@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <!--
+      EUC Thrills
+      EUC Thrills — original work by VibezZzCoder (https://github.com/VibezZzCoder). Source: https://github.com/VibezZzCoder/EUC-thrills
+      Play: https://vibezzzcoder.github.io/EUC-thrills/
+      Copyright (c) 2026 VibezZzCoder.
+      Code MIT; original game assets CC-BY-4.0.
+
+      This page is the published build of that repository. A copy served from
+      anywhere else is a fork — which the licence allows, and which is expected
+      to say so rather than to present the work as its own.
+    -->
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>EUC Thrills</title>
+    <meta name="description" content="An open-source arcade riding game about electric unicycles. One wheel. Total freedom. Ride anywhere." />
+    <meta name="color-scheme" content="dark" />
+
+    <!--
+      Critical boot styles are inline on purpose. The loading shell has to be
+      painted before any JavaScript runs, so the player never sees a white or
+      blank page.
+
+      The game's own UI is in a linked stylesheet, as this comment has promised
+      since M0. Linked rather than imported from TypeScript so that no module
+      under `src/` imports a `.css` file — every one of them has to stay
+      runnable under Node's own test runner with no build step (master §19.1),
+      and a stray CSS import is the one thing that would quietly end that.
+    -->
+
+    <style>
+      :root {
+        --ink: #eef2f7;
+        --ink-dim: #97a3b4;
+        --backdrop: #0d1014;
+        --accent: #1f6fe0;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: var(--backdrop);
+        color: var(--ink);
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+
+      /* Scoped to the play surface. A document-wide touch-action would also
+         cover the menus, and menus are where a tap must keep behaving as a
+         tap. */
+      #viewport {
+        display: block;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+      }
+
+      #boot {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-content: center;
+        justify-items: center;
+        gap: 1.5rem;
+        padding: 2rem;
+        text-align: center;
+        background:
+          radial-gradient(120% 90% at 50% 0%, #16202c 0%, var(--backdrop) 70%);
+        transition: opacity 320ms ease;
+      }
+
+      #boot[hidden] { display: none; }
+      #boot.is-dismissed { opacity: 0; pointer-events: none; }
+
+      #boot h1 {
+        margin: 0;
+        font-size: clamp(2rem, 8vw, 3.75rem);
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        line-height: 1;
+      }
+
+      #boot h1 .accent { color: var(--accent); }
+
+      #boot p {
+        margin: 0;
+        max-width: 34ch;
+        color: var(--ink-dim);
+        font-size: clamp(0.9rem, 2.6vw, 1.05rem);
+        line-height: 1.5;
+      }
+
+      #boot-track {
+        width: min(18rem, 70vw);
+        height: 3px;
+        border-radius: 999px;
+        background: #232c38;
+        overflow: hidden;
+      }
+
+      #boot-bar {
+        width: 35%;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--accent);
+        animation: boot-sweep 1.15s ease-in-out infinite;
+      }
+
+      @keyframes boot-sweep {
+        0%   { transform: translateX(-110%); }
+        100% { transform: translateX(320%); }
+      }
+
+      /* Respect the OS setting even before the in-game option exists. */
+      @media (prefers-reduced-motion: reduce) {
+        #boot-bar { animation: none; width: 100%; opacity: 0.55; }
+        #boot { transition: none; }
+      }
+
+      #boot-status {
+        font-size: 0.8rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--ink-dim);
+      }
+
+      #boot-error {
+        max-width: 46ch;
+        padding: 1rem 1.25rem;
+        border: 1px solid #7a2530;
+        border-radius: 0.5rem;
+        background: #1c1113;
+        color: #ffc9cf;
+        font-size: 0.9rem;
+        line-height: 1.5;
+        text-align: left;
+        white-space: pre-wrap;
+      }
+
+      #boot-error[hidden] { display: none; }
+    </style>
+    <script type="module" crossorigin src="./assets/index-DAh2GJmw.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CfkVhNtz.css">
+    <meta name="author" content="VibezZzCoder">
+    <link rel="author" href="https://github.com/VibezZzCoder">
+    <link rel="canonical" href="https://vibezzzcoder.github.io/EUC-thrills/">
+    <link rel="code-repository" href="https://github.com/VibezZzCoder/EUC-thrills">
+    <meta name="license" content="MIT (code), CC-BY-4.0 (original assets)">
+    <meta property="og:title" content="EUC Thrills">
+    <meta property="og:url" content="https://vibezzzcoder.github.io/EUC-thrills/">
+  </head>
+
+  <body>
+    <canvas id="viewport"></canvas>
+
+    <div id="boot">
+      <h1>EUC&nbsp;<span class="accent">THRILLS</span></h1>
+      <p>One wheel. Total freedom. Ride anywhere.</p>
+      <div id="boot-track"><div id="boot-bar"></div></div>
+      <p id="boot-status">Starting up</p>
+      <!-- role="alert" makes a fatal boot failure announce itself to
+           assistive tech instead of leaving a silent stuck loading screen. -->
+      <pre id="boot-error" role="alert" hidden></pre>
+    </div>
+
+  </body>
+</html>
