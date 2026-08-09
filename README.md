@@ -14,8 +14,8 @@ take the alley when you think you can hold it.
 
 What you can play today starts with one complete hand-built city loop, then
 opens into **seeded Fresh routes** that can be ridden free or against the clock.
-The city runs start to finish; the procedurally generated routes are point-to-point. 
-The riding is the part that is meant to be right — but this is still the foundation
+The city runs start to finish; the generated routes are point-to-point. The
+riding is the part that is meant to be right — but this is still the foundation
 of the game rather than the whole of it.
 
 Worth knowing before you start:
@@ -29,13 +29,19 @@ Worth knowing before you start:
   portrait or landscape. That is new, and it is the part of this build most
   likely to want adjusting on a handset nobody has tried it on yet — the size
   and the handedness of the controls are both in Settings.
-- **Wobble is switched off.** It was built, it was not fun, and it is waiting on
-  a redesign rather than sitting in the game annoying people. Pedal strike is
-  the EUC-specific way to lose a ride in the meantime.
-- **Your saved times may not survive every update.** Best times and ghosts are
-  stored against the city or the exact Fresh-route seed they were set on; if a
-  course or the save format changes, old records are left behind rather than
-  silently converted into something they are not.
+- **Fresh routes now carry road hazards, and wobble is on.** Liquid spills and
+  potholes appear on generated routes — visible, avoidable, and the only thing
+  that can start a speed wobble. Ride over one and the wheel weaves until you
+  slow down; carve as hard as you like on clean ground and it never will. The
+  hand-built city stays hazard-free on purpose, so pedal strike remains the
+  EUC-specific way to lose a ride there.
+- **Your saved times may not survive every update — and this update is one of
+  those.** Best times and ghosts are stored against the city or the exact
+  Fresh-route seed they were set on; if a course or the save format changes,
+  old records are left behind rather than silently converted into something
+  they are not. Hazards changed what a Fresh-route seed builds, so times and
+  ghosts set on seeds before this update no longer apply; city records are
+  untouched.
 - Things will look, sound, and handle differently in later builds. If the ride
   feels wrong somewhere — a control that fights you, a line that should work
   and doesn't — the repository linked above is the place to say so.
@@ -74,6 +80,12 @@ it surprises you:
   speed.
 - **Watch your pedals in a hard carve.** Lean far enough and a pedal grounds,
   which costs you speed and, if you were fast, the ride.
+- **On a Fresh route, watch the road itself.** A dark pothole or a wet spill is
+  exactly what it looks like. A spill and a shallow hole set the wheel weaving —
+  slow down and it settles; hold your speed and it grows until it puts you
+  down. A deep hole at speed is simply a crash, and hopping clears any of them.
+  Nothing else triggers the wobble: not speed, not rough ground, not the carve
+  you are enjoying.
 
 Crashes are non-graphic. After a spill you can ask to get going again with any
 riding input once the tumble has settled, and the rider remounts on their own
@@ -223,14 +235,20 @@ priority list, and anything below the first group may change or never happen.
 
 ### Planned next
 
-- **Wobble, redesigned, with readable road hazards.** Speed wobble is the
-  missing third EUC risk. The next milestone pairs its redesign with shallow
-  spills and potholes that can be seen and avoided, so wobble is recoverable
-  and situational rather than the thing that ruins an ordinary carve. That
-  work has not started in this build.
-- **Performance verification continues.** Generated routes already carry
-  structural draw-call and triangle limits, and the desktop ride check is
-  complete. The handset ride check is still owed.
+- **Something to swing at.** A new mode built around hitting scattered targets
+  from the saddle at speed — whether whacking things mid-carve is fun is
+  exactly what it exists to find out. That work has not started in this build.
+
+### Recently landed
+
+- **Wobble, redesigned, with readable road hazards.** Speed wobble was the
+  missing third EUC risk, and it arrived the way the roadmap promised: paired
+  with spills and potholes that can be seen and avoided, so it is recoverable
+  and situational rather than the thing that ruins an ordinary carve. It is
+  live in this build, on Fresh routes only.
+- **Performance verification is complete.** Generated routes carry structural
+  draw-call and triangle limits, and both the desktop and the handset ride
+  checks are done.
 
 ### Ideas under consideration
 
@@ -244,8 +262,8 @@ priority list, and anything below the first group may change or never happen.
 - **More ghosts.** Preset skill-level ghosts and a developer ghost to chase,
   beside your own.
 - **A proper look pass.** The world is drawn entirely by the game rather than
-  loaded from models, which leaves room to make it richer while keeping the 
-  procedurally generated-route budgets honest.
+  loaded from models, which leaves room to make it richer while keeping the
+  generated-route budgets honest.
 - **More wheels**, with real differences in character rather than a paint
   swap — and cosmetics for them.
 - **More riders.** Whether a second rider handles differently or is purely
