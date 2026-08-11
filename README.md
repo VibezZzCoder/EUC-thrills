@@ -20,6 +20,13 @@ still the foundation of the game rather than the whole of it.
 
 Worth knowing before you start:
 
+- **The wheel is much faster, and much handier at walking pace.** Top speed is
+  now around 50 mph — it takes a long straight and about eight seconds of held
+  throttle to find it, and it is worth finding. At the other end, a full-lock
+  turn at walking pace is now roughly half the circle it used to be, so weaving
+  between two lamp posts or turning around inside a lane is something the wheel
+  will actually do. Backwards riding went from a shuffle to about 15 mph; it is
+  still asked for the same way, from a standstill, twice.
 - The hand-built city is still the default and the place the ride is tuned
   against. **Fresh route** uses procedural generation to build you a brand-new
   place to ride.
@@ -55,9 +62,13 @@ Worth knowing before you start:
 
 There is a [roadmap](#roadmap) further down.
 
-![EUC Thrills — Cool Rider carving through the city on the suspension EUC](media/euc-thrills-gameplay.png)
+![EUC Thrills — Cool Rider airborne after striking a small traffic-island bollard, with the riderless wheel, bollard, road, and city each visible](media/euc-thrills-gameplay.png)
 
-*The screenshot shows the hand-built city, which remains the default world.
+*That is not a posed image: the rider clipped the small black bollard beside
+the riderless wheel, and the tumble is the game's own crash physics. The close
+oblique view is the game's selectable inspection camera; the road and traffic
+island remain visible behind the action. The screenshot shows the hand-built
+city, which remains the default world.
 Fresh routes use seeded procedural generation to rearrange its authored riding
 pieces. Both are drawn
 by the game at startup, so the repository is small. It holds the page itself
