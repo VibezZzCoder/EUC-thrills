@@ -42,7 +42,17 @@ Two sound loops in the game derive from public-domain recordings. CC0 requires n
 
 Both were trimmed, filtered, loop-processed, and level-matched for the game. The per-file processing chain is recorded in the project's development tree, which is not part of this distribution; the summary above is the complete provenance a redistributor needs.
 
-The other two shipped loops are original and are covered by the CC BY 4.0 claim above: the crash is the project owner's own recording — including his own voice, used with his approval — and the tyre rotation loop is synthesized from scratch with no external source.
+The other two loops are original and are covered by the CC BY 4.0 claim above: `crash_wipeout` is the project owner's own recording — including his own voice, used with his approval — and `tyre_solid_loop` (the tyre rotation) is synthesized from scratch with no external source.
+
+## Generated audio
+
+One shipped file is **not** covered by the CC BY 4.0 claim above, and is listed separately because its standing differs from everything else in this project.
+
+| Shipped file | What it is | Standing |
+|---|---|---|
+| `crash_trollina` (the second rider's crash) | A composed one-shot. Its slapstick layers — impact, spring, tumble clatter, falling slide and the wheel settling — are synthesized from first principles by a script in this project's development tree and are original work. Its **vocal beats are machine-generated**, produced with a text-to-speech model (OpenAI `gpt-audio`) and then cut, re-timed, pitch-shifted and mixed. | Machine-generated audio has doubtful copyright standing in several jurisdictions, so no copyright is claimed over the vocal layer and it is **excluded from the CC BY 4.0 claim**. It is redistributed with the game on the same terms the rest of the build is redistributed under, and a reuser who needs a clean rights position should replace it. |
+
+This is the same reasoning the project applies to the AI-generated art-direction reference under `references/`, applied to a shipped file rather than to a working one. It is recorded here rather than left implicit because a redistributor cannot tell by listening.
 
 ## Fictional designs and real-world brands
 
@@ -55,6 +65,8 @@ This project is not affiliated with, endorsed by, sponsored by, approved by, or 
 Private reference photographs held locally under `references/` are **not** part of this project's licensed content. They are not redistributed, are excluded from every build, and remain the property of their owner. Nothing under `references/` is covered by the licences above.
 
 The rider character "Cool Rider" is an original creation. The character name is an affectionate nod to a song title; no association with its rights holders is claimed or implied.
+
+The second rider, "Trollina", is also an original creation. She began as a crude joke drawing sent to the project owner, which he owns and kept; the character in the game is original geometry authored from that concept and is covered by the CC BY 4.0 claim above. The original drawing itself is held privately under `references/` and is not redistributed.
 
 ## Attribution
 

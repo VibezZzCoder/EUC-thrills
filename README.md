@@ -13,18 +13,27 @@ take the alley when you think you can hold it.
 ## ⚠️ This game is a work in progress
 
 What you can play today starts with one complete hand-built city loop, then
-opens into **seeded Fresh routes** that can be ridden free or against the clock.
-The city runs start to finish; the generated routes are point-to-point. The
-riding is the part that is meant to be right — but this is still the foundation
-of the game rather than the whole of it.
+opens into **procedurally generated Fresh routes** that can be ridden free or
+against the clock. The city runs start to finish; the generated routes are
+point-to-point. The riding is the part that is meant to be right — but this is
+still the foundation of the game rather than the whole of it.
 
 Worth knowing before you start:
 
 - The hand-built city is still the default and the place the ride is tuned
-  against. **Fresh route** builds a different route from a seed; enter the same
-  seed again and you get the same place. A rare seed may not produce a valid
-  route, in which case the game says so and asks for another rather than
-  quietly giving you a different world.
+  against. **Fresh route** uses procedural generation to build you a brand-new
+  place to ride.
+  Press **Surprise me** and it makes one — no typing, and that is the whole
+  path. Every route also has a name, and typing the same name again always
+  builds the same place, which is how you send one to a friend. A rare name may
+  not produce a valid route, in which case the game says so and asks for
+  another rather than quietly giving you a different world.
+- **There are two riders now.** The title screen says who you are riding as and
+  that line opens the chooser: **Cool Rider** in black and reflective blue, or
+  **Trollina**, who has wild magenta hair, a skater dress over black tights, and
+  her own idea of what falling off sounds like. Cool Rider is the first-time
+  default; after you choose, the game remembers your rider. It is looks only —
+  both ride exactly the same, and your best times carry across.
 - **Phones and tablets ride it too**, on their own on-screen controls, in
   portrait or landscape. That is new, and it is the part of this build most
   likely to want adjusting on a handset nobody has tried it on yet — the size
@@ -51,7 +60,8 @@ There is a [roadmap](#roadmap) further down.
 ![EUC Thrills — Cool Rider carving through the city on the suspension EUC](media/euc-thrills-gameplay.png)
 
 *The screenshot shows the hand-built city, which remains the default world.
-Fresh routes rearrange its authored riding pieces from a seed. Both are drawn
+Fresh routes use seeded procedural generation to rearrange its authored riding
+pieces. Both are drawn
 by the game at startup, so the repository is small. It holds the page itself
 (`index.html` with its built script and stylesheet under `assets/`), four sound
 recordings — the only media the game loads — the gameplay screenshot above
@@ -61,11 +71,14 @@ published file except itself.*
 
 ## Riding
 
-You are **Cool Rider**, on a fictional suspension wheel. The default ride is a
+You are **Cool Rider** or **Trollina**, on a fictional suspension wheel. The
+two are the same to ride, down to the last number — the choice changes what you
+look like and what you shout when it goes wrong. The default ride is a
 loop that leaves a plaza, runs a boulevard, crosses a park and a river ford,
 climbs a gravel trail, and comes back — with a shortcut through an alley that
 is genuinely faster and genuinely riskier. Fresh routes reuse those authored
-places in a seeded point-to-point ride with a different shape each time.
+places in a procedurally generated point-to-point ride with a different shape
+each time. Its seed makes that generation repeatable and shareable.
 
 Some of what the wheel does is specific to a real EUC, and worth knowing before
 it surprises you:
@@ -185,11 +198,23 @@ that you were.
 Scoring is **pure elapsed time**. Top speed and landing quality are shown
 because they are interesting, and count for nothing.
 
-**Fresh route** opens the seed chooser. Type something memorable or choose
-**Surprise me**, then ride that point-to-point route freely or start its time
-trial. The seed stays visible and becomes part of the address, so sending the
-link sends the same ground. Personal bests and ghosts stay with that seed;
-they never race on a different route.
+**Fresh route** uses procedural generation to build you a new place to ride.
+**Surprise me** is the whole path if you want one now; the route it makes is
+named, and typing that name in yourself always builds the same place. Ride it
+freely or start its time trial.
+The name stays visible and becomes part of the address, so sending the link
+sends the same ground. Personal bests and ghosts stay with that route; they
+never race on a different one — and they are kept per route, not per rider, so
+switching between Cool Rider and Trollina changes nothing about your times.
+
+## Riders
+
+The line under the title screen's buttons says who you are riding as, and
+opens the chooser. There are two, and the difference is entirely cosmetic:
+**Cool Rider** in black moto gear with reflective blue panels and a full-face
+helmet, and **Trollina**, who began life as a joke drawing somebody sent the
+author to make fun of the graphics and ended up in the game. Each has their own
+crash sound. Neither is faster.
 
 ## Settings
 
@@ -286,9 +311,11 @@ trying not to be.
 
 ## Licence
 
-Code is **MIT**. Original game assets are **CC BY 4.0**. Two of the four
-shipped sound loops derive from public-domain (CC0) recordings, and the crash
-is the author's own. Full terms, attribution, and per-file provenance are in
+Code is **MIT**. Original game assets are **CC BY 4.0**. Two of the five
+shipped sounds derive from public-domain (CC0) recordings, one crash is the
+author's own recording, and the second rider's crash is a composed one-shot
+whose voice is machine-generated and is therefore excluded from the CC BY 4.0
+claim. Full terms, attribution, and per-file provenance are in
 [`LICENSE`](LICENSE) and [`NOTICE.md`](NOTICE.md).
 
 The wheels in this game are original fictional designs. This project is not
