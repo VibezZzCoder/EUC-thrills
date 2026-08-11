@@ -38,19 +38,17 @@ Worth knowing before you start:
   portrait or landscape. That is new, and it is the part of this build most
   likely to want adjusting on a handset nobody has tried it on yet — the size
   and the handedness of the controls are both in Settings.
-- **Fresh routes now carry road hazards, and wobble is on.** Liquid spills and
-  potholes appear on generated routes — visible, avoidable, and the only thing
-  that can start a speed wobble. Ride over one and the wheel weaves until you
-  slow down; carve as hard as you like on clean ground and it never will. The
-  hand-built city stays hazard-free on purpose, so pedal strike remains the
-  EUC-specific way to lose a ride there.
-- **Your saved times may not survive every update — and this update is one of
-  those.** Best times and ghosts are stored against the city or the exact
-  Fresh-route seed they were set on; if a course or the save format changes,
-  old records are left behind rather than silently converted into something
-  they are not. Hazards changed what a Fresh-route seed builds, so times and
-  ghosts set on seeds before this update no longer apply; city records are
-  untouched.
+- **Fresh routes carry road hazards, and bushes are soft hazards.** Liquid
+  spills and potholes appear on generated routes. Bushes appear in the city and
+  generated worlds, but they are foliage rather than walls: the wheel pushes
+  through, loses speed, and takes one wobble jolt instead of crashing as though
+  it hit concrete. Slow down to settle the weave; carve as hard as you like on
+  clean ground and it never starts by itself.
+- **Your saved times may not survive every update.** Best times and ghosts are
+  stored against the city or the exact Fresh-route seed they were set on; if a
+  course or the save format changes, old records are left behind rather than
+  silently converted into something they are not. The earlier road-hazard
+  revision deliberately retired pre-hazard Fresh-route records.
 - Things will look, sound, and handle differently in later builds. If the ride
   feels wrong somewhere — a control that fights you, a line that should work
   and doesn't — the repository linked above is the place to say so.
@@ -63,8 +61,8 @@ There is a [roadmap](#roadmap) further down.
 Fresh routes use seeded procedural generation to rearrange its authored riding
 pieces. Both are drawn
 by the game at startup, so the repository is small. It holds the page itself
-(`index.html` with its built script and stylesheet under `assets/`), four sound
-recordings — the only media the game loads — the gameplay screenshot above
+(`index.html` with its built script and stylesheet under `assets/`), five sound
+files — the only runtime media the game loads — the gameplay screenshot above
 under `media/`, the licence texts (`LICENSE`, `NOTICE.md`), a `.nojekyll`
 marker, and `SHA256SUMS.txt`, a manifest listing the checksum of every
 published file except itself.*
@@ -97,13 +95,17 @@ it surprises you:
   exactly what it looks like. A spill and a shallow hole set the wheel weaving —
   slow down and it settles; hold your speed and it grows until it puts you
   down. A deep hole at speed is simply a crash, and hopping clears any of them.
-  Nothing else triggers the wobble: not speed, not rough ground, not the carve
-  you are enjoying.
+  A bush can also start the weave while dragging the wheel, but remains
+  pass-through and can never crash you directly. Clean speed, rough ground,
+  kerbs, landings, pedal strikes, and the carve you are enjoying do not trigger
+  wobble.
 
-Crashes are non-graphic. After a spill you can ask to get going again with any
-riding input once the tumble has settled, and the rider remounts on their own
-shortly after if you do nothing — either way you are restored moving, not
-stopped, so a crash costs you speed rather than the whole run.
+Crashes are non-graphic but no longer stiff: the rider tumbles, catches the
+ground and walls with their limbs, and settles into a comic rest while the
+wheel can bounce and spin away on a hard hit. A bush cushions the tumble rather
+than stopping it like concrete. Once the wipeout has settled, any riding input
+remounts; wait a little longer and the rider remounts automatically. Either way
+you return moving, so a crash costs speed rather than the whole run.
 
 ## Controls
 
@@ -266,11 +268,16 @@ priority list, and anything below the first group may change or never happen.
 
 ### Recently landed
 
+- **Fun wipeouts and soft bushes.** Crashes now use a short-lived active
+  ragdoll with a protective, non-graphic tumble; hard impacts give the wheel
+  its own bounce and spin-out. Bushes changed from solid blocks to soft foliage
+  hazards that drag, wobble, and cushion without directly causing a crash.
 - **Wobble, redesigned, with readable road hazards.** Speed wobble was the
   missing third EUC risk, and it arrived the way the roadmap promised: paired
   with spills and potholes that can be seen and avoided, so it is recoverable
   and situational rather than the thing that ruins an ordinary carve. It is
-  live in this build, on Fresh routes only.
+  live in this build on Fresh routes, with soft foliage as the corresponding
+  off-road hazard in every world that contains bushes.
 - **Performance verification is complete.** Generated routes carry structural
   draw-call and triangle limits, and both the desktop and the handset ride
   checks are done.
@@ -291,8 +298,8 @@ priority list, and anything below the first group may change or never happen.
   generated-route budgets honest.
 - **More wheels**, with real differences in character rather than a paint
   swap — and cosmetics for them.
-- **More riders.** Whether a second rider handles differently or is purely
-  cosmetic is still open.
+- **More riders.** Cool Rider and Trollina are cosmetic equals; any later rider
+  should preserve comparable handling and times.
 - **Other cameras.** Helmet view, wheel-level view, a replay camera, a photo
   mode.
 - **Music**, and a city with some life in it — people and movement you ride
