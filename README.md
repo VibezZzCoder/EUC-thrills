@@ -135,6 +135,7 @@ landscape. Rotating mid-ride is fine; nothing moves except the size of things.
 | Carve | Move the stick left or right — diagonal movement rides and carves together |
 | Crouch, and charge a bigger hop | Hold **CHARGE** — the touch equivalent of `Shift` |
 | Hop | Tap **HOP** — the touch equivalent of `Space`; hold **CHARGE** first for a bigger jump |
+| Swing the paddle | Tap **SWING** — the touch equivalent of `F`. It only appears in Knockabout |
 | Pause · quick reset · camera view | The three small buttons along the bottom |
 
 The stick has no fixed spot: **put your thumb down anywhere on that side of the
@@ -158,6 +159,7 @@ gentler one, not a twitchier one.
 | Carve right | `D` or `→` |
 | Hop | `Space` |
 | Crouch, and charge a bigger hop | `Shift` |
+| Swing the paddle — Knockabout only | `F` |
 | Quick reset — back to the start, or restart a timed run | `R` |
 | Mute | `M` |
 | Camera view | `C` |
@@ -179,6 +181,7 @@ the keys, or on your thumbs.
 | Carve | Left stick left and right, or D-pad left and right |
 | Hop | A |
 | Crouch, and charge a bigger hop | Left bumper |
+| Swing the paddle — Knockabout only | Right bumper |
 | Quick reset | X |
 | Camera view | Y |
 | Pause | Start |
@@ -210,6 +213,22 @@ that you were.
 
 Scoring is **pure elapsed time**. Top speed and landing quality are shown
 because they are interesting, and count for nothing.
+
+**Knockabout** gives you a padded paddle and puts things to hit along the
+route. Targets stand on the verge with their pad reaching in over the road, so
+hitting one is a matter of holding a line near it and timing the swing rather
+than of steering into anything — nothing here is solid, and riding straight
+through a target does nothing at all.
+
+The score is targets struck out of the targets the route carries. The clock is
+shown and is worth nothing: there is no time limit, no penalty for a miss, and
+a target you ride past simply stays standing. The run ends when the last one is
+down.
+
+It needs a route that has targets on it, which means a **Fresh route** — the
+hand-built city has none. Choosing Knockabout on a world without them takes you
+to the route generator and says so. Personal bests are kept per route and are
+entirely separate from your time-trial times.
 
 **Fresh route** uses procedural generation to build you a new place to ride.
 **Surprise me** is the whole path if you want one now; the route it makes is
@@ -273,11 +292,16 @@ priority list, and anything below the first group may change or never happen.
 
 ### Planned next
 
-- **Something to swing at.** A new mode built around hitting scattered targets
-  from the saddle at speed — whether whacking things mid-carve is fun is
-  exactly what it exists to find out. That work has not started in this build.
+- **Somebody to chase.** A third rider — a police officer on a wheel, carrying
+  the same paddle — and a mode where one player runs and the other pursues.
+  Local or peer-to-peer only if it happens at all; there will never be a server.
 
 ### Recently landed
+
+- **Knockabout.** The mode the roadmap called "something to swing at" is in
+  this build, under its real name. Fresh routes now carry targets on the verge
+  and the rider carries a padded paddle; whether whacking things mid-carve is
+  fun is exactly what it exists to find out, so tell me.
 
 - **Fun wipeouts and soft bushes.** Crashes now use a short-lived active
   ragdoll with a protective, non-graphic tumble; hard impacts give the wheel
