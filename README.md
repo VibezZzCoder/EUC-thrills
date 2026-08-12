@@ -193,51 +193,52 @@ reports the same positions (A is ✕, B is ○, X is □, Y is △).
 
 ## Modes
 
-**Start ride** is free ride in the world currently loaded: no clock, no
-objective, nothing to fail. In the city, ride the loop or ignore it entirely
-and go and look at the river.
+### Start ride
 
-**Time trial** runs the current world against a start line and five more
-checkpoints. The HUD points at the next one with a bearing and a distance; each
-crossing shows the split and, once you have a time to beat, how far ahead or
-behind it you are. The results screen breaks the run down leg by leg.
+Free ride in the world currently loaded: no clock, no objective, nothing to
+fail. In the city, ride the loop or ignore it entirely and go and look at the
+river.
 
-In the hand-built city, every checkpoint sits on ground both branches share,
-so the alley shows up where it actually happens — as a faster leg — and a time
-set the safe way is still comparable with one set through the alley.
+### Time trial
 
-Beat your own time and the game keeps the replay. The next attempt puts a
-translucent rider on the course beside you, riding your best lap in real time —
-which is the only honest way to see *where* you were slower rather than just
-that you were.
+Race from the start line through five more checkpoints. The HUD points toward
+the next one and shows the distance; each crossing shows your split and, once
+you have a time to beat, how far ahead or behind you are.
 
-Scoring is **pure elapsed time**. Top speed and landing quality are shown
-because they are interesting, and count for nothing.
+- Scoring is **pure elapsed time**. Top speed and landing quality are shown for
+  interest and count for nothing.
+- Beat your best and the next attempt adds a translucent replay rider, so you
+  can see *where* the time changed. Results break the run down leg by leg.
+- In the hand-built city, the safe route and the faster alley cross the same
+  checkpoints, so both lines remain comparable.
 
-**Knockabout** gives you a padded paddle and puts things to hit along the
-route. Targets stand on the verge with their pad reaching in over the road, so
-hitting one is a matter of holding a line near it and timing the swing rather
-than of steering into anything — nothing here is solid, and riding straight
-through a target does nothing at all.
+### Knockabout
 
-The score is targets struck out of the targets the route carries. The clock is
-shown and is worth nothing: there is no time limit, no penalty for a miss, and
-a target you ride past simply stays standing. The run ends when the last one is
-down.
+Carry a padded paddle along a Fresh route and knock down the yellow targets
+standing on its verges.
 
-It needs a route that has targets on it, which means a **Fresh route** — the
-hand-built city has none. Choosing Knockabout on a world without them takes you
-to the route generator and says so. Personal bests are kept per route and are
-entirely separate from your time-trial times.
+- Time a swing while holding a line near the target for a clean hit.
+- Riding into a target also knocks it down. The target never becomes a solid
+  wall and never causes a direct crash, but the clumsy hit sheds speed and adds
+  a recoverable wobble.
+- Your score is targets struck out of the route's total. The clock is shown but
+  counts for nothing: there is no time limit or miss penalty, and a target you
+  pass stays standing until you come back for it. The run ends when all are
+  down.
+- The hand-built city has no targets. Choosing Knockabout there opens the route
+  generator; Knockabout personal bests are kept per route and never overwrite
+  time-trial records.
 
-**Fresh route** uses procedural generation to build you a new place to ride.
-**Surprise me** is the whole path if you want one now; the route it makes is
-named, and typing that name in yourself always builds the same place. Ride it
-freely or start its time trial.
-The name stays visible and becomes part of the address, so sending the link
-sends the same ground. Personal bests and ghosts stay with that route; they
-never race on a different one — and they are kept per route, not per rider, so
-switching between Cool Rider and Trollina changes nothing about your times.
+### Fresh route
+
+Procedurally generate a new place to ride. Choose **Surprise me** for an instant
+seed, or type a seed to rebuild the same place every time; then ride it freely,
+start its time trial, or play Knockabout.
+
+The seed stays visible and becomes part of the address, so sending the link
+sends the same ground. Personal bests and ghosts stay with that route and are
+kept per route, not per rider—switching between Cool Rider and Trollina changes
+nothing about your records.
 
 ## Riders
 
@@ -287,21 +288,25 @@ down, and it changes nothing about how the wheel rides.
 
 ## Roadmap
 
-Direction, not a release schedule. There are no dates, the order is not a
-priority list, and anything below the first group may change or never happen.
+Direction, not a release schedule. There are no dates and the order is not a
+priority list. The first group is accepted direction; everything in **Ideas**
+may change or never happen.
 
-### Planned next
+### Planned direction
 
-- **Somebody to chase.** A third rider — a police officer on a wheel, carrying
-  the same paddle — and a mode where one player runs and the other pursues.
-  Local or peer-to-peer only if it happens at all; there will never be a server.
+- **Police chase.** A third rider — a police officer on a wheel, carrying the
+  same paddle — pursues Cool Rider or Trollina. The first single-player shape
+  is an AI cop; a third player could take the cop role in multiplayer.
+- **Player-hosted multiplayer.** A basic invite-based peer-to-peer or LAN game
+  is planned, with up to three players in Police chase as the first concrete
+  shape. It will not depend on accounts, cloud saves, or a central game server.
 
 ### Recently landed
 
 - **Knockabout.** The mode the roadmap called "something to swing at" is in
-  this build, under its real name. Fresh routes now carry targets on the verge
-  and the rider carries a padded paddle; whether whacking things mid-carve is
-  fun is exactly what it exists to find out, so tell me.
+  this build, under its real name. Fresh routes carry targets on the verge and
+  the rider carries a padded paddle. The first owner ride found the mode fun
+  and its forgiving body knock fair; more rider feedback is welcome.
 
 - **Fun wipeouts and soft bushes.** Crashes now use a short-lived active
   ragdoll with a protective, non-graphic tumble; hard impacts give the wheel
@@ -319,26 +324,24 @@ priority list, and anything below the first group may change or never happen.
 
 ### Ideas under consideration
 
-- **More world.** Downtown streets, a hillside neighbourhood, an industrial
-  edge, deeper woodland trail, more riverside — the urban-to-trail transition
-  is the part the EUC exists for.
-- **More to do.** Flow challenges that reward carving over braking, hill
-  climbs, technical trail, downhill runs, checkpoint sprints with genuinely
-  different lines, and a delivery ride that stays playful rather than becoming
-  a job.
-- **More ghosts.** Preset skill-level ghosts and a developer ghost to chase,
-  beside your own.
-- **A proper look pass.** The world is drawn entirely by the game rather than
-  loaded from models, which leaves room to make it richer while keeping the
-  generated-route budgets honest.
-- **More wheels**, with real differences in character rather than a paint
-  swap — and cosmetics for them.
-- **More riders.** Cool Rider and Trollina are cosmetic equals; any later rider
-  should preserve comparable handling and times.
-- **Other cameras.** Helmet view, wheel-level view, a replay camera, a photo
-  mode.
-- **Music**, and a city with some life in it — people and movement you ride
-  around rather than through.
+- **Jump lines and airtime.** A deliberate sequence of ramps, a jumpable tall
+  platform, and off-road hill crests that let the wheel properly leave the
+  ground are among the clearest repeated rider requests.
+- **More challenges and progression.** Flow, hill-climb, technical-trail,
+  downhill, delivery, scoring, crash-count, and meaningful reward ideas all
+  belong here; none has a settled ruleset yet.
+- **A living closed-loop course.** A separate hand-built route with moving
+  animals or cars is accepted in principle. It could also be the natural home
+  for a different time of day without changing the generated routes.
+- **More racing.** Preset skill-level and developer ghosts, AI riders, and
+  routes with genuinely different lines beside your own saved ghost.
+- **More world.** Downtown, hillside, industrial, deeper woodland, and more
+  riverside — while protecting the city-to-trail transition riders already
+  like.
+- **More rider voices.** Varied crash reactions and occasional hop, carve,
+  impact, and top-speed calls, without turning the ride bed into chatter.
+- **More character and presentation.** A richer procedural look, more wheels
+  and cosmetic-equal riders, music, helmet/wheel/replay cameras, and photo mode.
 - **More for the phone.** The controls are in and the game is properly
   playable on one; what is not there yet is anything that takes advantage of
   it — a layout that adapts to a folding screen, haptics on a landing or a
@@ -346,10 +349,10 @@ priority list, and anything below the first group may change or never happen.
 
 ### Deliberately not planned
 
-Online multiplayer, accounts, cloud saves, a story campaign, an in-game economy
-or marketplace, and VR. Locally saved ghosts are how this game intends to do
-competition, and the game asking you to sign in to ride is exactly what it is
-trying not to be.
+Hosted multiplayer servers, accounts, cloud saves, a story campaign, an in-game
+economy or marketplace, and VR. The player-hosted plan above is intentionally
+small: the game asking you to sign in to ride is exactly what it is trying not
+to be.
 
 ## Licence
 
