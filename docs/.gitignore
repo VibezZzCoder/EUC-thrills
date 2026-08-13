@@ -1,0 +1,16 @@
+# Operating-system and editor bookkeeping. None of it is part of the game.
+#
+# Seeded once by tools/package-github-pages.mjs in the EUC Thrills project
+# folder, and never rewritten by it afterwards. This file is yours to edit.
+#
+# Finder recreates .DS_Store in this folder constantly, including in the
+# seconds after a release is packaged. It is not published content, and it
+# records the names of the files in the folder it sits in, so it has no
+# business in a public repository.
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+*.swp
