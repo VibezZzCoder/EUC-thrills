@@ -1,5 +1,10 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { CHARACTERS, type CharacterId } from '../data/riders.ts';
+import {
+  CHARACTERS,
+  isPlayableCharacter,
+  type CharacterId,
+  type PlayableCharacterId,
+} from '../data/riders.ts';
 import { BINDINGS, RESERVED_CODES, keyLabel, type BindableAction } from '../input/bindings.ts';
 import {
   FOV_TRIM_MAX,
@@ -98,6 +103,15 @@ export interface MenuCallbacks {
    * this screen's.
    */
   onStartKnockabout(): void;
+  /**
+   * Start a police chase from the title — M18.
+   *
+   * `onStartKnockabout`'s twin, and always offered for the same reason: a
+   * button that appears and disappears is a mode nobody learns exists. On a
+   * world that cannot host a chase this opens the fresh-route panel and says
+   * so, which is the caller's decision rather than this screen's.
+   */
+  onStartChase(): void;
   /** Ride the same route again, from the results screen. */
   onRetryChallenge(): void;
   /** Leave the results screen for the title. */
@@ -125,7 +139,7 @@ export interface MenuCallbacks {
   /** Leave the rider chooser for the title. */
   onCloseRiders(): void;
   /** Ride as this one from now on. Applies immediately; the panel stays open. */
-  onPickRider(id: CharacterId): void;
+  onPickRider(id: PlayableCharacterId): void;
 }
 
 /**
@@ -171,10 +185,20 @@ export type RouteStatus =
    * is the same shape as `no-route` above: name the fix, do not apologise, and
    * never silently swap the world for one that would have worked.
    */
-  | { readonly kind: 'needs-targets' };
+  | { readonly kind: 'needs-targets' }
+  /**
+   * The player chose the chase on a world that cannot host one — M18, §13 q26.
+   *
+   * `needs-targets`' twin, on the same terms and for the same reason. The
+   * chase runs on generated routes only, because the cop follows the route's
+   * own through line and the hand-authored city has one the mode was never
+   * measured on. Same shape again: name the fix, do not apologise, never
+   * silently swap the world.
+   */
+  | { readonly kind: 'needs-route' };
 
 /** Why the player arrived at Fresh route. The chooser must not erase it. */
-export type RoutePurpose = 'ride' | 'knockabout';
+export type RoutePurpose = 'ride' | 'knockabout' | 'chase';
 
 /** One checkpoint's line on the results screen. */
 export interface ResultsRow {
@@ -262,6 +286,10 @@ const TITLE_TEMPLATE = `
       <span class="euc-button__label">Knockabout</span>
       <span class="euc-button__note">Swing a paddle at everything on the way past</span>
     </button>
+    <button type="button" class="euc-button" data-menu="chase">
+      <span class="euc-button__label">Police chase</span>
+      <span class="euc-button__note">Officer Dorkins is behind you. Stay ahead for five minutes</span>
+    </button>
     <button type="button" class="euc-button" data-menu="routes">
       <span class="euc-button__label">Fresh route</span>
       <span class="euc-button__note">Have the game procedurally generate a brand-new place to ride</span>
@@ -298,7 +326,7 @@ const TITLE_TEMPLATE = `
  * They are `aria-hidden` because the name beside them already says who it is —
  * a portrait that announces itself reads the character's name twice.
  */
-const RIDER_CARDS: Readonly<Record<CharacterId, { blurb: string; portrait: string }>> = {
+const RIDER_CARDS: Readonly<Record<PlayableCharacterId, { blurb: string; portrait: string }>> = {
   'cool-rider': {
     blurb: 'Black moto gear, reflective blue, full-face lid. '
       + 'Rides like he has nothing to prove.',
@@ -892,14 +920,18 @@ export class Menus {
     if (ride) {
       ride.textContent = purpose === 'knockabout'
         ? 'Play Knockabout on this route'
-        : 'Ride this route';
+        : purpose === 'chase'
+          ? 'Start the chase on this route'
+          : 'Ride this route';
     }
 
     const note = this.routes.querySelector<HTMLElement>('[data-menu="surprise"] .euc-button__note');
     if (note) {
       note.textContent = purpose === 'knockabout'
         ? 'Generate a brand-new route and start Knockabout, no typing'
-        : 'Procedurally generate a brand-new route, no typing';
+        : purpose === 'chase'
+          ? 'Generate a brand-new route and start the chase, no typing'
+          : 'Procedurally generate a brand-new route, no typing';
     }
   }
 
@@ -1078,6 +1110,7 @@ export class Menus {
     if (action === 'start') this.callbacks.onStartRide();
     else if (action === 'challenge') this.callbacks.onStartChallenge();
     else if (action === 'knockabout') this.callbacks.onStartKnockabout();
+    else if (action === 'chase') this.callbacks.onStartChase();
     else if (action === 'resume') this.callbacks.onResume();
     else if (action === 'settings') this.callbacks.onOpenSettings();
     else if (action === 'back') this.callbacks.onCloseSettings();
@@ -1098,7 +1131,13 @@ export class Menus {
     else if (action === 'riders-back') this.callbacks.onCloseRiders();
     else if (action === 'pick-rider') {
       const id = target.closest<HTMLElement>('[data-rider]')?.dataset.rider;
-      if (id !== undefined) this.callbacks.onPickRider(id as CharacterId);
+      // Guarded rather than cast, because M18 put a rider in `CharacterId` that
+      // nobody may choose. A `data-rider` attribute is a string off the DOM, so
+      // a straight cast would make "the cop is not on the chooser" a fact about
+      // the markup rather than about the code.
+      if (id !== undefined && isPlayableCharacter(id as CharacterId)) {
+        this.callbacks.onPickRider(id as PlayableCharacterId);
+      }
     }
   };
 
@@ -1615,6 +1654,12 @@ function routeStatusLine(status: RouteStatus): [string, string] {
     return [
       'refused',
       'Knockabout needs a route with things to hit. Generate a fresh one below.',
+    ];
+  }
+  if (status.kind === 'needs-route') {
+    return [
+      'refused',
+      'The chase needs a generated route to run on. Generate a fresh one below.',
     ];
   }
   if (status.kind === 'copied') return ['ready', 'Link copied. Anyone who opens it rides this route.'];

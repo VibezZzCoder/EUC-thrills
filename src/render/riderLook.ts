@@ -282,6 +282,26 @@ export interface RiderLook {
   readonly extras: readonly RiderExtra[];
 
   /**
+   * Optional vertex repaints on the limb and boot meshes, run once at build.
+   *
+   * **Paint is the only decoration a limb can afford.** A panel group on a leg
+   * is a mesh, a mesh is a draw call, and the cop — the look this exists for —
+   * has none to spend (`render/copRider.ts`). A vertex colour is an RGB
+   * *multiplier* on the mesh's one material, so a repaint can turn a band of
+   * skin into navy shorts, a sock, or a black knee pad for nothing but
+   * arithmetic — and because it rides the mesh it decorates, it moves with the
+   * IK and can never clip the way a pelvis-fixed garment volume does
+   * (Trollina's carve-clip lesson). Crisp edges come from the profile: put a
+   * seam ring pair at every paint boundary, or the band edge smears across
+   * whatever ring gap it lands in.
+   */
+  readonly paint?: {
+    readonly thigh?: (geometry: THREE.BufferGeometry) => void;
+    readonly shin?: (geometry: THREE.BufferGeometry) => void;
+    readonly boot?: (geometry: THREE.BufferGeometry) => void;
+  };
+
+  /**
    * Static additions to the relaxed hand target, in metres.
    *
    * The rig solves both arms to a base target and every reaction is an offset
@@ -1337,7 +1357,701 @@ export const TROLLINA_LOOK: RiderLook = Object.freeze({
   armCarriage: Object.freeze({ splay: 0.16, rise: 0.12 }),
 });
 
-export const RIDER_LOOKS: readonly RiderLook[] = Object.freeze([COOL_RIDER_LOOK, TROLLINA_LOOK]);
+// -- Officer Dorkins ---------------------------------------------------------
+//
+// M18's cop, and the first look that is **not** a character the player may be.
+// He is built from Cool Rider's own profiles rather than new ones, and that is
+// the file's rule 1 doing exactly what it was written for: one skeleton, one
+// stance solve, one set of cross-sections, and a different person out of
+// nothing but materials, shades and panels. The differences that matter at
+// chase distance are the yellow yoke, the chequer band, the white lid and the
+// bare legs.
+//
+// **He is also the cheapest look in the file, and that is a budget rather than
+// a taste.** `render/copRider.ts` explains the arithmetic; what it means here
+// is that he carries no elbow pads, no sleeve panels and no separate seat mesh,
+// because a second rider in the frame has about a third of a rider's worth of
+// draw calls to spend and every panel group is one of them.
+
+/** A stockier polo silhouette than Cool Rider's tapered armoured jacket. */
+const COP_TORSO = loftProfile([
+  { y: -0.010, halfWidth: 1.08 * TORSO_HALF_WIDTH, halfDepth: 1.05 * TORSO_HALF_DEPTH, square: 2.9 },
+  { y: 0.035, halfWidth: 1.03 * TORSO_HALF_WIDTH, halfDepth: 1.02 * TORSO_HALF_DEPTH, square: 2.9 },
+  { y: 0.145, halfWidth: 0.98 * TORSO_HALF_WIDTH, halfDepth: 1.00 * TORSO_HALF_DEPTH, square: 2.8 },
+  { y: 0.285, halfWidth: 1.04 * TORSO_HALF_WIDTH, halfDepth: 1.06 * TORSO_HALF_DEPTH, square: 2.8, z: 0.010 },
+  { y: 0.405, halfWidth: 1.10 * TORSO_HALF_WIDTH, halfDepth: 1.04 * TORSO_HALF_DEPTH, square: 3.0, z: 0.006 },
+  { y: 0.485, halfWidth: 1.04 * TORSO_HALF_WIDTH, halfDepth: 0.94 * TORSO_HALF_DEPTH, square: 3.0 },
+  { y: 0.525, halfWidth: 0.83 * TORSO_HALF_WIDTH, halfDepth: 0.76 * TORSO_HALF_DEPTH, square: 2.7 },
+  { y: 0.548, halfWidth: 0.48 * TORSO_HALF_WIDTH, halfDepth: 0.52 * TORSO_HALF_DEPTH, square: 2.4 },
+]);
+
+/**
+ * His legs, and the seam fractions are paint boundaries rather than moto
+ * quilting: 0.52 is the cargo shorts' hem and 0.80 the knee pad's top edge,
+ * so each colour change in `paintCopThigh` lands on a ring pair and reads as a
+ * garment edge instead of smearing across a ring gap. The knee end is thicker
+ * than the first pass because there is a pad over it now.
+ */
+const COP_THIGH = limbProfile(RIDER_BLOCKOUT.thighLength, [0.086, 0.078, 0.068], [0.52, 0.80], {
+  flatten: 0.95,
+  square: 2.5,
+});
+/** Seams at the pad's lower edge (0.30) and the sock's top and ring (0.58, 0.655). */
+const COP_SHIN = limbProfile(RIDER_BLOCKOUT.shinLength, [0.075, 0.063, 0.048], [0.30, 0.58, 0.655], {
+  flatten: 0.93,
+  square: 2.4,
+});
+const COP_UPPER_ARM = limbProfile(RIDER_BLOCKOUT.upperArmLength, [0.066, 0.057, 0.045], [0.55], {
+  flatten: 0.96,
+  square: 2.4,
+});
+const COP_FOREARM = limbProfile(RIDER_BLOCKOUT.forearmLength, [0.053, 0.046, 0.035], [0.45], {
+  flatten: 0.95,
+  square: 2.3,
+});
+
+/** The skin head under the open helmet: cheeks and jaw, not a painted shell. */
+const COP_HEAD = loftProfile([
+  { y: 0.088, halfWidth: 0.050, halfDepth: 0.055, square: 2.4, z: 0.010 },
+  { y: 0.116, halfWidth: 0.077, halfDepth: 0.083, square: 2.5, z: 0.012 },
+  { y: 0.158, halfWidth: 0.101, halfDepth: 0.108, square: 2.5, z: 0.010 },
+  { y: 0.207, halfWidth: 0.108, halfDepth: 0.114, square: 2.5, z: 0.004 },
+  { y: 0.253, halfWidth: 0.103, halfDepth: 0.108, square: 2.4 },
+  { y: 0.291, halfWidth: 0.085, halfDepth: 0.089, square: 2.3 },
+  { y: 0.316, halfWidth: 0.045, halfDepth: 0.047, square: 2.2 },
+  { y: 0.326, halfWidth: 0, halfDepth: 0 },
+]);
+
+/**
+ * The white bicycle helmet crown. Its lower edge leaves the whole face open.
+ *
+ * The crown leans *backward* as it rises — each ring's `z` walks negative —
+ * because that sweep is what separates a cycling helmet from a bowl: wide and
+ * forward at the brow, tapering aft, which is the reference's aerodynamic
+ * read and the second pass's answer to "a miner's hard hat".
+ */
+const COP_HELMET = loftProfile([
+  { y: 0.202, halfWidth: 0.112, halfDepth: 0.128, square: 2.5, z: 0.002 },
+  { y: 0.214, halfWidth: 0.130, halfDepth: 0.148, square: 2.7, z: 0.006 },
+  { y: 0.248, halfWidth: 0.126, halfDepth: 0.144, square: 2.5, z: 0.000 },
+  { y: 0.302, halfWidth: 0.115, halfDepth: 0.128, square: 2.4, z: -0.010 },
+  { y: 0.346, halfWidth: 0.086, halfDepth: 0.098, square: 2.3, z: -0.020 },
+  { y: 0.374, halfWidth: 0.042, halfDepth: 0.048, square: 2.2, z: -0.028 },
+  { y: 0.384, halfWidth: 0, halfDepth: 0, z: -0.030 },
+]);
+
+export type Tint = readonly [number, number, number];
+
+/**
+ * The vertex multiplier that repaints a `base`-coloured material as `target`.
+ *
+ * The whole repaint system rests on one shader fact: a vertex colour
+ * *multiplies* the material colour, per channel, in linear space — so the
+ * ratio of two linear colours is the paint that turns one into the other.
+ * `THREE.Color` decodes both hexes through the same sRGB transfer, which
+ * keeps the ratio honest and keeps every painted target authored in
+ * `data/tuning.ts` like any other colour (invariant 4 in spirit: the hex
+ * lives there; only the arithmetic lives here).
+ */
+export function tintOver(base: number, target: number, targetScale = 1): Tint {
+  const b = new THREE.Color(base);
+  const t = new THREE.Color(target).multiplyScalar(targetScale);
+  return [
+    t.r / Math.max(1e-3, b.r),
+    t.g / Math.max(1e-3, b.g),
+    t.b / Math.max(1e-3, b.b),
+  ];
+}
+
+/** Repaint one built part a single tint, in place, and hand it back. */
+function tinted(geometry: THREE.BufferGeometry, tint: Tint): THREE.BufferGeometry {
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < colour.count; i += 1) colour.setXYZ(i, tint[0], tint[1], tint[2]);
+  return geometry;
+}
+
+/**
+ * Repaint every vertex whose height lands in a band. First matching band wins;
+ * heights between bands keep the mesh's authored shade, which is how the bare
+ * skin between the shorts and the knee pad costs nothing to state.
+ */
+function paintBands(
+  geometry: THREE.BufferGeometry,
+  bands: readonly { readonly top: number; readonly bottom: number; readonly tint: Tint }[],
+): void {
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    for (const band of bands) {
+      if (y > band.top || y < band.bottom) continue;
+      colour.setXYZ(i, band.tint[0], band.tint[1], band.tint[2]);
+      break;
+    }
+  }
+}
+
+/**
+ * His face, one skin mesh: the head, clear glasses with eyes behind them, a
+ * brown moustache over a visible smirk, a nose, ears, and the helmet's chin
+ * straps.
+ *
+ * The first pass painted features onto a full-face helmet; the second gave him
+ * a real head but kept the glasses as one dark slab each side — reviewed
+ * against the reference, a blindfold. This pass is the difference between
+ * "wearing sunglasses" and "a cheerful man in *glasses*": the lens is pale and
+ * a pupil stands proud of it, the moustache is hair-brown rather than
+ * near-black, and the mouth under it is what makes him look pleased to be
+ * chasing you. Everything is still merged into the one extra colour call the
+ * 26-call cop ceiling affords — geometry detail is the cheap axis.
+ */
+function copFaceParts(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [loftGeometry(COP_HEAD, { radialSegments: 18 })];
+  const skin = BLOCKOUT_COLOURS.copSkin;
+
+  for (const side of [-1, 1]) {
+    // The frame: a dark rounded rectangle, one size up from the lens in it.
+    parts.push(loftGeometry(loftProfile([
+      { y: 0.170, halfWidth: 0.022, halfDepth: 0.004, square: 2.8, x: side * 0.043, z: 0.108 },
+      { y: 0.180, halfWidth: 0.038, halfDepth: 0.008, square: 3.2, x: side * 0.043, z: 0.112 },
+      { y: 0.215, halfWidth: 0.038, halfDepth: 0.008, square: 3.2, x: side * 0.043, z: 0.112 },
+      { y: 0.225, halfWidth: 0.022, halfDepth: 0.004, square: 2.8, x: side * 0.043, z: 0.108 },
+    ]), { radialSegments: 8, shade: 0.28 }));
+    // The lens: pale and slightly cool, proud of the frame — reads as glass
+    // catching the sky rather than as a hole in the face.
+    parts.push(tinted(loftGeometry(loftProfile([
+      { y: 0.177, halfWidth: 0.019, halfDepth: 0.003, square: 2.8, x: side * 0.043, z: 0.1135 },
+      { y: 0.186, halfWidth: 0.030, halfDepth: 0.005, square: 3.0, x: side * 0.043, z: 0.116 },
+      { y: 0.210, halfWidth: 0.030, halfDepth: 0.005, square: 3.0, x: side * 0.043, z: 0.116 },
+      { y: 0.218, halfWidth: 0.019, halfDepth: 0.003, square: 2.8, x: side * 0.043, z: 0.1135 },
+    ]), { radialSegments: 8 }), [1.06, 1.24, 1.46]));
+    // The pupil, proud of the lens and biased inboard so he looks *at* the
+    // road ahead rather than walleyed past it.
+    parts.push(loftGeometry(loftProfile([
+      { y: 0.190, halfWidth: 0.004, halfDepth: 0.002, square: 2.4, x: side * 0.0385, z: 0.117 },
+      { y: 0.198, halfWidth: 0.0085, halfDepth: 0.003, square: 2.6, x: side * 0.0385, z: 0.1185 },
+      { y: 0.206, halfWidth: 0.004, halfDepth: 0.002, square: 2.4, x: side * 0.0385, z: 0.117 },
+    ]), { radialSegments: 8, shade: 0.10 }));
+    // An ear: a small flattened bump standing just proud of the head's side.
+    parts.push(loftGeometry(loftProfile([
+      { y: 0.166, halfWidth: 0.009, halfDepth: 0.013, square: 2.2, x: side * 0.096, z: 0.008 },
+      { y: 0.186, halfWidth: 0.013, halfDepth: 0.018, square: 2.3, x: side * 0.104, z: 0.010 },
+      { y: 0.208, halfWidth: 0.009, halfDepth: 0.013, square: 2.2, x: side * 0.098, z: 0.008 },
+    ]), { radialSegments: 8, shade: 0.96 }));
+    // The chin strap: a thin band following the cheek's diagonal from the
+    // helmet's rim down to the jaw. What says the helmet is *worn*, not rested.
+    parts.push(loftGeometry(loftProfile([
+      { y: 0.104, halfWidth: 0.005, halfDepth: 0.011, square: 2.4, x: side * 0.024, z: 0.096 },
+      { y: 0.148, halfWidth: 0.005, halfDepth: 0.013, square: 2.4, x: side * 0.062, z: 0.070 },
+      { y: 0.198, halfWidth: 0.006, halfDepth: 0.014, square: 2.4, x: side * 0.090, z: 0.024 },
+    ]), { radialSegments: 6, shade: 0.22 }));
+  }
+
+  // The bridge joining the two frames, in the frame's own dark.
+  parts.push(loftGeometry(loftProfile([
+    { y: 0.190, halfWidth: 0.014, halfDepth: 0.004, square: 3, z: 0.116 },
+    { y: 0.197, halfWidth: 0.026, halfDepth: 0.006, square: 3, z: 0.118 },
+    { y: 0.204, halfWidth: 0.014, halfDepth: 0.004, square: 3, z: 0.116 },
+  ]), { radialSegments: 6, shade: 0.28 }));
+
+  // The nose: a small skin wedge between the lenses, a touch brighter than the
+  // face so it catches the sun. Without one the glasses float on a blank.
+  parts.push(loftGeometry(loftProfile([
+    { y: 0.148, halfWidth: 0.010, halfDepth: 0.006, square: 2.4, z: 0.106 },
+    { y: 0.160, halfWidth: 0.015, halfDepth: 0.009, square: 2.5, z: 0.119 },
+    { y: 0.176, halfWidth: 0.011, halfDepth: 0.006, square: 2.4, z: 0.112 },
+  ]), { radialSegments: 8, shade: 1.06 }));
+
+  // The moustache: broad, two-lobed, and *brown* — the reference's is hair,
+  // and the near-black first cut read as a letterbox slot at chase distance.
+  parts.push(tinted(loftGeometry(loftProfile([
+    { y: 0.126, halfWidth: 0.030, halfDepth: 0.006, square: 2.8, z: 0.112 },
+    { y: 0.138, halfWidth: 0.066, halfDepth: 0.013, square: 3.4, z: 0.118 },
+    { y: 0.150, halfWidth: 0.056, halfDepth: 0.011, square: 3.2, z: 0.117 },
+    { y: 0.160, halfWidth: 0.022, halfDepth: 0.005, square: 2.8, z: 0.111 },
+  ]), { radialSegments: 10 }), tintOver(skin, 0x54371c)));
+
+  // The smirk peeking out under it: proud, confident, a little dorky — the
+  // reference's whole expression, and the one feature no pass before this had.
+  // Kept small and dark: the first size read as a startled shout, which is
+  // exactly the wrong man.
+  parts.push(tinted(loftGeometry(loftProfile([
+    { y: 0.106, halfWidth: 0.009, halfDepth: 0.003, square: 2.6, z: 0.106 },
+    { y: 0.112, halfWidth: 0.017, halfDepth: 0.005, square: 2.8, z: 0.110 },
+    { y: 0.119, halfWidth: 0.013, halfDepth: 0.004, square: 2.6, z: 0.108 },
+  ]), { radialSegments: 8 }), tintOver(skin, 0x552018)));
+
+  // The nape: a crescent of trimmed brown hair hugging the back of the skull.
+  // The leaned-back helmet leaves the occiput open, and bare skin there read
+  // as a bald man wearing a bowl — the reference's Dorkins has hair under his
+  // lid, and this is the eight-ring version of it.
+  parts.push(tinted(loftGeometry(loftProfile([
+    { y: 0.098, halfWidth: 0.050, halfDepth: 0.032, square: 2.4, z: -0.058 },
+    { y: 0.150, halfWidth: 0.076, halfDepth: 0.044, square: 2.5, z: -0.066 },
+    { y: 0.205, halfWidth: 0.084, halfDepth: 0.046, square: 2.5, z: -0.060 },
+    { y: 0.236, halfWidth: 0.062, halfDepth: 0.036, square: 2.4, z: -0.048 },
+  ]), { radialSegments: 12 }), tintOver(skin, 0x54371c)));
+
+  return mergeGeometries(parts);
+}
+
+const COP_SKIN: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.copSkin,
+  roughness: 0.76,
+  metalness: 0.0,
+});
+
+const COP_GEAR: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.copGear,
+  roughness: 0.7,
+  metalness: 0.0,
+});
+
+/**
+ * The chequer band and every piece of duty kit, as one panel group.
+ *
+ * **Two rows of twelve, phase-alternating — a checkerboard, not a stripe.**
+ * The single row of eight it replaces read as bunting at chase distance; the
+ * reference's band is two courses of small squares, and doubling the rows
+ * costs triangles only, which is the cheap axis. All of it — the band, the
+ * duty belt, its pouches, the body camera, the shoulder mic and its cord, and
+ * the badge — is patches of shade on the *same* police-blue material, which is
+ * what makes a whole uniform's worth of kit cost one mesh. `mirrored` is
+ * deliberately unused on the band: it wraps, so each patch is an absolute span
+ * from the front anchor and the seam lands at the back.
+ *
+ * Everything proud of the yoke carries a lift above the yoke's 0.011, because
+ * two patches at the same lift on the same profile are a shimmer.
+ */
+const COP_TORSO_MARKINGS: readonly RiderPatch[] = Object.freeze([
+  ...Array.from({ length: 24 }, (_, index) => {
+    const column = index % 12;
+    const row = Math.floor(index / 12);
+    return Object.freeze({
+      anchor: 'front' as PatchAnchor,
+      u0: (column / 12) * Math.PI * 2,
+      u1: ((column + 1) / 12) * Math.PI * 2,
+      from: row === 0 ? 0.300 : 0.336,
+      to: row === 0 ? 0.336 : 0.372,
+      uSegments: 2,
+      vSegments: 1,
+      lift: 0.010,
+      // Pale, blue, pale, blue — and the opposite phase on the row above.
+      shade: (column + row) % 2 === 0 ? 2.6 : 0.82,
+    });
+  }),
+  // The duty belt, wrapped, with pouches proud of it at the hips and the
+  // small of the back, and a pale buckle plate at the front.
+  Object.freeze({
+    anchor: 'back' as PatchAnchor,
+    u0: 0,
+    u1: Math.PI * 2,
+    from: 0.045,
+    to: 0.100,
+    uSegments: 20,
+    vSegments: 1,
+    lift: 0.009,
+    shade: 0.16,
+  }),
+  Object.freeze({
+    anchor: 'front' as PatchAnchor,
+    u0: 0.50,
+    u1: 0.85,
+    mirrored: true,
+    from: 0.048,
+    to: 0.102,
+    uSegments: 2,
+    vSegments: 1,
+    lift: 0.014,
+    shade: 0.24,
+    taper: 0.12,
+  }),
+  Object.freeze({
+    anchor: 'back' as PatchAnchor,
+    u0: 0.28,
+    u1: 0.60,
+    mirrored: true,
+    from: 0.048,
+    to: 0.100,
+    uSegments: 2,
+    vSegments: 1,
+    lift: 0.013,
+    shade: 0.22,
+    taper: 0.12,
+  }),
+  Object.freeze({
+    anchor: 'front' as PatchAnchor,
+    u0: -0.10,
+    u1: 0.10,
+    from: 0.052,
+    to: 0.095,
+    uSegments: 2,
+    vSegments: 1,
+    lift: 0.015,
+    shade: 1.9,
+  }),
+  // The body camera, centred on the band the way the reference wears it.
+  Object.freeze({
+    anchor: 'front' as PatchAnchor,
+    u0: -0.14,
+    u1: 0.14,
+    from: 0.298,
+    to: 0.372,
+    uSegments: 2,
+    vSegments: 2,
+    lift: 0.016,
+    shade: 0.14,
+    taper: 0.10,
+  }),
+  // The shoulder mic, high on his left, and the coiled cord dropping from it
+  // across the band toward the belt — the thin dark line is all a cord is at
+  // gameplay scale, and it reads because it crosses the chequer.
+  Object.freeze({
+    anchor: 'front' as PatchAnchor,
+    u0: -0.52,
+    u1: -0.28,
+    from: 0.430,
+    to: 0.492,
+    uSegments: 2,
+    vSegments: 2,
+    lift: 0.017,
+    shade: 0.16,
+  }),
+  Object.freeze({
+    anchor: 'front' as PatchAnchor,
+    u0: -0.46,
+    u1: -0.40,
+    from: 0.150,
+    to: 0.435,
+    uSegments: 1,
+    vSegments: 6,
+    lift: 0.012,
+    shade: 0.18,
+  }),
+  // An original shield-shaped badge impression, not any real crest — pale
+  // toward silver on the blue material, standing proud of the yellow chest.
+  Object.freeze({
+    anchor: 'front' as PatchAnchor,
+    u0: 0.28,
+    u1: 0.62,
+    from: 0.392,
+    to: 0.458,
+    uSegments: 3,
+    vSegments: 3,
+    lift: 0.016,
+    taper: 0.34,
+    shade: 2.3,
+  }),
+]);
+
+// -- The cop's paintwork ------------------------------------------------------
+//
+// `RiderLook.paint` exists for him: shorts, knee pads, socks and sneakers are
+// exactly the things a second rider cannot buy as meshes. Every boundary here
+// has a matching seam ring pair in `COP_THIGH` / `COP_SHIN`, which is what
+// keeps a hem a hem rather than a gradient. The "briefs" defect this replaces
+// was structural — his seat mesh ended at the hip line and the whole leg was
+// skin — and the fix is a garment that rides the limb, so no reachable stance
+// can pull it off him (the carve-clip lesson, applied in advance this time).
+
+const COP_SHORTS_TINT = tintOver(BLOCKOUT_COLOURS.copSkin, BLOCKOUT_COLOURS.copShirt, 0.88);
+const COP_PAD_TINT = tintOver(BLOCKOUT_COLOURS.copSkin, BLOCKOUT_COLOURS.copGear, 0.92);
+const COP_SOCK_TINT = tintOver(BLOCKOUT_COLOURS.copSkin, BLOCKOUT_COLOURS.copShirt, 0.78);
+const COP_SOCK_RING_TINT = tintOver(BLOCKOUT_COLOURS.copSkin, BLOCKOUT_COLOURS.copHiVis);
+
+/** Cargo shorts to mid-thigh; a black knee pad over the knee's end. */
+function paintCopThigh(geometry: THREE.BufferGeometry): void {
+  const length = RIDER_BLOCKOUT.thighLength;
+  paintBands(geometry, [
+    { top: Infinity, bottom: -length * 0.52, tint: COP_SHORTS_TINT },
+    { top: -length * 0.80, bottom: -Infinity, tint: COP_PAD_TINT },
+  ]);
+}
+
+/** The pad's lower half, bare shin, then a navy crew sock with a hi-vis ring. */
+function paintCopShin(geometry: THREE.BufferGeometry): void {
+  const length = RIDER_BLOCKOUT.shinLength;
+  paintBands(geometry, [
+    { top: Infinity, bottom: -length * 0.30, tint: COP_PAD_TINT },
+    { top: -length * 0.58, bottom: -length * 0.655, tint: COP_SOCK_RING_TINT },
+    { top: -length * 0.655, bottom: -Infinity, tint: COP_SOCK_TINT },
+  ]);
+}
+
+const COP_LACE_TINT: Tint = [1.65, 1.68, 1.75];
+// Dimmed hard: at full hi-vis the first capture's cop wore glowing yellow
+// shoes that outshouted the yoke. A flash is a detail, not a signal.
+const COP_HEEL_TINT = tintOver(BLOCKOUT_COLOURS.copGear, BLOCKOUT_COLOURS.copHiVis, 0.38);
+
+/**
+ * Chunky sneakers instead of moto boots: a grey lace panel over the forefoot
+ * and a hi-vis flash on the heel. Banded by the boot's own bounding box rather
+ * than by rig constants, because the boot is built in the ankle's frame by
+ * `render/rider.ts` and this painter should not have to know its arithmetic.
+ */
+function paintCopBoot(geometry: THREE.BufferGeometry): void {
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox!;
+  const height = Math.max(1e-3, box.max.y - box.min.y);
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const t = (position.getY(i) - box.min.y) / height;
+    const z = position.getZ(i);
+    if (t > 0.40 && z > 0.030) {
+      colour.setXYZ(i, COP_LACE_TINT[0], COP_LACE_TINT[1], COP_LACE_TINT[2]);
+    } else if (t > 0.18 && t < 0.42 && z < -0.078) {
+      colour.setXYZ(i, COP_HEEL_TINT[0], COP_HEEL_TINT[1], COP_HEEL_TINT[2]);
+    }
+  }
+}
+
+export const COP_LOOK: RiderLook = Object.freeze({
+  id: 'cop' as CharacterId,
+  materials: Object.freeze({
+    body: Object.freeze({
+      colour: BLOCKOUT_COLOURS.copShirt,
+      roughness: 0.72,
+      metalness: 0.0,
+    }),
+    // Bare arms and legs: he is in shorts, and the skin is what separates his
+    // silhouette from a rider in a suit at a glance.
+    limbs: COP_SKIN,
+    accent: Object.freeze({
+      colour: BLOCKOUT_COLOURS.copHiVis,
+      roughness: 0.44,
+      metalness: 0.0,
+      // Hi-vis is *retroreflective*, and the emissive term is how a blockout
+      // says so: without it the yoke goes the colour of mud under a tree, which
+      // is exactly where a player most needs to know a cop is behind them. Held
+      // to Cool Rider's panel level rather than above it — the coupled visual
+      // system has one owner and one exposure (invariant 6).
+      emissive: 0x3a3208,
+      emissiveIntensity: 0.5,
+    }),
+    head: Object.freeze({
+      colour: BLOCKOUT_COLOURS.copHelmet,
+      roughness: 0.42,
+      metalness: 0.03,
+    }),
+    face: Object.freeze({
+      colour: BLOCKOUT_COLOURS.copBand,
+      roughness: 0.54,
+      metalness: 0.04,
+    }),
+    gear: COP_GEAR,
+  }),
+  profiles: Object.freeze({
+    torso: COP_TORSO,
+    seat: SEAT,
+    thigh: COP_THIGH,
+    shin: COP_SHIN,
+    upperArm: COP_UPPER_ARM,
+    forearm: COP_FOREARM,
+    neck: TROLLINA_NECK,
+    head: COP_HELMET,
+    boot: BOOT,
+    bootSole: BOOT_SOLE,
+    hand: GLOVE,
+  }),
+  // Shorts one step down from the polo so the hem reads; bare legs at the
+  // authored skin colour; the collar a touch up, as a collar is.
+  shades: Object.freeze({ seat: 0.88, legs: 1, collar: 1.1, sole: 0.72, neck: 1 }),
+  parts: Object.freeze({
+    hands: 'gear' as RiderMaterialRole,
+    kneePad: 'gear' as RiderMaterialRole,
+    // Skin, not cloth — the one part of him that is bare below the belt.
+    legs: 'limbs' as RiderMaterialRole,
+    // Merged into the torso mesh, as Cool Rider's trousers are: navy shorts
+    // under a navy polo is one garment as far as the geometry is concerned,
+    // and a separate mesh for them would be a draw call spent on a seam.
+    seat: 'body' as RiderMaterialRole,
+  }),
+  panels: Object.freeze({
+    collar: Object.freeze({
+      anchor: 'front' as PatchAnchor,
+      u0: 0,
+      u1: Math.PI * 2,
+      from: 0.502,
+      to: 0.545,
+      uSegments: 20,
+      vSegments: 2,
+      lift: 0.011,
+      shade: 1.1,
+    }),
+    // The yoke: hi-vis over both shoulders and the *whole* upper chest and
+    // back, everywhere above the chequer band — the reference's shirt is
+    // yellow from band to collar, and the first cut's shoulder-only pair left
+    // navy Vs at the sternum and spine that read as a costume rather than a
+    // uniform. Still one mesh: the fills ride a lower lift than the outboard
+    // pair so their overlaps stack instead of shimmer. It does not cast: a
+    // flat identity panel that casts is a meaningless blob on anything that
+    // reads `castShadow` (rule 3), and the cop's shadow budget is spent on his
+    // silhouette instead. The badge lives in the markings group now — it is
+    // silver, and this material only does yellow.
+    shoulders: Object.freeze({
+      role: 'accent' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -1.28,
+          u1: 1.28,
+          from: 0.372,
+          to: 0.520,
+          uSegments: 10,
+          vSegments: 4,
+          lift: 0.011,
+          taper: 0.22,
+        }),
+        // Untapered, and run up under the collar patch: a taper notched dark
+        // triangles of shirt out of the yoke's top edge on the first capture.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -0.72,
+          u1: 0.72,
+          from: 0.372,
+          to: 0.512,
+          uSegments: 6,
+          vSegments: 4,
+          lift: 0.009,
+        }),
+        Object.freeze({
+          anchor: 'back' as PatchAnchor,
+          u0: -0.72,
+          u1: 0.72,
+          from: 0.372,
+          to: 0.512,
+          uSegments: 6,
+          vSegments: 4,
+          lift: 0.009,
+        }),
+      ]),
+    }),
+    torso: Object.freeze({
+      role: 'face' as RiderMaterialRole,
+      casts: false,
+      patches: COP_TORSO_MARKINGS,
+    }),
+    // The helmet's dark vents merge into its white crown. The face is real
+    // skin geometry below it (`copFaceParts`) rather than features painted
+    // onto a full-face shell. The visual pass added the brow lip and two more
+    // vent pairs: a bicycle helmet's read is *many* slots radiating back from
+    // a peaked brow, and three patches were a hard hat with a stripe.
+    head: Object.freeze([
+      // The brow lip: a white peak standing proud over the glasses.
+      Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: -0.60,
+        u1: 0.60,
+        from: 0.206,
+        to: 0.230,
+        uSegments: 6,
+        vSegments: 2,
+        lift: 0.017,
+        taper: 0.35,
+        shade: 1.03,
+      }),
+      Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: -0.18,
+        u1: 0.18,
+        from: 0.236,
+        to: 0.342,
+        uSegments: 3,
+        vSegments: 5,
+        lift: 0.008,
+        shade: 0.18,
+      }),
+      Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: 0.38,
+        u1: 0.62,
+        mirrored: true,
+        from: 0.244,
+        to: 0.326,
+        uSegments: 2,
+        vSegments: 4,
+        lift: 0.007,
+        shade: 0.25,
+      }),
+      Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: 0.68,
+        u1: 0.88,
+        mirrored: true,
+        from: 0.242,
+        to: 0.312,
+        uSegments: 2,
+        vSegments: 3,
+        lift: 0.007,
+        shade: 0.25,
+      }),
+      Object.freeze({
+        anchor: 'back' as PatchAnchor,
+        u0: 0.26,
+        u1: 0.46,
+        mirrored: true,
+        from: 0.252,
+        to: 0.318,
+        uSegments: 2,
+        vSegments: 3,
+        lift: 0.007,
+        shade: 0.22,
+      }),
+      Object.freeze({
+        anchor: 'back' as PatchAnchor,
+        u0: -0.92,
+        u1: 0.92,
+        from: 0.208,
+        to: 0.228,
+        uSegments: 8,
+        vSegments: 1,
+        lift: 0.010,
+        shade: 0.88,
+      }),
+    ]),
+  }),
+  extras: Object.freeze([Object.freeze({
+    name: 'rider-cop-face',
+    joint: 'neck' as const,
+    role: 'limbs' as RiderMaterialRole,
+    casts: false,
+    build: copFaceParts,
+  })]),
+  // The shorts, knee pads, socks and sneakers — paint on the limb meshes,
+  // because he has no draw calls left to buy them as panels. See the tint
+  // block above `paintCopThigh` for the fix this is (the "briefs" defect).
+  paint: Object.freeze({
+    thigh: paintCopThigh,
+    shin: paintCopShin,
+    boot: paintCopBoot,
+  }),
+  // Hands forward and low: he is holding a paddle out in front of him, and the
+  // carriage is what makes that read as intent rather than as a man carrying a
+  // stick. Well inside the reach bound Trollina's entry documents.
+  armCarriage: Object.freeze({ splay: 0.04, rise: -0.01 }),
+});
+
+export const RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
+  COOL_RIDER_LOOK,
+  TROLLINA_LOOK,
+  COP_LOOK,
+]);
+
+/**
+ * The looks a *player* can be wearing — M18.
+ *
+ * Its own list because the render budget asks two different questions of these
+ * tables. "Which rig might the player's own be" is answered by this one, and
+ * measuring the cop as a candidate player rig would measure a cheaper rig and
+ * quietly under-reserve nothing at all; "which looks exist" is `RIDER_LOOKS`,
+ * and the cop is in it because he has to be built.
+ */
+export const PLAYABLE_RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
+  COOL_RIDER_LOOK,
+  TROLLINA_LOOK,
+]);
 
 /** Resolve a look, falling back to Cool Rider the way `characterSpec` does. */
 export function riderLook(id: CharacterId): RiderLook {

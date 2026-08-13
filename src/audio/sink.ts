@@ -98,6 +98,10 @@ export interface SampleBank {
   readonly crash: AudioBuffer;
   /** Trollina's, and the same length to the sample (M14.5). */
   readonly crashTrollina: AudioBuffer;
+  /** The chase siren's far wail loop (M18). */
+  readonly sirenFar: AudioBuffer;
+  /** And its close wail, crossfaded in by range. */
+  readonly sirenClose: AudioBuffer;
 }
 
 /**
@@ -171,6 +175,17 @@ export class WebAudioSink {
   private readonly scrapeGain: GainNode;
   private readonly scrapeRingLow: OscillatorNode;
   private readonly scrapeRingGain: GainNode;
+  /**
+   * The siren's two loop gains (M18). Eager like the tyre's sample gains —
+   * they exist from construction at zero so `applyFrame` can always write
+   * them; the loops themselves wait for the bank. No synthesized fallback:
+   * before the recordings land the chase simply runs without a siren, which
+   * is what it did for its whole first day.
+   */
+  private readonly sirenFarGain: GainNode;
+  private readonly sirenCloseGain: GainNode;
+  private sirenFar: AudioBufferSourceNode | null = null;
+  private sirenClose: AudioBufferSourceNode | null = null;
 
   // -- Shared buffers -------------------------------------------------------
   private readonly whiteBuffer: AudioBuffer;
@@ -315,6 +330,19 @@ export class WebAudioSink {
     this.scrapeRingLow.connect(this.scrapeRingGain);
     this.startSource(this.scrapeRingLow);
 
+    // -- Siren: two recorded loops crossfaded by the director (M18) ---------
+    //
+    // Into the bed, deliberately: the siren is part of the ride, so the pause
+    // fade, the ducking, and the crash duck all handle it without knowing it
+    // exists — a crash with the cop on you ducks his siren along with the
+    // motor, which is right, because at that moment the crash is the thing
+    // worth hearing.
+    this.sirenFarGain = this.keep(context.createGain());
+    this.sirenFarGain.gain.value = 0;
+    this.sirenFarGain.connect(this.bed);
+    this.sirenCloseGain = this.keep(context.createGain());
+    this.sirenCloseGain.gain.value = 0;
+    this.sirenCloseGain.connect(this.bed);
   }
 
   get counts(): SinkCounts {
@@ -334,14 +362,15 @@ export class WebAudioSink {
   /**
    * Install the decoded recordings. Once, shortly after arming.
    *
-   * Six changes to the permanent graph, all additive except one: each tyre
+   * Eight changes to the permanent graph, all additive except one: each tyre
    * slot grows a looping offroad source *and* a looping toko source feeding
    * the gains it was built with, and the wind's pink-noise fallback is
    * stopped in favour of the howl loop through an asset-trim gain into the
    * same filter — so the speed sweep the filter carries applies to the
-   * recording exactly as it did to the noise. The crash buffer is kept for
-   * `play` to voice. `permanentNodes` rises by six and then holds, which the
-   * leak audit accounts for by measuring after this lands.
+   * recording exactly as it did to the noise. The siren's two loops (M18)
+   * start into the gains built at construction. The crash buffer is kept for
+   * `play` to voice. `permanentNodes` rises by eight and then holds, which
+   * the leak audit accounts for by measuring after this lands.
    */
   setSampleBank(bank: SampleBank): void {
     if (this.disposed || this.bank !== null) return;
@@ -378,6 +407,12 @@ export class WebAudioSink {
     windTrim.gain.value = AUDIO.windSampleTrim;
     windTrim.connect(this.windFilter);
     this.createLoop(bank.windHowl, windTrim);
+
+    // The siren's loops (M18), into the gains built at construction. No
+    // start offset between them: they crossfade rather than sum, and each
+    // recording's own sweep phase is its identity.
+    this.sirenFar = this.createLoop(bank.sirenFar, this.sirenFarGain);
+    this.sirenClose = this.createLoop(bank.sirenClose, this.sirenCloseGain);
   }
 
   /** Bus gains, already through the volume curve. See `mix.busGain`. */
@@ -437,6 +472,10 @@ export class WebAudioSink {
     this.glide(this.scrapeRingGain.gain, frame.scrapeRingGain, now);
     this.glide(this.scrapeRingLow.frequency, frame.scrapeRingHz, now);
 
+    this.glide(this.sirenFarGain.gain, frame.sirenFarGain, now);
+    this.glide(this.sirenCloseGain.gain, frame.sirenCloseGain, now);
+    if (this.sirenFar) this.glide(this.sirenFar.playbackRate, frame.sirenRate, now);
+    if (this.sirenClose) this.glide(this.sirenClose.playbackRate, frame.sirenRate, now);
   }
 
   /**

@@ -311,6 +311,20 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  *
  * What has moved, most recent first:
  *
+ *   - **The Dorkins visual pass (2026-08-13): 26,150 → 28,058 triangles, zero
+ *     draw calls.** The owner's second look at the cop, built entirely on the
+ *     free axes: clear glasses with pupils, a nose, ears, chin straps, a nape
+ *     of hair and a smirk merged into the one face mesh; a two-row chequer,
+ *     badge, mic, cord and belt pouches merged into the one markings mesh;
+ *     shorts, knee pads, socks and sneakers as vertex paint on the limb
+ *     meshes (`RiderLook.paint`); the headlamp as vertex paint on his own
+ *     shell copy. The cop stays at 26 calls, still exactly at the library
+ *     ceiling.
+ *   - **M18 adversarial QA (2026-08-13): 87 → 88 draw calls, 25,704 →
+ *     26,150 triangles.** Officer Dorkins gained one merged skin-and-features
+ *     face beneath an open bicycle helmet; the original full-face helmet had
+ *     his glasses and moustache painted onto its shell. The cop is now 26
+ *     calls, exactly at the library-derived ceiling recorded in `AGENTS.md`.
  *   - **M14 (2026-08-12): 83 → 85 draw calls.** The paddle. One casting mesh on
  *     the rider's grip is a colour call and a shadow call, which is exactly the
  *     two the M14 budget verdict allowed it. Triangles grew by the merged
@@ -320,8 +334,8 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  *     triangle reserve; draw calls did not move.
  */
 export const NON_LEVEL_RESERVE = deepFreeze({
-  drawCalls: 85,
-  triangles: 24_588,
+  drawCalls: 88,
+  triangles: 28_058,
 });
 
 /**

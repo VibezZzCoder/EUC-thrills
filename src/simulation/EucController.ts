@@ -1026,6 +1026,56 @@ export function createPose(): EucPose {
   };
 }
 
+/**
+ * Every scalar field of a pose, discovered once from a fresh one.
+ *
+ * Derived rather than listed, and that is the point: a pose field added later
+ * is interpolated by `lerpPose` below without anybody remembering to add it,
+ * where a hand-written list is a list that silently stops covering the newest
+ * thing on screen. `ragdoll` is the one non-scalar and is handled separately.
+ */
+const POSE_SCALARS: readonly (keyof EucPose)[] = Object.freeze(
+  (Object.entries(createPose()) as [keyof EucPose, unknown][])
+    .filter(([, value]) => typeof value === 'number')
+    .map(([key]) => key),
+);
+
+/**
+ * Interpolate between two fixed-step poses — the other half of a fixed-step
+ * loop, and the one the renderer draws from.
+ *
+ * Three facts about pose interpolation are worth having in one place, because
+ * every one of them was learned the hard way:
+ *
+ *   - **Heading and wheel spin are unwrapped by the controller**, deliberately,
+ *     so a plain lerp is correct. A wrapped angle would spin the rig a full
+ *     turn every time it crossed the seam.
+ *   - **`wobbleSway` is already `sin(phase)`**, so it is continuous when the
+ *     phase wraps and interpolates like any other scalar. M13's first pass
+ *     sampled the current step instead, on the theory that adjacent sine
+ *     samples could jump from +1 to −1; at 120 Hz and at most 7 Hz they cannot,
+ *     and sampling gave the feet a one-step phase lead.
+ *   - **The ragdoll block is world positions**, so a per-float lerp is a lerp
+ *     of each particle's own path — exactly what the fixed step integrated
+ *     between these two states. It is skipped entirely at zero blend, which is
+ *     every frame but a crash.
+ */
+export function lerpPose(from: EucPose, to: EucPose, alpha: number, out: EucPose): void {
+  for (const key of POSE_SCALARS) {
+    const a = from[key] as number;
+    const b = to[key] as number;
+    (out[key] as number) = a + (b - a) * alpha;
+  }
+
+  const blend = out.ragdollBlend;
+  if (blend > 0) {
+    for (let index = 0; index < out.ragdoll.length; index += 1) {
+      out.ragdoll[index] = from.ragdoll[index]
+        + (to.ragdoll[index] - from.ragdoll[index]) * alpha;
+    }
+  }
+}
+
 export function copyPose(from: EucPose, to: EucPose): void {
   to.x = from.x;
   to.y = from.y;
@@ -4049,6 +4099,33 @@ export class EucController {
   /** The surface under the contact patch. */
   get currentSurface(): SurfaceId {
     return this.surface;
+  }
+
+  /**
+   * How much of a step the kerb feeler can see in front of the wheel, metres —
+   * M18.
+   *
+   * Already computed every step for the player's own kerb handling and already
+   * reported by `snapshot()`; this is the same number without the thirty-odd
+   * allocations that come with a snapshot, because `simulation/cpuRider.ts`
+   * reads it at 120 Hz. A second cast from the brain would be the same ray
+   * traced twice and the two could disagree (master §5.4).
+   */
+  get curbHeightAhead(): number {
+    return this.curbAhead;
+  }
+
+  /**
+   * The lateral acceleration the wheel can hold on the surface it is on, in g —
+   * M18.
+   *
+   * The same field `snapshot()` reports, exposed for the same reason
+   * `curbHeightAhead` is: `simulation/cpuRider.ts` reads it every step, and it
+   * is what keeps a CPU rider from cornering on gravel as though it were
+   * pavement without the brain ever learning what a surface is.
+   */
+  get lateralLimit(): number {
+    return this.lateralLimitG;
   }
 
   // -- What the composition root may push in (M14) --------------------------

@@ -3050,6 +3050,53 @@ export const BLOCKOUT_COLOURS = {
   trollinaGear: 0x2c2e34,
 
   /**
+   * Officer Dorkins — M18, and picked to be read at chase distance rather than
+   * admired up close.
+   *
+   * The owner's reference (`docs/PLANS.md` §13 q23) is a hi-vis yellow yoke
+   * over a navy polo with a blue-and-white chequer band, navy shorts, a white
+   * vented helmet and black gear. **The chequer is the generic police-marking
+   * idiom and the badge is an original shape**: no force's mark, crest or
+   * wordmark is reproduced anywhere (`AGENTS.md`, "Use fictional manufacturers
+   * and original designs"), and the reference image itself is AI-generated and
+   * never ships.
+   *
+   * Two of these are picked against each other rather than against the
+   * reference. The yoke has to be the brightest thing in the frame that is not
+   * the sun, because "there is a cop behind you" has to be legible in a mirror
+   * glance at 50 mph; and the navy has to stay *navy* rather than going black
+   * in shade, because a dark silhouette with a yellow blob on it reads as a
+   * hazard sign rather than as a person. Both are sRGB and are decoded to
+   * linear before lighting, so they look lighter here than they will on screen
+   * (`AGENTS.md`, colour authoring).
+   */
+  copShirt: 0x1e2a4c,
+  /** The hi-vis shoulder yoke. Kept separate from the blue chequer band. */
+  copHiVis: 0xd8c22a,
+  /**
+   * The chequer band, blue at shade 1 and driven toward white above it.
+   *
+   * M18's first pass used the yellow yoke material for both halves, producing a
+   * mustard stripe instead of the reference's police read. One blue material
+   * with vertex shades still costs one draw call and can carry the belt and
+   * body-camera silhouettes at its dark end.
+   */
+  copBand: 0x2d6da8,
+  /** The helmet. White, vented, and the top of the silhouette. */
+  copHelmet: 0xdfe2e6,
+  /**
+   * Bare arms and legs — he is in shorts, which is most of the joke.
+   *
+   * Lightened in the owner's visual pass (2026-08-13): the first value went
+   * muddy under the sun-and-sky rig and the head read as a different material
+   * from the arms at chase distance. The reference's skin is a light warm
+   * peach, and the cheerful face only reads if it is *bright*.
+   */
+  copSkin: 0xe2ab82,
+  /** Boots, gloves, knee pads, duty belt. Slightly warmer than the wheel's black. */
+  copGear: 0x2f3138,
+
+  /**
    * The ghost, and the checkpoint gates (M10).
    *
    * **Authored here rather than in the render modules that draw them, because
@@ -3917,6 +3964,67 @@ export const AUDIO = {
   scrapeRingLevel: 0.08,
   scrapeRingHz: 880,
 
+  // -- The siren (M18) ------------------------------------------------------
+
+  /**
+   * Master level of the cop's siren at point-blank range.
+   *
+   * The siren is a *threat radar the player hears*: its level follows the
+   * cop's range, so knowing how close he is never requires looking back. Two
+   * CC0 recordings (owner-auditioned A/B/C/D, 2026-08-13) crossfade by range —
+   * the far wail carries the chase, the close wail carries the panic — and the
+   * whole voice lives on the ride bed, so pause, ducking, and the crash duck
+   * all treat it as part of the ride. Both loops are RMS-matched to −20 dBFS
+   * by `tools/make-loop.mjs`, so this level is the mix decision and there is
+   * no asset trim to bridge.
+   *
+   * Subject to the standing rule that nothing may be annoying: if the owner's
+   * ride finds the loop wearing, the fallback design is burst-only
+   * punctuation, not a louder or softer loop.
+   */
+  sirenLevel: 0.4,
+  /** Range at which the siren becomes audible at all, metres. */
+  sirenFarMetres: 60,
+  /**
+   * Range at which it reaches full level, metres — swing range, roughly: by
+   * the time he can hit you, the siren has nothing left to add.
+   */
+  sirenNearMetres: 8,
+  /**
+   * Curve on the range-to-level map. Above 1 pushes the loudness toward close
+   * range, which reads as distance the way real 1/r falloff does — linear
+   * makes a cop 50 m back sound nearly on top of you.
+   */
+  sirenDistanceCurve: 1.5,
+  /**
+   * The A⇄D crossfade span: fully the far wail outside the first number,
+   * fully the close wail inside the second. Equal-power, like the tyre's
+   * surface fades and for the same reason — the two recordings are
+   * uncorrelated, so an amplitude fade dips 3 dB in the middle.
+   */
+  sirenBlendFarMetres: 40,
+  sirenBlendNearMetres: 12,
+  /** Smoothing on the blend position, seconds. */
+  sirenBlendSeconds: 0.6,
+  /** Smoothing on the level while the chase is live, seconds. */
+  sirenResponseSeconds: 0.35,
+  /**
+   * Fade-out when the chase stops being a chase — escape, bust, quit. Long
+   * enough to be a fade rather than a click, short enough that the results
+   * card is not shouted over.
+   */
+  sirenReleaseSeconds: 1.6,
+  /**
+   * Doppler lean: playback-rate offset per m/s of closing speed, clamped at
+   * `sirenDopplerMax`. ±3% is below conscious notice and still sells
+   * "he is gaining" — a real Doppler shift at these speeds is about 4%/25 mph.
+   * Applied to both loops identically so the crossfade never detunes.
+   */
+  sirenDopplerPerMs: 0.006,
+  sirenDopplerMax: 0.03,
+  /** Smoothing on the Doppler rate, seconds. */
+  sirenRateSeconds: 0.5,
+
   // -- Warnings -------------------------------------------------------------
 
   /**
@@ -4778,6 +4886,263 @@ export const TARGET = {
 } as const;
 
 /**
+ * The police chase — M18.
+ *
+ * Every number the mode and the cop's brain read, in one group, because the
+ * owner's phase-4 ride is where this milestone is decided and "the knobs move
+ * at F4 in the session" is the plan's own remedy for anything that is not fun.
+ * Each is registered in `LIVE_TUNABLES` below.
+ *
+ * **Three rules bind what may live here.**
+ *
+ * **1. Nothing here is a speed cheat** (§13 q27). The cop rides the same
+ * `EucController` with the same tuning as the player, so there is no top speed,
+ * no acceleration multiplier and no drag scale in this group — and there must
+ * never be one. `copSkill` buys *line quality and braking earliness*, which is
+ * a cop who corners better rather than a cop who is faster, and that is the
+ * only shape of difficulty the "two players ride the same wheel" promise (§13
+ * q3) leaves available.
+ *
+ * **2. Distances that are really *times* are stated as times.** The M16 speed
+ * pass is the reason: four constants that were secretly defined as the old top
+ * speed had to move with it. A lookahead in metres would be a lookahead that
+ * silently shortens the day somebody changes `EUC.dragCoefficient` again, so
+ * the lookahead is seconds of travel with a floor, and braking distances are
+ * derived from `EUC.brakeAuthority` at the speed the cop is actually doing.
+ *
+ * **3. The rider carries no paddle** (§13 q28), so there is no rider-side
+ * strike constant here and adding one is a design change rather than a tune.
+ */
+export const CHASE = {
+  // -- The run ---------------------------------------------------------------
+
+  /**
+   * How long the rider must survive to win, seconds — §13 q24.
+   *
+   * Five minutes, the owner's answer. It is the mode's whole shape rather than
+   * a difficulty knob: the win condition is identical on every seed, which is
+   * what makes one player's escape comparable with another's, and there is no
+   * finish line anywhere in the mode.
+   */
+  escapeSeconds: 300,
+  /**
+   * How far behind the rider the cop starts, metres.
+   *
+   * Close enough that the first ten seconds are already a chase — a mode whose
+   * opening is quiet teaches the player that the opening is quiet — and far
+   * enough that the rider is never struck before they have moved. Measured
+   * along the rider's heading and resolved against the ground, so a spawn on a
+   * hill does not bury him.
+   */
+  spawnGapMetres: 20,
+  /**
+   * How close the cop must be for a crash to be a bust, metres — §13 q25.
+   *
+   * The whole difference between pressure and tag. A rider who crashes with the
+   * cop on their shoulder is caught; a rider who crashes alone loses the
+   * recovery time and nothing else, which is already punishment enough and is
+   * the same crash free ride has always had.
+   */
+  bustRadiusMetres: 12,
+  /**
+   * How far from the route the rider may stray before the warning starts,
+   * metres — §13 q27, "not cheatable by going far off road".
+   *
+   * Measured from the route spine, so it is a corridor rather than a circle,
+   * and generous: the widest authored beat is about 9 m of rideable surface, so
+   * this is several road widths of shoulder, verge and grass. It exists to
+   * refuse the one strategy that would beat the mode without riding — pointing
+   * at the surround and holding throttle for five minutes — not to keep the
+   * player on the tarmac. **Outside this mode nothing changes**: go-anywhere is
+   * LOCKED and the rest of the game has no boundary at all.
+   */
+  strayLimitMetres: 30,
+  /**
+   * How long the rider may stay out there before it ends the run, seconds.
+   *
+   * Long enough that overshooting a corner onto the grass and coming back is
+   * never a bust, short enough that "ride away and wait" is not a strategy.
+   * The clock resets the moment the rider is back inside the corridor.
+   */
+  strayGraceSeconds: 8,
+  /**
+   * How long the results card waits after a bust or an escape, seconds.
+   *
+   * `CHALLENGE.resultsDelaySeconds`' twin, and deliberately its own number: the
+   * end of a chase is a crash or a clock hitting zero, and both want a beat to
+   * land before a panel covers them.
+   */
+  resultsDelaySeconds: 1.6,
+
+  // -- The cop's brain -------------------------------------------------------
+
+  /**
+   * How well the cop rides, 0..1 — §13 q27.
+   *
+   * Ships at 1 because the owner asked for an aggressive CPU. **It is not a
+   * speed multiplier and must never become one** (rule 1 above): at 1 the cop
+   * takes the spine's own line and brakes at the distance the physics actually
+   * needs; below it he wanders off the line and leaves his braking later, which
+   * is a cop who makes mistakes rather than a cop who is slow. Phase 1's
+   * headless sweep asserts both halves — clean at 1, measurably worse below.
+   */
+  copSkill: 1,
+  /**
+   * How far ahead the cop aims, as seconds of travel.
+   *
+   * A pure-pursuit lookahead. Too short and he saws at the wheel; too long and
+   * he cuts corners onto the verge. Seconds rather than metres by rule 2.
+   */
+  lookaheadSeconds: 0.55,
+  /** The lookahead's floor, metres, so a stopped cop still has a point to aim at. */
+  lookaheadMinMetres: 5,
+  /**
+   * Steering per radian of bearing error toward the aim point.
+   *
+   * `ActionSnapshot.steer` is ±1 and the controller owns what that means, so
+   * this is the brain's only steering authority — there is no second gain
+   * anywhere and no direct write to a yaw rate.
+   */
+  steerGain: 1.9,
+  /**
+   * Steering opposed to the cop's own turn rate, per rad/s.
+   *
+   * The damping term that stops the pursuit oscillating. Without it a lookahead
+   * this short weaves visibly at speed, and a weaving cop reads as a bug rather
+   * than as a character.
+   */
+  steerDamping: 0.30,
+  /**
+   * Throttle per m/s of speed error. Above about 1 the cop pumps the throttle
+   * on every small correction, which is audible before it is visible.
+   */
+  throttleGain: 0.55,
+  /**
+   * Share of the wheel's lateral limit the cop will spend in a corner.
+   *
+   * Under 1 because a cornering machine at its exact limit is a machine one
+   * bump from the ground, and because the margin is what `copSkill` eats into.
+   */
+  corneringMargin: 0.70,
+  /**
+   * Extra room the cop leaves either side of a hazard he steers around, metres.
+   *
+   * Added to the hazard's own radius. A pothole he clips is a pothole he
+   * crashes in, and the crash the player wants to watch is the one they lured
+   * him into rather than one the brain gave away for free.
+   */
+  hazardClearanceMetres: 1.2,
+  /**
+   * How far off the spine the cop will move to pass a hazard, as a share of the
+   * corridor's own half-width. Past this he brakes instead of swerving.
+   */
+  hazardSwerveShare: 0.75,
+  /**
+   * Safety factor on the braking distance the cop leaves for a hazard he cannot
+   * pass. Above 1 because a brake applied at exactly the required distance
+   * arrives at the hazard doing exactly the speed that crashes.
+   */
+  brakeSafety: 1.35,
+  /**
+   * How far the cop's line wanders off the spine at `copSkill = 0`, metres.
+   *
+   * Deterministic rather than random — it is a function of distance along the
+   * route, so the same seed and the same skill produce the same ride to the
+   * step, which is what Phase 1's determinism test asserts.
+   */
+  skillWanderMetres: 2.4,
+  /** How many wander cycles per hundred metres. Slow enough to read as a line. */
+  skillWanderPerHundredMetres: 3.5,
+  /**
+   * Share of the needed braking distance the cop still has at `copSkill = 0`.
+   *
+   * The other half of the skill knob: a poor cop brakes at 45% of the distance
+   * he needs, which is how he ends up in the pothole the player rode around.
+   */
+  skillBrakeLateness: 0.45,
+  /**
+   * How much of the quarry's own offset across the road the cop copies, 0..1.
+   *
+   * What makes the chase *close* rather than run parallel: he takes the line
+   * the rider is taking. Lateral only, and clamped to the corridor — this is
+   * the road half of the pursuit. A rider clear of the road entirely is
+   * `fieldRangeMetres`'s job. Not a slider: at 1 he mirrors and at 0 he
+   * ignores, and neither end is a ride the owner would be judging.
+   */
+  pursuitLateralFollow: 0.85,
+  /**
+   * How close an off-road quarry has to be before the cop leaves the road for
+   * them, metres of straight line.
+   *
+   * The owner's first ride found the hole this closes: the stray rule busts a
+   * rider who goes *far*, but between the road's edge and that limit was a band
+   * where standing still was safe — the cop chased along the tarmac below and
+   * would not step onto the grass. Inside this range he now comes across the
+   * field directly. Sized past the stray limit plus the road's own half-width,
+   * so the band has no safe outer edge; a quarry who stays out of even this is
+   * spending stray grace they cannot spend twice. Out of range, the chase runs
+   * along the road until he draws level — which is the leapfrog that keeps a
+   * moving off-road rider pressured without making grass his fastest surface.
+   */
+  fieldRangeMetres: 45,
+  /**
+   * How far ahead a kerb has to be for the cop to hop it, metres of feeler
+   * reading. Read off the controller's own `curbAhead`, so he hops the things
+   * the game already knows are in front of a wheel rather than things the brain
+   * guessed at.
+   */
+  hopCurbHeight: 0.10,
+
+  // -- The strike ------------------------------------------------------------
+
+  /**
+   * How close the quarry must be before the cop throws a swing, metres.
+   *
+   * Slightly beyond `PADDLE.reach` plus a rider's own radius, so he starts the
+   * wind-up while closing rather than when already alongside — a swing thrown
+   * at the exact moment of arrival always lands late.
+   */
+  swingRangeMetres: 3.4,
+  /**
+   * Half-angle of the cone ahead of the cop inside which a swing is worth
+   * throwing, radians. Wider than the paddle's own arc, because the arc sweeps
+   * during the swing and the quarry is moving through it.
+   */
+  swingConeRadians: 1.05,
+  /**
+   * The shortest gap between two of the cop's swings, seconds.
+   *
+   * Not a fairness tax — the swing's own cycle already costs him most of this —
+   * but a floor that keeps a cop riding alongside from becoming a metronome.
+   */
+  swingCooldownSeconds: 1.1,
+  /**
+   * The rider's hittable radius when the cop swings at them, metres.
+   *
+   * The one number that makes a rider a `HittableVolume`. It is the trunk's own
+   * half-width rather than an arm span: a strike that lands has to look like it
+   * landed on the rider, and `TARGET.bodyKnockRadius` is the same measurement
+   * taken for the same reason.
+   */
+  riderHitRadius: 0.35,
+  /**
+   * How far up the rider the strike sphere's centre sits above the contact
+   * patch, metres. Chest height, so the paddle's own `pivotHeight` sweeps
+   * through it.
+   */
+  riderHitHeight: 1.25,
+  /**
+   * Speed a landed strike costs the rider, m/s.
+   *
+   * Spent through `EucController.softKnock` — the M14 body-knock caller, the
+   * fourth and last sanctioned wobble caller — so a strike is one soft-body
+   * wobble and a shove, never a crash and never a stop-dead. What ends the run
+   * is the crash a rider fails to ride out of (§13 q25), not this.
+   */
+  strikeSpeedCost: 5.0,
+} as const;
+
+/**
  * The one frozen tuning root (AGENTS.md invariant 4).
  *
  * The named exports above stay, because a controller reading `WHEEL.tyreWidth`
@@ -4805,6 +5170,7 @@ export const TUNING = deepFreeze({
   PUDDLE,
   PADDLE,
   TARGET,
+  CHASE,
   FX,
   AUDIO,
   CHALLENGE,
@@ -6319,6 +6685,19 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
       + 'changes more obvious; the relative voices keep their proportions.',
   },
   {
+    path: 'AUDIO.sirenLevel',
+    group: 'Audio',
+    label: 'Siren',
+    unit: '',
+    min: 0,
+    max: 1,
+    step: 0.02,
+    note: 'The cop\'s siren at point-blank range; its level follows his '
+      + 'distance, so this is the ceiling, not the constant. Zero silences '
+      + 'the whole voice — the annoyance kill-switch the standing rule '
+      + 'demands.',
+  },
+  {
     path: 'AUDIO.beepLevel',
     group: 'Audio',
     label: 'Warning beeps',
@@ -6378,5 +6757,218 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     note: 'How far the ride bed drops while the top warning sounds. This, not '
       + 'the beep level, is the real answer to "is the right thing the loudest '
       + 'thing?"',
+  },
+
+  // The chase — M18. A long block on purpose: the milestone is decided by one
+  // owner ride, the plan's remedy for anything unfun is "the mode's knobs move
+  // at F4 in the session", and a knob that is not here cannot move during it.
+  {
+    path: 'CHASE.copSkill',
+    group: 'Ride — chase',
+    label: 'Cop skill',
+    unit: '',
+    min: 0,
+    max: 1,
+    step: 0.05,
+    note: 'How well the cop rides — his line and how early he brakes, never his '
+      + 'speed. He is on the player’s own wheel with the player’s own tuning, so '
+      + 'this is the only honest difficulty control the mode has.',
+  },
+  {
+    path: 'CHASE.escapeSeconds',
+    group: 'Ride — chase',
+    label: 'Escape time',
+    unit: 's',
+    min: 30,
+    max: 600,
+    step: 10,
+    note: 'How long you have to survive. Five minutes is the owner’s answer; '
+      + 'lower it to reach the results screen quickly while tuning anything else '
+      + 'in this group.',
+  },
+  {
+    path: 'CHASE.spawnGapMetres',
+    group: 'Ride — chase',
+    label: 'Spawn gap',
+    unit: 'm',
+    min: 5,
+    max: 80,
+    step: 1,
+    note: 'How far behind you the cop starts. Small numbers make the opening '
+      + 'frantic; large ones give you a quiet minute, which teaches the wrong '
+      + 'thing about the mode.',
+  },
+  {
+    path: 'CHASE.bustRadiusMetres',
+    group: 'Ride — chase',
+    label: 'Bust radius',
+    unit: 'm',
+    min: 2,
+    max: 40,
+    step: 1,
+    note: 'How close he has to be for a crash to end the run. This is the whole '
+      + 'difference between pressure and tag — raise it and every crash is a '
+      + 'bust, drop it and crashing costs only the recovery.',
+  },
+  {
+    path: 'CHASE.strayLimitMetres',
+    group: 'Ride — chase',
+    label: 'Stray limit',
+    unit: 'm',
+    min: 8,
+    max: 120,
+    step: 2,
+    note: 'How far off the route you may ride before the warning starts. It '
+      + 'exists to refuse "point at the grass and hold throttle", not to keep '
+      + 'you on the tarmac — nothing outside this mode has a boundary.',
+  },
+  {
+    path: 'CHASE.strayGraceSeconds',
+    group: 'Ride — chase',
+    label: 'Stray grace',
+    unit: 's',
+    min: 1,
+    max: 30,
+    step: 0.5,
+    note: 'How long you may stay out there. Long enough that running wide onto '
+      + 'the verge and coming back is never a bust.',
+  },
+  {
+    path: 'CHASE.fieldRangeMetres',
+    group: 'Ride — chase',
+    label: 'Cop field range',
+    unit: 'm',
+    min: 10,
+    max: 120,
+    step: 5,
+    note: 'How close an off-road rider has to be before the cop leaves the '
+      + 'tarmac and comes across the grass at them. Keep it past the stray '
+      + 'limit or standing just off the road becomes safe again.',
+  },
+  {
+    path: 'CHASE.lookaheadSeconds',
+    group: 'Ride — chase',
+    label: 'Cop lookahead',
+    unit: 's',
+    min: 0.15,
+    max: 2,
+    step: 0.05,
+    note: 'How far ahead the cop aims, in seconds of his own travel. Short and '
+      + 'he saws at the wheel; long and he cuts corners onto the verge.',
+  },
+  {
+    path: 'CHASE.steerGain',
+    group: 'Ride — chase',
+    label: 'Cop steering',
+    unit: '',
+    min: 0.2,
+    max: 5,
+    step: 0.1,
+    note: 'Steering per radian of bearing error. His only steering authority — '
+      + 'there is no second gain and nothing writes a yaw rate directly.',
+  },
+  {
+    path: 'CHASE.steerDamping',
+    group: 'Ride — chase',
+    label: 'Cop steer damping',
+    unit: '',
+    min: 0,
+    max: 1.5,
+    step: 0.02,
+    note: 'Counter-steer against his own turn rate. This is what stops the '
+      + 'pursuit weaving, and a weaving cop reads as a bug rather than a rival.',
+  },
+  {
+    path: 'CHASE.throttleGain',
+    group: 'Ride — chase',
+    label: 'Cop throttle',
+    unit: '',
+    min: 0.05,
+    max: 2,
+    step: 0.05,
+    note: 'Throttle per m/s of speed error. Too high and he pumps the throttle '
+      + 'on every correction, which you hear before you see.',
+  },
+  {
+    path: 'CHASE.corneringMargin',
+    group: 'Ride — chase',
+    label: 'Cop cornering margin',
+    unit: '×',
+    min: 0.3,
+    max: 1,
+    step: 0.02,
+    note: 'Share of the wheel’s lateral limit he will spend in a corner. At 1 he '
+      + 'is one bump from the ground, which is a cop who crashes for reasons the '
+      + 'player did not cause.',
+  },
+  {
+    path: 'CHASE.brakeSafety',
+    group: 'Ride — chase',
+    label: 'Cop brake safety',
+    unit: '×',
+    min: 1,
+    max: 3,
+    step: 0.05,
+    note: 'Safety factor on the braking distance he leaves for a hazard he '
+      + 'cannot swerve around. At 1 he arrives doing exactly the speed that '
+      + 'crashes.',
+  },
+  {
+    path: 'CHASE.hazardClearanceMetres',
+    group: 'Ride — chase',
+    label: 'Cop hazard clearance',
+    unit: 'm',
+    min: 0,
+    max: 4,
+    step: 0.1,
+    note: 'Room he leaves either side of a hazard he passes. Drop it and he '
+      + 'clips potholes — which is a crash you did not earn by leading him '
+      + 'there.',
+  },
+  {
+    path: 'CHASE.swingRangeMetres',
+    group: 'Ride — chase',
+    label: 'Cop swing range',
+    unit: 'm',
+    min: 1,
+    max: 8,
+    step: 0.1,
+    note: 'How close he has to be before he throws a swing. Beyond the paddle’s '
+      + 'own reach on purpose: a swing started on arrival always lands late.',
+  },
+  {
+    path: 'CHASE.swingCooldownSeconds',
+    group: 'Ride — chase',
+    label: 'Cop swing cooldown',
+    unit: 's',
+    min: 0,
+    max: 5,
+    step: 0.1,
+    note: 'Shortest gap between two of his swings. The swing cycle already costs '
+      + 'most of this; the floor keeps a cop riding alongside from becoming a '
+      + 'metronome.',
+  },
+  {
+    path: 'CHASE.riderHitRadius',
+    group: 'Ride — chase',
+    label: 'Your hit radius',
+    unit: 'm',
+    min: 0.1,
+    max: 2,
+    step: 0.05,
+    note: 'How big a target you are to his paddle. It is the trunk’s own '
+      + 'half-width, so raising it makes him land strikes you would say missed.',
+  },
+  {
+    path: 'CHASE.strikeSpeedCost',
+    group: 'Ride — chase',
+    label: 'Strike speed cost',
+    unit: 'm/s',
+    min: 0,
+    max: 15,
+    step: 0.25,
+    note: 'Speed a landed strike costs you. The wobble that comes with it is the '
+      + 'soft-body knock’s own and is not a slider, by the standing rule — what '
+      + 'ends the run is the crash you fail to ride out of.',
   },
 ]);

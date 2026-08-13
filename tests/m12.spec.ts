@@ -672,11 +672,12 @@ test('a gamepad alone can reach a route it cannot type', async ({ page }) => {
   const A = 0;
   const B = 1;
 
-  // Down three times from Start ride reaches Fresh route; A opens it. It was
-  // twice until M14 put Knockabout between Time trial and here — the walk
-  // follows the panel's real Tab order, so a menu that grows moves this count
-  // and is meant to.
+  // Down four times from Start ride reaches Fresh route; A opens it. It was
+  // twice until M14 put Knockabout between Time trial and here, and three until
+  // M18 put Police chase after that — the walk follows the panel's real Tab
+  // order, so a menu that grows moves this count and is meant to.
   await page.locator('.euc-menu--title [data-menu="start"]').focus();
+  await press(DPAD_DOWN);
   await press(DPAD_DOWN);
   await press(DPAD_DOWN);
   await press(DPAD_DOWN);

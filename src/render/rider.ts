@@ -492,12 +492,22 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     return mesh;
   };
 
-  /** A limb segment hanging from its joint, already in the joint's own frame. */
-  const limb = (profile: LoftProfile, material: THREE.Material, shade: number): THREE.Mesh => {
-    const mesh = new THREE.Mesh(
-      track(loftGeometry(profile, { radialSegments: 14, shade })),
-      material,
-    );
+  /**
+   * A limb segment hanging from its joint, already in the joint's own frame.
+   *
+   * `paintwork` is the look's optional vertex repaint (`RiderLook.paint`) —
+   * run here, once, on the built geometry, because a limb is the one place
+   * decoration cannot be a panel without costing a mesh.
+   */
+  const limb = (
+    profile: LoftProfile,
+    material: THREE.Material,
+    shade: number,
+    paintwork?: (geometry: THREE.BufferGeometry) => void,
+  ): THREE.Mesh => {
+    const geometry = track(loftGeometry(profile, { radialSegments: 14, shade }));
+    paintwork?.(geometry);
+    const mesh = new THREE.Mesh(geometry, material);
     return shadowed(mesh);
   };
 
@@ -621,13 +631,13 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       bendToward: FORWARD,
     }, solvedUpper, solvedLower);
     hip.quaternion.copy(solvedUpper);
-    hip.add(limb(profiles.thigh, legMaterial, shades.legs));
+    hip.add(limb(profiles.thigh, legMaterial, shades.legs, look.paint?.thigh));
 
     const knee = new THREE.Group();
     knee.name = `rider-knee-${sideName}`;
     knee.position.y = -RIDER_BLOCKOUT.thighLength;
     knee.quaternion.copy(solvedLower);
-    knee.add(limb(profiles.shin, legMaterial, shades.legs));
+    knee.add(limb(profiles.shin, legMaterial, shades.legs, look.paint?.shin));
     hip.add(knee);
 
     const ankle = new THREE.Group();
@@ -648,7 +658,9 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       .translate(0, soleTop + 0.047, 0);
     const sole = loftGeometry(profiles.bootSole, { radialSegments: 16, shade: shades.sole })
       .translate(0, soleTop, 0.018);
-    const boot = shadowed(new THREE.Mesh(track(mergeGeometries([upper, sole])), gearMaterial));
+    const bootGeometry = track(mergeGeometries([upper, sole]));
+    look.paint?.boot?.(bootGeometry);
+    const boot = shadowed(new THREE.Mesh(bootGeometry, gearMaterial));
     boot.name = `rider-boot-${sideName}`;
     ankle.add(boot);
 

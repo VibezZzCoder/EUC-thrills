@@ -51,7 +51,7 @@ test('ride input is live in exactly the ride states', () => {
   // "is this a ride?" through that export.
   const riding = APP_STATES.filter((id) => APP_STATE_SPECS[id].acceptsRideInput);
   assert.deepEqual(riding, [...RIDE_STATES]);
-  assert.deepEqual([...RIDE_STATES], ['freeRide', 'challenge', 'knockabout']);
+  assert.deepEqual([...RIDE_STATES], ['freeRide', 'challenge', 'knockabout', 'chase']);
   for (const id of APP_STATES) {
     assert.equal(
       isRideState(id),
@@ -84,10 +84,19 @@ test('both scored rides are reachable, and leave only where they should', () => 
     [...APP_STATE_SPECS.knockabout.successors],
     ['paused', 'results', 'title'],
   );
+  // And the chase is the third of them (M18), on the same argument again: the
+  // ride is the same ride, and what differs is what is behind you.
+  assert.deepEqual(
+    [...APP_STATE_SPECS.chase.successors],
+    ['paused', 'results', 'title'],
+  );
   // Retry is the only edge back into a ride from the results screen, and it
   // goes to whichever scored ride the player was in rather than to free ride: a
   // player who wants to stop being scored goes through the title deliberately.
-  assert.deepEqual([...APP_STATE_SPECS.results.successors], ['challenge', 'knockabout', 'title']);
+  assert.deepEqual(
+    [...APP_STATE_SPECS.results.successors],
+    ['challenge', 'knockabout', 'chase', 'title'],
+  );
   assert.equal(
     APP_STATE_SPECS.results.successors.includes('freeRide'),
     false,

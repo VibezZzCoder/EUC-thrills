@@ -4,6 +4,7 @@ import {
   hazardProbeFromQuery,
   levelFromQuery,
   seedFromQuery,
+  chaseProbeFromQuery,
   targetProbeFromQuery,
 } from '../level/levels.ts';
 import { PROVENANCE, provenanceLine } from '../data/provenance.ts';
@@ -116,6 +117,7 @@ function start(): void {
       hazardProbeFromQuery(window.location.search),
       // M14 phase 2's, read here for the same reason and on the same terms.
       targetProbeFromQuery(window.location.search),
+      chaseProbeFromQuery(window.location.search),
     );
   } catch (error) {
     fail('EUC Thrills could not start.', error);

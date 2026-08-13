@@ -8,10 +8,12 @@ import {
 } from '../data/surfaces.ts';
 import type { SurfaceId } from '../simulation/world.ts';
 import type { GhostSample } from '../simulation/ghost.ts';
+import type { EucPose } from '../simulation/EucController.ts';
 import type { LevelPlan } from '../level/plan.ts';
 import { createCheckpointGates, type CheckpointGates } from './checkpointGates.ts';
 import { createTargets, type TargetFamily } from './targets.ts';
 import { createGhostRider, type GhostRider } from './ghostRider.ts';
+import { createCopRider, type CopRider } from './copRider.ts';
 import { riderLook } from './riderLook.ts';
 import { DEFAULT_CHARACTER, type CharacterId } from '../data/riders.ts';
 import { createParticleField, type ParticleField } from './particles.ts';
@@ -152,6 +154,25 @@ export class GameRenderer {
   private ghost: GhostRider;
   /** Which rider the ghost is currently built as, so a repeat is a no-op. */
   private ghostCharacter: CharacterId = DEFAULT_CHARACTER;
+  /**
+   * M18's cop. Built once and hidden, exactly as the ghost is.
+   *
+   * See `secondRider` below for why he and the ghost are one slot.
+   */
+  private cop: CopRider;
+  /**
+   * **Which second rider the frame is showing, and it is one field on purpose.**
+   *
+   * A Time-trial ghost and a chase cop are different modes and could have been
+   * left as two independent booleans that simply never happened to be true
+   * together. They are not, because the render budget depends on it: the
+   * non-level reserve is measured as the *worse* of the two frames rather than
+   * their sum (`render/renderCost.ts`), and on the densest known route the sum
+   * does not fit the §9 ceiling. Two booleans would make that a convention
+   * anybody could break by adding a call site; one field makes showing either
+   * hide the other, in one expression, for good.
+   */
+  private secondRider: 'none' | 'ghost' | 'cop' = 'none';
 
   /** M5's two contact effects. Stepped from the fixed step, not the frame. */
   private readonly sparks: ParticleField;
@@ -294,6 +315,8 @@ export class GameRenderer {
 
     this.ghost = createGhostRider();
     this.scene.add(this.ghost.group);
+    this.cop = createCopRider();
+    this.scene.add(this.cop.group);
 
     canvas.addEventListener('webglcontextlost', this.onContextLost);
     canvas.addEventListener('webglcontextrestored', this.onContextRestored);
@@ -623,11 +646,58 @@ export class GameRenderer {
     this.ghost = createGhostRider(riderLook(character));
     this.ghost.setVisible(visible);
     this.scene.add(this.ghost.group);
+    // The cop is deliberately untouched: he is not a rider the player chose,
+    // so a rider swap has nothing to say about him.
   }
 
-  /** Show or hide the ghost. False when there is no record or no run. */
+  /**
+   * Put one rider — or nobody — in the second-rider slot.
+   *
+   * The single writer, so "the ghost is up" and "the cop is up" cannot both be
+   * true however the callers are reordered. See `secondRider`.
+   */
+  setSecondRider(who: 'none' | 'ghost' | 'cop'): void {
+    if (who === this.secondRider) return;
+    this.secondRider = who;
+    this.ghost.setVisible(who === 'ghost');
+    this.cop.setVisible(who === 'cop');
+  }
+
+  /** Which second rider is on screen. For the QA bridge and the budget. */
+  get secondRiderShown(): 'none' | 'ghost' | 'cop' {
+    return this.secondRider;
+  }
+
+  /**
+   * Show or hide the ghost. False when there is no record or no run.
+   *
+   * **"Hide me" only hides *me*.** `Game.updateGhost` calls this with false on
+   * every frame that is not a timed run against a record — which is almost
+   * every frame in the game — so a version that cleared the slot outright would
+   * evict the cop from it sixty times a second, and a chase would draw a cop
+   * for exactly one frame after each of its own render passes.
+   */
   setGhostVisible(visible: boolean): void {
-    this.ghost.setVisible(visible);
+    if (visible) this.setSecondRider('ghost');
+    else if (this.secondRider === 'ghost') this.setSecondRider('none');
+  }
+
+  /** Show or hide the cop — M18. Hides the ghost by construction, and vice versa. */
+  setCopVisible(visible: boolean): void {
+    if (visible) this.setSecondRider('cop');
+    else if (this.secondRider === 'cop') this.setSecondRider('none');
+  }
+
+  /**
+   * Pose the cop from a controller pose and aim his paddle — M18.
+   *
+   * Called from the render frame with an *interpolated* pose, exactly as the
+   * player's rig is: he is a live rider stepped at the fixed rate, so drawing
+   * him at the stepped pose would leave him juddering beside a smooth player.
+   */
+  applyCop(pose: EucPose, head: THREE.Vector3 | null, angle: number, blend: number): void {
+    this.cop.applySwing(head, angle, blend);
+    this.cop.apply(pose);
   }
 
   /**
@@ -648,12 +718,18 @@ export class GameRenderer {
     gateTriangles: number;
     ghostDrawCalls: number;
     ghostTriangles: number;
+    copDrawCalls: number;
+    copTriangles: number;
   } {
     return {
       gateDrawCalls: this.gates?.visible === true ? this.gates.drawCalls : 0,
       gateTriangles: this.gates?.visible === true ? this.gates.triangles : 0,
       ghostDrawCalls: this.ghost.visible ? this.ghost.drawCalls : 0,
       ghostTriangles: this.ghost.visible ? this.ghost.triangles : 0,
+      // Colour and shadow together, because that is what the frame is charged
+      // and what `NON_LEVEL_RESERVE` reserves.
+      copDrawCalls: this.cop.visible ? this.cop.drawCalls + this.cop.shadowDrawCalls : 0,
+      copTriangles: this.cop.visible ? this.cop.triangles : 0,
     };
   }
 
@@ -850,6 +926,7 @@ export class GameRenderer {
     this.targets?.dispose();
     this.targets = null;
     this.ghost.dispose();
+    this.cop.dispose();
     this.scene.background = null;
     this.sky.dispose();
     this.sparks.dispose();

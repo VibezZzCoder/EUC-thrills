@@ -33,14 +33,16 @@ Development-only tooling (TypeScript, Vite, Playwright, Node type definitions) i
 
 ## Third-party audio recordings
 
-Two sound loops in the game derive from public-domain recordings. CC0 requires no attribution; these are recorded as provenance, and they are **not** covered by the CC BY 4.0 claim over this project's original assets above.
+Four sound loops in the game derive from public-domain recordings. CC0 requires no attribution; these are recorded as provenance, and they are **not** covered by the CC BY 4.0 claim over this project's original assets above.
 
 | Shipped file | Derived from | Licence |
 |---|---|---|
 | `tyre_offroad_loop` (offroad tyre bed) | ["VEHBike-TASCAMX8_bike dirt road" by gadesound](https://freesound.org/people/gadesound/sounds/697049/), Freesound #697049 | CC0 / public domain |
 | `wind_howl_loop` (wind bed) | ["wind_howl2_stereo" by swiftoid](https://freesound.org/people/swiftoid/sounds/117611/), Freesound #117611 | CC0 / public domain |
+| `siren_far_loop` (chase siren, far) | ["Police Siren" by TitanKaempfer](https://freesound.org/people/TitanKaempfer/sounds/746302/), Freesound #746302 | CC0 / public domain |
+| `siren_close_loop` (chase siren, close) | ["police siren.wav" by vlammenos](https://freesound.org/people/vlammenos/sounds/52906/), Freesound #52906 | CC0 / public domain |
 
-Both were trimmed, filtered, loop-processed, and level-matched for the game. The per-file processing chain is recorded in the project's development tree, which is not part of this distribution; the summary above is the complete provenance a redistributor needs.
+All four were trimmed, filtered, loop-processed, and level-matched for the game. The per-file processing chain is recorded in the project's development tree, which is not part of this distribution; the summary above is the complete provenance a redistributor needs.
 
 The other two loops are original and are covered by the CC BY 4.0 claim above: `crash_wipeout` is the project owner's own recording — including his own voice, used with his approval — and `tyre_solid_loop` (the tyre rotation) is synthesized from scratch with no external source.
 

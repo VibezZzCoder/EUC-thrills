@@ -13,10 +13,11 @@ take the alley when you think you can hold it.
 ## ⚠️ This game is a work in progress
 
 What you can play today starts with one complete hand-built city loop, then
-opens into **procedurally generated Fresh routes** that can be ridden free or
-against the clock. The city runs start to finish; the generated routes are
-point-to-point. The riding is the part that is meant to be right — but this is
-still the foundation of the game rather than the whole of it.
+opens into **procedurally generated Fresh routes** that can be ridden free,
+against the clock, with a paddle in Knockabout, or with Officer Dorkins in
+pursuit. The city runs start to finish; the generated routes are point-to-point.
+The riding is the part that is meant to be right — but this is still the
+foundation of the game rather than the whole of it.
 
 Worth knowing before you start:
 
@@ -35,12 +36,17 @@ Worth knowing before you start:
   builds the same place, which is how you send one to a friend. A rare name may
   not produce a valid route, in which case the game says so and asks for
   another rather than quietly giving you a different world.
-- **There are two riders now.** The title screen says who you are riding as and
-  that line opens the chooser: **Cool Rider** in black and reflective blue, or
+- **There are two selectable riders now.** The title screen says who you are
+  riding as and that line opens the chooser: **Cool Rider** in black and reflective blue, or
   **Trollina**, who has wild magenta hair, a skater dress over black tights, and
   her own idea of what falling off sounds like. Cool Rider is the first-time
   default; after you choose, the game remembers your rider. It is looks only —
   both ride exactly the same, and your best times carry across.
+- **Police chase is live on Fresh routes.** Officer Dorkins is a CPU rider on
+  the same wheel physics as you, not a moving obstacle on a rail. Stay ahead for
+  five minutes; use the road, hazards, and rough ground to make his pursuit
+  difficult. He follows onto the grass when you leave the road, while riding too
+  far into the surround starts a warning and can end the run.
 - **Phones and tablets ride it too**, on their own on-screen controls, in
   portrait or landscape. That is new, and it is the part of this build most
   likely to want adjusting on a handset nobody has tried it on yet — the size
@@ -159,7 +165,7 @@ gentler one, not a twitchier one.
 | Hop | `Space` |
 | Crouch, and charge a bigger hop | `Shift` |
 | Swing the paddle — Knockabout only | `F` |
-| Quick reset — back to the start, or restart a timed run | `R` |
+| Quick reset — back to the start, or restart the current run | `R` |
 | Mute | `M` |
 | Camera view | `C` |
 | Pause | `Esc` |
@@ -228,11 +234,27 @@ standing on its verges.
   generator; Knockabout personal bests are kept per route and never overwrite
   time-trial records.
 
+### Police chase
+
+Officer Dorkins starts behind you on a Fresh route. Survive for five minutes to
+escape.
+
+- Dorkins rides the same terrain, grip, hazards, kerbs, crashes, and recovery as
+  the player. He can pursue along the route in either direction and cut across
+  the field when you leave the road.
+- He alone carries the padded paddle. A strike costs speed and adds a
+  recoverable wobble; crashing while he is close is the bust.
+- The route is the arena. Going far into the surround starts a grace warning,
+  then ends the run if you do not return. Camping just off the road is not a safe
+  loophole—the cop follows.
+- Survival records are kept per Fresh-route seed and do not overwrite time-trial
+  or Knockabout records.
+
 ### Fresh route
 
 Procedurally generate a new place to ride. Choose **Surprise me** for an instant
 seed, or type a seed to rebuild the same place every time; then ride it freely,
-start its time trial, or play Knockabout.
+start its time trial, play Knockabout, or start a Police chase.
 
 The seed stays visible and becomes part of the address, so sending the link
 sends the same ground. Personal bests and ghosts stay with that route and are
@@ -315,14 +337,18 @@ may change or never happen.
 
 ### Planned direction
 
-- **Police chase.** A third rider — a police officer on a wheel, carrying the
-  same paddle — pursues Cool Rider or Trollina. The first single-player shape
-  is an AI cop; a third player could take the cop role in multiplayer.
 - **Player-hosted multiplayer.** A basic invite-based peer-to-peer or LAN game
-  is planned, with up to three players in Police chase as the first concrete
-  shape. It will not depend on accounts, cloud saves, or a central game server.
+  is planned. Police chase now supplies the first concrete game shape and the
+  third rider, but this build is still single-player and the cop is CPU-driven.
+  Multiplayer will not depend on accounts, cloud saves, or a central game
+  server.
 
 ### Recently landed
+
+- **Police chase.** Officer Dorkins now pursues either playable rider across
+  Fresh routes, including off-road escapes. Survive five minutes, avoid his
+  paddle, and use the same terrain and hazards he has to ride. The single-player
+  mode is complete; player-hosted multiplayer remains future direction.
 
 - **Knockabout.** The mode the roadmap called "something to swing at" is in
   this build, under its real name. Fresh routes carry targets on the verge and
@@ -377,7 +403,7 @@ to be.
 
 ## Licence
 
-Code is **MIT**. Original game assets are **CC BY 4.0**. Two of the five
+Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the seven
 shipped sounds derive from public-domain (CC0) recordings, one crash is the
 author's own recording, and the second rider's crash is a composed one-shot
 whose voice is machine-generated and is therefore excluded from the CC BY 4.0

@@ -213,6 +213,30 @@ export function targetProbeFromQuery(search: string): number | undefined {
   return metres;
 }
 
+/**
+ * `?chaseprobe=1` — M18 Phase 2's early ride.
+ *
+ * The third diagnostic parameter, and the simplest: a switch rather than a
+ * cadence, because what it turns on is a *rider* rather than a scattering of
+ * things in the road. It puts a brain-ridden cop on whatever world is loaded
+ * with no chase rules attached, so "does a second rider read instantly, and is
+ * his look right" can be answered before the mode exists to answer it inside.
+ *
+ * It binds by the same three rules `?hazardprobe=` states: it goes through the
+ * real path (the same `CpuRider`, the same `EucController`, the same rig), it is
+ * read at boot and held for the session, and it is **not level identity** —
+ * `worldLink` never writes it and records are filed under the same level id.
+ * Unlike the other two it does not even join `Game.probing`, because it changes
+ * nothing about the world: no plan, no placement, no id, so a personal best set
+ * with it on is a best set on the world everybody else rides.
+ */
+export function chaseProbeFromQuery(search: string): boolean {
+  const requested = new URLSearchParams(search).get('chaseprobe');
+  if (requested === null) return false;
+  const value = requested.trim().toLowerCase();
+  return value === '' || value === '1' || value === 'true' || value === 'on';
+}
+
 /** One ordinary decimal number, with an optional scientific exponent. */
 const DECIMAL_NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
 

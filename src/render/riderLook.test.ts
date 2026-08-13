@@ -2,7 +2,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import * as THREE from 'three';
-import { CHARACTER_IDS } from '../data/riders.ts';
+import { ALL_CHARACTERS, CHARACTER_IDS } from '../data/riders.ts';
 import { RIDER, RIDER_BLOCKOUT, WHEEL } from '../data/tuning.ts';
 import { loftPoint, vAtHeight } from './blockoutKit.ts';
 import { createPlaceholderRider } from './rider.ts';
@@ -25,13 +25,22 @@ function meshes(root: THREE.Object3D): THREE.Mesh[] {
   return found;
 }
 
-test('every character in the roster has a look, and every look is in the roster', () => {
+test('every character has a look, and every look is a character', () => {
   // The two tables are in different layers on purpose — `data/riders.ts` is
   // plain data the options store and the menus read, and this file imports
   // three — so nothing but a test can keep them in step. A roster entry with no
   // look resolves to Cool Rider and silently ships the wrong rider.
-  assert.deepEqual([...RIDER_LOOKS].map((look) => look.id).sort(), [...CHARACTER_IDS].sort());
-  for (const id of CHARACTER_IDS) assert.equal(riderLook(id).id, id);
+  //
+  // **Against `ALL_CHARACTERS` rather than `CHARACTER_IDS` from M18**, and the
+  // difference is the cop: he is a look the renderer must be able to build and
+  // a rider the *player* may never be, so the playable roster is deliberately
+  // the shorter of the two lists. Checking looks against the playable roster
+  // would now fail for a reason that is correct.
+  const everyone = ALL_CHARACTERS.map((character) => character.id);
+  assert.deepEqual([...RIDER_LOOKS].map((look) => look.id).sort(), [...everyone].sort());
+  for (const id of everyone) assert.equal(riderLook(id).id, id);
+  // And the cop is emphatically not in the chooser's list.
+  assert.equal(CHARACTER_IDS.includes('cop' as never), false);
   // A stale id out of an old store must still resolve to somebody.
   assert.equal(riderLook('nobody' as never), COOL_RIDER_LOOK);
 });
@@ -127,6 +136,24 @@ test('Trollina cap sleeves overlap the bodice instead of floating beside it', ()
     assert.equal(cap.position.x, 0, `${side} arm is not centred in its cap sleeve`);
   }
   rider.dispose();
+});
+
+test('Officer Dorkins has an open helmet over a real face, not features painted on a shell', () => {
+  // The M18 first pass technically contained a moustache and glasses, but both
+  // were dark patches on Cool Rider's full-face helmet. Source structure can
+  // protect the corrected read even though the final acceptance is visual: the
+  // helmet crown stays above the brow and the merged skin/feature mesh exists
+  // independently beneath it.
+  const look = riderLook('cop');
+  assert.ok(
+    look.profiles.head.every((ring) => ring.y >= 0.2),
+    'the cop helmet closes back over the face',
+  );
+  assert.ok(
+    look.extras?.some((extra) => extra.name === 'rider-cop-face'),
+    'the cop has no real face beneath the helmet',
+  );
+  assert.equal(look.panels?.torso?.role, 'face', 'the police band lost its blue material');
 });
 
 test('every rider mesh carries a colour attribute, or it renders pure black', () => {

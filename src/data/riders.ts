@@ -30,8 +30,31 @@
  * (`docs/PLANS.md` §13 q3).
  */
 
-/** Every rider the game ships, as an id the store and the URL can carry. */
-export type CharacterId = 'cool-rider' | 'trollina';
+/**
+ * Every rider the game ships, as an id the store and the URL can carry.
+ *
+ * **`cop` is in this union and deliberately not in `CHARACTERS`** — M18. He is
+ * a rider in every sense the renderer cares about (a look, a rig, a crash
+ * voice) and is not a rider the *player* may be, so the two lists part company
+ * here for the first time: `CHARACTERS` is the roster the chooser walks and the
+ * options store coerces against, and this union is every look that exists.
+ * Folding him into the roster would put "Officer Dorkins" on the rider-select
+ * screen and, worse, would make him a legal saved value in `GameOptions` — a
+ * player who picked him once would be the cop in free ride forever.
+ */
+export type CharacterId = PlayableCharacterId | 'cop';
+
+/**
+ * The riders the player may actually be.
+ *
+ * Its own type rather than a runtime filter, so a screen that has to describe
+ * every choosable rider — `ui/menus.ts`' portrait table — still fails to
+ * compile when a rider is added and it is not, while remaining unable to
+ * describe the cop it must never offer. `GameOptions.character` is this type
+ * for the same reason: a saved record can no longer *say* `cop` even in
+ * principle.
+ */
+export type PlayableCharacterId = 'cool-rider' | 'trollina';
 
 /**
  * Which recorded crash one-shot a rider comes with.
@@ -65,20 +88,30 @@ export interface CharacterSpec {
 }
 
 /**
+ * A rider the chooser may offer — a `CharacterSpec` narrowed at its id.
+ *
+ * The narrowing is what lets `ui/menus.ts` index its portrait table by
+ * `character.id` and still fail to compile when a rider is added without one.
+ */
+export interface PlayableCharacterSpec extends CharacterSpec {
+  readonly id: PlayableCharacterId;
+}
+
+/**
  * Cool Rider first, and that ordering is load-bearing rather than alphabetical:
  * he is the default, he is what a new player rides, and the chooser reads
  * left-to-right.
  */
-export const CHARACTERS: readonly CharacterSpec[] = Object.freeze([
+export const CHARACTERS: readonly PlayableCharacterSpec[] = Object.freeze([
   Object.freeze({
-    id: 'cool-rider' as CharacterId,
+    id: 'cool-rider' as PlayableCharacterId,
     name: 'Cool Rider',
     blurb: 'Black moto gear, reflective blue, full-face lid. Rides like he has nothing to prove.',
     swatch: '#2f7fe8',
     crashVoice: 'cool-rider' as CrashVoiceId,
   }),
   Object.freeze({
-    id: 'trollina' as CharacterId,
+    id: 'trollina' as PlayableCharacterId,
     name: 'Trollina',
     blurb: 'Wild magenta hair, a skater dress over black tights, knee pads and a grin. '
       + 'Started life as a joke drawing and refused to leave.',
@@ -87,10 +120,46 @@ export const CHARACTERS: readonly CharacterSpec[] = Object.freeze([
   }),
 ]);
 
-export const CHARACTER_IDS: readonly CharacterId[] =
+/**
+ * Officer Dorkins — M18's chase cop, and the one character nobody may pick.
+ *
+ * The name and the look are the owner's answer to `docs/PLANS.md` §13 q23
+ * (2026-08-13), taken from a reference image he states is AI-generated and
+ * original: **not a real officer, and no real force's insignia**. What the
+ * build takes from it is a palette and a read — white helmet, hi-vis yellow
+ * over navy, a blue-and-white chequer band, navy shorts, black knee pads. The
+ * chequer is the generic police-marking idiom rather than anybody's mark, and
+ * the badge is an original shape (`AGENTS.md`, "Use fictional manufacturers and
+ * original designs").
+ *
+ * He carries a `swatch` and a `blurb` like the others because the results
+ * screen and the chase entrance name him, not because a card exists to click.
+ * The crash voice is Cool Rider's until dedicated lines exist, which q23
+ * explicitly allows.
+ */
+export const COP_CHARACTER: CharacterSpec = Object.freeze({
+  id: 'cop' as CharacterId,
+  name: 'Officer Dorkins',
+  blurb: 'Hi-vis over navy, white lid, moustache, and a paddle. '
+    + 'Believes the road is for going the speed limit on.',
+  swatch: '#ffd83d',
+  crashVoice: 'cool-rider' as CrashVoiceId,
+});
+
+/**
+ * Every look the renderer can build, playable or not.
+ *
+ * `render/renderCost.ts` measures this list rather than `CHARACTERS`: a budget
+ * that never measured the cop would be a budget that does not know about the
+ * mode it has to survive.
+ */
+export const ALL_CHARACTERS: readonly CharacterSpec[] =
+  Object.freeze([...CHARACTERS, COP_CHARACTER]);
+
+export const CHARACTER_IDS: readonly PlayableCharacterId[] =
   Object.freeze(CHARACTERS.map((character) => character.id));
 
-export const DEFAULT_CHARACTER: CharacterId = 'cool-rider';
+export const DEFAULT_CHARACTER: PlayableCharacterId = 'cool-rider';
 
 /**
  * Look a rider up, falling back to the default rather than throwing.
@@ -101,5 +170,17 @@ export const DEFAULT_CHARACTER: CharacterId = 'cool-rider';
  * *somebody* or the game boots to no rider at all.
  */
 export function characterSpec(id: CharacterId): CharacterSpec {
-  return CHARACTERS.find((character) => character.id === id) ?? CHARACTERS[0];
+  return ALL_CHARACTERS.find((character) => character.id === id) ?? CHARACTERS[0];
+}
+
+/**
+ * Is this a rider the player may choose?
+ *
+ * The one predicate that keeps the cop out of the chooser and out of the saved
+ * options record. `app/options.ts` coerces against `CHARACTER_IDS`, which is
+ * the same answer said as a list; this exists so a call site that has an id
+ * rather than a list can ask the question in one word.
+ */
+export function isPlayableCharacter(id: CharacterId): id is PlayableCharacterId {
+  return (CHARACTER_IDS as readonly CharacterId[]).includes(id);
 }

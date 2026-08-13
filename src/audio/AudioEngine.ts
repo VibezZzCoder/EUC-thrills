@@ -102,6 +102,15 @@ export interface AudioSnapshot {
    */
   readonly tyreVoice: string;
   readonly scrapeGain: number;
+  /**
+   * Both siren loops summed (M18) — what the chase is contributing, on the
+   * same "how loud, not how made" argument as `tyreGain`. Zero outside a
+   * live pursuit, and reported whether or not anything is armed, which is
+   * what lets a spec prove the siren follows the cop without a microphone.
+   */
+  readonly sirenGain: number;
+  /** The shared Doppler rate. 1 when nobody is closing on anybody. */
+  readonly sirenRate: number;
 }
 
 /**
@@ -291,15 +300,20 @@ export class AudioEngine {
     this.samplesRequested = true;
     void (async () => {
       try {
-        const [tyreOffroad, tyreSolid, windHowl, crash, crashTrollina] = await Promise.all([
-          fetch(urls.tyreOffroad).then((response) => response.arrayBuffer()),
-          fetch(urls.tyreSolid).then((response) => response.arrayBuffer()),
-          fetch(urls.windHowl).then((response) => response.arrayBuffer()),
-          fetch(urls.crash).then((response) => response.arrayBuffer()),
-          fetch(urls.crashTrollina).then((response) => response.arrayBuffer()),
-        ]);
+        const [tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, sirenFar, sirenClose] =
+          await Promise.all([
+            fetch(urls.tyreOffroad).then((response) => response.arrayBuffer()),
+            fetch(urls.tyreSolid).then((response) => response.arrayBuffer()),
+            fetch(urls.windHowl).then((response) => response.arrayBuffer()),
+            fetch(urls.crash).then((response) => response.arrayBuffer()),
+            fetch(urls.crashTrollina).then((response) => response.arrayBuffer()),
+            fetch(urls.sirenFar).then((response) => response.arrayBuffer()),
+            fetch(urls.sirenClose).then((response) => response.arrayBuffer()),
+          ]);
         if (this.disposed) return;
-        this.sampleData = { tyreOffroad, tyreSolid, windHowl, crash, crashTrollina };
+        this.sampleData = {
+          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, sirenFar, sirenClose,
+        };
         this.installSamples();
       } catch {
         // Network refusal: ride on synthesized fallbacks, report the truth.
@@ -317,15 +331,20 @@ export class AudioEngine {
         // decodeAudioData detaches its input buffer, so decoding is once-only
         // by nature — `decodeStarted` makes that explicit rather than relying
         // on a second call failing.
-        const [tyreOffroad, tyreSolid, windHowl, crash, crashTrollina] = await Promise.all([
-          context.decodeAudioData(data.tyreOffroad),
-          context.decodeAudioData(data.tyreSolid),
-          context.decodeAudioData(data.windHowl),
-          context.decodeAudioData(data.crash),
-          context.decodeAudioData(data.crashTrollina),
-        ]);
+        const [tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, sirenFar, sirenClose] =
+          await Promise.all([
+            context.decodeAudioData(data.tyreOffroad),
+            context.decodeAudioData(data.tyreSolid),
+            context.decodeAudioData(data.windHowl),
+            context.decodeAudioData(data.crash),
+            context.decodeAudioData(data.crashTrollina),
+            context.decodeAudioData(data.sirenFar),
+            context.decodeAudioData(data.sirenClose),
+          ]);
         if (this.disposed) return;
-        const bank: SampleBank = { tyreOffroad, tyreSolid, windHowl, crash, crashTrollina };
+        const bank: SampleBank = {
+          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, sirenFar, sirenClose,
+        };
         this.sink?.setSampleBank(bank);
       } catch {
         // An undecodable file is a build defect; the spec that asserts
@@ -544,6 +563,8 @@ export class AudioEngine {
         + slotB.gain + slotB.sampleGain + slotB.tokoGain,
       tyreVoice: frame.tyre[frame.tyreActive].voiceId,
       scrapeGain: frame.scrapeGain,
+      sirenGain: frame.sirenFarGain + frame.sirenCloseGain,
+      sirenRate: frame.sirenRate,
     };
   }
 

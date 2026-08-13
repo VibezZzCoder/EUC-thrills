@@ -509,16 +509,19 @@ test.describe('M9 — HUD, menus, options', () => {
 
     // Down walks the title screen's real focus order. **M10 inserted Time
     // trial between Start ride and Settings, M12 Phase 4 inserted Fresh route
-    // after it, and M14 inserted Knockabout between those two**, so this is
-    // four presses now rather than one — and asserting every intermediate stop
-    // is the point: the pad follows the panel's actual Tab order rather than a
-    // list of buttons this test remembers, which is exactly what should happen
-    // when the menu grows. Each time it has, this test has failed by naming the
-    // wrong stop, which is the failure it is for. A activates what is focused.
+    // after it, M14 inserted Knockabout between those two, and M18 inserted
+    // Police chase after Knockabout**, so this is five presses now rather than
+    // one — and asserting every intermediate stop is the point: the pad follows
+    // the panel's actual Tab order rather than a list of buttons this test
+    // remembers, which is exactly what should happen when the menu grows. Each
+    // time it has, this test has failed by naming the wrong stop, which is the
+    // failure it is for. A activates what is focused.
     await pulse(13);
     await expect(menuButton(page, 'title', 'challenge')).toBeFocused();
     await pulse(13);
     await expect(menuButton(page, 'title', 'knockabout')).toBeFocused();
+    await pulse(13);
+    await expect(menuButton(page, 'title', 'chase')).toBeFocused();
     await pulse(13);
     await expect(menuButton(page, 'title', 'routes')).toBeFocused();
     await pulse(13);

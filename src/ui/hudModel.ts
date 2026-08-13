@@ -116,6 +116,22 @@ export interface HudInput {
    * to see.
    */
   readonly knockabout?: { readonly struck: number; readonly total: number };
+  /**
+   * How the chase is going — M18. Absent in every other ride.
+   *
+   * Absent rather than zeroed, exactly as `knockabout` is and for the same
+   * reason. Three facts, because three is what the screen has to say: how long
+   * is left (the whole mode), whether the rider is outside the route corridor
+   * and on the clock for it, and whether the cop is close enough to be about to
+   * swing. Everything else about the chase — his position, the record, the
+   * outcome — belongs to the results card rather than to a lane the player
+   * reads at 50 mph.
+   */
+  readonly chase?: {
+    readonly remaining: number;
+    readonly straying: boolean;
+    readonly copClose: boolean;
+  };
   readonly powerStage: PowerStage;
   /** How far tilt-back has engaged, 0..1. */
   readonly tiltBack: number;
@@ -154,6 +170,22 @@ export interface HudView {
    * what cut the "Missed: Park gate" line at M10.
    */
   readonly knockabout: string;
+  /**
+   * The chase clock, already composed — M18.
+   *
+   * Empty means the lane is not drawn. It shares the corner with the Knockabout
+   * score because a ride is one mode or the other and never both, and
+   * `ui/hud.ts` picks between them in one expression rather than giving the two
+   * modes two elements that would have to be hidden in step.
+   */
+  readonly chase: string;
+  /**
+   * What the shared mode lane is counting.
+   *
+   * Empty whenever the lane is absent. The model owns these words because the
+   * DOM cannot infer that `5:00` is survival time rather than a target score.
+   */
+  readonly modeLabel: string;
 }
 
 /**
@@ -242,6 +274,29 @@ function formatDirection(radians: number): string {
 function knockaboutLane(run: { struck: number; total: number } | undefined): string {
   if (run === undefined) return '';
   return `${run.struck} / ${run.total}`;
+}
+
+/**
+ * The chase clock, composed once — M18.
+ *
+ * **Counting down, and to the second rather than to the hundredth.** The timed
+ * run's clock is a *measurement* and hundredths are the difference between two
+ * personal bests; this one is a *deadline*, and hundredths on a deadline churn
+ * two digits at 100 Hz in the corner of the eye of somebody being chased. It
+ * clamps at zero because a negative deadline is not a thing to draw.
+ */
+function chaseLane(run: { remaining: number } | undefined): string {
+  if (run === undefined) return '';
+  const whole = Math.max(0, Math.ceil(run.remaining));
+  const minutes = Math.floor(whole / 60);
+  return `${minutes}:${String(whole - minutes * 60).padStart(2, '0')}`;
+}
+
+/** The label above the one corner shared by Knockabout and the police chase. */
+function modeLaneLabel(input: Pick<HudInput, 'knockabout' | 'chase'>): string {
+  if (input.chase !== undefined) return 'Survive';
+  if (input.knockabout !== undefined) return 'Targets';
+  return '';
 }
 
 const NO_CHALLENGE: ChallengeHudView = Object.freeze({
@@ -440,12 +495,14 @@ export class HudModel {
         speed: formatSpeed(input.speed, this.speedUnit),
         speedUnit: this.speedUnit,
         reversing: false,
-        objective: this.objectiveFor(input.challenge),
+        objective: this.objectiveFor(input.challenge, input.chase),
         warning: 'none',
         warningLabel: '',
         offRoute: false,
         challenge: this.challengeView(nowSeconds, input.challenge),
         knockabout: knockaboutLane(input.knockabout),
+        chase: chaseLane(input.chase),
+        modeLabel: modeLaneLabel(input),
       };
     }
 
@@ -494,12 +551,14 @@ export class HudModel {
       speed: formatSpeed(input.speed, this.speedUnit),
       speedUnit: this.speedUnit,
       reversing: input.speed < -0.1,
-      objective: this.objectiveFor(input.challenge),
+      objective: this.objectiveFor(input.challenge, input.chase),
       warning,
       warningLabel: WARNING_LABELS[warning],
       offRoute: this.offRoute,
       challenge: this.challengeView(nowSeconds, input.challenge),
       knockabout: knockaboutLane(input.knockabout),
+      chase: chaseLane(input.chase),
+      modeLabel: modeLaneLabel(input),
     };
   }
 
@@ -518,7 +577,21 @@ export class HudModel {
    * whenever there is no run — including after the finish, where the line goes
    * quiet so the finish itself is the only thing happening on screen.
    */
-  private objectiveFor(challenge: ChallengeHudInput | undefined): string {
+  private objectiveFor(
+    challenge: ChallengeHudInput | undefined,
+    chase?: { readonly straying: boolean; readonly copClose: boolean },
+  ): string {
+    // **The chase takes the line before the timed run gets a look at it**, and
+    // the ordering is the mode's own: the two never run together, and of the
+    // two things a chase has to say, one is a rule the player is about to lose
+    // to. Straying outranks the cop for the same reason — being about to be
+    // busted for leaving is a thing the player can fix and may not know about,
+    // where the cop behind them is a thing they can already see.
+    if (chase !== undefined) {
+      if (chase.straying) return 'Back to the route';
+      if (chase.copClose) return 'He is right behind you';
+      return '';
+    }
     if (challenge === undefined || challenge.phase === 'idle') return this.objective;
     const away = formatDistance(challenge.distanceMetres);
     const direction = formatDirection(challenge.directionRadians);

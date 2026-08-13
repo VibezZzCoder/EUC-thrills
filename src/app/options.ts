@@ -1,5 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { CHARACTER_IDS, DEFAULT_CHARACTER, type CharacterId } from '../data/riders.ts';
+import { CHARACTER_IDS, DEFAULT_CHARACTER, type PlayableCharacterId } from '../data/riders.ts';
 import { SafeStorage } from '../platform/storage.ts';
 import type { PressedAction, HeldAction } from '../input/actions.ts';
 
@@ -105,7 +105,7 @@ export interface GameOptions {
    * where a run happened; folding the rider into a level id would orphan every
    * existing time the first time somebody switched (`data/riders.ts`).
    */
-  readonly character: CharacterId;
+  readonly character: PlayableCharacterId;
 
   // -- Display --------------------------------------------------------------
   readonly quality: QualityLevel;
@@ -235,8 +235,8 @@ export function coerceOptions(raw: unknown, base: GameOptions = DEFAULT_OPTIONS)
     : base.quality;
 
   return Object.freeze({
-    character: CHARACTER_IDS.includes(record.character as CharacterId)
-      ? (record.character as CharacterId)
+    character: CHARACTER_IDS.includes(record.character as PlayableCharacterId)
+      ? (record.character as PlayableCharacterId)
       : base.character,
 
     quality,

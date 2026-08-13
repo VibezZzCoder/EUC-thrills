@@ -4,6 +4,8 @@ import tyreSolidUrl from '../../assets/live/audio/tyre_solid_loop.wav?url';
 import windHowlUrl from '../../assets/live/audio/wind_howl_loop.wav?url';
 import crashUrl from '../../assets/live/audio/crash_wipeout.wav?url';
 import crashTrollinaUrl from '../../assets/live/audio/crash_trollina.wav?url';
+import sirenFarUrl from '../../assets/live/audio/siren_far_loop.wav?url';
+import sirenCloseUrl from '../../assets/live/audio/siren_close_loop.wav?url';
 
 /**
  * The shipped recordings, as URLs the bundler resolves.
@@ -15,7 +17,7 @@ import crashTrollinaUrl from '../../assets/live/audio/crash_trollina.wav?url';
  * stays testable and buildable with no bundler in sight.
  *
  * Every file here has its provenance recorded — the owner's own wipeout
- * recording under CC BY 4.0 with his other original assets, the two CC0
+ * recording under CC BY 4.0 with his other original assets, the four CC0
  * recordings in NOTICE.md's third-party table, the toko rotation loop
  * synthesized locally by `tools/make-toko.mjs` (original CC BY 4.0, no
  * external source), and Trollina's crash, which is composed by
@@ -36,6 +38,14 @@ export interface SampleUrls {
    * at the moment of a crash — see `audio/sink.ts`.
    */
   readonly crashTrollina: string;
+  /**
+   * The chase siren's two wails (M18) — the far carrier and the close
+   * panic, crossfaded by the cop's range. Both CC0 Freesound recordings,
+   * owner-auditioned A/B/C/D on 2026-08-13 and recorded in NOTICE.md's
+   * third-party table alongside the tyre and wind beds.
+   */
+  readonly sirenFar: string;
+  readonly sirenClose: string;
 }
 
 export const SAMPLE_URLS: SampleUrls = {
@@ -44,4 +54,6 @@ export const SAMPLE_URLS: SampleUrls = {
   windHowl: windHowlUrl,
   crash: crashUrl,
   crashTrollina: crashTrollinaUrl,
+  sirenFar: sirenFarUrl,
+  sirenClose: sirenCloseUrl,
 };

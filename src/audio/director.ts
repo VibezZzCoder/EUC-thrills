@@ -5,8 +5,10 @@ import type { SurfaceId } from '../simulation/world.ts';
 import type { PowerStage } from '../simulation/EucController.ts';
 import {
   approach,
+  clamp,
   clamp01,
   duckToGain,
+  equalPowerCrossfade,
   lerp,
   mapRange,
   rollingHz,
@@ -58,6 +60,22 @@ export interface RideAudioInput {
   /** True while the rider is off the wheel. */
   crashed: boolean;
   /**
+   * How far away the pursuing cop is, metres — the siren's whole input (M18).
+   *
+   * `Infinity` whenever there is no live pursuit: no chase mode, the run
+   * already ended, the probe with no rules. The director does not know what a
+   * chase *is* — it is handed a distance and shapes a voice from it, exactly
+   * as it is handed a speed and shapes the motor. An ended chase is therefore
+   * a cop at infinite range, and the siren's fade on escape or bust is the
+   * same arithmetic as him simply dropping too far back.
+   */
+  copRangeMetres: number;
+  /**
+   * How fast that range is shrinking, m/s — positive while he is gaining.
+   * Feeds the Doppler lean and nothing else; zero whenever range is Infinity.
+   */
+  copClosingSpeed: number;
+  /**
    * True while nothing is being simulated — paused, hidden, context lost.
    *
    * Not the same as "stopped". A stopped wheel still hums; a paused game makes
@@ -78,6 +96,8 @@ export function createRideAudioInput(): RideAudioInput {
     suspensionSpeed: 0,
     scrape: 0,
     crashed: false,
+    copRangeMetres: Number.POSITIVE_INFINITY,
+    copClosingSpeed: 0,
     idle: false,
   };
 }
@@ -170,6 +190,15 @@ export interface AudioFrame {
   scrapeRingHz: number;
   scrapeRingGain: number;
 
+  /**
+   * The siren's two loops (M18): the far wail and the close wail, already
+   * through the range envelope and the equal-power blend — the sink writes
+   * these two gains and the shared rate, and decides nothing.
+   */
+  sirenFarGain: number;
+  sirenCloseGain: number;
+  /** Playback rate of both loops — the Doppler lean, identical on each. */
+  sirenRate: number;
 }
 
 function createTyreSlotFrame(): TyreSlotFrame {
@@ -210,6 +239,9 @@ export function createAudioFrame(): AudioFrame {
     scrapeCentreHz: AUDIO.scrapeCentreHz,
     scrapeRingHz: AUDIO.scrapeRingHz,
     scrapeRingGain: 0,
+    sirenFarGain: 0,
+    sirenCloseGain: 0,
+    sirenRate: 1,
   };
 }
 
@@ -302,6 +334,12 @@ export interface AudioTuning {
    */
   swingLevel: number;
   hitLevel: number;
+  /**
+   * The siren's point-blank ceiling (M18). Live because the standing rule —
+   * nothing may be annoying — is judged by the owner's ear on a real ride,
+   * and zero is the kill-switch that judgment might reach for.
+   */
+  sirenLevel: number;
 }
 
 export function defaultAudioTuning(): AudioTuning {
@@ -321,6 +359,7 @@ export function defaultAudioTuning(): AudioTuning {
     duckTiltBack: AUDIO.duckTiltBack,
     swingLevel: AUDIO.swingLevel,
     hitLevel: AUDIO.hitLevel,
+    sirenLevel: AUDIO.sirenLevel,
   };
 }
 
@@ -413,6 +452,15 @@ export class AudioDirector {
   private tyreSpeedGain = 0;
   private tyreGrain = 0;
   private scrapeGain = 0;
+  // -- The siren (M18) ------------------------------------------------------
+  private sirenGain = 0;
+  /**
+   * The smoothed blend position, 0 = far wail, 1 = close wail. Held rather
+   * than zeroed when the pursuit ends, so the fade-out keeps the mix it was
+   * caught with instead of audibly sliding back to the far voice under it.
+   */
+  private sirenBlend = 0;
+  private sirenRate = 1;
 
   setTuning(tuning: Partial<AudioTuning>): void {
     this.tuning = { ...this.tuning, ...tuning };
@@ -458,6 +506,9 @@ export class AudioDirector {
     this.tyreSpeedGain = 0;
     this.tyreGrain = 0;
     this.scrapeGain = 0;
+    this.sirenGain = 0;
+    this.sirenBlend = 0;
+    this.sirenRate = 1;
     this.cueCount = 0;
   }
 
@@ -479,6 +530,7 @@ export class AudioDirector {
     this.updateMotor(step, input);
     this.updateWind(step, input);
     this.updateScrape(step, input);
+    this.updateSiren(step, input);
     this.updateWarnings(step, input);
     this.updateBed(step, input);
     this.impactHold = Math.max(0, this.impactHold - step);
@@ -991,6 +1043,62 @@ export class AudioDirector {
     this.frame.scrapeCentreHz = AUDIO.scrapeCentreHz;
     this.frame.scrapeRingHz = AUDIO.scrapeRingHz;
     this.frame.scrapeRingGain = this.scrapeGain * AUDIO.scrapeRingLevel;
+  }
+
+  /**
+   * The siren — a threat radar the player hears (M18).
+   *
+   * Level follows the cop's range through a curve that reads as distance;
+   * inside the blend span the far wail hands over to the close wail on the
+   * same equal-power law the tyre's surface fades use, and both loops lean a
+   * few percent sharp while he is closing. All of it is range arithmetic: an
+   * ended chase arrives here as `copRangeMetres = Infinity` and simply fades
+   * on the release constant, which is why escape, bust, and quit need no
+   * cases of their own.
+   */
+  private updateSiren(dt: number, input: RideAudioInput): void {
+    const range = input.copRangeMetres;
+    const live = Number.isFinite(range);
+
+    const proximity = live
+      ? mapRange(range, AUDIO.sirenFarMetres, AUDIO.sirenNearMetres, 0, 1)
+        ** AUDIO.sirenDistanceCurve
+      : 0;
+    const target = this.tuning.sirenLevel * proximity;
+    // Rising and in-pursuit falls track the ride; the release only owns the
+    // fade after the pursuit itself is gone, so a cop dropping back sounds
+    // like distance and a chase ending sounds like the siren being shut off.
+    this.sirenGain = approach(
+      this.sirenGain,
+      target,
+      live ? AUDIO.sirenResponseSeconds : AUDIO.sirenReleaseSeconds,
+      dt,
+    );
+
+    if (live) {
+      this.sirenBlend = approach(
+        this.sirenBlend,
+        mapRange(range, AUDIO.sirenBlendFarMetres, AUDIO.sirenBlendNearMetres, 0, 1),
+        AUDIO.sirenBlendSeconds,
+        dt,
+      );
+    }
+
+    // The lean is identical on both loops — a blend of two rates would detune
+    // the crossfade — and eases home to native pitch when the pursuit ends.
+    const lean = live
+      ? clamp(
+        input.copClosingSpeed * AUDIO.sirenDopplerPerMs,
+        -AUDIO.sirenDopplerMax,
+        AUDIO.sirenDopplerMax,
+      )
+      : 0;
+    this.sirenRate = approach(this.sirenRate, 1 + lean, AUDIO.sirenRateSeconds, dt);
+
+    const fade = equalPowerCrossfade(this.sirenBlend);
+    this.frame.sirenFarGain = this.sirenGain * fade.from;
+    this.frame.sirenCloseGain = this.sirenGain * fade.to;
+    this.frame.sirenRate = this.sirenRate;
   }
 
   /**

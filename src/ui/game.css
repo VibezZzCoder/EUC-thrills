@@ -1279,8 +1279,9 @@
   border-color: #2a7cf0;
 }
 
-/* Knockabout brought the player here for one purpose, not a mode re-pick. */
-.euc-routes__actions[data-purpose="knockabout"] [data-menu="trial-route"] {
+/* A mode brought the player here for one purpose, not a mode re-pick. */
+.euc-routes__actions[data-purpose="knockabout"] [data-menu="trial-route"],
+.euc-routes__actions[data-purpose="chase"] [data-menu="trial-route"] {
   display: none;
 }
 

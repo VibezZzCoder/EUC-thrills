@@ -137,6 +137,23 @@ test('the objective lane is empty until something writes it', () => {
   assert.equal(hud.update(0, at({})).objective, 'Free ride');
 });
 
+test('the shared mode lane names what its value counts', () => {
+  const hud = new HudModel();
+
+  const freeRide = hud.update(0, at({}));
+  assert.equal(freeRide.modeLabel, '');
+
+  const knockabout = hud.update(0, at({ knockabout: { struck: 2, total: 17 } }));
+  assert.equal(knockabout.modeLabel, 'Targets');
+  assert.equal(knockabout.knockabout, '2 / 17');
+
+  const chase = hud.update(0, at({
+    chase: { remaining: 300, straying: false, copClose: false },
+  }));
+  assert.equal(chase.modeLabel, 'Survive');
+  assert.equal(chase.chase, '5:00');
+});
+
 test('reset forgets the dwell timers', () => {
   const hud = new HudModel();
   hud.update(0, at({ powerStage: 'warn', offCourse: true }));

@@ -7,7 +7,8 @@ import { createCheckpointGates } from './checkpointGates.ts';
 import { createGhostRider } from './ghostRider.ts';
 import { createParticleField } from './particles.ts';
 import { createProps } from './props.ts';
-import { RIDER_LOOKS, type RiderLook } from './riderLook.ts';
+import { PLAYABLE_RIDER_LOOKS, type RiderLook } from './riderLook.ts';
+import { createCopRider } from './copRider.ts';
 import { createPose } from '../simulation/EucController.ts';
 import { createRidingRig } from './ridingRig.ts';
 import { createTargets } from './targets.ts';
@@ -296,14 +297,28 @@ const PADDLE_MEASURE_POINT = new THREE.Vector3(0, 1.4, 1);
  * each axis independently, which is conservative in the only direction a budget
  * may be wrong.
  */
+/**
+ * Which second rider the frame is holding — M18.
+ *
+ * **They are alternatives, not additions**, and `render/Renderer.ts` enforces
+ * that with one slot rather than leaving it to convention: a Time-trial ghost
+ * and a chase cop cannot appear together because no state exists in which both
+ * are shown. So the reserve is the *worse* of the two frames, exactly as it is
+ * already the worse of the two rider looks, and for the same reason — only one
+ * of them is ever on screen.
+ */
+export type SecondRider = 'none' | 'ghost' | 'cop';
+
 function measureNonLevelSceneFor(
   checkpoints: LevelPlan['checkpoints'],
   look: RiderLook,
+  second: SecondRider,
 ): SceneCost {
   const meshes: MeshCost[] = [];
 
   const rig = createRidingRig(look);
   const ghost = createGhostRider(look);
+  const cop = createCopRider();
   const gates = createCheckpointGates(checkpoints);
   const sparks = createParticleField({
     name: 'fx-sparks',
@@ -321,7 +336,15 @@ function measureNonLevelSceneFor(
   });
 
   try {
-    ghost.setVisible(true);
+    ghost.setVisible(second === 'ghost');
+    cop.setVisible(second === 'cop');
+    if (second === 'cop') {
+      // Posed and armed, for the reason the player's rig below is: a paddle
+      // that has never been aimed is a hidden mesh, and a reserve taken with it
+      // hidden is a reserve that does not know about the mode it exists for.
+      cop.applySwing(PADDLE_MEASURE_POINT, 0, 1);
+      cop.apply(createPose());
+    }
     gates.group.visible = true;
     // The paddle, shown for the same reason and by the same argument — M14. It
     // hangs off the rider's grip and starts hidden, so a reserve measured
@@ -336,7 +359,9 @@ function measureNonLevelSceneFor(
     // record and before the apply is measuring a hidden mesh.
     rig.apply(createPose());
 
-    for (const root of [rig.group, ghost.group, gates.group, sparks.points, dust.points]) {
+    for (const root of [
+      rig.group, ghost.group, cop.group, gates.group, sparks.points, dust.points,
+    ]) {
       meshes.push(...measureObject(root).meshes);
     }
     meshes.push({
@@ -351,18 +376,23 @@ function measureNonLevelSceneFor(
     dust.dispose();
     sparks.dispose();
     gates.dispose();
+    cop.dispose();
     ghost.dispose();
     rig.dispose();
   }
 }
 
 export function measureNonLevelScene(checkpoints: LevelPlan['checkpoints']): SceneCost {
-  const perLook = RIDER_LOOKS.map((look) => measureNonLevelSceneFor(checkpoints, look));
-  // Worst on each axis separately. A look could in principle be cheaper in
+  // Every frame a player can actually reach: either playable rider, wearing
+  // either second rider. Six builds, once, at build time.
+  const perFrame = PLAYABLE_RIDER_LOOKS.flatMap((look) => (
+    (['ghost', 'cop'] as const).map((second) => measureNonLevelSceneFor(checkpoints, look, second))
+  ));
+  // Worst on each axis separately. A frame could in principle be cheaper in
   // calls and dearer in triangles, and reserving the per-axis maximum is the
   // only answer that is safe for both.
-  const worstCalls = perLook.reduce((a, b) => (b.totalDrawCalls > a.totalDrawCalls ? b : a));
-  const worstTriangles = perLook.reduce((a, b) => (b.totalTriangles > a.totalTriangles ? b : a));
+  const worstCalls = perFrame.reduce((a, b) => (b.totalDrawCalls > a.totalDrawCalls ? b : a));
+  const worstTriangles = perFrame.reduce((a, b) => (b.totalTriangles > a.totalTriangles ? b : a));
   return {
     ...worstCalls,
     totalTriangles: worstTriangles.totalTriangles,

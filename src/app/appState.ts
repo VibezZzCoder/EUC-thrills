@@ -49,6 +49,7 @@ export type AppStateId =
   | 'freeRide'
   | 'challenge'
   | 'knockabout'
+  | 'chase'
   | 'paused'
   | 'results';
 
@@ -62,6 +63,7 @@ export const APP_STATES: readonly AppStateId[] = [
   'freeRide',
   'challenge',
   'knockabout',
+  'chase',
   'paused',
   'results',
 ];
@@ -74,7 +76,7 @@ export const APP_STATES: readonly AppStateId[] = [
  * absent: a paused game is a ride the player has stepped out of, which is why
  * `AppState.rideReturn` exists to remember which one.
  */
-export const RIDE_STATES: readonly AppStateId[] = ['freeRide', 'challenge', 'knockabout'];
+export const RIDE_STATES: readonly AppStateId[] = ['freeRide', 'challenge', 'knockabout', 'chase'];
 
 export function isRideState(state: AppStateId): boolean {
   return RIDE_STATES.includes(state);
@@ -178,7 +180,9 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     // expects. `riderSelect` goes last for that reason as much as for its own:
     // riding is why anyone opened the game.
     successors: Object.freeze(
-      ['freeRide', 'challenge', 'knockabout', 'settings', 'routes', 'riderSelect'] as AppStateId[],
+      [
+        'freeRide', 'challenge', 'knockabout', 'chase', 'settings', 'routes', 'riderSelect',
+      ] as AppStateId[],
     ),
   }),
   settings: Object.freeze({
@@ -216,7 +220,9 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     showsHud: false,
     showsMenu: true,
     resetsInput: true,
-    successors: Object.freeze(['title', 'freeRide', 'challenge', 'knockabout'] as AppStateId[]),
+    successors: Object.freeze(
+      ['title', 'freeRide', 'challenge', 'knockabout', 'chase'] as AppStateId[],
+    ),
   }),
   /**
    * Choosing a rider — M14.5, and the state this file has been holding open
@@ -291,6 +297,29 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     resetsInput: true,
     successors: Object.freeze(['paused', 'results', 'title'] as AppStateId[]),
   }),
+  /**
+   * The police chase — M18, the fourth ride.
+   *
+   * Identical to `knockabout` in every field, which by now is the point rather
+   * than a copy: **a mode is what a ride is for.** The wheel, the camera, the
+   * input and the physics do not know a cop is behind them, and the cop rides
+   * the same controller the player does — so a rider who is good in free ride
+   * is good here, and the mode's difficulty lives entirely in what is chasing
+   * rather than in a different kind of riding.
+   *
+   * It reaches `results` because a run ends with an outcome the player needs
+   * told: escaped, or busted, and how long they lasted (`docs/PLANS.md` §13
+   * q24, q25).
+   */
+  chase: Object.freeze({
+    id: 'chase' as AppStateId,
+    simulates: true,
+    acceptsRideInput: true,
+    showsHud: true,
+    showsMenu: false,
+    resetsInput: true,
+    successors: Object.freeze(['paused', 'results', 'title'] as AppStateId[]),
+  }),
   paused: Object.freeze({
     id: 'paused' as AppStateId,
     simulates: false,
@@ -303,7 +332,7 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     showsMenu: true,
     resetsInput: true,
     successors: Object.freeze(
-      ['freeRide', 'challenge', 'knockabout', 'settings', 'title'] as AppStateId[],
+      ['freeRide', 'challenge', 'knockabout', 'chase', 'settings', 'title'] as AppStateId[],
     ),
   }),
   /**
@@ -330,7 +359,7 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     // `knockabout` joins `challenge` here at M14, and for its reason: retry is
     // the one edge into a ride that is neither the title nor a pause, and a
     // mode with a score to beat needs it exactly as much as a mode with a time.
-    successors: Object.freeze(['challenge', 'knockabout', 'title'] as AppStateId[]),
+    successors: Object.freeze(['challenge', 'knockabout', 'chase', 'title'] as AppStateId[]),
   }),
 });
 

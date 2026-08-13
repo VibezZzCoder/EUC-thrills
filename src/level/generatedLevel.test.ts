@@ -722,17 +722,37 @@ test('generation alone does not consume the complete boot budget', () => {
  * unchanged, which is the check that the two passes are independent: the target
  * stream is a sixth domain and rerolling it moves targets and nothing else.
  *
+ * **Re-recorded 2026-08-13 for M18's cop, and this one moved nothing about the
+ * routes either.** Every seed gained the same two draw calls and the same 1,116
+ * triangles, because all of it is in the fixed reserve again: the chase cop is
+ * two draw calls dearer than the Time-trial ghost he *replaces* in the frame,
+ * and the reserve takes the worse of the two rather than their sum — the two
+ * are alternatives, held in one slot by `render/Renderer.ts` so that stays a
+ * fact rather than a convention. The uniformity is the check, exactly as it was
+ * for the paddle: a change that moved the routes would not move every seed by
+ * an identical amount. Hazard and target counts are unchanged.
+ *
+ * **Re-recorded 2026-08-13 again, for the cop's corrected face and the owner's
+ * visual pass — two reserve movements that had landed without this chore.**
+ * Every seed gained the same one draw call (the QA pass's merged skin face,
+ * 25 → 26 cop calls, reserve 87 → 88) and the same 2,354 triangles (that face,
+ * then the visual pass: glasses with pupils, nape hair, chin straps, the
+ * two-row chequer and duty kit, and the painted limbs — paint moves no
+ * triangle count, the merged geometry does). The uniformity is the check once
+ * more: hazard and target counts are untouched, and the level half of every
+ * frame measures exactly what it did.
+ *
  * The hazard and target counts are pinned beside the cost, because they are the
  * numbers the cost is a function of. A placement change that halved either
  * would leave the draw calls exactly where they are and quietly empty the roads.
  */
 const ADVERSARIAL_2026_08_09 = [
-  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 134, triangles: 300_788, hazards: 6, targets: 22 },
-  { seed: 'route-278', axis: 'second densest', drawCalls: 133, triangles: 297_464, hazards: 4, targets: 19 },
-  { seed: 'sweep-89', axis: 'third densest', drawCalls: 134, triangles: 294_600, hazards: 6, targets: 26 },
-  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 134, triangles: 290_102, hazards: 6, targets: 19 },
-  { seed: 'euc-180', axis: 'longest required route', drawCalls: 133, triangles: 275_868, hazards: 8, targets: 21 },
-  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 133, triangles: 245_002, hazards: 7, targets: 22 },
+  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 137, triangles: 304_258, hazards: 6, targets: 22 },
+  { seed: 'route-278', axis: 'second densest', drawCalls: 136, triangles: 300_934, hazards: 4, targets: 19 },
+  { seed: 'sweep-89', axis: 'third densest', drawCalls: 137, triangles: 298_070, hazards: 6, targets: 26 },
+  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 137, triangles: 293_572, hazards: 6, targets: 19 },
+  { seed: 'euc-180', axis: 'longest required route', drawCalls: 136, triangles: 279_338, hazards: 8, targets: 21 },
+  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 136, triangles: 248_472, hazards: 7, targets: 22 },
 ] as const;
 
 

@@ -33,7 +33,7 @@ const TEMPLATE = `
 </div>
 
 <div class="euc-hud__score" data-hud="score" hidden>
-  <span class="euc-hud__score-label">Targets</span>
+  <span class="euc-hud__score-label" data-hud="score-label"></span>
   <span class="euc-hud__score-value" data-hud="score-value">0 / 0</span>
 </div>
 
@@ -80,6 +80,7 @@ export class Hud {
   private lastUnit = '';
   private lastReverse = false;
   private lastObjective = '';
+  private lastModeLabel = '';
   private lastKnockabout = '';
   private lastWarningLabel = '';
   private lastWarningLevel = '';
@@ -163,10 +164,18 @@ export class Hud {
     // The Knockabout score — M14. Written on change only, like everything else
     // here: the HUD is repainted every frame and a `textContent` write that did
     // not change anything is still a layout invalidation.
-    if (view.knockabout !== this.lastKnockabout) {
-      this.nodes['score-value'].textContent = view.knockabout;
-      this.nodes.score.hidden = view.knockabout === '';
-      this.lastKnockabout = view.knockabout;
+    // One corner, two modes, one writer. A ride is Knockabout or a chase and
+    // never both (M18), so the lane shows whichever is live rather than each
+    // mode owning an element that the other has to remember to hide.
+    const lane = view.chase !== '' ? view.chase : view.knockabout;
+    if (view.modeLabel !== this.lastModeLabel) {
+      this.nodes['score-label'].textContent = view.modeLabel;
+      this.lastModeLabel = view.modeLabel;
+    }
+    if (lane !== this.lastKnockabout) {
+      this.nodes['score-value'].textContent = lane;
+      this.nodes.score.hidden = lane === '';
+      this.lastKnockabout = lane;
     }
 
     if (view.objective !== this.lastObjective) {

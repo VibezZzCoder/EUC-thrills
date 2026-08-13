@@ -1,0 +1,173 @@
+/*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { CHASE } from '../data/tuning.ts';
+
+/**
+ * The chase's referee — M18 Phase 3.
+ *
+ * `simulation/challenge.ts`'s counterpart, and built to the same shape for the
+ * same reason: **the rules of a mode are arithmetic over a few numbers, and
+ * arithmetic belongs where `node --test` can reach it.** Nothing here knows
+ * about a renderer, a menu, a HUD or a cop — it is handed four facts per step
+ * and answers with a state. `app/Game.ts` decides what the state *means* on
+ * screen.
+ *
+ * Nothing here may import three.js (invariant 1), and nothing here is a player
+ * option (invariant 5).
+ *
+ * ## The three ways a chase ends, and why they are these three
+ *
+ * **You survive the clock** (§13 q24, the owner's answer). Five minutes, the
+ * same on every seed, which is what makes one player's escape comparable with
+ * another's. There is no finish line anywhere in this mode, and the route
+ * running out under the rider is deliberately *not* an ending.
+ *
+ * **You crash with the cop on you** (§13 q25, the owner accepting the
+ * recommendation). The strike itself is pressure rather than a tag: it lands as
+ * the M14 body-knock wobble, and a wobble is something a rider can ride out.
+ * What ends the run is the crash that follows one — and only while he is close
+ * enough for it to be his doing. A crash alone, on an empty road, costs the
+ * recovery and nothing else, exactly as it does in free ride.
+ *
+ * **You leave** (§13 q27, the owner's "not cheatable by going far off road").
+ * Riding into the surround and holding throttle for five minutes would beat the
+ * mode without riding it, so distance from the route starts a warning and the
+ * warning runs out. It is a boundary on *this mode* and nowhere else: go-
+ * anywhere is LOCKED and the rest of the game has no edge at all.
+ *
+ * The stray clock resets the moment the rider is back inside the corridor,
+ * which is what makes running wide onto a verge free and camping out there
+ * fatal — the difference the owner actually asked for.
+ */
+
+export type ChasePhase = 'idle' | 'running' | 'escaped' | 'busted';
+
+/** What ended a chase. `none` while it is still running or has not started. */
+export type ChaseOutcome = 'none' | 'escaped' | 'caught' | 'strayed';
+
+export interface ChaseState {
+  readonly phase: ChasePhase;
+  /** Seconds left on the clock. Counts down; the number the HUD shows. */
+  readonly remaining: number;
+  /** Seconds survived so far. The thing a personal best is made of. */
+  readonly survived: number;
+  readonly outcome: ChaseOutcome;
+  /** True while the rider is outside the corridor and the warning is running. */
+  readonly straying: boolean;
+  /** Seconds of grace left before straying ends the run. Full when inside. */
+  readonly strayGrace: number;
+}
+
+/** What the referee is told each step. Plain numbers; it asks for nothing. */
+export interface ChaseInput {
+  /** How far the rider is from the route spine, metres. */
+  readonly offRoute: number;
+  /** How far the cop is from the rider, metres. */
+  readonly copDistance: number;
+  /** Whether the rider is crashed right now. */
+  readonly crashed: boolean;
+}
+
+export class ChaseRun {
+  // -- Live tuning, on the pattern every other simulation object uses ---------
+  escapeSeconds: number = CHASE.escapeSeconds;
+  bustRadiusMetres: number = CHASE.bustRadiusMetres;
+  strayLimitMetres: number = CHASE.strayLimitMetres;
+  strayGraceSeconds: number = CHASE.strayGraceSeconds;
+
+  private phaseValue: ChasePhase = 'idle';
+  // Annotated rather than inferred, for the reason every live-tuned field in
+  // `simulation/` is: the tuning table is `as const`, so an inferred field
+  // would take the *literal* type of today's default and refuse every other
+  // value — including the zero this counts down to.
+  private remainingSeconds: number = CHASE.escapeSeconds;
+  private outcomeValue: ChaseOutcome = 'none';
+  private strayedFor = 0;
+  /**
+   * Was the rider crashed on the previous step?
+   *
+   * The bust is an **edge**, not a level. A crash lasts until the controller
+   * respawns the rider a few seconds later, so a level test would re-decide the
+   * same crash on every one of those steps — harmless while the answer is the
+   * same, and wrong the moment the cop rides past the fallen rider and the
+   * distance changes underneath a run that has already ended.
+   */
+  private wasCrashed = false;
+
+  get state(): ChaseState {
+    return {
+      phase: this.phaseValue,
+      remaining: Math.max(0, this.remainingSeconds),
+      survived: Math.max(0, this.escapeSeconds - Math.max(0, this.remainingSeconds)),
+      outcome: this.outcomeValue,
+      straying: this.strayedFor > 0,
+      strayGrace: Math.max(0, this.strayGraceSeconds - this.strayedFor),
+    };
+  }
+
+  /** Start a run. The clock is full and nothing has happened yet. */
+  arm(): void {
+    this.phaseValue = 'running';
+    this.remainingSeconds = this.escapeSeconds;
+    this.outcomeValue = 'none';
+    this.strayedFor = 0;
+    this.wasCrashed = false;
+  }
+
+  /** Abandon a run in progress — a quit, or a world swapped underneath it. */
+  abandon(): void {
+    this.phaseValue = 'idle';
+    this.remainingSeconds = this.escapeSeconds;
+    this.outcomeValue = 'none';
+    this.strayedFor = 0;
+    this.wasCrashed = false;
+  }
+
+  /**
+   * One fixed step. Returns true on the step the run ends.
+   *
+   * Order matters and is stated rather than incidental: **the clock is spent
+   * first**, so a rider who reaches zero on the same step they crash has
+   * escaped. That is the generous reading and it is the right one — the run was
+   * over before the crash, and losing on the last step to something that
+   * happened after the whistle is the kind of unfairness §18.6 says is removed
+   * rather than tuned.
+   */
+  step(dt: number, input: ChaseInput): boolean {
+    if (this.phaseValue !== 'running') return false;
+
+    this.remainingSeconds -= Math.max(0, dt);
+    if (this.remainingSeconds <= 0) {
+      this.remainingSeconds = 0;
+      this.phaseValue = 'escaped';
+      this.outcomeValue = 'escaped';
+      return true;
+    }
+
+    // The bust: a crash, on its first step, with the cop close enough for it to
+    // be his doing.
+    const crashed = input.crashed;
+    const justCrashed = crashed && !this.wasCrashed;
+    this.wasCrashed = crashed;
+    if (justCrashed && input.copDistance <= this.bustRadiusMetres) {
+      this.phaseValue = 'busted';
+      this.outcomeValue = 'caught';
+      return true;
+    }
+
+    // The boundary. Reset rather than decayed: coming back inside gives the
+    // whole grace back, so a rider who overshoots a corner twice in a minute is
+    // never punished for the first one.
+    if (input.offRoute > this.strayLimitMetres) {
+      this.strayedFor += Math.max(0, dt);
+      if (this.strayedFor >= this.strayGraceSeconds) {
+        this.phaseValue = 'busted';
+        this.outcomeValue = 'strayed';
+        return true;
+      }
+    } else {
+      this.strayedFor = 0;
+    }
+
+    return false;
+  }
+}

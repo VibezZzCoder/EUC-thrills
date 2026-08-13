@@ -960,3 +960,129 @@ test('live tuning reaches the mix', () => {
     'a panel slider that moves nothing teaches you to distrust the panel',
   );
 });
+
+// ---------------------------------------------------------------------------
+// The siren (M18)
+// ---------------------------------------------------------------------------
+
+test('the siren is silent without a pursuit, and rises as the cop closes', () => {
+  const director = new AudioDirector();
+  const total = () => director.frame.sirenFarGain + director.frame.sirenCloseGain;
+
+  run(director, 1, riding({ speed: 10 }));
+  assert.equal(total(), 0, 'no pursuit, no siren');
+
+  run(director, 2, riding({ speed: 10, copRangeMetres: AUDIO.sirenFarMetres + 20 }));
+  assert.equal(total(), 0, 'a cop beyond the onset range is not audible');
+
+  run(director, 2, riding({ speed: 10, copRangeMetres: 40 }));
+  const at40 = total();
+  assert.ok(at40 > 0, 'inside the onset range the siren sounds');
+
+  run(director, 2, riding({ speed: 10, copRangeMetres: 15 }));
+  const at15 = total();
+  assert.ok(at15 > at40, 'closer is louder');
+
+  run(director, 2, riding({ speed: 10, copRangeMetres: AUDIO.sirenNearMetres }));
+  // At the near range the envelope carries the full ceiling; the equal-power
+  // split means the *power* reaches it while the amplitude sum overshoots a
+  // touch mid-blend, so the honest assertion is on power.
+  const power = Math.hypot(director.frame.sirenFarGain, director.frame.sirenCloseGain);
+  assert.ok(Math.abs(power - AUDIO.sirenLevel) < 0.02, `full-range power was ${power}`);
+});
+
+test('the siren hands over from the far wail to the close wail, at equal power', () => {
+  const director = new AudioDirector();
+
+  run(director, 3, riding({ speed: 10, copRangeMetres: AUDIO.sirenBlendFarMetres + 10 }));
+  const far = director.frame;
+  assert.ok(far.sirenFarGain > 0, 'outside the blend span the far wail carries it');
+  assert.ok(
+    far.sirenCloseGain < far.sirenFarGain * 0.02,
+    'the close wail waits its turn',
+  );
+
+  run(director, 4, riding({ speed: 10, copRangeMetres: AUDIO.sirenBlendNearMetres - 2 }));
+  const near = director.frame;
+  assert.ok(near.sirenCloseGain > 0, 'inside the span the close wail has taken over');
+  assert.ok(
+    near.sirenFarGain < near.sirenCloseGain * 0.02,
+    'and the far wail has left',
+  );
+
+  // Mid-blend, the two must sum in power to the envelope — the equal-power
+  // law, the same one the tyre's surface fades answer for.
+  const mid = (AUDIO.sirenBlendFarMetres + AUDIO.sirenBlendNearMetres) / 2;
+  run(director, 4, riding({ speed: 10, copRangeMetres: mid }));
+  const frame = director.frame;
+  assert.ok(frame.sirenFarGain > 0 && frame.sirenCloseGain > 0, 'mid-blend, both sound');
+  const proximity = ((AUDIO.sirenFarMetres - mid) / (AUDIO.sirenFarMetres - AUDIO.sirenNearMetres))
+    ** AUDIO.sirenDistanceCurve;
+  const expected = AUDIO.sirenLevel * proximity;
+  const power = Math.hypot(frame.sirenFarGain, frame.sirenCloseGain);
+  assert.ok(
+    Math.abs(power - expected) < 0.02,
+    `mid-blend power ${power} should hold the envelope ${expected}`,
+  );
+});
+
+test('an ended chase fades the siren on the release, holding its blend', () => {
+  const director = new AudioDirector();
+  run(director, 4, riding({ speed: 10, copRangeMetres: 10 }));
+  const caught = director.frame.sirenFarGain + director.frame.sirenCloseGain;
+  assert.ok(caught > 0);
+  const blendBefore = director.frame.sirenCloseGain
+    / (director.frame.sirenFarGain + director.frame.sirenCloseGain);
+
+  // The pursuit ends — escape, bust, or quit, all the same fact by design.
+  const over = riding({ speed: 10 });
+  run(director, AUDIO.sirenReleaseSeconds, over);
+  const fading = director.frame.sirenFarGain + director.frame.sirenCloseGain;
+  assert.ok(fading < caught * 0.6, 'one release constant in, clearly on the way down');
+  assert.ok(fading > 0.001, 'but a fade, not a cut');
+  const blendDuring = director.frame.sirenCloseGain
+    / (director.frame.sirenFarGain + director.frame.sirenCloseGain);
+  assert.ok(
+    Math.abs(blendDuring - blendBefore) < 1e-6,
+    'the fade keeps the mix it was caught with',
+  );
+
+  run(director, AUDIO.sirenReleaseSeconds * 4, over);
+  assert.ok(
+    director.frame.sirenFarGain + director.frame.sirenCloseGain < 0.005,
+    'and it does reach silence',
+  );
+});
+
+test('closing leans both loops sharp together, capped, and eases home', () => {
+  const director = new AudioDirector();
+
+  run(director, 3, riding({ speed: 10, copRangeMetres: 20, copClosingSpeed: 20 }));
+  assert.ok(
+    Math.abs(director.frame.sirenRate - (1 + AUDIO.sirenDopplerMax)) < 0.002,
+    'a hard closure pins the lean at the cap, not past it',
+  );
+
+  run(director, 3, riding({ speed: 10, copRangeMetres: 20, copClosingSpeed: -3 }));
+  const opening = director.frame.sirenRate;
+  assert.ok(opening < 1, 'pulling away leans flat');
+  assert.ok(opening > 1 - AUDIO.sirenDopplerMax - 0.002);
+
+  run(director, 3, riding({ speed: 10 }));
+  assert.ok(
+    Math.abs(director.frame.sirenRate - 1) < 0.005,
+    'no pursuit, native pitch',
+  );
+  // One rate for both loops is the invariant the frame's shape states: a
+  // blend of two rates would detune the crossfade. Nothing to assert beyond
+  // the field existing once, which the type already guarantees.
+});
+
+test('reset silences the siren with everything else', () => {
+  const director = new AudioDirector();
+  run(director, 4, riding({ speed: 10, copRangeMetres: 10, copClosingSpeed: 5 }));
+  director.reset();
+  director.update(STEP, riding());
+  assert.ok(director.frame.sirenFarGain + director.frame.sirenCloseGain < 1e-6);
+  assert.ok(Math.abs(director.frame.sirenRate - 1) < 1e-6);
+});
