@@ -62,7 +62,7 @@ Worth knowing before you start:
 
 There is a [roadmap](#roadmap) further down.
 
-![EUC Thrills — Cool Rider airborne after striking a small traffic-island bollard, with the riderless wheel, bollard, road, and city each visible](media/euc-thrills-gameplay.png)
+![EUC Thrills — Cool Rider airborne after striking a small traffic-island bollard, with the riderless wheel, bollard, road, and city each visible](https://vibezzzcoder.github.io/EUC-thrills/media/euc-thrills-gameplay.png)
 
 *That is not a posed image: the rider clipped the small black bollard beside
 the riderless wheel, and the tumble is the game's own crash physics. The close
@@ -71,12 +71,11 @@ island remain visible behind the action. The screenshot shows the hand-built
 city, which remains the default world.
 Fresh routes use seeded procedural generation to rearrange its authored riding
 pieces. Both are drawn
-by the game at startup, so the repository is small. It holds the page itself
-(`index.html` with its built script and stylesheet under `assets/`), five sound
-files — the only runtime media the game loads — the gameplay screenshot above
-under `media/`, the licence texts (`LICENSE`, `NOTICE.md`), a `.nojekyll`
-marker, and `SHA256SUMS.txt`, a manifest listing the checksum of every
-published file except itself.*
+by the game at startup, so the repository is small. The root of it is the
+game's TypeScript source — see [Building from source](#building-from-source) —
+and the playable build that GitHub Pages serves lives under `docs/`,
+regenerated with each release. `SHA256SUMS.txt` is a manifest listing the
+checksum of every published file except itself.*
 
 ## Riding
 
@@ -285,6 +284,28 @@ screen rather than sitting blank.
 On a phone the game is doing the same work it does on a desktop, so an older
 handset will run it slower. **Quality** in Settings is the first thing to turn
 down, and it changes nothing about how the wheel rides.
+
+## Building from source
+
+This repository is the source. `src/` holds the game as readable TypeScript
+with its tests beside it; `tests/` holds the browser suite; `docs/` is the
+built game that GitHub Pages serves and is regenerated per release, so there
+is never a reason to edit anything in it.
+
+```
+npm install
+npm run dev            # play your working copy locally
+npm run typecheck
+npm test               # the headless suite — over a thousand tests, no browser needed
+npm run test:browser   # the Playwright suite (once: npx playwright install chromium)
+npm run build
+```
+
+Two honest notes. The repository is a per-release snapshot of a private
+working tree, so its history moves one release at a time — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for how a pull request lands. And some
+code comments cite internal design documents (a plans file, a design bible)
+that are not part of this distribution; the code stands without them.
 
 ## Roadmap
 

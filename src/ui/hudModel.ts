@@ -1,0 +1,616 @@
+/*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import type { PowerStage } from '../simulation/EucController.ts';
+import type { RunPhase } from '../simulation/challenge.ts';
+import { SPEED_UNITS, type SpeedUnit } from '../app/options.ts';
+import { CHALLENGE } from '../data/tuning.ts';
+
+/**
+ * What the HUD says, decided as arithmetic — `docs/PLANS.md` §8.1.
+ *
+ * The HUD's layout rule is that **all geometry is in CSS and script never lays
+ * out** (master §14). This file is the other half of that rule: script does
+ * not *decide* much either. Everything the HUD shows is computed here, as a
+ * pure function of the ride plus a clock, so the DOM layer's whole job is to
+ * write strings and toggle classes — and so every rule about when a warning
+ * appears is `node --test` territory instead of something only a human staring
+ * at a screen can check.
+ *
+ * **The dwell timers are the reason this is not a one-line formatter.** The
+ * power ladder's rungs sit on a smoothed load, and a rider holding a climb at
+ * exactly the notice threshold would otherwise strobe the warning on and off
+ * several times a second. The same is true of the off-route hint at the edge
+ * of the course. A flickering warning is worse than no warning — it is the
+ * kind of thing that makes a player turn the HUD off — and it is squarely
+ * inside the owner's standing rule that nothing may be annoying. So a cue that
+ * appears stays up for a minimum time, and a cue that clears waits before it
+ * appears again.
+ *
+ * **M10's split delta is the third dwell and it is the same mechanism**, not a
+ * second one. It differs only in which direction needs the help: a checkpoint
+ * is crossed on exactly one simulation step, so a split that was not held would
+ * be a cue nobody ever saw, where a warning that was not held is a cue seen too
+ * many times. Both are the same defect from opposite ends, and both are one
+ * comparison against the same clock.
+ *
+ * The clock is **simulation seconds**, not wall time. That is what keeps
+ * `advance(n)` deterministic for a browser spec, and it also means the HUD
+ * holds its state while the game is paused rather than ageing behind the pause
+ * menu.
+ */
+
+/** Which rung of the power ladder the HUD is showing, if any. */
+export type HudWarning = 'none' | 'notice' | 'warn' | 'tiltBack';
+
+/**
+ * Re-exported so a consumer of the HUD does not have to know that the unit is
+ * also a saved option. It is declared in `app/options.ts` because it persists.
+ */
+export { SPEED_UNITS, type SpeedUnit };
+
+/**
+ * What a timed run tells the HUD, once per reading.
+ *
+ * Deliberately *not* the `ChallengeState` the simulation keeps. That record
+ * carries the whole split table, the route's checkpoint count, and a live
+ * delta; the HUD needs four things, and taking only those four is what stops
+ * the top-right lane from quietly becoming a second results screen. It also
+ * keeps this file testable without constructing a `ChallengeRun`.
+ *
+ * `split` is set **on the reading where a checkpoint was crossed and on no
+ * other**. How long it then stays on screen is this model's business, not the
+ * caller's — see the dwell in `update`.
+ */
+export interface ChallengeHudInput {
+  readonly phase: RunPhase;
+  readonly elapsed: number;
+  /** The checkpoint being sought, for the objective line. Empty when none. */
+  readonly nextLabel: string;
+  /** Gates already crossed, including the start line. */
+  readonly passed: number;
+  /** Gates in the route, including the start and finish. */
+  readonly total: number;
+  /** Signed bearing to the active gate relative to the rider's heading. */
+  readonly directionRadians: number;
+  /**
+   * Straight-line metres to that checkpoint. `Infinity` when there is none.
+   *
+   * **Formatted here rather than by the caller**, which is where it was first
+   * done — and the caller only used it while a run was *running*, so the one
+   * phase the distance was written for lost it. A rider who has armed the trial
+   * and is riding away from the start line has no other cue at all that the
+   * game is waiting for them, because nothing has begun.
+   */
+  readonly distanceMetres: number;
+  /** Set when a checkpoint was just crossed; the model owns how long it shows. */
+  readonly split: { readonly label: string; readonly delta: number | null } | null;
+}
+
+/** The challenge lane, ready to write. Every field is a string or a flag. */
+export interface ChallengeHudView {
+  readonly visible: boolean;
+  readonly time: string;
+  /** Empty when there is nothing to show, which is most of a run. */
+  readonly splitLabel: string;
+  readonly splitDelta: string;
+  /**
+   * Whether the split reads as *good news*.
+   *
+   * Not "delta < 0": a first run has no record to be ahead of, and the lane
+   * says `Best` there, which is good news too. The DOM layer turns this into
+   * brightness and weight, never into colour alone — `DESIGN.md` §9 and the
+   * red/green rule. The sign in `splitDelta` is the other half of the cue and
+   * is the half that survives a monochrome screenshot.
+   */
+  readonly ahead: boolean;
+}
+
+export interface HudInput {
+  /** Signed along the heading, m/s. Negative is reverse. */
+  readonly speed: number;
+  /**
+   * How the Knockabout run is going — M14. Absent in every other ride.
+   *
+   * Absent rather than zeroed, so "not in this mode" and "in this mode having
+   * hit nothing yet" are different things: the first draws no lane and the
+   * second draws `0 / 17`, which is the number a player starting a run wants
+   * to see.
+   */
+  readonly knockabout?: { readonly struck: number; readonly total: number };
+  readonly powerStage: PowerStage;
+  /** How far tilt-back has engaged, 0..1. */
+  readonly tiltBack: number;
+  /** True while the wheel is on the surround rather than the authored course. */
+  readonly offCourse: boolean;
+  readonly crashed: boolean;
+  /** Absent in free ride. Present from the moment the player arms a run. */
+  readonly challenge?: ChallengeHudInput;
+}
+
+export interface HudView {
+  /** Already rounded and ready to write. No units — the unit has its own element. */
+  readonly speed: string;
+  readonly speedUnit: SpeedUnit;
+  /** True while the rider is travelling backwards, which the number cannot show. */
+  readonly reversing: boolean;
+  /** One line, top-centre. Empty means the lane is not drawn at all. */
+  readonly objective: string;
+  readonly warning: HudWarning;
+  /** The warning's own words. Empty when there is no warning. */
+  readonly warningLabel: string;
+  readonly offRoute: boolean;
+  /** The top-right lane. `visible: false` in free ride, which is most of the game. */
+  readonly challenge: ChallengeHudView;
+  /**
+   * The Knockabout score, already composed — M14, §13 q14.
+   *
+   * Empty means the lane is not drawn, which is every ride but this one. A
+   * string rather than two numbers for the reason every other field here is
+   * one: the screen does no arithmetic and no formatting, so the score in the
+   * corner and the score on the results card cannot disagree.
+   *
+   * **A target the player rides past changes nothing here.** It stays standing,
+   * scores nothing, and this lane says nothing — the only answer consistent
+   * with the recorded rule against scolding a player for exploring, which is
+   * what cut the "Missed: Park gate" line at M10.
+   */
+  readonly knockabout: string;
+}
+
+/**
+ * How long a cue must stay up once shown, and how long it must stay away once
+ * cleared, in seconds.
+ *
+ * Not in `data/tuning.ts`: these are not ride values and no developer will
+ * ever tune them against the feel of the wheel. They are here, beside the rule
+ * they implement, where a reader asking "why does this warning linger?" is
+ * already looking.
+ */
+const WARNING_MIN_VISIBLE_SECONDS = 0.7;
+const OFF_ROUTE_MIN_VISIBLE_SECONDS = 1.1;
+/** Distance the wheel must be back on course before the hint may return. */
+const OFF_ROUTE_REARM_SECONDS = 0.5;
+
+const MS_PER_KPH = 3.6;
+const MS_PER_MPH = 2.236936;
+
+/**
+ * What the objective line says before the clock has started.
+ *
+ * There is no countdown anywhere in this game — the player starts on a short
+ * plan-derived run-up and rolls into the line, because a countdown you sit
+ * through on every retry is exactly the annoyance rule. That decision only
+ * works if the player is *told* what the game is waiting for, and this line is
+ * the telling.
+ */
+const START_LINE_OBJECTIVE = 'Ride to the start line';
+
+/**
+ * How far to the next gate, quantised so the digits do not churn.
+ *
+ * **Both steps are chosen against how fast the number changes, not against how
+ * precise it looks.** At 15 m/s a whole-metre readout ticks fifteen times a
+ * second, which is exactly the "pulls the eye off the road" problem the split
+ * dwell exists to avoid, arriving through a different lane — and the first
+ * version of this quantised to ten metres *above* 100 m and to whole metres
+ * below it, which put the coarse step on the range where the digit already
+ * moved slowest and left the fast-changing one raw.
+ *
+ * Five metres below 100 m is three changes a second at top speed and one at a
+ * walking pace, and it is still precise enough to aim at a gate. Above 100 m
+ * nobody is aiming, so ten is plenty.
+ *
+ * Empty for a distance there is no sensible reading of, which is what the
+ * objective line falls back to a bare label on.
+ */
+function formatDistance(metres: number): string {
+  if (!Number.isFinite(metres) || metres < 0) return '';
+  const step = metres >= 100 ? 10 : 5;
+  return `${Math.round(metres / step) * step} m`;
+}
+
+/**
+ * A stable eight-way bearing to the active checkpoint.
+ *
+ * A continuously rotating arrow would churn at every carve and ask for CSS
+ * geometry from script. Eight glyphs change only when the useful instruction
+ * changes: ahead, a side, a diagonal, or behind. Positive angles are to the
+ * rider's left under the project's +Y yaw convention.
+ */
+function formatDirection(radians: number): string {
+  if (!Number.isFinite(radians)) return '';
+  let angle = radians;
+  while (angle > Math.PI) angle -= Math.PI * 2;
+  while (angle <= -Math.PI) angle += Math.PI * 2;
+  const sector = Math.round(angle / (Math.PI / 4));
+  if (sector === 0) return '↑';
+  if (sector === 1) return '↖';
+  if (sector === 2) return '←';
+  if (sector === 3) return '↙';
+  if (Math.abs(sector) === 4) return '↓';
+  if (sector === -3) return '↘';
+  if (sector === -2) return '→';
+  return '↗';
+}
+
+/** The lane, switched off. Frozen and shared: free ride allocates nothing. */
+/**
+ * The Knockabout score, composed once — M14.
+ *
+ * A thin space either side of the slash rather than a bare `/`, so `12 / 17`
+ * reads as a score at a glance on a phone at speed instead of as a fraction.
+ */
+function knockaboutLane(run: { struck: number; total: number } | undefined): string {
+  if (run === undefined) return '';
+  return `${run.struck} / ${run.total}`;
+}
+
+const NO_CHALLENGE: ChallengeHudView = Object.freeze({
+  visible: false,
+  time: '0:00.00',
+  splitLabel: '',
+  splitDelta: '',
+  ahead: false,
+});
+
+/**
+ * A run clock as `M:SS.hh`.
+ *
+ * **Hundredths are rounded, not truncated, and that is a float decision rather
+ * than a presentation one.** The obvious stopwatch behaviour is to floor —
+ * 1.999 s should read `1.99` and never `2.00`. But a run time arrives as a sum
+ * of 1/120 s steps, so a genuine 1.23 s is held as 1.2299999999999998, and
+ * flooring `seconds * 100` prints `1.22`: a timer that is visibly one
+ * hundredth slow at arbitrary moments, and a results screen whose splits do not
+ * add up to its total. Rounding is wrong by at most 5 ms on a value nobody can
+ * read at 5 ms resolution, and it is wrong *consistently*.
+ *
+ * Minutes are not zero-padded. `M:SS.hh` is what the contract asks for and it
+ * is what a stopwatch shows; the field is right-aligned in a tabular-numeral
+ * font, so a run that crosses ten minutes grows leftwards and the digits the
+ * player is actually watching do not move.
+ *
+ * Anything non-finite or negative reads as zero. A clock is one of the few
+ * places where `NaN` on screen is genuinely possible — a delta divided by a
+ * zero-length leg upstream — and `NaN:aN.aN` in the corner of the frame is the
+ * kind of thing that ends a playtest.
+ */
+export function formatRunTime(seconds: number): string {
+  const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  const hundredths = Math.round(safe * 100);
+  const minutes = Math.floor(hundredths / 6000);
+  const wholeSeconds = Math.floor(hundredths / 100) % 60;
+  const fraction = hundredths % 100;
+  return `${minutes}:${pad2(wholeSeconds)}.${pad2(fraction)}`;
+}
+
+function pad2(value: number): string {
+  return value < 10 ? `0${value}` : String(value);
+}
+
+/**
+ * A signed delta against the record, in seconds, as the lane shows it.
+ *
+ * **The minus is U+2212, not a hyphen.** In a tabular-numeral font the real
+ * minus sign is the same advance width as the plus, so a run that swings
+ * between ahead and behind does not shuffle the digits sideways once a second.
+ * A hyphen is narrower, and the jitter it causes is small, constant, and
+ * exactly the sort of thing the standing annoyance rule is about.
+ *
+ * A delta that rounds to zero gets no sign at all. `+0.00` claims the player
+ * lost time they did not lose, and `−0.00` claims the reverse; a dead-even
+ * split is neither, and the missing sign is the honest rendering. The lane
+ * reserves the sign's width in CSS, so nothing moves.
+ */
+export function formatDelta(deltaSeconds: number): string {
+  if (!Number.isFinite(deltaSeconds)) return '';
+  const hundredths = Math.round(deltaSeconds * 100);
+  const magnitude = (Math.abs(hundredths) / 100).toFixed(2);
+  if (hundredths === 0) return magnitude;
+  return hundredths < 0 ? `−${magnitude}` : `+${magnitude}`;
+}
+
+/**
+ * The words on each rung.
+ *
+ * `docs/PLANS.md` §4.5 gives the ladder three rungs and M8 gave each one its
+ * own beep. The amber HUD it also asks for is this, and the wording is chosen
+ * so a player who has never read a manual can act on it: the first says the
+ * wheel is working, the second says to back off, the third says the machine
+ * has stopped asking.
+ */
+const WARNING_LABELS: Readonly<Record<HudWarning, string>> = Object.freeze({
+  none: '',
+  notice: 'Working hard',
+  warn: 'Ease off',
+  tiltBack: 'Tilt-back — slow down',
+});
+
+export function formatSpeed(speedMetresPerSecond: number, unit: SpeedUnit): string {
+  const magnitude = Math.abs(speedMetresPerSecond) * (unit === 'mph' ? MS_PER_MPH : MS_PER_KPH);
+  // Rounded to whole units: a speed readout with a decimal invites reading it
+  // rather than glancing at it, and a glance is all a rider has.
+  const rounded = Math.round(magnitude);
+  // `-0` is a real value that `Math.round` produces and `String` prints.
+  return rounded === 0 ? '0' : String(rounded);
+}
+
+function warningFor(stage: PowerStage): HudWarning {
+  if (stage === 'tiltBack') return 'tiltBack';
+  if (stage === 'warn') return 'warn';
+  if (stage === 'notice') return 'notice';
+  return 'none';
+}
+
+export interface HudModelOptions {
+  readonly speedUnit?: SpeedUnit;
+  /** The one line at top-centre. M10 replaces this while a challenge runs. */
+  readonly objective?: string;
+}
+
+export class HudModel {
+  private speedUnit: SpeedUnit;
+  private objective: string;
+
+  private warning: HudWarning = 'none';
+  private warningSince = Number.NEGATIVE_INFINITY;
+
+  private offRoute = false;
+  private offRouteSince = Number.NEGATIVE_INFINITY;
+  private onRouteSince = Number.NEGATIVE_INFINITY;
+
+  /**
+   * The split the lane is currently holding, and when it was latched.
+   *
+   * Same shape as the warning dwell above, on the same simulation clock, for
+   * the same reason: a checkpoint arrives on exactly one step, and a cue that
+   * appeared for one step would be a cue nobody ever saw. The difference is
+   * that this one only ever *clears* on time — there is nothing to re-assert,
+   * because a gate cannot be crossed twice.
+   */
+  private splitLabel = '';
+  private splitDelta: number | null = null;
+  private splitSince = Number.NEGATIVE_INFINITY;
+
+  constructor(options: HudModelOptions = {}) {
+    this.speedUnit = options.speedUnit ?? 'kph';
+    this.objective = options.objective ?? '';
+  }
+
+  setSpeedUnit(unit: SpeedUnit): void {
+    this.speedUnit = unit;
+  }
+
+  /**
+   * Set the top-centre line for free ride.
+   *
+   * M9 predicted that M10's challenge would write through here. It does not,
+   * and the reason is in `objectiveFor` below: a run's line is derived from the
+   * run rather than pushed, so it cannot go stale and it can be asserted
+   * headlessly. What is set here is what the lane says whenever no run is
+   * live — which is still most of the game.
+   */
+  setObjective(objective: string): void {
+    this.objective = objective;
+  }
+
+  /** Forget every dwell timer. Called on a reset, and on leaving a ride. */
+  reset(): void {
+    this.resetCues();
+    this.splitLabel = '';
+    this.splitDelta = null;
+    this.splitSince = Number.NEGATIVE_INFINITY;
+  }
+
+  /**
+   * Forget the ride's own cues, leaving the challenge lane alone.
+   *
+   * The two halves are separate because a crash needs one and not the other:
+   * the power ladder was describing a rider who is no longer on the wheel, but
+   * **the run's clock does not stop for a crash**, so the lane must keep
+   * reading, and a split the rider earned a second ago is still a true fact
+   * about the run they are still in the middle of. Blanking it would make the
+   * timer appear to restart, which is worse than saying nothing.
+   */
+  private resetCues(): void {
+    this.warning = 'none';
+    this.warningSince = Number.NEGATIVE_INFINITY;
+    this.offRoute = false;
+    this.offRouteSince = Number.NEGATIVE_INFINITY;
+    this.onRouteSince = Number.NEGATIVE_INFINITY;
+  }
+
+  /**
+   * One reading of the HUD, at a simulation time.
+   *
+   * Allocates one small object per call and is called once per drawn frame,
+   * which is deliberate: it is a plain value the DOM layer diffs against what
+   * it last wrote, and sixty of these a second is nothing next to the garbage
+   * a per-frame DOM read would cause.
+   */
+  update(nowSeconds: number, input: HudInput): HudView {
+    // **A crash is a discontinuity, not a fluctuation.** The dwell timers
+    // exist to smooth a wobbling input; a rider who is no longer on the wheel
+    // is not a wobbling input, and holding the warning they were given a
+    // moment ago over the top of a crash would be describing a situation that
+    // has stopped existing.
+    if (input.crashed) {
+      this.resetCues();
+      this.onRouteSince = nowSeconds;
+      return {
+        speed: formatSpeed(input.speed, this.speedUnit),
+        speedUnit: this.speedUnit,
+        reversing: false,
+        objective: this.objectiveFor(input.challenge),
+        warning: 'none',
+        warningLabel: '',
+        offRoute: false,
+        challenge: this.challengeView(nowSeconds, input.challenge),
+        knockabout: knockaboutLane(input.knockabout),
+      };
+    }
+
+    const target = warningFor(input.powerStage);
+
+    // Rising is immediate — a warning that waited to appear would be a warning
+    // arriving after the moment it was about. Only *clearing* is held back.
+    if (rank(target) > rank(this.warning)) {
+      this.warning = target;
+      this.warningSince = nowSeconds;
+    } else if (target === this.warning) {
+      // **Re-asserting refreshes the dwell**, which is what actually stops the
+      // flicker. Timing the hold from when the warning first appeared instead
+      // would let a load oscillating across a rung clear the warning the
+      // moment the dwell lapsed and re-raise it on the following frame — a
+      // slower strobe rather than no strobe.
+      this.warningSince = nowSeconds;
+    } else if (nowSeconds - this.warningSince >= WARNING_MIN_VISIBLE_SECONDS) {
+      this.warning = target;
+      this.warningSince = nowSeconds;
+    }
+
+    // Off-route is symmetric and both directions are held: it is a hint rather
+    // than a warning, and a hint that blinks at the kerb line is noise.
+    if (input.offCourse && !this.offRoute) {
+      if (nowSeconds - this.onRouteSince >= OFF_ROUTE_REARM_SECONDS) {
+        this.offRoute = true;
+        this.offRouteSince = nowSeconds;
+      }
+    } else if (!input.offCourse && this.offRoute) {
+      if (nowSeconds - this.offRouteSince >= OFF_ROUTE_MIN_VISIBLE_SECONDS) {
+        this.offRoute = false;
+        this.onRouteSince = nowSeconds;
+      }
+    } else if (!input.offCourse) {
+      this.onRouteSince = nowSeconds;
+    } else {
+      this.offRouteSince = nowSeconds;
+    }
+
+    // Tilt-back is the machine physically refusing, so it outranks the ladder's
+    // own wording whenever it is actually engaged rather than merely latched.
+    const warning: HudWarning = input.tiltBack > 0.02 ? 'tiltBack' : this.warning;
+
+    return {
+      speed: formatSpeed(input.speed, this.speedUnit),
+      speedUnit: this.speedUnit,
+      reversing: input.speed < -0.1,
+      objective: this.objectiveFor(input.challenge),
+      warning,
+      warningLabel: WARNING_LABELS[warning],
+      offRoute: this.offRoute,
+      challenge: this.challengeView(nowSeconds, input.challenge),
+      knockabout: knockaboutLane(input.knockabout),
+    };
+  }
+
+  /**
+   * The top-centre line, which a live run takes over.
+   *
+   * **A run derives the line rather than pushing it through `setObjective`**,
+   * and the difference matters for the same reason the rest of this file
+   * exists: derived, the wording is arithmetic over a value the caller already
+   * has, and `node --test` can assert that a rider who has not reached the
+   * start line is told to. Pushed, it would be a sequence of calls in
+   * `app/Game.ts` that only a browser could check, and the one it forgot to
+   * make would leave a stale checkpoint name on screen for the rest of the run.
+   *
+   * `setObjective` keeps its job for free ride, and is what the lane says
+   * whenever there is no run — including after the finish, where the line goes
+   * quiet so the finish itself is the only thing happening on screen.
+   */
+  private objectiveFor(challenge: ChallengeHudInput | undefined): string {
+    if (challenge === undefined || challenge.phase === 'idle') return this.objective;
+    const away = formatDistance(challenge.distanceMetres);
+    const direction = formatDirection(challenge.directionRadians);
+    const lead = direction === '' ? '' : `${direction} `;
+    const distance = away === '' ? '' : ` · ${away}`;
+    if (challenge.phase === 'armed') {
+      return `${lead}${START_LINE_OBJECTIVE}${distance}`;
+    }
+    if (challenge.phase === 'running') {
+      const scoredGates = Math.max(0, challenge.total - 1);
+      const progress = scoredGates > 0 && challenge.passed > 0
+        ? ` · ${Math.min(challenge.passed, scoredGates)}/${scoredGates}`
+        : '';
+      return `${lead}${challenge.nextLabel}${progress}${distance}`;
+    }
+    return '';
+  }
+
+  /**
+   * The challenge lane at a simulation time.
+   *
+   * The dwell is the whole of the interesting part. `CHALLENGE.splitHoldSeconds`
+   * is long enough to read a delta at speed and short enough that it is gone
+   * before the next corner needs the player's eyes — a number still sitting in
+   * the corner while a rider sets up a turn is the same defect as a warning
+   * that strobes, one milestone later.
+   *
+   * A second checkpoint inside the hold **replaces** the first rather than
+   * queueing behind it. Two gates 2.6 s apart is a fast section, not a bug, and
+   * a lane showing the previous gate's delta while the rider is already past
+   * the next one is worse than showing nothing.
+   */
+  private challengeView(
+    nowSeconds: number,
+    challenge: ChallengeHudInput | undefined,
+  ): ChallengeHudView {
+    if (challenge === undefined || challenge.phase === 'idle') {
+      // Leaving a run drops the latch as well as hiding the lane. Without this
+      // a player who abandons a run mid-split and immediately arms another one
+      // would be shown the abandoned run's delta on the new run's clock.
+      this.splitLabel = '';
+      this.splitDelta = null;
+      this.splitSince = Number.NEGATIVE_INFINITY;
+      return NO_CHALLENGE;
+    }
+
+    // `armed` is the state a quick reset returns to, and nothing has been
+    // crossed in it by definition. Clearing here is what makes `R` mid-run
+    // wipe the lane as well as the clock.
+    if (challenge.phase === 'armed' && challenge.split === null) {
+      this.splitLabel = '';
+      this.splitDelta = null;
+      this.splitSince = Number.NEGATIVE_INFINITY;
+    }
+
+    if (challenge.split !== null) {
+      this.splitLabel = challenge.split.label;
+      this.splitDelta = challenge.split.delta;
+      this.splitSince = nowSeconds;
+    }
+
+    const holding = this.splitLabel !== ''
+      && nowSeconds - this.splitSince < CHALLENGE.splitHoldSeconds;
+
+    if (!holding) {
+      return {
+        visible: true,
+        time: formatRunTime(challenge.elapsed),
+        splitLabel: '',
+        splitDelta: '',
+        ahead: false,
+      };
+    }
+
+    // A null delta is a leg with nothing to compare against — the player's
+    // first run on this route, or their first run since clearing the record.
+    // `Best` rather than a blank: it is true, it is the encouraging reading,
+    // and a label with an empty value beside it looks like a bug.
+    const delta = this.splitDelta;
+    return {
+      visible: true,
+      time: formatRunTime(challenge.elapsed),
+      splitLabel: this.splitLabel,
+      splitDelta: delta === null ? 'Best' : formatDelta(delta),
+      ahead: delta === null || Math.round(delta * 100) < 0,
+    };
+  }
+}
+
+function rank(warning: HudWarning): number {
+  if (warning === 'tiltBack') return 3;
+  if (warning === 'warn') return 2;
+  if (warning === 'notice') return 1;
+  return 0;
+}

@@ -1,17 +1,7 @@
 <!doctype html>
+<!-- EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills -->
 <html lang="en">
   <head>
-    <!--
-      EUC Thrills
-      EUC Thrills — original work by VibezZzCoder (https://github.com/VibezZzCoder). Source: https://github.com/VibezZzCoder/EUC-thrills
-      Play: https://vibezzzcoder.github.io/EUC-thrills/
-      Copyright (c) 2026 VibezZzCoder.
-      Code MIT; original game assets CC-BY-4.0.
-
-      This page is the published build of that repository. A copy served from
-      anywhere else is a fork — which the licence allows, and which is expected
-      to say so rather than to present the work as its own.
-    -->
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>EUC Thrills</title>
@@ -29,6 +19,7 @@
       runnable under Node's own test runner with no build step (master §19.1),
       and a stray CSS import is the one thing that would quietly end that.
     -->
+    <link rel="stylesheet" href="/src/ui/game.css" />
 
     <style>
       :root {
@@ -144,15 +135,6 @@
 
       #boot-error[hidden] { display: none; }
     </style>
-    <script type="module" crossorigin src="./assets/index-CrRTtT-G.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-D-Yq8v5g.css">
-    <meta name="author" content="VibezZzCoder">
-    <link rel="author" href="https://github.com/VibezZzCoder">
-    <link rel="canonical" href="https://vibezzzcoder.github.io/EUC-thrills/">
-    <link rel="code-repository" href="https://github.com/VibezZzCoder/EUC-thrills">
-    <meta name="license" content="MIT (code), CC-BY-4.0 (original assets)">
-    <meta property="og:title" content="EUC Thrills">
-    <meta property="og:url" content="https://vibezzzcoder.github.io/EUC-thrills/">
   </head>
 
   <body>
@@ -168,5 +150,6 @@
       <pre id="boot-error" role="alert" hidden></pre>
     </div>
 
+    <script type="module" src="/src/app/main.ts"></script>
   </body>
 </html>

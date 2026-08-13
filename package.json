@@ -1,0 +1,33 @@
+{
+  "name": "euc-thrills",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "EUC Thrills — an open-source arcade riding game about electric unicycles",
+  "license": "MIT",
+  "author": "VibezZzCoder (https://github.com/VibezZzCoder)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VibezZzCoder/EUC-thrills.git"
+  },
+  "homepage": "https://vibezzzcoder.github.io/EUC-thrills/",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test",
+    "test:browser": "playwright test",
+    "test:browser:one": "playwright test --project=chromium --workers=1",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^24.0.0",
+    "@types/three": "0.185.3",
+    "typescript": "^5.9.2",
+    "vite": "^7.0.0"
+  }
+}

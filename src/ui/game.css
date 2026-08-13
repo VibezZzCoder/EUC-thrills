@@ -1,0 +1,1749 @@
+/*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+/*
+ * Game UI — HUD, menus, and prompts. M9.
+ *
+ * `index.html` said "Game UI styles live in their own stylesheet from M9" from
+ * the first commit; this is that file.
+ *
+ * **All geometry is here and none of it is in script** (`docs/PLANS.md` §8.1,
+ * master §14). The TypeScript in this directory writes text, toggles a class,
+ * and sets one custom property. It never reads a size, never positions
+ * anything, and never measures — which is what keeps the HUD off the critical
+ * path of a frame and what makes the whole layer testable by asserting
+ * attributes rather than pixels.
+ *
+ * Three rules shape everything below:
+ *
+ *   1. **Reserved lanes at the edges; the centre is the playfield.** A cue may
+ *      be anywhere along an edge and nowhere near the middle, because the
+ *      middle is where the rider and the ground they are about to reach are.
+ *   2. **The HUD does not take clicks.** `pointer-events: none` on the root
+ *      and back on again only for the two things that are genuinely
+ *      interactive. A HUD that swallows a click is a HUD that eats an input
+ *      the player aimed at the game.
+ *   3. **Warning colours come from the machine's own status light.** The
+ *      wheel's rear light already carries the power ladder (`DESIGN.md` §6c)
+ *      in four named colours, and a HUD that chose its own amber would be a
+ *      second warning that disagrees with the first. These are the same
+ *      values, converted from the hex in `data/tuning.ts`.
+ */
+
+:root {
+  /* From FX.status* in `src/data/tuning.ts`. Keep the two in step. */
+  --cue-notice: #ffd23f;
+  --cue-warn: #ff8a1f;
+  --cue-critical: #ff2f2f;
+
+  /*
+   * Ahead of the record.
+   *
+   * Deliberately NOT half of a red/green pair — `DESIGN.md` forbids carrying
+   * ahead/behind on hue alone, so "behind" is the HUD's own dim ink rather than
+   * a red, and this mint is only the third channel behind the sign character
+   * and the brightness. It also reads as the brighter of the two in greyscale
+   * and under every common form of colour vision deficiency, which a
+   * red/green pair does not.
+   */
+  --delta-ahead: #8ef0b4;
+
+  --panel: rgba(13, 16, 20, 0.92);
+  --panel-edge: #2b3542;
+  --shade: rgba(7, 9, 12, 0.72);
+
+  /* One ramp for every inset, so a phone notch and a desktop margin are the
+     same rule rather than two. */
+  --lane-x: max(1.15rem, env(safe-area-inset-left));
+  --lane-x-right: max(1.15rem, env(safe-area-inset-right));
+  --lane-top: max(1rem, env(safe-area-inset-top));
+  --lane-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+/* ---------------------------------------------------------------------------
+ * Focus
+ *
+ * `:focus-visible` rather than `:focus`, so a mouse click on a menu button
+ * does not leave a ring behind, while every keyboard and gamepad arrival does.
+ * Declared once, here, for everything — an accessibility rule applied per
+ * component is an accessibility rule with holes in it.
+ * ------------------------------------------------------------------------ */
+
+.euc-ui :focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 0.35rem;
+}
+
+/* A high-contrast preference gets a ring that survives any background. */
+@media (prefers-contrast: more) {
+  .euc-ui :focus-visible {
+    outline-color: #ffffff;
+    outline-width: 4px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * The HUD
+ * ------------------------------------------------------------------------ */
+
+.euc-hud {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  /* Every lane is placed against this box, and the insets keep them clear of
+     a notch, a rounded corner, and a browser's own edge gestures. */
+  padding: var(--lane-top) var(--lane-x-right) var(--lane-bottom) var(--lane-x);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto 1fr auto;
+  grid-template-areas:
+    "objective challenge"
+    ".         .        "
+    "speed     cues     ";
+  /* The Knockabout score shares the challenge cell, and cannot collide with
+     the timer because the two modes are alternatives — a ride is one or the
+     other, never both (`app/appState.ts`). */
+  gap: 0.75rem;
+  /* Nothing in the HUD is selectable: a drag across the screen mid-ride must
+     not highlight the speed. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.euc-hud[hidden] { display: none; }
+
+/* -- Speed, bottom-left, large ------------------------------------------- */
+
+.euc-hud__speed {
+  grid-area: speed;
+  align-self: end;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  line-height: 0.9;
+  /* The one place the HUD sits over the ground rather than the sky, so it
+     carries its own contrast rather than relying on what is behind it. */
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.75);
+}
+
+.euc-hud__speed-value {
+  font-size: clamp(2.6rem, 7vw, 4.6rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  /* Tabular figures so the number does not jitter sideways as it counts. A
+     proportional 1 is narrower than a 0, and at this size a rider notices. */
+  font-variant-numeric: tabular-nums;
+}
+
+.euc-hud__speed-unit {
+  font-size: clamp(0.8rem, 1.6vw, 1rem);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.euc-hud__reverse {
+  align-self: center;
+  margin-left: 0.35rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 0.25rem;
+  background: var(--cue-notice);
+  color: #16202c;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.euc-hud__reverse[hidden] { display: none; }
+
+/* -- Objective, top-centre, one line -------------------------------------- */
+
+.euc-hud__objective {
+  grid-area: objective;
+  /* Centred over the viewport rather than over its grid column, so the line
+     does not shift when the challenge lane beside it gains a timer. */
+  justify-self: center;
+  grid-column: 1 / -1;
+  display: grid;
+  justify-items: center;
+  gap: 0.3rem;
+  text-align: center;
+  max-width: min(46ch, 90vw);
+}
+
+.euc-hud__objective-line {
+  font-size: clamp(0.85rem, 1.9vw, 1.05rem);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
+}
+
+.euc-hud__objective-line:empty { display: none; }
+
+.euc-hud__off-route {
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  background: var(--shade);
+  color: var(--cue-notice);
+  font-size: clamp(0.75rem, 1.6vw, 0.9rem);
+  font-weight: 600;
+}
+
+.euc-hud__off-route[hidden] { display: none; }
+
+/* -- The challenge lane, top-right: run clock and the last split ----------
+ *
+ * Reserved and empty at M9; filled at M10, in place, without moving.
+ *
+ * **Nothing in this lane may change width as its digits change.** A run clock
+ * counting up beside a delta that appears and vanishes is the most jitter-prone
+ * thing on the HUD, and a number that shuffles sideways in the corner of the
+ * frame is squarely the standing rule that nothing may be annoying. Three
+ * measures, all of them here rather than in script:
+ *
+ *   1. `tabular-nums` on the lane, so every digit is one advance width.
+ *   2. Both rows are `min-width`'d in `ch` and right-aligned, so the sign
+ *      column and the minutes column are reserved whether or not they are
+ *      currently occupied.
+ *   3. The split row's height is reserved by a fixed grid row, so hiding it
+ *      does not move the timer above it.
+ * ------------------------------------------------------------------------ */
+
+.euc-hud__challenge {
+  grid-area: challenge;
+  justify-self: end;
+  display: grid;
+  /* The second row is reserved whether or not a split is showing. `auto` here
+     would let the lane collapse and re-expand every 2.6 seconds. */
+  grid-template-rows: auto 1.15rem;
+  justify-items: end;
+  gap: 0.2rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.75);
+}
+
+.euc-hud__challenge[hidden] { display: none; }
+
+/* -- The Knockabout score (M14) ------------------------------------------- */
+
+/*
+ * Top right, in the challenge lane's own cell. It carries a label because a
+ * bare `4 / 17` in the corner of a ride is a number with no noun, and the one
+ * place a player meets this mode is a title-screen button they may have
+ * pressed out of curiosity.
+ */
+.euc-hud__score {
+  grid-area: challenge;
+  justify-self: end;
+  display: grid;
+  justify-items: end;
+  gap: 0.1rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.75);
+}
+
+.euc-hud__score[hidden] { display: none; }
+
+.euc-hud__score-label {
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
+.euc-hud__score-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.euc-hud__timer {
+  font-size: clamp(1.2rem, 3vw, 1.9rem);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  /* `M:SS.hh` plus room for a second minutes digit, so crossing ten minutes
+     does not step the whole lane sideways. */
+  min-width: 7ch;
+}
+
+.euc-hud__splits {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink-dim);
+}
+
+.euc-hud__splits[hidden] { display: none; }
+
+.euc-hud__split-label {
+  /* Truncates rather than wraps: a two-line lane would push the split row out
+     of its reserved height and shove the timer up. Checkpoint labels are short
+     by authoring, and this is the guard rather than the plan. */
+  max-width: 14ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/*
+ * The delta.
+ *
+ * **Ahead and behind are not carried by hue.** `DESIGN.md` rules out red/green
+ * as the only channel, so the cue is the sign character — a real U+2212, the
+ * same advance width as the plus — plus brightness and weight. The colours
+ * below are a third, redundant channel and are deliberately not a red/green
+ * pair: ahead is a bright mint, behind is the HUD's own dim ink, which reads
+ * as "quieter" in any form of colour vision and in a greyscale screenshot.
+ */
+.euc-hud__split-delta {
+  min-width: 6ch;
+  text-align: right;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.euc-hud__splits[data-ahead="true"] { color: var(--delta-ahead); }
+.euc-hud__splits[data-ahead="true"] .euc-hud__split-delta { color: var(--delta-ahead); }
+.euc-hud__splits[data-ahead="false"] .euc-hud__split-delta { color: var(--ink); opacity: 0.8; }
+
+/* -- Contextual cues, bottom-right ---------------------------------------- */
+
+.euc-hud__cues {
+  grid-area: cues;
+  align-self: end;
+  justify-self: end;
+  display: grid;
+  justify-items: end;
+  gap: 0.4rem;
+  max-width: min(34ch, 80vw);
+  text-align: right;
+}
+
+.euc-hud__warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.8rem;
+  border-radius: 999px;
+  background: var(--shade);
+  font-size: clamp(0.78rem, 1.7vw, 0.95rem);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.euc-hud__warning[hidden] { display: none; }
+
+/* A dot rather than an icon: it is the same shape as the light on the back of
+   the wheel, which is where the player has already learned to read it. */
+.euc-hud__warning::before {
+  content: "";
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0.5rem currentColor;
+}
+
+.euc-hud__warning[data-level="notice"] { color: var(--cue-notice); }
+.euc-hud__warning[data-level="warn"] { color: var(--cue-warn); }
+
+.euc-hud__warning[data-level="tiltBack"] {
+  color: var(--cue-critical);
+  animation: euc-cue-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes euc-cue-pulse {
+  50% { opacity: 0.58; }
+}
+
+/* -- The first-ride prompt ------------------------------------------------ */
+
+.euc-hud__prompt {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.42rem 0.5rem 0.42rem 0.9rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 999px;
+  background: var(--panel);
+  font-size: clamp(0.78rem, 1.7vw, 0.95rem);
+  font-weight: 600;
+  /* The one cue that can be interacted with, because it has a dismiss button.
+     Everything else in the HUD stays transparent to the pointer. */
+  pointer-events: auto;
+}
+
+.euc-hud__prompt[hidden] { display: none; }
+
+.euc-hud__prompt-dismiss {
+  display: grid;
+  place-items: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border: none;
+  border-radius: 50%;
+  background: #212b38;
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.euc-hud__prompt-dismiss:hover { color: var(--ink); }
+
+/* ---------------------------------------------------------------------------
+ * On-screen controls — M11.5
+ *
+ * Between the HUD (z-index 10) and the menus (20), because a menu covers the
+ * controls and the controls cover the HUD's own lanes.
+ *
+ * **One anatomy in both orientations.** Riding under one thumb, CHARGE/HOP
+ * under the other, the three rarely-used buttons small and central. Portrait and
+ * landscape differ in *size and inset* only: a player who rotates the phone
+ * mid-ride must not have to find anything again.
+ *
+ * Everything is sized from one unit so a single multiplier — the player's
+ * control-size setting — moves the whole layout together, and so a short
+ * landscape window can shrink all of it by changing one number.
+ *
+ * Script writes four custom properties and nothing else: the stick's two
+ * -1..1 axes, and `--euc-touch-x` / `--euc-touch-y`, the client coordinates
+ * the stick floats to. Those coordinates are raw numbers rather than lengths
+ * so this file decides they are pixels.
+ * ------------------------------------------------------------------------ */
+
+.euc-touch {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  /* Transparent to pointers; the controls themselves switch them back on. A
+     tap that misses a control has to reach the game. */
+  pointer-events: none;
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+  /* No flash of grey behind a thumb, and no browser gesture stealing a drag. */
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+
+  --euc-touch-scale: 1;
+  --euc-touch-throttle: 0;
+  --euc-touch-steer: 0;
+  --euc-touch-x: 0;
+  --euc-touch-y: 0;
+
+  /* Fit is the orientation's own factor; scale is the player's. Kept apart so
+     a player who enlarged the controls still gets them to fit in landscape. */
+  --touch-fit: 1;
+  --touch-unit: calc(1rem * var(--euc-touch-scale) * var(--touch-fit));
+
+  --touch-stick: calc(6.6 * var(--touch-unit));
+  --touch-knob: calc(2.6 * var(--touch-unit));
+  --touch-throw: calc((var(--touch-stick) - var(--touch-knob)) / 2 - 0.28 * var(--touch-unit));
+  --touch-primary: calc(4.05 * var(--touch-unit));
+  --touch-button: calc(3.6 * var(--touch-unit));
+  --touch-actions-rise: calc(0.95 * var(--touch-unit));
+
+  /* How far the clusters sit off the bottom edge. A thumb does not rest in the
+     corner of a tall phone, so portrait lifts them; landscape has no height to
+     spare and leaves them near the edge. */
+  --touch-rise: 0rem;
+  --touch-bottom: calc(var(--lane-bottom) + var(--touch-rise));
+}
+
+.euc-touch[hidden] { display: none; }
+
+/* The stick side is the layout's one mirror. `data-side` names where the
+   action cluster is, because that is the hand a player thinks with. */
+.euc-touch__zone--stick {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: min(48%, 24rem);
+  height: min(52%, 17rem);
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.euc-touch[data-side="left"] .euc-touch__zone--stick { left: auto; right: 0; }
+
+/* -- The floating stick --------------------------------------------------- */
+
+.euc-touch__layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/*
+ * Idle, it rests in the corner so the player can see where riding lives.
+ * Under a thumb it moves to the touch point, because a control that has to be
+ * *found* before it can be used costs a corner every time the thumb lifts.
+ */
+.euc-touch__stick {
+  position: absolute;
+  left: calc(var(--lane-x) + var(--touch-stick) / 2 + 0.4rem);
+  bottom: calc(var(--touch-bottom) + var(--touch-stick) / 2);
+  width: var(--touch-stick);
+  height: var(--touch-stick);
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(238, 242, 247, 0.22);
+  border-radius: 50%;
+  background: rgba(13, 16, 20, 0.34);
+  opacity: 0.5;
+  transform: translate(-50%, 50%);
+  transition: opacity 160ms ease;
+}
+
+.euc-touch[data-side="left"] .euc-touch__stick {
+  left: auto;
+  right: calc(var(--lane-x-right) + var(--touch-stick) / 2 + 0.4rem);
+  transform: translate(50%, 50%);
+}
+
+/*
+ * Client coordinates go straight in: this overlay is a fixed box at `inset: 0`,
+ * so its padding box is the viewport and a client coordinate is already an
+ * offset inside it. That is what lets the script place this without measuring.
+ */
+.euc-touch__stick[data-active="true"],
+.euc-touch[data-side="left"] .euc-touch__stick[data-active="true"] {
+  left: calc(var(--euc-touch-x) * 1px);
+  right: auto;
+  top: calc(var(--euc-touch-y) * 1px);
+  bottom: auto;
+  opacity: 0.92;
+  transform: translate(-50%, -50%);
+}
+
+.euc-touch__knob {
+  width: var(--touch-knob);
+  height: var(--touch-knob);
+  border-radius: 50%;
+  background: rgba(238, 242, 247, 0.9);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  /* Up/down is the rider's fore/aft lean; left/right is carve. Client-space Y
+     grows downward, so positive forward throttle is drawn upward. */
+  transform: translate(
+    calc(var(--euc-touch-steer) * var(--touch-throw)),
+    calc(var(--euc-touch-throttle) * var(--touch-throw) * -1)
+  );
+}
+
+/* Chevrons, so the axis reads as an axis before it is ever touched. */
+.euc-touch__stick-hint {
+  position: absolute;
+  top: 50%;
+  width: calc(0.62 * var(--touch-unit));
+  height: calc(0.62 * var(--touch-unit));
+  border-top: 2px solid rgba(238, 242, 247, 0.55);
+  border-left: 2px solid rgba(238, 242, 247, 0.55);
+}
+
+.euc-touch__stick-hint--left {
+  left: calc(0.55 * var(--touch-unit));
+  transform: translateY(-50%) rotate(-45deg);
+}
+
+.euc-touch__stick-hint--right {
+  right: calc(0.55 * var(--touch-unit));
+  transform: translateY(-50%) rotate(135deg);
+}
+
+.euc-touch__stick-hint--up {
+  top: calc(0.55 * var(--touch-unit));
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.euc-touch__stick-hint--down {
+  top: auto;
+  bottom: calc(0.55 * var(--touch-unit));
+  left: 50%;
+  transform: translateX(-50%) rotate(225deg);
+}
+
+/* -- Desktop-equivalent action buttons: Shift, Space and F ---------------- */
+
+/*
+ * SWING (M14) takes the bottom **inboard** cell, which was the one cell of this
+ * 2×2 that was empty in both mirrorings. Inboard rather than outboard because
+ * the thumb's outboard reach at the bottom corner is the worst arc on the grid,
+ * and because CHARGE — the one that is *held* — has to stay under the resting
+ * thumb. The cell flips with `data-side`, so a left-handed layout gets the same
+ * ergonomics rather than the same coordinates.
+ */
+.euc-touch__actions {
+  position: absolute;
+  right: var(--lane-x-right);
+  bottom: calc(var(--touch-bottom) + var(--touch-actions-rise));
+  display: grid;
+  grid-template-areas:
+    "hop    ."
+    "swing  crouch";
+  gap: calc(0.42 * var(--touch-unit));
+  align-items: end;
+  justify-items: center;
+}
+
+.euc-touch[data-side="left"] .euc-touch__actions {
+  right: auto;
+  left: var(--lane-x);
+  grid-template-areas:
+    ".      hop"
+    "crouch swing";
+}
+
+.euc-touch__button {
+  width: var(--touch-button);
+  height: var(--touch-button);
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(238, 242, 247, 0.38);
+  border-radius: calc(1.05 * var(--touch-unit));
+  background: rgba(13, 16, 20, 0.58);
+  color: var(--ink);
+  font: inherit;
+  font-size: max(0.625rem, calc(0.62 * var(--touch-unit)));
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  pointer-events: auto;
+  touch-action: none;
+  box-shadow: 0 0.12rem 0.45rem rgba(0, 0, 0, 0.18);
+  /* Backed off from full opacity: these sit on top of the road the player is
+     reading, and a control they cannot see through is a control in the way. */
+  opacity: 0.82;
+}
+
+/* CHARGE is held while HOP may be tapped by another finger, so it remains the
+   modestly larger target nearest the resting thumb. Its quieter tint keeps it
+   distinct without making it the dominant object in the lower playfield. */
+.euc-touch__button--crouch {
+  grid-area: crouch;
+  width: var(--touch-primary);
+  height: var(--touch-primary);
+  border-color: rgba(95, 149, 223, 0.78);
+  background: rgba(25, 53, 91, 0.58);
+  font-size: max(0.56rem, calc(0.5 * var(--touch-unit)));
+}
+
+.euc-touch__button--hop {
+  grid-area: hop;
+  border-color: rgba(230, 90, 85, 0.82);
+  background: rgba(91, 31, 31, 0.6);
+}
+
+/* SWING is tapped, never held, so it is an ordinary button on the ordinary
+   size. It is hidden outside Knockabout rather than dimmed: a control that does
+   nothing in the mode you are in is clutter over the road you are reading. */
+.euc-touch__button--swing {
+  grid-area: swing;
+  border-color: rgba(223, 136, 56, 0.84);
+  background: rgba(91, 50, 18, 0.6);
+}
+
+.euc-touch__actions[data-swing="false"] .euc-touch__button--swing {
+  display: none;
+}
+
+/* A press has to be visible on a screen where the finger covers the control:
+   the ring is what the player sees around their own thumb. */
+.euc-touch__button[data-pressed="true"] {
+  opacity: 1;
+  box-shadow:
+    inset 0 0 0 2px rgba(238, 242, 247, 0.72),
+    0 0.12rem 0.45rem rgba(0, 0, 0, 0.18);
+  transform: translateY(1px);
+}
+
+.euc-touch__button--crouch[data-pressed="true"] {
+  background: rgba(35, 83, 145, 0.78);
+}
+
+.euc-touch__button--hop[data-pressed="true"] {
+  background: rgba(133, 39, 37, 0.8);
+}
+
+.euc-touch__button--swing[data-pressed="true"] {
+  background: rgba(128, 66, 20, 0.8);
+}
+
+/* -- Pause, reset, view --------------------------------------------------- */
+
+/*
+ * Bottom centre, between the two thumb zones and below the rider rather than
+ * over them. Small and quiet: a phone has no Escape key, so pause has to be
+ * here, and being able to reset out of a bad spot matters more on a device
+ * with no keyboard than it does anywhere else — but neither is something a
+ * player reaches for while riding.
+ */
+.euc-touch__system {
+  position: absolute;
+  left: 50%;
+  bottom: var(--lane-bottom);
+  transform: translateX(-50%);
+  display: flex;
+  gap: calc(0.4 * var(--touch-unit));
+}
+
+.euc-touch__chip {
+  min-width: max(2.75rem, calc(2.6 * var(--touch-unit)));
+  min-height: 2.75rem;
+  padding: calc(0.34 * var(--touch-unit)) calc(0.6 * var(--touch-unit));
+  border: 1px solid rgba(238, 242, 247, 0.22);
+  border-radius: 999px;
+  background: rgba(13, 16, 20, 0.5);
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: max(0.625rem, calc(0.56 * var(--touch-unit)));
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1;
+  pointer-events: auto;
+  /* `manipulation` rather than `none`: these are taps, and the browser's own
+     double-tap suppression is exactly right for them. */
+  touch-action: manipulation;
+  cursor: pointer;
+}
+
+.euc-touch__chip:active { color: var(--ink); background: rgba(238, 242, 247, 0.18); }
+
+/* -- Orientation ---------------------------------------------------------- */
+
+/*
+ * Portrait has height to spare and a hand that grips low, so the clusters lift
+ * off the bottom edge to where a thumb actually rests.
+ */
+@media (orientation: portrait) {
+  /* Keep the enlarged 44 px system targets out of the stick/action thumb
+     zones. The old rise was tuned around 18–22 px chips and let Pause overlap
+     the stick ring once the controls met the real touch-target floor. */
+  .euc-touch { --touch-rise: 2.9rem; }
+}
+
+/*
+ * A short landscape window — every phone on its side — has no vertical room to
+ * give away. Everything shrinks together rather than any one control being
+ * dropped, because a layout that changes between orientations is a layout the
+ * player has to relearn every time they rotate.
+ */
+@media (orientation: landscape) and (max-height: 30rem) {
+  .euc-touch { --touch-fit: 0.82; }
+  .euc-touch__zone--stick { height: min(62%, 12rem); }
+}
+
+@media (max-height: 22rem) {
+  .euc-touch { --touch-fit: 0.7; }
+}
+
+/*
+ * With controls on screen, the bottom of the frame belongs to thumbs.
+ *
+ * The HUD's four lanes move to the top rather than shrinking: the speed is the
+ * one number a rider actually reads, and leaving it in the bottom-left corner
+ * would put it under the riding hand on every phone. The cues follow it,
+ * because a warning behind a thumb is a warning nobody sees.
+ */
+.euc-hud[data-touch="true"] {
+  grid-template-rows: auto auto auto 1fr;
+  grid-template-areas:
+    "speed     challenge"
+    "objective objective"
+    "cues      cues     "
+    ".         .        ";
+}
+
+/*
+ * The speed moves from the bottom-left corner to the top-left one, and that is
+ * a change of *background* as much as of position: the bottom of the frame is
+ * ground and the top is sky, and white text with a dark shadow that reads
+ * perfectly over tarmac disappears over a bright horizon. It gets the same
+ * shade pill the warning cue already uses, which is the legibility floor
+ * `DESIGN.md` asks for rather than a hope about which way the rider is facing.
+ */
+.euc-hud[data-touch="true"] .euc-hud__speed {
+  align-self: start;
+  justify-self: start;
+  padding: 0.15rem 0.7rem 0.25rem;
+  border-radius: 999px;
+  background: var(--shade);
+}
+
+.euc-hud[data-touch="true"] .euc-hud__speed-unit { color: var(--ink); opacity: 0.75; }
+
+/*
+ * Smaller than at the bottom of the frame, and deliberately.
+ *
+ * The bottom-left corner is peripheral vision, where a big number is read
+ * without looking. The top-left is where the *road* is on a phone held in
+ * portrait, so the same size there is a number sitting on the thing the player
+ * is trying to see. Still the largest text on screen; no longer the loudest
+ * object in the frame.
+ */
+.euc-hud[data-touch="true"] .euc-hud__speed-value { font-size: clamp(1.8rem, 4.4vw, 2.9rem); }
+
+.euc-hud[data-touch="true"] .euc-hud__cues {
+  align-self: start;
+  justify-self: center;
+  justify-items: center;
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------------------
+ * Menus — title, pause, settings
+ * ------------------------------------------------------------------------ */
+
+.euc-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  /*
+   * `safe` is load-bearing, not a refinement.
+   *
+   * Plain `center` overflows a too-tall panel in BOTH directions, and the
+   * overflow above the container is not reachable by scrolling — the settings
+   * list lost its heading and its entire first section in a 720-pixel window,
+   * with no scrollbar position that could bring them back. `safe` falls back
+   * to start alignment the moment the content stops fitting, which is exactly
+   * the behaviour a scrollable centred panel needs.
+   */
+  place-content: safe center;
+  justify-items: center;
+  padding: max(1.5rem, env(safe-area-inset-top)) 1.5rem max(1.5rem, env(safe-area-inset-bottom));
+  background: linear-gradient(to bottom, rgba(7, 9, 12, 0.55), rgba(7, 9, 12, 0.86));
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* The panel scrolls rather than the document: the body is `overflow: hidden`
+     so the canvas cannot be pushed around, and a settings list taller than a
+     short window still has to be reachable. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.euc-menu[hidden] { display: none; }
+
+.euc-menu__panel {
+  width: min(34rem, 100%);
+  display: grid;
+  gap: 1.15rem;
+  text-align: center;
+}
+
+.euc-menu--settings .euc-menu__panel {
+  width: min(42rem, 100%);
+  text-align: left;
+}
+
+.euc-menu__title {
+  margin: 0;
+  font-size: clamp(1.8rem, 6vw, 3.2rem);
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  line-height: 1;
+}
+
+.euc-menu__title .accent { color: var(--accent); }
+
+.euc-menu__tagline {
+  margin: 0;
+  color: var(--ink-dim);
+  font-size: clamp(0.85rem, 2.2vw, 1rem);
+}
+
+.euc-menu__actions {
+  display: grid;
+  gap: 0.6rem;
+  justify-items: stretch;
+}
+
+.euc-button {
+  padding: 0.75rem 1.4rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 0.5rem;
+  background: #182029;
+  color: var(--ink);
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.euc-button:hover { background: #1f2a35; border-color: #3a4757; }
+
+.euc-button--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.euc-button--primary:hover { background: #2a7cf0; border-color: #2a7cf0; }
+
+.euc-button--quiet {
+  background: transparent;
+  color: var(--ink-dim);
+  border-color: transparent;
+}
+
+.euc-button--quiet:hover { color: var(--ink); background: #161d25; }
+
+/*
+ * A button that says what it gives you.
+ *
+ * Added at M14.5 for the title screen and the fresh-route panel, where a
+ * one-word label had stopped being enough: "Fresh route" reads as a synonym
+ * for the three verbs beside it unless something says it builds a whole new
+ * place to ride. The label keeps the button's weight and the note is a quieter
+ * second line, so the control still scans as one word from across the room and
+ * answers the question when it is read.
+ *
+ * A grid rather than a `<br>`: the two spans are separate elements so the note
+ * can be sized, coloured and wrapped independently, and a button with no note
+ * collapses to exactly the single-line box it was.
+ */
+.euc-button__label { display: block; }
+
+.euc-button__note {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--ink-dim);
+  font-size: 0.82rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+
+.euc-button--primary .euc-button__note { color: rgba(238, 242, 247, 0.86); }
+
+/* -- Settings ------------------------------------------------------------- */
+
+.euc-settings {
+  display: grid;
+  gap: 1.4rem;
+  padding: 1.25rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 0.7rem;
+  background: var(--panel);
+}
+
+.euc-settings__group {
+  display: grid;
+  gap: 0.75rem;
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+.euc-settings__legend {
+  padding: 0;
+  color: var(--ink-dim);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.euc-field {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1fr) minmax(8rem, 1.2fr) auto;
+  align-items: center;
+  gap: 0.5rem 0.9rem;
+}
+
+.euc-field__label { font-size: 0.95rem; }
+
+.euc-field__value {
+  min-width: 3.5rem;
+  text-align: right;
+  color: var(--ink-dim);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.euc-field__note {
+  grid-column: 1 / -1;
+  margin: -0.2rem 0 0;
+  color: var(--ink-dim);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.euc-field input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.euc-field select {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 0.4rem;
+  background: #131a22;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.euc-field input[type="checkbox"] {
+  width: 1.15rem;
+  height: 1.15rem;
+  accent-color: var(--accent);
+  justify-self: start;
+}
+
+/* -- Rebinding ------------------------------------------------------------ */
+
+.euc-bindings {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.euc-binding {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) auto auto;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.euc-binding__keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  justify-content: flex-end;
+}
+
+.euc-key {
+  padding: 0.18rem 0.5rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 0.3rem;
+  background: #131a22;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.euc-key--empty { color: var(--cue-warn); border-style: dashed; }
+
+.euc-binding__set {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+}
+
+.euc-binding[data-listening="true"] .euc-binding__set {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.euc-settings__status {
+  margin: 0;
+  color: var(--cue-notice);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.euc-settings__status[hidden] { display: none; }
+
+/* ---------------------------------------------------------------------------
+ * Results
+ *
+ * A finished timed run. Same panel, same buttons, same focus ring as the other
+ * three screens — this is a menu surface, not a bespoke overlay.
+ *
+ * **Every number here is tabular and every column is fixed.** The split table
+ * is the one place in the game where a column of times is read down rather than
+ * glanced at, so the digits have to line up vertically; `table-layout: fixed`
+ * plus `tabular-nums` is what makes that true regardless of how long a
+ * checkpoint's name is.
+ *
+ * **Ahead and behind are the same two-channel cue as the HUD lane** — the sign
+ * character and brightness — and for the same reason: `DESIGN.md` rules out
+ * carrying it on hue alone. The mint and the dim ink below repeat the
+ * information a third time and neither is a member of a red/green pair.
+ * ------------------------------------------------------------------------ */
+
+.euc-menu--results .euc-menu__panel {
+  width: min(38rem, 100%);
+}
+
+.euc-results__heading {
+  font-size: clamp(1.5rem, 4.5vw, 2.4rem);
+}
+
+/* A record gets the accent and nothing that moves. A celebration animation on
+   a screen the player reaches after every single run is a celebration the
+   player learns to sit through. */
+.euc-results[data-record="true"] .euc-results__heading {
+  color: var(--delta-ahead);
+}
+
+.euc-results__summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 0.7rem;
+  background: var(--panel);
+}
+
+.euc-results__stat {
+  display: grid;
+  justify-items: center;
+  gap: 0.15rem;
+}
+
+.euc-results__caption {
+  color: var(--ink-dim);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.euc-results__total {
+  font-size: clamp(1.8rem, 5.5vw, 2.6rem);
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.euc-results__best {
+  font-size: clamp(1.3rem, 4vw, 1.8rem);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.euc-results__delta {
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  /* Reserved whether or not there is a delta, so the two summary columns keep
+     the same height on a first run as on every run after it. */
+  min-height: 1.2em;
+}
+
+.euc-results__table {
+  width: 100%;
+  border-collapse: collapse;
+  /* Fixed, so the time and delta columns are the same width on every row and
+     a long checkpoint name cannot push the numbers out of alignment. */
+  table-layout: fixed;
+  font-variant-numeric: tabular-nums;
+}
+
+.euc-results__table thead th {
+  padding: 0 0.5rem 0.35rem;
+  color: var(--ink-dim);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: right;
+}
+
+.euc-results__table thead th:first-child { text-align: left; }
+
+.euc-results__table tbody tr { border-top: 1px solid var(--panel-edge); }
+
+.euc-results__row-label,
+.euc-results__row-time,
+.euc-results__row-delta {
+  padding: 0.42rem 0.5rem;
+  font-size: 0.92rem;
+}
+
+.euc-results__row-label {
+  width: 50%;
+  font-weight: 600;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.euc-results__row-time {
+  width: 25%;
+  text-align: right;
+  font-weight: 700;
+}
+
+.euc-results__row-delta {
+  width: 25%;
+  text-align: right;
+  font-weight: 700;
+  color: var(--ink);
+  opacity: 0.8;
+}
+
+.euc-results__row-delta[data-ahead="true"],
+.euc-results__delta[data-ahead="true"] {
+  color: var(--delta-ahead);
+  opacity: 1;
+}
+
+.euc-results__notes {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-dim);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+/*
+ * The notes carry landing quality, top speed, and crash count — none of which
+ * score anything (the M10 contract: scoring is pure elapsed time). They are
+ * therefore deliberately quiet and below the table, so nothing on this screen
+ * suggests the player was marked on them.
+ */
+.euc-results__notes[hidden] { display: none; }
+
+/* ---------------------------------------------------------------------------
+ * Fresh routes (M12 Phase 4)
+ *
+ * The panel where a player chooses which world they are about to ride. Same
+ * card, same buttons, same focus ring as the other four screens — the seed
+ * field is the only genuinely new control the game has gained since M9, and it
+ * is styled to sit beside a `<select>` rather than to look like a search bar
+ * borrowed from somewhere else.
+ *
+ * **The seed is a monospaced string on purpose.** It is read aloud, retyped
+ * from a screenshot, and compared character by character against one somebody
+ * sent, and `l`/`1` and `0`/`O` all have to survive that. It is the same
+ * argument `tabular-nums` wins on the results table, applied to letters.
+ * ------------------------------------------------------------------------ */
+
+.euc-menu--routes .euc-menu__panel {
+  width: min(38rem, 100%);
+}
+
+.euc-routes__heading {
+  font-size: clamp(1.5rem, 4.5vw, 2.4rem);
+}
+
+/*
+ * The top half of the panel: the one control anybody can use, the line that
+ * judges the result, and the two that ride it.
+ *
+ * `data-stage` is the emphasis, and it is the whole reason this is a wrapper
+ * rather than three loose children. Before a route exists the useful control is
+ * the one that makes one; the instant one exists it is the one that rides it.
+ * The script writes the value and never touches a style (`DESIGN.md` §9).
+ */
+.euc-routes__actions {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.euc-routes__actions[data-stage="pick"] .euc-routes__pick {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.euc-routes__actions[data-stage="pick"] .euc-routes__pick:hover {
+  background: #2a7cf0;
+  border-color: #2a7cf0;
+}
+
+.euc-routes__actions[data-stage="ready"] [data-menu="ride-route"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+
+.euc-routes__actions[data-stage="ready"] [data-menu="ride-route"]:hover {
+  background: #2a7cf0;
+  border-color: #2a7cf0;
+}
+
+/* Knockabout brought the player here for one purpose, not a mode re-pick. */
+.euc-routes__actions[data-purpose="knockabout"] [data-menu="trial-route"] {
+  display: none;
+}
+
+/*
+ * The route-name field, and it is a `<fieldset>` now rather than a bare row.
+ *
+ * The legend is the point: "Got a route name?" is a question a player can
+ * decline, where the bare label `Seed` was a demand from a control they had no
+ * way to satisfy. It also gives a screen reader a group to announce the field
+ * inside, which is the same reason every settings section is a fieldset.
+ */
+.euc-routes__entry {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.4rem 0.9rem;
+  padding: 0.9rem 1.25rem 1.1rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 0.7rem;
+  background: var(--panel);
+  text-align: left;
+}
+
+.euc-routes__legend {
+  padding: 0 0.4rem;
+  color: var(--ink);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.euc-routes__entry .euc-field__note {
+  grid-column: 1 / -1;
+  margin: 0.15rem 0 0;
+}
+
+.euc-seed {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 0.4rem;
+  background: #131a22;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  /* A phone zooms any field whose text is under 16px the moment it is focused,
+     and never zooms back out. 1.05rem clears that; this is the belt to its
+     braces on a browser with a smaller root size. */
+  min-height: 2.5rem;
+  /*
+   * Room for the line underneath, when the browser scrolls this field into
+   * view above a soft keyboard.
+   *
+   * Without the bottom margin the field lands flush against the top of the
+   * keyboard and the status line — which is the only thing that says whether
+   * the seed worked — is the first thing under it. The player would type a
+   * seed, press go, and be told nothing.
+   */
+  scroll-margin-block: 1.5rem 5rem;
+}
+
+.euc-seed::placeholder {
+  color: var(--ink-dim);
+  font-weight: 400;
+  opacity: 0.7;
+}
+
+.euc-routes__pick { text-align: center; }
+
+/*
+ * The status line.
+ *
+ * It reserves its height whether or not it is saying anything, because it is
+ * the line that carries a refusal — and a panel whose buttons jump down the
+ * screen at the moment the player is told "no" has moved the target they were
+ * about to press. `min-height` rather than a non-breaking space, so a screen
+ * reader is not handed a blank announcement on every visit.
+ *
+ * Tone is a second channel behind the words, never the only one: every state
+ * below is a full sentence that means the same thing read in greyscale.
+ */
+.euc-routes__status {
+  margin: 0;
+  min-height: 2.6em;
+  color: var(--ink-dim);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.euc-routes__status[data-tone="busy"] { color: var(--ink); }
+.euc-routes__status[data-tone="ready"] { color: var(--delta-ahead); }
+.euc-routes__status[data-tone="refused"] { color: var(--cue-notice); }
+
+/*
+ * The second half of the panel: the route the player is *on*, as against the
+ * one they are choosing above.
+ *
+ * A rule rather than a gap, because the two halves disagree for as long as it
+ * takes to type a seed — and permanently if that seed is refused. Without the
+ * line, "copy a link" sits under a field naming a different route and reads as
+ * though it would copy that one.
+ */
+.euc-routes__loaded {
+  display: grid;
+  gap: 0.7rem;
+  padding-top: 1.15rem;
+  border-top: 1px solid var(--panel-edge);
+}
+
+/*
+ * The world line — which place is loaded, on the title, the pause card, and
+ * the fresh-route panel.
+ *
+ * Quiet on the slice and accented on a generated route, because on the slice it
+ * is a reminder and on a route it is the seed: the string the player needs in
+ * order to come back to this place or send somebody else to it.
+ */
+.euc-world {
+  margin: 0;
+  color: var(--ink-dim);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.euc-world[data-generated="true"] {
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88rem;
+  letter-spacing: 0.02em;
+  /* Long enough to be worth reading twice, so it may wrap, but it must never
+     be cut off — a truncated seed is a seed that cannot be retyped. */
+  overflow-wrap: anywhere;
+}
+
+/* -- The controls reference ---------------------------------------------- */
+
+.euc-controls-note {
+  margin: 0;
+  color: var(--ink-dim);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+/* ---------------------------------------------------------------------------
+ * The rider chooser (M14.5)
+ * ------------------------------------------------------------------------ */
+
+/*
+ * Two cards, side by side on a desk and stacked on a phone.
+ *
+ * `auto-fit` with a floor rather than a media query, because the thing that
+ * decides is how much room a card needs and not what kind of device is asking:
+ * a narrow desktop window happens constantly (`DESIGN.md` §9). The panel is
+ * wider than the default for the same reason the results screen is — two
+ * columns of prose do not fit in 34rem.
+ */
+.euc-menu--riders .euc-menu__panel { width: min(40rem, 100%); }
+
+.euc-riders__heading { font-size: clamp(1.5rem, 4.5vw, 2.4rem); }
+
+.euc-riders__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.9rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+/* Present for a screen reader, which needs the group named, and absent for a
+   sighted player, for whom two large portraits are not an ambiguous set. */
+.euc-riders__legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/*
+ * A card is a real `<button>`. Everything that follows — the focus ring, the
+ * Tab order, the gamepad's confirm, the coarse-pointer floor — comes from that
+ * and not from anything written here.
+ *
+ * `--rider-swatch` is the character's own colour, set inline from
+ * `data/riders.ts` per card. It is deliberately NOT `--accent`: that token is
+ * the focus ring, the primary button fill and the word THRILLS, and rebinding
+ * it per rider would recolour focus itself (`DESIGN.md` §9).
+ */
+.euc-rider-card {
+  display: grid;
+  justify-items: center;
+  gap: 0.35rem;
+  padding: 1rem 0.9rem 0.9rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 0.7rem;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.euc-rider-card:hover { border-color: var(--rider-swatch); background: #171f28; }
+
+/*
+ * The chosen one, and it says so three ways: a border in the rider's colour, a
+ * tinted panel, and the word "Riding now". Three channels because one of them
+ * is colour and colour is never allowed to be the only one — the card reads
+ * correctly in greyscale and to a screen reader, which gets `aria-pressed`.
+ */
+.euc-rider-card[aria-pressed="true"] {
+  border-color: var(--rider-swatch);
+  background: #1b2430;
+}
+
+.euc-rider-card__art {
+  width: 100%;
+  max-width: 7.5rem;
+  height: auto;
+  aspect-ratio: 1;
+}
+
+.euc-rider-card__name {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.euc-rider-card__blurb {
+  color: var(--ink-dim);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.euc-rider-card__state {
+  margin-top: 0.15rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: var(--rider-swatch);
+  color: #0d1014;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  /* Hidden rather than removed, so the card does not change height when the
+     player switches — a grid that reflows under a thumb is a grid that moves
+     the next target out from under it. */
+  visibility: hidden;
+}
+
+.euc-rider-card[aria-pressed="true"] .euc-rider-card__state { visibility: visible; }
+
+/*
+ * The title screen's way in: a chip, not a sentence.
+ *
+ * It replaced a static line reading "Riding as Cool Rider." — a full stop where
+ * the entrance to the chooser belongs. Styled as a quiet pill rather than as a
+ * fifth action button, because the four above it are what a player came here to
+ * do and this is what they look like while doing it. It is also why the title
+ * screen did not grow a button: `Controls` was removed from that list after
+ * playtest for duplicating Settings, and the list is not meant to grow.
+ */
+.euc-rider-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-self: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+
+.euc-rider-chip:hover { color: var(--ink); border-color: #3a4757; background: #161d25; }
+
+.euc-rider-chip strong { color: var(--ink); font-weight: 700; }
+
+.euc-rider-chip__swatch {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: var(--rider-swatch, var(--accent));
+}
+
+.euc-rider-chip__more {
+  color: var(--ink-dim);
+  font-size: 0.8rem;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+/* The title screen's colophon. Quieter than every control on the panel: it
+   must be findable by someone who wants to know whose game this is, and
+   ignorable by everyone else. */
+.euc-credit {
+  margin: 0;
+  color: var(--ink-dim);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.euc-credit__link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  transition: color 140ms ease;
+}
+
+.euc-credit__link:hover { color: var(--ink); }
+
+/* ---------------------------------------------------------------------------
+ * Reduced motion
+ *
+ * The game no longer adds camera shake or offers an in-game motion toggle.
+ * The operating-system preference still removes decorative DOM movement.
+ * ------------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .euc-ui *,
+  .euc-ui *::before,
+  .euc-ui *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  /* The tilt-back pulse carries meaning, so it becomes a steady colour rather
+     than disappearing with decorative movement. */
+  .euc-hud__warning[data-level="tiltBack"] { opacity: 1; }
+}
+
+/* ---------------------------------------------------------------------------
+ * Small and short viewports
+ *
+ * These rules are about *width and height*, not about device: a narrow desktop
+ * window happens constantly and a phone is narrow all the time, and both want
+ * the same thing — the settings list not running off the bottom and the speed
+ * not landing under the menu. The touch-specific layout is above; this is the
+ * part that applies whether or not anybody is using a finger.
+ * ------------------------------------------------------------------------ */
+
+@media (max-width: 34rem), (max-height: 30rem) {
+  .euc-field {
+    grid-template-columns: 1fr auto;
+  }
+
+  .euc-field input[type="range"] {
+    grid-column: 1 / -1;
+  }
+
+  /* A select carries its own minimum width, so in two columns it takes the
+     room the label needed and a longer label — "On-screen controls" — breaks
+     one word per line beside it. Given the full width it reads as an ordinary
+     stacked form field, which is what a narrow screen wants anyway. */
+  .euc-field select {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  /*
+   * A status line inside a field spans, exactly as `.euc-field__note` already
+   * does. Left in the second column it *sets* that column's width — the track
+   * is `auto`, and a sentence is wide — which on a phone left "On-screen
+   * controls" wrapping one word per line beside it. The wide layout does not
+   * have the problem because its first column has a 9rem floor; this one gives
+   * that floor up to fit, so the note has to come out of the columns with it.
+   */
+  .euc-field .euc-controls-note {
+    grid-column: 1 / -1;
+  }
+
+  .euc-binding {
+    grid-template-columns: 1fr auto;
+  }
+
+  .euc-binding__keys { grid-column: 1 / -1; justify-content: flex-start; }
+
+  /* Two summary columns in a narrow window put the total and the best on top
+     of each other at a size neither can be read at. Stacked, both stay large. */
+  .euc-results__summary { grid-template-columns: minmax(0, 1fr); }
+
+  /* The seed field takes the width and "Surprise me" goes under it. Squeezed
+     into three columns on a phone the field is about eight characters wide,
+     which is narrower than most of the seeds the game hands out. */
+  .euc-routes__entry { grid-template-columns: minmax(0, 1fr); }
+  .euc-routes__pick { justify-self: stretch; }
+}
+
+/* A live challenge puts two independently useful readings at the top of the
+   HUD. On a narrow viewport the centred objective can reach the right-aligned
+   clock even though both fit individually, so give the clock a second row
+   instead of letting the two lanes paint over each other. Kept width-only:
+   a short landscape window needs to preserve vertical playfield space. */
+@media (max-width: 34rem) {
+  .euc-hud {
+    grid-template-rows: auto auto 1fr auto;
+    grid-template-areas:
+      "objective objective"
+      ".         challenge"
+      ".         .        "
+      "speed     cues     ";
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * A finger as the primary pointer
+ *
+ * Not the same question as "is the window narrow" — a tablet is wide and is
+ * still driven by a thumb — so this is its own query rather than another
+ * breakpoint. Everything here is about the size of the target, which is the
+ * one thing a mouse forgives and a finger does not.
+ *
+ * 2.75rem is 44 CSS pixels at the default root size, which is the smallest
+ * target both platform guidelines call reliable.
+ * ------------------------------------------------------------------------ */
+
+@media (pointer: coarse) {
+  .euc-button {
+    min-height: 2.75rem;
+    padding-inline: 1.1rem;
+  }
+
+  /* Rebinding is the one settings row a phone cannot use — there is no key to
+     press — but it is still reachable with a paired keyboard, so the rows stay
+     and simply become finger-sized rather than being hidden. */
+  .euc-binding__set { min-height: 2.4rem; }
+
+  /* A slider thumb sized for a mouse is roughly a quarter of a fingertip. */
+  .euc-field input[type="range"] { height: 2.25rem; }
+
+  .euc-field input[type="checkbox"] { width: 1.5rem; height: 1.5rem; }
+
+  .euc-hud__prompt-dismiss { width: 2.2rem; height: 2.2rem; }
+
+  /* A finger-sized text field, and a font size no mobile browser will decide
+     to zoom into. Safari zooms any focused input under 16px and does not zoom
+     back out, which leaves the player on a panel they now have to pan around. */
+  .euc-seed { min-height: 2.75rem; font-size: max(1.05rem, 16px); }
+
+  .euc-routes__pick { min-height: 2.75rem; }
+
+  /* The chooser's own two targets. A card is already far past the floor, but
+     the chip is a single line of small text and would not be. */
+  .euc-rider-chip { min-height: 2.75rem; }
+  .euc-rider-card { min-height: 2.75rem; }
+
+  /* The credit link is one word of small text. Padding grows the touch target
+     to the floor; the negative margin gives the padding back, so the line
+     stays visually exactly where it is. */
+  .euc-credit__link {
+    display: inline-block;
+    padding: 0.9rem 0.5rem;
+    margin: -0.9rem -0.5rem;
+  }
+}
