@@ -8,7 +8,7 @@ import { CHASE } from '../src/data/tuning.ts';
  *
  * The milestone's gate is the owner's and cannot be automated: *is being chased
  * fun, and is losing to him ever unfair?* What can be automated is everything
- * that question rests on, and three of the claims below can only be made here:
+ * that question rests on, and four of the claims below can only be made here:
  *
  *   1. **That the cop is actually drawn, and that the ghost is not drawn with
  *      him.** The render budget's whole arithmetic depends on the two being
@@ -20,6 +20,9 @@ import { CHASE } from '../src/data/tuning.ts';
  *      pose every frame, and the two could silently part company.
  *   3. **That the entrance refuses the worlds it says it refuses**, through the
  *      same menu a player clicks rather than through the bridge.
+ *   4. **That a first-session Chase choice survives its Fresh route detour.**
+ *      A generated-route boot bypasses that handoff entirely, so it can stay
+ *      green while the advertised cold-start entrance becomes Free Ride.
  *
  * Nothing here reads a frame interval (`AGENTS.md`).
  */
@@ -55,6 +58,36 @@ test('the hand-built city refuses a chase and says what the mode needs', async (
   await expect(page.locator('.euc-menu--routes [data-menu="trial-route"]')).toBeHidden();
 
   expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('routes');
+  expect(errors).toEqual([]);
+});
+
+test('a cold-start Police Chase choice survives Surprise me and starts the mode', async ({ page }) => {
+  // Regression for the owner's exact first-session path. The hand-built city
+  // sends Chase through Fresh route; that deferred world swap must carry the
+  // chosen mode instead of quietly falling back to the route chooser or Free
+  // Ride, which made only the second title-screen attempt produce the cop.
+  const errors = collectErrors(page);
+  await bootToTitle(page);
+
+  await page.locator('.euc-menu--title [data-menu="chase"]').click();
+  await expect(page.locator('.euc-menu--routes')).toBeVisible();
+
+  // `Math.random() === 0` spells amber-arch. Pinning a known-good route keeps
+  // this a state-machine regression rather than a survey of random generation.
+  await page.evaluate(() => {
+    Math.random = () => 0;
+  });
+  await page.locator('.euc-menu--routes [data-menu="surprise"]').click();
+
+  await expect.poll(async () => page.evaluate(() => window.game.snapshot().app.state))
+    .toBe('chase');
+  await expect.poll(async () => page.evaluate(() => window.game.snapshot().hud.chase))
+    .not.toBe('');
+
+  const snapshot = await page.evaluate(() => window.game.snapshot());
+  expect(snapshot.world).toMatchObject({ generated: true, seed: 'amber-arch' });
+  expect(snapshot.chase.phase).toBe('running');
+  expect(snapshot.chase.secondRider).toBe('cop');
   expect(errors).toEqual([]);
 });
 

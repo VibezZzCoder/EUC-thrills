@@ -155,7 +155,7 @@ import { Onboarding, type PromptDevice } from '../ui/onboarding.ts';
  */
 export type CameraMode = 'chase' | 'orbit';
 
-type RouteDestination = 'freeRide' | 'challenge' | 'knockabout';
+type RouteDestination = 'freeRide' | 'challenge' | 'knockabout' | 'chase';
 type RouteArrival = RouteDestination | 'choose';
 
 const CAMERA_MODES: readonly CameraMode[] = ['chase', 'orbit'];
@@ -2763,11 +2763,15 @@ export class Game {
     if (this.pendingRoute !== null) return;
 
     // An explicit Time trial click changes the destination. The generic Ride
-    // button (and Enter/gamepad confirm on the field) preserve Knockabout when
-    // that is what sent the player through this prerequisite screen.
+    // button (and Enter/gamepad confirm on the field) preserve Knockabout or
+    // Police Chase when that is what sent the player through this prerequisite
+    // screen. Losing either purpose here makes the first attempt silently
+    // become Free Ride while a second title-screen attempt appears to work.
     const destination: RouteDestination = timed
       ? 'challenge'
-      : this.routePurpose === 'knockabout' ? 'knockabout' : 'freeRide';
+      : this.routePurpose === 'knockabout'
+        ? 'knockabout'
+        : this.routePurpose === 'chase' ? 'chase' : 'freeRide';
 
     const seed = normaliseSeed(typed);
     if (seed.length === 0) {
@@ -2798,7 +2802,7 @@ export class Game {
     if (this.pendingRoute !== null) return;
     const destination: RouteArrival = this.routePurpose === 'knockabout'
       ? 'knockabout'
-      : 'choose';
+      : this.routePurpose === 'chase' ? 'chase' : 'choose';
     this.beginRouteWork(
       { kind: 'surprise', destination },
       { kind: 'building', seed: 'a fresh route' },
@@ -2918,6 +2922,7 @@ export class Game {
   private rideLoadedWorld(destination: RouteDestination): void {
     if (destination === 'challenge') this.startChallenge();
     else if (destination === 'knockabout') this.enterKnockabout();
+    else if (destination === 'chase') this.enterChase();
     else this.goTo('freeRide');
   }
 
