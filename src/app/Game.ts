@@ -4526,6 +4526,12 @@ export class Game {
       brain.hazardClearanceMetres = this.tuning.get('CHASE.hazardClearanceMetres');
       brain.swingRangeMetres = this.tuning.get('CHASE.swingRangeMetres');
       brain.swingCooldownSeconds = this.tuning.get('CHASE.swingCooldownSeconds');
+      // The brain predicts the cop paddle's forward contact time from the same
+      // live values the paddle below receives. If F4 retunes the weapon, a
+      // head-on swing must not keep leading against the defaults.
+      brain.paddleReachMetres = this.tuning.get('PADDLE.reach');
+      brain.paddleWindupSeconds = this.tuning.get('PADDLE.windupSeconds');
+      brain.paddleActiveSeconds = this.tuning.get('PADDLE.activeSeconds');
       brain.fieldRangeMetres = this.tuning.get('CHASE.fieldRangeMetres');
     }
 

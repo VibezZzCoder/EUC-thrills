@@ -5,9 +5,11 @@ import { CHASE, EUC, SIMULATION } from '../data/tuning.ts';
 import { generateLevel } from '../level/generateRoute.ts';
 import { createLevel } from '../level/levels.ts';
 import type { LevelPlan } from '../level/plan.ts';
+import { RIDEABILITY } from '../level/routeValidator.ts';
 import { CpuRider, type CpuQuarry, type CpuView } from './cpuRider.ts';
 import { createPose, EucController, type EucPose } from './EucController.ts';
 import { HazardField } from './hazards.ts';
+import { Paddle, type HittableSet, type HittableVolume } from './paddle.ts';
 import { PlanTerrainSampler } from './planSampler.ts';
 import { RouteSpine } from './routeSpine.ts';
 import { SoftBodyField } from './softBodies.ts';
@@ -481,4 +483,240 @@ test('the brain never asks the wheel for something the actions cannot carry', ()
     assert.equal(actions.reset, false, 'a brain may never press reset');
     assert.equal(actions.pause, false, 'a brain may never press pause');
   }
+});
+
+// ---------------------------------------------------------------------------
+// The adversarial wall — FEEDBACK-TRIAGE §4.2
+// ---------------------------------------------------------------------------
+//
+// The 48-seed sweep proves the cop catches on open route; a daily player
+// proved within hours of the M18 announcement that he could be deliberately
+// parked behind a wall. These tests are the missing adversarial half: a
+// finite wall square across the line between cop and quarry, with room
+// around both ends, in both frames the brain reasons in. Being wedged is
+// allowed; staying wedged is the defect.
+
+/**
+ * A stationary quarry with a wall between it and the cop.
+ *
+ * `wallLateral`/`quarryLateral` move both off the line together for the
+ * field variant; zero for both is the on-road camp from the owner's own
+ * reproduction (standing square behind a corridor-spanning planter).
+ */
+function pursueAroundWall(
+  seed: string,
+  wallDistance: number,
+  copDistance: number,
+  lateral: number,
+  maxSeconds = 60,
+): PursuitResult & { readonly wallProjected: boolean } {
+  const { plan } = generateLevel(seed);
+  const spine = RouteSpine.fromPlan(plan)!;
+  const at = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
+  spine.sample(wallDistance, at);
+  const heading = at.headingY;
+  const wallX = at.x + Math.cos(heading) * lateral;
+  const wallZ = at.z - Math.sin(heading) * lateral;
+  const ground = createGroundSample();
+  new PlanTerrainSampler(plan).sampleGround(wallX, wallZ, ground);
+  plan.solids = [...(plan.solids ?? []), {
+    centre: { x: wallX, y: ground.height + 0.6, z: wallZ },
+    halfExtents: { x: 7, y: 0.6, z: 0.35 },
+    rotationY: heading,
+    surface: 'brick',
+  }];
+
+  const sampler = new PlanTerrainSampler(plan);
+  const controller = new EucController(sampler, {
+    spawn: plan.spawn,
+    hazards: new HazardField(plan.hazards ?? []),
+    softBodies: new SoftBodyField(plan.softBodies ?? []),
+  });
+  const brain = new CpuRider(spine, plan, sampler);
+  // On the line, the wall must project — its own top face must not measure
+  // it as flat road, which is the blind spot the first reproduction found.
+  const wallProjected = lateral !== 0 || brain.blockerField.some((blocker) => (
+    blocker.safeSpeed === 0
+    && blocker.from < wallDistance && blocker.to > wallDistance
+    && blocker.right < 0 && blocker.left > 0
+  ));
+
+  const copAt = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
+  spine.sample(copDistance, copAt);
+  sampler.sampleGround(copAt.x, copAt.z, ground);
+  controller.reset({
+    position: { x: copAt.x, y: ground.height, z: copAt.z },
+    headingY: copAt.headingY,
+  });
+
+  spine.sample(wallDistance + 3, at);
+  const quarry: CpuQuarry = {
+    x: at.x + Math.cos(at.headingY) * lateral,
+    y: at.y,
+    z: at.z - Math.sin(at.headingY) * lateral,
+    speed: 0,
+  };
+
+  const pose: EucPose = createPose();
+  controller.writePose(pose);
+  const view: { -readonly [K in keyof CpuView]: CpuView[K] } = {
+    x: pose.x,
+    y: pose.y,
+    z: pose.z,
+    headingY: pose.headingY,
+    speed: 0,
+    grounded: true,
+    crashed: false,
+    curbAhead: 0,
+    lateralLimitG: EUC.maxLateralG,
+  };
+  brain.place(view);
+
+  let closest = Infinity;
+  let finalGap = Infinity;
+  let crashes = 0;
+  let wasCrashed = false;
+  for (let step = 0; step < Math.round(maxSeconds * SIMULATION.hz); step += 1) {
+    controller.writePose(pose);
+    view.x = pose.x;
+    view.y = pose.y;
+    view.z = pose.z;
+    view.headingY = pose.headingY;
+    view.speed = pose.speed;
+    view.grounded = pose.y - pose.groundY <= 1e-6;
+    view.crashed = controller.crashed;
+    view.curbAhead = controller.curbHeightAhead;
+    view.lateralLimitG = controller.lateralLimit;
+    if (controller.crashed && !wasCrashed) crashes += 1;
+    wasCrashed = controller.crashed;
+    controller.step(STEP, brain.step(STEP, view, quarry));
+    finalGap = Math.hypot(pose.x - quarry.x, pose.z - quarry.z);
+    closest = Math.min(closest, finalGap);
+  }
+
+  return { crashes, closest, finalGap, wallProjected };
+}
+
+test('a wall square across the corridor projects into the blocker field', () => {
+  // The projection measured a box against the road under its own footprint,
+  // and the sampler answers a footprint with the box's top face — so a wall
+  // standing on the line measured itself as flat road and vanished. Route
+  // furniture never sits on the validated line, which is why 48 seeds never
+  // noticed; a player parking the cop behind a plaza wall did.
+  const pursuit = pursueAroundWall('route-41', 120, 118, 0, 1);
+  assert.ok(pursuit.wallProjected, 'the on-line wall is invisible to the brain');
+});
+
+test('a quarry camped behind a wall on the road is flanked, not besieged', () => {
+  // The owner's reproduction of Gaven Sydnes's report: stand square behind
+  // the middle of a long wall and watch the cop ride side to side forever.
+  // The whole §4.2 fix is that he now works the problem — brakes for the
+  // wall, tries its end, backs out of the wedge, slides around, and closes.
+  const pursuit = pursueAroundWall('route-41', 120, 60, 0);
+
+  assert.ok(
+    pursuit.closest <= CHASE.swingRangeMetres,
+    `the cop never reached swing range around the wall (closest ${
+      pursuit.closest.toFixed(1)} m)`,
+  );
+  assert.ok(
+    pursuit.crashes <= 2,
+    `${pursuit.crashes} crashes working around one wall is a ragdoll loop, not a flank`,
+  );
+});
+
+test('a quarry camped behind a wall in the field is flanked, not besieged', () => {
+  // The same camp with both of them off the road: no blockers out here, so
+  // this is the widening sideways walk on its own — the dead-reckoning half
+  // of the fix, where the road's end-around reasoning cannot help.
+  const pursuit = pursueAroundWall('route-41', 120, 60, 14);
+
+  assert.ok(
+    pursuit.closest <= CHASE.swingRangeMetres,
+    `the cop never reached swing range around the field wall (closest ${
+      pursuit.closest.toFixed(1)} m)`,
+  );
+  assert.ok(
+    pursuit.crashes <= 2,
+    `${pursuit.crashes} crashes working around one wall is a ragdoll loop, not a flank`,
+  );
+});
+
+test('a top-speed head-on rider is met by the cop paddle, not waved past', () => {
+  // FEEDBACK-TRIAGE §4.2's second field defect, reproduced through the actual
+  // brain → paddle handoff. At two top-speed wheels the range closes at about
+  // 44 m/s. Waiting until the ordinary 3.4 m swing radius means the whole gap
+  // disappears during the 0.10 s wind-up, so the paddle begins its strike only
+  // after the quarry is behind it. A swept paddle cannot repair a swing that
+  // was asked for too late.
+  const { plan } = generateLevel('route-41');
+  const spine = RouteSpine.fromPlan(plan);
+  assert.ok(spine !== null, 'route-41 produced no spine');
+  const brain = new CpuRider(spine, plan, new PlanTerrainSampler(plan));
+  const paddle = new Paddle();
+  const copAt = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
+  const quarryAt = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
+  const speed = RIDEABILITY.topSpeed;
+  const target: HittableVolume & { x: number; y: number; z: number } = {
+    id: 'rider',
+    x: 0,
+    y: 0,
+    z: 0,
+    radius: CHASE.riderHitRadius,
+  };
+  const targetSet: HittableSet = {
+    eachNear(minX, minY, minZ, maxX, maxY, maxZ, visit) {
+      if (target.x + target.radius < minX || target.x - target.radius > maxX) return;
+      if (target.y + target.radius < minY || target.y - target.radius > maxY) return;
+      if (target.z + target.radius < minZ || target.z - target.radius > maxZ) return;
+      visit(target);
+    },
+  };
+
+  let swingRequests = 0;
+  let firstSwingRange = Infinity;
+  let hits = 0;
+  for (let step = 0; step < SIMULATION.hz; step += 1) {
+    const seconds = step * STEP;
+    // This 12 m stretch is straight in route-41. Sampling the real route keeps
+    // the brain in its production frame while the two riders travel toward one
+    // another at the same physical top speed.
+    spine.sample(70 + speed * seconds, copAt);
+    spine.sample(82 - speed * seconds, quarryAt);
+    const view: CpuView = {
+      x: copAt.x,
+      y: copAt.y,
+      z: copAt.z,
+      headingY: copAt.headingY,
+      speed,
+      grounded: true,
+      crashed: false,
+      curbAhead: 0,
+      lateralLimitG: EUC.maxLateralG,
+    };
+    const quarry: CpuQuarry = {
+      x: quarryAt.x,
+      y: quarryAt.y,
+      z: quarryAt.z,
+      speed,
+    };
+    if (step === 0) brain.place(view);
+    const intent = brain.step(STEP, view, quarry);
+    const range = Math.hypot(quarry.x - view.x, quarry.z - view.z);
+    if (intent.swing) {
+      swingRequests += 1;
+      if (!Number.isFinite(firstSwingRange)) firstSwingRange = range;
+    }
+    target.x = quarry.x;
+    target.y = quarry.y + CHASE.riderHitHeight;
+    target.z = quarry.z;
+    hits += paddle.step(STEP, view, intent.swing, targetSet).length;
+  }
+
+  assert.equal(swingRequests, 1, 'one head-on pass should cost one committed swing');
+  assert.ok(
+    firstSwingRange > CHASE.swingRangeMetres,
+    `the cop waited until ${firstSwingRange.toFixed(2)} m to wind up against a top-speed closure`,
+  );
+  assert.ok(hits > 0, 'the head-on quarry crossed the cop without meeting the paddle');
 });

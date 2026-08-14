@@ -1,5 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { CHASE, EUC, PHYSICS } from '../data/tuning.ts';
+import { CHASE, EUC, PADDLE, PHYSICS } from '../data/tuning.ts';
 import type { ActionSnapshot } from '../input/actions.ts';
 import type { BoxCollider, LevelPlan } from '../level/plan.ts';
 import {
@@ -194,6 +194,10 @@ export class CpuRider {
   swingRangeMetres: number = CHASE.swingRangeMetres;
   swingConeRadians: number = CHASE.swingConeRadians;
   swingCooldownSeconds: number = CHASE.swingCooldownSeconds;
+  /** The shared paddle geometry/timing needed to lead a closing swing. */
+  paddleReachMetres: number = PADDLE.reach;
+  paddleWindupSeconds: number = PADDLE.windupSeconds;
+  paddleActiveSeconds: number = PADDLE.activeSeconds;
   pursuitLateralFollow: number = CHASE.pursuitLateralFollow;
   fieldRangeMetres: number = CHASE.fieldRangeMetres;
 
@@ -210,8 +214,58 @@ export class CpuRider {
   private lastHeading = 0;
   private hasHeading = false;
   private swingCooldown = 0;
+  /** Last straight-line quarry range, for deterministic observed closure. */
+  private lastQuarryRange = Infinity;
   /** How long the wheel has been going nowhere while asking to. */
   private stuckSeconds = 0;
+  /**
+   * Whether he is working his way *around* something rather than chasing.
+   *
+   * The first field report against the mode (FEEDBACK-TRIAGE §4.2): a player
+   * can stand behind a wall and the cop parks against the face, riding side to
+   * side until the clock runs out — the stuck escape below backed him out and
+   * then recommitted straight at the quarry, an infinite ram with no memory
+   * that the last five rams failed. The flank is that memory. It begins when a
+   * stuck escape completes with a quarry in hand, and while it is on the cop
+   * rides *at the rider* the way a field pursuit does — the spine's line and
+   * its blockers are what walled him in, and a wall that spans the corridor
+   * has no gap the corridor-clamped search can ever find. It ends when the
+   * quarry abandons the spot (they broke cover; chase them normally) or stops
+   * existing (crash, bust, escape). Reaching them needs no explicit exit: the
+   * hold, the swing and contact resolve it physically.
+   */
+  private flanking = false;
+  /** Where the quarry stood when the flank began. Them leaving it ends it. */
+  private flankQuarryX = 0;
+  private flankQuarryZ = 0;
+  /** Metres of travel left in the current sideways detour. Zero: aim direct. */
+  private detourRemaining = 0;
+  /** The direction the current detour slides, a world-space unit vector. */
+  private detourDirX = 0;
+  private detourDirZ = 0;
+  /** Which side the next detour tries. Alternates on every failed attempt. */
+  private detourSide: 1 | -1 = 1;
+  /**
+   * The heading he was wedged on, frozen the moment the stuck escape arms.
+   *
+   * The detour's slide runs perpendicular to *this*, not to the heading at
+   * the moment the slide begins — the escape reverses with full steer, and
+   * at pivot-first low-speed agility (M16) a second of that rotates the nose
+   * anywhere. Slides taken off the rotated heading pointed back into the
+   * wall or diagonally away from the chase; the heading with the nose still
+   * buried in the face is the one whose perpendicular is the face.
+   */
+  private wedgeHeading = 0;
+  /**
+   * How far the next detour commits to, metres. Doubles on every failed
+   * attempt, capped — alternate sides with a doubling span walks around any
+   * finite obstacle eventually, which is the property a pursuer an adversarial
+   * player is deliberately wedging has to have. Deterministic throughout:
+   * the same camp produces the same flank on every run, per `advance(n)`.
+   */
+  private detourSpan = DETOUR_SPAN_BASE_METRES;
+  /** How long the flank's direct leg has run freely, seconds. See below. */
+  private flankFreeSeconds = 0;
 
   // Scratch. One brain steps 120 times a second and every one of these would
   // otherwise be garbage.
@@ -287,9 +341,11 @@ export class CpuRider {
     this.lastHeading = view.headingY;
     this.hasHeading = true;
     this.swingCooldown = 0;
+    this.lastQuarryRange = Infinity;
     this.stuckSeconds = 0;
     this.pursuitDirection = 1;
     this.fieldPursuit = false;
+    this.endFlank();
   }
 
   /**
@@ -315,6 +371,7 @@ export class CpuRider {
     if (view.crashed) {
       this.lastHeading = view.headingY;
       this.stuckSeconds = 0;
+      this.lastQuarryRange = Infinity;
       return actions;
     }
 
@@ -346,6 +403,7 @@ export class CpuRider {
     let routeGap = Infinity;
     let quarryRange = Infinity;
     let quarrySpeed = 0;
+    let quarryClosingSpeed = 0;
 
     // **A pursuit has a direction; a route follower does not.** The M18 first
     // pass only copied the quarry's lateral line when the quarry happened to be
@@ -361,6 +419,20 @@ export class CpuRider {
       routeGap = this.quarryAt.distance - this.cursor;
       quarryRange = Math.hypot(quarry.x - view.x, quarry.z - view.z);
       quarrySpeed = Math.abs(quarry.speed);
+      // Range rate is the one fact a scalar-speed quarry cannot state directly:
+      // two riders at 22 m/s may be travelling together or meeting at 44 m/s.
+      // Observe it from consecutive deterministic fixed steps, capped by the
+      // sum of their physical speeds so a reset/teleport cannot manufacture an
+      // enormous one-frame closing rate and throw a swing across the map.
+      if (dt > 0 && Number.isFinite(this.lastQuarryRange)) {
+        const observed = (this.lastQuarryRange - quarryRange) / dt;
+        quarryClosingSpeed = clamp(
+          observed,
+          0,
+          Math.abs(view.speed) + quarrySpeed,
+        );
+      }
+      this.lastQuarryRange = quarryRange;
       const switchGap = this.swingRangeMetres + this.hazardClearanceMetres;
       if (this.pursuitDirection > 0 && routeGap < -switchGap) {
         this.pursuitDirection = -1;
@@ -370,6 +442,7 @@ export class CpuRider {
     } else {
       // The chase probe and Phase 1's solo sweep remain a forward route ride.
       this.pursuitDirection = 1;
+      this.lastQuarryRange = Infinity;
     }
     const direction = this.pursuitDirection;
 
@@ -398,6 +471,48 @@ export class CpuRider {
       this.fieldPursuit = false;
     }
     const field = this.fieldPursuit && quarry !== null;
+
+    // -- The flank -----------------------------------------------------------
+    //
+    // Kept and consumed here; *entered* down in the stuck escape, which is the
+    // only place that knows a ram failed. The quarry moving well off the spot
+    // he was wedged against is the one exit: they broke cover, so the ordinary
+    // pursuit — which was never the problem — takes over again.
+    if (quarry === null) {
+      this.endFlank();
+    } else if (this.flanking
+      && Math.hypot(quarry.x - this.flankQuarryX, quarry.z - this.flankQuarryZ)
+        > FLANK_QUARRY_MOVE_METRES) {
+      this.endFlank();
+    }
+    if (this.detourRemaining > 0) this.detourRemaining -= Math.abs(view.speed) * dt;
+    // The flank also expires on its own once the direct leg rides freely for
+    // a few seconds: he is moving at the rider unobstructed, so whatever he
+    // was wedged on is behind him. Without this an armed flank is permanent —
+    // it skips the gate that could notice the road sees the way, so nothing
+    // else can retire it while the quarry holds still.
+    if (this.flanking && this.detourRemaining <= 0
+      && Math.abs(view.speed) > STUCK_SPEED * 3) {
+      this.flankFreeSeconds += dt;
+      if (this.flankFreeSeconds > FLANK_FREE_SECONDS) {
+        // Softly: the widening walk's span and side survive, so a re-stick
+        // on the same obstacle resumes the walk instead of restarting it.
+        this.flanking = false;
+        this.flankFreeSeconds = 0;
+      }
+    } else if (this.flanking) {
+      this.flankFreeSeconds = 0;
+    }
+    const flanking = this.flanking && quarry !== null;
+    /** Sliding sideways past the thing he was stuck on, not aiming at anyone. */
+    const detouring = flanking && this.detourRemaining > 0;
+    /**
+     * Riding at the rider rather than along the line. A field pursuit and a
+     * flank skip the same road-shaped reasoning for the same reason: the
+     * spine's corner profile, its blockers and its corridor describe the road,
+     * and neither chase is on it.
+     */
+    const direct = field || flanking;
 
     this.spine.sample(this.cursor + direction * lookahead, this.aim);
 
@@ -461,7 +576,7 @@ export class CpuRider {
       // A poor cop also corners wider, which reads as him running out of road
       // rather than as him being underpowered.
       * (0.7 + 0.3 * skill);
-    if (!field) {
+    if (!direct) {
       for (let ahead = 0; ahead <= horizon; ahead += CORNER_SCAN_METRES) {
         const curvature = Math.abs(this.spine.curvature(
           this.cursor + direction * ahead,
@@ -514,8 +629,10 @@ export class CpuRider {
     // the centre and clipped the pier at speed.
     const lineLow = Math.min(selfLateral, offset);
     const lineHigh = Math.max(selfLateral, offset);
+    /** The chosen line rounds the conflict set's end, outside the corridor. */
+    let endAround = false;
     let blocking: RouteBlocker | null = null;
-    if (field) {
+    if (direct) {
       // Nothing on the line is in the way of a chase that has left it.
     } else if (direction > 0) {
       for (const blocker of this.blockers) {
@@ -615,6 +732,48 @@ export class CpuRider {
         // and a tight one puts him exactly down the middle.
         const margin = Math.min(room, bestWidth / 2);
         offset = clamp(offset, bestLow + margin, bestHigh - margin);
+      } else if (quarry !== null) {
+        // **No gap the corridor offers — but a wall has ends, and the
+        // blockers know exactly where they are.** Braking to a stop here is
+        // correct for a route ride, and it is also FEEDBACK-TRIAGE §4.2: a
+        // player who parks behind something spanning the corridor turns the
+        // stop into a stalemate they win by waiting. So a pursuit goes
+        // *around*: aim past the nearer lateral end of the whole conflict
+        // set, off the shoulder if that is where the end is. The ordinary
+        // machinery does the rest — the aim pulled in to the obstacle makes
+        // the offset a real swerve, and the sideways-feasibility cap below
+        // keeps the pace honest for how far across he has to move.
+        let lowEnd = Infinity;
+        let highEnd = -Infinity;
+        for (const blocker of this.conflicts) {
+          lowEnd = Math.min(lowEnd, blocker.right);
+          highEnd = Math.max(highEnd, blocker.left);
+        }
+        const below = lowEnd - room;
+        const above = highEnd + room;
+        // The side that ends *nearer the line* is the side whose end is
+        // actually an end. Shoulder rows — trees, fences — line both verges
+        // and merge into the conflict set, and picking by his own proximity
+        // aimed him beyond the fence row: an offset on the far side of
+        // something unpassable, which he then wedged against, which made
+        // that side nearer still. Only a genuine tie falls back to the
+        // shorter detour.
+        if (Math.abs(above) < Math.abs(below) - END_AROUND_TIE_METRES) {
+          offset = above;
+        } else if (Math.abs(below) < Math.abs(above) - END_AROUND_TIE_METRES) {
+          offset = below;
+        } else {
+          offset = Math.abs(below - selfLateral) <= Math.abs(above - selfLateral)
+            ? below
+            : above;
+        }
+        endAround = true;
+        // While his own lateral is still inside the blocked band the face is
+        // dead ahead, so arrive below the crash threshold — floored rather
+        // than braked to zero, because zero is the parked cop again.
+        if (selfLateral > lowEnd - TIGHT_ROOM && selfLateral < highEnd + TIGHT_ROOM) {
+          cap = Math.min(cap, Math.max(allow(0, Math.max(0, avoidAt)), FLANK_PROBE_SPEED));
+        }
       } else {
         // Nowhere to go at all: arrive at a speed it can be met at. For a wall
         // that is zero, which is a cop stopping — correct, and rare, because a
@@ -637,6 +796,19 @@ export class CpuRider {
       }
     }
 
+    // **Close pursuit: near the end of a chase, the target is the rider, not
+    // the road.** The spine frame steers at a point *ahead on the line*, and
+    // for a cop who has just worked around something — the §4.2 end-around —
+    // that point is past the quarry: he overshot, turned, met the same wall
+    // from the other side, went around it again, and orbited a rider he
+    // could see the whole time. So once the quarry is close and the gate
+    // reports nothing between them, he aims straight at them, exactly as a
+    // field pursuit would. The closing-speed cap still holds the stand-off,
+    // and a wall between the two keeps `blocking` non-null, which keeps this
+    // off until the end-around has actually cleared it.
+    const closePursuit = quarry !== null && !direct
+      && quarryRange <= CLOSE_PURSUIT_METRES && blocking === null;
+
     // **The end of the line is a place to stop, not to ride past.** A route is
     // point-to-point (§13 q6) and the cop rides roads (§18.7), so past the last
     // sample there is nothing to follow and the surround is what he ploughs
@@ -645,7 +817,8 @@ export class CpuRider {
     // Not in a field pursuit: a quarry camped off-road beside the route's last
     // metres would otherwise be protected by this very cap, the cop braking to
     // a stand at the line's end while aiming at somebody standing past it.
-    if (!field) {
+    // Nor in close pursuit, whose whole leg is shorter than the margin.
+    if (!direct && !closePursuit) {
       const endMargin = quarry === null ? END_MARGIN_METRES : 0;
       const routeLeft = direction > 0
         ? this.spine.length - endMargin - this.cursor
@@ -659,7 +832,7 @@ export class CpuRider {
     // and the cop may spend only the distance left before it. No multiplier can
     // make his wheel faster than the player's; this only decides when he asks
     // their shared controller to brake.
-    if (quarry !== null) {
+    if (quarry !== null && !detouring) {
       const standOff = Math.max(0, this.swingRangeMetres - this.hazardClearanceMetres);
       // Route projection clamps both riders to an endpoint. At chase spawn the
       // player is on distance zero and the cop is physically `spawnGapMetres`
@@ -671,8 +844,11 @@ export class CpuRider {
       // clamped endpoint.
       // In the field the road distance means nothing — a switchback can put
       // two hundred metres of route between riders fifteen metres apart — so
-      // the straight line is the whole closing distance there.
-      const closingDistance = field
+      // the straight line is the whole closing distance there. A detour skips
+      // this cap entirely: it is a slide *across* the quarry's range, and a
+      // cop wedged at arm's length behind a wall would otherwise crawl the
+      // whole flank at walking pace — which is the parked cop again, slower.
+      const closingDistance = direct
         ? quarryRange
         : Math.max(Math.abs(routeGap), quarryRange);
       cap = Math.min(cap, allow(quarrySpeed, closingDistance - standOff));
@@ -690,13 +866,43 @@ export class CpuRider {
     // -- Turn the aim point into intent --------------------------------------
     let aimX: number;
     let aimZ: number;
-    if (field && quarry !== null) {
+    if (detouring) {
+      // Sideways, deliberately: the detour's whole content is an aim point
+      // held a fixed reach away in the direction chosen when the ram failed.
+      // Recomputed from where he *is* each step so pure pursuit always has it
+      // ahead of him, and speed-capped because this is feeling along a wall,
+      // not a chase.
+      aimX = view.x + this.detourDirX * DETOUR_AIM_METRES;
+      aimZ = view.z + this.detourDirZ * DETOUR_AIM_METRES;
+      // Gently until the wheel actually points along the slide: the turn out
+      // of the wedge is an arc, and an arc ridden at slide speed carries the
+      // nose back through the wall it starts against — a ragdoll, not a
+      // detour.
+      const detourBearing = wrapAngle(
+        Math.atan2(aimX - view.x, aimZ - view.z) - view.headingY,
+      );
+      cap = Math.min(
+        cap,
+        Math.abs(detourBearing) > DETOUR_ALIGN_RADIANS ? FLANK_PROBE_SPEED : DETOUR_SPEED,
+      );
+    } else if ((direct || closePursuit) && quarry !== null) {
       // Straight at them. Pure pursuit needs no line when the target is the
       // point; the closing-speed cap above already stops him sailing past.
       aimX = quarry.x;
       aimZ = quarry.z;
+      // A flank's direct legs are probes at a wall that has already beaten
+      // him once, so they arrive below the crash threshold: a failed probe
+      // costs the 1.4 s stuck cycle, where a ragdoll costs several times
+      // that — which is how the first cut of this fix spent a whole clock
+      // crashing its way around one planter.
+      if (flanking) cap = Math.min(cap, FLANK_PROBE_SPEED);
     } else {
-      const clamped = clamp(offset, -this.aim.halfWidth * 0.9, this.aim.halfWidth * 0.9);
+      // An end-around's whole point is a line the corridor cannot hold, so
+      // the corridor does not clamp it. The offset came from real blocker
+      // extents plus clearance, which is its own bound.
+      const clamped = endAround
+        ? offset
+        : clamp(offset, -this.aim.halfWidth * 0.9, this.aim.halfWidth * 0.9);
 
       // **Never ask for more sideways than the tyre can give.** Choosing a line
       // is not the same as reaching it: moving Δ across the road within the
@@ -761,13 +967,37 @@ export class CpuRider {
     // Holding is a physical relationship, not a projection relationship. Two
     // riders clamped to the same endpoint can still be many metres apart.
     const holdingQuarry = quarry !== null && quarryRange <= standOff;
+    // Frozen from the last step before the escape arms; see `wedgeHeading`.
+    if (this.stuckSeconds <= STUCK_SECONDS) this.wedgeHeading = view.headingY;
     if (holdingQuarry) this.stuckSeconds = 0;
-    else if (view.grounded && Math.abs(view.speed) < STUCK_SPEED) this.stuckSeconds += dt;
-    else if (Math.abs(view.speed) > STUCK_SPEED * 3) this.stuckSeconds = 0;
+    // Not conditioned on `grounded`: a wheel pressed on a wall micro-bounces
+    // its suspension, and gating on ground contact made the timer accrue at a
+    // seventh of real time — a 1.4 s threshold that took ten seconds to arm,
+    // measured against the §4.2 wall. Airborne is covered by the speed reset:
+    // a wheel with anywhere to fly is a wheel moving faster than this.
+    else if (Math.abs(view.speed) < STUCK_SPEED) this.stuckSeconds += dt;
+    else if (Math.abs(view.speed) > STUCK_SPEED * 3) {
+      // An escape that got the wheel moving again has finished its job — and
+      // the fact it was needed at all is what arms the flank. Recommitting
+      // straight at the quarry from here is what the wall report caught: the
+      // ram that just failed, replayed forever. Detour instead. Even when
+      // the blockers see the obstacle: the end-around had its chance before
+      // the wedge, and a wheel with its nose on a face cannot steer out of
+      // one — power into a wall kills its speed, and steer is disarmed at a
+      // standstill. The flank's sideways slide from a stand is the one
+      // manoeuvre that regains room.
+      if (this.stuckSeconds > STUCK_SECONDS) this.beginDetour(quarry, quarryRange);
+      this.stuckSeconds = 0;
+    }
     if (this.stuckSeconds > STUCK_SECONDS) {
       actions.throttle = -1;
       actions.steer = bearing >= 0 ? 1 : -1;
-      if (this.stuckSeconds > STUCK_SECONDS + STUCK_REVERSE_SECONDS) this.stuckSeconds = 0;
+      if (this.stuckSeconds > STUCK_SECONDS + STUCK_REVERSE_SECONDS) {
+        // Boxed in enough that even reversing went nowhere. Detour from a
+        // stand rather than reverse forever.
+        this.beginDetour(quarry, quarryRange);
+        this.stuckSeconds = 0;
+      }
     }
 
     // The kerb, hopped off the controller's own feeler. `canAcceptHop` is the
@@ -780,7 +1010,21 @@ export class CpuRider {
       const dx = quarry.x - view.x;
       const dz = quarry.z - view.z;
       const range = Math.sqrt(dx * dx + dz * dz);
-      if (range <= this.swingRangeMetres) {
+      // **A head-on pass has to be led.** At two top-speed wheels the ordinary
+      // 3.4 m range disappears inside the paddle's 0.10 s wind-up, so the
+      // strike begins after the quarry is already behind the cop. The swept hit
+      // test can cover motion *during* an active step; it cannot repair a swing
+      // requested too late. Predict the range at the end of the strike — where
+      // this right-side forehand reaches forward — from observed closure, and
+      // start when that future contact point is one paddle reach away. The
+      // ordinary range remains the floor for slow and same-direction chases.
+      const contactSeconds = Math.max(0, this.paddleWindupSeconds)
+        + Math.max(0, this.paddleActiveSeconds);
+      const ledRange = Math.max(
+        this.swingRangeMetres,
+        Math.max(0, this.paddleReachMetres) + quarryClosingSpeed * contactSeconds,
+      );
+      if (range <= ledRange) {
         const toQuarry = wrapAngle(Math.atan2(dx, dz) - view.headingY);
         if (Math.abs(toQuarry) <= this.swingConeRadians) {
           actions.swing = true;
@@ -790,6 +1034,48 @@ export class CpuRider {
     }
 
     return actions;
+  }
+
+  /**
+   * Commit to sliding past whatever the failed ram was into.
+   *
+   * The direction is the perpendicular of the line to the quarry, on the side
+   * whose turn it is — which for a wall he just hit square-on is along its
+   * face. Each call flips the side and doubles the next commitment, so a
+   * detour that was not enough is followed by a longer one the other way:
+   * the walk widens until one end of the obstacle is inside it, however long
+   * the wall the player found. Everything here is arithmetic on state the
+   * step already has; a flank replays identically under `advance(n)`.
+   */
+  private beginDetour(quarry: CpuQuarry | null, range: number): void {
+    if (quarry === null || range <= 1e-6) return;
+    if (!this.flanking) {
+      this.flanking = true;
+      this.flankQuarryX = quarry.x;
+      this.flankQuarryZ = quarry.z;
+    }
+    // Perpendicular to the heading he was wedged on, not to the quarry line.
+    // His nose was buried in the thing he rammed, so that heading's
+    // perpendicular is the obstacle's face — the tangent a wall-follower
+    // actually wants. The quarry-line perpendicular is the same thing only
+    // for a square-on ram; wedged obliquely near a wall's end it points
+    // diagonally backward, and the first cut of this walked away from the
+    // chase on exactly that.
+    // Left of heading h is (cos h, −sin h) — the file's one sign convention.
+    this.detourDirX = this.detourSide * Math.cos(this.wedgeHeading);
+    this.detourDirZ = this.detourSide * -Math.sin(this.wedgeHeading);
+    this.detourRemaining = this.detourSpan;
+    this.detourSpan = Math.min(DETOUR_SPAN_MAX_METRES, this.detourSpan * 2);
+    this.detourSide = this.detourSide === 1 ? -1 : 1;
+  }
+
+  /** Forget the whole flank: the quarry moved, vanished, or we teleported. */
+  private endFlank(): void {
+    this.flanking = false;
+    this.detourRemaining = 0;
+    this.detourSpan = DETOUR_SPAN_BASE_METRES;
+    this.detourSide = 1;
+    this.flankFreeSeconds = 0;
   }
 }
 
@@ -826,6 +1112,36 @@ const CORRIDOR_SHARE = 0.8;
 const RELOCATE_METRES = 30;
 /** The slowest a swerve may ask him to go, m/s. Below this he is stopping. */
 const SWERVE_SPEED_FLOOR = 5;
+/** The first detour's commitment, metres of travel. */
+const DETOUR_SPAN_BASE_METRES = 7;
+/**
+ * The longest a single detour commits to, metres. Past this the walk stops
+ * widening: an obstacle bigger than this on both sides is not something the
+ * generator builds, and a cop forty metres out is visibly working the problem
+ * rather than parked, which is the defect's actual content.
+ */
+const DETOUR_SPAN_MAX_METRES = 48;
+/** How far ahead of the wheel the detour's aim point is held, metres. */
+const DETOUR_AIM_METRES = 8;
+/** The fastest a detour rides, m/s. Feeling along a wall, not chasing. */
+const DETOUR_SPEED = 8;
+/** A flank's straight-at-them legs stay below the obstacle crash speed. */
+const FLANK_PROBE_SPEED = EUC.obstacleCrashSpeed * 0.9;
+/** Within this of the slide's direction the detour opens up to full speed. */
+const DETOUR_ALIGN_RADIANS = 0.5;
+/** Free direct riding for this long retires the flank, softly. */
+const FLANK_FREE_SECONDS = 3;
+/** Inside this range, with a clear gate, the aim is the rider not the road. */
+const CLOSE_PURSUIT_METRES = 12;
+/** Ends within this of each other count as equally near the line, metres. */
+const END_AROUND_TIE_METRES = 0.5;
+/**
+ * How far the quarry has to move off the spot the cop was wedged against
+ * before the flank is abandoned for ordinary pursuit, metres. Generous on
+ * purpose: shuffling behind the wall must not reset the widening walk, or
+ * wiggling in cover becomes the new exploit.
+ */
+const FLANK_QUARRY_MOVE_METRES = 12;
 /** Below this the wheel is going nowhere, m/s. */
 const STUCK_SPEED = 0.6;
 /** How long it may go nowhere before the brain backs it out, seconds. */
@@ -902,6 +1218,23 @@ function routeBlockers(
   };
 
   /**
+   * The road as measured just clear of a box's own span, not under it.
+   *
+   * The line-sampling rule above has a blind spot the §4.2 wall repro found:
+   * a solid standing *on* the line is its own footprint, so the sampler
+   * answers with its top face and the box measures itself as flat road —
+   * which is how a wall square across the corridor projected to nothing and
+   * the cop rode at it forever. Sampling just before and just after the span
+   * and keeping the lower answer measures the box against the road a rider
+   * arrives on. The ford's deck stays invisible either way: its top *is* the
+   * road on both approaches, so the difference stays under the threshold.
+   */
+  const roadBesideBox = (distance: number, radius: number): number => Math.min(
+    roadHeightAt(distance - radius - 0.6),
+    roadHeightAt(distance + radius + 0.6),
+  );
+
+  /**
    * Where a world point sits on the line: how far along, and how far across.
    *
    * **The along-line component is added back, and that is not a refinement.**
@@ -963,7 +1296,8 @@ function routeBlockers(
     // the ford's deck is flat, so on the approach the two disagree by enough to
     // make the road the rider crosses read as a wall across it. Two of the
     // pinned seeds stopped dead at the water's edge on exactly that.
-    if (box.centre.y + box.halfExtents.y - roadHeightAt(centre.distance) < BLOCKER_MIN_HEIGHT) {
+    if (box.centre.y + box.halfExtents.y - roadBesideBox(centre.distance, circum)
+      < BLOCKER_MIN_HEIGHT) {
       continue;
     }
 
@@ -999,7 +1333,7 @@ function routeBlockers(
         // Per piece, so the half of a building that faces the road is a blocker
         // and the half behind it is not.
         if (Math.abs(piece.lateral) > at.halfWidth + radius + BLOCKER_MARGIN) continue;
-        if (box.centre.y + box.halfExtents.y - roadHeightAt(piece.distance)
+        if (box.centre.y + box.halfExtents.y - roadBesideBox(piece.distance, radius)
           < BLOCKER_MIN_HEIGHT) continue;
         out.push({
           from: piece.distance - radius,
