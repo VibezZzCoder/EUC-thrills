@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test } from '@playwright/test';
 import { bootToTitle, collectErrors } from './harness.ts';
-import { CHASE } from '../src/data/tuning.ts';
+import { CHASE, PADDLE } from '../src/data/tuning.ts';
 
 /**
  * M18 — the police chase, in a real browser.
@@ -354,6 +354,52 @@ test('camping off the road inside the stray limit brings the cop across the gras
   // Standing still under a paddle is not safe: the run either was still being
   // pressured or ended as a bust. It must never end as a stray from here.
   expect(['none', 'caught']).toContain(camped.outcome);
+  expect(errors).toEqual([]);
+});
+
+test('the cop mirrors his swing when the rider is beside his left shoulder', async ({ page }) => {
+  // Owner field report: the cop could stand close enough to swing forever from
+  // some angles without landing one. This is the rendered integration boundary
+  // behind that symptom — actual Game placement, production brain, cop paddle,
+  // rider target and the hit event — rather than a second collision model in
+  // the spec. TypeScript private is deliberately only compile-time here; these
+  // two live objects are read as diagnostics and never mutated.
+  const errors = collectErrors(page);
+  await bootChase(page);
+
+  const struck = await page.evaluate(({ reach }) => {
+    const game = window.game;
+    const internal = game as unknown as {
+      readonly copCurrent: { x: number; y: number; z: number; headingY: number };
+      readonly copPaddle: { readonly swingSide: 'right' | 'left' };
+    };
+    game.advance(1);
+    const cop = internal.copCurrent;
+    const targetBearing = cop.headingY + Math.PI / 4;
+    const x = cop.x + Math.sin(targetBearing) * reach;
+    const z = cop.z + Math.cos(targetBearing) * reach;
+    const ground = game.sampleGround(x, z);
+    game.placeRider({ x, y: ground.height, z }, cop.headingY);
+    game.clearActions();
+
+    const before = game.snapshot().audio.played.hit;
+    let sawLeftSwing = false;
+    for (let step = 0; step < 120; step += 1) {
+      game.advance(1);
+      sawLeftSwing ||= internal.copPaddle.swingSide === 'left';
+      const hits = game.snapshot().audio.played.hit - before;
+      if (hits > 0) return { hits, sawLeftSwing, gap: game.snapshot().chase.copGap };
+    }
+    return {
+      hits: game.snapshot().audio.played.hit - before,
+      sawLeftSwing,
+      gap: game.snapshot().chase.copGap,
+    };
+  }, { reach: PADDLE.reach });
+
+  expect(struck.sawLeftSwing).toBe(true);
+  expect(struck.hits).toBeGreaterThan(0);
+  expect(struck.gap).toBeLessThan(CHASE.swingRangeMetres);
   expect(errors).toEqual([]);
 });
 

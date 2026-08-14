@@ -2,6 +2,7 @@
 import { CHASE, EUC, PADDLE, PHYSICS } from '../data/tuning.ts';
 import type { ActionSnapshot } from '../input/actions.ts';
 import type { BoxCollider, LevelPlan } from '../level/plan.ts';
+import type { SwingSide } from './paddle.ts';
 import {
   createSpineLocation,
   createSpineSample,
@@ -194,6 +195,8 @@ export class CpuRider {
   swingRangeMetres: number = CHASE.swingRangeMetres;
   swingConeRadians: number = CHASE.swingConeRadians;
   swingCooldownSeconds: number = CHASE.swingCooldownSeconds;
+  /** Side of the paddle arc chosen with the current swing request. */
+  swingSide: SwingSide = 'right';
   /** The shared paddle geometry/timing needed to lead a closing swing. */
   paddleReachMetres: number = PADDLE.reach;
   paddleWindupSeconds: number = PADDLE.windupSeconds;
@@ -341,6 +344,7 @@ export class CpuRider {
     this.lastHeading = view.headingY;
     this.hasHeading = true;
     this.swingCooldown = 0;
+    this.swingSide = 'right';
     this.lastQuarryRange = Infinity;
     this.stuckSeconds = 0;
     this.pursuitDirection = 1;
@@ -832,8 +836,8 @@ export class CpuRider {
     // and the cop may spend only the distance left before it. No multiplier can
     // make his wheel faster than the player's; this only decides when he asks
     // their shared controller to brake.
+    const strikeStandOff = Math.max(0, this.paddleReachMetres);
     if (quarry !== null && !detouring) {
-      const standOff = Math.max(0, this.swingRangeMetres - this.hazardClearanceMetres);
       // Route projection clamps both riders to an endpoint. At chase spawn the
       // player is on distance zero and the cop is physically `spawnGapMetres`
       // behind that endpoint, so their route gap is zero while their real gap
@@ -851,7 +855,7 @@ export class CpuRider {
       const closingDistance = direct
         ? quarryRange
         : Math.max(Math.abs(routeGap), quarryRange);
-      cap = Math.min(cap, allow(quarrySpeed, closingDistance - standOff));
+      cap = Math.min(cap, allow(quarrySpeed, closingDistance - strikeStandOff));
     }
 
     // Off the road is somewhere to leave, not somewhere to hurry through: the
@@ -963,10 +967,9 @@ export class CpuRider {
     // stuck is to have braked for something unpassable and then have nothing
     // ask the wheel to move again, which is a stopped cop with a *negative*
     // throttle. He never wants to be stationary, so any long stop is a fault.
-    const standOff = Math.max(0, this.swingRangeMetres - this.hazardClearanceMetres);
     // Holding is a physical relationship, not a projection relationship. Two
     // riders clamped to the same endpoint can still be many metres apart.
-    const holdingQuarry = quarry !== null && quarryRange <= standOff;
+    const holdingQuarry = quarry !== null && quarryRange <= strikeStandOff;
     // Frozen from the last step before the escape arms; see `wedgeHeading`.
     if (this.stuckSeconds <= STUCK_SECONDS) this.wedgeHeading = view.headingY;
     if (holdingQuarry) this.stuckSeconds = 0;
@@ -1015,7 +1018,7 @@ export class CpuRider {
       // strike begins after the quarry is already behind the cop. The swept hit
       // test can cover motion *during* an active step; it cannot repair a swing
       // requested too late. Predict the range at the end of the strike — where
-      // this right-side forehand reaches forward — from observed closure, and
+      // either committed arc reaches forward — from observed closure, and
       // start when that future contact point is one paddle reach away. The
       // ordinary range remains the floor for slow and same-direction chases.
       const contactSeconds = Math.max(0, this.paddleWindupSeconds)
@@ -1027,6 +1030,12 @@ export class CpuRider {
       if (range <= ledRange) {
         const toQuarry = wrapAngle(Math.atan2(dx, dz) - view.headingY);
         if (Math.abs(toQuarry) <= this.swingConeRadians) {
+          // The authored player forehand travels through the rider's right.
+          // A cop has a target on either side, so mirror the same physical arc
+          // when the quarry is left of his nose. The paddle latches this value
+          // when it accepts the request; crossing the nose during wind-up
+          // cannot reverse a committed swing.
+          this.swingSide = toQuarry > 0 ? 'left' : 'right';
           actions.swing = true;
           this.swingCooldown = this.swingCooldownSeconds;
         }

@@ -168,6 +168,24 @@ test('a swing runs idle → windup → active → recover → idle, once per req
   assert.deepEqual(seen.slice(0, 5), ['windup', 'active', 'recover', 'idle', 'windup']);
 });
 
+test('a mirrored swing latches its side until the cycle finishes', () => {
+  const paddle = new Paddle();
+  let firstActiveAngle = -Infinity;
+  let sawActive = false;
+  for (let step = 0; step < 120; step += 1) {
+    // Ask left once, then offer the opposite side on every later step. A target
+    // crossing the cop's nose during wind-up must not reverse a committed arc.
+    paddle.step(DT, poseAt(step * DT, 0), step === 0, null, step === 0 ? 'left' : 'right');
+    if (paddle.phase === 'active' && !sawActive) {
+      sawActive = true;
+      firstActiveAngle = paddle.angle;
+    }
+    if (paddle.phase !== 'idle') assert.equal(paddle.swingSide, 'left');
+  }
+  assert.equal(sawActive, true, 'the mirrored request never reached its strike window');
+  assert.ok(firstActiveAngle > 0, `the left strike opened on the right (${firstActiveAngle})`);
+});
+
 test('each phase lasts the seconds it is tuned to', () => {
   const paddle = new Paddle();
   const counts: Record<string, number> = { idle: 0, windup: 0, active: 0, recover: 0 };

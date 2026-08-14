@@ -12,8 +12,9 @@ import { PADDLE, SIMULATION } from '../data/tuning.ts';
  * a `swing` request rather than off "the Knockabout player", the hit query takes
  * a **set of hittable spheres** rather than a level's targets, and the mode
  * decides who carries one. Target discs implement `HittableSet` today
- * (`simulation/targets.ts`); rider capsules will implement the same interface
- * whenever the cop swings at people, and this file will not change.
+ * (`simulation/targets.ts`); the chase's one-rider set implements the same
+ * interface. The optional swing side is also wielder-agnostic: the player keeps
+ * M14's authored right forehand while the cop may request its mirrored path.
  *
  * It holds no world of its own and imports nothing but the tuning table.
  * Nothing here may import three.js — AGENTS.md invariant 1.
@@ -111,6 +112,16 @@ export interface HittableSet {
  */
 export type SwingPhase = 'idle' | 'windup' | 'active' | 'recover';
 
+/**
+ * Which side the strike travels through.
+ *
+ * The ordinary player swing remains the right-side forehand. A CPU wielder may
+ * choose the mirrored left-side path when its quarry is on that side; the
+ * choice is latched when the request is accepted so an actor crossing the nose
+ * cannot reverse a swing that is already under way.
+ */
+export type SwingSide = 'right' | 'left';
+
 /** A wielder, as far as a paddle is concerned. */
 export interface WielderPose {
   /** The contact patch — the point every other system already measures from. */
@@ -165,6 +176,8 @@ export class Paddle {
   maxStepSweep: number = PADDLE.maxStepSweep;
 
   private phaseValue: SwingPhase = 'idle';
+  /** Side latched when an idle paddle accepts a swing request. */
+  private swingSideValue: SwingSide = 'right';
   /** Seconds spent in the current phase. */
   private elapsed = 0;
   /**
@@ -213,6 +226,11 @@ export class Paddle {
     return this.phaseValue === 'active';
   }
 
+  /** The side chosen for the current or most recently completed swing. */
+  get swingSide(): SwingSide {
+    return this.swingSideValue;
+  }
+
   /** How far through the current phase, 0..1. Idle is always 0. */
   get phaseProgress(): number {
     const span = this.spanOf(this.phaseValue);
@@ -229,21 +247,22 @@ export class Paddle {
    * than two that agree today.
    */
   get angle(): number {
+    const strikeStart = this.swingAngle(this.startAngle);
+    const strikeEnd = this.swingAngle(this.startAngle + this.sweepRadians);
     switch (this.phaseValue) {
       case 'idle':
         return this.restAngle;
       case 'windup':
-        return this.restAngle + (this.startAngle - this.restAngle) * smoothstep(this.phaseProgress);
+        return this.restAngle + (strikeStart - this.restAngle) * smoothstep(this.phaseProgress);
       case 'active':
         // **Linear, and that is not a stylistic choice.** The teleport guard and
         // the sagitta bound are both derived from a constant angular rate; an
         // eased strike window would exceed the rate they were computed at,
         // exactly in the middle where the hits happen.
-        return this.startAngle + this.sweepRadians * this.phaseProgress;
+        return strikeStart + (strikeEnd - strikeStart) * this.phaseProgress;
       case 'recover':
       default: {
-        const from = this.startAngle + this.sweepRadians;
-        return from + (this.restAngle - from) * smoothstep(this.phaseProgress);
+        return strikeEnd + (this.restAngle - strikeEnd) * smoothstep(this.phaseProgress);
       }
     }
   }
@@ -365,9 +384,10 @@ export class Paddle {
     pose: WielderPose,
     swingRequested: boolean,
     hittables: HittableSet | null,
+    swingSide: SwingSide = 'right',
   ): readonly PaddleHit[] {
     this.reseededThisStep = false;
-    this.advancePhase(dt, swingRequested);
+    this.advancePhase(dt, swingRequested, swingSide);
 
     this.previousX = this.headX;
     this.previousY = this.headY;
@@ -416,13 +436,14 @@ export class Paddle {
    * single transition per step would then stretch a swing back out to one step
    * per phase and make the slider appear to do nothing below 8.3 ms.
    */
-  private advancePhase(dt: number, swingRequested: boolean): void {
+  private advancePhase(dt: number, swingRequested: boolean, swingSide: SwingSide): void {
     this.activeDuringStep = this.phaseValue === 'active';
     if (this.phaseValue === 'idle') {
       // Only idle accepts a request. Re-pressing during recovery is a player
       // asking for a second swing before the first finished, and granting it
       // would make the whole cycle cost nothing.
       if (!swingRequested) return;
+      this.swingSideValue = swingSide;
       this.phaseValue = 'windup';
       this.elapsed = 0;
     }
@@ -447,6 +468,11 @@ export class Paddle {
       }
     }
     if (this.phaseValue === 'idle') this.elapsed = 0;
+  }
+
+  /** Mirror one authored right-side strike angle across the forward axis. */
+  private swingAngle(rightSideAngle: number): number {
+    return this.swingSideValue === 'left' ? -rightSideAngle : rightSideAngle;
   }
 
   /**

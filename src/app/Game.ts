@@ -2115,6 +2115,7 @@ export class Game {
         : null,
     );
     const wantsSwing = intent.swing;
+    const swingSide = brain.swingSide;
     cop.step(stepSeconds, intent);
     cop.writePose(this.copCurrent);
 
@@ -2123,8 +2124,9 @@ export class Game {
     this.copGap = Math.sqrt(dx * dx + dz * dz);
 
     // **The strike.** The rider is a one-entry `HittableSet` and the paddle is
-    // M14's, unchanged — the swept segment, the teleport guard and the sort are
-    // all the same code that knocks targets down. What a hit *means* is this
+    // M14's same generic weapon — the swept segment, the teleport guard and the
+    // sort are the same code that knocks targets down. The cop only supplies
+    // which mirrored side to commit when a new swing starts. What a hit *means* is this
     // method's answer, and it is the M14 body knock: one soft-body wobble and a
     // shove through `EucController.softKnock`, the fourth and last sanctioned
     // wobble caller. Nothing here reaches `injectWobble`, and a strike never
@@ -2148,6 +2150,7 @@ export class Game {
       },
       this.copView.crashed ? false : wantsSwing,
       this.riderTarget,
+      swingSide,
     );
 
     for (const hit of hits) {
@@ -4768,10 +4771,10 @@ function crashVoiceFor(id: CharacterId): CrashVoiceId {
 /**
  * The escaping rider, as the one thing the cop's paddle can hit — M18.
  *
- * **This is the second implementer `simulation/paddle.ts` was written for**,
- * and the file said so at M14: "`TargetField` is one implementation; rider
- * capsules will be another when the cop arrives with the chase direction." The
- * paddle did not change by a line to swing at a person.
+ * **This is the second implementer `simulation/paddle.ts` was written for.**
+ * Its one-entry sphere set plugs into the same generic swept query as
+ * `TargetField`; choosing a mirrored swing side changes the path the generic
+ * paddle takes, never what kind of thing it is allowed to hit.
  *
  * One volume, moved rather than rebuilt, because there is exactly one quarry
  * and it is somewhere different every step. `live` is what makes the set empty

@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { CHASE, EUC, SIMULATION } from '../data/tuning.ts';
+import { CHASE, EUC, PADDLE, SIMULATION } from '../data/tuning.ts';
 import { generateLevel } from '../level/generateRoute.ts';
 import { createLevel } from '../level/levels.ts';
 import type { LevelPlan } from '../level/plan.ts';
@@ -710,7 +710,7 @@ test('a top-speed head-on rider is met by the cop paddle, not waved past', () =>
     target.x = quarry.x;
     target.y = quarry.y + CHASE.riderHitHeight;
     target.z = quarry.z;
-    hits += paddle.step(STEP, view, intent.swing, targetSet).length;
+    hits += paddle.step(STEP, view, intent.swing, targetSet, brain.swingSide).length;
   }
 
   assert.equal(swingRequests, 1, 'one head-on pass should cost one committed swing');
@@ -719,4 +719,95 @@ test('a top-speed head-on rider is met by the cop paddle, not waved past', () =>
     `the cop waited until ${firstSwingRange.toFixed(2)} m to wind up against a top-speed closure`,
   );
   assert.ok(hits > 0, 'the head-on quarry crossed the cop without meeting the paddle');
+});
+
+test('a stopped quarry inside the cop cone is hittable from either side', () => {
+  // Owner field report: at close range the cop visibly swung forever while the
+  // rider stood beside him. Two guarantees had drifted apart. The brain's cone
+  // accepts both sides while M14's authored forehand only crosses the right,
+  // and the pursuit used to hold at 3.4 - 1.2 = 2.2 m even though a stopped
+  // paddle cannot physically reach that far. Exercise the production
+  // brain -> side-latched paddle handoff across the whole accepted cone.
+  const { plan } = generateLevel('route-41');
+  const spine = RouteSpine.fromPlan(plan);
+  assert.ok(spine !== null, 'route-41 produced no spine');
+  const at = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
+  spine.sample(70, at);
+
+  for (const bearingDegrees of [-60, -45, -30, 0, 30, 45, 60]) {
+    const bearing = bearingDegrees * Math.PI / 180;
+    const heading = at.headingY + bearing;
+    const quarry: CpuQuarry = {
+      x: at.x + Math.sin(heading) * PADDLE.reach,
+      y: at.y,
+      z: at.z + Math.cos(heading) * PADDLE.reach,
+      speed: 0,
+    };
+    const view: CpuView = {
+      x: at.x,
+      y: at.y,
+      z: at.z,
+      headingY: at.headingY,
+      speed: 0,
+      grounded: true,
+      crashed: false,
+      curbAhead: 0,
+      lateralLimitG: EUC.maxLateralG,
+    };
+    const brain = new CpuRider(spine, plan, new PlanTerrainSampler(plan));
+    brain.place(view);
+    const paddle = new Paddle();
+    const target: HittableVolume = {
+      id: 'rider',
+      x: quarry.x,
+      y: quarry.y + CHASE.riderHitHeight,
+      z: quarry.z,
+      radius: CHASE.riderHitRadius,
+    };
+    const targetSet: HittableSet = {
+      eachNear(minX, minY, minZ, maxX, maxY, maxZ, visit) {
+        if (target.x + target.radius < minX || target.x - target.radius > maxX) return;
+        if (target.y + target.radius < minY || target.y - target.radius > maxY) return;
+        if (target.z + target.radius < minZ || target.z - target.radius > maxZ) return;
+        visit(target);
+      },
+    };
+
+    let requests = 0;
+    let hits = 0;
+    for (let step = 0; step < SIMULATION.hz; step += 1) {
+      const intent = brain.step(STEP, view, quarry);
+      if (intent.swing) requests += 1;
+      hits += paddle.step(STEP, view, intent.swing, targetSet, brain.swingSide).length;
+    }
+    assert.equal(requests, 1, `${bearingDegrees} degrees did not produce one committed swing`);
+    assert.ok(hits > 0, `${bearingDegrees} degrees is inside the cop cone but outside his paddle`);
+  }
+
+  // Just outside the physical hold distance, a stopped cop must keep closing.
+  // The old 2.2 m hold returned exactly zero throttle here while every paddle
+  // angle missed, creating the permanent stalemate shown in the screenshots.
+  const view: CpuView = {
+    x: at.x,
+    y: at.y,
+    z: at.z,
+    headingY: at.headingY,
+    speed: 0,
+    grounded: true,
+    crashed: false,
+    curbAhead: 0,
+    lateralLimitG: EUC.maxLateralG,
+  };
+  const quarry: CpuQuarry = {
+    x: at.x + Math.sin(at.headingY) * (PADDLE.reach + 0.8),
+    y: at.y,
+    z: at.z + Math.cos(at.headingY) * (PADDLE.reach + 0.8),
+    speed: 0,
+  };
+  const brain = new CpuRider(spine, plan, new PlanTerrainSampler(plan));
+  brain.place(view);
+  assert.ok(
+    brain.step(STEP, view, quarry).throttle > 0,
+    'the cop stopped outside the stationary paddle envelope',
+  );
 });
