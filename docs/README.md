@@ -36,12 +36,14 @@ Worth knowing before you start:
   builds the same place, which is how you send one to a friend. A rare name may
   not produce a valid route, in which case the game says so and asks for
   another rather than quietly giving you a different world.
-- **There are two selectable riders now.** The title screen says who you are
-  riding as and that line opens the chooser: **Cool Rider** in black and reflective blue, or
+- **There are three selectable riders now.** The title screen says who you are
+  riding as and that line opens the chooser: **Cool Rider** in black and reflective blue;
   **Trollina**, who has wild magenta hair, a skater dress over black tights, and
-  her own idea of what falling off sounds like. Cool Rider is the first-time
+  her own idea of what falling off sounds like; and **Red Rider**, a real rider
+  who asked to be in the game and appears with his permission, in his own
+  red-and-black gear on his own customized wheel. Cool Rider is the first-time
   default; after you choose, the game remembers your rider. It is looks only —
-  both ride exactly the same, and your best times carry across.
+  all three ride exactly the same, and your best times carry across.
 - **Police chase is live on Fresh routes.** Officer Dorkins is a CPU rider on
   the same wheel physics as you, not a moving obstacle on a rail. Stay ahead for
   five minutes; use the road, hazards, and rough ground to make his pursuit
@@ -85,9 +87,9 @@ checksum of every published file except itself.*
 
 ## Riding
 
-You are **Cool Rider** or **Trollina**, on a fictional suspension wheel. The
-two are the same to ride, down to the last number — the choice changes what you
-look like and what you shout when it goes wrong. The default ride is a
+You are **Cool Rider**, **Trollina**, or **Red Rider**, on a suspension wheel.
+The three are the same to ride, down to the last number — the choice changes
+what you and your wheel look like and what you shout when it goes wrong. The default ride is a
 loop that leaves a plaza, runs a boulevard, crosses a park and a river ford,
 climbs a gravel trail, and comes back — with a shortcut through an alley that
 is genuinely faster and genuinely riskier. Fresh routes reuse those authored
@@ -258,17 +260,23 @@ start its time trial, play Knockabout, or start a Police chase.
 
 The seed stays visible and becomes part of the address, so sending the link
 sends the same ground. Personal bests and ghosts stay with that route and are
-kept per route, not per rider—switching between Cool Rider and Trollina changes
-nothing about your records.
+kept per route, not per rider—switching riders changes nothing about your
+records.
 
 ## Riders
 
 The line under the title screen's buttons says who you are riding as, and
-opens the chooser. There are two, and the difference is entirely cosmetic:
+opens the chooser. There are three, and the difference is entirely cosmetic:
 **Cool Rider** in black moto gear with reflective blue panels and a full-face
-helmet, and **Trollina**, who began life as a joke drawing somebody sent the
-author to make fun of the graphics and ended up in the game. Each has their own
-crash sound. Neither is faster.
+helmet; **Trollina**, who began life as a joke drawing somebody sent the
+author to make fun of the graphics and ended up in the game; and **Red Rider**,
+a real rider who asked to appear and is in the game with his permission — his
+red-and-black armour, harness, and camera are his, and he is the first rider
+whose machine looks different too, a red saddled wheel modelled on his own
+customized machine. Each has their own crash sound. None is faster, and
+Red Rider's wheel rides identically to the standard one, down to the last
+number. "Red Rider" is the only name published, and his likeness appears here
+with permission for this game only — see [`NOTICE.md`](NOTICE.md).
 
 ## Settings
 
@@ -345,6 +353,11 @@ may change or never happen.
 
 ### Recently landed
 
+- **A third rider, and the first with his own wheel.** Red Rider — a real
+  rider who asked to appear, in the game with his permission — joins the
+  chooser in his own gear on a red saddled wheel modelled on his customized
+  machine. Cosmetic-equal like the others, with his own crash sound.
+
 - **Police chase.** Officer Dorkins now pursues either playable rider across
   Fresh routes, including off-road escapes. Survive five minutes, avoid his
   paddle, and use the same terrain and hazards he has to ride. The single-player
@@ -388,7 +401,8 @@ may change or never happen.
 - **More rider voices.** Varied crash reactions and occasional hop, carve,
   impact, and top-speed calls, without turning the ride bed into chatter.
 - **More character and presentation.** A richer procedural look, more wheels
-  and cosmetic-equal riders, music, helmet/wheel/replay cameras, and photo mode.
+  and cosmetic-equal riders, a custom wheel designer, music,
+  helmet/wheel/replay cameras, and photo mode.
 - **More for the phone.** The controls are in and the game is properly
   playable on one; what is not there yet is anything that takes advantage of
   it — a layout that adapts to a folding screen, haptics on a landing or a
@@ -403,13 +417,17 @@ to be.
 
 ## Licence
 
-Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the seven
-shipped sounds derive from public-domain (CC0) recordings, one crash is the
-author's own recording, and the second rider's crash is a composed one-shot
+Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the eight
+shipped sounds derive from public-domain (CC0) recordings; two crashes derive
+from the author's own recording — the third rider's is that same wipeout with
+the author's voice removed; and the second rider's crash is a composed one-shot
 whose voice is machine-generated and is therefore excluded from the CC BY 4.0
-claim. Full terms, attribution, and per-file provenance are in
-[`LICENSE`](LICENSE) and [`NOTICE.md`](NOTICE.md).
+claim. Red Rider is a real person represented with permission, and no licence
+in this project covers his name, likeness, or persona. Full terms,
+attribution, and per-file provenance are in [`LICENSE`](LICENSE) and
+[`NOTICE.md`](NOTICE.md).
 
-The wheels in this game are original fictional designs. This project is not
-affiliated with, endorsed by, or associated with any electric unicycle
-manufacturer or retailer.
+The wheels in this game are original fictional designs — one is modelled, with
+its rider's permission, on his own customized machine, without reproducing any
+manufacturer's identity. This project is not affiliated with, endorsed by, or
+associated with any electric unicycle manufacturer or retailer.

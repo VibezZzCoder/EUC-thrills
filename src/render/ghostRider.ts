@@ -5,6 +5,7 @@ import { approach } from '../shared/maths.ts';
 import { createPose, type EucPose } from '../simulation/EucController.ts';
 import type { GhostSample } from '../simulation/ghost.ts';
 import { createRidingRig, type RidingRig } from './ridingRig.ts';
+import { STANDARD_MACHINE_LOOK, type MachineLook } from './machineLook.ts';
 import { COOL_RIDER_LOOK, type RiderLook } from './riderLook.ts';
 
 /**
@@ -116,13 +117,20 @@ export interface GhostRider {
  * noise — a ghost pumping back and forth from differentiation noise is the
  * annoyance rule (`AGENTS.md`), and a neutral riding stance is not.
  */
-export function createGhostRider(look: RiderLook = COOL_RIDER_LOOK): GhostRider {
+export function createGhostRider(
+  look: RiderLook = COOL_RIDER_LOOK,
+  machine: MachineLook = STANDARD_MACHINE_LOOK,
+): GhostRider {
   const group = new THREE.Group();
   group.name = 'ghost-rider';
   // Hidden until there is a record and a run. Free ride must cost nothing.
   group.visible = false;
 
-  const rig: RidingRig = createRidingRig(look);
+  // The machine is forwarded for the silhouette: the ghost draws only the
+  // rig's shadow-casting parts, and Red Rider's saddle is merged into the
+  // shell — a ghost of him on a saddleless wheel would be a different outline
+  // than the rider it replays.
+  const rig: RidingRig = createRidingRig(look, machine);
   group.add(rig.group);
 
   // **Every name in the ghost's copy of the rig is prefixed, and this is a

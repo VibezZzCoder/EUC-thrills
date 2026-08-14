@@ -498,15 +498,23 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
    * `paintwork` is the look's optional vertex repaint (`RiderLook.paint`) —
    * run here, once, on the built geometry, because a limb is the one place
    * decoration cannot be a panel without costing a mesh.
+   *
+   * **`side` is handed to the painter, and M19 is why.** Each limb gets a fresh
+   * geometry per side, so a painter that does not know which leg it is on can
+   * only band by height or by `|x|` — and a mark that should sit on the
+   * *outside* of both legs then lands outboard on one and inboard on the other.
+   * Red Rider's thigh graphic is exactly that mark. Passing the side costs
+   * nothing and every existing painter ignores it.
    */
   const limb = (
     profile: LoftProfile,
     material: THREE.Material,
     shade: number,
-    paintwork?: (geometry: THREE.BufferGeometry) => void,
+    paintwork?: (geometry: THREE.BufferGeometry, side: number) => void,
+    side = 1,
   ): THREE.Mesh => {
     const geometry = track(loftGeometry(profile, { radialSegments: 14, shade }));
-    paintwork?.(geometry);
+    paintwork?.(geometry, side);
     const mesh = new THREE.Mesh(geometry, material);
     return shadowed(mesh);
   };
@@ -631,13 +639,13 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       bendToward: FORWARD,
     }, solvedUpper, solvedLower);
     hip.quaternion.copy(solvedUpper);
-    hip.add(limb(profiles.thigh, legMaterial, shades.legs, look.paint?.thigh));
+    hip.add(limb(profiles.thigh, legMaterial, shades.legs, look.paint?.thigh, side));
 
     const knee = new THREE.Group();
     knee.name = `rider-knee-${sideName}`;
     knee.position.y = -RIDER_BLOCKOUT.thighLength;
     knee.quaternion.copy(solvedLower);
-    knee.add(limb(profiles.shin, legMaterial, shades.legs, look.paint?.shin));
+    knee.add(limb(profiles.shin, legMaterial, shades.legs, look.paint?.shin, side));
     hip.add(knee);
 
     const ankle = new THREE.Group();
@@ -659,7 +667,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     const sole = loftGeometry(profiles.bootSole, { radialSegments: 16, shade: shades.sole })
       .translate(0, soleTop, 0.018);
     const bootGeometry = track(mergeGeometries([upper, sole]));
-    look.paint?.boot?.(bootGeometry);
+    look.paint?.boot?.(bootGeometry, side);
     const boot = shadowed(new THREE.Mesh(bootGeometry, gearMaterial));
     boot.name = `rider-boot-${sideName}`;
     ankle.add(boot);
@@ -834,8 +842,10 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     }
     shoulder.add(elbow);
 
+    const handGeometry = track(loftGeometry(profiles.hand, { radialSegments: 10 }));
+    look.paint?.hand?.(handGeometry, side);
     const hand = shadowed(new THREE.Mesh(
-      track(loftGeometry(profiles.hand, { radialSegments: 10 })),
+      handGeometry,
       handMaterial,
     ));
     hand.name = `rider-hand-${sideName}`;
@@ -882,7 +892,10 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // rather than as temporary.
   const neckMesh = shadowed(new THREE.Mesh(
     track(loftGeometry(profiles.neck, { radialSegments: 12, shade: shades.neck })),
-    limbMaterial,
+    // Its own mesh already, so the role costs nothing: Red Rider's gaiter is
+    // the gear material where everyone before him wore `limbs` (see
+    // `RiderLook.parts.neck` for why a shade could not say "black").
+    materialFor(look.parts.neck ?? 'limbs'),
   ));
   neck.add(neckMesh);
 

@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
 import type { EucPose } from '../simulation/EucController.ts';
+import { STANDARD_MACHINE_LOOK, type MachineLook } from './machineLook.ts';
 import { COP_LOOK } from './riderLook.ts';
 import { createRidingRig, type RidingRig } from './ridingRig.ts';
 
@@ -74,6 +75,49 @@ const DROPPED_MESHES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * **His wheel's headlamp is paint, not a mesh.** The rig's decoration meshes
+ * stay dropped — the calls are the scarce thing — but the shell's material is
+ * `vertexColors: true` like everything in the rig, and the cop's shell
+ * geometry is his own copy, so a repaint of its nose vertices buys the bright
+ * lamp square a machine coming *at* you leads with. Banded off the shell's own
+ * bounding box, because the shell is authored in `render/euc.ts`'s frame and
+ * this file should not have to know its arithmetic. Not emissive — a painted
+ * lamp does not light the road — but at chase distance a bright square on a
+ * dark nose *is* a headlight, the same judgement the painted sock ring makes.
+ * (A hi-vis band around the arch skirt was tried and removed: the shell's
+ * vertex rows are sparse down there, so the band's edge interpolated half way
+ * up the shell and read as a spill of paint rather than trim.)
+ *
+ * From M19 Phase 2 the repaint rides the `MachineLook` axis it pioneered: he
+ * rides the standard machine (`data/machines.ts` says why) wearing this one
+ * paint, and `render/euc.ts` applies it at build. Same band, same values, same
+ * pixels — `renderCost.test.ts` would notice a moved vertex as a moved call.
+ */
+const COP_MACHINE_LOOK: MachineLook = {
+  ...STANDARD_MACHINE_LOOK,
+  paintShell: (geometry: THREE.BufferGeometry): void => {
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    if (box === null) return;
+    const span = Math.max(1e-3, box.max.y - box.min.y);
+    const position = geometry.getAttribute('position');
+    const colour = geometry.getAttribute('color');
+    for (let i = 0; i < position.count; i += 1) {
+      const y = position.getY(i);
+      const z = position.getZ(i);
+      if (
+        z > box.max.z - 0.028
+        && y > box.min.y + span * 0.30
+        && y < box.min.y + span * 0.62
+        && Math.abs(position.getX(i)) < 0.045
+      ) {
+        colour.setXYZ(i, 3.2, 3.2, 3.4);
+      }
+    }
+  },
+};
+
+/**
  * How much geometry a mesh needs before it is worth a shadow, triangles.
  *
  * **A rule rather than a list, and the rule is bulk.** What a shadow does at
@@ -111,7 +155,7 @@ export function createCopRider(): CopRider {
   // cost nothing for a rider who is not in them.
   group.visible = false;
 
-  const rig: RidingRig = createRidingRig(COP_LOOK);
+  const rig: RidingRig = createRidingRig(COP_LOOK, COP_MACHINE_LOOK);
   group.add(rig.group);
 
   // **Every name in the cop's copy of the rig is prefixed**, for the reason
@@ -146,44 +190,6 @@ export function createCopRider(): CopRider {
     });
   };
   trim();
-
-  // **His wheel's headlamp is paint, not a mesh.** The rig's decoration
-  // meshes stay dropped — the calls are the scarce thing — but the shell's
-  // material is `vertexColors: true` like everything in the rig, and the cop's
-  // shell geometry is his own copy, so a repaint of its nose vertices buys the
-  // bright lamp square a machine coming *at* you leads with. Banded off the
-  // shell's own bounding box, because the shell is authored in
-  // `render/euc.ts`'s frame and this file should not have to know its
-  // arithmetic. Not emissive — a painted lamp does not light the road — but at
-  // chase distance a bright square on a dark nose *is* a headlight, the same
-  // judgement the painted sock ring makes. (A hi-vis band around the arch
-  // skirt was tried and removed: the shell's vertex rows are sparse down
-  // there, so the band's edge interpolated half way up the shell and read as
-  // a spill of paint rather than trim.)
-  const paintWheel = (): void => {
-    const shell = rig.group.getObjectByName('euc-shell') as THREE.Mesh | undefined;
-    if (shell === undefined) return;
-    const geometry = shell.geometry;
-    geometry.computeBoundingBox();
-    const box = geometry.boundingBox;
-    if (box === null) return;
-    const span = Math.max(1e-3, box.max.y - box.min.y);
-    const position = geometry.getAttribute('position');
-    const colour = geometry.getAttribute('color');
-    for (let i = 0; i < position.count; i += 1) {
-      const y = position.getY(i);
-      const z = position.getZ(i);
-      if (
-        z > box.max.z - 0.028
-        && y > box.min.y + span * 0.30
-        && y < box.min.y + span * 0.62
-        && Math.abs(position.getX(i)) < 0.045
-      ) {
-        colour.setXYZ(i, 3.2, 3.2, 3.4);
-      }
-    }
-  };
-  paintWheel();
 
   rig.group.traverse((object) => {
     if (object.name !== '') object.name = `cop-${object.name}`;

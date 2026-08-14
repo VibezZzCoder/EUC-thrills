@@ -373,6 +373,56 @@ const RIDER_CARDS: Readonly<Record<PlayableCharacterId, { blurb: string; portrai
         <path d="M36 76h24l1.6 4H34.4z" fill="#2c2e34"/>
       </svg>`,
   },
+  /**
+   * Red Rider — M19, and built from Cool Rider's portrait rather than a new
+   * drawing, because they are the same silhouette: a full-face lid over a
+   * visor over shoulders. What separates them on a card is what separates them
+   * at 30 m — the colour field, and the black harness across the chest.
+   *
+   * **His name is deliberately not drawn into the art**, although the reference
+   * plate on his wheel carries it and the plan first said it would go here.
+   * The card already renders "Red Rider" in the name span two lines below, and
+   * this file's own rule is the one that settles it: a portrait that announces
+   * itself reads the character's name twice. The legible wordmark is therefore
+   * the name element that was always going to be there.
+   *
+   * His bolted nameplate was then drawn here as a wordless *badge*, and removed
+   * again after looking at it: with nothing to attach to it floated below his
+   * shoulder like a sticker, and neither of the portraits above carries a
+   * detached element. The plate belongs on the machine it is bolted to, which
+   * is where Phase 3 puts it. What stands in for it here is the harness buckle
+   * on his chest — connected, and the same piece of hardware his rig carries in
+   * three dimensions.
+   *
+   * The colours are the authored albedos from `BLOCKOUT_COLOURS.redRider*`,
+   * exactly as the two cards above use theirs. A card is lit by nothing and a
+   * rider is lit by the sun, so these will read a little deeper here than on
+   * the wheel — which is the right direction, and the same discrepancy the
+   * other two portraits have always carried.
+   */
+  'red-rider': {
+    blurb: 'Gloss red lid, dark visor, red over black armour, and a wheel he built to match. '
+      + 'A real rider, in the game because he asked.',
+    portrait: `
+      <svg viewBox="0 0 96 96" class="euc-rider-card__art" aria-hidden="true" focusable="false">
+        <path d="M18 76c6-5 17-8 30-8s24 3 30 8v6H18z" fill="#ba262b"/>
+        <path d="M31 71 47 82M65 71 49 82" stroke="#26282e" stroke-width="4.6"
+              stroke-linecap="round" fill="none"/>
+        <rect x="41" y="78" width="14" height="6" rx="1.6" fill="#26282e"/>
+        <path d="M20 58c0-19 12-31 28-31s28 12 28 31c0 6-2 11-5 14H25c-3-3-5-8-5-14z"
+              fill="#ba262b"/>
+        <path d="M23 52c3-14 12-22 25-22s22 8 25 22c-6-4-15-6-25-6s-19 2-25 6z"
+              fill="#d4333a"/>
+        <path d="M26 55c4-4 12-7 22-7s18 3 22 7c-1 7-3 11-6 13H32c-3-2-5-6-6-13z"
+              fill="#101216"/>
+        <path d="M28 56c4-3 11-5 20-5s16 2 20 5c-1 5-2 8-4 9H32c-2-1-3-4-4-9z"
+              fill="#1b1d22"/>
+        <path d="M30 58c4-2 10-3.4 18-3.4S62 56 66 58c-1 1.6-2 2.6-3.4 3.2-4-1.6-9-2.4-14.6-2.4
+                 s-10.6.8-14.6 2.4C32 60.6 31 59.6 30 58z" fill="#2f343d"/>
+        <path d="M27 68c5 2.6 12.6 4 21 4s16-1.4 21-4c-.8 2.4-1.8 4-3 5H30c-1.2-1-2.2-2.6-3-5z"
+              fill="#d4333a"/>
+      </svg>`,
+  },
 };
 
 /**
@@ -419,7 +469,7 @@ function ridersTemplate(): string {
      aria-labelledby="euc-riders-heading">
   <h2 class="euc-menu__title euc-riders__heading" id="euc-riders-heading">Choose your rider</h2>
   <p class="euc-menu__tagline">
-    Looks only — both ride exactly the same, and your best times carry across.
+    Looks only — every rider rides exactly the same, and your best times carry across.
     Swap whenever you like; the game remembers.
   </p>
 

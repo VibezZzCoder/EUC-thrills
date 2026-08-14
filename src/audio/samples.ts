@@ -4,6 +4,7 @@ import tyreSolidUrl from '../../assets/live/audio/tyre_solid_loop.wav?url';
 import windHowlUrl from '../../assets/live/audio/wind_howl_loop.wav?url';
 import crashUrl from '../../assets/live/audio/crash_wipeout.wav?url';
 import crashTrollinaUrl from '../../assets/live/audio/crash_trollina.wav?url';
+import crashRedRiderUrl from '../../assets/live/audio/crash_red_rider.wav?url';
 import sirenFarUrl from '../../assets/live/audio/siren_far_loop.wav?url';
 import sirenCloseUrl from '../../assets/live/audio/siren_close_loop.wav?url';
 
@@ -23,6 +24,12 @@ import sirenCloseUrl from '../../assets/live/audio/siren_close_loop.wav?url';
  * external source), and Trollina's crash, which is composed by
  * `tools/make-crash-trollina.mjs` from a generated vocal take and is the one
  * shipped file **not** covered by the CC BY 4.0 claim. NOTICE.md says why.
+ *
+ * Red Rider's crash is the one to *not* read across from hers. It is the
+ * owner's own recording with 0.8 s of one band re-textured from elsewhere in
+ * the same take, so nothing generated enters it and it stays inside the CC BY
+ * 4.0 claim with the owner's other originals. NOTICE.md says that too, in as
+ * many words, so the two are not assumed to share a standing.
  */
 export interface SampleUrls {
   readonly tyreOffroad: string;
@@ -39,6 +46,16 @@ export interface SampleUrls {
    */
   readonly crashTrollina: string;
   /**
+   * Red Rider's (M19).
+   *
+   * The owner's own wipeout recording with the owner's *voice* taken out of it
+   * by `tools/make-crash-red-rider.mjs` — a third rider must not crash to the
+   * sound of somebody else swearing. Same length as `crash` to the sample,
+   * because `audio/director.ts` ducks the mix on one envelope whoever is
+   * riding.
+   */
+  readonly crashRedRider: string;
+  /**
    * The chase siren's two wails (M18) — the far carrier and the close
    * panic, crossfaded by the cop's range. Both CC0 Freesound recordings,
    * owner-auditioned A/B/C/D on 2026-08-13 and recorded in NOTICE.md's
@@ -54,6 +71,7 @@ export const SAMPLE_URLS: SampleUrls = {
   windHowl: windHowlUrl,
   crash: crashUrl,
   crashTrollina: crashTrollinaUrl,
+  crashRedRider: crashRedRiderUrl,
   sirenFar: sirenFarUrl,
   sirenClose: sirenCloseUrl,
 };

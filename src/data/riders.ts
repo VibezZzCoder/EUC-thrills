@@ -54,7 +54,7 @@ export type CharacterId = PlayableCharacterId | 'cop';
  * for the same reason: a saved record can no longer *say* `cop` even in
  * principle.
  */
-export type PlayableCharacterId = 'cool-rider' | 'trollina';
+export type PlayableCharacterId = 'cool-rider' | 'trollina' | 'red-rider';
 
 /**
  * Which recorded crash one-shot a rider comes with.
@@ -64,7 +64,7 @@ export type PlayableCharacterId = 'cool-rider' | 'trollina';
  * declares its own `CrashVoiceId` and this field is the map between the two.
  * Two riders could legitimately share a voice; a rider without one could not.
  */
-export type CrashVoiceId = 'cool-rider' | 'trollina';
+export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider';
 
 export interface CharacterSpec {
   readonly id: CharacterId;
@@ -117,6 +117,30 @@ export const CHARACTERS: readonly PlayableCharacterSpec[] = Object.freeze([
       + 'Started life as a joke drawing and refused to leave.',
     swatch: '#ff3fb4',
     crashVoice: 'trollina' as CrashVoiceId,
+  }),
+  /**
+   * Red Rider — M19, and the one rider in this table who is a **real person**.
+   *
+   * He asked to be in the game and the owner said yes, both in public; the
+   * permission evidence, the reference photograph and the stills of his own
+   * customized wheel are held under `references/red-rider/` and are excluded
+   * from every build. `NOTICE.md` records him as represented **with his
+   * permission** rather than as an original creation, which is the one line
+   * that separates him from the two entries above.
+   *
+   * Nothing about that changes what this table is allowed to hold. He is a
+   * look and a crash voice like anybody else here, he is bit-identical to ride
+   * (§13 q3), and the swatch below is a card colour rather than an albedo —
+   * `BLOCKOUT_COLOURS.redRider*` are the values the sun actually falls on, and
+   * they are deeper than this for the reasons written beside them.
+   */
+  Object.freeze({
+    id: 'red-rider' as PlayableCharacterId,
+    name: 'Red Rider',
+    blurb: 'Gloss red lid, dark visor, red over black armour, and a wheel he built to match. '
+      + 'A real rider, in the game because he asked.',
+    swatch: '#e03a3a',
+    crashVoice: 'red-rider' as CrashVoiceId,
   }),
 ]);
 

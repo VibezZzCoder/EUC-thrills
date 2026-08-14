@@ -23,6 +23,8 @@ The same origin is carried inside the build itself — as a banner at the top of
 
 The two licences are stated separately on purpose: MIT is a software licence and does not read sensibly when applied to models, textures, and sound. If you reuse one but not the other, the terms are unambiguous.
 
+**One limit belongs here rather than in a footnote.** A CC BY 4.0 grant conveys this project's own rights in the assets this project authored. It does not convey — and cannot convey — rights in a real person's name, likeness, or persona. One rider in this game is a real person appearing with his permission, and the licence above does not extend to him. See *Reference material* below.
+
 ## Third-party software
 
 | Dependency | Version | Licence |
@@ -46,6 +48,8 @@ All four were trimmed, filtered, loop-processed, and level-matched for the game.
 
 The other two loops are original and are covered by the CC BY 4.0 claim above: `crash_wipeout` is the project owner's own recording — including his own voice, used with his approval — and `tyre_solid_loop` (the tyre rotation) is synthesized from scratch with no external source.
 
+`crash_red_rider` (the third rider's crash) is derived from that same recording and is covered by the CC BY 4.0 claim with it. It is the owner's wipeout with **the owner's voice removed**: for 0.8 s of the 3.4 s tumble, the band that carries speech is replaced with voice-free texture taken from elsewhere in the same take, and every sample outside that window is the original recording unchanged. It contains **no recording of Red Rider's own voice**, and no such recording is used anywhere in this game. Nothing generated, modelled, or third-party enters it, which is why it is not listed under *Generated audio* below.
+
 ## Generated audio
 
 One shipped file is **not** covered by the CC BY 4.0 claim above, and is listed separately because its standing differs from everything else in this project.
@@ -54,21 +58,35 @@ One shipped file is **not** covered by the CC BY 4.0 claim above, and is listed 
 |---|---|---|
 | `crash_trollina` (the second rider's crash) | A composed one-shot. Its slapstick layers — impact, spring, tumble clatter, falling slide and the wheel settling — are synthesized from first principles by a script in this project's development tree and are original work. Its **vocal beats are machine-generated**, produced with a text-to-speech model (OpenAI `gpt-audio`) and then cut, re-timed, pitch-shifted and mixed. | Machine-generated audio has doubtful copyright standing in several jurisdictions, so no copyright is claimed over the vocal layer and it is **excluded from the CC BY 4.0 claim**. It is redistributed with the game on the same terms the rest of the build is redistributed under, and a reuser who needs a clean rights position should replace it. |
 
-This is the same reasoning the project applies to the AI-generated art-direction reference under `references/`, applied to a shipped file rather than to a working one. It is recorded here rather than left implicit because a redistributor cannot tell by listening.
+This is the same reasoning the project applies to the AI-generated art-direction references under `references/`, applied to a shipped file rather than to a working one. It is recorded here rather than left implicit because a redistributor cannot tell by listening.
+
+One shipped file that a reader might expect in this table is deliberately absent: `crash_red_rider` carries no generated layer at all and stays inside the CC BY 4.0 claim. *Third-party audio recordings* above says what it is.
 
 ## Fictional designs and real-world brands
 
 Electric unicycles in this game are **original fictional designs**. They are informed by the general characteristics of real-world EUC categories — compact commuters, suspension trail wheels, long-range touring wheels — but they do not copy any specific commercial product's shell geometry, panel design, decals, naming, or protected product identity.
 
+**One machine is qualified, and the qualification is about a person rather than a manufacturer.** Red Rider's wheel is modelled on the machine he customized himself, from reference material he supplied, with his permission — including the red livery and the identification plate carrying his own name. It is still no manufacturer's product: it reproduces no commercial shell, no panel design, and no protected product identity, and the commercial gear mark visible in his photograph is deliberately not reproduced. The only branding on him or his wheel is his own name.
+
 This project is not affiliated with, endorsed by, sponsored by, approved by, or otherwise associated with Begode/Gotway, InMotion, King Song, Veteran, Extreme Bull, Solowheel/Inventist, Segway-Ninebot, or any other manufacturer, retailer, or rights holder. Any third-party names, trademarks, service marks, product names, or other protected material remain the property of their respective owners, and are referenced only for identification, commentary, or research context. No ownership is claimed over third-party rights.
 
 ## Reference material
 
-Private reference photographs held locally under `references/` are **not** part of this project's licensed content. They are not redistributed, are excluded from every build, and remain the property of their owner. Nothing under `references/` is covered by the licences above.
+Private reference material held locally under `references/` — photographs, supplied artwork, and permission evidence alike — is **not** part of this project's licensed content. It is not redistributed, is excluded from every build, and remains the property of its owner. Nothing under `references/` is covered by the licences above, and none of it is a public-facing asset.
 
 The rider character "Cool Rider" is an original creation. The character name is an affectionate nod to a song title; no association with its rights holders is claimed or implied.
 
 The second rider, "Trollina", is also an original creation. She began as a crude joke drawing sent to the project owner, which he owns and kept; the character in the game is original geometry authored from that concept and is covered by the CC BY 4.0 claim above. The original drawing itself is held privately under `references/` and is not redistributed.
+
+### Red Rider — a real person, represented with permission
+
+The third rider is **not** an original creation, and this entry is written narrowly on purpose.
+
+**Red Rider is represented with permission.** He is a real person. He asked to appear in the game in a public conversation, and the project owner agreed in that same conversation. The character is based on the supplied reference material, and supporting permission evidence is retained with the project — privately, under `references/`, never redistributed and never shown in the game.
+
+**No broader right is claimed or granted.** Red Rider is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place his name, likeness, or persona under any licence, and no licence in this file conveys them. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs his agreement, which is not the project's to give.
+
+**"Red Rider" is the only identity published.** No further real-world identity is disclosed anywhere in this project or its distributions, and the conversation that granted the permission is internal evidence rather than a public-facing asset.
 
 ## Attribution
 

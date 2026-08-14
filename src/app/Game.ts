@@ -6,6 +6,8 @@ import {
 import { LiveTuning } from '../data/liveTuning.ts';
 import { GameRenderer } from '../render/Renderer.ts';
 import { createRidingRig, pedalEdgeWorld, type RidingRig } from '../render/ridingRig.ts';
+import { machineForCharacter } from '../data/machines.ts';
+import { machineLook } from '../render/machineLook.ts';
 import { riderLook } from '../render/riderLook.ts';
 import {
   DEFAULT_CHARACTER,
@@ -1070,7 +1072,10 @@ export class Game {
     // every boot — and because `installCharacter` would then dispose a rig that
     // had never drawn anything.
     this.installedCharacter = this.options.current.character;
-    this.rig = createRidingRig(riderLook(this.installedCharacter));
+    this.rig = createRidingRig(
+      riderLook(this.installedCharacter),
+      machineLook(machineForCharacter(this.installedCharacter)),
+    );
     this.renderer.scene.add(this.rig.group);
     this.renderer.setCharacter(this.installedCharacter);
 
@@ -3032,7 +3037,7 @@ export class Game {
     this.installedCharacter = id;
     this.renderer.scene.remove(this.rig.group);
     this.rig.dispose();
-    this.rig = createRidingRig(riderLook(id));
+    this.rig = createRidingRig(riderLook(id), machineLook(machineForCharacter(id)));
     this.renderer.scene.add(this.rig.group);
     this.renderer.setCharacter(id);
     this.syncPoses();

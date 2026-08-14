@@ -300,19 +300,23 @@ export class AudioEngine {
     this.samplesRequested = true;
     void (async () => {
       try {
-        const [tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, sirenFar, sirenClose] =
-          await Promise.all([
-            fetch(urls.tyreOffroad).then((response) => response.arrayBuffer()),
-            fetch(urls.tyreSolid).then((response) => response.arrayBuffer()),
-            fetch(urls.windHowl).then((response) => response.arrayBuffer()),
-            fetch(urls.crash).then((response) => response.arrayBuffer()),
-            fetch(urls.crashTrollina).then((response) => response.arrayBuffer()),
-            fetch(urls.sirenFar).then((response) => response.arrayBuffer()),
-            fetch(urls.sirenClose).then((response) => response.arrayBuffer()),
-          ]);
+        const [
+          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider,
+          sirenFar, sirenClose,
+        ] = await Promise.all([
+          fetch(urls.tyreOffroad).then((response) => response.arrayBuffer()),
+          fetch(urls.tyreSolid).then((response) => response.arrayBuffer()),
+          fetch(urls.windHowl).then((response) => response.arrayBuffer()),
+          fetch(urls.crash).then((response) => response.arrayBuffer()),
+          fetch(urls.crashTrollina).then((response) => response.arrayBuffer()),
+          fetch(urls.crashRedRider).then((response) => response.arrayBuffer()),
+          fetch(urls.sirenFar).then((response) => response.arrayBuffer()),
+          fetch(urls.sirenClose).then((response) => response.arrayBuffer()),
+        ]);
         if (this.disposed) return;
         this.sampleData = {
-          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, sirenFar, sirenClose,
+          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider,
+          sirenFar, sirenClose,
         };
         this.installSamples();
       } catch {
@@ -331,19 +335,23 @@ export class AudioEngine {
         // decodeAudioData detaches its input buffer, so decoding is once-only
         // by nature — `decodeStarted` makes that explicit rather than relying
         // on a second call failing.
-        const [tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, sirenFar, sirenClose] =
-          await Promise.all([
-            context.decodeAudioData(data.tyreOffroad),
-            context.decodeAudioData(data.tyreSolid),
-            context.decodeAudioData(data.windHowl),
-            context.decodeAudioData(data.crash),
-            context.decodeAudioData(data.crashTrollina),
-            context.decodeAudioData(data.sirenFar),
-            context.decodeAudioData(data.sirenClose),
-          ]);
+        const [
+          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider,
+          sirenFar, sirenClose,
+        ] = await Promise.all([
+          context.decodeAudioData(data.tyreOffroad),
+          context.decodeAudioData(data.tyreSolid),
+          context.decodeAudioData(data.windHowl),
+          context.decodeAudioData(data.crash),
+          context.decodeAudioData(data.crashTrollina),
+          context.decodeAudioData(data.crashRedRider),
+          context.decodeAudioData(data.sirenFar),
+          context.decodeAudioData(data.sirenClose),
+        ]);
         if (this.disposed) return;
         const bank: SampleBank = {
-          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, sirenFar, sirenClose,
+          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider,
+          sirenFar, sirenClose,
         };
         this.sink?.setSampleBank(bank);
       } catch {

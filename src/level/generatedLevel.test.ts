@@ -742,17 +742,64 @@ test('generation alone does not consume the complete boot budget', () => {
  * more: hazard and target counts are untouched, and the level half of every
  * frame measures exactly what it did.
  *
+ * **Re-recorded 2026-08-14 for Red Rider's accessory pass (M19).** Every seed
+ * gained exactly 1,074 triangles and **no draw call at all**, which is the
+ * reserve moving and nothing else: he became the worst *look* on the triangle
+ * axis (17,508 against Cool Rider's 14,672) while staying equal to him on
+ * meshes and calls, so `NON_LEVEL_RESERVE` went 28,058 → 29,188 and the level
+ * half of every frame measures exactly what it did. The owner's review asked
+ * for every accessory in the reference to be represented, and all of it —
+ * chest pouches, vest flanks, full forearm and shin plates, shoulder caps,
+ * chin vents, a wider visor, plus paint for his thigh graphic, red knuckles,
+ * guard channel and boot panels — went onto the two free axes. The uniformity
+ * is the check, as it has been three times before: a change that moved the
+ * routes would not move every seed by an identical amount, and hazard and
+ * target counts are untouched.
+ *
+ * **Re-recorded 2026-08-14 again, for the M19 harness-order pass.** Every seed
+ * gained exactly 496 triangles and no draw call: the reserve moving once more
+ * (29,132 → 29,628) and nothing else. The pieces are the ones an outside
+ * review and the owner asked for — full-loop armour straps instead of tabs,
+ * the vertical chest straps with their sternum bridge, back straps re-spanned
+ * to wrap onto the front pair, the camera's lens, wider sheared sleeve
+ * stripes — all of it panel-group geometry on the same meshes. The uniformity
+ * is the check, as every time before: hazard and target counts are untouched.
+ *
  * The hazard and target counts are pinned beside the cost, because they are the
  * numbers the cost is a function of. A placement change that halved either
  * would leave the draw calls exactly where they are and quietly empty the roads.
+ *
+ * **Re-recorded 2026-08-14 for the adversarial harness repair.** Every seed
+ * gained exactly 44 triangles and no draw call. The shoulder yoke became two
+ * arched, overlapping strap halves so the front and back drops genuinely wrap
+ * over the shoulders; redundant chest patches were removed. The measured
+ * fixed reserve moved uniformly while every hazard, target and level triangle
+ * stayed where it was.
+ *
+ * **Re-recorded 2026-08-14 for Red Rider's machine — M19 Phase 3.** Every
+ * seed gained exactly 2,084 triangles and no draw call: the reserve moving
+ * (29,672 → 31,756) and nothing else, for the first time on the *machine*
+ * axis rather than the rider's. His customized red wheel costs the same 18
+ * calls as the standard wheel — livery is vertex paint, the saddle merges
+ * into the shell mesh, and the cowl, guards and nameplates share the one trim
+ * mesh — so the whole machine is triangles, and the Phase 2 axis refactor
+ * beneath it re-measured to the exact reserve it started from. The uniformity
+ * is the check, as every time before: hazard and target counts are untouched.
+ *
+ * **Re-recorded 2026-08-14 for the owner's taller-wheel refinement.** Every
+ * seed gained exactly 276 triangles and no draw call: Red Rider's saddle was
+ * narrowed and raised, his cosmetic shell became a squarer 0.43 m-deep tower,
+ * and the front/rear armor routes now run from near the axle to the shoulders.
+ * The tyre, pedals, suspension, hazard and target counts are untouched. The
+ * identical movement on all six routes is again the fixed-reserve check.
  */
 const ADVERSARIAL_2026_08_09 = [
-  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 137, triangles: 304_258, hazards: 6, targets: 22 },
-  { seed: 'route-278', axis: 'second densest', drawCalls: 136, triangles: 300_934, hazards: 4, targets: 19 },
-  { seed: 'sweep-89', axis: 'third densest', drawCalls: 137, triangles: 298_070, hazards: 6, targets: 26 },
-  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 137, triangles: 293_572, hazards: 6, targets: 19 },
-  { seed: 'euc-180', axis: 'longest required route', drawCalls: 136, triangles: 279_338, hazards: 8, targets: 21 },
-  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 136, triangles: 248_472, hazards: 7, targets: 22 },
+  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 137, triangles: 308_232, hazards: 6, targets: 22 },
+  { seed: 'route-278', axis: 'second densest', drawCalls: 136, triangles: 304_908, hazards: 4, targets: 19 },
+  { seed: 'sweep-89', axis: 'third densest', drawCalls: 137, triangles: 302_044, hazards: 6, targets: 26 },
+  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 137, triangles: 297_546, hazards: 6, targets: 19 },
+  { seed: 'euc-180', axis: 'longest required route', drawCalls: 136, triangles: 283_312, hazards: 8, targets: 21 },
+  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 136, triangles: 252_446, hazards: 7, targets: 22 },
 ] as const;
 
 

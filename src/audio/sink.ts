@@ -98,6 +98,18 @@ export interface SampleBank {
   readonly crash: AudioBuffer;
   /** Trollina's, and the same length to the sample (M14.5). */
   readonly crashTrollina: AudioBuffer;
+  /**
+   * Red Rider's (M19) — **required since Phase 4 shipped his file.**
+   *
+   * It was optional while `tools/make-crash-red-rider.mjs` had not been run,
+   * so that his wiring could be proved live before his recording existed. It is
+   * required now for the opposite reason: with a fallback in place, forgetting
+   * to put this buffer in the bank is silent — he keeps crashing to the owner's
+   * voice while `lastCrashVoice` still says `red-rider`, which is the one
+   * failure this milestone must not ship. Required, and the compiler is what
+   * notices.
+   */
+  readonly crashRedRider: AudioBuffer;
   /** The chase siren's far wail loop (M18). */
   readonly sirenFar: AudioBuffer;
   /** And its close wail, crossfaded in by range. */
@@ -114,7 +126,32 @@ export interface SampleBank {
  * `data/`, or `ui/`. The composition root maps one to the other, which is the
  * same route `quality` and `speedUnit` already take out of the options store.
  */
-export type CrashVoiceId = 'cool-rider' | 'trollina';
+export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider';
+
+/**
+ * Whose recording plays.
+ *
+ * A `switch` rather than the ternary this replaces, and the reason is the third
+ * rider: a chain of ternaries over a growing union is the shape that silently
+ * gives a new rider somebody else's voice, because nothing fails when a case is
+ * missing. Here the compiler's exhaustiveness check on `voice` is what fails
+ * instead — add a `CrashVoiceId` without a case and this stops compiling.
+ *
+ * Three riders, three buffers, no fallback left anywhere in the function. That
+ * is a Phase 4 change: while Red Rider's file was still to be built this
+ * returned Cool Rider's on his behalf, and `lastCrashVoice` reporting
+ * `red-rider` regardless is what let a test tell the two states apart.
+ */
+export function crashFor(voice: CrashVoiceId, bank: SampleBank): AudioBuffer {
+  switch (voice) {
+    case 'trollina':
+      return bank.crashTrollina;
+    case 'red-rider':
+      return bank.crashRedRider;
+    case 'cool-rider':
+      return bank.crash;
+  }
+}
 
 export class WebAudioSink {
   private readonly context: AudioContext;
@@ -497,15 +534,17 @@ export class WebAudioSink {
     const destination = cue.bus === 'ui' ? this.uiBus : this.transientTrim;
 
     // A crash is a recording once the bank is loaded — the owner's own wipeout
-    // for Cool Rider, Trollina's cartoon one for her — and the synthesized
-    // thump-and-burst below remains the fallback before it. **Both buffers are
-    // loaded up front and the choice is made here**, at the last possible
-    // moment: the bank is once-only by construction (`setSampleBank` refuses a
-    // second) and `decodeAudioData` detaches its input, so a design that
-    // fetched the other rider's crash when the player picked her would have to
-    // relax three separate guards to save 300 KB against an 8 MiB budget.
+    // for Cool Rider, Trollina's cartoon one for her, and that same wipeout
+    // with the owner's voice scrubbed out of it for Red Rider — and the
+    // synthesized thump-and-burst below remains the fallback before it. **All
+    // three buffers are loaded up front and the choice is made here**, at the
+    // last possible moment: the bank is once-only by construction
+    // (`setSampleBank` refuses a second) and `decodeAudioData` detaches its
+    // input, so a design that fetched a rider's crash when the player picked
+    // them would have to relax three separate guards to save 600 KB against an
+    // 8 MiB budget.
     if (cue.kind === 'crash' && this.bank) {
-      const buffer = this.crashVoice === 'trollina' ? this.bank.crashTrollina : this.bank.crash;
+      const buffer = crashFor(this.crashVoice, this.bank);
       this.lastCrashVoice = this.crashVoice;
       this.playCrashSample(buffer, cue, at, destination);
       return;

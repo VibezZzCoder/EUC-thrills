@@ -13,15 +13,16 @@ import {
   vAtHeight,
   type LoftRing,
 } from './blockoutKit.ts';
+import { STANDARD_MACHINE_LOOK, type MachineLook, type MachinePatch } from './machineLook.ts';
 
 /**
  * Blocked-out fictional suspension EUC.
  *
- * Still a blockout, and still built entirely from `WHEEL` in `data/tuning.ts`:
- * every outer dimension below — tyre diameter and width, shell height, width
- * and length, pedal span, height, length and thickness, pad block and travel —
- * is read from there rather than authored here, so the scale and the framing
- * judged at M0 and M3 are unchanged.
+ * Still a blockout. The standard machine is built entirely from `WHEEL` in
+ * `data/tuning.ts`, so the scale and framing judged at M0 and M3 are unchanged.
+ * M19 permits a `MachineLook` to substitute only the cosmetic shell loft; the
+ * tyre, pedal contacts and suspension travel remain the shared
+ * `MACHINE_CONTRACT`, and simulation/camera geometry cannot vary by look.
  *
  * What changed at the M11 look pass is the *form*, not the size. The machine
  * was a box with a cylinder on top, a puck for a tyre, and four more boxes for
@@ -160,9 +161,6 @@ const SHELL = loftProfile([
   shellRing(aboveCrown(0.78), 0.58, 0.65, 2.3),
 ]);
 
-/** The flat top the carry handle stands on. */
-const SHELL_TOP_FACE = SHELL[SHELL.length - 1]!.y;
-
 const TREAD_RING = (t: number, radius: number): LoftRing => ({
   y: t * TYRE_HALF_WIDTH,
   halfWidth: radius,
@@ -285,9 +283,28 @@ const GRIP_SHADE = 0.42;
 const PEDAL_LIP_SHADE = 1.14;
 const PEDAL_HINGE_SHADE = 0.72;
 
-export function createBlockoutEUC(): BlockoutEUC {
+/**
+ * Build the machine, optionally wearing a particular look — M19 Phase 2.
+ *
+ * The default is the standard wheel for the reason `createRidingRig` defaults
+ * to Cool Rider: every existing baseline, measurement and unit test constructs
+ * a machine with no argument, and all of them must keep measuring exactly what
+ * they measured. Everything a look may vary is appearance; the four
+ * `MACHINE_CONTRACT` constants are read from `WHEEL` here and nowhere in any
+ * look (`data/machines.test.ts` audits that).
+ */
+export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): BlockoutEUC {
   const group = new THREE.Group();
   group.name = 'euc-blockout';
+
+  // Standard stays on the WHEEL-derived profile exactly. A look may replace
+  // only this cosmetic body loft — never the tyre, pedals, suspension, or leg
+  // contact positions protected by `MACHINE_CONTRACT`. Resolve it once so
+  // every patch, light seat and pedal hanger reads the same visible shell.
+  const shellProfile = look.shell.profile
+    ? loftProfile(look.shell.profile.map((ring) => ({ ...ring })))
+    : SHELL;
+  const shellTopFace = shellProfile[shellProfile.length - 1]!.y;
 
   // Tracked so disposal is exhaustive rather than best-effort. Every geometry
   // and material that reaches a mesh is registered the moment it is created;
@@ -314,8 +331,8 @@ export function createBlockoutEUC(): BlockoutEUC {
   // `data/tuning.ts` and nothing here changes what those values mean.
   const shellMaterial = trackMaterial(
     new THREE.MeshStandardMaterial({
-      color: BLOCKOUT_COLOURS.shell,
-      roughness: 0.45,
+      color: look.shell.colour,
+      roughness: look.shell.roughness,
       metalness: 0.1,
       vertexColors: true,
     }),
@@ -347,8 +364,8 @@ export function createBlockoutEUC(): BlockoutEUC {
   const headlightMaterial = trackMaterial(
     new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      emissive: BLOCKOUT_COLOURS.headlight,
-      emissiveIntensity: 1.4,
+      emissive: look.headlight.emissive,
+      emissiveIntensity: look.headlight.emissiveIntensity,
       roughness: 0.3,
       vertexColors: true,
     }),
@@ -362,15 +379,16 @@ export function createBlockoutEUC(): BlockoutEUC {
       vertexColors: true,
     }),
   );
-  // Cool Rider's identity colour, previewed on the wheel's accent strips so the
-  // black/reflective-blue language is present from the first frame.
-  const accentMaterial = trackMaterial(
+  // The look's trim material — Cool Rider's reflective blue on the standard
+  // machine, satin armour red on Red Rider's. One material for every trim
+  // patch a look authors, which is what holds the slot at one draw call.
+  const trimMaterial = trackMaterial(
     new THREE.MeshStandardMaterial({
-      color: BLOCKOUT_COLOURS.accent,
-      emissive: 0x1c4f9c,
-      emissiveIntensity: 0.35,
-      roughness: 0.35,
-      metalness: 0.2,
+      color: look.trim.colour,
+      emissive: look.trim.emissive,
+      emissiveIntensity: look.trim.emissiveIntensity,
+      roughness: look.trim.roughness,
+      metalness: look.trim.metalness,
       vertexColors: true,
     }),
   );
@@ -395,11 +413,54 @@ export function createBlockoutEUC(): BlockoutEUC {
     options: Omit<Parameters<typeof patchGeometry>[1], 'v0' | 'v1'> & { from: number; to: number },
   ): THREE.BufferGeometry => {
     const { from, to, ...rest } = options;
-    return patchGeometry(SHELL, {
+    return patchGeometry(shellProfile, {
       ...rest,
-      v0: vAtHeight(SHELL, from),
-      v1: vAtHeight(SHELL, to),
+      v0: vAtHeight(shellProfile, from),
+      v1: vAtHeight(shellProfile, to),
     });
+  };
+
+  /**
+   * A look-authored patch, resolved to geometry — M19 Phase 2.
+   *
+   * A `shell` patch is `shellPatch` exactly. A `pad` patch is built once per
+   * side: mirrored across X (angle θ maps to π − θ, so a plate authored on the
+   * left pad's outboard face lands on the right pad's outboard face), then
+   * translated to where that pad actually sits. Returns a list because of that
+   * doubling; the caller merges everything into the one trim mesh regardless.
+   */
+  const machinePatch = (patch: MachinePatch): THREE.BufferGeometry[] => {
+    const { surface = 'shell', from, to, u0, u1, ...rest } = patch;
+    if (surface === 'shell') {
+      return [shellPatch({ ...rest, u0, u1, from, to })];
+    }
+    const sides: THREE.BufferGeometry[] = [];
+    for (const side of [1, -1]) {
+      sides.push(
+        patchGeometry(PAD, {
+          ...rest,
+          u0: side > 0 ? u0 : Math.PI - u1,
+          u1: side > 0 ? u1 : Math.PI - u0,
+          v0: vAtHeight(PAD, from),
+          v1: vAtHeight(PAD, to),
+        }).translate(side * PAD_CENTRE_X, WHEEL.padCentreHeight, 0),
+      );
+    }
+    return sides;
+  };
+
+  /**
+   * Overwrite a geometry's vertex colours with one RGB multiplier — the
+   * saddle's channel. `shaded()` is a scalar and a scalar cannot change hue:
+   * 0.06 × armour red is very dark red, not the black a leather cushion is.
+   */
+  const tinted = <T extends THREE.BufferGeometry>(
+    geometry: T,
+    tint: readonly [number, number, number],
+  ): T => {
+    const colour = shaded(geometry).getAttribute('color');
+    for (let i = 0; i < colour.count; i += 1) colour.setXYZ(i, tint[0], tint[1], tint[2]);
+    return geometry;
   };
 
   /** Sprung mass: everything except the contact patch. Compresses from M4. */
@@ -465,21 +526,38 @@ export function createBlockoutEUC(): BlockoutEUC {
   // One mesh: the lofted body plus the carry handle on its top face. The handle
   // is the cheapest identity cue on the machine — nothing else in a silhouette
   // says "this is picked up and carried" — and it stays inside
-  // `WHEEL.shellHeight`, which is what that constant has always measured.
+  // `WHEEL.shellHeight` on the standard profile, which is what that constant
+  // has always measured. A custom silhouette carries its own cosmetic top and
+  // uses the saddle path instead.
   const shellParts: THREE.BufferGeometry[] = [
-    loftGeometry(SHELL, { radialSegments: 20 }),
+    loftGeometry(shellProfile, { radialSegments: 20 }),
   ];
-  const handleGap = SHELL_TOP_FACE + (WHEEL.shellHeight - SHELL_TOP_FACE) * 0.62;
-  for (const z of [-0.064, 0.064]) {
+  if (look.top.kind === 'handle') {
+    const handleGap = shellTopFace + (WHEEL.shellHeight - shellTopFace) * 0.62;
+    for (const z of [-0.064, 0.064]) {
+      shellParts.push(
+        shaded(new THREE.BoxGeometry(0.030, handleGap - shellTopFace, 0.022), HANDLE_SHADE)
+          .translate(0, (shellTopFace + handleGap) / 2, z),
+      );
+    }
     shellParts.push(
-      shaded(new THREE.BoxGeometry(0.030, handleGap - SHELL_TOP_FACE, 0.022), HANDLE_SHADE)
-        .translate(0, (SHELL_TOP_FACE + handleGap) / 2, z),
+      shaded(new THREE.BoxGeometry(0.038, WHEEL.shellHeight - handleGap, 0.166), HANDLE_SHADE)
+        .translate(0, (handleGap + WHEEL.shellHeight) / 2, 0),
     );
+  } else {
+    // The saddle, in the handle's place — a saddle is bolted over the top
+    // face, so a handle under it would be triangles spent on a part no hand
+    // can reach. Merged into the shell mesh rather than built as its own, so
+    // it costs triangles and never a draw call, and it casts with the shell —
+    // which is what puts it in the ghost's silhouette too. Rings are authored
+    // in absolute metres like the shell's own, so no translate.
+    shellParts.push(tinted(
+      loftGeometry(loftProfile(look.top.profile.map((ring) => ({ ...ring }))), {
+        radialSegments: 14,
+      }),
+      look.top.tint,
+    ));
   }
-  shellParts.push(
-    shaded(new THREE.BoxGeometry(0.038, WHEEL.shellHeight - handleGap, 0.166), HANDLE_SHADE)
-      .translate(0, (handleGap + WHEEL.shellHeight) / 2, 0),
-  );
   // The sprung half of the suspension joint, riding on `body` with the shell.
   // It sits just proud of the skirt at rest and descends over the stanchion as
   // the machine compresses, which is the movement that makes the travel legible.
@@ -491,43 +569,28 @@ export function createBlockoutEUC(): BlockoutEUC {
       ).translate(side * STANCHION_X, STANCHION_TOP + SLIDER_LENGTH / 2 - 0.002, 0),
     );
   }
-  const shell = shadowed(new THREE.Mesh(track(mergeGeometries(shellParts)), shellMaterial));
+  const shellGeometry = track(mergeGeometries(shellParts));
+  // The look's livery, painted into the merged shell's vertex colours — the
+  // cop's headlamp-square technique, now a channel every machine reads. After
+  // the merge deliberately, so a painter sees the same one geometry the mesh
+  // draws and can band off its real bounding box.
+  look.paintShell?.(shellGeometry);
+  const shell = shadowed(new THREE.Mesh(shellGeometry, shellMaterial));
   shell.receiveShadow = true;
   shell.name = 'euc-shell';
   body.add(shell);
 
-  // -- Accent ---------------------------------------------------------------
-  // Patches of the shell's own surface, so they curve with it. Both shoulder
-  // stripes and the nose blade are one mesh: same material, same parent, and
-  // the pair of separate boxes this replaces cost two draw calls between them.
-  //
-  // They sit on the shoulder and the nose deliberately. The leg pads cover the
-  // shell's mid flank completely, so a stripe there is a stripe nobody sees.
-  const accentParts: THREE.BufferGeometry[] = [];
-  for (const centre of [0, Math.PI]) {
-    accentParts.push(shellPatch({
-      u0: centre - 0.55,
-      u1: centre + 0.55,
-      from: 0.545,
-      to: 0.575,
-      lift: 0.005,
-      sink: -0.010,
-      uSegments: 8,
-      vSegments: 2,
-    }));
-  }
-  accentParts.push(shellPatch({
-    u0: Math.PI / 2 - 0.62,
-    u1: Math.PI / 2 + 0.62,
-    from: 0.430,
-    to: 0.468,
-    lift: 0.005,
-    sink: -0.010,
-    uSegments: 8,
-    vSegments: 2,
-    taper: 0.35,
-  }));
-  const accent = new THREE.Mesh(track(mergeGeometries(accentParts)), accentMaterial);
+  // -- Trim -----------------------------------------------------------------
+  // Patches of the machine's own surfaces, so they curve with it — the
+  // standard machine's shoulder stripes and nose blade, or Red Rider's guard
+  // and nameplate set. However many patches a look authors, they merge into
+  // one mesh under one material, so the slot costs one draw call on every
+  // machine. Still named `euc-accent`: the cop's decoration trim and every
+  // name-based lookup predate the axis, and a rename would be a silent QA
+  // redirect (the ghost's twenty-nine-scenario lesson).
+  const trimParts: THREE.BufferGeometry[] = [];
+  for (const patch of look.trim.patches) trimParts.push(...machinePatch(patch));
+  const accent = new THREE.Mesh(track(mergeGeometries(trimParts)), trimMaterial);
   accent.name = 'euc-accent';
   body.add(accent);
 
@@ -552,7 +615,7 @@ export function createBlockoutEUC(): BlockoutEUC {
   for (const side of [-1, 1]) {
     const pedalCentreX = side * (SHELL_HALF_WIDTH + PEDAL_HALF_WIDTH);
     const mountBottomX = -side * PEDAL_HALF_WIDTH;
-    const mountTopX = side * SHELL[0]!.halfWidth - pedalCentreX;
+    const mountTopX = side * shellProfile[0]!.halfWidth - pedalCentreX;
     const mountRise = SHELL_BOTTOM - WHEEL.pedalHeight;
     const mountRun = mountTopX - mountBottomX;
     const mountLength = Math.hypot(mountRun, mountRise);
@@ -570,7 +633,9 @@ export function createBlockoutEUC(): BlockoutEUC {
         .rotateZ(mountAngle)
         .translate((mountBottomX + mountTopX) / 2, mountRise / 2, 0),
     ];
-    const pedal = shadowed(new THREE.Mesh(track(mergeGeometries(parts)), pedalMaterial));
+    const pedalGeometry = track(mergeGeometries(parts));
+    look.paintPedal?.(pedalGeometry, side);
+    const pedal = shadowed(new THREE.Mesh(pedalGeometry, pedalMaterial));
     pedal.position.set(pedalCentreX, WHEEL.pedalHeight, 0);
     pedal.receiveShadow = true;
     pedal.name = `euc-pedal-${side > 0 ? 'left' : 'right'}`;
@@ -582,17 +647,7 @@ export function createBlockoutEUC(): BlockoutEUC {
   // sits in the nose or the tail the way a moulded lens does. Separate meshes
   // because they are separate materials, which they have to be.
   const headlight = new THREE.Mesh(
-    track(shellPatch({
-      u0: Math.PI / 2 - 0.44,
-      u1: Math.PI / 2 + 0.44,
-      from: 0.502,
-      to: 0.530,
-      lift: 0.004,
-      sink: -0.012,
-      uSegments: 6,
-      vSegments: 2,
-      taper: 0.40,
-    })),
+    track(mergeGeometries(machinePatch(look.headlight.patch))),
     headlightMaterial,
   );
   headlight.name = 'euc-headlight';
@@ -641,9 +696,9 @@ export function createBlockoutEUC(): BlockoutEUC {
     statusMaterial,
   );
   statusLight.name = 'euc-status-light';
-  const statusV = vAtHeight(SHELL, 0.556);
-  const statusSeat = loftPoint(SHELL, -Math.PI / 2, statusV, new THREE.Vector3());
-  const statusOut = loftNormal(SHELL, -Math.PI / 2, statusV, new THREE.Vector3());
+  const statusV = vAtHeight(shellProfile, 0.556);
+  const statusSeat = loftPoint(shellProfile, -Math.PI / 2, statusV, new THREE.Vector3());
+  const statusOut = loftNormal(shellProfile, -Math.PI / 2, statusV, new THREE.Vector3());
   statusLight.position.copy(statusSeat).addScaledVector(statusOut, FX.statusLightDepth * 0.42);
   statusLight.rotation.x = -0.55;
   body.add(statusLight);

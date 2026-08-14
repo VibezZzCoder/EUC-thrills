@@ -1,5 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test } from '@playwright/test';
+import { CHARACTER_IDS } from '../src/data/riders.ts';
 import { boot, bootToTitle, collectErrors } from './harness.ts';
 
 /**
@@ -152,13 +153,16 @@ test('swapping riders repeatedly leaves the GPU counters where it found them', a
     await page.evaluate(() => window.game.advance(30));
   };
 
-  await page.evaluate(() => window.game.setOptions({ character: 'trollina' }));
+  // End on the newest (and currently heaviest) look so the before/after pair
+  // exercises every Red Rider geometry and material disposal path too.
+  await page.evaluate(() => window.game.setOptions({ character: 'red-rider' }));
   await settle();
   const before = await page.evaluate(() => window.game.resources());
 
   for (let round = 0; round < 6; round += 1) {
-    await page.evaluate(() => window.game.setOptions({ character: 'cool-rider' }));
-    await page.evaluate(() => window.game.setOptions({ character: 'trollina' }));
+    for (const character of CHARACTER_IDS) {
+      await page.evaluate((id) => window.game.setOptions({ character: id }), character);
+    }
   }
   await settle();
   const after = await page.evaluate(() => window.game.resources());
@@ -209,7 +213,7 @@ test('the whole frame still fits the budget with the heavier rider on it', async
   const errors = collectErrors(page);
   await boot(page);
 
-  for (const character of ['cool-rider', 'trollina'] as const) {
+  for (const character of CHARACTER_IDS) {
     await page.evaluate((id) => window.game.setOptions({ character: id }), character);
     await page.evaluate(() => window.game.advance(10));
     const render = await page.evaluate(() => window.game.snapshot().render);

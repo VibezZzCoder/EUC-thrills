@@ -311,6 +311,40 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  *
  * What has moved, most recent first:
  *
+ *   - **Red Rider's machine — M19 Phase 3 (2026-08-14): 29,672 → 31,756
+ *     triangles, zero draw calls.** The second `MachineLook`
+ *     (`render/machineLook.ts`): his customized red wheel, built the way the
+ *     plan budgeted it — livery as vertex paint (free), the saddle merged
+ *     into the shell mesh in the carry handle's place, and the cowl, corner
+ *     guards and nameplates as patches in the one trim mesh the accent
+ *     strips already paid for. His machine is 11 meshes and 18 calls,
+ *     identical to the standard wheel, at 5,860 total triangles against its
+ *     3,776 — and the Phase 2 axis refactor that made a second machine
+ *     possible moved *nothing* (the reserve regenerated to the same 29,672
+ *     it started the day at, which was the point of doing it separately).
+ *   - **The harness continuity QA pass (2026-08-14): 29,132 → 29,672
+ *     triangles, zero draw calls.** The chest rig re-authored as continuous
+ *     load paths — see the CHANGELOG entry of the same day.
+ *   - **Red Rider's accessory pass (2026-08-14): 28,058 → 29,132 triangles,
+ *     zero draw calls.** The owner's review of the first build was that it was
+ *     "still a loose interpretation" and that every accessory in the reference
+ *     had to be represented. All of it went onto the free axes, and the rider
+ *     reserve moved because he is now the worst *look* on the triangle axis
+ *     (17,508 against Cool Rider's 14,672) while remaining equal to him on
+ *     calls: an off-centre action camera and its mount, a second pouch, the
+ *     diagonal bandolier, vest flanks and two hanging strap tails merged into
+ *     the one harness mesh; a shoulder cap into the yoke; full forearm and
+ *     shin plates with their straps into the elbow and knee groups, which
+ *     mount on the forearm and shin profiles and had been carrying a single
+ *     small pad each; three uneven sleeve stripes; chin vents; a wider
+ *     wrapping visor. His thigh graphic, red knuckles, guard accent channel
+ *     and boot panel lines are vertex paint (`RiderLook.paint`, which gained a
+ *     `hand` hook and a `side` argument for this). **He is still 35 meshes and
+ *     58 draw calls — identical to Cool Rider.**
+ *
+ *     It peaked at 29,188 mid-pass and came back down: the owner's second
+ *     screenshot caught a pale buckle plate, a helmet pivot boss and a chest
+ *     strap the bandolier made redundant, and all three were cut.
  *   - **The Dorkins visual pass (2026-08-13): 26,150 → 28,058 triangles, zero
  *     draw calls.** The owner's second look at the cop, built entirely on the
  *     free axes: clear glasses with pupils, a nose, ears, chin straps, a nape
@@ -335,7 +369,7 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  */
 export const NON_LEVEL_RESERVE = deepFreeze({
   drawCalls: 88,
-  triangles: 28_058,
+  triangles: 32_032,
 });
 
 /**

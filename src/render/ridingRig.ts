@@ -15,6 +15,7 @@ import {
   RD_PELVIS,
 } from '../simulation/ragdoll.ts';
 import { createBlockoutEUC, type BlockoutEUC } from './euc.ts';
+import { STANDARD_MACHINE_LOOK, type MachineLook } from './machineLook.ts';
 import { createPlaceholderRider, createStanceInput, type PlaceholderRider } from './rider.ts';
 import { COOL_RIDER_LOOK, type RiderLook } from './riderLook.ts';
 import { createPaddle } from './paddle.ts';
@@ -100,15 +101,21 @@ export interface RidingRig {
 }
 
 /**
- * Build the rig, optionally wearing a particular rider.
+ * Build the rig, optionally wearing a particular rider — and, from M19, a
+ * particular machine.
  *
- * The look is forwarded and nothing else about this file knows a character
- * exists: `apply(pose)` writes joints, and joints are the same on both riders
- * because both are built to one `RIDER_BLOCKOUT` skeleton. The default is Cool
- * Rider for the reason `createPlaceholderRider` documents — every existing
- * baseline, measurement and unit test constructs a rig with no argument.
+ * Both looks are forwarded and nothing else about this file knows a character
+ * or a machine exists: `apply(pose)` writes joints, and joints are the same on
+ * every rider and every machine because both axes are built to one skeleton —
+ * `RIDER_BLOCKOUT` for the rider, the four `MACHINE_CONTRACT` constants for
+ * the wheel. The defaults are Cool Rider on the standard wheel for the reason
+ * `createPlaceholderRider` documents — every existing baseline, measurement
+ * and unit test constructs a rig with no argument.
  */
-export function createRidingRig(look: RiderLook = COOL_RIDER_LOOK): RidingRig {
+export function createRidingRig(
+  look: RiderLook = COOL_RIDER_LOOK,
+  machine: MachineLook = STANDARD_MACHINE_LOOK,
+): RidingRig {
   const group = new THREE.Group();
   group.name = 'riding-rig';
 
@@ -120,7 +127,7 @@ export function createRidingRig(look: RiderLook = COOL_RIDER_LOOK): RidingRig {
   leanPivot.name = 'riding-lean-pivot';
   groundPivot.add(leanPivot);
 
-  const euc = createBlockoutEUC();
+  const euc = createBlockoutEUC(machine);
   const rider = createPlaceholderRider(look);
   leanPivot.add(euc.group);
   leanPivot.add(rider.root);

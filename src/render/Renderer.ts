@@ -14,6 +14,8 @@ import { createCheckpointGates, type CheckpointGates } from './checkpointGates.t
 import { createTargets, type TargetFamily } from './targets.ts';
 import { createGhostRider, type GhostRider } from './ghostRider.ts';
 import { createCopRider, type CopRider } from './copRider.ts';
+import { machineForCharacter } from '../data/machines.ts';
+import { machineLook } from './machineLook.ts';
 import { riderLook } from './riderLook.ts';
 import { DEFAULT_CHARACTER, type CharacterId } from '../data/riders.ts';
 import { createParticleField, type ParticleField } from './particles.ts';
@@ -643,7 +645,7 @@ export class GameRenderer {
     const visible = this.ghost.visible;
     this.scene.remove(this.ghost.group);
     this.ghost.dispose();
-    this.ghost = createGhostRider(riderLook(character));
+    this.ghost = createGhostRider(riderLook(character), machineLook(machineForCharacter(character)));
     this.ghost.setVisible(visible);
     this.scene.add(this.ghost.group);
     // The cop is deliberately untouched: he is not a rider the player chose,

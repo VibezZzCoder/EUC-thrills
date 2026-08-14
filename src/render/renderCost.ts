@@ -7,6 +7,8 @@ import { createCheckpointGates } from './checkpointGates.ts';
 import { createGhostRider } from './ghostRider.ts';
 import { createParticleField } from './particles.ts';
 import { createProps } from './props.ts';
+import { machineForCharacter } from '../data/machines.ts';
+import { machineLook } from './machineLook.ts';
 import { PLAYABLE_RIDER_LOOKS, type RiderLook } from './riderLook.ts';
 import { createCopRider } from './copRider.ts';
 import { createPose } from '../simulation/EucController.ts';
@@ -316,8 +318,13 @@ function measureNonLevelSceneFor(
 ): SceneCost {
   const meshes: MeshCost[] = [];
 
-  const rig = createRidingRig(look);
-  const ghost = createGhostRider(look);
+  // The machine follows the character exactly as `app/Game.ts` installs it —
+  // M19. A reserve measured on the standard wheel alone would under-reserve
+  // the moment the player picks Red Rider, which is the same silent failure
+  // the rider-look loop already exists to prevent, one axis over.
+  const machine = machineLook(machineForCharacter(look.id));
+  const rig = createRidingRig(look, machine);
+  const ghost = createGhostRider(look, machine);
   const cop = createCopRider();
   const gates = createCheckpointGates(checkpoints);
   const sparks = createParticleField({

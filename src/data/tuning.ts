@@ -2934,6 +2934,31 @@ export const BLOCKOUT_COLOURS = {
   taillight: 0xff2233,
 
   /**
+   * Red Rider's machine — M19 Phase 3 (`render/machineLook.ts`).
+   *
+   * The reference addendum is explicit that his wheel is red-*dominant*, not a
+   * black wheel with red accents, so the red is the shell's **base** colour and
+   * the black structure is painted down from it — a vertex colour is a
+   * multiplier, and red can be painted to black where black can never be
+   * painted to red. Two reds rather than one: the bodywork at the shell's own
+   * satin roughness, and the bolt-on armour trim slightly brighter and
+   * glossier, so panel and body separate the way plastic and paint actually
+   * do. The headlight is deliberately **cool** against Cool Rider's warm
+   * `headlight` above — the mockup's projector reads blue-white, and the two
+   * machines should not share a light signature.
+   *
+   * The one hue collision this palette walks into on purpose:
+   * `statusCritical` two entries up is also red. The light itself is its own
+   * emissive mesh and survives, but a red shell behind it would bury the power
+   * ladder's only readable warning — so his livery paints a dark bezel column
+   * behind the status light (`docs/PLANS.md` §19.7), which is also simply what
+   * the real machine's black spine looks like.
+   */
+  machineRed: 0xc01824,
+  machineTrimRed: 0xd8202c,
+  machineHeadlightCool: 0xdff0ff,
+
+  /**
    * The machine's own status light (M6), in its four ladder colours.
    *
    * **This is the wheel telling the rider something, not a HUD.**
@@ -3095,6 +3120,80 @@ export const BLOCKOUT_COLOURS = {
   copSkin: 0xe2ab82,
   /** Boots, gloves, knee pads, duty belt. Slightly warmer than the wheel's black. */
   copGear: 0x2f3138,
+
+  /**
+   * Red Rider — M19, and the first palette in this file taken from a **real
+   * person** rather than invented.
+   *
+   * He asked to be in the game and the owner agreed publicly; the reference
+   * photograph, a polished character render and three stills of his customized
+   * wheel are held under `references/red-rider/` and never ship. What the build
+   * takes from them is his read: **red is the field and black is the
+   * structure**, and that ratio is the character. Gloss red full-face lid, red
+   * top and trousers, and every protective piece — chest harness, elbow and
+   * knee armour, gloves, boots — in black.
+   *
+   * **Authored well below the reference's red, and Trollina's entry above is
+   * why.** A saturated primary sits near the top of the sRGB gamut, the sun is
+   * strong, and ACES rolls a bright saturated highlight toward white — a true
+   * pillar-box red bleaches to salmon on the lit side at midday and takes the
+   * character's whole identity with it. These are picked to survive full sun on
+   * the shoulders while still reading red in the shade of a tree, which is the
+   * same two-ended test the hi-vis yoke had to pass.
+   *
+   * Two of them are picked against the *machine* rather than against each
+   * other, and that constraint is new in this file. `statusCritical` two
+   * hundred lines up is `0xff2f2f`, and M19 puts a red machine under a red
+   * rider — so the suit is held deliberately deeper and less orange than any
+   * warning value the wheel can reach, and the wheel's own red (see
+   * `machineRedRider*` below) is separated from it again. A rider whose gear
+   * is the same red as "you are about to be thrown off" is a rider wearing a
+   * warning light.
+   */
+  redRiderSuit: 0xba262b,
+  /**
+   * The lid, and it is **lighter than the suit** for exactly the reason
+   * `riderHelmet` is: the chase camera looks at the back of a head all day, and
+   * a helmet darker than the body subtracts the character's most recognisable
+   * shape from the silhouette. His is gloss where Cool Rider's is satin, so it
+   * carries a little more of the sky and can afford to sit further up.
+   */
+  redRiderHelmet: 0xd4333a,
+  /** The dark smoked visor. Deeper than Cool Rider's — his reads near-black. */
+  redRiderVisor: 0x1b1d22,
+  /**
+   * The hard armour: chest harness, elbow and knee guards.
+   *
+   * A separate value from `redRiderGear` and only just — armour is moulded
+   * plastic and boots are matte leather, so they part company in *roughness*
+   * far more than in hue (see the two material specs in `render/riderLook.ts`).
+   * Kept a touch cooler than the boots so the harness reads as a piece of kit
+   * laid over the chest rather than as a hole in it.
+   */
+  redRiderArmour: 0x26282e,
+  /** Boots, gloves, and the harness webbing. Matte, and warmer than the armour. */
+  redRiderGear: 0x2e3036,
+  /**
+   * The graphic down his outer **left** thigh — the one light value he wears.
+   *
+   * **It was removed once and is back deliberately.** The first build painted
+   * it symmetrically, because the limb painters were handed no side, and it
+   * landed on the *inside* of his right leg where it read as a lighting seam.
+   * `RiderLook.paint` now carries the side, so it sits outboard on the
+   * rider-left leg only, the way the reference wears it. Painting the same
+   * mark on both legs was a later symmetry error, not a reference fact.
+   *
+   * The reference's own graphic is a commercial gear brand's wordmark and is
+   * **not reproduced** (`NOTICE.md`, "Fictional designs and real-world brands";
+   * `AGENTS.md`, original designs). The owner's decision of 2026-08-14 is that
+   * the only branding Red Rider carries is his own name, so what ships is an
+   * original angular mark in the same place, at the same size, doing the same
+   * job for the silhouette.
+   *
+   * Warm rather than pure white: ACES drives the brightest thing on a sunlit
+   * character toward the top of the range, and a true white here flares.
+   */
+  redRiderMark: 0xd8d2c6,
 
   /**
    * The ghost, and the checkpoint gates (M10).
