@@ -642,11 +642,20 @@ function routesTemplate(seedMaxLength: number): string {
  * `data-menu` is on the `<button>` and the label is a `<span>` inside it,
  * because M14.5 recorded that a click lands on the innermost element and a hook
  * inside a control is a silent no-op.
+ *
+ * **The note's own hook is `data-note`, and it must never be `data-menu`** —
+ * the first build spelled it `data-menu="new-route-note"` and thereby walked
+ * straight into the trap the paragraph above describes: `onClick` resolves the
+ * nearest `data-menu` ancestor, so a tap landing on the note — which is most
+ * of the button's height on a phone — resolved to an action nobody handles
+ * and died silently. On the owner's handset that read as "the first tap after
+ * Busted takes several presses" (§4.5): taps on the note line did nothing,
+ * taps on the label line worked, and which one a thumb hits is luck.
  */
 const NEW_ROUTE_BUTTON = `
     <button type="button" class="euc-button" data-menu="new-route">
       <span class="euc-button__label">New route</span>
-      <span class="euc-button__note" data-menu="new-route-note"></span>
+      <span class="euc-button__note" data-note="new-route"></span>
     </button>`;
 
 /**
@@ -1021,7 +1030,7 @@ export class Menus {
     for (const panel of [this.pause, this.results]) {
       const button = panel.querySelector<HTMLButtonElement>('[data-menu="new-route"]');
       if (button) button.disabled = stage === 'building';
-      const target = panel.querySelector<HTMLElement>('[data-menu="new-route-note"]');
+      const target = panel.querySelector<HTMLElement>('[data-note="new-route"]');
       if (target && target.textContent !== note) target.textContent = note;
     }
   }

@@ -4289,12 +4289,22 @@ export const AUDIO = {
    * it inside the spirit of the rule is the range: nothing beeps below 40 mph,
    * so a rider pottering about hears none of this ever.
    *
-   * 0.17 is **half the level it first shipped at** (0.34). The owner rode the
-   * first build and asked for exactly this — *"irl it is loud too, but this is
-   * a videogame"* — a fidelity-versus-comfort call that goes comfort's way by
-   * the arcade rules at the top of this block.
+   * 0.04 is the level's **third cut, and the first two are the reason it is
+   * this deep**. It first shipped at 0.34; the owner rode that and asked for
+   * quieter (*"irl it is loud too, but this is a videogame"*), so M20.1 halved
+   * it to 0.17; he then rode the published 0.17 on his handset and reported
+   * *"the beeps are still way too loud"*. One halving having already proven
+   * insufficient, M20.2 cut it past half to 0.08. His next handset ride still
+   * found that too loud, so this pass halves it again instead of asking the
+   * warning to win a loudness contest it does not need to win —
+   * and 2565 Hz sits near the ear's most sensitive band *and* near a phone
+   * speaker's resonant peak, so the tone reads hotter on the handset he
+   * actually plays on than on the desktop where levels get set. A
+   * fidelity-versus-comfort call that goes comfort's way by the arcade rules
+   * at the top of this block; the warning also has a silent partner (the HUD
+   * glyph), so audibility is not load-bearing for fairness.
    */
-  overspeedLevel: 0.17,
+  overspeedLevel: 0.04,
   /**
    * The beep's own length, seconds — and it is the shipped recording's length
    * rather than a free choice.
@@ -5200,6 +5210,37 @@ export const CHASE = {
    * hill does not bury him.
    */
   spawnGapMetres: 20,
+  /**
+   * The super tracker — M20.2, and the owner's second reopening of the easy
+   * escape. M20.1 made the straight-line race dead even, and his next night
+   * ride found the leak that was left: *"i can still loose him easily by
+   * getting far away from him… the mode is about the tension, not
+   * freeriding."* Two equal wheels can never re-close a gap honestly, and the
+   * measurement agrees — a cop pursuing an identical full-skill route rider
+   * bleeds ~1.3 m/s to pursuit overhead (the quarry's line instead of the
+   * racing line, caution, detours) and is 125 m behind inside 90 seconds.
+   *
+   * So the cop is allowed the one power the owner asked for by name: **he
+   * always knows where the rider is, and when the gap blows out he turns up
+   * again**. When `copGap` stays beyond `trackerGapMetres` for
+   * `trackerHoldSeconds` continuously, he is placed back on the route
+   * `trackerReturnMetres` behind the rider, arriving at the rider's own pace
+   * (clamped by his own cutout ceiling, so this grants position, never a
+   * faster wheel). The fiction is a tracker, not a teleport the player can
+   * see: the trigger sits beyond any distance the chase camera shows of the
+   * road behind, and the return sits beyond `AUDIO.sirenFarMetres` — he
+   * arrives silent and the siren *fades in* as he closes, which reads as
+   * being found rather than as being spawned on.
+   *
+   * The hold seconds are what make a momentary blowout — a building between
+   * them, one long corner — survive on its own: only a gap that *stays* open
+   * regroups him. Inside `trackerGapMetres` nothing whatsoever changes, so
+   * every close-range behaviour (§4.2 wall choreography included) is
+   * untouched.
+   */
+  trackerGapMetres: 130,
+  trackerReturnMetres: 85,
+  trackerHoldSeconds: 3.0,
   /**
    * How close the cop must be for a crash to be a bust, metres — §13 q25.
    *
@@ -7161,6 +7202,41 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     note: 'How close he has to be for a crash to end the run. This is the whole '
       + 'difference between pressure and tag — raise it and every crash is a '
       + 'bust, drop it and crashing costs only the recovery.',
+  },
+  {
+    path: 'CHASE.trackerGapMetres',
+    group: 'Ride — chase',
+    label: 'Tracker gap',
+    unit: 'm',
+    min: 60,
+    max: 400,
+    step: 10,
+    note: 'How far you can stretch the gap before the super tracker regroups '
+      + 'him onto your tail. Raise it toward 400 and distance becomes an escape '
+      + 'again; the mode is about the tension.',
+  },
+  {
+    path: 'CHASE.trackerReturnMetres',
+    group: 'Ride — chase',
+    label: 'Tracker return',
+    unit: 'm',
+    min: 30,
+    max: 200,
+    step: 5,
+    note: 'How far behind you he turns up again. Keep it past the siren’s far '
+      + 'edge (60 m) so he arrives silent and fades in instead of blaring out '
+      + 'of nowhere.',
+  },
+  {
+    path: 'CHASE.trackerHoldSeconds',
+    group: 'Ride — chase',
+    label: 'Tracker hold',
+    unit: 's',
+    min: 1,
+    max: 15,
+    step: 0.5,
+    note: 'How long the gap must stay blown out before he regroups. Long '
+      + 'enough that a building or one long corner between you never counts.',
   },
   {
     path: 'CHASE.strayLimitMetres',

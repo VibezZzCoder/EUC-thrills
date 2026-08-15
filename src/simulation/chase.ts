@@ -73,6 +73,8 @@ export class ChaseRun {
   bustRadiusMetres: number = CHASE.bustRadiusMetres;
   strayLimitMetres: number = CHASE.strayLimitMetres;
   strayGraceSeconds: number = CHASE.strayGraceSeconds;
+  trackerGapMetres: number = CHASE.trackerGapMetres;
+  trackerHoldSeconds: number = CHASE.trackerHoldSeconds;
 
   private phaseValue: ChasePhase = 'idle';
   // Annotated rather than inferred, for the reason every live-tuned field in
@@ -82,6 +84,10 @@ export class ChaseRun {
   private remainingSeconds: number = CHASE.escapeSeconds;
   private outcomeValue: ChaseOutcome = 'none';
   private strayedFor = 0;
+  /** Seconds the gap has continuously sat beyond the tracker line. */
+  private trackedFor = 0;
+  /** A regroup the referee has decided on and nobody has consumed yet. */
+  private trackerDemand = false;
   /**
    * Was the rider crashed on the previous step?
    *
@@ -110,6 +116,8 @@ export class ChaseRun {
     this.remainingSeconds = this.escapeSeconds;
     this.outcomeValue = 'none';
     this.strayedFor = 0;
+    this.trackedFor = 0;
+    this.trackerDemand = false;
     this.wasCrashed = false;
   }
 
@@ -119,6 +127,8 @@ export class ChaseRun {
     this.remainingSeconds = this.escapeSeconds;
     this.outcomeValue = 'none';
     this.strayedFor = 0;
+    this.trackedFor = 0;
+    this.trackerDemand = false;
     this.wasCrashed = false;
   }
 
@@ -168,6 +178,39 @@ export class ChaseRun {
       this.strayedFor = 0;
     }
 
+    // The super tracker's clock — M20.2, the owner's "the mode is about the
+    // tension, not freeriding". Arithmetic only: this referee decides *when*
+    // the gap has genuinely blown out (beyond the tracker gap, continuously,
+    // for the hold), and `app/Game.ts` decides what a regroup *is*. The timer
+    // resets the moment the gap closes, exactly as the stray clock does, so a
+    // rider who flirts with the trigger line is never punished for the first
+    // approach. A crashed rider does not accumulate — regrouping the cop onto
+    // somebody who is down would hand the bust radius a rider who cannot ride.
+    if (!crashed && input.copDistance > this.trackerGapMetres) {
+      this.trackedFor += Math.max(0, dt);
+      if (this.trackedFor >= this.trackerHoldSeconds) {
+        this.trackedFor = 0;
+        this.trackerDemand = true;
+      }
+    } else {
+      this.trackedFor = 0;
+    }
+
     return false;
+  }
+
+  /**
+   * Consume the pending regroup demand, if the step above raised one.
+   *
+   * Edge-triggered and consumed on read, like the crash edge: the demand is an
+   * instruction to act once, and a level would re-relocate the cop on every
+   * step of a gap that stays weird for a frame or two after the move. If the
+   * caller cannot act on it (the cop is mid-crash, say), dropping it is safe —
+   * the timer starts again from zero and demands again one hold later.
+   */
+  takeTrackerDemand(): boolean {
+    const demanded = this.trackerDemand;
+    this.trackerDemand = false;
+    return demanded;
   }
 }

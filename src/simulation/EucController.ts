@@ -746,9 +746,15 @@ export type CrashCause =
 
 /**
  * Which non-graphic crash motion is playing (`EUC_RIDER_MOTION_REFERENCE.md`
- * §16). Chosen from the speed and the cause, not authored per trigger.
+ * §16). Chosen from the speed and the cause, not authored per trigger — with
+ * one exception: `faceplant` belongs to the cutout alone, because a cutout is
+ * the one crash whose direction physics dictates. The wheel stops holding the
+ * rider up while nothing slows the rider down, so the body goes over the
+ * *front* — which is also what every real cutout video shows. The first build
+ * routed the cutout through `sideFall` and the owner read it as backwards:
+ * *"he kinda falls back… looks like he got shot."*
  */
-export type CrashMotion = 'none' | 'stepOff' | 'runOut' | 'sideFall';
+export type CrashMotion = 'none' | 'stepOff' | 'runOut' | 'sideFall' | 'faceplant';
 
 export interface Spawn {
   readonly position: Vec3;
@@ -1687,15 +1693,23 @@ export class EucController {
     Object.assign(surface, values);
   }
 
-  /** Put the rider back at the spawn, stopped and upright. `R` does this. */
-  reset(spawn?: Spawn): void {
+  /**
+   * Put the rider back at the spawn, stopped and upright. `R` does this.
+   *
+   * `initialSpeed` is the one exception to "stopped", and it exists for the
+   * chase's super tracker (M20.2): a cop regrouped onto the route mid-pursuit
+   * arrives *riding*, because a cop who materialised at a standstill would be
+   * re-outrun before he finished accelerating and the regroup would have
+   * bought nothing. Every player-facing reset leaves it at its default.
+   */
+  reset(spawn?: Spawn, initialSpeed = 0): void {
     if (spawn) this.spawn = spawn;
 
     this.x = this.spawn.position.x;
     this.z = this.spawn.position.z;
     this.headingY = this.spawn.headingY;
 
-    this.speed = 0;
+    this.speed = initialSpeed;
     this.leanPitch = 0;
     this.riderPitch = 0;
     this.slopeLean = 0;
@@ -2973,13 +2987,18 @@ export class EucController {
     this.recoverTimer = 0;
     this.state = 'crashing';
 
-    this.crashMotion = cause === 'pedalStrike'
-      || cause === 'obstacle'
-      || this.crashSpeed > t.crashRunOutSpeed
-      ? 'sideFall'
-      : this.crashSpeed > t.crashStepOffSpeed
-        ? 'runOut'
-        : 'stepOff';
+    // The cutout is directional by physics rather than by speed band: power
+    // dies, the wheel stops balancing, momentum does the rest — forward, over
+    // the front. Everything else keeps the speed-banded choice.
+    this.crashMotion = cause === 'cutout'
+      ? 'faceplant'
+      : cause === 'pedalStrike'
+          || cause === 'obstacle'
+          || this.crashSpeed > t.crashRunOutSpeed
+        ? 'sideFall'
+        : this.crashSpeed > t.crashStepOffSpeed
+          ? 'runOut'
+          : 'stepOff';
 
     // Which side they go down. A scrape throws them over the pedal that caught;
     // otherwise they follow the lean they were carrying, and a rider who was
@@ -3019,8 +3038,12 @@ export class EucController {
     // speed bounces the machine and spins it out before it lies down. The
     // quiet M6 fall is untouched below the threshold, so a step-off still
     // reads as a step-off.
+    // The faceplant keeps the flourish the cutout had when it was a side fall:
+    // a dead wheel at ~49 mph absolutely does bounce and spin out.
     if (
-      (cause === 'obstacle' || this.crashMotion === 'sideFall')
+      (cause === 'obstacle'
+        || this.crashMotion === 'sideFall'
+        || this.crashMotion === 'faceplant')
       && this.crashSpeed >= t.crashWheelFlourishSpeed
     ) {
       this.wheelCrashSpinRate = -this.crashSide * t.crashWheelSpinRate;
@@ -4506,7 +4529,9 @@ export class EucController {
 
     const sideFall = this.crashMotion === 'sideFall';
     // A run-out carries the rider well past the wheel on their feet; a step-off
-    // barely separates at all; a side fall goes down beside it.
+    // barely separates at all; a side fall goes down beside it; a faceplant
+    // (cutout, ragdoll-off fallback) throws them almost as far forward as a
+    // run-out but face-down through the non-side-fall drop-and-tumble below.
     // An obstacle fall goes sideways from the contact point. Sending the rider
     // forward along the generic side-fall path would put them through the same
     // solid face that just took the wheel out from under them.
@@ -4516,7 +4541,9 @@ export class EucController {
         ? 0.5
         : this.crashMotion === 'runOut'
           ? 1
-          : 0.35;
+          : this.crashMotion === 'faceplant'
+            ? 0.85
+            : 0.35;
     const spread = sideFall ? 1 : this.crashMotion === 'stepOff' ? 0.5 : 0.18;
     target.crashForward = t.crashSeparationForward * reach * blend;
     target.crashLateral = this.crashSide * t.crashSeparationLateral * spread * blend;

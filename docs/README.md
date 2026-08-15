@@ -257,6 +257,10 @@ escape.
 - On a clear straight he can hold the wheel just under its cutout, so simply
   pinning the throttle will not leave him behind. Corners, hazards, rough ground,
   and a cleaner line are where the gap comes from.
+- He is a tracker: he always knows where you are, and a gap you stretch past
+  his reach gets closed — he turns up on the road behind you again, at your
+  pace, siren rising as he comes. Distance buys breathing room, never safety;
+  the escape is surviving the clock.
 - He alone carries the padded paddle. A strike costs speed and adds a
   recoverable wobble; crashing while he is close is the bust.
 - The route is the arena. Going far into the surround puts a warning on screen
@@ -287,15 +291,20 @@ records.
 The line under the title screen's buttons says who you are riding as, and
 opens the chooser. There are three, and the difference is entirely cosmetic:
 **Cool Rider** in black moto gear with reflective blue panels and a full-face
-helmet; **Trollina**, who began life as a joke drawing somebody sent the
+helmet; his clothes and riding style are based on what the project owner wears,
+credited at [@edwin_rodmen](https://www.instagram.com/edwin_rodmen/). Cool Rider
+does not reproduce the owner's face, and the fictional character name is not
+the owner's public name or nickname. **Trollina** began life as a joke drawing somebody sent the
 author to make fun of the graphics and ended up in the game; and **Red Rider**,
 a real rider who asked to appear and is in the game with his permission — his
 red-and-black armour, harness, and camera are his, and he is the first rider
 whose machine looks different too, a red saddled wheel modelled on his own
 customized machine. Each has their own crash sound. None is faster, and
 Red Rider's wheel rides identically to the standard one, down to the last
-number. "Red Rider" is the only name published, and his likeness appears here
-with permission for this game only — see [`NOTICE.md`](NOTICE.md).
+number. His public riding/photography persona is credited as
+[@r3d__rider](https://www.instagram.com/r3d__rider/) at his and the project
+owner's direction; no legal or private identity is published, and his likeness
+appears here with permission for this game only — see [`NOTICE.md`](NOTICE.md).
 
 ## Settings
 
@@ -441,8 +450,10 @@ shipped sounds derive from public-domain (CC0) recordings; two crashes derive
 from the author's own recording — the third rider's is that same wipeout with
 the author's voice removed; and the second rider's crash is a composed one-shot
 whose voice is machine-generated and is therefore excluded from the CC BY 4.0
-claim. Red Rider is a real person represented with permission, and no licence
-in this project covers his name, likeness, or persona. Full terms,
+claim. Cool Rider is an original fictional character whose clothes and style
+draw on what the project owner wears; Red Rider is a real person represented
+with permission, and no licence in this project covers his name, likeness, or
+persona. Full terms,
 attribution, and per-file provenance are in [`LICENSE`](LICENSE) and
 [`NOTICE.md`](NOTICE.md).
 

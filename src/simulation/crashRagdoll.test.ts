@@ -12,7 +12,7 @@ import {
   type EucTuning,
 } from './EucController.ts';
 import { PlanTerrainSampler } from './planSampler.ts';
-import { RAGDOLL_PARTICLES } from './ragdoll.ts';
+import { RAGDOLL_PARTICLES, RD_FOOT_L, RD_FOOT_R, RD_HEAD } from './ragdoll.ts';
 import { SoftBodyField } from './softBodies.ts';
 
 /**
@@ -256,6 +256,52 @@ test('the tumble is settled before manual recovery opens', () => {
     `the body is still moving ${moved.toFixed(4)} m/step at 2.3 s — not settled`,
   );
   assert.equal(euc.snapshot().crashed, true, 'settling must not mean recovered');
+});
+
+test('the cutout is a faceplant: over the front, not backwards or sideways', () => {
+  // The owner's night note on the published M20.1 build: routed through the
+  // side fall, the cutout read as *"he kinda falls back… looks like he got
+  // shot"* — and a real cutout is the one crash whose direction physics
+  // dictates. Ride flat pavement at full throttle until the wheel gives up
+  // (the only crash a flat empty run can produce with the funnel on), then
+  // watch the body: it must plow FORWARD past the wheel, head leading the
+  // feet, with next to no sideways throw.
+  const euc = controller({ plan: flatPlan(), tuning: { cutoutEnabled: 1 } });
+  const lost = rideUntilCrashed(euc, SECONDS(15));
+  assert.equal(lost.crashCause, 'cutout', 'the flat run must crash by cutout');
+  assert.equal(lost.crashMotion, 'faceplant');
+  const crashZ = lost.position.z;
+
+  // Early in the tumble — the readable moment the owner is reacting to.
+  for (let i = 0; i < SECONDS(0.4); i += 1) euc.step(STEP, actions());
+  let block = particles(euc);
+  const headZ = block[RD_HEAD * 3 + 2];
+  const headX = block[RD_HEAD * 3];
+  const feetZ = (block[RD_FOOT_L * 3 + 2] + block[RD_FOOT_R * 3 + 2]) / 2;
+  assert.ok(
+    headZ > crashZ + 1,
+    `the body must go forward of the cutout point (head ${headZ.toFixed(2)}, crash ${crashZ.toFixed(2)})`,
+  );
+  assert.ok(
+    headZ > feetZ + 0.15,
+    `over the FRONT: head (${headZ.toFixed(2)}) must lead the feet (${feetZ.toFixed(2)})`,
+  );
+  assert.ok(
+    Math.abs(headX) < 1.5,
+    `a cutout is not a side fall — head drifted ${headX.toFixed(2)} m sideways`,
+  );
+
+  // And it ends face-down on the deck, not standing and not backwards.
+  for (let i = 0; i < SECONDS(1.8); i += 1) euc.step(STEP, actions());
+  block = particles(euc);
+  assert.ok(
+    block[RD_HEAD * 3 + 1] < 0.75,
+    `the head must finish on the deck, got y ${block[RD_HEAD * 3 + 1].toFixed(2)}`,
+  );
+  assert.ok(
+    block[RD_HEAD * 3 + 2] > crashZ,
+    'the settled body lies ahead of where the wheel cut, never behind it',
+  );
 });
 
 test('two identical crashes produce bit-identical tumbles', () => {

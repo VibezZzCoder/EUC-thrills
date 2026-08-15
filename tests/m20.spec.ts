@@ -322,10 +322,15 @@ test('one press from a paused chase swaps the world and puts the player back in 
   await expect(page.locator('.euc-menu--pause')).toBeVisible();
 
   // The sentence that tells a player other courses exist. It is the feature.
-  await expect(page.locator('.euc-menu--pause [data-menu="new-route-note"]'))
+  await expect(page.locator('.euc-menu--pause [data-note="new-route"]'))
     .toContainText('brand-new');
 
-  await page.locator('.euc-menu--pause [data-menu="new-route"]').click();
+  // Press the NOTE, not the button's centre — §4.5. A click lands on the
+  // innermost element, the note is most of the button's height on a phone,
+  // and the first build's note carried a `data-menu` of its own, so the
+  // delegated handler resolved the wrong hook and dropped the press on the
+  // floor. This pin makes the worst landing spot the tested one.
+  await page.locator('.euc-menu--pause [data-note="new-route"]').click();
   await page.waitForFunction(() => window.game.snapshot().app.state === 'chase', undefined, {
     timeout: 20_000,
   });

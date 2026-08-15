@@ -23,7 +23,7 @@ The same origin is carried inside the build itself — as a banner at the top of
 
 The two licences are stated separately on purpose: MIT is a software licence and does not read sensibly when applied to models, textures, and sound. If you reuse one but not the other, the terms are unambiguous.
 
-**One limit belongs here rather than in a footnote.** A CC BY 4.0 grant conveys this project's own rights in the assets this project authored. It does not convey — and cannot convey — rights in a real person's name, likeness, or persona. One rider in this game is a real person appearing with his permission, and the licence above does not extend to him. See *Reference material* below.
+**One limit belongs here rather than in a footnote.** A CC BY 4.0 grant conveys this project's own rights in the assets this project authored. It does not convey — and cannot convey — rights in a real person's name, likeness, or persona. Red Rider is a real person appearing with his permission; the licence above does not extend to his identity. See *Reference material* below.
 
 ## Third-party software
 
@@ -76,7 +76,7 @@ This project is not affiliated with, endorsed by, sponsored by, approved by, or 
 
 Private reference material held locally under `references/` — photographs, supplied artwork, and permission evidence alike — is **not** part of this project's licensed content. It is not redistributed, is excluded from every build, and remains the property of its owner. Nothing under `references/` is covered by the licences above, and none of it is a public-facing asset.
 
-The rider character "Cool Rider" is an original creation. The character name is an affectionate nod to a song title; no association with its rights holders is claimed or implied.
+The Cool Rider character model and design are original work. **His riding clothes and style are based on what the project owner wears**, and the owner rides and posts publicly on Instagram as [@edwin_rodmen](https://www.instagram.com/edwin_rodmen/); the link is listed here as the style-inspiration credit at his direction. The character does not reproduce the owner's face, and “Cool Rider” is a fictional character name rather than the owner's public name or nickname. The character name is an affectionate nod to a song title; no association with its rights holders is claimed or implied.
 
 The second rider, "Trollina", is also an original creation. She began as a crude joke drawing sent to the project owner, which he owns and kept; the character in the game is original geometry authored from that concept and is covered by the CC BY 4.0 claim above. The original drawing itself is held privately under `references/` and is not redistributed.
 
@@ -86,9 +86,11 @@ The third rider is **not** an original creation, and this entry is written narro
 
 **Red Rider is represented with permission.** He is a real person. He asked to appear in the game in a public conversation, and the project owner agreed in that same conversation. The character is based on the supplied reference material, and supporting permission evidence is retained with the project — privately, under `references/`, never redistributed and never shown in the game.
 
+**His public presence:** Red Rider rides, photographs, and films as **Red** on Instagram — [@r3d__rider](https://www.instagram.com/r3d__rider/), *"French EUC Rider · Photographer · Filmmaker"*. The link is listed here as credit at the project owner's direction; it is the same public persona that appears in the game, not an additional identity.
+
 **No broader right is claimed or granted.** Red Rider is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place his name, likeness, or persona under any licence, and no licence in this file conveys them. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs his agreement, which is not the project's to give.
 
-**"Red Rider" is the only identity published.** No further real-world identity is disclosed anywhere in this project or its distributions, and the conversation that granted the permission is internal evidence rather than a public-facing asset.
+**"Red Rider" — with the public Instagram persona credited above — is the only identity published.** No legal name and no private identity is disclosed anywhere in this project or its distributions, and the conversation that granted the permission is internal evidence rather than a public-facing asset.
 
 ## Attribution
 

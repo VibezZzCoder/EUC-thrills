@@ -172,3 +172,63 @@ test('a retuned clock is the clock the next run uses', () => {
   ride(run, 13);
   assert.equal(run.state.outcome, 'escaped');
 });
+
+// ---------------------------------------------------------------------------
+// The super tracker — M20.2, the owner's "the mode is about the tension"
+// ---------------------------------------------------------------------------
+
+test('a gap that stays blown out demands a regroup after the hold, not before', () => {
+  const run = new ChaseRun();
+  run.arm();
+  const far: ChaseInput = { offRoute: 0, copDistance: CHASE.trackerGapMetres + 20, crashed: false };
+
+  ride(run, CHASE.trackerHoldSeconds - 0.5, far);
+  assert.equal(run.takeTrackerDemand(), false, 'demanded before the hold was served');
+
+  ride(run, 1, far);
+  assert.equal(run.takeTrackerDemand(), true, 'the held blowout never demanded');
+  // Consumed on read, exactly like the crash edge.
+  assert.equal(run.takeTrackerDemand(), false, 'one blowout demanded twice');
+});
+
+test('closing back inside the tracker line gives the whole hold back', () => {
+  const run = new ChaseRun();
+  run.arm();
+  const far: ChaseInput = { offRoute: 0, copDistance: CHASE.trackerGapMetres + 20, crashed: false };
+  const near: ChaseInput = { offRoute: 0, copDistance: CHASE.trackerGapMetres - 10, crashed: false };
+
+  // Flirt with the line twice: most of a hold out, a moment back in, most of a
+  // hold out again. Neither excursion may demand — the stray clock's rule.
+  ride(run, CHASE.trackerHoldSeconds - 0.2, far);
+  ride(run, 0.5, near);
+  ride(run, CHASE.trackerHoldSeconds - 0.2, far);
+  assert.equal(run.takeTrackerDemand(), false, 'two part-holds were added together');
+});
+
+test('a crashed rider is never regrouped onto', () => {
+  const run = new ChaseRun();
+  run.arm();
+  const farDown: ChaseInput = {
+    offRoute: 0, copDistance: CHASE.trackerGapMetres + 20, crashed: true,
+  };
+  // The crash itself is not a bust — the cop is far — so the run keeps going,
+  // but the tracker must not count while the rider is on the ground: the
+  // regroup would hand the bust radius somebody who cannot ride.
+  ride(run, CHASE.trackerHoldSeconds * 3, farDown);
+  assert.equal(run.state.phase, 'running');
+  assert.equal(run.takeTrackerDemand(), false, 'the tracker counted a downed rider');
+});
+
+test('a fresh run starts with no tracker debt and no pending demand', () => {
+  const run = new ChaseRun();
+  run.arm();
+  ride(run, CHASE.trackerHoldSeconds + 1,
+    { offRoute: 0, copDistance: CHASE.trackerGapMetres + 20, crashed: false });
+  // A demand is pending; abandoning must clear it and the timer both.
+  run.abandon();
+  run.arm();
+  assert.equal(run.takeTrackerDemand(), false, 'a demand survived abandon');
+  ride(run, CHASE.trackerHoldSeconds * 0.9,
+    { offRoute: 0, copDistance: CHASE.trackerGapMetres + 20, crashed: false });
+  assert.equal(run.takeTrackerDemand(), false, 'the old run’s timer leaked into this one');
+});

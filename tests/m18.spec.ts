@@ -459,6 +459,77 @@ test('the results card names the outcome and the mode keeps its own best', async
   expect(errors).toEqual([]);
 });
 
+test('the tracker refuses an overlapping regroup, then returns safely when the route has room', async ({ page }) => {
+  // The super tracker, M20.2 — the owner's "i can still loose him easily by
+  // getting far away from him… the mode is about the tension, not freeriding".
+  // Two equal wheels can never honestly re-close a stretched gap, so the
+  // referee demands a regroup and `Game.regroupCop` puts him back on the route
+  // behind the rider, at speed. Staged with the shipped tunables at their F4
+  // extremes rather than by riding minutes of real route: the cop spawns 80 m
+  // back with the trigger at 60 m, so the opening IS a blown-out gap, and the
+  // first build's proof accidentally exposed a worse defect: at the route
+  // start, sampling 30 m behind clamps to the start and put the cop 1.1 m from
+  // the rider. Its assertion treated any large gap reduction as success. Pin
+  // both halves now: no overlap when there is no route behind the rider, and a
+  // real return once the rider is placed far enough along the same route.
+  const errors = collectErrors(page);
+  await bootChase(page);
+
+  const tracked = await page.evaluate(async () => {
+    const game = window.game;
+    game.tuning.set('CHASE.spawnGapMetres', 80);
+    game.tuning.set('CHASE.trackerGapMetres', 60);
+    game.tuning.set('CHASE.trackerReturnMetres', 30);
+    game.tuning.set('CHASE.trackerHoldSeconds', 1);
+    game.startChase();
+
+    const startGaps: number[] = [];
+    for (let chunk = 0; chunk < 8; chunk += 1) {
+      game.advance(30);
+      startGaps.push(game.snapshot().chase.copGap);
+    }
+
+    // Start a clean run, then place the rider at a real route checkpoint. The
+    // tracker owns re-acquisition rather than the journey to the fixture, so a
+    // deterministic bridge placement isolates the composition rule.
+    game.startChase();
+    const plan = game.buildLevel('generated', game.snapshot().world.seed);
+    const checkpoint = plan.checkpoints[0];
+    const ground = game.sampleGround(checkpoint.centre.x, checkpoint.centre.z);
+    game.placeRider(
+      { x: checkpoint.centre.x, y: ground.height, z: checkpoint.centre.z },
+      checkpoint.headingY,
+    );
+
+    const placedGaps: number[] = [];
+    let snapped = false;
+    let gapAfterSnap = Infinity;
+    for (let chunk = 0; chunk < 20; chunk += 1) {
+      game.advance(30);
+      const gap = game.snapshot().chase.copGap;
+      const previous = placedGaps[placedGaps.length - 1];
+      placedGaps.push(gap);
+      if (previous !== undefined && previous - gap > 20) {
+        snapped = true;
+        gapAfterSnap = gap;
+        break;
+      }
+    }
+    return { startGaps, snapped, gapAfterSnap };
+  });
+
+  // The opening really was beyond the trigger, but the invalid candidate was
+  // refused instead of collapsing to the rider's own position.
+  expect(tracked.startGaps[0]).toBeGreaterThan(60);
+  expect(Math.min(...tracked.startGaps)).toBeGreaterThan(60);
+  // With real route behind the rider, the regroup fires at a safe separation.
+  expect(tracked.snapped).toBe(true);
+  expect(tracked.gapAfterSnap).toBeGreaterThan(CHASE.bustRadiusMetres);
+  expect(tracked.gapAfterSnap).toBeGreaterThan(25);
+  expect(tracked.gapAfterSnap).toBeLessThan(40);
+  expect(errors).toEqual([]);
+});
+
 test('the chase probe puts a cop on the road with no rules attached', async ({ page }) => {
   // Phase 2's owner gate: ride behind him and look at him, before the mode
   // exists to be ridden. It changes nothing about the world, so unlike the

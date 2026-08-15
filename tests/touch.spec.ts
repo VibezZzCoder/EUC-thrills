@@ -708,3 +708,50 @@ test.describe('M14.5 — choosing a rider on a phone', () => {
     expect(errors).toEqual([]);
   });
 });
+
+test.describe('M20.1 §4.5 — the Busted card obeys a thumb', () => {
+  /*
+   * The owner's phone report: the first tap on `New route` after being busted
+   * took several presses, later visits worked first time. The cause was not
+   * timing but geometry — the note under the label is most of the button's
+   * height on a phone, and the note's hook was spelled `data-menu`, so the
+   * delegated click resolved to the note's non-action and died silently. A tap
+   * on the label worked; a tap on the note did not; which one a thumb hits is
+   * luck, which is exactly a "takes a few presses" report.
+   *
+   * So this test taps THE NOTE, on a real touch pointer, on the results card
+   * of a genuine bust — the worst landing spot on the exact card he was
+   * looking at. It must start a fresh chase on the first tap.
+   */
+  test('a first tap on the note half of New route registers after a bust', async ({ page }) => {
+    const errors = collectErrors(page);
+    await bootToTitle(page, 'level=generated&seed=copper-yard-78');
+    await page.evaluate(() => window.game.startChase());
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
+    const before = await page.evaluate(() => window.game.snapshot().world.seed);
+
+    // Stand still and let Officer Dorkins do the busting — the owner's own
+    // route to this card. Frozen-stepped, the harness's first rule.
+    await page.evaluate(() => {
+      const game = window.game;
+      game.loop.setRunning(false);
+      for (let i = 0; i < 400; i += 1) {
+        game.setActions({});
+        game.advance(60);
+        if (game.snapshot().app.state === 'results') break;
+      }
+      game.loop.setRunning(true);
+    });
+    expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('results');
+
+    await page.locator('.euc-menu--results [data-note="new-route"]').tap();
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'chase', undefined, {
+      timeout: 30_000,
+    });
+
+    const after = await page.evaluate(() => window.game.snapshot());
+    expect(after.world.seed).not.toBe(before);
+    expect(after.chase.phase).toBe('running');
+    expect(errors).toEqual([]);
+  });
+});

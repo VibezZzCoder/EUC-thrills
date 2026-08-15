@@ -171,7 +171,7 @@ export interface RagdollSeed {
   hipDrop: number;
   /** Signed speed along the heading at the moment of the crash, m/s. */
   speed: number;
-  cause: 'stepOff' | 'runOut' | 'sideFall';
+  cause: 'stepOff' | 'runOut' | 'sideFall' | 'faceplant';
   /** True when the wheel stopped dead against a solid (obstacle cause). */
   intoSolid: boolean;
   /** Which side the rider goes down, +1 rider-left (+X). */
@@ -268,6 +268,18 @@ export class CrashRagdoll {
           ? speed * direction * t.ragdollLaunchCarry + direction * t.ragdollLaunchTumble
           : speed * direction * 0.2;
         vUp = pop;
+      } else if (input.cause === 'faceplant') {
+        // The cutout (M20.1). Same head-over shove as the wall flip — the
+        // torso outruns the feet and the constraints turn that into forward
+        // rotation — but the feet keep over half their speed, because nothing
+        // *stopped* them: the wheel merely quit holding the rider up. That
+        // difference is what separates "thrown over the bars" from a cutout's
+        // pitch-forward-and-plow. No side component and barely any pop: a
+        // cutout goes *down*, face first, and slides.
+        vForward = upper
+          ? speed * direction * t.ragdollLaunchCarry + direction * t.ragdollLaunchTumble
+          : speed * direction * 0.55;
+        vUp = upper ? pop * 0.35 : 0;
       } else if (input.cause === 'sideFall') {
         vForward = speed * direction * 0.8;
         vSide = input.side * t.ragdollLaunchSide * (upper ? 1.3 : 0.8);

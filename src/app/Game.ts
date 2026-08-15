@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
 import {
-  INSPECTION_CAMERA, CAMERA, CHALLENGE, CHASE, EUC, INPUT, RIDER, TARGET, WHEEL,
+  INSPECTION_CAMERA, AUDIO, CAMERA, CHALLENGE, CHASE, EUC, INPUT, RIDER, TARGET, WHEEL,
 } from '../data/tuning.ts';
 import { LiveTuning } from '../data/liveTuning.ts';
 import { GameRenderer } from '../render/Renderer.ts';
@@ -2087,6 +2087,89 @@ export class Game {
     this.copGap = gap;
   }
 
+  /**
+   * The super tracker's regroup — M20.2, the owner's "always knows where you
+   * are and goes to find you".
+   *
+   * The referee (`simulation/chase.ts`) has just ruled that the gap sat beyond
+   * `CHASE.trackerGapMetres` for the whole hold, which two equal wheels can
+   * never honestly close. So the cop is placed back **on the route**,
+   * `CHASE.trackerReturnMetres` behind the rider's own projection, facing the
+   * rider's direction of travel, arriving at the rider's pace — position is
+   * granted, a faster wheel never is, and his own throttle law immediately
+   * holds whatever his ceiling allows. On the route rather than straight
+   * behind the rider's heading (`placeCopBehindRider`'s shape), because a
+   * mid-ride heading can point across a field or into a block, and the spine
+   * is the one line guaranteed to be road.
+   *
+   * The return distance sits beyond the siren's far edge, so he arrives
+   * *silent* and the siren fades in as he closes — found, not spawned on. A
+   * cop who is mid-crash drops the demand on the floor; the referee's timer
+   * simply runs again and demands again one hold later, by which time he is
+   * back on his wheel.
+   */
+  private regroupCop(): void {
+    const cop = this.copController;
+    const brain = this.copBrain;
+    const spine = this.spine;
+    if (cop === null || brain === null || spine === null) return;
+    if (cop.crashed) return;
+
+    // Which way along the route the rider is travelling: their heading against
+    // the spine's at their own projection. `spineAt` was located by the caller
+    // this same step.
+    spine.sample(this.spineAt.distance, this.spineSample);
+    const along = Math.cos(this.currentPose.headingY - this.spineSample.headingY);
+    const direction = along >= 0 ? 1 : -1;
+
+    const back = this.tuning.get('CHASE.trackerReturnMetres');
+    spine.sample(this.spineAt.distance - direction * back, this.spineSample);
+
+    // A route-distance request is not proof of a safe world-space placement.
+    // `RouteSpine.sample` clamps at both ends, so asking for 30 m behind a
+    // rider still at the first metre used to answer the rider's own spawn.
+    // The M20.2 browser proof called the resulting 1.1 m overlap a successful
+    // regroup because it only looked for a large reduction in the old gap.
+    // A tightly folded route can collapse the two positions in world space
+    // without clamping, too. Refuse both cases and let the referee demand
+    // again after another hold; skipping one regroup is fair, materialising
+    // inside the bust radius is not.
+    const routeGap = Math.abs(this.spineAt.distance - this.spineSample.distance);
+    if (routeGap + 1e-6 < back) return;
+    const dx = this.spineSample.x - this.currentPose.x;
+    const dz = this.spineSample.z - this.currentPose.z;
+    const candidateGap = Math.sqrt(dx * dx + dz * dz);
+    const minimumGap = Math.max(
+      this.chaseRun.bustRadiusMetres + 1,
+      Math.min(back, AUDIO.sirenFarMetres),
+    );
+    if (candidateGap < minimumGap) return;
+
+    const heading = direction >= 0
+      ? this.spineSample.headingY
+      : this.spineSample.headingY + Math.PI;
+    cop.reset(
+      {
+        position: { x: this.spineSample.x, y: this.spineSample.y, z: this.spineSample.z },
+        headingY: heading,
+      },
+      Math.max(Math.abs(this.copCurrent.speed), Math.abs(this.currentPose.speed)),
+    );
+
+    // The same body-was-moved bookkeeping `placeCopBehindRider` does: no
+    // interpolation streak across the map, a globally re-found brain cursor,
+    // and no swing surviving a relocation.
+    cop.writePose(this.copCurrent);
+    copyPose(this.copCurrent, this.copPrevious);
+    copyPose(this.copCurrent, this.copRender);
+    this.writeCopView();
+    brain.place(this.copView);
+    this.copPaddle.cancel();
+    const placedX = this.copCurrent.x - this.currentPose.x;
+    const placedZ = this.copCurrent.z - this.currentPose.z;
+    this.copGap = Math.sqrt(placedX * placedX + placedZ * placedZ);
+  }
+
   /** Fill the brain's view from the cop's own pose. Allocation-free. */
   private writeCopView(): void {
     const cop = this.copController;
@@ -2226,6 +2309,9 @@ export class Game {
       crashed: this.controller.crashed,
     });
     if (ended) this.finishChase();
+    // The super tracker (M20.2). Asked after the endings so a run that just
+    // finished never regroups a cop onto its results card.
+    else if (this.chaseRun.takeTrackerDemand()) this.regroupCop();
   }
 
   /** The clock ran out, or it did not. Score it, offer it, and show the card. */
@@ -4706,6 +4792,8 @@ export class Game {
     this.chaseRun.bustRadiusMetres = this.tuning.get('CHASE.bustRadiusMetres');
     this.chaseRun.strayLimitMetres = this.tuning.get('CHASE.strayLimitMetres');
     this.chaseRun.strayGraceSeconds = this.tuning.get('CHASE.strayGraceSeconds');
+    this.chaseRun.trackerGapMetres = this.tuning.get('CHASE.trackerGapMetres');
+    this.chaseRun.trackerHoldSeconds = this.tuning.get('CHASE.trackerHoldSeconds');
     if (this.copBrain !== null) {
       const brain = this.copBrain;
       brain.skill = this.tuning.get('CHASE.copSkill');
