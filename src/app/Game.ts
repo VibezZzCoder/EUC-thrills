@@ -75,7 +75,9 @@ import { CpuRider, type CpuView } from '../simulation/cpuRider.ts';
 import {
   RouteSpine,
   createSpineLocation,
+  createSpineSample,
   type SpineLocation,
+  type SpineSample,
 } from '../simulation/routeSpine.ts';
 import { ChaseRecordsStore, type ChaseRecord } from './chaseRecords.ts';
 import { PlanTerrainSampler, paintedSurfaces } from '../simulation/planSampler.ts';
@@ -597,6 +599,8 @@ export class Game {
   /** The rider, as the one thing the cop's paddle can hit. See `RiderTarget`. */
   private readonly riderTarget = new RiderTarget();
   private readonly spineAt: SpineLocation = createSpineLocation();
+  /** Scratch for the HUD's "which way is the route" arrow (M20). Allocation-free. */
+  private readonly spineSample: SpineSample = createSpineSample();
   /** How far the cop is from the rider right now, metres. */
   private copGap = Infinity;
   /** What the last finished chase did, for the results screen. */
@@ -1118,6 +1122,7 @@ export class Game {
     this.hudView = this.hudModel.update(0, {
       speed: 0,
       powerStage: 'normal',
+      overspeed: 0,
       tiltBack: 0,
       offCourse: false,
       crashed: false,
@@ -1176,6 +1181,9 @@ export class Game {
         onRideTheCity: () => this.rideTheCity(),
         onCopyLink: () => this.copyWorldLink(),
 
+        // -- M20 -------------------------------------------------------------
+        onNewRoute: () => this.newRouteHere(),
+
         // -- M14.5 -----------------------------------------------------------
         onOpenRiders: () => this.goTo('riderSelect'),
         onCloseRiders: () => this.goTo('title'),
@@ -1189,6 +1197,11 @@ export class Game {
       seedMaxLength: MAX_SEED_LENGTH,
     });
     this.menus.setPersistenceWarning(this.options.persistent);
+    // The `New route` buttons introduce themselves at boot rather than on first
+    // press — M20. Their note is the sentence that tells a player other courses
+    // exist at all, which is the whole feature, and a control whose explanation
+    // only appears after it has been used explains nothing.
+    this.menus.setNewRouteStage('idle');
     // Whether a level has a route is a property of the plan, so this is asked
     // at construction *and* again on every world swap (`installLevel`). It was
     // a construction-time question only until M12 Phase 4, when the plan
@@ -1766,6 +1779,16 @@ export class Game {
   private startChallenge(): void {
     if (!this.challenge.available) return;
 
+    // Results are a tagged union spread across three nullable records. Keep
+    // the tag honest at every entrance: a completed chase used to survive a
+    // trip through the title screen, outrank the new lap in
+    // `buildResultsView`, and turn Time trial's results and New route button
+    // back into Police chase.
+    this.lastKnockabout = null;
+    this.lastKnockaboutWasRecord = false;
+    this.lastChase = null;
+    this.lastChaseWasRecord = false;
+    this.chaseRun.abandon();
     this.resetChallengeRider();
     this.loadRecordReference();
     this.challenge.arm();
@@ -1817,6 +1840,11 @@ export class Game {
     // picks by whichever last result is non-null, so an entrance that left the
     // previous mode's standing would show it.
     this.lastChase = null;
+    this.lastChaseWasRecord = false;
+    this.lastResult = null;
+    this.lastResultWasRecord = false;
+    this.lastResultGhostDropped = false;
+    this.lastResultPreviousSplits = [];
     this.chaseRun.abandon();
     this.resultsIn = 0;
     // Deliberately **not** `resetChallengeRider`: there is no start gate to run
@@ -2012,6 +2040,11 @@ export class Game {
     this.lastChase = null;
     this.lastChaseWasRecord = false;
     this.lastKnockabout = null;
+    this.lastKnockaboutWasRecord = false;
+    this.lastResult = null;
+    this.lastResultWasRecord = false;
+    this.lastResultGhostDropped = false;
+    this.lastResultPreviousSplits = [];
     this.resultsIn = 0;
     // Deliberately **not** `resetChallengeRider`: there is no start gate to run
     // up to, and the chase begins where the world begins — which is also what
@@ -2817,6 +2850,77 @@ export class Game {
     );
   }
 
+  /**
+   * A brand-new route, from wherever the player already is — M20.
+   *
+   * The owner's report is that Cop Chase always starts on the same course and
+   * that the way to a different one — title → Fresh route → generate → quit →
+   * re-enter the mode — is *"convoluted"* enough that casual players never
+   * discover other courses exist. This is that whole journey as one press, from
+   * the pause menu or the results card.
+   *
+   * **It rides the mode the player was already in**, which is the part that
+   * makes it worth having: a player being chased who wants a change of scene
+   * gets a new course *and a chase on it*, not a free ride they then have to
+   * leave. `retry`'s own rule, one screen over.
+   *
+   * **`routes` is deliberately not entered on the way through**, and that is
+   * the one recorded decision this touches. `app/appState.ts` says the route
+   * chooser is unreachable from a pause because "swapping the world underneath
+   * a ride would mean disposing the ground a rider is standing on". That
+   * reasoning is honoured rather than overruled: nothing is swapped underneath
+   * anybody. The player is paused or reading results — neither is a live ride —
+   * `installLevel` resets the rider onto the new spawn as part of the swap, and
+   * the mode is entered afterwards through its ordinary entrance. The edges
+   * used (`paused → chase`, `results → chase`, and so on) all already existed.
+   */
+  private newRouteHere(): void {
+    // A second press while the first is building. `beginRouteWork` would
+    // overwrite the pending work and the button is disabled anyway; refusing
+    // here is what makes that true of the QA bridge and the gamepad too.
+    if (this.pendingRoute !== null) return;
+
+    const destination = this.rideDestination();
+    if (destination === null) return;
+    this.menus.setNewRouteStage('building');
+    this.beginRouteWork(
+      { kind: 'surprise', destination },
+      // The fresh-route panel is not on screen, so this status is for the world
+      // line and the QA bridge rather than for a player. The words the player
+      // reads are the button's own (`Menus.setNewRouteStage`).
+      { kind: 'building', seed: 'a fresh route' },
+    );
+  }
+
+  /**
+   * Which mode a `New route` press should land in — M20.
+   *
+   * Three arrivals and one rule: **the mode the player is in the middle of.**
+   * From a pause that is the ride the pause is a pause *of*, which `AppState`
+   * already remembers for the Resume button. From the results card it is the
+   * mode whose result is on screen, read exactly the way `onRetryChallenge`
+   * reads it — each entrance clears the other two's last result, so at most one
+   * of them is non-null.
+   *
+   * `null` is "not somewhere this button exists", which is every other state.
+   * It cannot normally be reached, because the control is only on those two
+   * cards; it is here so that a bridge call or a stray key cannot start a world
+   * swap from the title.
+   */
+  private rideDestination(): RouteDestination | null {
+    const current = this.appState.current;
+    if (current === 'paused') {
+      const ride = this.appState.rideReturn;
+      return ride === 'challenge' || ride === 'knockabout' || ride === 'chase'
+        ? ride
+        : 'freeRide';
+    }
+    if (current !== 'results') return null;
+    if (this.lastKnockabout !== null) return 'knockabout';
+    if (this.lastChase !== null) return 'chase';
+    return 'challenge';
+  }
+
   /** Put the shipped slice back and return to the title, which is its home. */
   private rideTheCity(): void {
     if (this.pendingRoute !== null) return;
@@ -2900,8 +3004,21 @@ export class Game {
         if (work.destination === 'knockabout' && (outcome.plan.targets?.length ?? 0) === 0) {
           continue;
         }
+        // **And the chase asks for a through line** — M20, and it is the same
+        // argument one line up rather than a new one. A generated plan that
+        // states no spine is a legal world everywhere else and cannot host a
+        // chase (§13 q26); before this, `New route` from inside Cop Chase could
+        // land on one and `enterChase` would bounce the player out to the
+        // fresh-route panel — the exact journey this button exists to delete.
+        // Built and thrown away: `installLevel` builds the real one, and a
+        // Dijkstra over a few dozen sockets is nothing beside generating the
+        // route it is checking.
+        if (work.destination === 'chase' && RouteSpine.fromPlan(outcome.plan) === null) {
+          continue;
+        }
         this.installLevel('generated', outcome.seed, outcome.plan);
         this.menus.setSeed(outcome.seed);
+        this.menus.setNewRouteStage('idle');
         if (work.destination === 'choose') {
           this.setRouteStatus({ kind: 'ready', seed: outcome.seed });
         } else {
@@ -2909,8 +3026,14 @@ export class Game {
         }
         return;
       }
+      // Every attempt refused. The world is untouched, which is the important
+      // half; the other half is saying so on whichever surface asked, because
+      // the pause and results cards have no status line of their own.
+      this.menus.setNewRouteStage('failed');
       this.setRouteStatus(
-        work.destination === 'knockabout' ? { kind: 'needs-targets' } : { kind: 'blank' },
+        work.destination === 'knockabout' ? { kind: 'needs-targets' }
+          : work.destination === 'chase' ? { kind: 'needs-route' }
+            : { kind: 'blank' },
       );
       return;
     }
@@ -3734,8 +3857,19 @@ export class Game {
           remaining: this.chaseRun.state.remaining,
           straying: this.chaseRun.state.straying,
           copClose: this.copGap <= this.chaseRun.bustRadiusMetres,
+          // The two facts §4.4 asked for. The grace comes off the referee, so
+          // the number on screen is the clock the rule is actually keeping
+          // rather than a copy of it maintained here.
+          strayGrace: this.chaseRun.state.strayGrace,
+          homeRadians: this.directionToRoute(pose),
         }
         : undefined,
+      // Read off the controller rather than derived from `pose.speed` — M20.
+      // The cutout's thresholds are live-tunable and the controller owns them;
+      // a HUD that recomputed the ratio would be a second opinion about when
+      // the wheel is in trouble, and it would disagree the first time anybody
+      // touched F4.
+      overspeed: this.controller.overspeed,
     });
 
     const prompt = this.onboarding.update(this.simTimeSeconds, this.hudStepSeconds, {
@@ -3817,6 +3951,10 @@ export class Game {
     input.throttle = this.lastThrottle;
     input.load = this.controller.powerLoad;
     input.powerStage = this.controller.powerWarning;
+    // M20. The same number the HUD glyph blinks at, from the same getter on the
+    // same frame — the two cues are one warning on two channels, and a player
+    // riding muted has to be told exactly what a player with sound is told.
+    input.overspeed = this.controller.overspeed;
     input.surface = this.controller.currentSurface;
     input.grounded = pose.y - pose.groundY <= 1e-6;
     // **Three clocks, and each one is the only correct answer to its case.**
@@ -4055,6 +4193,39 @@ export class Game {
       Math.atan2(checkpoint.centre.x - pose.x, checkpoint.centre.z - pose.z)
         - pose.headingY,
     );
+  }
+
+  /**
+   * Which way the route is, relative to where the rider is pointing — M20, §4.4.
+   *
+   * `directionToCheckpoint`'s sibling, and it aims at a *line* rather than at a
+   * point: the nearest place on the spine, which is where a rider who has
+   * wandered onto the grass actually wants to go. Aiming at the next checkpoint
+   * instead would send a rider who overshot a bend forward past the corner they
+   * fell off, across whatever is between.
+   *
+   * **It reuses `spineAt` rather than locating again.** `stepChase` fills that
+   * struct on the same step from the same pose, so this is one `sample` call on
+   * a distance that is already known — and using a second, differently-windowed
+   * `locate` here would risk the arrow pointing at the *other* road where a
+   * generated route crosses itself, while the rule that ends the run measured
+   * the one the rider is on.
+   *
+   * `NaN` when there is no spine, which `formatDirection` draws as no arrow at
+   * all. A wrong arrow is worse than none: it is the one part of this banner a
+   * player will follow without thinking.
+   */
+  private directionToRoute(pose: EucPose): number {
+    const spine = this.spine;
+    if (spine === null) return Number.NaN;
+    spine.sample(this.spineAt.distance, this.spineSample);
+    const dx = this.spineSample.x - pose.x;
+    const dz = this.spineSample.z - pose.z;
+    // Standing on the line is the one case with no bearing to give. It cannot
+    // happen while the banner is up — it is 30 m away by definition — but the
+    // struct is shared and a caller from anywhere else would get `atan2(0, 0)`.
+    if (dx * dx + dz * dz < 1e-6) return Number.NaN;
+    return wrapAngle(Math.atan2(dx, dz) - pose.headingY);
   }
 
   private cycleCamera(): void {
@@ -4406,7 +4577,7 @@ export class Game {
     // being bent: player options are a separate mechanism that stays out of
     // `simulation/` (invariant 5). Pushed on change rather than polled, so the
     // controller reads plain numbers and stays trivially unit-testable.
-    this.controller.setTuning({
+    const controllerTuning = {
       maxLeanPitch: this.tuning.get('EUC.maxLeanPitch'),
       leanResponseSeconds: this.tuning.get('EUC.leanResponseSeconds'),
       leanRateLimit: this.tuning.get('EUC.leanRateLimit'),
@@ -4482,6 +4653,14 @@ export class Game {
       powerTiltBackLoad: this.tuning.get('EUC.powerTiltBackLoad'),
       tiltBackLeanBack: this.tuning.get('EUC.tiltBackLeanBack'),
       obstacleCrashSpeed: this.tuning.get('EUC.obstacleCrashSpeed'),
+      // The max-speed cutout (M20). Live for the reason the ragdoll's switch
+      // below is: the owner removed this feature once for being annoying, and
+      // the gate is his own ride — so the edge, the ramp and the whole
+      // feature's on/off have to move under him without a rebuild.
+      overspeedBeepShare: this.tuning.get('EUC.overspeedBeepShare'),
+      cutoutSpeedShare: this.tuning.get('EUC.cutoutSpeedShare'),
+      cutoutHoldSeconds: this.tuning.get('EUC.cutoutHoldSeconds'),
+      cutoutEnabled: this.tuning.get('EUC.cutoutEnabled'),
       crashRecoverSpeedFactor: this.tuning.get('EUC.crashRecoverSpeedFactor'),
       crashRecoverAutoSeconds: this.tuning.get('EUC.crashRecoverAutoSeconds'),
       // The ragdoll's owner A/B switch and the knobs his ride will judge it
@@ -4497,7 +4676,12 @@ export class Game {
       crashWheelFlourishSpeed: this.tuning.get('EUC.crashWheelFlourishSpeed'),
       crashWheelSpinRate: this.tuning.get('EUC.crashWheelSpinRate'),
       softBodyDrag: this.tuning.get('EUC.softBodyDrag'),
-    });
+    };
+    // Dorkins is a second rider, not a second ride. Every developer tuning
+    // change that reaches the player must reach his shared controller in the
+    // same notification; otherwise F4 silently compares two physics profiles.
+    this.controller.setTuning(controllerTuning);
+    this.copController?.setTuning(controllerTuning);
 
     // The paddle's live subset — M14. Pushed here rather than read through the
     // tuning table inside the swing, on the pattern the controller above uses:
@@ -4529,6 +4713,14 @@ export class Game {
       brain.steerGain = this.tuning.get('CHASE.steerGain');
       brain.steerDamping = this.tuning.get('CHASE.steerDamping');
       brain.throttleGain = this.tuning.get('CHASE.throttleGain');
+      brain.cutoutMarginShare = this.tuning.get('CHASE.cutoutMarginShare');
+      // These are the controller values the high-speed policy reasons about.
+      // Push them instead of importing today's frozen defaults in the brain,
+      // so its ceiling and drag feedforward move with both riders on F4.
+      brain.driveAcceleration = controllerTuning.leanToAccel
+        * Math.sin(controllerTuning.maxLeanPitch);
+      brain.dragCoefficient = controllerTuning.dragCoefficient;
+      brain.cutoutSpeedShare = controllerTuning.cutoutSpeedShare;
       brain.corneringMargin = this.tuning.get('CHASE.corneringMargin');
       brain.brakeSafety = this.tuning.get('CHASE.brakeSafety');
       brain.hazardClearanceMetres = this.tuning.get('CHASE.hazardClearanceMetres');
@@ -4583,6 +4775,7 @@ export class Game {
       swingLevel: this.tuning.get('AUDIO.swingLevel'),
       hitLevel: this.tuning.get('AUDIO.hitLevel'),
       sirenLevel: this.tuning.get('AUDIO.sirenLevel'),
+      overspeedLevel: this.tuning.get('AUDIO.overspeedLevel'),
     });
 
     // Per-surface response, pushed the same way and for the same reason. Only
@@ -4595,7 +4788,10 @@ export class Game {
         const path = `SURFACES.${id}.${field}`;
         if (this.tuning.specFor(path) !== undefined) overrides[field] = this.tuning.get(path);
       }
-      if (Object.keys(overrides).length > 0) this.controller.setSurfaceResponse(id, overrides);
+      if (Object.keys(overrides).length > 0) {
+        this.controller.setSurfaceResponse(id, overrides);
+        this.copController?.setSurfaceResponse(id, overrides);
+      }
     }
 
     // INSPECTION_CAMERA.orbitRate is read in `step` rather than pushed here:

@@ -14,6 +14,7 @@ import {
   rollingHz,
   stepDuck,
 } from './mix.ts';
+import { overspeedBeepPeriod } from '../shared/overspeed.ts';
 
 /**
  * The audio director: what the game should sound like, as plain numbers.
@@ -50,6 +51,18 @@ export interface RideAudioInput {
   load: number;
   /** Which rung of the ladder is lit. Drives the beep pattern. */
   powerStage: PowerStage;
+  /**
+   * How near the max-speed cutout the wheel is, 0..1 — M20.
+   *
+   * `EucController.overspeed`, handed over raw. **Not derived here from
+   * `speed`**, and that is the point rather than laziness: the cutout is a
+   * simulation rule with its own thresholds and its own live tuning, and a
+   * director that recomputed the ratio from a speed would be a second opinion
+   * about when the wheel is in trouble — audibly wrong the first time anybody
+   * drags the drag coefficient on F4. Zero when the feature is switched off,
+   * which is what silences the whole system in one place.
+   */
+  overspeed: number;
   surface: SurfaceId;
   /** True while the tyre is on the ground. */
   grounded: boolean;
@@ -91,6 +104,7 @@ export function createRideAudioInput(): RideAudioInput {
     throttle: 0,
     load: 0,
     powerStage: 'normal',
+    overspeed: 0,
     surface: 'pavement',
     grounded: true,
     suspensionSpeed: 0,
@@ -249,7 +263,17 @@ export function createAudioFrame(): AudioFrame {
 // One-shots
 // ---------------------------------------------------------------------------
 
-export type CueKind = 'hop' | 'landing' | 'curb' | 'crash' | 'recover' | 'beep' | 'swing' | 'hit';
+export type CueKind =
+  | 'hop' | 'landing' | 'curb' | 'crash' | 'recover' | 'beep' | 'swing' | 'hit'
+  /**
+   * The max-speed warning — M20.
+   *
+   * A kind of its own rather than a louder `beep`, because the sink reaches for
+   * a *recording* on this one and for synthesis on the other. The tone fields
+   * are still filled in and are the fallback before the sample bank lands,
+   * which is the same arrangement `crash` has had since M8.
+   */
+  | 'overspeed';
 
 /**
  * A one-shot, fully resolved.
@@ -326,6 +350,15 @@ export interface AudioTuning {
   tiltBackLevel: number;
   duckTiltBack: number;
   /**
+   * Master for the over-speed beeps — M20, and live for the reason every other
+   * level here is: the gate is the owner's own ride, on a phone, and "is the
+   * beep loud enough to act on without being loud enough to hate" is a question
+   * only an ear settles. At 0 the beeps stop and the cutout stays — which is a
+   * combination nobody should ship, so `EUC.cutoutEnabled` is the switch that
+   * turns the *feature* off, and this one is only a level.
+   */
+  overspeedLevel: number;
+  /**
    * The two M14 paddle levels.
    *
    * Live for the reason the bed levels above are: the milestone's exit question
@@ -357,6 +390,7 @@ export function defaultAudioTuning(): AudioTuning {
     beepLevel: AUDIO.beepLevel,
     tiltBackLevel: AUDIO.tiltBackLevel,
     duckTiltBack: AUDIO.duckTiltBack,
+    overspeedLevel: AUDIO.overspeedLevel,
     swingLevel: AUDIO.swingLevel,
     hitLevel: AUDIO.hitLevel,
     sirenLevel: AUDIO.sirenLevel,
@@ -421,6 +455,17 @@ export class AudioDirector {
   private beepTimer = 0;
   /** Seconds of duck still owed to the most recent beep. */
   private beepDuckHold = 0;
+  /**
+   * The over-speed beep's own timer and duck — M20, and deliberately its own
+   * pair rather than a share of the ladder's above.
+   *
+   * The ladder is silenced (`AUDIO.beepLevel` is 0) and must stay silenced;
+   * routing this through its timer would mean reviving `beepPattern` to carry
+   * it, which is how the tilt-back beeping the owner removed would come back
+   * by the side door.
+   */
+  private overspeedTimer = 0;
+  private overspeedDuckHold = 0;
 
   // -- Ducking and state ----------------------------------------------------
   private duck = 0;
@@ -486,6 +531,8 @@ export class AudioDirector {
     this.beepStage = 'normal';
     this.beepTimer = 0;
     this.beepDuckHold = 0;
+    this.overspeedTimer = 0;
+    this.overspeedDuckHold = 0;
     this.duck = 0;
     this.crashDuck = 0;
     this.transientDuck = 0;
@@ -532,6 +579,7 @@ export class AudioDirector {
     this.updateScrape(step, input);
     this.updateSiren(step, input);
     this.updateWarnings(step, input);
+    this.updateOverspeed(step, input);
     this.updateBed(step, input);
     this.impactHold = Math.max(0, this.impactHold - step);
 
@@ -1142,6 +1190,90 @@ export class AudioDirector {
     this.beepDuckHold = Math.max(0, this.beepDuckHold - dt);
   }
 
+  /**
+   * The over-speed beeps — M20, and the one warning the owner asked back.
+   *
+   * **The rate is the message.** There is one pitch, one level and one length;
+   * everything the player learns comes from how often it arrives, from about
+   * one a second at 40 mph to seven a second at the edge — both cadences
+   * measured off the reference video, at the owner's request. That is what a
+   * real wheel does, it is what the owner described ("riding the beeps"), and
+   * it is also what keeps the arcade rules honest: a warning that got louder or
+   * higher as it got worse would be the thing that hurts, and rule 3 says a
+   * warning wins by ducking.
+   *
+   * **The phase is not reset by a change of rate**, unlike the ladder above,
+   * which fires immediately on any rung change. A rider accelerating through
+   * the band changes rate continuously, and re-firing on every change would
+   * produce a stream of beeps at no rate at all. What the timer does instead is
+   * carry its remainder forward and re-clock against the new period, so the
+   * pattern tightens smoothly and a rider holding a steady speed hears a steady
+   * rate they can recognise.
+   */
+  private updateOverspeed(dt: number, input: RideAudioInput): void {
+    // One level, not a constant times a master: `AUDIO.overspeedLevel` *is* the
+    // F4 slider, exactly as `sirenLevel` is. Two multiplied levels would mean
+    // the number in the tuning table and the number the owner drags are
+    // different quantities, which is how a slider ends up with a useful range
+    // of one fifth of its travel.
+    const level = this.tuning.overspeedLevel;
+    const active = input.overspeed > 0 && level > 0 && !input.idle && !input.crashed;
+    if (!active) {
+      // Re-armed rather than left where it was: a rider who drops out of the
+      // band and climbs back into it should be beeped at straight away, and a
+      // stale remainder would swallow the first one.
+      this.overspeedTimer = 0;
+      this.overspeedDuckHold = Math.max(0, this.overspeedDuckHold - dt);
+      return;
+    }
+
+    const period = overspeedBeepPeriod(
+      input.overspeed,
+      AUDIO.overspeedSlowestPeriodSeconds,
+      AUDIO.overspeedFastestPeriodSeconds,
+    );
+
+    this.overspeedTimer -= dt;
+    if (this.overspeedTimer <= 0) {
+      this.overspeedTimer += period;
+      // The pathological case of a period shorter than the step, which a
+      // dragged slider can produce and a hang cannot be allowed to follow.
+      if (this.overspeedTimer <= 0) this.overspeedTimer = period;
+      this.emitOverspeedBeep(level);
+      // Long enough to cover the beep's own decay, and capped at the period so
+      // that at the top of the ramp the duck is continuous rather than
+      // retriggered into a tremolo on the bed — which is rule 4.
+      this.overspeedDuckHold = Math.min(period, AUDIO.overspeedBeepSeconds * 2.2);
+    }
+    this.overspeedDuckHold = Math.max(0, this.overspeedDuckHold - dt);
+  }
+
+  /**
+   * One over-speed beep.
+   *
+   * `kind: 'overspeed'` rather than `'beep'`, and the sink keys the *recording*
+   * off it. A synthesized tone remains the fallback before the sample bank
+   * lands, exactly as it is for a crash — a player on a slow connection gets a
+   * warning that is the wrong timbre rather than no warning at all, and the
+   * cutout is a rule that fires either way.
+   */
+  private emitOverspeedBeep(level: number): void {
+    const cue = this.claimCue();
+    if (!cue) return;
+    cue.kind = 'overspeed';
+    cue.bus = 'ui';
+    cue.gain = level;
+    cue.delaySeconds = 0;
+    cue.thumpFromHz = 0;
+    cue.thumpToHz = 0;
+    cue.thumpSeconds = 0;
+    cue.noiseHz = 0;
+    cue.noiseQ = 1;
+    cue.noiseSeconds = 0;
+    cue.toneHz = AUDIO.overspeedFallbackHz;
+    cue.toneSeconds = AUDIO.overspeedBeepSeconds;
+  }
+
   private emitBeep(pattern: BeepPattern, delaySeconds: number): void {
     const cue = this.claimCue();
     if (!cue) return;
@@ -1210,7 +1342,13 @@ export class AudioDirector {
    */
   private updateBed(dt: number, input: RideAudioInput): void {
     const pattern = this.beepPattern(input.powerStage);
-    const warningDemand = pattern !== null && this.beepDuckHold > 0 ? pattern.duck : 0;
+    const ladderDemand = pattern !== null && this.beepDuckHold > 0 ? pattern.duck : 0;
+    // The over-speed beep ducks on the same mechanism and its own depth — M20.
+    // Taken as a maximum with the ladder rather than multiplied, because the
+    // two are alternative descriptions of the same trouble and stacking them
+    // would push the bed twice as far down for a wheel in no more danger.
+    const overspeedDemand = this.overspeedDuckHold > 0 ? AUDIO.overspeedDuck : 0;
+    const warningDemand = Math.max(ladderDemand, overspeedDemand);
 
     // Transient duck demand decays on its own, so a single impact ducks and
     // releases without anything having to remember to cancel it.

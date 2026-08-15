@@ -184,6 +184,34 @@ export class CpuRider {
   steerGain: number = CHASE.steerGain;
   steerDamping: number = CHASE.steerDamping;
   throttleGain: number = CHASE.throttleGain;
+  /** Full-throttle forward acceleration used by the shared live ride, m/s². */
+  driveAcceleration: number = EUC.leanToAccel * Math.sin(EUC.maxLeanPitch);
+  /** Quadratic drag used by the shared live ride, 1/m. */
+  dragCoefficient: number = EUC.dragCoefficient;
+  /** The controller's cutout threshold as a share of derived top speed. */
+  cutoutSpeedShare: number = EUC.cutoutSpeedShare;
+  /**
+   * How close to the wheel's cutout speed the cop will ride, as a share of it
+   * — M20.
+   *
+   * **The max-speed cutout applies to him too, and it has to**: the cop rides
+   * the player's ride with the player's tuning and gets no private physics path
+   * (AGENTS.md, the M18 section). But a pursuit that ends because the pursuer
+   * fell off a straight is not a pursuit, and the shipped brain held throttle
+   * to infinity whenever nothing was clamping it — which after M20 means he
+   * reached the edge and wiped out on the long straights of two pinned seeds.
+   *
+   * So this is the same kind of decision as braking for a corner or swerving
+   * around a pothole: **a `CHASE.*` number the brain reasons with**, not a rule
+   * the machine treats him differently under. A rider who is good enough to
+   * take the spine's own line is good enough not to ride into a known cutout.
+   *
+   * Deliberately *not* coupled to `skill` yet, though the coupling is obvious
+   * and would be a good higher difficulty tier — an aggressive cop who
+   * occasionally cuts out is close to what a player asked for in §5's tiers
+   * entry. That is a design change and the owner's to open.
+   */
+  cutoutMarginShare: number = CHASE.cutoutMarginShare;
   corneringMargin: number = CHASE.corneringMargin;
   hazardClearanceMetres: number = CHASE.hazardClearanceMetres;
   hazardSwerveShare: number = CHASE.hazardSwerveShare;
@@ -944,9 +972,40 @@ export class CpuRider {
     if (Math.abs(bearing) > Math.PI / 2) {
       cap = Math.min(cap, Math.min(EUC.technicalTurnFadeSpeed, this.lookaheadMinMetres));
     }
-    actions.throttle = Number.isFinite(cap)
-      ? clamp((cap - Math.max(0, view.speed)) * this.throttleGain, -1, 1)
-      : 1;
+    // **And under the wheel's own cutout, always** — M20. Applied last so it
+    // binds every branch above, including the ones that deliberately leave `cap`
+    // unclamped: an end-around and a straight-line pursuit are exactly the
+    // situations that used to run him into the edge. Derived from the same
+    // expression the controller uses, so it moves with the ride rather than
+    // being a number that has to be remembered.
+    cap = Math.min(cap, this.cutoutSpeed());
+    // **Feedforward for the cost of holding speed** — the second half of the
+    // owner's "still very easy to lose him by speeding away" (2026-08-14).
+    // Proportional-only throttle can only produce the ~0.93 of throttle that
+    // holding near-top speed costs by carrying a ~1.7 m/s standing error, so
+    // whatever cap the branches above computed, he actually cruised ~4 mph
+    // under it and a player riding the beeps walked away on every straight.
+    // Raising `throttleGain` instead is the known-bad fix (audible throttle
+    // pumping — see its note in `data/tuning.ts`); paying the drag bill
+    // up front is not a correction, so the gentle gain stays gentle. The term
+    // is drag-only, exactly like `derivedTopSpeed`: rolling resistance is
+    // deliberately unpaid, so his equilibrium sits a shade *under* the cap
+    // rather than on it, which is his cutout safety margin on real pavement.
+    // Faded out both above the cap and below the over-speed band, and both
+    // fades carry their own reason. Above the cap it is absent so braking for
+    // corners and for the quarry is exactly the law it always was. Below
+    // `CRUISE_FEEDFORWARD_FROM` it is absent because the term is worthless
+    // there (drag is quadratic, so the bill it pays is pennies at walking
+    // pace) and because it is *harmful* there — see that constant's note for
+    // the wall-camp cop it left circling when it was allowed lower.
+    const speed = Math.max(0, view.speed);
+    const error = cap - speed;
+    const holdThrottle = (this.dragCoefficient * speed * speed)
+      / Math.max(1e-9, this.driveAcceleration);
+    const feedforward = holdThrottle
+      * clamp(error * 4, 0, 1)
+      * clamp((speed - CRUISE_FEEDFORWARD_FROM) / CRUISE_FEEDFORWARD_FADE, 0, 1);
+    actions.throttle = clamp(feedforward + error * this.throttleGain, -1, 1);
     // The turn rate, from the heading the body actually reached. Derived rather
     // than asked for, so the brain keeps sensing only what a rider senses.
     const turnRate = dt > 0 ? wrapAngle(view.headingY - this.lastHeading) / dt : 0;
@@ -1056,6 +1115,25 @@ export class CpuRider {
    * the wall the player found. Everything here is arithmetic on state the
    * step already has; a flank replays identically under `advance(n)`.
    */
+  /**
+   * The fastest the cop will ask for, m/s — M20.
+   *
+   * `EucController.derivedTopSpeed` × the cutout share × his own margin, and
+   * the three wheel values are pushed from the same live tuning record as his
+   * controller, so a drag or drive change moves this with both riders. He is
+   * not handed the controller: a brain that held one could read anything on
+   * it, and it has never needed more than the `CpuView` it is given.
+   *
+   * The cutout being switched off does not lift the ceiling. That is
+   * deliberate: `EUC.cutoutEnabled` is an owner A/B for the *player's* ride, and
+   * a cop whose top speed changed depending on which side of that switch the
+   * owner was on would make the A/B compare two different chases.
+   */
+  private cutoutSpeed(): number {
+    const top = Math.sqrt(this.driveAcceleration / Math.max(1e-9, this.dragCoefficient));
+    return top * this.cutoutSpeedShare * this.cutoutMarginShare;
+  }
+
   private beginDetour(quarry: CpuQuarry | null, range: number): void {
     if (quarry === null || range <= 1e-6) return;
     if (!this.flanking) {
@@ -1121,6 +1199,22 @@ const CORRIDOR_SHARE = 0.8;
 const RELOCATE_METRES = 30;
 /** The slowest a swerve may ask him to go, m/s. Below this he is stopping. */
 const SWERVE_SPEED_FLOOR = 5;
+/**
+ * Below this speed the hold-speed feedforward is fully off, m/s — see the
+ * throttle law. 18 m/s (~40 mph) is the bottom of the over-speed band, and
+ * the choice is not aesthetic: everything below it — wedge walks, swerves,
+ * detours, and the *approach* runs of the §4.2 adversarial scenarios, which
+ * top out around 17 — replays bit-for-bit the proportional-only trajectories
+ * those scenarios were tuned against. A first draft that faded in at 12 m/s
+ * changed the wall-camp cop's arrival by a fraction of a metre per second and
+ * the wedge dance downstream of it never converged. There is no dead zone
+ * left above the gate either: the proportional term alone saturates the
+ * throttle until ~20 m/s, so the feedforward only ever matters exactly where
+ * the droop it cures did — the last two metres per second of a cruise.
+ */
+const CRUISE_FEEDFORWARD_FROM = 18;
+/** And it fades in over this many m/s above that, rather than stepping. */
+const CRUISE_FEEDFORWARD_FADE = 2;
 /** The first detour's commitment, metres of travel. */
 const DETOUR_SPAN_BASE_METRES = 7;
 /**

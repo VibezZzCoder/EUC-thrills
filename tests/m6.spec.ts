@@ -1,6 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test, type Page } from '@playwright/test';
-import { PROVING_GROUND, boot as bootGame, collectErrors } from './harness.ts';
+import { PROVING_GROUND, boot as bootGame, collectErrors, disableMaxSpeedCutout } from './harness.ts';
 import { BLOCKOUT_COLOURS, EUC } from '../src/data/tuning.ts';
 
 /**
@@ -374,6 +374,11 @@ test('a hazard triggers visible foot correction, and then gets out of the way', 
 test('a wobble adds no synthetic pulsing tone to the real master bus', async ({ page }) => {
   const errors = collectErrors(page);
   await boot(page);
+  // This measures the *bed* for a pulse, so M20's over-speed beep — a
+  // deliberate transient at 2.5 kHz, above the band this test reads — has to
+  // be out of the fixture or it is measured as the thing being forbidden.
+  // See `disableMaxSpeedCutout`.
+  await disableMaxSpeedCutout(page);
   await enableWobble(page);
   await page.keyboard.press('KeyW');
   await page.waitForFunction(() => window.game.audioSnapshot().armed);
@@ -415,6 +420,9 @@ test('a wobble adds no synthetic pulsing tone to the real master bus', async ({ 
 
 test('the status light is on the wheel and walks green toward red with the load', async ({ page }) => {
   await boot(page);
+  // The light walks the *power ladder*, which needs a sustained flat-out run
+  // to reach its upper rungs. See `disableMaxSpeedCutout`.
+  await disableMaxSpeedCutout(page);
 
   const parked = await page.evaluate(() => {
     window.qa.resetRide();

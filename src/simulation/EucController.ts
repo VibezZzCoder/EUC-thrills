@@ -440,6 +440,16 @@ export interface EucTuning {
   /** Extra rearward pitch of the machine itself at full tilt-back, rad. */
   tiltBackPedalPitch: number;
 
+  // -- The max-speed cutout (M20) --------------------------------------------
+  /** Share of the derived top speed at which the over-speed beeps begin. */
+  overspeedBeepShare: number;
+  /** Share of the derived top speed at which the wheel gives up. */
+  cutoutSpeedShare: number;
+  /** How long above that speed before it does, s. */
+  cutoutHoldSeconds: number;
+  /** Master switch, 0 or 1. At 0 there is no cutout and no over-speed at all. */
+  cutoutEnabled: number;
+
   crashWheelDecel: number;
   crashWheelFallSeconds: number;
   crashWheelLean: number;
@@ -649,6 +659,11 @@ export function defaultEucTuning(): EucTuning {
     tiltBackReleaseSeconds: EUC.tiltBackReleaseSeconds,
     tiltBackPedalPitch: EUC.tiltBackPedalPitch,
 
+    overspeedBeepShare: EUC.overspeedBeepShare,
+    cutoutSpeedShare: EUC.cutoutSpeedShare,
+    cutoutHoldSeconds: EUC.cutoutHoldSeconds,
+    cutoutEnabled: EUC.cutoutEnabled,
+
     crashWheelDecel: EUC.crashWheelDecel,
     crashWheelFallSeconds: EUC.crashWheelFallSeconds,
     crashWheelLean: EUC.crashWheelLean,
@@ -717,7 +732,17 @@ export type PowerStage = 'normal' | 'notice' | 'warn' | 'tiltBack';
  * `LandingQuality` carries a `none`: "has not crashed" and "recovered from a
  * crash" are different facts.
  */
-export type CrashCause = 'none' | 'wobble' | 'landing' | 'pedalStrike' | 'obstacle' | 'hazard';
+export type CrashCause =
+  | 'none' | 'wobble' | 'landing' | 'pedalStrike' | 'obstacle' | 'hazard'
+  /**
+   * The wheel gave up at its own top speed — M20, the owner's reopened cutout.
+   *
+   * The only cause in this union that is the *machine* rather than something
+   * the rider hit, which is why it is tested last in the crash funnel: if a
+   * rider at maximum speed also went through a pothole, the pothole is the
+   * better story and the one the results card should name.
+   */
+  | 'cutout';
 
 /**
  * Which non-graphic crash motion is playing (`EUC_RIDER_MOTION_REFERENCE.md`
@@ -1264,6 +1289,10 @@ export interface EucSnapshot {
   readonly powerStage: PowerStage;
   /** How far tilt-back has engaged, 0..1. */
   readonly tiltBack: number;
+  /** How near the max-speed cutout the wheel is, 0..1 — M20. */
+  readonly overspeed: number;
+  /** Seconds spent past the cutout speed. Zero whenever it is not. */
+  readonly overspeedHeld: number;
 
   /** True while the rider is off the wheel. */
   readonly crashed: boolean;
@@ -1538,6 +1567,19 @@ export class EucController {
   private tiltBack = 0;
   /** Sticky above the engage threshold, released below the lower one. */
   private tiltBackLatched = false;
+
+  /**
+   * How near the cutout the wheel is, 0 at the first beep and 1 at the edge.
+   *
+   * Held as a field rather than recomputed by every reader because three
+   * separate consumers ask for it every frame — the beeps, the HUD glyph, and
+   * the QA bridge — and because a value the crash funnel acts on and the HUD
+   * draws must be the *same* value on the same step. It is written once per
+   * fixed step in `stepPower`.
+   */
+  private overspeedFactor = 0;
+  /** Seconds spent continuously past the cutout speed. Reset the moment it drops. */
+  private overspeedHold = 0;
 
   private crashing = false;
   private crashCause: CrashCause = 'none';
@@ -2403,6 +2445,15 @@ export class EucController {
       this.beginCrash(this.pedalStrike !== 0 ? 'pedalStrike' : 'wobble', speed);
     } else if (landed && this.landingQuality === 'crash') {
       this.beginCrash('landing', speed);
+    } else if (this.overspeedHold >= t.cutoutHoldSeconds) {
+      // **Last of the five, and the ordering is the story rather than the
+      // physics** — M20. Every funnel above is something the rider rode into
+      // and this one is the machine letting go, so a rider who reaches the edge
+      // of the speed range *and* drops into a pothole on the same step is told
+      // about the pothole. It cannot fire before the beeps have been sounding
+      // at their fastest for `cutoutHoldSeconds`, which is what makes it the
+      // consequence of a warning rather than an ambush.
+      this.beginCrash('cutout', speed);
     }
 
     // -- 9. State -----------------------------------------------------------
@@ -2631,6 +2682,54 @@ export class EucController {
         : this.loadFactor >= t.powerNoticeLoad
           ? 'notice'
           : 'normal';
+
+    this.stepOverspeed(dt, speed);
+  }
+
+  /**
+   * The max-speed cutout's own clock — M20.
+   *
+   * **Deliberately not a fifth rung of the ladder above.** The ladder measures
+   * *load*, which is what a hill and a hard landing produce; this measures
+   * *speed*, which is what a straight and a full throttle produce. A rider
+   * grinding up a gradient at half speed is on the ladder's top rung and is in
+   * no danger here at all, and that is the correct answer to both questions.
+   *
+   * Everything is derived from `derivedTopSpeed`, so a tuning change to drag or
+   * to lean authority moves the beeps and the edge together — M16's lesson,
+   * where four constants that were secretly the old top speed had to be chased
+   * down by hand and one of them silently revived a removed feature.
+   *
+   * **Airborne does not count.** A wheel with nothing under it is being asked
+   * for no torque, so a jump taken at full speed does not cut out at the top of
+   * its arc — and seeding a ragdoll in mid-air is not the wipeout anybody wants
+   * to watch. The beeps keep sounding through the flight, because the rider is
+   * still doing the speed that is about to be a problem when they land.
+   */
+  private stepOverspeed(dt: number, speed: number): void {
+    const t = this.tuning;
+    if (t.cutoutEnabled < 0.5) {
+      this.overspeedFactor = 0;
+      this.overspeedHold = 0;
+      return;
+    }
+
+    const top = this.derivedTopSpeed;
+    const from = top * t.overspeedBeepShare;
+    const to = top * t.cutoutSpeedShare;
+    // A guard rather than an assertion: both are live-tunable and an owner who
+    // drags the start above the edge should get a silent wheel, not a division
+    // by nothing and a rider who cuts out at walking pace.
+    this.overspeedFactor = to > from ? clamp01((speed - from) / (to - from)) : 0;
+
+    if (speed >= to && !this.airborne) {
+      this.overspeedHold += dt;
+    } else {
+      // Reset rather than decayed, on the stray clock's own argument: a rider
+      // who touches the edge twice in a minute is never punished for the first
+      // one, and backing off is supposed to be the whole counterplay.
+      this.overspeedHold = 0;
+    }
   }
 
   /**
@@ -2951,6 +3050,13 @@ export class EucController {
     this.lateralLimited = false;
     this.pedalStrike = 0;
     this.tiltBackLatched = false;
+    // The over-speed state stops being true on the step the rider leaves the
+    // wheel, not on the step after it — M20. `stepCrash` clears it too, but
+    // that runs a step later, and the HUD and the director both read these on
+    // the *crash* step. A beep or a glyph over the top of a wipeout describes
+    // something that has stopped existing.
+    this.overspeedFactor = 0;
+    this.overspeedHold = 0;
     this.wobbleEnergy = 0;
     this.wobblePhase = 0;
     this.wobbleYaw = 0;
@@ -3085,6 +3191,14 @@ export class EucController {
     this.loadFactor = approach(this.loadFactor, 0, t.powerReliefSeconds, Infinity, dt);
     this.landingLoad = approach(this.landingLoad, 0, t.powerLandingDecaySeconds, Infinity, dt);
     this.powerStage = 'normal';
+    // The wheel is on its side and the rider is not on it, so both halves of
+    // the over-speed state stop being true immediately rather than decaying —
+    // a beep or a glyph over the top of a wipeout is describing a situation
+    // that has stopped existing, which is `ui/hudModel.ts`'s own rule for a
+    // crash, and a hold left running would cut the rider out again the instant
+    // they respawned.
+    this.overspeedFactor = 0;
+    this.overspeedHold = 0;
     this.landingTimer = 0;
     this.state = 'crashing';
 
@@ -3216,6 +3330,8 @@ export class EucController {
     this.powerStage = 'normal';
     this.tiltBack = 0;
     this.tiltBackLatched = false;
+    this.overspeedFactor = 0;
+    this.overspeedHold = 0;
 
     this.crashing = false;
     this.crashTime = 0;
@@ -4224,6 +4340,48 @@ export class EucController {
     return this.powerStage;
   }
 
+  /**
+   * Where drag balances drive for *this* controller's live tuning, m/s — M20.
+   *
+   * The same expression as `level/routeValidator.ts`'s `RIDEABILITY.topSpeed`,
+   * and a colocated test asserts the two agree. It is computed here rather than
+   * imported because that module is under `level/` and reads the frozen table,
+   * while this one has to answer for whatever the developer panel has just
+   * dragged — an over-speed ladder pinned to the shipped default would go on
+   * beeping at 40 mph after the owner halved the drag on F4, which is the
+   * precise shape of the M16 defect.
+   *
+   * Rolling resistance is deliberately absent, exactly as it is there: this is
+   * the wheel's ceiling rather than any particular surface's, and the shares
+   * that read it are calibrated against it (`data/tuning.ts`).
+   */
+  get derivedTopSpeed(): number {
+    const t = this.tuning;
+    return Math.sqrt((t.leanToAccel * Math.sin(t.maxLeanPitch)) / Math.max(1e-9, t.dragCoefficient));
+  }
+
+  /**
+   * How near the cutout the wheel is, 0..1 — M20.
+   *
+   * 0 below the first beep, 1 at the speed the wheel gives up. The beeps, the
+   * HUD glyph and the QA bridge all read *this* rather than recomputing it from
+   * the speed, so what the player hears, what they see, and what a spec asserts
+   * cannot disagree about the same step.
+   */
+  get overspeed(): number {
+    return this.overspeedFactor;
+  }
+
+  /**
+   * Seconds the wheel has been past the cutout speed. Zero whenever it is not.
+   *
+   * Exposed for the browser spec that has to prove the hold is a hold — that
+   * touching the edge for one step is survivable and that staying there is not.
+   */
+  get overspeedHeld(): number {
+    return this.overspeedHold;
+  }
+
   /** Wobble energy as a fraction of the crash threshold, 0..1. */
   get wobbleLevel(): number {
     return clamp01(this.wobbleEnergy / Math.max(1e-6, this.tuning.wobbleCrashEnergy));
@@ -4480,6 +4638,8 @@ export class EucController {
       loadFactor: this.loadFactor,
       powerStage: this.powerStage,
       tiltBack: this.tiltBack,
+      overspeed: this.overspeedFactor,
+      overspeedHeld: this.overspeedHold,
 
       crashed: this.crashing,
       crashCause: this.crashCause,

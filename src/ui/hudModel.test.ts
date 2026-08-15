@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { CHALLENGE } from '../data/tuning.ts';
+import { CHALLENGE, CHASE } from '../data/tuning.ts';
 import {
   HudModel,
   formatDelta,
@@ -14,10 +14,30 @@ import {
 const RIDING: HudInput = Object.freeze({
   speed: 0,
   powerStage: 'normal' as const,
+  overspeed: 0,
   tiltBack: 0,
   offCourse: false,
   crashed: false,
 });
+
+/**
+ * A chase lane with the boundary quiet — M20.
+ *
+ * A helper rather than an inline literal because the block grew two fields at
+ * M20 and every test that mentions a chase has to state them. The defaults are
+ * the ordinary case: inside the corridor, the whole grace unspent, and the
+ * route dead ahead.
+ */
+function chasing(overrides: Partial<NonNullable<HudInput['chase']>> = {}): NonNullable<HudInput['chase']> {
+  return {
+    remaining: 300,
+    straying: false,
+    copClose: false,
+    strayGrace: CHASE.strayGraceSeconds,
+    homeRadians: 0,
+    ...overrides,
+  };
+}
 
 /** A run in progress with nothing to report. Overridden field by field below. */
 function running(overrides: Partial<ChallengeHudInput> = {}): ChallengeHudInput {
@@ -148,7 +168,7 @@ test('the shared mode lane names what its value counts', () => {
   assert.equal(knockabout.knockabout, '2 / 17');
 
   const chase = hud.update(0, at({
-    chase: { remaining: 300, straying: false, copClose: false },
+    chase: chasing(),
   }));
   assert.equal(chase.modeLabel, 'Survive');
   assert.equal(chase.chase, '5:00');
@@ -466,4 +486,147 @@ test('the objective points toward the active gate and numbers the remaining rout
   assert.equal(objective(Math.PI / 2), '← Park gate · 2/5 · 95 m');
   assert.equal(objective(-Math.PI / 2), '→ Park gate · 2/5 · 95 m');
   assert.equal(objective(Math.PI), '↓ Park gate · 2/5 · 95 m');
+});
+
+// --- Out of bounds, and the max-speed glyph — M20 ---------------------------
+
+/**
+ * §4.4, as assertions.
+ *
+ * The owner rode off-route in Cop Chase, was warned by one line of small text
+ * he called *"super subtle and hard to notice"*, and lost the run to a clock
+ * that was never on screen. His fix, in his words: **make the warning obviously
+ * visible, point the player back toward the course, and show the countdown** —
+ * *"that would be fair"*. The banner these tests describe is that, and the
+ * counter-requirement is the standing annoyance rule: prominent once, not
+ * nagging.
+ */
+
+test('inside the corridor there is no banner at all', () => {
+  const hud = new HudModel();
+  const view = hud.update(0, at({ chase: chasing() }));
+  assert.equal(view.stray.visible, false);
+  // And the top-centre line is free for the thing it is actually for.
+  assert.equal(view.objective, '');
+});
+
+test('crossing the boundary raises the banner immediately, with a way home and a clock', () => {
+  const hud = new HudModel();
+  const view = hud.update(0, at({
+    chase: chasing({ straying: true, strayGrace: 8, homeRadians: Math.PI / 2 }),
+  }));
+
+  assert.equal(view.stray.visible, true, 'the warning waited, which is the defect');
+  assert.equal(view.stray.label, 'Back to the route');
+  assert.equal(view.stray.arrow, '←', 'positive yaw is the rider\'s left');
+  assert.equal(view.stray.seconds, '8');
+  assert.equal(view.stray.urgent, false, 'eight seconds is not yet a deadline');
+});
+
+test('the countdown ceils, so the number reaching zero and the run ending are one moment', () => {
+  const hud = new HudModel();
+  // Rounding would put `0` on screen for half a second while the run is still
+  // alive, and a rider looking at a zero has already stopped trying.
+  const nearly = hud.update(0, at({ chase: chasing({ straying: true, strayGrace: 0.4 }) }));
+  assert.equal(nearly.stray.seconds, '1');
+  assert.equal(nearly.stray.urgent, true, 'the last seconds have to read as the last seconds');
+});
+
+test('the bar is the countdown a second time, for a glance too short to read a digit', () => {
+  const hud = new HudModel();
+  const full = hud.update(0, at({ chase: chasing({ straying: true, strayGrace: CHASE.strayGraceSeconds }) }));
+  assert.equal(full.stray.fraction, 1);
+  const half = hud.update(0, at({
+    chase: chasing({ straying: true, strayGrace: CHASE.strayGraceSeconds / 2 }),
+  }));
+  assert.ok(Math.abs(half.stray.fraction - 0.5) < 1e-9);
+});
+
+test('the old subtle line does not say the same thing underneath the banner', () => {
+  const hud = new HudModel();
+  const view = hud.update(0, at({ chase: chasing({ straying: true, strayGrace: 5 }) }));
+  // Two live copies of one message in two sizes is the M10 results-screen
+  // defect. The banner carries it; the objective line goes quiet.
+  assert.equal(view.objective, '');
+});
+
+test('coming back inside clears it, after just enough dwell to stop it strobing', () => {
+  const hud = new HudModel();
+  hud.update(0, at({ chase: chasing({ straying: true, strayGrace: 4 }) }));
+
+  // The referee resets the stray clock the instant the corridor is re-entered,
+  // so without a dwell a rider tracking the 30 m line would blink a full-width
+  // panel several times a second.
+  const justBack = hud.update(0.2, at({ chase: chasing() }));
+  assert.equal(justBack.stray.visible, true, 'it vanished on the first step back');
+  assert.equal(justBack.stray.urgent, false, 'and it must stop pulsing the moment they are safe');
+
+  const settled = hud.update(1.0, at({ chase: chasing() }));
+  assert.equal(settled.stray.visible, false, 'it is still there long after they got back');
+});
+
+test('leaving the chase takes the banner with it', () => {
+  const hud = new HudModel();
+  hud.update(0, at({ chase: chasing({ straying: true, strayGrace: 2 }) }));
+  assert.equal(hud.update(0.01, at({})).stray.visible, false);
+});
+
+test('a crash is not a warning about anything', () => {
+  const hud = new HudModel();
+  hud.update(0, at({ chase: chasing({ straying: true, strayGrace: 2 }) }));
+  const crashed = hud.update(0.01, at({ crashed: true, overspeed: 0.9 }));
+  assert.equal(crashed.stray.visible, false);
+  assert.equal(crashed.overspeed.visible, false);
+});
+
+test('the max-speed glyph is absent for the whole of ordinary riding', () => {
+  const hud = new HudModel();
+  // Nothing below 40 mph ever sees this, which is what keeps it non-annoying:
+  // a player pottering about is never told anything.
+  assert.equal(hud.update(0, at({ speed: 10 })).overspeed.visible, false);
+  assert.equal(hud.update(0, at({ speed: 10, overspeed: 0 })).overspeed.visible, false);
+});
+
+test('the glyph blinks at the beep rate, so muted and unmuted see one warning', () => {
+  const hud = new HudModel();
+  const early = hud.update(0, at({ overspeed: 0.01 })).overspeed;
+  const late = hud.update(0, at({ overspeed: 1 })).overspeed;
+
+  assert.equal(early.visible, true);
+  assert.equal(early.label, 'Max speed');
+  assert.ok(late.pulseSeconds < early.pulseSeconds / 5, 'the blink did not tighten with the beeps');
+  // Named, not commanded. Sitting just under the edge is a thing to be good at
+  // rather than a mistake, so the cue reports the condition and lets the player
+  // decide — the same rule that cut "Missed: Park gate" at M10.
+  assert.ok(!/slow/i.test(late.label), 'the HUD is scolding a player for riding well');
+});
+
+test('the glyph escalates through three steps rather than shouting from the start', () => {
+  const hud = new HudModel();
+  assert.equal(hud.update(0, at({ overspeed: 0.1 })).overspeed.level, 'notice');
+  assert.equal(hud.update(0, at({ overspeed: 0.5 })).overspeed.level, 'warn');
+  assert.equal(hud.update(0, at({ overspeed: 0.95 })).overspeed.level, 'critical');
+});
+
+test('the banner and the glyph coexist, because fleeing off-route at speed is a real thing', () => {
+  const hud = new HudModel();
+  const view = hud.update(0, at({
+    overspeed: 0.9,
+    chase: chasing({ straying: true, strayGrace: 3, homeRadians: 0 }),
+  }));
+  assert.equal(view.stray.visible, true);
+  assert.equal(view.overspeed.visible, true);
+  assert.equal(view.stray.arrow, '↑');
+});
+
+test('no route to point at draws no arrow rather than a wrong one', () => {
+  const hud = new HudModel();
+  // A wrong arrow is worse than none: it is the one part of this banner a
+  // player follows without thinking.
+  const view = hud.update(0, at({
+    chase: chasing({ straying: true, strayGrace: 6, homeRadians: Number.NaN }),
+  }));
+  assert.equal(view.stray.visible, true);
+  assert.equal(view.stray.arrow, '');
+  assert.equal(view.stray.seconds, '6', 'and the countdown is still there, which is the load-bearing half');
 });

@@ -7,6 +7,7 @@ import { NEUTRAL_ACTIONS, type ActionSnapshot } from '../input/actions.ts';
 import { buildLevelPlan } from '../level/buildPlan.ts';
 import type { Hazard, HazardKind, LevelPlan } from '../level/plan.ts';
 import type { SegmentSpec } from '../level/segments.ts';
+import { RIDEABILITY } from '../level/routeValidator.ts';
 import { HazardField } from './hazards.ts';
 import {
   EucController,
@@ -94,7 +95,15 @@ function controller(options: {
     // is disabled by owner decision (2026-08-02, `data/tuning.ts`) — and the
     // default's own guarantee has its own test below: no energy source can
     // feed the oscillator at all.
-    tuning: { wobbleMasterGain: 1, ...(options.tuning ?? {}) },
+    // **The max-speed cutout is off by default here** — M20, and it is the
+    // AGENTS.md rule about re-deriving a spec rather than patching it. Every
+    // test above this file's M20 section was written against a wheel with no
+    // failure at the top of its speed range, and a dozen of them ride flat out
+    // for ten seconds or more to measure top speed, drag, coast-down and pose.
+    // With the cutout on, those fixtures stop measuring what they claim and
+    // start measuring how long it takes to fall off. The cutout's own tests
+    // switch it back on explicitly, which also makes every one of them say so.
+    tuning: { wobbleMasterGain: 1, cutoutEnabled: 0, ...(options.tuning ?? {}) },
     spawn: plan.spawn,
     // Handed separately from the plan, exactly as `Game.installLevel` does it,
     // so these tests exercise the seam the game uses rather than one built for
@@ -1557,6 +1566,11 @@ test('a shallow scrape slides along the wall rather than manufacturing a crash',
   const plan = wallPlan();
   const euc = new EucController(new PlanTerrainSampler(plan), {
     spawn: { position: { x: 0, y: 0, z: 20 }, headingY: Math.PI * 0.42 },
+    // Built directly rather than through `controller()`, so the M20 cutout has
+    // to be switched off here too: this fixture holds full throttle for eight
+    // seconds to prove the *wall* does not crash the rider, and the wheel now
+    // reaches its own speed limit inside that window.
+    tuning: { cutoutEnabled: 0 },
   });
 
   rideToSpeed(euc, 10);
@@ -4004,4 +4018,200 @@ test('and the other half of it: ease off and the same water cannot touch you', (
   assert.equal(run.snapshot.crashed, false, 'the same forty metres of water, survived');
   assert.ok(run.peak < EUC.wobbleCrashEnergy * 0.8, `never close to it: ${run.peak}`);
   assert.ok(run.peak > EUC.wobbleStateEnergy, 'still a genuine wobble, still worth respecting');
+});
+
+// ---------------------------------------------------------------------------
+// The max-speed cutout — M20
+// ---------------------------------------------------------------------------
+
+/**
+ * The one failure condition the owner reopened, and the beeps that warn about
+ * it (`references/PublicFeedback/FEEDBACK-TRIAGE.md` §2, 2026-08-14).
+ *
+ * Cut-outs were implemented once, playtested, and removed as annoying. What
+ * came back is deliberately narrow — the wheel gives up at the very top of its
+ * own speed range and nowhere else — so the tests below are as much about what
+ * *cannot* happen as about what can: no cutout under load on a hill, none in
+ * the air, none for a rider who backs off, and none at all with the switch off.
+ */
+
+/** A kilometre of straight pavement — long enough to actually reach top speed. */
+function runwayPlan(): LevelPlan {
+  return buildLevelPlan(
+    [{ id: 'runway', length: 2000, halfWidth: 12, surface: 'pavement', shoulder: 1 }],
+    {
+      id: 'runway',
+      spawn: { position: { x: 0, y: 0, z: 0 }, headingY: 0 },
+      surround: { height: 0, surface: 'pavement' },
+      spacing: 4,
+    },
+  );
+}
+
+/** Hold an input for `seconds`, stopping early on the first crash. */
+function hold(euc: EucController, seconds: number, input: ActionSnapshot): EucSnapshot {
+  const steps = Math.round(seconds * SIMULATION.hz);
+  for (let i = 0; i < steps; i += 1) {
+    euc.step(STEP, input);
+    if (euc.snapshot().crashed) break;
+  }
+  return euc.snapshot();
+}
+
+test('the wheel derives its own top speed, and it is the one the route validator uses', () => {
+  // `RIDEABILITY.topSpeed` is under `level/` and reads the frozen table; the
+  // controller has to answer for whatever F4 has just dragged, so it computes
+  // the same expression from its own live tuning. If the two ever disagree, a
+  // generated route's hazard spacing and the speed the wheel cuts out at are
+  // being derived from different wheels.
+  assert.ok(
+    Math.abs(controller().derivedTopSpeed - RIDEABILITY.topSpeed) < 1e-9,
+    `controller says ${controller().derivedTopSpeed}, routeValidator says ${RIDEABILITY.topSpeed}`,
+  );
+});
+
+test('the beeps start just past the owner\'s 40 mph floor and reach the edge before the cutout does', () => {
+  const euc = controller({ plan: runwayPlan(), tuning: { cutoutEnabled: 1 } });
+  const top = euc.derivedTopSpeed;
+
+  let firstBeepSpeed = 0;
+  let lastRidingSpeed = 0;
+  for (let i = 0; i < SIMULATION.hz * 20; i += 1) {
+    euc.step(STEP, actions({ throttle: 1 }));
+    const state = euc.snapshot();
+    if (firstBeepSpeed === 0 && euc.overspeed > 0) firstBeepSpeed = Math.abs(state.speed);
+    if (state.crashed) break;
+    lastRidingSpeed = Math.abs(state.speed);
+  }
+
+  // "It should beep no earlier than 40mph" — the owner's revision after riding
+  // the 30 mph build, so the floor is his and hard; the ceiling only says the
+  // share has not wandered.
+  assert.ok(
+    firstBeepSpeed * 2.236936 >= 40 && firstBeepSpeed * 2.236936 < 41.5,
+    `the first beep was at ${(firstBeepSpeed * 2.236936).toFixed(1)} mph`,
+  );
+  // Full throttle on flat pavement reaches the edge, which is the whole
+  // mechanic: the wheel's terminal speed is *above* the cutout speed, so
+  // holding the throttle open is what eventually takes the rider off. If this
+  // ever fails it means the cutout share has drifted above what the surface's
+  // rolling resistance leaves reachable, and the feature has silently become
+  // a downhill-only event.
+  assert.equal(euc.snapshot().crashed, true, 'flat-out on the flat never reached the cutout');
+  assert.equal(euc.snapshot().crashCause, 'cutout');
+  assert.ok(
+    lastRidingSpeed > top * EUC.cutoutSpeedShare - 0.2,
+    `the cutout fired at ${lastRidingSpeed.toFixed(2)} m/s against a threshold of `
+      + `${(top * EUC.cutoutSpeedShare).toFixed(2)}`,
+  );
+});
+
+test('the rider gets seconds of accelerating beeps before it fires, not an ambush', () => {
+  const euc = controller({ plan: runwayPlan(), tuning: { cutoutEnabled: 1 } });
+  let beepingFor = 0;
+  for (let i = 0; i < SIMULATION.hz * 20; i += 1) {
+    euc.step(STEP, actions({ throttle: 1 }));
+    if (euc.overspeed > 0) beepingFor += STEP;
+    if (euc.snapshot().crashed) break;
+  }
+  // Measured at about 5 s on the shipped tuning (down from 6.5 when the band
+  // started at 30 mph rather than the owner's revised 40). The floor is
+  // deliberately well under that: what this pins is that the warning is a
+  // *warning* and not a formality, and a fixture that demanded the exact
+  // figure would fail on every legitimate tuning change instead.
+  assert.ok(beepingFor > 3, `only ${beepingFor.toFixed(2)}s of beeps before the wheel let go`);
+});
+
+test('backing off is the counterplay: the hold resets and the wheel keeps going', () => {
+  const euc = controller({ plan: runwayPlan(), tuning: { cutoutEnabled: 1 } });
+  // Up to the top of the band...
+  for (let i = 0; i < SIMULATION.hz * 20; i += 1) {
+    euc.step(STEP, actions({ throttle: 1 }));
+    if (euc.overspeedHeld > 0) break;
+  }
+  assert.ok(euc.overspeedHeld > 0, 'the fixture never reached the cutout speed');
+  assert.equal(euc.snapshot().crashed, false, 'it fired before the hold was up');
+
+  // ...and off it. **Half a second, not three**, and the number is the point:
+  // drag at this speed is 7 m/s², so a wheel that coasts for three seconds has
+  // lost fifteen metres per second and is nowhere near the band any more. The
+  // counterplay this test is about is a *lift*, not a stop.
+  const after = hold(euc, 0.5, actions({ throttle: 0 }));
+  assert.equal(after.crashed, false, 'lifting off did not save the rider');
+  assert.equal(euc.overspeedHeld, 0, 'the hold is reset, not decayed');
+  // Above zero rather than a mid-band figure: since the owner moved the first
+  // beep to 40 mph the band is ~4 m/s wide, and drag at the top of it sheds
+  // most of that in this half second. What matters is that a *lift* leaves the
+  // rider still inside the warning rather than teleported to silence.
+  assert.ok(euc.overspeed > 0, 'and the beeps are still going, which is the point');
+});
+
+test('riding the beeps: a steady speed just under the edge is survivable indefinitely', () => {
+  // The mechanic the owner named. A rider who modulates the throttle to sit
+  // under the cutout speed can hold the fastest riding in the game for as long
+  // as they like, at the fastest beep rate — that gap between "as fast as the
+  // wheel goes" and "as fast as you dare" is the whole feature.
+  const euc = controller({ plan: runwayPlan(), tuning: { cutoutEnabled: 1 } });
+  const edge = euc.derivedTopSpeed * EUC.cutoutSpeedShare;
+  let fastestSeen = 0;
+  for (let i = 0; i < SIMULATION.hz * 30; i += 1) {
+    // The simplest possible pilot: full throttle under the edge, off it above.
+    const speed = Math.abs(euc.snapshot().speed);
+    euc.step(STEP, actions({ throttle: speed < edge - 0.35 ? 1 : 0 }));
+    fastestSeen = Math.max(fastestSeen, speed);
+    if (euc.snapshot().crashed) break;
+  }
+  assert.equal(euc.snapshot().crashed, false, 'a rider holding under the edge was cut out anyway');
+  assert.ok(fastestSeen > edge - 1, `they only managed ${fastestSeen.toFixed(2)} m/s of ${edge.toFixed(2)}`);
+  assert.ok(euc.overspeed > 0.9, 'and they are riding the fastest beeps while they do it');
+});
+
+test('a climb at full throttle is the ladder\'s business and never the cutout\'s', () => {
+  // The distinction the whole design rests on. Tilt-back exists for load and
+  // the cutout exists for speed; a hill is the one situation that produces the
+  // first and forbids the second, so a rider grinding up one must be able to
+  // hold full throttle for as long as the hill lasts. A cutout here would be
+  // the removed realism coming back through the side door.
+  const euc = controller({ plan: rampPlan(0.2), tuning: { cutoutEnabled: 1 } });
+  const climbed = hold(euc, 12, actions({ throttle: 1 }));
+  assert.equal(climbed.crashed, false, `the climb cut the rider out (${climbed.crashCause})`);
+  // `warn` rather than `tiltBack` at a settled 1-in-5: `data/tuning.ts` says a
+  // settled climb at full throttle sits in the amber rung and it is *charging*
+  // a hill at speed that spikes into tilt-back. What matters here is only that
+  // the ladder is the mechanism that answered a hill, so the assertion is that
+  // it is lit rather than which rung.
+  assert.notEqual(climbed.powerStage, 'normal', 'the ladder said nothing about a 1-in-5 climb');
+  // **The beeps may legitimately be sounding here, and that is not a bug.** A
+  // 1-in-5 climb at full throttle still settles near 44 mph on this wheel, which
+  // is genuinely inside the over-speed band — the rider really is going that
+  // fast. What must not happen is the *cutout*, and the margin is what says so:
+  // the climb costs enough drive authority that the edge is out of reach, which
+  // is the arithmetic keeping load and speed as two separate questions.
+  assert.ok(
+    euc.overspeed < 0.95,
+    `the climb reached ${euc.overspeed.toFixed(2)} of the band — too close to the edge to be safe`,
+  );
+});
+
+test('the switch turns the whole feature off, beeps included', () => {
+  const euc = controller({ plan: runwayPlan(), tuning: { cutoutEnabled: 0 } });
+  const ridden = hold(euc, 20, actions({ throttle: 1 }));
+  assert.equal(ridden.crashed, false, 'the cutout fired with the feature switched off');
+  assert.equal(euc.overspeed, 0, 'and it was beeping about a cutout that cannot happen');
+  assert.ok(
+    Math.abs(ridden.speed) > euc.derivedTopSpeed * EUC.cutoutSpeedShare,
+    'the fixture never got fast enough for the assertion above to mean anything',
+  );
+});
+
+test('a crash of any kind clears the over-speed state rather than replaying it', () => {
+  // Both halves matter and for different reasons. A beep or a glyph over the
+  // top of a wipeout describes a situation that has stopped existing; a *hold*
+  // left running would cut the rider out again the instant they respawned, on
+  // a wheel that is standing still.
+  const euc = controller({ plan: runwayPlan(), tuning: { cutoutEnabled: 1 } });
+  hold(euc, 20, actions({ throttle: 1 }));
+  assert.equal(euc.snapshot().crashCause, 'cutout');
+  assert.equal(euc.overspeed, 0, 'still beeping at a rider on the floor');
+  assert.equal(euc.overspeedHeld, 0, 'the hold survived the crash it caused');
 });

@@ -133,6 +133,17 @@ export interface MenuCallbacks {
   /** Copy a link to the loaded world. */
   onCopyLink(): void;
 
+  // -- M20 --------------------------------------------------------------------
+  /**
+   * Generate a brand-new route and ride it in the mode already being played.
+   *
+   * Reachable from the pause menu and from the results card. **Which mode is
+   * the caller's to decide**, exactly as `onStartChase` is: this screen knows a
+   * player pressed a button, and `app/Game.ts` knows whether they were being
+   * chased.
+   */
+  onNewRoute(): void;
+
   // -- M14.5 ------------------------------------------------------------------
   /** Open the rider chooser from the title. */
   onOpenRiders(): void;
@@ -612,6 +623,33 @@ function routesTemplate(seedMaxLength: number): string {
 }
 
 /**
+ * The one-press way to a brand-new course — M20, and the owner's own report.
+ *
+ * Cop Chase always starts on the same route, and the only way to a different
+ * one was: back out to the title, open Fresh route, generate, quit, re-enter
+ * the mode. His words: *"casual players might not figure the convoluted UI
+ * out"* — meaning most players are riding one course forever without knowing
+ * regeneration exists at all.
+ *
+ * **So it is one button, in the two places a player already is when they want
+ * one**: the pause menu of any ride, and the results card at the end of a run.
+ * It generates and drops them straight back into *the mode they were in* — no
+ * typing, no seed, no journey through the title. The Fresh route panel keeps
+ * everything it had (typing a friend's seed, copying a link, the time-trial
+ * entrance); this is the affordance underneath it, for the player who does not
+ * yet know any of that is there.
+ *
+ * `data-menu` is on the `<button>` and the label is a `<span>` inside it,
+ * because M14.5 recorded that a click lands on the innermost element and a hook
+ * inside a control is a silent no-op.
+ */
+const NEW_ROUTE_BUTTON = `
+    <button type="button" class="euc-button" data-menu="new-route">
+      <span class="euc-button__label">New route</span>
+      <span class="euc-button__note" data-menu="new-route-note"></span>
+    </button>`;
+
+/**
  * The results screen.
  *
  * **A real dialog, exactly like the other three**, and for the reason stated at
@@ -664,6 +702,7 @@ const RESULTS_TEMPLATE = `
 
   <div class="euc-menu__actions">
     <button type="button" class="euc-button euc-button--primary" data-menu="retry">Ride it again</button>
+${NEW_ROUTE_BUTTON}
     <button type="button" class="euc-button" data-menu="results-title">Back to title</button>
   </div>
 </div>
@@ -674,6 +713,7 @@ const PAUSE_TEMPLATE = `
   <h2 class="euc-menu__title" id="euc-pause-heading">Paused</h2>
   <div class="euc-menu__actions">
     <button type="button" class="euc-button euc-button--primary" data-menu="resume">Resume</button>
+${NEW_ROUTE_BUTTON}
     <button type="button" class="euc-button" data-menu="settings">Settings</button>
     <button type="button" class="euc-button euc-button--quiet" data-menu="quit">Quit to title</button>
   </div>
@@ -748,9 +788,11 @@ export class Menus {
    * Show a screen, or `none`.
    *
    * Focus moves to the panel's first control on open and back to wherever it
-   * came from on close. Both halves matter: without the first a keyboard user
-   * has to Tab in from the document, and without the second they are returned
-   * to the top of the page every time.
+   * came from on close. The rider chooser is the one deliberate exception: it
+   * focuses the selected rider, so a saved third card is not opened below the
+   * fold on a phone. Both halves matter: without the first a keyboard user has
+   * to Tab in from the document, and without the second they are returned to
+   * the top of the page every time.
    */
   show(screen: MenuScreen): void {
     if (screen === this.screen) return;
@@ -774,6 +816,15 @@ export class Menus {
       this.returnFocus?.focus();
       this.returnFocus = null;
       return;
+    }
+
+    if (screen === 'riders') {
+      const selected = [...this.riders.querySelectorAll<HTMLElement>('[data-rider]')]
+        .find((card) => card.dataset.rider === this.options.character);
+      if (selected !== undefined) {
+        selected.focus();
+        return;
+      }
     }
 
     this.focusFirst(this.panelFor(screen));
@@ -933,6 +984,46 @@ export class Menus {
     if (title) title.hidden = !available;
     const routes = this.routes.querySelector<HTMLElement>('[data-menu="trial-route"]');
     if (routes) routes.hidden = !available;
+  }
+
+  // -- New route from inside a ride (M20) -------------------------------------
+
+  /**
+   * What the two `New route` buttons say, and whether they can be pressed.
+   *
+   * **The words belong to this screen** — M12 Phase 4's rule, applied to the
+   * one control that has to speak while it works. Generating a route is not
+   * instant, the button lives on a card with no status line of its own, and a
+   * button that looked idle while the game built a world would be pressed
+   * twice. So it narrates itself, in three states and no more:
+   *
+   *   - `idle` — the offer, and the sentence that tells a player who has never
+   *     opened Fresh route that other courses exist at all. That sentence is
+   *     the whole point of this feature.
+   *   - `building` — pressed, working, and disabled so it cannot be pressed
+   *     again. `app/Game.ts` refuses a second request anyway; this is so the
+   *     player is not left wondering whether the first one landed.
+   *   - `failed` — the generator refused every attempt. Rare (one in sixteen
+   *     billion by the retry budget) and it still needs words, because the
+   *     alternative is a button that does nothing and a player who concludes
+   *     the game is broken. Names the fix, does not apologise — the same shape
+   *     the fresh-route panel's own refusals take.
+   */
+  setNewRouteStage(stage: 'idle' | 'building' | 'failed'): void {
+    const note = stage === 'building'
+      ? 'Generating…'
+      : stage === 'failed'
+        ? 'That one did not build — press again for another'
+        : 'Swap to a brand-new procedurally generated course';
+    // Both cards carry the control, and neither knows about the other: a player
+    // pauses mid-run *or* finishes one, and whichever card they are looking at
+    // has to be the one that speaks.
+    for (const panel of [this.pause, this.results]) {
+      const button = panel.querySelector<HTMLButtonElement>('[data-menu="new-route"]');
+      if (button) button.disabled = stage === 'building';
+      const target = panel.querySelector<HTMLElement>('[data-menu="new-route-note"]');
+      if (target && target.textContent !== note) target.textContent = note;
+    }
   }
 
   // -- Fresh routes (M12 Phase 4) ---------------------------------------------
@@ -1176,6 +1267,8 @@ export class Menus {
     else if (action === 'surprise') this.callbacks.onSurpriseSeed();
     else if (action === 'ride-city') this.callbacks.onRideTheCity();
     else if (action === 'copy-link') this.callbacks.onCopyLink();
+    // -- M20 -----------------------------------------------------------------
+    else if (action === 'new-route') this.callbacks.onNewRoute();
     // -- M14.5 ---------------------------------------------------------------
     else if (action === 'riders') this.callbacks.onOpenRiders();
     else if (action === 'riders-back') this.callbacks.onCloseRiders();

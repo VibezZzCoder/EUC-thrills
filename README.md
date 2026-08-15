@@ -23,7 +23,8 @@ Worth knowing before you start:
 
 - **The wheel is much faster, and much handier at walking pace.** Top speed is
   now around 50 mph — it takes a long straight and about eight seconds of held
-  throttle to find it, and it is worth finding. At the other end, a full-lock
+  throttle to find it, and it is worth finding. **It will also cut out on you
+  up there**, which is the next point. At the other end, a full-lock
   turn at walking pace is now roughly half the circle it used to be, so weaving
   between two lamp posts or turning around inside a lane is something the wheel
   will actually do. Backwards riding went from a shuffle to about 15 mph; it is
@@ -107,6 +108,15 @@ it surprises you:
   tilts the pedals back to make you slow down — which is the real behaviour this
   is modelling, and the reason a rider watches the warning rather than the
   speed.
+- **The wheel beeps at you above 40 mph, and it means it.** About one beep a
+  second at 40, faster and faster as you climb, and a stream of them at the
+  top — the same cadences a real wheel's alarm uses. Ignore them all the way
+  to the ceiling and the wheel gives up: the motor
+  lets go and you go over the front, exactly as a real one does when you ask for
+  more than it has. Backing off even slightly is enough. Riders call sitting
+  just underneath that limit *riding the beeps*, and it is the fastest you can
+  go without paying for it. If you ride with the sound off, a small warning
+  triangle in the same place blinks at the same rate.
 - **Watch your pedals in a hard carve.** Lean far enough and a pedal grounds,
   which costs you speed and, if you were fast, the ride.
 - **On a Fresh route, watch the road itself.** A dark pothole or a wet spill is
@@ -244,11 +254,14 @@ escape.
 - Dorkins rides the same terrain, grip, hazards, kerbs, crashes, and recovery as
   the player. He can pursue along the route in either direction and cut across
   the field when you leave the road.
+- On a clear straight he can hold the wheel just under its cutout, so simply
+  pinning the throttle will not leave him behind. Corners, hazards, rough ground,
+  and a cleaner line are where the gap comes from.
 - He alone carries the padded paddle. A strike costs speed and adds a
   recoverable wobble; crashing while he is close is the bust.
-- The route is the arena. Going far into the surround starts a grace warning,
-  then ends the run if you do not return. Camping just off the road is not a safe
-  loophole—the cop follows.
+- The route is the arena. Going far into the surround puts a warning on screen
+  with an arrow back to the road and a countdown, and ends the run if you do not
+  return. Camping just off the road is not a safe loophole—the cop follows.
 - Survival records are kept per Fresh-route seed and do not overwrite time-trial
   or Knockabout records.
 
@@ -257,6 +270,12 @@ escape.
 Procedurally generate a new place to ride. Choose **Surprise me** for an instant
 seed, or type a seed to rebuild the same place every time; then ride it freely,
 start its time trial, play Knockabout, or start a Police chase.
+
+**You do not have to come back here for another one.** Pause during any ride,
+or finish a run, and **New route** builds a fresh course and puts you straight
+back into whatever you were playing — same chase, same time trial, new place.
+This screen is for when you want to type a seed a friend sent you, share a link
+to the one you are on, or start a time trial on a specific route.
 
 The seed stays visible and becomes part of the address, so sending the link
 sends the same ground. Personal bests and ghosts stay with that route and are
@@ -358,7 +377,7 @@ may change or never happen.
   chooser in his own gear on a red saddled wheel modelled on his customized
   machine. Cosmetic-equal like the others, with his own crash sound.
 
-- **Police chase.** Officer Dorkins now pursues either playable rider across
+- **Police chase.** Officer Dorkins now pursues any playable rider across
   Fresh routes, including off-road escapes. Survive five minutes, avoid his
   paddle, and use the same terrain and hazards he has to ride. The single-player
   mode is complete; player-hosted multiplayer remains future direction.

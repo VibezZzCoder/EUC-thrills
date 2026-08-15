@@ -1,6 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test } from '@playwright/test';
-import { PROVING_GROUND, boot, collectErrors } from './harness.ts';
+import { PROVING_GROUND, boot, collectErrors, disableMaxSpeedCutout } from './harness.ts';
 // The surface table imports nothing that needs a browser (invariant 1), so the
 // spec can hold the game's own answer for what each surface should sound like
 // rather than a second copy of it that would drift.
@@ -140,6 +140,12 @@ test.describe('M8 — audio', () => {
     // like once forty nodes have had their turn.
     const errors = collectErrors(page);
     await boot(page);
+    // **The rule this asserts is about *sustained* tones**, and M20's
+    // over-speed beep is a 75 ms one-shot by construction — but a band peak
+    // taken over a window cannot tell the two apart, and the flat-out read
+    // below now reaches the speed that fires it. Out of the fixture, with its
+    // own coverage elsewhere. See `disableMaxSpeedCutout`.
+    await disableMaxSpeedCutout(page);
     await page.keyboard.press('KeyW');
     await page.waitForFunction(() => window.game.audioSnapshot().samplesLoaded);
 
@@ -779,6 +785,13 @@ test.describe('M8 — audio', () => {
   test('quick reset takes the sound of the ride with it', async ({ page }) => {
     const errors = collectErrors(page);
     await boot(page);
+    // `audioTrace` runs 720 fixed steps in a few milliseconds of *wall* time,
+    // so M20's beeps — paced in simulation seconds — all land inside one audio
+    // instant and are still sounding when the reset lands. That is an artefact
+    // of instant advancement rather than anything a player meets at sixty
+    // frames a second, and this test is about the ride bed.
+    // See `disableMaxSpeedCutout`.
+    await disableMaxSpeedCutout(page);
     await page.keyboard.press('KeyW');
 
     const reset = await page.evaluate(() => {

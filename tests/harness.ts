@@ -652,6 +652,35 @@ export interface AudioSample {
 }
 
 /** Console errors and page exceptions, for the "zero errors" assertion. */
+/**
+ * Switch the max-speed cutout off for this page — M20.
+ *
+ * **A fixture-scoping helper, not a workaround.** M20 gave the wheel a failure
+ * at the very top of its speed range: hold above 96.5% of top speed for 0.45 s
+ * and the rider goes down. Ten browser specs written long before it hold full
+ * throttle for ten or twenty seconds to *reach* a settled top-speed state and
+ * then measure something else — the camera arm at speed, the arms' cruise pose,
+ * braking authority, the shape of the spectrum, whether a reset silences the
+ * ride. Every one of them had quietly assumed that riding flat out forever is
+ * safe, because until M20 it was, and none of them said so.
+ *
+ * Switching the cutout off is what makes each of those tests claim again what
+ * it was written to claim. It goes through the **live-tuning store**, which is
+ * the mechanism the owner's own F4 switch uses, so a spec that calls this is
+ * riding a configuration a player can actually be in rather than a test-only
+ * one. The cutout has its own coverage in `tests/m20.spec.ts`,
+ * `src/simulation/EucController.test.ts` and `src/shared/overspeed.test.ts`.
+ *
+ * Call it after boot and before the ride. `LiveTuning` survives a world swap
+ * (`Game.installLevel` replays `applyTuning` onto the fresh controller), so one
+ * call covers a spec that regenerates a route.
+ */
+export async function disableMaxSpeedCutout(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    window.game.tuning.set('EUC.cutoutEnabled', 0);
+  });
+}
+
 export function collectErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on('console', (message: ConsoleMessage) => {

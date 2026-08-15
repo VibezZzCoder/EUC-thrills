@@ -28,6 +28,17 @@ import type { HudView } from './hudModel.ts';
 
 const TEMPLATE = `
 <div class="euc-hud__objective">
+  <div class="euc-hud__stray" data-hud="stray" data-urgent="false" role="status"
+       aria-live="polite" hidden>
+    <span class="euc-hud__stray-arrow" data-hud="stray-arrow" aria-hidden="true"></span>
+    <span class="euc-hud__stray-label" data-hud="stray-label">Back to the route</span>
+    <span class="euc-hud__stray-count" data-hud="stray-count">0</span>
+    <span class="euc-hud__stray-bar" aria-hidden="true"><i data-hud="stray-bar"></i></span>
+  </div>
+  <div class="euc-hud__overspeed" data-hud="overspeed" data-level="none" hidden>
+    <span class="euc-hud__overspeed-glyph" aria-hidden="true">&#9888;&#65039;</span>
+    <span data-hud="overspeed-label"></span>
+  </div>
   <div class="euc-hud__objective-line" data-hud="objective"></div>
   <div class="euc-hud__off-route" data-hud="off-route" hidden>Off route</div>
 </div>
@@ -86,6 +97,14 @@ export class Hud {
   private lastWarningLevel = '';
   private lastOffRoute = false;
   private lastPrompt = '';
+  private lastStrayVisible = false;
+  private lastStrayArrow = '';
+  private lastStrayCount = '';
+  private lastStrayFraction = '';
+  private lastStrayUrgent = '';
+  private lastOverspeedLabel = '';
+  private lastOverspeedLevel = '';
+  private lastOverspeedPulse = '';
   private lastChallengeVisible = false;
   private lastRunTime = '';
   private lastSplitLabel = '';
@@ -206,7 +225,78 @@ export class Hud {
       this.lastPrompt = promptText;
     }
 
+    this.writeStray(view.stray);
+    this.writeOverspeed(view.overspeed);
     this.writeChallenge(view.challenge);
+  }
+
+  /**
+   * The out-of-bounds banner — M20, §4.4.
+   *
+   * Five writes behind one visibility check, on the challenge lane's own
+   * pattern: the banner is absent for the whole of every ride but a chase, and
+   * for almost all of a chase, so it must cost one boolean compare there.
+   *
+   * **The bar is the one place this file writes a length**, and it does it the
+   * way `game.css` permits — a custom property the stylesheet turns into a
+   * width. Script still measures nothing and lays nothing out; it hands over a
+   * number between 0 and 1 and the geometry belongs to the sheet.
+   */
+  private writeStray(stray: HudView['stray']): void {
+    if (stray.visible !== this.lastStrayVisible) {
+      this.nodes.stray.hidden = !stray.visible;
+      this.lastStrayVisible = stray.visible;
+    }
+    if (!stray.visible) return;
+
+    if (stray.arrow !== this.lastStrayArrow) {
+      this.nodes['stray-arrow'].textContent = stray.arrow;
+      this.lastStrayArrow = stray.arrow;
+    }
+    if (stray.seconds !== this.lastStrayCount) {
+      this.nodes['stray-count'].textContent = stray.seconds;
+      this.lastStrayCount = stray.seconds;
+    }
+    // Quantised to a percent before the diff, because the fraction changes
+    // every frame and the string it becomes does not.
+    const fraction = `${Math.round(stray.fraction * 100)}`;
+    if (fraction !== this.lastStrayFraction) {
+      this.nodes['stray-bar'].style.setProperty('--stray-left', `${fraction}%`);
+      this.lastStrayFraction = fraction;
+    }
+    const urgent = stray.urgent ? 'true' : 'false';
+    if (urgent !== this.lastStrayUrgent) {
+      this.nodes.stray.dataset.urgent = urgent;
+      this.lastStrayUrgent = urgent;
+    }
+  }
+
+  /**
+   * The max-speed glyph — M20.
+   *
+   * `--beep-period` is the second and last custom property this layer writes,
+   * and it carries the beep rate into the CSS animation so the blink and the
+   * sound stay in step. Quantised to 10 ms before the diff: the underlying
+   * period changes continuously with speed, and restarting a CSS animation
+   * sixty times a second would make it hold still.
+   */
+  private writeOverspeed(overspeed: HudView['overspeed']): void {
+    if (overspeed.label !== this.lastOverspeedLabel) {
+      this.nodes['overspeed-label'].textContent = overspeed.label;
+      this.nodes.overspeed.hidden = !overspeed.visible;
+      this.lastOverspeedLabel = overspeed.label;
+    }
+    if (!overspeed.visible) return;
+
+    if (overspeed.level !== this.lastOverspeedLevel) {
+      this.nodes.overspeed.dataset.level = overspeed.level;
+      this.lastOverspeedLevel = overspeed.level;
+    }
+    const pulse = `${Math.round(overspeed.pulseSeconds * 100) / 100}s`;
+    if (pulse !== this.lastOverspeedPulse) {
+      this.nodes.overspeed.style.setProperty('--beep-period', pulse);
+      this.lastOverspeedPulse = pulse;
+    }
   }
 
   /**

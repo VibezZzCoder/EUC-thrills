@@ -271,16 +271,27 @@ test('riding into the surround runs the boundary out and busts the run', async (
 
     let sawWarning = false;
     let sawObjective = false;
+    let sawCountdown = '';
     for (let chunk = 0; chunk < 200; chunk += 1) {
       game.advance(15);
       const snapshot = game.snapshot();
       if (snapshot.chase.straying) sawWarning = true;
-      if (snapshot.hud.objective.includes('Back to the route')) sawObjective = true;
+      // **The words moved to their own panel at M20** and the objective line
+      // deliberately goes quiet underneath it: the owner's §4.4 report was that
+      // this sentence, as one line of body text, was too subtle to notice while
+      // riding. What this spec is claiming is unchanged — that the player is
+      // *told* — so it reads the cue that now carries the telling.
+      if (snapshot.hud.stray.visible
+        && snapshot.hud.stray.label.includes('Back to the route')) sawObjective = true;
+      if (snapshot.hud.stray.visible && sawCountdown === '') {
+        sawCountdown = snapshot.hud.stray.seconds;
+      }
       if (snapshot.chase.phase !== 'running') {
         return {
           outcome: snapshot.chase.outcome,
           sawWarning,
           sawObjective,
+          sawCountdown,
           offRoute: snapshot.chase.offRoute,
           limit,
           grace,
@@ -292,6 +303,7 @@ test('riding into the surround runs the boundary out and busts the run', async (
       outcome: end.chase.outcome,
       sawWarning,
       sawObjective,
+      sawCountdown,
       offRoute: end.chase.offRoute,
       limit,
       grace,
@@ -301,6 +313,10 @@ test('riding into the surround runs the boundary out and busts the run', async (
   expect(strayed.offRoute).toBeGreaterThan(CHASE.strayLimitMetres);
   expect(strayed.sawWarning).toBe(true);
   expect(strayed.sawObjective).toBe(true);
+  // And the countdown that made it fair (§4.4): a whole number of seconds, on
+  // screen, inside the grace the rule actually keeps.
+  expect(Number(strayed.sawCountdown)).toBeGreaterThan(0);
+  expect(Number(strayed.sawCountdown)).toBeLessThanOrEqual(CHASE.strayGraceSeconds);
   expect(strayed.outcome).toBe('strayed');
   expect(errors).toEqual([]);
 });

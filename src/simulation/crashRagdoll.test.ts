@@ -74,7 +74,16 @@ function controller(options: {
 } = {}): EucController {
   const plan = options.plan ?? wallPlan();
   return new EucController(new PlanTerrainSampler(plan), {
-    tuning: { wobbleMasterGain: 1, ...(options.tuning ?? {}) },
+    // **The max-speed cutout is off for this whole file** — M20, and it is the
+    // rule about re-deriving a spec rather than patching it. Every test here
+    // names the crash it is about, and one of them rides flat out for twelve
+    // seconds to prove a *bush* does not manufacture one. Full throttle on flat
+    // pavement now reaches the cutout speed at 8.7 s, so that fixture started
+    // failing with "foliage manufactured a crash" for a crash the foliage had
+    // nothing to do with. Switching the new funnel off here restores what the
+    // fixtures were always claiming; `EucController.test.ts` is where the
+    // cutout is proved, on its own terms.
+    tuning: { wobbleMasterGain: 1, cutoutEnabled: 0, ...(options.tuning ?? {}) },
     spawn: plan.spawn,
     softBodies: new SoftBodyField(options.softBodies ?? []),
   });

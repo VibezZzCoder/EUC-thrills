@@ -295,6 +295,28 @@ test('a plan with no stated route refuses to produce a spine', () => {
   assert.equal(RouteSpine.fromPlan(createLevel('proving')), null);
 });
 
+test('the high-speed policy follows the live wheel tuning it is given', () => {
+  const { plan } = generateLevel('route-41');
+  const spine = RouteSpine.fromPlan(plan);
+  assert.ok(spine !== null);
+  const sampler = new PlanTerrainSampler(plan);
+  const brain = new CpuRider(spine, plan, sampler);
+  const cutoutSpeed = () => (
+    brain as unknown as { cutoutSpeed(): number }
+  ).cutoutSpeed();
+
+  const shipped = Math.sqrt(
+    (EUC.leanToAccel * Math.sin(EUC.maxLeanPitch)) / EUC.dragCoefficient,
+  ) * EUC.cutoutSpeedShare * CHASE.cutoutMarginShare;
+  assert.ok(Math.abs(cutoutSpeed() - shipped) < 1e-12);
+
+  brain.driveAcceleration = 9;
+  brain.dragCoefficient = 0.09;
+  brain.cutoutSpeedShare = 0.9;
+  brain.cutoutMarginShare = 0.8;
+  assert.ok(Math.abs(cutoutSpeed() - 7.2) < 1e-12);
+});
+
 // ---------------------------------------------------------------------------
 // The kill gate
 // ---------------------------------------------------------------------------

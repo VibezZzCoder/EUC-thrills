@@ -338,6 +338,29 @@ test('the rider chooser is a real dialog a keyboard can operate', async ({ page 
   expect(errors).toEqual([]);
 });
 
+test('the chooser opens on the saved rider in portrait and landscape', async ({ page }) => {
+  const errors = collectErrors(page);
+  await bootToTitle(page);
+  await page.evaluate(() => window.game.setOptions({ character: 'red-rider' }));
+
+  for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
+    await page.setViewportSize(viewport);
+    await page.locator('.euc-menu--title [data-menu="riders"]').click();
+
+    const selected = page.locator('.euc-menu--riders [data-rider="red-rider"]');
+    await expect(selected).toBeFocused();
+    const box = await selected.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.y).toBeGreaterThanOrEqual(0);
+    expect(box!.y + box!.height).toBeLessThanOrEqual(viewport.height + 1);
+
+    await page.keyboard.press('Escape');
+    expect((await appState(page)).state).toBe('title');
+  }
+
+  expect(errors).toEqual([]);
+});
+
 test('Trollina crashes with her own recording, audibly', async ({ page }) => {
   // **The rung that matters, and the reason `lastCrashVoice` exists.**
   // `crashSamplePlays` counts the source node and both riders have one, so it

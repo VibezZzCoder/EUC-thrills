@@ -1086,3 +1086,137 @@ test('reset silences the siren with everything else', () => {
   assert.ok(director.frame.sirenFarGain + director.frame.sirenCloseGain < 1e-6);
   assert.ok(Math.abs(director.frame.sirenRate - 1) < 1e-6);
 });
+
+// --- The over-speed beeps — M20 ---------------------------------------------
+
+/**
+ * The one warning the owner asked to have back, and the one number he gave.
+ *
+ * §2 of the feedback triage: cut-outs, over-speed beeps and the alarm ladder
+ * were built once, playtested and removed as annoying, and on 2026-08-14 he
+ * reopened exactly one of them — *"just for max speed, so i would need the
+ * beeps"*. So these tests are as much about the boundary as about the beep: the
+ * ladder above stays silent, nothing sounds below 40 mph (his revised floor,
+ * after riding the 30 mph build), and the whole system disappears when the
+ * feature is off.
+ */
+
+/** How many beeps a second, measured by running the director for a while. */
+function beepRate(overspeed: number, seconds = 6): number {
+  const director = new AudioDirector();
+  const cues = run(director, seconds, riding({ speed: 20, overspeed }));
+  return cues.filter((cue) => cue.kind === 'overspeed').length / seconds;
+}
+
+test('nothing beeps until the wheel is in the band', () => {
+  assert.equal(beepRate(0), 0, 'a wheel below 40 mph made a noise about its top speed');
+});
+
+test('at the bottom of the band the cadence is the real alarm\'s slowest', () => {
+  // Ten seconds is long enough that an off-by-one at the ends does not move the
+  // answer much, and short enough to stay a unit test. The expected count is
+  // derived from the tuned period rather than quoted, because the period is a
+  // *measurement* of the reference video (see `data/tuning.ts`) and this test's
+  // business is that the director honours it, not what the video contained.
+  const director = new AudioDirector();
+  const cues = run(director, 10.05, riding({ speed: 18, overspeed: 0.0001 }));
+  const beeps = cues.filter((cue) => cue.kind === 'overspeed').length;
+  const expected = Math.floor(10.05 / AUDIO.overspeedSlowestPeriodSeconds);
+  assert.ok(
+    Math.abs(beeps - expected) <= 1,
+    `${beeps} beeps in ten seconds against a period of ${AUDIO.overspeedSlowestPeriodSeconds}s`,
+  );
+});
+
+test('the rate climbs with the wheel, all the way to the edge', () => {
+  const rates = [0.001, 0.25, 0.5, 0.75, 1].map((factor) => beepRate(factor));
+  for (let i = 1; i < rates.length; i += 1) {
+    assert.ok(rates[i] > rates[i - 1], `the rate stalled between step ${i - 1} and ${i}`);
+  }
+  // The edge rate is the tuned fastest period, minus one beep of edge effect
+  // over the measuring window.
+  const edge = 1 / AUDIO.overspeedFastestPeriodSeconds;
+  assert.ok(rates[rates.length - 1] > edge - 0.5, `only ${rates[rates.length - 1]} a second at the edge`);
+});
+
+test('the beep is the shipped recording, and the tone is only its stand-in', () => {
+  const director = new AudioDirector();
+  const cues = run(director, 3, riding({ speed: 22, overspeed: 1 }));
+  const beep = cues.find((cue) => cue.kind === 'overspeed');
+  assert.ok(beep, 'no beep at the top of the band');
+  // The sink reaches for `bank.overspeedBeep` on this kind. The tone fields are
+  // filled anyway, at the measured fundamental, so a player whose samples have
+  // not landed hears the right note through the wrong synthesis rather than no
+  // warning at all — the arrangement `crash` has had since M8.
+  assert.equal(beep.bus, 'ui');
+  assert.equal(beep.toneHz, AUDIO.overspeedFallbackHz);
+  assert.ok(beep.toneSeconds > 0);
+  assert.equal(beep.thumpSeconds, 0, 'a warning beep is not an impact');
+  assert.equal(beep.noiseSeconds, 0);
+});
+
+test('every beep is identical, because the rate is the whole message', () => {
+  const director = new AudioDirector();
+  const cues = run(director, 4, riding({ speed: 22, overspeed: 0.9 }))
+    .filter((cue) => cue.kind === 'overspeed');
+  assert.ok(cues.length > 8, 'not enough beeps to compare');
+  // A crash rotates its playback rate so back-to-back takes are not the same
+  // sound. This must not: a pitch that wandered would be a second variable
+  // moving underneath the one the player is being asked to read, on the one
+  // sound in the game that plays nine times a second.
+  for (const cue of cues) {
+    assert.equal(cue.toneHz, cues[0].toneHz);
+    assert.equal(cue.gain, cues[0].gain);
+    assert.equal(cue.toneSeconds, cues[0].toneSeconds);
+  }
+});
+
+test('the level slider silences the beeps without touching their timing', () => {
+  const director = new AudioDirector();
+  director.setTuning({ overspeedLevel: 0 });
+  const cues = run(director, 4, riding({ speed: 22, overspeed: 1 }));
+  assert.equal(cues.filter((cue) => cue.kind === 'overspeed').length, 0);
+});
+
+test('the silenced power ladder stays silenced', () => {
+  // The most important assertion in this block. `AUDIO.beepLevel` is 0 by the
+  // owner's 2026-08-04 decision — *"get rid of the tiltback beeps"* — and the
+  // way that decision would be undone is by routing a new warning through the
+  // ladder's machinery. It is not: tilt-back at a standstill emits nothing.
+  const director = new AudioDirector();
+  const cues = run(director, 4, riding({ speed: 3, powerStage: 'tiltBack', load: 1 }));
+  assert.equal(cues.length, 0, 'the ladder beeped, which the owner removed');
+});
+
+test('a crash and a pause both stop the beeping', () => {
+  for (const state of [{ crashed: true }, { idle: true }] as const) {
+    const director = new AudioDirector();
+    const cues = run(director, 4, riding({ speed: 22, overspeed: 1, ...state }));
+    assert.equal(
+      cues.filter((cue) => cue.kind === 'overspeed').length,
+      0,
+      `still beeping while ${JSON.stringify(state)}`,
+    );
+  }
+});
+
+test('the beep ducks the bed, and never as deep as it retriggers', () => {
+  // Rule 3 — a warning wins by ducking, never by hurting. And the cap: at the
+  // top of the band the beeps arrive faster than a duck releases, so a deep one
+  // would hold the wind down through the fastest riding in the game, and the
+  // wind *is* the sense of speed.
+  // **Both run for the same two seconds.** The bed's own envelopes take longer
+  // than one step to settle, so comparing a settled beeping director against a
+  // single-step quiet one would measure the ramp rather than the duck.
+  const quiet = new AudioDirector();
+  run(quiet, 2, riding({ speed: 22 }));
+  const quietBed = quiet.frame.bedGain;
+
+  const beeping = new AudioDirector();
+  run(beeping, 2, riding({ speed: 22, overspeed: 1 }));
+  assert.ok(beeping.frame.bedGain < quietBed, 'the beep did not duck the bed at all');
+  assert.ok(
+    beeping.frame.bedGain > quietBed * 0.5,
+    'the duck flattened the ride, which is what the shallow depth exists to avoid',
+  );
+});

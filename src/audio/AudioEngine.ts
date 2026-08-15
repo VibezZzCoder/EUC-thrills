@@ -69,6 +69,13 @@ export interface AudioSnapshot {
   readonly played: Readonly<Record<CueKind, number>>;
   /** Crash voices that started the owner's recording, counted in the sink. */
   readonly crashSamplePlays: number;
+  /**
+   * Over-speed beeps that started the shipped recording rather than the
+   * synthesized fallback (M20) — `crashSamplePlays`' twin, and it answers the
+   * one question `played.overspeed` cannot: is the player hearing the wheel's
+   * own alarm, or the stand-in for it?
+   */
+  readonly overspeedSamplePlays: number;
   /** Whose crash recording started last, or null before the first (M14.5). */
   readonly lastCrashVoice: CrashVoiceId | null;
   /** Whose crash recording the next one will start. */
@@ -174,6 +181,7 @@ export class AudioEngine {
     beep: 0,
     swing: 0,
     hit: 0,
+    overspeed: 0,
   };
 
   constructor(target: Window | null = typeof window === 'undefined' ? null : window) {
@@ -302,7 +310,7 @@ export class AudioEngine {
       try {
         const [
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider,
-          sirenFar, sirenClose,
+          sirenFar, sirenClose, overspeedBeep,
         ] = await Promise.all([
           fetch(urls.tyreOffroad).then((response) => response.arrayBuffer()),
           fetch(urls.tyreSolid).then((response) => response.arrayBuffer()),
@@ -312,11 +320,12 @@ export class AudioEngine {
           fetch(urls.crashRedRider).then((response) => response.arrayBuffer()),
           fetch(urls.sirenFar).then((response) => response.arrayBuffer()),
           fetch(urls.sirenClose).then((response) => response.arrayBuffer()),
+          fetch(urls.overspeedBeep).then((response) => response.arrayBuffer()),
         ]);
         if (this.disposed) return;
         this.sampleData = {
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider,
-          sirenFar, sirenClose,
+          sirenFar, sirenClose, overspeedBeep,
         };
         this.installSamples();
       } catch {
@@ -337,7 +346,7 @@ export class AudioEngine {
         // on a second call failing.
         const [
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider,
-          sirenFar, sirenClose,
+          sirenFar, sirenClose, overspeedBeep,
         ] = await Promise.all([
           context.decodeAudioData(data.tyreOffroad),
           context.decodeAudioData(data.tyreSolid),
@@ -347,11 +356,12 @@ export class AudioEngine {
           context.decodeAudioData(data.crashRedRider),
           context.decodeAudioData(data.sirenFar),
           context.decodeAudioData(data.sirenClose),
+          context.decodeAudioData(data.overspeedBeep),
         ]);
         if (this.disposed) return;
         const bank: SampleBank = {
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider,
-          sirenFar, sirenClose,
+          sirenFar, sirenClose, overspeedBeep,
         };
         this.sink?.setSampleBank(bank);
       } catch {
@@ -553,6 +563,7 @@ export class AudioEngine {
       droppedVoices: counts?.droppedVoices ?? 0,
       played: { ...this.played },
       crashSamplePlays: counts?.crashSamplePlays ?? 0,
+      overspeedSamplePlays: counts?.overspeedSamplePlays ?? 0,
       lastCrashVoice: counts?.lastCrashVoice ?? null,
       crashVoice: this.crashVoice,
       bedGain: frame.bedGain,

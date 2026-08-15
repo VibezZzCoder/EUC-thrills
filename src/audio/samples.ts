@@ -7,6 +7,7 @@ import crashTrollinaUrl from '../../assets/live/audio/crash_trollina.wav?url';
 import crashRedRiderUrl from '../../assets/live/audio/crash_red_rider.wav?url';
 import sirenFarUrl from '../../assets/live/audio/siren_far_loop.wav?url';
 import sirenCloseUrl from '../../assets/live/audio/siren_close_loop.wav?url';
+import overspeedBeepUrl from '../../assets/live/audio/overspeed_beep.wav?url';
 
 /**
  * The shipped recordings, as URLs the bundler resolves.
@@ -63,6 +64,21 @@ export interface SampleUrls {
    */
   readonly sirenFar: string;
   readonly sirenClose: string;
+  /**
+   * The max-speed warning beep (M20).
+   *
+   * **Original, CC BY 4.0, with the owner's other originals** — and it is worth
+   * saying why, because the owner supplied a reference video and the obvious
+   * reading is that this file came out of it. It did not. The video is a public
+   * one he did not film, so its audio is somebody else's recording and cannot
+   * be redistributed here; what shipped is a *measured replica* of the piezo
+   * alarm on it, built by `tools/make-overspeed-beep.mjs` from the measurement
+   * that tool records — 2565 Hz, one partial 17.4 dB down, a 10 ms attack. The
+   * alarm is a two-partial tone with no fine structure, so there is nothing in
+   * the recording a replica can fail to carry; the tool's header states the
+   * whole argument and how to hear the two side by side.
+   */
+  readonly overspeedBeep: string;
 }
 
 export const SAMPLE_URLS: SampleUrls = {
@@ -74,4 +90,5 @@ export const SAMPLE_URLS: SampleUrls = {
   crashRedRider: crashRedRiderUrl,
   sirenFar: sirenFarUrl,
   sirenClose: sirenCloseUrl,
+  overspeedBeep: overspeedBeepUrl,
 };

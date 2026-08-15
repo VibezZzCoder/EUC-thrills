@@ -1,6 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test, type Page } from '@playwright/test';
-import { PROVING_GROUND, boot as bootGame, collectErrors } from './harness.ts';
+import { PROVING_GROUND, boot as bootGame, collectErrors, disableMaxSpeedCutout } from './harness.ts';
 import { CAMERA, RIDER, RIDER_BLOCKOUT, SIMULATION } from '../src/data/tuning.ts';
 
 /**
@@ -45,6 +45,9 @@ const STEPS = (seconds: number): number => Math.round(seconds * SIMULATION.hz);
 
 test('the camera pulls back and widens with speed, and neither snaps', async ({ page }, testInfo) => {
   await boot(page);
+  // Sustained top speed is the fixture, and M20 put a cutout there. See
+  // `disableMaxSpeedCutout`.
+  await disableMaxSpeedCutout(page);
 
   const parked = await page.evaluate(() => {
     window.qa.resetRide();
@@ -313,6 +316,9 @@ test('the rider looks into the corner, mirrored, on top of the pitch stabilisati
 
 test('the arms react to load and lean without ever looking like handlebars', async ({ page }, testInfo) => {
   await boot(page);
+  // Sustained top speed is the fixture, and M20 put a cutout there. See
+  // `disableMaxSpeedCutout`.
+  await disableMaxSpeedCutout(page);
 
   const poses = await page.evaluate(() => {
     window.qa.resetRide();
@@ -565,6 +571,9 @@ test('a full camera ride produces no console errors', async ({ page }, testInfo)
 
 test('a camera constant changed through F4 reaches the running camera', async ({ page }) => {
   await boot(page, 'panel=1');
+  // Sustained top speed is the fixture, and M20 put a cutout there. See
+  // `disableMaxSpeedCutout`.
+  await disableMaxSpeedCutout(page);
 
   const stock = await page.evaluate(() => {
     window.qa.resetRide();
@@ -604,6 +613,9 @@ test('a camera constant changed through F4 reaches the running camera', async ({
 
 test('the inspection orbit stays available as a diagnostic and holds a fixed field of view', async ({ page }, testInfo) => {
   await boot(page);
+  // Sustained top speed is the fixture, and M20 put a cutout there. See
+  // `disableMaxSpeedCutout`.
+  await disableMaxSpeedCutout(page);
 
   const views = await page.evaluate((steps) => {
     window.qa.resetRide();

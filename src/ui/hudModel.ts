@@ -2,7 +2,12 @@
 import type { PowerStage } from '../simulation/EucController.ts';
 import type { RunPhase } from '../simulation/challenge.ts';
 import { SPEED_UNITS, type SpeedUnit } from '../app/options.ts';
-import { CHALLENGE } from '../data/tuning.ts';
+import { AUDIO, CHALLENGE, CHASE } from '../data/tuning.ts';
+import {
+  overspeedBeepPeriod,
+  overspeedLevel,
+  type OverspeedLevel,
+} from '../shared/overspeed.ts';
 
 /**
  * What the HUD says, decided as arithmetic — `docs/PLANS.md` §8.1.
@@ -131,7 +136,35 @@ export interface HudInput {
     readonly remaining: number;
     readonly straying: boolean;
     readonly copClose: boolean;
+    /**
+     * Seconds left before leaving the route ends the run — M20, §4.4.
+     *
+     * **The defect the owner reported was that this number existed and was
+     * invisible**: he wandered off at low speed, the only cue was a small line
+     * of text, and the run ended at fourteen seconds with an "Out of bounds"
+     * card that explained *afterwards* that a clock had been running. Handed
+     * over raw; the rounding is this file's, like every other number on screen.
+     */
+    readonly strayGrace: number;
+    /**
+     * Bearing to the nearest point on the route, relative to the rider's
+     * heading, radians — the "point the player back toward the course" half of
+     * his fix. Positive is to their left, under the project's +Y yaw
+     * convention. Non-finite when there is no route to point at, which draws
+     * no arrow rather than a wrong one.
+     */
+    readonly homeRadians: number;
   };
+  /**
+   * How near the max-speed cutout the wheel is, 0..1 — M20.
+   *
+   * `EucController.overspeed`. **The screen carries this because the sound
+   * might not reach the player**: the owner's own framing was that the beeps
+   * are the warning, and a player riding with the phone muted would otherwise
+   * meet the cutout with no warning at all. It is the same number the director
+   * beeps from, so the glyph and the beep cannot describe different wheels.
+   */
+  readonly overspeed: number;
   readonly powerStage: PowerStage;
   /** How far tilt-back has engaged, 0..1. */
   readonly tiltBack: number;
@@ -186,7 +219,79 @@ export interface HudView {
    * DOM cannot infer that `5:00` is survival time rather than a target score.
    */
   readonly modeLabel: string;
+  /** The out-of-bounds banner — M20, §4.4. */
+  readonly stray: StrayHudView;
+  /** The max-speed warning glyph — M20. */
+  readonly overspeed: OverspeedHudView;
 }
+
+/**
+ * The out-of-bounds banner — M20, and the owner's §4.4 report answered
+ * literally.
+ *
+ * He named three things and this carries all three: **make the warning
+ * obviously visible** (its own element, big, in the middle of the top edge,
+ * where `hud.ts` and `game.css` give it a panel rather than a line of body
+ * text), **point the player back toward the course** (`arrow`), and **show the
+ * countdown** (`seconds`). His summary of why — *"don't wanna bore the
+ * players"*, the punishment isn't the problem, the surprise is.
+ *
+ * **It is one event, not a repeated cue**, which is how it clears the standing
+ * annoyance bar the same feedback file records: it appears once when the rider
+ * leaves, it stays for exactly as long as they are outside, and it is gone the
+ * moment they are back. Nothing about it pulses or re-announces until the last
+ * few seconds, when `urgent` earns it.
+ */
+export interface StrayHudView {
+  readonly visible: boolean;
+  /** The instruction. Empty when the banner is not drawn. */
+  readonly label: string;
+  /** One of the eight bearing glyphs, or empty when there is nothing to aim at. */
+  readonly arrow: string;
+  /** Whole seconds left, as the banner shows them. Empty when not drawn. */
+  readonly seconds: string;
+  /** How much of the grace is left, 0..1 — the bar the panel draws. */
+  readonly fraction: number;
+  /** The last few seconds. The DOM turns this into colour *and* a pulse. */
+  readonly urgent: boolean;
+}
+
+/**
+ * The max-speed warning, for a player who cannot hear the beeps — M20.
+ *
+ * **Non-obstructive by construction**, which is what the owner asked for: it is
+ * a glyph and two words in the same top-centre column as the banner above,
+ * never in the middle of the frame, and it does not exist at all below 40 mph —
+ * so a player who never goes near the top of the range never sees it once.
+ *
+ * `pulseSeconds` is the beep period from `shared/overspeed.ts`, handed to CSS
+ * as an animation duration. That is the one place this file lets a value become
+ * geometry, and it is deliberate: the *rate* is the whole message of this
+ * warning, so a glyph that blinked at a fixed rate while the beeps accelerated
+ * would be telling the player something false.
+ */
+export interface OverspeedHudView {
+  readonly visible: boolean;
+  readonly label: string;
+  readonly level: OverspeedLevel;
+  readonly pulseSeconds: number;
+}
+
+const NO_STRAY: StrayHudView = Object.freeze({
+  visible: false,
+  label: '',
+  arrow: '',
+  seconds: '',
+  fraction: 1,
+  urgent: false,
+});
+
+const NO_OVERSPEED: OverspeedHudView = Object.freeze({
+  visible: false,
+  label: '',
+  level: 'none' as OverspeedLevel,
+  pulseSeconds: AUDIO.overspeedSlowestPeriodSeconds,
+});
 
 /**
  * How long a cue must stay up once shown, and how long it must stay away once
@@ -201,6 +306,24 @@ const WARNING_MIN_VISIBLE_SECONDS = 0.7;
 const OFF_ROUTE_MIN_VISIBLE_SECONDS = 1.1;
 /** Distance the wheel must be back on course before the hint may return. */
 const OFF_ROUTE_REARM_SECONDS = 0.5;
+/**
+ * How long the out-of-bounds banner stays after the rider is back inside, s.
+ *
+ * The referee resets the stray clock the instant the corridor is re-entered, so
+ * without this a rider tracking along the 30 m line would blink a full-width
+ * panel on and off several times a second — the flicker this whole file exists
+ * to prevent, arriving through the newest lane. Short, because the honest thing
+ * once a player is back is to get out of their way.
+ */
+const STRAY_MIN_VISIBLE_SECONDS = 0.6;
+/**
+ * When the countdown becomes urgent, seconds.
+ *
+ * A third of the shipped eight-second grace. It is the point at which the
+ * banner stops being information and starts being a deadline, and it is the
+ * only thing on this HUD besides tilt-back that is allowed to pulse.
+ */
+const STRAY_URGENT_SECONDS = 3;
 
 const MS_PER_KPH = 3.6;
 const MS_PER_MPH = 2.236936;
@@ -290,6 +413,39 @@ function chaseLane(run: { remaining: number } | undefined): string {
   const whole = Math.max(0, Math.ceil(run.remaining));
   const minutes = Math.floor(whole / 60);
   return `${minutes}:${String(whole - minutes * 60).padStart(2, '0')}`;
+}
+
+function clamp01(value: number): number {
+  return value < 0 ? 0 : value > 1 ? 1 : value;
+}
+
+/**
+ * The max-speed glyph — M20.
+ *
+ * **The words are "Max speed", not "Slow down".** The owner's decision is that
+ * riding right underneath the edge is a thing to be *good at* rather than a
+ * mistake to be corrected, so the cue names the condition and lets the player
+ * decide what to do about it. A HUD that told a rider deliberately holding the
+ * fastest speed in the game to slow down would be scolding them for playing
+ * well, which is the same rule that cut "Missed: Park gate" at M10.
+ *
+ * The glyph is `⚠` and it is the whole reason this exists: the owner asked for
+ * *"one of those warning emoji things"* for players riding with the sound off.
+ * It is `aria-hidden` in the DOM and the words beside it carry the meaning, so
+ * a screen reader does not announce "warning sign warning".
+ */
+function overspeedView(overspeed: number): OverspeedHudView {
+  if (!(overspeed > 0)) return NO_OVERSPEED;
+  return {
+    visible: true,
+    label: 'Max speed',
+    level: overspeedLevel(overspeed),
+    pulseSeconds: overspeedBeepPeriod(
+      overspeed,
+      AUDIO.overspeedSlowestPeriodSeconds,
+      AUDIO.overspeedFastestPeriodSeconds,
+    ),
+  };
 }
 
 /** The label above the one corner shared by Knockabout and the police chase. */
@@ -414,6 +570,16 @@ export class HudModel {
   private onRouteSince = Number.NEGATIVE_INFINITY;
 
   /**
+   * When the out-of-bounds banner was last asserted — M20.
+   *
+   * One timestamp rather than the pair the off-route hint keeps, because this
+   * cue is asymmetric: it must appear the *instant* the boundary is crossed
+   * (the whole defect was a warning nobody noticed in time) and may only linger
+   * on the way out.
+   */
+  private strayingSince = Number.NEGATIVE_INFINITY;
+
+  /**
    * The split the lane is currently holding, and when it was latched.
    *
    * Same shape as the warning dwell above, on the same simulation clock, for
@@ -472,6 +638,7 @@ export class HudModel {
     this.offRoute = false;
     this.offRouteSince = Number.NEGATIVE_INFINITY;
     this.onRouteSince = Number.NEGATIVE_INFINITY;
+    this.strayingSince = Number.NEGATIVE_INFINITY;
   }
 
   /**
@@ -503,6 +670,11 @@ export class HudModel {
         knockabout: knockaboutLane(input.knockabout),
         chase: chaseLane(input.chase),
         modeLabel: modeLaneLabel(input),
+        // Both M20 cues go with the rest of them, and for the paragraph above:
+        // a rider on the floor is neither about to leave the route nor about to
+        // cut out, and the controller has already zeroed both anyway.
+        stray: NO_STRAY,
+        overspeed: NO_OVERSPEED,
       };
     }
 
@@ -559,6 +731,49 @@ export class HudModel {
       knockabout: knockaboutLane(input.knockabout),
       chase: chaseLane(input.chase),
       modeLabel: modeLaneLabel(input),
+      stray: this.strayView(nowSeconds, input.chase),
+      overspeed: overspeedView(input.overspeed),
+    };
+  }
+
+  /**
+   * The out-of-bounds banner at a simulation time — M20, §4.4.
+   *
+   * The dwell is the only state here and it is one-sided: rising is immediate,
+   * because the defect being fixed is a warning that arrived too quietly to act
+   * on, and clearing waits out `STRAY_MIN_VISIBLE_SECONDS` so a rider tracking
+   * along the boundary does not strobe a panel.
+   *
+   * **The seconds are ceiled, not rounded**, which is the same decision every
+   * countdown in the world makes and the opposite of the run clock's a hundred
+   * lines up. A rounded countdown shows `0` for half a second while the run is
+   * still alive, and a rider looking at a zero has already given up. Ceiling
+   * means the number reaching 0 and the run ending are the same instant.
+   */
+  private strayView(
+    nowSeconds: number,
+    chase: HudInput['chase'],
+  ): StrayHudView {
+    if (chase === undefined) {
+      this.strayingSince = Number.NEGATIVE_INFINITY;
+      return NO_STRAY;
+    }
+
+    if (chase.straying) this.strayingSince = nowSeconds;
+    else if (nowSeconds - this.strayingSince >= STRAY_MIN_VISIBLE_SECONDS) return NO_STRAY;
+
+    // The full grace is not a field on the input: the referee's own reset makes
+    // `strayGrace` equal to it whenever the rider is inside, and reading it
+    // from there rather than being told means the bar cannot disagree with the
+    // rule if the owner drags `CHASE.strayGraceSeconds` on F4 mid-ride.
+    const seconds = Math.max(0, chase.strayGrace);
+    return {
+      visible: true,
+      label: 'Back to the route',
+      arrow: formatDirection(chase.homeRadians),
+      seconds: String(Math.ceil(seconds)),
+      fraction: clamp01(seconds / Math.max(1e-6, CHASE.strayGraceSeconds)),
+      urgent: chase.straying && seconds <= STRAY_URGENT_SECONDS,
     };
   }
 
@@ -582,13 +797,17 @@ export class HudModel {
     chase?: { readonly straying: boolean; readonly copClose: boolean },
   ): string {
     // **The chase takes the line before the timed run gets a look at it**, and
-    // the ordering is the mode's own: the two never run together, and of the
-    // two things a chase has to say, one is a rule the player is about to lose
-    // to. Straying outranks the cop for the same reason — being about to be
-    // busted for leaving is a thing the player can fix and may not know about,
-    // where the cop behind them is a thing they can already see.
+    // the ordering is the mode's own: the two never run together.
+    //
+    // **Straying no longer speaks here at all** — M20. It used to return "Back
+    // to the route" into this one line of body text, and the owner's §4.4
+    // report is that the line was *"super subtle and hard to notice"* while
+    // riding. It has its own banner now (`strayView`), and the line goes quiet
+    // underneath it rather than saying the same thing twice in two sizes —
+    // which would be the M10 results-screen defect, where two live copies of
+    // one number read as an unfinished screen.
     if (chase !== undefined) {
-      if (chase.straying) return 'Back to the route';
+      if (chase.straying) return '';
       if (chase.copClose) return 'He is right behind you';
       return '';
     }

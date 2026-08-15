@@ -1,5 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test, type Page } from '@playwright/test';
+import { CHARACTER_IDS } from '../src/data/riders.ts';
 import { boot, bootToTitle, collectErrors } from './harness.ts';
 
 /**
@@ -663,12 +664,12 @@ test.describe('M12 Phase 4 — a fresh route on a phone', () => {
  *
  * The one project in the suite where `(pointer: coarse)` matches and a tap is a
  * real touch pointer, which makes it the only place the 44-pixel floor can be
- * measured rather than assumed. Two new targets arrived with this milestone and
- * neither is a plain button: the title screen's rider chip is a line of small
+ * measured rather than assumed. The new targets that arrived with this milestone
+ * are not plain buttons: the title screen's rider chip is a line of small
  * text in a pill, and a card is a large grid of spans.
  */
 test.describe('M14.5 — choosing a rider on a phone', () => {
-  test('the chip and both cards are big enough for a thumb', async ({ page }) => {
+  test('the chip and every rider card are big enough for a thumb', async ({ page }) => {
     await bootToTitle(page);
 
     const chip = page.locator('.euc-menu--title [data-menu="riders"]');
@@ -677,7 +678,7 @@ test.describe('M14.5 — choosing a rider on a phone', () => {
     expect(chipBox!.height, `the chip is ${chipBox!.height}px tall`).toBeGreaterThanOrEqual(44);
 
     await chip.tap();
-    for (const id of ['cool-rider', 'trollina']) {
+    for (const id of CHARACTER_IDS) {
       const box = await page.locator(`.euc-menu--riders [data-rider="${id}"]`).boundingBox();
       expect(box, `${id} has no box`).not.toBeNull();
       expect(box!.height, `${id} is ${box!.height}px tall`).toBeGreaterThanOrEqual(44);
@@ -692,17 +693,17 @@ test.describe('M14.5 — choosing a rider on a phone', () => {
     // The portrait covers most of the card, so this is also the check that a
     // tap landing on an inline SVG reaches the button underneath it — the exact
     // shape that made the cards silently inert on the first build.
-    await page.locator('.euc-menu--riders [data-rider="trollina"] svg').tap();
+    await page.locator('.euc-menu--riders [data-rider="red-rider"] svg').tap();
     await expect.poll(async () => page.evaluate(
       () => window.game.snapshot().rider.installed,
-    )).toBe('trollina');
-    await expect(page.locator('.euc-menu--riders [data-rider="trollina"]'))
+    )).toBe('red-rider');
+    await expect(page.locator('.euc-menu--riders [data-rider="red-rider"]'))
       .toHaveAttribute('aria-pressed', 'true');
 
     // Done is the only way out on a phone: there is no Escape key and no pad.
     await page.locator('.euc-menu--riders [data-menu="riders-back"]').tap();
     expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('title');
-    await expect(page.locator('.euc-menu--title [data-menu="riders"]')).toContainText('Trollina');
+    await expect(page.locator('.euc-menu--title [data-menu="riders"]')).toContainText('Red Rider');
 
     expect(errors).toEqual([]);
   });

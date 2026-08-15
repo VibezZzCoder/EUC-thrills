@@ -49,6 +49,14 @@ export interface SinkCounts {
    */
   readonly crashSamplePlays: number;
   /**
+   * Over-speed beeps that started the *recording* — M20, and it exists for
+   * exactly the reason `crashSamplePlays` does. `played.overspeed` on the
+   * director side counts the decision to warn and increments identically when
+   * the synthesized fallback sounds instead, so it cannot answer "is the
+   * player hearing the wheel's own alarm". This can.
+   */
+  readonly overspeedSamplePlays: number;
+  /**
    * Whose recording the last one started (M14.5), or `null` before the first.
    *
    * `crashSamplePlays` counts both riders identically — it is counted at the
@@ -114,6 +122,15 @@ export interface SampleBank {
   readonly sirenFar: AudioBuffer;
   /** And its close wail, crossfaded in by range. */
   readonly sirenClose: AudioBuffer;
+  /**
+   * The max-speed warning beep (M20) — 75 ms, 2565 Hz.
+   *
+   * **Required, like `crashRedRider` and for the same reason**: there is a
+   * synthesized fallback, so forgetting to put this in the bank would be
+   * silent — the wheel would go on warning at the wrong timbre while every
+   * counter said the system was working. Required, and the compiler notices.
+   */
+  readonly overspeedBeep: AudioBuffer;
 }
 
 /**
@@ -207,6 +224,8 @@ export class WebAudioSink {
   private crashVoice: CrashVoiceId = 'cool-rider';
   /** Crash voices that started the recording, not the fallback. See `SinkCounts`. */
   private crashSamplePlays = 0;
+  /** Over-speed beeps that started the recording rather than the fallback. */
+  private overspeedSamplePlays = 0;
   private lastCrashVoice: CrashVoiceId | null = null;
   private readonly scrapeFilter: BiquadFilterNode;
   private readonly scrapeGain: GainNode;
@@ -388,6 +407,7 @@ export class WebAudioSink {
       voices: this.voices.size,
       droppedVoices: this.droppedVoices,
       crashSamplePlays: this.crashSamplePlays,
+      overspeedSamplePlays: this.overspeedSamplePlays,
       lastCrashVoice: this.lastCrashVoice,
     };
   }
@@ -547,6 +567,19 @@ export class WebAudioSink {
       const buffer = crashFor(this.crashVoice, this.bank);
       this.lastCrashVoice = this.crashVoice;
       this.playCrashSample(buffer, cue, at, destination);
+      return;
+    }
+
+    // The over-speed warning is a recording too, on the crash's exact terms —
+    // M20. **No rate rotation and no variation of any kind**, unlike the crash
+    // above: the whole message of this cue is its *rate of repetition*, and a
+    // pitch that wandered from beep to beep would be a second variable moving
+    // underneath the one the player is being asked to read. It is also the one
+    // sound in the game that plays nine times a second, which is the worst
+    // possible place for a detune.
+    if (cue.kind === 'overspeed' && this.bank) {
+      this.playSampleOnce(this.bank.overspeedBeep, cue, at, destination);
+      this.overspeedSamplePlays += 1;
       return;
     }
 
@@ -783,6 +816,39 @@ export class WebAudioSink {
     // ends itself; the stop is the register's teardown moment, just past it.
     this.launch(source, at, at + buffer.duration / rate + 0.05, [gain]);
     this.crashSamplePlays += 1;
+  }
+
+  /**
+   * A recording, once, at its own rate — M20.
+   *
+   * `playCrashSample`'s plain sibling, and separate rather than a flag on it
+   * because everything interesting in that method is the crash's: the rate
+   * rotation, the trim constant, and the counter a spec reads to tell a real
+   * take from the synthesized fallback. What is left here is the part that is
+   * genuinely generic — a buffer, an attack, and a teardown — and keeping the
+   * two apart is what stops the over-speed beep from silently acquiring the
+   * crash's detune the next time somebody tunes it.
+   */
+  private playSampleOnce(
+    buffer: AudioBuffer,
+    cue: TransientCue,
+    at: number,
+    destination: AudioNode,
+  ): void {
+    const context = this.context;
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(SILENT, at);
+    // 3 ms rather than the crash's 8: the recording's own attack is 10 ms and
+    // measured off the reference, and a slower ramp on top of it would round
+    // the one part of this sound that says "now".
+    gain.gain.linearRampToValueAtTime(cue.gain, at + 0.003);
+
+    source.connect(gain);
+    gain.connect(destination);
+    this.launch(source, at, at + buffer.duration + 0.03, [gain]);
   }
 
   private playTone(cue: TransientCue, at: number, destination: AudioNode): void {

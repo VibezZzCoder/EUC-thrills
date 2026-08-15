@@ -195,6 +195,150 @@
 
 .euc-hud__off-route[hidden] { display: none; }
 
+/* -- Out of bounds, top-centre, prominent ---------------------------------
+ *
+ * M20, and the owner's §4.4 report is the whole specification. He rode off the
+ * route in Cop Chase at low speed, and the only thing that happened was the
+ * `objective-line` above saying "Back to the route" in body text — *"super
+ * subtle and hard to notice"* — while an invisible eight-second clock ran out
+ * and ended the run. His fix, in his words: make it obviously visible, point
+ * the player back toward the course, and show the countdown.
+ *
+ * So it is a panel rather than a line, and it takes the four decisions that
+ * distinguish a warning from an annoyance:
+ *
+ *   1. **It is in the objective lane, not the middle of the frame.** Rule 1 at
+ *      the top of this file: the centre is where the ground the rider is about
+ *      to reach is, and a rider who cannot see is a rider who crashes for a
+ *      second reason.
+ *   2. **The countdown is the loudest thing in it.** The number is what
+ *      converts a punishment into a deadline the player can act on, which is
+ *      the whole of "that would be fair".
+ *   3. **It does not pulse until the last three seconds.** A panel that
+ *      throbbed for the whole eight would be the standing annoyance rule, and
+ *      by then a rider who has not turned around has chosen not to.
+ *   4. **It is gone the moment they are back**, bar a 0.6 s dwell that exists
+ *      only to stop it strobing at the boundary (`ui/hudModel.ts`).
+ * ------------------------------------------------------------------------ */
+
+.euc-hud__stray {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.3rem 0.7rem;
+  padding: 0.5rem 0.9rem 0.55rem;
+  border-radius: 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--cue-warn) 55%, transparent);
+  background: var(--panel);
+  box-shadow: 0 6px 26px rgba(0, 0, 0, 0.55);
+  color: var(--cue-warn);
+  text-shadow: none;
+}
+
+.euc-hud__stray[hidden] { display: none; }
+
+/* The bearing home. Sized well above the label, because at speed it is the
+   only part a glance actually resolves. */
+.euc-hud__stray-arrow {
+  font-size: clamp(1.5rem, 4.2vw, 2.1rem);
+  line-height: 1;
+}
+
+.euc-hud__stray-arrow:empty { display: none; }
+
+.euc-hud__stray-label {
+  font-size: clamp(0.95rem, 2.4vw, 1.2rem);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* The seconds. `tabular-nums` and a reserved width so 10 → 9 does not shuffle
+   the label beside it, and large enough to be the thing the eye lands on. */
+.euc-hud__stray-count {
+  min-width: 1.6ch;
+  text-align: right;
+  font-size: clamp(1.6rem, 4.6vw, 2.3rem);
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The same countdown a second time, as a length. Redundant on purpose: it is
+   the channel that survives a glance too short to read a digit, and it is the
+   one a player tracks without looking away from the road. */
+.euc-hud__stray-bar {
+  grid-column: 1 / -1;
+  display: block;
+  height: 0.3rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 22%, transparent);
+  overflow: hidden;
+}
+
+.euc-hud__stray-bar > i {
+  display: block;
+  height: 100%;
+  width: var(--stray-left, 100%);
+  border-radius: inherit;
+  background: currentColor;
+}
+
+.euc-hud__stray[data-urgent="true"] {
+  color: var(--cue-critical);
+  border-color: color-mix(in srgb, var(--cue-critical) 70%, transparent);
+  animation: euc-cue-pulse 0.65s ease-in-out infinite;
+}
+
+/* -- The max-speed warning, under the banner ------------------------------
+ *
+ * M20. The owner's ask was for *"one of those warning emoji things"* to appear
+ * *"in a non-annoying way, non-obstructive way"*, in the same place as the
+ * out-of-bounds cue, so that a player riding with the sound off still gets the
+ * beeps' message. It is therefore small, in the same column, and — the part
+ * that makes it work — **it blinks at the beep rate**.
+ *
+ * `--beep-period` is written by `ui/hud.ts` from the same arithmetic the audio
+ * director schedules the beeps with (`shared/overspeed.ts`), so the blink and
+ * the sound are the same cue on two channels rather than two cues. It starts
+ * at about one flash a second just past 40 mph and reaches seven a second at
+ * the edge — the real alarm's own cadences — which is the "riding the beeps"
+ * feel made visible.
+ * ------------------------------------------------------------------------ */
+
+.euc-hud__overspeed {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.22rem 0.7rem;
+  border-radius: 999px;
+  background: var(--shade);
+  color: var(--cue-notice);
+  font-size: clamp(0.72rem, 1.6vw, 0.88rem);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  animation: euc-beep-blink var(--beep-period, 2s) steps(1, end) infinite;
+}
+
+.euc-hud__overspeed[hidden] { display: none; }
+
+.euc-hud__overspeed-glyph { font-size: 1.05em; line-height: 1; }
+
+.euc-hud__overspeed[data-level="warn"] { color: var(--cue-warn); }
+.euc-hud__overspeed[data-level="critical"] { color: var(--cue-critical); }
+
+/*
+ * A hard on/off rather than a fade, because it is standing in for a beep and a
+ * beep does not fade. The dark half is short: the glyph is *information* for
+ * as long as the wheel is in the band, and a cue that spent half its life
+ * invisible would be missed by exactly the glance it exists for.
+ */
+@keyframes euc-beep-blink {
+  0%, 74% { opacity: 1; }
+  75%, 100% { opacity: 0.34; }
+}
+
 /* -- The challenge lane, top-right: run clock and the last split ----------
  *
  * Reserved and empty at M9; filled at M10, in place, without moving.
@@ -1432,21 +1576,22 @@
  * ------------------------------------------------------------------------ */
 
 /*
- * Two cards, side by side on a desk and stacked on a phone.
+ * The whole roster in one row when it fits, and stacked on a phone.
  *
  * `auto-fit` with a floor rather than a media query, because the thing that
  * decides is how much room a card needs and not what kind of device is asking:
  * a narrow desktop window happens constantly (`DESIGN.md` §9). The panel is
- * wider than the default for the same reason the results screen is — two
- * columns of prose do not fit in 34rem.
+ * wider than the default for the same reason the results screen is — three
+ * columns of prose do not fit in 34rem. The selected card receives focus when
+ * this screen opens, so a stacked roster also scrolls to the current rider.
  */
-.euc-menu--riders .euc-menu__panel { width: min(40rem, 100%); }
+.euc-menu--riders .euc-menu__panel { width: min(52rem, 100%); }
 
 .euc-riders__heading { font-size: clamp(1.5rem, 4.5vw, 2.4rem); }
 
 .euc-riders__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
   gap: 0.9rem;
   margin: 0;
   padding: 0;
@@ -1622,6 +1767,17 @@
   /* The tilt-back pulse carries meaning, so it becomes a steady colour rather
      than disappearing with decorative movement. */
   .euc-hud__warning[data-level="tiltBack"] { opacity: 1; }
+
+  /* Same rule, twice more, for M20's two cues. The out-of-bounds banner keeps
+     its urgent colour and stops throbbing; the max-speed glyph stops blinking
+     and stays lit. **Neither loses any information by it** — the banner's
+     countdown and bar carry the deadline and the glyph's colour carries the
+     three steps of the ramp — which is the test a decorative animation has to
+     pass before it may be removed here. What is lost is the beep *rate* as a
+     visual, and that is the correct trade: a player who has asked for less
+     motion has asked not to be blinked at nine times a second. */
+  .euc-hud__stray[data-urgent="true"],
+  .euc-hud__overspeed { opacity: 1; }
 }
 
 /* ---------------------------------------------------------------------------
@@ -1734,7 +1890,7 @@
 
   .euc-routes__pick { min-height: 2.75rem; }
 
-  /* The chooser's own two targets. A card is already far past the floor, but
+  /* The chooser's own targets. A card is already far past the floor, but
      the chip is a single line of small text and would not be. */
   .euc-rider-chip { min-height: 2.75rem; }
   .euc-rider-card { min-height: 2.75rem; }

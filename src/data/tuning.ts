@@ -1598,6 +1598,81 @@ export const EUC = {
   tiltBackPedalPitch: 0.18,
 
   /**
+   * The max-speed cutout, and the beeps that warn about it — M20.
+   *
+   * **Reopened by the owner on 2026-08-14**, and reopened narrowly. Cut-outs,
+   * over-speed beeps and the alarm-then-cutout ladder were implemented once,
+   * playtested, and removed as annoying; §2 of the feedback triage records that
+   * decision and it still stands for all of it *except* this: *"just for max
+   * speed, so i would need the beeps"*. So there is one failure condition, it
+   * sits at the very top of the speed range, and everything below it is exactly
+   * the ride the owner has already accepted. The full realism — a cutout that
+   * can arrive under load on a hill, an alarm ladder, a battery model — stays
+   * REJECTED and stays Simulation Mode's if it is ever anybody's.
+   *
+   * **Everything here is a share of the wheel's own top speed, never a speed.**
+   * That is M16's lesson applied before it can bite again: four constants that
+   * were secretly defined as the old top speed had to be found and rescaled by
+   * hand when the top speed moved, and one of them silently reintroduced a
+   * feature the owner had removed. `EucController.derivedTopSpeed` recomputes
+   * `sqrt(driveAccel / dragCoefficient)` from its own live tuning every time it
+   * is asked, so dragging `EUC.dragCoefficient` on F4 moves the beeps and the
+   * cutout with the ride instead of leaving them stranded at an old number.
+   *
+   * **The beeps are the whole safety net.** There is no HUD-only version of
+   * this and no silent version: a cutout the player did not hear coming is the
+   * unfairness §18.6 says is removed rather than tuned. `ui/hudModel.ts` draws
+   * a warning glyph on the same schedule for a player riding with the sound
+   * off, and that glyph is not optional either.
+   */
+  /**
+   * Where the beeps start, as a share of top speed.
+   *
+   * 0.785 is **40 mph at the shipped tuning**. The owner's first number was
+   * 30 mph; he rode that build on 2026-08-14 and moved it himself — *"30mph is
+   * too soon for the beeping to start. it should beep no earlier than 40mph"*
+   * — so the share is chosen to put the first beep a shade *above* 40 rather
+   * than a shade below it. Stated as a share so it stays 40-mph-ish relative
+   * to a 50 mph wheel rather than becoming an arbitrary absolute the day the
+   * wheel changes.
+   */
+  overspeedBeepShare: 0.785,
+  /**
+   * Where the wheel gives up, as a share of top speed.
+   *
+   * **Below 1, and it has to be**, because top speed is where drag balances
+   * drive and the wheel approaches it asymptotically — a threshold at 1.00
+   * would be a cutout that can never fire on the flat, and one at 0.99 would
+   * be a cutout that can never fire on the flat *either*, because rolling
+   * resistance puts the real pavement terminal near 0.975 of the drag-only
+   * figure this is a share of.
+   *
+   * At 0.965 a rider holding full throttle on flat pavement reaches it after
+   * roughly ten seconds flat out, and a rider who backs off by a few percent
+   * sits underneath it indefinitely with the beeps at their fastest. That gap
+   * is the mechanic: **riding the beeps**, in the owner's words, is a real
+   * thing to be good at rather than a warning to obey.
+   */
+  cutoutSpeedShare: 0.965,
+  /**
+   * How long the wheel must be over that speed before it lets go, seconds.
+   *
+   * The owner's shape is "very fast beeps shortly before the cutout", and this
+   * is the shortly. It is also what stops a downhill blip or a single fast step
+   * from taking a rider off with no beat of warning at maximum rate first.
+   */
+  cutoutHoldSeconds: 0.45,
+  /**
+   * The master switch, 0 or 1. **On F4**, like `ragdollEnabled`.
+   *
+   * A feature that was removed once for being annoying comes back behind a
+   * switch the owner can throw mid-ride, so the gate ride can A/B it without a
+   * rebuild. At zero the beeps and the glyph go with it: they exist to warn
+   * about this and warning about nothing is the annoyance rule.
+   */
+  cutoutEnabled: 1,
+
+  /**
    * Crash and recovery (`docs/PLANS.md` §4.5, `EUC_RIDER_MOTION_REFERENCE.md`
    * §16, the vision §9).
    *
@@ -4182,6 +4257,97 @@ export const AUDIO = {
   tiltBackPeriodSeconds: 0.30,
   tiltBackLevel: 0.29,
 
+  // -- The over-speed beeps (M20) -------------------------------------------
+
+  /**
+   * The max-speed warning, and **the one beep the owner asked to have back**.
+   *
+   * Deliberately a separate system from the power ladder above rather than a
+   * fifth rung on it, and the separation is the design:
+   *
+   *   - **The ladder is about load; this is about speed.** A rider grinding up
+   *     a hill at 20 mph is on the ladder's top rung and is in no danger from
+   *     this; a rider flat out on level tarmac is barely on the ladder and is
+   *     about to lose the wheel. They answer different questions and a rung
+   *     that meant both would answer neither.
+   *   - **The ladder stays silenced.** `beepLevel` is still 0 by the owner's
+   *     2026-08-04 decision and this does not reopen it. Reviving the ladder to
+   *     carry a new warning would have quietly restored the tilt-back beeping
+   *     he removed, which is exactly the M16 failure in a different subsystem.
+   *   - **It is a recording, not a synthesized tone**, which no rung above is.
+   *     `assets/live/overspeed_beep.wav` is a measured replica of the piezo
+   *     alarm on the owner's reference video — 2565 Hz with its second harmonic
+   *     17.4 dB down, its 10 ms attack, and a tightened release so beeps at the
+   *     top of the ramp do not smear into each other. `tools/make-overspeed-
+   *     beep.mjs` holds the measurement and the reasoning, including why the
+   *     video's own audio is not the shipped file.
+   *
+   * **On rule 2 of the arcade rules above** — no isolated sustained tone over
+   * ~1.5 kHz. A 75 ms one-shot is not a sustained tone, and this one is the
+   * sound the machine it is imitating actually makes; the rule was written
+   * against a PWM carrier that played whenever the player *stopped*. What keeps
+   * it inside the spirit of the rule is the range: nothing beeps below 40 mph,
+   * so a rider pottering about hears none of this ever.
+   *
+   * 0.17 is **half the level it first shipped at** (0.34). The owner rode the
+   * first build and asked for exactly this — *"irl it is loud too, but this is
+   * a videogame"* — a fidelity-versus-comfort call that goes comfort's way by
+   * the arcade rules at the top of this block.
+   */
+  overspeedLevel: 0.17,
+  /**
+   * The beep's own length, seconds — and it is the shipped recording's length
+   * rather than a free choice.
+   *
+   * `assets/live/audio/overspeed_beep.wav` is 75 ms: a 10 ms measured attack,
+   * 40 ms of hold, and a 25 ms release. The number is here because the duck's
+   * hold is derived from it and because the synthesized fallback has to match
+   * the recording it stands in for. Change the tool's envelope and change this.
+   */
+  overspeedBeepSeconds: 0.075,
+  /**
+   * The synthesized fallback's pitch, Hz.
+   *
+   * The measured fundamental of the reference alarm, so a player whose sample
+   * bank has not landed yet hears the right note through the wrong synthesis
+   * rather than a different warning. It is not a tuning knob; it is the
+   * measurement, and `tools/make-overspeed-beep.mjs` is where it came from.
+   */
+  overspeedFallbackHz: 2565,
+  /**
+   * The beep period at the bottom and the top of the ramp, seconds.
+   *
+   * **Both ends are measured off the owner's reference video**, at his own
+   * request after riding the first build — *"maybe best for it to beep the same
+   * intervals real euc beeps"*. The first build used his sketch numbers (2.00 s
+   * at the bottom, 0.11 s at the top); the real alarm on the video never beeps
+   * that lazily or that frantically. Gating the video's 2565 Hz tone and
+   * reading beep-onset gaps gives a rapid alarm at 0.125–0.165 s and a
+   * slowest structured cadence around 0.9–1.1 s, so the ramp now runs 1.10 s
+   * down to 0.14 s: every interval the game plays is one the real machine
+   * produces. At 0.14 s a 75 ms beep still leaves clear silence between beeps.
+   *
+   * **Interpolated geometrically**, not linearly. Linear in period spends most
+   * of the speed range sounding almost identical and then collapses in the last
+   * mile per hour; geometric makes every extra mile per hour a fixed *ratio*
+   * faster, which is what a rider actually feels as the wheel running out of
+   * room. `audio/director.ts` does the arithmetic.
+   */
+  overspeedSlowestPeriodSeconds: 1.10,
+  overspeedFastestPeriodSeconds: 0.14,
+  /**
+   * How far the beep ducks the ride bed, 0..1 — rule 3, "a warning wins by
+   * ducking, never by hurting".
+   *
+   * Shallower than the tilt-back rung's 0.54 even though this warning is more
+   * serious, and for a reason that is specific to this one: at the top of the
+   * ramp the beeps arrive faster than the duck releases, so a deep duck would
+   * hold the wind bed down for the whole of the fastest riding in the game —
+   * and the wind *is* the sense of speed (§5's own entry). The beep wins on
+   * being a different sound in a quiet band rather than on flattening the ride.
+   */
+  overspeedDuck: 0.22,
+
   // -- Transients -----------------------------------------------------------
 
   /**
@@ -5116,6 +5282,28 @@ export const CHASE = {
    * on every small correction, which is audible before it is visible.
    */
   throttleGain: 0.55,
+  /**
+   * How close to the wheel's own cutout speed the cop will ride, as a share of
+   * it — M20.
+   *
+   * The max-speed cutout applies to the cop, because he rides the player's ride
+   * and never gets a private physics path. What this stops is the *brain*
+   * riding him into it: before M20 he held the throttle open whenever nothing
+   * was clamping him, which on a long straight is now a wipeout, and a pursuit
+   * that ends because the pursuer fell off is not a pursuit.
+   *
+   * 0.995 leaves him about a quarter of a mile per hour under the edge — he
+   * rides the beeps like a good player instead of cruising with a polite gap.
+   * It shipped at 0.97 (~1.5 mph of room) and the owner escaped him by simply
+   * holding speed: *"still very easy to lose him by speeding away"*, with the
+   * follow-up that a hard mode is the point. The margin can sit this close
+   * because his throttle law brakes him the moment he is over the cap, and
+   * the cutout needs `EUC.cutoutHoldSeconds` of *sustained* trespass to fire —
+   * a transient brush with the edge never accrues it. The other half of the
+   * same fix is in `cpuRider.ts`: a proportional-only throttle sagged ~4 mph
+   * below any cap it was given, so the cap was never the binding number.
+   */
+  cutoutMarginShare: 0.995,
   /**
    * Share of the wheel's lateral limit the cop will spend in a corner.
    *
@@ -6137,6 +6325,57 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
       + 'and, per the motion reference, exactly wrong for this game.',
   },
   {
+    path: 'EUC.cutoutEnabled',
+    group: 'Ride — cutout',
+    label: 'Max-speed cutout',
+    unit: 'on/off',
+    min: 0,
+    max: 1,
+    step: 1,
+    note: 'M20, reopened by the owner 2026-08-14 — the wheel gives up at the '
+      + 'top of its speed range and the rider goes down. At 0 there is no '
+      + 'cutout, no beeps and no glyph, which is the ride as it shipped before '
+      + 'M20. The rest of the removed realism stays removed.',
+  },
+  {
+    path: 'EUC.overspeedBeepShare',
+    group: 'Ride — cutout',
+    label: 'First beep',
+    unit: 'x top speed',
+    min: 0.30,
+    max: 0.95,
+    step: 0.005,
+    note: 'Where the beeps start, as a share of the wheel\'s own top speed. '
+      + '0.785 is just over 40 mph on the shipped ride — the owner moved it up '
+      + 'from 30 after riding. A share rather than a speed so it follows a '
+      + 'drag change.',
+  },
+  {
+    path: 'EUC.cutoutSpeedShare',
+    group: 'Ride — cutout',
+    label: 'Cutout speed',
+    unit: 'x top speed',
+    min: 0.80,
+    max: 1.00,
+    step: 0.005,
+    note: 'Where the wheel lets go. Must stay under about 0.975 or rolling '
+      + 'resistance means flat pavement never reaches it and the cutout can '
+      + 'only ever fire downhill. The gap between this and 1.0 is the room a '
+      + 'rider has to sit just underneath it — "riding the beeps".',
+  },
+  {
+    path: 'EUC.cutoutHoldSeconds',
+    group: 'Ride — cutout',
+    label: 'Cutout delay',
+    unit: 's',
+    min: 0,
+    max: 2,
+    step: 0.05,
+    note: 'How long past the cutout speed before it fires. This is the "very '
+      + 'fast beeps shortly before" — at 0 the wheel lets go the instant the '
+      + 'edge is touched, which reads as an ambush.',
+  },
+  {
     path: 'EUC.ragdollEnabled',
     group: 'Ride — crash',
     label: 'Ragdoll',
@@ -6797,6 +7036,20 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
       + 'demands.',
   },
   {
+    path: 'AUDIO.overspeedLevel',
+    group: 'Audio',
+    label: 'Over-speed beeps',
+    unit: '',
+    min: 0,
+    max: 1,
+    step: 0.02,
+    note: 'The max-speed warning (M20). Its *rate* is what carries the '
+      + 'message, so this is loudness only and nothing here changes the '
+      + 'timing. Zero silences the beeps but does NOT remove the cutout — '
+      + 'use "Max-speed cutout" for that, because a cutout with no warning '
+      + 'is the unfairness this whole feature is built to avoid.',
+  },
+  {
     path: 'AUDIO.beepLevel',
     group: 'Audio',
     label: 'Warning beeps',
@@ -6976,6 +7229,19 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     step: 0.02,
     note: 'Counter-steer against his own turn rate. This is what stops the '
       + 'pursuit weaving, and a weaving cop reads as a bug rather than a rival.',
+  },
+  {
+    path: 'CHASE.cutoutMarginShare',
+    group: 'Chase — brain',
+    label: 'Cop speed ceiling',
+    unit: 'x cutout speed',
+    min: 0.80,
+    max: 1.00,
+    step: 0.005,
+    note: 'How close to the max-speed cutout the cop is willing to ride. At 1 '
+      + 'he rides straight into it and wipes out on long straights, which is '
+      + 'a real (and funny) higher-tier option rather than a bug — but it is a '
+      + 'design change, not a tune.',
   },
   {
     path: 'CHASE.throttleGain',

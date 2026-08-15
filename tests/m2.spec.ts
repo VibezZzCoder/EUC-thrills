@@ -1,6 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test, type Page } from '@playwright/test';
-import { PROVING_GROUND, boot as bootGame, collectErrors } from './harness.ts';
+import { PROVING_GROUND, boot as bootGame, collectErrors, disableMaxSpeedCutout } from './harness.ts';
 import {
   EUC,
   PHYSICS,
@@ -691,6 +691,9 @@ test('riding a full circle comes back to where it started', async ({ page }) => 
 
 test('braking is powerful, and the state machine says so', async ({ page }) => {
   await boot(page);
+  // Sustained top speed is the fixture, and M20 put a cutout there. See
+  // `disableMaxSpeedCutout`.
+  await disableMaxSpeedCutout(page);
 
   const stop = await page.evaluate(() => {
     window.qa.resetRide();
