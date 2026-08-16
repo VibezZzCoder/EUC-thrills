@@ -66,12 +66,18 @@ interface PadShape {
   down?: number[];
   /** Analog overrides, for the triggers. */
   values?: Record<number, number>;
+  /**
+   * How many buttons the pad defines. Seventeen is the standard mapping's
+   * full complement; eleven is the shape Firefox on Linux has shipped for an
+   * Xbox pad, whose d-pad lives on hat axes 6/7 instead.
+   */
+  buttonCount?: number;
 }
 
 function pad(shape: PadShape = {}): GamepadReading {
   const down = new Set(shape.down ?? []);
   const buttons: { pressed: boolean; value: number }[] = [];
-  for (let i = 0; i < 17; i += 1) {
+  for (let i = 0; i < (shape.buttonCount ?? 17); i += 1) {
     const analog = shape.values?.[i];
     const value = analog ?? (down.has(i) ? 1 : 0);
     // Real pads report a trigger as pressed past roughly half travel.
@@ -437,6 +443,94 @@ test('a held menu direction repeats slowly rather than flying through a list', (
   present({ down: [STANDARD_BUTTON.dpadUp] });
   input.poll(delay + gap + 0.02);
   assert.deepEqual(menu, ['up', 'up', 'up', 'up']);
+});
+
+test('menu repeats run on the menu clock, so a frozen simulation clock cannot stall them', () => {
+  // The pause menu is the one place this bites: `paused` runs no simulation
+  // steps, so the sim clock the ride presses are stamped with stands still
+  // there. Repeats are paced by the second clock — the player's own time.
+  const delay = GAMEPAD_DEFAULTS.menuRepeatDelaySeconds;
+  const gap = GAMEPAD_DEFAULTS.menuRepeatIntervalSeconds;
+  const { input, present, connect, menu } = rig();
+  connect();
+
+  const frozenSim = 42;
+  present({ down: [STANDARD_BUTTON.dpadDown] });
+  input.poll(frozenSim, 0);
+  assert.deepEqual(menu, ['down']);
+
+  input.poll(frozenSim, delay - 0.01);
+  assert.deepEqual(menu, ['down'], 'nothing repeats before the delay, in menu time');
+
+  input.poll(frozenSim, delay);
+  assert.deepEqual(menu, ['down', 'down'], 'the repeat fires though the sim clock never moved');
+
+  input.poll(frozenSim, delay + gap);
+  assert.deepEqual(menu, ['down', 'down', 'down']);
+});
+
+test('a standard-claiming pad missing its d-pad buttons is read from the hat axes', () => {
+  // The documented Firefox-on-Linux shape: fewer buttons than the standard
+  // mapping names, eight axes, the d-pad on axes 6/7 quantised to ±1. The
+  // buttons that exist are believed; the four that do not fall through to the
+  // hat, where the alternative is a d-pad that silently does nothing.
+  const shape = { buttonCount: 11, axes: [0, 0, 0, 0, 0, 0, 0, 0] };
+  const { state, input, present, connect, menu } = rig();
+  connect(shape);
+
+  present({ ...shape, axes: [0, 0, 0, 0, 0, 0, 0, -1] });
+  input.poll(1);
+  assert.deepEqual(menu, ['up'], 'hat up navigates');
+  assert.equal(state.sample(1).throttle, 1, 'and accelerates, exactly as the button would');
+
+  present({ ...shape, axes: [0, 0, 0, 0, 0, 0, 1, 0] });
+  input.poll(2);
+  assert.deepEqual(menu, ['up', 'right']);
+  assert.equal(state.sample(2).steer, 1);
+
+  present(shape);
+  input.poll(3);
+  assert.deepEqual(state.sample(3), NEUTRAL_ACTIONS, 'letting go of the hat releases');
+});
+
+test('a pad with real d-pad buttons never has the hat axes read against it', () => {
+  // A full standard pad with junk on axes 6/7 — an extra paddle, a stuck
+  // reading. Its defined d-pad buttons are authoritative, including their
+  // unpressed state, so the junk must not steer menus or the ride.
+  const { state, input, present, connect, menu } = rig();
+  connect();
+
+  present({ axes: [0, 0, 0, 0, 0, 0, 1, -1] });
+  input.poll(1);
+  assert.deepEqual(menu, []);
+  assert.deepEqual(state.sample(1), NEUTRAL_ACTIONS);
+});
+
+test('an ignored pad is reported once, and a usable or absent pad clears the report', () => {
+  const unusable: boolean[] = [];
+  const { input, source } = rig({ onUnusablePad: (present) => unusable.push(present) });
+
+  source.pads = [pad({ mapping: '' })];
+  input.poll(0);
+  input.poll(1);
+  assert.deepEqual(unusable, [true], 'a verdict, not a heartbeat');
+  assert.equal(input.unusablePadSeen, true);
+  assert.equal(input.connected, false);
+
+  // A usable pad arriving beside the ignored one wins, and the settings line
+  // must switch from the warning to "connected" — one state at a time.
+  source.pads = [pad({ mapping: '' }), pad({ index: 1 })];
+  input.poll(2);
+  assert.deepEqual(unusable, [true, false]);
+  assert.equal(input.connected, true);
+
+  // Everything unplugged: no usable pad, but no ignored one either.
+  source.pads = [pad({ mapping: '' })];
+  input.poll(3);
+  assert.equal(input.unusablePadSeen, true, 'the usable pad leaving re-exposes the ignored one');
+  source.pads = [];
+  input.poll(4);
+  assert.equal(input.unusablePadSeen, false);
 });
 
 test('the stick navigates menus past a threshold well beyond the dead zone', () => {

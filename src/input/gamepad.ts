@@ -26,7 +26,20 @@ import type { ActionState } from './actions.ts';
  *     the device's HID descriptor happened to list, so a "reasonable default"
  *     puts brake on a face button and hop on a shoulder — a pad whose controls
  *     land in unknown places is worse than no pad, because the player cannot
- *     tell a broken layout from a broken game.
+ *     tell a broken layout from a broken game. What an ignored pad *does* get
+ *     is a word in the settings screen: `onUnusablePad` fires when the scan
+ *     sees a connected pad it will not read, because "the game never noticed
+ *     my controller" and "the browser reported my controller unusably" call
+ *     for different fixes and looked identical before (the owner's Linux QA
+ *     pass — Firefox there is the documented producer of such pads).
+ *   - **A standard-claiming pad may still be missing its d-pad buttons, and
+ *     then the hat axes are read instead.** The Linux kernel exposes an Xbox
+ *     d-pad as a hat — two axes quantised to −1/0/+1 — and Firefox on Linux
+ *     has shipped that shape through the Gamepad API with fewer than sixteen
+ *     buttons (bugzilla 952773, 1643358; w3c/gamepad#133). Buttons 12–15 stay
+ *     authoritative whenever they exist; the fallback engages only for a pad
+ *     that does not define them at all, where the choice is between reading
+ *     the hat and a d-pad that silently does nothing.
  *   - **The dead zone is radial, then rescaled.** Radial because a per-axis
  *     cutoff makes a diagonal push behave differently from a straight one and
  *     carves a square hole the player can feel; rescaled because a plain
@@ -125,6 +138,21 @@ const STANDARD_BUTTON_COUNT = 17;
 const LEFT_STICK_X = 0;
 const LEFT_STICK_Y = 1;
 
+/**
+ * Where the Linux joystick layout puts the d-pad hat, and what counts as
+ * pressed on it.
+ *
+ * Protocol facts rather than tuning: the kernel's xpad driver places the hat
+ * on the seventh and eighth axes and quantises each to −1/0/+1 (up and left
+ * are negative, matching the sticks' sign convention), so half travel is not
+ * a feel choice — it splits a quantised press from noise with the widest
+ * possible margin on both sides. Consulted only for a pad whose d-pad
+ * *buttons* are absent; see the header.
+ */
+const HAT_AXIS_X = 6;
+const HAT_AXIS_Y = 7;
+const HAT_PRESS = 0.5;
+
 const STANDARD_MAPPING = 'standard';
 
 /**
@@ -204,6 +232,14 @@ export interface GamepadInputOptions {
    * prompts between keys and buttons. Never fired for a pad that was ignored.
    */
   onConnectionChange?(connected: boolean): void;
+  /**
+   * Fired when the scan's verdict about ignored pads changes: `true` when a
+   * pad is connected that this layer will not read (non-standard mapping) and
+   * no usable pad is, `false` when that stops being the case. The settings
+   * screen tells the player, because a pad the browser reports unusably and a
+   * pad the browser never reported look identical from the couch.
+   */
+  onUnusablePad?(present: boolean): void;
   /**
    * Fired for menu navigation, edge-latched, with a slow repeat while held.
    *
@@ -285,6 +321,27 @@ function axisValue(axes: readonly number[], index: number): number {
   return value !== undefined && Number.isFinite(value) ? value : 0;
 }
 
+/**
+ * Whether a d-pad direction is held, reading the button when the pad defines
+ * one and the hat axis only when it does not.
+ *
+ * The gate is the button slot's *existence*, not its state: a defined button
+ * that reads false means "not pressed" and is believed, so a pad with a real
+ * d-pad can never have a stray value on axes 6/7 held against it. Only a pad
+ * missing the slot entirely — the documented Firefox-on-Linux shape — falls
+ * through to the hat, where the alternative is a d-pad that does nothing.
+ */
+function dpadHeld(
+  pad: GamepadReading,
+  buttonIndex: number,
+  hatAxis: number,
+  sign: 1 | -1,
+): boolean {
+  const button: GamepadButtonReading | undefined = pad.buttons[buttonIndex];
+  if (button !== undefined) return button.pressed === true;
+  return sign * axisValue(pad.axes, hatAxis) >= HAT_PRESS;
+}
+
 /** A configured fraction, or the documented default if it is not usable. */
 function fraction(value: number | undefined, fallback: number): number {
   if (value === undefined || !Number.isFinite(value)) return fallback;
@@ -323,6 +380,9 @@ export class GamepadInput {
   private menuMode = false;
   /** False while the player has turned the pad off in the settings screen. */
   private enabled = true;
+
+  /** Whether the last scan saw a connected pad it refused. See the header. */
+  private unusableSeen = false;
 
   /** Last frame's button states, for edge detection. Preallocated. */
   private readonly previousButtons = new Uint8Array(STANDARD_BUTTON_COUNT);
@@ -370,6 +430,16 @@ export class GamepadInput {
   }
 
   /**
+   * Whether a pad is connected that this layer refuses to read, while no
+   * usable pad is. The settings screen's status line reads it, so a player
+   * whose browser reports the pad without the standard mapping is told that
+   * rather than left watching "no gamepad detected" with a pad in hand.
+   */
+  get unusablePadSeen(): boolean {
+    return this.unusableSeen;
+  }
+
+  /**
    * Turn the pad off entirely, from the settings screen.
    *
    * Device state rather than a ride parameter, so it stays on the presentation
@@ -384,6 +454,9 @@ export class GamepadInput {
     if (!enabled) {
       this.activeIndex = -1;
       this.state.clearDevice('gamepad');
+      // A disabled layer scans nothing, so it has no opinion about unusable
+      // pads either; leaving the flag set would outlive the evidence for it.
+      this.noteUnusable(false);
     }
   }
 
@@ -425,8 +498,19 @@ export class GamepadInput {
    * Takes the frame's timestamp so every press raised by one frame carries one
    * time; it defaults to the injected clock for callers that have no frame of
    * their own.
+   *
+   * `menuNowSeconds` is a second clock for the menu-repeat bookkeeping, and it
+   * exists because the two consumers genuinely live on different clocks: a
+   * ride press is stamped for `ActionState`, whose buffer expiry is compared
+   * against the *simulation* clock, while a held menu direction repeats in the
+   * *player's* time — and the one menu where that distinction bites is the
+   * pause menu, where the simulation clock is deliberately frozen. Scheduling
+   * repeats from the frozen clock made "hold down to travel the list" work on
+   * every screen except that one. Callers with only one clock (every unit
+   * test) pass one; the game passes the frame's wall clock alongside the sim
+   * clock.
    */
-  poll(nowSeconds: number = this.options.now()): void {
+  poll(nowSeconds: number = this.options.now(), menuNowSeconds: number = nowSeconds): void {
     const pad = this.resolvePad();
     if (pad === null) return;
 
@@ -445,11 +529,29 @@ export class GamepadInput {
       triggerLevel(analogValue(buttons, STANDARD_BUTTON.rightTrigger), this.triggerThreshold)
       - triggerLevel(analogValue(buttons, STANDARD_BUTTON.leftTrigger), this.triggerThreshold);
 
+    // The d-pad, resolved once for both consumers: buttons when the pad
+    // defines them, the Linux hat axes when it does not (see `dpadHeld`).
+    const dpadUp = dpadHeld(pad, STANDARD_BUTTON.dpadUp, HAT_AXIS_Y, -1);
+    const dpadDown = dpadHeld(pad, STANDARD_BUTTON.dpadDown, HAT_AXIS_Y, 1);
+    const dpadLeft = dpadHeld(pad, STANDARD_BUTTON.dpadLeft, HAT_AXIS_X, -1);
+    const dpadRight = dpadHeld(pad, STANDARD_BUTTON.dpadRight, HAT_AXIS_X, 1);
+
     // Menu intent is read from the stick alone. A trigger is a throttle, and a
     // player feathering it is not asking to move down a list.
-    this.updateMenu(nowSeconds, steer, stickThrottle, buttons);
+    this.updateMenu(
+      menuNowSeconds, steer, stickThrottle, buttons, dpadUp, dpadDown, dpadLeft, dpadRight,
+    );
     if (!this.menuMode) {
-      this.updateRide(nowSeconds, strongerAxis(stickThrottle, triggerThrottle), steer, buttons);
+      this.updateRide(
+        nowSeconds,
+        strongerAxis(stickThrottle, triggerThrottle),
+        steer,
+        buttons,
+        dpadUp,
+        dpadDown,
+        dpadLeft,
+        dpadRight,
+      );
     }
 
     // Recorded last, and recorded even in menu mode: a button held across a
@@ -483,14 +585,22 @@ export class GamepadInput {
       this.releasePad();
     }
 
+    let unusable = false;
     for (let i = 0; i < pads.length; i += 1) {
       const pad = pads[i];
-      // A non-standard pad is skipped rather than adopted, and skipped
-      // silently: it may well be a dance mat or a flight yoke sharing the bus.
-      if (pad === null || pad === undefined || !pad.connected || !isStandard(pad)) continue;
+      if (pad === null || pad === undefined || !pad.connected) continue;
+      // A non-standard pad is skipped rather than adopted — it may well be a
+      // dance mat or a flight yoke sharing the bus — but no longer silently:
+      // the scan remembers it saw one, so the settings screen can say why a
+      // pad in the player's hands is doing nothing.
+      if (!isStandard(pad)) {
+        unusable = true;
+        continue;
+      }
       this.adopt(i);
       return pad;
     }
+    this.noteUnusable(unusable);
     return null;
   }
 
@@ -499,7 +609,16 @@ export class GamepadInput {
     this.priming = true;
     this.previousButtons.fill(0);
     this.menuDirectionHeld.fill(0);
+    // A usable pad answers the unusable question before the connection
+    // callback runs, so the status line the callback writes reads one state.
+    this.noteUnusable(false);
     this.options.onConnectionChange?.(true);
+  }
+
+  private noteUnusable(present: boolean): void {
+    if (this.unusableSeen === present) return;
+    this.unusableSeen = present;
+    this.options.onUnusablePad?.(present);
   }
 
   private releasePad(): void {
@@ -520,15 +639,19 @@ export class GamepadInput {
     throttle: number,
     steer: number,
     buttons: readonly GamepadButtonReading[],
+    dpadUp: boolean,
+    dpadDown: boolean,
+    dpadLeft: boolean,
+    dpadRight: boolean,
   ): void {
     this.state.setAxes('gamepad', throttle, steer);
 
     // The d-pad means exactly what the arrow keys mean. Written every frame,
     // including the false cases: an analog device has to say it let go.
-    this.state.setHeld('accelerate', isDown(buttons, STANDARD_BUTTON.dpadUp), 'gamepad');
-    this.state.setHeld('brake', isDown(buttons, STANDARD_BUTTON.dpadDown), 'gamepad');
-    this.state.setHeld('steerLeft', isDown(buttons, STANDARD_BUTTON.dpadLeft), 'gamepad');
-    this.state.setHeld('steerRight', isDown(buttons, STANDARD_BUTTON.dpadRight), 'gamepad');
+    this.state.setHeld('accelerate', dpadUp, 'gamepad');
+    this.state.setHeld('brake', dpadDown, 'gamepad');
+    this.state.setHeld('steerLeft', dpadLeft, 'gamepad');
+    this.state.setHeld('steerRight', dpadRight, 'gamepad');
     this.state.setHeld('crouch', isDown(buttons, STANDARD_BUTTON.leftShoulder), 'gamepad');
 
     if (this.priming) return;
@@ -554,6 +677,10 @@ export class GamepadInput {
     steer: number,
     forward: number,
     buttons: readonly GamepadButtonReading[],
+    dpadUp: boolean,
+    dpadDown: boolean,
+    dpadLeft: boolean,
+    dpadRight: boolean,
   ): void {
     // A stick is never exactly on an axis, so a diagonal push resolves to its
     // dominant component. Firing "down" and "left" from one flick would move
@@ -561,25 +688,21 @@ export class GamepadInput {
     const vertical = Math.abs(forward) >= Math.abs(steer);
     const threshold = this.menuStickThreshold;
 
-    this.updateMenuDirection(
-      MENU_UP,
-      nowSeconds,
-      isDown(buttons, STANDARD_BUTTON.dpadUp) || (vertical && forward >= threshold),
-    );
+    this.updateMenuDirection(MENU_UP, nowSeconds, dpadUp || (vertical && forward >= threshold));
     this.updateMenuDirection(
       MENU_DOWN,
       nowSeconds,
-      isDown(buttons, STANDARD_BUTTON.dpadDown) || (vertical && forward <= -threshold),
+      dpadDown || (vertical && forward <= -threshold),
     );
     this.updateMenuDirection(
       MENU_LEFT,
       nowSeconds,
-      isDown(buttons, STANDARD_BUTTON.dpadLeft) || (!vertical && steer <= -threshold),
+      dpadLeft || (!vertical && steer <= -threshold),
     );
     this.updateMenuDirection(
       MENU_RIGHT,
       nowSeconds,
-      isDown(buttons, STANDARD_BUTTON.dpadRight) || (!vertical && steer >= threshold),
+      dpadRight || (!vertical && steer >= threshold),
     );
 
     // Confirm and back never repeat. A held direction wanting to travel a list

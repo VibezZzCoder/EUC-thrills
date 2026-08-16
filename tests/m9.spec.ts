@@ -549,6 +549,134 @@ test.describe('M9 — HUD, menus, options', () => {
       .toHaveText(/No gamepad detected/);
   });
 
+  test('a Linux-shaped pad with its d-pad on the hat axes still walks the menus', async ({ page }) => {
+    // The owner's Ubuntu QA pass: Firefox on Linux has shipped an Xbox pad
+    // through the Gamepad API claiming the standard mapping while defining
+    // fewer buttons than the mapping names, with the d-pad on hat axes 6/7.
+    // Buttons 12–15 do not exist on such a pad, so a reader that only asks
+    // them left the d-pad dead in every menu while the stick worked — which
+    // is exactly "some inputs wouldn't register".
+    await page.addInitScript(() => {
+      const pad = {
+        index: 0,
+        id: 'fake linux pad',
+        connected: true,
+        mapping: 'standard',
+        axes: [0, 0, 0, 0, 0, 0, 0, 0],
+        buttons: Array.from({ length: 11 }, () => ({ pressed: false, value: 0, touched: false })),
+      };
+      (window as unknown as { fakePad: typeof pad }).fakePad = pad;
+      navigator.getGamepads = () => [pad] as never;
+    });
+    await bootToTitle(page);
+    await page.waitForFunction(() => window.game.snapshot().gamepadConnected);
+
+    const pulseHat = async (axis: number, value: number): Promise<void> => page.evaluate(
+      async ({ axis, value }) => {
+        const pad = (window as unknown as { fakePad: { axes: number[] } }).fakePad;
+        const frame = () => new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+        pad.axes[axis] = value;
+        await frame();
+        pad.axes[axis] = 0;
+        await frame();
+      },
+      { axis, value },
+    );
+
+    // Hat down (+1 on axis 7) walks the title's focus order; hat up walks back.
+    await pulseHat(7, 1);
+    await expect(menuButton(page, 'title', 'challenge')).toBeFocused();
+    await pulseHat(7, 1);
+    await expect(menuButton(page, 'title', 'knockabout')).toBeFocused();
+    await pulseHat(7, -1);
+    await expect(menuButton(page, 'title', 'challenge')).toBeFocused();
+  });
+
+  test('a held menu direction repeats in the pause menu, where the sim clock is frozen', async ({ page }) => {
+    // `paused` runs no simulation steps, and the pad's menu-repeat pacing used
+    // to be scheduled from the simulation clock — so "hold down to travel the
+    // list" worked on the title screen and died in the pause menu, the one
+    // place a rider most often holds a direction. Repeats now pace themselves
+    // by the frame's wall clock, which this spec spends real time to prove.
+    await page.addInitScript(() => {
+      const pad = {
+        index: 0,
+        id: 'fake standard pad',
+        connected: true,
+        mapping: 'standard',
+        axes: [0, 0, 0, 0],
+        buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0, touched: false })),
+      };
+      (window as unknown as { fakePad: typeof pad }).fakePad = pad;
+      navigator.getGamepads = () => [pad] as never;
+    });
+    await boot(page);
+    await page.waitForFunction(() => window.game.snapshot().gamepadConnected);
+
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'paused');
+    await expect(page.locator('[data-menu="resume"]')).toBeFocused();
+
+    // Hold d-pad down for ~0.9 s of real time: one immediate move plus, at the
+    // shipped 0.42 s delay and 0.14 s interval, three repeats. Two focus
+    // changes is the floor that proves repeating at all under a slow frame.
+    const focusChanges = await page.evaluate(async () => {
+      const pad = (window as unknown as { fakePad: {
+        buttons: { pressed: boolean; value: number }[];
+      } }).fakePad;
+      const frame = () => new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+      pad.buttons[13].pressed = true;
+      pad.buttons[13].value = 1;
+      const started = performance.now();
+      let changes = 0;
+      let last = document.activeElement;
+      while (performance.now() - started < 900) {
+        await frame();
+        if (document.activeElement !== last) {
+          changes += 1;
+          last = document.activeElement;
+        }
+      }
+      pad.buttons[13].pressed = false;
+      pad.buttons[13].value = 0;
+      await frame();
+      return changes;
+    });
+    expect(focusChanges).toBeGreaterThanOrEqual(2);
+
+    // And the frozen clock the repeats no longer read really was frozen.
+    expect((await app(page)).state).toBe('paused');
+  });
+
+  test('a pad the browser reports without the standard mapping is named in the settings', async ({ page }) => {
+    // The other documented Linux shape: the browser lists the pad with
+    // `mapping: ""`. The game refuses to guess at its indices (M9), but the
+    // refusal used to be silent — the settings line read "No gamepad
+    // detected" with a pad in the player's hands, which made a browser
+    // quirk look like a game defect.
+    await page.addInitScript(() => {
+      const pad = {
+        index: 0,
+        id: 'fake raw pad',
+        connected: true,
+        mapping: '',
+        axes: [0, 0, 0, 0, 0, 0, 0, 0],
+        buttons: Array.from({ length: 11 }, () => ({ pressed: false, value: 0, touched: false })),
+      };
+      navigator.getGamepads = () => [pad] as never;
+    });
+    await bootToTitle(page);
+
+    expect(await page.evaluate(() => window.game.snapshot().gamepadConnected)).toBe(false);
+    await menuButton(page, 'title', 'settings').click();
+    await expect(page.locator('[data-menu="gamepad-status"]'))
+      .toHaveText(/standard button layout/);
+  });
+
   /*
    * The touch controls' desktop half (M11.5).
    *

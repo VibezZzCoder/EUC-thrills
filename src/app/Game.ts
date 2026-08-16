@@ -1281,6 +1281,10 @@ export class Game {
         this.updateGamepadStatus();
       },
       onMenuAction: (action) => this.handleMenuAction(action),
+      // The status line's fourth state: a pad the browser reports without the
+      // standard mapping is a fact the player can act on (another browser, a
+      // different connection), where "searching" reads as "plug one in".
+      onUnusablePad: () => this.updateGamepadStatus(),
     });
 
     // The touchscreen (M11.5). Split in two on purpose: `TouchInput` holds what
@@ -3465,8 +3469,12 @@ export class Game {
     // or title-screen loop runs no steps at all, and a pad that only reported
     // while simulating could not press Start to unpause. It is also the wrong
     // clock for a device — the Gamepad API describes the present moment, not
-    // a fixed step.
-    this.gamepad.poll(this.simTimeSeconds);
+    // a fixed step. Two clocks go in because the pad serves two consumers on
+    // different clocks: ride presses are stamped for `ActionState`, whose
+    // buffer expiry compares against the simulation clock, while menu-repeat
+    // pacing runs in the player's time — and the pause menu is exactly the
+    // place the simulation clock is frozen, which is where repeats died.
+    this.gamepad.poll(this.simTimeSeconds, nowMs / 1000);
 
     // A route the player asked for on the previous frame (M12 Phase 4). Here
     // rather than in `step`, because it must run whether or not the loop is
@@ -4522,7 +4530,9 @@ export class Game {
         ? 'disabled'
         : this.gamepad.connected
           ? 'connected'
-          : 'searching',
+          : this.gamepad.unusablePadSeen
+            ? 'unsupported'
+            : 'searching',
     );
   }
 

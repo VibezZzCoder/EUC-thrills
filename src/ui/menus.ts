@@ -1146,21 +1146,29 @@ export class Menus {
   /**
    * The controls section's one line about the pad.
    *
-   * Three states rather than a boolean, because "no pad" and "pad switched
-   * off" call for different advice — telling a player who unticked the box to
-   * press a button to wake the pad would be advice the game ignores. Written
-   * at construction and on every change (M10 QA, F4): the paragraph used to be
-   * filled only by a connection *transition*, so a player who opened Settings
-   * with no pad ever attached read an empty line.
+   * Four states rather than a boolean, because each calls for different
+   * advice — telling a player who unticked the box to press a button to wake
+   * the pad would be advice the game ignores. Written at construction and on
+   * every change (M10 QA, F4): the paragraph used to be filled only by a
+   * connection *transition*, so a player who opened Settings with no pad ever
+   * attached read an empty line. `unsupported` joined at the Linux QA pass:
+   * a browser can report a pad without the standard button layout (Firefox on
+   * Linux is the documented case), and that pad looked exactly like no pad —
+   * the one situation where the right advice is a different browser rather
+   * than a different cable.
    */
-  setGamepadStatus(status: 'connected' | 'searching' | 'disabled'): void {
+  setGamepadStatus(status: 'connected' | 'searching' | 'disabled' | 'unsupported'): void {
     const node = this.settings.querySelector<HTMLElement>('[data-menu="gamepad-status"]');
     if (node) {
       node.textContent = status === 'connected'
         ? 'Gamepad connected. The keyboard keeps working at the same time.'
         : status === 'disabled'
           ? 'Gamepad input is switched off. Tick the box to use a pad.'
-          : 'No gamepad detected. Connect one and press a button to wake it.';
+          : status === 'unsupported'
+            ? 'A controller is connected, but this browser reports it without the '
+              + 'standard button layout, so the game cannot read it safely. '
+              + 'Another browser may report it correctly.'
+            : 'No gamepad detected. Connect one and press a button to wake it.';
     }
   }
 
