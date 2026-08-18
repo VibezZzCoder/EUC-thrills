@@ -26,10 +26,12 @@ describe the shape — it may already be planned, rejected, or in progress.
   the same style as its neighbours: plain `node --test`, no build step.
 - `npm run test:browser` passes if you touched anything a browser can see
   (first run: `npx playwright install chromium`).
-- **Arcade over simulation.** This game deliberately removed cut-outs, beeps,
-  and free-running speed wobble because they were annoying in playtests.
-  Anything that punishes clean riding, nags, or interrupts for realism's sake
-  will be declined no matter how authentic it is — fun wins every argument.
+- **Arcade over simulation.** The cut-out, the beeps, and speed wobble are
+  all in the game — but only in the forms playtests proved fun: the beeps
+  live at the very top of the speed range and wobble fires only on visible
+  road hazards, never on clean riding. Anything that punishes clean riding,
+  nags, or interrupts for realism's sake will be declined no matter how
+  authentic it is — fun wins every argument.
 - Match the code around you, comments included. Comments here explain *why*,
   not what.
 

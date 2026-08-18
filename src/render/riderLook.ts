@@ -7,7 +7,9 @@ import {
   loftGeometry,
   loftProfile,
   mergeGeometries,
+  tintOver,
   type LoftProfile,
+  type Tint,
 } from './blockoutKit.ts';
 
 /**
@@ -281,6 +283,21 @@ export interface RiderLook {
     readonly waist?: RiderPanelGroup;
     readonly sleeve?: RiderPanelGroup;
     readonly elbowPad?: RiderPanelGroup;
+    /**
+     * On the thigh — M22, and the mirror of `elbowPad` sitting on the forearm
+     * rather than on the upper arm.
+     *
+     * **Armour spans a joint; a mesh cannot.** Everything above is parented to
+     * the bone it decorates, and the knee is precisely where the two leg bones
+     * part company: a guard authored entirely in `kneePad` is parented to the
+     * shin, so every millimetre of it above the knee swings off the thigh the
+     * moment the leg bends. Adonisb2's guard covers the lower third of his
+     * thigh in the reference, which is a third of the guard, so his look is the
+     * first that cannot be built without this slot — and the alternative,
+     * hanging it off the pelvis as an extra, is the fixed-garment-volume defect
+     * `parts.legs` documents at length.
+     */
+    readonly thighPad?: RiderPanelGroup;
     readonly kneePad?: RiderPanelGroup;
     /** Merged into the head mesh: chin bar, brow, spoiler, rim — or none. */
     readonly head: readonly RiderPatch[];
@@ -1462,28 +1479,14 @@ const COP_HELMET = loftProfile([
   { y: 0.384, halfWidth: 0, halfDepth: 0, z: -0.030 },
 ]);
 
-export type Tint = readonly [number, number, number];
-
 /**
- * The vertex multiplier that repaints a `base`-coloured material as `target`.
- *
- * The whole repaint system rests on one shader fact: a vertex colour
- * *multiplies* the material colour, per channel, in linear space — so the
- * ratio of two linear colours is the paint that turns one into the other.
- * `THREE.Color` decodes both hexes through the same sRGB transfer, which
- * keeps the ratio honest and keeps every painted target authored in
- * `data/tuning.ts` like any other colour (invariant 4 in spirit: the hex
- * lives there; only the arithmetic lives here).
+ * `Tint` and `tintOver` live in `render/blockoutKit.ts` from M22 — the machine
+ * axis needed the same colour arithmetic, and a `render/machineLook.ts` that
+ * imported this file to get it would be a machine depending on the riders. Both
+ * names are re-exported here because every caller in the tree learned them at
+ * this address.
  */
-export function tintOver(base: number, target: number, targetScale = 1): Tint {
-  const b = new THREE.Color(base);
-  const t = new THREE.Color(target).multiplyScalar(targetScale);
-  return [
-    t.r / Math.max(1e-3, b.r),
-    t.g / Math.max(1e-3, b.g),
-    t.b / Math.max(1e-3, b.b),
-  ];
-}
+export { tintOver, type Tint };
 
 /** Repaint one built part a single tint, in place, and hand it back. */
 function tinted(geometry: THREE.BufferGeometry, tint: Tint): THREE.BufferGeometry {
@@ -2888,10 +2891,1103 @@ export const RED_RIDER_LOOK: RiderLook = Object.freeze({
   armCarriage: Object.freeze({ splay: 0.022, rise: 0 }),
 });
 
+// -- Adonisb2 ----------------------------------------------------------------
+//
+// M22 Phase 1, and the second look in this file taken from a **real person** —
+// one who *asked* to be here so he could share it. The photograph and the
+// permission evidence sit under `references/guest-rider/` and never ship; the
+// reference document ranks what recognition rests on, and this build follows
+// that ranking: the black + neon-green palette, the helmet with its mirrored
+// visor and green striping, the LARGE green knee/shin guards, and the backpack.
+//
+// **He is Cool Rider's chassis with the colour logic inverted.** Red Rider is
+// red-field/black-structure; Adonisb2 is black-field/green-structure, and that
+// inversion decides where paint can go (§22.3 fact 4): a vertex colour
+// multiplies *down*, so the saturated green must live in a base material and be
+// painted down to black — never black painted up to green. His **legs are
+// therefore the accent material**: green moulded plastic as the base, with the
+// trousers painted down to the suit's black above the guards and the boot cuff
+// painted down below them. The guards are not decorations on his legs; on this
+// rider the legs are guards wearing trousers.
+//
+// **The backpack is the one genuinely new silhouette element** — M19's
+// chest-harness logic aimed at the back: the pack and the shoulder wraps cast
+// (they change his outline), the strap runs down the chest are flat and do not.
+// He spends no meshes on sleeve stripes or elbow armour because the photograph
+// shows plain black sleeves; those two omissions are what pay for the pack, the
+// green buckle hardware, and the helmet striping.
+
+/**
+ * Where the guard's upper wing begins, as a fraction of the thigh.
+ *
+ * Measured off the reference and then given back a centimetre. In the mockup
+ * the green starts about 95 px above the knee where knee-to-boot is 265 px, so
+ * the wing climbs roughly 0.36 of a shin above the joint — 0.136 m, which on a
+ * 0.40 m thigh is 0.655. `render/riderClearance.test.ts` refused that by a
+ * millimetre: in a hard carve held under a full crouch the thigh swings up far
+ * enough to bring the wing's proud top corner to 29 mm below the pelvis, and
+ * the jacket hem is at 10 mm with a 20 mm margin. So the guard sits 12 mm
+ * lower than the reference implies, which is invisible beside a 138 mm shell
+ * and is the difference between armour and green showing through a jacket hem
+ * in exactly one reachable stance. The first build stopped the green at 0.78
+ * and the guard read as a cuff below the knee rather than a shell spanning it.
+ */
+const ADONISB2_GUARD_TOP = 0.685;
+
+/**
+ * The knee cup's two edges, in each bone's own space: where its dark starts on
+ * the thigh, and where it ends on the shin. Named because five things have to
+ * agree on them — two cup patches, the plate that butts against the lower one,
+ * the two leg painters that darken the limb beneath, and the seam rings those
+ * paint boundaries must land on.
+ */
+const ADONISB2_CUP_TOP = -0.348;
+/**
+ * **Halved on the owner's ride.** The cup ran to −0.078, which with the thigh
+ * half above it made 130 mm of unbroken black across the joint, and his verdict
+ * was that the lower half of that lip should be the guard's green: "split in
+ * half, use top black and bottom green". So the black is 65 mm now — the
+ * thigh's 52 mm plus this — and everything below the joint that used to be cup
+ * is plate. The photograph's cup does reach further down his shin than this,
+ * but the photograph is a dome under directional light and this is flat
+ * shading on a low-poly leg, where the same proportion reads as a much heavier
+ * band; the owner is judging the render, which is the thing being built.
+ */
+const ADONISB2_CUP_BOTTOM = -0.013;
+
+/**
+ * Seams at the guard's upper wing plus Cool Rider's padding breaks. The wing
+ * seam is where trouser-black meets guard-green above the knee, and a paint
+ * boundary that does not land on a ring smears (M19's fog lesson).
+ */
+const ADONISB2_THIGH = limbProfile(
+  RIDER_BLOCKOUT.thighLength,
+  [0.079, 0.072, 0.061],
+  [0.30, 0.52, ADONISB2_GUARD_TOP, -ADONISB2_CUP_TOP / RIDER_BLOCKOUT.thighLength],
+  { flatten: 0.94, square: 2.4 },
+);
+/**
+ * Where the boot's shaft begins, as a fraction of the shin.
+ *
+ * **His boots are tall, and the boot mesh is a foot.** The photograph is a
+ * laced motocross boot whose shaft covers the bottom third of the shin, and
+ * the owner's ride called the first build's footwear "shoes" — correctly,
+ * because everything above the ankle was leg. The shaft is the shin's own
+ * lower band painted in the gear material, which is what `parts.legs` and the
+ * paint hooks exist for and costs nothing; the guard's lower strap lands on
+ * this boundary and reads as the boot's collar. Measured off the photograph at
+ * 68% down the shin, and the guard's plate now stops here instead of lapping
+ * over it.
+ */
+const ADONISB2_BOOT_TOP = 0.66;
+
+/**
+ * One seam, at the boot's collar. A paint boundary that does not land on a
+ * ring pair smears (M19's fog lesson), and this is the only one the shin has.
+ */
+const ADONISB2_SHIN = limbProfile(
+  RIDER_BLOCKOUT.shinLength,
+  // The end radius carries the boot rather than an ankle: every other look
+  // tapers to 0.046 because a trouser leg narrows into a shoe, and his lower
+  // shin is inside a laced boot that does not.
+  [0.064, 0.058, 0.053],
+  [-ADONISB2_CUP_BOTTOM / RIDER_BLOCKOUT.shinLength, ADONISB2_BOOT_TOP],
+  { flatten: 0.92, square: 2.4 },
+);
+
+/** The black field: jacket, sleeves and (as paint) the trousers. */
+const ADONISB2_SUIT: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.adonisb2Suit,
+  roughness: 0.80,
+  metalness: 0.0,
+});
+
+/**
+ * The neon-green moulded plastic: guards, helmet striping, buckle hardware —
+ * and the *base* of both legs, per the paint-direction rule above.
+ *
+ * Matte, for `RED_ARMOUR`'s reason: the knee group carries full-loop straps,
+ * and a full-circumference band on a glossy material always finds the sun's
+ * mirror angle somewhere and clips to white. Moulded impact plastic is dull;
+ * the green does its work in hue, not in highlight.
+ */
+const ADONISB2_GUARD: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.adonisb2Guard,
+  roughness: 0.86,
+  metalness: 0.0,
+});
+
+/** Gloves, boots, backpack, straps, neck gaiter: the glossier black half. */
+const ADONISB2_GEAR: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.adonisb2Gear,
+  roughness: 0.62,
+  metalness: 0.0,
+});
+
+// -- Adonisb2's paintwork -----------------------------------------------------
+//
+// The legs are green-based, so every tint below paints *down* from the guard
+// colour — the direction the multiplier honours.
+
+/** Green → the trousers. ×0.92 matches `shades.seat`, so hem and hip agree. */
+const ADONISB2_TROUSER_TINT = tintOver(
+  BLOCKOUT_COLOURS.adonisb2Guard,
+  BLOCKOUT_COLOURS.adonisb2Suit,
+  0.92,
+);
+/** Green → the boot cuff under the guard. */
+const ADONISB2_CUFF_TINT = tintOver(BLOCKOUT_COLOURS.adonisb2Guard, BLOCKOUT_COLOURS.adonisb2Gear);
+/**
+ * The knee cup's near-black, painted onto the leg beneath it.
+ *
+ * **A hinge cannot be sealed, so what shows through it has to be the right
+ * colour.** The cup spans the knee and is therefore two patches on two bones,
+ * and a bending knee *stretches* its front — the patella side is the outside
+ * of the bend — so the halves pull apart exactly where they are most visible.
+ * The owner's ride caught the result: a bright green line between two blacks,
+ * which is the "sandwich" neither reference has. Sealing the halves is not
+ * possible at every angle the leg can reach, so the limb under the cup is
+ * painted to the cup's own value instead, and the gap opens onto more black.
+ *
+ * The number is the cup patches' `shade` and has to stay equal to it.
+ */
+const ADONISB2_CUP_TINT: readonly [number, number, number] = Object.freeze([0.10, 0.10, 0.10]);
+/** Panel lines on the boot: the gear colour one step up, as Red Rider's. */
+const ADONISB2_BOOT_PANEL_TINT = tintOver(
+  BLOCKOUT_COLOURS.adonisb2Gear,
+  BLOCKOUT_COLOURS.adonisb2Gear,
+  1.28,
+);
+// **His gloves carry no green, and that is a decision rather than an
+// omission.** The mockup pipes a hairline seam down the back of each glove and
+// two builds tried to reproduce it. A glove is a ten-segment loft about 80 mm
+// long, so the narrowest band its vertices can express spans a fifth of the
+// circumference — which, since only one side of a glove is ever visible, is
+// most of the visible face. Both attempts rendered as green mittens on a rider
+// whose gloves are black in every reference, and a mark that cannot be made
+// small is a mark that should not be made: at the distance the chase camera
+// works at, the seam it is standing in for is under a pixel wide anyway.
+
+/**
+ * Is this point on the leg under the guard's shell?
+ *
+ * **The guard is a shell strapped to a black leg, not a green leg.** The first
+ * build painted the whole limb green below the knee and every capture read it
+ * as a sock: with no black behind it, nothing said *armour*, because armour is
+ * only legible against the thing it is bolted to. Both references agree — the
+ * calf and the inboard face are black in each, and the green stops at a hard
+ * moulded edge.
+ *
+ * The arc runs from a little inboard of straight ahead, across the front, and
+ * round the outboard flank until it is a good way toward the back of the leg.
+ * It is deliberately lopsided, and the capture that set it is the *chase* one:
+ * a mask that stopped at the flank left him reading as a black rider with a
+ * green helmet from the only angle the game shows for most of a run, because
+ * from behind the player sees the outboard side of both legs and almost none
+ * of the front. The reference's shell wraps that far too — what stays black is
+ * the inboard face and the back of the calf.
+ *
+ * Angles are measured on the limb's own axes, so `side` is what makes outboard
+ * outboard — a mask that did not know its side would armour one leg's calf.
+ */
+function underAdonisb2Guard(x: number, z: number, side: number): boolean {
+  const angle = Math.atan2(side * x, z);
+  return angle > -0.55 && angle < 2.30;
+}
+
+/**
+ * Trousers, except where the guard's upper wing covers the lower thigh.
+ *
+ * The green survives only under the shell; everything the shell does not cover
+ * is painted down to exactly the seat's black.
+ */
+function paintAdonisb2Thigh(geometry: THREE.BufferGeometry, side: number): void {
+  const top = -RIDER_BLOCKOUT.thighLength * ADONISB2_GUARD_TOP;
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    const under = underAdonisb2Guard(position.getX(i), position.getZ(i), side);
+    const tint = !under || y > top
+      ? ADONISB2_TROUSER_TINT
+      : y <= ADONISB2_CUP_TOP
+        ? ADONISB2_CUP_TINT
+        : null;
+    if (tint !== null) colour.setXYZ(i, tint[0], tint[1], tint[2]);
+  }
+}
+
+/**
+ * The shin: guard-green under the shell, trouser-black behind it, and the
+ * boot's shaft all the way round below `ADONISB2_BOOT_TOP`.
+ *
+ * The photograph's vent slots were painted here once and removed on the
+ * capture: the proud plate patch covers the whole front channel they lived in,
+ * so the paint could never show — the moulded read is the plate's, the vents'
+ * and the straps'.
+ */
+function paintAdonisb2Shin(geometry: THREE.BufferGeometry, side: number): void {
+  const cuff = -RIDER_BLOCKOUT.shinLength * ADONISB2_BOOT_TOP;
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    const tint = y < cuff
+      ? ADONISB2_CUFF_TINT
+      : !underAdonisb2Guard(position.getX(i), position.getZ(i), side)
+        ? ADONISB2_TROUSER_TINT
+        : y > ADONISB2_CUP_BOTTOM
+          ? ADONISB2_CUP_TINT
+          : null;
+    if (tint !== null) colour.setXYZ(i, tint[0], tint[1], tint[2]);
+  }
+}
+
+/** Ankle band, toe cap and instep strap — the boot grammar M19 established. */
+function paintAdonisb2Boot(geometry: THREE.BufferGeometry): void {
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox;
+  if (box === null) return;
+  const height = Math.max(1e-3, box.max.y - box.min.y);
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const t = (position.getY(i) - box.min.y) / height;
+    const z = position.getZ(i);
+    const ankleBand = t > 0.62 && t < 0.82;
+    const toeCap = t < 0.34 && z > 0.055;
+    const instepStrap = t > 0.38 && t < 0.52 && z > 0.02;
+    if (ankleBand || toeCap || instepStrap) {
+      colour.setXYZ(
+        i,
+        ADONISB2_BOOT_PANEL_TINT[0],
+        ADONISB2_BOOT_PANEL_TINT[1],
+        ADONISB2_BOOT_PANEL_TINT[2],
+      );
+    }
+  }
+}
+
+/**
+ * The helmet shell at a height: the ring anything decorating it must sit on.
+ *
+ * `docs/LESSONS_LEARNED.md` carries the entry this exists to obey — geometry
+ * that decorates a curved shell must *compute* the shell, not estimate it.
+ * Two capture rounds of the first build went on stripes tabulated by eye
+ * against a dome they turned out not to be on, surfacing as dashes wherever
+ * they happened to break through. Nothing below carries a hand-picked offset
+ * any more: every ring asks the profile where the surface is and steps a
+ * stated few millimetres outside it.
+ */
+function adonisb2ShellRing(y: number): LoftProfile[number] {
+  const first = HELMET[0]!;
+  const last = HELMET[HELMET.length - 1]!;
+  if (y <= first.y) return first;
+  if (y >= last.y) return last;
+  let lower = first;
+  let upper = last;
+  for (let i = 1; i < HELMET.length; i += 1) {
+    if (HELMET[i]!.y < y) continue;
+    lower = HELMET[i - 1]!;
+    upper = HELMET[i]!;
+    break;
+  }
+  const f = (y - lower.y) / (upper.y - lower.y);
+  const blend = (a: number, b: number): number => a + (b - a) * f;
+  return {
+    y,
+    halfWidth: blend(lower.halfWidth, upper.halfWidth),
+    halfDepth: blend(lower.halfDepth, upper.halfDepth),
+    x: blend(lower.x, upper.x),
+    z: blend(lower.z, upper.z),
+    square: blend(lower.square, upper.square),
+  };
+}
+
+/**
+ * How far forward (`sign` +1) or back (−1) the shell reaches at a height, at a
+ * lateral offset from its midline — the section `|x/w|^s + |z/d|^s = 1` solved
+ * for z. A crown stripe set beside the midline needs this and not the plain
+ * half-depth: the front face is only the front face *at* x = 0.
+ */
+function adonisb2ShellDepth(y: number, x: number, sign: number): number {
+  const ring = adonisb2ShellRing(y);
+  if (ring.halfWidth <= 0) return ring.z;
+  const t = Math.min(1, Math.abs(x - ring.x) / ring.halfWidth);
+  return ring.z + sign * ring.halfDepth * (1 - t ** ring.square) ** (1 / ring.square);
+}
+
+/** The same section solved for x: how far out the flank reaches at a depth. */
+function adonisb2ShellWidth(y: number, z: number): number {
+  const ring = adonisb2ShellRing(y);
+  if (ring.halfDepth <= 0) return ring.halfWidth;
+  const t = Math.min(1, Math.abs(z - ring.z) / ring.halfDepth);
+  return ring.halfWidth * (1 - t ** ring.square) ** (1 / ring.square);
+}
+
+/**
+ * The helmet's green striping, as one merged extra on the neck joint.
+ *
+ * The head's own patches are merged into the head mesh and can only *shade*
+ * the black shell — a scalar cannot make green — and the face group already
+ * carries the visor's material. So the striping is what `RiderExtra` exists
+ * for: real geometry in the accent material, following the shell.
+ *
+ * Three families, all from the reference: a tight triple running brow-to-nape
+ * over the crown; four long swept stripes on each cheek, the mark both
+ * references carry beside the chin bar; and a band down the centre of the chin
+ * itself. Everything stands a few millimetres off whatever surface it
+ * decorates — the shell, or the head patch already lifted off it — because
+ * M19's pivot boss taught what a proud tab on a helmet's silhouette reads as.
+ */
+function adonisb2HelmetStripes(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const stripe = (rings: Parameters<typeof loftProfile>[0]): void => {
+    parts.push(loftGeometry(loftProfile(rings), { radialSegments: 8 }));
+  };
+
+  // -- A triple over the crown ----------------------------------------------
+  //
+  // Three lanes, not the first build's two, and bundled close to the midline:
+  // that is what the reference wears. Each lane's lateral offset is a
+  // *fraction of the shell's own half-width* at its height, so the three
+  // converge toward the apex the way lines of longitude do — a fixed offset
+  // walks off a narrowing dome, which is half of what buried the first build.
+  //
+  // Clearances rise where a head patch is already lifted off the shell: the
+  // brow step is 11 mm proud, so a stripe crossing it at the 3 mm the open
+  // dome needs would run underneath it and disappear exactly where the
+  // reference's stripes are most visible.
+  const CROWN_FRONT: ReadonlyArray<readonly [number, number]> = [
+    [0.244, 0.015], [0.254, 0.015], [0.266, 0.009],
+    [0.282, 0.005], [0.300, 0.003], [0.318, 0.003], [0.3335, 0.003],
+  ];
+  const CROWN_REAR: ReadonlyArray<readonly [number, number]> = [
+    [0.3335, 0.003], [0.320, 0.003], [0.302, 0.003],
+    [0.280, 0.003], [0.254, 0.004], [0.228, 0.008], [0.206, 0.015],
+  ];
+  for (const lane of [-1, 0, 1]) {
+    const ringAt = ([y, clear]: readonly [number, number], sign: number, taper: number) => {
+      const x = lane * 0.26 * adonisb2ShellRing(y).halfWidth;
+      return {
+        y,
+        halfWidth: 0.0075 * taper,
+        halfDepth: 0.005,
+        square: 2.6,
+        x,
+        z: adonisb2ShellDepth(y, x, sign) + sign * clear,
+      };
+    };
+    // The one ring both halves share, sitting just clear of the closed apex.
+    // The first build ended each half on the shell's own face at the top,
+    // which left 50 mm of bald crown between the two sets of tips — a gap
+    // right where a crown stripe is a crown stripe. The lanes are nudged apart
+    // here so three tips meet without three coincident solids.
+    const apex = {
+      y: 0.3495,
+      halfWidth: 0.0055,
+      halfDepth: 0.010,
+      square: 2.6,
+      x: lane * 0.005,
+      z: 0,
+    };
+    stripe([...CROWN_FRONT.map((step, i) => ringAt(step, 1, i === 0 ? 0.7 : 1)), apex]);
+    stripe([
+      apex,
+      ...CROWN_REAR.map((step, i) => ringAt(step, -1, i === CROWN_REAR.length - 1 ? 0.5 : 1)),
+    ]);
+  }
+
+  // -- Four swept stripes per cheek -----------------------------------------
+  //
+  // The mark both references carry beside the chin bar: long thin lines
+  // sweeping down and *forward*, from behind the temple to just outboard of
+  // the chin. The first build made them three short dashes centred at z 0.020,
+  // which is the back of the cheek — the head capture read them as tally marks
+  // behind the ear, and the front capture did not see them at all.
+  //
+  // Each ring sits on the flank the shell actually presents at that height and
+  // depth, which is what lets a line cross a curving cheek without either end
+  // lifting off. The front ends stop short of ±0.70 rad, where the chin-bar
+  // patch's own 15 mm lift begins.
+  for (const side of [-1, 1]) {
+    for (let lane = 0; lane < 4; lane += 1) {
+      const rings = [];
+      for (let step = 0; step <= 3; step += 1) {
+        const t = step / 3;
+        const y = 0.163 - lane * 0.009 - t * 0.024;
+        // Starting at the temple, not behind it: at z 0.016 the run began on
+        // the widest part of the shell, where the head capture caught four
+        // proud tips serrating the silhouette from *behind* — the mark is a
+        // cheek mark, so it starts where the cheek does.
+        const z = 0.032 + t * 0.060;
+        rings.push({
+          y,
+          halfWidth: 0.004,
+          halfDepth: 0.0085,
+          square: 2.6,
+          x: side * (adonisb2ShellWidth(y, z) + 0.002),
+          z,
+        });
+      }
+      stripe(rings);
+    }
+  }
+
+  // -- The chin band --------------------------------------------------------
+  //
+  // Down the chin bar, not across it: the reference's mark runs the length of
+  // the chin, and the first build's short horizontal dash read as a smudge.
+  // Its z clears the chin-bar *patch* (lift 0.015 over the shell) rather than
+  // the bare shell — the first build anchored to the shell and the patch
+  // swallowed it whole.
+  stripe(([[0.102, 0.013], [0.118, 0.015], [0.134, 0.015], [0.149, 0.013]] as const)
+    .map(([y, clear], i) => ({
+      y,
+      // Narrow. The pass before this ran 36 mm across a chin bar barely three
+      // times that wide and stood it 18 mm off the shell, which the front
+      // capture read as a green blob stuck to his jaw rather than as a band
+      // moulded into it.
+      halfWidth: i === 0 || i === 3 ? 0.009 : 0.012,
+      halfDepth: 0.005,
+      square: 3.0,
+      z: adonisb2ShellDepth(y, 0, 1) + clear,
+    })));
+
+  const merged = mergeGeometries(parts);
+  for (const part of parts) part.dispose();
+  return merged;
+}
+
+export const ADONISB2_LOOK: RiderLook = Object.freeze({
+  id: 'adonisb2' as CharacterId,
+  materials: Object.freeze({
+    body: ADONISB2_SUIT,
+    // One black garment, jacket and sleeves — the same dedup Cool Rider's is.
+    limbs: ADONISB2_SUIT,
+    accent: ADONISB2_GUARD,
+    head: Object.freeze({
+      colour: BLOCKOUT_COLOURS.adonisb2Helmet,
+      // Gloss, like Red Rider's lid and for his reason: the shell in the
+      // photograph is the shiniest black he wears, and the chase camera looks
+      // at the back of a head all day.
+      roughness: 0.24,
+      metalness: 0.05,
+    }),
+    face: Object.freeze({
+      // The mirrored visor — pale where every other visor in this file is
+      // dark, because *mirror* is the read the reference names. There is no
+      // environment map, so this borrows the retroreflection approximation
+      // Cool Rider's blue established: low roughness plus a small cool
+      // emissive, which keeps the glass luminous in shade the way a real
+      // mirror stays bright with the sky in it.
+      colour: BLOCKOUT_COLOURS.adonisb2Visor,
+      roughness: 0.06,
+      metalness: 0.35,
+      emissive: 0x2e3a46,
+      emissiveIntensity: 0.40,
+    }),
+    gear: ADONISB2_GEAR,
+  }),
+  profiles: Object.freeze({
+    torso: JACKET,
+    seat: SEAT,
+    thigh: ADONISB2_THIGH,
+    shin: ADONISB2_SHIN,
+    upperArm: UPPER_ARM,
+    forearm: FOREARM,
+    neck: NECK,
+    head: HELMET,
+    boot: BOOT,
+    bootSole: BOOT_SOLE,
+    hand: GLOVE,
+  }),
+  // `seat` at 0.92 is load-bearing: `ADONISB2_TROUSER_TINT` paints the legs to
+  // exactly suit × 0.92, so the trousers agree across the hip join. `legs` at
+  // 1.0 because the legs' base *is* the green and the green is the identity.
+  // The neck is the gear material darkened — a black gaiter, as Red Rider's is.
+  // `neck` dropped with the gear material's rise: the gaiter under his chin is
+  // the darkest thing he wears, and a scalar that read as black against the
+  // old gear reads as pale grey against the new one.
+  shades: Object.freeze({ seat: 0.92, legs: 1.0, collar: 1.12, sole: 0.62, neck: 0.40 }),
+  parts: Object.freeze({
+    hands: 'gear' as RiderMaterialRole,
+    neck: 'gear' as RiderMaterialRole,
+    kneePad: 'accent' as RiderMaterialRole,
+    // The inversion, stated where it takes effect: his legs are built in the
+    // green accent material and painted down to trousers, never black painted
+    // up to green (§22.3 fact 4).
+    legs: 'accent' as RiderMaterialRole,
+    seat: 'body' as RiderMaterialRole,
+  }),
+  panels: Object.freeze({
+    collar: Object.freeze({
+      anchor: 'front' as PatchAnchor,
+      u0: 0,
+      u1: Math.PI * 2,
+      from: 0.502,
+      to: 0.545,
+      uSegments: 20,
+      vSegments: 2,
+      lift: 0.011,
+      shade: 1.12,
+    }),
+    // The backpack and its shoulder routes — the casting group, because the
+    // pack is the one thing that changes his outline (rule 3). The wrap
+    // patches are Red Rider's proven shoulder arch, re-rolled in black gear.
+    shoulders: Object.freeze({
+      role: 'gear' as RiderMaterialRole,
+      casts: true,
+      patches: Object.freeze([
+        // The pack body: the largest single piece of kit he wears after the
+        // guards, high on the back between the shoulder blades. Narrower than
+        // the first build's ±0.60 — at that span its top edge wrapped past
+        // the shoulder curve and showed from the *front* as a mantle around
+        // the neck — and prouder, because a backpack is a volume and the flat
+        // first build repeated M19's back panel mistake in luggage form.
+        Object.freeze({
+          anchor: 'back' as PatchAnchor,
+          u0: -0.46,
+          u1: 0.46,
+          from: 0.200,
+          to: 0.452,
+          uSegments: 6,
+          vSegments: 5,
+          lift: 0.050,
+          taper: 0.26,
+          shade: 0.98,
+        }),
+        // Its lid: a top compartment standing prouder and lighter, kept
+        // strictly inside the body's span — the first build let its corners
+        // reach past the body's top edge, and they stood off the shoulder
+        // curve as floating tabs in every capture that saw them.
+        Object.freeze({
+          anchor: 'back' as PatchAnchor,
+          u0: -0.36,
+          u1: 0.36,
+          from: 0.352,
+          to: 0.440,
+          uSegments: 4,
+          vSegments: 3,
+          lift: 0.060,
+          taper: 0.32,
+          shade: 1.10,
+        }),
+        // Rear half of each shoulder wrap: climbs from the pack to the crown.
+        Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -1.05,
+          u1: 0.04,
+          from: 0.405,
+          to: 0.465,
+          uSegments: 6,
+          vSegments: 3,
+          lift: 0.012,
+          taper: 0.02,
+          skewFrom: 0.440,
+          skewTo: 0.400,
+        }),
+        // Front half: descends from the crown into the chest strap.
+        Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -0.04,
+          u1: 1.05,
+          from: 0.405,
+          to: 0.465,
+          uSegments: 6,
+          vSegments: 3,
+          lift: 0.012,
+          taper: 0.02,
+          skewFrom: 0.400,
+          skewTo: 0.440,
+        }),
+        // Padding over each crown, standing proud of the strap beneath.
+        Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -0.42,
+          u1: 0.42,
+          from: 0.425,
+          to: 0.492,
+          uSegments: 4,
+          vSegments: 3,
+          lift: 0.019,
+          taper: 0.26,
+          shade: 1.10,
+        }),
+      ]),
+    }),
+    // The strap runs down the chest, the buckle housings, the zip and the
+    // belt — flat on the jacket, so none of it casts.
+    //
+    // These shades used to run as high as 1.65 because the gear material was
+    // authored *darker* than the suit and every piece of kit had to be lifted
+    // back out of it one patch at a time. That was fixing the wrong thing, and
+    // the owner's ride found what it missed: the pack and straps on his back,
+    // where no shade was rescuing them, disappeared into the jacket entirely.
+    // `adonisb2Gear` is a lighter material now and these multipliers describe
+    // surfaces again — a strap slightly catching the light, a belt plate
+    // brighter than its webbing.
+    torso: Object.freeze({
+      role: 'gear' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        // Down to 0.170, not the first build's 0.262: a strap that stopped
+        // mid-chest read as two dangling tabs, and the photograph's straps
+        // run to his waist.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: 0.42,
+          u1: 0.72,
+          mirrored: true,
+          from: 0.170,
+          to: 0.438,
+          uSegments: 3,
+          vSegments: 6,
+          lift: 0.010,
+          taper: 0.02,
+          shade: 1.12,
+        }),
+        // The buckle housing on each strap. A mirrored pair, because that is
+        // what the mockup wears: an intermediate pass followed the photograph
+        // here instead and built two differently sized units, which reads as
+        // damage rather than as kit at the distance the game is played at.
+        // Their green faces live in the `waist` group below; these bodies
+        // share the strap's gear material and add only triangles.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: 0.42,
+          u1: 0.68,
+          mirrored: true,
+          from: 0.286,
+          to: 0.370,
+          uSegments: 3,
+          vSegments: 3,
+          lift: 0.017,
+          taper: 0.16,
+          shade: 1.06,
+        }),
+        // The zip, down the centre of the jacket. One narrow raised placket:
+        // the mockup's strongest bit of jacket structure, and the reason its
+        // chest reads as a garment rather than as a black volume with straps
+        // laid over it.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -0.055,
+          u1: 0.055,
+          from: 0.075,
+          to: 0.470,
+          uSegments: 1,
+          vSegments: 8,
+          lift: 0.006,
+          taper: 0.10,
+          shade: 1.06,
+        }),
+        // The waist belt and its plate. Dropped from the first build on the
+        // grounds that the photograph does not show one; the mockup does, and
+        // it is what ends the jacket — without it the black torso runs into
+        // the black trousers and the figure loses its waist from every angle
+        // except the one the guards are lit from.
+        //
+        // A full loop, and safe as one for the reason `ADONISB2_GUARD` is
+        // matte: M19's white-line lesson is about a band bright enough to find
+        // the sun's mirror angle. This is near-black webbing at 0.62 roughness
+        // and has nothing to clip.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: 0,
+          u1: Math.PI * 2,
+          from: 0.012,
+          to: 0.062,
+          uSegments: 20,
+          vSegments: 1,
+          lift: 0.010,
+          shade: 1.02,
+        }),
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -0.20,
+          u1: 0.20,
+          from: 0.008,
+          to: 0.066,
+          uSegments: 3,
+          vSegments: 2,
+          lift: 0.018,
+          taper: 0.30,
+          shade: 1.24,
+        }),
+      ]),
+    }),
+    // The green face of each chest buckle — the mockup's one green mark above
+    // the waist, and the only thing that carries his colour on the upper body
+    // from the front. It is a *material* choice and not a shade: the housings
+    // it sits on are near-black gear, and no scalar multiplier on near-black
+    // makes green (the same argument `parts.neck` records for Red Rider's
+    // gaiter, one colour over).
+    waist: Object.freeze({
+      role: 'accent' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: 0.46,
+          u1: 0.64,
+          mirrored: true,
+          from: 0.298,
+          to: 0.340,
+          uSegments: 2,
+          vSegments: 2,
+          lift: 0.023,
+          taper: 0.14,
+          shade: 1.04,
+        }),
+      ]),
+    }),
+    // The upper half of the knee guard, on the thigh — see
+    // `RiderLook.panels.thighPad` for why it cannot live with the rest of the
+    // guard. The reference's shell covers the lower third of the thigh, wraps
+    // wider than the leg, and carries the guard's largest pivot; without it
+    // the green starts at the knee and the whole assembly reads as a sock
+    // rather than as armour spanning a joint.
+    thighPad: Object.freeze({
+      role: 'accent' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        // The flared shell itself, wider than the leg it is strapped to, and
+        // lopsided outboard for the reason `underAdonisb2Guard` records: the
+        // chase camera is behind him.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -0.60,
+          u1: 1.90,
+          mirrored: true,
+          from: -0.400,
+          to: -0.274,
+          uSegments: 8,
+          vSegments: 5,
+          // Proud enough to change the leg's outline, which is the property
+          // the reference guard has and a painted band never will: measured
+          // against the capture, the green mass the chase camera sees is
+          // almost all silhouette, so a shell that only hugs the leg reads as
+          // a stripe from behind no matter how far round it is painted.
+          lift: 0.020,
+          taper: 0.30,
+          shade: 1.06,
+        }),
+        // **The upper half of the black knee cup.** In the photograph the cup
+        // is a dark dome sitting *on* the joint with green wrapped round it,
+        // and the first build put the whole cup below the knee — which is why
+        // the owner's ride reported the knee pads "down to the shins": a cup
+        // entirely on the shin is not a knee pad, it is a shin pad, and no
+        // amount of green above it says otherwise. The cup is therefore split
+        // across the joint, half here and half on the shin. The two halves
+        // hinge, and that is safe because they meet on the *front* of the
+        // knee: a bend closes them into each other rather than opening a gap,
+        // and both halves are the same near-black.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          // As wide as the wing above it, so the cup is a complete dark ring
+          // at knee height rather than a dark face with green shoulders that
+          // meet across the hinge.
+          u0: -0.60,
+          u1: 1.90,
+          mirrored: true,
+          from: -0.400,
+          to: ADONISB2_CUP_TOP,
+          uSegments: 7,
+          vSegments: 2,
+          lift: 0.030,
+          taper: 0.30,
+          shade: 0.10,
+        }),
+        // **No strap crosses the guard.** There was a dark full loop here and
+        // another below the cup, and together they did something neither did
+        // alone: a full loop is a closed black ring, so two of them cut the
+        // guard's green into an isolated slice with black above and black
+        // below. The owner's ride named it — "there is no sandwich of blacks
+        // sandwiching a green" in either reference — and he is right about
+        // why. In the photograph the webbing runs *down* the side of the
+        // guard, not across its face, so the green stays one connected shape
+        // and the black cup sits in it as an island. Any strap added here
+        // later has to run lengthwise or stay off the green entirely.
+        //
+        // The guard's big outboard pivot, the mechanical circle the reference
+        // wears at the top of the wing.
+        Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -0.24,
+          u1: 0.24,
+          from: -0.360,
+          to: -0.320,
+          uSegments: 4,
+          vSegments: 2,
+          lift: 0.024,
+          taper: 0.78,
+          shade: 0.18,
+        }),
+      ]),
+    }),
+    // **The whole knee-and-shin guard**, Red Rider's proven anatomy in the
+    // inverse palette: the shin mesh beneath is already guard-green, so the
+    // proud geometry carries only what catches light — the dark knee cap, the
+    // strap loops, and the long moulded plate.
+    kneePad: Object.freeze({
+      role: 'accent' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        // A flared green carrier around the black cap. The reference's guard
+        // is much wider than the trouser leg at the knee; leaving the cap on
+        // the bare shin profile made it read as a painted sleeve.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -0.62,
+          u1: 1.95,
+          mirrored: true,
+          // **It starts below the cup, not at the joint.** It used to run to
+          // −0.002, two millimetres under the knee, and its bright top edge
+          // was what showed through the hinge — a thin green line with black
+          // above and black below, which is the defect the owner circled. A
+          // collar that flares the guard does not need to reach the joint to
+          // do it, and reaching the joint is the one thing that could put
+          // green there.
+          from: -0.150,
+          to: ADONISB2_CUP_BOTTOM,
+          uSegments: 8,
+          vSegments: 2,
+          lift: 0.016,
+          taper: 0.20,
+          shade: 1.06,
+        }),
+        // The knee cap: the one *dark* piece of the guard, exactly as the
+        // photograph wears it — a black cup in a green surround. Shade does
+        // the darkening; at 0.10 the green base reads as near-black moulding.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -0.62,
+          u1: 1.95,
+          mirrored: true,
+          // The cup's lower lip. It carries the proud form across the hinge so
+          // the cup does not end in a step at the joint; the depth it used to
+          // have below the knee is the plate's now.
+          from: ADONISB2_CUP_BOTTOM,
+          to: 0.000,
+          uSegments: 8,
+          vSegments: 1,
+          lift: 0.030,
+          taper: 0.28,
+          shade: 0.10,
+        }),
+        // The strap that used to sit under the cup is gone — see the thigh
+        // group for the argument. It was the lower half of the sandwich.
+        //
+        // The long green plate down the shin. The first pass called a 108 mm
+        // patch "long" while the photograph's moulded plate covers most of
+        // the shin; it left a smooth green tube below the knee. This one runs
+        // nearly to the boot and stays narrow enough that its lower corners
+        // cannot float off the tapering leg.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -0.55,
+          u1: 1.45,
+          mirrored: true,
+          // It stops where the boot shaft starts. It used to run to −0.305,
+          // 80% of the way down the shin, which left the guard lapping over
+          // the top of the footwear — the other half of the owner's "down to
+          // the shins" report, and the reason the boots read as shoes: there
+          // was no boot above the ankle to see.
+          // Butted against the cup's lower edge, so the guard reads as one
+          // moulding with a dark cup set into it rather than as parts.
+          from: -0.252,
+          to: ADONISB2_CUP_BOTTOM,
+          uSegments: 7,
+          vSegments: 7,
+          lift: 0.019,
+          taper: 0.42,
+          shade: 1.08,
+        }),
+        // The vent ladder — the guard's largest surface detail in both
+        // references, and the thing that says *moulded plastic* rather than
+        // *painted tube*. Dark lifted insets keep the perforated read without
+        // holes, textures, or another material.
+        //
+        // A staggered single column stepping outboard as it descends, which is
+        // how the mockup's slots run; the pass before this one used three
+        // symmetric pairs down the centre line and they read, at any distance
+        // the game is played at, as a smudge rather than as louvres. `mirrored`
+        // is what makes the stagger lean away from the centre on *both* legs
+        // instead of leaning the same way in world space on each.
+        ...[0.16, 0.24, 0.32, 0.40, 0.48].map((centre, i) => {
+          const from = -0.128 - i * 0.0245;
+          return Object.freeze({
+            anchor: 'front' as PatchAnchor,
+            u0: centre - 0.22,
+            u1: centre + 0.22,
+            mirrored: true,
+            from,
+            to: from + 0.016,
+            uSegments: 2,
+            vSegments: 1,
+            lift: 0.023,
+            taper: 0.46,
+            shade: 0.10,
+          });
+        }),
+        // The two pivot bosses on the outer edge — large mechanical circles in
+        // the photograph, approximated as tapered low-poly pads in the
+        // existing guard mesh.
+        //
+        // **Dark pads on the green plate, not green pads on the dark cup.**
+        // They were authored bright and sat at cup height, which put a green
+        // island in the middle of the black — the thing the owner circled, and
+        // the last of his "blacks sandwiching a green". The photograph has it
+        // the other way round: the pivots are the dark hardware and the guard
+        // around them is the green. Moving them down onto the plate is what
+        // makes that reading available at all, since a dark boss inside a dark
+        // cup is nothing.
+        //
+        // Three millimetres proud of the plate and no more, with the edges
+        // pulled hard: the carve capture caught these standing far enough off
+        // the guard to read as tabs snagged on its rim, which is M19's helmet
+        // pivot in a second place.
+        ...[-0.104, -0.148].map((from) => Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -0.24,
+          u1: 0.24,
+          from,
+          to: from + 0.028,
+          uSegments: 4,
+          vSegments: 2,
+          lift: 0.024,
+          taper: 0.78,
+          shade: 0.18,
+        })),
+        // Its lower strap, holding the plate to the shin at the boot's collar.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -Math.PI,
+          u1: Math.PI,
+          from: -0.268,
+          to: -0.248,
+          uSegments: 14,
+          vSegments: 1,
+          lift: 0.022,
+          taper: 0.28,
+          shade: 0.16,
+        }),
+      ]),
+    }),
+    // The same four patches every full-face lid in this file wears, shaded
+    // for a black shell: the chin bar and brow step down toward the visor,
+    // the spoiler sits near the shell, and the base rim steps up so the
+    // helmet ends somewhere. No chin vents — the wing stripes own the cheeks.
+    head: Object.freeze([
+      Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: -0.70,
+        u1: 0.70,
+        from: 0.098,
+        to: 0.152,
+        uSegments: 6,
+        vSegments: 3,
+        lift: 0.015,
+        taper: 0.42,
+        shade: 0.86,
+      }),
+      Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: -0.86,
+        u1: 0.86,
+        from: 0.236,
+        to: 0.256,
+        uSegments: 7,
+        vSegments: 1,
+        lift: 0.011,
+        taper: 0.3,
+        shade: 0.80,
+      }),
+      Object.freeze({
+        anchor: 'back' as PatchAnchor,
+        u0: -0.78,
+        u1: 0.78,
+        from: 0.150,
+        to: 0.206,
+        uSegments: 8,
+        vSegments: 3,
+        lift: 0.012,
+        taper: 0.62,
+        shade: 1.04,
+      }),
+      Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: 0,
+        u1: Math.PI * 2,
+        from: 0.090,
+        to: 0.113,
+        uSegments: 18,
+        vSegments: 1,
+        lift: 0.004,
+        shade: 1.08,
+      }),
+    ]),
+    // The big wrapping shield, Red Rider's span: at ±1.05 rad it turns the
+    // corner of the shell, which is what makes it glass around a face rather
+    // than a letterbox — and on this rider it is the *pale* thing on a black
+    // head, the single strongest identity cue the photograph has.
+    face: Object.freeze({
+      role: 'face' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -1.05,
+          u1: 1.05,
+          // Down to the chin bar rather than stopping short of it. The chin
+          // patch is lifted further than this one, so it overlaps the shield's
+          // lower edge from in front — which is how a chin bar meets a visor.
+          from: 0.150,
+          to: 0.246,
+          uSegments: 12,
+          vSegments: 4,
+          lift: 0.007,
+          sink: -0.014,
+          taper: 0.18,
+        }),
+        // **A mirror blaze was tried here and removed on the owner's ride.**
+        // The mockup's visor carries a hard bright streak, and with one sun
+        // and no environment map the only way to have one from every heading
+        // is to author it as a second, brighter patch. It worked as a picture
+        // and failed as a game object: at this polygon count a hard-edged
+        // white rectangle sitting on a face does not read as a reflection, it
+        // reads as a sticking plaster — the owner's word for it was "that
+        // bandaid white square thing". A fake highlight needs enough
+        // surrounding detail to be read as light rather than as paint, and
+        // this rider's head does not have it. The shield is one value again.
+      ]),
+    }),
+  }),
+  extras: Object.freeze([
+    Object.freeze({
+      name: 'rider-helmet-stripes',
+      joint: 'neck' as const,
+      role: 'accent' as RiderMaterialRole,
+      casts: false,
+      build: adonisb2HelmetStripes,
+    }),
+  ]),
+  paint: Object.freeze({
+    thigh: paintAdonisb2Thigh,
+    shin: paintAdonisb2Shin,
+    boot: paintAdonisb2Boot,
+  }),
+  // A touch of splay so the pack's silhouette stays open behind the arms;
+  // otherwise Cool Rider's carriage — the photograph stands relaxed.
+  armCarriage: Object.freeze({ splay: 0.012, rise: 0 }),
+});
+
 export const RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   COOL_RIDER_LOOK,
   TROLLINA_LOOK,
   RED_RIDER_LOOK,
+  ADONISB2_LOOK,
   COP_LOOK,
 ]);
 
@@ -2908,6 +4004,7 @@ export const PLAYABLE_RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   COOL_RIDER_LOOK,
   TROLLINA_LOOK,
   RED_RIDER_LOOK,
+  ADONISB2_LOOK,
 ]);
 
 /** Resolve a look, falling back to Cool Rider the way `characterSpec` does. */

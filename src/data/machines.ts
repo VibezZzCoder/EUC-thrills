@@ -43,7 +43,7 @@ import type { CharacterId } from './riders.ts';
  */
 
 /** Every machine the renderer can build. */
-export type MachineId = 'standard' | 'red-rider';
+export type MachineId = 'standard' | 'red-rider' | 'adonisb2';
 
 export interface MachineSpec {
   readonly id: MachineId;
@@ -73,6 +73,24 @@ export const MACHINES: readonly MachineSpec[] = Object.freeze([
     name: "Red Rider's wheel",
     blurb: 'Red bodywork over black, a saddle, and his name on the side. '
       + 'Built by hand, and it shows.',
+  }),
+  /**
+   * Adonisb2's machine — M22 Phase 2, and the second one taken from a real
+   * rider's own wheel with his permission.
+   *
+   * His character reference ranks it fourth in what carries the identity and
+   * says it "should not be replaced with a generic wheel": a blocky off-road
+   * body, a big knobby tyre, broad platforms, a saddle, pale light panels, and
+   * the green plate with the angry eyes that is the single most memorable mark
+   * on it. What ships is the game's own fictional off-road form wearing *his
+   * personalization* — no manufacturer's shell and none of the third-party
+   * decal art the photograph carries (`docs/PLANS.md` §22.2, `NOTICE.md`).
+   */
+  Object.freeze({
+    id: 'adonisb2' as MachineId,
+    name: "Adonisb2's wheel",
+    blurb: 'Blocky black off-road bodywork on a knobby tyre, a saddle, '
+      + 'two cream lamps, and a green plate that glares back.',
   }),
 ]);
 
@@ -123,7 +141,9 @@ export function machineContract(): Readonly<Record<MachineContractKey, number>> 
  * would read as a stolen bike.
  */
 export function machineForCharacter(character: CharacterId): MachineId {
-  return character === 'red-rider' ? 'red-rider' : DEFAULT_MACHINE;
+  if (character === 'red-rider') return 'red-rider';
+  if (character === 'adonisb2') return 'adonisb2';
+  return DEFAULT_MACHINE;
 }
 
 /** Look a machine up, falling back the way `characterSpec` does, and for the same reason. */

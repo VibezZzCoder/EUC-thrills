@@ -54,7 +54,7 @@ export type CharacterId = PlayableCharacterId | 'cop';
  * for the same reason: a saved record can no longer *say* `cop` even in
  * principle.
  */
-export type PlayableCharacterId = 'cool-rider' | 'trollina' | 'red-rider';
+export type PlayableCharacterId = 'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2';
 
 /**
  * Which recorded crash one-shot a rider comes with.
@@ -64,7 +64,7 @@ export type PlayableCharacterId = 'cool-rider' | 'trollina' | 'red-rider';
  * declares its own `CrashVoiceId` and this field is the map between the two.
  * Two riders could legitimately share a voice; a rider without one could not.
  */
-export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider';
+export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2';
 
 export interface CharacterSpec {
   readonly id: CharacterId;
@@ -141,6 +141,37 @@ export const CHARACTERS: readonly PlayableCharacterSpec[] = Object.freeze([
       + 'A real rider, in the game because he asked.',
     swatch: '#e03a3a',
     crashVoice: 'red-rider' as CrashVoiceId,
+  }),
+  /**
+   * Adonisb2 — M22, and the second **real person** in this table.
+   *
+   * Where Red Rider was asked-and-agreed in public, this rider *initiated*: he
+   * messaged the owner asking to have his avatar added so he could share the
+   * game, supplied the reference photograph, chose this name himself when
+   * asked — the spelling is exactly what he typed (`docs/PLANS.md` §22.1) —
+   * and uploaded EUC recordings to Freesound for the project's use. The
+   * permission evidence lives under `references/guest-rider/` and is excluded
+   * from every build; `NOTICE.md` gains his entry in M22 Phase 4.
+   *
+   * **His crash is his own fall.** M22 Phase 3, and it took the fork §22.8
+   * listed last rather than first: the Freesound upload was still in
+   * moderation, so the owner asked him directly and he sent the files — a
+   * narrow grant for this game, recorded in `NOTICE.md`. What ships is 3.4 s
+   * of that recording, cut and levelled by `tools/make-crash-adonisb2.mjs`,
+   * with nothing removed, substituted or generated. He is the first rider here
+   * whose crash is a recording of *him* crashing.
+   *
+   * The swatch is a card colour, not an albedo: the values the sun falls on
+   * are `BLOCKOUT_COLOURS.adonisb2*`, picked with the neon-green ACES caveat
+   * written beside them.
+   */
+  Object.freeze({
+    id: 'adonisb2' as PlayableCharacterId,
+    name: 'Adonisb2',
+    blurb: 'Black kit under big neon-green guards, a mirrored visor, and a wheel that glares back. '
+      + 'A real rider, in the game so he could share it.',
+    swatch: '#72ec16',
+    crashVoice: 'adonisb2' as CrashVoiceId,
   }),
 ]);
 

@@ -339,8 +339,8 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
   );
   const tyreMaterial = trackMaterial(
     new THREE.MeshStandardMaterial({
-      color: BLOCKOUT_COLOURS.tyre,
-      roughness: 0.92,
+      color: look.tyre?.colour ?? BLOCKOUT_COLOURS.tyre,
+      roughness: look.tyre?.roughness ?? 0.92,
       metalness: 0.0,
       vertexColors: true,
     }),
@@ -421,6 +421,22 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
   };
 
   /**
+   * Overwrite a geometry's vertex colours with one RGB multiplier — the
+   * saddle's channel, and every trim patch that carries a `tint`. `shaded()`
+   * is a scalar and a scalar cannot change hue: 0.06 × armour red is very dark
+   * red, not the black a leather cushion is, and no scalar over a pale trim
+   * material is the green Adonisb2's nose plate has to be.
+   */
+  const tinted = <T extends THREE.BufferGeometry>(
+    geometry: T,
+    tint: readonly [number, number, number],
+  ): T => {
+    const colour = shaded(geometry).getAttribute('color');
+    for (let i = 0; i < colour.count; i += 1) colour.setXYZ(i, tint[0], tint[1], tint[2]);
+    return geometry;
+  };
+
+  /**
    * A look-authored patch, resolved to geometry — M19 Phase 2.
    *
    * A `shell` patch is `shellPatch` exactly. A `pad` patch is built once per
@@ -430,37 +446,32 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
    * doubling; the caller merges everything into the one trim mesh regardless.
    */
   const machinePatch = (patch: MachinePatch): THREE.BufferGeometry[] => {
-    const { surface = 'shell', from, to, u0, u1, ...rest } = patch;
+    const { surface = 'shell', from, to, u0, u1, tint, ...rest } = patch;
+    const paint = (geometry: THREE.BufferGeometry): THREE.BufferGeometry => (
+      tint ? tinted(geometry, tint) : geometry
+    );
     if (surface === 'shell') {
-      return [shellPatch({ ...rest, u0, u1, from, to })];
+      return [paint(shellPatch({ ...rest, u0, u1, from, to }))];
     }
     const sides: THREE.BufferGeometry[] = [];
     for (const side of [1, -1]) {
-      sides.push(
+      sides.push(paint(
         patchGeometry(PAD, {
           ...rest,
+          // A mirrored span runs backwards in parameter space, which winds the
+          // outer face inward — so the *ends* swap as well as reflecting, and
+          // `skew` flips sign with them or a sheared plate lands as its own
+          // mirror image on one side only (the chest-chevron lesson in
+          // `blockoutKit.ts`, one surface over).
           u0: side > 0 ? u0 : Math.PI - u1,
           u1: side > 0 ? u1 : Math.PI - u0,
+          skew: side > 0 ? rest.skew : -(rest.skew ?? 0),
           v0: vAtHeight(PAD, from),
           v1: vAtHeight(PAD, to),
         }).translate(side * PAD_CENTRE_X, WHEEL.padCentreHeight, 0),
-      );
+      ));
     }
     return sides;
-  };
-
-  /**
-   * Overwrite a geometry's vertex colours with one RGB multiplier — the
-   * saddle's channel. `shaded()` is a scalar and a scalar cannot change hue:
-   * 0.06 × armour red is very dark red, not the black a leather cushion is.
-   */
-  const tinted = <T extends THREE.BufferGeometry>(
-    geometry: T,
-    tint: readonly [number, number, number],
-  ): T => {
-    const colour = shaded(geometry).getAttribute('color');
-    for (let i = 0; i < colour.count; i += 1) colour.setXYZ(i, tint[0], tint[1], tint[2]);
-    return geometry;
   };
 
   /** Sprung mass: everything except the contact patch. Compresses from M4. */
@@ -483,7 +494,38 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
     new THREE.CylinderGeometry(TYRE_RADIUS * 0.46, TYRE_RADIUS * 0.46, WHEEL.tyreWidth + 0.016, 16),
     HUB_SHADE,
   );
-  const tyre = new THREE.Mesh(track(mergeGeometries([tread, rim, hub])), tyreMaterial);
+  const tyreParts: THREE.BufferGeometry[] = [tread, rim, hub];
+  // Off-road lugs, when a look asks for them — M22, and merged into the tyre
+  // rather than built beside it, so a knobby tyre costs the same draw calls as
+  // a slick one. Authored in the loft's own frame: the axle is local +Y and the
+  // radial direction sweeps the local XZ plane from +X toward +Z, which is
+  // `loftPoint`'s convention one file over. A block is pushed out along +X at
+  // its own tread radius and then swung round by −θ, which leaves the axle
+  // untouched and puts the block's third dimension on the tangent.
+  const lugs = look.tyre?.lugs;
+  if (lugs) {
+    const [arc, high, long] = lugs.size;
+    for (const row of lugs.rows) {
+      const axial = row.at * TYRE_HALF_WIDTH;
+      // The tread is crowned, so a lug on the shoulder starts lower than one on
+      // the centreline. Read the radius off the profile that actually shipped
+      // instead of assuming a cylinder, or the shoulder rows float.
+      const v = vAtHeight(TREAD, axial);
+      const below = TREAD[Math.min(TREAD.length - 2, Math.floor(v))]!;
+      const above = TREAD[Math.min(TREAD.length - 1, Math.floor(v) + 1)]!;
+      const seat = below.halfWidth
+        + (above.halfWidth - below.halfWidth) * (v - Math.floor(v));
+      for (let i = 0; i < lugs.count; i += 1) {
+        const theta = ((i + row.phase) / lugs.count) * Math.PI * 2;
+        tyreParts.push(
+          shaded(new THREE.BoxGeometry(high, long, arc), lugs.shade)
+            .translate(seat + high / 2 - 0.004, axial, 0)
+            .rotateY(-theta),
+        );
+      }
+    }
+  }
+  const tyre = new THREE.Mesh(track(mergeGeometries(tyreParts)), tyreMaterial);
   // A cylinder's axis is Y by default and the loft's is too, so the mesh is
   // rotated onto X exactly as the cylinder it replaces was. `rotation.x` stays
   // free for the spin the controller and the ghost drive.
@@ -647,7 +689,7 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
   // sits in the nose or the tail the way a moulded lens does. Separate meshes
   // because they are separate materials, which they have to be.
   const headlight = new THREE.Mesh(
-    track(mergeGeometries(machinePatch(look.headlight.patch))),
+    track(mergeGeometries(look.headlight.patches.flatMap(machinePatch))),
     headlightMaterial,
   );
   headlight.name = 'euc-headlight';

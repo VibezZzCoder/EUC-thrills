@@ -21,14 +21,13 @@ foundation of the game rather than the whole of it.
 
 Worth knowing before you start:
 
-- **The wheel is much faster, and much handier at walking pace.** Top speed is
-  now around 50 mph — it takes a long straight and about eight seconds of held
-  throttle to find it, and it is worth finding. **It will also cut out on you
-  up there**, which is the next point. At the other end, a full-lock
-  turn at walking pace is now roughly half the circle it used to be, so weaving
-  between two lamp posts or turning around inside a lane is something the wheel
-  will actually do. Backwards riding went from a shuffle to about 15 mph; it is
-  still asked for the same way, from a standstill, twice.
+- **The wheel does about 50 mph flat out, and is handy at walking pace.** Top
+  speed takes a long straight and about eight seconds of held throttle to
+  find, and it is worth finding — **it will also cut out on you up there**,
+  which is the next point. At the other end, a full-lock turn at walking pace
+  fits inside a lane, so weaving between two lamp posts is something the wheel
+  will actually do, and backwards riding reaches about 15 mph — asked for from
+  a standstill, twice.
 - The hand-built city is still the default and the place the ride is tuned
   against. **Fresh route** uses procedural generation to build you a brand-new
   place to ride.
@@ -37,23 +36,20 @@ Worth knowing before you start:
   builds the same place, which is how you send one to a friend. A rare name may
   not produce a valid route, in which case the game says so and asks for
   another rather than quietly giving you a different world.
-- **There are three selectable riders now.** The title screen says who you are
-  riding as and that line opens the chooser: **Cool Rider** in black and reflective blue;
-  **Trollina**, who has wild magenta hair, a skater dress over black tights, and
-  her own idea of what falling off sounds like; and **Red Rider**, a real rider
-  who asked to be in the game and appears with his permission, in his own
-  red-and-black gear on his own customized wheel. Cool Rider is the first-time
-  default; after you choose, the game remembers your rider. It is looks only —
-  all three ride exactly the same, and your best times carry across.
+- **There are four selectable riders — two of them real riders who appear
+  with their permission.** The title screen says who you are riding as, and
+  that line opens the chooser; Cool Rider is the first-time default, and after
+  you choose, the game remembers. It is looks only — all four ride exactly the
+  same, and your best times carry across. The [Riders](#riders) section below
+  has the roster.
 - **Police chase is live on Fresh routes.** Officer Dorkins is a CPU rider on
   the same wheel physics as you, not a moving obstacle on a rail. Stay ahead for
   five minutes; use the road, hazards, and rough ground to make his pursuit
   difficult. He follows onto the grass when you leave the road, while riding too
   far into the surround starts a warning and can end the run.
 - **Phones and tablets ride it too**, on their own on-screen controls, in
-  portrait or landscape. That is new, and it is the part of this build most
-  likely to want adjusting on a handset nobody has tried it on yet — the size
-  and the handedness of the controls are both in Settings.
+  portrait or landscape — the size and the handedness of the controls are both
+  in Settings, and every menu fits the screen in both orientations.
 - **Fresh routes carry road hazards, and bushes are soft hazards.** Liquid
   spills and potholes appear on generated routes. Bushes appear in the city and
   generated worlds, but they are foliage rather than walls: the wheel pushes
@@ -88,9 +84,10 @@ checksum of every published file except itself.*
 
 ## Riding
 
-You are **Cool Rider**, **Trollina**, or **Red Rider**, on a suspension wheel.
-The three are the same to ride, down to the last number — the choice changes
-what you and your wheel look like and what you shout when it goes wrong. The default ride is a
+You are **Cool Rider**, **Trollina**, **Red Rider**, or **Adonisb2**, on a
+suspension wheel. The four are the same to ride, down to the last number — the
+choice changes what you and your wheel look like and what you shout when it
+goes wrong. The default ride is a
 loop that leaves a plaza, runs a boulevard, crosses a park and a river ford,
 climbs a gravel trail, and comes back — with a shortcut through an alley that
 is genuinely faster and genuinely riskier. Fresh routes reuse those authored
@@ -289,22 +286,41 @@ records.
 ## Riders
 
 The line under the title screen's buttons says who you are riding as, and
-opens the chooser. There are three, and the difference is entirely cosmetic:
-**Cool Rider** in black moto gear with reflective blue panels and a full-face
-helmet; his clothes and riding style are based on what the project owner wears,
-credited at [@edwin_rodmen](https://www.instagram.com/edwin_rodmen/). Cool Rider
-does not reproduce the owner's face, and the fictional character name is not
-the owner's public name or nickname. **Trollina** began life as a joke drawing somebody sent the
-author to make fun of the graphics and ended up in the game; and **Red Rider**,
-a real rider who asked to appear and is in the game with his permission — his
-red-and-black armour, harness, and camera are his, and he is the first rider
-whose machine looks different too, a red saddled wheel modelled on his own
-customized machine. Each has their own crash sound. None is faster, and
-Red Rider's wheel rides identically to the standard one, down to the last
-number. His public riding/photography persona is credited as
-[@r3d__rider](https://www.instagram.com/r3d__rider/) at his and the project
-owner's direction; no legal or private identity is published, and his likeness
-appears here with permission for this game only — see [`NOTICE.md`](NOTICE.md).
+opens the chooser. There are four, and the difference is entirely cosmetic:
+each has their own crash sound, none is faster, and the two custom wheels ride
+identically to the standard one, down to the last number.
+
+**Cool Rider** wears black moto gear with reflective blue panels and a
+full-face helmet; his clothes and riding style are based on what the project
+owner wears, credited at
+[@edwin_rodmen](https://www.instagram.com/edwin_rodmen/). Cool Rider does not
+reproduce the owner's face, and the fictional character name is not the
+owner's public name or nickname.
+
+**Trollina** began life as a joke drawing somebody sent the author to make fun
+of the graphics, and ended up in the game with wild magenta hair, a skater
+dress over black tights, and her own idea of what falling off sounds like.
+
+**Red Rider** is a real rider who asked to appear and is in the game with his
+permission — his red-and-black armour, harness, and camera are his, and he was
+the first rider whose machine looks different too, a red saddled wheel
+modelled on his own customized machine. His public riding/photography persona
+is credited as [@r3d__rider](https://www.instagram.com/r3d__rider/) at his and
+the project owner's direction.
+
+**Adonisb2** is also a real rider, and he asked from the other direction: he
+contacted the owner to have his avatar added to the game so he could share it,
+supplied the reference photo of himself and his machine, and chose his in-game
+name. He rides in black kit under big neon-green guards with a mirrored visor,
+on a blocky off-road wheel that carries the green angry-eye plate from his own
+machine — and his crash is real: he contributed a recording of one of his own
+falls, and that is the sound his character crashes with. His public persona is
+credited as [@adonisjg_v11](https://www.tiktok.com/@adonisjg_v11) at his and
+the project owner's direction.
+
+For both real riders, no legal or private identity is published anywhere in
+this project, and their likenesses appear here with permission for this game
+only — see [`NOTICE.md`](NOTICE.md).
 
 ## Settings
 
@@ -381,6 +397,14 @@ may change or never happen.
 
 ### Recently landed
 
+- **A fourth rider, with his own wheel and his own real crash.** Adonisb2 —
+  a real rider who asked to have his avatar in the game so he could share it —
+  joins the chooser in black-and-neon-green gear on a rugged off-road wheel
+  that glares back, and crashes to a recording of himself crashing,
+  contributed by him. Cosmetic-equal like the others. Alongside him, the
+  rider chooser, title, and pause screens now fit every supported phone size
+  in both orientations without scrolling.
+
 - **A third rider, and the first with his own wheel.** Red Rider — a real
   rider who asked to appear, in the game with his permission — joins the
   chooser in his own gear on a red saddled wheel modelled on his customized
@@ -400,15 +424,6 @@ may change or never happen.
   ragdoll with a protective, non-graphic tumble; hard impacts give the wheel
   its own bounce and spin-out. Bushes changed from solid blocks to soft foliage
   hazards that drag, wobble, and cushion without directly causing a crash.
-- **Wobble, redesigned, with readable road hazards.** Speed wobble was the
-  missing third EUC risk, and it arrived the way the roadmap promised: paired
-  with spills and potholes that can be seen and avoided, so it is recoverable
-  and situational rather than the thing that ruins an ordinary carve. It is
-  live in this build on Fresh routes, with soft foliage as the corresponding
-  off-road hazard in every world that contains bushes.
-- **Performance verification is complete.** Generated routes carry structural
-  draw-call and triangle limits, and both the desktop and the handset ride
-  checks are done.
 
 ### Ideas under consideration
 
@@ -445,19 +460,21 @@ to be.
 
 ## Licence
 
-Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the eight
+Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the ten
 shipped sounds derive from public-domain (CC0) recordings; two crashes derive
 from the author's own recording — the third rider's is that same wipeout with
-the author's voice removed; and the second rider's crash is a composed one-shot
-whose voice is machine-generated and is therefore excluded from the CC BY 4.0
-claim. Cool Rider is an original fictional character whose clothes and style
-draw on what the project owner wears; Red Rider is a real person represented
-with permission, and no licence in this project covers his name, likeness, or
-persona. Full terms,
+the author's voice removed. Two shipped sounds sit outside the CC BY 4.0
+claim: the second rider's crash is a composed one-shot whose voice is
+machine-generated, and the fourth rider's crash is **his own contributed
+recording of his own fall**, used in this game with his permission and with no
+copyright over it claimed by this project. Cool Rider is an original fictional
+character whose clothes and style draw on what the project owner wears; Red
+Rider and Adonisb2 are real people represented with permission, and no licence
+in this project covers their names, likenesses, or personas. Full terms,
 attribution, and per-file provenance are in [`LICENSE`](LICENSE) and
 [`NOTICE.md`](NOTICE.md).
 
-The wheels in this game are original fictional designs — one is modelled, with
-its rider's permission, on his own customized machine, without reproducing any
-manufacturer's identity. This project is not affiliated with, endorsed by, or
+The wheels in this game are original fictional designs — two are modelled,
+with their riders' permission, on their own customized machines, without
+reproducing any manufacturer's identity or any third-party sticker artwork. This project is not affiliated with, endorsed by, or
 associated with any electric unicycle manufacturer or retailer.

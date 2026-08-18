@@ -452,6 +452,37 @@ export function shaded<T extends THREE.BufferGeometry>(geometry: T, shade = 1): 
   return geometry;
 }
 
+/** A per-channel vertex multiplier over a material's colour. 1,1,1 is the colour. */
+export type Tint = readonly [number, number, number];
+
+/**
+ * The vertex multiplier that repaints a `base`-coloured material as `target`.
+ *
+ * The whole repaint system rests on one shader fact: a vertex colour
+ * *multiplies* the material colour, per channel, in linear space — so the
+ * ratio of two linear colours is the paint that turns one into the other.
+ * `THREE.Color` decodes both hexes through the same sRGB transfer, which
+ * keeps the ratio honest and keeps every painted target authored in
+ * `data/tuning.ts` like any other colour (invariant 4 in spirit: the hex
+ * lives there; only the arithmetic lives here).
+ *
+ * It sits in the kit beside `shaded()` because both look files need it and for
+ * the same reason — `shaded` is this function's scalar half, and a scalar
+ * cannot change hue. It lived in `render/riderLook.ts` until M22 gave a
+ * *machine* a pale trim material that has to reach green, blue and near-black
+ * from one base; importing 4,000 lines of rider looks to borrow eight lines of
+ * colour arithmetic was the wrong direction of dependency.
+ */
+export function tintOver(base: number, target: number, targetScale = 1): Tint {
+  const b = new THREE.Color(base);
+  const t = new THREE.Color(target).multiplyScalar(targetScale);
+  return [
+    t.r / Math.max(1e-3, b.r),
+    t.g / Math.max(1e-3, b.g),
+    t.b / Math.max(1e-3, b.b),
+  ];
+}
+
 /**
  * Fold several geometries into one buffer, and dispose the inputs.
  *

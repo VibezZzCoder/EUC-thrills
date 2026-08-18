@@ -311,6 +311,20 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  *
  * What has moved, most recent first:
  *
+ *   - **Adonisb2's machine — M22 Phase 2 (2026-08-17): 32,032 → 33,648
+ *     triangles, zero draw calls.** The third `MachineLook`: his blocky
+ *     off-road wheel. It is **11 meshes and 18 draw calls, identical to the
+ *     standard wheel and to Red Rider's**, at 6,244 triangles against the
+ *     standard's 3,776 — the saddle merged into the shell mesh, the whole
+ *     angry-eye plate and every accent as patches in the one trim mesh, both
+ *     cream lamps in the one headlight mesh, and the livery as vertex paint.
+ *     Roughly a quarter of the growth is the one thing on this machine that
+ *     is deliberately geometry rather than paint: 54 tyre lugs merged into
+ *     the tyre's own mesh, because a knobby tyre's whole read is its broken
+ *     silhouette and paint on a shared-vertex loft blurs between columns
+ *     (`docs/PLANS.md` §22.7). The reserve counts his machine twice — the rig
+ *     and the Time-trial ghost each build one — which is why 2,428 triangles
+ *     of machine move the frame by more than 2,428.
  *   - **Red Rider's machine — M19 Phase 3 (2026-08-14): 29,672 → 31,756
  *     triangles, zero draw calls.** The second `MachineLook`
  *     (`render/machineLook.ts`): his customized red wheel, built the way the
@@ -369,7 +383,7 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  */
 export const NON_LEVEL_RESERVE = deepFreeze({
   drawCalls: 88,
-  triangles: 32_032,
+  triangles: 33_648,
 });
 
 /**

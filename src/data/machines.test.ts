@@ -55,10 +55,13 @@ test('every character maps to a machine that exists', () => {
   }
 });
 
-test('Red Rider gets his own wheel and nobody else does', () => {
+test('the two riders with their own wheels get them, and nobody else does', () => {
   // The q29 default, asserted so that changing it is a deliberate act with a
-  // failing test attached rather than a quiet edit.
+  // failing test attached rather than a quiet edit. Both real people who lent
+  // a machine ride that machine; the two fictional riders share the standard
+  // wheel until the wheel designer (§13 q29) gives the player the choice.
   assert.equal(machineForCharacter('red-rider'), 'red-rider');
+  assert.equal(machineForCharacter('adonisb2'), 'adonisb2');
   assert.equal(machineForCharacter('cool-rider'), 'standard');
   assert.equal(machineForCharacter('trollina'), 'standard');
   // The chase's threat does not ride somebody else's personal machine.

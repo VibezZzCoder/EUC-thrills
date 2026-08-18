@@ -434,6 +434,54 @@ const RIDER_CARDS: Readonly<Record<PlayableCharacterId, { blurb: string; portrai
               fill="#d4333a"/>
       </svg>`,
   },
+  /**
+   * Adonisb2 — M22, the fourth card, and this `Record` doing its declared job:
+   * the compiler refused the widened `PlayableCharacterId` until this entry
+   * existed (`docs/PLANS.md` §22.5).
+   *
+   * Built from the same head-and-shoulders silhouette as the two helmeted
+   * cards above, because he shares it — a full-face lid over a visor over
+   * shoulders. What separates him at 30 m is what separates him here: the
+   * black field, the neon-green striping, and a **pale mirrored visor** where
+   * every other card's visor is dark. The visor's diagonal streaks are the
+   * card's shorthand for "mirror" the way Red Rider's sheen band is his
+   * shorthand for "smoke". The backpack straps sit a step darker than the
+   * jacket — black webbing on black kit, which is what the photograph shows,
+   * so the card does not invent contrast the rider does not have.
+   *
+   * **His name is not drawn into the art** — Red Rider's entry above records
+   * why (a portrait that announces itself reads the name twice), and the
+   * legible wordmark §22.5 requires is the name span two lines below the
+   * portrait, rendering the spelling he typed. The colours are the authored
+   * albedos from `BLOCKOUT_COLOURS.adonisb2*`, reading a little deeper on an
+   * unlit card exactly as the three portraits above do.
+   */
+  adonisb2: {
+    blurb: 'Black kit under big neon-green guards, a mirrored visor, and a wheel that glares back. '
+      + 'A real rider, in the game so he could share it.',
+    portrait: `
+      <svg viewBox="0 0 96 96" class="euc-rider-card__art" aria-hidden="true" focusable="false">
+        <path d="M18 76c6-5 17-8 30-8s24 3 30 8v6H18z" fill="#2b2d31"/>
+        <path d="M31 71 47 82M65 71 49 82" stroke="#46474b" stroke-width="4.6"
+              stroke-linecap="round" fill="none"/>
+        <path d="M20 58c0-19 12-31 28-31s28 12 28 31c0 6-2 11-5 14H25c-3-3-5-8-5-14z"
+              fill="#34373d"/>
+        <path d="M23 52c3-14 12-22 25-22s22 8 25 22c-6-4-15-6-25-6s-19 2-25 6z"
+              fill="#3f434a"/>
+        <path d="M36 32l3.4 9M60 32l-3.4 9" stroke="#6fc814" stroke-width="3.4"
+              stroke-linecap="round" fill="none"/>
+        <path d="M26 55c4-4 12-7 22-7s18 3 22 7c-1 7-3 11-6 13H32c-3-2-5-6-6-13z"
+              fill="#9cabb9"/>
+        <path d="M28 56c4-3 11-5 20-5s16 2 20 5c-1 5-2 8-4 9H32c-2-1-3-4-4-9z"
+              fill="#b9c7d3"/>
+        <path d="M35 56l7 11M45 55l7 12" stroke="#e2ecf3" stroke-width="2.6"
+              stroke-linecap="round" opacity="0.85" fill="none"/>
+        <path d="M26 53c4.4-4 12.6-6.4 22-6.4s17.6 2.4 22 6.4" stroke="#6fc814"
+              stroke-width="3" stroke-linecap="round" fill="none"/>
+        <path d="M27 68c5 2.6 12.6 4 21 4s16-1.4 21-4c-.8 2.4-1.8 4-3 5H30c-1.2-1-2.2-2.6-3-5z"
+              fill="#6fc814"/>
+      </svg>`,
+  },
 };
 
 /**

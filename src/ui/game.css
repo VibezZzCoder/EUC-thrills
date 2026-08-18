@@ -1854,6 +1854,140 @@
 }
 
 /* ---------------------------------------------------------------------------
+ * Menus that must FIT, not scroll (M22 QA)
+ *
+ * Three of the six menu surfaces are shallow enough that a player should never
+ * have to scroll them: the title, the pause card, and the rider chooser. On
+ * phone-sized viewports all three overflowed — the chooser by 650 pixels in
+ * the worst portrait, the title by 290 in landscape — and `overflow-y: auto`
+ * on `.euc-menu` quietly turned a layout defect into a scrollbar. Settings,
+ * results and the fresh-route panel are lists and forms; they scroll by
+ * design and nothing here touches them.
+ *
+ * Same doctrine as the section above: these queries ask about width and
+ * height, never about device.
+ * ------------------------------------------------------------------------ */
+
+/*
+ * Tier one — short viewports (portrait phones, half-height desktop windows).
+ *
+ * Quieter chrome, not a different layout: the backdrop padding, the panel
+ * rhythm and the button height each give back a little, which is enough to
+ * bring the title screen inside a 667-pixel phone with all six buttons, the
+ * world line, the rider chip and the credit still on screen.
+ */
+@media (max-height: 42rem) {
+  .euc-menu {
+    padding: max(0.9rem, env(safe-area-inset-top)) 1.25rem max(0.9rem, env(safe-area-inset-bottom));
+  }
+
+  .euc-menu__panel { gap: 0.85rem; }
+
+  .euc-menu__actions { gap: 0.5rem; }
+
+  .euc-button { padding-block: 0.6rem; }
+}
+
+/*
+ * The compact rider card: the same card, turned sideways.
+ *
+ * Four vertical cards stack more than 1,300 pixels tall on a phone, and no
+ * amount of shrinking the type makes that fit — the portrait on top of the
+ * words is what costs the height. Sideways, the portrait sits beside the
+ * words and a card is a quarter the height without losing the portrait, the
+ * name, the blurb or the "Riding now" pill. One anatomy for every small
+ * viewport; portrait and landscape differ only in how many columns the
+ * `auto-fit` floor lets through (one on a portrait phone, two in landscape
+ * and on a short desktop window). §9d's rules are untouched: the card is
+ * still a `<button>`, the pill still holds its space so the grid never
+ * reflows under a thumb, and every card stays far past the 44-pixel floor.
+ */
+@media (max-width: 44rem), (max-height: 42rem) {
+  .euc-riders__grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+    gap: 0.6rem;
+  }
+
+  .euc-rider-card {
+    grid-template-columns: auto minmax(0, 1fr);
+    /*
+     * The pill sits UNDER the portrait, not under the blurb. Its space is
+     * still reserved (visibility, never display — §9d's no-reflow rule), but
+     * the portrait's column is the shorter one, so here the reservation costs
+     * no height at all instead of a line's worth in all four cards.
+     */
+    grid-template-areas:
+      "art   name"
+      "art   blurb"
+      "state blurb";
+    align-items: start;
+    justify-items: start;
+    column-gap: 0.8rem;
+    row-gap: 0.2rem;
+    padding: 0.6rem 0.8rem;
+    text-align: left;
+  }
+
+  .euc-rider-card__art {
+    grid-area: art;
+    width: 3.6rem;
+  }
+
+  .euc-rider-card__name { grid-area: name; font-size: 1rem; }
+
+  .euc-rider-card__blurb {
+    grid-area: blurb;
+    font-size: 0.78rem;
+    line-height: 1.35;
+  }
+
+  .euc-rider-card__state {
+    grid-area: state;
+    justify-self: center;
+    margin-top: 0.05rem;
+  }
+
+  .euc-riders__heading { font-size: clamp(1.3rem, 4.5vw, 1.7rem); }
+
+  .euc-menu--riders .euc-menu__tagline { font-size: 0.8rem; }
+}
+
+/*
+ * Tier two — short landscape (a phone on its side).
+ *
+ * The title's six actions go to two columns and their second lines go away:
+ * the labels came first historically and stand alone, and 390 pixels of
+ * height has no room for four explanatory sentences. Scoped to the title and
+ * pause card only — the fresh-route panel's "Surprise me" note is the control
+ * a new player needs most (§9c-ii) and that panel scrolls by design. The
+ * chooser drops its tagline here for the same reason: it is advice, and the
+ * roster is the point.
+ */
+@media (max-height: 30rem) {
+  .euc-menu {
+    padding: max(0.75rem, env(safe-area-inset-top)) 1rem max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .euc-menu__panel { gap: 0.6rem; }
+
+  .euc-menu__title { font-size: clamp(1.4rem, 5.5vh, 2rem); }
+
+  .euc-menu--title .euc-menu__panel { width: min(44rem, 100%); }
+
+  .euc-menu--title .euc-menu__actions,
+  .euc-menu--pause .euc-menu__actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .euc-menu--title .euc-button__note,
+  .euc-menu--pause .euc-button__note { display: none; }
+
+  .euc-menu--riders .euc-menu__tagline { display: none; }
+
+  .euc-riders__heading { font-size: clamp(1.2rem, 5vh, 1.5rem); }
+}
+
+/* ---------------------------------------------------------------------------
  * A finger as the primary pointer
  *
  * Not the same question as "is the window narrow" — a tablet is wide and is

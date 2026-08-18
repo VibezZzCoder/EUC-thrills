@@ -3034,6 +3034,43 @@ export const BLOCKOUT_COLOURS = {
   machineHeadlightCool: 0xdff0ff,
 
   /**
+   * Adonisb2's machine — M22 Phase 2 (`render/machineLook.ts`).
+   *
+   * **The inverse of the entry above, and it has to be built the other way
+   * round.** His wheel is black bodywork carrying green personalization, so
+   * unlike Red Rider's the shell's base is *not* the identity colour: it is
+   * `machineAdonisb2`, a graphite dark enough to read black under the level's
+   * one hard sun and light enough that the painter can still take the recesses
+   * further down. A base actually at 0x000000 would be a base no paint could
+   * move, which is the same direction rule stated from the dark end.
+   *
+   * The green lives on the trim instead — and `machineAdonisb2Trim` is
+   * deliberately **pale**, not green, because his nose plate holds four values
+   * on one material: the green plate, the white of the eyes, the near-black of
+   * the pupils and brows, and the blue chevrons between his light panels. A
+   * scalar shade cannot change hue and a green base cannot be painted white,
+   * so the base is the brightest thing on the plate and everything else is
+   * painted down from it (`MachinePatch.tint`, `docs/PLANS.md` §22.4).
+   *
+   * `machineAdonisb2Green` is the same lime as his knee guards
+   * (`adonisb2Guard`) rather than a second green: the whole point of the
+   * personalization is that the rider and the machine match. His light panels
+   * are the warm `headlight` above — the photograph's panels are cream, not
+   * the projector white Red Rider's wheel uses — and `machineAdonisb2Blue` is
+   * the one cool mark on the machine, the chevron stack on the centre spine.
+   */
+  machineAdonisb2: 0x303338,
+  machineAdonisb2Trim: 0xf2f0ea,
+  machineAdonisb2Green: 0x6fc814,
+  machineAdonisb2Blue: 0x1f5fd0,
+  /**
+   * The teal strips on his side brackets — the machine's own running lights in
+   * the photograph, and the only colour on it that is neither green nor black.
+   * They ride the trim material like everything else, so they cost nothing.
+   */
+  machineAdonisb2Teal: 0x22c8c0,
+
+  /**
    * The machine's own status light (M6), in its four ladder colours.
    *
    * **This is the wheel telling the rider something, not a HUD.**
@@ -3269,6 +3306,71 @@ export const BLOCKOUT_COLOURS = {
    * character toward the top of the range, and a true white here flares.
    */
   redRiderMark: 0xd8d2c6,
+
+  /**
+   * Adonisb2 — M22, the second palette taken from a real person, and the
+   * exact inverse of Red Rider's problem: **black is the field and neon green
+   * is the structure**. His photograph (under `references/guest-rider/`, never
+   * shipped) is black kit head to toe — full-face lid, jacket, trousers,
+   * gloves, boots, backpack — with the identity carried entirely by the
+   * neon-green pieces: helmet striping, and knee/shin guards the reference
+   * document forbids shrinking.
+   *
+   * The blacks are the Cool Rider exercise: authored lighter than the real
+   * gear so form survives ACES. The green is the Trollina/Red Rider exercise
+   * pointed at the other primary: picker-neon green (#39ff14 territory) sits
+   * at the top of the gamut and bleaches to lime-white on a sunlit shoulder,
+   * so it is authored well below the reference and must still read *neon*
+   * against the blacks beside it — the contrast does most of that work.
+   *
+   * **One rule these values exist to enforce (§22.3 fact 4): a vertex colour
+   * is a multiplier, so green must live in base materials and be painted
+   * *down* to black — a black base can never be painted up to green.** The
+   * Phase 1 look is built around that direction, and these are its starting
+   * values, refined on captures like every palette above.
+   */
+  adonisb2Suit: 0x2b2d31,
+  /**
+   * Gloves, boots, backpack, its straps, and the boot shafts.
+   *
+   * **A step *lighter* than the suit, not deeper.** It was authored deeper on
+   * the reasoning that laid-over kit is darker gear, which is true of the real
+   * clothing and useless on screen: the owner's ride found the backpack, its
+   * straps and the belt invisible, because near-black kit on near-black
+   * clothing under one hard sun has nothing left to separate it. Every shade
+   * above 1 in his panel groups was a patch on that. The gear reads as its own
+   * material now, and the multipliers came back down to where they describe a
+   * surface rather than rescue one.
+   */
+  adonisb2Gear: 0x46474b,
+  /**
+   * The lid — lighter than the suit for the reason every helmet in this file
+   * is: the chase camera looks at the back of a head all day.
+   */
+  adonisb2Helmet: 0x34373d,
+  /**
+   * The one saturated value he wears: guards, helmet striping, and later the
+   * angry-eye art on his wheel (M22 Phase 2).
+   *
+   * **Lime, not grass.** The first value here was a pure green picked by eye,
+   * and the reference comparison measured the miss rather than argued it: the
+   * neon mass of the owner's mockup averages rgb(103,172,11) and the
+   * photograph's rgb(85,166,60), while the render of the first value averaged
+   * rgb(75,165,34) — the same brightness at the wrong hue, short of red and
+   * long on blue. Moulded hi-vis plastic is a yellow-green, and this walks the
+   * albedo there while keeping the value that survived the ACES argument
+   * above.
+   */
+  adonisb2Guard: 0x6fc814,
+  /**
+   * The large mirrored visor — pale where every other visor in this file is
+   * dark, because *mirrored* is the read the reference names. Most of that
+   * read is roughness, not albedo; this stays below white because a curved
+   * reflective surface already catches the sun's mirror angle and ACES clips
+   * it toward white (the M19 waist-strap lesson — on a visor that may be the
+   * look, and the Phase 1 captures decide).
+   */
+  adonisb2Visor: 0x9cabb9,
 
   /**
    * The ghost, and the checkpoint gates (M10).

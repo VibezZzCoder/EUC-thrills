@@ -23,7 +23,7 @@ The same origin is carried inside the build itself — as a banner at the top of
 
 The two licences are stated separately on purpose: MIT is a software licence and does not read sensibly when applied to models, textures, and sound. If you reuse one but not the other, the terms are unambiguous.
 
-**One limit belongs here rather than in a footnote.** A CC BY 4.0 grant conveys this project's own rights in the assets this project authored. It does not convey — and cannot convey — rights in a real person's name, likeness, or persona. Red Rider is a real person appearing with his permission; the licence above does not extend to his identity. See *Reference material* below.
+**One limit belongs here rather than in a footnote.** A CC BY 4.0 grant conveys this project's own rights in the assets this project authored. It does not convey — and cannot convey — rights in a real person's name, likeness, or persona. **Two of the four riders are real people appearing with their permission** — Red Rider and Adonisb2 — and the licence above does not extend to either identity. One of them also contributed a recording, which the licence does not cover either. See *Reference material* below.
 
 ## Third-party software
 
@@ -52,9 +52,13 @@ The other two loops are original and are covered by the CC BY 4.0 claim above: `
 
 `crash_red_rider` (the third rider's crash) is derived from that same recording and is covered by the CC BY 4.0 claim with it. It is the owner's wipeout with **the owner's voice removed**: for 0.8 s of the 3.4 s tumble, the band that carries speech is replaced with voice-free texture taken from elsewhere in the same take, and every sample outside that window is the original recording unchanged. It contains **no recording of Red Rider's own voice**, and no such recording is used anywhere in this game. Nothing generated, modelled, or third-party enters it, which is why it is not listed under *Generated audio* below.
 
+`crash_adonisb2` (the fourth rider's crash) is **a recording of the rider it belongs to, contributed by him**, and it is the one shipped audio file in this game whose standing is neither this project's own nor a public-domain download. The rider represented here as Adonisb2 recorded his own fall on an electric unicycle and gave the project owner the file for use in this game. What ships is 3.4 s of *his* recording — cut to the shared crash length, the two near-identical channels summed to mono, and the level matched to `crash_wipeout`. Nothing is removed, substituted, modelled, or generated.
+
+He gave permission for it to be in this game, and that is the whole of what is claimed. It is **not** covered by the CC BY 4.0 claim above, no copyright over it is claimed by this project, and no licence in this repository conveys any right to it beyond redistribution with the game. A reuser who wants that recording for anything else should ask him. He is credited by the name he chose for himself here; no other name of his appears in this project's public files.
+
 ## Generated audio
 
-One shipped file is **not** covered by the CC BY 4.0 claim above, and is listed separately because its standing differs from everything else in this project.
+One shipped file is outside the CC BY 4.0 claim above **because part of it is machine-generated**, and is listed separately because that standing differs from everything else in this project. (It is not the only file outside the claim — `crash_adonisb2` is too, for an unrelated reason the section above gives.)
 
 | Shipped file | What it is | Standing |
 |---|---|---|
@@ -62,13 +66,17 @@ One shipped file is **not** covered by the CC BY 4.0 claim above, and is listed 
 
 This is the same reasoning the project applies to the AI-generated art-direction references under `references/`, applied to a shipped file rather than to a working one. It is recorded here rather than left implicit because a redistributor cannot tell by listening.
 
-One shipped file that a reader might expect in this table is deliberately absent: `crash_red_rider` carries no generated layer at all and stays inside the CC BY 4.0 claim. *Third-party audio recordings* above says what it is.
+Two shipped files a reader might expect in this table are deliberately absent, and the reason differs for each. `crash_red_rider` carries no generated layer at all and stays inside the CC BY 4.0 claim. `crash_adonisb2` carries none either and stays *outside* it, because it is somebody else's recording rather than this project's. Four riders crash in this game and only one of those four sounds is machine-made; *Third-party audio recordings* above says what the other three are.
 
 ## Fictional designs and real-world brands
 
 Electric unicycles in this game are **original fictional designs**. They are informed by the general characteristics of real-world EUC categories — compact commuters, suspension trail wheels, long-range touring wheels — but they do not copy any specific commercial product's shell geometry, panel design, decals, naming, or protected product identity.
 
-**One machine is qualified, and the qualification is about a person rather than a manufacturer.** Red Rider's wheel is modelled on the machine he customized himself, from reference material he supplied, with his permission — including the red livery and the identification plate carrying his own name. It is still no manufacturer's product: it reproduces no commercial shell, no panel design, and no protected product identity, and the commercial gear mark visible in his photograph is deliberately not reproduced. The only branding on him or his wheel is his own name.
+**Two machines are qualified, and in both cases the qualification is about a person rather than a manufacturer.**
+
+Red Rider's wheel is modelled on the machine he customized himself, from reference material he supplied, with his permission — including the red livery and the identification plate carrying his own name. It is still no manufacturer's product: it reproduces no commercial shell, no panel design, and no protected product identity, and the commercial gear mark visible in his photograph is deliberately not reproduced. The only branding on him or his wheel is his own name.
+
+Adonisb2's wheel is modelled the same way and on the same footing: a blocky off-road form and the green plate with the stylized eyes that personalize his own machine, from reference material he supplied, with his permission. The plate's artwork is drawn from scratch in this project's own style rather than copied. It reproduces no manufacturer's shell, no panel design and no protected product identity, the third-party sticker artwork visible in his photograph and in the supplied mockup is deliberately not reproduced, and his wheel carries no name or wordmark at all.
 
 This project is not affiliated with, endorsed by, sponsored by, approved by, or otherwise associated with Begode/Gotway, InMotion, King Song, Veteran, Extreme Bull, Solowheel/Inventist, Segway-Ninebot, or any other manufacturer, retailer, or rights holder. Any third-party names, trademarks, service marks, product names, or other protected material remain the property of their respective owners, and are referenced only for identification, commentary, or research context. No ownership is claimed over third-party rights.
 
@@ -91,6 +99,18 @@ The third rider is **not** an original creation, and this entry is written narro
 **No broader right is claimed or granted.** Red Rider is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place his name, likeness, or persona under any licence, and no licence in this file conveys them. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs his agreement, which is not the project's to give.
 
 **"Red Rider" — with the public Instagram persona credited above — is the only identity published.** No legal name and no private identity is disclosed anywhere in this project or its distributions, and the conversation that granted the permission is internal evidence rather than a public-facing asset.
+
+### Adonisb2 — a real person, represented with permission
+
+The fourth rider is **not** an original creation either, and the same narrow terms apply. What is different about this one is worth stating plainly, because it is the actual shape of the permission: **he initiated it.**
+
+**Adonisb2 is represented with permission, at his own request.** He is a real EUC rider. He contacted the project owner asking to have his avatar added to the game so that he could share it, supplied the reference photograph of himself and his machine, **chose the in-game name himself** when the owner asked what it should be — the spelling here is exactly what he typed — and then **contributed a recording of one of his own falls**, which is the sound his character crashes with. The permission conversation and the photograph are retained with the project privately, under `references/`, never redistributed and never shown in the game.
+
+**His public presence:** Adonisb2 rides and posts on TikTok as [@adonisjg_v11](https://www.tiktok.com/@adonisjg_v11) — the handle he watermarks on his own photographs. The link is listed here as credit at the project owner's direction; it is the same public persona that appears in the game, not an additional identity.
+
+**No broader right is claimed or granted.** Adonisb2 is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place his name, likeness, or persona under any licence, and no licence in this file conveys them. His contributed recording is not under that grant either — *Third-party audio recordings* above says so separately. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs his agreement, which is not the project's to give.
+
+**"Adonisb2" — with the public TikTok persona credited above — is the only identity published.** He chose that name *to be published*. No legal name and no other account of his is disclosed anywhere in this project or its distributions, and the conversation that granted the permission is internal evidence rather than a public-facing asset.
 
 ## Attribution
 

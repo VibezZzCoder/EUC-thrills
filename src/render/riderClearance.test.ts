@@ -2,9 +2,9 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import * as THREE from 'three';
-import { EUC, RIDER_BLOCKOUT } from '../data/tuning.ts';
+import { BLOCKOUT_COLOURS, EUC, RIDER_BLOCKOUT } from '../data/tuning.ts';
 import { createPlaceholderRider, createStanceInput, type StanceInput } from './rider.ts';
-import { TROLLINA_LOOK } from './riderLook.ts';
+import { ADONISB2_LOOK, TROLLINA_LOOK } from './riderLook.ts';
 import type { LoftProfile } from './blockoutKit.ts';
 
 /**
@@ -242,6 +242,145 @@ test('the common transient — a preload, into a moderate carve — stays clear 
         }
       }
     }
+  } finally {
+    rider.dispose();
+  }
+});
+
+/**
+ * Adonisb2 — M22, the third look with a garment-versus-leg contrast problem,
+ * and the reason this file's header says a look like his "must join" it.
+ *
+ * Cool Rider's exemption was that his jacket, trousers and legs are one black
+ * suit: a hem graze has nothing to show. Adonisb2's legs are the *green* base
+ * material painted down to trousers (§22.3 fact 4), which hands the legs
+ * contrast again — a fold that swung guard-green up through the black jacket
+ * hem would be Trollina's skirt defect in a new colour. The clearance is
+ * therefore asserted the way hers is, but for the coloured region rather than
+ * the whole limb: no green-based vertex may reach the jacket's hem zone in any
+ * stance of the held envelope or the common transient. Green vertices are
+ * found by their painted colour, not by height arithmetic, so the assertion
+ * survives the paint boundary moving.
+ */
+test("Adonisb2's guard green never reaches the jacket hem", () => {
+  const rider = createPlaceholderRider(ADONISB2_LOOK);
+  const hem = ADONISB2_LOOK.profiles.torso[0]!.y;
+
+  const stances: Array<Partial<StanceInput>> = [];
+  for (const rollAngle of CARVES) {
+    for (const riderPitch of LEANS) {
+      stances.push({ rollAngle, riderPitch, torsoPitch: torsoPitchFor(riderPitch) });
+      stances.push({
+        rollAngle: rollAngle * 0.8,
+        riderPitch: riderPitch * 0.8,
+        torsoPitch: torsoPitchFor(riderPitch * 0.8),
+        crouch: 1,
+      });
+    }
+  }
+  stances.push({ restFactor: 1, torsoPitch: torsoPitchFor(0) });
+  stances.push({ crash: 1, torsoPitch: torsoPitchFor(0) });
+
+  try {
+    const point = new THREE.Vector3();
+    let sampled = 0;
+    for (const overrides of stances) {
+      const stance = Object.assign(createStanceInput(), overrides);
+      rider.applyStanceReaction(stance);
+      rider.root.updateMatrixWorld(true);
+      const pelvis = rider.pelvis;
+
+      let highestGreen = -Infinity;
+      for (const side of ['left', 'right']) {
+        const hip = rider.root.getObjectByName(`rider-hip-${side}`)!;
+        const knee = rider.root.getObjectByName(`rider-knee-${side}`)!;
+        const meshes: THREE.Mesh[] = [];
+        for (const joint of [hip, knee]) {
+          for (const child of joint.children) {
+            if ((child as THREE.Mesh).isMesh === true) meshes.push(child as THREE.Mesh);
+          }
+        }
+        for (const mesh of meshes) {
+          const positions = mesh.geometry.getAttribute('position');
+          const colours = mesh.geometry.getAttribute('color');
+          for (let i = 0; i < positions.count; i += 1) {
+            // Green base or the bright guard plate: the multiplier's green
+            // channel sits near 1; the trouser and cuff tints paint it far
+            // below. 0.5 splits the two populations with margin either way.
+            if (colours.getY(i) < 0.5) continue;
+            point.fromBufferAttribute(positions, i);
+            mesh.localToWorld(point);
+            pelvis.worldToLocal(point);
+            sampled += 1;
+            highestGreen = Math.max(highestGreen, point.y);
+          }
+        }
+      }
+      assert.ok(
+        highestGreen < hem - 0.02,
+        `carve ${(overrides.rollAngle ?? 0).toFixed(2)}, lean `
+          + `${(overrides.riderPitch ?? 0).toFixed(2)}, crouch ${overrides.crouch ?? 0}: `
+          + `guard green rises to ${(highestGreen * 1000).toFixed(0)} mm against the hem at `
+          + `${(hem * 1000).toFixed(0)} mm — the jacket would show green through its hem`,
+      );
+    }
+    assert.ok(sampled > 1000, `only ${sampled} green vertices sampled — the guards are missing`);
+  } finally {
+    rider.dispose();
+  }
+});
+
+test("Adonisb2's trousers agree with his seat across the hip join", () => {
+  // The other half of his exemption from the radial assertion Trollina needs:
+  // where his leg CAN graze the hem, it must be painted to exactly the black
+  // the seat wears, so a graze has nothing to show — Cool Rider's property,
+  // recovered by arithmetic on a green-based leg. The painted trouser colour
+  // is base × tint; the seat is suit × shades.seat; the two must be one value.
+  const look = ADONISB2_LOOK;
+  assert.equal(look.parts.legs, 'accent', 'his legs must be the green base material');
+  assert.equal(look.parts.seat, 'body', 'his seat is the suit, inside the torso mesh');
+
+  const rider = createPlaceholderRider(look);
+  try {
+    const thigh = rider.root.getObjectByName('rider-hip-left')!.children.find(
+      (child) => (child as THREE.Mesh).isMesh === true,
+    ) as THREE.Mesh;
+    const positions = thigh.geometry.getAttribute('position');
+    const colours = thigh.geometry.getAttribute('color');
+    const base = new THREE.Color(BLOCKOUT_COLOURS.adonisb2Guard);
+    const seat = new THREE.Color(BLOCKOUT_COLOURS.adonisb2Suit).multiplyScalar(look.shades.seat);
+    let checked = 0;
+    for (let i = 0; i < positions.count; i += 1) {
+      // **The trouser band is the top half of the thigh**, which is the only
+      // part of it that can reach the hem and therefore the only part this
+      // contract is about.
+      //
+      // It used to be selected as "every vertex that is not green", on the
+      // reasoning that a green-based leg has exactly two painted populations.
+      // It has three since the knee cup's dark was painted onto the limb
+      // beneath the cup patches (a hinge opens, and what shows through it has
+      // to be the cup's own value) — near-black paint at the knee, correct,
+      // deliberate, and nowhere near a jacket hem. Selecting by height keeps
+      // the assertion aimed at what it was written to protect instead of
+      // failing on a third colour it never anticipated.
+      if (positions.getY(i) < -RIDER_BLOCKOUT.thighLength * 0.5) continue;
+      if (colours.getY(i) >= 0.5) continue;
+      checked += 1;
+      const painted = new THREE.Color(
+        base.r * colours.getX(i) * look.shades.legs,
+        base.g * colours.getY(i) * look.shades.legs,
+        base.b * colours.getZ(i) * look.shades.legs,
+      );
+      assert.ok(
+        Math.abs(painted.r - seat.r) < 2e-3
+          && Math.abs(painted.g - seat.g) < 2e-3
+          && Math.abs(painted.b - seat.b) < 2e-3,
+        `trouser vertex ${i} paints to (${painted.r.toFixed(4)}, ${painted.g.toFixed(4)}, `
+          + `${painted.b.toFixed(4)}) against the seat's (${seat.r.toFixed(4)}, `
+          + `${seat.g.toFixed(4)}, ${seat.b.toFixed(4)}) — the hip join would show a seam`,
+      );
+    }
+    assert.ok(checked > 50, `only ${checked} trouser vertices found`);
   } finally {
     rider.dispose();
   }

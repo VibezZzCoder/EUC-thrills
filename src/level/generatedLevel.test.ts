@@ -792,14 +792,25 @@ test('generation alone does not consume the complete boot budget', () => {
  * and the front/rear armor routes now run from near the axle to the shoulders.
  * The tyre, pedals, suspension, hazard and target counts are untouched. The
  * identical movement on all six routes is again the fixed-reserve check.
+ *
+ * **Re-recorded 2026-08-17 for Adonisb2's machine — M22 Phase 2.** Every seed
+ * gained exactly 1,616 triangles and no draw call: `NON_LEVEL_RESERVE` moving
+ * 32,032 → 33,648 and nothing else. His off-road wheel is 11 meshes and 18
+ * calls, identical to the standard wheel and to Red Rider's — the saddle
+ * merges into the shell mesh, the angry-eye plate and every accent share the
+ * one trim mesh, both lamps share the one headlight mesh, and the 54 tyre
+ * lugs merge into the tyre. Hazard and target counts are untouched on all six
+ * routes, which is what makes the uniform movement a reserve change rather
+ * than a generator change. The densest route now spends 77.5% of the triangle
+ * ceiling, still inside the 80% the headroom test below demands.
  */
 const ADVERSARIAL_2026_08_09 = [
-  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 137, triangles: 308_232, hazards: 6, targets: 22 },
-  { seed: 'route-278', axis: 'second densest', drawCalls: 136, triangles: 304_908, hazards: 4, targets: 19 },
-  { seed: 'sweep-89', axis: 'third densest', drawCalls: 137, triangles: 302_044, hazards: 6, targets: 26 },
-  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 137, triangles: 297_546, hazards: 6, targets: 19 },
-  { seed: 'euc-180', axis: 'longest required route', drawCalls: 136, triangles: 283_312, hazards: 8, targets: 21 },
-  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 136, triangles: 252_446, hazards: 7, targets: 22 },
+  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 137, triangles: 309_848, hazards: 6, targets: 22 },
+  { seed: 'route-278', axis: 'second densest', drawCalls: 136, triangles: 306_524, hazards: 4, targets: 19 },
+  { seed: 'sweep-89', axis: 'third densest', drawCalls: 137, triangles: 303_660, hazards: 6, targets: 26 },
+  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 137, triangles: 299_162, hazards: 6, targets: 19 },
+  { seed: 'euc-180', axis: 'longest required route', drawCalls: 136, triangles: 284_928, hazards: 8, targets: 21 },
+  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 136, triangles: 254_062, hazards: 7, targets: 22 },
 ] as const;
 
 

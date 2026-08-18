@@ -641,6 +641,13 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     hip.quaternion.copy(solvedUpper);
     hip.add(limb(profiles.thigh, legMaterial, shades.legs, look.paint?.thigh, side));
 
+    // The half of a knee guard that lives above the knee, on the bone it is
+    // strapped to. See `RiderLook.panels.thighPad`: this is one joint further
+    // up than the pad below, and that is the whole point of it.
+    if (panels.thighPad) {
+      hip.add(panelMesh(`rider-thigh-pad-${sideName}`, panels.thighPad, profiles.thigh, side));
+    }
+
     const knee = new THREE.Group();
     knee.name = `rider-knee-${sideName}`;
     knee.position.y = -RIDER_BLOCKOUT.thighLength;

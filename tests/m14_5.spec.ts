@@ -153,9 +153,12 @@ test('swapping riders repeatedly leaves the GPU counters where it found them', a
     await page.evaluate(() => window.game.advance(30));
   };
 
-  // End on the newest (and currently heaviest) look so the before/after pair
-  // exercises every Red Rider geometry and material disposal path too.
-  await page.evaluate(() => window.game.setOptions({ character: 'red-rider' }));
+  // Bracket the loop with the roster's newest look — the id the swap loop
+  // below ends on — so before and after measure the same rig. Derived rather
+  // than named, because the hardcoded 'red-rider' this replaced went stale
+  // the day M22 appended a fourth rider and the loop stopped ending on him.
+  const newest = CHARACTER_IDS[CHARACTER_IDS.length - 1]!;
+  await page.evaluate((id) => window.game.setOptions({ character: id }), newest);
   await settle();
   const before = await page.evaluate(() => window.game.resources());
 

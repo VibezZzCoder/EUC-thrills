@@ -2,6 +2,7 @@
 import type * as THREE from 'three';
 import { BLOCKOUT_COLOURS } from '../data/tuning.ts';
 import { DEFAULT_MACHINE, type MachineId } from '../data/machines.ts';
+import { tintOver, type Tint } from './blockoutKit.ts';
 
 /**
  * What a machine *looks like* — M19 Phase 2's axis.
@@ -65,9 +66,27 @@ export interface MachinePatch {
   readonly vSegments?: number;
   readonly lift?: number;
   readonly sink?: number;
+  /**
+   * Diagonal shear: the height span slides by this many rings across the
+   * angular span. An angry eyebrow is a sheared band, not a bent box.
+   */
+  readonly skew?: number;
   readonly taper?: number;
   /** Vertex multiplier over the trim material's colour. 1 is the colour. */
   readonly shade?: number;
+  /**
+   * The same multiplier per channel — and the reason it exists is M22.
+   *
+   * `shade` is a scalar, and a scalar cannot change hue. That was enough while
+   * every trim slot held one colour: Cool Rider's strips are blue on a blue
+   * material, Red Rider's guards red on a red one. Adonisb2's nose plate is
+   * green, its eyes are white, its pupils are near-black and the chevrons
+   * between his light panels are blue — four hues on one material, which the
+   * direction rule at the top of this file says can only be reached by
+   * painting *down* from a pale base. `tint` is that paint; it overrides
+   * `shade` when both are given.
+   */
+  readonly tint?: Tint;
 }
 
 /** One ring of a saddle loft. Heights are absolute metres, like the shell's. */
@@ -137,11 +156,52 @@ export interface MachineLook {
     readonly patches: readonly MachinePatch[];
   };
 
-  /** The headlight: its patch on the nose, and what it glows. */
+  /**
+   * The forward lighting: its patches on the nose, and what they glow.
+   *
+   * A list rather than one patch since M22, because a `MachinePatch` spans one
+   * contiguous arc and his machine carries a pair of pale panels with the
+   * bodywork's centre spine between them. They merge into the one
+   * `euc-headlight` mesh either way, so a look with two lamps costs exactly
+   * what a look with one costs.
+   */
   readonly headlight: {
-    readonly patch: MachinePatch;
+    readonly patches: readonly MachinePatch[];
     readonly emissive: number;
     readonly emissiveIntensity: number;
+  };
+
+  /**
+   * The tyre — appearance only, and the one place this axis buys geometry.
+   *
+   * `MACHINE_CONTRACT` owns `tyreDiameter`, so a look may not change how big
+   * the wheel is or where it touches the ground. What it may change is what
+   * the rubber looks like, and M22 needed one thing no colour could say: the
+   * owner named the off-road tyre as one of four traits that make his machine
+   * his, and a knobby tyre's whole read is its *broken silhouette*. Paint on a
+   * shared-vertex loft blurs between columns and gives a ripple, not blocks —
+   * so the lugs are boxes, merged into the tyre's own mesh at no draw calls,
+   * and bounded by `count × rows` so the cost is stated rather than open.
+   * `docs/PLANS.md` §22.4 assumed colour and roughness would be enough here;
+   * §22.7's delivery records the measurement that changed the answer.
+   */
+  readonly tyre?: {
+    readonly colour?: number;
+    readonly roughness?: number;
+    readonly lugs?: {
+      /** How many lug positions around the circumference. */
+      readonly count: number;
+      /**
+       * One row per entry. `at` is the position along the axle as a fraction
+       * of the tyre's half width; `phase` offsets the row around the wheel in
+       * lug pitches, which is what makes a staggered block pattern rather than
+       * three rings of the same lug.
+       */
+      readonly rows: readonly { readonly at: number; readonly phase: number }[];
+      /** Arc width, radial height, and length along the axle. All metres. */
+      readonly size: readonly [number, number, number];
+      readonly shade: number;
+    };
   };
 
   /**
@@ -222,7 +282,7 @@ export const STANDARD_MACHINE_LOOK: MachineLook = {
   },
 
   headlight: {
-    patch: {
+    patches: [{
       u0: Math.PI / 2 - 0.44,
       u1: Math.PI / 2 + 0.44,
       from: 0.502,
@@ -232,7 +292,7 @@ export const STANDARD_MACHINE_LOOK: MachineLook = {
       uSegments: 6,
       vSegments: 2,
       taper: 0.40,
-    },
+    }],
     emissive: BLOCKOUT_COLOURS.headlight,
     emissiveIntensity: 1.4,
   },
@@ -504,7 +564,7 @@ export const RED_RIDER_MACHINE_LOOK: MachineLook = {
     // flatter nose made ±0.17 read as a white slit, so the final aperture is
     // narrower and slightly taller — square enough to keep the reference's
     // single projector read.
-    patch: {
+    patches: [{
       u0: Math.PI / 2 - 0.13,
       u1: Math.PI / 2 + 0.13,
       from: 0.497,
@@ -514,7 +574,7 @@ export const RED_RIDER_MACHINE_LOOK: MachineLook = {
       uSegments: 6,
       vSegments: 2,
       taper: 0.55,
-    },
+    }],
     emissive: BLOCKOUT_COLOURS.machineHeadlightCool,
     emissiveIntensity: 1.9,
   },
@@ -581,9 +641,648 @@ export const RED_RIDER_MACHINE_LOOK: MachineLook = {
   },
 };
 
+// -- Adonisb2's wheel — M22 Phase 2 -----------------------------------------
+
+/**
+ * Where a feature `x` metres off the centreline lands on his nose, in radians.
+ *
+ * **A superellipse is not a ruler.** A ring with `square` well above 2 is very
+ * nearly flat across its front face, so `x` rises almost vertically out of the
+ * centreline and then crawls: on the ring below, 20 mm of nose is the first
+ * 0.03 rad and the remaining 90 mm takes the next 0.75. Hand-authoring the
+ * angry eyes in radians against that curve is guesswork, and guesswork in `u`
+ * is what puts an eye through the edge of the plate it sits on. So the face is
+ * authored the way it was measured off the photograph — in millimetres either
+ * side of centre — and inverted here, once.
+ *
+ * `side` is -1 for the rider's LEFT (+X, angles below front centre) and +1 for
+ * their right, matching `loftPoint`'s frame. The ring it inverts is the widest
+ * one; features higher up the nose ride a slightly narrower ring and come out
+ * marginally narrower, which is the taper the plate has in the reference
+ * anyway.
+ */
+const ADONISB2_NOSE_HALF_WIDTH = 0.114;
+const ADONISB2_NOSE_SQUARE = 4.6;
+
+/** How far off front centre a feature `x` metres from the centreline sits. */
+function adonisb2NosePhi(x: number): number {
+  const t = Math.min(1, Math.abs(x) / ADONISB2_NOSE_HALF_WIDTH) ** (ADONISB2_NOSE_SQUARE / 2);
+  return Math.asin(t);
+}
+
+function adonisb2NoseU(x: number, side: number): number {
+  return Math.PI / 2 + side * adonisb2NosePhi(x);
+}
+
+/** A patch on the nose authored in metres from the centreline rather than radians. */
+interface Adonisb2NosePatch extends Omit<MachinePatch, 'u0' | 'u1'> {
+  /** Distance from the centreline, metres. `inner` is the edge nearer centre. */
+  readonly inner: number;
+  readonly outer: number;
+}
+
+/**
+ * The same patch on both halves of the nose.
+ *
+ * A mirrored span runs backwards in parameter space, so the ends swap *and*
+ * the shear flips: `skew` is authored for the rider's left, where `s` runs
+ * outboard-to-inboard, and negated on the right so an eyebrow slanting down
+ * toward the centre keeps slanting down toward the centre. Getting that sign
+ * wrong is the defect `blockoutKit.ts` documents at length — a panel wound
+ * inside-out, or here, a face with one raised eyebrow.
+ */
+function adonisb2NosePair({ inner, outer, ...rest }: Adonisb2NosePatch): MachinePatch[] {
+  const skew = rest.skew ?? 0;
+  return [
+    { ...rest, u0: adonisb2NoseU(outer, -1), u1: adonisb2NoseU(inner, -1), skew },
+    { ...rest, u0: adonisb2NoseU(inner, 1), u1: adonisb2NoseU(outer, 1), skew: -skew },
+  ];
+}
+
+/** One patch straddling front centre, `half` metres either side of it. */
+function adonisb2NoseSpan(
+  { half, ...rest }: Omit<MachinePatch, 'u0' | 'u1'> & { readonly half: number },
+): MachinePatch {
+  return { ...rest, u0: adonisb2NoseU(half, -1), u1: adonisb2NoseU(half, 1) };
+}
+
+/**
+ * The trim's four hues, painted down from one pale material.
+ *
+ * Greys need no entry here: the base is deliberately near-neutral, so a scalar
+ * `shade` walks it all the way from the eye whites (1) through the mockup's
+ * grey irises (0.32) to the near-black of the brows and pupils (0.010) without
+ * touching hue. Only the three colours need real per-channel paint, and the
+ * green is `adonisb2Guard` — the rider's own knee-guard lime — because the
+ * whole point of the personalization is that he and the machine match.
+ */
+const ADONISB2_TRIM = BLOCKOUT_COLOURS.machineAdonisb2Trim;
+const ADONISB2_TRIM_GREEN = tintOver(ADONISB2_TRIM, BLOCKOUT_COLOURS.machineAdonisb2Green);
+const ADONISB2_TRIM_BLUE = tintOver(ADONISB2_TRIM, BLOCKOUT_COLOURS.machineAdonisb2Blue);
+const ADONISB2_TRIM_TEAL = tintOver(ADONISB2_TRIM, BLOCKOUT_COLOURS.machineAdonisb2Teal);
+/** The eye whites are the base itself; the brows and the V are it crushed. */
+const ADONISB2_INK = 0.010;
+/**
+ * The iris inside each eye — the middle of three values, and it has to *be*
+ * the middle.
+ *
+ * It shipped at 0.055 for one capture, which is dark enough to be the same
+ * mark as the lash above it: the two merged and the eye became a black hole
+ * with a white rim. The eye needs the sclera bright, the lid near-black, and
+ * this clearly between them, or the lid stops reading as a lid.
+ */
+const ADONISB2_IRIS = 0.30;
+/**
+ * Structural bodywork on the trim material — the rear corner guards.
+ *
+ * A step *above* the shell's graphite rather than level with it. At 0.038 the
+ * guards matched the body exactly and the tail came back from the capture as
+ * one featureless black slab with two lights on it; a bolted-on panel in a
+ * lighter polymer is both what the machine's construction actually looks like
+ * and the only thing giving that face any form.
+ */
+const ADONISB2_STRUCTURE = 0.075;
+
+/** Metres of height per ring index where the face lives. See the shell profile. */
+const ADONISB2_NOSE_RING = 0.040;
+
+/** One part of one eye, in millimetres either side of centre and metres up. */
+export interface Adonisb2EyePart {
+  readonly inner: number;
+  readonly outer: number;
+  readonly from: number;
+  readonly to: number;
+}
+
+/**
+ * The four parts of one eye, all measured in the **same** frame: heights as
+ * they stand at the eye's own mid-angle, so `iris.from > sclera.from` means
+ * exactly what it reads like — the iris starts above the white's bottom edge.
+ *
+ * Exported because it is the face's specification rather than an
+ * implementation detail: `adonisb2.test.ts` asserts the relationships between
+ * these four spans directly, which is the level they are actually stated at.
+ */
+export const ADONISB2_EYE = Object.freeze({
+  sclera: Object.freeze({ inner: 0.009, outer: 0.058, from: 0.496, to: 0.538 }),
+  iris: Object.freeze({ inner: 0.022, outer: 0.046, from: 0.507, to: 0.535 }),
+  pupil: Object.freeze({ inner: 0.027, outer: 0.039, from: 0.510, to: 0.526 }),
+  lash: Object.freeze({ inner: 0.008, outer: 0.061, from: 0.532, to: 0.538 }),
+});
+
+/**
+ * The eyebrow, and it is **not** an eye part — it has its own, much steeper
+ * tilt, which is what makes it an arrow rather than a lid. Stated beside the
+ * eye so the two can be compared, since confusing them is the defect that
+ * shipped once.
+ */
+export const ADONISB2_BROW = Object.freeze({
+  inner: 0.001, outer: 0.008, from: 0.550, to: 0.554, skew: -0.50,
+});
+
+const ADONISB2_EYE_LOW = adonisb2NosePhi(ADONISB2_EYE.sclera.inner);
+const ADONISB2_EYE_HIGH = adonisb2NosePhi(ADONISB2_EYE.sclera.outer);
+const ADONISB2_EYE_MID = (ADONISB2_EYE_LOW + ADONISB2_EYE_HIGH) / 2;
+
+/**
+ * The eye's tilt, and what makes the face angry — now as rings of rise per
+ * radian outboard rather than as one `skew` number.
+ *
+ * Measured off the photograph and the mockup together: the eyes fill the lower
+ * two thirds of the plate, nearly meet at the centre, and slant *down toward
+ * the centre*, which is the entire difference between an angry face and a
+ * worried one. 0.50 rings — 20 mm at this profile's ring spacing — across the
+ * whole eye is the 22° the reference measures.
+ *
+ * **It has to be a tilt and not a skew, and that is the owner's second
+ * correction.** `MachinePatch.skew` slides a band across the patch's *own*
+ * angular span, so giving the iris the eye's 0.50 tilted it by 0.50 across
+ * half the width — twice the angle — and its corners came out through the
+ * white on both sides. Nothing about the numbers looked wrong; they were the
+ * eye's own.
+ */
+const ADONISB2_EYE_TILT = 0.50 / (ADONISB2_EYE_HIGH - ADONISB2_EYE_LOW);
+
+/**
+ * One eye part, resolved from the shared frame into a patch.
+ *
+ * Two corrections, both consequences of `skew` being measured per patch:
+ * the **shear** scales with the part's own angular span so every part sits at
+ * the eye's angle rather than at its own; and the **heights** shift by the rise
+ * between the eye's mid-angle and the part's, because a patch shears about its
+ * own midpoint and a narrower part's midpoint is further inboard and therefore
+ * lower down the eye.
+ */
+function adonisb2EyePatch(
+  part: Adonisb2EyePart,
+  rest: Omit<Adonisb2NosePatch, 'inner' | 'outer' | 'from' | 'to' | 'skew'>,
+): Adonisb2NosePatch {
+  const low = adonisb2NosePhi(part.inner);
+  const high = adonisb2NosePhi(part.outer);
+  const rise = ADONISB2_EYE_TILT * ((low + high) / 2 - ADONISB2_EYE_MID) * ADONISB2_NOSE_RING;
+  return {
+    ...rest,
+    inner: part.inner,
+    outer: part.outer,
+    from: part.from + rise,
+    to: part.to + rise,
+    skew: -ADONISB2_EYE_TILT * (high - low),
+  };
+}
+
+/** The livery's paint values. See `paintShell` for what each one covers. */
+const ADONISB2_CORE: Tint = [0.60, 0.60, 0.62];
+const ADONISB2_CAVITY: Tint = [0.26, 0.26, 0.28];
+const ADONISB2_EDGE: Tint = [1.28, 1.28, 1.30];
+/** Black leatherette over the graphite shell. Neutral base, so this is nearly scalar. */
+const ADONISB2_SEAT = tintOver(BLOCKOUT_COLOURS.machineAdonisb2, 0x141519);
+/** Where the seat starts, shared by the profile and the painter that must not repaint it. */
+const ADONISB2_SEAT_BOTTOM = 0.556;
+
+/**
+ * Adonisb2's machine, from his photograph (`references/guest-rider/`) and the
+ * mockup beside it — the second wheel on this axis taken from a real rider's
+ * own machine, with his permission.
+ *
+ * His character reference ranks the wheel fourth in what carries the identity
+ * and is explicit that it "should not be replaced with a generic wheel". The
+ * owner named the four traits that make it his — *aggressive, tall, off-road
+ * tyre, an obvious saddle* — and then the one thing that matters most: the
+ * green at the front, the pair of white headlights, and the little face in the
+ * middle. This look is those six things in the §19.3 order of what carries at
+ * distance, and nothing else:
+ *
+ * - **Black bodywork over a graphite base** — the colour field, free. The
+ *   inverse of Red Rider's build (`BLOCKOUT_COLOURS.machineAdonisb2`): his
+ *   identity colour is *not* the shell's, so the shell is dark enough to read
+ *   black and light enough that the painter can still take the recesses down.
+ * - **A blocky, near-vertical body** — the silhouette. Squarer sections than
+ *   either wheel before it, full width held from the arch to the shoulder
+ *   instead of tapering into a pod, and a short hard chamfer at the top rather
+ *   than a dome. The tyre, pedals and suspension stay `MACHINE_CONTRACT`.
+ * - **The saddle** — the silhouette's other half, and the trait the owner
+ *   asked for by name. A narrow neck out of the shell's top face flaring into
+ *   a long cushion with a kicked tail, so it reads as *bolted on* rather than
+ *   as a rounded cap. Merged into the shell mesh: triangles, no draw call.
+ * - **The knobby tyre** — the one place this axis buys geometry, and the
+ *   reason `tyre.lugs` exists. See the field's own comment.
+ * - **The angry-eye plate** — his single most memorable mark, and original art
+ *   in the game's own hand rather than a copy of any decal product. A green
+ *   plate standing proud of the nose, two pale eyes with grey irises, brows
+ *   slanting down to the centre, the scored V above them and the mount notch
+ *   below. All paint and patches; not one extra mesh.
+ * - **The pair of cream lamps** with the bodywork's dark spine between them,
+ *   the blue chevron stack on that spine, and the green bars beneath — the
+ *   front exactly as the mockup lays it out.
+ *
+ * What the references show and this look deliberately does not build: the
+ * third-party decal art on the machine (a lotus in the photograph, a maple
+ * leaf in the mockup — the same rule that kept a commercial gear mark off Red
+ * Rider's thigh), any manufacturer's shell, the printed artwork inside the
+ * light panels (they ship as light panels, not as pictures), and his name
+ * anywhere on it — the machine carries the eyes, and the legible wordmark
+ * lives on his chooser card where a player is actually reading names.
+ *
+ * The one addition the references do not contain: **green rails on the
+ * shoulder**, where the standard machine's accent strips sit. Everything else
+ * green on this wheel faces forward, and the camera lives behind the rider —
+ * so without them his machine is a black wheel from the only angle the game
+ * normally shows. They are stated here rather than hidden because they are the
+ * one thing on it that is the game's invention rather than his.
+ */
+export const ADONISB2_MACHINE_LOOK: MachineLook = {
+  machine: 'adonisb2',
+
+  shell: {
+    colour: BLOCKOUT_COLOURS.machineAdonisb2,
+    // Flatter than either wheel before it. The photograph's machine is
+    // moulded plastic over a hard frame, and a satin sheen is what separates
+    // that from the standard wheel's painted shell at the same value.
+    roughness: 0.52,
+    // Blocky, and tall by *aspect* rather than by height — the contract fixes
+    // where the axle and the pedals are, so a taller machine is one that holds
+    // its width and depth from the arch all the way to the shoulder instead of
+    // rounding off. `square` is the number doing that work: 4.6 through the
+    // body is a rounded rectangle in plan, well past Red Rider's 4.4, which is
+    // what gives the nose a flat face for the plate and the lamps to sit on.
+    // The skirt stays narrow so the stanchions still show the travel.
+    //
+    // **The four middle rings are evenly spaced on purpose, and it is not a
+    // shape decision.** `MachinePatch.skew` and every patch's height are ring
+    // *indices*, not metres — `patchGeometry` shears in v — so a region whose
+    // rings crowd together shears less per authored unit than one whose rings
+    // are far apart. The first version of this profile jumped from 68 mm
+    // between rings to 30 mm right where the eyes sit, and the brows came back
+    // from the capture three times thicker at one end than the other: one
+    // slanted band read as a solid black mass over half the plate. 40 mm a ring
+    // from 0.378 to 0.578 makes the whole face authorable in millimetres —
+    // `skew: -0.50` is 20 mm of drop, everywhere on it.
+    profile: [
+      { y: 0.250, halfWidth: 0.050, halfDepth: 0.120, square: 3.2 },
+      { y: 0.322, halfWidth: 0.086, halfDepth: 0.188, square: 4.0 },
+      { y: 0.378, halfWidth: 0.112, halfDepth: 0.226, square: 4.6 },
+      { y: 0.418, halfWidth: 0.114, halfDepth: 0.230, square: 4.6 },
+      { y: 0.458, halfWidth: 0.114, halfDepth: 0.230, square: 4.6 },
+      { y: 0.498, halfWidth: 0.114, halfDepth: 0.229, square: 4.6 },
+      { y: 0.538, halfWidth: 0.112, halfDepth: 0.226, square: 4.6 },
+      { y: 0.578, halfWidth: 0.098, halfDepth: 0.196, square: 4.2 },
+      { y: 0.598, halfWidth: 0.072, halfDepth: 0.146, square: 3.4 },
+    ],
+  },
+
+  top: {
+    kind: 'saddle',
+    // "An obvious saddle" — the owner's words, and the shape is what has to
+    // carry it, because the height cannot. The crown is pinned under
+    // `RIDER.hipHeight - crouchHipDrop` by a hand's breadth exactly as Red
+    // Rider's is (`redRider.test.ts`), so the only room left is the 62 mm
+    // above the shell's top face. It spends them on a *neck*: rings 1-2 are
+    // narrower than the shell's crown and buried in it, and the cushion then
+    // flares 40 mm wider than the neck and 90 mm longer than Red Rider's seat,
+    // with the last two rings sliding back into a kicked tail. A seat you can
+    // see daylight under reads as a seat; a wide ring on the crown reads as a
+    // lid.
+    profile: [
+      { y: ADONISB2_SEAT_BOTTOM, halfWidth: 0.044, halfDepth: 0.126, square: 3.6 },
+      { y: 0.598, halfWidth: 0.052, halfDepth: 0.148, square: 3.8 },
+      { y: 0.620, halfWidth: 0.078, halfDepth: 0.196, z: -0.012, square: 4.4 },
+      { y: 0.638, halfWidth: 0.082, halfDepth: 0.204, z: -0.026, square: 4.8 },
+      { y: 0.649, halfWidth: 0.058, halfDepth: 0.162, z: -0.042, square: 3.8 },
+    ],
+    tint: ADONISB2_SEAT,
+  },
+
+  tyre: {
+    // The photograph's tyre is a moto knobby, and the mockup enlarges its
+    // blocks further. Three staggered rows of 18: the centre row sits on the
+    // crown and breaks the wheel's silhouette by 12 mm, the shoulder rows sit
+    // where the tread falls away and read as the tyre's edge. `shade` is high
+    // for the reason every multiplier on this near-black rubber is — see the
+    // note above `RIM_SHADE` in `render/euc.ts`.
+    lugs: {
+      count: 18,
+      rows: [
+        { at: -0.62, phase: 0 },
+        { at: 0, phase: 0.5 },
+        { at: 0.62, phase: 0 },
+      ],
+      size: [0.048, 0.016, 0.022],
+      shade: 2.4,
+    },
+  },
+
+  trim: {
+    colour: ADONISB2_TRIM,
+    // No glow anywhere on the trim. The lamps carry their own emissive on the
+    // headlight channel and the status light carries the power ladder; a third
+    // glowing thing on a black machine is a third thing competing to be read.
+    emissive: 0x000000,
+    emissiveIntensity: 0,
+    roughness: 0.38,
+    metalness: 0.08,
+    patches: [
+      // -- The nose plate, and the face on it ---------------------------------
+      // The plate first, so everything else lands on top of it. Lifted 22 mm:
+      // in both references it is a separate moulding bolted to the front, not
+      // a sticker, and the shadow under its lower edge is half of what makes it
+      // read that way.
+      adonisb2NoseSpan({
+        half: 0.066,
+        from: 0.454,
+        to: 0.566,
+        lift: 0.026,
+        sink: -0.010,
+        uSegments: 6,
+        vSegments: 4,
+        tint: ADONISB2_TRIM_GREEN,
+      }),
+      // The eye whites, and they have to *be* white. The second capture built
+      // them as three nested rectangles — white rim, grey iris, black pupil,
+      // which is what the mockup draws — and at this size three values inside
+      // a 48 mm eye read as a machined bezel, not as an eye. So the eye is the
+      // photograph's instead, where the two references disagree and §22.2 says
+      // the photograph wins: a white sclera with one smoked lens in it. Sunk
+      // to 10 mm — below the plate's own outer face — so the rim stays buried
+      // in the plate and only the lens shows.
+      ...adonisb2NosePair(adonisb2EyePatch(ADONISB2_EYE.sclera, {
+        lift: 0.030,
+        sink: 0.010,
+        uSegments: 4,
+        vSegments: 2,
+      })),
+      // The iris. It runs *up under* the lash rather than stopping short of
+      // it: a strip of white left between the two would be a bright line
+      // trapped between two darks, which is the sandwich this project has
+      // already been shown once (`docs/LESSONS_LEARNED.md`). White stays
+      // generous around its sides and under it, which is what the mockup's eye
+      // actually is.
+      ...adonisb2NosePair(adonisb2EyePatch(ADONISB2_EYE.iris, {
+        lift: 0.032,
+        sink: 0.012,
+        uSegments: 3,
+        vSegments: 2,
+        shade: ADONISB2_IRIS,
+      })),
+      // The pupils. Small enough that they are a mark rather than a third
+      // ring, and they take the eye's tilt like everything else on it.
+      ...adonisb2NosePair(adonisb2EyePatch(ADONISB2_EYE.pupil, {
+        lift: 0.035,
+        sink: 0.014,
+        uSegments: 2,
+        vSegments: 1,
+        shade: ADONISB2_INK,
+      })),
+      // The lashes — a darkened upper lid, not a second brow.
+      //
+      // **This is the owner's correction, and it is worth stating as a rule.**
+      // The first build put a wide dark band *above* the eye and a heavy V
+      // above that, and he read the result exactly right: two sets of
+      // eyebrows. In both references the dark near the eye is cartoon
+      // eyelashes — the eye's own top edge darkened — and the eyebrows are the
+      // small arrow much higher up. So this patch is thin, and it lies inside
+      // the eye's own span rather than over the plate: 6 mm of the eye's top,
+      // running 3 mm past its outer corner into the point that makes the face
+      // angry, and 1 mm past its inner one.
+      //
+      // The shear is the eye's, and the whole face still turns on its sign:
+      // dropping toward the centre is angry, the other way is worried.
+      ...adonisb2NosePair(adonisb2EyePatch(ADONISB2_EYE.lash, {
+        lift: 0.034,
+        sink: 0.020,
+        uSegments: 4,
+        vSegments: 1,
+        shade: ADONISB2_INK,
+      })),
+      // The eyebrows: the tiny steep arrow scored high into the plate, which
+      // is the only thing on this face that is actually a brow. Measured off
+      // the mockup rather than judged — the mark there is 10% of the plate's
+      // width and 22% of its height, which is a *narrow* V, not a wide one.
+      // The first build drew it at half the plate's width with a shallow slope
+      // and it became the upper of the two brow rows.
+      ...adonisb2NosePair({
+        ...ADONISB2_BROW,
+        lift: 0.030,
+        sink: 0.020,
+        uSegments: 2,
+        vSegments: 1,
+        shade: ADONISB2_INK,
+      }),
+      // The mount notch bitten out of the plate's bottom edge.
+      adonisb2NoseSpan({
+        half: 0.016,
+        from: 0.454,
+        to: 0.470,
+        lift: 0.028,
+        sink: 0.014,
+        uSegments: 2,
+        vSegments: 1,
+        shade: ADONISB2_INK,
+      }),
+
+      // -- The centre spine, between the lamps -------------------------------
+      // Three chevrons pointing down, the machine's one cool mark. Each is two
+      // sheared arms; a single patch cannot bend.
+      ...[0.378, 0.398, 0.418].flatMap((base) => adonisb2NosePair({
+        inner: 0.002,
+        outer: 0.020,
+        from: base,
+        to: base + 0.010,
+        lift: 0.010,
+        sink: -0.006,
+        uSegments: 2,
+        vSegments: 1,
+        skew: -0.20,
+        tint: ADONISB2_TRIM_BLUE,
+      })),
+
+      // -- Green, below the lamps --------------------------------------------
+      ...adonisb2NosePair({
+        inner: 0.022,
+        outer: 0.064,
+        from: 0.344,
+        to: 0.362,
+        lift: 0.012,
+        sink: -0.008,
+        uSegments: 3,
+        vSegments: 1,
+        tint: ADONISB2_TRIM_GREEN,
+      }),
+      // The teal running strips on the front corner brackets — the only colour
+      // on the real machine that is neither green nor black, and the reason
+      // `machineAdonisb2Teal` exists. Pulled inboard of the corner after the
+      // first capture put them right on it, where a strip on a surface turning
+      // away from you reads as a loose cyan block rather than a light.
+      ...adonisb2NosePair({
+        inner: 0.074,
+        outer: 0.092,
+        from: 0.354,
+        to: 0.366,
+        lift: 0.011,
+        sink: -0.008,
+        uSegments: 2,
+        vSegments: 1,
+        tint: ADONISB2_TRIM_TEAL,
+      }),
+
+      // -- The shoulder rails, where the camera actually is ------------------
+      // Above the leg pads (which end at 0.54) for the reason the standard
+      // machine's strips are: a stripe on the mid flank is a stripe nobody
+      // sees. They run most of the shoulder rather than sitting square on the
+      // flank, so the front and rear corners catch them too — from behind, at
+      // ±0.36, the saddle overhung them and there was nothing green on the
+      // machine at all. See the note in this look's own comment: these are the
+      // game's invention, not his.
+      {
+        u0: -0.62,
+        u1: 0.62,
+        from: 0.544,
+        to: 0.566,
+        lift: 0.010,
+        sink: -0.010,
+        uSegments: 8,
+        vSegments: 1,
+        tint: ADONISB2_TRIM_GREEN,
+      },
+      {
+        u0: Math.PI - 0.62,
+        u1: Math.PI + 0.62,
+        from: 0.544,
+        to: 0.566,
+        lift: 0.010,
+        sink: -0.010,
+        uSegments: 8,
+        vSegments: 1,
+        tint: ADONISB2_TRIM_GREEN,
+      },
+
+      // -- The rear corner guards -------------------------------------------
+      // Structural, not decorative: they give the tail the same vertical route
+      // the nose has, and they stop 0.28 rad short of rear centre so the
+      // status light keeps a dark margin all round (§19.7's rule, which is
+      // cheap to honour here because the field behind the light is already
+      // dark).
+      {
+        u0: -Math.PI / 2 + 0.28,
+        u1: -Math.PI / 2 + 0.62,
+        from: 0.372,
+        to: 0.556,
+        lift: 0.012,
+        sink: -0.010,
+        uSegments: 3,
+        vSegments: 5,
+        taper: 0.10,
+        shade: ADONISB2_STRUCTURE,
+      },
+      {
+        u0: -Math.PI / 2 - 0.62,
+        u1: -Math.PI / 2 - 0.28,
+        from: 0.372,
+        to: 0.556,
+        lift: 0.012,
+        sink: -0.010,
+        uSegments: 3,
+        vSegments: 5,
+        taper: 0.10,
+        shade: ADONISB2_STRUCTURE,
+      },
+    ],
+  },
+
+  headlight: {
+    // Two panels, not one lamp — the trait the owner named as "the left/right
+    // white headlights". They are tall portrait rectangles either side of the
+    // dark centre spine, exactly as both references lay them out, and they are
+    // warm rather than the projector white on Red Rider's wheel because the
+    // photograph's panels are cream.
+    patches: [
+      ...adonisb2NosePair({
+        inner: 0.024,
+        outer: 0.062,
+        from: 0.372,
+        to: 0.436,
+        lift: 0.008,
+        sink: -0.014,
+        uSegments: 3,
+        vSegments: 4,
+      }),
+    ],
+    emissive: BLOCKOUT_COLOURS.headlight,
+    // Under the standard machine's 1.4 rather than over it: two panels this
+    // size at 1.5 came back from the first capture as blank white rectangles
+    // with the warmth burnt out of them, and the references' panels are cream.
+    emissiveIntensity: 1.2,
+  },
+
+  paintShell: (geometry): void => {
+    const position = geometry.getAttribute('position');
+    const colour = geometry.getAttribute('color');
+    for (let i = 0; i < position.count; i += 1) {
+      const x = position.getX(i);
+      const y = position.getY(i);
+      const z = position.getZ(i);
+
+      // The saddle, tinted at build and repainted identically here so the
+      // bands below cannot half-recolour it.
+      //
+      // **A height alone cannot find it.** The saddle is merged into the shell
+      // mesh, and the two overlap for the 34 mm the neck spends buried in the
+      // crown — so `y > seatBottom` catches the shell's own top chamfer too,
+      // which is exactly the edge the highlight below exists to keep. Above the
+      // shell's last ring only the saddle exists; inside the overlap the
+      // saddle is the narrow thing, which is what the second clause says.
+      if (y > 0.599
+        || (y > ADONISB2_SEAT_BOTTOM && Math.abs(x) < 0.062 && Math.abs(z) < 0.160)) {
+        colour.setXYZ(i, ADONISB2_SEAT[0], ADONISB2_SEAT[1], ADONISB2_SEAT[2]);
+        continue;
+      }
+      // The nose recess the lamps sit in, and the spine between them. Painted
+      // as one region rather than two windows: what the reference shows is a
+      // dark plate with the panels let into it, and the chevrons then ride
+      // that plate.
+      if (z > 0.16 && Math.abs(x) < 0.075 && y > 0.360 && y < 0.470) {
+        colour.setXYZ(i, ADONISB2_CAVITY[0], ADONISB2_CAVITY[1], ADONISB2_CAVITY[2]);
+        continue;
+      }
+      // The rear spine: taillight surround and the status light's bezel.
+      if (z < -0.15 && Math.abs(x) < 0.075 && y > 0.400) {
+        colour.setXYZ(i, ADONISB2_CAVITY[0], ADONISB2_CAVITY[1], ADONISB2_CAVITY[2]);
+        continue;
+      }
+      // The arch skirt, all the way round — the structure under the bodywork,
+      // and the shadow the tyre sits in.
+      if (y < 0.336) {
+        colour.setXYZ(i, ADONISB2_CORE[0], ADONISB2_CORE[1], ADONISB2_CORE[2]);
+        continue;
+      }
+      // The top chamfer, and only it. Everything on this machine is dark, so
+      // the one thing a capture cannot recover is where the box *ends* — the
+      // hard edge the sun would catch on moulded plastic. This is the single
+      // band painted brighter than the base, and it is what keeps the blocky
+      // crown from dissolving into the body at chase distance.
+      if (y > 0.560) {
+        colour.setXYZ(i, ADONISB2_EDGE[0], ADONISB2_EDGE[1], ADONISB2_EDGE[2]);
+      }
+    }
+  },
+
+  paintPedal: (geometry): void => {
+    const colour = geometry.getAttribute('color');
+    // His platforms are black polymer, not the standard machine's machined
+    // metal — and they are directly under the rider's boots in every chase
+    // frame, which makes them the machine's most-seen surface. Scaled rather
+    // than overwritten, so the grip inset, the outboard lip and the hinge keep
+    // every value relation `render/euc.ts` authored and the whole plate simply
+    // moves to a darker material.
+    for (let i = 0; i < colour.count; i += 1) {
+      colour.setXYZ(i, colour.getX(i) * 0.11, colour.getY(i) * 0.11, colour.getZ(i) * 0.115);
+    }
+  },
+};
+
 const MACHINE_LOOKS: readonly MachineLook[] = Object.freeze([
   STANDARD_MACHINE_LOOK,
   RED_RIDER_MACHINE_LOOK,
+  ADONISB2_MACHINE_LOOK,
 ]);
 
 /**

@@ -118,6 +118,15 @@ export interface SampleBank {
    * notices.
    */
   readonly crashRedRider: AudioBuffer;
+  /**
+   * Adonisb2's (M22) — and the only one of the four that is a recording of
+   * the rider it belongs to actually crashing.
+   *
+   * Required for the same reason as `crashRedRider`: the interim where he
+   * shared Cool Rider's crash is over, and a bank missing this key would put
+   * him back on it silently while every counter said otherwise.
+   */
+  readonly crashAdonisb2: AudioBuffer;
   /** The chase siren's far wail loop (M18). */
   readonly sirenFar: AudioBuffer;
   /** And its close wail, crossfaded in by range. */
@@ -143,7 +152,7 @@ export interface SampleBank {
  * `data/`, or `ui/`. The composition root maps one to the other, which is the
  * same route `quality` and `speedUnit` already take out of the options store.
  */
-export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider';
+export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2';
 
 /**
  * Whose recording plays.
@@ -154,10 +163,12 @@ export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider';
  * missing. Here the compiler's exhaustiveness check on `voice` is what fails
  * instead — add a `CrashVoiceId` without a case and this stops compiling.
  *
- * Three riders, three buffers, no fallback left anywhere in the function. That
+ * Four riders, four buffers, no fallback left anywhere in the function. That
  * is a Phase 4 change: while Red Rider's file was still to be built this
  * returned Cool Rider's on his behalf, and `lastCrashVoice` reporting
- * `red-rider` regardless is what let a test tell the two states apart.
+ * `red-rider` regardless is what let a test tell the two states apart. M22
+ * added the fourth arm and never needed the interim, because his recording
+ * arrived before his wiring did.
  */
 export function crashFor(voice: CrashVoiceId, bank: SampleBank): AudioBuffer {
   switch (voice) {
@@ -165,6 +176,8 @@ export function crashFor(voice: CrashVoiceId, bank: SampleBank): AudioBuffer {
       return bank.crashTrollina;
     case 'red-rider':
       return bank.crashRedRider;
+    case 'adonisb2':
+      return bank.crashAdonisb2;
     case 'cool-rider':
       return bank.crash;
   }

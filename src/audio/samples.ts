@@ -5,6 +5,7 @@ import windHowlUrl from '../../assets/live/audio/wind_howl_loop.wav?url';
 import crashUrl from '../../assets/live/audio/crash_wipeout.wav?url';
 import crashTrollinaUrl from '../../assets/live/audio/crash_trollina.wav?url';
 import crashRedRiderUrl from '../../assets/live/audio/crash_red_rider.wav?url';
+import crashAdonisb2Url from '../../assets/live/audio/crash_adonisb2.wav?url';
 import sirenFarUrl from '../../assets/live/audio/siren_far_loop.wav?url';
 import sirenCloseUrl from '../../assets/live/audio/siren_close_loop.wav?url';
 import overspeedBeepUrl from '../../assets/live/audio/overspeed_beep.wav?url';
@@ -57,6 +58,23 @@ export interface SampleUrls {
    */
   readonly crashRedRider: string;
   /**
+   * Adonisb2's (M22) — **his own fall, and the file with the shortest story
+   * behind it of anything in this table.**
+   *
+   * The rider recorded himself coming off on a mountain and sent the owner the
+   * file for this use. `tools/make-crash-adonisb2.mjs` takes 3.4 s of it,
+   * mono-sums the near-identical channels, and matches the level to `crash`.
+   * Nothing is removed, substituted, modelled or generated — which is what
+   * separates it from Trollina's, and what it shares with Red Rider's without
+   * needing any of that file's arithmetic. Same length as `crash` to the
+   * sample, for the reason every entry here repeats.
+   *
+   * It is **not** covered by the project's CC BY 4.0 claim and it is not a
+   * third-party CC0 download either: it is licensed material contributed by a
+   * named person under a narrow grant. NOTICE.md holds the terms.
+   */
+  readonly crashAdonisb2: string;
+  /**
    * The chase siren's two wails (M18) — the far carrier and the close
    * panic, crossfaded by the cop's range. Both CC0 Freesound recordings,
    * owner-auditioned A/B/C/D on 2026-08-13 and recorded in NOTICE.md's
@@ -88,6 +106,7 @@ export const SAMPLE_URLS: SampleUrls = {
   crash: crashUrl,
   crashTrollina: crashTrollinaUrl,
   crashRedRider: crashRedRiderUrl,
+  crashAdonisb2: crashAdonisb2Url,
   sirenFar: sirenFarUrl,
   sirenClose: sirenCloseUrl,
   overspeedBeep: overspeedBeepUrl,

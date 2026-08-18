@@ -309,7 +309,7 @@ export class AudioEngine {
     void (async () => {
       try {
         const [
-          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider,
+          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
           sirenFar, sirenClose, overspeedBeep,
         ] = await Promise.all([
           fetch(urls.tyreOffroad).then((response) => response.arrayBuffer()),
@@ -318,13 +318,14 @@ export class AudioEngine {
           fetch(urls.crash).then((response) => response.arrayBuffer()),
           fetch(urls.crashTrollina).then((response) => response.arrayBuffer()),
           fetch(urls.crashRedRider).then((response) => response.arrayBuffer()),
+          fetch(urls.crashAdonisb2).then((response) => response.arrayBuffer()),
           fetch(urls.sirenFar).then((response) => response.arrayBuffer()),
           fetch(urls.sirenClose).then((response) => response.arrayBuffer()),
           fetch(urls.overspeedBeep).then((response) => response.arrayBuffer()),
         ]);
         if (this.disposed) return;
         this.sampleData = {
-          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider,
+          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
           sirenFar, sirenClose, overspeedBeep,
         };
         this.installSamples();
@@ -345,7 +346,7 @@ export class AudioEngine {
         // by nature — `decodeStarted` makes that explicit rather than relying
         // on a second call failing.
         const [
-          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider,
+          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
           sirenFar, sirenClose, overspeedBeep,
         ] = await Promise.all([
           context.decodeAudioData(data.tyreOffroad),
@@ -354,13 +355,14 @@ export class AudioEngine {
           context.decodeAudioData(data.crash),
           context.decodeAudioData(data.crashTrollina),
           context.decodeAudioData(data.crashRedRider),
+          context.decodeAudioData(data.crashAdonisb2),
           context.decodeAudioData(data.sirenFar),
           context.decodeAudioData(data.sirenClose),
           context.decodeAudioData(data.overspeedBeep),
         ]);
         if (this.disposed) return;
         const bank: SampleBank = {
-          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider,
+          tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
           sirenFar, sirenClose, overspeedBeep,
         };
         this.sink?.setSampleBank(bank);
