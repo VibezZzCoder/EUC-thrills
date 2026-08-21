@@ -460,8 +460,11 @@ export function measurePartTriangles(): Map<string, { triangles: number; castsSh
   // One block of every height class, because a building's facade is chosen by
   // its own height: a low block wears `buildingBody` and only a high-rise ever
   // builds `buildingTall`. A probe made of one 18 m block would leave the
-  // most expensive part in the whole kit unmeasured.
-  for (const [index, height] of [18, 34, 64].entries()) {
+  // most expensive part in the whole kit unmeasured — and one that starts at
+  // 18 m leaves the *cheapest* one unmeasured at the other end, which is how
+  // `buildingLow` arrived unpriced. Every class this list omits is a part the
+  // budget cannot see.
+  for (const [index, height] of [5, 18, 34, 64].entries()) {
     props.push({
       kind: 'building',
       position: { x: -60 - index * 40, y: 0, z: 0 },

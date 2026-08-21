@@ -132,8 +132,21 @@ test('every rider fits the ghost budget, not just the one the default builds', (
     assert.equal(drawn, casting, `${look.id}: the ghost draws a different set`);
     assert.equal(ghost.drawCalls, casting, `${look.id}: draw calls disagree with the rule`);
     assert.ok(total > drawn, `${look.id}: nothing was hidden`);
-    assert.ok(ghost.drawCalls <= 24, `${look.id}: ${ghost.drawCalls} draw calls for a recording`);
-    assert.ok(ghost.triangles < 12_000, `${look.id}: ${ghost.triangles} triangles`);
+    // 26 since A1d, with the frame ceiling — the two moved together and for
+    // the same reason. A recording is still the cheapest rig in the frame and
+    // is still built at half density (`ghostDensity`), which is where its
+    // triangles went; what it gained is the one casting mesh Maribel's hump
+    // needs, plus a call of slack.
+    assert.ok(ghost.drawCalls <= 26, `${look.id}: ${ghost.drawCalls} draw calls for a recording`);
+    // **20 k since A1d**, and unlike the draw-call cap beside it this one was
+    // never the binding constraint: the whole frame ceiling is 400 k and the
+    // densest measured route sits under two thirds of it, so a recording at
+    // eighteen thousand is four per cent of the budget. The number moved
+    // because Maribel's hair is a merged buffer built by her own look — it
+    // does not read the density table `ghostDensity` halves — and because the
+    // owner opened the budget for exactly this: *"increase budget. Make it
+    // better."* Draw calls remain the axis that is actually scarce.
+    assert.ok(ghost.triangles < 20_000, `${look.id}: ${ghost.triangles} triangles`);
 
     // Every name still carries the prefix, whichever rider is underneath: the
     // M10 defect this guards — `getObjectByName` returning the ghost's frozen

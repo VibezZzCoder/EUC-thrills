@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test, type Page } from '@playwright/test';
 import { CHARACTER_IDS } from '../src/data/riders.ts';
+import { TRACK_LAP_SEGMENT_IDS } from '../src/level/trackLevel.ts';
 import { boot, bootToTitle, collectErrors } from './harness.ts';
 
 /**
@@ -45,6 +46,45 @@ async function centreOf(page: Page, selector: string) {
 }
 
 test.describe('M11.5 — on-screen controls', () => {
+  test('BelVar survives a portrait-to-landscape resize during a mobile ride', async ({ page }) => {
+    const errors = collectErrors(page);
+    await bootToTitle(page, 'level=track');
+    expect(await page.evaluate(() => window.game.levelPlan.id)).toBe('belvar-r1');
+
+    // A real touch starts the ride; the rest is a deterministic physical lap
+    // so this tests the mobile renderer and controller rather than a timer.
+    await page.locator('[data-menu="start"]').tap();
+    await expect(page.locator('.euc-touch')).toBeVisible();
+    expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('freeRide');
+
+    await page.setViewportSize({ width: 844, height: 390 });
+    await expect(page.locator('.euc-touch')).toBeVisible();
+    expect(await page.evaluate(() => ({
+      state: window.game.snapshot().app.state,
+      level: window.game.levelPlan.id,
+    }))).toEqual({ state: 'freeRide', level: 'belvar-r1' });
+
+    // **The lap's own corridors, not every corridor the plan carries.** From
+    // M23 Phase B1 the venue also holds the paddock — rideable ground reached
+    // through a barrier gate — and a follower handed `levelPlan.segments`
+    // walks the lap and then tries to teleport back to the paddock road,
+    // which it cannot do and reports as an unfinished ride. That is the same
+    // class of hidden consumer the B0 QA found in `RouteSpine`: two things
+    // asking a plan for "its segments" and meaning "the lap".
+    const ride = await page.evaluate((segments) => window.qa.followRoute(
+      window.qa.routePoints(segments, 2),
+      { lookAhead: 9, maxSteps: 30_000, maxSpeed: 12 },
+    ), [...TRACK_LAP_SEGMENT_IDS]);
+    expect(ride.finished).toBe(true);
+    expect(ride.crashes).toBe(0);
+    expect(ride.blockedSteps).toBe(0);
+
+    await page.setViewportSize({ width: 412, height: 915 });
+    await expect(page.locator('.euc-touch')).toBeVisible();
+    expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('freeRide');
+    expect(errors).toEqual([]);
+  });
+
   test('a touchscreen gets the controls, and only while riding', async ({ page }) => {
     const errors = collectErrors(page);
     await bootToTitle(page);
@@ -752,6 +792,125 @@ test.describe('M20.1 §4.5 — the Busted card obeys a thumb', () => {
     const after = await page.evaluate(() => window.game.snapshot());
     expect(after.world.seed).not.toBe(before);
     expect(after.chase.phase).toBe('running');
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe('M23 Phase B2 — a track day on a phone', () => {
+  /*
+   * Track Day is the first mode whose entrance a thumb reaches on a button
+   * carrying a second line, and the second line is most of that button's height
+   * on a phone — which is exactly the geometry that made `New route` read to
+   * the owner as "takes a few presses" one milestone ago. The hook there was
+   * spelled `data-menu` and won the `closest()` race; this one is a bare span
+   * and should not, so the assertion is that the worst landing spot works on
+   * the first tap.
+   */
+  test('the worst landing spot on Track Day starts a session first time', async ({ page }) => {
+    const errors = collectErrors(page);
+    await bootToTitle(page);
+
+    const button = page.locator('.euc-menu--title [data-menu="track-day"]');
+    const box = await button.boundingBox();
+    expect(box, 'Track Day has no box').not.toBeNull();
+    expect(box!.height, `Track Day is ${box!.height}px tall`).toBeGreaterThanOrEqual(44);
+
+    // The note, not the label: which one a thumb lands on is luck.
+    await button.locator('.euc-button__note').tap();
+    await page.waitForFunction(
+      () => window.game.snapshot().app.state === 'trackDay',
+      undefined,
+      { timeout: 30_000 },
+    );
+    expect(await page.evaluate(() => window.game.levelPlan.id)).toBe('belvar-r1');
+    expect((await page.evaluate(() => window.game.snapshot().trackDay)).phase).toBe('outLap');
+
+    expect(errors).toEqual([]);
+  });
+
+  test('the lap lane stays clear of the thumbs, in both orientations', async ({ page }) => {
+    const errors = collectErrors(page);
+    await bootToTitle(page, 'level=track');
+    await page.evaluate(() => window.game.startTrackDay());
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
+    await page.evaluate(() => window.qa.advance(2));
+
+    // The lane is a third row taller than a time trial's, and it sits in the
+    // corner a phone's HUD is most crowded in. Both orientations, because the
+    // landscape one is the one with less height to give.
+    const checkLane = async (what: string) => {
+      await expect(page.locator('[data-hud="lap-label"]')).toBeVisible();
+      const lane = await page.locator('[data-hud="challenge"]').boundingBox();
+      const stick = await page.locator('.euc-touch__stick').boundingBox();
+      expect(lane, `${what}: the lane has no box`).not.toBeNull();
+      expect(stick, `${what}: the stick has no box`).not.toBeNull();
+      // Fully on screen...
+      expect(lane!.x, `${what}: the lane starts off the left`).toBeGreaterThanOrEqual(-0.5);
+      expect(lane!.y, `${what}: the lane starts above the frame`).toBeGreaterThanOrEqual(-0.5);
+      expect(lane!.x + lane!.width, `${what}: the lane runs off the right`)
+        .toBeLessThanOrEqual(page.viewportSize()!.width + 0.5);
+      // ...and clear of the thumb that is holding the throttle.
+      expect(lane!.y + lane!.height, `${what}: the lane reaches the stick`)
+        .toBeLessThanOrEqual(stick!.y + 0.5);
+    };
+
+    await checkLane('portrait');
+
+    const before = await page.evaluate(() => window.game.snapshot().layoutChanges);
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.waitForFunction(
+      (was) => window.game.snapshot().layoutChanges > was,
+      before,
+    );
+    await page.evaluate(() => window.qa.advance(2));
+    await checkLane('landscape');
+
+    expect(errors).toEqual([]);
+  });
+
+  test('a session can be started, paused and pitted with nothing but taps', async ({ page }) => {
+    const errors = collectErrors(page);
+    await bootToTitle(page, 'level=track');
+    await page.evaluate(() => window.game.clearRecords());
+    await page.locator('.euc-menu--title [data-menu="track-day"]').tap();
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
+
+    // One lap, by gate, so the card has something to report. The ride itself is
+    // the desktop project's claim; this one is about the controls.
+    await page.evaluate(() => {
+      const game = window.game;
+      game.loop.setRunning(false);
+      const order = [...game.levelPlan.checkpoints].sort((a, b) => a.routeIndex - b.routeIndex);
+      const cross = (cp: (typeof order)[number], hold: number) => {
+        game.placeRider({ x: cp.centre.x, y: cp.centre.y, z: cp.centre.z }, cp.headingY);
+        game.advance(2);
+        game.advance(hold);
+      };
+      cross(order[0], 30);
+      for (const cp of order.slice(1)) cross(cp, 60);
+      cross(order[0], 2);
+      // **Thawed, and that is not tidying up.** The pause chip latches a
+      // one-shot the fixed step consumes, so a frozen loop swallows the tap and
+      // the card never opens — which reads as a broken button rather than as a
+      // frozen game.
+      game.loop.setRunning(true);
+    });
+    expect((await page.evaluate(() => window.game.snapshot().trackDay)).lapsCounted).toBe(1);
+
+    // The phone's own way to a pause is the chip, not an Escape key.
+    await page.locator('[data-touch-tap="pause"]').tap();
+    await expect(page.locator('.euc-menu--pause')).toBeVisible();
+
+    const end = page.locator('.euc-menu--pause [data-menu="end-session"]');
+    const endBox = await end.boundingBox();
+    expect(endBox, 'End session has no box').not.toBeNull();
+    expect(endBox!.height, `End session is ${endBox!.height}px tall`).toBeGreaterThanOrEqual(44);
+
+    await end.tap();
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'results');
+    await expect(page.locator('[data-menu="results-heading"]')).toHaveText('New best lap');
+    await expect(page.locator('[data-menu="results-total"]')).toHaveText(/^\d+:\d{2}\.\d{2}$/);
+
     expect(errors).toEqual([]);
   });
 });

@@ -7,6 +7,11 @@ import {
 } from '../data/riders.ts';
 import { BINDINGS, RESERVED_CODES, keyLabel, type BindableAction } from '../input/bindings.ts';
 import {
+  MV_LOGO_HEIGHT,
+  MV_LOGO_PNG_BASE64,
+  MV_LOGO_WIDTH,
+} from '../data/mvLogoAsset.ts';
+import {
   FOV_TRIM_MAX,
   FOV_TRIM_MIN,
   QUALITY_LEVELS,
@@ -112,6 +117,23 @@ export interface MenuCallbacks {
    * so, which is the caller's decision rather than this screen's.
    */
   onStartChase(): void;
+  /**
+   * The player chose Track Day — M23.
+   *
+   * Unlike `onStartChallenge`, this one is never refused for want of a world:
+   * the mode brings its own circuit, so the button is always live and pressing
+   * it is also how a player reaches BelVar at all.
+   */
+  onStartTrackDay(): void;
+  /**
+   * The player pitted, from the pause card — M23.
+   *
+   * **The only control in the game that ends a ride from a menu.** Every other
+   * mode ends by crossing something or by running a clock out; a track day ends
+   * when the rider decides they are done, and there is nowhere else for that
+   * decision to live.
+   */
+  onEndSession(): void;
   /** Ride the same route again, from the results screen. */
   onRetryChallenge(): void;
   /** Leave the results screen for the title. */
@@ -163,10 +185,36 @@ export interface MenuCallbacks {
  * 92.005 seconds looks like, and prose is written here because there is only
  * one place it appears.
  */
+/**
+ * What each hand-built world is called, in the title's own voice.
+ *
+ * The generated case is not here because it is not a name — it is a seed, and
+ * `setWorld` composes it. The proving ground is a diagnostic nobody reaches
+ * from a menu and gets a line anyway, because "reachable only by typing a URL"
+ * is not the same as "may show the wrong world's description".
+ */
+const WORLD_LINES: Readonly<Record<WorldView['world'], string>> = Object.freeze({
+  slice: 'The hand-built city — the route everything else is measured against.',
+  track: 'BelVar Circuit — a kart-scale technical lap, built to be raced.',
+  proving: 'The proving ground — a flat instrument, not a place.',
+  generated: '',
+});
+
 export interface WorldView {
-  /** True when a seeded route is loaded rather than the hand-authored slice. */
-  readonly generated: boolean;
-  /** The loaded route's seed. Empty on the slice. */
+  /**
+   * Which world is loaded, as `level/levels.ts` names it.
+   *
+   * **A name rather than the `generated` boolean it replaced** — M23. That flag
+   * asked one question ("is this a seeded route") and three controls read it as
+   * if it answered another ("is this not the city"), which was the same
+   * statement while the game had exactly two hand-built worlds and stopped
+   * being one the day BelVar arrived: the circuit wore the city's own sentence
+   * on the title, the pause card and the route panel, and the panel's way back
+   * to the city was hidden on the one world where it was the thing a player
+   * most needed.
+   */
+  readonly world: 'slice' | 'proving' | 'generated' | 'track';
+  /** The loaded route's seed. Empty on every world but a generated one. */
   readonly seed: string;
 }
 
@@ -230,6 +278,19 @@ export interface ResultsRow {
 export interface ResultsView {
   readonly heading: string;        // 'New record' | 'Run complete'
   readonly isRecord: boolean;
+  /**
+   * What the big number is, in words — M23.
+   *
+   * **The two captions used to be markup and stopped being true when a fourth
+   * mode arrived.** "This run" over a number is right for a timed lap, a
+   * Knockabout score and a chase; a track day's headline is the best lap of
+   * an afternoon, and calling that "this run" is a small lie on the one screen
+   * whose whole job is to be believed. So the words travel with the numbers,
+   * like every other string here.
+   */
+  readonly totalCaption: string;
+  /** What the number beside it is. Usually the record standing before the run. */
+  readonly bestCaption: string;
   readonly total: string;
   readonly best: string;           // '—' when this run is the first
   readonly deltaToBest: string;    // '' when this run is the record
@@ -251,6 +312,58 @@ export interface MenuOptions {
    * saved.
    */
   readonly seedMaxLength: number;
+}
+
+/**
+ * The way into the roster — M23, and the third time this game has answered the
+ * same question.
+ *
+ * The owner's report: the chip *"is so small and what not some casual players
+ * might not even realize there is a change rider setting"*. That is exactly
+ * M20's finding about fresh routes (*"casual players might not figure the
+ * convoluted UI out"*) and M14.5's about the one-word title buttons, and the
+ * fix is the same shape both times: **the affordance introduces itself, rather
+ * than waiting to be found.** Three changes, each doing a different job.
+ *
+ * **It says how many riders there are, without a sentence.** The single swatch
+ * became one dot per rider in the roster's own colours, the current one filled
+ * and ringed and the rest small. A player who has never opened this panel can
+ * now see that there are five people behind it and that they are riding one of
+ * them — which is the fact the old chip never carried, and the reason "Change
+ * rider" read as a setting rather than as a cast list. It is built from
+ * `CHARACTERS`, so a sixth rider adds a sixth dot and nothing here changes.
+ *
+ * **It looks like a control.** A transparent pill in dim ink beside four solid
+ * buttons reads as a caption; it now carries the panel's own surface, a border,
+ * and a chevron, which is the same visual grammar as everything above it.
+ *
+ * **And it advertises itself exactly once, ever.** `data-attract` is set while
+ * `seenRiderChooser` is false and never again after the player opens the panel
+ * — the arcade attract-loop idea the owner asked for ("like those insert coin
+ * messages"), bounded by the standing rule that nothing may be annoying. The
+ * bound is what makes it acceptable: a returning player has already been told,
+ * so telling them again every launch would be nagging rather than teaching.
+ * The animation is the *decoration* of that state and not the state itself —
+ * under `prefers-reduced-motion` the movement stops and the emphasis stays,
+ * which is the rule the tilt-back pulse and M20's two cues already follow.
+ *
+ * The dots are `aria-hidden`: a screen reader is told "Riding as Cool Rider,
+ * change rider" by the text, and five unlabelled colours would add nothing but
+ * noise to it.
+ */
+function riderChipTemplate(): string {
+  const dots = CHARACTERS.map((character) => `
+      <span class="euc-rider-chip__dot" data-rider-dot="${character.id}"
+            style="--rider-swatch: ${character.swatch}"></span>`).join('');
+
+  return `
+  <button type="button" class="euc-rider-chip" data-menu="riders" data-attract="false">
+    <span class="euc-rider-chip__roster" aria-hidden="true">${dots}
+    </span>
+    <span class="euc-rider-chip__label">Riding as <strong data-rider-name>Cool Rider</strong></span>
+    <span class="euc-rider-chip__more">Change rider</span>
+    <span class="euc-rider-chip__chevron" aria-hidden="true">›</span>
+  </button>`;
 }
 
 /**
@@ -293,6 +406,10 @@ const TITLE_TEMPLATE = `
       <span class="euc-button__label">Time trial</span>
       <span class="euc-button__note">Race the clock through the checkpoints</span>
     </button>
+    <button type="button" class="euc-button" data-menu="track-day">
+      <span class="euc-button__label">Track Day</span>
+      <span class="euc-button__note">Lap BelVar Circuit. Your best lap rides with you</span>
+    </button>
     <button type="button" class="euc-button" data-menu="knockabout">
       <span class="euc-button__label">Knockabout</span>
       <span class="euc-button__note">Swing a paddle at everything on the way past</span>
@@ -310,11 +427,7 @@ const TITLE_TEMPLATE = `
     </button>
   </div>
   <p class="euc-world" data-menu="world"></p>
-  <button type="button" class="euc-rider-chip" data-menu="riders">
-    <span class="euc-rider-chip__swatch" data-rider-swatch aria-hidden="true"></span>
-    <span>Riding as <strong data-rider-name>Cool Rider</strong></span>
-    <span class="euc-rider-chip__more">Change rider</span>
-  </button>
+  ${riderChipTemplate()}
   <p class="euc-credit">An open-source game by
     <a class="euc-credit__link" href="https://github.com/VibezZzCoder/EUC-thrills"
       target="_blank" rel="noopener">VibezZzCoder</a></p>
@@ -337,6 +450,26 @@ const TITLE_TEMPLATE = `
  * They are `aria-hidden` because the name beside them already says who it is —
  * a portrait that announces itself reads the character's name twice.
  */
+/**
+ * Where her mark sits on her card, in the portraits' own 96 × 96 units.
+ *
+ * The height is *derived* from the artwork's pixels and never typed, which is
+ * the whole point: `MV_LOGO_ASSET_PACK`'s README forbids stretching the mark
+ * in X against Y, and a hand-typed height is a stretch waiting for somebody to
+ * change the width. Fifteen units wide is as much as the card's chest has —
+ * the collar is at 68 and the shoulders end at 82 — so it starts at 64 and
+ * runs to 81.9, which is the last unit of suit there is.
+ */
+const MV_CARD_MARK = (() => {
+  const width = 17;
+  return {
+    x: (96 - width) / 2,
+    y: 75,
+    width,
+    height: Number(((width * MV_LOGO_HEIGHT) / MV_LOGO_WIDTH).toFixed(2)),
+  };
+})();
+
 const RIDER_CARDS: Readonly<Record<PlayableCharacterId, { blurb: string; portrait: string }>> = {
   'cool-rider': {
     blurb: 'Black moto gear, reflective blue, full-face lid. '
@@ -480,6 +613,112 @@ const RIDER_CARDS: Readonly<Record<PlayableCharacterId, { blurb: string; portrai
               stroke-width="3" stroke-linecap="round" fill="none"/>
         <path d="M27 68c5 2.6 12.6 4 21 4s16-1.4 21-4c-.8 2.4-1.8 4-3 5H30c-1.2-1-2.2-2.6-3-5z"
               fill="#6fc814"/>
+      </svg>`,
+  },
+  /**
+   * Maribel Vargas — M23, the fifth card, and the first one drawn from a
+   * reference that is itself already in this game's visual language: the owner
+   * had a low-poly render made of her, and it agrees with her photographs on
+   * every point that matters here.
+   *
+   * Three things separate her at a glance. **The visor is bright cyan and
+   * mirrored** where Cool Rider's is deep blue and Red Rider's is smoked — the
+   * loudest single element she has. **The accents are asymmetric**: aqua on
+   * one side, coral on the other, which no other card does and which is the
+   * detail her friends would name first. And **her own mark sits on the
+   * collar** (below).
+   *
+   * **The ponytail is not here, and it was — removed on the owner's look at
+   * the finished card.** It is still hers and still committed for the rig in
+   * Phase A1, where a head seen from six angles has somewhere to put it; on a
+   * front-facing emblem it can only hang off the side of the shell, and at
+   * this size a brown shape beside a dark helmet reads as a smudge rather than
+   * as hair. The card's three-shape budget was already spent on the silhouette,
+   * the visor and the mark — this is that rule collecting.
+   *
+   * **Viewer-left is her right, and the sides are not decorative.** Aqua sits
+   * at her right hand and coral at her left, on her suit and on her knee
+   * guards, so a portrait facing the viewer wears aqua on the left of the
+   * image (`docs/PLANS.md` §23.2 — the brief's "left" is viewer-relative and
+   * flipping it would mirror a real person). Phase A1 carries the same
+   * handedness into three dimensions, where it becomes −X and +X.
+   *
+   * **Nothing purple is drawn here, although her swatch is purple**, and that
+   * is the honest version rather than an oversight: the violet is her
+   * *machine* — the pads on her wheel and the mark she rides under — and the
+   * card wears it as the border, the swatch dot and the "Riding now" pill,
+   * where it identifies her without claiming she wears a colour she does not.
+   * The values below are measured off the render rather than picked by eye,
+   * and Phase A1 authors the albedos the sun actually falls on.
+   *
+   * **The mark on her chest is her own logo, with her permission** — the
+   * grinning devil over the M and the V she rides under, which she confirmed
+   * and then sent a clean copy of unprompted (`docs/PLANS.md` §23.5,
+   * `NOTICE.md`). It replaced
+   * an invented white chevron that was standing in for the brand wings on the
+   * real suit, and it is the better mark for the same reason it is the safer
+   * one: it is hers.
+   *
+   * **It is her file, not a drawing of one — and that replaced a drawing that
+   * had been defended here at length.** Two paragraphs used to stand in this
+   * spot explaining why the card carried the monogram half of her lockup, hand
+   * drawn as two strokes, because at 120 px on a card and 58 px on a phone the
+   * devil's head resolves to a purple smudge while the M's zigzag survives all
+   * the way down. That reasoning is still true and no longer decides anything:
+   * `MV_LOGO_ASSET_PACK` is the authority the owner declared, it forbids
+   * drawing the M from scratch anywhere, and `AGENTS.md` carries the rule. So
+   * the card shows the same PNG the suit, the back and the wheel show — the
+   * `<image>` below is `src/data/mvLogoAsset.ts`, byte for byte.
+   *
+   * **The smudge is real and it is the price.** At this size the head is about
+   * seven pixels of purple. The alternative is a shape of ours wearing her
+   * colours on the screen that names her, and the owner has now twice called
+   * that unacceptable. It also fixes the thing he did not have to argue: the
+   * V under the M is *hers*, at her proportions, without anybody having to
+   * check whether we got the middle's plunge the right way up — which a first
+   * pass here did not, and which he caught with *"what about the V under the
+   * M?"*
+   *
+   * Her name is rendered by the name span below the portrait rather than drawn
+   * into the art — the rule Red Rider's entry above established.
+   *
+   * **The loose hair arrived with Phase A1b**, and it belongs on the card for
+   * the reason it belongs on the character: it is the identity that survives
+   * being small. A helmet is a dark oval on every rider in this game, and hers
+   * is the only one with a light mass falling either side of it — which is
+   * exactly the read a 96-pixel emblem has room for. Two authored values, the
+   * same pair the mesh carries: dark at the crown, ashy at the ends.
+   */
+  'maribel-vargas': {
+    blurb: 'Black race leathers, a mirrored blue visor, aqua one side and pink the other, '
+      + 'on a purple wheel. A real racer, in the game because she asked.',
+    portrait: `
+      <svg viewBox="0 0 96 96" class="euc-rider-card__art" aria-hidden="true" focusable="false">
+        <path d="M26 40c-8 10-12 26-11 42h13c-2-16 0-30 5-39z" fill="#4c3e35"/>
+        <path d="M70 40c8 10 12 26 11 42H68c2-16 0-30-5-39z" fill="#4c3e35"/>
+        <path d="M15.4 68c-.4 5-.5 10-.4 14h13c-.5-4-.7-9-.6-14z" fill="#c0b6a5"/>
+        <path d="M80.6 68c.4 5 .5 10 .4 14h-13c.5-4 .7-9 .6-14z" fill="#c0b6a5"/>
+        <path d="M18 76c6-5 17-8 30-8s24 3 30 8v20H18z" fill="#2f3238"/>
+        <path d="M20 58c0-19 12-31 28-31s28 12 28 31c0 6-2 11-5 14H25c-3-3-5-8-5-14z"
+              fill="#23262b"/>
+        <path d="M23 52c3-14 12-22 25-22s22 8 25 22c-6-4-15-6-25-6s-19 2-25 6z"
+              fill="#2e323a"/>
+        <path d="M26 55c4-4 12-7 22-7s18 3 22 7c-1 7-3 11-6 13H32c-3-2-5-6-6-13z"
+              fill="#14161a"/>
+        <path d="M28 56c4-3 11-5 20-5s16 2 20 5c-1 5-2 8-4 9H32c-2-1-3-4-4-9z"
+              fill="#1b9ae0"/>
+        <path d="M30 58c4-2 10-3.4 18-3.4S62 56 66 58c-1 1.6-2 2.6-3.4 3.2-4-1.6-9-2.4-14.6-2.4
+                 s-10.6.8-14.6 2.4C32 60.6 31 59.6 30 58z" fill="#58d8fb"/>
+        <path d="M27 68c5 2.6 12.6 4 21 4s16-1.4 21-4c-.8 2.4-1.8 4-3 5H30c-1.2-1-2.2-2.6-3-5z"
+              fill="#24272c"/>
+        <path d="M18.6 75.6c6-4.6 16.6-7.4 29.4-7.4v6.2c-11.6 0-21.8 2.4-27.6 5.8z"
+              fill="#4fd6cf"/>
+        <path d="M77.4 75.6c-6-4.6-16.6-7.4-29.4-7.4v6.2c11.6 0 21.8 2.4 27.6 5.8z"
+              fill="#e8446a"/>
+        <image href="data:image/png;base64,${MV_LOGO_PNG_BASE64}"
+               x="${MV_CARD_MARK.x}" y="${MV_CARD_MARK.y}"
+               width="${MV_CARD_MARK.width}" height="${MV_CARD_MARK.height}"
+               preserveAspectRatio="xMidYMid meet"/>
       </svg>`,
   },
 };
@@ -733,11 +972,11 @@ const RESULTS_TEMPLATE = `
 
   <div class="euc-results__summary">
     <div class="euc-results__stat">
-      <span class="euc-results__caption">This run</span>
+      <span class="euc-results__caption" data-menu="results-total-caption">This run</span>
       <span class="euc-results__total" data-menu="results-total">0:00.00</span>
     </div>
     <div class="euc-results__stat">
-      <span class="euc-results__caption">Best</span>
+      <span class="euc-results__caption" data-menu="results-best-caption">Best</span>
       <span class="euc-results__best" data-menu="results-best">—</span>
       <span class="euc-results__delta" data-menu="results-delta" data-ahead="false"></span>
     </div>
@@ -770,6 +1009,10 @@ const PAUSE_TEMPLATE = `
   <h2 class="euc-menu__title" id="euc-pause-heading">Paused</h2>
   <div class="euc-menu__actions">
     <button type="button" class="euc-button euc-button--primary" data-menu="resume">Resume</button>
+    <button type="button" class="euc-button" data-menu="end-session" hidden>
+      <span class="euc-button__label">End session</span>
+      <span class="euc-button__note">Pit in and see your best lap</span>
+    </button>
 ${NEW_ROUTE_BUTTON}
     <button type="button" class="euc-button" data-menu="settings">Settings</button>
     <button type="button" class="euc-button euc-button--quiet" data-menu="quit">Quit to title</button>
@@ -892,6 +1135,10 @@ export class Menus {
     this.options = options;
 
     this.setRider(options.character);
+    // The attract state is a fact about the player, not about this screen, so
+    // it is read from the record on every sync rather than latched here: the
+    // moment the composition root writes `seenRiderChooser`, the chip settles.
+    this.setRiderAttract(!options.seenRiderChooser);
 
     this.setValue('fieldOfViewTrim', options.fieldOfViewTrim);
     this.setText('fieldOfViewTrim-value', `${options.fieldOfViewTrim > 0 ? '+' : ''}${options.fieldOfViewTrim}°`);
@@ -935,14 +1182,37 @@ export class Menus {
 
     const name = this.title.querySelector<HTMLElement>('[data-rider-name]');
     if (name && name.textContent !== character.name) name.textContent = character.name;
-    const swatch = this.title.querySelector<HTMLElement>('[data-rider-swatch]');
-    if (swatch) swatch.style.setProperty('--rider-swatch', character.swatch);
+
+    // The chip's own `--rider-swatch` is what its border and its attract glow
+    // are drawn in, so the way in to the roster is always in the colour of the
+    // rider the player is currently wearing.
+    const chip = this.title.querySelector<HTMLElement>('.euc-rider-chip');
+    chip?.style.setProperty('--rider-swatch', character.swatch);
+    for (const dot of this.title.querySelectorAll<HTMLElement>('[data-rider-dot]')) {
+      const current = dot.dataset.riderDot === character.id ? 'true' : 'false';
+      if (dot.dataset.current !== current) dot.dataset.current = current;
+    }
 
     for (const card of this.riders.querySelectorAll<HTMLElement>('[data-rider]')) {
       const active = card.dataset.rider === character.id;
       const pressed = active ? 'true' : 'false';
       if (card.getAttribute('aria-pressed') !== pressed) card.setAttribute('aria-pressed', pressed);
     }
+  }
+
+  /**
+   * Have the chip advertise the roster, or stop.
+   *
+   * An attribute rather than a class, and CSS decides what it looks like — the
+   * same division `data-stage` makes on the fresh-route panel (`DESIGN.md` §9).
+   * It is deliberately *not* announced to a screen reader: the button's name
+   * already says "change rider", and a live region firing on the title screen
+   * would be an interruption where this is only an invitation.
+   */
+  private setRiderAttract(attract: boolean): void {
+    const chip = this.title.querySelector<HTMLElement>('.euc-rider-chip');
+    const value = attract ? 'true' : 'false';
+    if (chip && chip.dataset.attract !== value) chip.dataset.attract = value;
   }
 
   /**
@@ -972,7 +1242,9 @@ export class Menus {
     if (panel) panel.dataset.record = view.isRecord ? 'true' : 'false';
 
     this.setResultsText('results-heading', view.heading);
+    this.setResultsText('results-total-caption', view.totalCaption);
     this.setResultsText('results-total', view.total);
+    this.setResultsText('results-best-caption', view.bestCaption);
     this.setResultsText('results-best', view.best);
     this.setResultsText('results-delta', view.deltaToBest);
 
@@ -1041,6 +1313,24 @@ export class Menus {
     if (title) title.hidden = !available;
     const routes = this.routes.querySelector<HTMLElement>('[data-menu="trial-route"]');
     if (routes) routes.hidden = !available;
+  }
+
+  /**
+   * Offer to pit, or do not — M23.
+   *
+   * **Not the mirror of `setChallengeAvailable`, and the difference is worth
+   * stating.** That one hides an entrance on a world that cannot host the mode;
+   * this hides an *exit* that only means anything inside one. A pause taken in
+   * free ride offering "End session" would be a control with no session behind
+   * it, and pressing it would have to do nothing — the exact failure the method
+   * above was written for.
+   *
+   * There is no title-screen half: Track Day brings its own circuit, so its
+   * entrance is always live.
+   */
+  setEndSessionAvailable(available: boolean): void {
+    const button = this.pause.querySelector<HTMLElement>('[data-menu="end-session"]');
+    if (button) button.hidden = !available;
   }
 
   // -- New route from inside a ride (M20) -------------------------------------
@@ -1148,21 +1438,28 @@ export class Menus {
    * 15 m/s with a kerb coming.
    */
   setWorld(view: WorldView): void {
-    const line = view.generated
-      ? `Fresh route · ${view.seed}`
-      : 'The hand-built city — the route everything else is measured against.';
+    const generated = view.world === 'generated';
+    const line = generated ? `Fresh route · ${view.seed}` : WORLD_LINES[view.world];
     for (const panel of [this.title, this.pause, this.routes]) {
       const node = panel.querySelector<HTMLElement>('[data-menu="world"]');
       if (node && node.textContent !== line) node.textContent = line;
-      if (node) node.dataset.generated = view.generated ? 'true' : 'false';
+      if (node) node.dataset.generated = generated ? 'true' : 'false';
     }
 
     // Both of these are answers to "what else can I do from here", and both are
     // wrong when the world already is what they offer.
+    //
+    // **The city button asks whether this *is* the city, not whether the world
+    // was generated**, which used to be the same question and stopped being one
+    // at M23. On the circuit the old test hid the one control that leads back
+    // to the hand-built world, which is exactly where a player who arrived by
+    // pressing Track Day would look for it.
     const city = this.routes.querySelector<HTMLElement>('[data-menu="ride-city"]');
-    if (city) city.hidden = !view.generated;
+    if (city) city.hidden = view.world === 'slice';
+    // The copy button stays generated-only: a link is only worth copying when
+    // it carries a seed somebody else could not otherwise guess.
     const copy = this.routes.querySelector<HTMLElement>('[data-menu="copy-link"]');
-    if (copy) copy.hidden = !view.generated;
+    if (copy) copy.hidden = !generated;
   }
 
   /**
@@ -1317,6 +1614,9 @@ export class Menus {
     else if (action === 'challenge') this.callbacks.onStartChallenge();
     else if (action === 'knockabout') this.callbacks.onStartKnockabout();
     else if (action === 'chase') this.callbacks.onStartChase();
+    // -- M23 -----------------------------------------------------------------
+    else if (action === 'track-day') this.callbacks.onStartTrackDay();
+    else if (action === 'end-session') this.callbacks.onEndSession();
     else if (action === 'resume') this.callbacks.onResume();
     else if (action === 'settings') this.callbacks.onOpenSettings();
     else if (action === 'back') this.callbacks.onCloseSettings();

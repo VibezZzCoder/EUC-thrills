@@ -884,3 +884,50 @@ function assertTrackIsSane(decoded: GhostTrack): void {
     }
   }
 }
+
+// --- Replaying a lap, M23 Phase B2 -------------------------------------------
+
+test('playback is a pure function of the clock, which is what makes a lap ghost work', () => {
+  // **This is the whole of §23.6's "one genuine delta".** A time-trial ghost is
+  // sampled at run seconds and plays once; a lap ghost is sampled at *lap*
+  // seconds, so the referee's clock returning to zero on the line is the
+  // restart — no seek, no reset call, no second representation. That works only
+  // because `sample` holds no state between calls, and the file already argues
+  // for the binary search on exactly this ground: a remembered cursor "has to
+  // be right when the player restarts, scrubs, or rewinds, and is wrong in a
+  // way that only shows up as a ghost jumping".
+  //
+  // So this asserts the property rather than the feature: the same time
+  // answers the same pose whatever was asked before it.
+  const samples: GhostSample[] = [];
+  for (let index = 0; index <= 40; index += 1) {
+    const t = index * 0.05;
+    samples.push(sampleAt(t, { x: t * 3, z: -t, headingY: t * 0.4, speed: 12 + t }));
+  }
+  const player = new GhostPlayer(track(samples));
+
+  const read = (t: number): GhostSample => {
+    const out = createGhostSample();
+    assert.equal(player.sample(t, out), true, `no pose at ${t}`);
+    return { ...out };
+  };
+
+  // Two laps of the same track, read in order, then the same times read again
+  // in a scrambled order. A cursor would agree with the first walk and disagree
+  // with the second.
+  const lapTimes = [0, 0.3, 0.77, 1.2, 1.85, 2.0];
+  const first = lapTimes.map(read);
+  const second = lapTimes.map(read);
+  assert.deepEqual(second, first, 'a second lap read a different line');
+
+  const scrambled = [...lapTimes].reverse().map(read);
+  assert.deepEqual(scrambled, [...first].reverse(), 'reading backwards moved the ghost');
+
+  // And the pose really does change along the track, so the equalities above
+  // are not four copies of one sample.
+  assert.notDeepEqual(first[0], first[first.length - 1]);
+
+  // Past the end it answers false rather than freezing at the last pose, which
+  // is what hides a ghost whose lap was quicker than the one being ridden.
+  assert.equal(player.sample(2.5, createGhostSample()), false);
+});

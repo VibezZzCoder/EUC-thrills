@@ -3,12 +3,14 @@ import * as THREE from 'three';
 import {
   BUILDING_FACADE,
   BUILDING_TONES,
+  GANTRY_WORDMARK,
   PROP_COLOURS,
   PROP_SIZES,
   PROP_TINT_JITTER,
   type PropKind,
 } from '../data/props.ts';
 import { materialAppearance } from '../data/surfaces.ts';
+import { linearFromHex, wordStrokes } from './inkKit.ts';
 import { positionHash01 } from '../shared/maths.ts';
 import type { LevelPlan, Prop } from '../level/plan.ts';
 
@@ -113,8 +115,11 @@ type PartId =
   | 'signPlate'
   | 'fenceBay'
   | 'buildingBody'
+  | 'buildingLow'
   | 'buildingTall'
-  | 'buildingCap';
+  | 'buildingCap'
+  | 'tyreStack'
+  | 'gantrySpan';
 
 interface PartDefinition {
   /** Built once, on first use. Local space, origin at the prop's base. */
@@ -396,6 +401,30 @@ const PARTS: Readonly<Record<PartId, PartDefinition>> = {
   },
 
   /**
+   * The same box with two storeys, for anything too short for four.
+   *
+   * **A third geometry, and the second one that exists because band count is
+   * baked per part rather than per instance.** `buildingTall` was added
+   * because four bands on a sixty-metre tower are ten-metre floors; this is
+   * the same argument from the other end. Four bands on a four-metre paddock
+   * shed are one-metre floors, and `BUILDING_FACADE.minFloorHeight` already
+   * called that striping — the renderer just never applied its own rule to a
+   * short *body*, only to a short rooftop tower.
+   *
+   * A solid ground floor and one glazed strip above it, which is a workshop.
+   * Nothing shorter than `lowRiseFloors × minFloorHeight` gets a facade that
+   * fits: `props.test.ts` measures every instance and is meant to say so.
+   */
+  buildingLow: {
+    build: () => facadeBox(BUILDING_FACADE.lowRiseFloors),
+    albedo: 0xffffff,
+    roughness: 0.92,
+    metalness: 0,
+    tint: 0,
+    castShadow: false,
+  },
+
+  /**
    * The same box with more storeys, for anything tall.
    *
    * **One extra draw call, and the alternative was worse.** The box is scaled
@@ -423,6 +452,60 @@ const PARTS: Readonly<Record<PartId, PartDefinition>> = {
     tint: PROP_TINT_JITTER.structure,
     castShadow: false,
   },
+
+  /**
+   * A bundle of tyres — M23's venue furniture, and eight sides of it.
+   *
+   * The waist is the whole read. A stack of equal cylinders is a bin; every
+   * other tyre pulled in by a tenth gives the silhouette the four steps that
+   * say *tyres* at the distance this is seen from. It casts, because a stack
+   * that does not is a sticker on the grass beside a barrier that does.
+   */
+  tyreStack: {
+    build: () => {
+      const stack = PROP_SIZES.tyreStack;
+      return merge(Array.from({ length: stack.tyres }, (_ignored, tyre) => {
+        const radius = stack.radius * (tyre % 2 === 1 ? stack.waist : 1);
+        return cylinder(radius, radius, stack.tyreHeight, stack.sides, tyre * stack.tyreHeight);
+      }));
+    },
+    albedo: PROP_COLOURS.tyreStack,
+    roughness: 0.95,
+    metalness: 0,
+    tint: PROP_TINT_JITTER.structure,
+    castShadow: true,
+  },
+
+  /**
+   * The overhead half of BelVar's start gantry: truss, banner, and the venue's
+   * own name.
+   *
+   * **Three things it is not.** It is not the legs — those are two authored
+   * blocks in `metal`, because a prop cannot span a road and a block cannot
+   * leave the ground, and this is authored `onCollider` on top of them. It is
+   * not solid — `PROP_SOLIDS.gantrySpan` is null and says why. And the
+   * wordmark is not a texture: the letters are the *same stroke paths* the
+   * rider atlas prints, extruded into plates standing off the banner face, so
+   * the project's lettering has one alphabet and one set of metrics
+   * (`render/inkKit.ts`). That keeps invariant 12 at two textures rather than
+   * three, and it costs triangles, which is the axis this phase was told to
+   * spend on.
+   *
+   * The banner is red through the `color` attribute rather than through a
+   * material of its own — the same mechanism a building's glazing bands use,
+   * and the reason a two-colour object here is still one draw call.
+   */
+  gantrySpan: {
+    build: () => buildGantrySpan(),
+    albedo: PROP_COLOURS.gantryPlate,
+    roughness: 0.62,
+    metalness: 0.25,
+    // Zero. Two of this part's three colours are carried in the `color`
+    // attribute, and a per-instance tint would drag the banner's red and the
+    // wordmark with the truss.
+    tint: 0,
+    castShadow: true,
+  },
 };
 
 /** Which parts each kind emits. Buildings are the one kind that computes. */
@@ -437,6 +520,8 @@ const SIMPLE_PARTS: Readonly<Partial<Record<PropKind, readonly PartId[]>>> = {
   bollardCap: ['bollardCap'],
   signpost: ['signPost', 'signPlate'],
   fenceBay: ['fenceBay'],
+  tyreStack: ['tyreStack'],
+  gantrySpan: ['gantrySpan'],
 };
 
 // ---------------------------------------------------------------------------
@@ -534,6 +619,165 @@ function cone(
 ): THREE.BufferGeometry {
   return flat(new THREE.ConeGeometry(radius, height, sides, 1, false))
     .translate(0, base + height / 2, 0);
+}
+
+/**
+ * The venue's start gantry, from the top of its legs upward.
+ *
+ * Local frame: `x` runs along the span, `y` up from the truss's underside, `z`
+ * along the corridor the rider travels. The rider meets it head on, so the
+ * wordmark is on the `-z` face and nowhere else — a real gantry's back is
+ * blank, and a second copy would be three hundred triangles nobody sees.
+ *
+ * **Three colours, one draw call, no second material.** Every vertex carries a
+ * ratio of `PROP_COLOURS.gantryPlate` in the `color` attribute — 1 on the
+ * letters, the truss's own value on the frame, and `signalRed` on the banner,
+ * each derived from the palette rather than typed here, so a change to the
+ * barrier's red carries the banner with it. The same mechanism a building's
+ * glazing bands use.
+ */
+function buildGantrySpan(): THREE.BufferGeometry {
+  const size = PROP_SIZES.gantrySpan;
+  const plate = linearFromHex(PROP_COLOURS.gantryPlate);
+  /** One colour, as the ratio that reproduces it over the plate's albedo. */
+  const over = (hex: number): [number, number, number] => {
+    const target = linearFromHex(hex);
+    return [target[0] / plate[0], target[1] / plate[1], target[2] / plate[2]];
+  };
+  const truss = over(PROP_COLOURS.gantryTruss);
+  const banner = over(materialAppearance('signalRed').albedo);
+  const white: [number, number, number] = [1, 1, 1];
+
+  const pieces: THREE.BufferGeometry[] = [];
+  const tones: [number, number, number][] = [];
+  const add = (
+    geometry: THREE.BufferGeometry,
+    tone: [number, number, number],
+  ): void => {
+    pieces.push(geometry);
+    tones.push(tone);
+  };
+
+  /** A bar of `length` lying along local +x, turned by `angle` about +z. */
+  const bar = (
+    length: number,
+    thickness: number,
+    angle: number,
+    x: number,
+    y: number,
+    z: number,
+  ): THREE.BufferGeometry => (
+    flat(new THREE.BoxGeometry(length, thickness, thickness))
+      .rotateZ(angle)
+      .translate(x, y, z)
+  );
+
+  // The two chords, and a post closing each end.
+  const span = size.halfSpan * 2;
+  add(bar(span, size.chord, 0, 0, size.chord / 2, 0), truss);
+  add(bar(span, size.chord, 0, 0, size.trussHeight - size.chord / 2, 0), truss);
+  for (const end of [-1, 1]) {
+    add(
+      bar(size.trussHeight, size.chord, Math.PI / 2, end * (size.halfSpan - size.chord / 2), size.trussHeight / 2, 0),
+      truss,
+    );
+  }
+
+  // Diagonals, zig-zagging between the chords. `braces` per half-span, so the
+  // pattern is symmetric about the centre where the banner hangs.
+  const bays = size.braces * 2;
+  const bay = span / bays;
+  const rise = size.trussHeight - size.chord * 2;
+  const diagonal = Math.hypot(bay, rise);
+  for (let index = 0; index < bays; index += 1) {
+    const x = -size.halfSpan + bay * (index + 0.5);
+    const up = index % 2 === 0;
+    add(
+      bar(diagonal, size.brace, Math.atan2(up ? rise : -rise, bay), x, size.trussHeight / 2, 0),
+      truss,
+    );
+  }
+
+  // The banner, standing proud of both chord faces.
+  add(
+    flat(new THREE.BoxGeometry(size.bannerHalfWidth * 2, size.bannerHeight, size.bannerThickness))
+      .translate(0, size.trussHeight / 2, 0),
+    banner,
+  );
+
+  // BELVAR, as plates standing off the face the rider arrives at. The strokes
+  // are `render/inkKit.ts`'s own — one alphabet for the whole project — and a
+  // stroke becomes one box per segment rather than a texture, which is why
+  // invariant 12 still says two textures.
+  const strokes = wordStrokes(GANTRY_WORDMARK, size.letterHeight);
+  let widest = 0;
+  for (const stroke of strokes) for (const [x] of stroke) if (x > widest) widest = x;
+  const left = widest / 2;
+  const top = size.trussHeight / 2 + size.letterHeight / 2;
+  const face = -(size.bannerThickness / 2 + size.letterRelief / 2);
+  for (const stroke of strokes) {
+    for (let index = 1; index < stroke.length; index += 1) {
+      const [ax, ay] = stroke[index - 1];
+      const [bx, by] = stroke[index];
+      // Mirrored in x: the reader stands at -z looking along +z, so their
+      // right is -x and a word laid out left to right runs the other way.
+      const x0 = left - ax;
+      const x1 = left - bx;
+      const y0 = top - ay;
+      const y1 = top - by;
+      const length = Math.hypot(x1 - x0, y1 - y0);
+      if (length < 1e-6) continue;
+      add(
+        bar(
+          length + size.letterWeight,
+          size.letterWeight,
+          Math.atan2(y1 - y0, x1 - x0),
+          (x0 + x1) / 2,
+          (y0 + y1) / 2,
+          face,
+        ),
+        white,
+      );
+    }
+  }
+
+  return mergeToned(pieces, tones);
+}
+
+/**
+ * Merge parts that each carry their own flat colour into one geometry.
+ *
+ * `merge` above drops the `color` attribute because every other part in the
+ * kit is one flat colour and takes its white in `withInstanceColour`. This is
+ * the same concatenation with a tone per piece, which is what lets a gantry be
+ * grey, red and white in one draw call.
+ */
+function mergeToned(
+  pieces: readonly THREE.BufferGeometry[],
+  tones: readonly (readonly [number, number, number])[],
+): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const colours: number[] = [];
+
+  for (let index = 0; index < pieces.length; index += 1) {
+    const piece = pieces[index];
+    const tone = tones[index];
+    const position = piece.getAttribute('position');
+    const normal = piece.getAttribute('normal');
+    for (let vertex = 0; vertex < position.count; vertex += 1) {
+      positions.push(position.getX(vertex), position.getY(vertex), position.getZ(vertex));
+      normals.push(normal.getX(vertex), normal.getY(vertex), normal.getZ(vertex));
+      colours.push(tone[0], tone[1], tone[2]);
+    }
+    piece.dispose();
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colours, 3));
+  return geometry;
 }
 
 /**
@@ -728,7 +972,15 @@ export function createProps(plan: LevelPlan): PropsView {
     const size = prop.size ?? { x: 12, y: 18, z: 12 };
     const shape = PROP_SIZES.building;
     /** Which facade a box of this height wears. See `buildingTall`. */
-    const facade = (height: number): PartId => (
+    const facade = (height: number): PartId => {
+      if (height >= BUILDING_FACADE.highRiseHeight) return 'buildingTall';
+      return height >= BUILDING_FACADE.lowRiseHeight ? 'buildingBody' : 'buildingLow';
+    };
+    // A setback tower keeps the original two, and stays suppressed when
+    // neither fits it. That suppression is a statement about roof features
+    // rather than about band heights, so giving short towers the low-rise
+    // facade would restyle every skyline in the city to fix a paddock.
+    const towerFacade = (height: number): PartId => (
       height >= BUILDING_FACADE.highRiseHeight ? 'buildingTall' : 'buildingBody'
     );
 
@@ -753,8 +1005,8 @@ export function createProps(plan: LevelPlan): PropsView {
 
     if (hash01(prop.position.x, prop.position.z, 9) > 0.55) {
       const towerHeight = size.y * shape.towerHeightFraction;
-      const towerFacade = facade(towerHeight);
-      const towerFloors = towerFacade === 'buildingTall'
+      const towerPart = towerFacade(towerHeight);
+      const towerFloors = towerPart === 'buildingTall'
         ? BUILDING_FACADE.highFloors
         : BUILDING_FACADE.lowFloors;
       // A short setback box is a roof feature, not a miniature four-storey
@@ -767,7 +1019,7 @@ export function createProps(plan: LevelPlan): PropsView {
         size.z * shape.towerWidthFraction,
       );
       local.setPosition(0, size.y + shape.capHeight, 0);
-      emit(towerFacade, composed.multiplyMatrices(base, local), tone);
+      emit(towerPart, composed.multiplyMatrices(base, local), tone);
     }
   }
 

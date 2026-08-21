@@ -310,7 +310,7 @@ export class AudioEngine {
       try {
         const [
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
-          sirenFar, sirenClose, overspeedBeep,
+          crashMaribel, sirenFar, sirenClose, overspeedBeep,
         ] = await Promise.all([
           fetch(urls.tyreOffroad).then((response) => response.arrayBuffer()),
           fetch(urls.tyreSolid).then((response) => response.arrayBuffer()),
@@ -319,6 +319,7 @@ export class AudioEngine {
           fetch(urls.crashTrollina).then((response) => response.arrayBuffer()),
           fetch(urls.crashRedRider).then((response) => response.arrayBuffer()),
           fetch(urls.crashAdonisb2).then((response) => response.arrayBuffer()),
+          fetch(urls.crashMaribel).then((response) => response.arrayBuffer()),
           fetch(urls.sirenFar).then((response) => response.arrayBuffer()),
           fetch(urls.sirenClose).then((response) => response.arrayBuffer()),
           fetch(urls.overspeedBeep).then((response) => response.arrayBuffer()),
@@ -326,7 +327,7 @@ export class AudioEngine {
         if (this.disposed) return;
         this.sampleData = {
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
-          sirenFar, sirenClose, overspeedBeep,
+          crashMaribel, sirenFar, sirenClose, overspeedBeep,
         };
         this.installSamples();
       } catch {
@@ -347,7 +348,7 @@ export class AudioEngine {
         // on a second call failing.
         const [
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
-          sirenFar, sirenClose, overspeedBeep,
+          crashMaribel, sirenFar, sirenClose, overspeedBeep,
         ] = await Promise.all([
           context.decodeAudioData(data.tyreOffroad),
           context.decodeAudioData(data.tyreSolid),
@@ -356,6 +357,7 @@ export class AudioEngine {
           context.decodeAudioData(data.crashTrollina),
           context.decodeAudioData(data.crashRedRider),
           context.decodeAudioData(data.crashAdonisb2),
+          context.decodeAudioData(data.crashMaribel),
           context.decodeAudioData(data.sirenFar),
           context.decodeAudioData(data.sirenClose),
           context.decodeAudioData(data.overspeedBeep),
@@ -363,7 +365,7 @@ export class AudioEngine {
         if (this.disposed) return;
         const bank: SampleBank = {
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
-          sirenFar, sirenClose, overspeedBeep,
+          crashMaribel, sirenFar, sirenClose, overspeedBeep,
         };
         this.sink?.setSampleBank(bank);
       } catch {

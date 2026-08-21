@@ -362,6 +362,8 @@ export function createRidingRig(
       stance.groundY = -pose.suspensionOffset;
       stance.crouch = pose.crouch;
       stance.tuck = pose.tuck;
+      stance.attack = pose.attack;
+      stance.carveStance = pose.carveStance;
       stance.airBlend = pose.airBlend;
       // "Falling" from the pose rather than from a velocity the rig does not
       // have: the rider is above the ground and the gap is closing, which is

@@ -12,6 +12,7 @@ import {
   REFUSE_BURIED_BUILDINGS,
 } from '../data/props.ts';
 import type { PropKind } from '../data/props.ts';
+import type { MaterialId } from '../data/surfaces.ts';
 import type {
   BoxCollider,
   Checkpoint,
@@ -19,6 +20,8 @@ import type {
   Hazard,
   HazardKind,
   Heightfield,
+  LapCourse,
+  LapPoint,
   LevelPlan,
   Marking,
   Prop,
@@ -93,6 +96,14 @@ export interface BuildOptions {
    * every fixture a unit test builds. See `resolveCheckpoints`.
    */
   readonly checkpoints?: readonly CheckpointSpec[];
+  /**
+   * Albedo this level paints an existing material with. See `LevelPlan.palette`.
+   *
+   * Passed through untouched: the builder has no opinion about colour, and an
+   * override that changed anything the builder reasons about — a surface's
+   * encroachment, a collider's height — would not be a palette.
+   */
+  readonly palette?: Readonly<Partial<Record<MaterialId, number>>>;
   /**
    * What is lying in the road, authored against segments — M13 Phase 1.
    *
@@ -403,8 +414,13 @@ export function buildLevelPlan(
   options: BuildOptions,
 ): LevelPlan {
   const spacing = options.spacing ?? DEFAULT_SPACING;
-  const placed = placeGraph(asGraph(input), options.spawn);
+  const graph = asGraph(input);
+  const placed = placeGraph(graph, options.spawn);
   if (placed.length === 0) throw new Error('a level plan needs at least one segment');
+  // `placeGraph` lays the main chain first, in riding order, and appends each
+  // branch after it. That ordering is what makes "the lap" nameable below
+  // without the plan carrying a second copy of which corridors are the circuit.
+  const mainChain = placed.slice(0, graph.main.length);
 
   // -- Bounds -------------------------------------------------------------
   // Padded by two extra cells beyond every segment's own shoulder so the
@@ -719,6 +735,13 @@ export function buildLevelPlan(
     withProbeTargets(placed, options.targets, options.targetProbeMetres),
   );
 
+  // -- The lap ------------------------------------------------------------
+  // After the gates, because it is the gates' spelling that says whether this
+  // route is a lap at all, and from `placed` rather than from `segments`
+  // because the emitted `Segment` keeps only its two sockets — the arc between
+  // them, which is the whole shape of a corner, exists only here.
+  const lap = lapCourse(mainChain, options.checkpoints);
+
   return {
     id: options.id,
     spawn: { position: { ...options.spawn.position }, headingY: options.spawn.headingY },
@@ -735,7 +758,118 @@ export function buildLevelPlan(
     ...(solids.length === 0 ? {} : { solids }),
     ...(softBodies.length === 0 ? {} : { softBodies }),
     ...(markings.length === 0 ? {} : { markings }),
+    // Absent unless the route is a lap, on `LevelPlan.targets`'s contract: a
+    // plan with no key is a world that is not a circuit, so the slice, the
+    // proving ground, every generated route and every fixture leave both
+    // pinned digests exactly where they were.
+    ...(lap === null ? {} : { lap }),
+    ...(options.palette === undefined ? {} : { palette: { ...options.palette } }),
   };
+}
+
+/**
+ * How far apart the lap centreline is sampled, metres.
+ *
+ * **Derived from the tightest corner the game can author, not chosen.** The
+ * consumer measures a point against the chord between two samples, so the
+ * error is the sagitta `R(1 - cos(spacing / 2R))`. BelVar's hairpin is R14,
+ * where two metres of spacing is 36 mm — three orders of magnitude inside the
+ * ten-metre half-width the chord is compared against, and still under a
+ * centimetre at any radius above 50 m. Halving it would double a 465-point
+ * array to describe a difference nothing can measure.
+ */
+const LAP_SAMPLE_SPACING = 2;
+
+/**
+ * How far a lap's two ends may miss each other and still be one ring, metres.
+ *
+ * `simulation/routeSpine.ts` calls 1.25 m the distance at which two segment
+ * ends are the same joint, and this is the same statement about the same
+ * geometry: below it the chain met itself and the remainder is arithmetic;
+ * above it the author was not drawing a circuit.
+ */
+const LAP_CLOSE_TOLERANCE = 1.25;
+
+/**
+ * The lap as a closed line, or null when the route is not one.
+ *
+ * **The circuit is the main chain**, which is a fact about how a lap is
+ * authored rather than an assumption: a closed route's gates are on the ring,
+ * `placeGraph` lays the ring first, and the paddock — the one branch BelVar
+ * carries — is deliberately *not* part of the racing surface. Asserting that
+ * every gate stands on a main-chain corridor is what keeps the two statements
+ * from drifting; a lap whose sector gate had been authored on a branch would
+ * produce an envelope the referee then judged the rider against, and the
+ * symptom would be a valid lap voided at one corner with nothing on screen
+ * explaining it.
+ *
+ * The ring is closed explicitly by repeating the first point, so a consumer
+ * walking spans always has one across the start/finish seam. Without it the
+ * few metres either side of the line would read as the end of an open line,
+ * which is the one place on the circuit where every lap is decided.
+ */
+function lapCourse(
+  mainChain: readonly PlacedSegment[],
+  specs: readonly CheckpointSpec[] | undefined,
+): LapCourse | null {
+  if (specs === undefined || specs.length < 2) return null;
+  // The lap spelling `assertRouteOrder` accepts: a start, splits, and no
+  // finish. A point-to-point route has two ends and is not a ring.
+  if (specs[specs.length - 1].kind === 'finish') return null;
+
+  const ring = new Set(mainChain.map((segment) => segment.spec.id));
+  for (const spec of specs) {
+    if (ring.has(spec.segment)) continue;
+    throw new Error(
+      `lap checkpoint "${spec.id}" is authored on "${spec.segment}", which is not on the lap`,
+    );
+  }
+
+  const points: LapPoint[] = [];
+  let length = 0;
+  const push = (x: number, z: number, halfWidth: number): void => {
+    const previous = points[points.length - 1];
+    if (previous !== undefined) {
+      const step = Math.hypot(x - previous.x, z - previous.z);
+      // Two samples in the same place would be a zero-length span, which is a
+      // division by zero in every point-to-span test that walks this array.
+      // Corridor joints produce one at every seam by construction.
+      if (step < 1e-6) return;
+      length += step;
+    }
+    points.push({ x, z, halfWidth });
+  };
+
+  for (const segment of mainChain) {
+    const spec = segment.spec;
+    const divisions = Math.max(1, Math.ceil(spec.length / LAP_SAMPLE_SPACING));
+    for (let division = 0; division <= divisions; division += 1) {
+      const centre = centrelineAt(segment.entry, spec, (division / divisions) * spec.length);
+      push(centre.x, centre.z, spec.halfWidth);
+    }
+  }
+
+  if (points.length < 2) return null;
+  const first = points[0];
+  const last = points[points.length - 1];
+  const gap = Math.hypot(last.x - first.x, last.z - first.z);
+  // **A chain that does not meet itself is not a circuit, and that is answered
+  // here rather than thrown about.** `assertRouteOrder` accepts `start, split…`
+  // as the spelling of a lap, and a spelling is all it is: a straight road with
+  // no finish gate is a legal plan and a great many unit fixtures are exactly
+  // that. Refusing to emit an envelope for one is the honest answer — nothing
+  // downstream is then able to lap it, which is correct — and a venue that
+  // *meant* to be a ring says so in its own test rather than relying on a
+  // builder to guess.
+  //
+  // The tolerance is `placeChain`'s stitching slack rather than zero, because
+  // the loop closes by solving a linear system (`trackLevel.ts`) and lands
+  // within floating point of exact rather than exactly on it.
+  if (gap > LAP_CLOSE_TOLERANCE) return null;
+  length += gap;
+  points.push({ x: first.x, z: first.z, halfWidth: first.halfWidth });
+
+  return { points, length };
 }
 
 /**
@@ -848,18 +982,39 @@ function resolveCheckpoints(
   });
 }
 
-/** A route is one `start`, then splits, then one `finish`, with unique ids. */
+/**
+ * A route is one `start`, then splits, and then either one `finish` or nothing.
+ *
+ * **The second spelling is a lap, and it arrived with M23's circuit.** A point
+ * to-point course has two ends and names them; a closed circuit has one line,
+ * crossed to open a lap and crossed again to close that lap and open the next.
+ * Writing the lap as `start, split, split…` rather than inventing a `finish`
+ * at the start's own coordinates is what keeps one gantry where the player
+ * sees one gantry: two `Checkpoint`s at identical centres would draw twice,
+ * detect one crossing twice, and give the results screen a leg of zero
+ * seconds.
+ *
+ * **Nothing downstream needed changing, which is the evidence that the shape
+ * is coherent rather than convenient.** `ChallengeRun.available` already asks
+ * whether a route can *start and stop* — it requires the last gate to be a
+ * finish — so a lap is reported un-timeable by the M10 referee on its own
+ * terms, with no branch anywhere on which level is loaded. The referee that
+ * can read a lap is `docs/PLANS.md` §23.15's.
+ *
+ * Ids are unique in both spellings, because a split in a log names itself.
+ */
 function assertRouteOrder(specs: readonly CheckpointSpec[]): void {
   if (specs.length < 2) {
     throw new Error('a timed route needs at least a start and a finish');
   }
+  const lap = specs[specs.length - 1].kind !== 'finish';
   const seen = new Set<string>();
   specs.forEach((spec, index) => {
     if (seen.has(spec.id)) throw new Error(`duplicate checkpoint id "${spec.id}"`);
     seen.add(spec.id);
     const expected: CheckpointKind = index === 0
       ? 'start'
-      : index === specs.length - 1 ? 'finish' : 'split';
+      : index === specs.length - 1 && !lap ? 'finish' : 'split';
     if (spec.kind !== expected) {
       throw new Error(
         `checkpoint "${spec.id}" is a ${spec.kind} at route index ${index}, where a ${expected} belongs`,
@@ -1429,7 +1584,7 @@ function polylineLength(points: readonly Vec3[]): number {
  * Half a metre rather than zero: a bin balanced exactly on the white line is a
  * bin the rider still goes through, and the tyre is half a metre across.
  */
-const PROP_CORRIDOR_CLEARANCE = 0.5;
+export const PROP_CORRIDOR_CLEARANCE = 0.5;
 
 /**
  * Whether a prop would stand where somebody could ride.

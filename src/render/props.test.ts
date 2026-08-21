@@ -2,11 +2,21 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import * as THREE from 'three';
-import { BUILDING_FACADE, BUILDING_TONES, PROP_BUDGET, PROP_KINDS, type PropKind } from '../data/props.ts';
+import {
+  BUILDING_FACADE,
+  BUILDING_TONES,
+  GANTRY_WORDMARK,
+  PROP_BUDGET,
+  PROP_KINDS,
+  PROP_SIZES,
+  type PropKind,
+} from '../data/props.ts';
 import { buildLevelPlan } from '../level/buildPlan.ts';
 import type { LevelPlan, Prop } from '../level/plan.ts';
 import { createProvingGround } from '../level/provingGround.ts';
 import { createSliceLevel } from '../level/sliceLevel.ts';
+import { createTrackLevel } from '../level/trackLevel.ts';
+import { wordStrokes } from './inkKit.ts';
 import { createProps } from './props.ts';
 
 /**
@@ -26,8 +36,21 @@ import { createProps } from './props.ts';
 const plan = createSliceLevel();
 const view = createProps(plan);
 
-/** Every kind the slice actually places, so a kind cannot rot unnoticed. */
-const placedKinds = new Set<PropKind>((plan.props ?? []).map((prop) => prop.kind));
+/**
+ * Every kind the game's hand-authored worlds place, so a kind cannot rot
+ * unnoticed.
+ *
+ * **It was the slice alone until M23 Phase B1**, which is when the kit first
+ * gained a kind the slice has no business carrying: a tyre stack and a start
+ * gantry belong to a race venue and would be litter in a city park. The rule
+ * the test is really making — *a kind nobody places is a kind nobody notices
+ * has broken* — is about the built worlds rather than about one of them, so
+ * the set is the union and the per-prop density claims below stay on the slice
+ * where they were calibrated.
+ */
+const placedKinds = new Set<PropKind>(
+  [...(plan.props ?? []), ...(createTrackLevel().props ?? [])].map((prop) => prop.kind),
+);
 
 test('the slice carries dressing, and enough of it to be a place', () => {
   assert.ok(plan.props !== undefined, 'the slice emits no props at all');
@@ -35,7 +58,7 @@ test('the slice carries dressing, and enough of it to be a place', () => {
   assert.equal(view.props, (plan.props ?? []).length);
 });
 
-test('every kind the kit declares is used somewhere in the slice', () => {
+test('every kind the kit declares is used somewhere in a hand-authored world', () => {
   // A kind nobody places is a kind nobody notices has broken.
   for (const kind of PROP_KINDS) assert.ok(placedKinds.has(kind), `${kind} is built but never placed`);
 });
@@ -348,18 +371,67 @@ test('a tall block gets more storeys than a low one, and both are plausible', ()
   const position = new THREE.Vector3();
   const quaternion = new THREE.Quaternion();
   const scale = new THREE.Vector3();
-  for (const child of [low, tall]) {
-    const mesh = child as THREE.InstancedMesh;
-    const floors = child === tall ? BUILDING_FACADE.highFloors : BUILDING_FACADE.lowFloors;
-    for (let index = 0; index < mesh.count; index += 1) {
-      mesh.getMatrixAt(index, matrix);
-      matrix.decompose(position, quaternion, scale);
-      const height = scale.y / floors;
-      assert.ok(
-        height >= BUILDING_FACADE.minFloorHeight
-          && height <= BUILDING_FACADE.maxFloorHeight,
-        `${mesh.name} instance ${index} gets ${height.toFixed(2)} m storeys`,
-      );
+
+  /** The bands each facade geometry carries, by the mesh the renderer names. */
+  const FLOORS: Readonly<Record<string, number>> = {
+    'level-props-buildingLow': BUILDING_FACADE.lowRiseFloors,
+    'level-props-buildingBody': BUILDING_FACADE.lowFloors,
+    'level-props-buildingTall': BUILDING_FACADE.highFloors,
+  };
+
+  // **Every hand-authored world, not just the slice.** This assertion existed
+  // and was correct throughout B1, and never saw BelVar's four paddock sheds
+  // wearing 0.85 m storeys, because it was pointed at one level. That is the
+  // third time a check has been fenced to the slice while a second world
+  // quietly broke it — after `RouteSpine` and the mobile resize ride.
+  for (const scene of [view, createProps(createTrackLevel())]) {
+    for (const child of scene.group.children) {
+      const floors = FLOORS[child.name];
+      if (floors === undefined) continue;
+      const mesh = child as THREE.InstancedMesh;
+      for (let index = 0; index < mesh.count; index += 1) {
+        mesh.getMatrixAt(index, matrix);
+        matrix.decompose(position, quaternion, scale);
+        const height = scale.y / floors;
+        assert.ok(
+          height >= BUILDING_FACADE.minFloorHeight
+            && height <= BUILDING_FACADE.maxFloorHeight,
+          `${mesh.name} instance ${index} gets ${height.toFixed(2)} m storeys`,
+        );
+      }
     }
   }
+});
+
+
+test('the wordmark fits the banner it is bolted to, and keeps a margin of red', () => {
+  // **The check the name's own length needed.** B1's gantry said BELVAR, which
+  // fits any panel; the venue is BelVar Circuit, and the fix more than doubled
+  // the lettering. Nothing in the kit was watching that: the plates are placed
+  // from the word's own width, so a longer name does not wrap or clip — it
+  // simply walks off the ends of the red and hangs in the truss, which reads as
+  // a broken renderer rather than as a name that outgrew its sign.
+  const size = PROP_SIZES.gantrySpan;
+  const strokes = wordStrokes(GANTRY_WORDMARK, size.letterHeight);
+  let width = 0;
+  for (const stroke of strokes) for (const [x] of stroke) if (x > width) width = x;
+  // The plates are the stroke paths *thickened*, so the ink is half a weight
+  // wider than the path at each end.
+  width += size.letterWeight;
+  const panel = size.bannerHalfWidth * 2;
+  const margin = (panel - width) / 2;
+  assert.ok(
+    margin > 0,
+    `${GANTRY_WORDMARK} is ${width.toFixed(2)} m of lettering on a ${panel.toFixed(2)} m panel`,
+  );
+  // One cap height of red at each end, which is the difference between a sign
+  // and a word with a red rectangle behind it.
+  assert.ok(
+    margin > size.letterHeight,
+    `only ${margin.toFixed(2)} m of banner beside the wordmark, against a ${size.letterHeight} m cap`,
+  );
+  assert.ok(
+    size.letterHeight < size.bannerHeight,
+    'the lettering is taller than the panel carrying it',
+  );
 });

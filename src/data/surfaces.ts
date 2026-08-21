@@ -52,7 +52,7 @@ export type ParticleId = 'none' | 'dust' | 'grassClipping' | 'grit' | 'splinter'
  * entries are for the things that stand *on* the ground — kerbs, walls, posts —
  * which are not surfaces a rider rolls along and so are not `SurfaceId`s.
  */
-export type MaterialId = SurfaceId | 'concrete' | 'stone' | 'metal';
+export type MaterialId = SurfaceId | 'concrete' | 'stone' | 'metal' | 'signalRed';
 
 /** How a material is lit. `render/terrain.ts` is the only consumer. */
 export interface MaterialAppearance {
@@ -300,6 +300,32 @@ export const MATERIALS: Readonly<Record<MaterialId, MaterialAppearance>> = deepF
   // linear 0.10, with enough metalness to catch the sun on a bollard's cap.
   metal: {
     id: 'metal', albedo: 0x5a5a5e, roughness: 0.45, metalness: 0.65, mottle: 0.0, encroach: 0,
+  },
+  // linear (0.442, 0.0315, 0.0265) — **painted, not pigmented.** M23 Phase B1's
+  // fourth structure material, and the one thing that turns a grey graybox into
+  // a race venue: a modular barrier alternates this with `concrete` down both
+  // sides of BelVar Circuit.
+  //
+  // It is a new entry rather than a reuse because the free candidate does not
+  // do the job. `brick` is the palette's only existing red and it is a warm
+  // clay at linear (0.16, 0.075, 0.055) — a fifth of the red channel and three
+  // times the green — which reads as a garden wall at chase-camera distance
+  // and never as safety paint. The two draw calls it costs (a colour pass and
+  // a shadow pass, `data/renderCost.ts`) are two of the ten the library had
+  // spare, spent on the kind `docs/PLANS.md` §23.7 named first.
+  //
+  // The red channel sits under the 0.6 legibility ceiling with room, and the
+  // other two sit above the 0.03 floor as a *luminance* (0.118) rather than
+  // per channel — a saturated hue is dark in green and blue by definition, and
+  // `surfaces.test.ts` measures the luminance the eye actually reads.
+  //
+  // Roughness follows the finish: coated panel, not raw concrete, so it holds
+  // a little more of the sun than the kerb beside it. Mottle is a structure
+  // material's, which is nearly none — a barrier is manufactured and the
+  // per-cell jitter is a *ground* effect anyway; a block mesh is built with
+  // vertex colours off.
+  signalRed: {
+    id: 'signalRed', albedo: 0xb03531, roughness: 0.7, metalness: 0.0, mottle: 0.05, encroach: 0,
   },
 });
 

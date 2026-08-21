@@ -4,6 +4,7 @@ import { EUC, RIDER, RIDER_BLOCKOUT, WHEEL } from '../data/tuning.ts';
 import { clamp, clamp01, lerp } from '../shared/maths.ts';
 import {
   loftGeometry,
+  mapUvInto,
   mergeGeometries,
   patchGeometry,
   vAtHeight,
@@ -107,6 +108,16 @@ export interface StanceInput {
    * absorb does none of the last three.
    */
   tuck: number;
+  /**
+   * The attack stance, 0..1 — sustained throttle at speed (M23).
+   *
+   * Separate from `tuck` for the reason `EucPose.attack` gives: they are two
+   * poses that share a hinge, and a rider who crouches inside a long pull is
+   * doing both. The joints below add them.
+   */
+  attack: number;
+  /** The hard-carve stance, 0..1 — real roll at real speed (M23). */
+  carveStance: number;
   /** Airborne blend, 0..1 (M5). */
   airBlend: number;
   /** True while falling, so the head can look at the landing (M5). */
@@ -217,6 +228,8 @@ export function createStanceInput(): StanceInput {
     groundY: 0,
     crouch: 0,
     tuck: 0,
+    attack: 0,
+    carveStance: 0,
     airBlend: 0,
     falling: false,
     pedalStrike: 0,
@@ -430,6 +443,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
 
   const geometries: THREE.BufferGeometry[] = [];
   const materials: THREE.Material[] = [];
+  const textures: THREE.Texture[] = [];
   const track = <T extends THREE.BufferGeometry>(geometry: T): T => {
     geometries.push(geometry);
     return geometry;
@@ -453,6 +467,42 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // point at the same frozen spec — so he still ends up with exactly the five
   // materials he had before looks existed, and the count in `Game.resources()`
   // does not move for a character who did not change.
+  //
+  // **The look's printed sheet, if it has one** — M23 Phase A1b. One texture
+  // per rig over pixels the atlas module memoises, tracked here so it is freed
+  // with everything else the rig owns: a shared texture would be disposed out
+  // from under the ghost the first time the player changed character.
+  const atlas = look.atlas;
+  const sheet = atlas === undefined ? null : atlas.build();
+  if (sheet !== null) textures.push(sheet);
+  // **Asked of the spec, not of the role**, because `materialFor` deduplicates
+  // by spec identity: two roles pointing at one frozen spec are one material,
+  // and whether it samples the sheet cannot depend on which of them happened
+  // to be built first.
+  const mapsRole = (role: RiderMaterialRole): boolean => (
+    atlas !== undefined
+    && atlas.roles.some((mapped) => look.materials[mapped] === look.materials[role])
+  );
+  /**
+   * Fold a part's own texture square onto its page of that sheet.
+   *
+   * A no-op for a look with no atlas, and for a material that does not sample
+   * one — which is every look but Maribel's and most of hers. Where it is not
+   * a no-op it is mandatory: geometry keeping the unit square the kit gave it
+   * would sample the whole sheet at once. `maribel.test.ts` walks a built rig
+   * and asserts that every mesh drawn in a mapped material landed on a page,
+   * which is what makes it safe that only patches and extras are paged here —
+   * a look that mapped a role a *loft* is drawn in would fail that test rather
+   * than ship a rider wearing her own chest print across both legs.
+   */
+  const paged = (
+    geometry: THREE.BufferGeometry,
+    role: RiderMaterialRole,
+    art?: string,
+  ): THREE.BufferGeometry => (
+    atlas !== undefined && mapsRole(role) ? mapUvInto(geometry, atlas.region(art)) : geometry
+  );
+
   const built = new Map<RiderMaterialSpec, THREE.MeshStandardMaterial>();
   const materialFor = (role: RiderMaterialRole): THREE.MeshStandardMaterial => {
     const spec = look.materials[role];
@@ -465,6 +515,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       emissive: spec.emissive ?? 0x000000,
       emissiveIntensity: spec.emissiveIntensity ?? 1,
       vertexColors: true,
+      map: sheet !== null && mapsRole(role) ? sheet : null,
     }));
     built.set(spec, material);
     return material;
@@ -480,6 +531,23 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // stay on `limbs`. Cool Rider names `limbs` for both and builds identically.
   const legMaterial = materialFor(look.parts.legs);
   const { profiles, shades, panels } = look;
+
+  /**
+   * How many sections a lofted part is built from — M23 Phase A1b.
+   *
+   * The defaults are the numbers this rig has used since M7, so every look
+   * that does not ask builds byte-identically. `RiderLook.density` is the
+   * owner's waiver made spendable, and it is spent here rather than in the
+   * look because the *rig* is what decides how many parts there are.
+   */
+  const density = {
+    limb: look.density?.limb ?? 14,
+    torso: look.density?.torso ?? 24,
+    head: look.density?.head ?? 20,
+    boot: look.density?.boot ?? 12,
+    hand: look.density?.hand ?? 10,
+    neck: look.density?.neck ?? 12,
+  };
 
   /**
    * Casting a shadow is also what the ghost reads to decide what to draw
@@ -513,7 +581,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     paintwork?: (geometry: THREE.BufferGeometry, side: number) => void,
     side = 1,
   ): THREE.Mesh => {
-    const geometry = track(loftGeometry(profile, { radialSegments: 14, shade }));
+    const geometry = track(loftGeometry(profile, { radialSegments: density.limb, shade }));
     paintwork?.(geometry, side);
     const mesh = new THREE.Mesh(geometry, material);
     return shadowed(mesh);
@@ -564,6 +632,8 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       lift: patch.lift,
       sink: patch.sink,
       taper: patch.taper,
+      bulge: patch.bulge,
+      bow: patch.bow,
       // A shear authored as two heights, converted here so the look reads in
       // metres like every other measurement it carries.
       skew: patch.skewFrom !== undefined && patch.skewTo !== undefined
@@ -592,13 +662,24 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     side: number | null,
   ): THREE.Mesh => {
     const parts: THREE.BufferGeometry[] = [];
+    // A patch's page of the look's atlas, and the one-sided marks: a script
+    // that exists once on a person is authored once and blanked on the other
+    // leg, rather than being two patches that must be kept in step.
+    const pageFor = (patch: RiderPatch, patchSide: number): string | undefined => (
+      patch.artOn !== undefined && Math.sign(patch.artOn) !== Math.sign(patchSide)
+        ? patch.artElse
+        : patch.art
+    );
+    const add = (patch: RiderPatch, patchSide: number): void => {
+      parts.push(paged(patchOn(profile, patch, patchSide), group.role, pageFor(patch, patchSide)));
+    };
     for (const patch of group.patches) {
       if (side !== null) {
-        parts.push(patchOn(profile, patch, side));
+        add(patch, side);
       } else if (patch.mirrored === true || patch.anchor === 'outboard') {
-        for (const pairSide of [-1, 1]) parts.push(patchOn(profile, patch, pairSide));
+        for (const pairSide of [-1, 1]) add(patch, pairSide);
       } else {
-        parts.push(patchOn(profile, patch, 1));
+        add(patch, 1);
       }
     }
     const mesh = new THREE.Mesh(track(mergeGeometries(parts)), materialFor(group.role));
@@ -668,10 +749,10 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     // turn and then dropped until the sole meets the pedal tread — the ankle
     // ends up over the heel, which is where the M2 box was placed by hand.
     const soleTop = -RIDER_BLOCKOUT.ankleAbovePedal + 0.018;
-    const upper = loftGeometry(profiles.boot, { radialSegments: 12 })
+    const upper = loftGeometry(profiles.boot, { radialSegments: density.boot })
       .rotateX(Math.PI / 2)
       .translate(0, soleTop + 0.047, 0);
-    const sole = loftGeometry(profiles.bootSole, { radialSegments: 16, shade: shades.sole })
+    const sole = loftGeometry(profiles.bootSole, { radialSegments: density.boot + 4, shade: shades.sole })
       .translate(0, soleTop, 0.018);
     const bootGeometry = track(mergeGeometries([upper, sole]));
     look.paint?.boot?.(bootGeometry, side);
@@ -711,7 +792,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // *cap* at the neck: an open collar is a hole into the inside of the jacket,
   // and at chase-camera height the player looks down into it. A dress with a
   // neckline tapers closed instead and carries no collar at all.
-  const torsoParts = [loftGeometry(profiles.torso, { radialSegments: 24 })];
+  const torsoParts = [loftGeometry(profiles.torso, { radialSegments: density.torso })];
   // The seat: merged into the garment when it *is* the garment (Cool Rider's
   // trousers), its own non-casting mesh when it is a different one (Trollina's
   // tights — the role split is the invisibility her carve-clip fix rests on;
@@ -719,14 +800,21 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // the torso above it carries the silhouette, and the ghost has no use for a
   // second dark volume inside the first.
   if (look.parts.seat === 'body') {
-    torsoParts.push(loftGeometry(profiles.seat, { radialSegments: 24, shade: shades.seat }));
+    torsoParts.push(loftGeometry(profiles.seat, { radialSegments: density.torso, shade: shades.seat }));
   }
   if (panels.collar) torsoParts.push(patchOn(profiles.torso, panels.collar, 1));
-  const torso = shadowed(new THREE.Mesh(track(mergeGeometries(torsoParts)), bodyMaterial));
+  const torsoGeometry = track(mergeGeometries(torsoParts));
+  // The body repaint — M23. Run after the merge rather than on the garment
+  // loft alone, so a panel that runs from the chest to the hip is one field
+  // and not one field with a seam where the seat begins. It takes no side:
+  // this is a single mesh spanning both halves, so a painter reads the sign of
+  // x off the vertex it is looking at (`RiderLook.paint.torso`).
+  look.paint?.torso?.(torsoGeometry);
+  const torso = shadowed(new THREE.Mesh(torsoGeometry, bodyMaterial));
   pelvis.add(torso);
   if (look.parts.seat !== 'body') {
     const seat = new THREE.Mesh(
-      track(loftGeometry(profiles.seat, { radialSegments: 24, shade: shades.seat })),
+      track(loftGeometry(profiles.seat, { radialSegments: density.torso, shade: shades.seat })),
       materialFor(look.parts.seat),
     );
     seat.name = 'rider-seat';
@@ -813,7 +901,11 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       bendToward,
     }, solvedUpper, solvedLower);
     shoulder.quaternion.copy(solvedUpper);
-    shoulder.add(limb(profiles.upperArm, limbMaterial, 1));
+    // The bicep is painted per side — M23, and the only way an asymmetric
+    // livery reaches the arms: a panel group here is built per side but names
+    // one material for both, so it can hold one colour and Maribel wears two
+    // (`RiderLook.paint.upperArm`).
+    shoulder.add(limb(profiles.upperArm, limbMaterial, 1, look.paint?.upperArm, side));
 
     // The accent runs down the *outer* sleeve, not around the whole arm.
     //
@@ -830,7 +922,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     // the silhouette and the ghost already carry its shape.
     if (profiles.sleeve) {
       const sleeve = new THREE.Mesh(
-        track(loftGeometry(profiles.sleeve, { radialSegments: 14 })),
+        track(loftGeometry(profiles.sleeve, { radialSegments: density.limb })),
         bodyMaterial,
       );
       sleeve.name = `rider-cap-sleeve-${sideName}`;
@@ -841,7 +933,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     elbow.name = `rider-elbow-${sideName}`;
     elbow.position.y = -RIDER_BLOCKOUT.upperArmLength;
     elbow.quaternion.copy(solvedLower);
-    elbow.add(limb(profiles.forearm, limbMaterial, 1));
+    elbow.add(limb(profiles.forearm, limbMaterial, 1, look.paint?.forearm, side));
     // Elbow armour, on the side the elbow actually points: the chains bend
     // backward, so this is the face a rider lands on.
     if (panels.elbowPad) {
@@ -849,7 +941,12 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     }
     shoulder.add(elbow);
 
-    const handGeometry = track(loftGeometry(profiles.hand, { radialSegments: 10 }));
+    // A hand may be several lofts — a palm, a thumb, finger lobes — merged
+    // into one mesh so the extra volumes cost triangles and never a draw call.
+    // Merged *before* the paint hook, so a look's repaint covers every part.
+    const handParts = [loftGeometry(profiles.hand, { radialSegments: density.hand })];
+    for (const build of look.build?.hand ?? []) handParts.push(build(side));
+    const handGeometry = track(mergeGeometries(handParts));
     look.paint?.hand?.(handGeometry, side);
     const hand = shadowed(new THREE.Mesh(
       handGeometry,
@@ -898,7 +995,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // shoulders, and a figure whose head is not attached to it reads as broken
   // rather than as temporary.
   const neckMesh = shadowed(new THREE.Mesh(
-    track(loftGeometry(profiles.neck, { radialSegments: 12, shade: shades.neck })),
+    track(loftGeometry(profiles.neck, { radialSegments: density.neck, shade: shades.neck })),
     // Its own mesh already, so the role costs nothing: Red Rider's gaiter is
     // the gear material where everyone before him wore `limbs` (see
     // `RiderLook.parts.neck` for why a shade could not say "black").
@@ -917,7 +1014,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // the collar, and a **rear spoiler** — which matters more than the other
   // three put together, because the back of the head is the part of the rider
   // the chase camera is looking at. On Trollina it is one patch: the hairline.
-  const headParts = [loftGeometry(profiles.head, { radialSegments: 20 })];
+  const headParts = [loftGeometry(profiles.head, { radialSegments: density.head })];
   for (const patch of panels.head) headParts.push(patchOn(profiles.head, patch, 1));
   const head = shadowed(new THREE.Mesh(track(mergeGeometries(headParts)), headMaterial));
   neck.add(head);
@@ -930,19 +1027,59 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     neck.add(panelMesh('rider-face', panels.face, profiles.head, null));
   }
 
-  // Anything the look adds that the rig has no slot for. Today that is exactly
-  // one thing — Trollina's hair — and it hangs off the neck because that is
-  // where the head is.
+  // Anything the look adds that the rig has no slot for — hair, and Maribel's
+  // moulded armour. Hair hangs off the neck because that is where the head is.
+  //
+  // **An extra that `sways` gets a pivot of its own** (M23). A mesh bolted to
+  // the neck rotates rigidly with it, and the owner's ride found what that
+  // costs on a long mass: folded forward over the wheel, her hair folded into
+  // her own back; turned into a corner, it swept through the shoulder. The
+  // pivot below is what `applyStanceReaction` gives the body's rotation back
+  // to, so the hair keeps hanging where it hung. One node, shared by every
+  // swaying extra a look has, because they should all hang together.
+  let sway: THREE.Group | null = null;
   for (const extra of look.extras) {
-    const mesh = new THREE.Mesh(track(extra.build()), materialFor(extra.role));
+    const mesh = new THREE.Mesh(
+      track(paged(extra.build(), extra.role, extra.art)),
+      materialFor(extra.role),
+    );
     mesh.name = extra.name;
     if (extra.casts) shadowed(mesh);
-    (extra.joint === 'neck' ? neck : pelvis).add(mesh);
+    const joint = extra.joint === 'neck' ? neck : pelvis;
+    if (extra.sways) {
+      if (sway === null) {
+        sway = new THREE.Group();
+        sway.name = 'rider-hair-sway';
+        joint.add(sway);
+      }
+      sway.add(mesh);
+    } else {
+      joint.add(mesh);
+    }
   }
+  const hairSway = sway;
 
   // A constant forward tilt. Nobody rides bolt upright, and a figure that does
   // reads as a mannequin balanced on a wheel rather than as someone riding one.
   pelvis.rotation.x = RIDER_BLOCKOUT.torsoRestPitch;
+
+  /**
+   * Where the head sits when nothing is happening — the neck's own resting
+   * pitch, which is what `hairFollowPitch` measures its compensation from.
+   * Stated as the same expression the stabiliser uses below rather than as a
+   * constant, so the two cannot drift apart.
+   */
+  const HAIR_NECK_REST = -clamp(
+    RIDER_BLOCKOUT.torsoRestPitch * RIDER_BLOCKOUT.headStabilizationFactor,
+    -RIDER_BLOCKOUT.headStabilizationMax,
+    RIDER_BLOCKOUT.headStabilizationMax,
+  );
+
+  /** Scratch for the hair's orientation solve. Nothing here allocates. */
+  const HAIR_REST = new THREE.Quaternion();
+  const HAIR_EULER = new THREE.Euler();
+  const HAIR_TARGET = new THREE.Quaternion();
+  const HAIR_INVERSE = new THREE.Quaternion();
 
   const bendScratch = new THREE.Vector3();
   // Reused per-frame results for the four chains the reaction re-solves.
@@ -996,6 +1133,11 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       // Suppressed by the rest blend for the same reason the crouch is: a
       // rider standing with a foot down is not tucked.
       const tuck = clamp(stance.tuck, 0, 1) * (1 - rest) * (1 - clamp(stance.crash, 0, 1));
+      // The two reference stances (M23). Suppressed by rest and by a crash on
+      // the same terms as the tuck — a stopped rider is not driving, and a
+      // crashing one has stopped choosing anything.
+      const attack = clamp(stance.attack, 0, 1) * (1 - rest) * (1 - clamp(stance.crash, 0, 1));
+      const carving = clamp(stance.carveStance, 0, 1) * (1 - rest) * (1 - clamp(stance.crash, 0, 1));
 
       // -- Wobble and crash (M6) --------------------------------------------
       // Wobble is a *stance*, not a shake: "rider lowers centre of mass, knees
@@ -1092,6 +1234,12 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
           + bracing * RIDER_BLOCKOUT.brakeSquatMax
           + crouch * RIDER_BLOCKOUT.crouchHipDrop
           + tuck * RIDER_BLOCKOUT.tuckHipDrop
+          // A third of a tuck's drop while running straight: the attack
+          // stance keeps the legs long. A committed carve already owns the
+          // same hip compression, so fade this one out with the ordinary
+          // carve amount instead of stacking two presentation channels into
+          // an unreachable knee fold (and through short garment hems).
+          + attack * RIDER_BLOCKOUT.attackHipDrop * (1 - amount)
           // "Rider lowers centre of mass ... knees bend deeper" (§13.2, §13.3).
           + wobble * RIDER_BLOCKOUT.wobbleHipDrop
           // Backwards is less stable than forwards, and flexed knees are how
@@ -1105,7 +1253,18 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       // putting the helmet on the tyre.
       const torsoPitch = Math.min(
         RIDER_BLOCKOUT.tuckTorsoPitchMax,
-        stance.torsoPitch + tuck * RIDER_BLOCKOUT.tuckTorsoPitch,
+        stance.torsoPitch
+          + tuck * RIDER_BLOCKOUT.tuckTorsoPitch
+          // Attack and hard-carve are two readings of the same forward torso
+          // hinge. Their arms and hips still compose, but adding both hinge
+          // angles folded the shared rig twice whenever a charged pull became
+          // a committed corner. Keep the stronger signal instead: a hard
+          // carve can inherit attack's deeper fold without putting a second
+          // copy of the fold through every rider's garment.
+          + Math.max(
+            attack * RIDER_BLOCKOUT.attackTorsoPitch,
+            carving * RIDER_BLOCKOUT.carveStanceTorsoPitch,
+          ),
       );
       pelvis.rotation.x = torsoPitch;
 
@@ -1121,7 +1280,10 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       // the motion that caused them.
       pelvis.position.x = RIDER_BLOCKOUT.restHipShift * rest;
       pelvis.position.y = lerp(RIDER.hipHeight - squat, RIDER_BLOCKOUT.restHipHeight, settled);
-      pelvis.position.z = hipShift * (1 - settled);
+      // The hips carry back as the torso goes over them — the photograph's
+      // rider is not folded at the waist over a static seat, their whole mass
+      // has moved behind the pedals. Negative is rearward.
+      pelvis.position.z = (hipShift - attack * RIDER_BLOCKOUT.attackHipShift) * (1 - settled);
       if (ragActive) {
         // The root *is* the particle frame, so the pelvis returns to its
         // neutral seat on it: the torso then lies along the spine the
@@ -1280,6 +1442,11 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
           // The tuck opens the arms only slightly. The reference hands are
           // back and low, not out — a wide tuck reads as a tightrope walker.
           + tuck * RIDER_BLOCKOUT.tuckArmSplay
+          // The attack stance pins the arms *in*; the hard carve throws the
+          // outside one out and leaves the inside one where the ordinary
+          // carve reaction put it.
+          + attack * RIDER_BLOCKOUT.attackArmSplay
+          + (inside ? 0 : carving * RIDER_BLOCKOUT.carveStanceOutsideSplay)
           // Backwards: "arms held slightly outward from the body ... as
           // counterweights". Balance, never bars — down-and-out only.
           + reverse * RIDER_BLOCKOUT.reverseArmSplay;
@@ -1287,13 +1454,23 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
           - driving * RIDER_BLOCKOUT.armAccelBack
           // Hands finish *behind* the hips in a tuck, which is both the
           // reference pose and the furthest thing from a handlebar grip.
-          - tuck * RIDER_BLOCKOUT.tuckArmBack;
+          - tuck * RIDER_BLOCKOUT.tuckArmBack
+          - attack * RIDER_BLOCKOUT.attackArmBack
+          // The asymmetry is the carve photograph's whole signature: the
+          // outside glove reaches across the machine, the inside one trails.
+          + (inside
+            ? -carving * RIDER_BLOCKOUT.carveStanceInsideBack
+            : carving * RIDER_BLOCKOUT.carveStanceOutsideForward);
         const rise = (inside ? 0 : amount * RIDER_BLOCKOUT.armCarveOutsideRise)
           + air * RIDER_BLOCKOUT.airArmRise
           + wobble * RIDER_BLOCKOUT.wobbleArmRise
           // And drop, so the hands do not ride up as the torso hinges over
           // them — the one way a tuck could still find the handlebar pose.
           - tuck * RIDER_BLOCKOUT.tuckArmDrop
+          - attack * RIDER_BLOCKOUT.attackArmDrop
+          + (inside
+            ? carving * RIDER_BLOCKOUT.carveStanceInsideRise
+            : -carving * RIDER_BLOCKOUT.carveStanceOutsideDrop)
           // "Arms protect body" (§16). Symmetric, deliberately: there is
           // nothing asymmetric about coming off.
           + crashing * RIDER_BLOCKOUT.crashArmRise;
@@ -1409,6 +1586,88 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       // and a full-lock steer can never stack the two into an owl pose.
       neck.rotation.y = lerp(lookYaw, RIDER_BLOCKOUT.reverseHeadYaw, reverse);
 
+      // -- Hair that keeps hanging (M23) ------------------------------------
+      //
+      // The pivot gives back what the body just did. `torsoPitch` is the whole
+      // fore-aft hinge and `neck.rotation.x` is the head's share of it, so
+      // their sum less the resting tilt is how far the neck frame has folded
+      // from the carriage the hair was modelled in — and that is exactly the
+      // rotation that used to drive the mass through her back.
+      //
+      // Yaw is a *lag* rather than a give-back: at full compensation the hair
+      // would sit dead still while the head turned inside it, which loses the
+      // one thing the owner liked about it ("it moves away and reveals the
+      // logo while riding"). A third of the turn is enough to keep the mass
+      // out of the shoulder and still swing.
+      //
+      // Roll hangs the mass out of the corner, which is where gravity puts it
+      // on a rider leaned into one, and is the third of the three combinations
+      // the owner asked to be checked.
+      if (hairSway !== null) {
+        // **Solved as an orientation, not as three angles.** The node is a
+        // child of the neck, so "give back the head's pitch and lag its yaw"
+        // is a composition — and Euler angles do not compose: cancelling a
+        // 0.88 rad yaw underneath a 0.45 rad pitch by writing the negative
+        // yaw leaves a cross term, which is what put the mass 36 mm further
+        // into her torso in the look-behind stance with the yaw already
+        // nominally cancelled. Naming the pose the hair should *hold* and
+        // dividing out the joint it hangs from has no such residue.
+        //
+        //   - **Pitch** returns to its resting angle. Draping over a back is
+        //     not hanging under gravity: a folded rider's back is tilted, and
+        //     hair pinned to world-vertical would pass through it. Holding the
+        //     rest angle in the torso's own frame is what a mass lying on a
+        //     back does, and it is the only pose that cannot penetrate.
+        //   - **Trail** then lifts it *off* the back as the fold deepens —
+        //     positive is backward here — which is the wind, and the one
+        //     direction that adds clearance rather than spending it.
+        //   - **Yaw** follows part of the turn and then stops at the shoulder,
+        //     which keeps what the owner liked ("it moves away and reveals the
+        //     logo") without sweeping the fall through her.
+        //   - **Roll** is deliberately absent; `RIDER_BLOCKOUT` carries the
+        //     measurement that ruled it out.
+        //
+        // **And the pitch never goes below the head's own** — the owner's
+        // report, mid-repair: *"the hair detaches when hard breaking."* Every
+        // sentence above was reasoned from a rider folding *forward*, where
+        // the head cranes up and giving that rotation back is what keeps the
+        // mass lying on the back. A hard brake is the same stabiliser running
+        // the other way: it settles at −0.70 rad of backward lean and **holds
+        // there**, which tips the head 0.39 rad forward, and a mass that
+        // insists on the torso's rest angle underneath it swings 0.46 rad down
+        // and forward about the neck joint — 55 mm at the middle of the fall,
+        // which slides the roots out from under the helmet rim and opens a gap
+        // between the two. Hair grows out of a scalp: it may lag a head that
+        // turns and it may lift off a back that folds, but it cannot rotate
+        // *below* where it is attached. The floor is the head's own pitch,
+        // which is a no-op for every forward stance — there the give-back is
+        // already above it — and rides the skull rigidly through a brake.
+        const fold = Math.max(0, torsoPitch - RIDER_BLOCKOUT.torsoRestPitch);
+        HAIR_EULER.set(
+          Math.max(
+            HAIR_NECK_REST + fold * RIDER_BLOCKOUT.hairTrailPitch,
+            neck.rotation.x,
+          ),
+          clamp(
+            neck.rotation.y * (1 - RIDER_BLOCKOUT.hairFollowYaw),
+            -RIDER_BLOCKOUT.hairYawMax,
+            RIDER_BLOCKOUT.hairYawMax,
+          ),
+          0,
+        );
+        HAIR_TARGET.setFromEuler(HAIR_EULER);
+        HAIR_INVERSE.copy(neck.quaternion).invert();
+        hairSway.quaternion.copy(HAIR_INVERSE).multiply(HAIR_TARGET);
+        // The ragdoll owns the body outright; the hair goes back to hanging
+        // off the joint it is parented to and lets the particles carry it.
+        if (rag > 0) hairSway.quaternion.slerp(HAIR_REST.identity(), rag);
+        // And a little back off the shoulder blades as it folds: rotation
+        // alone pivots about the nape, which clears the tips and not the
+        // roots, and the roots are what press into the yoke of the suit.
+        hairSway.position.z = -RIDER_BLOCKOUT.hairFollowLift
+          * clamp(fold / RIDER_BLOCKOUT.hairFollowPitchMax, 0, 1) * (1 - rag);
+      }
+
       // -- The ragdoll head (M15) -------------------------------------------
       // The neck leans the head toward its particle, which is what makes the
       // tumble read from the chase camera: a body that rolls while the head
@@ -1434,8 +1693,12 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     dispose(): void {
       for (const geometry of geometries) geometry.dispose();
       for (const material of materials) material.dispose();
+      // The look's printed sheet, if it had one. A texture is a GPU resource
+      // like the other two and the M0 resource test counts it as one.
+      for (const texture of textures) texture.dispose();
       geometries.length = 0;
       materials.length = 0;
+      textures.length = 0;
       root.removeFromParent();
     },
   };

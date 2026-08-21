@@ -4215,3 +4215,87 @@ test('a crash of any kind clears the over-speed state rather than replaying it',
   assert.equal(euc.overspeed, 0, 'still beeping at a rider on the floor');
   assert.equal(euc.overspeedHeld, 0, 'the hold survived the crash it caused');
 });
+
+test('the attack stance takes a held throttle at speed, and nothing else', () => {
+  // **M23, from two photographs the owner filed in `references/`.** He asked
+  // for the racer's forward lean, and he said exactly when it may arrive: the
+  // rider has *"held forward for like a couple of seconds"*. That word is the
+  // whole contract — a blip must not produce the pose, and neither must a
+  // rider who is merely moving fast on a rolling throttle.
+  const euc = controller();
+  const pose = createPose();
+
+  // Up to speed, but only just there: the clock has not run.
+  ride(euc, SECONDS(1.0), { throttle: 1 });
+  euc.writePose(pose);
+  assert.ok(
+    pose.attack < 0.02,
+    `a second of throttle is not the attack stance: ${pose.attack}`,
+  );
+
+  // Held. The delay plus the ramp plus the blend's own easing.
+  ride(euc, SECONDS(EUC.attackDelaySeconds + EUC.attackRampSeconds + 1), { throttle: 1 });
+  euc.writePose(pose);
+  assert.ok(pose.attack > 0.95, `a held throttle must reach the stance, not ${pose.attack}`);
+
+  // Released: the clock resets at once and the blend eases out.
+  ride(euc, SECONDS(1.0), { throttle: 0 });
+  euc.writePose(pose);
+  assert.ok(pose.attack < 0.05, `lifting off must stand the rider up, not ${pose.attack}`);
+
+  // And it does not come back on the *next* blip, because the clock restarted.
+  ride(euc, SECONDS(0.5), { throttle: 1 });
+  euc.writePose(pose);
+  assert.ok(pose.attack < 0.05, `a blip re-entered the stance at ${pose.attack}`);
+
+  // Speed is a gate of its own: a rider who has held the throttle forever but
+  // is crawling — up a hill, off-surface, whatever costs them the speed — is
+  // not in a racer's tuck.
+  const crawler = controller();
+  const slow = createPose();
+  ride(crawler, SECONDS(0.4), { throttle: 1 });
+  crawler.writePose(slow);
+  assert.ok(crawler.snapshot().speed < EUC.attackSpeed, 'the crawler got up to speed too fast');
+  assert.equal(slow.attack, 0, 'the stance arrived below its speed gate');
+});
+
+test('the hard-carve stance needs roll AND speed, which is the owner\'s rule', () => {
+  // **M23.** *"Not at slow speed, as that's when people [are] fooling around
+  // doing playful turns, not carving."* So the blend is a product: either
+  // input alone is a pose the game already has — a full-lock steer at walking
+  // pace is the technical turn, and speed on its own is the attack stance.
+  const euc = controller();
+  const pose = createPose();
+
+  // Fast and straight: nothing.
+  ride(euc, SECONDS(4), { throttle: 1 });
+  euc.writePose(pose);
+  assert.ok(euc.snapshot().speed > EUC.carveStanceFullSpeed, 'the run-up did not reach speed');
+  assert.equal(pose.carveStance, 0, 'a straight line is not a carve');
+
+  // Fast and turning hard: the stance.
+  ride(euc, SECONDS(2), { throttle: 0.6, steer: 1 });
+  euc.writePose(pose);
+  assert.ok(
+    Math.abs(euc.snapshot().rollAngle) > EUC.carveStanceFullRoll,
+    `the carve did not reach full roll: ${euc.snapshot().rollAngle}`,
+  );
+  assert.ok(pose.carveStance > 0.9, `a committed corner must reach the stance, not ${pose.carveStance}`);
+
+  // Straightening up drops it.
+  ride(euc, SECONDS(1.5), { throttle: 0.6 });
+  euc.writePose(pose);
+  assert.ok(pose.carveStance < 0.05, `the stance outlived the corner: ${pose.carveStance}`);
+
+  // Slow and turning hard: the playful turn, and nothing else.
+  const playing = controller();
+  const play = createPose();
+  ride(playing, SECONDS(0.8), { throttle: 0.35 });
+  ride(playing, SECONDS(2), { throttle: 0.2, steer: 1 });
+  playing.writePose(play);
+  assert.ok(
+    playing.snapshot().speed < EUC.carveStanceSpeed,
+    `the playful turn was not slow: ${playing.snapshot().speed}`,
+  );
+  assert.equal(play.carveStance, 0, 'a playful turn reached the racing stance');
+});

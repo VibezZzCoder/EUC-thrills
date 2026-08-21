@@ -295,6 +295,15 @@ test('a plan with no stated route refuses to produce a spine', () => {
   assert.equal(RouteSpine.fromPlan(createLevel('proving')), null);
 });
 
+test('a closed lap is not an open chase spine', () => {
+  // M23's circuit has one start/finish line followed by sector splits and no
+  // terminal finish. Treating those gates as an open route builds only the
+  // 713 m path from spawn to the last sector of a 930 m lap, then leaves the
+  // cop clamped there. A lap needs a looping spine (which Track Day does not
+  // use); the open, point-to-point chase spine must refuse it.
+  assert.equal(RouteSpine.fromPlan(createLevel('track')), null);
+});
+
 test('the high-speed policy follows the live wheel tuning it is given', () => {
   const { plan } = generateLevel('route-41');
   const spine = RouteSpine.fromPlan(plan);

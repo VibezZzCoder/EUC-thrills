@@ -41,7 +41,7 @@ import type { SurfaceId } from '../simulation/world.ts';
  * the difference travels on the vertex colour, exactly as a prop's tone travels
  * on its instance colour (`render/props.ts`).
  */
-export type MarkingPaint = 'road' | 'path';
+export type MarkingPaint = 'road' | 'path' | 'kerb';
 
 /**
  * Which line this is. Width comes from here rather than from the author, so a
@@ -80,6 +80,24 @@ export const MARKING_PAINTS: Readonly<Record<MarkingPaint, { readonly albedo: nu
    * road narrows, the grass shoulders arrive, and the paint fades.
    */
   path: { albedo: 0x8a8985, wear: 0.26 },
+  /**
+   * linear (0.30, 0.035, 0.030) — the red half of a kerb, added at M23 B1.
+   *
+   * **A third paint costs nothing at all, and that is the point.** Every
+   * painted line in a level is one mesh and one material; the paint's identity
+   * travels on the vertex colour, exactly as a prop's tone travels on its
+   * instance colour. So the red/white apex kerbs a race circuit is read by are
+   * free, where a red *material* would have cost two of the ten draw calls the
+   * library had spare.
+   *
+   * Under road paint in luminance rather than over it, because a kerb is a
+   * warning at the edge of the racing surface and the white line down the
+   * middle of it is the thing that must stay brightest (`DESIGN.md` §3's
+   * bounded exception). It is also a good deal lighter than the barrier's
+   * `signalRed`: paint on tarmac is thin and worn, and a kerb that matched the
+   * barrier would read as a barrier lying down.
+   */
+  kerb: { albedo: 0x943834, wear: 0.22 },
 });
 
 /**

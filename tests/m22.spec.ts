@@ -1,6 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test } from '@playwright/test';
-import { CHARACTER_IDS } from '../src/data/riders.ts';
+import { CHARACTERS, CHARACTER_IDS } from '../src/data/riders.ts';
 import { boot, bootToTitle, collectErrors } from './harness.ts';
 
 /**
@@ -89,19 +89,39 @@ test('Adonisb2 crashes with his own recording, audibly', async ({ page }) => {
  *
  * The contract here is the stronger one QA asked for: every card, the
  * heading and Done **simultaneously** inside the viewport, and the menu
- * containers with nothing to scroll to at all. Adonisb2 is the selected
- * rider while measuring, deliberately: his card carries the longest blurb
- * AND the visible "Riding now" pill, so it is the tallest any card gets.
+ * containers with nothing to scroll to at all.
+ *
+ * **The rider selected while measuring is the one with the longest blurb, and
+ * it is computed rather than named.** A card's height is its words plus, on
+ * the selected one, the visible "Riding now" pill — so the tallest a card ever
+ * gets is the longest blurb wearing the pill. That was Adonisb2 at M22 and is
+ * Maribel at M23, which is exactly the kind of fact that goes stale silently:
+ * a hard-coded name would have kept passing while measuring the second-tallest
+ * card. Reading it off `CHARACTERS` means the next rider re-aims this test by
+ * existing.
+ *
+ * **Tablets joined the list at M23**, on the owner's ask, and they are not
+ * decorative additions: a tablet is the one shape that is wide enough to look
+ * like a desktop and short enough to run out of height, and 1024×768 sits
+ * exactly at the width where the roster stops fitting in one row. Both
+ * orientations of three common sizes are here for that reason.
  */
-test('chooser, title and pause fit every supported phone size with nothing to scroll to', async ({ page }) => {
+test('chooser, title and pause fit every supported phone and tablet size with nothing to scroll to', async ({ page }) => {
   const errors = collectErrors(page);
   await bootToTitle(page);
-  await page.evaluate(() => window.game.setOptions({ character: 'adonisb2' }));
+
+  const tallest = [...CHARACTERS].sort((a, b) => b.blurb.length - a.blurb.length)[0].id;
+  await page.evaluate((id) => window.game.setOptions({ character: id }), tallest);
 
   const VIEWPORTS = [
+    // Phones, both orientations.
     { width: 360, height: 800 }, { width: 375, height: 667 },
     { width: 390, height: 844 }, { width: 412, height: 915 },
     { width: 667, height: 375 }, { width: 844, height: 390 },
+    // Tablets, both orientations — M23.
+    { width: 768, height: 1024 }, { width: 1024, height: 768 },
+    { width: 820, height: 1180 }, { width: 1180, height: 820 },
+    { width: 834, height: 1194 }, { width: 1194, height: 834 },
   ];
 
   // A layout change is an input-reset moment by contract (master §8.2): the
@@ -136,8 +156,12 @@ test('chooser, title and pause fit every supported phone size with nothing to sc
   for (const viewport of VIEWPORTS) {
     await resizeTo(viewport);
 
-    // The title: all six actions, the world line, the chip, and the credit.
-    for (const control of ['start', 'challenge', 'knockabout', 'chase', 'routes', 'settings', 'riders']) {
+    // The title: every action, the world line, the chip, and the credit. The
+    // list is spelled out rather than queried, so a button that stops being
+    // rendered fails here instead of quietly dropping out of the contract.
+    for (const control of [
+      'start', 'challenge', 'track-day', 'knockabout', 'chase', 'routes', 'settings', 'riders',
+    ]) {
       await fits(page.locator(`.euc-menu--title [data-menu="${control}"]`), viewport.height,
         `title ${control} at ${viewport.width}x${viewport.height}`);
     }
@@ -172,6 +196,26 @@ test('chooser, title and pause fit every supported phone size with nothing to sc
     }
     await fits(page.locator('.euc-menu--pause .euc-controls-note'), viewport.height,
       `pause hint at ${viewport.width}x${viewport.height}`);
+    await unscrollable('.euc-menu--pause');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => window.game.snapshot().app.acceptsRideInput);
+  }
+
+  // **And the pause card during a track day, which is the tallest it gets** —
+  // M23. End session is hidden in every other ride, so the four-button card
+  // above is not the worst case any more, and a fit contract measuring only the
+  // easy one is a contract that passes while the hard one clips.
+  await page.evaluate(() => window.game.setAppState('title'));
+  await page.evaluate(() => window.game.startTrackDay());
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
+  for (const viewport of [{ width: 667, height: 375 }, { width: 844, height: 390 }]) {
+    await resizeTo(viewport);
+    await page.keyboard.press('Escape');
+    await page.locator('.euc-menu--pause:not([hidden])').waitFor();
+    for (const control of ['resume', 'end-session', 'new-route', 'settings', 'quit']) {
+      await fits(page.locator(`.euc-menu--pause [data-menu="${control}"]`), viewport.height,
+        `track-day pause ${control} at ${viewport.width}x${viewport.height}`);
+    }
     await unscrollable('.euc-menu--pause');
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => window.game.snapshot().app.acceptsRideInput);

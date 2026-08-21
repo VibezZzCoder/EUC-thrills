@@ -43,7 +43,7 @@ import type { CharacterId } from './riders.ts';
  */
 
 /** Every machine the renderer can build. */
-export type MachineId = 'standard' | 'red-rider' | 'adonisb2';
+export type MachineId = 'standard' | 'red-rider' | 'adonisb2' | 'maribel';
 
 export interface MachineSpec {
   readonly id: MachineId;
@@ -91,6 +91,24 @@ export const MACHINES: readonly MachineSpec[] = Object.freeze([
     name: "Adonisb2's wheel",
     blurb: 'Blocky black off-road bodywork on a knobby tyre, a saddle, '
       + 'two cream lamps, and a green plate that glares back.',
+  }),
+  /**
+   * Maribel's machine — M23 Phase A2, and the third taken from a real rider's
+   * own wheel with her permission.
+   *
+   * Black bodywork, purple pads and her own logo on both flanks: the livery
+   * her regenerated reference render carries and the colour her logo is drawn
+   * in. A2 kept the standard body on a livery-not-shape argument; A1c
+   * re-measured that against the photographs — a tall performance wheel with
+   * a moulded pad stack — and re-authored the cosmetic shell to match
+   * (`render/machineLook.ts`). The standard body was the invented claim: it
+   * dressed a racer's machine as a commuter. Contract dimensions untouched.
+   */
+  Object.freeze({
+    id: 'maribel' as MachineId,
+    name: "Maribel's wheel",
+    blurb: 'Tall black performance bodywork, a purple pad stack over a '
+      + 'treaded street tyre, and her grinning devil on both flanks.',
   }),
 ]);
 
@@ -143,6 +161,13 @@ export function machineContract(): Readonly<Record<MachineContractKey, number>> 
 export function machineForCharacter(character: CharacterId): MachineId {
   if (character === 'red-rider') return 'red-rider';
   if (character === 'adonisb2') return 'adonisb2';
+  // M23 Phase A2. Her id, her spec above and her `MachineLook` row arrived in
+  // one edit, for the reason the note that stood here while she was absent
+  // gave: each of the three without the others is a silent fallback — a mapped
+  // id with no look resolves to `standard` and ships the wrong wheel without
+  // saying so. She rode the standard machine for exactly one build, and the
+  // owner's ride of it is why this line exists (`docs/PLANS.md` §23.9c).
+  if (character === 'maribel-vargas') return 'maribel';
   return DEFAULT_MACHINE;
 }
 

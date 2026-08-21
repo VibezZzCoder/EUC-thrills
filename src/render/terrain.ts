@@ -82,16 +82,38 @@ function sampleHeight(field: Heightfield, column: number, row: number): number {
 }
 
 /**
+ * A material's appearance, after whatever this level repainted.
+ *
+ * **The only thing a level may change is the albedo**, and the only thing that
+ * changes is which colour comes out of this function — the id, the material
+ * set, and therefore the draw-call count are all untouched (`LevelPlan.palette`
+ * says why). Every appearance lookup in this file goes through here, including
+ * the one that feeds the mottle: the saturation layer moves a patch toward
+ * *its own* material's grey, so a retint the mottle could not see would
+ * desaturate the new colour toward the old one's.
+ */
+function paintedAppearance(
+  id: MaterialId,
+  palette: LevelPlan['palette'],
+): MaterialAppearance {
+  const appearance = materialAppearance(id);
+  const albedo = palette?.[id];
+  return albedo === undefined ? appearance : { ...appearance, albedo };
+}
+
+/**
  * Every surface's encroachment and decoded albedo, resolved once.
  *
  * The edge blend asks four questions per drawn cell and the slice draws
  * forty-three thousand of them, so decoding an sRGB hex inside that loop would
  * be a hundred and seventy thousand `Math.pow` calls at every level build.
  */
-function surfaceLookup(): Map<SurfaceId, { encroach: number; linear: GroundTint }> {
+function surfaceLookup(
+  palette: LevelPlan['palette'],
+): Map<SurfaceId, { encroach: number; linear: GroundTint }> {
   const lookup = new Map<SurfaceId, { encroach: number; linear: GroundTint }>();
   for (const id of Object.keys(SURFACES) as SurfaceId[]) {
-    const appearance = materialAppearance(SURFACES[id].material);
+    const appearance = paintedAppearance(SURFACES[id].material, palette);
     const linear: GroundTint = { r: 1, g: 1, b: 1 };
     linearFromSrgbHex(appearance.albedo, linear);
     lookup.set(id, { encroach: appearance.encroach, linear });
@@ -148,7 +170,7 @@ export function createTerrain(plan: LevelPlan): TerrainView {
   const materials: THREE.Material[] = [];
 
   const field = plan.heightfield;
-  const surroundAppearance = materialAppearance(SURFACES[plan.surround.surface].material);
+  const surroundAppearance = paintedAppearance(SURFACES[plan.surround.surface].material, plan.palette);
 
   // -- The backstop -------------------------------------------------------
   // One uniform plane a few centimetres below the world, following the rider so
@@ -269,11 +291,12 @@ export function createTerrain(plan: LevelPlan): TerrainView {
   const base: GroundTint = { r: 1, g: 1, b: 1 };
   const blended: GroundTint = { r: 1, g: 1, b: 1 };
   const encroaching: GroundTint = { r: 0, g: 0, b: 0 };
-  const surfaceLook = surfaceLookup();
+  const surfaceLook = surfaceLookup(plan.palette);
 
   for (const [surface, cells] of cellsBySurface) {
-    const appearance = materialAppearance(
+    const appearance = paintedAppearance(
       SURFACES[surface as keyof typeof SURFACES]?.material ?? 'pavement',
+      plan.palette,
     );
     // The material's linear albedo, which the saturation layer needs so a
     // desaturated patch moves toward *this* surface's grey.
@@ -398,7 +421,7 @@ export function createTerrain(plan: LevelPlan): TerrainView {
 
   let colliderTriangles = 0;
   for (const [id, colliders] of byMaterial) {
-    const appearance = materialAppearance(id);
+    const appearance = paintedAppearance(id, plan.palette);
     const boxPositions: number[] = [];
     const boxNormals: number[] = [];
     const boxIndices: number[] = [];

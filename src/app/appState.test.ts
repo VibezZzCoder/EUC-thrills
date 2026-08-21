@@ -51,7 +51,10 @@ test('ride input is live in exactly the ride states', () => {
   // "is this a ride?" through that export.
   const riding = APP_STATES.filter((id) => APP_STATE_SPECS[id].acceptsRideInput);
   assert.deepEqual(riding, [...RIDE_STATES]);
-  assert.deepEqual([...RIDE_STATES], ['freeRide', 'challenge', 'knockabout', 'chase']);
+  assert.deepEqual(
+    [...RIDE_STATES],
+    ['freeRide', 'challenge', 'trackDay', 'knockabout', 'chase'],
+  );
   for (const id of APP_STATES) {
     assert.equal(
       isRideState(id),
@@ -90,17 +93,36 @@ test('both scored rides are reachable, and leave only where they should', () => 
     [...APP_STATE_SPECS.chase.successors],
     ['paused', 'results', 'title'],
   );
+  // And Track Day is the fourth (M23). It reaches `results` without crossing
+  // anything — a circuit has no finish — but the list is identical anyway,
+  // because where a ride may *go* is not what distinguishes one mode from
+  // another. What ends the session is the pause card, and that edge is
+  // `paused → results` rather than a fourth entry here.
+  assert.deepEqual(
+    [...APP_STATE_SPECS.trackDay.successors],
+    ['paused', 'results', 'title'],
+  );
+  assert.ok(
+    APP_STATE_SPECS.paused.successors.includes('results'),
+    'a session that ends from the pause card has nowhere to report itself',
+  );
   // Retry is the only edge back into a ride from the results screen, and it
   // goes to whichever scored ride the player was in rather than to free ride: a
   // player who wants to stop being scored goes through the title deliberately.
   assert.deepEqual(
     [...APP_STATE_SPECS.results.successors],
-    ['challenge', 'knockabout', 'chase', 'title'],
+    ['challenge', 'trackDay', 'knockabout', 'chase', 'freeRide', 'title'],
   );
-  assert.equal(
+  // **`freeRide` is here from M23 and it is the New route edge, nothing else.**
+  // The rule it replaced — no unscored ride the player did not choose — was
+  // about *accidentally* leaving a scored state, and this card's New route
+  // button says on its face that it swaps the world for a generated one, which
+  // no mode with a card on screen can be scored on. Refusing the edge left the
+  // player reading a frozen results card over a world already replaced
+  // underneath it. Retry still goes to the mode that ended, never here.
+  assert.ok(
     APP_STATE_SPECS.results.successors.includes('freeRide'),
-    false,
-    'results must not drop the player into an unscored ride they did not choose',
+    'New route from a results card has nowhere legal to land',
   );
 });
 

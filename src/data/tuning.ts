@@ -147,6 +147,68 @@ export const RIDER_BLOCKOUT = {
   /** Constant forward tilt of the torso even at rest. Nobody rides bolt upright. */
   torsoRestPitch: 0.10,
 
+  // -- Hair that hangs (M23) ---------------------------------------------
+  //
+  // **The owner's ride: "when going all the way forward it sinks inside the
+  // body. Same when turning."** Maribel's hair hangs off the neck joint, so
+  // every degree the torso hinges forward was a degree the hair hinged *into*
+  // her back, and every degree the head turned swept the mass through the
+  // shoulder on that side. `RiderExtra.sways` puts a pivot between the joint
+  // and the mesh; these four numbers are what that pivot spends.
+  //
+  // **The pitch term gives back the HEAD's rotation, not the torso's**, and
+  // which of the two it is was the whole bug. The head stabilises: it cranes
+  // *up* as the rider folds down, so the neck joint rotates backwards by more
+  // than half a radian in a deep lean — and anything hanging from that joint
+  // swings the other way, forward, straight through her chest. Measured at a
+  // 0.70 lean it put the mass 133 mm inside the torso.
+  //
+  // Draping over a back is not the same as hanging under gravity, either. A
+  // rider folded forward has hair lying *along* their back, which is tilted;
+  // hair pinned to world-vertical would pass through it. So the rest position
+  // is held in the torso's own frame — 1.0, exactly cancelling the head — and
+  // the wind is a separate, smaller term that lifts the mass *off* the back
+  // as the fold deepens, which is the direction that also cannot penetrate.
+  /** How much of the head's own pitch the hair refuses to inherit, 0..1. */
+  hairFollowPitch: 1,
+  /** Ceiling on that, radians. The head's stabiliser cannot exceed it. */
+  hairFollowPitchMax: 0.85,
+  /** How far the fold trails the mass back off the shoulders, per radian. */
+  hairTrailPitch: 0.26,
+  /**
+   * How much of the head's yaw the hair *lags* by, 0..1.
+   *
+   * A lag rather than a give-back, because full compensation loses the one
+   * thing the owner liked: *"i like the behavior of how it moves away and
+   * reveals the logo while riding... that's cool"*. Measured against the
+   * torso across the whole stance envelope, the mass sits deepest when the
+   * head turns toward her left and sweeps the fall across her spine; at 0.34
+   * that reached 36 mm inside her, at 0.52 it reaches 24 mm — which is the
+   * depth the hair already rests at, so no turn is worse than standing still.
+   * Above that it only costs movement.
+   */
+  hairFollowYaw: 0.52,
+  /**
+   * How far the mass may swing around her, radians — the shoulder's own stop.
+   *
+   * A lag is a fraction, and a fraction of the look-behind is still enormous:
+   * riding backwards turns the head 1.5 rad and half of that swept the whole
+   * fall across her spine and into the far shoulder (76 mm inside). Real hair
+   * does not wrap around a neck when someone looks over their shoulder — it
+   * stays on the back, because the back is in the way. This is that stop.
+   */
+  hairYawMax: 0.30,
+  // **There is no roll term, and that is a measurement rather than an
+  // omission.** Hanging the mass out of a corner is what gravity would do and
+  // it looks right in a still; across the envelope it was also the single
+  // largest source of penetration, because a fall swung sideways at chest
+  // height goes around her ribs rather than past them (43 mm inside at a full
+  // carve against 31 mm without it). The rig already rolls the whole rider, so
+  // the hair leans with the body regardless; what this would have added is the
+  // *extra* lean, and it is not worth what it cost.
+  /** How far the mass swings back off the shoulders at full fold, metres. */
+  hairFollowLift: 0.016,
+
   /**
    * Wheel roll that produces the full hard-carve body reaction, radians.
    * Approximately the controller's 0.75 g lateral limit.
@@ -409,6 +471,67 @@ export const RIDER_BLOCKOUT = {
    */
   tuckHeadStabilization: 0.92,
   tuckHeadStabilizationMax: 0.45,
+
+  // -- The attack stance (M23) ----------------------------------------------
+  //
+  // `references/movement-photos/forward-lean-ref.jpeg`: a racer two seconds
+  // into a pull, torso well past forty-five degrees, hips carried *back*
+  // rather than dropped, both arms swept behind the body like a skater's, and
+  // the helmet up — eyes on the road, not on the tyre.
+  //
+  // **It is not a deeper tuck, and the numbers say so.** A tuck drops the hips
+  // 160 mm and folds the torso half a radian; this hinges further and drops
+  // less, because a rider who is *driving* keeps their legs long and their
+  // weight over the pedals. Both stack when a player crouches inside a long
+  // pull, which is the pose at the very front of the photograph.
+  /** Extra torso hinge at the full attack stance, rad. */
+  attackTorsoPitch: 0.42,
+  /** Hip drop it adds, m — a third of a tuck's, on purpose. */
+  attackHipDrop: 0.055,
+  /** How far back the hips travel as the torso goes over them, m. */
+  attackHipShift: 0.045,
+  /** Arms swept behind the hips, m. Further than a tuck's; it is the pose. */
+  attackArmBack: 0.155,
+  /** And drawn in, not out — the photograph's arms are pinned to the body. */
+  attackArmSplay: -0.020,
+  /** And down, so they trail rather than ride up as the torso goes over. */
+  attackArmDrop: 0.055,
+
+  // -- The hard-carve stance (M23) ------------------------------------------
+  //
+  // `references/movement-photos/carve-lean-ref.jpeg`: four riders in one
+  // left-hander, and the shape they share is asymmetric. The **outside** arm
+  // reaches forward and down across the machine — it is the counterweight and
+  // the thing that reads at forty pixels — while the **inside** arm trails
+  // back and high behind the hip. The torso folds forward as well as rolling,
+  // which is what stops a leaned rider reading as a plank on a hinge.
+  //
+  // These are offsets on top of the carve reaction the game already has
+  // (`armCarveOutsideSplay` and friends), not replacements for it: that one
+  // arrives with any roll at any speed, and this one only when the corner is
+  // real.
+  /**
+   * Extra torso hinge at the full carve stance, rad.
+   *
+   * Raised from 0.16 after a blind critic's fair point: at gameplay distance
+   * the corner read as the machine's steering angle rather than as the
+   * rider's body, because the torso was folding nine degrees where the
+   * photograph's riders are draped over the machine. It stays well short of
+   * the photograph — those are mini-moto racers on a track with no traffic —
+   * because this rig has a documented failure mode at the other end, the
+   * "exaggerated plank pose the owner rejected" (`render/ridingRig.ts`).
+   */
+  carveStanceTorsoPitch: 0.24,
+  /** How far the outside hand reaches forward, m. */
+  carveStanceOutsideForward: 0.105,
+  /** And down — the photograph's outside glove is below the hip. */
+  carveStanceOutsideDrop: 0.070,
+  /** And out, past the ordinary carve splay. */
+  carveStanceOutsideSplay: 0.045,
+  /** How far the inside hand trails behind, m. */
+  carveStanceInsideBack: 0.075,
+  /** And up, behind the hip, where the photographs put it. */
+  carveStanceInsideRise: 0.050,
 
   /**
    * Arm reaction while airborne, metres.
@@ -1083,6 +1206,46 @@ export const EUC = {
   crouchHeldAmount: 0.55,
   /** Time constant for the crouch blend chasing its target, seconds. */
   crouchResponseSeconds: 0.07,
+
+  // -- The two riding stances off the owner's photographs (M23) -------------
+  //
+  // He put two pictures of real riders in `references/movement-photos/` and
+  // asked for the poses in them: *"my idea is that the current behavior of
+  // leaning/carving at speed initiate with the current animation and into the
+  // reference animation"*. Both photographs are the same lesson — a racer's
+  // stance is not the cruising stance turned up, it is a **different shape**,
+  // and it arrives after the input has been *held*.
+  //
+  // The forward-lean picture is a rider pinned over the wheel: torso near
+  // horizontal, hips back, arms swept behind, helmet up on the horizon. The
+  // carve picture is four riders folded into a left-hander with the outside
+  // arm reaching down across the machine and the inside arm trailing.
+  //
+  // Both are gated on *time* and *speed*, per his note that a carve pose at
+  // walking pace is somebody "fooling around doing playful turns, not
+  // carving".
+
+  /** Throttle that counts as driving forward for the attack stance, 0..1. */
+  attackThrottle: 0.55,
+  /** Speed below which the attack stance never arrives, m/s. */
+  attackSpeed: 7.0,
+  /** How long the throttle must be held before it starts, s. */
+  attackDelaySeconds: 1.6,
+  /** How long from there to the full stance, s. */
+  attackRampSeconds: 1.1,
+  /** Easing on the blend itself, s — and how fast it lets go. */
+  attackResponseSeconds: 0.30,
+
+  /** Roll where the hard-carve stance starts to arrive, rad. */
+  carveStanceRoll: 0.30,
+  /** Roll where it is fully in, rad. */
+  carveStanceFullRoll: 0.58,
+  /** Speed where it starts to arrive, m/s. */
+  carveStanceSpeed: 8.0,
+  /** Speed where speed stops holding it back, m/s. */
+  carveStanceFullSpeed: 13.0,
+  /** Easing on the blend, s. Slower in than out is deliberate — see below. */
+  carveStanceResponseSeconds: 0.34,
   /**
    * Time constant for the landing absorb decaying back out, seconds.
    *
@@ -3373,6 +3536,299 @@ export const BLOCKOUT_COLOURS = {
   adonisb2Visor: 0x9cabb9,
 
   /**
+   * Maribel Vargas — M23, the third palette taken from a real person, and the
+   * first one that is **asymmetric**.
+   *
+   * Everything here was measured off `references/Maribel-Vargas/IMG_6600`
+   * rather than picked by eye, which matters more than usual: that photograph
+   * was taken in hard overhead sun, which is the light this game has, so its
+   * readings are close to what the *render* should produce and the albedos
+   * below sit a step under them. Where the AI render disagrees with the
+   * photograph it loses (brief §5), and it disagrees loudly — it drives every
+   * accent to picker saturation, which is exactly the value ACES throws away.
+   *
+   * **The structure is black with mid-grey panels**, which is what separates
+   * her from the two black-suited riders already on the roster: Adonisb2 is
+   * black head to foot with green armour, Cool Rider is one mid-grey-blue
+   * garment. Hers is two values of neutral before any accent is applied.
+   *
+   * ---
+   *
+   * **Re-authored for value, M23 Phase A1b — and this block is the record of
+   * why the measured version failed.**
+   *
+   * A1 shipped every one of her materials inside a ten-per-cent band of
+   * brightness: suit `#33353e`, helmet `#36383f`, gear `#3d3f46`, hair
+   * `#2f2622`. Each one was measured honestly off her own photographs, and
+   * together they rendered a black void with a blue visor floating on it. The
+   * owner's verdict was *"I am not happy with the design, at all"*, and the
+   * §23.9c audit agreed with him and found the cause here rather than in the
+   * polygon count.
+   *
+   * **A palette is a value story, and measuring reality does not author one.**
+   * A photograph is a record of one light on one day; a game character is read
+   * at forty pixels tall against a grey road, and every rider on this roster
+   * that works has a two-step value story in it — Cool Rider's mid-grey against
+   * black, Red Rider's red against charcoal, Adonisb2's green armour on black.
+   * So from here the **hues stay measured** (they are hers, and the accents
+   * below still sit where the photographs put them) and the **values are
+   * designed**: helmet darkest, gear near it, suit a step up, panels a long
+   * step above that, hair a light mass, the mark near-white. That spread is
+   * the arcade-over-authenticity rule, applied for the first time to value
+   * rather than to hue.
+   *
+   * The measurements stay in each comment as provenance. The shipped number is
+   * a decision.
+   *
+   * Down from `#33353e`: the leather has to be the *floor* the panels step off,
+   * and it was sitting where the panels should have been.
+   */
+  // **A1d lifted this from 0x24262d.**
+  //
+  // Her leather was authored as the darkest value on the roster and it made
+  // her a hole rather than a character: measured against the game's own grass
+  // at luminance 79, her suit rendered at 38 and her thighs at almost zero.
+  // Everything printed on her is a *multiplier* over this base — the halftone,
+  // her mark, every panel — so a near-black ground meant the atlas could paint
+  // whatever it liked and none of it could show. The chest page is fully
+  // saturated on the sheet and rendered monochrome on the rider.
+  //
+  // It is also more faithful, not less. Black leather in direct sun is a
+  // mid-dark grey, which is exactly what the photograph of her in the van
+  // shows and what the reference render paints.
+  maribelSuit: 0x3a3d45,
+  /**
+   * The mid-grey stretch and panel material — flanks, outer arm, outer thigh,
+   * shin, and (shaded down from the mark below) the shoulder armour.
+   *
+   * Measured at rgb(154,148,143) on a sunlit shin and rgb(61,48,46) in shade;
+   * this is the albedo between them. It is the second-largest surface she
+   * wears and the reason her silhouette has internal structure at distance
+   * without a single extra mesh — every square millimetre of it is paint.
+   *
+   * **A1b lifts it and widens the gap below it.** Against the darker leather
+   * this is now a full stop of separation rather than a hint of one, which is
+   * what makes the flank, the outer sleeve and the outer thigh read as panels
+   * at chase distance instead of as a slightly different black.
+   */
+  maribelPanel: 0x6b6f7a,
+  /**
+   * The lid — matte, where Red Rider's and Adonisb2's are gloss.
+   *
+   * Hers is a matte black road-racing shell in both photographs and the
+   * roughness carries that; the albedo is a step lighter than the suit for
+   * the reason every helmet in this file is, since the chase camera looks at
+   * the back of a head all day. It also has to *lose* to the visor: on this
+   * character the glass is the identity and the shell is its frame.
+   *
+   * **A1b inverts the "step lighter" reasoning for this one part**, and the
+   * capture is why: her head now carries a loose hair mass on both sides of it
+   * and a mirrored shield across the front, so the shell is no longer a lone
+   * dark ball needing to be found — it is the *frame* two brighter things are
+   * read against, and the darkest value on the character is the right one for
+   * it. What separates it from the suit below is that nothing else here is
+   * this dark.
+   */
+  // Lifted with the suit. A matte black lid still reads as black beside a
+  // 0x3a3d45 suit; what it gains is the internal structure — chin bar, brow,
+  // spoiler, rim — that was authored below what the display could show.
+  maribelHelmet: 0x2e3138,
+  /**
+   * **The single loudest thing she wears**, and the second item in the
+   * brief's own recognition order.
+   *
+   * A mirrored blue-cyan, where Cool Rider's and Red Rider's visors are
+   * near-black and Adonisb2's is a neutral pale mirror — so no two riders'
+   * glass reads alike. Measured across the shield in the front photograph:
+   * rgb(65,133,195) over the main field and rgb(90,185,205) where the
+   * iridescence turns cyan near the brow. This is the blend, and the *mirror*
+   * comes from roughness and a cool emissive rather than from albedo, the
+   * approximation Cool Rider's blue established.
+   *
+   * **A1b hands the iridescence to the atlas and keeps this as the mirror's
+   * mid-tone.** `render/maribelAtlas.ts` paints the shield's whole sweep —
+   * deep blue at the brow, cyan toward the chin — as a multiplier over this
+   * value, which is the thing a single albedo could never hold and the reason
+   * the render's visor looks like glass and A1's looked like a blue card.
+   */
+  maribelVisor: 0x63c8ea,
+  /**
+   * Her right-hand accent — bicep ring, ankle cuff, and the aqua half of the
+   * chest gradient. **Aqua lives at −X**, which is her right; the brief's
+   * "left-side accent: aqua" is the viewer's left and the photographs decide
+   * (§23.2).
+   *
+   * The photograph reads rgb(142,199,205) on a sunlit bicep and rgb(154,216,216)
+   * at the ankle — both washed by the sun, both at a third of the saturation
+   * the AI render draws. This is authored between the two: deep enough that
+   * the sun leaves it turquoise rather than white, light enough that it never
+   * disappears into the black beside it.
+   *
+   * **A1b takes it up to arcade weight.** Against a leather floor two stops
+   * darker than A1's, the restrained turquoise had nothing to be restrained
+   * against; this is the same hue with the value the print needs to survive
+   * ACES on a small surface.
+   */
+  maribelAqua: 0x35cbc3,
+  /**
+   * Her left-hand accent — the same three places, at +X. Measured
+   * rgb(230,69,107), and lifted with the aqua so the two halves of the livery
+   * stay each other's equal.
+   */
+  maribelCoral: 0xe63a61,
+  /**
+   * The gloves. **A large field, not a knuckle pinstripe** — the photograph's
+   * gloves are fluorescent from cuff to fingertip on the outer face, and at
+   * chase distance they are two bright marks at the ends of the arms, which
+   * is more identity than anything else below the shoulders.
+   *
+   * A yellow-green (H67°) rather than the cop's amber hi-vis (H50°) or
+   * Adonisb2's lime (H85°), which is where the measurement put it.
+   */
+  // The measured value off her own gloves. A1d's captures showed the hi-vis
+  // dying to olive at chase distance — the one cue on her hands that carries
+  // at forty pixels — because the authored value had a blue lift in it.
+  maribelHiVis: 0xc7dd0f,
+  /**
+   * Boots, glove bodies, and the gaiter under her chin.
+   *
+   * A1 made this a step *lighter* than the suit on the M22 reasoning that
+   * near-black kit on near-black clothing has nothing to separate it. A1b
+   * takes the other road, because the M22 lesson was about two materials that
+   * had to be told apart and these two do not: her boots are what the figure
+   * *stands on*, and a character whose feet are lighter than her legs floats.
+   * The separation now comes from the boots being the darkest thing below the
+   * knee against a leg that is a step up, plus the panel-lit boot detailing —
+   * which is a value story rather than an offset.
+   */
+  // Lifted with the suit, and for the same reason plus one of its own: this
+  // is the gaiter under her chin, and at 0x17181d it was the darkest value on
+  // the character — so the helmet's lower half and her neck merged into one
+  // silhouette and she had no chin.
+  maribelGear: 0x2a2d36,
+  /**
+   * The white angular chest device, and the base the shoulder armour is shaded
+   * down from.
+   *
+   * Warm-neutral and below white for `redRiderMark`'s reason — ACES drives the
+   * brightest thing on a sunlit character toward the top of the range, and a
+   * true white flares. Being the *pale* base is deliberate: the armour, the
+   * hair and everything else this material carries is painted **down** from
+   * it, which is the direction a vertex multiplier honours (§22.3 fact 4).
+   *
+   * **A1b makes it the printing ground as well**, which is a second job with
+   * one hard requirement: `render/maribelAtlas.ts` paints a *multiplier*, and
+   * a multiplier can only ever darken. Every colour on her printed sheet — the
+   * leather it dissolves into, the aqua and coral dots, the white of her mark
+   * — is reached down from this one value, so it has to sit above all of them.
+   * A pale base is no longer only the direction a vertex tint honours; it is
+   * the ceiling the whole print hangs from.
+   */
+  maribelMark: 0xdcdde1,
+  /**
+   * Her hair, dark — and it is here because the owner said so, not because a
+   * reference showed it: every racing photograph has her helmeted, and the AI
+   * render guessed a plain dark brown.
+   *
+   * Measured off the reference he then supplied
+   * (`references/Maribel-Vargas/hair color ref.webp`): the darkest decile of
+   * that hair mass is rgb(23,20,21) and the roots read rgb(43,34,32). This is
+   * authored above both, because dark hair against a dark helmet under one
+   * hard sun is the exact case where an honest albedo becomes a bigger helmet.
+   *
+   * **A1 was authored above the darkest decile and still came back as a bigger
+   * helmet.** The same reference read in *sunlight* rather than in its shadows
+   * gives a mid-brown around rgb(90,75,70) across the mass, and that is the
+   * value a player sees. A1b authors to the lit reading: still unmistakably
+   * dark brown, no longer a silhouette hole. The hue is untouched — it is
+   * hers, and the render's warmer caramel loses to the photograph (brief §5).
+   * A1c holds this value: the rebuilt mass is much larger, and the owner's
+   * direction is that the hair itself stays dark brown — the highlights, one
+   * entry down, are what came toward it.
+   */
+  // **Dark brown, and A1d's first pass was not.** 0x554b45 measured as a mid
+  // grey-taupe on screen; both references put her hair's core between
+  // rgb(30,22,17) and rgb(37,31,27), and the owner's standing note is that it
+  // *"should remain dark brown"*.
+  // **Lifted again once the suit stopped being black.** 0x342a22 was measured
+  // against her references' own hair core and was right — against black
+  // leather. A1d lifted the leather to 0x3a3d45, and a capture then measured
+  // her hair at rgb(29,22,17) against a suit at rgb(33,34,39): the hair was
+  // *darker* than the garment, so at forty pixels she had no hair at all, only
+  // a dark silhouette. What the references actually show is brown hair against
+  // black leather — a relationship, not a pair of absolute values — and this
+  // is that relationship restated against the new ground.
+  maribelHair: 0x33281f,
+  /**
+   * The unnatural blonde in it — the second authored value the ponytail needs,
+   * and the reason it reads as hair at thirty metres rather than as a dark
+   * blob hanging off a dark shell.
+   *
+   * **Ashy, not golden.** The brightest decile of the same reference measures
+   * rgb(162,151,140): a bleached, low-saturation greige. A warm blonde here
+   * would be somebody else's hair.
+   *
+   * **A1b lifted it to a near-greige and A1c brings it back down.** At
+   * rgb(196,184,169) across fifteen alternating locks, the "highlights" were
+   * half the hair's area and the chase capture read as grey dreadlocks — the
+   * owner's reviewer said the hair must read dark brown first, with
+   * highlights that *catch light*, not carry the mass. An ash mid-brown a
+   * long step above the base does exactly that: the bleach ramp in
+   * `maribelHair()` now confines it to the ends besides, so this value is the
+   * tip of a dark mass rather than half of a striped one.
+   */
+  // Ash, at 1.9x the base rather than 2.4x. The first A1d pass put this at
+  // 0xc0b6a5 and the ends came back as near-white ropes hanging below the mass
+  // — bleached bone rather than sunlit hair.
+  //
+  // **2.4x again at M23's fourth hair pass, and the difference is where it
+  // lands rather than how bright it is.** 0xc0b6a5 failed on fifteen
+  // alternating locks, where a bright value *was* half the mass; 0x8d8177 was
+  // the retreat from that. The owner's note against `hair color ref.webp` —
+  // *"the highlights/tips are not obvious enough"* — is about the one thing
+  // both of those got wrong: the reference is a dark-rooted balayage whose
+  // ends go pale and whose crown does not. One curtain with a ramp confined to
+  // its bottom two rows can hold a genuinely pale tip without the mass ever
+  // becoming blonde, which fifteen locks could not. Still ashy greige, still
+  // a long way under the reference's own brightest decile — and **ashier than
+  // the first cut of it**: 0xa79b8c rendered at 22–24% saturation and hue
+  // 33–38°, where the reference's pale measures 5–15% at hue 0–13°. A sandy
+  // blonde is a different woman's hair. This is the same value, desaturated.
+  maribelHairLight: 0xa39d97,
+
+  /**
+   * Her purple — M23 Phase A2, and it comes from her own logo.
+   *
+   * The lightning-M and the devil head she had drawn for herself are purple,
+   * the AI render puts purple pads on her machine, and the two agree, which is
+   * rare enough to take. It is also the only strongly saturated colour on any
+   * machine in the game that is neither a warning nor a lamp — Red Rider's
+   * bodywork is red, Adonisb2's plate is green, and both of those are large
+   * fields; hers is four pads on a black wheel, which is the arrangement that
+   * lets a colour this loud be a signature rather than a paint job.
+   */
+  maribelPurple: 0x8b46dc,
+  /**
+   * **Her logo's purple, which is not her wheel's purple** — A1d.
+   *
+   * Sampled off the artwork she sent: the mark ramps from a warm mauve at the
+   * brow down to a deep violet at the point of the V. `maribelPurple` above is
+   * the blue-violet of the pads she rides on, and the two are close enough to
+   * be confused and far enough apart that using one for the other is visibly
+   * the wrong logo. The owner's standing instruction on this mark is that it
+   * *"must look exact to the original"*, and a colour is part of an original.
+   */
+  maribelLogo: 0x9d4fa6,
+  maribelLogoDeep: 0x543080,
+
+  /**
+   * The shell those pads are bolted to: the blackest bodywork in the game, a
+   * shade under her helmet so the machine sits *below* the rider in value the
+   * way a dark wheel under a dark rider has to if either is to be found.
+   */
+  maribelMachine: 0x1b1c21,
+
+  /**
    * The ghost, and the checkpoint gates (M10).
    *
    * **Authored here rather than in the render modules that draw them, because
@@ -4968,6 +5424,56 @@ export const CHALLENGE = {
    * beat it, so a hundredth of a second does not get a celebration.
    */
   recordEpsilonSeconds: 0.01,
+} as const;
+
+/**
+ * Track Day — M23 Phase B2.
+ *
+ * **Its own group rather than three more fields in `CHALLENGE`**, and the split
+ * is the one `PADDLE` makes against `TARGET` a few groups down: `CHALLENGE`
+ * describes a *gate* — how thick it is so nobody tunnels through it, how wide
+ * so the shoulder counts, how long a split lingers — and every one of those
+ * numbers is as true of a lap as it is of a timed run, which is exactly why
+ * `simulation/trackDay.ts` reads them from there. What is here is what a *lap*
+ * adds, and there turned out to be very little of it, which is the evidence
+ * that a circuit really is the same machinery pointed at a closed course.
+ *
+ * Nothing here reaches `EucController`. The ride is bit-identical whether a
+ * session is running or not, for `CHALLENGE`'s reason and with the same
+ * consequence: a lap set this afternoon is comparable with one set next month.
+ */
+export const TRACK_DAY = {
+  /**
+   * How far outside the corridor the contact patch must get before the lap
+   * stops counting, metres.
+   *
+   * **Measured from the corridor edge, not from the racing surface.** BelVar's
+   * corridor is 10 m each side of the centreline and only its middle 5 m is
+   * asphalt; the verge between them is where a rider who runs wide ends up and
+   * is legal ground that the surface system already punishes with grip. The
+   * barrier stands at 8.4 m, so the only way past the corridor edge at all is
+   * through one of the two authored gaps in it — which means this margin is not
+   * deciding *whether* a rider left the circuit, only insisting they have
+   * clearly finished doing it before the lap is written off.
+   *
+   * Two and a half metres is four metres past the barrier line and about five
+   * wheel-widths past the corridor's edge. It also swallows, three orders of
+   * magnitude over, the 36 mm by which the sampled centreline departs from the
+   * hairpin's true arc (`level/buildPlan.ts`, `LAP_SAMPLE_SPACING`).
+   */
+  offCourseMarginMetres: 2.5,
+
+  /**
+   * How long the lap that just ended stays on the HUD, seconds.
+   *
+   * Longer than `CHALLENGE.splitHoldSeconds` — a lap time is the number the
+   * rider came for and a sector split is a progress report, and the moment it
+   * appears is also the moment they are accelerating out of the last corner
+   * and cannot look away for long. Still short enough to be gone well before
+   * the braking point for the sweeper, which is the constraint that stops it
+   * simply lasting until the next crossing.
+   */
+  lapHoldSeconds: 4,
 } as const;
 
 /**

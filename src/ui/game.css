@@ -361,17 +361,49 @@
   grid-area: challenge;
   justify-self: end;
   display: grid;
-  /* The second row is reserved whether or not a split is showing. `auto` here
-     would let the lane collapse and re-expand every 2.6 seconds. */
-  grid-template-rows: auto 1.15rem;
+  /* Four rows from M23: a label, the clock, the last lap, and the time to
+     beat. The label and the bottom row are hidden outright in a time trial, so
+     that mode's lane is still exactly the two rows it has always been.
+
+     The bottom two are reserved at a fixed height whether or not they are
+     showing. `auto` there would let the lane collapse and re-expand as a lap
+     closed, which is the jitter this whole block exists to prevent. */
+  grid-template-rows: auto auto 1.35rem 1.35rem;
   justify-items: end;
-  gap: 0.2rem;
+  /* **Row gap is zero and the spacing is carried by margins**, which is the
+     one way to add a row that costs nothing when it is empty: a grid gap
+     applies between tracks whether or not either holds anything, so a `gap`
+     here would push a time trial's clock down by a row it does not have. */
+  row-gap: 0;
+  column-gap: 0.2rem;
   font-variant-numeric: tabular-nums;
   text-align: right;
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.75);
 }
 
 .euc-hud__challenge[hidden] { display: none; }
+
+/* The lap line above the clock — M23. Small caps, in the Knockabout score
+   label's own voice, because they are the same kind of thing: the noun over a
+   number. It is also where a lap that will not count says so. */
+.euc-hud__lap {
+  /* **Bigger and brighter than the Knockabout label it was copied from**, on
+     the owner's first session: at 0.7rem and 0.72 opacity it was legible on a
+     desktop screenshot and not at riding speed. */
+  font-size: 0.82rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.9;
+  margin-bottom: 0.1rem;
+  /* A lap label is at most `Lap 12 · no time`; anything longer is a bug
+     upstream and truncates rather than wrapping the lane into a second line. */
+  max-width: 18ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.euc-hud__lap[hidden] { display: none; }
 
 /* -- The Knockabout score (M14) ------------------------------------------- */
 
@@ -411,6 +443,8 @@
   font-size: clamp(1.2rem, 3vw, 1.9rem);
   font-weight: 700;
   letter-spacing: -0.01em;
+  /* The row gap the lane gave up, put back where it can be measured. */
+  margin-bottom: 0.2rem;
   /* `M:SS.hh` plus room for a second minutes digit, so crossing ten minutes
      does not step the whole lane sideways. */
   min-width: 7ch;
@@ -420,15 +454,30 @@
   display: flex;
   align-items: baseline;
   justify-content: flex-end;
-  gap: 0.45rem;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--ink-dim);
+  gap: 0.55rem;
+  /* **0.8rem was the owner's "kinda hard to read"** — a 13-pixel dim grey
+     number in the corner of a moving frame. These two rows carry the last lap
+     and the lap being chased, which are the reason the mode exists, so they get
+     the size and the contrast of something meant to be read at 40 mph rather
+     than the size of a footnote under the clock. */
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ink);
+  opacity: 0.92;
 }
+
+/* The bottom row is the time to beat and never moves. Slightly quieter than
+   the row above it, which is where a fresh split or lap lands. */
+.euc-hud__splits--best { opacity: 0.78; }
+
+.euc-hud__splits--best[hidden] { display: none; }
 
 .euc-hud__splits[hidden] { display: none; }
 
 .euc-hud__split-label {
+  /* The words are the quiet half of the row; the number is what is read. */
+  opacity: 0.72;
+  letter-spacing: 0.04em;
   /* Truncates rather than wraps: a two-line lane would push the split row out
      of its reserved height and shove the timer up. Checkpoint labels are short
      by authoring, and this is the guard rather than the plan. */
@@ -457,7 +506,7 @@
 
 .euc-hud__splits[data-ahead="true"] { color: var(--delta-ahead); }
 .euc-hud__splits[data-ahead="true"] .euc-hud__split-delta { color: var(--delta-ahead); }
-.euc-hud__splits[data-ahead="false"] .euc-hud__split-delta { color: var(--ink); opacity: 0.8; }
+.euc-hud__splits[data-ahead="false"] .euc-hud__split-delta { color: var(--ink); opacity: 1; }
 
 /* -- Contextual cues, bottom-right ---------------------------------------- */
 
@@ -1585,13 +1634,45 @@
  * columns of prose do not fit in 34rem. The selected card receives focus when
  * this screen opens, so a stacked roster also scrolls to the current rider.
  */
-.euc-menu--riders .euc-menu__panel { width: min(52rem, 100%); }
+/*
+ * Wide enough for the whole roster in one row — M23, and it is arithmetic
+ * rather than taste: five cards at the 12rem floor plus four 0.9rem gaps need
+ * 63.6rem, so the old 52rem cap wrapped the fifth rider onto a second row and
+ * put her below the fold of a 1280×720 window. 64rem is the smallest cap that
+ * holds five, and the compact card below takes over at every window narrower
+ * than one, so nothing ever has to scroll to meet a rider.
+ *
+ * **The width is declared on the column rather than on the panel**, and that is
+ * the half of this that took a measurement to find. Every other menu sizes its
+ * panel with `width: min(Xrem, 100%)` inside `.euc-menu`'s single *auto* grid
+ * column — so the column is sized by the panel's content and `100%` resolves
+ * against whatever that came to. On a panel whose content is a wrapping grid
+ * that is circular in practice: the roster got narrower, the column followed
+ * it down, and `auto-fit` then had room for fewer columns than the viewport
+ * could actually hold. It cost a column at 1280 wide and cost *two* on a
+ * landscape phone the moment the phone card stopped carrying a blurb. A
+ * definite column breaks the loop — the track is the viewport's business, and
+ * how many cards fit in it is the grid's.
+ */
+.euc-menu--riders { grid-template-columns: min(64rem, 100%); }
+
+.euc-menu--riders .euc-menu__panel { width: 100%; }
 
 .euc-riders__heading { font-size: clamp(1.5rem, 4.5vw, 2.4rem); }
 
 .euc-riders__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  /*
+   * The floor came down from 12rem to 10.5rem at M23, and it is the second
+   * half of fitting five: the panel is content-sized inside a centred grid, so
+   * widening its cap alone did not buy a fifth column — the floor is what
+   * decides how many tracks that width holds. 10.5rem × 5 plus four gaps fits
+   * inside it with room to spare, and `auto-fit` still collapses to fewer
+   * columns on the way down. The cards get narrower rather than fewer, which
+   * is the right trade for a roster: a rider you cannot see is worse than a
+   * rider in a narrow card.
+   */
+  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
   gap: 0.9rem;
   margin: 0;
   padding: 0;
@@ -1688,38 +1769,74 @@
  * The title screen's way in: a chip, not a sentence.
  *
  * It replaced a static line reading "Riding as Cool Rider." — a full stop where
- * the entrance to the chooser belongs. Styled as a quiet pill rather than as a
- * fifth action button, because the four above it are what a player came here to
- * do and this is what they look like while doing it. It is also why the title
- * screen did not grow a button: `Controls` was removed from that list after
- * playtest for duplicating Settings, and the list is not meant to grow.
+ * the entrance to the chooser belongs. It is still not a fifth action button,
+ * because the four above it are what a player came here to do and this is what
+ * they look like while doing it; that is also why the title screen did not grow
+ * a button, `Controls` having been removed from that list after playtest for
+ * duplicating Settings.
+ *
+ * **M23 stopped it being quiet, and that was a defect rather than a taste.**
+ * The owner's report is that players do not notice it at all, so it no longer
+ * styles itself as a caption: it carries the panel's surface and the game's
+ * ink, the way every control on this screen does. What keeps it from competing
+ * with the four buttons is its shape and its size, not its faintness.
  */
 .euc-rider-chip {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-self: center;
-  gap: 0.5rem;
+  gap: 0.55rem;
   margin: 0;
-  padding: 0.45rem 0.9rem;
+  padding: 0.45rem 0.85rem;
   border: 1px solid var(--panel-edge);
   border-radius: 999px;
-  background: transparent;
-  color: var(--ink-dim);
+  background: var(--panel);
+  color: var(--ink);
   font: inherit;
   font-size: 0.9rem;
   cursor: pointer;
   transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
 }
 
-.euc-rider-chip:hover { color: var(--ink); border-color: #3a4757; background: #161d25; }
+.euc-rider-chip:hover { border-color: var(--rider-swatch); background: #161d25; }
 
 .euc-rider-chip strong { color: var(--ink); font-weight: 700; }
 
-.euc-rider-chip__swatch {
-  width: 0.7rem;
-  height: 0.7rem;
+/*
+ * One dot per rider, in the roster's own colours — the change that tells a
+ * player there is a roster at all.
+ *
+ * The old chip showed a single swatch, which says "you are blue" and nothing
+ * about anybody else; five dots say "there are five of these and you are on
+ * the first", which is the entire fact the player was missing. The current one
+ * is bigger, fully lit and ringed, so the row reads correctly in greyscale and
+ * for a player who cannot separate two of the hues.
+ *
+ * Sizes are fixed per state rather than tweened, so switching riders moves the
+ * emphasis without changing the row's width — the same no-reflow rule the
+ * "Riding now" pill follows two blocks up.
+ */
+.euc-rider-chip__roster {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.24rem;
+}
+
+.euc-rider-chip__dot {
+  width: 0.4rem;
+  height: 0.4rem;
   border-radius: 50%;
   background: var(--rider-swatch, var(--accent));
+  opacity: 0.55;
+  transition: width 140ms ease, height 140ms ease, opacity 140ms ease;
+}
+
+.euc-rider-chip__dot[data-current="true"] {
+  width: 0.72rem;
+  height: 0.72rem;
+  opacity: 1;
+  box-shadow: 0 0 0 1.5px rgba(233, 240, 248, 0.3);
 }
 
 .euc-rider-chip__more {
@@ -1727,6 +1844,63 @@
   font-size: 0.8rem;
   text-decoration: underline;
   text-underline-offset: 0.2em;
+}
+
+/* Points at what the button does. Aria-hidden in the markup: the words beside
+   it already say "change rider", and a chevron read aloud is punctuation. */
+.euc-rider-chip__chevron {
+  margin-left: -0.2rem;
+  color: var(--ink-dim);
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+/*
+ * The attract state — M23, and the arcade "insert coin" idea, bounded.
+ *
+ * Shown only until the player has opened the chooser once, ever
+ * (`app/options.ts`, `seenRiderChooser`), because a hint that returns every
+ * launch is nagging rather than teaching and the standing rule forbids it.
+ *
+ * **The colour is the state and the ripple is its decoration**, which is what
+ * makes this safe under `prefers-reduced-motion`: the block at the top of this
+ * file stops the animation, the ring stays at its resting opacity of zero, and
+ * everything the state actually communicates — a border in the rider's colour,
+ * "Change rider" lit rather than dim — survives untouched. That is the same
+ * test M20's two cues had to pass.
+ *
+ * The ring is a pseudo-element animating opacity and transform only: no layout,
+ * no paint of anything underneath it, and nothing that can move the chip and
+ * therefore nothing that can move a tap target out from under a thumb.
+ */
+.euc-rider-chip[data-attract="true"] {
+  border-color: var(--rider-swatch);
+}
+
+.euc-rider-chip[data-attract="true"] .euc-rider-chip__more,
+.euc-rider-chip[data-attract="true"] .euc-rider-chip__chevron {
+  color: var(--ink);
+}
+
+.euc-rider-chip::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border: 2px solid var(--rider-swatch, var(--accent));
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.euc-rider-chip[data-attract="true"]::after {
+  animation: euc-chip-attract 2.6s ease-out infinite;
+}
+
+@keyframes euc-chip-attract {
+  0% { opacity: 0; transform: scale(0.98); }
+  18% { opacity: 0.9; transform: scale(1); }
+  55% { opacity: 0; transform: scale(1.06); }
+  100% { opacity: 0; transform: scale(1.06); }
 }
 
 /* The title screen's colophon. Quieter than every control on the panel: it
@@ -1869,14 +2043,25 @@
  * ------------------------------------------------------------------------ */
 
 /*
- * Tier one — short viewports (portrait phones, half-height desktop windows).
+ * Tier one — short viewports (portrait phones, and now most laptop windows).
  *
  * Quieter chrome, not a different layout: the backdrop padding, the panel
  * rhythm and the button height each give back a little, which is enough to
- * bring the title screen inside a 667-pixel phone with all six buttons, the
- * world line, the rider chip and the credit still on screen.
+ * bring the title screen inside a 667-pixel phone with every button, the world
+ * line, the rider chip and the credit still on screen.
+ *
+ * **The threshold is derived from the title's own height, and M23 moved it
+ * from 42rem to 50rem.** Six buttons at full chrome needed 695 px and 42rem
+ * (672) was a comfortable "this is a short screen" guess; seven need 761, so a
+ * 1000×700 window — the size the browser suite itself runs at — clipped the
+ * heading and hid 61 px of the panel under a scrollbar nothing was measuring.
+ * 50rem is 800 px, which clears the requirement by about forty and puts the
+ * boundary above every common laptop viewport rather than in the middle of
+ * them. What a window between 672 and 800 loses by dropping into this tier is
+ * five pixels of button padding; what it gained was a title screen it could
+ * not read the top of.
  */
-@media (max-height: 42rem) {
+@media (max-height: 50rem) {
   .euc-menu {
     padding: max(0.9rem, env(safe-area-inset-top)) 1.25rem max(0.9rem, env(safe-area-inset-bottom));
   }
@@ -1886,6 +2071,44 @@
   .euc-menu__actions { gap: 0.5rem; }
 
   .euc-button { padding-block: 0.6rem; }
+}
+
+/*
+ * Tier one-and-a-half — a portrait phone, where seven noted buttons do not fit
+ * any other way (M23).
+ *
+ * The arithmetic, because this one deletes something and had better be able to
+ * defend it. A 375×667 phone has 638 usable pixels. The heading, the tagline,
+ * the world line, the rider chip, the credit and the panel's own gaps take 190
+ * of them; seven buttons and their gaps take 477, because five carry a second
+ * line and two of those five wrap that line at this width. That is 727 against
+ * 638, and the sixty-odd pixels have to come from somewhere.
+ *
+ * They come from the rhythm first — a little off every gap and off each
+ * button's padding, which is tier one's own move made once more — and the last
+ * of them from the tagline, which is the only thing on this screen that is
+ * neither a control nor a fact about the session. `DESIGN.md` §9d already makes
+ * that argument about the chooser's tagline one tier down ("it is advice, and
+ * the roster is the point"); a title screen with seven entrances is the same
+ * situation arriving earlier.
+ *
+ * **What is deliberately NOT cut is the second line under each button.** The
+ * owner's M14.5 report was that players did not know other courses existed at
+ * all, and the notes are the whole answer to it — on a phone most of all, which
+ * is the device most people meet this game on.
+ */
+@media (max-height: 42rem) and (orientation: portrait) {
+  .euc-menu {
+    padding: max(0.75rem, env(safe-area-inset-top)) 1.25rem max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .euc-menu__panel { gap: 0.7rem; }
+
+  .euc-menu__actions { gap: 0.4rem; }
+
+  .euc-button { padding-block: 0.45rem; }
+
+  .euc-menu--title .euc-menu__tagline { display: none; }
 }
 
 /*
@@ -1901,8 +2124,17 @@
  * and on a short desktop window). §9d's rules are untouched: the card is
  * still a `<button>`, the pill still holds its space so the grid never
  * reflows under a thumb, and every card stays far past the 44-pixel floor.
+ *
+ * **The width the sideways card takes over at is the roster's, not the
+ * device's — M23.** It was 44rem while four vertical cards fitted a laptop
+ * window in one row; five need 67rem of viewport to do the same, and a window
+ * between the two wraps the fifth rider onto a row that does not fit. So the
+ * threshold is now the width at which one row of the *whole roster* stops
+ * fitting, which is why it reads as a strange number: it is derived, and a
+ * sixth rider moves it again. Every tablet in portrait and most in landscape
+ * lands here, which is the intent — this anatomy is the one that fits.
  */
-@media (max-width: 44rem), (max-height: 42rem) {
+@media (max-width: 67rem), (max-height: 42rem) {
   .euc-riders__grid {
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
     gap: 0.6rem;
@@ -1953,15 +2185,63 @@
 }
 
 /*
+ * Tier one-and-a-half — a phone, where the fifth rider does not fit any other
+ * way.
+ *
+ * The arithmetic, because this one deletes something and had better be able to
+ * defend it: a 375×667 phone has 619 usable pixels, the heading, tagline, Done
+ * and the panel's own gaps take 177 of them, and five cards plus their gaps
+ * have to live in the remaining 442 — 80 pixels each. A sideways card is
+ * already 77 pixels tall on its portrait alone. **The blurb does not fit, at
+ * any type size**, and shrinking the portrait to buy room for four lines of
+ * 11-pixel text would be trading the thing that identifies a rider for the
+ * thing that describes one.
+ *
+ * So on a phone a card is a portrait, a name and the pill — which is what a
+ * character select has always been — and the words come back the moment there
+ * is room for them, which includes every tablet. Nothing is truncated and no
+ * card ends in an ellipsis: a sentence is either there in full or not on this
+ * screen, because half a sentence about a person reads worse than none.
+ *
+ * The portrait comes down with it, from 3.6rem to 2.9rem. That is not a fit
+ * necessity at 800 pixels of height — it is one at 375, where three rows of
+ * two must clear a landscape phone's 342 usable pixels — and one size for
+ * every phone beats a fourth tier.
+ */
+@media (max-width: 44rem), (max-height: 30rem) {
+  .euc-rider-card__blurb { display: none; }
+
+  .euc-rider-card {
+    grid-template-areas:
+      "art name"
+      "art state";
+    align-items: center;
+  }
+
+  .euc-rider-card__art { width: 2.9rem; }
+
+  .euc-rider-card__state { justify-self: start; }
+}
+
+/*
  * Tier two — short landscape (a phone on its side).
  *
- * The title's six actions go to two columns and their second lines go away:
- * the labels came first historically and stand alone, and 390 pixels of
- * height has no room for four explanatory sentences. Scoped to the title and
+ * The title's actions go to a grid and their second lines go away: the labels
+ * came first historically and stand alone, and 390 pixels of height has no
+ * room for explanatory sentences under every button. Scoped to the title and
  * pause card only — the fresh-route panel's "Surprise me" note is the control
  * a new player needs most (§9c-ii) and that panel scrolls by design. The
  * chooser drops its tagline here for the same reason: it is advice, and the
  * roster is the point.
+ *
+ * **The title takes three columns and the pause card keeps two — M23.** Two
+ * columns fitted six buttons in three tidy rows; the seventh made a fourth
+ * row, and a fourth row of 44-pixel buttons is fifty-two pixels this screen
+ * does not have at 375. Three columns puts the six mode-and-world entrances
+ * back into two rows with `Start ride` spanning above them, which is also the
+ * better reading: the primary action is unmistakably primary, the modes sit
+ * together on one line, and a hidden Time trial (which is every world that
+ * cannot be timed) simply closes the gap instead of leaving a hole.
  */
 @media (max-height: 30rem) {
   .euc-menu {
@@ -1974,7 +2254,15 @@
 
   .euc-menu--title .euc-menu__panel { width: min(44rem, 100%); }
 
-  .euc-menu--title .euc-menu__actions,
+  .euc-menu--title .euc-menu__actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  /* Full width, because it is the one thing most players came to press. */
+  .euc-menu--title [data-menu="start"] { grid-column: 1 / -1; }
+
+  /* The pause card keeps two: it holds four controls, or five during a track
+     day, and three columns would leave a row of one and a half. */
   .euc-menu--pause .euc-menu__actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

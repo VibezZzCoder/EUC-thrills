@@ -48,6 +48,7 @@ export type AppStateId =
   | 'riderSelect'
   | 'freeRide'
   | 'challenge'
+  | 'trackDay'
   | 'knockabout'
   | 'chase'
   | 'paused'
@@ -62,6 +63,7 @@ export const APP_STATES: readonly AppStateId[] = [
   'riderSelect',
   'freeRide',
   'challenge',
+  'trackDay',
   'knockabout',
   'chase',
   'paused',
@@ -76,7 +78,9 @@ export const APP_STATES: readonly AppStateId[] = [
  * absent: a paused game is a ride the player has stepped out of, which is why
  * `AppState.rideReturn` exists to remember which one.
  */
-export const RIDE_STATES: readonly AppStateId[] = ['freeRide', 'challenge', 'knockabout', 'chase'];
+export const RIDE_STATES: readonly AppStateId[] = [
+  'freeRide', 'challenge', 'trackDay', 'knockabout', 'chase',
+];
 
 export function isRideState(state: AppStateId): boolean {
   return RIDE_STATES.includes(state);
@@ -138,6 +142,13 @@ export interface AppStateSpec {
  *     reason `settings` lists two returns: Resume has to mean two different
  *     things and neither the button nor the player should have to know which.
  *     `rideReturn` remembers, and `resumeRide()` is the move.
+ *   - `paused → results` arrived at M23 and is the only edge from a menu to an
+ *     outcome. Every other ride ends by crossing something or by running a
+ *     clock down; a track day ends when the player decides they are done, and
+ *     the place a player decides that is the pause card's "End session". The
+ *     alternative — routing it back through `trackDay` and out again inside one
+ *     tick — would be two transitions describing one decision, and the second
+ *     would be reporting a ride nobody resumed.
  *   - `results → challenge` is the retry, and it is the only edge into a ride
  *     that is not from the title or a pause. `results → freeRide` is absent on
  *     purpose: a player who wants to stop being timed goes to the title, which
@@ -181,7 +192,8 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     // riding is why anyone opened the game.
     successors: Object.freeze(
       [
-        'freeRide', 'challenge', 'knockabout', 'chase', 'settings', 'routes', 'riderSelect',
+        'freeRide', 'challenge', 'trackDay', 'knockabout', 'chase',
+        'settings', 'routes', 'riderSelect',
       ] as AppStateId[],
     ),
   }),
@@ -277,6 +289,30 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     successors: Object.freeze(['paused', 'results', 'title'] as AppStateId[]),
   }),
   /**
+   * Track Day — M23, the fifth ride.
+   *
+   * Identical to `challenge` in every field, which by the fifth application is
+   * the point rather than a copy: **a mode is what a ride is for.** The wheel,
+   * the camera, the input and the physics do not know a lap is being timed, so
+   * a rider who is good in free ride is good here, and a lap set on the circuit
+   * is comparable with one set next month because nothing about the machine
+   * changed in between.
+   *
+   * It reaches `results` for the same reason the timed run does, and it is the
+   * one ride that gets there **without crossing a line**: a circuit has no
+   * finish, so a session ends when the player pits — which is a button on the
+   * pause card, and is why `paused` lists `results` as a successor.
+   */
+  trackDay: Object.freeze({
+    id: 'trackDay' as AppStateId,
+    simulates: true,
+    acceptsRideInput: true,
+    showsHud: true,
+    showsMenu: false,
+    resetsInput: true,
+    successors: Object.freeze(['paused', 'results', 'title'] as AppStateId[]),
+  }),
+  /**
    * Knockabout — M14, the third ride.
    *
    * Identical to `challenge` in every field, which is the point: a mode is what
@@ -332,7 +368,10 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     showsMenu: true,
     resetsInput: true,
     successors: Object.freeze(
-      ['freeRide', 'challenge', 'knockabout', 'chase', 'settings', 'title'] as AppStateId[],
+      [
+        'freeRide', 'challenge', 'trackDay', 'knockabout', 'chase',
+        'settings', 'results', 'title',
+      ] as AppStateId[],
     ),
   }),
   /**
@@ -359,7 +398,18 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     // `knockabout` joins `challenge` here at M14, and for its reason: retry is
     // the one edge into a ride that is neither the title nor a pause, and a
     // mode with a score to beat needs it exactly as much as a mode with a time.
-    successors: Object.freeze(['challenge', 'knockabout', 'chase', 'title'] as AppStateId[]),
+    // **`freeRide` joined at M23, and only through New route.** The rule that
+    // kept it out — a player must not be dropped into an unscored ride they did
+    // not choose — is about *accidentally* leaving a scored state, and neither
+    // half of it applies here: the run is already over, and the button that
+    // takes this edge says on its face that it swaps the world for a generated
+    // one. A generated course is point-to-point and carries no lap, so the mode
+    // whose card is on screen cannot exist on it; free ride is the only honest
+    // destination, and refusing the edge left the player looking at a frozen
+    // card over a world that had already been replaced underneath it.
+    successors: Object.freeze(
+      ['challenge', 'trackDay', 'knockabout', 'chase', 'freeRide', 'title'] as AppStateId[],
+    ),
   }),
 });
 

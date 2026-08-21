@@ -10,7 +10,9 @@ import {
   tintOver,
   type LoftProfile,
   type Tint,
+  type UvRect,
 } from './blockoutKit.ts';
+import { ATLAS_REGIONS, createMaribelAtlas, type AtlasRegionName } from './maribelAtlas.ts';
 
 /**
  * What a rider *looks* like, as data — one entry per character.
@@ -143,6 +145,10 @@ export interface RiderPatch {
   readonly lift?: number;
   readonly sink?: number;
   readonly taper?: number;
+  /** Swell the band's height toward its middle — see `PatchOptions.bulge`. */
+  readonly bulge?: number;
+  /** Slide the band's centre line at its middle — see `PatchOptions.bow`. */
+  readonly bow?: number;
   /**
    * Shear the height span diagonally across the angular span, expressed as the
    * two heights the shear runs between so it reads in metres like everything
@@ -151,6 +157,44 @@ export interface RiderPatch {
   readonly skewFrom?: number;
   readonly skewTo?: number;
   readonly shade?: number;
+  /**
+   * Which page of the look's atlas this panel's own square lands on — M23.
+   *
+   * **A patch is the right primitive for a printed graphic**, and it took the
+   * rejection of Phase A1 to see it. A patch already has its own texture
+   * square, its own crisp geometric edge, and a rim that keeps it opaque over
+   * whatever it lies on; a body loft has none of those and shares its surface
+   * with everything else the garment carries. So a chest print, a leg script
+   * and a knee device are patches wearing art, and the body underneath keeps
+   * doing what vertex paint is good at.
+   *
+   * A patch with no `art` in a look that has an atlas is mapped to the blank
+   * page, which multiplies by one. That is deliberate and not a default worth
+   * skipping: geometry that kept its own unit square would sample the *whole*
+   * sheet and wear every other part's graphics smeared across it.
+   */
+  readonly art?: string;
+  /**
+   * Restrict the art to one side, +1 left or −1 right; the other side gets the
+   * blank page and the same geometry.
+   *
+   * For a mark that exists once on a person. Her leg script runs down one
+   * thigh in the reference, as a leg script does, and a look with no way to say
+   * so would either print her name twice or not at all — the same asymmetry
+   * problem `paint.upperArm` exists for, one layer up.
+   */
+  readonly artOn?: number;
+  /**
+   * The page the *other* side wears when `artOn` restricts the art.
+   *
+   * Needed, and the first capture is why. A printed patch sets `shade: 1` so
+   * its pale material can be inked down; the blank page multiplies by one; so
+   * an unpaged printed patch renders as the **pale base itself** — her left
+   * thigh came back wearing a white plate where her right wears her name. The
+   * unprinted twin needs a page that is plain leather, not a page that is
+   * nothing.
+   */
+  readonly artElse?: string;
 }
 
 /** A group of panels drawn as one mesh on one joint. */
@@ -179,10 +223,68 @@ export interface RiderExtra {
   readonly joint: 'neck' | 'pelvis';
   readonly role: RiderMaterialRole;
   readonly casts: boolean;
+  /** Its page of the look's atlas, as on `RiderPatch.art`. */
+  readonly art?: string;
+  /**
+   * Hang it from a node that answers to gravity instead of bolting it to the
+   * joint — M23, and the owner's ride is what forced it.
+   *
+   * A mass on the neck rotates *with* the neck, so a rider who folds forty
+   * degrees over the wheel folds their hair into their own shoulder blades,
+   * and a rider who looks into a corner sweeps it through the shoulder on
+   * that side. Both were reported as the hair "sinking inside the body". No
+   * amount of reshaping fixes it, because the defect is in the frame rather
+   * than the silhouette: real hair keeps hanging where it was while the body
+   * moves out from under it.
+   *
+   * So an extra that sets this gets a pivot between it and the joint, and
+   * `render/rider.ts` gives that pivot back most of the body's own rotation —
+   * see `RIDER_BLOCKOUT.hairFollow*`. Anything rigid (armour) leaves it unset
+   * and is parented exactly as before.
+   */
+  readonly sways?: boolean;
   build(): THREE.BufferGeometry;
 }
 
 // -- The look ----------------------------------------------------------------
+
+/**
+ * A look's own printed sheet — M23 Phase A1b.
+ *
+ * **A texture costs triangles' worth of nothing and meshes' worth of nothing.**
+ * The budget this project cannot spend is draw calls; a `map` on a material
+ * that is already being drawn adds none, which is why a rider could carry
+ * printed graphics at any point in the last twenty milestones and nobody
+ * noticed. What it does cost is memory and a build, and both are paid once.
+ *
+ * The mechanism is deliberately narrow. A look names which **material roles**
+ * sample the sheet, and every geometry drawn in one of those materials is
+ * folded onto a named page before it is merged (`blockoutKit.mapUvInto`).
+ * Everything else in the rig is untouched, so a look can print on its decals
+ * without putting a texture lookup on its whole body — and a look with no
+ * atlas at all, which is every look but hers, builds exactly as it did.
+ */
+export interface RiderAtlas {
+  /**
+   * One texture per rig, over pixels the module memoises.
+   *
+   * Per *rig* rather than per look, because `render/rider.ts` disposes what it
+   * builds and a shared texture would be freed under the ghost the moment the
+   * player changed character. Per *pixels* rather than per texture, because
+   * painting a million texels twice for the same sheet would be a stutter on a
+   * character swap in exchange for nothing.
+   */
+  build(): THREE.Texture;
+  /** Which materials carry the map. Anything else in the rig is unmapped. */
+  readonly roles: readonly RiderMaterialRole[];
+  /**
+   * Where a named page sits on the sheet. An unknown name — including the
+   * absence of one — must return the blank page rather than throw: a part that
+   * forgot to name its art should render as though the atlas were not there,
+   * not take the rig down.
+   */
+  region(art: string | undefined): UvRect;
+}
 
 export interface RiderLook {
   readonly id: CharacterId;
@@ -216,6 +318,54 @@ export interface RiderLook {
      */
     readonly sleeve?: LoftProfile;
   };
+
+  /**
+   * How many sections each lofted part is built from — M23 Phase A1b.
+   *
+   * **The one axis this project has always had room on.** `render/rider.ts`
+   * has built every rider at the same densities since M7 (14 around a limb, 24
+   * around a torso, 20 around a head), which was right while the budget's
+   * scarce axis was draw calls and the abundant one was triangles nobody had a
+   * use for. Maribel is the first look with a use for them: the owner waived
+   * her mesh-parity target outright — *"break the graphics budget… Her looking
+   * good is priority one"* — and density is where that permission is spent,
+   * because a section costs triangles and a *mesh* costs calls.
+   *
+   * Omitted entirely by every look before hers, and the defaults are the
+   * numbers the rig has always used, so nothing else moves.
+   */
+  readonly density?: {
+    readonly limb?: number;
+    readonly torso?: number;
+    readonly head?: number;
+    readonly boot?: number;
+    readonly hand?: number;
+    readonly neck?: number;
+  };
+
+  /**
+   * Extra lofts merged into a part's own mesh, built per side — A1d.
+   *
+   * **The channel that exists because a hand is not one tube.** Everything a
+   * look could add to a limb until now was either a patch (which offsets the
+   * surface outward and so can raise a pad but never cut a crease) or paint
+   * (which cannot change a silhouette at all). A thumb is neither: it is a
+   * second volume leaving the palm at an angle, and the crease between two
+   * fingers is where two volumes intersect.
+   *
+   * Merging rather than parenting is what makes it free. The parts land in the
+   * mesh the part already draws, so a hand with a thumb and two finger lobes
+   * is still one mesh and still the same three draw calls, and the look's
+   * paint hook — which runs after the merge — covers all of it.
+   *
+   * `side` is +1 for the rider's left, matching every other hook here.
+   */
+  readonly build?: {
+    readonly hand?: readonly ((side: number) => THREE.BufferGeometry)[];
+  };
+
+  /** The look's printed sheet, if it has one. See `RiderAtlas`. */
+  readonly atlas?: RiderAtlas;
 
   /** Vertex-colour multipliers on shared materials. 1 is the authored colour. */
   readonly shades: {
@@ -338,6 +488,60 @@ export interface RiderLook {
      * has nowhere else to live.
      */
     readonly hand?: (geometry: THREE.BufferGeometry, side: number) => void;
+    /**
+     * The upper arm — M23, and the one slot Maribel's livery could not be
+     * built without.
+     *
+     * Her identity is **asymmetric**: an aqua ring on her right bicep and a
+     * coral one on her left. `panels.sleeve` is already built per side and
+     * would place them, but a `RiderPanelGroup` names *one* material role for
+     * both sides, so it can put the same colour on both arms and nothing
+     * else. Two hues on two arms is a repaint or it is two more meshes, and
+     * the repaint costs nothing.
+     *
+     * It is the same widening M19 made for the glove, one bone up, and it
+     * arrives with `side` already meaningful — every painter has been handed
+     * its side since M19, which is what makes an asymmetric mark expressible
+     * at all.
+     */
+    readonly upperArm?: (geometry: THREE.BufferGeometry, side: number) => void;
+    /**
+     * The forearm — M23 Phase A1c, and the hook that a frame ceiling wrote.
+     *
+     * An earlier note here said there was deliberately no forearm hook
+     * because nothing on the roster needed one. Maribel's elbow armour then
+     * needed *something*: built as `panels.elbowPad` patches it cost two
+     * draw calls, and the §9 measurement found the frame ceiling sitting at
+     * exactly 150 with them in — the reserve had no headroom at all. So the
+     * elbows became what Red Rider's boot panelling already is: paint. Same
+     * grammar (a guard-dark field with one lighter moulded line), zero calls,
+     * and the M19 rule again — the surface has no affordable slot left for
+     * what has to go on it.
+     */
+    readonly forearm?: (geometry: THREE.BufferGeometry, side: number) => void;
+    /**
+     * The body — M23, and the only painter here that takes no side.
+     *
+     * **On a limb the side is an argument, because each limb is a fresh
+     * geometry; on the body it is the vertex's own x, because the torso is one
+     * mesh spanning both halves.** That difference is the whole signature.
+     *
+     * It exists for the same reason `hand` does — the surface has no panel
+     * slot left for what has to go on it. The torso's four groups are spoken
+     * for by Maribel's collar, her shoulder armour and her chest device, and
+     * her suit still needs two more colours on it: the grey flank panels, and
+     * the aqua-to-coral gradient across her chest that the reference carries
+     * as a halftone of several hundred printed dots. A patch grid cannot draw
+     * a gradient and a `shade` is a scalar that cannot change hue, so paint is
+     * what is left — and paint is also the honest translation, since at
+     * vertex resolution a halftone *is* a fade.
+     *
+     * The geometry handed over is the merged torso: the garment loft, whatever
+     * `parts.seat` put inside it, and the collar patch. A painter that bands by
+     * height sees all three, which is correct — a flank panel that stopped at
+     * the hem would be a flank panel with a seam in it.
+     */
+    readonly torso?: (geometry: THREE.BufferGeometry) => void;
   };
 
   /**
@@ -822,12 +1026,12 @@ const TROLLINA_HALF_DEPTH = 0.84 * TORSO_HALF_DEPTH;
  * way a halter does.
  */
 const DRESS = loftProfile([
-  { y: -0.062, halfWidth: 1.84 * TROLLINA_HALF_WIDTH, halfDepth: 1.76 * TROLLINA_HALF_DEPTH, square: 2.4, z: 0.036 },
+  { y: -0.062, halfWidth: 2.410 * TROLLINA_HALF_WIDTH, halfDepth: 2.305 * TROLLINA_HALF_DEPTH, square: 3.45, z: 0.036 },
   // The hem lip: two close rings, so the skirt ends at an edge rather than
   // a taper — the same trick Cool Rider's jacket hem records.
-  { y: -0.046, halfWidth: 1.80 * TROLLINA_HALF_WIDTH, halfDepth: 1.72 * TROLLINA_HALF_DEPTH, square: 2.4, z: 0.033 },
-  { y: 0.008, halfWidth: 1.42 * TROLLINA_HALF_WIDTH, halfDepth: 1.34 * TROLLINA_HALF_DEPTH, square: 2.35, z: 0.024 },
-  { y: 0.092, halfWidth: 1.08 * TROLLINA_HALF_WIDTH, halfDepth: 1.10 * TROLLINA_HALF_DEPTH, square: 2.3, z: 0.010 },
+  { y: -0.046, halfWidth: 2.329 * TROLLINA_HALF_WIDTH, halfDepth: 2.226 * TROLLINA_HALF_DEPTH, square: 3.38, z: 0.033 },
+  { y: 0.008, halfWidth: 1.726 * TROLLINA_HALF_WIDTH, halfDepth: 1.629 * TROLLINA_HALF_DEPTH, square: 3.10, z: 0.024 },
+  { y: 0.092, halfWidth: 1.190 * TROLLINA_HALF_WIDTH, halfDepth: 1.212 * TROLLINA_HALF_DEPTH, square: 2.68, z: 0.010 },
   { y: 0.166, halfWidth: 0.83 * TROLLINA_HALF_WIDTH, halfDepth: 0.88 * TROLLINA_HALF_DEPTH, square: 2.25 },
   // The waist. The belt patch sits on this ring.
   { y: 0.212, halfWidth: 0.74 * TROLLINA_HALF_WIDTH, halfDepth: 0.84 * TROLLINA_HALF_DEPTH, square: 2.2 },
@@ -2926,13 +3130,13 @@ export const RED_RIDER_LOOK: RiderLook = Object.freeze({
  * 0.40 m thigh is 0.655. `render/riderClearance.test.ts` refused that by a
  * millimetre: in a hard carve held under a full crouch the thigh swings up far
  * enough to bring the wing's proud top corner to 29 mm below the pelvis, and
- * the jacket hem is at 10 mm with a 20 mm margin. So the guard sits 12 mm
- * lower than the reference implies, which is invisible beside a 138 mm shell
- * and is the difference between armour and green showing through a jacket hem
- * in exactly one reachable stance. The first build stopped the green at 0.78
- * and the guard read as a cuff below the knee rather than a shell spanning it.
+ * the jacket hem is at 10 mm with a 20 mm margin. M23's deeper hard-carve fold
+ * moved that same corner back to the hem, so the seam now sits another 26 mm
+ * down the thigh. It remains well above the first build's 0.78 boundary (which
+ * read as a cuff below the knee), but restores the black-trouser buffer in the
+ * new presentation channel too.
  */
-const ADONISB2_GUARD_TOP = 0.685;
+const ADONISB2_GUARD_TOP = 0.750;
 
 /**
  * The knee cup's two edges, in each bone's own space: where its dark starts on
@@ -3661,7 +3865,9 @@ export const ADONISB2_LOOK: RiderLook = Object.freeze({
           u1: 1.90,
           mirrored: true,
           from: -0.400,
-          to: -0.274,
+          // Shares the paint seam. Keeping this hard-coded at the old value
+          // let the proud shell stay green above a correctly lowered limb.
+          to: -RIDER_BLOCKOUT.thighLength * ADONISB2_GUARD_TOP,
           uSegments: 8,
           vSegments: 5,
           // Proud enough to change the leg's outline, which is the property
@@ -3983,11 +4189,1813 @@ export const ADONISB2_LOOK: RiderLook = Object.freeze({
   armCarriage: Object.freeze({ splay: 0.012, rise: 0 }),
 });
 
+// -- Maribel Vargas ----------------------------------------------------------
+//
+// M23 Phase A1, and the **third body vocabulary** this file carries. The owner's
+// directive while the plan was being drafted is the whole reason it is a third
+// and not a reuse: *"don't reuse trollina's body, maribel is a real woman not a
+// caricature."* Trollina's proportions are a joke drawing made solid — a 0.74×
+// cinched waist against 1.22× hips — and the brief for a real person asks for
+// the opposite: *"recognizable adult female anatomy, not sexualization or
+// caricature"* (§6).
+//
+// So the numbers below are an athlete's, read off her own photographs: shoulders
+// a shade inside the men's, a waist at 0.78 against hips at 1.03 (a ratio of
+// 0.76, where Trollina's is 0.61), a bust ring that leads the profile and does
+// nothing else, and limbs slimmer than Cool Rider's but thicker than Trollina's
+// — she is wearing armoured leather, not a party dress. **Every bone length is
+// `RIDER_BLOCKOUT`'s, unchanged** (rule 1); all of this is ring radii.
+//
+// What reads as *her*, in the brief's own recognition order (§12): the adult
+// female silhouette, a mirrored blue-cyan visor in a matte black shell, black
+// leathers over mid-grey panels, **aqua on her right and coral on her left**,
+// a white angular chest device, and — the owner's own memory of riding with her
+// — a two-tone ponytail out the back of the lid.
+//
+// **The handedness is written down because a build cannot see it.** In the
+// front photograph the aqua band is on her right arm and right ankle, the coral
+// on her left. The brief's §9 "left-side accent: aqua" is the *viewer's* left.
+// In world axes +X is the rider's left, so **aqua lives at −X and coral at +X**,
+// and every painter below states which it is doing.
+
+/** Where her boot's shaft ends on the shin, as a fraction from the knee. */
+const MARIBEL_BOOT_TOP = 0.62;
+/**
+ * Where the accent cuff begins above it.
+ *
+ * **The band is at the boot's collar, not at the knee, and that is the
+ * photographs overruling the render.** The AI render puts her aqua and coral
+ * rings just above each knee; both real photographs put them at the top of the
+ * boot, where the leather cuff meets the shaft. Brief §5 is explicit that a
+ * photograph wins an argument with the render about an identifying detail
+ * unless the owner approves the change, and nobody has. It lands mid-shin
+ * rather than at the ankle because that is where the reference's boot collar
+ * is — high enough to clear the wheel's shell in the chase view, which is the
+ * one thing the ankle placement would have risked.
+ */
+const MARIBEL_CUFF_TOP = 0.46;
+/** Where the knee guard's upper wing starts on the thigh. */
+const MARIBEL_GUARD_TOP = 0.70;
+/** The guard's dark cup, in each bone's own space — thigh side, then shin side. */
+const MARIBEL_CUP_TOP = -0.352;
+const MARIBEL_CUP_BOTTOM = -0.012;
+/** The bicep ring, as fractions of the upper arm from the shoulder. */
+const MARIBEL_BICEP_TOP = 0.20;
+const MARIBEL_BICEP_BOTTOM = 0.40;
+
+/**
+ * Shades on the pale material, and **the arithmetic that the first capture
+ * round got wrong.**
+ *
+ * A `shade` multiplies in **linear** space, and every intuition about "thirty
+ * per cent of white" is an intuition about sRGB. The first pass shaded her
+ * armour at 0.30 expecting near-black and rendered `#7a7a7c` — a mid grey — so
+ * her speed hump came back as a pale shield across her shoulders, which the
+ * chase capture made the loudest thing on the character. The conversion is
+ * `linear(target) / linear(maribelMark)`, and these four constants are it,
+ * applied once and named so a future patch cannot re-guess.
+ *
+ * **All four moved in Phase A1b, and none of them was re-picked.** The pale
+ * base went up (`maribelMark` is now the printing ground and has to sit above
+ * every ink) and the leather went down two stops, so the same four *targets*
+ * now need different multipliers to land on. They are recomputed, not
+ * re-guessed — which is the difference between a palette that was authored and
+ * one that drifted:
+ *
+ *   0.027 → the suit's own near-black; a shell that reads by *relief*.
+ *   0.095 → armour: a step above the leather, so an edge exists.
+ *   0.378 → a moulded rim catching light along a guard's edge.
+ *   1.00  → the printed pages, which carry their own values as ink.
+ *
+ * Everything the `accent` material carries is one of these, and none of them is
+ * picked by eye. (A fourth constant — 0.222, `maribelPanel`'s own value — left
+ * with the flat shoulder cups in A1c; the paint tints still reach that grey.)
+ */
+// **Derived, not typed** — A1d. This is the ratio that turns the pale accent
+// base into her leather, and it was a hand-entered 0.027 that matched the suit
+// as it was authored in A1b. When A1d lifted the suit out of near-black, every
+// part that painted "leather" from the accent material — the aero hump most
+// visibly — stayed at the old value and came back as a hole in her back.
+// Reading it off the two colours means it can never disagree with them again.
+const MARIBEL_LEATHER_SHADE = tintOver(
+  BLOCKOUT_COLOURS.maribelMark,
+  BLOCKOUT_COLOURS.maribelSuit,
+)[0];
+/** Guard-dark, held a fixed step under the leather rather than at a typed value. */
+const MARIBEL_GUARD_SHADE = MARIBEL_LEATHER_SHADE * 2.4;
+const MARIBEL_RIM_SHADE = 0.378;
+
+/**
+ * Her torso — twenty-seven rings, A1d.
+ *
+ * **The blockiness the owner kept naming was here, and it was not a section
+ * count.** A1c had sixteen rings averaging 35 mm apart, and `blockoutKit`
+ * interpolates between rings *linearly*: every span between two of them is a
+ * straight cone in silhouette however many radial sections or `subdivisions`
+ * are thrown at it. So the outline of her side was a chain of straight
+ * segments, and no density setting could ever curve it. Rings are the only
+ * axis that moves an outline; these are 21 mm apart.
+ *
+ * The flare is also front-loaded now. A ribcage leaves the waist fast and is
+ * done by the sternum; A1c spread 34 mm of it over 274 mm as a seven-degree
+ * cone, which is a funnel, not a woman.
+ */
+const MARIBEL_SUIT_TORSO = loftProfile([
+  { y: -0.010, halfWidth: 1.060 * TORSO_HALF_WIDTH, halfDepth: 1.020 * TORSO_HALF_DEPTH, square: 2.55 },
+  { y: 0.012, halfWidth: 1.025 * TORSO_HALF_WIDTH, halfDepth: 0.985 * TORSO_HALF_DEPTH, square: 2.52 },
+  { y: 0.036, halfWidth: 0.965 * TORSO_HALF_WIDTH, halfDepth: 0.935 * TORSO_HALF_DEPTH, square: 2.48 },
+  { y: 0.062, halfWidth: 0.900 * TORSO_HALF_WIDTH, halfDepth: 0.885 * TORSO_HALF_DEPTH, square: 2.44 },
+  { y: 0.090, halfWidth: 0.845 * TORSO_HALF_WIDTH, halfDepth: 0.850 * TORSO_HALF_DEPTH, z: -0.002, square: 2.4 },
+  { y: 0.118, halfWidth: 0.800 * TORSO_HALF_WIDTH, halfDepth: 0.820 * TORSO_HALF_DEPTH, z: -0.004, square: 2.36 },
+  { y: 0.148, halfWidth: 0.755 * TORSO_HALF_WIDTH, halfDepth: 0.795 * TORSO_HALF_DEPTH, z: -0.005, square: 2.32 },
+  { y: 0.168, halfWidth: 0.723 * TORSO_HALF_WIDTH, halfDepth: 0.780 * TORSO_HALF_DEPTH, z: -0.006, square: 2.3 },
+  // The waist — the narrowest ring on the figure.
+  { y: 0.185, halfWidth: 0.710 * TORSO_HALF_WIDTH, halfDepth: 0.772 * TORSO_HALF_DEPTH, z: -0.006, square: 2.28 },
+  { y: 0.205, halfWidth: 0.730 * TORSO_HALF_WIDTH, halfDepth: 0.800 * TORSO_HALF_DEPTH, z: -0.002, square: 2.28 },
+  { y: 0.228, halfWidth: 0.768 * TORSO_HALF_WIDTH, halfDepth: 0.845 * TORSO_HALF_DEPTH, z: 0.004, square: 2.27 },
+  { y: 0.252, halfWidth: 0.805 * TORSO_HALF_WIDTH, halfDepth: 0.895 * TORSO_HALF_DEPTH, z: 0.011, square: 2.26 },
+  { y: 0.276, halfWidth: 0.838 * TORSO_HALF_WIDTH, halfDepth: 0.945 * TORSO_HALF_DEPTH, z: 0.019, square: 2.24 },
+  { y: 0.300, halfWidth: 0.862 * TORSO_HALF_WIDTH, halfDepth: 0.995 * TORSO_HALF_DEPTH, z: 0.028, square: 2.22 },
+  { y: 0.318, halfWidth: 0.874 * TORSO_HALF_WIDTH, halfDepth: 1.045 * TORSO_HALF_DEPTH, z: 0.036, square: 2.18 },
+  // The bust apex, and **its lead is in `z`, not in `halfDepth`.**
+  //
+  // A1c pushed depth alone, which moves a ring's *front and back* together: at
+  // the apex her back surface stood 24 mm further out than her waist did, so
+  // the side capture showed a woman bulging backwards between her shoulder
+  // blades and her belt. A loft ring is a closed section — the only way to
+  // lead forward without dragging the spine with it is to offset the whole
+  // ring. Back surface now runs −0.110 at the waist, −0.104 here, −0.119 at
+  // the shoulder blade: a shallow lumbar hollow with the rearmost point where
+  // a back's rearmost point is.
+  { y: 0.336, halfWidth: 0.882 * TORSO_HALF_WIDTH, halfDepth: 1.085 * TORSO_HALF_DEPTH, z: 0.043, square: 2.14 },
+  { y: 0.352, halfWidth: 0.886 * TORSO_HALF_WIDTH, halfDepth: 1.075 * TORSO_HALF_DEPTH, z: 0.042, square: 2.16 },
+  { y: 0.370, halfWidth: 0.892 * TORSO_HALF_WIDTH, halfDepth: 1.020 * TORSO_HALF_DEPTH, z: 0.034, square: 2.24 },
+  { y: 0.388, halfWidth: 0.900 * TORSO_HALF_WIDTH, halfDepth: 0.965 * TORSO_HALF_DEPTH, z: 0.024, square: 2.34 },
+  { y: 0.408, halfWidth: 0.908 * TORSO_HALF_WIDTH, halfDepth: 0.930 * TORSO_HALF_DEPTH, z: 0.014, square: 2.44 },
+  { y: 0.430, halfWidth: 0.914 * TORSO_HALF_WIDTH, halfDepth: 0.910 * TORSO_HALF_DEPTH, z: 0.008, square: 2.56 },
+  // The shoulders: 0.92 against the men's 1.00, and *visibly inside her own
+  // hips*. The arm still hangs from the rig's fixed 0.175 m joint and its top
+  // ring still overlaps this wall, so there is no armhole daylight to close.
+  { y: 0.452, halfWidth: 0.920 * TORSO_HALF_WIDTH, halfDepth: 0.900 * TORSO_HALF_DEPTH, z: 0.003, square: 2.7 },
+  { y: 0.474, halfWidth: 0.906 * TORSO_HALF_WIDTH, halfDepth: 0.868 * TORSO_HALF_DEPTH, z: 0.001, square: 2.78 },
+  { y: 0.500, halfWidth: 0.860 * TORSO_HALF_WIDTH, halfDepth: 0.800 * TORSO_HALF_DEPTH, square: 2.8 },
+  { y: 0.528, halfWidth: 0.700 * TORSO_HALF_WIDTH, halfDepth: 0.640 * TORSO_HALF_DEPTH, square: 2.5 },
+  { y: 0.548, halfWidth: 0.420 * TORSO_HALF_WIDTH, halfDepth: 0.480 * TORSO_HALF_DEPTH, square: 2.3 },
+]);
+
+/**
+ * Her hips, inside the same garment — and now the widest thing on the figure.
+ *
+ * 1.06 against her shoulders' 0.92: the inversion of the male frame, which is
+ * the half of the silhouette statement the torso cannot make alone. Still a
+ * long way inside Trollina's 1.22-on-a-narrowed-frame — hers is a drawing's
+ * hip and this is a person's.
+ */
+const MARIBEL_SEAT = loftProfile([
+  { y: -0.098, halfWidth: 0.840 * TORSO_HALF_WIDTH, halfDepth: 0.840 * TORSO_HALF_DEPTH, square: 2.55 },
+  { y: -0.078, halfWidth: 0.955 * TORSO_HALF_WIDTH, halfDepth: 0.905 * TORSO_HALF_DEPTH, square: 2.58 },
+  { y: -0.062, halfWidth: 1.020 * TORSO_HALF_WIDTH, halfDepth: 0.945 * TORSO_HALF_DEPTH, square: 2.6 },
+  { y: -0.046, halfWidth: 1.062 * TORSO_HALF_WIDTH, halfDepth: 0.972 * TORSO_HALF_DEPTH, square: 2.6 },
+  // The widest ring on the whole figure, and 20 mm *below* the hem lip —
+  // a hip is a curve through a seam, not a step at one.
+  { y: -0.030, halfWidth: 1.080 * TORSO_HALF_WIDTH, halfDepth: 0.980 * TORSO_HALF_DEPTH, square: 2.58 },
+  { y: -0.014, halfWidth: 1.048 * TORSO_HALF_WIDTH, halfDepth: 0.972 * TORSO_HALF_DEPTH, square: 2.56 },
+  { y: 0.008, halfWidth: 0.985 * TORSO_HALF_WIDTH, halfDepth: 0.935 * TORSO_HALF_DEPTH, square: 2.56 },
+  { y: 0.030, halfWidth: 0.950 * TORSO_HALF_WIDTH, halfDepth: 0.900 * TORSO_HALF_DEPTH, square: 2.58 },
+]);
+
+/**
+ * Limbs in fitted leather, authored ring by ring — A1d.
+ *
+ * **A1c generated these with `limbProfile` and that is what the owner saw as
+ * "blocky".** The helper takes three radii and a list of seams and interpolates
+ * between them, which gives a cone with collars: no deltoid, no forearm belly,
+ * no calf, no knee, and — worse — a *sawtooth*. Every seam it inserts is a ring
+ * pair scaled 1.05 then 0.95 across eighteen millimetres, so each accent band
+ * on her arm put a five per cent step into the outline and then took it back
+ * out. Three of those down an upper arm read exactly as the capture showed
+ * them: pipe, collar, pipe, collar.
+ *
+ * Authored rings fix both halves at once. The seams stay — every one is a paint
+ * boundary and the accent bands must still land on a ring pair or their edges
+ * smear — but they are now three-millimetre lips rather than ten-millimetre
+ * kinks, and the millimetres saved are spent on the events a limb actually
+ * has. Nothing here moves a joint: the profiles span exactly the blockout's
+ * lengths, so the IK, the stances and every clearance proof are untouched.
+ *
+ * A note for whoever tries to smooth these further: `subdivisions` will not do
+ * it. `blockoutKit`'s ring interpolation is a straight lerp, so an inserted row
+ * is collinear with its neighbours by construction — it costs triangles and
+ * changes the silhouette by nothing at all. Rings are the only axis that moves
+ * an outline.
+ */
+const MARIBEL_THIGH = loftProfile([
+  { y: 0, halfWidth: 0.0860, halfDepth: 0.0826, square: 2.30 },
+  // The quadriceps: one millimetre *wider* than the hip ring above it, which a
+  // three-radius taper cannot express and which is the difference between a
+  // thigh and a cone.
+  { y: -0.052, halfWidth: 0.0838, halfDepth: 0.0805, square: 2.28 },
+  { y: -0.098, halfWidth: 0.0770, halfDepth: 0.0740, square: 2.28 },
+  { y: -0.117, halfWidth: 0.0742, halfDepth: 0.0713, square: 2.28 },
+  { y: -0.123, halfWidth: 0.0726, halfDepth: 0.0698, square: 2.28 },
+  { y: -0.180, halfWidth: 0.0668, halfDepth: 0.0642, square: 2.30 },
+  { y: -0.240, halfWidth: 0.0620, halfDepth: 0.0596, square: 2.30 },
+  // The slider guard's upper edge — `MARIBEL_GUARD_TOP` of the thigh.
+  { y: -0.277, halfWidth: 0.0600, halfDepth: 0.0578, square: 2.32 },
+  { y: -0.283, halfWidth: 0.0588, halfDepth: 0.0566, square: 2.32 },
+  { y: -0.300, halfWidth: 0.0592, halfDepth: 0.0570, square: 2.34 },
+  // The knee itself flares back out. Small, and the one event that stops the
+  // leg reading as a single tapering tube from hip to boot.
+  { y: -0.344, halfWidth: 0.0578, halfDepth: 0.0566, square: 2.38 },
+  { y: -0.349, halfWidth: 0.0570, halfDepth: 0.0558, square: 2.38 },
+  { y: -0.355, halfWidth: 0.0556, halfDepth: 0.0546, square: 2.36 },
+  { y: -0.400, halfWidth: 0.0540, halfDepth: 0.0524, square: 2.34 },
+]);
+
+/**
+ * The shin, and **the one section on her that is deeper than it is wide.**
+ *
+ * A calf is not a flattened cylinder; it is a mass hung on the back of the leg.
+ * `limbProfile`'s `flatten` could only ever make `halfDepth` *smaller* than
+ * `halfWidth`, so A1c's calf was anatomically inside out — and since the
+ * chase camera looks at the backs of her legs for the whole ride, it was
+ * inside out in the one view the player actually has. This ring is 1.06 and
+ * sits six millimetres rearward.
+ */
+const MARIBEL_SHIN = loftProfile([
+  { y: 0, halfWidth: 0.0580, halfDepth: 0.0540, square: 2.30 },
+  { y: -0.070, halfWidth: 0.0575, halfDepth: 0.0552, square: 2.30 },
+  { y: -0.108, halfWidth: 0.0620, halfDepth: 0.0657, z: -0.006, square: 2.32 },
+  { y: -0.150, halfWidth: 0.0596, halfDepth: 0.0602, z: -0.003, square: 2.32 },
+  // The accent cuff's two edges — `MARIBEL_CUFF_TOP` of the shin.
+  { y: -0.1718, halfWidth: 0.0545, halfDepth: 0.0520, square: 2.30 },
+  { y: -0.1778, halfWidth: 0.0522, halfDepth: 0.0498, square: 2.30 },
+  { y: -0.210, halfWidth: 0.0510, halfDepth: 0.0482, square: 2.30 },
+  // The boot's collar — `MARIBEL_BOOT_TOP` of the shin.
+  { y: -0.2326, halfWidth: 0.0500, halfDepth: 0.0470, square: 2.32 },
+  { y: -0.2386, halfWidth: 0.0490, halfDepth: 0.0460, square: 2.32 },
+  { y: -0.310, halfWidth: 0.0492, halfDepth: 0.0464, square: 2.32 },
+  // Full at the bottom, as Adonisb2's is and for his reason: the lower shin is
+  // inside a laced racing boot, which does not narrow into a shoe.
+  { y: -0.380, halfWidth: 0.0490, halfDepth: 0.0462, square: 2.32 },
+]);
+
+/** The deltoid crest is the widest ring on the arm, and A1c had no such ring. */
+const MARIBEL_UPPER_ARM = loftProfile([
+  { y: 0, halfWidth: 0.0430, halfDepth: 0.0417, square: 2.30 },
+  { y: -0.028, halfWidth: 0.0492, halfDepth: 0.0477, square: 2.25 },
+  // The bicep band's upper edge — a three-millimetre lip, where the generated
+  // profile put a ten-millimetre kink.
+  { y: -0.0545, halfWidth: 0.0498, halfDepth: 0.0478, square: 2.25 },
+  { y: -0.0575, halfWidth: 0.0468, halfDepth: 0.0449, square: 2.25 },
+  { y: -0.082, halfWidth: 0.0455, halfDepth: 0.0437, square: 2.25 },
+  { y: -0.1105, halfWidth: 0.0442, halfDepth: 0.0420, square: 2.25 },
+  { y: -0.1135, halfWidth: 0.0468, halfDepth: 0.0445, square: 2.25 },
+  { y: -0.140, halfWidth: 0.0440, halfDepth: 0.0418, square: 2.30 },
+  { y: -0.172, halfWidth: 0.0412, halfDepth: 0.0387, square: 2.30 },
+  { y: -0.2015, halfWidth: 0.0400, halfDepth: 0.0376, square: 2.30 },
+  { y: -0.2045, halfWidth: 0.0378, halfDepth: 0.0355, square: 2.30 },
+  { y: -0.230, halfWidth: 0.0368, halfDepth: 0.0342, square: 2.35 },
+  // The elbow: the radius rises. Nothing generated from three numbers can.
+  { y: -0.256, halfWidth: 0.0372, halfDepth: 0.0342, square: 2.40 },
+  { y: -0.272, halfWidth: 0.0350, halfDepth: 0.0322, square: 2.30 },
+  { y: -0.280, halfWidth: 0.0300, halfDepth: 0.0276, square: 2.20 },
+]);
+
+/** The forearm's belly sits a quarter of the way down, not at the elbow. */
+const MARIBEL_FOREARM = loftProfile([
+  { y: 0, halfWidth: 0.0378, halfDepth: 0.0362, square: 2.30 },
+  { y: -0.030, halfWidth: 0.0400, halfDepth: 0.0378, square: 2.35 },
+  { y: -0.058, halfWidth: 0.0392, halfDepth: 0.0366, square: 2.35 },
+  { y: -0.092, halfWidth: 0.0360, halfDepth: 0.0332, square: 2.30 },
+  { y: -0.1155, halfWidth: 0.0345, halfDepth: 0.0316, square: 2.30 },
+  { y: -0.1185, halfWidth: 0.0328, halfDepth: 0.0300, square: 2.30 },
+  { y: -0.150, halfWidth: 0.0310, halfDepth: 0.0280, square: 2.30 },
+  { y: -0.186, halfWidth: 0.0288, halfDepth: 0.0252, square: 2.40 },
+  { y: -0.220, halfWidth: 0.0268, halfDepth: 0.0225, square: 2.50 },
+  // The wrist flattens before the glove does: depth is four fifths of width.
+  { y: -0.246, halfWidth: 0.0252, halfDepth: 0.0206, square: 2.55 },
+  { y: -0.262, halfWidth: 0.0242, halfDepth: 0.0198, square: 2.50 },
+  { y: -0.266, halfWidth: 0.0180, halfDepth: 0.0150, square: 2.40 },
+]);
+
+/** A slimmer neck, and one that still disappears into a gaiter and a collar. */
+const MARIBEL_NECK = loftProfile([
+  { y: -0.048, halfWidth: 0.058, halfDepth: 0.056, square: 2.4 },
+  { y: -0.010, halfWidth: 0.051, halfDepth: 0.049, square: 2.3 },
+  { y: 0.050, halfWidth: 0.046, halfDepth: 0.044, square: 2.2 },
+  { y: 0.098, halfWidth: 0.044, halfDepth: 0.042, square: 2.2 },
+]);
+
+/**
+ * Her helmet — A1c, and the first look to bring its own shell.
+ *
+ * The shared `HELMET` is Cool Rider’s: a neutral road lid on a male head. Hers
+ * is authored two millimetres smaller in every section — a helmet over a
+ * smaller head, which the narrowed neck below it makes legible — with the
+ * whole crown swept *back*: the chin bar leads further, the crown’s rings walk
+ * rearward as they rise, and the shell reads as an aero road-racing lid rather
+ * than a ball. The visor patch on it is also cut wider and taller than any
+ * other rider’s (±1.22 rad against the proven ±1.05), because the brief’s
+ * recognition order puts the blue mirror second only to the silhouette and the
+ * reviewer’s note asked for exactly this: at thirty metres the visor is the
+ * face, and hers should be the widest thing on the front of the helmet.
+ */
+const MARIBEL_HELMET = loftProfile([
+  // The chin bar. It reaches lower and further forward than the crown does,
+  // which is what separates a full-face from an open-face with a screen on it
+  // — A1d, after two rounds of critics found no jaw under her visor at all.
+  //
+  // **The rear rim comes down over the nape** — M23, and the measurement
+  // behind the owner's second and third notes about a thick neck. Below the
+  // shell's widest ring these three rings used to run *forward* as they fell,
+  // so the back of the shell tapered onto the neck like a hood and left the
+  // nape bare from y = 0.114 down. Hair filled that gap, which is how a mesh
+  // that is supposed to be worn *under* a helmet came to stand 101 mm proud
+  // of it at the rim. The reference photograph the owner supplied
+  // (`hair-example-from-google-search`) shows the real order: shell down to
+  // below the ear, then hair, then neck. So the lower rings keep their front
+  // — the chin bar and the visor are unmoved, to the millimetre — and grow
+  // rearward instead, which puts the shell's back wall vertical from the brow
+  // down and gives the hair something to emerge from under. The bottom ring
+  // matches the one above it at the back for the same reason: an undercut rear
+  // rim is a shelf, and every millimetre of hair tucked behind it comes back
+  // out below as a lump.
+  { y: 0.052, halfWidth: 0.066, halfDepth: 0.100, square: 2.3, z: 0.000 },
+  { y: 0.086, halfWidth: 0.090, halfDepth: 0.110, square: 2.3, z: 0.010 },
+  { y: 0.114, halfWidth: 0.104, halfDepth: 0.124, square: 2.5, z: 0.006 },
+  { y: 0.152, halfWidth: 0.114, halfDepth: 0.130, square: 2.6, z: 0.008 },
+  { y: 0.208, halfWidth: 0.119, halfDepth: 0.134, square: 2.5, z: 0.002 },
+  { y: 0.258, halfWidth: 0.109, halfDepth: 0.121, square: 2.3, z: -0.004 },
+  { y: 0.300, halfWidth: 0.082, halfDepth: 0.092, square: 2.2, z: -0.010 },
+  { y: 0.330, halfWidth: 0.040, halfDepth: 0.048, square: 2.2, z: -0.014 },
+  { y: 0.342, halfWidth: 0, halfDepth: 0 },
+]);
+
+/**
+ * A narrower boot on the same sole footprint.
+ *
+ * The sole is what stands on the pedal and `render/riderEuc.test.ts` asserts it
+ * does, so its plan stays the shared one; only the upper comes in. Seven per
+ * cent is not a silhouette on its own — it is the `legs` capture agreeing with
+ * everything above it, which is how a proportion reads as deliberate rather
+ * than as one part being wrong.
+ */
+const MARIBEL_BOOT = loftProfile(
+  BOOT.map((ring) => ({ ...ring, halfWidth: ring.halfWidth * 0.93, halfDepth: ring.halfDepth * 0.95 })),
+);
+/**
+ * Her glove — A1d, and the part the owner's ride named outright: *"Her hands
+ * look amputated."*
+ *
+ * He was describing something real and measurable. A1c's hand was the shared
+ * `GLOVE` scaled to 92%: a hundred and five millimetres long against a
+ * two-hundred-and-sixty-millimetre forearm, of which only seventy-eight showed
+ * because the sleeve's rounded end sat inside it — under a third of the
+ * forearm, where a hand is about three quarters of one. It was also round in
+ * section (1.14 wide to deep, against a real hand's two to one), widest at the
+ * *cuff* rather than at the knuckles, and it had no wrist ring anywhere. A
+ * shape like that cannot read as a hand at any polygon count or under any
+ * paint; it reads as a stump with a bracelet, which is exactly what the
+ * capture showed.
+ *
+ * So this is authored as a hand: a flared gauntlet, a wrist that is the
+ * narrowest ring on the part, a palm that is nearly twice as wide as it is
+ * thick, a knuckle line, and a finger mass that curls forward as it falls.
+ * The thumb and the two finger lobes are separate lofts merged into the same
+ * mesh — see `RiderLook.build`.
+ */
+const MARIBEL_HAND = loftProfile([
+  // The gauntlet's mouth, tucked up inside the sleeve so no rim can show.
+  { y: 0.014, halfWidth: 0.0300, halfDepth: 0.0270, square: 2.5 },
+  { y: 0.006, halfWidth: 0.0405, halfDepth: 0.0350, square: 2.7 },
+  { y: -0.020, halfWidth: 0.0387, halfDepth: 0.0330, square: 2.8 },
+  { y: -0.038, halfWidth: 0.0330, halfDepth: 0.0270, square: 2.8 },
+  // The wrist: the narrowest ring on the hand, and the one A1c never had.
+  { y: -0.052, halfWidth: 0.0270, halfDepth: 0.0215, square: 2.6 },
+  { y: -0.068, halfWidth: 0.0355, halfDepth: 0.0225, square: 3.0 },
+  { y: -0.092, halfWidth: 0.0400, halfDepth: 0.0215, square: 3.4 },
+  // The knuckles — widest, flattest, 2.08 across to through.
+  { y: -0.114, halfWidth: 0.0415, halfDepth: 0.0200, square: 3.6 },
+  { y: -0.132, halfWidth: 0.0405, halfDepth: 0.0235, square: 3.2 },
+  { y: -0.146, halfWidth: 0.0330, halfDepth: 0.0250, square: 2.9 },
+  { y: -0.156, halfWidth: 0.0225, halfDepth: 0.0195, square: 2.6 },
+  { y: -0.162, halfWidth: 0.0090, halfDepth: 0.0080, square: 2.4 },
+  { y: -0.166, halfWidth: 0, halfDepth: 0 },
+]);
+
+/**
+ * The thumb, and the two lobes the fingers group into.
+ *
+ * **Three lofts, because a valley cannot be painted or patched.** A vertex
+ * colour on a smooth-shaded surface is a smudge, not a gap, and a patch offsets
+ * the surface *outward*, so it can raise a pad and never cut the crease between
+ * two fingers. Two closed lofts that intersect do cut one — the overlap is a
+ * real concavity in the merged surface — which is why the finger mass is two
+ * overlapping lobes rather than one lump with a stripe on it.
+ *
+ * They merge into the hand's own mesh (`RiderLook.build.hand`), so all of this
+ * costs triangles and not one draw call, and the hi-vis repaint runs after the
+ * merge and therefore covers them.
+ *
+ * `side` is +1 for the rider's left; the lobes are mirrored through it so that
+ * the thumb is inboard on both hands.
+ */
+const maribelThumb = (side: number): THREE.BufferGeometry => loftGeometry(loftProfile([
+  { y: -0.056, x: -side * 0.0230, z: 0.0060, halfWidth: 0.0135, halfDepth: 0.0150, square: 2.7 },
+  { y: -0.070, x: -side * 0.0330, z: 0.0135, halfWidth: 0.0140, halfDepth: 0.0155, square: 2.8 },
+  { y: -0.086, x: -side * 0.0395, z: 0.0215, halfWidth: 0.0125, halfDepth: 0.0140, square: 2.7 },
+  { y: -0.100, x: -side * 0.0420, z: 0.0285, halfWidth: 0.0100, halfDepth: 0.0115, square: 2.6 },
+  { y: -0.108, x: -side * 0.0425, z: 0.0310, halfWidth: 0, halfDepth: 0 },
+]), { radialSegments: 14 });
+
+/** Index and middle: inboard, and the longer of the two. */
+const maribelFingersInner = (side: number): THREE.BufferGeometry => loftGeometry(loftProfile([
+  { y: -0.104, x: -side * 0.0115, z: 0.0035, halfWidth: 0.0175, halfDepth: 0.0180, square: 2.8 },
+  { y: -0.124, x: -side * 0.0125, z: 0.0075, halfWidth: 0.0195, halfDepth: 0.0210, square: 3.0 },
+  { y: -0.144, x: -side * 0.0130, z: 0.0130, halfWidth: 0.0180, halfDepth: 0.0195, square: 2.9 },
+  { y: -0.158, x: -side * 0.0130, z: 0.0180, halfWidth: 0.0125, halfDepth: 0.0140, square: 2.6 },
+  { y: -0.166, x: -side * 0.0130, z: 0.0205, halfWidth: 0, halfDepth: 0 },
+]), { radialSegments: 14 });
+
+/** Ring and little: outboard, and nine millimetres shorter, which is the read. */
+const maribelFingersOuter = (side: number): THREE.BufferGeometry => loftGeometry(loftProfile([
+  { y: -0.104, x: side * 0.0125, z: 0.0030, halfWidth: 0.0160, halfDepth: 0.0170, square: 2.8 },
+  { y: -0.122, x: side * 0.0140, z: 0.0068, halfWidth: 0.0175, halfDepth: 0.0195, square: 3.0 },
+  { y: -0.138, x: side * 0.0145, z: 0.0115, halfWidth: 0.0155, halfDepth: 0.0175, square: 2.9 },
+  { y: -0.150, x: side * 0.0145, z: 0.0155, halfWidth: 0.0105, halfDepth: 0.0120, square: 2.6 },
+  { y: -0.157, x: side * 0.0145, z: 0.0175, halfWidth: 0, halfDepth: 0 },
+]), { radialSegments: 14 });
+
+/** The black leather: torso, hips, sleeves and legs, one garment and one material. */
+const MARIBEL_SUIT: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.maribelSuit,
+  roughness: 0.70,
+  metalness: 0.0,
+});
+
+/**
+ * The pale material, and **everything it carries is painted down from it.**
+ *
+ * That inversion is Adonisb2's (§22.3 fact 4) pointed at a different problem.
+ * He needed a saturated green that a black base could never be multiplied up
+ * to; she needs a *white* chest device, grey shoulder armour, and hair — three
+ * values a scalar shade can reach from one near-white base and none of which a
+ * near-black base can reach without a multiplier in the tens. So `accent` is
+ * the brightest thing she wears and the armour, the guards and the ponytail are
+ * all shades of it.
+ *
+ * Matte, for `RED_ARMOUR`'s reason: the shoulder cups are broad curved surfaces
+ * near the top of a sunlit figure, and a glossy pale panel there finds the
+ * sun's mirror angle and clips to white.
+ */
+const MARIBEL_MARK: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.maribelMark,
+  roughness: 0.74,
+  metalness: 0.0,
+});
+
+/** Boots, glove bodies, the gaiter: the glossier near-black half. */
+const MARIBEL_GEAR: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.maribelGear,
+  roughness: 0.58,
+  metalness: 0.0,
+});
+
+// -- Maribel's paintwork ------------------------------------------------------
+//
+// Her suit is black and every accent on it is lighter, so unlike Adonisb2 these
+// tints paint *up*. That is safe here in a way it would not be for his green:
+// grey-from-black is a near-uniform multiplier on all three channels
+// (×3.5, ×3.7, ×3.2), and the two saturated ones are small fields the sun can
+// only wash, not fields the whole figure is made of.
+
+/** Black → the mid-grey stretch panels: flanks, outer arm, outer thigh, shin. */
+const MARIBEL_PANEL_TINT = tintOver(
+  BLOCKOUT_COLOURS.maribelSuit,
+  BLOCKOUT_COLOURS.maribelPanel,
+  // **0.55 of the way, not all of it** — A1d. This grey covers the outer
+  // thigh, the outer shin and the seat, and once the suit under it was lifted
+  // out of near-black the three together made her hips, her backside and her
+  // outer legs the brightest surfaces on the character. Both references are a
+  // black rider with grey seams; she had become a grey rider with black trim.
+  0.55,
+);
+/**
+ * Black → the half-step between them: the yoke over her shoulders and the top
+ * of each sleeve.
+ *
+ * **The value story needs a middle, and this is it.** With the leather taken
+ * down to `#24262d` in A1b there is a long way to the panel grey, and a figure
+ * whose only two values meet at a hard line reads as two garments. The
+ * reference agrees: in the regenerated render her shoulders and upper sleeves
+ * catch light a clear step above her ribs, which is what a one-piece suit does
+ * over the parts of a body that face the sky.
+ */
+const MARIBEL_YOKE_TINT = tintOver(
+  BLOCKOUT_COLOURS.maribelSuit,
+  BLOCKOUT_COLOURS.maribelPanel,
+  // **0.22, down from 0.52** — A1d. Half a step toward the panel grey was the
+  // right amount over a suit that rendered near-black; over a suit that has a
+  // value of its own it put a pale plate across her whole upper back and both
+  // shoulders, which the chase camera read as a grey vest worn over the
+  // leather. The light on a shoulder is a hint, not a garment.
+  0.22,
+);
+/** Her right — −X. Bicep ring, boot cuff, and the aqua edge of the chest field. */
+const MARIBEL_AQUA_TINT = tintOver(BLOCKOUT_COLOURS.maribelSuit, BLOCKOUT_COLOURS.maribelAqua);
+/** Her left — +X. The same three places. */
+const MARIBEL_CORAL_TINT = tintOver(BLOCKOUT_COLOURS.maribelSuit, BLOCKOUT_COLOURS.maribelCoral);
+/** Black → the boot's shaft, which is the shin's own lower band. */
+const MARIBEL_BOOT_TINT = tintOver(BLOCKOUT_COLOURS.maribelSuit, BLOCKOUT_COLOURS.maribelGear);
+/**
+ * The knee guard's own value, painted onto the leg underneath it.
+ *
+ * **The number has to stay equal to the guard patches' `shade`**, and M22 paid
+ * for the reason: a guard spans a hinge, a hinge cannot be sealed, and a
+ * bending knee pulls its two halves apart exactly where the player is looking.
+ * What shows through the gap is the limb, so the limb is painted the guard's
+ * colour and the gap opens onto more guard.
+ */
+const MARIBEL_GUARD_TINT = tintOver(
+  BLOCKOUT_COLOURS.maribelSuit,
+  BLOCKOUT_COLOURS.maribelMark,
+  MARIBEL_GUARD_SHADE,
+);
+/** The elbow guard's crest line — the rim shade, quieted for arm's-length. */
+const MARIBEL_ELBOW_RIM_TINT = tintOver(
+  BLOCKOUT_COLOURS.maribelSuit,
+  BLOCKOUT_COLOURS.maribelMark,
+  MARIBEL_RIM_SHADE * 0.7,
+);
+/** Panel lines on a boot: the gear colour one step up, the M19 grammar. */
+const MARIBEL_BOOT_PANEL_TINT = tintOver(
+  BLOCKOUT_COLOURS.maribelGear,
+  BLOCKOUT_COLOURS.maribelGear,
+  1.34,
+);
+/** The fluorescent field on the outer glove — the loudest thing below her chin. */
+const MARIBEL_HIVIS_TINT = tintOver(BLOCKOUT_COLOURS.maribelGear, BLOCKOUT_COLOURS.maribelHiVis);
+/** The pale mark material → her hair, and → the bleached streaks in it. */
+const MARIBEL_HAIR_TINT = tintOver(BLOCKOUT_COLOURS.maribelMark, BLOCKOUT_COLOURS.maribelHair);
+/** The shadow half of the mass: the parting, and where it tucks under the lid. */
+const MARIBEL_HAIR_DARK_TINT = tintOver(BLOCKOUT_COLOURS.maribelMark, 0x1d1712);
+const MARIBEL_HAIR_LIGHT_TINT = tintOver(
+  BLOCKOUT_COLOURS.maribelMark,
+  BLOCKOUT_COLOURS.maribelHairLight,
+);
+
+/** Which accent a side wears. Aqua is her right (−X); coral is her left (+X). */
+function maribelAccent(side: number): Tint {
+  return side < 0 ? MARIBEL_AQUA_TINT : MARIBEL_CORAL_TINT;
+}
+
+/** Blend two tints. `t = 0` is `a`. */
+function mixTint(a: Tint, b: Tint, t: number): Tint {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+}
+
+/** A smooth 0→1 ramp between two bounds, clamped outside them. */
+function ramp(value: number, from: number, to: number): number {
+  const t = Math.min(1, Math.max(0, (value - from) / (to - from)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * The body — grey flanks, and the yoke over her shoulders.
+ *
+ * **The chest print left this function in Phase A1b, and that is the whole
+ * lesson of the phase in one diff.** A1 painted the reference's halftone as a
+ * vertex gradient on the reasoning that at a vertex colour's resolution a
+ * halftone *is* a fade — true, and the wrong question. The print is the most
+ * looked-at surface on the character, and what it needed was not a better
+ * approximation of dots but a surface that could hold dots. It is now a
+ * printed patch (`panels.torso`), and this painter keeps the two jobs a vertex
+ * colour is genuinely the right tool for: broad fields, and side asymmetry.
+ *
+ * Both are *value* work, which is the other half of what A1 got wrong. The
+ * flank panel and the yoke are the figure's internal structure at chase
+ * distance, and neither costs a triangle.
+ */
+function paintMaribelTorso(geometry: THREE.BufferGeometry): void {
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const x = position.getX(i);
+    const y = position.getY(i);
+    const z = position.getZ(i);
+    const radius = Math.hypot(x, z);
+    if (radius < 1e-4) continue;
+
+    // The grey flank: a *strip* down the side of the garment, waist to armpit.
+    //
+    // **0.86, not the first pass's 0.66**, and it stops above the seat. At 0.66
+    // the panel was the whole outboard face and the side capture came back with
+    // a grey rider wearing black sleeves — the reference has black in front of
+    // the panel and black behind it, which is what makes it a panel. Ending it
+    // at the waist matters as much: running it down over the hips turned the
+    // seat's wide shallow section into a grey belt, since almost every vertex
+    // on a flattened ellipse passes an outboard test.
+    if (Math.abs(x) / radius > 0.86 && y > 0.034 && y < 0.436) {
+      colour.setXYZ(i, MARIBEL_PANEL_TINT[0], MARIBEL_PANEL_TINT[1], MARIBEL_PANEL_TINT[2]);
+      continue;
+    }
+
+    // The yoke: the half-step, over the shoulders and fading out down the
+    // chest and the back. Ramped rather than banded because the light it
+    // stands for has no edge — a hard line across a shoulder is a garment
+    // seam, and this is not one.
+    // **Its lower edge is a V, not a shelf.** A1d's captures showed a
+    // light-grey plate with a dead-straight horizontal bottom running across
+    // her upper chest — the strongest cardboard-cut-out cue on the model. A
+    // yoke's edge follows the collarbone, so the front dips at the sternum and
+    // rises toward the shoulder points; the back keeps the authored line.
+    const scoop = position.getZ(i) > 0
+      ? 0.034 * (1 - ramp(Math.abs(position.getX(i)), 0.018, 0.132))
+      : 0;
+    const lift = ramp(y, 0.404 - scoop, 0.500 - scoop * 0.4);
+    if (lift <= 0.002) continue;
+    const tint = mixTint([1, 1, 1], MARIBEL_YOKE_TINT, lift);
+    colour.setXYZ(i, tint[0], tint[1], tint[2]);
+  }
+}
+
+/**
+ * The bicep ring, and the grey panel down the outer sleeve.
+ *
+ * The ring is a **full wrap**, which every other band in this file deliberately
+ * is not — Cool Rider's sleeve accent is an outboard panel precisely because a
+ * solid band read as a machine joint. This one is a band in both photographs
+ * and in the render, it is 56 mm of a 280 mm arm rather than half the limb, and
+ * it is the clearest statement of the asymmetry the game has: from directly
+ * behind, the two arms are the only place a player sees both accents at once.
+ */
+function paintMaribelUpperArm(geometry: THREE.BufferGeometry, side: number): void {
+  const length = RIDER_BLOCKOUT.upperArmLength;
+  const top = -length * MARIBEL_BICEP_TOP;
+  const bottom = -length * MARIBEL_BICEP_BOTTOM;
+  const accent = maribelAccent(side);
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    if (y <= top && y >= bottom) {
+      colour.setXYZ(i, accent[0], accent[1], accent[2]);
+      continue;
+    }
+    // The grey panel runs the outer sleeve below the band, stopping at the
+    // elbow seam. Above the band the shoulder armour covers the arm anyway.
+    // 0.725 lands the seam mid-pair at −0.203 (−0.2015/−0.2045); 0.74 was one
+    // facet past it — the forearm guard's own bug, one limb up.
+    if (y > bottom || y < -length * 0.725) continue;
+    if (!outboardFace(position.getX(i), position.getZ(i), side, 0.70)) continue;
+    colour.setXYZ(i, MARIBEL_PANEL_TINT[0], MARIBEL_PANEL_TINT[1], MARIBEL_PANEL_TINT[2]);
+  }
+}
+
+/**
+ * The elbow guard, painted — A1c, and the paint hook's own origin story
+ * (`RiderLook.paint.forearm`).
+ *
+ * Built first as two `elbowPad` patches; they read correctly and cost two
+ * draw calls, and the §9 sweep found the frame ceiling at exactly 150 with
+ * them in. Red Rider's boots already prove the alternative: at chase
+ * distance, a guard is a value story — a dark moulded field with one lighter
+ * line along its crest — and a repaint tells it for free. The field wraps the
+ * elbow's rear half (the chains bend backward, so that is both where armour
+ * goes and what the chase camera sees); the crest line sits inside it.
+ */
+function paintMaribelForearm(geometry: THREE.BufferGeometry, _side: number): void {
+  const length = RIDER_BLOCKOUT.forearmLength;
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    // 0.45 of the forearm is −0.117 — the middle of the authored lip pair at
+    // −0.1155/−0.1185. The first A1d constant said 0.40, which is −0.104: a
+    // point between rings, so the guard's lower edge smeared across the whole
+    // 23 mm facet band beside the pair that was authored to hold it.
+    if (y > -0.006 || y < -length * 0.45) continue;
+    const x = position.getX(i);
+    const z = position.getZ(i);
+    const radius = Math.hypot(x, z);
+    if (radius < 1e-4) continue;
+    // Rear half only: the front of the forearm stays leather, which is what
+    // keeps this reading as a pad strapped over a sleeve rather than as a
+    // darker sleeve segment (the M2 "machine joint" trap, again).
+    if (z / radius > 0.10) continue;
+    const crest = z / radius < -0.62 && y < -0.030 && y > -0.062;
+    const tint = crest ? MARIBEL_ELBOW_RIM_TINT : MARIBEL_GUARD_TINT;
+    colour.setXYZ(i, tint[0], tint[1], tint[2]);
+  }
+}
+
+/** The grey panel down the outside of the thigh, and the guard's dark cup. */
+function paintMaribelThigh(geometry: THREE.BufferGeometry, side: number): void {
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    if (y <= MARIBEL_CUP_TOP) {
+      // Under the guard, and the reason it is painted rather than sealed: a
+      // knee is a hinge, the guard spans it in two halves, and what shows
+      // through when the leg bends has to be the guard's own value or it reads
+      // as a bright line opening in the middle of the armour (M22's lesson,
+      // paid for on the owner's ride).
+      colour.setXYZ(i, MARIBEL_GUARD_TINT[0], MARIBEL_GUARD_TINT[1], MARIBEL_GUARD_TINT[2]);
+      continue;
+    }
+    // **The aqua/coral band, moved up to the thigh** — A1d. Both bands sat at
+    // the ankle, where the reference render puts them just above the knee pod
+    // and where they were competing with the purple pads, the taillight and
+    // the status lamp inside sixty pixels of screen. Her loudest two colours
+    // now sit at the height the reference gives them. The ring pair at −0.240
+    // and −0.277 is what makes the edge a crease rather than a smear.
+    // Half a millimetre of slack at each edge, because the band's edges *are*
+    // authored rings and a float that round-trips through a buffer attribute
+    // lands a hair outside an exact compare — which is how the first build of
+    // this painted a band nobody could find.
+    if (y <= -0.2395 && y >= -0.2775) {
+      const band = maribelAccent(side);
+      colour.setXYZ(i, band[0], band[1], band[2]);
+      continue;
+    }
+    if (y > -0.020 || y < -RIDER_BLOCKOUT.thighLength * MARIBEL_GUARD_TOP) continue;
+    if (!outboardFace(position.getX(i), position.getZ(i), side, 0.55)) continue;
+    colour.setXYZ(i, MARIBEL_PANEL_TINT[0], MARIBEL_PANEL_TINT[1], MARIBEL_PANEL_TINT[2]);
+  }
+}
+
+/**
+ * The shin: the guard's cup at the top, a grey panel down the outside, then the
+ * accent cuff and the boot's shaft.
+ *
+ * The cuff is the leg's half of the asymmetry and the only accent that is
+ * unobstructed from the `legs` angle, so it is a full wrap for the bicep ring's
+ * reason.
+ */
+function paintMaribelShin(geometry: THREE.BufferGeometry, side: number): void {
+  const length = RIDER_BLOCKOUT.shinLength;
+  const cuffTop = -length * MARIBEL_CUFF_TOP;
+  const bootTop = -length * MARIBEL_BOOT_TOP;
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    if (y < bootTop) {
+      colour.setXYZ(i, MARIBEL_BOOT_TINT[0], MARIBEL_BOOT_TINT[1], MARIBEL_BOOT_TINT[2]);
+      continue;
+    }
+    // **The accent moved to the thigh in A1d and this branch had to go with
+    // it.** Both fired for one capture round, so each leg wore her colour
+    // twice — and the one the eye actually found was this low one, sitting
+    // directly beside the machine's purple pads and its status lamps, which is
+    // the exact collision moving the band upstairs was written to prevent.
+    if (y < cuffTop) {
+      colour.setXYZ(i, MARIBEL_BOOT_TINT[0], MARIBEL_BOOT_TINT[1], MARIBEL_BOOT_TINT[2]);
+      continue;
+    }
+    if (y > MARIBEL_CUP_BOTTOM) {
+      colour.setXYZ(i, MARIBEL_GUARD_TINT[0], MARIBEL_GUARD_TINT[1], MARIBEL_GUARD_TINT[2]);
+      continue;
+    }
+    if (!outboardFace(position.getX(i), position.getZ(i), side, 0.55)) continue;
+    colour.setXYZ(i, MARIBEL_PANEL_TINT[0], MARIBEL_PANEL_TINT[1], MARIBEL_PANEL_TINT[2]);
+  }
+}
+
+/** Ankle band, toe cap and instep strap — the boot grammar M19 established. */
+function paintMaribelBoot(geometry: THREE.BufferGeometry): void {
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox;
+  if (box === null) return;
+  const height = Math.max(1e-3, box.max.y - box.min.y);
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const t = (position.getY(i) - box.min.y) / height;
+    const z = position.getZ(i);
+    const ankleBand = t > 0.64 && t < 0.84;
+    const toeCap = t < 0.32 && z > 0.055;
+    const instepStrap = t > 0.38 && t < 0.52 && z > 0.02;
+    if (ankleBand || toeCap || instepStrap) {
+      colour.setXYZ(
+        i,
+        MARIBEL_BOOT_PANEL_TINT[0],
+        MARIBEL_BOOT_PANEL_TINT[1],
+        MARIBEL_BOOT_PANEL_TINT[2],
+      );
+    }
+  }
+}
+
+/**
+ * The fluorescent glove.
+ *
+ * **A field, not a pinstripe**, and that is the reference rather than a liberty:
+ * in the photograph the whole outer hand from the cuff to the fingertips is
+ * hi-vis, and the render draws it the same way. It is also the M22 micro-accent
+ * rule cutting the other way — Adonisb2's green glove seam was removed because
+ * a mark that cannot be made small should not be made, and this mark is not
+ * small. At chase distance it is two bright points at the ends of two dark
+ * arms, which is more identity than anything else she wears below the shoulder.
+ */
+function paintMaribelHand(geometry: THREE.BufferGeometry): void {
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    // The gauntlet: sixty-four millimetres of black leather, where A1c had a
+    // twenty-six millimetre ring that read as a bracelet. Her real one is a
+    // long flared cuff and it is most of what makes the glove look like gear
+    // rather than like a mitten.
+    if (y > -0.050) continue;
+    // The palm is black and everything else is hi-vis. **The palm faces
+    // backwards**, which the first A1d capture settled: an arm hanging at rest
+    // presents the *back* of the hand forward, which is what both the
+    // photograph and the reference render show — hi-vis from the front. The
+    // black is therefore −Z, and the yellow wraps the back, both edges, the
+    // thumb and the fingers, so the glove keeps a lit edge from behind too.
+    if (position.getZ(i) < -0.006) continue;
+    // **The fingertips and the thumb are black**, because in both references
+    // the hi-vis is a shield that stops before the fingers do. A yellow field
+    // ending in dark tips is what the eye reads as *fingers*; hi-vis all the
+    // way to the end is one lump, which is what the first A1d capture showed.
+    // Half a millimetre of slack, for the thigh band's reason: the boundary is
+    // the authored ring at −0.132, and float32 rounds that ring to just above
+    // the exact compare — which quietly moved the black down to the next ring
+    // and cut the tips from 34 mm to 20.
+    if (y < -0.1315) continue;
+    if (Math.abs(position.getX(i)) > 0.030 && y < -0.070) continue;
+    colour.setXYZ(i, MARIBEL_HIVIS_TINT[0], MARIBEL_HIVIS_TINT[1], MARIBEL_HIVIS_TINT[2]);
+  }
+}
+
+/**
+ * One closed, shallow curtain for the loose hair.
+ *
+ * A rotational loft is the wrong primitive here: even when it is flattened,
+ * its concentric rings make a smooth bulb with one pointed end. Separate lofts
+ * solve that outline by creating several pointed ends — the fox-tail failure.
+ * This grid owns one perimeter instead. Its bottom row stays broad and varies
+ * only by 22 mm, so the silhouette reads as a soft wavy hem rather than locks.
+ */
+/**
+ * How long the lock at this point across the mass is, 0.28 to 1.
+ *
+ * **Shared by the mesh and the paint, on purpose.** The hem's break and the
+ * bleach's onset have to be the *same* wave or the pale becomes a band ruled
+ * across the tips rather than the tips themselves — which is exactly what a
+ * blind critic measured on the build before this one and called trim. Two
+ * waves rather than one, at 2.6 and 5.3 cycles across the width, because a
+ * single cosine gives identical teeth at even spacing and reads as bunting.
+ *
+ * `u` is the mass's own -1..1 coordinate across its width.
+ */
+function lockLength(u: number): number {
+  const wave = 0.5 + 0.5 * Math.cos((u + 0.21) * Math.PI * 2.6);
+  const fine = 0.5 + 0.5 * Math.cos((u - 0.37) * Math.PI * 5.3);
+  return 0.28 + 0.56 * wave ** 1.2 + 0.16 * fine;
+}
+
+function maribelHairCurtain(): THREE.BufferGeometry {
+  // **Shoulder-blade length, and the length is a measurement rather than a
+  // taste** — the owner's call after his ride of the one-curtain build:
+  // *"there's like a fox tail with other tails besides it… maybe shorter hair
+  // to the armpits is the way to go. would still show the logo, and can be
+  // wider. so the bottom tips of hair right above the logo."*
+  //
+  // Her back mark spans 0.135–0.356 of the pelvis frame and the neck sits at
+  // 0.499, so the print's **top edge is y = -0.143 in this frame**. A curtain
+  // that ended at -0.410 hung 46 mm below the print's *bottom* and covered the
+  // whole of it — which is what every back capture in this milestone shows and
+  // why the mark had to be photographed with `--hide rider-hair`. Ending at
+  // -0.130 leaves 13 mm of leather between the tips and the artwork, and the
+  // chase camera gets the mark back.
+  //
+  // Losing 280 mm of length has to be paid for in width or the mass reads as a
+  // tail: the widest row goes 0.103 → 0.112 (224 mm across, still inside the
+  // 238 mm helmet and well inside the shoulder pods) and it now arrives by the
+  // third row instead of the fifth, so the silhouette is a bell that reaches
+  // its width at the nape rather than a rope that reaches it at the waist.
+  //
+  // **And it lies ON her back rather than behind it.** The long build carried
+  // 42 mm of half-thickness on a centreline 70 mm off the jacket, which the
+  // side capture showed for what it is: a slab hanging in the air off the back
+  // of the lid, joined to nothing. Her jacket's back surface sits at z = -0.093
+  // under the collar and -0.119 at the blades (measured off `profiles.torso`
+  // at each row's own height), and each row's `z` is now that surface minus
+  // its own half-thickness and 4 mm of drape — so the *inner* face of the
+  // curtain rests on the leather all the way down, whatever the row is doing.
+  // The thickness itself comes down with it: 84 mm through the mass was a
+  // pillow, and hair on a back is nearer 50.
+  //
+  // **Widest at three fifths of its height, narrowing to two thirds of that at
+  // the tips.** The first short build was widest at the *bottom* and ended
+  // flat, and a blind Opus critic named what that is: 55 px wide by 50 px tall
+  // at chase distance, a bell terminating at its own maximum — *"the silhouette
+  // of a garment. It is never the silhouette of hair."* It read to it as the
+  // fold-down hood of a hoodie. Hair tapers.
+  //
+  // **And it is not a ponytail** — the owner, looking at a hard-brake capture:
+  // *"you can just widen the top of the curtain or whatever… it's not a
+  // ponytail."* The root row used to be 72 mm across against a helmet rim of
+  // 132, so the mass left a bare wedge of neck on each side of it directly
+  // under the shell, and the liner's two nape lobes sat in that wedge as
+  // separate hair-coloured tabs. The root is 116 mm now, 88% of the rim, and
+  // the taper up to it is gentle rather than a stalk.
+  //
+  // `wrap` is what makes the widening buildable. A row is a straight line in
+  // x at a constant z, so widening one alone throws its corners *backwards*
+  // off the head: the shell's rim ring falls from z = -0.100 at the spine to
+  // -0.055 at x = 0.058, and a flat root row would have hung 41 mm behind it
+  // in mid-air. Each row's ends therefore curl forward by `wrap` on the rim
+  // ring's own exponent, which holds the root at a constant 4 mm inside the
+  // shell all the way round — the same offset it already had at the spine —
+  // and fades out by the shoulder blades, where the mass is wider than
+  // anything to lie on and hair spans free.
+  const rows = [
+    { y: 0.050, x: 0.000, z: -0.096, width: 0.058, depth: 0.010, wrap: 0.045 },
+    { y: 0.024, x: -0.003, z: -0.112, width: 0.086, depth: 0.016, wrap: 0.038 },
+    { y: -0.002, x: -0.004, z: -0.134, width: 0.106, depth: 0.022, wrap: 0.025 },
+    { y: -0.026, x: -0.007, z: -0.147, width: 0.118, depth: 0.026, wrap: 0.015 },
+    { y: -0.046, x: -0.011, z: -0.146, width: 0.116, depth: 0.025, wrap: 0.009 },
+    { y: -0.064, x: -0.014, z: -0.139, width: 0.106, depth: 0.020, wrap: 0.005 },
+    { y: -0.080, x: -0.017, z: -0.130, width: 0.092, depth: 0.014, wrap: 0.002 },
+    { y: -0.095, x: -0.019, z: -0.121, width: 0.079, depth: 0.008, wrap: 0.000 },
+  ] as const;
+  /**
+   * How far a column has curled forward off its row's centreline, 0..1.
+   *
+   * The rear arc of a superellipse at the shell's own `square`, normalised to
+   * the row's own half-width so a row wider than the helmet still describes
+   * one continuous curve instead of running out of ring and going flat.
+   */
+  const wrapAt = (u: number): number => {
+    const t = Math.min(1, Math.abs(u));
+    const shell = MARIBEL_HELMET[0]!.square;
+    return 1 - (1 - t ** shell) ** (1 / shell);
+  };
+  const columns = 13;
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const colours: number[] = [];
+  const indices: number[] = [];
+
+  // Two shallow surfaces, body-side first and camera-side second. The waves
+  // move the surfaces together so no groove pinches through the thickness.
+  for (const side of [1, -1]) {
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+      const row = rows[rowIndex]!;
+      const v = rowIndex / (rows.length - 1);
+      for (let column = 0; column < columns; column += 1) {
+        const u01 = column / (columns - 1);
+        const u = u01 * 2 - 1;
+        const edge = Math.cos(Math.abs(u) * Math.PI * 0.5);
+        // **The hem is three locks of different lengths, not a ripple.**
+        // Measured on the previous build, the bottom edge varied 7 px across a
+        // 138 px mass — five per cent — and the critic's word for a flat
+        // boundary with a constant pale band above it was *trim*: fleece on a
+        // hood rather than tips. This runs the last two rows down by up to
+        // 45 mm on a three-lobe wave, which is a quarter of the mass's height,
+        // and it squares the ramp so the extra length arrives as points rather
+        // than as a shifted edge. The longest lock ends at y = -0.140, three
+        // millimetres above the top of her back print.
+        const tip = Math.max(0, (v - 0.52) / 0.48);
+        const hem = -0.046 * tip * tip * lockLength(u);
+        const surfaceWave = Math.sin(v * Math.PI * 2.3 + u * Math.PI * 1.7) * 0.0045 * edge;
+        const sideDepth = row.depth * (0.32 + 0.68 * edge ** 0.7);
+        positions.push(
+          row.x + u * row.width + Math.sin(v * Math.PI * 1.7) * u * 0.003,
+          row.y + hem,
+          row.z + row.wrap * wrapAt(u) + surfaceWave + side * sideDepth,
+        );
+        uvs.push(u01, 1 - v);
+        colours.push(1, 1, 1);
+      }
+    }
+  }
+
+  const surfaceSize = rows.length * columns;
+  for (let side = 0; side < 2; side += 1) {
+    const offset = side * surfaceSize;
+    for (let row = 0; row < rows.length - 1; row += 1) {
+      for (let column = 0; column < columns - 1; column += 1) {
+        const a = offset + row * columns + column;
+        const b = a + 1;
+        const c = a + columns;
+        const d = c + 1;
+        if (side === 0) indices.push(a, c, b, b, c, d);
+        else indices.push(a, b, c, b, d, c);
+      }
+    }
+  }
+
+  // Close the four perimeter edges. Each quad joins the two surface grids;
+  // duplicated perimeter vertices are unnecessary because normals are meant
+  // to flow softly over this stylised, continuous volume.
+  //
+  // **Wound body-side first, then across the thickness, then along the edge**
+  // — and the order is the whole of a defect an Opus critic measured on two
+  // builds running (§23.9m). Written the other way round, every one of these
+  // thirty-eight quads faces *inward*: the right-hand edge's normal came out
+  // at −x on the +x side of the mass, the top edge's pointed at the floor.
+  // Back faces are culled, so the closing band did not draw at all — and in
+  // strict profile, where the camera looks straight down the near edge, the
+  // gap between the two grids opened onto the sky. What the critic saw as a
+  // 4 px hair-coloured ribbon floating clear of her back was the *outer* grid
+  // alone, with its edge missing and the world showing through the slot.
+  //
+  // It is asserted rather than described (`maribel.test.ts`): a closed shell
+  // traverses every directed edge exactly once, so a flipped face shows up as
+  // an edge walked twice the same way. This build walked seventy-six.
+  const close = (a: number, b: number): void => {
+    indices.push(a, a + surfaceSize, b, b, a + surfaceSize, b + surfaceSize);
+  };
+  for (let column = 0; column < columns - 1; column += 1) {
+    close(column + 1, column);
+    const bottom = (rows.length - 1) * columns;
+    close(bottom + column, bottom + column + 1);
+  }
+  for (let row = 0; row < rows.length - 1; row += 1) {
+    close(row * columns, (row + 1) * columns);
+    close((row + 2) * columns - 1, (row + 1) * columns - 1);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colours, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/**
+ * Her hair — **one mass, worn down her back.** q58 H1, the fourth build.
+ *
+ * The owner's A1d ride settled the colour ("nailed the hair color") and
+ * rejected everything about where it hung: the forward fall clipped through
+ * her armpit — structurally, not tunably, because a chest-length mass on the
+ * neck joint crosses a torso-jointed shoulder the moment the head turns — it
+ * reached her waist where the render stops at the ribs, and the collar tiers
+ * read to him as *"a dead animals fur around her neck."*
+ *
+ * **And then he found the reference that had been missing all along**: two of
+ * his own 2019 photographs of her riding in SF, filed in `references/`. They
+ * are the project's only pictures of her hair worn loose while riding, and
+ * they answer the two questions everything previous was invented around: it
+ * hangs OUT THE BACK of the helmet, loose and wind-lifted with flyaway wisps,
+ * and it ends at the shoulder blades — not the waist. The back of her hair is
+ * no longer an inference.
+ *
+ * So the length lives in one spine-hugging curtain down the back, weighted to
+ * her right as every reference weights her, with nothing in front at all. The
+ * A1d rules hold: one outer boundary, separations drawn by shade, no strand
+ * geometry, and nothing wider than the shoulder pods. Two new rules join them,
+ * one from each source:
+ *
+ *   - **The mass pinches at the helmet's rim and swells below it.** Roots
+ *     start at 0.070–0.082 — under the shell's rear skirt — where A1d rooted
+ *     them at 0.092–0.108, flush with the rim band, which is exactly the
+ *     "growing out of the helmet" the owner circled. The pinch-then-swell is
+ *     the silhouette cue that a helmet is worn OVER hair.
+ *   - **A back fall must stay narrower than the story it lies on.** The first
+ *     A1d back build died as "cargo" because it was a wide pale slab; this one
+ *     is dark with one lit lane and leaves the back mark's arms readable either
+ *     side of it.
+ *
+ * The loose mass is one merged buffer and one casting mesh. The thin liner
+ * tucked inside the helmet is a second, non-casting mesh fixed directly to the
+ * neck: it belongs to the shell's frame, while the visible falls belong to the
+ * sway frame. Keeping those two mechanical jobs separate is what prevents a
+ * deep fold from rotating hidden hair out through the crown.
+ */
+function paintMaribelHair(geometry: THREE.BufferGeometry): void {
+  // The colour pass — dark hair *with* highlights, in that order. One lit
+  // plane (her right and outboard), a length ramp that only begins below the
+  // shoulders, and shadow grooves carrying the internal separations that used
+  // to be twelve separate silhouettes. The palette is the accepted A1d pair.
+  // **The bleach runs along the strand, not down the world.** The owner's
+  // second hair note is *"the highlights/tips are not obvious enough"*,
+  // against `hair color ref.webp` — a dark-rooted balayage whose bottom
+  // *sixty per cent* goes near-platinum, seeded higher with fine pale ribbons.
+  //
+  // Two builds got this wrong in opposite directions and both were wrong for
+  // the same reason: the ramp was a function of **y**, so on a mass a third of
+  // its old length it either covered everything or covered nothing, and
+  // whatever it covered was a band of constant thickness parallel to the hem.
+  // A blind Opus critic measured the second one: pale over 7% of the length
+  // against the reference's ~60%, a strip 7–20 px thick whose top edge varied
+  // by ten pixels across the whole width. Its word for that was *trim*.
+  //
+  // The ramp is `1 - uv.y` now — the fraction of the way down a strand's own
+  // length — with its onset modulated by the same three-lobe wave the hem
+  // uses. A long lock is pale over a long distance, a short one over a short
+  // one, and the top of the pale wanders with the tips instead of ruling a
+  // line across them. Coverage lands a little over half the length, which is
+  // the reference's.
+  //
+  // **And the shadow fades out as the bleach comes in.** The previous build
+  // measured 40 at the crown, **12 through the middle** and 93 at the tips: a
+  // dark band above a pale band separates the pale from the hair and makes it
+  // its own object. Hair reads as hair because value runs monotonically from
+  // root to tip. `maribel.test.ts` still holds the rest of the shape here:
+  // base the majority, shadows below the base, and the bleach a partial one.
+  const position = geometry.getAttribute('position');
+  const uv = geometry.getAttribute('uv');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const x = position.getX(i);
+    const y = position.getY(i);
+    const z = position.getZ(i);
+    const u = uv.getX(i) * 2 - 1;
+    const along = 1 - uv.getY(i);
+    const onset = 0.62 - 0.24 * lockLength(u);
+    const depth = ramp(along, onset, 0.99) * 0.94;
+    const lane = 0.56 + 0.44 * ramp(-0.82 * x - 0.45 * z, -0.04, 0.10);
+    const parting = 1 - ramp(Math.abs(x), 0.006, 0.052);
+    const tuck = ramp(y, 0.045, 0.105);
+    const grooveA = 1 - ramp(Math.abs(x + 0.030), 0.004, 0.019);
+    const grooveB = 1 - ramp(Math.abs(x + 0.082), 0.004, 0.017);
+    const strandGroove = Math.max(grooveA, grooveB) * ramp(along, 0.10, 0.45);
+    const shadow = Math.min(0.34, parting * 0.26 + tuck * 0.26 + strandGroove * 0.10)
+      * (1 - depth);
+    const lit = mixTint(MARIBEL_HAIR_TINT, MARIBEL_HAIR_LIGHT_TINT, depth * lane);
+    const tint = mixTint(lit, MARIBEL_HAIR_DARK_TINT, shadow);
+    colour.setXYZ(i, tint[0], tint[1], tint[2]);
+  }
+}
+
+/** The hidden liner, derived from the helmet and fixed in its own frame. */
+function maribelHairCap(): THREE.BufferGeometry {
+  //
+  // A1b wrote it by hand and its comment claimed it was "8% inside the helmet
+  // at every height". It was not, and that sentence is most of why the owner
+  // has now written three times that the neck looks thick. Below the shell's
+  // widest ring the helmet tapers toward the chin bar; a hand-authored cap
+  // that kept its own width did not taper with it, so measured against the
+  // shell's own surface it stood 24 mm proud at y = 0.12, 40 mm at 0.10 and
+  // 101 mm at 0.06 — a brown collar wrapped around the *outside* of the lower
+  // helmet, exactly where he keeps circling.
+  //
+  // Insetting the helmet's own rings makes the claim true by construction, and
+  // keeps it true the next time the shell is reshaped. Below 0.086 there is no
+  // cap at all: that is the rim, and what shows under it is the yoke.
+  const parts: THREE.BufferGeometry[] = [loftGeometry(loftProfile(
+    MARIBEL_HELMET
+      .filter((ring) => ring.y >= 0.086 && ring.y <= 0.262)
+      .map((ring) => ({
+        ...ring,
+        halfWidth: ring.halfWidth * 0.90,
+        halfDepth: ring.halfDepth * 0.90,
+        z: ring.z * 0.90,
+      })),
+  ), { radialSegments: 24, subdivisions: 1 })];
+
+  // The visible nape gather is fixed with the liner too. It covers the pivot
+  // seam below the rim while the curtain moves, and because it never rotates
+  // relative to the shell it cannot become the next crown bump after the cap
+  // has been separated.
+  //
+  // **One wrapped loft, and no longer three pieces** — the owner, on a brake
+  // capture: *"the hair is not stitched together right."* Two extra lobes used
+  // to sit either side of this gather, centred at x = ±0.06 and reaching
+  // 0.092 — thirty-five millimetres outboard of the loose curtain's root row,
+  // which tapers to 0.036 as it goes up under the rim. Below the shell they
+  // had nothing behind them, so from the chase camera they read as two
+  // hair-coloured tabs standing clear of the mass with the helmet's own black
+  // rim in the wedge between. A hard brake tips the head 0.39 rad forward and
+  // turns that wedge to face the player, which is the frame he marked up.
+  //
+  // They were also doing no work: removed, the deepest fold this rig can reach
+  // (charged attack, full carve, held crouch, head capture) changed by **four
+  // pixels**. This gather is a loft about the neck's own axis, so it wraps
+  // where they cornered, and one continuous shape from inside the shell down
+  // to the shoulder blades is what "one head of hair" means. Its widest ring
+  // comes in to sit inside the curtain's own width at the same height, which
+  // is the contract `riderClearance.test.ts` now holds it to.
+  parts.push(loftGeometry(loftProfile([
+    { y: 0.100, halfWidth: 0.052, halfDepth: 0.032, square: 2.6, z: -0.046 },
+    { y: 0.060, halfWidth: 0.054, halfDepth: 0.036, square: 2.5, z: -0.050 },
+    { y: 0.020, halfWidth: 0.066, halfDepth: 0.036, square: 2.4, z: -0.050 },
+    { y: -0.020, halfWidth: 0.074, halfDepth: 0.032, square: 2.4, z: -0.050 },
+    { y: -0.060, halfWidth: 0.066, halfDepth: 0.026, square: 2.4, z: -0.048 },
+  ]), { radialSegments: 24, subdivisions: 1 }));
+  const cap = mergeGeometries(parts);
+  paintMaribelHair(cap);
+  for (const part of parts) part.dispose();
+  return cap;
+}
+
+function maribelHair(): THREE.BufferGeometry {
+  const curtain = maribelHairCurtain();
+  paintMaribelHair(curtain);
+  return curtain;
+}
+
+/**
+ * Her armour — moulded shoulder pods and hip sliders, as real geometry. A1c.
+ *
+ * A1b said "armoured shoulders" with a flat pale patch on the torso, and the
+ * front capture showed what a patch can say at that size: two grey tabs. The
+ * racing photograph shows *equipment* — a hard rounded pod standing over each
+ * deltoid, and a slider at each hip point — and equipment is volume, so this
+ * is volume: four small lofts in one merged buffer, one mesh, one draw call.
+ *
+ * The pods also own the shoulder join. Her chest wall now ends 19 mm inside
+ * the rig's fixed arm joint, and the pod is what spans that gap — Trollina
+ * closed the same join with a puff sleeve; leathers close it with armour,
+ * which is the honest version for a racer.
+ *
+ * `casts: false`, and that is the ghost's 24-call cap making the same trade
+ * A1b's cup patch made: the arm behind each pod already carries the casting
+ * silhouette there, so the shadow pass and the ghost lose nothing they had.
+ */
+function maribelArmour(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  for (const side of [-1, 1]) {
+    // The shoulder pod, leaning outboard as it rises so its crest sits over
+    // the arm joint at 0.175 while its skirt grips the narrowed chest wall.
+    parts.push(loftGeometry(loftProfile([
+      { y: 0.415, halfWidth: 0.034, halfDepth: 0.050, x: side * 0.146, z: 0.004, square: 2.5 },
+      { y: 0.448, halfWidth: 0.046, halfDepth: 0.064, x: side * 0.158, z: 0.005, square: 2.6 },
+      { y: 0.478, halfWidth: 0.048, halfDepth: 0.066, x: side * 0.166, z: 0.004, square: 2.6 },
+      { y: 0.504, halfWidth: 0.040, halfDepth: 0.054, x: side * 0.170, z: 0.002, square: 2.5 },
+      { y: 0.522, halfWidth: 0.020, halfDepth: 0.030, x: side * 0.170, z: 0, square: 2.4 },
+    ]), { radialSegments: 12 }));
+    // The hip slider, riding the widest ring of the seat — **seated on the
+    // leather rather than half-sunk in it** (§23.9m).
+    //
+    // A slider is a lens 108 mm long and 20 mm thick lying on a hip that runs
+    // the same way, so its surface is very nearly *parallel* to the seat's:
+    // the steepest crossing anywhere on its rim changes clearance by 0.3 mm
+    // per millimetre of travel. That is a grazing intersection, and a grazing
+    // intersection is not a line, it is an amplifier — the 3.9 mm chord
+    // sagitta of a ten-segment ring and the seat's own 0.3 mm move the
+    // crossing eight millimetres along the pad, and it lands on a different
+    // facet each row. Rendered, that is the stair-stepped notch an Opus critic
+    // measured out of the rear edge, five pixels deep at chase distance
+    // against a pad that is only sixty across.
+    //
+    // **So the crossing is taken out of the visible half altogether.** Each
+    // ring keeps the outer face it already had — 14.8 / 8.4 / 8.9 mm proud,
+    // the silhouette is untouched to a tenth of a millimetre — and slides
+    // outboard until its whole outboard rim clears the seat by ~4 mm, the
+    // thickness giving up exactly what the centre gains. The pale patch's
+    // boundary is now the pad's *own* rim, which is a loft edge and cannot
+    // step; what still crosses the seat is the inner face, buried 2.8 to
+    // 9.3 mm, where nothing outside can see it. Twenty radial segments then
+    // keep that rim from reading as a decagon, at a cost of eighty triangles
+    // for the pair.
+    //
+    // The top ring is 3 mm thicker than the arithmetic asks for, and that is
+    // load-bearing: solved for rim clearance alone its inner face came out
+    // level with the leather, which is a puck floating off her hip.
+    parts.push(loftGeometry(loftProfile([
+      { y: -0.078, halfWidth: 0.012, halfDepth: 0.038, x: side * 0.165, z: 0.010, square: 2.6 },
+      { y: -0.045, halfWidth: 0.008, halfDepth: 0.054, x: side * 0.181, z: 0.012, square: 2.8 },
+      { y: -0.012, halfWidth: 0.008, halfDepth: 0.049, x: side * 0.178, z: 0.010, square: 2.7 },
+      { y: 0.014, halfWidth: 0.006, halfDepth: 0.032, x: side * 0.169, z: 0.008, square: 2.5 },
+    ]), { radialSegments: 20 }));
+  }
+  const merged = mergeGeometries(parts);
+  // Guard-dark, with the moulded crest of each shoulder pod catching a step
+  // more light — the same one-lighter-line grammar every guard here uses.
+  const position = merged.getAttribute('position');
+  const colour = merged.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    const crest = y > 0.470 && y < 0.512 ? ramp(y, 0.470, 0.496) : 0;
+    const value = MARIBEL_GUARD_SHADE
+      + (MARIBEL_RIM_SHADE * 0.78 - MARIBEL_GUARD_SHADE) * crest;
+    colour.setXYZ(i, value, value, value);
+  }
+  for (const part of parts) part.dispose();
+  return merged;
+}
+
+export const MARIBEL_LOOK: RiderLook = Object.freeze({
+  id: 'maribel-vargas' as CharacterId,
+  /**
+   * **The one look on the roster that spends triangles freely**, by the
+   * owner's own instruction on the night he rejected A1: *"we gonna have to
+   * tweak the plans, break the graphics budget to get her to look good. If
+   * playing as her drops the framerate then so be it. Her looking good is
+   * priority one. Whatever you need, more polygons or whatever else, i don't
+   * care."*
+   *
+   * Read exactly, that permission buys less than it sounds like and more than
+   * it looks like. Draw calls are the axis a frame ceiling is actually made
+   * of, and none of these numbers touches one — a section is triangles, and
+   * §9's 400 k ceiling had over a hundred and sixty thousand spare when this
+   * was written. What the density buys is a rounder silhouette at the two
+   * places a woman's figure is stated (the waist and the shoulder line), paint
+   * boundaries that land where they were authored instead of where the nearest
+   * facet is, and a chest patch that follows a curved ribcage instead of
+   * folding across it. `docs/RENDER_COST.md` carries the measured result.
+   */
+  density: Object.freeze({ limb: 26, torso: 44, head: 32, boot: 22, hand: 24, neck: 16 }),
+  /**
+   * Her printed sheet, and the two materials that sample it.
+   *
+   * **Only two**, deliberately. Her decals are patches and her hair is an
+   * extra, and both are drawn in `accent`; the visor is `face`. The suit, the
+   * limbs, the boots and the helmet carry no map at all, so the overwhelming
+   * majority of her surface is exactly the vertex-tinted loft every other
+   * rider is, and a bug in the atlas can only ever be a bug on a decal.
+   */
+  atlas: Object.freeze({
+    build: createMaribelAtlas,
+    roles: Object.freeze(['accent', 'face'] as RiderMaterialRole[]),
+    region: (art: string | undefined): UvRect => (
+      art !== undefined && art in ATLAS_REGIONS
+        ? ATLAS_REGIONS[art as AtlasRegionName]
+        : ATLAS_REGIONS.blank
+    ),
+  }),
+  materials: Object.freeze({
+    body: MARIBEL_SUIT,
+    // One garment: a one-piece suit's sleeves and its torso are the same
+    // leather, and two roles on one spec build one material.
+    limbs: MARIBEL_SUIT,
+    accent: MARIBEL_MARK,
+    head: Object.freeze({
+      colour: BLOCKOUT_COLOURS.maribelHelmet,
+      // **Matte, where Red Rider's lid and Adonisb2's are gloss**, and that is
+      // the photograph: hers is a matte black shell. It is also the right
+      // choice for this character even if it were arguable, because the visor
+      // is the identity here and a shiny shell competes with it.
+      //
+      // A1d took it further to 0.62: at 0.46 the crown was rendering a 2.2x
+      // specular bloom over a shell authored near-black, so the comment above
+      // was describing something the render did not do and the lid read as
+      // glossy plastic — a bicycle helmet, not a race lid.
+      roughness: 0.62,
+      metalness: 0,
+    }),
+    face: Object.freeze({
+      // The mirrored blue-cyan — recognition item two, and the loudest thing
+      // she wears. It borrows Adonisb2's mirror approximation (low roughness,
+      // real metalness, a cool emissive that keeps the glass luminous in
+      // shade) and points it at a *hue* rather than at a neutral: his mirror
+      // is what a chrome visor does to a grey sky, hers is what a blue one
+      // does to any sky at all.
+      colour: BLOCKOUT_COLOURS.maribelVisor,
+      // A1c pushes the mirror further: the reviewer's note — from thirty
+      // metres the blue visor should scream her — and the widened patch below
+      // give it the area; these give it the light.
+      roughness: 0.05,
+      metalness: 0.44,
+      emissive: 0x1d4f6b,
+      emissiveIntensity: 0.58,
+    }),
+    gear: MARIBEL_GEAR,
+  }),
+  profiles: Object.freeze({
+    torso: MARIBEL_SUIT_TORSO,
+    seat: MARIBEL_SEAT,
+    thigh: MARIBEL_THIGH,
+    shin: MARIBEL_SHIN,
+    upperArm: MARIBEL_UPPER_ARM,
+    forearm: MARIBEL_FOREARM,
+    neck: MARIBEL_NECK,
+    head: MARIBEL_HELMET,
+    boot: MARIBEL_BOOT,
+    bootSole: BOOT_SOLE,
+    hand: MARIBEL_HAND,
+  }),
+  // `seat` barely steps: it is the same leather as the torso on a one-piece,
+  // and the waist above it is doing the work a hem does on the men. `legs` at
+  // 1.0 because the legs' base *is* the suit and every panel on them is paint.
+  // The neck is the gear material well down — a black gaiter under her chin, as
+  // Red Rider's and Adonisb2's are.
+  shades: Object.freeze({ seat: 0.97, legs: 1.0, collar: 1.10, sole: 0.62, neck: 0.74 }),
+  // The thumb and the two finger lobes, merged into the hand's own mesh.
+  build: Object.freeze({
+    hand: Object.freeze([maribelThumb, maribelFingersInner, maribelFingersOuter]),
+  }),
+  parts: Object.freeze({
+    hands: 'gear' as RiderMaterialRole,
+    neck: 'gear' as RiderMaterialRole,
+    kneePad: 'accent' as RiderMaterialRole,
+    legs: 'limbs' as RiderMaterialRole,
+    seat: 'body' as RiderMaterialRole,
+  }),
+  panels: Object.freeze({
+    collar: Object.freeze({
+      anchor: 'front' as PatchAnchor,
+      u0: 0,
+      u1: Math.PI * 2,
+      from: 0.502,
+      to: 0.545,
+      uSegments: 20,
+      vSegments: 2,
+      lift: 0.011,
+      shade: 1.10,
+    }),
+    // The moulded shoulder armour does not cast, and the hair does — that is
+    // her trade. A ghost is capped and the hair is the one line that says
+    // which rider the recording is of; the cups lose because her arm hangs
+    // from a joint 10 mm outside her chest, so at chase distance the limb is
+    // the silhouette there and the armour is decoration on it — where Cool
+    // Rider's shoulder panel, which does cast, is the largest identity element
+    // he owns. (`ghostRider.test.ts` holds the cap; the aero hump that used to
+    // share this trade is gone — q59.)
+    // **The printed chest, as one patch wearing one page of the atlas** — and
+    // this single entry is what Phase A1b exists for.
+    //
+    // A1 spent three patches here drawing an *invented* white device in the
+    // shape class of the manufacturer's mark on her real suit, because a mark
+    // could not be drawn and a shape could. The owner's answer to that, on his
+    // ride, was *"About the logo on her chest, do the one in the real photo"* —
+    // and the one in the real photo is a trademark this project may not
+    // reproduce (`NOTICE.md`). What ships is the resolution recorded as q57:
+    // **her own devil-and-M, in white, at that mark's scale and position**,
+    // which is the thing he was actually pointing at — a real, specific,
+    // *hers* mark in the place the photograph puts one.
+    //
+    // The halftone comes with it. §23.4 wrote that the print was "expected to
+    // simplify" at this fidelity, §23.9d repealed the clause, and the dots are
+    // now dots: several hundred of them, aqua from her right, coral from her
+    // left, over a near-white ground with the zip down the middle. All of it —
+    // print, mark, zip — is one patch, one page, one draw call's share of a
+    // mesh that already existed.
+    //
+    // `shade: 1` is load-bearing. The page is painted as a *multiplier*, so
+    // the pale accent material is the ceiling every ink on it hangs from; a
+    // shade here would darken the ground and take the whole print down with it.
+    torso: Object.freeze({
+      role: 'accent' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        // **Her full logo, printed large and flat between the shoulder
+        // blades** — q59, the owner's own call after his A1d ride, and the
+        // photograph agrees with him: IMG_6601 finally shows her real back,
+        // and it is smooth — no speed hump. The hump this replaces was an
+        // invention twice over: a volume no reference showed, wearing a mark
+        // its own curvature stretched into drips ("missing the M and the W
+        // merge", in his words, because the letters did not survive the
+        // surface). A flat panel is the one canvas that cannot distort her
+        // artwork, and losing the pod refunds a casting mesh.
+        Object.freeze({
+          anchor: 'back' as PatchAnchor,
+          u0: -0.66,
+          u1: 0.66,
+          from: 0.135,
+          to: 0.356,
+          uSegments: 12,
+          vSegments: 10,
+          lift: 0.004,
+          sink: -0.009,
+          taper: 0.06,
+          shade: 1,
+          art: 'backMark',
+        }),
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -1.16,
+          u1: 1.16,
+          from: 0.030,
+          to: 0.478,
+          // Dense, because this patch is a *screen* now: the print's dots are
+          // texels, but the surface they lie on still has to follow a chest
+          // that curves in two directions, and a coarse grid would fold the
+          // halftone along its own facets.
+          uSegments: 24,
+          vSegments: 26,
+          // Barely proud. A printed panel on a race suit is ink, not armour,
+          // and the reason it is a patch at all is the crisp edge and the
+          // opaque underside — not relief.
+          lift: 0.004,
+          sink: -0.009,
+          // The lens shape: the field is widest across the chest and narrows
+          // toward the waist, which is what the reference's print does and
+          // what keeps a rectangle of dots from reading as a bib.
+          taper: 0.14,
+          shade: 1,
+          art: 'chest',
+        }),
+      ]),
+    }),
+    // The knee guard's upper half, on the thigh — `RiderLook.panels.thighPad`
+    // records why it cannot live with the rest of it. Hers is a low moulded
+    // slider rather than Adonisb2's motocross shell: dark, close to the leg,
+    // and reading by relief and edge rather than by colour, which is what the
+    // photographs show and what keeps a bright pad from merging into the
+    // wheel's shell at exactly this height.
+    thighPad: Object.freeze({
+      role: 'accent' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        // **Centred on the front of the leg** — the owner's bug-hunt ride
+        // caught these "inverted inwards", and he was reading the numbers off
+        // the screen: the span used to run −0.58…+1.70 about the front, and
+        // +u from the front is *inboard* on both legs once `mirrored` does its
+        // job, so every cup wrapped the inside of its knee. Her photograph
+        // hangs the slider on the outer-front; he settled for straight
+        // forward, which is this — the same 2.28 rad of arc, symmetric.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -1.14,
+          u1: 1.14,
+          mirrored: true,
+          from: -0.398,
+          to: MARIBEL_CUP_TOP,
+          uSegments: 7,
+          vSegments: 3,
+          lift: 0.016,
+          taper: 0.30,
+          shade: MARIBEL_GUARD_SHADE,
+        }),
+        // The moulded rim along the guard's outer edge — the one lighter line
+        // on it, and the whole reason a near-black guard on near-black leather
+        // is legible at all.
+        Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -0.26,
+          u1: 0.26,
+          from: -0.374,
+          to: -0.344,
+          uSegments: 4,
+          vSegments: 1,
+          lift: 0.021,
+          taper: 0.66,
+          shade: MARIBEL_RIM_SHADE,
+        }),
+        // **VARGAS down the outside of her right thigh** — A1b, and the piece
+        // of the reference that simply could not exist before this phase.
+        //
+        // Both the photograph and the regenerated render carry a manufacturer's
+        // wordmark here, running the length of the leg. That name never ships
+        // (`NOTICE.md`); hers does (q50 — *"she is well known in euc
+        // community"*), and it is the better mark anyway, since the only word
+        // worth reading off a leg at riding speed is the rider's.
+        //
+        // `artOn: -1` because a leg script exists once on a person. It is on
+        // her right leg, which is −X, which is also the side whose outboard
+        // face is furthest from the loft's shared seam — the one place the
+        // texture coordinate runs backwards (see `blockoutKit.ts`). Her left
+        // thigh builds the identical patch and wears the blank page.
+        Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -0.40,
+          u1: 0.40,
+          from: -0.300,
+          to: -0.052,
+          uSegments: 5,
+          vSegments: 8,
+          lift: 0.004,
+          sink: -0.008,
+          taper: 0.10,
+          shade: 1,
+          art: 'legScript',
+          artOn: -1,
+          artElse: 'legPlain',
+        }),
+      ]),
+    }),
+    kneePad: Object.freeze({
+      role: 'accent' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        // The cup over the knee itself, carrying the proud form across the
+        // hinge so the guard does not end in a step at the joint. Centred on
+        // the front for the thigh cup's reason — the pair used to wrap inboard.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -1.14,
+          u1: 1.14,
+          mirrored: true,
+          from: MARIBEL_CUP_BOTTOM,
+          to: 0.000,
+          uSegments: 7,
+          vSegments: 1,
+          lift: 0.018,
+          taper: 0.30,
+          shade: MARIBEL_GUARD_SHADE,
+        }),
+        // The slider plate down the upper shin, stopping well above the accent
+        // cuff so the two never argue.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -0.97,
+          u1: 0.97,
+          mirrored: true,
+          from: -0.108,
+          to: MARIBEL_CUP_BOTTOM,
+          uSegments: 6,
+          vSegments: 4,
+          lift: 0.015,
+          taper: 0.42,
+          // **The plate is a printed page in A1b**, and it is the one addition
+          // here taken straight off the regenerated render: both her knee cups
+          // carry a pale chevron device, which is her own M's inner V with the
+          // head taken off it. A knee is at the exact height of the wheel's
+          // shell, so this mark does the job A1's near-black guard could not —
+          // it says where her knee *is* in a silhouette that otherwise merges
+          // rider and machine at that line. The plate's own value comes back as
+          // ink, so the guard is the same grey it was.
+          shade: 1,
+          art: 'kneeDevice',
+        }),
+        // Its lower strap.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -Math.PI,
+          u1: Math.PI,
+          from: -0.126,
+          to: -0.110,
+          uSegments: 14,
+          vSegments: 1,
+          lift: 0.018,
+          taper: 0.26,
+          // Webbing: a step *below* the leather it is strapped over.
+          shade: MARIBEL_LEATHER_SHADE * 0.88,
+        }),
+      ]),
+    }),
+    // Three patches, shaded for a matte black shell: the chin bar and the brow
+    // step down toward the visor, and the base rim steps up so the helmet ends
+    // somewhere. Every other full-face lid in this file wears a fourth — see
+    // the note where hers used to be.
+    head: Object.freeze([
+      Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: -0.70,
+        u1: 0.70,
+        from: 0.098,
+        to: 0.146,
+        uSegments: 6,
+        vSegments: 3,
+        lift: 0.015,
+        taper: 0.42,
+        shade: 0.86,
+      }),
+      // The brow step. **Its ends were a tab on the outline** — M23: a blind
+      // critic traced the shell's right silhouette stepping out two pixels at
+      // y ≈ 0.26 and back in fifteen rows later, which a convex loft cannot do.
+      // It read as a chip, the same class as the spoiler the owner circled,
+      // and it was this band's corner: 11 mm proud, ending over seven segments
+      // where the shell is already turning away from a rear camera. The lift
+      // comes down and the taper doubles, which keeps the step across the brow
+      // — where it is seen head-on and does its job — and lets the ends melt.
+      //
+      // **And it has to sit ABOVE the eyeport, not inside it** — the owner's
+      // *"strips of black on the helmet's front visor"*. A1d gave the visor
+      // `bulge: 0.52`, which arches its top edge from a flat 0.250 up to 0.267
+      // at the centreline; this band was left where a flat visor had put it,
+      // at 0.252–0.270, so the arch spent fifteen thousandths of a ring
+      // *inside* the band. Two patches on one shell one millimetre apart in
+      // lift (0.007 against the visor's 0.008), tessellated 9 segments against
+      // 16, interleave — and what that renders as is a row of dark teeth
+      // biting down into the glass, nine of them, across exactly the 0.86/1.22
+      // of the visor's width this band spans. Moving it clear of the arch
+      // removes the strip outright; raising its lift would only have made a
+      // fighting band win. **A patch that overlaps another patch on the same
+      // body is a bug, not a stack** — there is no depth order between them.
+      Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: -0.86,
+        u1: 0.86,
+        from: 0.274,
+        to: 0.292,
+        uSegments: 9,
+        vSegments: 1,
+        lift: 0.007,
+        taper: 0.62,
+        shade: 0.78,
+      }),
+      // **There is no rear spoiler, and its removal is the owner's note.** He
+      // circled a lump on the crown and asked *"not sure what the purpose is.
+      // an error?"* — which is the only answer that matters about a detail
+      // whose whole job is to be recognised. It was her own lid's fin
+      // (IMG_6601), authored as a 39-degree patch lifted 22 mm, and at a
+      // helmet 238 mm wide that is a hexagonal tab standing off the shell with
+      // its own hard shadow, not a spoiler. M19's pivot boss taught the same
+      // lesson on the same surface and this file already carried the note.
+      // A fin is a thing you resolve at arm's length; at riding distance the
+      // crown is a silhouette, and the honest version of a small aerodynamic
+      // detail at that size is no geometry at all.
+      Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: 0,
+        u1: Math.PI * 2,
+        from: 0.090,
+        to: 0.113,
+        uSegments: 18,
+        vSegments: 1,
+        lift: 0.004,
+        shade: 1.08,
+      }),
+    ]),
+    // The big wrapping shield at Red Rider's proven ±1.05 rad, which is what
+    // turns the corner of the shell and makes it glass around a face rather
+    // than a letterbox. On this rider it is the loudest identity element on the
+    // character, so it is the one patch here with no shade at all.
+    //
+    // **A1b puts the iridescence on it.** The note above this file's other
+    // visor records a mirror blaze tried and removed — a hard bright patch on
+    // a face at this polygon count read as "that bandaid white square thing".
+    // A texture is the thing that was missing: the whole sweep goes on at once,
+    // deep blue at the brow through cyan at the chin with one soft band across
+    // it and no edge anywhere for the eye to catch. Generic blue-cyan mirror,
+    // no brand on the shield, and none on the shell either.
+    face: Object.freeze({
+      role: 'face' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          // **±1.22 rad, past Red Rider's proven ±1.05** — A1c. Her helmet is
+          // her loudest identity element and it was wearing a visor cut for a
+          // neutral lid; this is the widest glass on the roster, wrapped
+          // further round the corner of her own swept shell, with the chin
+          // bar thinned and the brow raised so the extra glass actually shows.
+          u0: -1.22,
+          u1: 1.22,
+          // **An eyeport, not a letterbox** — A1d. The span is the same
+          // height at its ends and half again as tall through the middle, so
+          // the brow arcs and the chin edge notches down over the nose. Every
+          // gauntlet round called the flat blue rectangle the loudest wrong
+          // thing on the front of her, and it was structural: a constant-`v`
+          // band is two horizontal rings around the shell and can never be
+          // anything else, however wide it is cut.
+          // The span is authored *flat* and the swell is what shapes it, so
+          // the two numbers have to leave room for the arch: at bulge 0.52 the
+          // brow reaches 0.279 at the centreline against a crown at 0.342, and
+          // a capture with `to` at 0.296 put the glass on top of her head.
+          from: 0.148,
+          to: 0.250,
+          bulge: 0.52,
+          bow: -0.010,
+          uSegments: 16,
+          vSegments: 5,
+          lift: 0.008,
+          sink: -0.014,
+          taper: 0.18,
+          art: 'visor',
+        }),
+      ]),
+    }),
+  }),
+  extras: Object.freeze([
+    Object.freeze({
+      name: 'rider-armour',
+      joint: 'pelvis' as const,
+      role: 'accent' as RiderMaterialRole,
+      // Non-casting: the arm behind each pod carries the casting silhouette
+      // there, and the ghost's 24-call cap is why that trade exists at all
+      // (`ghostRider.test.ts`).
+      casts: false,
+      build: maribelArmour,
+    }),
+    Object.freeze({
+      name: 'rider-hair-cap',
+      joint: 'neck' as const,
+      role: 'accent' as RiderMaterialRole,
+      // Hidden under the shell and fixed to the head. It must not share the
+      // loose hair's sway pivot, and the helmet already casts its silhouette.
+      casts: false,
+      art: 'hair',
+      build: maribelHairCap,
+    }),
+    Object.freeze({
+      name: 'rider-hair',
+      joint: 'neck' as const,
+      role: 'accent' as RiderMaterialRole,
+      // It casts, and Trollina's hair is the precedent: from behind — which is
+      // where the player is — the mass *is* the outline, and the ghost should
+      // draw it for the same reason. It matters more now than it did for the
+      // tail: this is the largest thing on the character that is not the suit.
+      casts: true,
+      art: 'hair',
+      sways: true,
+      build: maribelHair,
+    }),
+  ]),
+  paint: Object.freeze({
+    torso: paintMaribelTorso,
+    upperArm: paintMaribelUpperArm,
+    forearm: paintMaribelForearm,
+    thigh: paintMaribelThigh,
+    shin: paintMaribelShin,
+    boot: paintMaribelBoot,
+    hand: paintMaribelHand,
+  }),
+  // A racer's carriage: hands a little narrower and lower than Cool Rider's,
+  // which is the compact tuck the carving video holds for its whole thirteen
+  // seconds. Small, because it is added to the base target and the rig's own
+  // deliberate left/right asymmetry has to survive it.
+  armCarriage: Object.freeze({ splay: -0.006, rise: -0.010 }),
+});
+
 export const RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   COOL_RIDER_LOOK,
   TROLLINA_LOOK,
   RED_RIDER_LOOK,
   ADONISB2_LOOK,
+  MARIBEL_LOOK,
   COP_LOOK,
 ]);
 
@@ -4005,6 +6013,7 @@ export const PLAYABLE_RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   TROLLINA_LOOK,
   RED_RIDER_LOOK,
   ADONISB2_LOOK,
+  MARIBEL_LOOK,
 ]);
 
 /** Resolve a look, falling back to Cool Rider the way `characterSpec` does. */

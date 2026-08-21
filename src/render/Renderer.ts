@@ -102,6 +102,15 @@ export class GameRenderer {
 
   /** The world, built from a `LevelPlan`. Disposed and rebuilt with the level. */
   private terrain: TerrainView | null = null;
+  /**
+   * What the current level repainted, held for anything that must match the
+   * ground rather than the table. See `LevelPlan.palette`.
+   *
+   * Not a second palette: it is the same object the terrain resolved through,
+   * kept because a particle that settles into the grass has to settle into
+   * *this* level's grass.
+   */
+  private palette: LevelPlan['palette'] = undefined;
 
   /**
    * M10's checkpoint markers, built from the same plan. Rebuilt with the level
@@ -410,7 +419,8 @@ export class GameRenderer {
       // surface's dust toward the horizon makes a puff over dark grass get
       // brighter as it dies — the opposite of settling, and it reads as a pale
       // disc rather than as anything the wheel threw up.
-      fadeTo: materialAppearance(properties.material).albedo,
+      fadeTo: this.palette?.[properties.material]
+        ?? materialAppearance(properties.material).albedo,
     });
   }
 
@@ -521,6 +531,7 @@ export class GameRenderer {
    */
   setLevel(plan: LevelPlan): TerrainView {
     this.terrain?.dispose();
+    this.palette = plan.palette;
     const terrain = createTerrain(plan);
     this.terrain = terrain;
     this.scene.add(terrain.group);

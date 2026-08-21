@@ -58,9 +58,24 @@ test('no playable rider costs more than Cool Rider', () => {
   const baseline = rows.find((row) => row.id === 'cool-rider');
   assert.ok(baseline, 'Cool Rider is the baseline and must be measurable');
   for (const row of rows) {
+    // **Parity is the roster rule, and Maribel is the one waived exception.**
+    //
+    // The owner waived her parity target at A1c and the §9 sweep then found
+    // the frame at exactly 150 calls with no headroom, so the waiver bought
+    // nothing and A1c shipped at parity anyway — this loop's own comment said
+    // that if a look ever genuinely needed calls, the ceiling was the
+    // negotiation and not this assertion. A1d is that negotiation: the owner
+    // raised the ceiling to 160, and her aero hump — a closed casting volume,
+    // where A1c had a floating slab — spends exactly one of it.
+    //
+    // The allowance is bounded rather than open. Four calls is the *whole* of
+    // what the raised ceiling can absorb before the worst level stops fitting,
+    // so a fifth is a budget conversation with the owner and not a test edit.
+    const allowance = row.id === 'maribel-vargas' ? 4 : 0;
     assert.ok(
-      row.calls <= baseline.calls,
-      `${row.id} costs ${row.calls} draw calls against Cool Rider's ${baseline.calls}`,
+      row.calls <= baseline.calls + allowance,
+      `${row.id} costs ${row.calls} draw calls against Cool Rider's ${baseline.calls}`
+        + `${allowance > 0 ? ` and a waived allowance of ${allowance}` : ''}`,
     );
   }
 });

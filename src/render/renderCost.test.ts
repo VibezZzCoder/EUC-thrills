@@ -361,7 +361,7 @@ test('the budget verdict can fail, and says why', () => {
   const verdict = withinRenderBudget(bloated);
   assert.equal(verdict.ok, false);
   assert.equal(verdict.breaches.length, 1);
-  assert.match(verdict.breaches[0], /triangles against a ceiling of 400000/);
+  assert.match(verdict.breaches[0], /triangles against a ceiling of 460000/);
 });
 
 test('the model tracks a change to the plan rather than reporting a constant', () => {

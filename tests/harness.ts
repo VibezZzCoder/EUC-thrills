@@ -350,6 +350,18 @@ export interface Toolkit {
        * were and takes away only the speed a human would have braked off.
        */
       maxSpeed?: number;
+      /**
+       * Record the ride every N steps, rather than only its summary — M23.
+       *
+       * **A lap asks questions a summary cannot answer.** The circuit's
+       * acceptance is one continuous ride, not three, because every call to
+       * this places the rider first; so everything a lap has to prove —
+       * that it went through each sector gate, that the chase camera never
+       * pulled in, that it came home to the line it left — has to come out of
+       * the same ride. Absent by default, so no existing route spec pays for
+       * an array it does not read.
+       */
+      watch?: number;
     },
   ): {
     finished: boolean;
@@ -363,6 +375,17 @@ export interface Toolkit {
     offCourseSteps: number;
     landings: number;
     worstLanding: string;
+    /** Present only when `watch` asked for it. */
+    path: {
+      x: number;
+      y: number;
+      z: number;
+      speed: number;
+      /** Chase arm after the obstruction pull-in, metres. */
+      armDistance: number;
+      drawCalls: number;
+      triangles: number;
+    }[];
   };
 
   // -- Terrain (M4) ---------------------------------------------------------
@@ -952,6 +975,11 @@ function installToolkit(): void {
       const startDistance = before.distanceTravelled;
       const tiers = ['clean', 'heavy', 'wobble', 'crash'];
       let worst = 0;
+      const watch = options.watch ?? 0;
+      const path: {
+        x: number; y: number; z: number; speed: number;
+        armDistance: number; drawCalls: number; triangles: number;
+      }[] = [];
 
       while (steps < options.maxSteps) {
         const euc = game.snapshot().euc;
@@ -1001,6 +1029,18 @@ function installToolkit(): void {
         if (after.offCourse) offCourseSteps += 1;
         const tier = tiers.indexOf(after.landingQuality);
         if (tier > worst) worst = tier;
+        if (watch > 0 && steps % watch < 2) {
+          const frame = game.snapshot();
+          path.push({
+            x: after.position.x,
+            y: after.position.y,
+            z: after.position.z,
+            speed: after.speed,
+            armDistance: frame.camera.armDistance,
+            drawCalls: frame.render.drawCalls,
+            triangles: frame.render.triangles,
+          });
+        }
       }
 
       const end = game.snapshot().euc;
@@ -1018,6 +1058,7 @@ function installToolkit(): void {
         offCourseSteps,
         landings: end.landings - startLandings,
         worstLanding: tiers[worst],
+        path,
       };
     },
 

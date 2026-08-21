@@ -353,6 +353,20 @@ export interface EucTuning {
   crouchResponseSeconds: number;
   landingAbsorbSeconds: number;
 
+  /** The attack stance — sustained throttle at speed (M23). */
+  attackThrottle: number;
+  attackSpeed: number;
+  attackDelaySeconds: number;
+  attackRampSeconds: number;
+  attackResponseSeconds: number;
+
+  /** The hard-carve stance — real roll at real speed (M23). */
+  carveStanceRoll: number;
+  carveStanceFullRoll: number;
+  carveStanceSpeed: number;
+  carveStanceFullSpeed: number;
+  carveStanceResponseSeconds: number;
+
   /** Unexplained fall that puts the wheel in the air, m. */
   dropLaunchThreshold: number;
 
@@ -590,6 +604,18 @@ export function defaultEucTuning(): EucTuning {
     crouchHeldAmount: EUC.crouchHeldAmount,
     crouchResponseSeconds: EUC.crouchResponseSeconds,
     landingAbsorbSeconds: EUC.landingAbsorbSeconds,
+
+    attackThrottle: EUC.attackThrottle,
+    attackSpeed: EUC.attackSpeed,
+    attackDelaySeconds: EUC.attackDelaySeconds,
+    attackRampSeconds: EUC.attackRampSeconds,
+    attackResponseSeconds: EUC.attackResponseSeconds,
+
+    carveStanceRoll: EUC.carveStanceRoll,
+    carveStanceFullRoll: EUC.carveStanceFullRoll,
+    carveStanceSpeed: EUC.carveStanceSpeed,
+    carveStanceFullSpeed: EUC.carveStanceFullSpeed,
+    carveStanceResponseSeconds: EUC.carveStanceResponseSeconds,
 
     dropLaunchThreshold: TERRAIN.dropLaunchThreshold,
 
@@ -877,6 +903,27 @@ export interface EucPose {
    */
   tuck: number;
   /**
+   * The attack stance — how far the rider is folded over the wheel because
+   * they have been *driving* rather than because they asked to be, 0..1 (M23).
+   *
+   * Its own number rather than more `tuck`, because the two are different
+   * poses that happen to share a hinge: a tuck is a held crouch with the hips
+   * dropped, and this is a racer pinned over the wheel with the hips back and
+   * the arms swept behind. They compose — a player who crouches inside a long
+   * pull gets both — and `render/rider.ts` spends them separately.
+   *
+   * Presentation only. Nothing in the physics reads it.
+   */
+  attack: number;
+  /**
+   * The hard-carve stance, 0..1 (M23).
+   *
+   * Gated on roll *and* speed, because the owner drew the line himself: a hard
+   * turn at low speed is somebody playing, and the racer's shape belongs to
+   * the corner they are actually committed to. Presentation only.
+   */
+  carveStance: number;
+  /**
    * How airborne the rider is, 0..1, smoothed at both edges.
    *
    * A blend rather than the boolean, because the arms opening and the head
@@ -1030,6 +1077,8 @@ export function createPose(): EucPose {
     speed: 0,
     crouch: 0,
     tuck: 0,
+    attack: 0,
+    carveStance: 0,
     airBlend: 0,
     airHeight: 0,
     groundY: 0,
@@ -1128,6 +1177,8 @@ export function copyPose(from: EucPose, to: EucPose): void {
   to.speed = from.speed;
   to.crouch = from.crouch;
   to.tuck = from.tuck;
+  to.attack = from.attack;
+  to.carveStance = from.carveStance;
   to.airBlend = from.airBlend;
   to.airHeight = from.airHeight;
   to.groundY = from.groundY;
@@ -1181,6 +1232,9 @@ export interface EucSnapshot {
   readonly riderTurnTwist: number;
   /** Signed hard low-speed technique blend, -1..1. */
   readonly technicalTurn: number;
+  /** The M23 riding stances, for tools and tests. Presentation only. */
+  readonly attack: number;
+  readonly carveStance: number;
   readonly wheelPitch: number;
   readonly rollAngle: number;
   readonly riderRoll: number;
@@ -1495,6 +1549,12 @@ export class EucController {
    * snapping the torso upright. Nothing reads it but the rig.
    */
   private tuck = 0;
+  /** Seconds the throttle has been held forward at speed. Charges `attack`. */
+  private attackHold = 0;
+  /** The attack stance's own blend, 0..1 (M23). Presentation only. */
+  private attack = 0;
+  /** The hard-carve stance's blend, 0..1 (M23). Presentation only. */
+  private carveStance = 0;
   /** The landing absorb alone, added on top of `crouch` and decaying. */
   private absorb = 0;
   /** Smoothed 0..1 airborne blend, for presentation only. */
@@ -1765,6 +1825,9 @@ export class EucController {
     this.hops = 0;
     this.crouch = 0;
     this.tuck = 0;
+    this.attackHold = 0;
+    this.attack = 0;
+    this.carveStance = 0;
     this.absorb = 0;
     this.airBlend = 0;
     this.airPitch = 0;
@@ -2419,6 +2482,7 @@ export class EucController {
 
     this.writeGroundTilt(dt);
     this.stepCrouch(dt, actions);
+    this.stepRidingStances(dt, throttle);
     this.stepSuspension(dt, response);
     this.readFeeler(Math.sin(this.headingY), Math.cos(this.headingY));
 
@@ -3208,6 +3272,11 @@ export class EucController {
     this.reverseBlend = approach(this.reverseBlend, 0, t.reversePoseSeconds, Infinity, dt);
     this.crouch = approach(this.crouch, 0, t.crouchResponseSeconds, Infinity, dt);
     this.tuck = approach(this.tuck, 0, t.crouchResponseSeconds, Infinity, dt);
+    // A crash ends both riding stances outright: the rider is no longer
+    // driving and no longer carving, whatever the sticks say.
+    this.attackHold = 0;
+    this.attack = approach(this.attack, 0, t.attackResponseSeconds, Infinity, dt);
+    this.carveStance = approach(this.carveStance, 0, t.carveStanceResponseSeconds, Infinity, dt);
     this.absorb = approach(this.absorb, 0, t.landingAbsorbSeconds, Infinity, dt);
     this.airBlend = approach(this.airBlend, 0, t.crouchResponseSeconds, Infinity, dt);
     this.tiltBack = approach(this.tiltBack, 0, t.tiltBackReleaseSeconds, Infinity, dt);
@@ -3293,6 +3362,9 @@ export class EucController {
     this.hopWasHeld = false;
     this.crouch = 0;
     this.tuck = 0;
+    this.attackHold = 0;
+    this.attack = 0;
+    this.carveStance = 0;
     this.absorb = 0;
     this.landingTimer = 0;
     this.pedalStrike = 0;
@@ -4167,6 +4239,57 @@ export class EucController {
     this.tuck = approach(this.tuck, heldOnGround ? 1 : 0, t.crouchResponseSeconds, Infinity, dt);
   }
 
+  /**
+   * The two stances off the owner's reference photographs — M23.
+   *
+   * **Both are held inputs becoming a different shape, and both are gated.**
+   * The owner's brief is unusually precise about when each one may arrive:
+   * the forward lean is *"when the player has held forward for like a couple
+   * of seconds"*, and the carve pose is *"when the carve is hard and at high
+   * speed — not at slow speed, as that's when people [are] fooling around
+   * doing playful turns, not carving"*. So neither is a curve on an existing
+   * input; each has its own gate, and the gate is most of the design.
+   *
+   * **The attack stance charges on a clock and releases on a constant.** A
+   * player who blips the throttle gets nothing; a player who holds it gets the
+   * pose about a second and a half later, eased in over another. Lifting off
+   * drops the clock to zero at once and the blend eases out, which is what
+   * makes the stance read as something the *rider* is doing rather than
+   * something the throttle is doing.
+   *
+   * **The carve stance multiplies roll by speed.** Either one alone is a
+   * pose the game already has: hard roll at walking pace is the technical
+   * turn, and speed on its own is the attack stance above. It is the product
+   * that is a racer committed to a corner.
+   *
+   * Presentation only, both of them. Nothing below touches a force.
+   */
+  private stepRidingStances(dt: number, throttle: number): void {
+    const t = this.tuning;
+    const riding = !this.airborne && this.crashBlend <= 0 && this.reverseBlend <= 0;
+
+    const driving = riding && throttle >= t.attackThrottle && this.speed >= t.attackSpeed;
+    this.attackHold = driving ? this.attackHold + dt : 0;
+    const charged = clamp01((this.attackHold - t.attackDelaySeconds) / Math.max(1e-6, t.attackRampSeconds));
+    this.attack = approach(this.attack, driving ? charged : 0, t.attackResponseSeconds, Infinity, dt);
+
+    const hard = clamp01(
+      (Math.abs(this.rollAngle) - t.carveStanceRoll)
+      / Math.max(1e-6, t.carveStanceFullRoll - t.carveStanceRoll),
+    );
+    const fast = clamp01(
+      (this.speed - t.carveStanceSpeed)
+      / Math.max(1e-6, t.carveStanceFullSpeed - t.carveStanceSpeed),
+    );
+    this.carveStance = approach(
+      this.carveStance,
+      riding ? hard * fast : 0,
+      t.carveStanceResponseSeconds,
+      Infinity,
+      dt,
+    );
+  }
+
   private surfaceResponse(): SurfaceResponse {
     return this.surfaces[this.surface] ?? this.surfaces.pavement;
   }
@@ -4457,6 +4580,8 @@ export class EucController {
     target.speed = this.speed;
     target.crouch = clamp01(this.crouch + this.absorb);
     target.tuck = this.tuck;
+    target.attack = this.attack;
+    target.carveStance = this.carveStance;
     target.airBlend = this.airBlend;
     target.airHeight = this.y - this.groundY;
     target.groundY = this.groundY;
@@ -4601,6 +4726,8 @@ export class EucController {
       riderLookYaw: this.riderLookYaw,
       riderTurnTwist: this.riderTurnTwist,
       technicalTurn: this.technicalTurn,
+      attack: this.attack,
+      carveStance: this.carveStance,
       wheelPitch: this.riderPitch * t.wheelPitchFactor + this.airPitch - tiltPitch,
       rollAngle: this.rollAngle,
       riderRoll: this.rollAngle * lerp(

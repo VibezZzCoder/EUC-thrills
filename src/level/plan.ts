@@ -476,6 +476,26 @@ export interface LevelPlan {
    */
   props?: Prop[];
   /**
+   * Albedo this level paints an existing material with. Absent on most plans.
+   *
+   * **A level may retint the palette; it may not extend it.** The keys are
+   * `MaterialId`s that already exist and the values are sRGB hexes, so nothing
+   * here can add a material, a surface, or a draw call — the count is a set
+   * union over the library (`data/renderCost.ts`) and this leaves the set
+   * alone. Roughness, metalness, mottle and encroach are deliberately **not**
+   * overridable: mottle is a speed cue and encroach decides which surface
+   * spreads into which, and neither is a level's business.
+   *
+   * **Why it exists.** BelVar is a maintained race venue and the city is not,
+   * and one global grass had to be either the venue's mown turf or the city's
+   * rough verge. Making a venue-only turf a `SurfaceId` of its own would have
+   * cost three of the four library draw calls the phone budget had left, to
+   * say something a colour already says. `DESIGN.md` §2's luminance bounds
+   * apply to an override exactly as they apply to the table it overrides, and
+   * `render/terrain.test.ts` holds them to it.
+   */
+  palette?: Readonly<Partial<Record<MaterialId, number>>>;
+  /**
    * Colliders the dressing contributes. Absent on a plan that carries none.
    *
    * **Separate from `segments[].colliders` on purpose, and the separation is
@@ -515,6 +535,66 @@ export interface LevelPlan {
    * painted down it.
    */
   markings?: Marking[];
+  /**
+   * The lap, as a closed line with a width — M23 Phase B2. Absent on a plan
+   * that is not a circuit.
+   *
+   * **This is the legal track envelope, and it exists because a lap referee
+   * cannot derive one.** `Segment` carries an entry socket, an exit socket and
+   * its colliders; the *shape* between the two ends — which for the hairpin is
+   * a 175° arc of radius 14 — is not in the emitted plan at all, so anything
+   * downstream that asks "is the rider still on the track" would have to
+   * reconstruct it from the chord and would be metres wrong on exactly the
+   * corners where being wrong matters. `level/buildPlan.ts` has the real
+   * geometry at build time and samples it here once.
+   *
+   * **Absent, never empty**, the idiom `targets` writes down: a plan with no
+   * key is a world that is not a circuit, and the pinned digests of the slice,
+   * the proving ground and every generated route never see it.
+   *
+   * The line is the **main chain's** centreline, in riding order, closed — the
+   * last point is the first point, so a span always exists across the
+   * start/finish seam. Points are sampled fine enough that the chord between
+   * two of them departs from the arc by well under a centimetre at the
+   * tightest radius the venue has (`LAP_SAMPLE_SPACING`).
+   */
+  lap?: LapCourse;
+}
+
+/**
+ * A closed centreline and the width around it — the shape of "on the track".
+ *
+ * Plain data with no methods, exactly as every other `LevelPlan` array is:
+ * `simulation/trackDay.ts` builds its own cumulative index over this at
+ * construction, and `level/` emits data rather than machinery (invariant 2).
+ */
+export interface LapCourse {
+  /**
+   * The closed centreline. `points[0]` and the last point are the same place.
+   *
+   * Two or more spans are guaranteed, so a consumer may walk `i → i + 1`
+   * without a special case for a degenerate ring.
+   */
+  points: LapPoint[];
+  /** Centreline length of one lap, metres. */
+  length: number;
+}
+
+/** One sample of the lap centreline. */
+export interface LapPoint {
+  x: number;
+  z: number;
+  /**
+   * Rideable half-width here, metres — the corridor's, not the racing
+   * surface's.
+   *
+   * The verge is inside this and is *legal ground*: running wide onto the
+   * grass is a mistake the surface system already punishes with grip, and a
+   * referee that voided a lap for it would be deleting laps for ordinary
+   * racing. What is outside this is ground the rider could only reach through
+   * a gap in the barrier.
+   */
+  halfWidth: number;
 }
 
 /** Sample index for a heightfield column and row. Row-major. */

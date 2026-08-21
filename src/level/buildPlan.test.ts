@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { MARKINGS } from '../data/markings.ts';
 import { CHALLENGE } from '../data/tuning.ts';
-import { insideCheckpoint } from '../simulation/challenge.ts';
+import { ChallengeRun, insideCheckpoint } from '../simulation/challenge.ts';
 import { PlanTerrainSampler } from '../simulation/planSampler.ts';
 import { createGroundSample } from '../simulation/world.ts';
 import {
@@ -263,14 +263,19 @@ test('a route out of order is refused at build time rather than repaired', () =>
       { id: 'a', segment: 'road', s: 8, kind: 'split', label: 'A' },
       { id: 'b', segment: 'road', s: 32, kind: 'finish', label: 'B' },
     ]],
-    ['no finish', [
-      { id: 'a', segment: 'road', s: 8, kind: 'start', label: 'A' },
-      { id: 'b', segment: 'road', s: 32, kind: 'split', label: 'B' },
-    ]],
     ['a finish in the middle', [
       { id: 'a', segment: 'road', s: 8, kind: 'start', label: 'A' },
       { id: 'b', segment: 'road', s: 20, kind: 'finish', label: 'B' },
       { id: 'c', segment: 'road', s: 32, kind: 'finish', label: 'C' },
+    ]],
+    ['a finish followed by a split', [
+      { id: 'a', segment: 'road', s: 8, kind: 'start', label: 'A' },
+      { id: 'b', segment: 'road', s: 20, kind: 'finish', label: 'B' },
+      { id: 'c', segment: 'road', s: 32, kind: 'split', label: 'C' },
+    ]],
+    ['a split at the start of a lap', [
+      { id: 'a', segment: 'road', s: 8, kind: 'split', label: 'A' },
+      { id: 'b', segment: 'road', s: 32, kind: 'split', label: 'B' },
     ]],
     ['two gates with one id', [
       { id: 'a', segment: 'road', s: 8, kind: 'start', label: 'A' },
@@ -280,6 +285,145 @@ test('a route out of order is refused at build time rather than repaired', () =>
   for (const [name, specs] of cases) {
     assert.throws(() => timedRoad(specs), `${name} was accepted`);
   }
+});
+
+test('a route with no finish is a lap, and is built rather than refused', () => {
+  // **`no finish` was in the list above until M23**, and the venue is why it
+  // left. A closed circuit has one line — crossed to open a lap and crossed
+  // again to close it — so there is no second gate to call a finish, and
+  // inventing one at the start's own coordinates would put two gantries in one
+  // place and detect one crossing twice. Everything else about the grammar is
+  // unchanged: it is still one start, then splits, and the cases above still
+  // throw.
+  const lap = timedRoad([
+    { id: 'line', segment: 'road', s: 8, kind: 'start', label: 'Line' },
+    { id: 'sector-1', segment: 'road', s: 20, kind: 'split', label: 'Sector 1' },
+    { id: 'sector-2', segment: 'road', s: 32, kind: 'split', label: 'Sector 2' },
+  ]);
+  assert.deepEqual(lap.checkpoints.map((gate) => gate.kind), ['start', 'split', 'split']);
+  assert.deepEqual(lap.checkpoints.map((gate) => gate.routeIndex), [0, 1, 2]);
+
+  // And the M10 referee declines it without being told to, which is what makes
+  // this a coherent shape rather than a convenient one: a time trial asks
+  // whether a route can start and stop, and a lap cannot.
+  assert.equal(new ChallengeRun(lap.id, lap.checkpoints).available, false);
+
+  // A straight road spelled as a lap is still a straight road, so it carries
+  // no envelope — which is the honest answer and is what stops anything
+  // downstream lapping a fixture. See `LevelPlan.lap`.
+  assert.equal(lap.lap, undefined, 'a chain that does not meet itself emitted a ring');
+});
+
+// ---------------------------------------------------------------------------
+// The lap envelope — M23 Phase B2
+// ---------------------------------------------------------------------------
+
+/**
+ * A closed ring of four quarter-circles, authored the way `trackLevel.ts`
+ * authors BelVar and small enough to check by hand.
+ *
+ * `curvature` is `1 / radius`, positive toward the rider's LEFT, and four
+ * ninety-degree arcs of the same radius close on themselves — so the emitted
+ * envelope's length must be the circle's circumference and its ends must meet.
+ */
+function ringOfRadius(radius: number, halfWidth = 6): LevelPlan {
+  const quarter = (index: number): SegmentSpec => ({
+    id: `arc-${index}`,
+    length: (Math.PI / 2) * radius,
+    curvature: 1 / radius,
+    halfWidth,
+    surface: 'pavement',
+    shoulder: 5,
+  });
+  return buildLevelPlan([quarter(0), quarter(1), quarter(2), quarter(3)], {
+    ...OPTIONS,
+    checkpoints: [
+      { id: 'line', segment: 'arc-0', s: 1, kind: 'start', label: 'Line' },
+      { id: 'sector-1', segment: 'arc-2', s: 1, kind: 'split', label: 'Sector 1' },
+    ],
+  });
+}
+
+test('a closed ring emits its own centreline, and the ends meet', () => {
+  const radius = 30;
+  const plan = ringOfRadius(radius);
+  const lap = plan.lap;
+  assert.ok(lap !== undefined, 'a ring carries no lap');
+
+  const circumference = 2 * Math.PI * radius;
+  assert.ok(
+    Math.abs(lap.length - circumference) < 0.05,
+    `the ring measures ${lap.length.toFixed(3)} m against ${circumference.toFixed(3)}`,
+  );
+
+  const first = lap.points[0];
+  const last = lap.points[lap.points.length - 1];
+  assert.equal(first.x, last.x, 'the ring does not close in x');
+  assert.equal(first.z, last.z, 'the ring does not close in z');
+  for (const point of lap.points) assert.equal(point.halfWidth, 6);
+
+  // Every sample is on the circle, which is what says the line is the arc and
+  // not the chord between two sockets. The centre is one radius to the rider's
+  // LEFT of the spawn, since the curvature turns that way.
+  const centre = { x: OPTIONS.spawn.position.x + radius, z: OPTIONS.spawn.position.z };
+  for (const point of lap.points) {
+    const off = Math.abs(Math.hypot(point.x - centre.x, point.z - centre.z) - radius);
+    assert.ok(off < 0.02, `a sample sits ${off.toFixed(3)} m off the circle`);
+  }
+});
+
+test('samples are close enough that the chord between two is not a shortcut', () => {
+  // The sagitta bound `LAP_SAMPLE_SPACING` is derived from. At the tightest
+  // radius the venue authors, two samples must not span more than a centimetre
+  // of departure from the arc they describe.
+  const plan = ringOfRadius(14);
+  const lap = plan.lap!;
+  const centre = { x: OPTIONS.spawn.position.x + 14, z: OPTIONS.spawn.position.z };
+  let worst = 0;
+  for (let index = 1; index < lap.points.length; index += 1) {
+    const a = lap.points[index - 1];
+    const b = lap.points[index];
+    const midX = (a.x + b.x) / 2;
+    const midZ = (a.z + b.z) / 2;
+    worst = Math.max(worst, 14 - Math.hypot(midX - centre.x, midZ - centre.z));
+  }
+  assert.ok(worst < 0.05, `a chord cuts ${(worst * 1000).toFixed(0)} mm inside a 14 m corner`);
+});
+
+test('a point-to-point route carries no envelope at all', () => {
+  assert.equal(timedRoad(START_AND_FINISH).lap, undefined);
+  // Absent, never empty — `LevelPlan.lap` states the contract and this is the
+  // producer it binds. An empty ring would be a different plan with a different
+  // digest, and it would move both pinned ones on the day it was emitted.
+  assert.ok(!('lap' in timedRoad(START_AND_FINISH)), 'the key must not be present at all');
+});
+
+test('a lap gate authored onto a branch is refused rather than fenced off', () => {
+  // The envelope is the main chain. A sector line hanging off a side road would
+  // be a gate the referee expects the rider to cross while judging them against
+  // an envelope that does not contain it — a lap voided at one corner with
+  // nothing on screen explaining why.
+  assert.throws(() => buildLevelPlan({
+    main: [
+      { id: 'ring-a', length: (Math.PI / 2) * 20, curvature: 1 / 20, halfWidth: 6, surface: 'pavement' },
+      { id: 'ring-b', length: (Math.PI / 2) * 20, curvature: 1 / 20, halfWidth: 6, surface: 'pavement' },
+      { id: 'ring-c', length: (Math.PI / 2) * 20, curvature: 1 / 20, halfWidth: 6, surface: 'pavement' },
+      { id: 'ring-d', length: (Math.PI / 2) * 20, curvature: 1 / 20, halfWidth: 6, surface: 'pavement' },
+    ],
+    branches: [{
+      from: 'ring-a',
+      atDistance: 10,
+      lateralOffset: -6,
+      headingOffset: -Math.PI / 2,
+      specs: [{ id: 'spur', length: 30, halfWidth: 4, surface: 'pavement' }],
+    }],
+  }, {
+    ...OPTIONS,
+    checkpoints: [
+      { id: 'line', segment: 'ring-a', s: 1, kind: 'start', label: 'Line' },
+      { id: 'sector-1', segment: 'spur', s: 10, kind: 'split', label: 'Sector 1' },
+    ],
+  }), /not on the lap/);
 });
 
 test('a gate authored onto nowhere is refused', () => {

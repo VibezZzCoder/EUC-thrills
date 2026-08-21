@@ -9,6 +9,31 @@
     <meta name="color-scheme" content="dark" />
 
     <!--
+      Added to the home screen, this opens as a game rather than as a tab.
+
+      The manifest is what iOS 16.4+ and Android read for the name, the icon,
+      and `display: standalone`; the four `apple-` lines below are the older
+      iOS route, kept because a handset that has not been updated is exactly
+      the handset somebody rides this on. `black-translucent` puts the page
+      under the status bar, which is only safe because the viewport is already
+      `viewport-fit=cover` and every HUD lane and menu in `game.css` is padded
+      by `env(safe-area-inset-*)` — remove either and the speed readout goes
+      under the notch.
+
+      There is no service worker, so this is an installed launcher and not an
+      offline game: it still fetches the build each time it opens. That is a
+      deliberate omission rather than an oversight — a cache needs a version
+      and an update path, and neither exists yet.
+    -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0d1014" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="EUC Thrills" />
+
+    <!--
       Critical boot styles are inline on purpose. The loading shell has to be
       painted before any JavaScript runs, so the player never sees a white or
       blank page.

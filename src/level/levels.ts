@@ -3,6 +3,7 @@ import { generateLevel } from './generateRoute.ts';
 import type { LevelPlan } from './plan.ts';
 import { createProvingGround } from './provingGround.ts';
 import { createSliceLevel } from './sliceLevel.ts';
+import { createTrackLevel } from './trackLevel.ts';
 
 /**
  * The levels this build can produce, and the decision behind there being two.
@@ -57,8 +58,20 @@ import { createSliceLevel } from './sliceLevel.ts';
  * promoted the same URL to a player-facing shared link and added the Fresh
  * route entrance on the title screen; the proving ground alone remains
  * diagnostic-only.
+ *
+ * **M23 adds a fourth, and it is the first one that is a *place* rather than a
+ * route.** `?level=track` builds BelVar Circuit (`trackLevel.ts`), a closed
+ * hand-authored kart-scale circuit — the venue Maribel Vargas suggested,
+ * designed from §23.7's corner program rather than from her reference. It is a
+ * diagnostic entrance at Phase B0 on exactly the terms `?level=generated` was
+ * one at M12 Phase 2: the owner needs a way to ride the layout before the mode
+ * that gives it a reason exists. Phase B2's Track Day is what makes it
+ * player-facing, and the query parameter survives as the shape of a link.
+ *
+ * Nothing here branches on which of the four is loaded, which is invariant 2
+ * still holding at four producers.
  */
-export type LevelId = 'slice' | 'proving' | 'generated';
+export type LevelId = 'slice' | 'proving' | 'generated' | 'track';
 
 export const DEFAULT_LEVEL: LevelId = 'slice';
 
@@ -90,6 +103,8 @@ const BUILDERS: Readonly<Record<
     createProvingGround(hazardProbeMetres, targetProbeMetres),
   generated: (seed, hazardProbeMetres, targetProbeMetres) =>
     generateLevel(seed, hazardProbeMetres, targetProbeMetres).plan,
+  track: (_seed, hazardProbeMetres, targetProbeMetres) =>
+    createTrackLevel(hazardProbeMetres, targetProbeMetres),
 };
 
 /** Every level id, for tests and diagnostics. */

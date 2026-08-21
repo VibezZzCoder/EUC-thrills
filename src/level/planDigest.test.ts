@@ -312,6 +312,13 @@ test('the slice census is what the digest is a digest of', () => {
     // the plan and this reads the summary of it. If a future field lands here
     // the same way, check the digest before reaching for the message below.
     targets: 0,
+    // Zero for a third time, at M23, and the third census-shape change this
+    // block has absorbed without the digest moving: the slice is a
+    // point-to-point course, so `buildLevelPlan` emits no `lap` key at all and
+    // `planSummary` reports nothing to count. `LevelPlan.lap` follows the same
+    // absent-never-empty contract `targets` writes down, which is exactly why
+    // the digest above is byte-identical either side of the change.
+    lapPoints: 0,
     samples: 97200,
     cells: 96571,
     columns: 270,

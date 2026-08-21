@@ -67,7 +67,23 @@ export type PropKind =
   /** One bay of a fence run. Runs are made of bays so nothing is stretched. */
   | 'fenceBay'
   /** A skyline or street block. The only kind authored at a metric `size`. */
-  | 'building';
+  | 'building'
+  /** A bundle of tyres, M23's venue furniture. */
+  | 'tyreStack'
+  /**
+   * The overhead half of a start gantry: truss, banner and wordmark (M23 B1).
+   *
+   * **Its legs are not here, and that is the shape of the thing rather than an
+   * omission.** A prop stands on the ground and cannot span a road; a
+   * `SegmentBlock` spans nothing and cannot leave the ground. So the legs are
+   * two blocks in `metal` and this is what crosses the sky between their tops,
+   * authored `onCollider` on exactly those two blocks and lifted to their
+   * height — the `treeCanopy` pattern, one storey up. It is solid nowhere,
+   * because a collider over a road is ground three metres up and a rider who
+   * ducks under a gate would land on it (`render/checkpointGates.ts` states
+   * the same trap for the same reason).
+   */
+  | 'gantrySpan';
 
 export const PROP_KINDS: readonly PropKind[] = deepFreeze([
   'broadleafTree',
@@ -81,6 +97,8 @@ export const PROP_KINDS: readonly PropKind[] = deepFreeze([
   'signpost',
   'fenceBay',
   'building',
+  'tyreStack',
+  'gantrySpan',
 ] as PropKind[]);
 
 /**
@@ -129,6 +147,27 @@ export const PROP_COLOURS = deepFreeze({
   /** linear (0.165, 0.160, 0.153) — parapets and roof slabs, a step down from
    *  every body colour so a roofline is a line rather than a fade. */
   buildingCap: 0x706f6d,
+  /** linear (0.042, 0.042, 0.045) — worn tyre rubber, and the darkest value in
+   *  the whole kit. It sits above `DESIGN.md` §2's 0.03 legibility floor with
+   *  room to spare *after* the instance jitter takes its 7% off, which is the
+   *  bound that actually matters: a stack that crushes to a silhouette is a
+   *  black hole on the verge rather than a bundle of tyres. Rubber really is
+   *  darker than this and would be exactly that hole. */
+  tyreStack: 0x3c3c3f,
+  /** linear (0.46, 0.462, 0.455) — the wordmark's own plate, and the gantry
+   *  part's *base* albedo. **The brightest thing on the venue, and it has to
+   *  be the base rather than the truss**: a part carries one albedo and paints
+   *  its other colours as ratios in the `color` attribute, and a ratio can only
+   *  go down without blowing the bound `props.test.ts` holds. So the palest of
+   *  the three is the albedo and the truss and the banner are fractions of it.
+   *  The letters therefore carry a flat white and cannot drift from this. */
+  gantryPlate: 0xb3b3b2,
+  /** linear (0.19, 0.192, 0.20) — galvanised truss, a step above `metal`'s
+   *  0.10 because a gantry is read against the *sky* rather than against the
+   *  ground, and the sky is the brightest thing in the frame. A lamp post at
+   *  metal's value is fine at eye level and reads as a black cutout six metres
+   *  up. Painted as a ratio of `gantryPlate`, never as a second material. */
+  gantryTruss: 0x7d7e80,
 });
 
 /** The three body tones a building picks from, in hash order. */
@@ -269,6 +308,46 @@ export const PROP_SIZES = deepFreeze({
     railUpper: 0.88,
     railLower: 0.50,
   },
+  tyreStack: {
+    /** Four. Three reads as a bollard and six as a tower. */
+    tyres: 4,
+    radius: 0.44,
+    /** Every other tyre is narrower, so the stack has a waist and the eye can
+     *  count the tyres in it. A plain cylinder is a bin. */
+    waist: 0.88,
+    tyreHeight: 0.21,
+    /** Eight. It is a small round thing seen from six metres and beyond, and
+     *  `DESIGN.md` §7's rule is silhouette rather than surface. */
+    sides: 8,
+  },
+  gantrySpan: {
+    /**
+     * Half the truss's own length, metres.
+     *
+     * It reaches from leg to leg, and the legs stand just outside the
+     * corridor's own half-width — `level/trackLevel.ts` derives both from the
+     * same number, so a wider venue moves the legs and the truss together.
+     */
+    halfSpan: 10.9,
+    /** Depth of the truss, metres. Local `y` runs 0 to here. */
+    trussHeight: 1.15,
+    /** Square section of the two chords, metres. */
+    chord: 0.15,
+    /** Diagonals per half-span. Enough to read as a truss, not as a ladder. */
+    braces: 6,
+    brace: 0.09,
+    /** The red panel bolted to the truss. */
+    bannerHalfWidth: 4.0,
+    bannerHeight: 0.97,
+    /** Total thickness, so it stands proud of both chord faces. */
+    bannerThickness: 0.29,
+    /** Cap height of the wordmark, metres. */
+    letterHeight: 0.62,
+    /** Stroke width of the wordmark, metres. */
+    letterWeight: 0.105,
+    /** How far a letter plate stands off the banner face, metres. */
+    letterRelief: 0.035,
+  },
   building: {
     /** Parapet thickness and how far it oversails the body, metres. */
     capHeight: 0.75,
@@ -278,6 +357,30 @@ export const PROP_SIZES = deepFreeze({
     towerHeightFraction: 0.22,
   },
 });
+
+/**
+ * The word the gantry carries, in the alphabet `render/inkKit.ts` owns.
+ *
+ * **The kit's one lettered part, and the name is here rather than in
+ * `level/trackLevel.ts` because `render/props.ts` may not import a level.**
+ * That file holds the other end of the wire and throws at module load if the
+ * two stop agreeing, which is the check that would catch this drifting away
+ * from the place it names.
+ *
+ * **It carries the venue's whole name, and the first version did not.** B1
+ * shipped `BELVAR` alone, and it read as a place rather than as a circuit —
+ * the owner's ride was what said so, because a banner with a plausible word on
+ * it looks finished. The comparison in `trackLevel.ts` was written against
+ * `TRACK_NAME.split(' ')[0]`, so it agreed with the half-name it was given and
+ * had nothing to say; a guard aimed at the first word of a name cannot see a
+ * missing second word. It now checks the whole name.
+ *
+ * Nothing else in the kit prints anything, and the alphabet is closed to the
+ * letters this project prints — see `inkKit.ts` for what that guard is now
+ * that a venue's own name has widened it past the point where being unable to
+ * spell a brand was the protection.
+ */
+export const GANTRY_WORDMARK = 'BELVAR CIRCUIT';
 
 /**
  * The part of each prop that must stay out of a rideable corridor, in local XZ.
@@ -339,6 +442,13 @@ export const PROP_FOOTPRINTS: Readonly<Record<PropKind, PropFootprint>> = deepFr
   // A building supplies its metric size on the prop. These unit half-extents
   // are scaled by that size in `buildPlan.ts` rather than used directly.
   building: { shape: 'box', halfX: 0.5, halfZ: 0.5 },
+  tyreStack: { shape: 'circle', radius: PROP_SIZES.tyreStack.radius },
+  // Nothing. The span has no ground footprint of its own — it is authored on
+  // the two leg blocks and skips this guard through `onCollider`, exactly as a
+  // crown does over its trunk. **What that guard therefore cannot see is the
+  // far leg**, which is why `level/trackLevel.test.ts` checks both legs stand
+  // clear of every corridor rather than trusting the builder to notice.
+  gantrySpan: { shape: 'circle', radius: 0 },
 });
 
 /**
@@ -381,6 +491,15 @@ export const PROP_SPREADS: Readonly<Record<PropKind, PropFootprint>> = deepFreez
   // Scaled by the prop's own metric size in `buildPlan.ts`, plus the parapet's
   // oversail, which is the widest a block gets.
   building: { shape: 'box', halfX: 0.5, halfZ: 0.5 },
+  tyreStack: PROP_FOOTPRINTS.tyreStack,
+  // The honest plan extent, which is the whole span. It has no footprint and
+  // still has to be in this table truthfully: this is the question a building
+  // asks, and a clubhouse should not be planted under the gantry.
+  gantrySpan: {
+    shape: 'box',
+    halfX: PROP_SIZES.gantrySpan.halfSpan,
+    halfZ: PROP_SIZES.gantrySpan.bannerThickness / 2,
+  },
 });
 
 /** Vertical mesh envelope at `scale: 1`, relative to the placed prop origin. */
@@ -423,6 +542,13 @@ export const PROP_VERTICAL_SPANS: Readonly<Record<PropKind, {
   // Buildings supply their metric height on the placed prop. The unit span is
   // still useful to keep this table exhaustive.
   building: { bottom: 0, top: 1 },
+  tyreStack: {
+    bottom: 0,
+    top: PROP_SIZES.tyreStack.tyres * PROP_SIZES.tyreStack.tyreHeight,
+  },
+  // Measured from the prop's own origin, which the level lifts to the top of
+  // the legs. The truss stands on that; nothing hangs below it.
+  gantrySpan: { bottom: 0, top: PROP_SIZES.gantrySpan.trussHeight },
 });
 
 /**
@@ -586,6 +712,22 @@ export const PROP_SOLIDS: Readonly<Record<PropKind, PropSolid | null>> = deepFre
   // parapet's oversail is deliberately not included, because a rider stopped
   // 45 cm short of a wall by an eave twenty metres above them is a bug.
   building: { halfX: 0.5, halfZ: 0.5, height: 1, surface: 'pavement', occludes: true },
+  // A bundle of tyres is a bundle of tyres: solid, low, and narrower than the
+  // rider, so it stops a wheel without ducking the chase camera. It stands
+  // where nothing hides it — outside a barrier gate or in the paddock — so it
+  // is one of the few things on the venue a rider can actually meet.
+  tyreStack: {
+    halfX: PROP_SIZES.tyreStack.radius * ROUND_TO_BOX,
+    halfZ: PROP_SIZES.tyreStack.radius * ROUND_TO_BOX,
+    height: PROP_SIZES.tyreStack.tyres * PROP_SIZES.tyreStack.tyreHeight,
+    surface: 'pavement',
+    occludes: false,
+  },
+  // **Null, and this is the M7 trap rather than a convenience.** The sampler
+  // resolves a collider by its *top* face, so a box spanning the road six
+  // metres up is ground six metres up: a rider passing under the gantry would
+  // be standing on it. Its legs carry the solidity, as two authored blocks.
+  gantrySpan: null,
 });
 
 /**
@@ -641,6 +783,32 @@ export const BUILDING_MAX_JOIN_FRACTION = 0.15;
 export const BUILDING_FACADE = deepFreeze({
   /** Bands on a low block, and on the setback tower that caps a tall one. */
   lowFloors: 4,
+  /**
+   * Bands on a building too short to wear `lowFloors` of them.
+   *
+   * **The rule `minFloorHeight` states was enforced in one place and not the
+   * other.** `render/props.ts` suppresses a *rooftop setback box* whose bands
+   * would come out under two metres, in as many words: "a short setback box is
+   * a roof feature, not a miniature four-storey building". Nothing said the
+   * same about a short *body*, so BelVar's paddock sheds — 3.4 to 5.0 m —
+   * wore four bands of 0.85 to 1.25 m and read as striped office units rather
+   * than as sheds. `render/props.test.ts` asserts every instance is in range
+   * and built only the slice, so it never saw them.
+   *
+   * Two bands: a solid ground floor and one glazed strip above it, which is
+   * what a workshop looks like. A building shorter than
+   * `lowRiseFloors × minFloorHeight` still has no facade that fits it, and the
+   * assertion is left to say so rather than being softened.
+   */
+  lowRiseFloors: 2,
+  /**
+   * Body height, metres, below which a block wears `lowRiseFloors`.
+   *
+   * `lowFloors × minFloorHeight` — the height at which the four-band facade
+   * stops producing storeys somebody could stand up in. Kept as a literal so
+   * it reads at the call site; `props.test.ts` holds it to the derivation.
+   */
+  lowRiseHeight: 8,
   /** Bands on anything above `highRiseHeight`. */
   highFloors: 11,
   /** Body height, metres, at which a block switches to the taller pattern. */

@@ -7,6 +7,7 @@ import {
   loftNormal,
   loftPoint,
   loftProfile,
+  mapUvInto,
   mergeGeometries,
   patchGeometry,
   shaded,
@@ -306,12 +307,21 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
     : SHELL;
   const shellTopFace = shellProfile[shellProfile.length - 1]!.y;
 
+  // The leg pad's section, resolved the same way and for the same reason — a
+  // look may restyle the pad it sits against without touching where it sits.
+  // Rings are authored about the pad's centre height, so the profile is used
+  // as given and the mesh is translated to `WHEEL.padCentreHeight` below.
+  const padBlocks = look.pads?.blocks?.length
+    ? look.pads.blocks.map((rings) => loftProfile(rings.map((ring) => ({ ...ring }))))
+    : [PAD];
+
   // Tracked so disposal is exhaustive rather than best-effort. Every geometry
   // and material that reaches a mesh is registered the moment it is created;
   // the pieces that go into `mergeGeometries` are disposed by the merge and
   // are deliberately not tracked here.
   const geometries: THREE.BufferGeometry[] = [];
   const materials: THREE.Material[] = [];
+  const textures: THREE.Texture[] = [];
 
   const track = <T extends THREE.BufferGeometry>(geometry: T): T => {
     geometries.push(geometry);
@@ -347,8 +357,8 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
   );
   const padMaterial = trackMaterial(
     new THREE.MeshStandardMaterial({
-      color: BLOCKOUT_COLOURS.pad,
-      roughness: 0.85,
+      color: look.pads?.colour ?? BLOCKOUT_COLOURS.pad,
+      roughness: look.pads?.roughness ?? 0.85,
       metalness: 0.0,
       vertexColors: true,
     }),
@@ -382,6 +392,11 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
   // The look's trim material — Cool Rider's reflective blue on the standard
   // machine, satin armour red on Red Rider's. One material for every trim
   // patch a look authors, which is what holds the slot at one draw call.
+  // The look's printed sheet, if it has one — M23 Phase A2. One texture per
+  // machine, tracked for disposal beside the materials, exactly as the rider's
+  // is (`render/rider.ts`).
+  const sheet = look.atlas === undefined ? null : look.atlas.build();
+  if (sheet !== null) textures.push(sheet);
   const trimMaterial = trackMaterial(
     new THREE.MeshStandardMaterial({
       color: look.trim.colour,
@@ -390,6 +405,7 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
       roughness: look.trim.roughness,
       metalness: look.trim.metalness,
       vertexColors: true,
+      map: sheet,
     }),
   );
 
@@ -446,17 +462,24 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
    * doubling; the caller merges everything into the one trim mesh regardless.
    */
   const machinePatch = (patch: MachinePatch): THREE.BufferGeometry[] => {
-    const { surface = 'shell', from, to, u0, u1, tint, ...rest } = patch;
-    const paint = (geometry: THREE.BufferGeometry): THREE.BufferGeometry => (
-      tint ? tinted(geometry, tint) : geometry
-    );
+    const { surface = 'shell', from, to, u0, u1, tint, art, ...rest } = patch;
+    // Paint, then page. A look with no atlas skips the fold entirely and the
+    // geometry keeps the unit square the kit gave it, which is harmless
+    // because its material carries no map; a look *with* one must fold every
+    // patch, including the ones with no art, or an undecorated strip would
+    // sample the whole sheet.
+    const paint = (geometry: THREE.BufferGeometry): THREE.BufferGeometry => {
+      const painted = tint ? tinted(geometry, tint) : geometry;
+      return look.atlas === undefined ? painted : mapUvInto(painted, look.atlas.region(art));
+    };
     if (surface === 'shell') {
       return [paint(shellPatch({ ...rest, u0, u1, from, to }))];
     }
     const sides: THREE.BufferGeometry[] = [];
+    const block = padBlocks[patch.block ?? 0] ?? padBlocks[0]!;
     for (const side of [1, -1]) {
       sides.push(paint(
-        patchGeometry(PAD, {
+        patchGeometry(block, {
           ...rest,
           // A mirrored span runs backwards in parameter space, which winds the
           // outer face inward — so the *ends* swap as well as reflecting, and
@@ -466,8 +489,8 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
           u0: side > 0 ? u0 : Math.PI - u1,
           u1: side > 0 ? u1 : Math.PI - u0,
           skew: side > 0 ? rest.skew : -(rest.skew ?? 0),
-          v0: vAtHeight(PAD, from),
-          v1: vAtHeight(PAD, to),
+          v0: vAtHeight(block, from),
+          v1: vAtHeight(block, to),
         }).translate(side * PAD_CENTRE_X, WHEEL.padCentreHeight, 0),
       ));
     }
@@ -572,7 +595,7 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
   // has always measured. A custom silhouette carries its own cosmetic top and
   // uses the saddle path instead.
   const shellParts: THREE.BufferGeometry[] = [
-    loftGeometry(shellProfile, { radialSegments: 20 }),
+    loftGeometry(shellProfile, { radialSegments: 28 }),
   ];
   if (look.top.kind === 'handle') {
     const handleGap = shellTopFace + (WHEEL.shellHeight - shellTopFace) * 0.62;
@@ -595,7 +618,7 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
     // in absolute metres like the shell's own, so no translate.
     shellParts.push(tinted(
       loftGeometry(loftProfile(look.top.profile.map((ring) => ({ ...ring }))), {
-        radialSegments: 14,
+        radialSegments: 20,
       }),
       look.top.tint,
     ));
@@ -638,9 +661,14 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
 
   // -- Leg-contact pads -----------------------------------------------------
   for (const side of [-1, 1]) {
-    const pad = shadowed(
-      new THREE.Mesh(track(loftGeometry(PAD, { radialSegments: 12 })), padMaterial),
-    );
+    // However many blocks a look authors, they merge into the one per-side
+    // pad mesh — a pad is a slot in the draw-call budget, not a part count.
+    const padGeometry = track(mergeGeometries(padBlocks.map((profile) => loftGeometry(
+      profile,
+      { radialSegments: look.pads?.segments ?? 12 },
+    ))));
+    look.pads?.paintPad?.(padGeometry, side);
+    const pad = shadowed(new THREE.Mesh(padGeometry, padMaterial));
     pad.position.set(side * PAD_CENTRE_X, WHEEL.padCentreHeight, 0);
     pad.name = `euc-pad-${side > 0 ? 'left' : 'right'}`;
     body.add(pad);
@@ -698,19 +726,22 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
   // Narrower and shorter than the headlight, and tapered at both ends. The
   // first capture had it as a wide slab: at chase distance the machine's whole
   // rear read as a red rectangle, and the status light — which is the one the
-  // rider has to read — was competing with it.
+  // rider has to read — was competing with it. A look may author its own lamp
+  // shape (`MachineLook.taillight` — q61); the material stays this shared one.
   const taillight = new THREE.Mesh(
-    track(shellPatch({
-      u0: -Math.PI / 2 - 0.26,
-      u1: -Math.PI / 2 + 0.26,
-      from: 0.500,
-      to: 0.521,
-      lift: 0.004,
-      sink: -0.012,
-      uSegments: 6,
-      vSegments: 2,
-      taper: 0.45,
-    })),
+    track(look.taillight
+      ? mergeGeometries(look.taillight.patches.flatMap(machinePatch))
+      : shellPatch({
+        u0: -Math.PI / 2 - 0.26,
+        u1: -Math.PI / 2 + 0.26,
+        from: 0.500,
+        to: 0.521,
+        lift: 0.004,
+        sink: -0.012,
+        uSegments: 6,
+        vSegments: 2,
+        taper: 0.45,
+      })),
     taillightMaterial,
   );
   taillight.name = 'euc-taillight';
@@ -797,8 +828,10 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
     dispose(): void {
       for (const geometry of geometries) geometry.dispose();
       for (const material of materials) material.dispose();
+      for (const texture of textures) texture.dispose();
       geometries.length = 0;
       materials.length = 0;
+      textures.length = 0;
       group.removeFromParent();
     },
   };

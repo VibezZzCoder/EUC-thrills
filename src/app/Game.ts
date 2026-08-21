@@ -102,6 +102,12 @@ import {
   type ChallengeState,
 } from '../simulation/challenge.ts';
 import {
+  TrackDayRun,
+  type TrackDayEvent,
+  type TrackDaySessionResult,
+  type TrackDayState,
+} from '../simulation/trackDay.ts';
+import {
   GhostPlayer,
   GhostRecorder,
   createGhostSample,
@@ -110,7 +116,14 @@ import {
   type GhostSample,
 } from '../simulation/ghost.ts';
 import { Hud } from '../ui/hud.ts';
-import { HudModel, formatDelta, formatRunTime, formatSpeed, type HudView } from '../ui/hudModel.ts';
+import {
+  HudModel,
+  formatDelta,
+  formatRunTime,
+  formatSpeed,
+  type HudView,
+  type LapFlash,
+} from '../ui/hudModel.ts';
 import {
   Menus,
   type MenuScreen,
@@ -328,6 +341,33 @@ export interface GameSnapshot {
     readonly recordedSamples: number;
   };
   /**
+   * The track day, as the referee has it — M23.
+   *
+   * On the bridge in full for `challenge`'s reason: a lap's *rules* are what a
+   * browser spec has to assert — that a lap counted, that a cut one did not,
+   * that the clock restarted on the line — and its appearance is a separate
+   * question asked separately. `available` is a property of the loaded plan
+   * rather than of the state, so a spec can assert that the city declines to be
+   * lapped without entering anything.
+   */
+  readonly trackDay: TrackDayState & {
+    readonly available: boolean;
+    /** Lap length along the centreline, metres. Zero on a world with no lap. */
+    readonly lapMetres: number;
+    /** Samples the ghost recorder has kept for the lap in progress. */
+    readonly recordedSamples: number;
+    /**
+     * Whether the ghost being raced is on screen this frame.
+     *
+     * Read off the renderer's own one-rider slot rather than from a flag this
+     * file keeps, so a spec asserting "the ghost restarts on the line" is
+     * asserting what is drawn rather than what was intended.
+     */
+    readonly ghostVisible: boolean;
+    /** The finished session's best lap, or null while none has finished. */
+    readonly sessionBest: number | null;
+  };
+  /**
    * The stored personal best for the level being ridden, if there is one.
    *
    * `ghost` is reported as a sample count rather than as the track, because a
@@ -511,6 +551,17 @@ export class Game {
    * frame a lap ends.
    */
   challenge: ChallengeRun;
+  /**
+   * The lap referee — M23, and `challenge`'s sibling in every respect above.
+   *
+   * Public and mutable for the same two reasons: a browser spec asserts the
+   * *rules* rather than the pixels, and a world swap replaces it because the
+   * circuit it refereed no longer exists. It shares `records` with the timed
+   * run, because a personal best is a personal best and the store is keyed by
+   * the plan id rather than by the mode — the two can never collide, since a
+   * plan is either a route or a lap and never both.
+   */
+  trackDay: TrackDayRun;
   readonly records: RecordsStore;
 
   /**
@@ -787,6 +838,41 @@ export class Game {
    */
   private lastResultPreviousSplits: readonly number[] = [];
 
+  // -- Track Day — M23 --------------------------------------------------------
+
+  /**
+   * The lane flash the HUD is currently showing, latched from the fixed step.
+   *
+   * `pendingSplit`'s counterpart, and separate from it rather than shared
+   * because a lap has three things to announce where a timed run has one: a
+   * sector, a lap that counted, and a lap that did not. The union is composed
+   * into words by `ui/hudModel.ts`, which is where every other string on the
+   * HUD is composed.
+   */
+  private pendingLapFlash: LapFlash | null = null;
+  /** The most recent finished session, for the results card and the bridge. */
+  private lastTrackDay: TrackDaySessionResult | null = null;
+  /** Whether that session's best lap was actually kept by the store. */
+  private lastTrackDayWasRecord = false;
+  /** Whether the store had to drop the ghost to fit that lap in. */
+  private lastTrackDayGhostDropped = false;
+  /**
+   * The split table standing *before* the session, for the card's per-sector
+   * deltas.
+   *
+   * `lastResultPreviousSplits` for laps, captured on the same argument and
+   * against the same failure: by the time the card is built the store has been
+   * given the new best, so re-reading it would compare a record lap with itself
+   * and print a column of zeroes under a summary line correctly reading several
+   * seconds faster.
+   *
+   * **Captured when the session's first record lands, not when it ends**, which
+   * is the one place the two differ. A track day can beat the stored best four
+   * times in an afternoon; the table worth comparing against on the card is the
+   * one the player arrived with.
+   */
+  private lastTrackDayPreviousSplits: readonly number[] = [];
+
   private tick = 0;
   private simTimeSeconds = 0;
   private layoutChanges = 0;
@@ -1059,6 +1145,15 @@ export class Game {
     // which is what keeps the time trial off a level that is a measuring
     // instrument rather than a place.
     this.challenge = new ChallengeRun(this.levelPlan.id, this.levelPlan.checkpoints);
+    // And the lap referee beside it — M23. Same plan, same gates, different
+    // question: `ChallengeRun` asks whether a route can start and stop and
+    // `TrackDayRun` asks whether it closes on itself, so exactly one of them
+    // says yes about any world and neither needs to know which world it is.
+    this.trackDay = new TrackDayRun(
+      this.levelPlan.id,
+      this.levelPlan.checkpoints,
+      this.levelPlan.lap ?? null,
+    );
     // Built here as well as in `installLevel`, for the reason stated above the
     // controller: this path constructs the fields that one replaces, and
     // anything added to one and not the other makes the first world of a
@@ -1154,6 +1249,9 @@ export class Game {
         onStartChallenge: () => this.startChallenge(),
         onStartKnockabout: () => this.enterKnockabout(),
         onStartChase: () => this.enterChase(),
+        // -- M23 ---------------------------------------------------------
+        onStartTrackDay: () => this.enterTrackDay(),
+        onEndSession: () => this.endTrackDaySession(),
         // **Retry means the mode the run that just finished was in** — M14.
         // One button, two modes, and the results screen must not have to know
         // which: `lastKnockabout` is set only by a Knockabout run and cleared
@@ -1165,6 +1263,7 @@ export class Game {
           // these is non-null on any results screen.
           if (this.lastKnockabout !== null) this.enterKnockabout();
           else if (this.lastChase !== null) this.enterChase();
+          else if (this.lastTrackDay !== null) this.enterTrackDay();
           else this.startChallenge();
         },
         onResultsToTitle: () => {
@@ -1185,7 +1284,15 @@ export class Game {
         onNewRoute: () => this.newRouteHere(),
 
         // -- M14.5 -----------------------------------------------------------
-        onOpenRiders: () => this.goTo('riderSelect'),
+        // Opening the panel is what retires its advertisement, and it is
+        // written here rather than in `ui/` because this is where the record
+        // lives — the same reason picking a rider goes straight into the store
+        // below. `set` is a no-op once the flag is true, so this costs one
+        // comparison on every later visit and never writes again.
+        onOpenRiders: () => {
+          this.options.set({ seenRiderChooser: true });
+          this.goTo('riderSelect');
+        },
         onCloseRiders: () => this.goTo('title'),
         // Straight into the store, exactly like every other player choice: the
         // swap happens in `applyOptions`, so the one path that changes a rider
@@ -1600,6 +1707,14 @@ export class Game {
         resultsIn: this.resultsIn,
         recordedSamples: this.ghostRecorder.sampleCount,
       },
+      trackDay: {
+        ...this.trackDay.state,
+        available: this.trackDay.available,
+        lapMetres: this.trackDay.lapMetres,
+        recordedSamples: this.ghostRecorder.sampleCount,
+        ghostVisible: this.renderer.secondRiderShown === 'ghost',
+        sessionBest: this.lastTrackDay?.bestLapSeconds ?? null,
+      },
       paddle: {
         equipped: this.paddleEquipped,
         phase: this.paddle.phase,
@@ -1710,6 +1825,31 @@ export class Game {
   }
 
   /**
+   * Start a track day, for the automation wire — M23.
+   *
+   * `startTimeTrial`'s twin, and unlike every other entrance on this bridge it
+   * changes the world: the mode brings BelVar with it, which is the shipped
+   * behaviour and is the whole reason the button is always live.
+   */
+  startTrackDay(): void {
+    this.enterTrackDay();
+  }
+
+  /**
+   * Pit in, for the automation wire — M23.
+   *
+   * A session ends from the pause card, so this is the two presses a player
+   * makes rather than a test-only door into `endTrackDaySession`: pause, then
+   * End session. A spec that reached past the pause would be asserting a path
+   * no player can take, and would keep passing on the day the button stopped
+   * being reachable.
+   */
+  endTrackDay(): void {
+    if (this.appState.current === 'trackDay') this.goTo('paused');
+    this.endTrackDaySession();
+  }
+
+  /**
    * Start a police chase, for the automation wire — M18.
    *
    * `startKnockabout`'s twin and it exists for the same reason: a browser spec
@@ -1740,6 +1880,11 @@ export class Game {
     this.knockaboutRecords.clearAll();
     this.chaseRecords.clearAll();
     this.loadRecordReference();
+    // A lap best is filed in `records` beside the timed run's, so `clearAll`
+    // above already took it — what this re-points is the *live* session: a
+    // referee still comparing against a record that no longer exists would go
+    // on printing deltas against it, and its ghost would go on racing.
+    this.loadLapReference();
   }
 
   /**
@@ -1783,16 +1928,9 @@ export class Game {
   private startChallenge(): void {
     if (!this.challenge.available) return;
 
-    // Results are a tagged union spread across three nullable records. Keep
-    // the tag honest at every entrance: a completed chase used to survive a
-    // trip through the title screen, outrank the new lap in
-    // `buildResultsView`, and turn Time trial's results and New route button
-    // back into Police chase.
-    this.lastKnockabout = null;
-    this.lastKnockaboutWasRecord = false;
-    this.lastChase = null;
-    this.lastChaseWasRecord = false;
+    this.clearLastResults();
     this.chaseRun.abandon();
+    this.trackDay.abandon();
     this.resetChallengeRider();
     this.loadRecordReference();
     this.challenge.arm();
@@ -1807,6 +1945,269 @@ export class Game {
     this.lastResultWasRecord = false;
     this.lastResultGhostDropped = false;
     this.goTo('challenge');
+  }
+
+  /**
+   * Forget every mode's last result.
+   *
+   * **`buildResultsView` is a tagged union with no tag** — it picks whichever
+   * of four nullable records is non-null, in a fixed precedence — so the whole
+   * scheme rests on every entrance clearing the other three. That was three
+   * hand-written blocks of five assignments each, kept in step by hand, and it
+   * had already failed once: a completed chase survived a trip through the
+   * title screen and turned Time trial's results card and its New route button
+   * back into Police chase. A fourth mode would have made it four blocks of
+   * seven, which is twenty-eight assignments and four chances to miss one.
+   *
+   * So there is one of them and every entrance calls it. Adding a fifth mode
+   * means adding two lines here rather than remembering four call sites.
+   */
+  private clearLastResults(): void {
+    this.lastResult = null;
+    this.lastResultWasRecord = false;
+    this.lastResultGhostDropped = false;
+    this.lastResultPreviousSplits = [];
+    this.lastKnockabout = null;
+    this.lastKnockaboutWasRecord = false;
+    this.lastChase = null;
+    this.lastChaseWasRecord = false;
+    this.lastTrackDay = null;
+    this.lastTrackDayWasRecord = false;
+    this.lastTrackDayGhostDropped = false;
+    this.lastTrackDayPreviousSplits = [];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Track Day (M23 Phase B2)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The player chose Track Day, from the title screen or from Retry.
+   *
+   * **This is the one entrance that brings its own world**, and that is what
+   * makes it always available rather than conditionally offered. Every other
+   * mode asks something of whatever is loaded — a route to time, targets to
+   * hit, a through line for the cop — and refuses, or opens the fresh-route
+   * panel, when the answer is no. A circuit is not a property a world might
+   * happen to have; BelVar *is* the mode's venue, so pressing the button takes
+   * the player there. The button's own note says so ("Lap BelVar Circuit"), so
+   * this is a journey the player asked for rather than the silent world swap
+   * M12's `no-route` rule forbids.
+   *
+   * The probes are replayed into the swap exactly as `rideTheCity` replays
+   * them: a diagnostic session must not be able to ask for the circuit and
+   * silently get a different circuit from the one everybody else rides.
+   */
+  private enterTrackDay(): void {
+    // A world swap is in flight. Starting a mode on top of one would arm a
+    // referee against a plan that is about to be replaced.
+    if (this.pendingRoute !== null) return;
+
+    if (this.levelId !== 'track') {
+      this.installLevel(
+        'track',
+        '',
+        createLevel('track', DEFAULT_SEED, this.hazardProbe, this.targetProbe),
+      );
+    }
+    // After the swap, because `installLevel` rebuilt the referee this asks.
+    if (!this.trackDay.available) return;
+
+    this.clearLastResults();
+    this.chaseRun.abandon();
+    this.challenge.abandon();
+    // The rider goes to the start line's own run-up rather than the level
+    // spawn, exactly as a timed run does: an out lap that begins in the same
+    // place every time is what makes the first flying lap comparable with the
+    // fortieth. On this venue the two happen to be seventy metres apart, and
+    // relying on that would be relying on a layout that iterates.
+    this.resetChallengeRider();
+    this.loadLapReference();
+    this.trackDay.arm();
+    // Point the gates at the armed line before `goTo` makes them visible, or a
+    // retry shows the previous session's last sector for one frame.
+    this.renderer.setCheckpointProgress(0);
+    this.ghostRecorder.reset();
+    this.resultsIn = 0;
+    this.pendingLapFlash = null;
+    this.pendingSplit = null;
+    this.setRoutePurpose('ride');
+    this.goTo('trackDay');
+  }
+
+  /**
+   * Point the lap referee and the ghost at the stored best lap.
+   *
+   * `loadRecordReference`'s twin, and separate rather than shared because the
+   * two hand the same record to different referees — and because the ghost the
+   * two build is the same object read at a different clock: a time-trial ghost
+   * is sampled at run seconds and a lap ghost at *lap* seconds, so it restarts
+   * beside the player every time they cross the line.
+   */
+  private loadLapReference(): void {
+    const best = this.recordForCurrentWorld();
+    this.trackDay.setReference(
+      best === null ? null : { totalSeconds: best.totalSeconds, splits: best.splits },
+    );
+    this.lastTrackDayPreviousSplits = best === null ? [] : best.splits;
+    this.ghostPlayer = new GhostPlayer(best?.ghost ? decodeGhost(best.ghost) : null);
+  }
+
+  /**
+   * One fixed step of a track day.
+   *
+   * `stepChallenge`'s shape, including the guard on the first line — which is
+   * load-bearing for the reason recorded there: the results countdown must not
+   * keep running behind the settings screen, which also simulates, because
+   * `settings` lists no `results` successor and the transition would be refused
+   * with the countdown already spent.
+   *
+   * **The ghost is recorded after the events are handled, not before.** A lap
+   * that closes opens the next one inside the same step, and the recorder is
+   * reset by that `open` event; recording first would put the closing lap's
+   * final sample at the head of the new lap's track, at a clock of forty-odd
+   * seconds, after which every genuine sample of the new lap would be silently
+   * dropped for not moving the clock forward.
+   */
+  private stepTrackDay(stepSeconds: number): void {
+    if (this.appState.current !== 'trackDay') return;
+
+    if (this.resultsIn > 0) {
+      this.resultsIn -= stepSeconds;
+      if (this.resultsIn <= 0) {
+        this.resultsIn = 0;
+        this.goTo('results');
+        return;
+      }
+    }
+
+    const pose = this.currentPose;
+    const events = this.trackDay.step(stepSeconds, {
+      x: pose.x,
+      y: pose.y,
+      z: pose.z,
+      speed: pose.speed,
+      landed: this.controller.touchedDown,
+      landingClean: this.controller.lastLandingQuality === 'clean',
+      crashed: this.controller.crashed,
+    });
+
+    const state = this.trackDay.state;
+    this.renderer.setCheckpointProgress(state.crossed);
+    this.renderer.stepCheckpoints(stepSeconds);
+
+    for (const event of events) this.handleTrackDayEvent(event);
+
+    if (this.trackDay.state.phase === 'running' && !this.probing) {
+      this.ghostRecorder.record(this.trackDay.state.elapsed, {
+        x: pose.x,
+        y: pose.y,
+        z: pose.z,
+        groundY: pose.groundY,
+        headingY: pose.headingY,
+        rollAngle: pose.rollAngle,
+        speed: pose.speed,
+        crouch: pose.crouch,
+      });
+    }
+  }
+
+  /** A line was crossed. Flare it, flash it, and file a lap if one ended. */
+  private handleTrackDayEvent(event: TrackDayEvent): void {
+    if (event.kind === 'open') {
+      // A fresh lap is a fresh recording. This fires on the first crossing of
+      // the session, on every lap close, and on the restart a lap that reached
+      // no sector line gets — three doors into one requirement.
+      this.ghostRecorder.reset();
+      return;
+    }
+
+    this.renderer.flareCheckpoint(event.routeIndex);
+
+    if (event.kind === 'sector') {
+      this.pendingLapFlash = {
+        kind: 'sector',
+        label: event.label,
+        delta: event.totalDelta,
+      };
+      return;
+    }
+
+    const lap = event.lap;
+    if (lap === null) return;
+    this.pendingLapFlash = lap.counted
+      ? { kind: 'lap', seconds: lap.seconds, delta: event.totalDelta }
+      : { kind: 'void' };
+    if (lap.counted) this.fileLap(lap.seconds, lap.splits);
+  }
+
+  /**
+   * A counting lap: keep it if it beat the record, and race it from now on.
+   *
+   * **The store is offered every counting lap, not only the session's best**,
+   * and `RecordsStore.submit` is what decides — it holds the same
+   * "a tie is not a record" law the referee reports on its own events, in the
+   * same algebraic form, for the reason `challenge.ts` records at length.
+   *
+   * On a record the reference is replaced *immediately*, and so is the ghost.
+   * That is the whole difference between a track day and a time trial: a rider
+   * who improves on lap four is racing their lap-four ghost on lap five, not
+   * the one they arrived with. Waiting until the session ended would make the
+   * ghost a recording of a lap the player has already beaten, which is the one
+   * thing a ghost must never be.
+   */
+  private fileLap(seconds: number, splits: readonly number[]): void {
+    if (this.probing) {
+      // The probe changes the course without changing its level id, so a lap
+      // set on one is not a lap of the world anybody else rides. The session
+      // still reports itself; the store and the ghost codec never see it.
+      this.ghostRecorder.reset();
+      return;
+    }
+
+    const track = this.ghostRecorder.finish(this.levelPlan.id, seconds);
+    const candidate: RouteRecord = {
+      levelId: this.levelPlan.id,
+      totalSeconds: seconds,
+      splits,
+      // The only wall time in this mode, exactly as in the timed run: a label
+      // on a saved record that reaches no clock the simulation reads.
+      setAt: new Date().toISOString(),
+      ghost: track === null ? null : encodeGhost(track),
+    };
+
+    const kept = this.records.submit(candidate);
+    if (!kept) return;
+
+    this.lastTrackDayWasRecord = true;
+    const stored = this.recordForCurrentWorld();
+    this.lastTrackDayGhostDropped = this.lastTrackDayGhostDropped
+      || (candidate.ghost !== null && (stored === null || stored.ghost === null));
+    this.trackDay.setReference({ totalSeconds: seconds, splits });
+    this.ghostPlayer = new GhostPlayer(
+      stored?.ghost ? decodeGhost(stored.ghost) : track,
+    );
+  }
+
+  /**
+   * The player pitted — the pause card's End session.
+   *
+   * **The only place a menu ends a ride**, and the reason `paused` lists
+   * `results` as a successor. It goes straight to the card with no delay:
+   * `CHALLENGE.resultsDelaySeconds` exists so a player who has just crossed a
+   * finish line at speed sees themselves finish rather than a dialog, and there
+   * is nothing to watch here — the player is stationary behind a pause menu and
+   * pressed a button asking for exactly this screen.
+   */
+  private endTrackDaySession(): void {
+    if (this.appState.current !== 'paused') return;
+    if (this.appState.rideReturn !== 'trackDay') return;
+    const result = this.trackDay.end();
+    if (result === null) return;
+    this.lastTrackDay = result;
+    this.resultsIn = 0;
+    this.pendingLapFlash = null;
+    this.goTo('results');
   }
 
   /**
@@ -1838,18 +2239,9 @@ export class Game {
     this.renderer.resetTargets();
     this.paddle.cancel();
     this.knockaboutSeconds = 0;
-    this.lastKnockabout = null;
-    this.lastKnockaboutWasRecord = false;
-    // The other mode's card is not this mode's card — M18. `buildResultsView`
-    // picks by whichever last result is non-null, so an entrance that left the
-    // previous mode's standing would show it.
-    this.lastChase = null;
-    this.lastChaseWasRecord = false;
-    this.lastResult = null;
-    this.lastResultWasRecord = false;
-    this.lastResultGhostDropped = false;
-    this.lastResultPreviousSplits = [];
+    this.clearLastResults();
     this.chaseRun.abandon();
+    this.trackDay.abandon();
     this.resultsIn = 0;
     // Deliberately **not** `resetChallengeRider`: there is no start gate to run
     // up to. Knockabout begins where the world begins, which is also what makes
@@ -1950,6 +2342,8 @@ export class Game {
     return {
       heading: this.lastKnockaboutWasRecord ? 'New record' : 'Route cleared',
       isRecord: this.lastKnockaboutWasRecord,
+      totalCaption: 'This run',
+      bestCaption: 'Best',
       total: `${run.struck} of ${run.total}`,
       best: previous === null ? '—' : `${previous.struck} of ${previous.total}`,
       deltaToBest: previous === null || previous.struck === run.struck
@@ -2041,14 +2435,8 @@ export class Game {
       return;
     }
 
-    this.lastChase = null;
-    this.lastChaseWasRecord = false;
-    this.lastKnockabout = null;
-    this.lastKnockaboutWasRecord = false;
-    this.lastResult = null;
-    this.lastResultWasRecord = false;
-    this.lastResultGhostDropped = false;
-    this.lastResultPreviousSplits = [];
+    this.clearLastResults();
+    this.trackDay.abandon();
     this.resultsIn = 0;
     // Deliberately **not** `resetChallengeRider`: there is no start gate to run
     // up to, and the chase begins where the world begins — which is also what
@@ -2376,6 +2764,8 @@ export class Game {
     return {
       heading,
       isRecord: this.lastChaseWasRecord,
+      totalCaption: 'This run',
+      bestCaption: 'Best',
       total: formatRunTime(run.survived),
       best: previous === null ? '—' : formatRunTime(previous.seconds),
       deltaToBest: previous === null || Math.abs(previous.seconds - run.survived) < 0.005
@@ -2396,6 +2786,100 @@ export class Game {
           ahead: false,
         },
       ],
+      notes,
+    };
+  }
+
+  /**
+   * Turn a finished track day into the words on the results card — M23.
+   *
+   * **The headline number is the best lap**, not the session: a track day is
+   * not a race and the afternoon's total means nothing, which is exactly what
+   * §23.6 settles by making the record the best lap. Everything else is the
+   * story — how many laps, how many counted, and what the three sectors would
+   * add up to if a rider ever put their best three together, which is the one
+   * number that tells a rider there is more in it.
+   *
+   * The rows are the best lap's own sectors against the record that was
+   * standing when the session began — `lastTrackDayPreviousSplits`, captured
+   * at the entrance for `lastResultPreviousSplits`'s reason: by now the store
+   * holds this session's lap and comparing it with itself prints a column of
+   * zeroes under a summary that correctly reads seconds faster.
+   */
+  private buildTrackDayResults(session: TrackDaySessionResult): ResultsView {
+    const unit = this.options.current.speedUnit;
+    const best = session.bestLapSeconds;
+    const previous = session.previousBest;
+    const previousSplits = this.lastTrackDayPreviousSplits;
+
+    const rows: ResultsRow[] = [];
+    // Index zero is the line the lap started from, whose split is zero by
+    // construction. A row reading `0:00.00` teaches the player nothing — the
+    // same skip the timed run's card makes, one mode later.
+    for (let index = 1; index < session.bestLapSplits.length; index += 1) {
+      const delta = index < previousSplits.length
+        ? session.bestLapSplits[index] - previousSplits[index]
+        : null;
+      rows.push({
+        label: session.labels[index] ?? `Sector ${index}`,
+        time: formatRunTime(session.bestLapSplits[index]),
+        delta: delta === null ? '' : formatDelta(delta),
+        ahead: delta === null || Math.round(delta * 100) < 0,
+      });
+    }
+
+    const notes: string[] = [];
+    notes.push(session.lapsCounted === session.lapsRidden
+      ? `${lapCount(session.lapsCounted)} counted`
+      : `${lapCount(session.lapsCounted)} counted of ${session.lapsRidden}`);
+    // **Only when it is actually quicker than the best lap.** A rider who put
+    // every sector together on one lap has an ideal lap equal to it, and
+    // printing "there is 0.00 in it" would be furniture.
+    if (
+      session.idealLapSeconds !== null
+      && best !== null
+      && best - session.idealLapSeconds >= 0.01
+    ) {
+      notes.push(`Best sectors together ${formatRunTime(session.idealLapSeconds)}`);
+    }
+    notes.push(
+      `Top speed ${formatSpeed(session.topSpeed, unit)} ${unit === 'mph' ? 'mph' : 'km/h'}`,
+    );
+    if (session.crashes > 0) {
+      notes.push(session.crashes === 1 ? 'One crash' : `${session.crashes} crashes`);
+    }
+    if (this.probing) {
+      notes.push('Diagnostic session — best lap and replay not saved');
+    } else {
+      if (this.lastTrackDayGhostDropped) notes.push('Replay not saved — storage full');
+      if (!this.records.persistent) {
+        notes.push('This browser will not save times after you close the tab');
+      }
+    }
+
+    const delta = best !== null && previous !== null ? best - previous : null;
+
+    return {
+      // **The heading comes from what the store did**, never from the
+      // referee's own `beatRecord` — the two are computed by layers that may
+      // not import each other, and they disagreed once already at a margin of
+      // exactly one hundredth of a second. Reporting the store's answer means a
+      // future drift costs a wrong field on a snapshot rather than a
+      // celebration over a lap the player will not find next session.
+      heading: this.lastTrackDayWasRecord
+        ? 'New best lap'
+        : best === null ? 'No lap set' : 'Session complete',
+      isRecord: this.lastTrackDayWasRecord,
+      // **The afternoon's best lap, not "this run".** A track day has no run
+      // to report — it has laps — and the number beside it is the record the
+      // player arrived with rather than a best they are still chasing.
+      totalCaption: 'Best lap',
+      bestCaption: 'Record',
+      total: best === null ? '—' : formatRunTime(best),
+      best: previous === null ? '—' : formatRunTime(previous),
+      deltaToBest: delta === null || Math.round(delta * 100) === 0 ? '' : formatDelta(delta),
+      ahead: delta !== null && Math.round(delta * 100) < 0,
+      rows,
       notes,
     };
   }
@@ -2744,12 +3228,16 @@ export class Game {
     // of the other two untouched. The three are mutually exclusive because a
     // ride is one mode, and each entrance clears the other two's last result.
     if (this.lastChase !== null) return this.buildChaseResults(this.lastChase);
+    // And Track Day after those, on the same argument a fourth time.
+    if (this.lastTrackDay !== null) return this.buildTrackDayResults(this.lastTrackDay);
 
     const result = this.lastResult;
     if (result === null) {
       return {
         heading: 'Run complete',
         isRecord: false,
+        totalCaption: 'This run',
+        bestCaption: 'Best',
         total: formatRunTime(0),
         best: '—',
         deltaToBest: '',
@@ -2819,6 +3307,8 @@ export class Game {
     return {
       heading: isRecord ? 'New record' : 'Run complete',
       isRecord,
+      totalCaption: 'This run',
+      bestCaption: 'Best',
       total: formatRunTime(result.totalSeconds),
       best: previous === null ? '—' : formatRunTime(previous),
       deltaToBest: previous === null ? '' : formatDelta(result.totalSeconds - previous),
@@ -3008,6 +3498,13 @@ export class Game {
     if (current !== 'results') return null;
     if (this.lastKnockabout !== null) return 'knockabout';
     if (this.lastChase !== null) return 'chase';
+    // **A track day cannot follow a fresh route, so New route means free ride
+    // here.** A generated course is point-to-point by construction (§13 q6) and
+    // carries no lap for the referee to judge, so resuming the mode on one
+    // would be offering a session that could never start. Free ride is what the
+    // player actually asked for — a new place — with nothing pretending to keep
+    // score on it.
+    if (this.lastTrackDay !== null) return 'freeRide';
     return 'challenge';
   }
 
@@ -3174,6 +3671,15 @@ export class Game {
     // cause, and means the ghost recorder is never carrying samples taken on
     // ground that no longer exists.
     if (this.challenge.state.phase !== 'idle') this.challenge.abandon();
+    // And a lap session belongs to the circuit that is leaving, for exactly
+    // that reason. `enterTrackDay` calls this before it arms, so the abandon
+    // here is of whatever the *previous* world was doing.
+    if (this.trackDay.state.phase !== 'idle') this.trackDay.abandon();
+    this.pendingLapFlash = null;
+    this.lastTrackDay = null;
+    this.lastTrackDayWasRecord = false;
+    this.lastTrackDayGhostDropped = false;
+    this.lastTrackDayPreviousSplits = [];
     this.ghostRecorder.reset();
     this.ghostPlayer = new GhostPlayer(null);
     this.renderer.setGhostVisible(false);
@@ -3197,6 +3703,7 @@ export class Game {
       softBodies: new SoftBodyField(plan.softBodies ?? []),
     });
     this.challenge = new ChallengeRun(plan.id, plan.checkpoints);
+    this.trackDay = new TrackDayRun(plan.id, plan.checkpoints, plan.lap ?? null);
     this.targets = new TargetField(plan.targets ?? []);
 
     // **The chase's world half, rebuilt with everything else and for the same
@@ -3259,7 +3766,7 @@ export class Game {
 
   /** Tell the menus which world is loaded. */
   private publishWorld(): void {
-    this.menus.setWorld({ generated: this.levelId === 'generated', seed: this.seed });
+    this.menus.setWorld({ world: this.levelId, seed: this.seed });
   }
 
   /**
@@ -3557,7 +4064,12 @@ export class Game {
       if (action === 'hop') hopForController = true;
       if (action === 'swing') swingForPaddle = true;
       if (action === 'reset') {
-        const timed = this.challenge.state.phase !== 'idle';
+        // A lap session resets to the start line's run-up exactly as a timed
+        // run does, and for the reason below: `TrackDayRun.restart` throws the
+        // lap in progress away, so a rider nine hundred metres round cannot
+        // teleport to eighteen metres short of the line and close it.
+        const timed = this.challenge.state.phase !== 'idle'
+          || this.trackDay.state.phase !== 'idle';
         if (timed) this.resetChallengeRider();
         else this.resetRider();
         // **During a timed run, `R` restarts the run rather than merely moving
@@ -3568,8 +4080,10 @@ export class Game {
         // `ChallengeRun.restart`, which is a no-op outside a run so free ride's
         // own `R` cannot arm one.
         this.challenge.restart();
+        this.trackDay.restart();
         this.ghostRecorder.reset();
         this.pendingSplit = null;
+        this.pendingLapFlash = null;
         this.resultsIn = 0;
         didReset = true;
       }
@@ -3711,6 +4225,7 @@ export class Game {
     // which is what makes a split time reproducible under `advance(n)` — and a
     // split time that is not reproducible is a personal best nobody can trust.
     this.stepChallenge(stepSeconds);
+    this.stepTrackDay(stepSeconds);
 
     // The camera reacts to the state that step just produced, and is stepped
     // at the same fixed rate for the same reason the controller is: so that
@@ -3911,6 +4426,7 @@ export class Game {
     const riding = this.appState.acceptsRideInput;
 
     const run = this.challenge.state;
+    const lap = this.trackDay.state;
     this.hudView = this.hudModel.update(this.simTimeSeconds, {
       speed: pose.speed,
       powerStage: this.controller.powerWarning,
@@ -3958,6 +4474,43 @@ export class Game {
           homeRadians: this.directionToRoute(pose),
         }
         : undefined,
+      // The lap lane — M23. It shares the run lane with the timed run and the
+      // two can never both be present: they are different app states, and
+      // `hudModel.ts` prefers this one when it is.
+      // **Gated on the referee's phase, not on the app state**, which is what
+      // the timed run's lane does one field up and for the reason a pause
+      // exists: a player who paused to read their lap time must not have the
+      // number they paused to read disappear. The gates stay lit through the
+      // same pause (`enterState`), so a lane that vanished would leave the
+      // lines on screen with no clock beside them.
+      trackDay: lap.phase !== 'idle'
+        ? {
+          phase: lap.phase,
+          lap: lap.lap,
+          elapsed: lap.elapsed,
+          valid: lap.valid,
+          // **The time to beat, decided here rather than on screen.** It is
+          // whichever of the stored record and this afternoon's best is
+          // quicker, which is normally the same number — a lap that beats the
+          // record replaces it immediately — and is not on the first lap of a
+          // session on a world whose record was set by somebody else's browser
+          // and then cleared. A lane that reasoned about which of two to show
+          // would be a second opinion about what the player is racing.
+          bestLapSeconds: lap.bestLapSeconds === null
+            ? lap.recordSeconds
+            : lap.recordSeconds === null
+              ? lap.bestLapSeconds
+              : Math.min(lap.bestLapSeconds, lap.recordSeconds),
+          lastLapSeconds: lap.lastLapSeconds,
+          nextLabel: lap.nextLabel,
+          directionRadians: this.directionToCheckpoint(lap.nextIndex, pose),
+          distanceMetres: lap.distanceToNext,
+          // Consumed rather than read, exactly as the timed run's split is: a
+          // crossing is one step's edge, and leaving it set would re-arm the
+          // model's dwell on every frame for as long as the player rode.
+          split: this.takePendingLapFlash(),
+        }
+        : undefined,
       // Read off the controller rather than derived from `pose.speed` — M20.
       // The cutout's thresholds are live-tunable and the controller owns them;
       // a HUD that recomputed the ratio would be a second opinion about when
@@ -4000,13 +4553,24 @@ export class Game {
    * is the annoyance rule almost word for word.
    */
   private updateGhost(): void {
-    if (this.appState.current !== 'challenge' || !this.ghostPlayer.hasTrack) {
+    const state = this.appState.current;
+    if ((state !== 'challenge' && state !== 'trackDay') || !this.ghostPlayer.hasTrack) {
       this.renderer.setGhostVisible(false);
       return;
     }
 
-    const run = this.challenge.state;
-    if (run.phase !== 'running' || !this.ghostPlayer.sample(run.elapsed, this.ghostSample)) {
+    // **The lap ghost is the same recording read at a different clock, and
+    // that is the whole of §23.6's "one genuine delta".** A time-trial ghost is
+    // sampled at run seconds and plays once; a lap ghost is sampled at *lap*
+    // seconds, so it restarts on the line beside the player and every flying
+    // lap is raced side by side against the stored best. There is no second
+    // representation, no seek, and no state — the referee's lap clock going
+    // back to zero is the restart.
+    const running = state === 'trackDay' ? this.trackDay.state : this.challenge.state;
+    if (
+      running.phase !== 'running'
+      || !this.ghostPlayer.sample(running.elapsed, this.ghostSample)
+    ) {
       this.renderer.setGhostVisible(false);
       return;
     }
@@ -4020,6 +4584,13 @@ export class Game {
     const split = this.pendingSplit;
     this.pendingSplit = null;
     return split;
+  }
+
+  /** The same, for the lap lane. See `pendingLapFlash`. */
+  private takePendingLapFlash(): LapFlash | null {
+    const flash = this.pendingLapFlash;
+    this.pendingLapFlash = null;
+    return flash;
   }
 
   /**
@@ -4367,11 +4938,24 @@ export class Game {
     // HUD: a player pausing to work out where the next gate is should not have
     // the gates disappear when they pause. `settings` opened from that pause
     // keeps them too, since it is the same interruption one screen deeper.
+    //
+    // **Track Day joins on the same terms** — M23. Its gates are the same
+    // volumes wearing the same renderer, and the `paused`/`settings` clause has
+    // to ask *both* referees or a paused lap loses the lines it is being timed
+    // against.
+    const running = this.challenge.state.phase !== 'idle'
+      || this.trackDay.state.phase !== 'idle';
     const timing = state === 'challenge'
+      || state === 'trackDay'
       || state === 'results'
-      || ((state === 'paused' || state === 'settings') && this.challenge.state.phase !== 'idle');
+      || ((state === 'paused' || state === 'settings') && running);
     this.renderer.setCheckpointsVisible(timing);
     if (!timing) this.renderer.setGhostVisible(false);
+
+    // The pit-in control exists only while there is a session to pit out of.
+    this.menus.setEndSessionAvailable(
+      state === 'paused' && this.appState.rideReturn === 'trackDay',
+    );
 
     // **Only two states actually end a run, and they are named rather than
     // derived.** `title` is quitting and `freeRide` is choosing the untimed
@@ -4389,7 +4973,7 @@ export class Game {
     // is not the results screen or a pause — M14. `lastKnockabout` is cleared
     // with it, which is what makes `buildResultsView` and the retry button able
     // to tell which mode they are looking at.
-    if (state === 'title' || state === 'freeRide' || state === 'challenge') {
+    if (state === 'title' || state === 'freeRide' || state === 'challenge' || state === 'trackDay') {
       this.lastKnockabout = null;
       this.lastKnockaboutWasRecord = false;
       this.knockaboutSeconds = 0;
@@ -4400,6 +4984,18 @@ export class Game {
       this.ghostRecorder.reset();
       this.resultsIn = 0;
       this.pendingSplit = null;
+    }
+
+    // A track day ends on exactly the two exits a timed run ends on, and for
+    // the same reason: `paused` and the `settings` screen behind it are places
+    // the player is coming back from, and every other way out is a decision to
+    // stop. `results` is not here because a session reaches it by ending
+    // itself — `endTrackDaySession` has already frozen the card.
+    if ((state === 'title' || state === 'freeRide') && this.trackDay.state.phase !== 'idle') {
+      this.trackDay.abandon();
+      this.ghostRecorder.reset();
+      this.resultsIn = 0;
+      this.pendingLapFlash = null;
     }
 
     // The results panel is filled before it is shown, or the player reads one
@@ -5115,6 +5711,14 @@ class RiderTarget implements HittableSet {
     if (volume.z + volume.radius < minZ || volume.z - volume.radius > maxZ) return;
     visit(volume);
   }
+}
+
+/**
+ * `1 lap` / `4 laps`, because "1 laps counted" is the kind of thing a results
+ * card says once and is remembered for.
+ */
+function lapCount(laps: number): string {
+  return laps === 1 ? '1 lap' : `${laps} laps`;
 }
 
 function menuScreenFor(state: AppStateId): MenuScreen {

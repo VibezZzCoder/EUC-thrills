@@ -56,13 +56,17 @@ export type PropPartId =
   | 'signPlate'
   | 'fenceBay'
   | 'buildingBody'
+  | 'buildingLow'
   | 'buildingTall'
-  | 'buildingCap';
+  | 'buildingCap'
+  | 'tyreStack'
+  | 'gantrySpan';
 
 export const PROP_PART_IDS: readonly PropPartId[] = deepFreeze([
   'trunk', 'crown', 'coniferFoliage', 'shrub', 'lampPost', 'lampHead',
   'benchWood', 'benchMetal', 'litterBin', 'bollardCap', 'signPost', 'signPlate',
-  'fenceBay', 'buildingBody', 'buildingTall', 'buildingCap',
+  'fenceBay', 'buildingBody', 'buildingLow', 'buildingTall', 'buildingCap',
+  'tyreStack', 'gantrySpan',
 ]);
 
 export interface PartCost {
@@ -96,8 +100,15 @@ export const PART_COSTS: Readonly<Record<PropPartId, PartCost>> = deepFreeze({
   signPlate: { triangles: 24, castsShadow: false },
   fenceBay: { triangles: 36, castsShadow: true },
   buildingBody: { triangles: 60, castsShadow: false },
+  buildingLow: { triangles: 28, castsShadow: false },
   buildingTall: { triangles: 172, castsShadow: false },
   buildingCap: { triangles: 12, castsShadow: false },
+  tyreStack: { triangles: 128, castsShadow: true },
+  // 984 rather than B1's 552 because the banner reads BELVAR CIRCUIT rather
+  // than BELVAR: a stroke becomes one box per segment, and the venue's full
+  // name is 65 segments where its first word was 29. One instance in the
+  // world, so it is 432 triangles on the frame and no draw call at all.
+  gantrySpan: { triangles: 984, castsShadow: true },
 });
 
 /**
@@ -117,13 +128,34 @@ export const SIMPLE_PROP_PARTS: Readonly<Partial<Record<PropKind, readonly PropP
   bollardCap: ['bollardCap'],
   signpost: ['signPost', 'signPlate'],
   fenceBay: ['fenceBay'],
+  tyreStack: ['tyreStack'],
+  gantrySpan: ['gantrySpan'],
 });
 
 /** The default a building falls back to when it carries no metric size. */
 const DEFAULT_BUILDING_SIZE = { x: 12, y: 18, z: 12 } as const;
 
-/** Which facade a box of this height wears. */
+/**
+ * Which facade a box of this height wears.
+ *
+ * Three ways rather than two: a body under `lowRiseHeight` cannot carry
+ * `lowFloors` bands without them falling under `minFloorHeight`, which is the
+ * defect BelVar's paddock sheds shipped with.
+ */
 function facadeFor(height: number): PropPartId {
+  if (height >= BUILDING_FACADE.highRiseHeight) return 'buildingTall';
+  return height >= BUILDING_FACADE.lowRiseHeight ? 'buildingBody' : 'buildingLow';
+}
+
+/**
+ * Which facade a *setback tower* wears — deliberately still the old two.
+ *
+ * A short tower is suppressed rather than given the low-rise facade, because
+ * the suppression is a statement about roof features and not about band
+ * heights: letting five-metre towers appear now that a facade fits them would
+ * change every skyline in the city as a side effect of fixing a paddock.
+ */
+function towerFacadeFor(height: number): PropPartId {
   return height >= BUILDING_FACADE.highRiseHeight ? 'buildingTall' : 'buildingBody';
 }
 
@@ -149,7 +181,7 @@ export function buildingTowerPart(
 ): PropPartId | null {
   if (positionHash01(x, z, 9) <= 0.55) return null;
   const towerHeight = size.y * PROP_SIZES.building.towerHeightFraction;
-  const facade = facadeFor(towerHeight);
+  const facade = towerFacadeFor(towerHeight);
   const floors = facade === 'buildingTall' ? BUILDING_FACADE.highFloors : BUILDING_FACADE.lowFloors;
   if (towerHeight / floors < BUILDING_FACADE.minFloorHeight) return null;
   return facade;
@@ -311,6 +343,21 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  *
  * What has moved, most recent first:
  *
+ *   - **Maribel's look and her wheel — M23 Phase A1b/A2 (2026-08-18): 33,648 →
+ *     36,112 triangles, zero draw calls.** The one look on the roster whose
+ *     mesh-parity target the owner waived outright — *"break the graphics
+ *     budget… Her looking good is priority one"* — and the interesting result
+ *     is how little of that permission the frame needed. Everything her
+ *     redesign added went onto the free axes: her printed chest, her leg
+ *     script, her knee devices, her visor gradient and her wheel's badge are
+ *     **one texture** shared by two materials that were already being drawn,
+ *     and a texture is not a mesh; her sixteen-piece head of loose hair is one
+ *     merged buffer in the slot the ponytail's single buffer occupied; and the
+ *     rest is `RiderLook.density`, which buys sections rather than parts. So a
+ *     waiver written for draw calls was spent entirely on triangles, and the
+ *     rider is **still one mesh and one call fewer than Cool Rider**. Her
+ *     machine is 11 meshes and 18 calls, level with the standard wheel and
+ *     with both machines before it.
  *   - **Adonisb2's machine — M22 Phase 2 (2026-08-17): 32,032 → 33,648
  *     triangles, zero draw calls.** The third `MachineLook`: his blocky
  *     off-road wheel. It is **11 meshes and 18 draw calls, identical to the
@@ -383,7 +430,7 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  */
 export const NON_LEVEL_RESERVE = deepFreeze({
   drawCalls: 88,
-  triangles: 33_648,
+  triangles: 53_274,
 });
 
 /**
@@ -398,8 +445,44 @@ export const NON_LEVEL_RESERVE = deepFreeze({
  * business inside a generator.
  */
 export const RENDER_BUDGET = deepFreeze({
-  maxDrawCalls: 150,
-  maxTriangles: 400_000,
+  /**
+   * **Raised from 150 to 160 by the owner on 2026-08-19** — M23 Phase A1d.
+   *
+   * The number had stood since M7 and A1c ran into it head-on: the frame was
+   * sitting at exactly 150 (88 reserved, 62 for the worst level), so the
+   * parity waiver the owner had already granted Maribel was unspendable and
+   * her build had to pay for everything in triangles and paint instead. His
+   * instruction on the A1c ride settles it — *"I don't know… increase budget.
+   * Make it better."*
+   *
+   * Ten calls, not an open cheque. What it actually buys is one casting mesh
+   * on one character (her aero hump, which is why the ceiling moved at all)
+   * and nine calls of headroom for the looks after her, so the next character
+   * work is a design argument rather than a budget one. Triangles were not
+   * touched: 400 k was never the binding constraint.
+   */
+  maxDrawCalls: 160,
+  /**
+   * **Raised from 400 k to 460 k by the owner on 2026-08-19** — M23 Phase A1d,
+   * the same instruction that moved the draw-call ceiling.
+   *
+   * His words on the A1c ride were *"She needs more poligons… increase budget.
+   * Make it better."*, and the polygons went where he named them: her figure's
+   * ring count, a hand that is a hand, hair that is a mass rather than ropes.
+   * The measured cost is **+36,770 triangles on the worst reserve**, which
+   * took the densest known route from 78.9% of the old ceiling to 88.1% — past
+   * the 80% line `level/generatedLevel.test.ts` holds as the point where
+   * scaling work would be needed.
+   *
+   * Sixty thousand rather than a round doubling, and triangles rather than
+   * draw calls, because the two axes are not alike. A draw call is CPU work
+   * per frame and is what this project has always been scarce on; triangles at
+   * this order of magnitude are trivial for any GPU the game targets — the
+   * densest route is now 353 k, which an M1 or a recent iPhone chews through
+   * far below its limit. The new ceiling puts that route at 76.6% and restores
+   * the margin the 80% rule exists to protect.
+   */
+  maxTriangles: 460_000,
 });
 
 /**

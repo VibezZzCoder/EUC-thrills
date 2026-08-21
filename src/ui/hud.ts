@@ -49,10 +49,15 @@ const TEMPLATE = `
 </div>
 
 <div class="euc-hud__challenge" data-hud="challenge" hidden>
+  <div class="euc-hud__lap" data-hud="lap-label"></div>
   <div class="euc-hud__timer" data-hud="timer">0:00.00</div>
   <div class="euc-hud__splits" data-hud="splits" data-ahead="false" hidden>
     <span class="euc-hud__split-label" data-hud="split-label"></span>
     <span class="euc-hud__split-delta" data-hud="split-delta"></span>
+  </div>
+  <div class="euc-hud__splits euc-hud__splits--best" data-hud="lap-best" hidden>
+    <span class="euc-hud__split-label" data-hud="lap-best-label"></span>
+    <span class="euc-hud__split-delta" data-hud="lap-best-value"></span>
   </div>
 </div>
 
@@ -106,6 +111,9 @@ export class Hud {
   private lastOverspeedLevel = '';
   private lastOverspeedPulse = '';
   private lastChallengeVisible = false;
+  private lastLapLabel = '';
+  private lastBestLabel = '';
+  private lastBestValue = '';
   private lastRunTime = '';
   private lastSplitLabel = '';
   private lastSplitDelta = '';
@@ -320,6 +328,17 @@ export class Hud {
     }
     if (!challenge.visible) return;
 
+    if (challenge.lapLabel !== this.lastLapLabel) {
+      this.nodes['lap-label'].textContent = challenge.lapLabel;
+      // Hidden rather than left empty, so its own bottom margin goes with it —
+      // which is what keeps a time trial's lane pixel-identical to the one it
+      // had before Track Day existed. `:empty` would do the same and would
+      // also fire on the frame between two labels; a boolean the diff already
+      // owns cannot.
+      this.nodes['lap-label'].hidden = challenge.lapLabel === '';
+      this.lastLapLabel = challenge.lapLabel;
+    }
+
     if (challenge.time !== this.lastRunTime) {
       this.nodes.timer.textContent = challenge.time;
       this.lastRunTime = challenge.time;
@@ -344,6 +363,19 @@ export class Hud {
     if (ahead !== this.lastSplitAhead) {
       this.nodes.splits.dataset.ahead = ahead;
       this.lastSplitAhead = ahead;
+    }
+
+    // The bottom row. Hidden by its label for the row above's reason: hiding
+    // the row takes the value beside it with it, and an empty label with a
+    // number next to it reads as a bug.
+    if (challenge.bestLabel !== this.lastBestLabel) {
+      this.nodes['lap-best-label'].textContent = challenge.bestLabel;
+      this.nodes['lap-best'].hidden = challenge.bestLabel === '';
+      this.lastBestLabel = challenge.bestLabel;
+    }
+    if (challenge.bestValue !== this.lastBestValue) {
+      this.nodes['lap-best-value'].textContent = challenge.bestValue;
+      this.lastBestValue = challenge.bestValue;
     }
   }
 

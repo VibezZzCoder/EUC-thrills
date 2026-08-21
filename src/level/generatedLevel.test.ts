@@ -793,6 +793,19 @@ test('generation alone does not consume the complete boot budget', () => {
  * The tyre, pedals, suspension, hazard and target counts are untouched. The
  * identical movement on all six routes is again the fixed-reserve check.
  *
+ * **Re-recorded 2026-08-18 for Maribel's look and her wheel — M23 Phase A1b
+ * and A2.** Every seed gained exactly 2,464 triangles and no draw call:
+ * `NON_LEVEL_RESERVE` moving 33,648 → 36,112 and nothing else. The owner
+ * waived her mesh-parity target to get the look he wanted and the frame did
+ * not need the waiver — her printed graphics are one texture on materials that
+ * were already drawn, her loose hair is one merged buffer in the ponytail's
+ * slot, and the rest is `RiderLook.density`, which buys sections. Her rider is
+ * 23 meshes and 39 calls against Cool Rider's 24 and 40; her machine is 11 and
+ * 18, level with all three before it. Hazard and target counts are untouched
+ * on all six routes, which is what makes the uniform movement a reserve change
+ * rather than a generator change. The densest route now spends 78.1% of the
+ * triangle ceiling, still inside the 80% the headroom test below demands.
+ *
  * **Re-recorded 2026-08-17 for Adonisb2's machine — M22 Phase 2.** Every seed
  * gained exactly 1,616 triangles and no draw call: `NON_LEVEL_RESERVE` moving
  * 32,032 → 33,648 and nothing else. His off-road wheel is 11 meshes and 18
@@ -803,14 +816,65 @@ test('generation alone does not consume the complete boot budget', () => {
  * routes, which is what makes the uniform movement a reserve change rather
  * than a generator change. The densest route now spends 77.5% of the triangle
  * ceiling, still inside the 80% the headroom test below demands.
+ *
+ * **Re-recorded 2026-08-19 for the A1c geometry reconstruction — Maribel's
+ * chassis, hair, armour, helmet and her machine's performance body.** Every
+ * seed gained exactly 3,412 triangles and no draw call: `NON_LEVEL_RESERVE`
+ * moving 36,112 → 39,524 and nothing else. The owner's reviewer waived her
+ * draw-call parity outright for this pass ("5–10 additional draw calls is
+ * probably a much better trade than an ugly character") and the ceiling test
+ * refused the spend anyway — the frame was at exactly 150 with the level
+ * library's worst case — so everything A1c added, it added in triangles:
+ * the female chassis re-authored ring by ring, a hair mass of lobes and
+ * clumps in the one hair buffer, moulded shoulder pods and hip sliders in
+ * one new non-casting buffer (paid for by painting the elbow guards instead
+ * of patching them), her own swept helmet shell, and a machine whose tall
+ * body, purple pad stack and street tread all merge into meshes it already
+ * had. Her rider is 24 meshes and 40 calls — exact parity with Cool Rider at
+ * nearly twice his triangles — and her machine is 11 and 18, level with all
+ * three before it. Hazard and target counts are untouched on all six routes.
+ * The densest route now spends 78.9% of the triangle ceiling, still inside
+ * the 80% the headroom test below demands.
+ */
+/**
+ * **Re-recorded 2026-08-19, for M23 Phase A1d.** Every seed gained exactly one
+ * draw call and 33,842 triangles, uniformly — the same rider work on every
+ * route, which is what a change to the non-level reserve looks like when it is
+ * a character and not a generator change. The call is Maribel's aero hump,
+ * which became a closed casting volume where it had been a floating patch; the
+ * triangles are her ring counts, her hands, her hair and her machine's pad
+ * blocks. The owner raised both §9 ceilings the same day to pay for it, so the
+ * densest known route now spends 76.0% of a 460 k ceiling where it spent 78.9%
+ * of a 400 k one — slightly *more* headroom than it had before the pass.
  */
 const ADVERSARIAL_2026_08_09 = [
-  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 137, triangles: 309_848, hazards: 6, targets: 22 },
-  { seed: 'route-278', axis: 'second densest', drawCalls: 136, triangles: 306_524, hazards: 4, targets: 19 },
-  { seed: 'sweep-89', axis: 'third densest', drawCalls: 137, triangles: 303_660, hazards: 6, targets: 26 },
-  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 137, triangles: 299_162, hazards: 6, targets: 19 },
-  { seed: 'euc-180', axis: 'longest required route', drawCalls: 136, triangles: 284_928, hazards: 8, targets: 21 },
-  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 136, triangles: 254_062, hazards: 7, targets: 22 },
+  // Re-recorded 2026-08-19 twice in one day, both uniform across the sweep:
+  // −92 triangles when the bug hunt removed the wheel's invented tail-spine
+  // patch, then −1 call and −7,568 triangles as q58–q61 landed and settled through capture calibration — the aero
+  // hump (a casting mesh) left with its volume, and the machine's pad wrap is
+  // simpler than the four pill blocks it replaced. The tail lamp, the purple
+  // ring and the larger flank badges all live inside existing meshes.
+  // Re-recorded 2026-08-20 after the five-defect QA pass: −15,932 triangles
+  // uniformly, with calls, hazards and targets unchanged. Twelve separate hair
+  // lofts became one shallow closed curtain while the helmet liner moved into
+  // its own non-casting mesh; this is a non-level rider-cost change, not a
+  // generated-route change.
+  // Re-recorded 2026-08-20 (fourth pass): +640 triangles uniformly, calls,
+  // hazards and targets unchanged. Two patches on Maribel's machine gained
+  // rows so the bodywork stops breaking through them, the helmet's brow band
+  // moved off the visor, and Trollina's skirt gained a boxier plan — all
+  // non-level rider and machine cost.
+  // Re-recorded 2026-08-20 (fifth pass, §23.9m's repairs): −288 triangles
+  // uniformly, calls, hazards and targets unchanged. Maribel's hip sliders
+  // doubled their radial segments so their rim stops reading as a decagon
+  // (+160) and her helmet liner lost its two nape lobes (−448). Non-level
+  // rider cost on one character.
+  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 137, triangles: 329_474, hazards: 6, targets: 22 },
+  { seed: 'route-278', axis: 'second densest', drawCalls: 136, triangles: 326_150, hazards: 4, targets: 19 },
+  { seed: 'sweep-89', axis: 'third densest', drawCalls: 137, triangles: 323_286, hazards: 6, targets: 26 },
+  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 137, triangles: 318_788, hazards: 6, targets: 19 },
+  { seed: 'euc-180', axis: 'longest required route', drawCalls: 136, triangles: 304_554, hazards: 8, targets: 21 },
+  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 136, triangles: 273_688, hazards: 7, targets: 22 },
 ] as const;
 
 
@@ -1028,7 +1092,7 @@ test('the render budget is a live contract, not a formality it never reaches', (
 
   const verdict = withinRenderBudget(denser);
   assert.equal(verdict.ok, false, 'three times the dressing on the densest route fits the ceiling');
-  assert.match(verdict.breaches[0], /triangles against a ceiling of 400000/);
+  assert.match(verdict.breaches[0], /triangles against a ceiling of 460000/);
 });
 
 // ---------------------------------------------------------------------------

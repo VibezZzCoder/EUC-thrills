@@ -43,6 +43,8 @@ const DECLARED: readonly PropKind[] = [
   'signpost',
   'fenceBay',
   'building',
+  'tyreStack',
+  'gantrySpan',
 ];
 
 /** Linear luminance of an sRGB hex, the same arithmetic `surfaces.test.ts` uses. */
@@ -258,6 +260,8 @@ const WIDEST: Record<PropKind, number> = {
   signpost: PROP_SIZES.signpost.plateWidth - PROP_SIZES.signpost.postRadius,
   fenceBay: PROP_SIZES.fenceBay.length / 2,
   building: 0.5,
+  tyreStack: PROP_SIZES.tyreStack.radius,
+  gantrySpan: PROP_SIZES.gantrySpan.halfSpan,
 };
 
 /** The largest distance from a footprint's origin to its own boundary. */
@@ -318,6 +322,14 @@ test('the facade bands are storeys rather than stripes', () => {
   );
   // The switch has to land where both patterns give plausible storeys.
   assert.ok(BUILDING_FACADE.minFloorHeight > 1.5);
+  // `lowRiseHeight` is not a taste: it is the height at which the four-band
+  // facade stops producing storeys somebody could stand up in, which is what
+  // decides when a body wears `lowRiseFloors` instead.
+  assert.equal(
+    BUILDING_FACADE.lowRiseHeight,
+    BUILDING_FACADE.lowFloors * BUILDING_FACADE.minFloorHeight,
+  );
+  assert.ok(BUILDING_FACADE.lowRiseFloors < BUILDING_FACADE.lowFloors);
   assert.ok(BUILDING_FACADE.maxFloorHeight < 8);
   assert.ok(
     BUILDING_FACADE.highRiseHeight / BUILDING_FACADE.lowFloors

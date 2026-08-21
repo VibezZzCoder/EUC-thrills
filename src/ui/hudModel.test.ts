@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { CHALLENGE, CHASE } from '../data/tuning.ts';
+import { CHALLENGE, CHASE, TRACK_DAY } from '../data/tuning.ts';
 import {
   HudModel,
   formatDelta,
@@ -9,6 +9,7 @@ import {
   formatSpeed,
   type ChallengeHudInput,
   type HudInput,
+  type TrackDayHudInput,
 } from './hudModel.ts';
 
 const RIDING: HudInput = Object.freeze({
@@ -629,4 +630,226 @@ test('no route to point at draws no arrow rather than a wrong one', () => {
   assert.equal(view.stray.visible, true);
   assert.equal(view.stray.arrow, '');
   assert.equal(view.stray.seconds, '6', 'and the countdown is still there, which is the load-bearing half');
+});
+
+// --- The lap lane, M23 -------------------------------------------------------
+
+/** A track day in progress, with the fields a test usually does not care about. */
+function lapping(overrides: Partial<TrackDayHudInput> = {}): TrackDayHudInput {
+  return {
+    phase: 'running',
+    lap: 1,
+    elapsed: 0,
+    valid: true,
+    bestLapSeconds: null,
+    lastLapSeconds: null,
+    nextLabel: 'Sector 1',
+    directionRadians: Number.NaN,
+    distanceMetres: Infinity,
+    split: null,
+    ...overrides,
+  };
+}
+
+test('the lap lane names the lap above the clock, and the out lap says so', () => {
+  const hud = new HudModel();
+
+  const out = hud.update(0, at({ trackDay: lapping({ phase: 'outLap', lap: 0 }) }));
+  assert.equal(out.challenge.visible, true);
+  assert.equal(out.challenge.lapLabel, 'Out lap');
+  assert.equal(out.challenge.time, '0:00.00');
+
+  const flying = hud.update(1, at({ trackDay: lapping({ lap: 3, elapsed: 12.5 }) }));
+  assert.equal(flying.challenge.lapLabel, 'Lap 3');
+  assert.equal(flying.challenge.time, '0:12.50');
+});
+
+test('a lap that will not count says so where the lap is named', () => {
+  // Beside the lap it is about, rather than in a cue lane the player reads for
+  // a different reason — and it stays there for the rest of the lap, because a
+  // rider who has just gone off needs to know the push is over.
+  const hud = new HudModel();
+  const view = hud.update(0, at({ trackDay: lapping({ lap: 2, valid: false }) }));
+  assert.equal(view.challenge.lapLabel, 'Lap 2 · no time');
+  const later = hud.update(20, at({ trackDay: lapping({ lap: 2, valid: false, elapsed: 20 }) }));
+  assert.equal(later.challenge.lapLabel, 'Lap 2 · no time');
+});
+
+test('the last lap and the time to beat both stay on the lane, permanently', () => {
+  // **The owner's first session found this**: the finished lap was flashed for
+  // four seconds and then the row was given back, so a rider who looked up six
+  // seconds after the line saw neither the lap they had just ridden nor the one
+  // they were chasing, and reported the lane as resetting itself.
+  const hud = new HudModel();
+  const first = hud.update(0, at({ trackDay: lapping() }));
+  assert.equal(first.challenge.splitLabel, '', 'a first lap has no last lap');
+  assert.equal(first.challenge.bestLabel, '', 'and nothing to chase either');
+
+  const going = hud.update(0, at({
+    trackDay: lapping({ lap: 3, lastLapSeconds: 63.2, bestLapSeconds: 62.41 }),
+  }));
+  assert.equal(going.challenge.splitLabel, 'Last');
+  assert.equal(going.challenge.splitDelta, '1:03.20');
+  assert.equal(going.challenge.bestLabel, 'Best');
+  assert.equal(going.challenge.bestValue, '1:02.41');
+  assert.equal(going.challenge.ahead, false, 'neither is a delta');
+
+  // And they are still there a full minute later, which is the whole claim.
+  const later = hud.update(60, at({
+    trackDay: lapping({ lap: 3, elapsed: 40, lastLapSeconds: 63.2, bestLapSeconds: 62.41 }),
+  }));
+  assert.equal(later.challenge.splitDelta, '1:03.20');
+  assert.equal(later.challenge.bestValue, '1:02.41');
+});
+
+test('a flash borrows the Last row and never the Best row', () => {
+  // The time to beat is the number a rider chasing a lap wants permanently in
+  // view, so nothing may take its row — the flash lands one row up, over a
+  // value that is repeated on the results card anyway.
+  const hud = new HudModel();
+  const view = hud.update(5, at({
+    trackDay: lapping({
+      lap: 2,
+      lastLapSeconds: 63.2,
+      bestLapSeconds: 62.41,
+      split: { kind: 'sector', label: 'Sector 1', delta: -0.42 },
+    }),
+  }));
+  assert.equal(view.challenge.splitLabel, 'Sector 1');
+  assert.equal(view.challenge.splitDelta, '−0.42');
+  assert.equal(view.challenge.bestLabel, 'Best');
+  assert.equal(view.challenge.bestValue, '1:02.41');
+});
+
+test('a sector crossing flashes over the time to beat, and gives it back', () => {
+  const hud = new HudModel();
+  const crossed = hud.update(10, at({
+    trackDay: lapping({
+      elapsed: 20.5,
+      bestLapSeconds: 62.41,
+      split: { kind: 'sector', label: 'Sector 1', delta: -0.42 },
+    }),
+  }));
+  assert.equal(crossed.challenge.splitLabel, 'Sector 1');
+  assert.equal(crossed.challenge.splitDelta, '−0.42');
+  assert.equal(crossed.challenge.ahead, true);
+
+  // Still holding just inside the dwell...
+  const holding = hud.update(
+    10 + CHALLENGE.splitHoldSeconds - 0.01,
+    at({ trackDay: lapping({ elapsed: 22, bestLapSeconds: 62.41 }) }),
+  );
+  assert.equal(holding.challenge.splitLabel, 'Sector 1');
+
+  // ...and once it lapses the row goes back to the last lap. A hair past
+  // rather than exactly on it, because `10 + 2.6` is not 12.6 in binary
+  // floating point and a test balanced on the boundary is testing the adder.
+  const released = hud.update(
+    10 + CHALLENGE.splitHoldSeconds + 0.01,
+    at({ trackDay: lapping({ elapsed: 22, lastLapSeconds: 63.2, bestLapSeconds: 62.41 }) }),
+  );
+  assert.equal(released.challenge.splitLabel, 'Last');
+  assert.equal(released.challenge.splitDelta, '1:03.20');
+  assert.equal(released.challenge.bestValue, '1:02.41', 'the time to beat never left');
+});
+
+test('a lap that counted flashes the lap time, and holds it longer than a sector', () => {
+  const hud = new HudModel();
+  const view = hud.update(5, at({
+    trackDay: lapping({
+      lap: 2,
+      elapsed: 0.01,
+      bestLapSeconds: 62.41,
+      split: { kind: 'lap', seconds: 62.41, delta: -0.3 },
+    }),
+  }));
+  assert.equal(view.challenge.splitLabel, 'Lap 1:02.41');
+  assert.equal(view.challenge.splitDelta, '−0.30');
+  assert.equal(view.challenge.ahead, true);
+  assert.equal(view.challenge.lapLabel, 'Lap 2', 'the label already belongs to the new lap');
+
+  // A lap time is the number the rider came for and outlasts a sector split.
+  assert.ok(TRACK_DAY.lapHoldSeconds > CHALLENGE.splitHoldSeconds);
+  const stillUp = hud.update(
+    5 + CHALLENGE.splitHoldSeconds + 0.01,
+    at({ trackDay: lapping({ lap: 2, elapsed: 3, lastLapSeconds: 62.41, bestLapSeconds: 62.41 }) }),
+  );
+  assert.equal(stillUp.challenge.splitLabel, 'Lap 1:02.41');
+  const gone = hud.update(
+    5 + TRACK_DAY.lapHoldSeconds + 0.01,
+    at({ trackDay: lapping({ lap: 2, elapsed: 3, lastLapSeconds: 62.41, bestLapSeconds: 62.41 }) }),
+  );
+  assert.equal(gone.challenge.splitLabel, 'Last');
+  assert.equal(gone.challenge.splitDelta, '1:02.41', 'the lap it just set is still readable');
+});
+
+test('a first lap with nothing to compare against reads Best rather than a delta', () => {
+  const hud = new HudModel();
+  const view = hud.update(0, at({
+    trackDay: lapping({ split: { kind: 'lap', seconds: 62.41, delta: null } }),
+  }));
+  assert.equal(view.challenge.splitLabel, 'Lap 1:02.41');
+  assert.equal(view.challenge.splitDelta, 'Best');
+  assert.equal(view.challenge.ahead, true);
+});
+
+test('a void lap says so once at the line and carries no delta', () => {
+  const hud = new HudModel();
+  const view = hud.update(0, at({
+    trackDay: lapping({ lap: 4, bestLapSeconds: 62.41, split: { kind: 'void' } }),
+  }));
+  assert.equal(view.challenge.splitLabel, 'No time');
+  assert.equal(view.challenge.splitDelta, '', 'a lap that did not count has no delta, and Best would be a lie');
+  assert.equal(view.challenge.ahead, false);
+});
+
+test('the objective points at the line on the out lap and goes quiet on a flying lap', () => {
+  const hud = new HudModel();
+  const out = hud.update(0, at({
+    trackDay: lapping({
+      phase: 'outLap',
+      lap: 0,
+      distanceMetres: 50,
+      directionRadians: 0,
+    }),
+  }));
+  assert.equal(out.objective, '↑ Ride to the start line · 50 m');
+
+  // **Silent while lapping, on purpose.** A circuit tells a rider where to go
+  // by being a circuit, and a line naming the next sector three times a lap is
+  // the standing rule against anything annoying.
+  const flying = hud.update(1, at({
+    trackDay: lapping({ distanceMetres: 200, directionRadians: 0 }),
+  }));
+  assert.equal(flying.objective, '');
+});
+
+test('the lap lane and the timed run share one lane and never both fill it', () => {
+  const hud = new HudModel();
+  // The time trial's own lane carries no lap label, so the DOM row it lives in
+  // is hidden and a time trial's lane is the two rows it has always been.
+  const timed = hud.update(0, at({ challenge: running({ elapsed: 3 }) }));
+  assert.equal(timed.challenge.lapLabel, '');
+  assert.equal(timed.challenge.bestLabel, '', 'the timed run has no fourth row either');
+  assert.equal(timed.challenge.time, '0:03.00');
+
+  // Track Day wins when both arrive, which cannot happen from `app/Game.ts` and
+  // is asserted so that it cannot start happening quietly.
+  const both = hud.update(0, at({
+    challenge: running({ elapsed: 3 }),
+    trackDay: lapping({ elapsed: 9 }),
+  }));
+  assert.equal(both.challenge.time, '0:09.00');
+  assert.equal(both.challenge.lapLabel, 'Lap 1');
+});
+
+test('leaving a session drops the flash, so the next run does not inherit it', () => {
+  const hud = new HudModel();
+  hud.update(0, at({
+    trackDay: lapping({ split: { kind: 'lap', seconds: 62.41, delta: -0.3 } }),
+  }));
+  // Back to free ride, then straight into a timed run inside the dwell.
+  hud.update(0.5, at({}));
+  const armed = hud.update(1, at({ challenge: running({ phase: 'armed' }) }));
+  assert.equal(armed.challenge.splitLabel, '', 'the lap flash survived into a time trial');
 });

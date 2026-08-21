@@ -1,8 +1,9 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import type { PowerStage } from '../simulation/EucController.ts';
 import type { RunPhase } from '../simulation/challenge.ts';
+import type { LapPhase } from '../simulation/trackDay.ts';
 import { SPEED_UNITS, type SpeedUnit } from '../app/options.ts';
-import { AUDIO, CHALLENGE, CHASE } from '../data/tuning.ts';
+import { AUDIO, CHALLENGE, CHASE, TRACK_DAY } from '../data/tuning.ts';
 import {
   overspeedBeepPeriod,
   overspeedLevel,
@@ -90,10 +91,98 @@ export interface ChallengeHudInput {
   readonly split: { readonly label: string; readonly delta: number | null } | null;
 }
 
-/** The challenge lane, ready to write. Every field is a string or a flag. */
+/**
+ * What the lane flashes when a line is crossed — M23.
+ *
+ * A discriminated union rather than a bag of nullable fields, because the three
+ * cases want three different sentences and the alternative is a caller in
+ * `app/` composing them. `AGENTS.md`'s rule is that the screen owns the words,
+ * and this file is the screen: `app/Game.ts` reports what happened and every
+ * string below is composed here, from the same formatters the results card
+ * uses, so the lap time in the corner of the frame and the one on the card
+ * cannot disagree.
+ */
+export type LapFlash =
+  /** A sector line. `label` is the level author's own. */
+  | { readonly kind: 'sector'; readonly label: string; readonly delta: number | null }
+  /** A lap that counted. */
+  | { readonly kind: 'lap'; readonly seconds: number; readonly delta: number | null }
+  /** A lap that reached the line and will not count. */
+  | { readonly kind: 'void' };
+
+/**
+ * How the track day is going — M23. Absent in every other ride.
+ *
+ * Absent rather than zeroed, exactly as `knockabout` and `chase` are: "not
+ * lapping" and "lapping, having set nothing yet" are different things, and the
+ * second draws a clock at zero rather than no lane at all.
+ *
+ * It carries `ChallengeHudInput`'s fields under a lap's names plus the two
+ * facts a lap has and a timed run does not — which lap this is, and whether it
+ * still counts.
+ */
+export interface TrackDayHudInput {
+  readonly phase: LapPhase;
+  /** The lap being ridden, counting from one. Zero on the out lap. */
+  readonly lap: number;
+  /** Seconds into that lap. */
+  readonly elapsed: number;
+  /** False once the lap has been written off. */
+  readonly valid: boolean;
+  /**
+   * The time to beat, or null while there is none.
+   *
+   * The *chased* best rather than the session's: it is whichever of the stored
+   * record and this afternoon's best is quicker, decided upstream, because the
+   * lane's job is to name one number and a screen that reasoned about which of
+   * two to show would be a second opinion about what the player is racing.
+   */
+  readonly bestLapSeconds: number | null;
+  /** The last lap that counted, or null before there is one. */
+  readonly lastLapSeconds: number | null;
+  /** The line being sought, for the out lap's objective. Empty when there is none. */
+  readonly nextLabel: string;
+  readonly directionRadians: number;
+  readonly distanceMetres: number;
+  /** Set on the reading where a line was crossed, and on no other. */
+  readonly split: LapFlash | null;
+}
+
+/**
+ * The run lane, ready to write. Every field is a string or a flag.
+ *
+ * **One view, two producers** — M23. The time trial and Track Day are
+ * alternatives (a ride is one mode, never both), they want the same corner of
+ * the screen, and `.euc-hud__challenge` is already the element that owns it.
+ * Giving the lap its own view type would have meant a second element in the
+ * same grid cell, which CSS resolves by stacking them silently on top of each
+ * other; giving it the same one means the DOM layer keeps a single writer and
+ * the two modes cannot be on screen together by construction.
+ */
 export interface ChallengeHudView {
   readonly visible: boolean;
+  /**
+   * The small line above the clock. Empty in a time trial, which has none.
+   *
+   * A lap clock without it is a number with no noun — the same objection
+   * `modeLaneLabel` exists to answer for the Knockabout score, arriving in the
+   * other corner. It is also where a lap that will not count says so, because
+   * that belongs beside the lap it is about rather than in a cue lane the
+   * player reads for a different reason.
+   */
+  readonly lapLabel: string;
   readonly time: string;
+  /**
+   * The always-on bottom row: the time to beat. Empty in a time trial.
+   *
+   * **Persistent rather than flashed, because the owner's first session said
+   * so.** The first build put the finished lap in the split row for four
+   * seconds and then gave the row back — so a rider who looked up six seconds
+   * after the line found the lane apparently reset, with neither the lap they
+   * had just ridden nor the one they were chasing on it. Both now stay.
+   */
+  readonly bestLabel: string;
+  readonly bestValue: string;
   /** Empty when there is nothing to show, which is most of a run. */
   readonly splitLabel: string;
   readonly splitDelta: string;
@@ -173,6 +262,13 @@ export interface HudInput {
   readonly crashed: boolean;
   /** Absent in free ride. Present from the moment the player arms a run. */
   readonly challenge?: ChallengeHudInput;
+  /**
+   * Absent in every ride but Track Day — M23.
+   *
+   * It and `challenge` share one lane and are mutually exclusive by app state,
+   * so `update` prefers this one and never merges them.
+   */
+  readonly trackDay?: TrackDayHudInput;
 }
 
 export interface HudView {
@@ -455,9 +551,15 @@ function modeLaneLabel(input: Pick<HudInput, 'knockabout' | 'chase'>): string {
   return '';
 }
 
+/** What the lane says at the line when the lap will not count. */
+const VOID_LAP_FLASH = 'No time';
+
 const NO_CHALLENGE: ChallengeHudView = Object.freeze({
   visible: false,
+  lapLabel: '',
   time: '0:00.00',
+  bestLabel: '',
+  bestValue: '',
   splitLabel: '',
   splitDelta: '',
   ahead: false,
@@ -591,6 +693,16 @@ export class HudModel {
   private splitLabel = '';
   private splitDelta: number | null = null;
   private splitSince = Number.NEGATIVE_INFINITY;
+  /**
+   * How long the latched flash stays up, seconds.
+   *
+   * A field rather than a constant because a lap and a sector are not the same
+   * announcement: a sector split is a progress report and a lap time is the
+   * number the rider came for, arriving at the moment they are accelerating out
+   * of the last corner and cannot look away for long. The time trial writes
+   * `CHALLENGE.splitHoldSeconds` here and never changes it.
+   */
+  private splitHold: number = CHALLENGE.splitHoldSeconds;
 
   constructor(options: HudModelOptions = {}) {
     this.speedUnit = options.speedUnit ?? 'kph';
@@ -662,11 +774,11 @@ export class HudModel {
         speed: formatSpeed(input.speed, this.speedUnit),
         speedUnit: this.speedUnit,
         reversing: false,
-        objective: this.objectiveFor(input.challenge, input.chase),
+        objective: this.objectiveFor(input),
         warning: 'none',
         warningLabel: '',
         offRoute: false,
-        challenge: this.challengeView(nowSeconds, input.challenge),
+        challenge: this.runLane(nowSeconds, input),
         knockabout: knockaboutLane(input.knockabout),
         chase: chaseLane(input.chase),
         modeLabel: modeLaneLabel(input),
@@ -723,11 +835,11 @@ export class HudModel {
       speed: formatSpeed(input.speed, this.speedUnit),
       speedUnit: this.speedUnit,
       reversing: input.speed < -0.1,
-      objective: this.objectiveFor(input.challenge, input.chase),
+      objective: this.objectiveFor(input),
       warning,
       warningLabel: WARNING_LABELS[warning],
       offRoute: this.offRoute,
-      challenge: this.challengeView(nowSeconds, input.challenge),
+      challenge: this.runLane(nowSeconds, input),
       knockabout: knockaboutLane(input.knockabout),
       chase: chaseLane(input.chase),
       modeLabel: modeLaneLabel(input),
@@ -793,9 +905,10 @@ export class HudModel {
    * quiet so the finish itself is the only thing happening on screen.
    */
   private objectiveFor(
-    challenge: ChallengeHudInput | undefined,
-    chase?: { readonly straying: boolean; readonly copClose: boolean },
+    input: Pick<HudInput, 'challenge' | 'trackDay' | 'chase'>,
   ): string {
+    const challenge = input.challenge;
+    const chase = input.chase;
     // **The chase takes the line before the timed run gets a look at it**, and
     // the ordering is the mode's own: the two never run together.
     //
@@ -810,6 +923,21 @@ export class HudModel {
       if (chase.straying) return '';
       if (chase.copClose) return 'He is right behind you';
       return '';
+    }
+    // **Track Day speaks only on the out lap**, and that is a decision rather
+    // than an omission. A circuit tells a rider where to go by being a circuit:
+    // naming the next sector line every lap would be a line of text changing
+    // three times a lap for a rider who already knows the way round, which is
+    // the standing rule against anything annoying. Before the first crossing
+    // there is no such cue, because nothing has begun and nothing on screen
+    // would say so.
+    const lap = input.trackDay;
+    if (lap !== undefined) {
+      if (lap.phase !== 'outLap') return '';
+      const distance = formatDistance(lap.distanceMetres);
+      const direction = formatDirection(lap.directionRadians);
+      const lead = direction === '' ? '' : `${direction} `;
+      return `${lead}${START_LINE_OBJECTIVE}${distance === '' ? '' : ` · ${distance}`}`;
     }
     if (challenge === undefined || challenge.phase === 'idle') return this.objective;
     const away = formatDistance(challenge.distanceMetres);
@@ -870,14 +998,17 @@ export class HudModel {
       this.splitLabel = challenge.split.label;
       this.splitDelta = challenge.split.delta;
       this.splitSince = nowSeconds;
+      this.splitHold = CHALLENGE.splitHoldSeconds;
     }
 
-    const holding = this.splitLabel !== ''
-      && nowSeconds - this.splitSince < CHALLENGE.splitHoldSeconds;
+    const holding = this.splitLabel !== '' && nowSeconds - this.splitSince < this.splitHold;
 
     if (!holding) {
       return {
         visible: true,
+        lapLabel: '',
+        bestLabel: '',
+        bestValue: '',
         time: formatRunTime(challenge.elapsed),
         splitLabel: '',
         splitDelta: '',
@@ -892,10 +1023,111 @@ export class HudModel {
     const delta = this.splitDelta;
     return {
       visible: true,
+      lapLabel: '',
+      bestLabel: '',
+      bestValue: '',
       time: formatRunTime(challenge.elapsed),
       splitLabel: this.splitLabel,
       splitDelta: delta === null ? 'Best' : formatDelta(delta),
       ahead: delta === null || Math.round(delta * 100) < 0,
+    };
+  }
+
+  /**
+   * Which producer fills the run lane this frame.
+   *
+   * Track Day wins when it is present, and the two can never both be: they are
+   * different app states and `app/Game.ts` sends one or the other. The `else`
+   * still runs `challengeView(undefined)` rather than being skipped, because
+   * that call is also what *clears the latch* — a session that ends mid-flash
+   * and a time trial armed straight afterwards would otherwise open with the
+   * last lap's delta sitting on a clock that has nothing to do with it.
+   */
+  private runLane(nowSeconds: number, input: HudInput): ChallengeHudView {
+    if (input.trackDay !== undefined && input.trackDay.phase !== 'idle') {
+      return this.trackDayView(nowSeconds, input.trackDay);
+    }
+    return this.challengeView(nowSeconds, input.challenge);
+  }
+
+  /**
+   * The lap lane at a simulation time.
+   *
+   * The same three rows the time trial uses — a label, a clock and a line under
+   * it — with the label carrying which lap this is and the line under the clock
+   * doing double duty. **While nothing has just been crossed it names the time
+   * to beat**, which is the one number a rider chasing a lap wants permanently
+   * in view and the one a time trial does not need (its own delta is the
+   * comparison). While a crossing is fresh, the flash replaces it, because two
+   * numbers in a lane read at 40 mph is one too many.
+   */
+  private trackDayView(nowSeconds: number, lap: TrackDayHudInput): ChallengeHudView {
+    if (lap.split !== null) {
+      const flash = lap.split;
+      if (flash.kind === 'sector') {
+        this.splitLabel = flash.label;
+        this.splitDelta = flash.delta;
+        this.splitHold = CHALLENGE.splitHoldSeconds;
+      } else if (flash.kind === 'lap') {
+        // The lap time itself, because the number a rider crosses the line for
+        // is the lap and not the delta — the delta is the second reading, in
+        // the column beside it.
+        this.splitLabel = `Lap ${formatRunTime(flash.seconds)}`;
+        this.splitDelta = flash.delta;
+        this.splitHold = TRACK_DAY.lapHoldSeconds;
+      } else {
+        // **Said once, at the line, and then let go.** The lap label has been
+        // carrying "no time" for however long the lap had left; repeating it
+        // here is the confirmation that the lap really has ended and the next
+        // one is clean.
+        this.splitLabel = VOID_LAP_FLASH;
+        this.splitDelta = null;
+        this.splitHold = TRACK_DAY.lapHoldSeconds;
+      }
+      this.splitSince = nowSeconds;
+    }
+
+    const holding = this.splitLabel !== '' && nowSeconds - this.splitSince < this.splitHold;
+    const label = lap.phase === 'outLap'
+      ? 'Out lap'
+      : lap.valid ? `Lap ${lap.lap}` : `Lap ${lap.lap} · no time`;
+
+    // **The bottom row never moves.** The time to beat is the number a rider
+    // chasing a lap wants permanently in view, so nothing borrows its row —
+    // the flash lands one row up, over `Last`, which is the row that can afford
+    // to be interrupted because the value it holds is repeated on the card.
+    const best = lap.bestLapSeconds === null
+      ? { bestLabel: '', bestValue: '' }
+      : { bestLabel: 'Best', bestValue: formatRunTime(lap.bestLapSeconds) };
+
+    if (holding) {
+      const delta = this.splitDelta;
+      return {
+        visible: true,
+        lapLabel: label,
+        ...best,
+        time: formatRunTime(lap.elapsed),
+        splitLabel: this.splitLabel,
+        // A void lap has no delta to show and `Best` would be a lie, so the
+        // column is empty and the label carries the whole message.
+        splitDelta: this.splitLabel === VOID_LAP_FLASH
+          ? ''
+          : delta === null ? 'Best' : formatDelta(delta),
+        ahead: this.splitLabel !== VOID_LAP_FLASH && (delta === null || Math.round(delta * 100) < 0),
+      };
+    }
+
+    return {
+      visible: true,
+      lapLabel: label,
+      ...best,
+      time: formatRunTime(lap.elapsed),
+      // Nothing yet means an empty row rather than a placeholder: a rider on
+      // their first lap has no last lap, and inventing a dash for it would be
+      // furniture.
+      splitLabel: lap.lastLapSeconds === null ? '' : 'Last',
+      splitDelta: lap.lastLapSeconds === null ? '' : formatRunTime(lap.lastLapSeconds),
+      ahead: false,
     };
   }
 }

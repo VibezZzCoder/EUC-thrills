@@ -38,6 +38,23 @@ import * as THREE from 'three';
  * shade. Default 1 is "exactly the material colour", so a part that forgets to
  * pass one is not the black mesh `DESIGN.md` §7c warns about.
  *
+ * **Every generator also writes `uv`, and nothing was obliged to use it until
+ * M23.** A loft already walks a surface parameterization to place its vertices
+ * — the angle around a section and the height up the profile — and a patch
+ * already walks its own square; handing those two numbers on as texture
+ * coordinates costs one attribute and closes the resolution ceiling that
+ * vertex tint has. A material with no `map` ignores the attribute entirely, so
+ * every look built before this change renders exactly as it did. `mapUvInto`
+ * is how a look folds a part's unit square onto one page of a shared atlas,
+ * which is what keeps printed graphics free of draw calls.
+ *
+ * The one thing to know about a loft's `u`: the seam column is **shared**, so
+ * the last quad runs the coordinate backwards from `(radial-1)/radial` to 0.
+ * The seam sits at `u = 0`, which by `loftPoint`'s convention is the rider's
+ * LEFT, and art is placed away from it. A duplicated seam column would fix the
+ * wrap and split the normals, which is a shading crack down a rider's side in
+ * exchange for a texel nobody is looking at.
+ *
  * Nothing here is animated and nothing here is read by `simulation/`. It is
  * geometry construction, run once per rig.
  */
@@ -235,11 +252,13 @@ export function loftGeometry(profile: LoftProfile, options: LoftOptions = {}): T
 
   const positions: number[] = [];
   const colours: number[] = [];
+  const uvs: number[] = [];
   const indices: number[] = [];
   const point = new THREE.Vector3();
 
   const bottomPole = isPole(profile[0]!);
   const topPole = isPole(profile[profile.length - 1]!);
+  const vSpan = Math.max(1e-6, profile.length - 1);
 
   // One vertex per (u, v), with the u = 2π column folded back onto u = 0.
   for (const v of rows) {
@@ -247,6 +266,12 @@ export function loftGeometry(profile: LoftProfile, options: LoftOptions = {}): T
       loftPoint(profile, (i / radial) * Math.PI * 2, v, point);
       positions.push(point.x, point.y, point.z);
       colours.push(shade, shade, shade);
+      // The surface's own parameters, handed on as texture coordinates — see
+      // the `uv` note in the file comment. `v` is the profile's ring-index
+      // axis normalised, which is the space `vAtHeight` speaks, so a look can
+      // convert a height in metres into a texture row without knowing how many
+      // rings the profile happens to have.
+      uvs.push(i / radial, v / vSpan);
     }
   }
   const at = (row: number, i: number): number => row * radial + (i % radial);
@@ -266,6 +291,10 @@ export function loftGeometry(profile: LoftProfile, options: LoftOptions = {}): T
     const centre = positions.length / 3;
     positions.push(ring.x, ring.y, ring.z);
     colours.push(shade, shade, shade);
+    // A cap has no surface parameter of its own; it takes the middle of the
+    // texture row its ring sits on, so a mapped part's end disc samples the
+    // same neighbourhood as the surface around it rather than a corner.
+    uvs.push(0.5, upward ? 1 : 0);
     for (let i = 0; i < radial; i += 1) {
       const a = at(row, i);
       const b = at(row, i + 1);
@@ -279,6 +308,7 @@ export function loftGeometry(profile: LoftProfile, options: LoftOptions = {}): T
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colours, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
   return geometry;
@@ -304,6 +334,23 @@ export interface PatchOptions {
   skew?: number;
   /** Taper the band's height toward its ends, as a fraction of the span. */
   taper?: number;
+  /**
+   * Swell the band's height toward its middle, as a fraction of the span.
+   *
+   * **The axis a visor needed and a stripe never did.** Every patch before
+   * M23 Phase A1d was a band of constant height, which is right for a rail, a
+   * cuff or a shoulder stripe — and is why a helmet's eyeport drawn as one
+   * came out as a television: a constant-`v` span is a pair of horizontal
+   * rings around the shell by construction, so it has a dead-straight top and
+   * bottom and square corners at any width. `taper` cannot fix it; it pulls
+   * both edges *in* at the ends, which is a lens, not an eyeport.
+   *
+   * Swelling the middle instead gives an arched brow and a chin notch from one
+   * number, and composes with `taper` — the two together are a shield.
+   */
+  bulge?: number;
+  /** Slide the band's centre line at its middle, in ring indices. */
+  bow?: number;
   shade?: number;
 }
 
@@ -328,15 +375,25 @@ export function patchGeometry(profile: LoftProfile, options: PatchOptions): THRE
   const sink = options.sink ?? -0.006;
   const skew = options.skew ?? 0;
   const taper = options.taper ?? 0;
+  const bulge = options.bulge ?? 0;
+  const bow = options.bow ?? 0;
   const shade = options.shade ?? 1;
 
   const positions: number[] = [];
   const colours: number[] = [];
+  const uvs: number[] = [];
   const indices: number[] = [];
   const point = new THREE.Vector3();
   const normal = new THREE.Vector3();
 
-  const push = (u: number, v: number, offset: number): number => {
+  /**
+   * `s`/`t` are the patch's **own** square, not the body's — which is exactly
+   * what a decal wants. A panel authored as "±0.95 rad of the front, waist to
+   * collarbone" gets a texture space whose corners are its own corners however
+   * the body curves underneath it, so art painted for it cannot slide when the
+   * profile it lies on gains a ring.
+   */
+  const push = (u: number, v: number, offset: number, s: number, t: number): number => {
     const index = positions.length / 3;
     loftPoint(profile, u, v, point);
     loftNormal(profile, u, v, normal);
@@ -346,14 +403,20 @@ export function patchGeometry(profile: LoftProfile, options: PatchOptions): THRE
       point.z + normal.z * offset,
     );
     colours.push(shade, shade, shade);
+    uvs.push(s, t);
     return index;
   };
 
   /** The patch's own (s, t) square mapped onto the body's (u, v). */
   const coords = (s: number, t: number): [number, number] => {
     const u = options.u0 + (options.u1 - options.u0) * s;
-    const centre = (options.v0 + options.v1) / 2 + skew * (s - 0.5);
-    const halfSpan = ((options.v1 - options.v0) / 2) * (1 - taper * Math.abs(s - 0.5) * 2);
+    // How far along the span this column is from either end: 1 in the middle,
+    // 0 at the edges. Both the swell and the bow are measured against it.
+    const middle = 1 - Math.abs(s - 0.5) * 2;
+    const centre = (options.v0 + options.v1) / 2 + skew * (s - 0.5) + bow * middle;
+    const halfSpan = ((options.v1 - options.v0) / 2)
+      * (1 - taper * Math.abs(s - 0.5) * 2)
+      * (1 + bulge * middle);
     return [u, centre + halfSpan * (t * 2 - 1)];
   };
 
@@ -364,9 +427,11 @@ export function patchGeometry(profile: LoftProfile, options: PatchOptions): THRE
     const outerRow: number[] = [];
     const innerRow: number[] = [];
     for (let j = 0; j <= vSegments; j += 1) {
-      const [u, v] = coords(i / uSegments, j / vSegments);
-      outerRow.push(push(u, v, lift));
-      innerRow.push(push(u, v, sink));
+      const s = i / uSegments;
+      const t = j / vSegments;
+      const [u, v] = coords(s, t);
+      outerRow.push(push(u, v, lift, s, t));
+      innerRow.push(push(u, v, sink, s, t));
     }
     outer.push(outerRow);
     inner.push(innerRow);
@@ -394,6 +459,7 @@ export function patchGeometry(profile: LoftProfile, options: PatchOptions): THRE
       for (const index of [a0[k]!, a0[k + 1]!, a1[k + 1]!, a1[k]!]) {
         positions.push(positions[index * 3]!, positions[index * 3 + 1]!, positions[index * 3 + 2]!);
         colours.push(shade, shade, shade);
+        uvs.push(uvs[index * 2]!, uvs[index * 2 + 1]!);
       }
       if (flip) indices.push(p, p + 2, p + 1, p, p + 3, p + 2);
       else indices.push(p, p + 1, p + 2, p, p + 2, p + 3);
@@ -432,6 +498,7 @@ export function patchGeometry(profile: LoftProfile, options: PatchOptions): THRE
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colours, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
   return geometry;
@@ -496,11 +563,20 @@ export function mergeGeometries(parts: readonly THREE.BufferGeometry[]): THREE.B
   const positions: number[] = [];
   const normals: number[] = [];
   const colours: number[] = [];
+  const uvs: number[] = [];
   const indices: number[] = [];
+  // **All or nothing on `uv`** — M23. Every generator in this kit writes one,
+  // so a merge that loses it is a merge with a stock geometry in it, and a
+  // half-filled attribute is worse than none: the parts that had coordinates
+  // would keep them and the parts that did not would silently sample texel
+  // (0, 0). `mapUvInto` refuses a geometry with no `uv`, so the atlas path
+  // cannot ride on a merge that dropped it.
+  const mapped = parts.every((part) => part.getAttribute('uv') !== undefined);
   for (const part of parts) {
     const position = part.getAttribute('position');
     const normal = part.getAttribute('normal');
     const colour = part.getAttribute('color');
+    const uv = part.getAttribute('uv');
     if (!normal) throw new Error('a merged geometry needs normals');
     if (!colour) throw new Error('a merged geometry needs a color attribute; see shaded()');
     const offset = positions.length / 3;
@@ -508,6 +584,7 @@ export function mergeGeometries(parts: readonly THREE.BufferGeometry[]): THREE.B
       positions.push(position.getX(i), position.getY(i), position.getZ(i));
       normals.push(normal.getX(i), normal.getY(i), normal.getZ(i));
       colours.push(colour.getX(i), colour.getY(i), colour.getZ(i));
+      if (mapped && uv) uvs.push(uv.getX(i), uv.getY(i));
     }
     const index = part.getIndex();
     if (index) {
@@ -521,7 +598,44 @@ export function mergeGeometries(parts: readonly THREE.BufferGeometry[]): THREE.B
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colours, 3));
+  if (mapped) geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geometry.setIndex(indices);
+  return geometry;
+}
+
+/** A rectangle of a texture atlas, in texture coordinates. */
+export interface UvRect {
+  readonly u0: number;
+  readonly v0: number;
+  readonly u1: number;
+  readonly v1: number;
+}
+
+/**
+ * Fold a part's own `uv` square into one rectangle of a shared atlas.
+ *
+ * **This is the whole of the atlas mechanism** — M23 Phase A1b. Every
+ * generator above writes texture coordinates spanning the unit square, because
+ * a part's natural parameters are the only ones it can know; which *page* of
+ * which sheet those coordinates land on is a decision the look makes, after the
+ * fact, on the geometry it just built. One texture then serves a chest print, a
+ * leg script and a visor gradient at no extra draw call, which is the only
+ * reason a rider may carry printed graphics at all (`docs/PLANS.md` §23.9d).
+ *
+ * Refuses a geometry with no `uv` rather than adding one. A part that arrived
+ * here unmapped is a part whose surface parameters were thrown away somewhere
+ * upstream, and inventing a square for it would put art on a surface at an
+ * angle nobody chose.
+ */
+export function mapUvInto<T extends THREE.BufferGeometry>(geometry: T, rect: UvRect): T {
+  const uv = geometry.getAttribute('uv');
+  if (!uv) throw new Error('mapUvInto needs a geometry with texture coordinates');
+  const width = rect.u1 - rect.u0;
+  const height = rect.v1 - rect.v0;
+  for (let i = 0; i < uv.count; i += 1) {
+    uv.setXY(i, rect.u0 + uv.getX(i) * width, rect.v0 + uv.getY(i) * height);
+  }
+  uv.needsUpdate = true;
   return geometry;
 }
 

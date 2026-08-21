@@ -342,6 +342,13 @@ export class RouteSpine {
     if (segments.length === 0) return null;
     const gates = [...plan.checkpoints].sort((a, b) => a.routeIndex - b.routeIndex);
     if (gates.length < 2) return null;
+    // This spine is deliberately open and clamps at both ends. A circuit's
+    // `start, split, split...` spelling states a lap, not a through line: if it
+    // is accepted here, the walk ends at the last sector and silently builds a
+    // truncated chase route (713 m on BelVar's 930 m lap). A looping spine is
+    // real future work and Track Day does not use one, so refuse the shape at
+    // the boundary instead of making a cop that can only ride part of it.
+    if (gates[0].kind !== 'start' || gates[gates.length - 1].kind !== 'finish') return null;
 
     const nodes = endNodes(segments);
     const neighbours = neighboursOf(nodes);

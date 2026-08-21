@@ -237,7 +237,7 @@ const lumOf = (hex: number): number => {
 test('only the loose and the rough creep, and turf creeps hardest of all', () => {
   // The ordering *is* the rule: colour travels from the higher value to the
   // lower, so this table decides which way every boundary in the world frays.
-  for (const laid of ['pavement', 'brick', 'wood', 'concrete', 'stone', 'metal'] as const) {
+  for (const laid of ['pavement', 'brick', 'wood', 'concrete', 'stone', 'metal', 'signalRed'] as const) {
     assert.equal(MATERIALS[laid].encroach, 0, `${laid} is laid or built and must not spread`);
   }
   assert.equal(MATERIALS.grass.encroach, 1, 'grass is the reference the others are set against');

@@ -164,6 +164,32 @@ export interface GameOptions {
    * retroactively mark it seen for everybody who has ridden before.
    */
   readonly seenPrompts: readonly string[];
+
+  /**
+   * Whether the player has ever opened the rider chooser.
+   *
+   * The title chip advertises itself until this is true and then stops for
+   * good — M23, and the owner's report: the chip *"is so small and what not
+   * some casual players might not even realize there is a change rider
+   * setting"*. It is the same failure M20 answered for fresh routes, and it
+   * gets the same shape of answer: the affordance introduces itself once,
+   * rather than a player being expected to find it.
+   *
+   * **Deliberately its own field rather than a member of `seenPrompts`
+   * above.** That array is owned wholesale by `ui/onboarding.ts` — the
+   * composition root re-writes it from the `Onboarding` instance's own set
+   * whenever a ride prompt retires (`Game.persistOnboarding`), and that set
+   * was seeded at boot. A flag written to the array mid-session by anybody
+   * else would be silently dropped by the next prompt to finish, which is a
+   * bug that would only show up as "the hint came back" days later.
+   *
+   * It is persisted rather than per-session because a returning player who
+   * already knows where the roster is should never see it flash again — a
+   * hint that reappears every launch is the nagging the standing annoyance
+   * rule forbids. Clearing it is `Reset everything`, which is correct: a
+   * player who reset the game back to its first run gets the first run.
+   */
+  readonly seenRiderChooser: boolean;
 }
 
 export const DEFAULT_OPTIONS: GameOptions = Object.freeze({
@@ -191,6 +217,7 @@ export const DEFAULT_OPTIONS: GameOptions = Object.freeze({
   touchScale: 1,
 
   seenPrompts: Object.freeze([]) as readonly string[],
+  seenRiderChooser: false,
 });
 
 /** Where the record lives inside `SafeStorage`'s namespace. */
@@ -278,6 +305,9 @@ export function coerceOptions(raw: unknown, base: GameOptions = DEFAULT_OPTIONS)
     seenPrompts: Array.isArray(record.seenPrompts)
       ? Object.freeze(record.seenPrompts.filter((id): id is string => typeof id === 'string'))
       : base.seenPrompts,
+    seenRiderChooser: typeof record.seenRiderChooser === 'boolean'
+      ? record.seenRiderChooser
+      : base.seenRiderChooser,
   });
 }
 
@@ -431,6 +461,7 @@ export function sameOptions(a: GameOptions, b: GameOptions): boolean {
     || a.touchControls !== b.touchControls
     || a.touchSwapSides !== b.touchSwapSides
     || a.touchScale !== b.touchScale
+    || a.seenRiderChooser !== b.seenRiderChooser
   ) {
     return false;
   }

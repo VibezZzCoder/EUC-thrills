@@ -2,7 +2,8 @@
 import type * as THREE from 'three';
 import { BLOCKOUT_COLOURS } from '../data/tuning.ts';
 import { DEFAULT_MACHINE, type MachineId } from '../data/machines.ts';
-import { tintOver, type Tint } from './blockoutKit.ts';
+import { tintOver, type Tint, type UvRect } from './blockoutKit.ts';
+import { ATLAS_REGIONS, createMaribelAtlas, type AtlasRegionName } from './maribelAtlas.ts';
 
 /**
  * What a machine *looks like* — M19 Phase 2's axis.
@@ -56,6 +57,21 @@ import { tintOver, type Tint } from './blockoutKit.ts';
 export interface MachinePatch {
   /** Which surface carries it. Default `'shell'`. */
   readonly surface?: 'shell' | 'pad';
+  /**
+   * Which leg-pad block a `surface: 'pad'` patch lands on. Defaults to the
+   * first. Only meaningful for a look whose pads are built from several.
+   */
+  readonly block?: number;
+  /**
+   * Its page of the look's printed sheet — M23 Phase A2.
+   *
+   * The rider's mechanism (`RiderPatch.art`) pointed at a machine, and for the
+   * same reason: a patch can carry relief and a flat colour, and a *mark* is
+   * neither. Adonisb2's angry eyes are the counter-example that proves the
+   * boundary — three nested rectangles were enough for eyes because eyes are
+   * rectangles at that size, and Maribel's grinning devil is not.
+   */
+  readonly art?: string;
   /** Angular span, radians, measured from +X (the rider's left). Front is π/2. */
   readonly u0: number;
   readonly u1: number;
@@ -97,6 +113,20 @@ export interface MachineSaddleRing {
   /** Forward offset, metres. A kicked tail is a ring slid rearward. */
   readonly z?: number;
   readonly square?: number;
+}
+
+/**
+ * One section of a leg pad, in metres about the pad's centre height.
+ *
+ * The same shape a shell ring is, measured about a different origin, and named
+ * separately so a look cannot pass one where the other belongs.
+ */
+export interface MachinePadRing {
+  readonly y: number;
+  readonly halfWidth: number;
+  readonly halfDepth: number;
+  readonly square?: number;
+  readonly z?: number;
 }
 
 /** One absolute section of a machine-specific cosmetic shell. */
@@ -142,6 +172,76 @@ export interface MachineLook {
     };
 
   /**
+   * The leg-contact pads — M23 Phase A2, and the first look to want them.
+   *
+   * They were a shared constant for four machines because four machines had
+   * black pads: a pad is the part a rider's shins press against, and every
+   * reference machine before hers wears the same scuffed near-black there.
+   * Hers are **purple**, in both the regenerated render and her own logo, and
+   * they are the single largest colour field on the wheel — a pad is a hand's
+   * breadth of flat surface at exactly shin height, which is why a machine
+   * that wants to be *seen* from the chase camera puts its colour there rather
+   * than on the shell.
+   *
+   * Omitted by every other look, which keeps `BLOCKOUT_COLOURS.pad`.
+   */
+  readonly pads?: {
+    readonly colour?: number;
+    readonly roughness?: number;
+    /**
+     * The pad's blocks, each a section in metres about `WHEEL.padCentreHeight`
+     * — A1d.
+     *
+     * **Because "purple pads" turned out to be a shape, not a colour.** Every
+     * machine before hers wore the shared pad: a flat slab from 0.34 to 0.54,
+     * which is what a commuter's grip pad is. The owner's note on her real
+     * wheel — *"it has a black seat surrounded by all the purple"* — describes
+     * something else entirely: tall moulded power pads that rise past the
+     * shell's shoulder and flank a black top plate, which is also what both
+     * photographs and the reference render show.
+     *
+     * **A list, because hers is not one slab.** The shared pad is a single
+     * soft-cornered loft, which is what a commuter's grip pad is; the photo of
+     * her own machine shows separate angular blocks with black bodywork
+     * showing between them. Every block merges into the same per-side mesh, so
+     * however many a look authors the pads still cost what one pad cost.
+     *
+     * The **outer face does not move**: `halfWidth` stays at the shared pad's
+     * thickness through the whole leg-contact band, so a restyled pad is
+     * restyled and nothing else. `render/riderClearance.test.ts` is what holds
+     * that promise, and `render/riderEuc.test.ts` still owns where the boots
+     * land.
+     */
+    readonly blocks?: readonly (readonly MachinePadRing[])[];
+    /** Sections around each block. The shared pad uses 12. */
+    readonly segments?: number;
+    /**
+     * Vertex repaint of the merged per-side pad, in pad-local space — A1d.
+     *
+     * `paintShell`'s twin, for the same reason and with the same cost. A
+     * moulded block reads as a block because its top plane is a stop brighter
+     * than its outer one; a loft's own normals under one hard sun will not do
+     * that at forty pixels, and the reference's pads read as blocks in every
+     * photograph. Runs before the mesh is positioned, so `y` is measured about
+     * the pad's centre height and `side` is +1 for the rider's left.
+     */
+    readonly paintPad?: (geometry: THREE.BufferGeometry, side: number) => void;
+  };
+
+  /**
+   * A printed sheet for the trim mesh — M23 Phase A2.
+   *
+   * The rider's `RiderAtlas` with the rig-shaped parts taken out: one texture,
+   * one material, and a page per patch. Only the trim material samples it, so
+   * a machine's shell, tyre, pads and lamps are exactly the untextured lofts
+   * they have always been.
+   */
+  readonly atlas?: {
+    build(): THREE.Texture;
+    region(art: string | undefined): UvRect;
+  };
+
+  /**
    * The trim mesh: every decoration patch, merged under one material — the
    * slot the standard machine's blue accent strips occupy. One draw call
    * regardless of how many patches a look authors, which is what lets Red
@@ -169,6 +269,19 @@ export interface MachineLook {
     readonly patches: readonly MachinePatch[];
     readonly emissive: number;
     readonly emissiveIntensity: number;
+  };
+
+  /**
+   * The rear lamp's patches, when a look wants its own — q61.
+   *
+   * Absent, the shared narrow bar ships (deliberately smaller than the
+   * headlight so the status light stays the one the rider reads; see the
+   * taillight note in `euc.ts`). The material — colour, emissive, intensity —
+   * is the shared one either way: a tail lamp's red is road grammar, not
+   * livery, and a look only gets to say how much of it there is.
+   */
+  readonly taillight?: {
+    readonly patches: readonly MachinePatch[];
   };
 
   /**
@@ -282,6 +395,9 @@ export const STANDARD_MACHINE_LOOK: MachineLook = {
   },
 
   headlight: {
+    // Six rows rather than two: this lamp straddles the chine (0.500 → 0.508),
+    // and a two-row chord across a step is the same defect the purple arcs
+    // above carried — the bodywork breaking back through the lamp's own face.
     patches: [{
       u0: Math.PI / 2 - 0.44,
       u1: Math.PI / 2 + 0.44,
@@ -290,7 +406,7 @@ export const STANDARD_MACHINE_LOOK: MachineLook = {
       lift: 0.004,
       sink: -0.012,
       uSegments: 6,
-      vSegments: 2,
+      vSegments: 6,
       taper: 0.40,
     }],
     emissive: BLOCKOUT_COLOURS.headlight,
@@ -1279,10 +1395,375 @@ export const ADONISB2_MACHINE_LOOK: MachineLook = {
   },
 };
 
+// -- Maribel's wheel — M23 Phase A2 ------------------------------------------
+
+/**
+ * The trim's three paints, all reached **down** from a pale base.
+ *
+ * The direction rule at the top of this file, on a machine whose livery is a
+ * saturated purple over near-black: black cannot be painted up to purple, so
+ * the material is pale and everything on it — the charcoal rails and blade,
+ * the pad badge's plate — is a multiplier.
+ *
+ * **A1d retired the rail purple.** No reference carries purple on the
+ * shoulder, and the black deck above it only reads as black if nothing purple
+ * sits immediately under it.
+ */
+const MARIBEL_TRIM_BASE = 0xdcdde1;
+const MARIBEL_TRIM_DARK = tintOver(MARIBEL_TRIM_BASE, 0x26272c);
+const MARIBEL_TRIM_PURPLE = tintOver(MARIBEL_TRIM_BASE, BLOCKOUT_COLOURS.maribelPurple);
+/**
+ * The deck's black — A1d.
+ *
+ * The saddle slot is tinted, not painted, so the crown's colour is authored in
+ * one place. A step *down* from the shell rather than level with it, because a
+ * deck that is exactly its surroundings has no edge and the whole point of the
+ * plate is that it reads as a separate black surface between the purple.
+ */
+const MARIBEL_DECK = tintOver(BLOCKOUT_COLOURS.maribelMachine, 0x141519);
+
+/**
+ * Maribel's machine — the fourth `MachineLook` row, and the third taken from a
+ * real rider's own wheel with her permission.
+ *
+ * **She was shown to the owner on Cool Rider's wheel and half the miss was the
+ * machine.** A1 shipped her black leathers standing on the identity-blue
+ * default, which is the M22 Phase 0 intermediate — legitimate while a phase is
+ * in flight and not shippable — and §23.9c bundled this phase into A1b so she
+ * is never seen halfway again, by him or by her.
+ *
+ * What the references agree on, and what each part costs:
+ *
+ * - **Black shell, purple pads.** The colour field, free: the pads already
+ *   have their own material and their own mesh, so the loudest surface on the
+ *   machine is a hex in `data/tuning.ts` (`MachineLook.pads`).
+ * - **Her logo on the pad.** The mark, one page of her printed sheet, no draw
+ *   call — the first thing on any machine in this game that a patch could not
+ *   have drawn. §23.5's "original mascot" drafting is superseded by her own
+ *   written grant.
+ * - **Purple shoulder rails.** Adonisb2's lesson, restated: everything else
+ *   coloured on this wheel faces sideways, and the camera lives behind the
+ *   rider — without them her machine is a black wheel from the one angle the
+ *   game normally shows.
+ * - **Road rubber with real tread.** A2 shipped the tyre slick on the
+ *   reasoning that lugs are Adonisb2's identity; the photograph disagrees —
+ *   her tyre carries visible street blocks — and A1c splits the difference
+ *   the way the references do: shallow wide blocks at half his height, a
+ *   road tyre's tread rather than a moto knobby's, distinct from both the
+ *   slick and his by construction.
+ *
+ * **A2 kept the standard body loft and A1c re-authors it, because the claim
+ * behind keeping it was measured against the photograph and failed.** The A2
+ * row said her machine's identity was livery, not shape — but the machine in
+ * both racing photographs is a tall performance wheel with a big pad stack on
+ * top, and the *standard* body is the invented claim: it dressed her kit as a
+ * compact commuter. The owner's reviewer named exactly that ("a compact
+ * generic EUC with purple cosmetics"). What ships now is the game's own
+ * fictional performance form — taller body held wide over the tyre, the
+ * carry handle giving way to a moulded purple pad stack (`top: saddle`, the
+ * mechanism Red Rider's seat proved) — wearing her livery. Contract
+ * dimensions untouched: same tyre circle, same pedals, same suspension.
+ */
+export const MARIBEL_MACHINE_LOOK: MachineLook = {
+  machine: 'maribel',
+
+  shell: {
+    colour: BLOCKOUT_COLOURS.maribelMachine,
+    // Satin. Her suit is matte and her helmet is matte; a glossy machine under
+    // the same sun would read as the only lacquered thing in the frame.
+    roughness: 0.48,
+    // The performance body — A1c. Taller by *mass* rather than by a spike:
+    // the standard shell starts tapering at 0.51 and hers holds its full
+    // section to 0.545, carries more width (0.116 against 0.110) and a touch
+    // more length, and squares off harder in plan (4.2 through the body).
+    // The skirt stays narrow so the stanchions still show the travel, and
+    // every trim, lamp and status height on it is authored in metres and
+    // re-lands via `vAtHeight`.
+    profile: [
+      { y: 0.250, halfWidth: 0.052, halfDepth: 0.130, square: 3.0 },
+      { y: 0.318, halfWidth: 0.096, halfDepth: 0.212, square: 3.6 },
+      { y: 0.372, halfWidth: 0.113, halfDepth: 0.252, square: 4.0 },
+      { y: 0.428, halfWidth: 0.116, halfDepth: 0.258, square: 5.0 },
+      { y: 0.490, halfWidth: 0.116, halfDepth: 0.256, square: 5.0 },
+      // The chine: an 8 mm step across the flank, so a large flat black panel
+      // has one edge to catch the sun instead of reading as unlit mass.
+      { y: 0.500, halfWidth: 0.116, halfDepth: 0.256, square: 5.0 },
+      { y: 0.508, halfWidth: 0.112, halfDepth: 0.248, square: 4.6 },
+      { y: 0.545, halfWidth: 0.112, halfDepth: 0.244, square: 4.0 },
+      { y: 0.582, halfWidth: 0.100, halfDepth: 0.212, square: 3.5 },
+      { y: 0.600, halfWidth: 0.074, halfDepth: 0.152, square: 3.0 },
+    ],
+  },
+
+  top: {
+    // The purple pad stack — the photograph's loudest feature after the pads
+    // themselves: a moulded power-pad crown standing over the shell where a
+    // commuter carries its handle. Mechanically it is Red Rider's saddle slot
+    // (merged into the shell mesh, casts with it, costs no draw call), tinted
+    // to her purple, and its crown sits at 0.649 — level with Adonisb2's seat
+    // and inside the crouched-hips ceiling his test pins.
+    kind: 'saddle',
+    // **The black deck** — A1d, and the owner's own description of his
+    // friend's machine: *"it has a black seat surrounded by all the purple"*.
+    //
+    // A1c had this exactly inverted. It put a purple loaf on the crown, which
+    // made the highest and best-lit surface on the wheel purple and left the
+    // machine reading as a purple wheel with black gaps rather than a black
+    // wheel with purple blocks on it. The rings below are a flat deck rather
+    // than a cushion, the tint is the shell's own black, and the purple that
+    // surrounds it is the pad blocks standing up on either flank.
+    //
+    // The crown drops from 0.649 to 0.626, which is *further* inside the
+    // crouched-hip ceiling `maribel.test.ts` pins, not closer to it.
+    profile: [
+      { y: 0.590, halfWidth: 0.070, halfDepth: 0.168, square: 4.6 },
+      { y: 0.604, halfWidth: 0.078, halfDepth: 0.182, square: 5.4 },
+      { y: 0.618, halfWidth: 0.076, halfDepth: 0.178, z: -0.004, square: 5.6 },
+      { y: 0.626, halfWidth: 0.062, halfDepth: 0.150, z: -0.008, square: 4.4 },
+    ],
+    tint: MARIBEL_DECK,
+  },
+
+  pads: {
+    colour: BLOCKOUT_COLOURS.maribelPurple,
+    // Softer than the shell: a pad is moulded foam, and the sheen is most of
+    // what says so at this distance.
+    roughness: 0.82,
+    // **One moulded wrap per flank, worn high — q60 W1.** A1d built two
+    // vertical pad pills per side and the owner's ride threw them out: *"her
+    // real one does not [have vertical pads]… it's just the purple pads ain't
+    // that great."* What IMG_6601 actually shows is purple saddling the top of
+    // the machine — pads wrapping the upper body just under the black seat —
+    // so each flank now carries one long low block hugging the shell from the
+    // chine up to the deck, running the bodywork's full length. The nose and
+    // tail bands on the trim close the same purple into a ring, which is his
+    // sketch verbatim: "a purple band all around the black seat".
+    //
+    // The outer face is still the shared pad's, ring for ring: `halfWidth`
+    // never exceeds 0.028, so the plane a rider's shins rest against has not
+    // moved by a millimetre and every clearance the rig proves still holds.
+    blocks: [
+      [
+        { y: 0.026, halfWidth: 0.012, halfDepth: 0.128, z: 0.004, square: 3.2 },
+        { y: 0.052, halfWidth: 0.026, halfDepth: 0.146, z: 0.002, square: 3.6 },
+        { y: 0.086, halfWidth: 0.028, halfDepth: 0.150, z: 0.000, square: 3.6 },
+        { y: 0.116, halfWidth: 0.024, halfDepth: 0.142, z: -0.002, square: 3.4 },
+        { y: 0.138, halfWidth: 0.011, halfDepth: 0.120, z: -0.004, square: 3.0 },
+      ],
+    ],
+    segments: 16,
+    // Three planes, one stop apart: a block reads as a block because its top
+    // catches the sun and its underside does not.
+    paintPad: (geometry): void => {
+      const position = geometry.getAttribute('position');
+      const colour = geometry.getAttribute('color');
+      for (let i = 0; i < position.count; i += 1) {
+        const y = position.getY(i);
+        const lift = y > 0.108 ? 1.26 : y < 0.048 ? 0.62 : 1;
+        if (lift === 1) continue;
+        colour.setXYZ(i, colour.getX(i) * lift, colour.getY(i) * lift, colour.getZ(i) * lift);
+      }
+    },
+  },
+
+  atlas: {
+    build: createMaribelAtlas,
+    region: (art: string | undefined): UvRect => (
+      art !== undefined && art in ATLAS_REGIONS
+        ? ATLAS_REGIONS[art as AtlasRegionName]
+        : ATLAS_REGIONS.blank
+    ),
+  },
+
+  tyre: {
+    // Road rubber: a touch glossier than the standard tyre's matte —
+    roughness: 0.86,
+    // — with street tread. Half the height of Adonisb2's moto blocks and
+    // nearly twice as many around the circle, so the silhouette break reads
+    // as siped road rubber, not knobbies: distinct from his machine on both
+    // numbers, and from the slick the A2 row shipped, which the photograph's
+    // visibly treaded tyre never supported.
+    lugs: {
+      count: 26,
+      rows: [
+        { at: -0.86, phase: 0.25 },
+        { at: -0.50, phase: 0 },
+        { at: 0.02, phase: 0.5 },
+        { at: 0.50, phase: 0 },
+        { at: 0.86, phase: 0.25 },
+      ],
+      // Flat and wide: the first cut at 7.5 mm still silhouetted as a moto
+      // knobby from the side, which is the one read this tyre must not have.
+      size: [0.030, 0.008, 0.036],
+      shade: 1.22,
+    },
+  },
+
+  trim: {
+    colour: MARIBEL_TRIM_BASE,
+    emissive: 0x000000,
+    emissiveIntensity: 0,
+    roughness: 0.40,
+    metalness: 0.10,
+    patches: [
+      // **The purple ring's nose and tail arcs — q60 W1.** The flanks' purple
+      // is the pad mesh itself; these two bands carry the same colour around
+      // the ends at the same height, so from every angle the black deck sits
+      // inside purple — "a black seat surrounded by all the purple", which is
+      // the owner's description of the real machine. They sit above the
+      // headlight (0.502–0.530) and the tail lamp, and the status light is a
+      // proud emissive mesh that stays legible on top of the tail arc.
+      //
+      // **`vSegments: 8`, and that is the owner's second black strip.** A
+      // patch's outer face is a *chord* between its own sample rows, and this
+      // band spans the shell's steepest knee: half-depth falls 0.244 → 0.212 →
+      // 0.152 across 0.545, 0.582 and 0.600. At two rows the chord from 0.562
+      // to 0.588 cut 7.2 mm inside a surface it was only lifted 5.0 mm off, so
+      // the black bodywork came back through the purple once per u-segment —
+      // ten dark teeth along the top edge of the arc, which is what he circled
+      // on the wheel. Raising the lift would hide it by standing the trim off
+      // the body; sampling the knee is the fix that keeps a decal flat.
+      // The rule this stands for: **`lift` only clears the body where the
+      // patch's own rows are dense enough to follow it.**
+      {
+        u0: Math.PI / 2 - 0.85,
+        u1: Math.PI / 2 + 0.85,
+        from: 0.535,
+        to: 0.588,
+        lift: 0.005,
+        sink: -0.010,
+        uSegments: 10,
+        vSegments: 8,
+        tint: MARIBEL_TRIM_PURPLE,
+      },
+      {
+        u0: -Math.PI / 2 - 0.85,
+        u1: -Math.PI / 2 + 0.85,
+        from: 0.535,
+        to: 0.588,
+        lift: 0.005,
+        sink: -0.010,
+        uSegments: 10,
+        vSegments: 8,
+        tint: MARIBEL_TRIM_PURPLE,
+      },
+      // The nose blade, charcoal: relief under the lamp, and the one piece of
+      // structure on an otherwise plain front.
+      {
+        u0: Math.PI / 2 - 0.62,
+        u1: Math.PI / 2 + 0.62,
+        from: 0.430,
+        to: 0.468,
+        lift: 0.005,
+        sink: -0.010,
+        uSegments: 8,
+        vSegments: 2,
+        taper: 0.35,
+        tint: MARIBEL_TRIM_DARK,
+      },
+      // A deep-purple spine ran down the tail here until the owner's bug-hunt
+      // ride called it what the chase camera sees: *"a purple square in the
+      // back of her EUC. just a square."* It was an invention — no reference
+      // shows her machine's rear — and it out-shouted her own back mark from
+      // the one angle the player always has. The tail is her black bodywork
+      // now; if the rear earns a feature it will be a larger tail lamp (his
+      // suggestion), which is an authored light, not a tint.
+      // **Her devil, large on the black flank — q60.** The owner named the old
+      // wheel's flank devil "really cool" and the A1d badge unreadable, and he
+      // was right on both: A1d printed it 154 mm on a near-black plate in the
+      // 150 mm column between two pads, dead centre where the rider's own shin
+      // stands. This one is 176 mm on a plate in her pad purple — the old
+      // badge's own ground, which is what made it pop — on the black bodywork
+      // below the wrap, biased toward the tail so the boot no longer parks in
+      // front of it and the chase camera's three-quarter sees it whole.
+      //
+      // **Sized in metres, and the previous size was measured wrong.** The
+      // note this replaces claimed 0.68 rad was 0.176 m of arc "square on this
+      // shell". It is not: this shell is a boxy superellipse, so a radian near
+      // the flank buys about half a metre of surface rather than the quarter
+      // of one a circle of the wheel's width would — `tools/uv-anisotropy.mjs`
+      // measures 0.68 rad as roughly 0.34 m, twice the number the plate was
+      // laid out around. Her mark was printed 1.8 : 1 into that page and came
+      // out that much too wide, which is the badge the owner circled.
+      //
+      // 0.34 rad by 0.155 m is the page now — near enough square in metres
+      // that the artwork lands at its own proportions with a tenth left over,
+      // and a 150 mm sticker on a 460 mm wheel besides, which is the size a
+      // real one is. The centre keeps its small rearward bias so the boot does
+      // not park in front of it.
+      {
+        u0: -0.21,
+        u1: 0.13,
+        from: 0.272,
+        to: 0.427,
+        lift: 0.004,
+        sink: -0.014,
+        uSegments: 8,
+        vSegments: 8,
+        art: 'machineMark',
+      },
+      {
+        u0: Math.PI - 0.13,
+        u1: Math.PI + 0.21,
+        from: 0.272,
+        to: 0.427,
+        lift: 0.004,
+        sink: -0.014,
+        uSegments: 8,
+        vSegments: 8,
+        art: 'machineMark',
+      },
+    ],
+  },
+
+  headlight: {
+    // Six rows rather than two: this lamp straddles the chine (0.500 → 0.508),
+    // and a two-row chord across a step is the same defect the purple arcs
+    // above carried — the bodywork breaking back through the lamp's own face.
+    patches: [{
+      u0: Math.PI / 2 - 0.44,
+      u1: Math.PI / 2 + 0.44,
+      from: 0.502,
+      to: 0.530,
+      lift: 0.004,
+      sink: -0.012,
+      uSegments: 6,
+      vSegments: 6,
+      taper: 0.40,
+    }],
+    emissive: BLOCKOUT_COLOURS.headlight,
+    emissiveIntensity: 1.4,
+  },
+
+  // The wide rear lamp — q61, the owner's call once the tail spine was gone:
+  // *"maybe a bigger red light?"* Below the chine and clear of the purple arc
+  // and the status light above it; the shared red material, just more of it.
+  taillight: {
+    patches: [{
+      u0: -Math.PI / 2 - 0.50,
+      u1: -Math.PI / 2 + 0.50,
+      // Wider than the shared bar and *lower* — the blind critic caught the
+      // first cut stacked directly under the status lamp at chase distance,
+      // where the two would merge into one red blob at exactly the moment the
+      // status ramps red and matters most. Bigger by width, never by height,
+      // and 80 mm of black bodywork now separates them.
+      from: 0.446,
+      to: 0.476,
+      lift: 0.004,
+      sink: -0.012,
+      uSegments: 8,
+      vSegments: 2,
+      taper: 0.28,
+    }],
+  }
+
+};
+
 const MACHINE_LOOKS: readonly MachineLook[] = Object.freeze([
   STANDARD_MACHINE_LOOK,
   RED_RIDER_MACHINE_LOOK,
   ADONISB2_MACHINE_LOOK,
+  MARIBEL_MACHINE_LOOK,
 ]);
 
 /**

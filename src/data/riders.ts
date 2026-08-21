@@ -54,7 +54,8 @@ export type CharacterId = PlayableCharacterId | 'cop';
  * for the same reason: a saved record can no longer *say* `cop` even in
  * principle.
  */
-export type PlayableCharacterId = 'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2';
+export type PlayableCharacterId =
+  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel-vargas';
 
 /**
  * Which recorded crash one-shot a rider comes with.
@@ -64,7 +65,23 @@ export type PlayableCharacterId = 'cool-rider' | 'trollina' | 'red-rider' | 'ado
  * declares its own `CrashVoiceId` and this field is the map between the two.
  * Two riders could legitimately share a voice; a rider without one could not.
  */
-export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2';
+export type CrashVoiceId =
+  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel';
+
+/**
+ * **`'maribel'` arrived with her recording, in the same edit, exactly as
+ * Phase A0 said it would.**
+ *
+ * She was seated at A0 with `crashVoice: 'red-rider'` — the one crash in the
+ * game with no voice in it at all — because her own had not been recorded yet
+ * (`docs/PLANS.md` §23.11, and the owner's words: *"until further notice"*).
+ * An id of her own would have been a promise the `audio/` layer could not
+ * keep, since every id maps to a file and an id without one is a rider who
+ * crashes in silence. So the interim was a deliberate value here rather than a
+ * fallback in `audio/sink.ts`, and swapping it on 2026-08-20 was one line in
+ * this file and one arm in `crashFor`. That is the shape to reuse: park a new
+ * rider on an existing voice **in the data**, never in the resolver.
+ */
 
 export interface CharacterSpec {
   readonly id: CharacterId;
@@ -172,6 +189,47 @@ export const CHARACTERS: readonly PlayableCharacterSpec[] = Object.freeze([
       + 'A real rider, in the game so he could share it.',
     swatch: '#72ec16',
     crashVoice: 'adonisb2' as CrashVoiceId,
+  }),
+  /**
+   * Maribel Vargas — M23, the third **real person** here, and the first rider
+   * in this table who **races**.
+   *
+   * Like Adonisb2 she initiated, in a private message: *"Can you make a woman
+   * euc"*, then *"I would like to be one of those"*. She supplied racing
+   * photographs and a carving video, and the permission conversation is held
+   * under `references/Maribel-Vargas/` and excluded from every build.
+   *
+   * **Her real name is on the card, and that was a decision rather than a
+   * default** (`docs/PLANS.md` §23.18 q50). The owner's reasoning: *"she is
+   * well known in euc community"* — she competes under this name in published
+   * results, so the name is the recognition. It follows that `maribel` and
+   * `vargas` may never join `tools/private-tokens.mjs`' forbidden list the way
+   * the owner's own handles are: the release tooling would refuse to publish
+   * this file.
+   *
+   * **The swatch is her purple, and it is hers twice over** — the pads on her
+   * own wheel and the grinning devil mark she rides under are both violet, and
+   * the owner named it as her colour when this seat was opened. Measured off
+   * the reference photograph the pads run `#51457b` shaded to `#7667b5` in
+   * sun and the mark sits near `#9b5cb4`; this is brighter than either because
+   * a card swatch is lit by nothing (the note on `swatch` above), and it sits
+   * at hue 271° — between her two purples, and the widest gap left in a roster
+   * that already holds blue at 214°, green at 94°, red at 0° and magenta at
+   * 323°. It also has to carry near-black text as the "Riding now" pill, which
+   * a faithful shaded violet could not do at all.
+   *
+   * **Her `crashVoice` is her own from 2026-08-20** (M23 Phase A3). She
+   * recorded it at the owner's request — an older wheel dropped in a lift and
+   * a yell — and it is the only crash in the game a rider made on purpose. The
+   * `'red-rider'` interim is spent; see the `CrashVoiceId` note above.
+   */
+  Object.freeze({
+    id: 'maribel-vargas' as PlayableCharacterId,
+    name: 'Maribel Vargas',
+    blurb: 'Black race leathers, a mirrored blue visor, aqua one side and pink the other, '
+      + 'on a purple wheel. A real racer, in the game because she asked.',
+    swatch: '#a95ff0',
+    crashVoice: 'maribel' as CrashVoiceId,
   }),
 ]);
 

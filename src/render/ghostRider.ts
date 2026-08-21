@@ -94,6 +94,41 @@ export interface GhostRider {
 }
 
 /**
+ * The same look, built at half the sections — M23 Phase A1d.
+ *
+ * **A ghost is an outline, and an outline does not need a character's
+ * density.** The rig it copies is drawn in one flat translucent colour with no
+ * lighting to break over its facets, so a section that earns its triangles on
+ * the player's own rider — a rounder waist, a hand that reads as a hand — buys
+ * literally nothing here. Maribel's A1d density pass is what made that
+ * concrete: it took her ghost from under budget to 16,968 triangles against a
+ * twelve-thousand ceiling, on a mesh nobody can see the shape of.
+ *
+ * Halving is deliberately blunt. It cannot change *which* meshes exist, so the
+ * ghost's silhouette, its draw calls and every name in it are untouched, and
+ * the assertions in `ghostRider.test.ts` that compare the ghost to the rig
+ * part for part still compare the same parts. A look with no density table
+ * comes back unchanged, which is every rider before her.
+ */
+function ghostDensity(look: RiderLook): RiderLook {
+  if (look.density === undefined) return look;
+  const half = (value: number | undefined): number | undefined => (
+    value === undefined ? undefined : Math.max(6, Math.round(value / 2))
+  );
+  return {
+    ...look,
+    density: {
+      limb: half(look.density.limb),
+      torso: half(look.density.torso),
+      head: half(look.density.head),
+      boot: half(look.density.boot),
+      hand: half(look.density.hand),
+      neck: half(look.density.neck),
+    },
+  };
+}
+
+/**
  * Which recorded numbers reach the rig, and which are invented.
  *
  * A `GhostSample` is eight numbers and an `EucPose` is thirty-odd, so most of
@@ -130,7 +165,7 @@ export function createGhostRider(
   // rig's shadow-casting parts, and Red Rider's saddle is merged into the
   // shell — a ghost of him on a saddleless wheel would be a different outline
   // than the rider it replays.
-  const rig: RidingRig = createRidingRig(look, machine);
+  const rig: RidingRig = createRidingRig(ghostDensity(look), machine);
   group.add(rig.group);
 
   // **Every name in the ghost's copy of the rig is prefixed, and this is a

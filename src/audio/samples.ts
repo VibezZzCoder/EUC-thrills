@@ -6,6 +6,7 @@ import crashUrl from '../../assets/live/audio/crash_wipeout.wav?url';
 import crashTrollinaUrl from '../../assets/live/audio/crash_trollina.wav?url';
 import crashRedRiderUrl from '../../assets/live/audio/crash_red_rider.wav?url';
 import crashAdonisb2Url from '../../assets/live/audio/crash_adonisb2.wav?url';
+import crashMaribelUrl from '../../assets/live/audio/crash_maribel.wav?url';
 import sirenFarUrl from '../../assets/live/audio/siren_far_loop.wav?url';
 import sirenCloseUrl from '../../assets/live/audio/siren_close_loop.wav?url';
 import overspeedBeepUrl from '../../assets/live/audio/overspeed_beep.wav?url';
@@ -75,6 +76,30 @@ export interface SampleUrls {
    */
   readonly crashAdonisb2: string;
   /**
+   * Maribel's (M23) — **and the only one a rider made on purpose.**
+   *
+   * The others are recordings of something that happened. Hers is a
+   * performance: the owner asked her for something usable, so she rode an
+   * older EUC into a lift, powered the wheel off, dropped it on the floor and
+   * yelled. `tools/make-crash-maribel.mjs` takes one continuous 3.4 s slice of
+   * it — the drop, her shout, her yell — and copies her own power-off beep
+   * into the empty tail, onset on the sample her voice stops ringing, because
+   * a real wheel lying on its side goes on beeping. Nothing else is moved,
+   * nothing is substituted, and no sound is in the file that she did not
+   * record.
+   *
+   * Two of its details are hers rather than choices. It takes the **right**
+   * channel instead of mono-summing, because summing her two mics nulls
+   * 12.6 dB at 630 Hz in the middle of the yell; and it is unfiltered, because
+   * the weight under the thud is the thud. Same length as `crash` to the
+   * sample, for the reason every entry here repeats.
+   *
+   * Standing is Adonisb2's, not the owner's: a **narrow grant from a named
+   * person**, outside the CC BY 4.0 claim and not sublicensable. NOTICE.md
+   * holds the terms.
+   */
+  readonly crashMaribel: string;
+  /**
    * The chase siren's two wails (M18) — the far carrier and the close
    * panic, crossfaded by the cop's range. Both CC0 Freesound recordings,
    * owner-auditioned A/B/C/D on 2026-08-13 and recorded in NOTICE.md's
@@ -107,6 +132,7 @@ export const SAMPLE_URLS: SampleUrls = {
   crashTrollina: crashTrollinaUrl,
   crashRedRider: crashRedRiderUrl,
   crashAdonisb2: crashAdonisb2Url,
+  crashMaribel: crashMaribelUrl,
   sirenFar: sirenFarUrl,
   sirenClose: sirenCloseUrl,
   overspeedBeep: overspeedBeepUrl,

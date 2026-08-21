@@ -127,6 +127,15 @@ export interface SampleBank {
    * him back on it silently while every counter said otherwise.
    */
   readonly crashAdonisb2: AudioBuffer;
+  /**
+   * Maribel's (M23) — required on the same terms as the two above.
+   *
+   * Her seat carried `'red-rider'` as an explicit interim while her recording
+   * was still being asked for (§23.11, q52 "until further notice"). The notice
+   * was the file arriving, so the interim is gone — and a bank missing this key
+   * would quietly restore it while `lastCrashVoice` said `maribel`.
+   */
+  readonly crashMaribel: AudioBuffer;
   /** The chase siren's far wail loop (M18). */
   readonly sirenFar: AudioBuffer;
   /** And its close wail, crossfaded in by range. */
@@ -152,7 +161,7 @@ export interface SampleBank {
  * `data/`, or `ui/`. The composition root maps one to the other, which is the
  * same route `quality` and `speedUnit` already take out of the options store.
  */
-export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2';
+export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel';
 
 /**
  * Whose recording plays.
@@ -163,12 +172,15 @@ export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2';
  * missing. Here the compiler's exhaustiveness check on `voice` is what fails
  * instead — add a `CrashVoiceId` without a case and this stops compiling.
  *
- * Four riders, four buffers, no fallback left anywhere in the function. That
+ * Five riders, five buffers, no fallback left anywhere in the function. That
  * is a Phase 4 change: while Red Rider's file was still to be built this
  * returned Cool Rider's on his behalf, and `lastCrashVoice` reporting
  * `red-rider` regardless is what let a test tell the two states apart. M22
  * added the fourth arm and never needed the interim, because his recording
- * arrived before his wiring did.
+ * arrived before his wiring did. M23 added the fifth and *did* need one, in
+ * the other place: Maribel shared Red Rider's file by an explicit decision in
+ * `data/riders.ts` rather than by a fallback here, which is why swapping her
+ * onto her own recording was one line there and one arm here.
  */
 export function crashFor(voice: CrashVoiceId, bank: SampleBank): AudioBuffer {
   switch (voice) {
@@ -178,6 +190,8 @@ export function crashFor(voice: CrashVoiceId, bank: SampleBank): AudioBuffer {
       return bank.crashRedRider;
     case 'adonisb2':
       return bank.crashAdonisb2;
+    case 'maribel':
+      return bank.crashMaribel;
     case 'cool-rider':
       return bank.crash;
   }

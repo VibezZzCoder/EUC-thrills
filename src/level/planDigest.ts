@@ -67,6 +67,8 @@ export interface PlanSummary {
   readonly checkpoints: number;
   readonly hazards: number;
   readonly targets: number;
+  /** Samples of the lap centreline. Zero on every plan that is not a circuit. */
+  readonly lapPoints: number;
   readonly samples: number;
   readonly cells: number;
   readonly columns: number;
@@ -92,6 +94,7 @@ export function planSummary(plan: LevelPlan): PlanSummary {
     checkpoints: plan.checkpoints.length,
     hazards: (plan.hazards ?? []).length,
     targets: (plan.targets ?? []).length,
+    lapPoints: plan.lap === undefined ? 0 : plan.lap.points.length,
     samples: field.heights.length,
     cells: field.surfaces.length,
     columns: field.columns,
