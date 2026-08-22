@@ -1162,6 +1162,25 @@ export const EUC = {
    */
   airYawFactor: 0.25,
   /**
+   * How fast the 180° spin jump sweeps the heading, rad/s — M24.
+   *
+   * The spin is the deliberate airborne about-face (pressing hop again while
+   * airborne), so its rate is scripted rather than borrowed from steering:
+   * π radians at this rate takes ~0.42 s, inside an uncharged hop's ~0.61 s
+   * of air, so a tap thrown straight off the ground completes with margin —
+   * while a tap thrown at the top of the arc lands part-turned and pays for
+   * it through the landing score, which is the skill.
+   */
+  spinYawRate: 7.5,
+  /**
+   * How hard steer must be held at the spin press to choose its direction.
+   *
+   * Below it the spin goes left (positive yaw, the world's positive
+   * direction); past it, the spin follows the stick. A threshold rather than
+   * a raw sign so drift on a worn pad cannot decide which way a trick turns.
+   */
+  spinSteerThreshold: 0.35,
+  /**
    * Fraction of the drag coefficient that still applies with no wheel on the
    * ground, dimensionless.
    *
@@ -2066,6 +2085,20 @@ export const EUC = {
    */
   softBodyDrag: 6.5,
   softBodyDragQuadratic: 0.04,
+  /**
+   * Speed below which the constant drag term fades out, m/s — M24.
+   *
+   * Without the fade, a wheel that came to rest *inside* a bush was trapped:
+   * 6.5 m/s² of constant drag beats the drive a standing start can build, so
+   * full throttle produced 0.00 m/s forever — measured on a bare controller,
+   * six seconds, no exaggeration. A player could only reset out, and the
+   * chase's CPU deterministically parked himself into one and besieged a
+   * fixture on it. Scaling the constant term by `|speed| / this` leaves the
+   * cushion untouched at riding speeds and gives a stopped wheel an
+   * equilibrium push-through at about walking pace, which is what shoving a
+   * wheel out of a hedge should feel like.
+   */
+  softBodyDragFadeSpeed: 1.0,
   /** Wobble energy injected once on entering a soft foliage hazard. */
   softBodyWobbleEnergy: 0.35,
 } as const;
@@ -5859,6 +5892,29 @@ export const CHASE = {
    */
   bustRadiusMetres: 12,
   /**
+   * How close counts as *touching* Officer Dorkins, metres — M24, Dario's
+   * publicly promised "the police should arrest you if you touch the police
+   * officer".
+   *
+   * Centre-to-centre in the ground plane, sized as two `riderHitRadius`
+   * bodies brushing plus a hand's width, so the bust fires when the two
+   * machines visibly meet and never from riding *near* him. Deliberately far
+   * inside `bustRadiusMetres`, which answers a different question (whose
+   * fault a crash was) at shoulder distance.
+   */
+  touchBustMetres: 1.1,
+  /**
+   * How fast the rider must be closing on the cop for a touch to be their
+   * ram, m/s.
+   *
+   * The design guard made arithmetic: the touch busts only when the *rider*
+   * is doing the closing (and doing more of it than the cop — see
+   * `ChaseRun.step`), so the cop gains no new way to score by ramming. Above
+   * wobble drift, below a deliberate creep: a rider who noses into him at
+   * walking pace chose to.
+   */
+  touchBustClosingSpeed: 0.5,
+  /**
    * How far from the route the rider may stray before the warning starts,
    * metres — §13 q27, "not cheatable by going far off road".
    *
@@ -6028,6 +6084,21 @@ export const CHASE = {
    * guessed at.
    */
   hopCurbHeight: 0.10,
+  /**
+   * The tallest step the cop will try to hop, metres — M24.
+   *
+   * The feeler reports *any* face ahead, and a wall is a face: without a
+   * ceiling the cop hop-spammed every wall he wedged against — 27 to 43 hops
+   * in the §4.2 reproduction, each buying a few degrees of airborne yaw,
+   * which is exactly the owner's "slowly jumping to correct himself". The
+   * barrier faces that trigger the pogo read 1.0 m and taller on the feeler;
+   * this sits well under them and well over every step the ride can actually
+   * mount (an uncharged hop's own apex is ≈ 0.46 m, and momentum, slope and
+   * suspension legitimately stretch what a moving wheel clears — the first
+   * cut at 0.42 refused mid-height street furniture the §4.2 camp flank was
+   * genuinely using, and the fixture caught it).
+   */
+  hopMaxCurbHeight: 0.8,
 
   // -- The strike ------------------------------------------------------------
 
@@ -7810,6 +7881,30 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     note: 'How close he has to be for a crash to end the run. This is the whole '
       + 'difference between pressure and tag — raise it and every crash is a '
       + 'bust, drop it and crashing costs only the recovery.',
+  },
+  {
+    path: 'CHASE.touchBustMetres',
+    group: 'Ride — chase',
+    label: 'Touch-bust reach',
+    unit: 'm',
+    min: 0.5,
+    max: 4,
+    step: 0.1,
+    note: 'How close counts as touching Officer Dorkins. The bust fires only '
+      + 'when the rider is the one closing, so raising this widens the ram '
+      + 'zone without ever letting him score by ramming you.',
+  },
+  {
+    path: 'CHASE.touchBustClosingSpeed',
+    group: 'Ride — chase',
+    label: 'Touch-bust closing',
+    unit: 'm/s',
+    min: 0.1,
+    max: 5,
+    step: 0.1,
+    note: 'How fast you must be moving into him for a touch to be your ram. '
+      + 'Below it, brushing past costs nothing; drop it toward 0.1 and wobble '
+      + 'drift near him starts to count.',
   },
   {
     path: 'CHASE.trackerGapMetres',

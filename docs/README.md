@@ -116,6 +116,8 @@ survive five minutes to escape.
   breathing room, never safety.
 - He alone carries the paddle. A strike costs speed and adds a wobble; crashing
   while he is close is the bust.
+- Hands off the law: riding into him is an instant bust. Contact only counts
+  when you are the one closing — him running you down scores nothing.
 - The route is the arena. Going far into the surround puts a warning and a
   countdown on screen and ends the run if you do not come back. Camping just
   off the road is not a loophole — he follows.
@@ -201,6 +203,7 @@ Rotating mid-ride is fine; nothing moves except the size of things.
 | Carve | Move the stick left or right — diagonal rides and carves together |
 | Crouch, and charge a bigger hop | Hold **CHARGE** |
 | Hop | Tap **HOP** — hold **CHARGE** first for a bigger jump |
+| 180° spin jump | Tap **HOP** again on the way up — lands you riding fakie |
 | Swing the paddle | Tap **SWING** — Knockabout only |
 | Pause · quick reset · camera view | The three small buttons along the bottom |
 
@@ -218,6 +221,7 @@ gentler one, not a twitchier one.
 | Brake, and reverse from a standstill | `S` or `↓` |
 | Carve left / right | `A` `D` or `←` `→` |
 | Hop | `Space` |
+| 180° spin jump | `Space` again on the way up |
 | Crouch, and charge a bigger hop | `Shift` |
 | Swing the paddle — Knockabout only | `F` |
 | Quick reset — back to the start, or restart the run | `R` |
@@ -234,6 +238,7 @@ always pauses, and `F3`/`F4` open developer overlays.
 | Brake / reverse | Left stick back, left trigger, or D-pad down |
 | Carve | Left stick left and right, or D-pad left and right |
 | Hop · crouch | A · left bumper |
+| 180° spin jump | A again on the way up |
 | Swing the paddle — Knockabout only | Right bumper |
 | Quick reset · camera view · pause | X · Y · Start |
 | In menus | Stick or D-pad to move, A to confirm, B to go back |

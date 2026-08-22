@@ -232,3 +232,103 @@ test('a fresh run starts with no tracker debt and no pending demand', () => {
     { offRoute: 0, copDistance: CHASE.trackerGapMetres + 20, crashed: false });
   assert.equal(run.takeTrackerDemand(), false, 'the old run’s timer leaked into this one');
 });
+
+// -- The touch bust — M24 -----------------------------------------------------
+//
+// Dario's twice-asked, publicly promised rule: touch Officer Dorkins and you
+// are busted. The matrix below is mostly the *guard*: the bust must punish the
+// rider's ram and hand the cop no new way to score by ramming, which is the
+// design condition the owner attached to the promise.
+
+/** Contact-range input with explicit attribution facts. */
+function touching(riderClosing: number, extra: Partial<ChaseInput> = {}): ChaseInput {
+  return {
+    offRoute: 0,
+    copDistance: CHASE.touchBustMetres * 0.8,
+    crashed: false,
+    riderClosingSpeed: riderClosing,
+    copCrashed: false,
+    ...extra,
+  };
+}
+
+test('riding into the cop is an instant bust with its own outcome', () => {
+  const run = new ChaseRun();
+  run.arm();
+  ride(run, 2);
+  assert.equal(run.step(STEP, touching(3)), true, 'the ram did not end the run');
+  assert.equal(run.state.phase, 'busted');
+  assert.equal(run.state.outcome, 'touched');
+});
+
+test('the cop ramming the rider scores nothing, however long he grinds', () => {
+  const run = new ChaseRun();
+  run.arm();
+  // Standing rider, cop grinding against them, in contact range the whole
+  // time: the forbidden channel. The rider's own closing rate is zero — only
+  // the rider's stick can raise it — so if this ever busts, the cop has
+  // learned to score by ramming and the promise behind the feature is broken.
+  ride(run, 30, touching(0));
+  assert.equal(run.state.phase, 'running', 'the cop scored by ramming a standing rider');
+
+  // Overtaking a fleeing rider from behind: the rider is opening, contact
+  // happens — the cop's doing alone, no bust.
+  ride(run, 10, touching(-6));
+  assert.equal(run.state.phase, 'running', 'the cop scored by overrunning a fleeing rider');
+});
+
+test('a head-on meeting where the rider does the closing is the rider’s ram', () => {
+  const run = new ChaseRun();
+  run.arm();
+  ride(run, 1);
+  // The §4.2 head-on shape. Running at him was already answered once with the
+  // led swing; now the body itself answers it. The cop closing too — even
+  // faster than the rider, as a pursuing cop usually is — is deliberately no
+  // defence: riding into him is the offence, and comparing the two rates
+  // would decide every mutual meeting by whoever happened to be faster.
+  assert.equal(run.step(STEP, touching(4)), true);
+  assert.equal(run.state.outcome, 'touched');
+});
+
+test('drift, downed riders, and a downed cop never make a touch', () => {
+  const run = new ChaseRun();
+  run.arm();
+  // Sub-threshold creep: wobble drift beside him is free.
+  ride(run, 10, touching(CHASE.touchBustClosingSpeed * 0.5));
+  assert.equal(run.state.phase, 'running', 'wobble drift near the cop busted');
+
+  // Opening, at zero gap: absurd caller facts must still read as nothing.
+  ride(run, 2, touching(-3, { copDistance: 0 }));
+  assert.equal(run.state.phase, 'running', 'an opening rider at zero gap busted');
+
+  // A ragdolled officer arrests nobody.
+  ride(run, 2, touching(5, { copCrashed: true }));
+  assert.equal(run.state.phase, 'running', 'a crashed cop made an arrest');
+
+  // A crashed rider sliding into him is the crash rule's business, and the
+  // crash edge was spent far from the cop two lines up in wall-clock terms:
+  // spend it explicitly far away, then slide the body into contact.
+  ride(run, 1, { offRoute: 0, copDistance: 400, crashed: true });
+  assert.equal(run.state.phase, 'running', 'the lone crash itself busted');
+  ride(run, 2, touching(4, { crashed: true }));
+  assert.equal(run.state.phase, 'running', 'a ragdoll sliding into the cop busted');
+});
+
+test('a touch during the stray warning is a touch, not a stray', () => {
+  const run = new ChaseRun();
+  run.arm();
+  ride(run, CHASE.strayGraceSeconds * 0.5,
+    { offRoute: CHASE.strayLimitMetres + 5, crashed: false, copDistance: 300 });
+  assert.equal(run.state.straying, true);
+  assert.equal(run.step(STEP, touching(6, { offRoute: CHASE.strayLimitMetres + 5 })), true);
+  assert.equal(run.state.outcome, 'touched', 'the stray clock outranked the touch');
+});
+
+test('callers that say nothing about touching can never produce one', () => {
+  // Every pre-M24 call site — and every fixture above this section — omits the
+  // attribution facts entirely. Absent facts must read as "nobody is closing".
+  const run = new ChaseRun();
+  run.arm();
+  ride(run, 5, { offRoute: 0, copDistance: 0, crashed: false });
+  assert.equal(run.state.phase, 'running', 'an attribution-blind caller busted on proximity');
+});

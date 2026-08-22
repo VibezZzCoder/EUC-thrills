@@ -2695,10 +2695,31 @@ export class Game {
     if (spine === null) return;
     spine.locate(this.currentPose.x, this.currentPose.z, -1, this.spineAt);
 
+    // How fast the rider's own motion is closing on the cop, for the touch
+    // bust — M24. The rider's contribution alone, read off the step's real
+    // displacement (which sees airborne travel and wobble weave, where a
+    // heading would lie): the rider's move measured against where the cop
+    // *ended up* this step, so the cop's own motion contributes nothing.
+    // Capped by the rider's own physical speed, the `maxStepSweep` argument
+    // one system over — a respawn or reset teleports a pose, and a teleport
+    // must read as nothing rather than as a ram. `copGap` was refreshed by
+    // `stepCop` this very step.
+    const riderClosingSpeed = Math.min(
+      stepSeconds > 0
+        ? (Math.hypot(
+          this.previousPose.x - this.copCurrent.x,
+          this.previousPose.z - this.copCurrent.z,
+        ) - this.copGap) / stepSeconds
+        : 0,
+      Math.abs(this.currentPose.speed),
+    );
+
     const ended = this.chaseRun.step(stepSeconds, {
       offRoute: this.spineAt.offRoute,
       copDistance: this.copGap,
       crashed: this.controller.crashed,
+      riderClosingSpeed,
+      copCrashed: this.copController?.crashed ?? true,
     });
     if (ended) this.finishChase();
     // The super tracker (M20.2). Asked after the endings so a run that just
@@ -2709,6 +2730,16 @@ export class Game {
   /** The clock ran out, or it did not. Score it, offer it, and show the card. */
   private finishChase(): void {
     const state = this.chaseRun.state;
+    // The touch bust lands as a body knock — M24. The referee decided the run;
+    // this is what the ram *feels* like: the strike's own thud and stagger, so
+    // riding into him reads as hitting a person rather than a tripwire. The
+    // same public `softKnock` the paddle strike spends, so the wobble-caller
+    // census is untouched, and the ride is already over before the wobble can
+    // cost anything.
+    if (state.outcome === 'touched') {
+      this.audio.hit();
+      this.controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
+    }
     this.lastChase = {
       survived: state.survived,
       escaped: state.outcome === 'escaped',
@@ -2756,6 +2787,7 @@ export class Game {
       notes.push('This browser is not keeping personal bests');
     }
     if (run.outcome === 'strayed') notes.push('You left the route and the clock ran out on it');
+    if (run.outcome === 'touched') notes.push('You touched Officer Dorkins — that is an instant bust');
 
     const heading = run.escaped
       ? (this.lastChaseWasRecord ? 'Escaped — new record' : 'Escaped')
@@ -4050,8 +4082,12 @@ export class Game {
       // The latch is a buffer, not merely an edge detector. Legality belongs
       // to the controller, so an early Space press stays pending while the
       // wheel is airborne and is claimed on the first grounded step that can
-      // actually begin another compression.
-      if (action === 'hop' && !this.controller.canAcceptHop) continue;
+      // actually begin another compression — unless the wheel is still on
+      // the way *up*, where the press is the M24 spin jump and is delivered
+      // now. The controller owns both answers.
+      if (action === 'hop'
+        && !this.controller.canAcceptHop
+        && !this.controller.canAcceptSpin) continue;
       // The same contract for the swing, and the same reasoning: a press
       // thrown during the recovery of the last swing stays latched and is
       // claimed on the first step that can begin another one, so a player
@@ -5396,6 +5432,8 @@ export class Game {
     // beside the code it decides.
     this.chaseRun.escapeSeconds = this.tuning.get('CHASE.escapeSeconds');
     this.chaseRun.bustRadiusMetres = this.tuning.get('CHASE.bustRadiusMetres');
+    this.chaseRun.touchBustMetres = this.tuning.get('CHASE.touchBustMetres');
+    this.chaseRun.touchBustClosingSpeed = this.tuning.get('CHASE.touchBustClosingSpeed');
     this.chaseRun.strayLimitMetres = this.tuning.get('CHASE.strayLimitMetres');
     this.chaseRun.strayGraceSeconds = this.tuning.get('CHASE.strayGraceSeconds');
     this.chaseRun.trackerGapMetres = this.tuning.get('CHASE.trackerGapMetres');

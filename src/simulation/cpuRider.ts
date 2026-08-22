@@ -220,6 +220,7 @@ export class CpuRider {
   skillWanderPerHundredMetres: number = CHASE.skillWanderPerHundredMetres;
   skillBrakeLateness: number = CHASE.skillBrakeLateness;
   hopCurbHeight: number = CHASE.hopCurbHeight;
+  hopMaxCurbHeight: number = CHASE.hopMaxCurbHeight;
   swingRangeMetres: number = CHASE.swingRangeMetres;
   swingConeRadians: number = CHASE.swingConeRadians;
   swingCooldownSeconds: number = CHASE.swingCooldownSeconds;
@@ -297,6 +298,54 @@ export class CpuRider {
   private detourSpan = DETOUR_SPAN_BASE_METRES;
   /** How long the flank's direct leg has run freely, seconds. See below. */
   private flankFreeSeconds = 0;
+  /**
+   * The spin-jump escape — M24, the owner's own remedy for the §4.2 wedge.
+   *
+   * A cop parked nose-into a face with his aim on the far side is the one
+   * pose the ladder below could not leave: the end-around wants speed, the
+   * flank's slides arc his nose back into the wall, and both restart from a
+   * pinned standstill — the 90-second reproduction in `cpuRider.test.ts`
+   * never moved at all. The 180° spin jump is the exit: hop, tap, land
+   * facing *away*, and ride off with the full forward agility every other
+   * part of the brain already knows how to use. `spinTapPending` carries the
+   * two-press grammar across steps (the controller reads a rising edge, so
+   * the press that launches and the tap that spins must be separate
+   * presses); the cooldown keeps a still-wedged cop from pogoing the trick.
+   */
+  private spinTapPending = false;
+  /** Seconds left for the pending tap's flight to begin before it is dropped. */
+  private spinTapTimeout = 0;
+  private spinEscapeCooldown = 0;
+  /**
+   * Stuck escapes spent from a stand since the wheel last genuinely rode.
+   *
+   * The siege detector. The first trigger design read the curb feeler — spin
+   * when a tall face is dead ahead — and the measured deadlocks laughed at
+   * it: a cop pinned obliquely on a prop, or between two, reads 0.00 on a
+   * feeler that probes straight ahead (M17's shallow-angle lesson all over
+   * again), and froze forever with the feeler swearing the way was clear.
+   * What every deadlock *does* share is the ladder cycling uselessly:
+   * stuck → crawl → detour armed → still parked → stuck again, ~2.4 s per
+   * lap, nothing moving. So the trigger counts exactly that — detours armed
+   * from a stand — and two in a row with no real riding between them is a
+   * siege whatever the feeler thinks it sees.
+   */
+  private stuckDetours = 0;
+  /** Where the wedge last armed, so re-arms in the same place count up. */
+  private lastWedgeX = Number.NaN;
+  private lastWedgeZ = Number.NaN;
+  /**
+   * Seconds of committed forward riding left after a spin escape lands.
+   *
+   * The half that turned out to be load-bearing: the about-face puts the wall
+   * *behind* him, and the stuck crawl's reverse-and-steer — correct with a
+   * nose on a face — backs a spun cop straight into the wall he just escaped.
+   * The first build did exactly that, a pirouette show at 0 m/s forever.
+   * Landing a spin therefore commits to riding straight ahead for a beat,
+   * which restores the speed every other escape (the detour, the flank, the
+   * end-around) was designed to work from.
+   */
+  private spinRideOutSeconds = 0;
 
   // Scratch. One brain steps 120 times a second and every one of these would
   // otherwise be garbage.
@@ -396,6 +445,7 @@ export class CpuRider {
     actions.swing = false;
 
     this.swingCooldown = Math.max(0, this.swingCooldown - dt);
+    this.spinEscapeCooldown = Math.max(0, this.spinEscapeCooldown - dt);
 
     // A crashed rider is not riding. The controller respawns him on its own
     // timer exactly as it does the player, and thinking through a crash would
@@ -404,6 +454,9 @@ export class CpuRider {
       this.lastHeading = view.headingY;
       this.stuckSeconds = 0;
       this.lastQuarryRange = Infinity;
+      this.spinTapPending = false;
+      this.spinRideOutSeconds = 0;
+      this.stuckDetours = 0;
       return actions;
     }
 
@@ -1037,7 +1090,21 @@ export class CpuRider {
     // seventh of real time — a 1.4 s threshold that took ten seconds to arm,
     // measured against the §4.2 wall. Airborne is covered by the speed reset:
     // a wheel with anywhere to fly is a wheel moving faster than this.
-    else if (Math.abs(view.speed) < STUCK_SPEED) this.stuckSeconds += dt;
+    else if (Math.abs(view.speed) < STUCK_SPEED) {
+      const wasArmed = this.stuckSeconds > STUCK_SECONDS;
+      this.stuckSeconds += dt;
+      if (!wasArmed && this.stuckSeconds > STUCK_SECONDS) {
+        // A wedge lap begins. Laps count up only while they keep happening in
+        // the same few metres — a re-arm across the map is a new problem, not
+        // a siege — and the brief bursts of motion inside a siege (a reverse
+        // that gains two metres and re-pins) deliberately do NOT reset the
+        // count, which is the mistake the first counter made.
+        const moved = Math.hypot(view.x - this.lastWedgeX, view.z - this.lastWedgeZ);
+        this.stuckDetours = moved > WEDGE_SAME_SPOT_METRES ? 1 : this.stuckDetours + 1;
+        this.lastWedgeX = view.x;
+        this.lastWedgeZ = view.z;
+      }
+    }
     else if (Math.abs(view.speed) > STUCK_SPEED * 3) {
       // An escape that got the wheel moving again has finished its job — and
       // the fact it was needed at all is what arms the flank. Recommitting
@@ -1051,7 +1118,18 @@ export class CpuRider {
       if (this.stuckSeconds > STUCK_SECONDS) this.beginDetour(quarry, quarryRange);
       this.stuckSeconds = 0;
     }
-    if (this.stuckSeconds > STUCK_SECONDS) {
+    // Which exit the wedge takes — M24. A face taller than any hop is the
+    // pose the reverse-and-steer crawl could never leave (the 90-second
+    // reproduction in the suite): the spin-jump escape below owns that case,
+    // so the crawl only runs when the way ahead is something reversing can
+    // actually help with.
+    // Two full ladder laps from a stand and still parked: the siege is real,
+    // whatever the feeler reads (see `stuckDetours`). A first wedge keeps the
+    // ordinary escape, which the field probes showed resolving faster and
+    // with fewer crashes than a spin thrown at every wall.
+    const spinEscapeReady = this.stuckDetours >= 2 && this.spinEscapeCooldown <= 0;
+    if (this.stuckSeconds > STUCK_SECONDS && !spinEscapeReady && !this.spinTapPending
+      && this.spinRideOutSeconds <= 0) {
       actions.throttle = -1;
       actions.steer = bearing >= 0 ? 1 : -1;
       if (this.stuckSeconds > STUCK_SECONDS + STUCK_REVERSE_SECONDS) {
@@ -1064,8 +1142,67 @@ export class CpuRider {
 
     // The kerb, hopped off the controller's own feeler. `canAcceptHop` is the
     // authority on whether it happens, exactly as it is for a player holding
-    // the key down: this is a request, not a jump.
-    actions.hop = view.grounded && view.curbAhead > this.hopCurbHeight;
+    // the key down: this is a request, not a jump. Bounded above as well as
+    // below (M24): the feeler reports walls too, and a face taller than an
+    // uncharged hop's apex is unclearable — hopping at it was the §4.2 pogo,
+    // dozens of jumps against a wall each buying a few degrees of airborne
+    // yaw, which read as "slowly jumping to correct himself".
+    actions.hop = view.grounded
+      && view.curbAhead > this.hopCurbHeight
+      && view.curbAhead <= this.hopMaxCurbHeight;
+
+    // -- The spin-jump escape (M24) ------------------------------------------
+    // The two-press grammar, spelled out across steps: press to launch,
+    // *release*, tap again in the air. Runs after the kerb request above so a
+    // pending sequence owns the hop flag outright — a stray kerb-shaped
+    // request mid-sequence would merge the two presses into one held level
+    // and the controller's rising edge would never see the tap.
+    if (this.spinTapPending) {
+      // Riding inputs stand down while the trick is thrown: reverse throttle
+      // under the launch would fight the hop, and held steer through the
+      // flight would spend air yaw on top of the scripted sweep.
+      actions.throttle = 0;
+      actions.steer = 0;
+      this.spinTapTimeout -= dt;
+      if (!view.grounded) {
+        actions.hop = true;
+        this.spinTapPending = false;
+        this.spinRideOutSeconds = SPIN_RIDE_OUT_SECONDS;
+        // Make sure the landing has a leg to aim along — but never stomp one
+        // already running: `beginDetour` flips the side and doubles the span
+        // on every call, and an extra call per spin pumped the alternation so
+        // hard the widening walk shredded its own half-finished legs (the
+        // from-distance camp fixture caught it at 6.3 m closest). A leg in
+        // progress keeps its direction; the ride-out below just drives it.
+        if (this.detourRemaining <= 0) this.beginDetour(quarry, quarryRange);
+      } else {
+        actions.hop = false;
+        // A launch that never happened — refused hop, retuned compression —
+        // must not leave a tap armed to fire on some later, unrelated flight.
+        if (this.spinTapTimeout <= 0) this.spinTapPending = false;
+      }
+    } else if (this.spinRideOutSeconds > 0) {
+      // The landing's committed exit — M24, and its shape was measured twice.
+      // Riding blind straight ahead parked the first build nose-into the
+      // verge furniture opposite the wall, pinned in a pocket the feeler
+      // cannot see; commanding reverse (the crawl's instinct) backed the
+      // second into the wall it had just spun away from, a pirouette show at
+      // 0 m/s. So the ride-out changes exactly one thing: the throttle is
+      // held open. The steer stays the aim machinery's own, which — with the
+      // detour armed at the tap — is the flank's slide, a forward diagonal
+      // off the face, from real speed.
+      this.spinRideOutSeconds -= dt;
+      if (view.grounded) {
+        actions.throttle = 1;
+      }
+    } else if (this.stuckSeconds > STUCK_SECONDS && spinEscapeReady && view.grounded) {
+      actions.hop = true;
+      actions.throttle = 0;
+      actions.steer = 0;
+      this.spinTapPending = true;
+      this.spinTapTimeout = SPIN_TAP_TIMEOUT_SECONDS;
+      this.spinEscapeCooldown = SPIN_ESCAPE_COOLDOWN_SECONDS;
+    }
 
     // -- The swing -----------------------------------------------------------
     if (quarry !== null && this.swingCooldown <= 0) {
@@ -1251,6 +1388,34 @@ const STUCK_SPEED = 0.6;
 const STUCK_SECONDS = 1.4;
 /** How long it backs out for, seconds. */
 const STUCK_REVERSE_SECONDS = 1.0;
+/**
+ * How long a spin escape's launch may wait to leave the ground before the
+ * pending air-tap is dropped, seconds — M24. Longer than the hop compression,
+ * far shorter than anything that could re-arm by accident.
+ */
+const SPIN_TAP_TIMEOUT_SECONDS = 1.0;
+/**
+ * Dwell between spin escapes, seconds — M24. Long enough that a cop still
+ * wedged after one spin rides the ordinary ladder (reverse, detour, flank)
+ * before trying another, so the trick reads as a recovery rather than a tic.
+ */
+const SPIN_ESCAPE_COOLDOWN_SECONDS = 2.5;
+/**
+ * How long a landed spin escape commits to the throttle, seconds — M24.
+ *
+ * Long enough to actually travel the flank leg the tap armed: at 1.6 s the
+ * blocker caps re-parked him two metres into every leg and the siege cycled
+ * — spin, creep, park, spin — at the same wall face forever. Three and a
+ * half seconds is ten-plus metres of committed riding, which is past the end
+ * of any wall the detour ladder is mid-way through walking around.
+ */
+const SPIN_RIDE_OUT_SECONDS = 3.5;
+/**
+ * Wedge re-arms this close together belong to the same siege, metres — M24.
+ * Wider than the reverse crawl's whole excursion, far narrower than any real
+ * change of scenery.
+ */
+const WEDGE_SAME_SPOT_METRES = 8;
 /**
  * How far past the road's edge a quarry must be before the cop leaves it,
  * metres — and how close to it he still counts as being *on* it once he has.

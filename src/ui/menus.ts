@@ -22,6 +22,7 @@ import {
   type GameOptions,
   type TouchControlsMode,
 } from '../app/options.ts';
+import { rowNeighbour, rowStep, type ControlRect } from './menuRows.ts';
 
 /**
  * Title, pause, and settings — the menu surfaces M9 owes, and the file that
@@ -1574,7 +1575,10 @@ export class Menus {
   }
 
   private focusFirst(panel: HTMLElement | null): void {
-    panel?.querySelector<HTMLElement>(focusableSelector())?.focus();
+    if (panel === null) return;
+    const first = [...panel.querySelectorAll(focusableSelector())]
+      .find((node): node is HTMLElement => node instanceof HTMLElement && node.offsetParent !== null);
+    first?.focus();
   }
 
   private readonly onClick = (event: MouseEvent): void => {
@@ -1769,10 +1773,7 @@ export class Menus {
    * tell where focus went, because the thing that has it is not visible.
    */
   private trapFocus(event: KeyboardEvent): void {
-    const panel = this.panelFor(this.screen);
-    if (!panel) return;
-    const focusable = [...panel.querySelectorAll<HTMLElement>(focusableSelector())]
-      .filter((node) => node.offsetParent !== null || node === document.activeElement);
+    const focusable = this.focusableControls(document.activeElement);
     if (focusable.length === 0) return;
 
     const first = focusable[0];
@@ -1789,17 +1790,48 @@ export class Menus {
   }
 
   /**
+   * The open panel's operable controls, in DOM order.
+   *
+   * One census for `navigate`, `confirm`, `trapFocus` and `focusFirst`, and
+   * the filters are the M24 lesson rather than tidiness: the selector's old
+   * bare `[href]` clause matched the SVG `<image>` inside Maribel's card
+   * portrait — an `SVGImageElement`, which is not focusable, so the pad's
+   * walk called `.focus()` on it, nothing happened, and the rider chooser
+   * jammed on the card beside it with Done unreachable (§4.6). The
+   * `instanceof HTMLElement` filter makes that class of element structurally
+   * impossible whatever the selector says, and `offsetParent` keeps hidden
+   * controls out exactly as before. `keep` lets the Tab trap retain a focused
+   * control that is mid-transition.
+   */
+  private focusableControls(keep: Element | null = null): HTMLElement[] {
+    const panel = this.panelFor(this.screen);
+    if (!panel) return [];
+    return [...panel.querySelectorAll(focusableSelector())]
+      .filter((node): node is HTMLElement => node instanceof HTMLElement)
+      .filter((node) => node.offsetParent !== null || node === keep);
+  }
+
+  /**
    * Move or adjust the real focused control from a gamepad menu direction.
    *
    * The Gamepad API does not synthesize keyboard events, so the browser cannot
-   * move DOM focus on the pad's behalf. Up/down follow the panel's actual Tab
-   * order; left/right adjust native controls and otherwise follow that order.
+   * move DOM focus on the pad's behalf. What a direction *means* is
+   * geometric, not list-shaped — the M24 §4.6 report ("only left and right,
+   * not up and down") came from walking the one-dimensional Tab order for
+   * every direction, which reads as vertical movement only while a panel is a
+   * single column, and the rider chooser is a card grid:
+   *
+   *   - **up/down move between the visual rows** the player sees, landing on
+   *     the horizontally nearest control, wrapping at the ends
+   *     (`ui/menuRows.ts` owns the arithmetic, headlessly pinned);
+   *   - **left/right first adjust the focused control** (a select, slider or
+   *     checkbox), then move within the row, and deliberately stop at its
+   *     edge — bleeding into vertical movement is the confusion this fixes;
+   *   - a panel with focus elsewhere admits the walk at its first or last
+   *     control, exactly as before.
    */
   navigate(action: 'up' | 'down' | 'left' | 'right'): void {
-    const panel = this.panelFor(this.screen);
-    if (!panel) return;
-    const focusable = [...panel.querySelectorAll<HTMLElement>(focusableSelector())]
-      .filter((node) => node.offsetParent !== null);
+    const focusable = this.focusableControls();
     if (focusable.length === 0) return;
 
     const active = document.activeElement;
@@ -1808,10 +1840,23 @@ export class Menus {
     }
 
     const current = focusable.indexOf(active as HTMLElement);
-    const delta = action === 'up' || action === 'left' ? -1 : 1;
-    const next = current < 0
-      ? (delta > 0 ? 0 : focusable.length - 1)
-      : (current + delta + focusable.length) % focusable.length;
+    const forward = action === 'down' || action === 'right';
+    let next: number;
+    if (current < 0) {
+      next = forward ? 0 : focusable.length - 1;
+    } else {
+      const rects: ControlRect[] = focusable.map((node) => {
+        const rect = node.getBoundingClientRect();
+        return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+      });
+      if (action === 'up' || action === 'down') {
+        next = rowStep(rects, current, action === 'down' ? 1 : -1);
+      } else {
+        const beside = rowNeighbour(rects, current, action === 'right' ? 1 : -1);
+        if (beside === null) return;
+        next = beside;
+      }
+    }
     focusable[next].focus();
     focusable[next].scrollIntoView({ block: 'nearest' });
   }
@@ -1839,6 +1884,20 @@ export class Menus {
     const focused = document.activeElement;
     if (this.seedField !== null && focused === this.seedField) {
       this.callbacks.onRideRoute(this.seed);
+      return;
+    }
+    // A `.click()` on a native `<select>` opens nothing and changes nothing in
+    // any browser this game runs in, and on a checkbox it toggles only by the
+    // grace of the default click action — which is why the owner's §4.6
+    // report named the quality and speed-unit dropdowns as "not accepting the
+    // action button" (M24). Confirm on a select means what a click cannot:
+    // step to the next option, wrapping, through the same `input` event the
+    // pointer path fires. Everything else keeps the click, which is right for
+    // buttons and cards.
+    if (focused instanceof HTMLSelectElement) {
+      if (focused.options.length === 0) return;
+      focused.selectedIndex = (focused.selectedIndex + 1) % focused.options.length;
+      focused.dispatchEvent(new Event('input', { bubbles: true }));
       return;
     }
     if (focused instanceof HTMLElement) focused.click();
@@ -2178,6 +2237,10 @@ function routeStatusLine(status: RouteStatus): [string, string] {
 }
 
 function focusableSelector(): string {
+  // `a[href]`, never bare `[href]`: an SVG `<image href>` — Maribel's card
+  // mark — matched the bare clause and jammed the pad's walk on the rider
+  // chooser (M24 §4.6). `focusableControls` filters non-HTML elements out
+  // structurally as well; the selector stays honest so the two never argue.
   return 'button:not([disabled]), input:not([disabled]), select:not([disabled]), '
-    + '[href], [tabindex]:not([tabindex="-1"])';
+    + 'a[href], [tabindex]:not([tabindex="-1"])';
 }

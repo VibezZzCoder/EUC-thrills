@@ -623,6 +623,13 @@ function pursueAroundWall(
     controller.step(STEP, brain.step(STEP, view, quarry));
     finalGap = Math.hypot(pose.x - quarry.x, pose.z - quarry.z);
     closest = Math.min(closest, finalGap);
+    if (process.env.WEDGE_TRACE && step % SIMULATION.hz === 0) {
+      const b = brain as unknown as Record<string, number | boolean>;
+      console.log(`t=${(step / SIMULATION.hz).toFixed(0)}s speed=${pose.speed.toFixed(1)} gap=${finalGap.toFixed(1)} `
+        + `curb=${view.curbAhead.toFixed(2)} stuck=${(b.stuckSeconds as number).toFixed(1)} `
+        + `flank=${b.flanking} detour=${(b.detourRemaining as number).toFixed(1)} span=${(b.detourSpan as number).toFixed(0)} `
+        + `hops=${controller.snapshot().hops} xz=(${pose.x.toFixed(1)},${pose.z.toFixed(1)}) h=${pose.headingY.toFixed(2)}`);
+    }
   }
 
   return { crashes, closest, finalGap, wallProjected };
@@ -671,6 +678,179 @@ test('a quarry camped behind a wall in the field is flanked, not besieged', () =
     pursuit.crashes <= 2,
     `${pursuit.crashes} crashes working around one wall is a ragdoll loop, not a flank`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// The wedge about-face — FEEDBACK-TRIAGE §4.2's 2026-08-22 datapoint, M24
+// ---------------------------------------------------------------------------
+//
+// The owner's sighting, and the reproducible core of the "weirds out" report:
+// *"getting stuck sometimes on a wall and then slowly jumping to correct
+// himself (his facing direction) eventually."* The camp fixtures above prove
+// the cop eventually gets around a wall; this one measures the *about-face* —
+// nose against a face, quarry behind him — because how long the turn takes is
+// the whole complaint.
+
+/**
+ * Wedge the cop nose-into a wall with the quarry behind him, and measure the
+ * about-face: seconds until his heading is within half a radian of the
+ * bearing to the quarry, plus how many hops the recovery spent and how close
+ * he got in the allotted time.
+ */
+function wedgeAboutFace(
+  seed: string,
+  wallDistance: number,
+  quarryBehindMetres: number,
+  maxSeconds = 30,
+  lateral = 0,
+): { recoverSeconds: number; hops: number; closest: number; crashes: number } {
+  const { plan } = generateLevel(seed);
+  const spine = RouteSpine.fromPlan(plan)!;
+  const at = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
+  spine.sample(wallDistance, at);
+  const heading = at.headingY;
+  const wallX = at.x + Math.cos(heading) * lateral;
+  const wallZ = at.z - Math.sin(heading) * lateral;
+  const ground = createGroundSample();
+  new PlanTerrainSampler(plan).sampleGround(wallX, wallZ, ground);
+  plan.solids = [...(plan.solids ?? []), {
+    centre: { x: wallX, y: ground.height + 0.6, z: wallZ },
+    halfExtents: { x: 7, y: 0.6, z: 0.35 },
+    rotationY: heading,
+    surface: 'brick',
+  }];
+
+  const sampler = new PlanTerrainSampler(plan);
+  const controller = new EucController(sampler, {
+    spawn: plan.spawn,
+    hazards: new HazardField(plan.hazards ?? []),
+    softBodies: new SoftBodyField(plan.softBodies ?? []),
+  });
+  const brain = new CpuRider(spine, plan, sampler);
+
+  // Right against the face, pointed at it — the pose the owner watched.
+  const copAt = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
+  spine.sample(wallDistance - 1.0, copAt);
+  copAt.x += Math.cos(heading) * lateral;
+  copAt.z -= Math.sin(heading) * lateral;
+  sampler.sampleGround(copAt.x, copAt.z, ground);
+  controller.reset({
+    position: { x: copAt.x, y: ground.height, z: copAt.z },
+    headingY: copAt.headingY,
+  });
+
+  const quarryPoint = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
+  spine.sample(wallDistance - quarryBehindMetres, quarryPoint);
+  const quarry: CpuQuarry = {
+    x: quarryPoint.x + Math.cos(quarryPoint.headingY) * lateral,
+    y: quarryPoint.y,
+    z: quarryPoint.z - Math.sin(quarryPoint.headingY) * lateral,
+    speed: 0,
+  };
+
+  const pose: EucPose = createPose();
+  controller.writePose(pose);
+  const view: { -readonly [K in keyof CpuView]: CpuView[K] } = {
+    x: pose.x,
+    y: pose.y,
+    z: pose.z,
+    headingY: pose.headingY,
+    speed: 0,
+    grounded: true,
+    crashed: false,
+    curbAhead: 0,
+    lateralLimitG: EUC.maxLateralG,
+  };
+  brain.place(view);
+
+  let recoverSeconds = Infinity;
+  let closest = Infinity;
+  let crashes = 0;
+  let wasCrashed = false;
+  const steps = Math.round(maxSeconds * SIMULATION.hz);
+  for (let step = 0; step < steps; step += 1) {
+    controller.writePose(pose);
+    view.x = pose.x;
+    view.y = pose.y;
+    view.z = pose.z;
+    view.headingY = pose.headingY;
+    view.speed = pose.speed;
+    view.grounded = pose.y - pose.groundY <= 1e-6;
+    view.crashed = controller.crashed;
+    view.curbAhead = controller.curbHeightAhead;
+    view.lateralLimitG = controller.lateralLimit;
+    if (controller.crashed && !wasCrashed) crashes += 1;
+    wasCrashed = controller.crashed;
+    controller.step(STEP, brain.step(STEP, view, quarry));
+
+    closest = Math.min(closest, Math.hypot(pose.x - quarry.x, pose.z - quarry.z));
+    if (recoverSeconds === Infinity) {
+      const bearing = Math.atan2(quarry.x - pose.x, quarry.z - pose.z) - pose.headingY;
+      const error = Math.abs(Math.atan2(Math.sin(bearing), Math.cos(bearing)));
+      if (error < 0.5) recoverSeconds = (step + 1) * STEP;
+    }
+  }
+
+  return { recoverSeconds, hops: controller.snapshot().hops, closest, crashes };
+}
+
+test('the wedge about-face is quick and clean, never a hop-corrected crawl', () => {
+  // The owner's exact sighting shape: nose on a face, the way out behind him.
+  // The turn itself was never the slow part — the pivot the obstacle contact
+  // arms recovers the heading in under a second — but this pin is what keeps
+  // it that way: if any future trigger lets the wall pogo back in (the test
+  // below), the hop count and the clock both catch it here first.
+  const wedge = wedgeAboutFace('route-41', 120, 40);
+
+  assert.ok(
+    wedge.recoverSeconds <= 3,
+    `the about-face took ${wedge.recoverSeconds.toFixed(1)} s — the slow hop-correction is back`,
+  );
+  assert.ok(
+    wedge.closest <= CHASE.swingRangeMetres,
+    `he turned but never closed (closest ${wedge.closest.toFixed(1)} m)`,
+  );
+  assert.equal(wedge.hops, 0, `${wedge.hops} hops spent on a turn the ground provides`);
+  assert.equal(wedge.crashes, 0, `${wedge.crashes} crashes in a stationary about-face`);
+});
+
+test('a wall face is never hop-spammed — the §4.2 pogo stays dead', () => {
+  // The reproduced core of the owner's "slowly jumping to correct himself":
+  // with the quarry just past the wall, the curb feeler reads the face as a
+  // hoppable kerb, and before M24 the cop threw **27 hops in 30 seconds**
+  // against it, each buying a few degrees of airborne yaw — the facing
+  // corrected by pogo. The fix is `hopMaxCurbHeight` (a wall face reads
+  // about a metre on the feeler; no hop mounts that), and the budget below
+  // leaves room for the deliberate spin-jump escape, which spends a launch
+  // per genuine siege lap — never one per second, which is what a pogo is.
+  const wedge = wedgeAboutFace('route-41', 120, -3, 30);
+  assert.ok(
+    wedge.hops <= 4,
+    `${wedge.hops} hops in 30 s against a wall — the pogo is back`,
+  );
+});
+
+test('the wedged-start siege breaks: one spin escape reaches around the wall', () => {
+  // Harder than anything reported from the field, on purpose: the cop
+  // *starts* pinned at the face with the quarry eight metres past it — the
+  // pose the M18 escape ladder could not leave. Measured before the spin
+  // escape existed, ninety seconds of this fixture moved him nowhere at all
+  // (closest stayed at his spawn's 8.5 m; with the pogo still alive, 43 hops
+  // of jumping on the spot). The owner's remedy was the 180° spin jump, and
+  // this is it working end to end through the real controller: wedge lap,
+  // spin about-face, committed ride-out along the flank's own leg, around
+  // the end and onto the quarry. Being wedged is allowed; staying wedged is
+  // the defect.
+  const siege = wedgeAboutFace('route-41', 120, -8, 90);
+  assert.ok(
+    siege.closest <= CHASE.swingRangeMetres,
+    `the siege held: closest ${siege.closest.toFixed(1)} m after 90 s`,
+  );
+  assert.ok(
+    siege.hops >= 1,
+    'the spin escape never fired — whatever got him around, it was not the M24 move',
+  );
+  assert.equal(siege.crashes, 0, `${siege.crashes} crashes escaping one wedge`);
 });
 
 test('a top-speed head-on rider is met by the cop paddle, not waved past', () => {

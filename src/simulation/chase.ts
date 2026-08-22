@@ -14,7 +14,7 @@ import { CHASE } from '../data/tuning.ts';
  * Nothing here may import three.js (invariant 1), and nothing here is a player
  * option (invariant 5).
  *
- * ## The three ways a chase ends, and why they are these three
+ * ## The four ways a chase ends, and why they are these four
  *
  * **You survive the clock** (§13 q24, the owner's answer). Five minutes, the
  * same on every seed, which is what makes one player's escape comparable with
@@ -27,6 +27,16 @@ import { CHASE } from '../data/tuning.ts';
  * What ends the run is the crash that follows one — and only while he is close
  * enough for it to be his doing. A crash alone, on an empty road, costs the
  * recovery and nothing else, exactly as it does in free ride.
+ *
+ * **You touch him** (M24, Dario's twice-asked and publicly promised "the
+ * police should arrest you if you touch the police officer"). Rider-initiated
+ * contact is an immediate bust. The attribution is the whole rule: the touch
+ * counts only while the *rider* is closing at least `touchBustClosingSpeed`,
+ * so the cop gains no new way to score by ramming — a cop who overruns a
+ * fleeing, stationary, or passing rider meets no rider-side closing and
+ * passes straight through, exactly as before. This deliberately ends the
+ * §4.2 head-on ram as a bust: running at him was already answered once with
+ * the led swing, and now the body itself answers it.
  *
  * **You leave** (§13 q27, the owner's "not cheatable by going far off road").
  * Riding into the surround and holding throttle for five minutes would beat the
@@ -42,7 +52,7 @@ import { CHASE } from '../data/tuning.ts';
 export type ChasePhase = 'idle' | 'running' | 'escaped' | 'busted';
 
 /** What ended a chase. `none` while it is still running or has not started. */
-export type ChaseOutcome = 'none' | 'escaped' | 'caught' | 'strayed';
+export type ChaseOutcome = 'none' | 'escaped' | 'caught' | 'strayed' | 'touched';
 
 export interface ChaseState {
   readonly phase: ChasePhase;
@@ -65,12 +75,28 @@ export interface ChaseInput {
   readonly copDistance: number;
   /** Whether the rider is crashed right now. */
   readonly crashed: boolean;
+  /**
+   * How fast the rider's own motion is closing the gap, m/s — M24.
+   *
+   * The rider's contribution alone, positive when approaching, and capped by
+   * the caller at the rider's own physical speed so a respawn or reset step
+   * can never manufacture a ram. Zero when absent-minded callers (tests for
+   * the other three endings) have nothing to say about touching.
+   */
+  readonly riderClosingSpeed?: number;
+  /**
+   * Whether the cop is crashed right now. A rider riding over a ragdolled
+   * officer is not an arrest — there is nobody standing to make one.
+   */
+  readonly copCrashed?: boolean;
 }
 
 export class ChaseRun {
   // -- Live tuning, on the pattern every other simulation object uses ---------
   escapeSeconds: number = CHASE.escapeSeconds;
   bustRadiusMetres: number = CHASE.bustRadiusMetres;
+  touchBustMetres: number = CHASE.touchBustMetres;
+  touchBustClosingSpeed: number = CHASE.touchBustClosingSpeed;
   strayLimitMetres: number = CHASE.strayLimitMetres;
   strayGraceSeconds: number = CHASE.strayGraceSeconds;
   trackerGapMetres: number = CHASE.trackerGapMetres;
@@ -161,6 +187,32 @@ export class ChaseRun {
     if (justCrashed && input.copDistance <= this.bustRadiusMetres) {
       this.phaseValue = 'busted';
       this.outcomeValue = 'caught';
+      return true;
+    }
+
+    // The touch — M24. A **level**, not an edge, because contact is not a
+    // one-step event the way a crash's first step is: the attribution gates
+    // make repeated answers identical while the answer is "no", and the first
+    // "yes" ends the run. Two clauses, both load-bearing:
+    //   - not while either rider is down (a ragdoll sliding into him is not a
+    //     ram, and a ragdolled officer arrests nobody);
+    //   - the rider must be closing at ram pace, and that clause alone is the
+    //     no-scoring-by-ramming promise: only the rider's own stick can put
+    //     ram-pace closing on the rider — a standing rider shows zero, a
+    //     fleeing rider shows negative, and a rider *passing* him shows a
+    //     radial rate that falls to zero exactly at the closest approach, so
+    //     the cop steering into any of them scores nothing.
+    // The cop's own closing rate is deliberately NOT compared against the
+    // rider's. Requiring the rider to out-close him would decide every mutual
+    // head-on by who happened to be faster — and a pursuing cop is always
+    // faster than, say, a reversing rider, which would quietly delete the
+    // exact ram this rule was promised for. Riding into him is the offence;
+    // how fast he was coming the other way is not a defence.
+    if (!crashed && input.copCrashed !== true
+      && input.copDistance <= this.touchBustMetres
+      && (input.riderClosingSpeed ?? 0) >= this.touchBustClosingSpeed) {
+      this.phaseValue = 'busted';
+      this.outcomeValue = 'touched';
       return true;
     }
 

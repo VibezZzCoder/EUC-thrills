@@ -9,6 +9,7 @@ import type { Hazard, HazardKind, LevelPlan } from '../level/plan.ts';
 import type { SegmentSpec } from '../level/segments.ts';
 import { RIDEABILITY } from '../level/routeValidator.ts';
 import { HazardField } from './hazards.ts';
+import { SoftBodyField } from './softBodies.ts';
 import {
   EucController,
   createPose,
@@ -4298,4 +4299,265 @@ test('the hard-carve stance needs roll AND speed, which is the owner\'s rule', (
     `the playful turn was not slow: ${playing.snapshot().speed}`,
   );
   assert.equal(play.carveStance, 0, 'a playful turn reached the racing stance');
+});
+
+// ---------------------------------------------------------------------------
+// The 180° spin jump — M24
+// ---------------------------------------------------------------------------
+//
+// The owner-accepted trick input (FEEDBACK-TRIAGE §5): pressing hop again while
+// airborne sweeps the heading through π. The physics was already paid for by
+// M5 — travel frozen at takeoff, heading free in flight, landing speed
+// recomposed as `speed * alignment` — so what these pin is the move's own
+// grammar: the sweep, the landing fold that keeps a clean 180 from scoring as
+// a crash, and the reverse-state reconciliation that makes it the first legal
+// way to enter reverse at speed.
+
+/** Hop from the current state, air-tap at apex-ish, ride out the landing. */
+function spinJump(euc: EucController, held: Partial<ActionSnapshot> = {}): EucSnapshot {
+  ride(euc, 1, { ...held, hop: true });
+  // Let the compression spend itself and the wheel leave the ground.
+  let guard = 0;
+  while (euc.snapshot().grounded) {
+    ride(euc, 1, held);
+    assert.ok((guard += 1) < 200, 'the hop never left the ground');
+  }
+  // The air-tap. One step with the flag up is exactly what a press delivers.
+  ride(euc, 1, { ...held, hop: true });
+  guard = 0;
+  while (!euc.snapshot().grounded) {
+    ride(euc, 1, held);
+    assert.ok((guard += 1) < 400, 'the spin jump never landed');
+  }
+  return euc.snapshot();
+}
+
+test('a standing spin jump lands facing the other way, cleanly', () => {
+  const euc = controller();
+  const before = euc.snapshot().headingY;
+  const after = spinJump(euc);
+
+  assert.ok(
+    Math.abs(after.headingY - (before + Math.PI)) < 0.02,
+    `heading moved ${(after.headingY - before).toFixed(3)} rad, not +π`,
+  );
+  assert.equal(after.spins, 1);
+  assert.equal(after.crashed, false);
+  assert.equal(after.landingQuality, 'clean', `landing scored ${after.landingQuality}`);
+  assert.ok(
+    after.landingMisalignment < 0.05,
+    `a completed 180 was charged ${after.landingMisalignment.toFixed(2)} rad of misalignment`,
+  );
+  assert.ok(Math.abs(after.speed) < 0.2, 'a standing spin invented travel');
+  assert.equal(after.reversing, false, 'a standing spin engaged reverse');
+});
+
+test('steer held at the tap picks the spin direction, and right is negative yaw', () => {
+  // Steer is applied only on the tap step: held through the flight it would
+  // *also* spend the ordinary quarter-authority air yaw on top of the sweep,
+  // which is legal riding (over-rotation is the player's own doing) but not
+  // what a direction test should measure.
+  const spinWithTapSteer = (steer: number): { before: number; after: number } => {
+    const euc = controller();
+    const before = euc.snapshot().headingY;
+    ride(euc, 1, { hop: true });
+    let guard = 0;
+    while (euc.snapshot().grounded) {
+      ride(euc, 1, {});
+      assert.ok((guard += 1) < 200, 'the hop never left the ground');
+    }
+    ride(euc, 1, { hop: true, steer });
+    guard = 0;
+    while (!euc.snapshot().grounded) {
+      ride(euc, 1, {});
+      assert.ok((guard += 1) < 400, 'the spin jump never landed');
+    }
+    return { before, after: euc.snapshot().headingY };
+  };
+
+  const right = spinWithTapSteer(1);
+  assert.ok(
+    Math.abs(right.after - (right.before - Math.PI)) < 0.05,
+    `full right steer at the tap did not spin through −π (moved ${
+      (right.after - right.before).toFixed(3)} rad)`,
+  );
+  const neutral = spinWithTapSteer(0);
+  assert.ok(
+    Math.abs(neutral.after - (neutral.before + Math.PI)) < 0.05,
+    'a neutral tap did not take the default left spin',
+  );
+});
+
+test('a spin at speed lands fakie: rolling backward, reverse engaged, capped', () => {
+  const euc = controller();
+  rideToSpeed(euc, 10);
+  const spun = spinJump(euc, { throttle: 0 });
+
+  assert.ok(spun.speed < 0, `landed at ${spun.speed.toFixed(2)} m/s, not rolling backward`);
+  assert.equal(spun.reversing, true, 'the fakie landing left the reverse state disengaged');
+  assert.equal(spun.crashed, false, 'a clean 180 crashed');
+  // The next grounded step applies the reverse branch's own ceiling: the
+  // machine's reverse envelope holds, trick or no trick.
+  ride(euc, 2, {});
+  const settled = euc.snapshot();
+  assert.ok(
+    settled.speed >= -EUC.maxReverseSpeed - 1e-6,
+    `fakie speed ${settled.speed.toFixed(2)} m/s outran the reverse envelope`,
+  );
+});
+
+test('a spin out of reverse lands rolling forward and releases reverse', () => {
+  const euc = controller();
+  // Enter reverse the ordinary way: ask twice from a stop, then build speed.
+  ride(euc, SECONDS(1.5), { throttle: -1 });
+  const reversing = euc.snapshot();
+  assert.equal(reversing.reversing, true, 'the fixture never entered reverse');
+  assert.ok(reversing.speed < -2, `reverse only reached ${reversing.speed.toFixed(2)} m/s`);
+
+  const spun = spinJump(euc, { throttle: 0 });
+  assert.ok(spun.speed > 0, `landed at ${spun.speed.toFixed(2)} m/s, still backward`);
+  assert.equal(spun.reversing, false, 'reverse survived being spun out of');
+  assert.equal(spun.crashed, false);
+});
+
+test('one flight holds one spin, however often the button is pressed', () => {
+  const euc = controller();
+  ride(euc, 1, { hop: true });
+  let guard = 0;
+  while (euc.snapshot().grounded) {
+    ride(euc, 1, {});
+    assert.ok((guard += 1) < 200, 'the hop never left the ground');
+  }
+  const before = euc.snapshot().headingY;
+  // Mash the button through the flight — press, release, press, release —
+  // the way "spam it for crazy spins" will actually be played.
+  guard = 0;
+  while (!euc.snapshot().grounded) {
+    ride(euc, 1, { hop: guard % 2 === 0 });
+    assert.ok((guard += 1) < 400, 'the spin jump never landed');
+  }
+  const after = euc.snapshot();
+  assert.equal(after.spins, 1, `${after.spins} spins from one flight`);
+  assert.ok(
+    Math.abs(after.headingY - (before + Math.PI)) < 0.05,
+    'mashing swept past a single 180',
+  );
+});
+
+test('the spin window is the rising half of the flight, and a falling press is not one', () => {
+  // The split that keeps M5's buffered landing hop intact: a press on the
+  // way up always has at least the descent left to finish the sweep, so it
+  // spins; a press on the way down is the slightly-early hop it always was —
+  // `canAcceptSpin` refuses it here, and `app/Game.ts`'s one-shot buffer
+  // holds the latch for the landing. Without the refusal, mistiming a
+  // landing hop by a tenth of a second would buy a quarter-finished spin and
+  // a scrubbed landing nobody asked for.
+  const euc = controller();
+  rideToSpeed(euc, 8);
+  ride(euc, 1, { hop: true });
+  let guard = 0;
+  while (euc.snapshot().grounded) {
+    ride(euc, 1, {});
+    assert.ok((guard += 1) < 200, 'the hop never left the ground');
+  }
+  assert.equal(euc.snapshot().spinning, false);
+  // Ride past the apex, then press: the press must not arm a spin.
+  guard = 0;
+  while (euc.snapshot().verticalVelocity > -0.5) {
+    ride(euc, 1, {});
+    assert.ok((guard += 1) < 400, 'the flight never turned downward');
+  }
+  const headingAtPress = euc.snapshot().headingY;
+  ride(euc, 1, { hop: true });
+  assert.equal(euc.snapshot().spinning, false, 'a falling press armed a spin');
+  guard = 0;
+  while (!euc.snapshot().grounded) {
+    ride(euc, 1, {});
+    assert.ok((guard += 1) < 400, 'the flight never landed');
+  }
+  const after = euc.snapshot();
+  assert.equal(after.spins, 0, 'a falling press was counted as a trick');
+  assert.ok(
+    Math.abs(after.headingY - headingAtPress) < 0.05,
+    'a falling press swept the heading anyway',
+  );
+  assert.equal(after.landingQuality, 'clean', 'the refused press spoiled an ordinary landing');
+});
+
+test('the spin state does not survive a crash or a reset', () => {
+  const euc = controller();
+  rideToSpeed(euc, 10);
+  ride(euc, 1, { hop: true });
+  let guard = 0;
+  while (euc.snapshot().grounded) {
+    ride(euc, 1, {});
+    assert.ok((guard += 1) < 200, 'the hop never left the ground');
+  }
+  ride(euc, 1, { hop: true });
+  assert.equal(euc.snapshot().spinning, true);
+  euc.reset({ position: { x: 0, y: 0, z: 0 }, headingY: 0 });
+  assert.equal(euc.snapshot().spinning, false, 'a reset kept a spin in flight');
+  assert.equal(euc.snapshot().spins, 0, 'a reset kept the trick counter');
+});
+
+test('a wheel stopped inside a bush can drive itself out — M24', () => {
+  // The trap the M24 chase work uncovered: the M15 foliage drag's constant
+  // term (6.5 m/s²) outmuscled everything a standing start can build, so a
+  // wheel that came to rest inside a dense bush held 0.00 m/s under full
+  // throttle forever — six measured seconds on this exact fixture — and only
+  // Reset could leave. The constant term now fades below
+  // `softBodyDragFadeSpeed`, which keeps the cushion untouched at riding
+  // speeds (the assertions below check that too) and gives the stopped wheel
+  // a walking-pace shove out.
+  const plan = flatPlan();
+  const euc = new EucController(new PlanTerrainSampler(plan), {
+    tuning: { wobbleMasterGain: 0, cutoutEnabled: 0 },
+    spawn: plan.spawn,
+    hazards: new HazardField([]),
+    softBodies: new SoftBodyField([
+      { centre: { x: 0, y: 0.6, z: 2 }, halfExtents: { x: 1.6, y: 0.7, z: 1.6 }, rotationY: 0, surface: 'grass' },
+    ]),
+  });
+
+  // Park dead-centre in the hedge, from rest.
+  euc.reset({ position: { x: 0, y: 0, z: 2 }, headingY: 0 });
+  const out = ride(euc, SECONDS(6), { throttle: 1 });
+  assert.ok(
+    Math.hypot(out.position.x - 0, out.position.z - 2) > 1.6,
+    `six seconds of full throttle left the wheel inside the hedge (moved to z=${
+      out.position.z.toFixed(2)})`,
+  );
+
+  // And the cushion still cushions: the same coast with the hedge in the way
+  // ends measurably slower than without it, so the fade cannot have eaten the
+  // M15 drag the owner accepted — only the standstill trap.
+  const coast = (withHedge: boolean): number => {
+    const euc = new EucController(new PlanTerrainSampler(plan), {
+      tuning: { wobbleMasterGain: 0, cutoutEnabled: 0 },
+      spawn: plan.spawn,
+      hazards: new HazardField([]),
+      softBodies: new SoftBodyField(withHedge
+        ? [{
+          centre: { x: 0, y: 0.6, z: 60 },
+          halfExtents: { x: 1.6, y: 0.7, z: 1.6 },
+          rotationY: 0,
+          surface: 'grass',
+        }]
+        : []),
+    });
+    // Drive through the hedge's station flat out and report the speed just
+    // past it, so the two runs differ only by what the body cost.
+    const input = actions({ throttle: 1 });
+    for (let step = 0; step < SECONDS(10); step += 1) {
+      euc.step(STEP, input);
+      if (euc.snapshot().position.z >= 64) break;
+    }
+    return euc.snapshot().speed;
+  };
+  const clear = coast(false);
+  const hedged = coast(true);
+  assert.ok(
+    hedged < clear - 2,
+    `the hedge stopped cushioning (clear coast ${clear.toFixed(1)}, hedged ${hedged.toFixed(1)})`,
+  );
 });

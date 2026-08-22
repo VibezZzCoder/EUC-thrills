@@ -328,6 +328,10 @@ export interface EucTuning {
   // -- Hop, air, landing, pedal strike (M5) ---------------------------------
   /** Dwell between the hop press and the impulse, s. */
   hopCompressSeconds: number;
+  /** Scripted sweep rate of the M24 spin jump, rad/s. */
+  spinYawRate: number;
+  /** Steer level at the spin press that chooses its direction. */
+  spinSteerThreshold: number;
   /** Vertical speed at take-off with no charge, m/s. */
   hopLaunchSpeed: number;
   /** Held-crouch time for the full bonus, s. */
@@ -512,6 +516,7 @@ export interface EucTuning {
   crashWheelPopRestitution: number;
   softBodyDrag: number;
   softBodyDragQuadratic: number;
+  softBodyDragFadeSpeed: number;
   softBodyWobbleEnergy: number;
 }
 
@@ -590,6 +595,8 @@ export function defaultEucTuning(): EucTuning {
     groundTiltRollFollow: TERRAIN.groundTiltRollFollow,
 
     hopCompressSeconds: EUC.hopCompressSeconds,
+    spinYawRate: EUC.spinYawRate,
+    spinSteerThreshold: EUC.spinSteerThreshold,
     hopLaunchSpeed: EUC.hopLaunchSpeed,
     hopChargeSeconds: EUC.hopChargeSeconds,
     hopChargeHeightBonus: EUC.hopChargeHeightBonus,
@@ -737,6 +744,7 @@ export function defaultEucTuning(): EucTuning {
     crashWheelPopRestitution: EUC.crashWheelPopRestitution,
     softBodyDrag: EUC.softBodyDrag,
     softBodyDragQuadratic: EUC.softBodyDragQuadratic,
+    softBodyDragFadeSpeed: EUC.softBodyDragFadeSpeed,
     softBodyWobbleEnergy: EUC.softBodyWobbleEnergy,
   };
 }
@@ -1289,6 +1297,10 @@ export interface EucSnapshot {
   readonly crouchCharge: number;
   /** Hops taken since the last reset. */
   readonly hops: number;
+  /** 180° spin jumps thrown since the last reset — M24, the trick counter. */
+  readonly spins: number;
+  /** True while a spin jump's flight is still in the air. */
+  readonly spinning: boolean;
   /** Vertical speed of the contact patch, m/s. Positive is rising. */
   readonly verticalVelocity: number;
   /** Height of the contact patch above the ground beneath it, metres. */
@@ -1534,6 +1546,21 @@ export class EucController {
   /** Last step's hop flag, so a hop is a rising edge rather than a level. */
   private hopWasHeld = false;
   private hops = 0;
+  // -- The 180° spin jump (M24) ---------------------------------------------
+  /** Radians of the spin's sweep still to deliver. Zero when none is armed. */
+  private spinRemaining = 0;
+  /** Which way the sweep turns: +1 left (positive yaw), −1 right. */
+  private spinDirection = 1;
+  /**
+   * True from the airborne press until the landing that scores it.
+   *
+   * Distinct from `spinRemaining` on purpose: the sweep can finish mid-air
+   * while the *flight* is still a spin jump, and the landing score has to
+   * know that — a completed 180 measures its misalignment against the
+   * flipped travel direction, or every clean spin would score as a crash.
+   */
+  private spinArmed = false;
+  private spinsCount = 0;
 
   /** Rider compression, 0..1. Preload, air tuck, and landing absorb. */
   private crouch = 0;
@@ -1823,6 +1850,9 @@ export class EucController {
     this.hopCharge = 0;
     this.hopWasHeld = false;
     this.hops = 0;
+    this.spinRemaining = 0;
+    this.spinArmed = false;
+    this.spinsCount = 0;
     this.crouch = 0;
     this.tuck = 0;
     this.attackHold = 0;
@@ -2156,6 +2186,20 @@ export class EucController {
     this.lateralLimited = lateralLimited;
     this.headingY += yawRate * dt;
 
+    // The spin jump's sweep — M24. Written straight onto the heading rather
+    // than through `yawRate` on purpose: the yaw rate feeds lean and the
+    // lateral model, and a scripted 7.5 rad/s through those channels would
+    // slam the rider into a phantom carve. In the air the heading is exactly
+    // the free axis §4.4 grants, lateral acceleration is already zero, and
+    // the machine simply whips — which is the trick. The sweep only spends
+    // while airborne, so a spin that runs out of air finishes short and the
+    // landing fold in `land()` charges the difference.
+    if (airborne && this.spinRemaining > 0) {
+      const sweep = Math.min(this.spinRemaining, t.spinYawRate * dt);
+      this.headingY += sweep * this.spinDirection;
+      this.spinRemaining -= sweep;
+    }
+
     // -- 6. Roll ------------------------------------------------------------
     // The angle a rider actually leans to balance a cornering force. At the
     // 0.75 g pavement ceiling this is about 37 degrees, which is where a real
@@ -2453,7 +2497,16 @@ export class EucController {
         softStruck = true;
         this.injectWobble(t.softBodyWobbleEnergy);
       }
-      const drag = (t.softBodyDrag + t.softBodyDragQuadratic * speed * speed) * dt;
+      // The constant term fades below walking pace — M24. At full strength it
+      // outmuscled everything a standing start can deliver, which turned a
+      // deep bush into a trap only Reset could leave: measured on a bare
+      // controller, six seconds of full throttle from rest inside one held
+      // 0.00 m/s. The fade leaves the cushion untouched at riding speeds and
+      // lets a stopped wheel shove out at about `softBodyDragFadeSpeed`,
+      // which is what pushing through a hedge should be.
+      const constant = t.softBodyDrag
+        * clamp01(Math.abs(speed) / Math.max(1e-6, t.softBodyDragFadeSpeed));
+      const drag = (constant + t.softBodyDragQuadratic * speed * speed) * dt;
       speed = speed >= 0 ? Math.max(0, speed - drag) : Math.min(0, speed + drag);
     }
     this.inSoftBody = inFoliage;
@@ -3128,6 +3181,8 @@ export class EucController {
     this.crouchHold = 0;
     this.hopCharge = 0;
     this.hopWasHeld = false;
+    this.spinRemaining = 0;
+    this.spinArmed = false;
     this.reversing = false;
     this.reverseHold = 0;
     this.restHold = 0;
@@ -3360,6 +3415,8 @@ export class EucController {
     this.crouchHold = 0;
     this.hopCharge = 0;
     this.hopWasHeld = false;
+    this.spinRemaining = 0;
+    this.spinArmed = false;
     this.crouch = 0;
     this.tuck = 0;
     this.attackHold = 0;
@@ -3942,11 +3999,27 @@ export class EucController {
     this.hopWasHeld = actions.hop;
 
     if (this.airborne) {
-      // No second hop in flight. The press is simply dropped rather than
-      // queued: a hop that fires the instant the wheel touches down is not
-      // what the player asked for, and the 0.15 s input buffer upstream
-      // already covers a press made slightly too early. A rider cannot
-      // preload against air either, so the charge goes with it.
+      // A second press in flight is the 180° spin jump — M24, the owner's
+      // accepted trick input (Wyatt Neal's "spam it for crazy spins" made
+      // literal). The press that used to be dropped here now arms a scripted
+      // π of heading sweep, spent in section 5 where the heading integrates;
+      // held steer past the threshold picks the direction, and one flight
+      // holds one spin — re-pressing mid-sweep neither queues nor reverses,
+      // the same rule the grounded hop applies to its own re-presses. The
+      // charge bookkeeping below is unchanged: a rider cannot preload
+      // against air.
+      if (requested && this.canAcceptSpin) {
+        this.spinArmed = true;
+        this.spinRemaining = Math.PI;
+        // Positive steer is a right-hand turn request and a right turn is
+        // negative yaw (the load-bearing sign in section 5), so the stick's
+        // direction and the spin's agree with the ground steering they
+        // learned from.
+        this.spinDirection = actions.steer >= t.spinSteerThreshold
+          ? -1
+          : 1;
+        this.spinsCount += 1;
+      }
       this.compressTimer = 0;
       this.compressing = false;
       this.crouchHold = 0;
@@ -4079,7 +4152,14 @@ export class EucController {
       -(velocityX * normal.x + this.verticalVelocity * normal.y + velocityZ * normal.z),
     );
     const alignment = clamp(this.airDirX * forwardX + this.airDirZ * forwardZ, -1, 1);
-    const misalignment = Math.acos(alignment);
+    // A spin jump's target attitude is the *flipped* takeoff heading — M24 —
+    // so its misalignment is the distance from π rather than from zero. A
+    // clean 180 scores aligned, a half-finished 90 scores exactly what a
+    // 90-degree air-steer always scored, and an ordinary flight keeps M5's
+    // arithmetic untouched.
+    const misalignment = this.spinArmed
+      ? Math.abs(Math.PI - Math.acos(alignment))
+      : Math.acos(alignment);
 
     const score = impact / Math.max(1e-6, t.landingImpactReference)
       + misalignment / Math.max(1e-6, t.landingMisalignReference)
@@ -4135,7 +4215,26 @@ export class EucController {
       t.powerLandingLoad * 2,
     );
 
-    return speed * alignment * (1 - loss);
+    // `speed * alignment` is signed along the *new* heading, which is the
+    // whole reason a spin jump needs no landing physics of its own: a
+    // completed 180 lands the wheel rolling backward under its rider. What it
+    // does need is the reverse *state* reconciled — M24. The standstill entry
+    // ritual (ask twice, from a stop) exists so a brake is never mistaken for
+    // a reverse request; a rider who just turned the machine around in the
+    // air has asked as deliberately as anyone can, so a spun landing engages
+    // reverse directly when it lands rolling backward and releases it when a
+    // spin out of reverse lands rolling forward. The reverse branch's own
+    // ceiling then scrubs a fast fakie to `maxReverseSpeed` on the next step
+    // — the reverse envelope is the machine's, and a trick does not widen it.
+    // Unspun landings keep their old meaning exactly: a rider who air-steered
+    // themselves backwards still lands in the "a stop is a stop" clamp.
+    const landed = speed * alignment * (1 - loss);
+    if (this.spinArmed) {
+      this.reversing = landed < -t.stoppedSpeed;
+      this.spinArmed = false;
+      this.spinRemaining = 0;
+    }
+    return landed;
   }
 
   /**
@@ -4318,6 +4417,21 @@ export class EucController {
    */
   get canAcceptHop(): boolean {
     return !this.airborne && !this.compressing && !this.crashing;
+  }
+
+  /**
+   * Whether a hop press right now would arm the 180° spin jump — M24.
+   *
+   * The rising half of the flight only. The split protects both meanings a
+   * mid-air press can have: on the way up there is always at least the
+   * descent left to finish the sweep, so the press is a trick; on the way
+   * down it stays in `app/Game.ts`'s one-shot buffer and lands as the
+   * slightly-early hop it always was (M5's buffer feature) — without this
+   * gate, a press thrown a tenth of a second before touchdown would become a
+   * quarter-finished spin and a scrubbed landing the player never asked for.
+   */
+  get canAcceptSpin(): boolean {
+    return this.airborne && !this.crashing && !this.spinArmed && this.verticalVelocity > 0;
   }
 
   /** True while the rider is off the wheel. `app/Game.ts` frames the camera. */
@@ -4762,6 +4876,8 @@ export class EucController {
       hopCharge: this.hopCharge,
       crouchCharge: clamp01(this.crouchHold / Math.max(1e-6, this.tuning.hopChargeSeconds)),
       hops: this.hops,
+      spins: this.spinsCount,
+      spinning: this.spinArmed,
       verticalVelocity: this.verticalVelocity,
       airHeight: this.y - this.groundY,
       airApex: this.airApex,

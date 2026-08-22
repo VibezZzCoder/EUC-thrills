@@ -72,7 +72,7 @@ export const BINDINGS: readonly BindingSpec[] = Object.freeze([
   Object.freeze({
     action: 'hop' as BindableAction,
     kind: 'pressed' as const,
-    label: 'Hop',
+    label: 'Hop / air spin',
     defaults: Object.freeze(['Space']),
   }),
   Object.freeze({
