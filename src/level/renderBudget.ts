@@ -4,6 +4,9 @@ import {
   NON_LEVEL_RESERVE,
   PART_COSTS,
   RENDER_BUDGET,
+  RENDER_BUDGET_SPLIT,
+  SPLIT_NON_LEVEL_RESERVE,
+  SPLIT_PASSES,
   propPartCounts,
   type PropPartId,
 } from '../data/renderCost.ts';
@@ -264,6 +267,53 @@ export function withinRenderBudget(plan: LevelPlan): BudgetVerdict {
       `${frame.triangles} triangles against a ceiling of ${RENDER_BUDGET.maxTriangles} `
       + `(${level.cellsDrawn} ground cells, ${level.fieldPatches} surround patches, `
       + `${level.markingQuads} paint quads)`,
+    );
+  }
+
+  return { ok: breaches.length === 0, frame, level, breaches };
+}
+
+/**
+ * Does this plan fit **Contract 2**, the desktop split-screen ceiling? —
+ * M25 Phase 3.
+ *
+ * **A sibling of `withinRenderBudget`, not a flag through it.** The project
+ * made this choice once already, at M23: `simulation/trackDay.ts` is
+ * `challenge.ts`'s sibling because a gate volume must mean one thing. The same
+ * argument holds here — a *verdict* must mean one thing, and a boolean
+ * parameter deciding which of two ceilings a plan was judged against is a
+ * verdict whose meaning depends on its caller.
+ *
+ * The frame is `SPLIT_PASSES` passes of one scene, and its cost is their sum
+ * (§25.4): both halves redraw the level, both rigs and both machines, with a
+ * shadow render each.
+ *
+ * `withinRenderBudget` above is untouched and is still what every generated
+ * route is validated against, because a route has to be rideable on a phone
+ * before it is rideable on a couch.
+ */
+export function withinSplitRenderBudget(plan: LevelPlan): BudgetVerdict {
+  const level = planRenderCost(plan);
+  const frame: RenderCost = {
+    drawCalls: (level.drawCalls + SPLIT_NON_LEVEL_RESERVE.drawCalls) * SPLIT_PASSES,
+    triangles: (level.triangles + SPLIT_NON_LEVEL_RESERVE.triangles) * SPLIT_PASSES,
+  };
+
+  const breaches: string[] = [];
+  if (frame.drawCalls > RENDER_BUDGET_SPLIT.maxDrawCalls) {
+    breaches.push(
+      `${frame.drawCalls} split draw calls against a ceiling of `
+      + `${RENDER_BUDGET_SPLIT.maxDrawCalls} (${level.drawCalls} from the level and `
+      + `${SPLIT_NON_LEVEL_RESERVE.drawCalls} reserved for two riders, the gates and the `
+      + `particles, both drawn ${SPLIT_PASSES} times)`,
+    );
+  }
+  if (frame.triangles > RENDER_BUDGET_SPLIT.maxTriangles) {
+    breaches.push(
+      `${frame.triangles} split triangles against a ceiling of `
+      + `${RENDER_BUDGET_SPLIT.maxTriangles} (${level.cellsDrawn} ground cells, `
+      + `${level.fieldPatches} surround patches, ${level.markingQuads} paint quads, `
+      + `drawn ${SPLIT_PASSES} times)`,
     );
   }
 

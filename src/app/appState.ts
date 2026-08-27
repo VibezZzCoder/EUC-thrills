@@ -46,6 +46,7 @@ export type AppStateId =
   | 'settings'
   | 'routes'
   | 'riderSelect'
+  | 'couchJoin'
   | 'freeRide'
   | 'challenge'
   | 'trackDay'
@@ -61,6 +62,7 @@ export const APP_STATES: readonly AppStateId[] = [
   'settings',
   'routes',
   'riderSelect',
+  'couchJoin',
   'freeRide',
   'challenge',
   'trackDay',
@@ -192,7 +194,7 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     // riding is why anyone opened the game.
     successors: Object.freeze(
       [
-        'freeRide', 'challenge', 'trackDay', 'knockabout', 'chase',
+        'freeRide', 'couchJoin', 'challenge', 'trackDay', 'knockabout', 'chase',
         'settings', 'routes', 'riderSelect',
       ] as AppStateId[],
     ),
@@ -254,6 +256,41 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     showsMenu: true,
     resetsInput: true,
     successors: Object.freeze(['title'] as AppStateId[]),
+  }),
+  /**
+   * Sitting down together — M25 Phase 5, and the state that is a *session
+   * shape* rather than a mode.
+   *
+   * A sibling of `riderSelect` in every flag, and that is the point rather
+   * than a copy. **There is no sixth ride here on purpose** (§25.9): "two
+   * players" is who is riding, not what the ride is for, and this project's
+   * own principle — *a mode is what a ride is for* — is what refused the
+   * plan's first draft of a `twoPlayerFreeRide` row. So the join panel is a
+   * menu that hands a two-seat session to the ride that already exists, and a
+   * future couch chase reuses `chase` with two seats rather than breeding
+   * `twoPlayerChase`.
+   *
+   * It differs from `riderSelect` in exactly one successor, and for the
+   * mirror of that state's own reason. Choosing a rider is choosing what to
+   * look like, so a chooser that launched a ride would make trying the other
+   * character a round trip through a ride nobody asked for. Sitting a second
+   * player down *is* asking for the ride: the panel's whole job is to hold
+   * both players until they are both holding something, and the moment they
+   * are, the only thing left to do is go.
+   *
+   * **`freeRide` and not the other four.** Stage 1 is two riders in one world
+   * with nothing being refereed (§25.6): a couch chase, race or Knockabout is
+   * real design rather than a second seat, and each one is named in the plan
+   * as its own future milestone.
+   */
+  couchJoin: Object.freeze({
+    id: 'couchJoin' as AppStateId,
+    simulates: true,
+    acceptsRideInput: false,
+    showsHud: false,
+    showsMenu: true,
+    resetsInput: true,
+    successors: Object.freeze(['title', 'freeRide'] as AppStateId[]),
   }),
   freeRide: Object.freeze({
     id: 'freeRide' as AppStateId,

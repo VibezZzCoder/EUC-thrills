@@ -903,3 +903,70 @@ test.describe('M8 — audio', () => {
     expect(errors).toEqual([]);
   });
 });
+
+/**
+ * `?audiolatency=` actually moves the buffer — M25 polish, the Ubuntu wind.
+ *
+ * The parameter exists to be ridden on a machine this suite never runs on, so
+ * what is provable here is the wiring: the hint reaches the context the first
+ * gesture builds, and the context the browser grants reflects it. Asserted by
+ * comparing `baseLatency` across two boots rather than against a constant,
+ * because the granted quantum is the browser's to choose — Chromium gives
+ * 'interactive' roughly 10 ms and 'playback' several times that, and both
+ * numbers are platform noise. The *ordering* is the contract.
+ */
+test('?audiolatency=playback is granted a larger buffer than the default', async ({ page }) => {
+  const errors = collectErrors(page);
+  await boot(page);
+  await page.keyboard.press('KeyW');
+  await page.waitForFunction(() => window.game.audioSnapshot().armed);
+  const standard = await page.evaluate(() => window.game.audioSnapshot().baseLatency);
+
+  await boot(page, 'audiolatency=playback');
+  await page.keyboard.press('KeyW');
+  await page.waitForFunction(() => window.game.audioSnapshot().armed);
+  const playback = await page.evaluate(() => window.game.audioSnapshot().baseLatency);
+
+  // Chromium reports baseLatency; a browser that hides it would leave both
+  // null and this spec would be asserting nothing, so that is pinned first.
+  expect(standard).not.toBeNull();
+  expect(playback).not.toBeNull();
+  expect(playback!).toBeGreaterThan(standard!);
+
+  expect(errors).toEqual([]);
+});
+
+/**
+ * `?audiosamples=off` keeps the fallbacks, and the fallbacks keep sounding —
+ * M25 polish, the other half of the Ubuntu wind diagnosis.
+ *
+ * The owner's report has the one-time signature of the sample swap: wind for
+ * a second or two, then the hum, permanently. This parameter holds the swap
+ * open so a ride can be taken entirely on the synthesized voices. What is
+ * provable here is that the switch genuinely prevents the install — not
+ * merely delays it — while the bed still carries signal at riding speed,
+ * because a diagnostic that silenced the game would "cure" the hum for the
+ * wrong reason.
+ */
+test('?audiosamples=off rides on the synthesized wind, never the recording', async ({ page }) => {
+  const errors = collectErrors(page);
+  await boot(page, 'audiosamples=off');
+  await page.keyboard.press('KeyW');
+  await page.waitForFunction(() => window.game.audioSnapshot().armed);
+
+  const measured = await page.evaluate(async () => {
+    window.qa.freeze();
+    window.qa.resetRide();
+    window.qa.audioTrace({ throttle: 1 }, 720, 60);
+    const riding = await window.qa.audioOutput(400);
+    const snap = window.game.audioSnapshot();
+    return { riding, samplesLoaded: snap.samplesLoaded, samplesDisabled: snap.samplesDisabled };
+  });
+
+  expect(measured.samplesDisabled).toBe(true);
+  // The seconds above are exactly the window in which an un-gated install
+  // lands in this suite, so "still false here" is the claim that matters.
+  expect(measured.samplesLoaded).toBe(false);
+  expect(measured.riding).toBeGreaterThan(0.001);
+  expect(errors).toEqual([]);
+});

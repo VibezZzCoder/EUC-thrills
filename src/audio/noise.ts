@@ -115,6 +115,54 @@ export function fillNoise(
 }
 
 /**
+ * The Web Audio render quantum. Fixed at 128 by the spec this game runs
+ * against; `AudioContext.renderQuantumSize` may some day make it negotiable,
+ * at which point the sink should read it from the context instead.
+ */
+export const RENDER_QUANTUM_FRAMES = 128;
+
+/**
+ * Trim a looping buffer to an exact whole number of render quanta, splicing
+ * the seam so the wrap stays continuous — the fix for the Ubuntu hum.
+ *
+ * **Measured, not theorised.** On the owner's Ubuntu Chrome the wind loop
+ * degenerated at its first wrap into a harmonic comb whose fundamental was
+ * exactly 375 Hz — 48 000 / 128, the render-quantum repetition rate — i.e.
+ * the source got stuck replaying a single quantum forever. The three looping
+ * sources that never did this shared one property the wind lacked: the pink
+ * bed's 144 000 frames divide by 128 exactly, and the tyre pair play through
+ * the rate-interpolation path (their pitch tracks the wheel). The wind was
+ * the one loop that wrapped *mid-quantum* on the rate-1.0 fast path. Whether
+ * the underlying Chromium fault is precisely that alignment or the decoded
+ * buffer's provenance, both die here: the data is copied to a fresh buffer
+ * whose length divides by the quantum.
+ *
+ * The trim discards at most 127 frames (2.6 ms of a multi-second loop). The
+ * seam survives because the last `fade` frames are crossfaded toward the
+ * *original* tail — the samples that always led back into frame 0 — so the
+ * wrap lands on the same join the asset shipped with.
+ */
+export function alignLoopToQuantum(
+  data: Float32Array<ArrayBuffer>,
+  quantum: number = RENDER_QUANTUM_FRAMES,
+  fade = 64,
+): Float32Array<ArrayBuffer> {
+  const length = data.length;
+  const aligned = Math.floor(length / quantum) * quantum;
+  if (aligned === length || aligned === 0 || aligned <= fade) return data;
+
+  const out = new Float32Array(new ArrayBuffer(aligned * 4));
+  out.set(data.subarray(0, aligned));
+  for (let i = 0; i < fade; i += 1) {
+    // `t` reaches 1 on the final frame, so the loop's last sample IS the
+    // asset's last sample — the one whose successor was always frame 0.
+    const t = (i + 1) / fade;
+    out[aligned - fade + i] = out[aligned - fade + i] * (1 - t) + data[length - fade + i] * t;
+  }
+  return out;
+}
+
+/**
  * Scale to a peak of 1.
  *
  * Pink noise comes out of the filter well below full scale and white comes out

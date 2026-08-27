@@ -8,6 +8,9 @@ import {
   PART_COSTS,
   PROP_PART_IDS,
   RENDER_BUDGET,
+  RENDER_BUDGET_SPLIT,
+  SPLIT_NON_LEVEL_RESERVE,
+  SPLIT_PASSES,
   propPartCounts,
   type PropPartId,
 } from '../data/renderCost.ts';
@@ -15,7 +18,11 @@ import { PROP_KINDS } from '../data/props.ts';
 import { buildLevelPlan } from '../level/buildPlan.ts';
 import { generateLevel } from '../level/generateRoute.ts';
 import type { LevelPlan } from '../level/plan.ts';
-import { planRenderCost, withinRenderBudget } from '../level/renderBudget.ts';
+import {
+  planRenderCost,
+  withinRenderBudget,
+  withinSplitRenderBudget,
+} from '../level/renderBudget.ts';
 import { createProvingGround } from '../level/provingGround.ts';
 import { createSliceLevel } from '../level/sliceLevel.ts';
 import { terrainCells } from '../level/terrainCoverage.ts';
@@ -24,6 +31,7 @@ import {
   measureNonLevelScene,
   measurePartTriangles,
   measurePropKinds,
+  measureSplitNonLevelScene,
 } from './renderCost.ts';
 
 /**
@@ -211,6 +219,104 @@ test('the non-level reserve is what the rest of the scene actually costs', () =>
       + 'reserve the generator budgets against has to follow them',
   );
   assert.equal(NON_LEVEL_RESERVE.triangles, measured.totalTriangles);
+});
+
+// ---------------------------------------------------------------------------
+// Contract 2 — the desktop split frame (M25 Phase 3)
+// ---------------------------------------------------------------------------
+
+test('the split reserve is what a scene holding two riders actually costs', () => {
+  const measured = measureSplitNonLevelScene(slice.checkpoints);
+  assert.equal(
+    SPLIT_NON_LEVEL_RESERVE.drawCalls,
+    measured.totalDrawCalls,
+    'two rigs, two machines, the gates, the particles and the background changed '
+      + 'cost; the split ceiling is written against this number and has to follow it',
+  );
+  assert.equal(SPLIT_NON_LEVEL_RESERVE.triangles, measured.totalTriangles);
+});
+
+test('a split pass costs one whole extra rider, and nothing else doubles', () => {
+  // **The shape of the reserve, not just its size.** A split frame shares one
+  // scene: one pair of particle pools, one set of checkpoint gates, one
+  // background. If a future change made any of those per-seat, this reserve
+  // would grow by more than a rider and the ceiling above would be wrong
+  // without anything failing — so the difference is asserted, not just the
+  // total. The floor is a rider and a machine; the ceiling is two of them.
+  const extraCalls = SPLIT_NON_LEVEL_RESERVE.drawCalls - NON_LEVEL_RESERVE.drawCalls;
+  const extraTriangles = SPLIT_NON_LEVEL_RESERVE.triangles - NON_LEVEL_RESERVE.triangles;
+  assert.ok(extraCalls > 0, 'a second seated rider cost nothing, so nothing was seated');
+  assert.ok(
+    SPLIT_NON_LEVEL_RESERVE.drawCalls < NON_LEVEL_RESERVE.drawCalls * 2,
+    `a split pass costs ${SPLIT_NON_LEVEL_RESERVE.drawCalls} calls against `
+      + `${NON_LEVEL_RESERVE.drawCalls} for one rider — that is the whole reserve twice `
+      + 'over, so something shared (the particle pools, the gates, the background) has '
+      + 'stopped being shared',
+  );
+  assert.ok(
+    SPLIT_NON_LEVEL_RESERVE.triangles < NON_LEVEL_RESERVE.triangles * 2,
+    `${extraTriangles} extra triangles is more than a rider and a machine`,
+  );
+});
+
+test('the slice fits Contract 2, both passes counted', () => {
+  const verdict = withinSplitRenderBudget(slice);
+  assert.deepEqual(verdict.breaches, []);
+  assert.ok(verdict.ok);
+  // The frame is the sum of the passes — the definition §25.4 gives — and the
+  // verdict must have applied it rather than reporting one pass.
+  assert.equal(
+    verdict.frame.drawCalls,
+    (verdict.level.drawCalls + SPLIT_NON_LEVEL_RESERVE.drawCalls) * SPLIT_PASSES,
+  );
+  assert.equal(
+    verdict.frame.triangles,
+    (verdict.level.triangles + SPLIT_NON_LEVEL_RESERVE.triangles) * SPLIT_PASSES,
+  );
+});
+
+test('no split frame the library can build breaches the Contract 2 ceiling', () => {
+  // Contract 1's set-union argument, doubled with the passes. The bound is
+  // what actually governs: the measured frame is written against the slice,
+  // and a generated route can draw on more of the library than the slice does.
+  const bound = (LIBRARY_MAX_DRAW_CALLS + SPLIT_NON_LEVEL_RESERVE.drawCalls) * SPLIT_PASSES;
+  assert.ok(
+    bound <= RENDER_BUDGET_SPLIT.maxDrawCalls,
+    `a split frame of a level drawing on every surface, material and prop part at `
+      + `once would cost ${bound} draw calls, past the ${RENDER_BUDGET_SPLIT.maxDrawCalls} `
+      + `Contract 2 ceiling. Every new character costs twice here, so this is the `
+      + `bound that has to move before a rider does.`,
+  );
+});
+
+test('a route at the generator’s own triangle line still fits a split frame', () => {
+  // `level/generatedLevel.test.ts` holds generated routes to 80% of Contract
+  // 1's triangle ceiling as the point past which scaling work is needed. A
+  // couch session can be started on a generated world, so the frame that has
+  // to fit is the one at that line — not the slice, which is far below it.
+  const line = RENDER_BUDGET.maxTriangles * 0.8;
+  const worst = (line + SPLIT_NON_LEVEL_RESERVE.triangles) * SPLIT_PASSES;
+  assert.ok(
+    worst <= RENDER_BUDGET_SPLIT.maxTriangles,
+    `a route at the generator's 80% line would cost ${worst} triangles in a split `
+      + `frame, past the ${RENDER_BUDGET_SPLIT.maxTriangles} ceiling`,
+  );
+});
+
+test('Contract 2 is a second ceiling, never a relaxation of the first', () => {
+  // The owner's direction on 2026-08-21: the split mode gets its own much
+  // higher budget and the phone contract is never touched. Both halves of that
+  // are assertable — the split ceiling is strictly higher, and the
+  // single-player one is still the number it has been since M23.
+  assert.ok(RENDER_BUDGET_SPLIT.maxDrawCalls > RENDER_BUDGET.maxDrawCalls);
+  assert.ok(RENDER_BUDGET_SPLIT.maxTriangles > RENDER_BUDGET.maxTriangles);
+  assert.equal(RENDER_BUDGET.maxDrawCalls, 160, 'Contract 1 moved');
+  assert.equal(RENDER_BUDGET.maxTriangles, 460_000, 'Contract 1 moved');
+  // And a single-player verdict is still judged against Contract 1: a plan
+  // that fits the split ceiling but not the phone one must still be refused.
+  const verdict = withinRenderBudget(slice);
+  assert.ok(verdict.frame.drawCalls <= RENDER_BUDGET.maxDrawCalls);
+  assert.ok(verdict.frame.drawCalls < RENDER_BUDGET_SPLIT.maxDrawCalls);
 });
 
 // ---------------------------------------------------------------------------

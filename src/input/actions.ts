@@ -38,6 +38,25 @@ export type PressedAction = 'hop' | 'swing' | 'reset' | 'cameraCycle' | 'pause' 
  * fails with no clue why. `actions.test.ts` pins the two against each other so
  * the next addition cannot make that mistake.
  */
+/**
+ * The one-shots that belong to the **machine** rather than to a seat — M25
+ * Phase 5 QA.
+ *
+ * Pause and mute are the two things any person in the room may do regardless
+ * of whether they are riding: q69 already says the pause menu is identical for
+ * both seats with no authority guards, and a mute nobody can reach is a mute
+ * that does not work. Everything else in `PRESSED_ACTIONS` is a rider telling
+ * their own wheel what to do.
+ *
+ * The distinction only becomes load-bearing once a device can be a spectator,
+ * which is what a couch session invented: an unclaimed keyboard must not steer
+ * anybody, and must still be able to stop the game.
+ */
+export const GLOBAL_PRESSED_ACTIONS: ReadonlySet<PressedAction> = new Set<PressedAction>([
+  'pause',
+  'muteAudio',
+]);
+
 export const PRESSED_ACTIONS: readonly PressedAction[] = [
   'hop',
   'swing',

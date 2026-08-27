@@ -62,12 +62,24 @@
  * Focus
  *
  * `:focus-visible` rather than `:focus`, so a mouse click on a menu button
- * does not leave a ring behind, while every keyboard and gamepad arrival does.
- * Declared once, here, for everything — an accessibility rule applied per
- * component is an accessibility rule with holes in it.
+ * does not leave a ring behind. Declared once, here, for everything — an
+ * accessibility rule applied per component is an accessibility rule with holes
+ * in it.
+ *
+ * **`[data-pad-cursor]` is the gamepad's half, and it is not a belt-and-braces
+ * duplicate of the pseudo-class** (M25 Phase 5 QA). `:focus-visible` is the
+ * browser guessing whether a human is navigating by *key*, and a gamepad
+ * presses none — so the guess is re-armed by a keydown in Chrome, by a
+ * focus-moving Tab in Firefox, and by nothing whatsoever on a pad. One mouse
+ * click on a menu button therefore ended the ring for the rest of the session
+ * and left the pad walking an invisible cursor: reported from Firefox on
+ * Ubuntu, and reproducible in Chromium as soon as nobody happens to press a
+ * key. `ui/menus.ts` writes the attribute while the pad is the device
+ * steering; this rule owns what it looks like.
  * ------------------------------------------------------------------------ */
 
-.euc-ui :focus-visible {
+.euc-ui :focus-visible,
+.euc-ui [data-pad-cursor='true'] {
   outline: 3px solid var(--accent);
   outline-offset: 3px;
   border-radius: 0.35rem;
@@ -75,7 +87,8 @@
 
 /* A high-contrast preference gets a ring that survives any background. */
 @media (prefers-contrast: more) {
-  .euc-ui :focus-visible {
+  .euc-ui :focus-visible,
+  .euc-ui [data-pad-cursor='true'] {
     outline-color: #ffffff;
     outline-width: 4px;
   }
@@ -85,11 +98,64 @@
  * The HUD
  * ------------------------------------------------------------------------ */
 
+/* ---------------------------------------------------------------------------
+ * The split's containers — M25 Phase 3
+ *
+ * One per seated rider, mounted by `app/Game.ts` and given `data-split` and
+ * `data-side` by `ui/hud.ts`. In single-player there is one of them, it covers
+ * the viewport, and it changes nothing: the HUD inside it is `position: fixed`
+ * against the viewport exactly as it has been since M9.
+ *
+ * `contain: layout` is the single line that makes a split work at all. A
+ * fixed-position element ignores an ancestor's `position`, so a half-width
+ * wrapper would do nothing on its own; containment makes this element the
+ * containing block for its fixed descendants, and the HUD's `inset: 0` then
+ * resolves to the half rather than to the window.
+ *
+ * `pointer-events: none` is not optional. The container covers everything the
+ * player is trying to ride into, and without it `elementFromPoint` returns
+ * this div instead of the canvas — which is the exact failure `tests/m9.spec`
+ * has checked for since M9, and would be a HUD that silently ate clicks.
+ * ------------------------------------------------------------------------ */
+
+.euc-hud-seat {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.euc-hud-seat[data-split="true"] {
+  contain: layout;
+  inset: 0 auto 0 0;
+  width: 50%;
+}
+
+.euc-hud-seat[data-split="true"][data-side="right"] {
+  inset: 0 0 0 auto;
+}
+
+/* A seam, so two half-frames read as two views rather than as one wide one
+   that has gone wrong. Drawn on the right half's leading edge, inside the
+   container, so it needs no element of its own in either HUD. */
+.euc-hud-seat[data-split="true"][data-side="right"]::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: rgb(0 0 0 / 45%);
+}
+
 .euc-hud {
   position: fixed;
   inset: 0;
   z-index: 10;
   pointer-events: none;
+  /* How wide "one percent of the view" is for the lanes below — M25 Phase 3.
+     Every `vw` inside this component reads through it, because in a split each
+     half is half the window and `vw` does not know that: type sized in raw
+     `vw` would arrive in a 500 px pane at the size it was drawn for a 1000 px
+     one. The halves override it and nothing else has to know. */
+  --hud-vw: 1vw;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color: var(--ink);
   /* Every lane is placed against this box, and the insets keep them clear of
@@ -129,7 +195,7 @@
 }
 
 .euc-hud__speed-value {
-  font-size: clamp(2.6rem, 7vw, 4.6rem);
+  font-size: clamp(2.6rem, calc(7 * var(--hud-vw)), 4.6rem);
   font-weight: 800;
   letter-spacing: -0.02em;
   /* Tabular figures so the number does not jitter sideways as it counts. A
@@ -138,7 +204,7 @@
 }
 
 .euc-hud__speed-unit {
-  font-size: clamp(0.8rem, 1.6vw, 1rem);
+  font-size: clamp(0.8rem, calc(1.6 * var(--hud-vw)), 1rem);
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -172,11 +238,11 @@
   justify-items: center;
   gap: 0.3rem;
   text-align: center;
-  max-width: min(46ch, 90vw);
+  max-width: min(46ch, calc(90 * var(--hud-vw)));
 }
 
 .euc-hud__objective-line {
-  font-size: clamp(0.85rem, 1.9vw, 1.05rem);
+  font-size: clamp(0.85rem, calc(1.9 * var(--hud-vw)), 1.05rem);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
@@ -189,7 +255,7 @@
   border-radius: 999px;
   background: var(--shade);
   color: var(--cue-notice);
-  font-size: clamp(0.75rem, 1.6vw, 0.9rem);
+  font-size: clamp(0.75rem, calc(1.6 * var(--hud-vw)), 0.9rem);
   font-weight: 600;
 }
 
@@ -240,14 +306,14 @@
 /* The bearing home. Sized well above the label, because at speed it is the
    only part a glance actually resolves. */
 .euc-hud__stray-arrow {
-  font-size: clamp(1.5rem, 4.2vw, 2.1rem);
+  font-size: clamp(1.5rem, calc(4.2 * var(--hud-vw)), 2.1rem);
   line-height: 1;
 }
 
 .euc-hud__stray-arrow:empty { display: none; }
 
 .euc-hud__stray-label {
-  font-size: clamp(0.95rem, 2.4vw, 1.2rem);
+  font-size: clamp(0.95rem, calc(2.4 * var(--hud-vw)), 1.2rem);
   font-weight: 800;
   letter-spacing: 0.02em;
   white-space: nowrap;
@@ -258,7 +324,7 @@
 .euc-hud__stray-count {
   min-width: 1.6ch;
   text-align: right;
-  font-size: clamp(1.6rem, 4.6vw, 2.3rem);
+  font-size: clamp(1.6rem, calc(4.6 * var(--hud-vw)), 2.3rem);
   font-weight: 800;
   line-height: 1;
   font-variant-numeric: tabular-nums;
@@ -314,7 +380,7 @@
   border-radius: 999px;
   background: var(--shade);
   color: var(--cue-notice);
-  font-size: clamp(0.72rem, 1.6vw, 0.88rem);
+  font-size: clamp(0.72rem, calc(1.6 * var(--hud-vw)), 0.88rem);
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -440,7 +506,7 @@
 }
 
 .euc-hud__timer {
-  font-size: clamp(1.2rem, 3vw, 1.9rem);
+  font-size: clamp(1.2rem, calc(3 * var(--hud-vw)), 1.9rem);
   font-weight: 700;
   letter-spacing: -0.01em;
   /* The row gap the lane gave up, put back where it can be measured. */
@@ -517,7 +583,7 @@
   display: grid;
   justify-items: end;
   gap: 0.4rem;
-  max-width: min(34ch, 80vw);
+  max-width: min(34ch, calc(80 * var(--hud-vw)));
   text-align: right;
 }
 
@@ -528,7 +594,7 @@
   padding: 0.3rem 0.8rem;
   border-radius: 999px;
   background: var(--shade);
-  font-size: clamp(0.78rem, 1.7vw, 0.95rem);
+  font-size: clamp(0.78rem, calc(1.7 * var(--hud-vw)), 0.95rem);
   font-weight: 700;
   letter-spacing: 0.03em;
 }
@@ -568,7 +634,7 @@
   border: 1px solid var(--panel-edge);
   border-radius: 999px;
   background: var(--panel);
-  font-size: clamp(0.78rem, 1.7vw, 0.95rem);
+  font-size: clamp(0.78rem, calc(1.7 * var(--hud-vw)), 0.95rem);
   font-weight: 600;
   /* The one cue that can be interacted with, because it has a dismiss button.
      Everything else in the HUD stays transparent to the pointer. */
@@ -1090,6 +1156,36 @@
 }
 
 .euc-button--primary:hover { background: #2a7cf0; border-color: #2a7cf0; }
+
+/*
+ * A control that is not available yet.
+ *
+ * **Added at M25 Phase 5, and it is a gap rather than a new idea**: the game
+ * has shipped `disabled` since M20's `New route` and never said what one looks
+ * like, so a button the player cannot press looked exactly like one they could.
+ * The join panel is where that stops being cosmetic — Start is disabled until
+ * both seats are held, and a Start that reads as ready is a player pressing it
+ * and concluding the game is broken.
+ *
+ * A primary button loses its fill as well as its opacity, because the accent
+ * *means* "this is the thing to press". Opacity alone would leave the loudest
+ * control on the panel still the loudest. The `disabled` attribute carries the
+ * fact to a screen reader on its own, and each seat's status line says what is
+ * missing — so colour is not doing this job by itself.
+ */
+.euc-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.euc-button:disabled:hover { background: #182029; border-color: var(--panel-edge); }
+
+.euc-button--primary:disabled,
+.euc-button--primary:disabled:hover {
+  background: #182029;
+  border-color: var(--panel-edge);
+  color: var(--ink-dim);
+}
 
 .euc-button--quiet {
   background: transparent;
@@ -1923,6 +2019,172 @@
 .euc-credit__link:hover { color: var(--ink); }
 
 /* ---------------------------------------------------------------------------
+ * An eighth entrance on the title (M25 Phase 5)
+ *
+ * **This is M23's finding, one button later.** The seventh title button made a
+ * fourth row of stacked controls and cost fifty-two pixels a short screen did
+ * not have; the eighth does it again at ordinary laptop heights — measured, not
+ * guessed: 1180 x 820 overflowed by 9 px, 1280 x 720 by 16, and the browser
+ * suite's own 1000 x 700 window by 36.
+ *
+ * Two columns rather than three: three is the *short* layout below, where the
+ * notes are hidden and the buttons are one line each. Here the notes are still
+ * on — they are the sentences that tell a new player what a mode is — so two
+ * columns is as narrow as a button carrying two lines of text can usefully get.
+ *
+ * **Keyed off `data-couch` and not off a width**, because the cause is the
+ * eighth button rather than the window: a machine that is not offered a couch
+ * still has seven, which is the layout that has shipped since M23 and must not
+ * move. The threshold that decides the offer lives in `app/couch.ts`, once.
+ * ------------------------------------------------------------------------ */
+
+@media (max-height: 56rem) {
+  .euc-menu--title[data-couch="true"] .euc-menu__panel { width: min(46rem, 100%); }
+
+  .euc-menu--title[data-couch="true"] .euc-menu__actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* Full width, because it is the one thing most players came to press. */
+  .euc-menu--title[data-couch="true"] [data-menu="start"] { grid-column: 1 / -1; }
+}
+
+/*
+ * And the notes go earlier than they otherwise would, for the same reason.
+ *
+ * Two columns buys four rows back and runs out again at about 560 px of window
+ * — a small browser window on a laptop, which is a real thing rather than a
+ * contrived one (1600 x 500 overflowed by 67 px, 1000 x 560 by 7). The notes
+ * are the biggest single saving because every button carries one, and they are
+ * the right thing to drop: a player on a window this short has already met the
+ * modes or is about to, and a title they must scroll is worse than a title
+ * that is briefer.
+ *
+ * The 30 rem block below still does this for *every* title. This one only
+ * brings it forward where an eighth entrance made it necessary.
+ */
+@media (max-height: 40rem) {
+  .euc-menu--title[data-couch="true"] .euc-button__note,
+  .euc-menu--title[data-couch="true"] .euc-menu__tagline { display: none; }
+}
+
+/* ---------------------------------------------------------------------------
+ * The two-player join panel (M25 Phase 5)
+ *
+ * Two seats side by side, because that is the shape of the thing being set up:
+ * the screen is about to be two halves, and a panel that stacked the players
+ * vertically would be describing a layout the game does not have. It falls to
+ * one column only where the panel itself is too narrow to hold two — which the
+ * entrance predicate (`app/couch.ts`) already makes rare, since a machine that
+ * cannot split the screen is never offered the button in the first place.
+ *
+ * A seat card is NOT a button. Unlike the rider cards, nothing here is
+ * activated by clicking the card: a seat is claimed by pressing the device you
+ * intend to play with, which is a fact about a controller rather than about a
+ * pointer. The only controls inside a card are the two rider arrows.
+ * ------------------------------------------------------------------------ */
+
+.euc-menu--couch { grid-template-columns: min(52rem, 100%); }
+
+.euc-menu--couch .euc-menu__panel { width: 100%; }
+
+.euc-couch__heading { font-size: clamp(1.5rem, 4.5vw, 2.4rem); }
+
+.euc-couch__seats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.9rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+/* Named for a screen reader, invisible to everyone else — the roster's
+   legend, and for its reason. */
+.euc-couch__legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.euc-couch__seat {
+  display: grid;
+  gap: 0.55rem;
+  align-content: start;
+  padding: 0.9rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 0.7rem;
+  background: var(--panel);
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+/* Held, and it says so three ways: the rider's colour on the border, a lifted
+   panel, and the status line's own words. Colour is never the only channel. */
+.euc-couch__seat[data-claimed="true"] {
+  border-color: var(--rider-swatch);
+  background: #1b2430;
+}
+
+.euc-couch__player {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.euc-couch__status {
+  margin: 0;
+  min-height: 2.4em;
+  color: var(--ink-dim);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.euc-couch__seat[data-claimed="true"] .euc-couch__status { color: var(--ink); }
+
+/* The rider card: two steppers with the name between them. `1fr` in the middle
+   so the arrows stay put as names of different lengths pass through — a
+   control whose buttons move when its value changes is one you have to aim at
+   twice. */
+.euc-couch__rider {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.euc-couch__name {
+  color: var(--ink);
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.euc-couch__step {
+  min-width: 2rem;
+  min-height: 2rem;
+  padding: 0;
+  border: 1px solid var(--panel-edge);
+  border-radius: 0.45rem;
+  background: transparent;
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+
+.euc-couch__step:hover {
+  border-color: var(--rider-swatch);
+  color: var(--ink);
+}
+
+/* ---------------------------------------------------------------------------
  * Reduced motion
  *
  * The game no longer adds camera shake or offers an in-game motion toggle.
@@ -2026,6 +2288,40 @@
       "speed     cues     ";
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * A HUD that is half of a screen — M25 Phase 3
+ *
+ * **Keyed off the attribute, never off a media query**, and the rule above is
+ * exactly why the plan insists on it: `@media (max-width: 34rem)` measures the
+ * *window*. On the browser suite's own 1000x700 window each half is 500 px —
+ * 31.25rem, comfortably inside the collision this rule exists to prevent — and
+ * the query never fires, because the window is 62.5rem. The objective would
+ * paint over the clock in both halves with every test green.
+ *
+ * So the split restates it against the container, and halves the view unit
+ * while it is here.
+ * ------------------------------------------------------------------------ */
+
+.euc-hud[data-split="left"],
+.euc-hud[data-split="right"] {
+  --hud-vw: 0.5vw;
+  grid-template-rows: auto auto 1fr auto;
+  grid-template-areas:
+    "objective objective"
+    ".         challenge"
+    ".         .        "
+    "speed     cues     ";
+  /* Tighter margins: a half has less room to give away, and the outer edges
+     are the only ones that still need to clear a rounded corner. */
+  padding: var(--lane-top) 0.85rem var(--lane-bottom) 0.85rem;
+  gap: 0.5rem;
+}
+
+/* The outermost edge of each half keeps the full safe-area inset; the inner
+   edges meet at the seam and do not need it. */
+.euc-hud[data-split="left"] { padding-left: var(--lane-x); }
+.euc-hud[data-split="right"] { padding-right: var(--lane-x-right); }
 
 /* ---------------------------------------------------------------------------
  * Menus that must FIT, not scroll (M22 QA)
@@ -2254,11 +2550,19 @@
 
   .euc-menu--title .euc-menu__panel { width: min(44rem, 100%); }
 
+  /* **Both selectors, and the first one is why.** The two-column rule above is
+     attribute-scoped and therefore more specific than a bare class chain, so a
+     window that is wide *and* very short — which is a real desktop window, and
+     the one this compact layout was written for — would otherwise keep two
+     columns here. Matching its specificity lets source order decide, and this
+     block is last. */
+  .euc-menu--title[data-couch="true"] .euc-menu__actions,
   .euc-menu--title .euc-menu__actions {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   /* Full width, because it is the one thing most players came to press. */
+  .euc-menu--title[data-couch="true"] [data-menu="start"],
   .euc-menu--title [data-menu="start"] { grid-column: 1 / -1; }
 
   /* The pause card keeps two: it holds four controls, or five during a track
@@ -2311,6 +2615,11 @@
   .euc-seed { min-height: 2.75rem; font-size: max(1.05rem, 16px); }
 
   .euc-routes__pick { min-height: 2.75rem; }
+
+  /* Present for completeness rather than because a phone reaches it — the
+     couch entrance is refused below 1000 CSS px — but a wide touch screen
+     with a pad attached is eligible, and its arrows must be finger-sized. */
+  .euc-couch__step { min-width: 2.75rem; min-height: 2.75rem; }
 
   /* The chooser's own targets. A card is already far past the floor, but
      the chip is a single line of small text and would not be. */

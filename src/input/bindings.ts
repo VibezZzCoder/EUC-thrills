@@ -131,6 +131,25 @@ export const PAUSE_CODE = 'Escape';
  * diagnostic overlay. Tab because it is how a keyboard user reaches the menus
  * at all, and binding over it would trap them.
  */
+/**
+ * Keys that claim a seat — M25 Phase 4, moved here at Phase 5.
+ *
+ * The confirm family, and nothing that could be a throttle: a claim must be a
+ * deliberate "I am sitting down", never an already-held ride key that a player
+ * was leaning on when the panel opened. Enter and Space are what every other
+ * menu in the game already treats as confirm, so nobody has to be told.
+ *
+ * **It lives in this file because two layers now read it and they must never
+ * disagree.** `input/keyboard.ts` turns these presses into a claim; `ui/menus.ts`
+ * stops the browser turning the same press into a button click while the
+ * pressing device holds no seat. Two copies of this set is one copy that gets a
+ * key added to it and one that does not — and the visible symptom would be the
+ * second player's claim also pressing Start.
+ */
+export const CLAIM_CODES: ReadonlySet<string> = Object.freeze(
+  new Set(['Enter', 'NumpadEnter', 'Space']),
+) as ReadonlySet<string>;
+
 export const RESERVED_CODES: ReadonlySet<string> = Object.freeze(
   new Set(['Escape', 'F3', 'F4', 'Tab']),
 );

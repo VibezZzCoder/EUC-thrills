@@ -94,7 +94,40 @@ const PARTICLE_COLOURS: Partial<Record<ParticleId, number>> = FX.particleColours
 export class GameRenderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene: THREE.Scene;
+  /**
+   * The frame's first view — M25 Phase 3.
+   *
+   * `viewCameras[0]` and this field are the same object, deliberately: every
+   * reader that predates the split (the QA snapshot's `tuning.fieldOfView`,
+   * four browser specs, `tools/rider-views.mjs`) means "the camera the player
+   * is looking through", and in a left|right split that is still the left
+   * half. A second camera is an addition, never a replacement.
+   */
   readonly camera: THREE.PerspectiveCamera;
+
+  /**
+   * One camera per drawn view, left to right — M25 Phase 3.
+   *
+   * The array *is* the split: `viewCount === 1` is the single-player frame
+   * this game has always drawn, and nothing about the two-view path is
+   * conditional anywhere else. Cameras hold no GPU resource — no buffers, no
+   * programs, nothing `renderer.info.memory` counts — so seating and
+   * dismissing a second view costs an object and a projection matrix, which
+   * is why `setViewCount` can be called at runtime without a plateau test of
+   * its own.
+   */
+  private readonly viewCameras: THREE.PerspectiveCamera[] = [];
+
+  /**
+   * How much the split widens the vertical field of view, and where it stops.
+   *
+   * Pushed from `Game.applyTuning` rather than read from `CAMERA` here, for
+   * the reason `setQuality` takes its ceiling as an argument: the tuning
+   * store is the app layer's, and a renderer that reached into it would be a
+   * second reader of a value the F4 panel can move. See `splitFieldOfView`.
+   */
+  private splitFovGain: number = CAMERA.splitFovGain;
+  private splitFovCap: number = CAMERA.splitFovCap;
 
   private readonly sun: THREE.DirectionalLight;
   private readonly hemisphere: THREE.HemisphereLight;
@@ -210,24 +243,40 @@ export class GameRenderer {
   private maxPixelRatio: number = RENDER.maxPixelRatio;
 
   /**
-   * Fractional sparks owed from previous steps.
+   * Fractional sparks owed from previous steps, **per emitter**.
    *
    * A scrape emits at a rate, and one 120 Hz step at 90 particles a second is
    * three quarters of a particle. Rounding that to zero would emit nothing
    * ever; rounding it to one would emit at 120 a second whatever the rate
    * says. Carrying the remainder makes the rate mean what it says.
+   *
+   * **An array rather than a number since M25 Phase 2.** The pool is shared
+   * and stays shared — one `ParticleField`, one draw call, one `stepParticles`
+   * clock — but the *remainder* is a fact about one rider's continuous scrape,
+   * and two riders sharing one remainder hand each other's fractions back and
+   * forth. `source` is the seat index, so the array grows with the seats and
+   * a seat that never scrapes never costs a slot.
    */
-  private sparkDebt = 0;
+  private readonly sparkDebt: number[] = [];
 
   /**
-   * Fractional spray owed from previous steps — M13 Phase 2.
+   * Fractional spray owed from previous steps — M13 Phase 2, per emitter since
+   * M25 Phase 2.
    *
    * `sparkDebt`'s job for the other continuous emitter, and it is reset rather
    * than carried whenever the wheel leaves the water: a rider who crosses three
    * puddles should get three sprays that each start from nothing, not one that
    * remembers a fraction of a droplet from the last one.
+   *
+   * **This one had to become per-emitter or a second rider would have deleted
+   * the feature.** The reset above fires from a caller who is *not* in water,
+   * and `emitSurfaceSpray` is called every step by every rider — so with one
+   * shared remainder, a dry seat 1 stepped after a wet seat 0 would zero the
+   * debt every step. At 55 droplets a second and a 120 Hz step no single step
+   * ever accrues a whole one, so the spray would have gone from a sheet of
+   * water to nothing at all, silently, on the day a second seat existed.
    */
-  private splashDebt = 0;
+  private readonly splashDebt: number[] = [];
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -242,6 +291,27 @@ export class GameRenderer {
     // PCFSoftShadowMap is deprecated as of three 0.185 and silently falls back
     // to PCFShadowMap, so ask for what we actually get.
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
+
+    // **Both of these exist because a frame may now be more than one pass**
+    // (M25 Phase 3, docs/PLANS.md §25.4).
+    //
+    // `autoClear` would clear at the top of *every* `render()` call, so the
+    // second pass would wipe the first: the left half would be drawn and then
+    // erased, every frame, and the canvas would show one rider on a full-width
+    // view. `beginFrame` does the one clear instead.
+    //
+    // `info.autoReset` would reset the draw-call counters at the top of every
+    // `render()` call, so the two runtime diagnostics that read them — the QA
+    // snapshot's `render` block and the F3 overlay — would silently report the
+    // *right-hand half only* and a split frame would look cheaper than a
+    // single-player one. `beginFrame` resets once instead, which makes
+    // `info.render.calls` the sum of every pass. That sum is precisely the
+    // definition §25.4 gives for what a split frame costs.
+    //
+    // Both are set for the single-view path too. Two paths that reported
+    // differently would be worse than either.
+    this.renderer.autoClear = false;
+    this.renderer.info.autoReset = false;
 
     this.scene = new THREE.Scene();
 
@@ -265,6 +335,7 @@ export class GameRenderer {
       CAMERA.near,
       CAMERA.far,
     );
+    this.viewCameras.push(this.camera);
 
     // Hemisphere fill. Downward-facing surfaces sample groundBounceColour —
     // the underside of the wheel and, from M2, the rider. Too dark and those
@@ -344,8 +415,13 @@ export class GameRenderer {
    * Rate rather than count: the caller passes the step it is spending, so a
    * scrape lasting a tenth of a second and one lasting a second differ in how
    * much they throw rather than in whether they throw anything.
+   *
+   * `source` is which rider is scraping — the seat index (M25 Phase 2). It
+   * addresses this rider's fractional remainder and nothing else: the pool,
+   * the colour, the rate and the draw call are all still one thing.
    */
   emitSparks(
+    source: number,
     x: number,
     y: number,
     z: number,
@@ -356,10 +432,10 @@ export class GameRenderer {
   ): void {
     const intensity = Math.min(1, depth / EUC_PEDAL_STRIKE_REFERENCE_DEPTH);
     if (intensity <= 0 || dt <= 0) return;
-    this.sparkDebt += FX.sparkRatePerSecond * intensity * dt;
-    const count = Math.floor(this.sparkDebt);
+    const owed = (this.sparkDebt[source] ?? 0) + FX.sparkRatePerSecond * intensity * dt;
+    const count = Math.floor(owed);
+    this.sparkDebt[source] = owed - count;
     if (count <= 0) return;
-    this.sparkDebt -= count;
 
     // Outward from the wheel on the scraping side and back along the travel,
     // in the rider's frame: +X is their left, +Z is forward.
@@ -442,8 +518,14 @@ export class GameRenderer {
    * wants continuous spray gets it by declaring `splash` and nothing else.
    *
    * Shares the dust pool, so `NON_LEVEL_RESERVE` does not move.
+   *
+   * `source` is which rider is riding through it — the seat index (M25 Phase
+   * 2). It addresses only this rider's owed fraction, and it is the parameter
+   * that keeps the "leaving the water clears the debt" rule below a statement
+   * about *that* rider rather than about whoever called last.
    */
   emitSurfaceSpray(
+    source: number,
     contact: boolean,
     x: number,
     y: number,
@@ -461,7 +543,7 @@ export class GameRenderer {
     // (invariant 3).
     const properties = surfaceProperties(surface);
     if (!contact || properties.particle !== 'splash' || dt <= 0) {
-      this.splashDebt = 0;
+      this.splashDebt[source] = 0;
       return;
     }
     const colour = PARTICLE_COLOURS[properties.particle];
@@ -471,14 +553,14 @@ export class GameRenderer {
     // A stopped wheel sits in water without disturbing it, which is also what
     // keeps a crashed rider from spraying forever where they came off.
     if (strength <= 0) {
-      this.splashDebt = 0;
+      this.splashDebt[source] = 0;
       return;
     }
 
-    this.splashDebt += FX.splashRatePerSecond * strength * dt;
-    const count = Math.floor(this.splashDebt);
+    const owed = (this.splashDebt[source] ?? 0) + FX.splashRatePerSecond * strength * dt;
+    const count = Math.floor(owed);
+    this.splashDebt[source] = owed - count;
     if (count <= 0) return;
-    this.splashDebt -= count;
 
     // Up and *back* along the travel, which is where a tyre actually throws
     // water and what keeps the sheet behind the rider instead of in front of
@@ -508,12 +590,30 @@ export class GameRenderer {
     this.dust.step(dt);
   }
 
+  /**
+   * Forget what one emitter was owed — M25 Phase 2.
+   *
+   * A remainder belongs to the *rider* who accrued it, so a rider who leaves
+   * takes theirs with them. Without this the next rider seated at the same
+   * index would inherit up to one droplet and one spark of somebody else's
+   * scrape: bounded and invisible, and still a resource with no disposal path,
+   * which is the half of invariant 10 that is about discipline rather than
+   * about memory.
+   */
+  forgetEmitter(source: number): void {
+    this.sparkDebt[source] = 0;
+    this.splashDebt[source] = 0;
+  }
+
   /** Kill every particle. A reset must not leave sparks hanging in the air. */
   clearParticles(): void {
     this.sparks.clear();
     this.dust.clear();
-    this.sparkDebt = 0;
-    this.splashDebt = 0;
+    // Every emitter's owed fraction, not seat 0's: this clears the *pool*, and
+    // a remainder left behind by a rider whose particles have just been thrown
+    // away is a droplet owed for a scrape that no longer happened.
+    this.sparkDebt.fill(0);
+    this.splashDebt.fill(0);
   }
 
   /** How many particles are alive, for the QA bridge and the overlay. */
@@ -805,10 +905,7 @@ export class GameRenderer {
 
     // Only a real layout change alters the projection. A pixel-ratio-only
     // change backs the same CSS box with more device pixels.
-    if (layoutChanged) {
-      this.camera.aspect = width / height;
-      this.camera.updateProjectionMatrix();
-    }
+    if (layoutChanged) this.applyViewAspects();
 
     return { layoutChanged, width, height };
   }
@@ -850,12 +947,160 @@ export class GameRenderer {
     this.sun.position.set(x + this.sunOffset.x, y + this.sunOffset.y, z + this.sunOffset.z);
   }
 
-  /** Vertical field of view in radians. Driven by speed from M3. */
-  setFieldOfView(radians: number): void {
-    const degrees = THREE.MathUtils.radToDeg(radians);
-    if (this.camera.fov === degrees) return;
-    this.camera.fov = degrees;
-    this.camera.updateProjectionMatrix();
+  /**
+   * Vertical field of view for one view, in radians. Driven by speed from M3;
+   * addressed per view since M25 Phase 3.
+   *
+   * **The early-out is per camera and that is the whole reason this is not a
+   * loop.** It compares against the camera it is about to write; a single
+   * shared guard would skip the second view for exactly as long as the two
+   * riders happened to be going the same speed, which is most of a couch ride
+   * and all of the first second of one.
+   */
+  setFieldOfView(view: number, radians: number): void {
+    const camera = this.cameraFor(view);
+    const degrees = THREE.MathUtils.radToDeg(this.splitFieldOfView(radians));
+    if (camera.fov === degrees) return;
+    camera.fov = degrees;
+    camera.updateProjectionMatrix();
+  }
+
+  /**
+   * How wide the split's vertical field of view should be — M25 Phase 3
+   * (docs/PLANS.md §25.5, "the split projection must keep the road readable,
+   * not just halve the aspect").
+   *
+   * A vertical split halves each view's aspect, and a perspective camera's
+   * *horizontal* angle is derived from the vertical one through it. So halving
+   * the aspect and changing nothing else does not give each player half the
+   * view — it gives them a keyhole. On a 1920x1080 window the numbers are
+   * exact: horizontal falls from 96.8 degrees to 58.8, and 38 degrees of the
+   * road either side of the rider simply stop existing.
+   *
+   * **Preserving the horizontal angle exactly is not available.** It needs a
+   * vertical angle of 103 degrees at rest and 116 at speed, against a tuning
+   * table whose header calls motion sickness a hard constraint rather than a
+   * preference. And a bare cap is worse than it looks: applied to both ends of
+   * the speed ease it clamps both, which would delete the strongest speed cue
+   * in the game exactly where two players are most likely to be racing.
+   *
+   * So: **gain, then cap.** The gain recovers most of the lost horizontal and
+   * the cap keeps the widest frame inside what the same table already
+   * tolerates, while leaving enough travel between the two ends for the ease
+   * to survive. Both numbers are F4-tunable through `setSplitFieldOfView`,
+   * because §25.5 gives the owner's own look the final say and a number he can
+   * only report is a number he has to wait on.
+   */
+  private splitFieldOfView(radians: number): number {
+    if (this.viewCameras.length < 2) return radians;
+    return Math.min(this.splitFovCap, radians * this.splitFovGain);
+  }
+
+  /**
+   * The split's field-of-view widening, from the tuning table.
+   *
+   * `Game.applyTuning` pushes this the way it pushes the quality ceiling: the
+   * store belongs to the app layer, and a renderer that read it would be a
+   * second reader of a value the F4 panel can move underneath it.
+   */
+  setSplitFieldOfView(gain: number, capRadians: number): void {
+    if (gain === this.splitFovGain && capRadians === this.splitFovCap) return;
+    this.splitFovGain = gain;
+    this.splitFovCap = capRadians;
+    // The cameras are holding a previously widened angle; the next frame
+    // rewrites them, but a paused game does not have a next frame.
+    for (const camera of this.viewCameras) camera.updateProjectionMatrix();
+  }
+
+  /** How many views this frame draws, left to right. One, until asked. */
+  get viewCount(): number {
+    return this.viewCameras.length;
+  }
+
+  /**
+   * Draw `count` views side by side from now on — M25 Phase 3.
+   *
+   * Called when a seat is added or removed, so the number of views and the
+   * number of riders are the same number by construction rather than by two
+   * places agreeing. Idempotent, so the caller does not have to know whether
+   * it is already true.
+   */
+  setViewCount(count: number): void {
+    const wanted = Math.max(1, Math.floor(count));
+    if (wanted === this.viewCameras.length) return;
+    while (this.viewCameras.length < wanted) {
+      this.viewCameras.push(new THREE.PerspectiveCamera(
+        THREE.MathUtils.radToDeg(CAMERA.fovAtRest),
+        1,
+        CAMERA.near,
+        CAMERA.far,
+      ));
+    }
+    // Never below one, and never the *first* camera: `this.camera` is the same
+    // object and is public.
+    this.viewCameras.length = wanted;
+    this.applyViewAspects();
+  }
+
+  /** The camera for one view. Throws rather than drawing the wrong half. */
+  cameraFor(view: number): THREE.PerspectiveCamera {
+    const camera = this.viewCameras[view];
+    if (camera === undefined) {
+      throw new Error(`no such view: ${view} (views: ${this.viewCameras.length})`);
+    }
+    return camera;
+  }
+
+  /**
+   * Where one view sits across the canvas, in whole CSS pixels.
+   *
+   * **The partition is by rounded boundaries, not by a divided width, and an
+   * odd number of pixels is exactly why.** `width / views` on a 1001 px canvas
+   * is 500.5, and two passes of 500.5 both floor to 500 — leaving the final
+   * column drawn by nobody. It shows as a one-pixel stripe of untouched page
+   * down the right edge of the game, which a Codex QA pass found on the day
+   * this shipped: even widths were flawless and 1001x701 was not.
+   *
+   * Taking each edge as `round(width * view / views)` makes every boundary a
+   * single number shared by the pane that ends there and the pane that starts
+   * there, so the views tile the canvas exactly once with no gap and no
+   * overlap, at any width and any view count. The panes are then not
+   * necessarily equal — 1001 splits into 500 and 501 — which is why the
+   * aspects below are taken from these same widths rather than from a halved
+   * canvas.
+   */
+  viewBounds(view: number): { x: number; width: number } {
+    const views = this.viewCameras.length;
+    if (view < 0 || view >= views) {
+      throw new Error(`no such view: ${view} (views: ${views})`);
+    }
+    const start = Math.round((this.lastWidth * view) / views);
+    const end = Math.round((this.lastWidth * (view + 1)) / views);
+    return { x: start, width: end - start };
+  }
+
+  /**
+   * Give every view the aspect of its own pane.
+   *
+   * **Each view's aspect is its own pane's width over the height, not the
+   * canvas's.** A camera left on the full-canvas aspect while drawing into
+   * half of it stretches the world horizontally, which reads as the rider
+   * being fatter rather than as the frame being wrong — the kind of defect
+   * that survives a review and is obvious the moment somebody rides it.
+   *
+   * Read from `viewBounds`, so an odd canvas gives its two panes slightly
+   * different aspects rather than one shared approximation. The alternative —
+   * halving the canvas — would put both cameras half a pixel out on the wider
+   * pane, which is invisible, and would be a second definition of where the
+   * panes are, which is not.
+   */
+  private applyViewAspects(): void {
+    if (this.lastWidth === 0 || this.lastHeight === 0) return;
+    for (let view = 0; view < this.viewCameras.length; view += 1) {
+      const camera = this.viewCameras[view];
+      camera.aspect = this.viewBounds(view).width / this.lastHeight;
+      camera.updateProjectionMatrix();
+    }
   }
 
   /**
@@ -924,8 +1169,68 @@ export class GameRenderer {
     };
   }
 
+  /**
+   * Start a frame: reset the counters, and clear the canvas exactly once.
+   *
+   * **Once, whatever the view count**, which is why `autoClear` is off (see
+   * the constructor). Clearing per pass would erase the half drawn before it;
+   * clearing inside the scissor box would work and would still be two clears
+   * for one canvas.
+   */
+  beginFrame(): void {
+    this.renderer.info.reset();
+    this.renderer.setScissorTest(false);
+    this.renderer.setViewport(0, 0, this.lastWidth, this.lastHeight);
+    this.renderer.clear();
+  }
+
+  /**
+   * Draw one view into its own half of the canvas — M25 Phase 3.
+   *
+   * The caller sets whatever is per-pass *before* calling: this view's camera
+   * transform, the shadow cascade's focus, and the surround plane's centre.
+   * Each half is its own rider's window on the world, and all three of those
+   * are singular objects that have to be moved between the passes rather than
+   * duplicated — one directional light, one depth target, one backstop mesh.
+   *
+   * **Viewport and scissor are set every pass, every frame, on purpose.**
+   * `WebGLRenderer.setSize` ends by resetting the viewport to the full canvas,
+   * and `resize()` is polled once per frame — so state set once at a split
+   * would be silently undone by the next pixel-ratio change or container
+   * resize, and the symptom would be one rider drawn across both halves.
+   *
+   * Arguments to `setViewport`/`setScissor` are in CSS pixels; three applies
+   * the device-pixel ratio itself.
+   */
+  renderView(view: number): void {
+    const camera = this.cameraFor(view);
+    if (this.viewCameras.length === 1) {
+      this.renderer.setScissorTest(false);
+      this.renderer.setViewport(0, 0, this.lastWidth, this.lastHeight);
+    } else {
+      // Whole pixels from `viewBounds`, which tiles the canvas exactly once.
+      const pane = this.viewBounds(view);
+      this.renderer.setViewport(pane.x, 0, pane.width, this.lastHeight);
+      // Without the scissor, a pass would draw its sky and its fog across the
+      // whole canvas and only the depth-tested geometry would stay in its
+      // half.
+      this.renderer.setScissor(pane.x, 0, pane.width, this.lastHeight);
+      this.renderer.setScissorTest(true);
+    }
+    this.renderer.render(this.scene, camera);
+  }
+
+  /**
+   * A whole frame from the state already set.
+   *
+   * `Game` does not use this — it has to move the shadow focus and the
+   * surround plane between passes, so it drives `beginFrame` and `renderView`
+   * itself. This is for the callers that just want a frame on the canvas: the
+   * four browser specs that force a redraw, and anything that follows them.
+   */
   render(): void {
-    this.renderer.render(this.scene, this.camera);
+    this.beginFrame();
+    for (let view = 0; view < this.viewCameras.length; view += 1) this.renderView(view);
   }
 
   dispose(): void {

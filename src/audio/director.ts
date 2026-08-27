@@ -49,7 +49,17 @@ export interface RideAudioInput {
   throttle: number;
   /** The power ladder's load scalar. 1.0 is tilt-back. */
   load: number;
-  /** Which rung of the ladder is lit. Drives the beep pattern. */
+  /**
+   * Which rung of the ladder is lit. Drives the beep pattern.
+   *
+   * **The worst rung among the riders who are *upright*, and excluding the
+   * downed ones is the caller's job** (M25 Phase 5). This used to be one
+   * rider's rung and the gate below refused to beep while `crashed` was set;
+   * with two riders that flag is seat 0's, so the player lying on the ground
+   * silenced the guest's tilt-back. The rule did not go away — it moved to
+   * where it can be asked per seat (`app/riderMix.ts`), and a caller that
+   * hands over a downed rider's rung will be beeped at for them.
+   */
   powerStage: PowerStage;
   /**
    * How near the max-speed cutout the wheel is, 0..1 — M20.
@@ -61,6 +71,8 @@ export interface RideAudioInput {
    * about when the wheel is in trouble — audibly wrong the first time anybody
    * drags the drag coefficient on F4. Zero when the feature is switched off,
    * which is what silences the whole system in one place.
+   *
+   * The nearest *upright* rider's, on `powerStage`'s contract exactly.
    */
   overspeed: number;
   surface: SurfaceId;
@@ -70,7 +82,14 @@ export interface RideAudioInput {
   suspensionSpeed: number;
   /** Pedal-strike overlap past clearance, radians. Sign is irrelevant here. */
   scrape: number;
-  /** True while the rider is off the wheel. */
+  /**
+   * True while the rider **the continuous bed follows** is off the wheel.
+   *
+   * Seat 0's, and since M25 Phase 5's QA repair that is the whole of what it
+   * does: it dips the bed and nothing else. Whether a rider's kerb strikes are
+   * suppressed, and when their recovery chirp fires, are per-rider questions
+   * answered by `crash` / `recovered` and `RiderBook`.
+   */
   crashed: boolean;
   /**
    * How far away the pursuing cop is, metres — the siren's whole input (M18).
@@ -263,6 +282,22 @@ export function createAudioFrame(): AudioFrame {
 // One-shots
 // ---------------------------------------------------------------------------
 
+/**
+ * Which crash recording plays.
+ *
+ * **Declared under `audio/` rather than imported from `data/riders.ts`**, and
+ * that is the layering rule rather than duplication for its own sake:
+ * everything under `audio/` except `samples.ts` runs headlessly under
+ * `node --test` with no bundler and no DOM, and it stays that way by owing
+ * nothing to `app/`, `data/`, or `ui/`. The composition root maps one to the
+ * other, which is the same route `quality` and `speedUnit` already take out of
+ * the options store.
+ *
+ * It lives in *this* file rather than in `sink.ts` since M25 Phase 5, because
+ * a `TransientCue` names the voice it wants and a cue is this file's.
+ */
+export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel';
+
 export type CueKind =
   | 'hop' | 'landing' | 'curb' | 'crash' | 'recover' | 'beep' | 'swing' | 'hit'
   /**
@@ -304,6 +339,19 @@ export interface TransientCue {
   /** A clean square tone. Warnings and the recovery chirp only. */
   toneHz: number;
   toneSeconds: number;
+
+  /**
+   * Whose crash this is — M25 Phase 5, and `null` on every other kind.
+   *
+   * **The voice travels with the cue rather than being read off a setting when
+   * it plays**, because two riders on one screen crash in two different
+   * characters (q68 keeps them distinct, so the voices are never ambiguous) and
+   * a single "current voice" on the sink would give whichever crash arrived
+   * second the wrong person's fall. `null` means "whatever the sink was told
+   * last", which is single-player's answer and the one every pre-Phase-5 caller
+   * still gets.
+   */
+  voice: CrashVoiceId | null;
 }
 
 function createCue(): TransientCue {
@@ -320,19 +368,49 @@ function createCue(): TransientCue {
     noiseSeconds: 0,
     toneHz: 0,
     toneSeconds: 0,
+    voice: null,
   };
+}
+
+/**
+ * One rider's one-shot bookkeeping — M25 Phase 5, extended by its QA repair.
+ *
+ * Three scalars, not a second director. Everything continuous stays singular
+ * and stays seat 0's; what is per rider is only the state that answers *"has
+ * this wheel already reported something"*, which is meaningless when shared.
+ */
+interface RiderBook {
+  /** Seconds left of this rider's kerb-strike retrigger window. */
+  impactHold: number;
+  /** How hard their last reported strike was, for the harder-hit exception. */
+  lastImpactScale: number;
+  /**
+   * Whether this rider is off the wheel.
+   *
+   * Set by `crash`, cleared by `recovered`, and driven for **every** seat
+   * including 0 by the composition root's own per-seat edge — so there is one
+   * edge detector rather than one per seat plus a spare in here.
+   */
+  crashing: boolean;
 }
 
 /**
  * How many one-shots one update may produce.
  *
- * Generous against the real worst case — a crash landing on a kerb during
- * tilt-back is four — and fixed so nothing here allocates. Overflow drops the
- * newest rather than growing, because a frame that wanted more than eight
- * simultaneous impacts has a bug upstream and the honest failure is a missing
- * sound rather than a growing array nobody notices.
+ * Generous against the real worst case, and fixed so nothing here allocates.
+ * Overflow drops the newest rather than growing, because a frame that wanted
+ * more than this many simultaneous impacts has a bug upstream and the honest
+ * failure is a missing sound rather than a growing array nobody notices.
+ *
+ * **Doubled at M25 Phase 5, and the arithmetic is the reason.** One rider's
+ * worst case is four — a crash landing on a kerb during tilt-back — and eight
+ * was twice that. q66 gives both couch riders their own one-shots, so the
+ * worst case became eight and the old ceiling had no headroom left at all:
+ * two riders crashing together would have dropped whichever sounds arrived
+ * last, silently, and only ever on the loudest frame in the game. Sixteen
+ * restores the same 2× margin the number was chosen with.
  */
-const MAX_CUES_PER_UPDATE = 8;
+const MAX_CUES_PER_UPDATE = 16;
 
 /** The live subset of `AUDIO` the tuning panel may move. See LIVE_TUNABLES. */
 export interface AudioTuning {
@@ -474,12 +552,19 @@ export class AudioDirector {
   private transientDuck = 0;
   private crashedBed = 1;
   private idleGain = 0;
-  private wasCrashed = false;
-  /** True between the crash and the recovery. Suppresses kerb-strike cues. */
-  private crashing = false;
-  /** Seconds left of the solid-impact retrigger window, and its last scale. */
-  private impactHold = 0;
-  private lastImpactScale = 0;
+  /**
+   * Per-rider one-shot bookkeeping — M25 Phase 5, extended by its QA repair.
+   *
+   * **Per rider and not per world.** The retrigger window's whole meaning is
+   * "this wheel already reported a hit", so one shared window means the guest
+   * grinding along a wall eats the player's and their real collision arrives
+   * silent; and the crash flag's whole meaning is "this rider is sliding", so
+   * one shared flag — driven from a `RideAudioInput.crashed` that is seat 0's
+   * — silenced the guest's wall for the whole length of the *player's*
+   * ragdoll. The *continuous* director is emphatically not duplicated
+   * (§25.5): this is three scalars, not a second model.
+   */
+  private readonly riders: RiderBook[] = [];
 
   // -- Smoothed continuous values ------------------------------------------
   // Annotated `number` rather than inferred: `AUDIO` is `as const`, so an
@@ -537,10 +622,12 @@ export class AudioDirector {
     this.crashDuck = 0;
     this.transientDuck = 0;
     this.crashedBed = 1;
-    this.wasCrashed = false;
-    this.crashing = false;
-    this.impactHold = 0;
-    this.lastImpactScale = 0;
+    for (const rider of this.riders) {
+      if (rider === undefined) continue;
+      rider.impactHold = 0;
+      rider.lastImpactScale = 0;
+      rider.crashing = false;
+    }
     this.motorHz = AUDIO.motorIdleHz;
     this.motorGain = 0;
     this.singGain = 0;
@@ -581,7 +668,10 @@ export class AudioDirector {
     this.updateWarnings(step, input);
     this.updateOverspeed(step, input);
     this.updateBed(step, input);
-    this.impactHold = Math.max(0, this.impactHold - step);
+    for (const rider of this.riders) {
+      if (rider === undefined) continue;
+      rider.impactHold = Math.max(0, rider.impactHold - step);
+    }
 
     return this.frame;
   }
@@ -665,21 +755,25 @@ export class AudioDirector {
    * grinding along a wall reports one at 120 Hz. See
    * `AUDIO.impactRetriggerSeconds`.
    */
-  impact(speed: number): void {
+  impact(speed: number, seat = 0): void {
     // Below audibility before a cue is claimed, not after: most refusals are a
     // wheel resting against a kerb rather than an impact.
     const scale = clamp01(speed / AUDIO.curbImpactReference);
     if (scale <= 0.02) return;
+    const rider = this.riderBook(seat);
     // A crash owns its own moment; the rider sliding along the ground must not
-    // also be reported as a series of kerb strikes.
-    if (this.crashing) return;
+    // also be reported as a series of kerb strikes. **This rider's own crash,
+    // since the Phase 5 QA repair** — it read one shared flag, which is seat
+    // 0's, so a player on the ground silenced the guest's wall for the whole
+    // length of a ragdoll.
+    if (rider.crashing) return;
     // Inside the window, only something clearly harder than the last hit gets
     // through — so a real collision at the end of a scrape still lands.
-    if (this.impactHold > 0 && scale < this.lastImpactScale * 1.5) return;
+    if (rider.impactHold > 0 && scale < rider.lastImpactScale * 1.5) return;
     const cue = this.claimCue();
     if (!cue) return;
-    this.impactHold = AUDIO.impactRetriggerSeconds;
-    this.lastImpactScale = scale;
+    rider.impactHold = AUDIO.impactRetriggerSeconds;
+    rider.lastImpactScale = scale;
     cue.kind = 'curb';
     cue.bus = 'sfx';
     cue.gain = AUDIO.curbLevel * scale;
@@ -695,10 +789,23 @@ export class AudioDirector {
     this.demandTransientDuck(AUDIO.duckCurb * scale);
   }
 
-  /** The rider came off. The loudest thing in the game, and the longest duck. */
-  crash(speed: number): void {
+  /**
+   * The rider came off. The loudest thing in the game, and the longest duck.
+   *
+   * `voice` is `null` for "whoever the sink was told to use", which is the
+   * single-player answer and every pre-M25 caller's. A couch seat names its
+   * own character's, because two riders crashing in one world must not both
+   * speak in whoever the player last chose.
+   */
+  crash(speed: number, voice: CrashVoiceId | null = null, seat = 0): void {
+    // **Before the cue is claimed, so the flag is set even when the ring is
+    // full.** A dropped crash sound is one missing sound; a crash that failed
+    // to mark its rider as down would go on reporting their slide as kerb
+    // strikes, which is a stream of wrong ones.
+    this.riderBook(seat).crashing = true;
     const cue = this.claimCue();
     if (!cue) return;
+    cue.voice = voice;
     const scale = lerp(0.55, 1, clamp01(Math.abs(speed) / AUDIO.speedReference));
     cue.kind = 'crash';
     cue.bus = 'sfx';
@@ -712,8 +819,48 @@ export class AudioDirector {
     cue.noiseSeconds = AUDIO.crashNoiseSeconds;
     cue.toneHz = 0;
     cue.toneSeconds = 0;
-    this.crashing = true;
     this.crashDuck = Math.max(this.crashDuck, AUDIO.duckCrash);
+  }
+
+  /**
+   * Forget everything this rider's one-shots were remembering — silently.
+   *
+   * The audible counterpart of `reset()`, addressed: a rider teleported to the
+   * spawn is not recovering from a crash, they simply stopped having one, so
+   * this clears the flag without the chirp `recovered` fires. Called wherever a
+   * rider's continuity ends — a quick reset, a world swap, and the moment a
+   * seat is dismissed, so the next rider seated at that index does not inherit
+   * a crash that happened to somebody else.
+   */
+  forgetRider(seat = 0): void {
+    const rider = this.riderBook(seat);
+    rider.impactHold = 0;
+    rider.lastImpactScale = 0;
+    rider.crashing = false;
+  }
+
+  /**
+   * This rider is back on the wheel — M25 Phase 5's QA repair.
+   *
+   * **Addressed, and dispatched by the caller rather than watched here.** The
+   * director used to detect the crash *end* itself, from the falling edge of
+   * `RideAudioInput.crashed`, on the argument that duplicating a rising-edge
+   * detector in the composition root would be the more surprising arrangement.
+   * That was true with one rider and false with two: the shared input is seat
+   * 0's, so a guest who crashed and recovered got no chirp at all — and the
+   * only place that knows the answer per seat is the fixed step that already
+   * detects the start. One edge detector, in the place that has the seats.
+   *
+   * It moved from the render clock to the fixed step with that change, which
+   * is strictly better and matches every other one-shot: `advance(n)` reaches
+   * the same recovery chirps every run.
+   */
+  recovered(seat = 0): void {
+    const rider = this.riderBook(seat);
+    // Idempotent, so a caller that simply re-states "not crashed" is correct.
+    if (!rider.crashing) return;
+    rider.crashing = false;
+    this.recover();
   }
 
   /** Back on the wheel. Two rising tones — the only cue here that goes up. */
@@ -805,7 +952,33 @@ export class AudioDirector {
     if (this.cueCount >= MAX_CUES_PER_UPDATE) return null;
     const cue = this.cues[this.cueCount];
     this.cueCount += 1;
+    // **Reset here rather than trusted to every caller.** The ring is reused,
+    // every other field is written unconditionally by whoever claims a cue, and
+    // `voice` is the one field only `crash` sets — so without this a beep
+    // claimed after a voiced crash would carry a stale name. Harmless today,
+    // because only a crash cue is read for it; the next kind that wants a
+    // recording would inherit the bug.
+    cue.voice = null;
     return cue;
+  }
+
+  /**
+   * One rider's one-shot bookkeeping, created the first time that seat makes a
+   * sound.
+   *
+   * Lazy rather than sized up front because the director is handed a seat
+   * number and has no opinion about how many there are — and because the array
+   * is two small objects for the life of a couch session, allocated once,
+   * never in a step.
+   */
+  private riderBook(seat: number): RiderBook {
+    const index = seat >= 0 ? seat : 0;
+    let book = this.riders[index];
+    if (book === undefined) {
+      book = { impactHold: 0, lastImpactScale: 0, crashing: false };
+      this.riders[index] = book;
+    }
+    return book;
   }
 
   private demandTransientDuck(depth: number): void {
@@ -1169,7 +1342,7 @@ export class AudioDirector {
       this.beepTimer = 0;
     }
 
-    if (pattern === null || input.idle || input.crashed) {
+    if (pattern === null || input.idle) {
       this.beepTimer = 0;
       this.beepDuckHold = Math.max(0, this.beepDuckHold - dt);
       return;
@@ -1217,7 +1390,7 @@ export class AudioDirector {
     // different quantities, which is how a slider ends up with a useful range
     // of one fifth of its travel.
     const level = this.tuning.overspeedLevel;
-    const active = input.overspeed > 0 && level > 0 && !input.idle && !input.crashed;
+    const active = input.overspeed > 0 && level > 0 && !input.idle;
     if (!active) {
       // Re-armed rather than left where it was: a rider who drops out of the
       // band and climbs back into it should be beeped at straight away, and a
@@ -1383,14 +1556,11 @@ export class AudioDirector {
     // not instant: pause has to be a fade or it is a click.
     this.idleGain = approach(this.idleGain, input.idle ? 0 : 1, 0.05, dt);
 
-    // Recovery is an edge, and the only place the director watches one itself.
-    // Every other event is dispatched by `app/Game.ts` from the fixed step,
-    // but the crash *end* is a state change rather than a single-step flag,
-    // and duplicating a rising-edge detector in the composition root to catch
-    // it would be the more surprising of the two arrangements.
-    if (this.wasCrashed && !input.crashed) this.recover();
-    this.wasCrashed = input.crashed;
-    this.crashing = input.crashed;
+    // **`input.crashed` reaches the bed gain above and nothing else**, since
+    // the Phase 5 QA repair. It answers for the rider the continuous mix
+    // follows — seat 0 — and the recovery chirp and the kerb-strike gate are
+    // per rider, dispatched from the fixed step by the one place that knows
+    // how many riders there are (`RiderBook`, `recovered`).
 
     this.frame.duck = this.duck;
     this.frame.crashDuck = this.crashDuck;

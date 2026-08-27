@@ -760,6 +760,18 @@ export function defaultEucTuning(): EucTuning {
 export type PowerStage = 'normal' | 'notice' | 'warn' | 'tiltBack';
 
 /**
+ * The ladder in order of severity, least first — M25 Phase 5.
+ *
+ * Beside the type rather than wherever severity was first needed, because
+ * "which rung is worse" is a fact about the ladder and adding a fifth rung
+ * must not leave a comparison somewhere else quietly ranking it lowest. Its
+ * one consumer today is the couch mix, which beeps at the worst rung any rider
+ * is standing on (q66).
+ */
+export const POWER_STAGE_ORDER: readonly PowerStage[] =
+  Object.freeze(['normal', 'notice', 'warn', 'tiltBack']);
+
+/**
  * Why the rider came off (`EUC_RIDER_MOTION_REFERENCE.md` §16).
  *
  * `none` means no crash has happened since the last reset, for the same reason

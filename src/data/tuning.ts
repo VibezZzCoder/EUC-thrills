@@ -2302,6 +2302,32 @@ export const CAMERA = {
   /** Vertical field of view, radians. Eased between these with speed. */
   fovAtRest: 1.13,
   fovAtSpeed: 1.36,
+
+  /**
+   * How the split view widens the two above, and where the widening stops —
+   * M25 Phase 3.
+   *
+   * A vertical split halves each view's aspect, and a perspective camera's
+   * horizontal angle comes out of the vertical one through it. Left alone,
+   * `fovAtRest` on a half-width view drops the horizontal angle from 96.8
+   * degrees to 58.8 on a 1920x1080 screen: half the screen, but far less than
+   * half the road. Recovering the horizontal exactly needs 103 degrees of
+   * vertical at rest and 116 at speed, which this file's own header rules out
+   * in its first line.
+   *
+   * So the split multiplies by the gain and stops at the cap. The gain buys
+   * most of the lost horizontal back; the cap keeps the widest frame inside
+   * what the paragraph above tolerates — and the two are separate numbers
+   * rather than one clamped angle so that the speed ease *survives the split*.
+   * A single cap applied to both ends would flatten `fovAtRest` and
+   * `fovAtSpeed` onto the same value and delete the strongest speed cue in the
+   * game at exactly the moment two players are racing each other.
+   *
+   * Both are live-tunable because `docs/PLANS.md` §25.5 gives the owner's own
+   * look the final say on the split projection.
+   */
+  splitFovGain: 1.22,
+  splitFovCap: 1.52,
   /** Spring-arm length, metres, eased with speed. */
   distanceAtRest: 4.2,
   distanceAtSpeed: 6.0,
@@ -7533,6 +7559,30 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     note: 'Vertical field of view at the reference speed. A wide gap between '
       + 'the two is the strongest speed sensation and the fastest route to '
       + 'motion sickness; move it a little at a time.',
+  },
+  {
+    path: 'CAMERA.splitFovGain',
+    group: 'Camera',
+    label: 'Split FOV gain',
+    unit: 'x',
+    min: 1,
+    max: 1.6,
+    step: 0.01,
+    note: 'How much wider the vertical field of view goes when the screen is '
+      + 'split two ways. 1.0 is a keyhole — half the screen and far less than '
+      + 'half the road. Single-player frames ignore this entirely.',
+  },
+  {
+    path: 'CAMERA.splitFovCap',
+    group: 'Camera',
+    label: 'Split FOV cap',
+    unit: 'rad',
+    min: 1.1,
+    max: 1.9,
+    step: 0.01,
+    note: 'Where the widening above stops. Set it at or below the gained '
+      + 'resting angle and the speed ease disappears, because both ends clamp '
+      + 'to the same value.',
   },
   {
     path: 'CAMERA.lookAheadSeconds',

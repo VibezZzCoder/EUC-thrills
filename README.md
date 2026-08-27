@@ -67,6 +67,17 @@ costs speed rather than the whole run.
 **Start ride** — free ride in the world currently loaded. No clock, no
 objective, nothing to fail.
 
+**2 Players (desktop)** — free ride for two, side by side on one screen. On a
+desktop-shaped machine the title screen offers **2 Players**: each player
+presses a button on their own controller — a gamepad, or this keyboard — to
+take a seat, picks their rider (you ride as different characters), and **Start
+riding** puts you in the world together, each in your own half of the screen
+with your own camera and HUD. Nothing is timed and no records are kept — it is
+free ride, shared. Either player can pause for both, each of you beeps,
+crashes and recovers on your own, and for now you ride straight through each
+other. The mode is desktop-only: it needs a window at least 1000 pixels wide
+to keep both halves readable, so a phone never sees the button.
+
 **Time trial** — race from the start line through five more checkpoints. The
 HUD points at the next one and shows the distance; each crossing gives you a
 split and, once you have a time to beat, the gap. Scoring is pure elapsed
@@ -331,16 +342,21 @@ list.
 
 ### Accepted direction
 
-- **Local split-screen multiplayer, on one desktop.** Two riders, two views,
-  one keyboard-and-pads — no accounts, no server, and nothing to connect to.
-  This is the shape the project is actually building toward: local multiplayer
-  on desktop, single-player on mobile. Playing across two devices is not
-  cancelled, but it is behind this and behind everything else. The split-screen
-  mode gets its own, higher graphics budget so that nothing about the
-  single-player game on a phone has to give way for it.
+- **More couch multiplayer.** Free ride for two landed first (see **2
+  Players** above); couch versions of the chase, the race and Knockabout are
+  each real design work rather than a toggle, and come one at a time. A gentle
+  rider-to-rider bump is a named fast-follow — today the two of you ride
+  through each other on purpose. The shape stays what it was: local
+  multiplayer on desktop, single-player on mobile, and playing across two
+  devices is not cancelled but sits behind all of this.
 
 ### Recently landed
 
+- **Local split-screen multiplayer, on one desktop** — the **2 Players** mode
+  above: two riders, two views, one keyboard-and-pads, no accounts, no server,
+  and nothing to connect to. The split frame carries its own, higher graphics
+  budget, measured separately, so nothing about the single-player game on a
+  phone gave way for it.
 - **Track Day, and the circuit it is for** — BelVar Circuit, a hand-built kart
   course, and a lap mode with sector splits, a best-lap record, and a ghost that
   restarts beside you on every lap.

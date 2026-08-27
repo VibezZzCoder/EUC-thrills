@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { AUDIO } from '../data/tuning.ts';
-import type { AudioFrame, TransientCue } from './director.ts';
-import { NOISE_SECONDS, fillNoise } from './noise.ts';
+import type { AudioFrame, CrashVoiceId, TransientCue } from './director.ts';
+import { NOISE_SECONDS, alignLoopToQuantum, fillNoise } from './noise.ts';
 
 /**
  * The Web Audio graph. **This file makes no decisions.**
@@ -154,14 +154,14 @@ export interface SampleBank {
 /**
  * Which crash recording plays.
  *
- * **Declared here rather than imported from `data/riders.ts`**, and that is the
- * layering rule rather than duplication for its own sake: everything under
- * `audio/` except `samples.ts` runs headlessly under `node --test` with no
- * bundler and no DOM, and it stays that way by owing nothing to `app/`,
- * `data/`, or `ui/`. The composition root maps one to the other, which is the
- * same route `quality` and `speedUnit` already take out of the options store.
+ * **Moved up to `director.ts` at M25 Phase 5 and re-exported here**, because a
+ * cue now *carries* its voice: two riders on one screen each crash in their
+ * own character, so the decision travels with the one-shot rather than being
+ * read off a setting at the moment it is played — and the vocabulary belongs
+ * where the decisions are made. Every importer of `CrashVoiceId` from this
+ * file is unaffected.
  */
-export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel';
+export type { CrashVoiceId } from './director.ts';
 
 /**
  * Whose recording plays.
@@ -459,27 +459,33 @@ export class WebAudioSink {
   setSampleBank(bank: SampleBank): void {
     if (this.disposed || this.bank !== null) return;
     this.bank = bank;
+    // Aligned once for both slots — the same guard `createLoop` applies; the
+    // tyre pair only escapes it because the half-loop offset needs bare
+    // sources. The offsets read the ALIGNED duration, or slot B would start
+    // up to 2.6 ms past the midpoint it names.
+    const tyreOffroad = this.alignLoop(bank.tyreOffroad);
+    const tyreSolid = this.alignLoop(bank.tyreSolid);
     for (let index = 0; index < 2; index += 1) {
       const slot = this.tyre[index];
       const source = this.keep(this.context.createBufferSource());
-      source.buffer = bank.tyreOffroad;
+      source.buffer = tyreOffroad;
       source.loop = true;
       // Half the loop apart, so the two slots never play the same instant of
       // the recording in unison during a dirt-to-gravel crossfade.
       source.connect(slot.sampleGain);
       this.permanentSources.push(source);
-      source.start(0, index === 0 ? 0 : bank.tyreOffroad.duration / 2);
+      source.start(0, index === 0 ? 0 : tyreOffroad.duration / 2);
       slot.sample = source;
 
       // The toko loop, likewise — the half-loop offset lands the two slots on
       // opposite tick phases, so a pavement-to-brick crossfade does not
       // double every tap for a fifth of a second.
       const toko = this.keep(this.context.createBufferSource());
-      toko.buffer = bank.tyreSolid;
+      toko.buffer = tyreSolid;
       toko.loop = true;
       toko.connect(slot.tokoGain);
       this.permanentSources.push(toko);
-      toko.start(0, index === 0 ? 0 : bank.tyreSolid.duration / 2);
+      toko.start(0, index === 0 ? 0 : tyreSolid.duration / 2);
       slot.toko = toko;
     }
     this.windNoise.stop();
@@ -591,8 +597,12 @@ export class WebAudioSink {
     // them would have to relax three separate guards to save 600 KB against an
     // 8 MiB budget.
     if (cue.kind === 'crash' && this.bank) {
-      const buffer = crashFor(this.crashVoice, this.bank);
-      this.lastCrashVoice = this.crashVoice;
+      // **The cue's own voice wins** — M25 Phase 5. A crash names the rider it
+      // belongs to; `null` is "whoever this sink was told to use", which is
+      // single-player's answer and what every caller before Phase 5 sends.
+      const voice = cue.voice ?? this.crashVoice;
+      const buffer = crashFor(voice, this.bank);
+      this.lastCrashVoice = voice;
       this.playCrashSample(buffer, cue, at, destination);
       return;
     }
@@ -762,11 +772,30 @@ export class WebAudioSink {
 
   private createLoop(buffer: AudioBuffer, destination: AudioNode): AudioBufferSourceNode {
     const source = this.keep(this.context.createBufferSource());
-    source.buffer = buffer;
+    // Aligned before it ever loops — see `alignLoopToQuantum` for the Ubuntu
+    // hum this guards against. One door for every looping voice on purpose:
+    // a rule applied per call site is a rule with holes in it.
+    source.buffer = this.alignLoop(buffer);
     source.loop = true;
     source.connect(destination);
     this.startSource(source);
     return source;
+  }
+
+  /**
+   * `alignLoopToQuantum`, lifted to AudioBuffers. Returns the input untouched
+   * when it is already aligned — the synthesized beds at 48 kHz are, which is
+   * exactly why they never hummed.
+   */
+  private alignLoop(buffer: AudioBuffer): AudioBuffer {
+    const aligned = alignLoopToQuantum(buffer.getChannelData(0));
+    if (aligned.length === buffer.length) return buffer;
+    const out = this.context.createBuffer(buffer.numberOfChannels, aligned.length, buffer.sampleRate);
+    out.copyToChannel(aligned, 0);
+    for (let channel = 1; channel < buffer.numberOfChannels; channel += 1) {
+      out.copyToChannel(alignLoopToQuantum(buffer.getChannelData(channel)), channel);
+    }
+    return out;
   }
 
   private createTyreSlot(): TyreSlot {

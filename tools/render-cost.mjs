@@ -33,8 +33,8 @@ const { SLICE_BEATS, SLICE_GRAPH, SLICE_POCKETS, createSliceLevel } = await impo
 const { createProvingGround } = await import(join(src, 'level/provingGround.ts'));
 const { createTrackLevel, TRACK_LAP_METRES } = await import(join(src, 'level/trackLevel.ts'));
 const { planRenderCost } = await import(join(src, 'level/renderBudget.ts'));
-const { LIBRARY_MAX_DRAW_CALLS, NON_LEVEL_RESERVE, PART_COSTS, RENDER_BUDGET, propPartCounts } = await import(join(src, 'data/renderCost.ts'));
-const { measureLevelScene, measureNonLevelScene } = await import(join(src, 'render/renderCost.ts'));
+const { LIBRARY_MAX_DRAW_CALLS, NON_LEVEL_RESERVE, PART_COSTS, RENDER_BUDGET, RENDER_BUDGET_SPLIT, SPLIT_PASSES, propPartCounts } = await import(join(src, 'data/renderCost.ts'));
+const { measureLevelScene, measureNonLevelScene, measureSplitNonLevelScene } = await import(join(src, 'render/renderCost.ts'));
 
 const write = process.argv.includes('--write');
 
@@ -167,6 +167,12 @@ const frame = {
 const proving = createProvingGround();
 const provingMeasured = measureLevelScene(proving);
 const provingPredicted = planRenderCost(proving);
+
+// **Contract 2, the desktop split frame** — M25 Phase 3 (docs/PLANS.md §25.4).
+// Measured against the worst level the game ships rather than the slice, for
+// the reason the ceiling exists at all: a couch session can be started on any
+// world, including a generated one, so the number has to survive the dearest.
+const splitReserve = measureSplitNonLevelScene(slice.checkpoints);
 
 const track = createTrackLevel();
 const trackMeasured = measureLevelScene(track);
@@ -375,17 +381,78 @@ out('over-estimates, which is the safe direction; the exact figure comes from');
 out('`planRenderCost` on the emitted plan, which is what the contract actually uses.');
 out();
 
+// ---------------------------------------------------------------------------
+// Contract 2 — the desktop split frame (M25 Phase 3)
+// ---------------------------------------------------------------------------
+
+const splitWorst = [
+  ['the slice', predicted],
+  ['the proving ground', provingPredicted],
+  ['BelVar Circuit', trackPredicted],
+].reduce((worst, row) => (row[1].drawCalls > worst[1].drawCalls ? row : worst));
+const splitPass = {
+  drawCalls: splitWorst[1].drawCalls + splitReserve.totalDrawCalls,
+  triangles: splitWorst[1].triangles + splitReserve.totalTriangles,
+};
+const splitFrame = {
+  drawCalls: splitPass.drawCalls * SPLIT_PASSES,
+  triangles: splitPass.triangles * SPLIT_PASSES,
+};
+const splitLibraryBound = (LIBRARY_MAX_DRAW_CALLS + splitReserve.totalDrawCalls) * SPLIT_PASSES;
+
+out('## The desktop split frame, against the Contract 2 ceiling');
+out();
+out('```');
+out(`level (${splitWorst[0]})${' '.repeat(Math.max(1, 17 - splitWorst[0].length))}${pad(splitWorst[1].drawCalls, 6)} calls   ${pad(splitWorst[1].triangles, 8)} triangles`);
+out(`everything else          ${pad(splitReserve.totalDrawCalls, 6)} calls   ${pad(splitReserve.totalTriangles, 8)} triangles`);
+out(`                         ------          --------`);
+out(`one pass                 ${pad(splitPass.drawCalls, 6)} calls   ${pad(splitPass.triangles, 8)} triangles`);
+out(`x ${SPLIT_PASSES} passes               ${pad(splitFrame.drawCalls, 6)} calls   ${pad(splitFrame.triangles, 8)} triangles`);
+out(`ceiling (Contract 2)     ${pad(RENDER_BUDGET_SPLIT.maxDrawCalls, 6)} calls   ${pad(RENDER_BUDGET_SPLIT.maxTriangles, 8)} triangles`);
+out(`headroom                 ${pad(RENDER_BUDGET_SPLIT.maxDrawCalls - splitFrame.drawCalls, 6)} calls   ${pad(RENDER_BUDGET_SPLIT.maxTriangles - splitFrame.triangles, 8)} triangles`);
+out('```');
+out();
+out('A split frame is two full renders of one scene through two cameras, each');
+out('with its own shadow-map render, so **its cost is the sum of both passes**.');
+out('"Everything else" here is the single-player reserve plus a whole second');
+out(`rider and machine — ${splitReserve.totalDrawCalls - NON_LEVEL_RESERVE.drawCalls} calls and `
+  + `${(splitReserve.totalTriangles - NON_LEVEL_RESERVE.triangles).toLocaleString('en-GB')} triangles more `
+  + 'than one rider, measured');
+out('over unordered distinct pairs of playable riders, per-axis worst. Distinct');
+out('because two riders on one screen are never the same character.');
+out();
+out(`**The structural bound doubles with the passes.** A level drawing on every`);
+out(`surface, material and prop part at once costs ${LIBRARY_MAX_DRAW_CALLS} calls, so no split frame`);
+out(`the library can build exceeds ${splitLibraryBound} calls — which is what`);
+out('`render/renderCost.test.ts` asserts against the ceiling, exactly as it does');
+out('for Contract 1. **Contract 1 is untouched by any of this**: single-player');
+out('frames are one pass and are measured, reserved and bounded above.');
+out();
+
 if (write) {
   const sourceTarget = join(src, 'data/renderCost.ts');
   const sourceBefore = readFileSync(sourceTarget, 'utf8');
-  const reservePattern = /(export const NON_LEVEL_RESERVE = deepFreeze\(\{\n  drawCalls: )[\d_]+(,\n  triangles: )[\d_]+(,\n\}\);)/;
-  if (!reservePattern.test(sourceBefore)) {
-    throw new Error('could not locate NON_LEVEL_RESERVE in src/data/renderCost.ts');
-  }
   const sourceInteger = (value) => String(value).replace(/\B(?=(\d{3})+(?!\d))/g, '_');
-  const sourceAfter = sourceBefore.replace(
-    reservePattern,
-    `$1${sourceInteger(reserve.totalDrawCalls)}$2${sourceInteger(reserve.totalTriangles)}$3`,
+  // **One rewriter, two reserves** — M25 Phase 3. It was a single hardcoded
+  // pattern for a single constant; Contract 2 needs a second, and a second copy
+  // of the regex is how the two would drift. Each still throws its own named
+  // error rather than skipping silently, which is what made the M14 pass find
+  // that a stray comment had left the tool unusable for a milestone.
+  const rewriteReserve = (source, name, drawCalls, triangles) => {
+    const pattern = new RegExp(
+      `(export const ${name} = deepFreeze\\(\\{\\n  drawCalls: )[\\d_]+(,\\n  triangles: )[\\d_]+(,\\n\\}\\);)`,
+    );
+    if (!pattern.test(source)) {
+      throw new Error(`could not locate ${name} in src/data/renderCost.ts`);
+    }
+    return source.replace(pattern, `$1${sourceInteger(drawCalls)}$2${sourceInteger(triangles)}$3`);
+  };
+  let sourceAfter = rewriteReserve(
+    sourceBefore, 'NON_LEVEL_RESERVE', reserve.totalDrawCalls, reserve.totalTriangles,
+  );
+  sourceAfter = rewriteReserve(
+    sourceAfter, 'SPLIT_NON_LEVEL_RESERVE',
+    splitReserve.totalDrawCalls, splitReserve.totalTriangles,
   );
   writeFileSync(sourceTarget, sourceAfter);
 

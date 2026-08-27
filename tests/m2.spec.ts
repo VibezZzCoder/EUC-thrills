@@ -195,26 +195,89 @@ test('fore-aft rider lean is strongest while speed changes and relaxes at cruise
     rig.wheelPitch + rig.pelvisPitch - RIDER_BLOCKOUT.torsoRestPitch
   );
 
+  /**
+   * The M23 riding stances' share of the same fore-aft hinge.
+   *
+   * `render/rider.ts` composes the torso pitch as the controller's lean plus
+   * the *stronger* of the two stances — `Math.max`, not a sum, so a charged
+   * pull entering a committed corner does not fold the rig twice. Read from
+   * the snapshot rather than assumed, because the three identities below are
+   * claiming that the rig shows the controller's state and nothing else.
+   *
+   * **Re-derived 2026-08-23, and the reason is a fixed defect rather than a
+   * tolerance.** Until then `Game.renderSeat` interpolated the player's render
+   * pose with a hand-written block that wrote 43 of `EucPose`'s 45 scalars,
+   * and the two it missed were `attack` and `carveStance` — so the player's
+   * copies held their spawn value of zero and this identity passed by
+   * accident: the attack and hard-carve stances had never once been drawn on
+   * the player, only on the cop, whose branch has always used the derived
+   * `lerpPose`. Both riders share that helper now, and the fold below is what
+   * the player was supposed to have been shown since M23.
+   */
+  const stanceFold = (euc: { attack: number; carveStance: number }): number => Math.max(
+    euc.attack * RIDER_BLOCKOUT.attackTorsoPitch,
+    euc.carveStance * RIDER_BLOCKOUT.carveStanceTorsoPitch,
+  );
+
   expect(launch.snapshot.euc.longitudinalAccel).toBeGreaterThan(4);
   expect(launch.snapshot.euc.riderPitch).toBeGreaterThan(0.66);
-  expect(renderedRiderPitch(launch.rig)).toBeCloseTo(launch.snapshot.euc.riderPitch, 4);
+  // One second into the pull, so the attack stance has not begun: it charges on
+  // a clock and `EUC.attackDelaySeconds` has not elapsed. The launch pose is
+  // the controller's lean alone, exactly as it was before M23.
+  expect(launch.snapshot.euc.attack).toBe(0);
+  expect(renderedRiderPitch(launch.rig)).toBeCloseTo(
+    launch.snapshot.euc.riderPitch + stanceFold(launch.snapshot.euc),
+    4,
+  );
 
   expect(Math.abs(cruise.snapshot.euc.longitudinalAccel)).toBeLessThan(0.01);
   expect(cruise.snapshot.euc.riderPitch).toBeGreaterThan(0.04);
   expect(cruise.snapshot.euc.riderPitch).toBeLessThan(launch.snapshot.euc.riderPitch * 0.25);
-  expect(renderedRiderPitch(cruise.rig)).toBeCloseTo(cruise.snapshot.euc.riderPitch, 4);
+  // Thirty-nine seconds of held full throttle at speed is the attack stance
+  // fully charged, and asserting that is what would have caught the missing
+  // interpolation: with the stance stuck at zero this passed on a rider who
+  // was never in it.
+  expect(cruise.snapshot.euc.attack).toBeGreaterThan(0.99);
+  expect(renderedRiderPitch(cruise.rig)).toBeCloseTo(
+    cruise.snapshot.euc.riderPitch + stanceFold(cruise.snapshot.euc),
+    4,
+  );
 
   expect(braking.snapshot.euc.longitudinalAccel).toBeLessThan(-8);
   expect(braking.snapshot.euc.riderPitch).toBeLessThan(-0.66);
-  expect(renderedRiderPitch(braking.rig)).toBeCloseTo(braking.snapshot.euc.riderPitch, 4);
+  // Four tenths of a second after the throttle was released, so the stance is
+  // easing out on `EUC.attackResponseSeconds` rather than gone. It is still
+  // part of the hinge, and the identity has to spend it.
+  expect(braking.snapshot.euc.attack).toBeGreaterThan(0.2);
+  expect(renderedRiderPitch(braking.rig)).toBeCloseTo(
+    braking.snapshot.euc.riderPitch + stanceFold(braking.snapshot.euc),
+    4,
+  );
 
   // This is the regression the first QA pass missed: a side inspection camera
   // can prove the transform moved while the player's real chase view still
-  // looks unchanged. The head-to-hip span the player sees must visibly
-  // compress during both action poses and reopen at cruise — in metres of
-  // world-vertical, so the M3 camera's speed easing cannot fake either result.
-  expect(cruiseChase - launchChase).toBeGreaterThan(0.10);
-  expect(cruiseChase - brakingChase).toBeGreaterThan(0.06);
+  // looks unchanged. The head-to-hip span the player sees must visibly change
+  // between these three moments — in metres of world-vertical, so the M3
+  // camera's speed easing cannot fake the result.
+  //
+  // **Both bounds were re-derived on 2026-08-23 and the reference pose is why.**
+  // The M2 version measured launch and braking against a *relaxed* cruise, and
+  // since M23 there is no such thing at speed: sustained throttle is the attack
+  // stance, which folds the torso `attackTorsoPitch` further and drops the hips
+  // `attackHipDrop`, so the pose these differences are measured from is itself
+  // a compressed one. Measured before the interpolation fix — launch 0.385,
+  // cruise 0.504, braking 0.408; measured after it — launch 0.385, cruise 0.449,
+  // braking 0.447. The launch gap survives at a little over half its old size
+  // and is asserted at 0.05 with the same proportional margin the 0.10 had.
+  //
+  // **The braking comparison did not survive, and that is a finding rather than
+  // a tolerance failure**: an early hard brake and a settled cruise now present
+  // the same span to within 0.002, because this sample is taken while a quarter
+  // of the attack stance is still easing out. So the claim is made against the
+  // launch pose instead, which is the one the chase view still separates —
+  // braking stands the rider back up out of a fold the launch is deep in.
+  expect(cruiseChase - launchChase).toBeGreaterThan(0.05);
+  expect(brakingChase - launchChase).toBeGreaterThan(0.05);
 });
 
 test('the placeholder rider is in the scene, and the M0 scale post is gone', async ({ page }) => {
@@ -486,34 +549,79 @@ test('braking is a hips-back semi-squat and launching drives the hips forward, n
   await boot(page);
 
   const stances = await page.evaluate(() => {
+    const read = () => ({
+      rig: window.qa.rigTransform(),
+      euc: window.game.snapshot().euc,
+    });
     window.qa.resetRide();
     window.qa.drive([{ actions: { throttle: 1 }, steps: 120 }]);
-    const launch = window.qa.rigTransform();
+    const launch = read();
     window.qa.drive([{ actions: { throttle: 1 }, steps: 120 * 39 }]);
-    const cruise = window.qa.rigTransform();
+    const cruise = read();
     window.qa.drive([{ actions: { throttle: -1 }, steps: 48 }]);
-    const braking = window.qa.rigTransform();
+    const braking = read();
     return { launch, cruise, braking };
   });
 
-  // Launch: hips ahead of neutral, knees loaded, eyes still on the route
-  // rather than on the contact patch.
-  expect(stances.launch.pelvisZ).toBeGreaterThan(0.06);
-  expect(stances.launch.pelvisY).toBeLessThan(RIDER.hipHeight - 0.02);
-  expect(stances.launch.neckPitch).toBeLessThan(-0.4);
+  /**
+   * What the M23 attack stance is contributing to this sample's hips and head.
+   *
+   * **Re-derived 2026-08-23.** These three assertions were written against a
+   * rider the attack stance had never reached: `Game.renderSeat` interpolated
+   * the player's pose by hand and never wrote `attack` or `carveStance`, so
+   * they sat at their spawn zero and the stance was drawn on the cop alone.
+   * Subtracting the stance's own offsets is what leaves the acceleration pose
+   * these assertions are actually about — it is an isolation, not a widened
+   * bound, and every term below is the constant `render/rider.ts` spends.
+   */
+  const stance = (sample: typeof stances.cruise) => ({
+    /** Hips carried back as the torso goes over them. */
+    hipShift: sample.euc.attack * RIDER_BLOCKOUT.attackHipShift,
+    /** A third of a tuck's drop, because the attack stance keeps legs long. */
+    hipDrop: sample.euc.attack * RIDER_BLOCKOUT.attackHipDrop,
+    /**
+     * The head's give-back. The neck stabilises against the *total* fore-aft
+     * hinge, and the stance's fold is part of that total, so the helmet comes
+     * down by its share of it on the tuck allowance.
+     */
+    headGive: Math.min(
+      RIDER_BLOCKOUT.tuckHeadStabilizationMax,
+      sample.euc.attack * RIDER_BLOCKOUT.attackTorsoPitch
+        * RIDER_BLOCKOUT.tuckHeadStabilization,
+    ),
+  });
 
-  // Cruise: the stance relaxes with the pose — near neutral, near full height.
-  expect(Math.abs(stances.cruise.pelvisZ)).toBeLessThan(0.02);
-  expect(stances.cruise.pelvisY).toBeGreaterThan(RIDER.hipHeight - 0.01);
+  // Launch: hips ahead of neutral, knees loaded, eyes still on the route
+  // rather than on the contact patch. One second in, so the stance has not
+  // begun charging and none of the corrections above apply here.
+  expect(stances.launch.euc.attack).toBe(0);
+  expect(stances.launch.rig.pelvisZ).toBeGreaterThan(0.06);
+  expect(stances.launch.rig.pelvisY).toBeLessThan(RIDER.hipHeight - 0.02);
+  expect(stances.launch.rig.neckPitch).toBeLessThan(-0.4);
+
+  // Cruise: the *acceleration* stance relaxes with the pose — near neutral,
+  // near full height — underneath a fully charged attack stance, which is
+  // what thirty-nine seconds of held throttle at speed now means.
+  expect(stances.cruise.euc.attack).toBeGreaterThan(0.99);
+  expect(
+    Math.abs(stances.cruise.rig.pelvisZ + stance(stances.cruise).hipShift),
+  ).toBeLessThan(0.02);
+  expect(
+    stances.cruise.rig.pelvisY + stance(stances.cruise).hipDrop,
+  ).toBeGreaterThan(RIDER.hipHeight - 0.01);
 
   // Braking: hips well behind the axle in a deep squat with both knees bent —
   // not only the backward torso tilt the motion reference forbids — and no
-  // backward head-throw.
-  expect(stances.braking.pelvisZ).toBeLessThan(-0.1);
-  expect(stances.braking.pelvisY).toBeLessThan(RIDER.hipHeight - 0.06);
-  expect(stances.braking.leftHipY).toBeLessThan(RIDER.hipHeight - 0.06);
-  expect(stances.braking.rightHipY).toBeLessThan(RIDER.hipHeight - 0.06);
-  expect(stances.braking.neckPitch).toBeGreaterThan(0.3);
+  // backward head-throw. Sampled four tenths of a second after the throttle
+  // was released, so a quarter of the attack stance is still easing out and
+  // the head is still giving back its share of that fold.
+  expect(stances.braking.rig.pelvisZ).toBeLessThan(-0.1);
+  expect(stances.braking.rig.pelvisY).toBeLessThan(RIDER.hipHeight - 0.06);
+  expect(stances.braking.rig.leftHipY).toBeLessThan(RIDER.hipHeight - 0.06);
+  expect(stances.braking.rig.rightHipY).toBeLessThan(RIDER.hipHeight - 0.06);
+  expect(
+    stances.braking.rig.neckPitch + stance(stances.braking).headGive,
+  ).toBeGreaterThan(0.3);
 });
 
 test('left and right hard carves mirror, and the inside knee opens toward the apex', async ({ page }, testInfo) => {

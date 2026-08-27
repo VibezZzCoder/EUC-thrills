@@ -507,26 +507,44 @@ test.describe('M9 — HUD, menus, options', () => {
       await frame();
     }, button);
 
-    // Down walks the title screen's real focus order. **M10 inserted Time
-    // trial between Start ride and Settings, M12 Phase 4 inserted Fresh route
-    // after it, M14 inserted Knockabout between those two, M18 inserted Police
-    // chase after Knockabout, and M23 inserted Track Day between Time trial and
-    // Knockabout** — the two timed modes together — so this is six presses now
-    // rather than one, and asserting every intermediate stop is the point: the
-    // pad follows the panel's actual Tab order rather than a list of buttons
-    // this test remembers, which is exactly what should happen when the menu
-    // grows. Each time it has, this test has failed by naming the wrong stop,
-    // which is the failure it is for. A activates what is focused.
+    // The d-pad walks the title screen's **real geometry**, and at M25 Phase 5
+    // that geometry became a grid.
+    //
+    // The history is the point of this test. M10 inserted Time trial, M12
+    // Phase 4 Fresh route, M14 Knockabout, M18 Police chase, M23 Track Day —
+    // each time this test failed by naming the wrong stop, which is the
+    // failure it is for. Phase 5's 2 Players is the eighth entrance, and eight
+    // stacked buttons do not fit an ordinary laptop (measured — see the
+    // 56 rem tier in `ui/game.css`), so the title lays out in two columns on
+    // any window shorter than 896 px. This project's is 700.
+    //
+    // **So Down walks a column and Right crosses to the other one**, which is
+    // M24's `ui/menuRows.ts` arithmetic doing exactly what it was written for:
+    // before it, "down" on a grid moved sideways and the d-pad appeared to have
+    // no vertical axis at all. Both columns are walked below, so every entrance
+    // is still named — a control that stops being reachable still fails here.
+    // A activates what is focused.
     await pulse(13);
-    await expect(menuButton(page, 'title', 'challenge')).toBeFocused();
+    await expect(menuButton(page, 'title', 'couch')).toBeFocused();
     await pulse(13);
     await expect(menuButton(page, 'title', 'track-day')).toBeFocused();
     await pulse(13);
+    await expect(menuButton(page, 'title', 'chase')).toBeFocused();
+
+    // Back up to the top of the left column, then across and down the right.
+    await pulse(12);
+    await expect(menuButton(page, 'title', 'track-day')).toBeFocused();
+    await pulse(12);
+    await expect(menuButton(page, 'title', 'couch')).toBeFocused();
+    await pulse(15);
+    await expect(menuButton(page, 'title', 'challenge')).toBeFocused();
+    await pulse(13);
     await expect(menuButton(page, 'title', 'knockabout')).toBeFocused();
     await pulse(13);
-    await expect(menuButton(page, 'title', 'chase')).toBeFocused();
-    await pulse(13);
     await expect(menuButton(page, 'title', 'routes')).toBeFocused();
+
+    // The last row holds Settings alone, so a Down from either column lands on
+    // it — which is the nearest-neighbour half of the same arithmetic.
     await pulse(13);
     await expect(menuButton(page, 'title', 'settings')).toBeFocused();
     await pulse(0);
@@ -589,12 +607,15 @@ test.describe('M9 — HUD, menus, options', () => {
     );
 
     // Hat down (+1 on axis 7) walks the title's focus order; hat up walks back.
+    // The stops are the two-column grid's, exactly as the d-pad test above —
+    // this spec is about the *hat axes reaching the menu at all*, so it names
+    // whatever the panel's geometry currently is.
     await pulseHat(7, 1);
-    await expect(menuButton(page, 'title', 'challenge')).toBeFocused();
+    await expect(menuButton(page, 'title', 'couch')).toBeFocused();
     await pulseHat(7, 1);
     await expect(menuButton(page, 'title', 'track-day')).toBeFocused();
     await pulseHat(7, -1);
-    await expect(menuButton(page, 'title', 'challenge')).toBeFocused();
+    await expect(menuButton(page, 'title', 'couch')).toBeFocused();
   });
 
   test('a held menu direction repeats in the pause menu, where the sim clock is frozen', async ({ page }) => {

@@ -669,18 +669,25 @@ test('a gamepad alone can reach a route it cannot type', async ({ page }) => {
   };
 
   const DPAD_DOWN = 13;
+  const DPAD_RIGHT = 15;
   const A = 0;
   const B = 1;
 
-  // Down five times from Start ride reaches Fresh route; A opens it. It was
-  // twice until M14 put Knockabout between Time trial and here, three until
-  // M18 put Police chase after that, and four until M23 put Track Day beside
-  // Time trial — the walk follows the panel's real Tab order, so a menu that
-  // grows moves this count and is meant to.
+  // Four presses from Start ride reach Fresh route; A opens it. It was twice
+  // until M14 put Knockabout between Time trial and here, three until M18 put
+  // Police chase after that, five until M23 put Track Day beside Time trial —
+  // and at M25 Phase 5 it stopped being a straight line at all. An eighth
+  // entrance does not fit in one stacked column on a laptop, so the title lays
+  // out in two on any window shorter than 896 px (this project's is 700), and
+  // the d-pad walks that geometry: Down travels a column, Right crosses to the
+  // other one (M24's `ui/menuRows.ts`).
+  //
+  // The claim this test makes is unchanged and is the reason it survives every
+  // one of those moves: **a pad has a complete path to a route**, whatever
+  // shape the panel is.
   await page.locator('.euc-menu--title [data-menu="start"]').focus();
   await press(DPAD_DOWN);
-  await press(DPAD_DOWN);
-  await press(DPAD_DOWN);
+  await press(DPAD_RIGHT);
   await press(DPAD_DOWN);
   await press(DPAD_DOWN);
   await expect(page.locator('.euc-menu--title [data-menu="routes"]')).toBeFocused();

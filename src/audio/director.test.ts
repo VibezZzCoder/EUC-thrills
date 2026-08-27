@@ -603,12 +603,39 @@ test('a rung change is heard immediately, not at the end of the previous period'
   assert.equal(cues[0].toneHz, AUDIO.tiltBackHz);
 });
 
-test('the wheel does not beep at the player while they are lying on the ground', () => {
-  // Revived, so this tests the crash gate rather than the silent master.
+test('the wheel does not beep at a rider who is not on a rung', () => {
+  // Revived, so this tests the ladder's own gate rather than the silent master.
+  //
+  // **This used to be spelled `crashed: true`, and the rung it moved to is the
+  // point** (M25 Phase 5's QA repair). "A rider on the ground is not beeped
+  // at" was a `!input.crashed` clause in the gate below, which was the same
+  // statement while there was one rider: with two, that flag is seat 0's, so
+  // the *player* lying on the ground silenced the *guest's* tilt-back. The
+  // rule now lives where the riders are — `app/riderMix.ts` hands over the
+  // worst rung among the riders who are **upright**, and its own test pins it
+  // — and a downed lone rider therefore arrives here as `normal`, which is the
+  // same early return this test always exercised, through a different door.
   const director = new AudioDirector();
   director.setTuning({ beepLevel: 1 });
-  const cues = run(director, 3, riding({ speed: 4, load: 1, powerStage: 'tiltBack', crashed: true }));
+  const cues = run(director, 3, riding({ speed: 4, load: 1, powerStage: 'normal' }));
   assert.equal(cues.filter((cue) => cue.kind === 'beep').length, 0);
+});
+
+test('a crashed seat 0 does not silence the ladder for a rider who is upright', () => {
+  // The defect, at the layer it was in. `crashed` is the *bed's* rider now and
+  // reaches the bed gain and nothing else, so a tilt-back handed over while
+  // seat 0 is down is a real rider in real trouble and must be beeped at.
+  const director = new AudioDirector();
+  director.setTuning({ beepLevel: 1 });
+  const cues = run(
+    director,
+    3,
+    riding({ speed: 4, load: 1, powerStage: 'tiltBack', crashed: true }),
+  );
+  assert.ok(
+    cues.filter((cue) => cue.kind === 'beep').length > 0,
+    'the guest’s tilt-back was silenced by somebody else’s crash',
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -723,6 +750,77 @@ test('a crash does not also report itself as a series of kerb strikes', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Two riders in one mix — M25 Phase 5 (q66)
+// ---------------------------------------------------------------------------
+
+test('one rider’s scrape does not eat the other rider’s collision', () => {
+  // The defect Phase 2's one-shot guard existed to avoid rather than to fix:
+  // the retrigger window is what stops a wheel grinding along a wall reporting
+  // at 120 Hz, and one shared window means the guest's grinding swallows the
+  // player's real hit. Per rider, so it cannot.
+  const director = new AudioDirector();
+  director.impact(1.5, 1);
+  assert.equal(director.cueCount, 1, 'the guest’s first scrape is a scrape');
+  director.clearCues();
+  director.impact(1.5, 1);
+  assert.equal(director.cueCount, 0, 'the guest’s own window still holds them off');
+  director.impact(1.5, 0);
+  assert.equal(director.cueCount, 1, 'the player’s wall is the player’s to hear');
+});
+
+test('the window is still a window, per rider', () => {
+  // The mutation guard for the test above: making the books per rider must not
+  // quietly turn the rate limit off. Same rider, same scrape, still refused.
+  const director = new AudioDirector();
+  director.impact(1.5, 1);
+  director.clearCues();
+  for (let i = 0; i < 10; i += 1) director.impact(1.5, 1);
+  assert.equal(director.cueCount, 0, 'a second rider grinding is still rate-limited');
+});
+
+test('a crash carries the voice it was given, and nothing else inherits it', () => {
+  const director = new AudioDirector();
+  director.crash(10, 'maribel');
+  assert.equal(director.cueCount, 1);
+  assert.equal(director.cues[0].voice, 'maribel');
+  director.clearCues();
+
+  // The ring is reused, and `voice` is the one field only `crash` writes. A
+  // beep claimed straight after a voiced crash must not carry a rider's name.
+  director.hop(1);
+  assert.equal(director.cueCount, 1);
+  assert.equal(director.cues[0].voice, null, 'a hop inherited a crash’s voice');
+});
+
+test('an unvoiced crash still means “whoever the sink was told”', () => {
+  // Single player's path, and every caller written before Phase 5.
+  const director = new AudioDirector();
+  director.crash(10);
+  assert.equal(director.cues[0].voice, null);
+});
+
+test('two riders can both crash on the same update without either being dropped', () => {
+  // The cue ring is fixed and overflow drops the newest silently, which is the
+  // right failure and the wrong one to reach on the loudest frame in the game.
+  // Two riders' worst case is a crash landing on a kerb during tilt-back each.
+  const director = new AudioDirector();
+  for (const seat of [0, 1]) {
+    director.crash(10, seat === 0 ? 'cool-rider' : 'trollina');
+    director.landing(1, 'pavement');
+    director.impact(6, seat);
+  }
+  const kinds = [];
+  for (let i = 0; i < director.cueCount; i += 1) kinds.push(director.cues[i].kind);
+  assert.equal(kinds.filter((kind) => kind === 'crash').length, 2, 'a crash was dropped');
+  assert.equal(kinds.filter((kind) => kind === 'landing').length, 2, 'a landing was dropped');
+  const voices = [];
+  for (let i = 0; i < director.cueCount; i += 1) {
+    if (director.cues[i].kind === 'crash') voices.push(director.cues[i].voice);
+  }
+  assert.deepEqual(voices, ['cool-rider', 'trollina'], 'both crashes spoke as themselves');
+});
+
+// ---------------------------------------------------------------------------
 // The acoustic reference (owner-supplied, 2026-08-03)
 // ---------------------------------------------------------------------------
 
@@ -819,6 +917,12 @@ test('nothing in the ride bed is amplitude-modulated', () => {
 });
 
 test('the bed falls while the rider is off the wheel, and comes back on recovery', () => {
+  // **Two halves that used to be one, and separating them is the repair.**
+  // `input.crashed` is the *bed's* rider — seat 0 — and since M25 Phase 5's QA
+  // pass it dips the bed and does nothing else. The recovery chirp is a
+  // per-rider event, dispatched by the composition root's own per-seat crash
+  // edge (`recovered`), because the shared input can only ever answer for one
+  // seat and a guest who picked themselves up got no sound at all.
   const director = new AudioDirector();
   const input = riding({ speed: 10, throttle: 1 });
   run(director, 1, input);
@@ -826,6 +930,8 @@ test('the bed falls while the rider is off the wheel, and comes back on recovery
 
   input.crashed = true;
   input.throttle = 0;
+  director.crash(10);
+  director.clearCues();
   run(director, 1.5, input);
   assert.ok(
     director.frame.bedGain < riding0 * 0.5,
@@ -833,7 +939,11 @@ test('the bed falls while the rider is off the wheel, and comes back on recovery
   );
 
   input.crashed = false;
-  const cues = run(director, 1.5, input);
+  director.recovered();
+  const cues = [];
+  for (let i = 0; i < director.cueCount; i += 1) cues.push({ ...director.cues[i] });
+  director.clearCues();
+  run(director, 1.5, input);
   assert.ok(
     director.frame.bedGain > riding0 * 0.8,
     'the ride bed must come back after a recovery',
@@ -842,6 +952,67 @@ test('the bed falls while the rider is off the wheel, and comes back on recovery
     cues.some((cue) => cue.kind === 'recover'),
     'coming back deserves a sound, or the moment simply does not exist',
   );
+});
+
+test('a recovery is that rider’s, and stating it twice does not chirp twice', () => {
+  // M25 Phase 5's QA repair. Seat 1 crashing and recovering while seat 0 stays
+  // upright produced no chirp at all, because the only detector watched a flag
+  // that answers for seat 0. And the call is idempotent, so a caller that
+  // simply re-states "not crashed" every step is correct.
+  const director = new AudioDirector();
+  director.crash(10, null, 1);
+  director.clearCues();
+
+  director.recovered(1);
+  assert.equal(
+    [...Array(director.cueCount).keys()].filter((i) => director.cues[i].kind === 'recover').length,
+    2,
+    'the guest came back in silence',
+  );
+  director.clearCues();
+
+  director.recovered(1);
+  assert.equal(director.cueCount, 0, 'a second statement of the same fact chirped again');
+
+  // And it is addressed: seat 0 never crashed, so it has nothing to recover
+  // from and must not borrow the guest's.
+  director.recovered(0);
+  assert.equal(director.cueCount, 0, 'a seat that never fell chirped anyway');
+});
+
+test('a rider on the ground silences only their own wall', () => {
+  // The other half of the same defect: the kerb-strike gate read the shared
+  // flag, so the player's ragdoll muted the guest's collisions for its whole
+  // length. Per rider now.
+  const director = new AudioDirector();
+  director.crash(10, null, 0);
+  director.clearCues();
+
+  director.impact(6, 0);
+  assert.equal(director.cueCount, 0, 'the crash still owns its own moment');
+  director.impact(6, 1);
+  assert.equal(director.cueCount, 1, 'the guest’s wall was silenced by somebody else’s crash');
+  director.clearCues();
+
+  // And the guest gets their gate back the moment they come off too.
+  director.crash(10, null, 1);
+  director.clearCues();
+  director.impact(6, 1);
+  assert.equal(director.cueCount, 0);
+});
+
+test('a rider whose continuity ends forgets their crash without chirping', () => {
+  // A quick reset, a world swap, a dismissed seat: the rider stopped having a
+  // crash rather than surviving one, so the flag clears and nothing sounds.
+  // Without it a guest reset mid-ragdoll keeps a flag nothing will ever clear.
+  const director = new AudioDirector();
+  director.crash(10, null, 1);
+  director.clearCues();
+
+  director.forgetRider(1);
+  assert.equal(director.cueCount, 0, 'a respawn is not a recovery and must be silent');
+  director.impact(6, 1);
+  assert.equal(director.cueCount, 1, 'the guest stayed silent against walls after a respawn');
 });
 
 test('pausing fades to silence rather than cutting', () => {
@@ -1188,8 +1359,12 @@ test('the silenced power ladder stays silenced', () => {
   assert.equal(cues.length, 0, 'the ladder beeped, which the owner removed');
 });
 
-test('a crash and a pause both stop the beeping', () => {
-  for (const state of [{ crashed: true }, { idle: true }] as const) {
+test('a pause stops the beeping, and so does a rider who is no longer near the edge', () => {
+  // `{ crashed: true }` was the third case here until M25 Phase 5's QA repair,
+  // and it moved for the reason on the ladder test above: `crashed` answers for
+  // the bed's rider, and gating a *shared* warning on it silenced the guest.
+  // A downed rider now arrives as `overspeed: 0`, which is the first case.
+  for (const state of [{ overspeed: 0 }, { idle: true }] as const) {
     const director = new AudioDirector();
     const cues = run(director, 4, riding({ speed: 22, overspeed: 1, ...state }));
     assert.equal(
@@ -1198,6 +1373,15 @@ test('a crash and a pause both stop the beeping', () => {
       `still beeping while ${JSON.stringify(state)}`,
     );
   }
+});
+
+test('a crashed seat 0 does not silence the cutout warning for a rider who is upright', () => {
+  const director = new AudioDirector();
+  const cues = run(director, 4, riding({ speed: 22, overspeed: 1, crashed: true }));
+  assert.ok(
+    cues.filter((cue) => cue.kind === 'overspeed').length > 0,
+    'the guest rode into the cutout in silence because somebody else was down',
+  );
 });
 
 test('the beep ducks the bed, and never as deep as it retriggers', () => {

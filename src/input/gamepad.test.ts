@@ -14,6 +14,16 @@ import {
 } from './gamepad.ts';
 
 /**
+ * Note on what is *not* parameterised here — M25 Phase 4.
+ *
+ * `rig` below builds the layer with no routing, which means every test in this
+ * file that predates Phase 4 exercises the adopt-one rule M9 shipped: first
+ * standard pad drives the state, the rest are read for menus and claims only.
+ * That is the preservation the plan asked for (§25.5 Phase 4), and it is worth
+ * more as untouched tests than as a new assertion.
+ */
+
+/**
  * The gamepad device layer against fake pads and a fake window.
  *
  * Everything the pad layer does is arithmetic and edge bookkeeping over a
@@ -144,6 +154,66 @@ function rig(options: Partial<GamepadInputOptions> = {}): Rig {
       source.pads = [pad(shape)];
       input.poll(0);
       menu.length = 0;
+    },
+  };
+}
+
+/**
+ * A two-pad rig with an explicit routing — M25 Phase 4.
+ *
+ * Deliberately a *second* helper rather than a parameter on the first: every
+ * test above this line runs through the layer's own default routing, and that
+ * is the point of them. The adopt-one rule is not preserved by a paragraph
+ * saying so; it is preserved because the tests that prove it never learned
+ * that routing exists.
+ */
+function couch(options: Partial<GamepadInputOptions> = {}): {
+  seats: ActionState[];
+  input: GamepadInput;
+  source: FakeSource;
+  menu: MenuAction[];
+  claims: number[];
+  padChanges: [number, boolean][];
+  /** Which pad drives which seat. Empty means the default order rule. */
+  claim(padIndex: number, seat: number): void;
+  present(...shapes: PadShape[]): void;
+} {
+  const seats = [new ActionState(), new ActionState()];
+  const source = new FakeSource();
+  const menu: MenuAction[] = [];
+  const claims: number[] = [];
+  const padChanges: [number, boolean][] = [];
+  const routed = new Map<number, number>();
+  const input = new GamepadInput(
+    seats[0],
+    {
+      now: () => 0,
+      onMenuAction: (action) => menu.push(action),
+      onClaimPress: (index) => claims.push(index),
+      onPadChange: (index, present) => padChanges.push([index, present]),
+      routing: {
+        sinkForPad: (padIndex, order) => {
+          if (routed.size === 0) return order === 0 ? seats[0] : null;
+          const seat = routed.get(padIndex);
+          return seat === undefined ? null : seats[seat];
+        },
+      },
+      ...options,
+    },
+    new FakeWindow() as unknown as Window,
+    source,
+  );
+
+  return {
+    seats,
+    input,
+    source,
+    menu,
+    claims,
+    padChanges,
+    claim: (padIndex, seat) => routed.set(padIndex, seat),
+    present: (...shapes) => {
+      source.pads = shapes.map((shape) => pad(shape));
     },
   };
 }
@@ -629,4 +699,156 @@ test('the fallback defaults agree with the shipped tuning values', () => {
   assert.equal(GAMEPAD_DEFAULTS.menuStickThreshold, INPUT.menuStickThreshold);
   assert.equal(GAMEPAD_DEFAULTS.menuRepeatDelaySeconds, INPUT.menuRepeatDelaySeconds);
   assert.equal(GAMEPAD_DEFAULTS.menuRepeatIntervalSeconds, INPUT.menuRepeatIntervalSeconds);
+});
+
+// ---------------------------------------------------------------------------
+// M25 Phase 4 — two pads, and the claim that tells them apart
+// ---------------------------------------------------------------------------
+
+test('two claimed pads carve two seats, and neither one writes the other', () => {
+  const { seats, input, claim, present } = couch();
+  claim(0, 0);
+  claim(1, 1);
+
+  present(
+    { index: 0, axes: [1, 0] },
+    { index: 1, axes: [-1, 0], down: [STANDARD_BUTTON.dpadUp] },
+  );
+  input.poll(1);
+
+  // The foundation gate of the whole milestone, at the device layer: the two
+  // riders are independent because their intent never shared a slot, not
+  // because something downstream sorts it out afterwards.
+  approx(seats[0].sample(1).steer, 1, 'pad 0 carves right');
+  approx(seats[0].sample(1).throttle, 0, 'and asks for no throttle');
+  approx(seats[1].sample(1).steer, -1, 'pad 1 carves left');
+  approx(seats[1].sample(1).throttle, 1, 'and is on the throttle');
+  assert.equal(seats[0].isHeld('accelerate'), false, "pad 1's d-pad is not seat 0's");
+});
+
+test('a pad that drives nobody still navigates the menu it is looking at', () => {
+  const { input, menu, claims, claim, present } = couch();
+  claim(0, 0);
+
+  // The pause card belongs to whoever paused, and the paused player is not
+  // necessarily the one holding the pad the game adopted first (§25.5 Phase 4).
+  present({ index: 0 }, { index: 1 });
+  input.poll(0);
+  menu.length = 0;
+  claims.length = 0;
+
+  present({ index: 0 }, { index: 1, down: [STANDARD_BUTTON.dpadDown] });
+  input.poll(1);
+  assert.deepEqual(menu, ['down'], 'the unclaimed pad drives the card');
+  assert.deepEqual(claims, [], 'a direction is not a claim');
+
+  present({ index: 0 }, { index: 1, down: [STANDARD_BUTTON.a] });
+  input.poll(2);
+  assert.deepEqual(menu, ['down', 'confirm']);
+  assert.deepEqual(claims, [1], 'and it can still press its way into a seat');
+});
+
+test('each pad gets its own edge, so one held button cannot eat another press', () => {
+  const { seats, input, claim, present } = couch();
+  claim(0, 0);
+  claim(1, 1);
+
+  present({ index: 0, down: [STANDARD_BUTTON.a] }, { index: 1 });
+  input.poll(0);
+  present({ index: 0, down: [STANDARD_BUTTON.a] }, { index: 1 });
+  input.poll(1);
+  assert.equal(seats[0].consume('hop', 1), false, 'pad 0 is still holding its first press');
+
+  // Two players holding A must each get their own rising edge. One shared
+  // `previousButtons` would have made the second player's hop invisible for as
+  // long as the first player leaned on the button.
+  present({ index: 0, down: [STANDARD_BUTTON.a] }, { index: 1, down: [STANDARD_BUTTON.a] });
+  input.poll(2);
+  assert.equal(seats[1].consume('hop', 2), true, 'and pad 1 hops on its own');
+});
+
+test('a claim needs a fresh edge after the window opens, and a settled stick', () => {
+  const { input, claims, present } = couch();
+
+  // The press that opened the panel is not a press aimed at the panel.
+  present({ index: 0, down: [STANDARD_BUTTON.a] });
+  input.poll(0);
+  assert.deepEqual(claims, [], 'the frame a pad appears on is a level, not an edge');
+
+  input.poll(1);
+  assert.deepEqual(claims, [], 'and it is still the same press');
+
+  present({ index: 0 });
+  input.poll(2);
+  present({ index: 0, down: [STANDARD_BUTTON.start] });
+  input.poll(3);
+  assert.deepEqual(claims, [0], 'Start claims as well as A — both are confirm on a pad');
+
+  // Re-priming is what a panel opening does, and it makes the held button
+  // stale all over again.
+  input.primeAll();
+  present({ index: 0, down: [STANDARD_BUTTON.start] });
+  input.poll(4);
+  input.poll(5);
+  assert.deepEqual(claims, [0], 'a button held when the panel opened claims nothing');
+});
+
+test('a pad resting on a cushion with a pushed stick cannot seat a player', () => {
+  const { input, claims, present } = couch();
+
+  // The neutral-stick rule (§25.5 Phase 4). A pad face-down with a stick off
+  // centre is a pad nobody is holding, and letting it claim means the join
+  // panel fills itself while the second player is still in the kitchen.
+  present({ index: 0, axes: [0.9, 0] });
+  input.poll(0);
+  present({ index: 0, axes: [0.9, 0], down: [STANDARD_BUTTON.a] });
+  input.poll(1);
+  assert.deepEqual(claims, [], 'a deflected stick is not a body');
+
+  present({ index: 0, axes: [0, 0] });
+  input.poll(2);
+  present({ index: 0, axes: [0, 0], down: [STANDARD_BUTTON.a] });
+  input.poll(3);
+  assert.deepEqual(claims, [0], 'let go of it and the press counts');
+});
+
+test('a pad leaving is named, and only its own seat is handed back', () => {
+  const { seats, input, padChanges, claim, present } = couch();
+  claim(0, 0);
+  claim(1, 1);
+
+  present({ index: 0, axes: [1, 0] }, { index: 1, axes: [-1, 0] });
+  input.poll(0);
+  input.poll(1);
+  padChanges.length = 0;
+
+  present({ index: 0, axes: [1, 0] });
+  input.poll(2);
+
+  // A router cannot retain the right seat unless it is told *which* pad went;
+  // `onConnectionChange` is a verdict about whether any pad is present at all,
+  // and in a couch session one is.
+  assert.deepEqual(padChanges, [[1, false]]);
+  assert.equal(input.connected, true, 'the other pad is still in somebody’s hands');
+  approx(seats[0].sample(2).steer, 1, 'whose carve is untouched');
+  assert.equal(seats[1].sample(2).steer, 0, 'while the dead pad stops steering');
+});
+
+test('a re-routed pad hands the seat it left back its axes', () => {
+  const { seats, input, claim, present } = couch();
+  claim(0, 0);
+  claim(1, 1);
+
+  present({ index: 0, axes: [1, 0] }, { index: 1, axes: [0, 0] });
+  input.poll(0);
+  input.poll(1);
+  approx(seats[0].sample(1).steer, 1, 'pad 0 is carving seat 0');
+
+  // The panel's Swap, seen from down here. Without the hand-back, seat 0 would
+  // carve for ever on a reading nothing is refreshing any more.
+  claim(0, 1);
+  claim(1, 0);
+  input.poll(2);
+  assert.equal(seats[0].sample(2).steer, 0);
+  approx(seats[1].sample(2).steer, 1, 'and the carve moved with the pad');
 });

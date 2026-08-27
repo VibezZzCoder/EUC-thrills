@@ -52,7 +52,13 @@ export default defineConfig(({ mode }) => {
     // public packaging is an explicit mode rather than the default.
     base: githubPages ? './' : '/',
     server: {
-      port: 5173,
+      // `PORT` is how the editor's preview launcher hands over a free port
+      // when more than one session wants a dev server at once, and Vite does
+      // not read that variable on its own. Falls back to Vite's usual 5173,
+      // which is the port AGENTS.md documents and the one
+      // `playwright.config.ts` waits on — that run sets no `PORT`, so the
+      // suite is unaffected.
+      port: Number(process.env.PORT) || 5173,
       strictPort: false,
     },
     // Keep the origin banner through minification. esbuild's default for a

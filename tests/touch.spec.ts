@@ -914,3 +914,94 @@ test.describe('M23 Phase B2 — a track day on a phone', () => {
     expect(errors).toEqual([]);
   });
 });
+
+test.describe('M25 Phases 2-5 — the phone never meets a second rider or a split', () => {
+  /**
+   * The phone contract is a claim about frames a phone player can *reach*.
+   *
+   * M25 Phase 2 puts a second full `RidingRig` in the game — 35 meshes and 58
+   * draw calls of it — and the whole reason that does not touch the 160-call
+   * ceiling is that no phone path arrives there: the second rider is
+   * bridge-only in this phase and desktop-gated in Phase 5, and the house
+   * pattern (`docs/PLANS.md` §25.6) says mobile stays single-player for good.
+   *
+   * "No path" is the kind of claim that rots quietly, so this is the mobile
+   * project's own assertion of it. It runs on a real touch device, through the
+   * controls a player actually has, and it fails the day a menu, a query
+   * parameter or a default seats a second rider on a phone.
+   */
+  test('a phone ride has exactly one rider, and no touch path to a second', async ({ page }) => {
+    // Phase 4's half of the same claim is in the assertions below: a phone has
+    // no claims and no pads, so every device on it cooperates on seat 0 — the
+    // single-player game, reached by the no-claims path rather than by a
+    // mobile branch. Touch is not a `DeviceId` at all, which is how "touch
+    // never joins a couch session" (§25.5 Phase 4) is enforced rather than
+    // remembered.
+    const errors = collectErrors(page);
+    // Every diagnostic spelling anyone might reach for, all at once: none of
+    // them is a door, and this is where that stops being a promise.
+    await boot(page, 'seats=2&couch=1&players=2&secondrider=1&split=1');
+
+    expect(await page.evaluate(() => window.game.seatCount)).toBe(1);
+
+    // **And exactly one view and one HUD** — M25 Phase 3. The split is what
+    // Contract 2's much higher ceiling is for, and the whole basis of leaving
+    // the phone's 160 calls alone is that a phone frame is one pass. A second
+    // view here would double this device's frame cost with nothing in the
+    // program saying so.
+    expect(await page.evaluate(() => window.game.renderer.viewCount)).toBe(1);
+    expect(await page.locator('.euc-hud').count()).toBe(1);
+    expect(await page.locator('.euc-hud-seat[data-split="true"]').count()).toBe(0);
+    expect(await page.evaluate(() => window.game.snapshot().input.devices)).toEqual([null]);
+    expect(await page.evaluate(() => window.game.snapshot().input.claiming)).toBe(false);
+    expect(await page.evaluate(() => window.game.snapshot().input.pads)).toBe(0);
+
+    // Ride it, because "one rider" has to survive the session rather than the
+    // first frame — the controls are up, the world is live, the HUD is on.
+    await page.evaluate(() => window.qa.advance(120));
+    expect(await page.evaluate(() => window.game.seatCount)).toBe(1);
+    expect(await page.evaluate(() => {
+      try {
+        window.game.snapshotFor(1);
+        return 'answered';
+      } catch (error) {
+        return (error as Error).message;
+      }
+    })).toBe('no such seat: 1 (seats: 1)');
+
+    // And nothing on the phone's own menus offers one. The title screen is
+    // where Phase 5's "2 Players" button lives, and `couchEligible` is what
+    // keeps it off this device — a phone fails **both** its clauses, which is
+    // belt and braces on purpose: too narrow to split, and no fine pointer.
+    await page.evaluate(() => window.game.setAppState('title'));
+    await expect(page.locator('.euc-menu--title')).toBeVisible();
+    expect(await page.evaluate(() => window.game.snapshot().couch.available)).toBe(false);
+    await expect(page.locator('.euc-menu--title [data-menu="couch"]')).toBeHidden();
+
+    // **Visible controls, not every node in the markup** — M25 Phase 5. The
+    // couch button ships in the title's template and is hidden by the
+    // predicate, so a scan of the raw DOM would find it on every device and
+    // this assertion would be about the markup rather than about the offer. A
+    // player is offered what they can see and reach.
+    const offers = await page.locator('.euc-menu--title [data-menu]:visible').evaluateAll(
+      (nodes) => nodes.map((node) => `${node.getAttribute('data-menu')} ${node.textContent ?? ''}`),
+    );
+    expect(offers.length, 'the title screen offered nothing at all').toBeGreaterThan(3);
+    for (const entry of offers) {
+      expect(entry.toLowerCase(), `the phone's title screen offers "${entry}"`)
+        .not.toMatch(/2 player|two player|couch|split/);
+    }
+
+    // Rotating to landscape is the phone's widest possible window, and it is
+    // still not a couch. This is the "re-evaluated on resize" half of the
+    // predicate proved from the direction that matters on this device.
+    await page.setViewportSize({ width: 915, height: 412 });
+    await page.evaluate(() => new Promise((done) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => done(null)));
+    }));
+    expect(await page.evaluate(() => window.game.snapshot().couch.available)).toBe(false);
+    await expect(page.locator('.euc-menu--title [data-menu="couch"]')).toBeHidden();
+
+    expect(errors).toEqual([]);
+  });
+});

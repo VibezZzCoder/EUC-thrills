@@ -368,13 +368,25 @@ test('the arms react to load and lean without ever looking like handlebars', asy
 
   // And it mirrors: a left carve opens the right arm by the same amount the
   // right carve opened the left one.
+  //
+  // **Stated as a proportion of the opening since 2026-08-23, and that is a
+  // re-derivation rather than a loosened bound.** The absolute 0.005 was sized
+  // when the outside arm had one splay channel — the ordinary carve reaction —
+  // because M23's `carveStanceOutsideSplay` was reaching the cop and not the
+  // player: `Game.renderSeat` interpolated the player's pose by hand and never
+  // wrote `carveStance`. With the stance drawn, the opening roughly doubles
+  // (the M23 term alone is `carveStanceOutsideSplay`), and the two arms are
+  // deliberately asymmetric at rest, so an identical offset resolves through
+  // each arm's own solve to a slightly different hand. The mirror claim is
+  // about the *reaction*, so bound the mismatch by the reaction's own size: a
+  // tenth is tighter in proportion than the old absolute bound ever was
+  // (0.005 of a 0.032 opening was 16%; the measured mismatch here is 8%).
   expect(poses.carvingLeft.right.outboard).toBeGreaterThan(poses.cruise.right.outboard + 0.03);
-  expect(
-    Math.abs(
-      (poses.carvingRight.left.outboard - poses.cruise.left.outboard)
-      - (poses.carvingLeft.right.outboard - poses.cruise.right.outboard),
-    ),
-  ).toBeLessThan(0.005);
+  const openedLeft = poses.carvingRight.left.outboard - poses.cruise.left.outboard;
+  const openedRight = poses.carvingLeft.right.outboard - poses.cruise.right.outboard;
+  expect(Math.abs(openedLeft - openedRight)).toBeLessThan(
+    Math.min(openedLeft, openedRight) * 0.10,
+  );
 
   // **Never handlebar-like.** Hands stay low and stay out: they never rise
   // toward the chest and never converge toward the centreline, which is what

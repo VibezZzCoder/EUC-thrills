@@ -80,10 +80,14 @@ interface Rig {
   up(code: string): void;
 }
 
-function rig(): Rig {
+function rig(options: { onClaimPress?: () => void } = {}): Rig {
   const state = new ActionState();
   const fake = new FakeWindow();
-  const keyboard = new KeyboardInput(state, { now: () => 0 }, fake as unknown as Window);
+  const keyboard = new KeyboardInput(
+    state,
+    { now: () => 0, ...options },
+    fake as unknown as Window,
+  );
   return {
     state,
     keyboard,
@@ -163,4 +167,117 @@ test('blur clears held aliases so nothing comes back from a tab switch', () => {
   down('ArrowUp');
   fake.dispatch('blur', {});
   assert.equal(state.isHeld('accelerate'), false);
+});
+
+// ---------------------------------------------------------------------------
+// M25 Phase 4 — the keyboard as one claimable seat
+// ---------------------------------------------------------------------------
+
+test('Enter and Space report a claim press, and an auto-repeat does not', () => {
+  let claims = 0;
+  const { state, down } = rig({ onClaimPress: () => { claims += 1; } });
+
+  down('Enter');
+  down('Space');
+  assert.equal(claims, 2, 'the confirm family, exactly as every other menu means it');
+
+  // The keyboard gets its *fresh edge* free: a key held when the panel opened
+  // delivers only repeats, which is why there is no keyboard `primeAll`.
+  down('Space', { repeat: true });
+  assert.equal(claims, 2, 'a held key is one press');
+
+  // And the claim is a second reading of the press, never a redirection of it:
+  // Space is still hop.
+  assert.equal(state.isPending('hop', 0), true);
+
+  down('KeyW');
+  assert.equal(claims, 2, 'a throttle is not a claim');
+});
+
+test('a claim press is not read from something the player is typing into', () => {
+  let claims = 0;
+  const { down } = rig({ onClaimPress: () => { claims += 1; } });
+
+  down('Enter', { target: Object.assign(new (globalThis as { HTMLElement: new () => object })
+    .HTMLElement(), { tagName: 'INPUT', isContentEditable: false }) });
+  assert.equal(claims, 0, 'the seed field takes its own Enter');
+
+  down('Enter', { ctrlKey: true });
+  assert.equal(claims, 0, 'and a modified key belongs to the browser');
+});
+
+test('moving the keyboard to another seat leaves nothing held on the one it left', () => {
+  const { state, keyboard, down } = rig();
+  const other = new ActionState();
+
+  down('KeyW');
+  down('Space');
+  assert.equal(state.isHeld('accelerate'), true);
+
+  keyboard.setSink(other);
+  assert.equal(state.isHeld('accelerate'), false, 'a throttle does not outlive the rider');
+  assert.equal(state.isPending('hop', 0), false, 'nor does a buffered hop');
+  assert.equal(other.isHeld('accelerate'), false, 'and it is not inherited either');
+
+  // The per-key bookkeeping went with it, so the new seat starts from nothing
+  // rather than from a set that still remembers KeyW.
+  down('KeyW');
+  assert.equal(other.isHeld('accelerate'), true);
+});
+
+test('moving the keyboard is not a focus loss, so scripted values survive', () => {
+  const { state, keyboard } = rig();
+  const other = new ActionState();
+  state.setScripted({ throttle: 1 }, 0);
+
+  keyboard.setSink(other);
+  assert.equal(state.sample(0).throttle, 1, 'a spec that scripted this seat still means it');
+
+  keyboard.setSink(state);
+  assert.equal(state.sample(0).throttle, 1);
+});
+
+/**
+ * A spectator's keyboard — M25 Phase 5 QA.
+ *
+ * `sinkForPad` has always refused an unclaimed pad in a couch session, on the
+ * stated grounds that the alternative is a spectator's controller steering a
+ * player. The keyboard was never given the same rule, so on the owner's couch
+ * — two controllers, both seats claimed — brushing the keys drove Player 1.
+ *
+ * What must survive is the reason the rule was hard to apply: pause and mute
+ * travel through the same `ActionState` as the throttle, and a couch whose
+ * Escape key does nothing is a worse bug than the one being fixed.
+ */
+test('a spectating keyboard steers nobody and still stops the game', () => {
+  const { state, keyboard, down, up } = rig();
+
+  down('KeyW');
+  assert.equal(state.isHeld('accelerate'), true, 'it rides while it holds a seat');
+
+  keyboard.setSpectating(true);
+  assert.equal(
+    state.isHeld('accelerate'),
+    false,
+    'a throttle held when the second player sat down does not stay latched',
+  );
+
+  down('KeyW');
+  assert.equal(state.isHeld('accelerate'), false, 'and no new throttle arrives');
+  down('Space');
+  assert.equal(state.isPending('hop', 0), false, 'a spectator does not hop the rider');
+  down('KeyR');
+  assert.equal(state.isPending('reset', 0), false, 'nor reset them');
+
+  // The two that are the machine's, not the seat's.
+  down('Escape');
+  assert.equal(state.isPending('pause', 0), true, 'Escape still pauses');
+  down('KeyM');
+  assert.equal(state.isPending('muteAudio', 0), true, 'and M still mutes');
+
+  // And it all comes back when the couch breaks up.
+  up('KeyW');
+  keyboard.setSpectating(false);
+  down('KeyW');
+  assert.equal(state.isHeld('accelerate'), true, 'the player gets their keyboard back');
 });

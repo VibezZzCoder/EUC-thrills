@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test } from '@playwright/test';
 import { CHARACTERS, CHARACTER_IDS } from '../src/data/riders.ts';
+import { COUCH_MIN_WIDTH_PX } from '../src/app/couch.ts';
 import { boot, bootToTitle, collectErrors } from './harness.ts';
 
 /**
@@ -137,12 +138,20 @@ test('chooser, title and pause fit every supported phone and tablet size with no
   };
 
   // A menu root with anything to scroll to is a failed layout, whatever it is.
-  const unscrollable = async (menu: string) => {
+  //
+  // **The message names the size as well as the menu**, which it did not until
+  // M25 Phase 5 added the first control that only exists at some of them: a
+  // failure that says only "the title overflows" sends the reader looking
+  // through twelve viewports for the one that did it.
+  const unscrollable = async (menu: string, viewport: { width: number; height: number }) => {
     const overflow = await page.evaluate((sel) => {
       const root = document.querySelector<HTMLElement>(sel)!;
       return root.scrollHeight - root.clientHeight;
     }, menu);
-    expect(overflow, `${menu} has ${overflow}px hidden below the fold`).toBeLessThanOrEqual(1);
+    expect(
+      overflow,
+      `${menu} has ${overflow}px hidden below the fold at ${viewport.width}x${viewport.height}`,
+    ).toBeLessThanOrEqual(1);
   };
 
   // And the things a player came for are each fully inside the viewport.
@@ -165,9 +174,32 @@ test('chooser, title and pause fit every supported phone and tablet size with no
       await fits(page.locator(`.euc-menu--title [data-menu="${control}"]`), viewport.height,
         `title ${control} at ${viewport.width}x${viewport.height}`);
     }
+
+    // **The couch entrance, pinned at its own boundary** — M25 Phase 5.
+    //
+    // It is the first title control that is not always there, so this contract
+    // asserts *both* sides of the predicate rather than only the easy one:
+    // absent on every phone and every portrait tablet, which is what protects
+    // the fit this whole test exists for — an eighth button is a ninth row on a
+    // screen that had no room for a seventh — and, where it does appear, held
+    // to exactly the same fit as the seven beside it.
+    //
+    // Landscape tablets are wide enough and are therefore offered it, and that
+    // is deliberate rather than an oversight: this project reports a fine
+    // pointer at every size, so a 1194-wide window here is indistinguishable
+    // from a 1194-wide desktop window — and the threshold that would tell them
+    // apart would also hide the mode in the suite's own 1000-wide window, where
+    // every other Phase 5 spec reaches it. See `src/app/couch.ts`.
+    const couch = page.locator('.euc-menu--title [data-menu="couch"]');
+    if (viewport.width >= COUCH_MIN_WIDTH_PX) {
+      await fits(couch, viewport.height,
+        `title couch at ${viewport.width}x${viewport.height}`);
+    } else {
+      await expect(couch, `couch offered at ${viewport.width}x${viewport.height}`).toBeHidden();
+    }
     await fits(page.locator('.euc-menu--title .euc-credit'), viewport.height,
       `title credit at ${viewport.width}x${viewport.height}`);
-    await unscrollable('.euc-menu--title');
+    await unscrollable('.euc-menu--title', viewport);
 
     // The chooser: every card and Done, at once.
     await page.locator('.euc-menu--title [data-menu="riders"]').click();
@@ -179,7 +211,7 @@ test('chooser, title and pause fit every supported phone and tablet size with no
       `chooser heading at ${viewport.width}x${viewport.height}`);
     await fits(page.locator('.euc-menu--riders [data-menu="riders-back"]'), viewport.height,
       `chooser Done at ${viewport.width}x${viewport.height}`);
-    await unscrollable('.euc-menu--riders');
+    await unscrollable('.euc-menu--riders', viewport);
     await page.keyboard.press('Escape');
   }
 
@@ -196,7 +228,7 @@ test('chooser, title and pause fit every supported phone and tablet size with no
     }
     await fits(page.locator('.euc-menu--pause .euc-controls-note'), viewport.height,
       `pause hint at ${viewport.width}x${viewport.height}`);
-    await unscrollable('.euc-menu--pause');
+    await unscrollable('.euc-menu--pause', viewport);
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => window.game.snapshot().app.acceptsRideInput);
   }
@@ -216,7 +248,7 @@ test('chooser, title and pause fit every supported phone and tablet size with no
       await fits(page.locator(`.euc-menu--pause [data-menu="${control}"]`), viewport.height,
         `track-day pause ${control} at ${viewport.width}x${viewport.height}`);
     }
-    await unscrollable('.euc-menu--pause');
+    await unscrollable('.euc-menu--pause', viewport);
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => window.game.snapshot().app.acceptsRideInput);
   }

@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { createRandom, fillNoise, lowBandEnergyRatio, rms } from './noise.ts';
+import { RENDER_QUANTUM_FRAMES, alignLoopToQuantum, createRandom, fillNoise, lowBandEnergyRatio, rms } from './noise.ts';
 
 const SAMPLE_RATE = 48000;
 const LENGTH = SAMPLE_RATE; // one second is plenty to characterise
@@ -109,4 +109,39 @@ test('an empty buffer is handled rather than throwing inside the boot path', () 
   fillNoise(empty, 1);
   assert.equal(rms(empty), 0);
   assert.equal(lowBandEnergyRatio(empty, SAMPLE_RATE, 500), 0);
+});
+
+/**
+ * Quantum alignment — the Ubuntu hum fix, provable as arithmetic.
+ *
+ * The claim in `alignLoopToQuantum`'s comment is that the wrap lands on the
+ * join the asset shipped with: the output's final sample is the input's final
+ * sample, so the frame that follows it on loop — frame 0 — is the same frame
+ * that always followed it.
+ */
+test('alignLoopToQuantum trims to a whole number of quanta and keeps the seam', () => {
+  // 235,200 frames is the wind howl's decoded length at 48 kHz — the real
+  // misaligned case (1837.5 quanta).
+  const misaligned = new Float32Array(new ArrayBuffer(235200 * 4));
+  for (let i = 0; i < misaligned.length; i += 1) misaligned[i] = Math.sin(i / 97) * 0.5;
+
+  const out = alignLoopToQuantum(misaligned);
+  assert.equal(out.length % RENDER_QUANTUM_FRAMES, 0, 'a whole number of quanta');
+  assert.equal(out.length, 235136, 'the floor multiple, at most 127 frames shorter');
+  assert.ok(
+    Math.abs(out[out.length - 1] - misaligned[misaligned.length - 1]) < 1e-6,
+    'the loop still ends on the sample whose successor was always frame 0',
+  );
+  // The body before the splice window is untouched.
+  for (let i = 0; i < out.length - 64; i += 1) {
+    if (out[i] !== misaligned[i]) assert.fail(`body altered at frame ${i}`);
+  }
+});
+
+test('alignLoopToQuantum leaves aligned and degenerate buffers alone', () => {
+  const aligned = new Float32Array(new ArrayBuffer(144000 * 4)); // the pink bed
+  assert.equal(alignLoopToQuantum(aligned), aligned, 'the 3 s bed at 48 kHz is already aligned');
+
+  const tiny = new Float32Array(new ArrayBuffer(100 * 4));
+  assert.equal(alignLoopToQuantum(tiny), tiny, 'shorter than a quantum: nothing sane to trim');
 });

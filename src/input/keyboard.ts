@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import type { ActionState, HeldAction } from './actions.ts';
+import { GLOBAL_PRESSED_ACTIONS, type ActionState, type HeldAction } from './actions.ts';
 import {
+  CLAIM_CODES,
   DEBUG_BINDINGS,
   resolveBindings,
   type BindingTables,
@@ -37,6 +38,18 @@ export interface KeyboardInputOptions {
    * can re-anchor its clock at the same moment.
    */
   onInputReset?(reason: 'blur' | 'hidden'): void;
+  /**
+   * Fired on a fresh Enter or Space press — the keyboard half of
+   * claim-by-press (M25 Phase 4, docs/PLANS.md §25.5).
+   *
+   * Fires whatever the game is doing, exactly as the pad's equivalent does:
+   * this layer does not know what a join panel is, and the router refuses a
+   * claim outside a claim window. The *fresh edge* the pad needs a priming
+   * frame for is free here — a key held when the panel opened delivers only
+   * auto-repeats, which the handler below already filters — which is why
+   * there is no keyboard equivalent of `primeAll`.
+   */
+  onClaimPress?(): void;
 }
 
 /** True when a key belongs to whatever the player is typing into, not to us. */
@@ -48,7 +61,18 @@ function isEditingTarget(target: EventTarget | null): boolean {
 }
 
 export class KeyboardInput {
-  private readonly state: ActionState;
+  /**
+   * Where this keyboard writes — one seat at a time, and re-pointed rather
+   * than resolved per event (M25 Phase 4).
+   *
+   * The keyboard is claimable **as a unit** (q65: no two-players-one-keyboard
+   * in stage 1), so unlike the pad it never needs a per-device routing
+   * question: it has exactly one sink, and `setSink` moves it. Resolving the
+   * sink inside each handler instead would let it change between a keydown
+   * and its keyup — the one reliable way to leave a key held on a seat that
+   * nothing is clearing any more.
+   */
+  private state: ActionState;
   private readonly options: KeyboardInputOptions;
   private readonly target: Window;
 
@@ -96,6 +120,48 @@ export class KeyboardInput {
     this.tables = tables;
   }
 
+  /**
+   * Point the keyboard at another seat — M25 Phase 4.
+   *
+   * The keys the player is holding are released from the seat being left,
+   * along with anything it had buffered, and are *not* carried across: a
+   * throttle held at the moment the couch swapped sides belongs to the rider
+   * who was being driven, not to the one who just inherited the keys.
+   *
+   * Deliberately narrower than `reset`, which is the focus-loss contract and
+   * clears the scripted values too. Moving a sink is not a focus loss, and a
+   * spec that scripted the seat it is leaving still means it.
+   */
+  /**
+   * Stop steering, keep the machine's keys — M25 Phase 5 QA.
+   *
+   * A keyboard that holds no seat in a two-seat session is a spectator's, and
+   * `InputRouter.keyboardRides` is the whole of the decision; this method only
+   * carries it out. Held keys are released from the seat on the way in, or a
+   * throttle held at the moment the second player sat down would stay latched
+   * on a rider nobody is driving any more.
+   *
+   * Pause and mute are unaffected: see `GLOBAL_PRESSED_ACTIONS`.
+   */
+  setSpectating(spectating: boolean): void {
+    if (this.spectating === spectating) return;
+    this.spectating = spectating;
+    if (!spectating) return;
+    this.heldCodes.clear();
+    this.state.clearDevice('keyboard');
+  }
+
+  setSink(state: ActionState): void {
+    if (this.state === state) return;
+    this.heldCodes.clear();
+    this.state.clearDevice('keyboard');
+    this.state.clearPending();
+    this.state = state;
+  }
+
+  /** See `setSpectating`. False for the whole of a single-player session. */
+  private spectating = false;
+
   dispose(): void {
     this.target.removeEventListener('keydown', this.onKeyDown);
     this.target.removeEventListener('keyup', this.onKeyUp);
@@ -109,6 +175,12 @@ export class KeyboardInput {
     // the developer console must all keep working while the game has focus.
     if (event.ctrlKey || event.metaKey || event.altKey) return;
 
+    // Before the binding tables, and deliberately not instead of them: Space
+    // is also `hop`, and a player claiming a seat with it should not have to
+    // learn that the key means something different in a panel. The claim is a
+    // second reading of the same press, not a redirection of it.
+    if (!event.repeat && CLAIM_CODES.has(event.code)) this.options.onClaimPress?.();
+
     const debug = DEBUG_BINDINGS[event.code];
     if (debug) {
       // Auto-repeat must not toggle a panel dozens of times per second.
@@ -119,6 +191,14 @@ export class KeyboardInput {
 
     const held = this.tables.held[event.code];
     if (held) {
+      // Every held action is ride intent — there is no held global — so a
+      // spectating keyboard writes none of them. `preventDefault` still runs
+      // below by falling into the same suppression check: the browser must not
+      // scroll the page because somebody who is not riding leant on an arrow.
+      if (this.spectating) {
+        if (this.tables.suppress.has(event.code)) event.preventDefault();
+        return;
+      }
       let codes = this.heldCodes.get(held);
       if (!codes) {
         codes = new Set();
@@ -132,6 +212,12 @@ export class KeyboardInput {
 
     const pressed = this.tables.pressed[event.code];
     if (pressed) {
+      // Pause and mute survive spectating; hop, swing, reset and the camera do
+      // not, because those are a rider talking to their own wheel.
+      if (this.spectating && !GLOBAL_PRESSED_ACTIONS.has(pressed)) {
+        if (this.tables.suppress.has(event.code)) event.preventDefault();
+        return;
+      }
       // Edge-triggered: the latch is set once per physical press. Key repeat
       // would otherwise refresh the buffer forever and turn one hop into a
       // hop that fires again the moment it becomes legal.

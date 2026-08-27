@@ -87,7 +87,15 @@ export interface HudOptions {
 }
 
 export class Hud {
-  private readonly root: HTMLDivElement;
+  /**
+   * This HUD's own root.
+   *
+   * Public since M25 Phase 3 so the composition root can find the container it
+   * was mounted into and take both away together when a rider leaves. Still
+   * write-only from outside in practice: everything that changes what the HUD
+   * *says* goes through the methods below.
+   */
+  readonly root: HTMLDivElement;
   private readonly nodes: Record<string, HTMLElement> = {};
   private readonly options: HudOptions;
 
@@ -154,6 +162,32 @@ export class Hud {
     const value = active ? 'true' : 'false';
     if (this.root.dataset.touch === value) return;
     this.root.dataset.touch = value;
+  }
+
+  /**
+   * Which half of a split screen this HUD is, or `null` for the whole of it —
+   * M25 Phase 3.
+   *
+   * Written onto the HUD root **and** onto the container it was mounted into,
+   * because both need it: the container is what becomes half-width, and the
+   * HUD is what has to re-grid its lanes inside that half. One attribute each,
+   * and `game.css` owns every consequence — the same rule `setTouchLayout`
+   * above follows, and the reason neither method measures anything.
+   *
+   * **Not a media query, and this is the whole point of the attribute.** An
+   * `@media (max-width: 34rem)` rule measures the window, which stays
+   * desktop-wide while each pane is 500 px — so the objective-versus-clock
+   * collision that rule exists to prevent would silently return inside both
+   * halves of every split frame.
+   */
+  setSplit(side: 'left' | 'right' | null): void {
+    const value = side ?? 'none';
+    if (this.root.dataset.split === value) return;
+    this.root.dataset.split = value;
+    const container = this.root.parentElement;
+    if (container === null) return;
+    container.dataset.split = side === null ? 'false' : 'true';
+    container.dataset.side = value;
   }
 
   setVisible(visible: boolean): void {

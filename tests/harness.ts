@@ -409,7 +409,7 @@ export interface Toolkit {
    * Freezes and drops scripted input first, so a spec that places the rider
    * and then holds a key is not also carrying whatever the previous spec held.
    */
-  placeRider(x: number, z: number, headingY: number): GameSnapshot;
+  placeRider(x: number, z: number, headingY: number, seat?: number): GameSnapshot;
   /** What the level says the ground is at a point, through the real sampler. */
   groundAt(x: number, z: number): {
     height: number;
@@ -864,11 +864,11 @@ function installToolkit(): void {
       return { reached: read() >= beyond, steps, snapshot: game.snapshot() };
     },
 
-    placeRider(x: number, z: number, headingY: number) {
+    placeRider(x: number, z: number, headingY: number, seat = 0) {
       game.loop.setRunning(false);
       game.clearActions();
-      game.placeRider({ x, y: 0, z }, headingY);
-      return game.snapshot();
+      game.placeRider({ x, y: 0, z }, headingY, seat);
+      return game.snapshotFor(seat);
     },
 
     groundAt(x: number, z: number) {

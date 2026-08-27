@@ -5,7 +5,13 @@ import {
   type CharacterId,
   type PlayableCharacterId,
 } from '../data/riders.ts';
-import { BINDINGS, RESERVED_CODES, keyLabel, type BindableAction } from '../input/bindings.ts';
+import {
+  BINDINGS,
+  CLAIM_CODES,
+  RESERVED_CODES,
+  keyLabel,
+  type BindableAction,
+} from '../input/bindings.ts';
 import {
   MV_LOGO_HEIGHT,
   MV_LOGO_PNG_BASE64,
@@ -73,7 +79,7 @@ import { rowNeighbour, rowStep, type ControlRect } from './menuRows.ts';
  */
 
 export type MenuScreen =
-  | 'none' | 'title' | 'pause' | 'settings' | 'results' | 'routes' | 'riders';
+  | 'none' | 'title' | 'pause' | 'settings' | 'results' | 'routes' | 'riders' | 'couch';
 
 /**
  * The touch-mode select's words.
@@ -174,6 +180,23 @@ export interface MenuCallbacks {
   onCloseRiders(): void;
   /** Ride as this one from now on. Applies immediately; the panel stays open. */
   onPickRider(id: PlayableCharacterId): void;
+
+  // -- M25 Phase 5 ------------------------------------------------------------
+  /** Open the two-player join panel from the title. */
+  onOpenCouch(): void;
+  /** Leave the join panel for the title. The second seat goes with it. */
+  onCloseCouch(): void;
+  /** Both seats are held; ride. */
+  onStartCouch(): void;
+  /**
+   * Step one seat's rider card along the roster.
+   *
+   * The seat is a number rather than "player" or "guest" because this screen
+   * has no opinion about which of the two is the machine's owner — and because
+   * what the two cards *do* differs (seat 0's choice is saved, seat 1's is not)
+   * in `app/Game.ts`, which is where the options firewall lives.
+   */
+  onCycleCouchRider(seat: number, delta: 1 | -1): void;
 }
 
 /**
@@ -402,6 +425,10 @@ const TITLE_TEMPLATE = `
   <div class="euc-menu__actions">
     <button type="button" class="euc-button euc-button--primary" data-menu="start">
       <span class="euc-button__label">Start ride</span>
+    </button>
+    <button type="button" class="euc-button" data-menu="couch" hidden>
+      <span class="euc-button__label">2 Players</span>
+      <span class="euc-button__note">Two riders, one screen — share the keyboard and a pad</span>
     </button>
     <button type="button" class="euc-button" data-menu="challenge">
       <span class="euc-button__label">Time trial</span>
@@ -785,6 +812,128 @@ function ridersTemplate(): string {
 }
 
 /**
+ * One seat, as the join panel needs to draw it — M25 Phase 5.
+ *
+ * Every field is already decided. This screen does not ask the router
+ * anything, does not know what a `DeviceId` is, and cannot compose a device
+ * name wrongly, which is the same split the fresh-route panel makes between a
+ * tagged status and the sentence it prints.
+ */
+export interface CouchSeatView {
+  /** What is driving this seat, or `null` while nothing is. */
+  readonly device: 'keyboard' | 'gamepad' | null;
+  /**
+   * Which pad, counting from 1, when `device` is `'gamepad'`.
+   *
+   * A number rather than a name, because naming it is prose and prose belongs
+   * to this screen (M12 Phase 4's rule). `app/Game.ts` knows the pad is at
+   * index 1; only this file decides that a player reads that as "Gamepad 2".
+   */
+  readonly padNumber: number | null;
+  /** True while this seat's device has gone and the seat is being held. */
+  readonly awaiting: boolean;
+  /** Who this seat will ride as. */
+  readonly character: PlayableCharacterId;
+}
+
+/**
+ * What is still available to sit down with — M25 Phase 5.
+ *
+ * **The panel has to be able to say "there is nothing left to press".** The
+ * title's entrance predicate is deliberately loose — a desktop with a mouse
+ * and no pad passes it, because a pad may be plugged in at any moment — and
+ * the claim step is what actually proves a second device exists. Without this,
+ * a keyboard-only machine reads "press Enter on the keyboard" beside a seat
+ * the keyboard is already holding, and the panel looks broken rather than
+ * honest.
+ */
+export type CouchSpare = 'both' | 'pad' | 'keyboard' | 'none';
+
+/** Both seats, and whether the panel may leave. */
+export interface CouchView {
+  readonly seats: readonly CouchSeatView[];
+  /** True once every seat is held. What arms Start. */
+  readonly ready: boolean;
+  /** What an empty seat could still be claimed with. */
+  readonly spare: CouchSpare;
+}
+
+/**
+ * The two-player join panel — M25 Phase 5 (`docs/PLANS.md` §25.5).
+ *
+ * **A menu, not a mode.** Nothing on this screen is a ride: it exists to get
+ * two people holding two devices and wearing two different riders, and then to
+ * hand that arrangement to free ride. The state machine says the same thing —
+ * `couchJoin` is a sibling of `riderSelect`, not a sixth entry in
+ * `RIDE_STATES` — because "two players" is *who* is riding rather than what
+ * the ride is for.
+ *
+ * **Nobody is asked to configure anything.** The one instruction is "press the
+ * button you are going to play with", which is also the only instruction that
+ * can be followed by somebody who has just been handed a controller. That is
+ * why the seats are claimed by *pressing* rather than assigned from a list:
+ * a dropdown of device names is a screen a guest cannot use, and it would be
+ * wrong the moment two identical pads were plugged in.
+ *
+ * **The claim press is not also a menu press**, and that is a real rule rather
+ * than an implementation detail — see `setSuppressConfirmKeys` and
+ * `app/Game.ts`'s `claimsFirst`. Without it the second player's Enter would
+ * seat them *and* activate whatever button happened to have focus, which at
+ * the moment the panel arms is Start.
+ *
+ * **Both cards cycle the roster and the two can never agree** (q68). Seat 1's
+ * card steps over seat 0's pick rather than landing on it and being corrected,
+ * so there is no invalid state for the panel to recover from. What differs
+ * between the two cards is invisible here and load-bearing there: the player's
+ * choice is written to `GameOptions`, and the guest's is session state that
+ * never reaches the saved record.
+ *
+ * The status lines are `role="status"` for the reason the route panel's is:
+ * "Player 2 is in" is an announcement, and a player using a screen reader is
+ * exactly the player who cannot see the card light up.
+ */
+function couchTemplate(): string {
+  const seats = [0, 1].map((seat) => `
+      <div class="euc-couch__seat" data-couch-seat="${seat}" data-claimed="false">
+        <h3 class="euc-couch__player">Player ${seat + 1}</h3>
+        <p class="euc-couch__status" data-couch-status="${seat}" role="status"></p>
+        <div class="euc-couch__rider">
+          <button type="button" class="euc-couch__step" data-menu="couch-prev"
+                  data-couch-step="${seat}" aria-label="Previous rider for player ${seat + 1}">&#8249;</button>
+          <span class="euc-couch__name" data-couch-rider="${seat}"></span>
+          <button type="button" class="euc-couch__step" data-menu="couch-next"
+                  data-couch-step="${seat}" aria-label="Next rider for player ${seat + 1}">&#8250;</button>
+        </div>
+      </div>`).join('');
+
+  return `
+<div class="euc-menu__panel euc-couch" role="dialog" aria-modal="true"
+     aria-labelledby="euc-couch-heading">
+  <h2 class="euc-menu__title euc-couch__heading" id="euc-couch-heading">Two players</h2>
+  <p class="euc-menu__tagline">
+    One screen, one world, two riders. Each player takes their own controller — a
+    gamepad, or this keyboard — and presses to sit down. Nothing is being timed;
+    go wherever you like.
+  </p>
+
+  <fieldset class="euc-couch__seats">
+    <legend class="euc-couch__legend">Seats</legend>
+    ${seats}
+  </fieldset>
+
+  <div class="euc-menu__actions">
+    <button type="button" class="euc-button euc-button--primary" data-menu="couch-start" disabled>
+      <span class="euc-button__label">Start riding</span>
+    </button>
+    <button type="button" class="euc-button" data-menu="couch-back">
+      <span class="euc-button__label">Back</span>
+    </button>
+  </div>
+</div>
+`;
+}
+
+/**
  * The fresh-route panel — M12 Phase 4, reworked for a casual player at M14.5.
  *
  * **The shape is the owner's and only the wording is mine.** He settled it on
@@ -1033,6 +1182,7 @@ export class Menus {
   private readonly results: HTMLDivElement;
   private readonly routes: HTMLDivElement;
   private readonly riders: HTMLDivElement;
+  private readonly couch: HTMLDivElement;
   /** The seed field, held because it is read as well as written. */
   private readonly seedField: HTMLInputElement | null;
 
@@ -1045,6 +1195,12 @@ export class Menus {
 
   private options: GameOptions;
 
+  /**
+   * Whether Enter and Space are a seat claim rather than a button press — M25
+   * Phase 5. See `setSuppressConfirmKeys`.
+   */
+  private claimKeys = false;
+
   constructor(initial: GameOptions, config: MenuOptions) {
     this.callbacks = config.callbacks;
     this.parent = config.parent ?? document.body;
@@ -1056,6 +1212,7 @@ export class Menus {
     this.results = this.mount('euc-menu--results', RESULTS_TEMPLATE);
     this.routes = this.mount('euc-menu--routes', routesTemplate(config.seedMaxLength));
     this.riders = this.mount('euc-menu--riders', ridersTemplate());
+    this.couch = this.mount('euc-menu--couch', couchTemplate());
     this.seedField = this.routes.querySelector<HTMLInputElement>('[data-menu="seed"]');
 
     this.parent.addEventListener('click', this.onClick);
@@ -1111,9 +1268,11 @@ export class Menus {
     this.results.hidden = screen !== 'results';
     this.routes.hidden = screen !== 'routes';
     this.riders.hidden = screen !== 'riders';
+    this.couch.hidden = screen !== 'couch';
     this.screen = screen;
 
     if (screen === 'none') {
+      this.setPadCursor(null);
       this.returnFocus?.focus();
       this.returnFocus = null;
       return;
@@ -1124,6 +1283,7 @@ export class Menus {
         .find((card) => card.dataset.rider === this.options.character);
       if (selected !== undefined) {
         selected.focus();
+        this.setPadCursor(this.padDriving ? selected : null);
         return;
       }
     }
@@ -1334,6 +1494,83 @@ export class Menus {
     if (button) button.hidden = !available;
   }
 
+  // -- Two players (M25 Phase 5) ----------------------------------------------
+
+  /**
+   * Offer a couch session, or do not.
+   *
+   * `setChallengeAvailable`'s shape and not its reason. That one hides an
+   * entrance on a world that cannot host the mode; this hides one on a
+   * *machine* that cannot host it — a phone has one screen's width and one
+   * pair of hands, and an entrance leading to a panel that could never arm is
+   * worse than no entrance at all.
+   *
+   * The answer can change while the game is running, which is why this is a
+   * method rather than a construction-time flag: a window dragged wider, or
+   * the first gamepad of the session appearing, both make it true.
+   */
+  setCouchAvailable(available: boolean): void {
+    const button = this.title.querySelector<HTMLElement>('[data-menu="couch"]');
+    if (button) button.hidden = !available;
+    // **And the panel says how many entrances it is holding**, because an
+    // eighth one is a layout question as well as an offer: seven stacked
+    // buttons fit an ordinary laptop and eight do not (M23's finding, one
+    // button later). One data attribute, and the stylesheet owns every
+    // consequence of it — the same division `data-stage` and `data-split`
+    // make (`DESIGN.md` §9). Keying the layout off the *cause* rather than off
+    // a second copy of the width threshold is what stops the two drifting.
+    const value = available ? 'true' : 'false';
+    if (this.title.dataset.couch !== value) this.title.dataset.couch = value;
+  }
+
+  /**
+   * Draw both seats, and arm or disarm Start.
+   *
+   * Every sentence on the panel is composed here from the facts in the view,
+   * for the reason the fresh-route panel's refusals are: a caller that could
+   * compose "Player 2 is in" is a caller that could compose it wrongly, and
+   * this is the screen where a wrong word is the difference between a guest
+   * pressing the right button and giving up.
+   */
+  setCouchView(view: CouchView): void {
+    for (let seat = 0; seat < view.seats.length; seat += 1) {
+      const card = this.couch.querySelector<HTMLElement>(`[data-couch-seat="${seat}"]`);
+      if (card === null) continue;
+      const entry = view.seats[seat];
+      const claimed = entry.device !== null;
+      const value = claimed ? 'true' : 'false';
+      if (card.dataset.claimed !== value) card.dataset.claimed = value;
+
+      const character = CHARACTERS.find((one) => one.id === entry.character) ?? CHARACTERS[0];
+      card.style.setProperty('--rider-swatch', character.swatch);
+
+      const name = card.querySelector<HTMLElement>(`[data-couch-rider="${seat}"]`);
+      if (name && name.textContent !== character.name) name.textContent = character.name;
+
+      const status = card.querySelector<HTMLElement>(`[data-couch-status="${seat}"]`);
+      const line = couchSeatLine(entry, view.spare);
+      if (status && status.textContent !== line) status.textContent = line;
+    }
+
+    const start = this.couch.querySelector<HTMLButtonElement>('[data-menu="couch-start"]');
+    // **Disabled rather than hidden.** A player who can see the control they
+    // are working towards knows the panel is going somewhere; one that appears
+    // out of nowhere the instant the second seat fills is also one that can be
+    // pressed by the very keystroke that filled it.
+    if (start) start.disabled = !view.ready;
+  }
+
+  /**
+   * Treat Enter and Space as a seat claim rather than as a button press.
+   *
+   * Set while a device that holds no seat could press them — which is exactly
+   * while the join panel is up and the keyboard is unclaimed. The rule and the
+   * reason are on `onKeyDown`; this is only the switch.
+   */
+  setSuppressConfirmKeys(suppress: boolean): void {
+    this.claimKeys = suppress;
+  }
+
   // -- New route from inside a ride (M20) -------------------------------------
 
   /**
@@ -1492,7 +1729,7 @@ export class Menus {
   /**
    * The controls section's one line about the pad.
    *
-   * Four states rather than a boolean, because each calls for different
+   * Five states rather than a boolean, because each calls for different
    * advice — telling a player who unticked the box to press a button to wake
    * the pad would be advice the game ignores. Written at construction and on
    * every change (M10 QA, F4): the paragraph used to be filled only by a
@@ -1501,20 +1738,29 @@ export class Menus {
    * a browser can report a pad without the standard button layout (Firefox on
    * Linux is the documented case), and that pad looked exactly like no pad —
    * the one situation where the right advice is a different browser rather
-   * than a different cable.
+   * than a different cable. `lost` joined at M25 Phase 4, and it is the only
+   * one that names a *seat*: a couch player's pad dying holds their place
+   * rather than dissolving it, and the line has to say so or the game looks
+   * like it forgot them.
    */
-  setGamepadStatus(status: 'connected' | 'searching' | 'disabled' | 'unsupported'): void {
+  setGamepadStatus(
+    status: 'connected' | 'searching' | 'disabled' | 'unsupported' | 'lost',
+    seat: number = 0,
+  ): void {
     const node = this.settings.querySelector<HTMLElement>('[data-menu="gamepad-status"]');
     if (node) {
       node.textContent = status === 'connected'
         ? 'Gamepad connected. The keyboard keeps working at the same time.'
         : status === 'disabled'
           ? 'Gamepad input is switched off. Tick the box to use a pad.'
-          : status === 'unsupported'
-            ? 'A controller is connected, but this browser reports it without the '
-              + 'standard button layout, so the game cannot read it safely. '
-              + 'Another browser may report it correctly.'
-            : 'No gamepad detected. Connect one and press a button to wake it.';
+          : status === 'lost'
+            ? `Player ${seat + 1}'s gamepad disconnected. Their seat is being held — `
+              + 'reconnect a pad and press A or Start to take it back.'
+            : status === 'unsupported'
+              ? 'A controller is connected, but this browser reports it without the '
+                + 'standard button layout, so the game cannot read it safely. '
+                + 'Another browser may report it correctly.'
+              : 'No gamepad detected. Connect one and press a button to wake it.';
     }
   }
 
@@ -1551,6 +1797,7 @@ export class Menus {
     this.results.remove();
     this.routes.remove();
     this.riders.remove();
+    this.couch.remove();
   }
 
   // -------------------------------------------------------------------------
@@ -1571,7 +1818,56 @@ export class Menus {
     if (screen === 'results') return this.results;
     if (screen === 'routes') return this.routes;
     if (screen === 'riders') return this.riders;
+    if (screen === 'couch') return this.couch;
     return null;
+  }
+
+  /**
+   * The control the gamepad's cursor is sitting on — M25 Phase 5 QA.
+   *
+   * **`:focus-visible` is a heuristic about *keys*, and a gamepad presses
+   * none.** The ring below `game.css`'s focus rule is granted by the browser
+   * only when it believes the human is navigating by keyboard, and every
+   * engine re-arms that belief differently: Chrome takes any keydown at all,
+   * even one this game swallows; Firefox takes only a focus-moving Tab. A pad
+   * emits neither. So one mouse click on a menu button ends the ring for the
+   * rest of the session and the pad walks an invisible cursor — reported from
+   * Firefox on Ubuntu, and reproducible in Chromium the moment nobody happens
+   * to touch a key.
+   *
+   * The fix is the one this file already uses for the couch cards: the script
+   * writes an attribute and the stylesheet owns the consequence. Nothing here
+   * asks a browser what it thinks the player is doing.
+   *
+   * Deliberately *not* set for every scripted focus. A panel opened with the
+   * mouse must still come up ringless — that is the whole reason the rule is
+   * `:focus-visible` and not `:focus` — so the marker follows `padDriving`,
+   * which is a fact about who is steering rather than about how focus moved.
+   */
+  private padCursor: HTMLElement | null = null;
+  /**
+   * Whether the gamepad is the device currently walking the menus.
+   *
+   * True from any pad menu action (`navigate`/`confirm` are reachable from
+   * nothing else — `Game.handleMenuAction` is wired only to `onMenuAction`),
+   * false again the moment a real pointer or a real key arrives. A synthetic
+   * click does not count, because `confirm()` produces one on the pad's behalf
+   * and a pad confirming a button must not hand the cursor to the mouse.
+   */
+  private padDriving = false;
+
+  /** Move the drawn cursor, or take it away. Idempotent. */
+  private setPadCursor(node: HTMLElement | null): void {
+    if (this.padCursor === node) return;
+    if (this.padCursor !== null) delete this.padCursor.dataset.padCursor;
+    this.padCursor = node;
+    if (node !== null) node.dataset.padCursor = 'true';
+  }
+
+  /** The pointer or the keyboard has taken over; the pad's ring goes away. */
+  private releasePadCursor(): void {
+    this.padDriving = false;
+    this.setPadCursor(null);
   }
 
   private focusFirst(panel: HTMLElement | null): void {
@@ -1579,9 +1875,19 @@ export class Menus {
     const first = [...panel.querySelectorAll(focusableSelector())]
       .find((node): node is HTMLElement => node instanceof HTMLElement && node.offsetParent !== null);
     first?.focus();
+    // A pad that opened this panel keeps its cursor across the boundary; a
+    // mouse that opened it gets the ringless panel `:focus-visible` promises.
+    this.setPadCursor(this.padDriving ? first ?? null : null);
   }
 
   private readonly onClick = (event: MouseEvent): void => {
+    // **`detail > 0` is what makes this a *pointer* click.** `confirm()` calls
+    // `.click()` on the pad's behalf and a keyboard Enter on a focused button
+    // produces one too; both arrive here with `detail === 0`. Clearing on
+    // those would mean the pad switched its own cursor off every time it
+    // pressed A, which is the bug this method is helping to fix.
+    if (event.detail > 0) this.releasePadCursor();
+
     const target = event.target;
     // **`Element`, not `HTMLElement`, and that is not pedantry.** The rider
     // cards carry an inline SVG portrait that covers most of their area, and an
@@ -1641,6 +1947,16 @@ export class Menus {
     // -- M14.5 ---------------------------------------------------------------
     else if (action === 'riders') this.callbacks.onOpenRiders();
     else if (action === 'riders-back') this.callbacks.onCloseRiders();
+    // -- M25 Phase 5 ---------------------------------------------------------
+    else if (action === 'couch') this.callbacks.onOpenCouch();
+    else if (action === 'couch-back') this.callbacks.onCloseCouch();
+    else if (action === 'couch-start') this.callbacks.onStartCouch();
+    else if (action === 'couch-prev' || action === 'couch-next') {
+      const seat = target.closest<HTMLElement>('[data-couch-step]')?.dataset.couchStep;
+      if (seat !== undefined) {
+        this.callbacks.onCycleCouchRider(Number(seat), action === 'couch-next' ? 1 : -1);
+      }
+    }
     else if (action === 'pick-rider') {
       const id = target.closest<HTMLElement>('[data-rider]')?.dataset.rider;
       // Guarded rather than cast, because M18 put a rider in `CharacterId` that
@@ -1720,6 +2036,30 @@ export class Menus {
 
     if (this.screen === 'none') return;
 
+    // A real key means a human at the keyboard, and from here the browser's
+    // own `:focus-visible` draws the ring — so the pad's explicit one must go,
+    // or two cursors would be lit at once the moment somebody reached over.
+    this.releasePadCursor();
+
+    // **A claim press is not also a button press** — M25 Phase 5.
+    //
+    // The browser turns Enter and Space on a focused `<button>` into a click,
+    // and the keyboard layer turns the same keys into a seat claim. While a
+    // device holds no seat those are the same physical press meaning one
+    // thing, and letting both happen is how the second player's "I'm in"
+    // also fires whatever button had focus — which, at the exact moment the
+    // panel arms, is Start.
+    //
+    // `preventDefault` and **not** `stopPropagation`: the claim itself lives
+    // downstream in `input/keyboard.ts`, and killing the event here would
+    // suppress the very thing this is protecting. The flag is cleared the
+    // moment the keyboard holds a seat, so the next Enter is an ordinary
+    // confirm — see `app/Game.ts`'s `claimsFirst`.
+    if (this.claimKeys && CLAIM_CODES.has(event.code)) {
+      event.preventDefault();
+      return;
+    }
+
     if (event.code === 'Escape') {
       // The title screen has nowhere to go back to, so Escape does nothing
       // there rather than dropping the player into a ride they did not ask
@@ -1744,6 +2084,9 @@ export class Menus {
       // Same rule as the fresh-route panel: one meaning for Escape across every
       // screen that has somewhere to go back to.
       else if (this.screen === 'riders') this.callbacks.onCloseRiders();
+      // The join panel goes back the way every other openable panel does. The
+      // second seat leaves with it, which is `app/Game.ts`'s business.
+      else if (this.screen === 'couch') this.callbacks.onCloseCouch();
       else return;
 
       // **The event has to die here, and this is not defensive coding.**
@@ -1831,6 +2174,9 @@ export class Menus {
    *     control, exactly as before.
    */
   navigate(action: 'up' | 'down' | 'left' | 'right'): void {
+    // Reachable from the gamepad and nothing else: the keyboard walks menus by
+    // native Tab, which the browser rings for us.
+    this.padDriving = true;
     const focusable = this.focusableControls();
     if (focusable.length === 0) return;
 
@@ -1858,6 +2204,7 @@ export class Menus {
       }
     }
     focusable[next].focus();
+    this.setPadCursor(focusable[next]);
     focusable[next].scrollIntoView({ block: 'nearest' });
   }
 
@@ -1881,6 +2228,10 @@ export class Menus {
    * not be the second file that knows what the seed field is.
    */
   confirm(): void {
+    // Same door as `navigate`, and it matters for the panel this press opens:
+    // `focusFirst` reads `padDriving` to decide whether the new panel arrives
+    // with a cursor on it.
+    this.padDriving = true;
     const focused = document.activeElement;
     if (this.seedField !== null && focused === this.seedField) {
       this.callbacks.onRideRoute(this.seed);
@@ -2198,6 +2549,39 @@ export class Menus {
  * something else — the whole point of the decision is that the game never
  * quietly substitutes a world.
  */
+/**
+ * What an empty seat is waiting for, named as buttons a person can press.
+ *
+ * **It names only what is actually left.** Seats are not assigned — whoever
+ * presses first sits first — so the first empty seat offers both devices; the
+ * second offers whatever the first did not take. The `none` line is the one
+ * that matters most and is the easiest to leave out: on a machine with one
+ * keyboard and no pad the panel can never arm, and a screen that goes on
+ * saying "press Enter" beside a seat the keyboard is already holding is a
+ * screen the player concludes is broken.
+ */
+const COUCH_SPARE_LINES: Readonly<Record<CouchSpare, string>> = Object.freeze({
+  both: 'Empty — press A or Start on a gamepad, or Enter on the keyboard.',
+  pad: 'Empty — press A or Start on a gamepad.',
+  keyboard: 'Empty — press Enter on the keyboard.',
+  none: 'Empty — plug in a gamepad, then press A or Start on it.',
+});
+
+/**
+ * What one seat's status line says — M25 Phase 5.
+ *
+ * Three states and no more: waiting for a device that went away, empty, or
+ * held by something that is named.
+ */
+function couchSeatLine(seat: CouchSeatView, spare: CouchSpare): string {
+  if (seat.awaiting) {
+    return 'Controller lost — press A on a pad, or Enter, to take this seat back.';
+  }
+  if (seat.device === null) return COUCH_SPARE_LINES[spare];
+  if (seat.device === 'keyboard') return 'Keyboard. Ready.';
+  return `${seat.padNumber === null ? 'Gamepad' : `Gamepad ${seat.padNumber}`}. Ready.`;
+}
+
 function routeStatusLine(status: RouteStatus): [string, string] {
   if (status.kind === 'building') return ['busy', `Building ${status.seed}…`];
   if (status.kind === 'ready') return ['ready', `${status.seed} is built and ready to ride.`];

@@ -47,6 +47,16 @@ export interface AudioSnapshot {
   readonly muted: boolean;
   readonly volumes: BusVolumes;
   readonly sampleRate: number;
+  /**
+   * What the browser actually granted, in seconds — the render-quantum buffer
+   * (`baseLatency`) and the device path beyond it (`outputLatency`). Null
+   * before arming or where a browser hides them. The `?audiolatency=`
+   * diagnosis reads these to prove the hint took, rather than trusting it.
+   */
+  readonly baseLatency: number | null;
+  readonly outputLatency: number | null;
+  /** True when `?audiosamples=off` pinned the synthesized fallbacks. */
+  readonly samplesDisabled: boolean;
   /** Permanent graph nodes. Constant once samples load; the leak audit reads it. */
   readonly permanentNodes: number;
   /**
@@ -134,7 +144,34 @@ const GESTURES: readonly string[] = ['pointerdown', 'keydown', 'touchstart', 'to
 /** Ceiling on the sub-steps one `update` may run. See the note in `update`. */
 const MAX_MODEL_CHUNKS = 600;
 
-type AudioContextConstructor = new () => AudioContext;
+type AudioContextConstructor = new (options?: AudioContextOptions) => AudioContext;
+
+/**
+ * `?audiolatency=` — the value the query parameter is allowed to mean.
+ *
+ * The three named hints are the Web Audio API's own vocabulary; a number is
+ * seconds of requested output latency, clamped to half a second because
+ * anything beyond that is a typo, not a preference. Anything else — including
+ * an empty value — is null, and null means "say nothing to the constructor",
+ * which is what every player who never heard of this parameter gets.
+ *
+ * It exists because of the owner's Ubuntu Chrome, where the wind arrives at
+ * `context.destination` measurably intact (the analyser taps the limiter,
+ * which IS the node connected to destination) and still reaches the ear as a
+ * pitched hum. A starved output callback that repeats buffer quanta imposes a
+ * period on whatever flows through it: a tone stays a tone, but broadband
+ * noise — the wind — acquires a pitch. The buffer size is chosen at context
+ * construction from the latency hint, so the hint is the one web-side knob
+ * over that failure, and it can only be tested by riding the real game on the
+ * real machine — hence a URL, on `?wobble=`'s exact terms.
+ */
+export function parseLatencyHint(value: string | null): AudioContextLatencyCategory | number | null {
+  if (value === null || value === '') return null;
+  if (value === 'interactive' || value === 'balanced' || value === 'playback') return value;
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return Math.min(seconds, 0.5);
+}
 
 function resolveAudioContext(): AudioContextConstructor | null {
   if (typeof window === 'undefined') return null;
@@ -161,6 +198,23 @@ export class AudioEngine {
    * or `suspended` state is only a fault when nobody asked for it.
    */
   private wantSuspended = false;
+
+  /** See `parseLatencyHint`. Null asks the browser for its default. */
+  private latencyHint: AudioContextLatencyCategory | number | null = null;
+
+  /**
+   * `?audiosamples=off` — keep the synthesized fallbacks forever.
+   *
+   * The one-time swap from the pink-noise wind to the recorded howl is the
+   * only transition in the audio path that happens once, shortly after the
+   * first gesture, and never again — which is the exact signature of the
+   * owner's Ubuntu report: "the wind plays for a second or two and then
+   * breaks into the hum, and only the hum plays after that." This switch
+   * holds the swap open so a ride can answer whether the fallback is the
+   * wind that sounds right, with the shipped default untouched for everyone
+   * who never typed the parameter.
+   */
+  private samplesDisabled = false;
 
   private volumes: BusVolumes = DEFAULT_VOLUMES;
   private muted = false;
@@ -209,13 +263,29 @@ export class AudioEngine {
    * is playable in silence, and a thrown constructor here would take the whole
    * ride down with it.
    */
+  /**
+   * Ask the next context for a different output buffer. Boot-time only by
+   * nature: the buffer is fixed at construction, so a hint set after the first
+   * gesture built the context is ignored rather than half-applied.
+   */
+  setLatencyHint(hint: AudioContextLatencyCategory | number): void {
+    if (this.context !== null) return;
+    this.latencyHint = hint;
+  }
+
+  /** See `samplesDisabled`. One-way by design: a diagnostic, not a setting. */
+  setSamplesDisabled(): void {
+    this.samplesDisabled = true;
+  }
+
   arm(): void {
     if (this.disposed || this.sink !== null) return;
     const Constructor = resolveAudioContext();
     if (!Constructor) return;
 
     try {
-      const context = this.context ?? new Constructor();
+      const context = this.context
+        ?? new Constructor(this.latencyHint === null ? undefined : { latencyHint: this.latencyHint });
       this.context = context;
       this.sink = new WebAudioSink(context);
       this.applyVolumes();
@@ -304,7 +374,7 @@ export class AudioEngine {
    * a missing file changes the timbre, never the ride.
    */
   setSampleUrls(urls: SampleUrls): void {
-    if (this.disposed || this.samplesRequested) return;
+    if (this.disposed || this.samplesRequested || this.samplesDisabled) return;
     this.samplesRequested = true;
     void (async () => {
       try {
@@ -339,6 +409,10 @@ export class AudioEngine {
   private installSamples(): void {
     const context = this.context;
     const data = this.sampleData;
+    // `samplesDisabled` is checked here as well as at the fetch, because the
+    // fetch starts at boot and the query parameter is parsed a moment later —
+    // bytes already in flight must still never reach the sink.
+    if (this.samplesDisabled) return;
     if (!context || !this.sink || !data || this.decodeStarted || this.disposed) return;
     this.decodeStarted = true;
     void (async () => {
@@ -458,12 +532,49 @@ export class AudioEngine {
     this.director.landing(impactFraction, surface);
   }
 
-  impact(speed: number): void {
-    this.director.impact(speed);
+  /**
+   * The wheel hit something solid. `seat` is which rider's wheel — M25 Phase 5.
+   *
+   * The rate limit behind this is that rider's own, so a guest grinding along a
+   * wall cannot eat the player's retrigger window and swallow their real
+   * collision.
+   */
+  impact(speed: number, seat = 0): void {
+    this.director.impact(speed, seat);
   }
 
-  crash(speed: number): void {
-    this.director.crash(speed);
+  /**
+   * A rider came off, in their own character's voice — M25 Phase 5 (q66/q68).
+   *
+   * `null` means the voice this engine was last *set* to, which is seat 0's and
+   * what single player has always used.
+   */
+  crash(speed: number, voice: CrashVoiceId | null = null, seat = 0): void {
+    this.director.crash(speed, voice, seat);
+  }
+
+  /**
+   * A rider is back on the wheel — the recovery chirp, addressed.
+   *
+   * Dispatched by the composition root's own per-seat crash edge rather than
+   * watched inside the director, because the crash *end* is a per-rider fact
+   * and the shared input can only answer for seat 0.
+   */
+  recovered(seat = 0): void {
+    this.director.recovered(seat);
+  }
+
+  /**
+   * One rider's continuity ended — a respawn, a world swap, a dismissed seat.
+   *
+   * `reset()` addressed to a single rider and without the recovery chirp: a
+   * rider put back at the spawn is not recovering from a crash, they stopped
+   * having one. Without it a guest who is reset mid-ragdoll keeps a `crashing`
+   * flag nothing will ever clear, and their kerb strikes are silent for the
+   * rest of the session.
+   */
+  resetRider(seat = 0): void {
+    this.director.forgetRider(seat);
   }
 
   /** The paddle went through the air (M14). A miss is silence after this. */
@@ -561,8 +672,11 @@ export class AudioEngine {
       muted: this.muted,
       volumes: this.volumes,
       sampleRate: this.context?.sampleRate ?? 0,
+      baseLatency: this.context?.baseLatency ?? null,
+      outputLatency: this.context?.outputLatency ?? null,
       permanentNodes: counts?.permanentNodes ?? 0,
       samplesLoaded: this.sink?.samplesLoaded ?? false,
+      samplesDisabled: this.samplesDisabled,
       voices: counts?.voices ?? 0,
       droppedVoices: counts?.droppedVoices ?? 0,
       played: { ...this.played },

@@ -14,6 +14,7 @@ import {
   characterSpec,
   type CharacterId,
   type CrashVoiceId,
+  type PlayableCharacterId,
 } from '../data/riders.ts';
 import {
   ChaseCamera,
@@ -23,8 +24,7 @@ import {
   lerpChaseCameraState,
   resolveChaseView,
   type ChaseCameraInput,
-  type ChaseCameraState,
-  type ChaseCameraView,
+  type OcclusionProbe,
 } from '../render/chaseCamera.ts';
 import {
   DEFAULT_LEVEL,
@@ -50,6 +50,15 @@ import {
 import { KeyboardInput } from '../input/keyboard.ts';
 import { GamepadInput } from '../input/gamepad.ts';
 import { TouchInput } from '../input/touch.ts';
+import {
+  InputRouter,
+  KEYBOARD_DEVICE,
+  padDeviceId,
+  padIndexOf,
+  type DeviceId,
+} from '../input/inputRouter.ts';
+import type { RiderSource } from '../input/riderSource.ts';
+import type { CameraMode, RiderSeat } from './seats.ts';
 import { TouchControls } from '../ui/touchControls.ts';
 import { resolveBindings } from '../input/bindings.ts';
 import {
@@ -63,6 +72,7 @@ import {
 import { clamp, wrapAngle } from '../shared/maths.ts';
 import { HazardField } from '../simulation/hazards.ts';
 import { SoftBodyField } from '../simulation/softBodies.ts';
+import { spawnSlot } from '../simulation/spawnSlots.ts';
 import {
   Paddle,
   type HittableSet,
@@ -82,7 +92,7 @@ import {
 import { ChaseRecordsStore, type ChaseRecord } from './chaseRecords.ts';
 import { PlanTerrainSampler, paintedSurfaces } from '../simulation/planSampler.ts';
 import { createGroundSample } from '../simulation/world.ts';
-import { AudioEngine, type AudioSnapshot } from '../audio/AudioEngine.ts';
+import { AudioEngine, type AudioSnapshot, parseLatencyHint } from '../audio/AudioEngine.ts';
 import { SAMPLE_URLS } from '../audio/samples.ts';
 import type { BusVolumes } from '../audio/mix.ts';
 import { FixedStepLoop, createBrowserScheduler, type FrameSample, type LoopStats } from './loop.ts';
@@ -126,12 +136,16 @@ import {
 } from '../ui/hudModel.ts';
 import {
   Menus,
+  type CouchSeatView,
+  type CouchSpare,
   type MenuScreen,
   type ResultsRow,
   type ResultsView,
   type RoutePurpose,
   type RouteStatus,
 } from '../ui/menus.ts';
+import { COUCH_SEATS, couchEligible, cycleGuest, guestBeside } from './couch.ts';
+import { loudestWarning, nearestCutout, type RiderWarningState } from './riderMix.ts';
 import { Onboarding, type PromptDevice } from '../ui/onboarding.ts';
 
 /**
@@ -170,7 +184,12 @@ import { Onboarding, type PromptDevice } from '../ui/onboarding.ts';
  * that can show fore/aft articulation, which the chase camera looks almost
  * straight down the axis of (`docs/LESSONS_LEARNED.md`).
  */
-export type CameraMode = 'chase' | 'orbit';
+/**
+ * Re-exported from `app/seats.ts`, where it moved at M25 Phase 3 — a camera
+ * mode became a property of a seat the moment `cameraCycle` acted per seat.
+ * The name stays here because that is where every reader has always found it.
+ */
+export type { CameraMode };
 
 type RouteDestination = 'freeRide' | 'challenge' | 'knockabout' | 'chase';
 type RouteArrival = RouteDestination | 'choose';
@@ -301,6 +320,45 @@ export interface GameSnapshot {
   readonly options: GameOptions & { readonly persistent: boolean };
   /** Whether a gamepad is connected and being read. */
   readonly gamepadConnected: boolean;
+
+  /**
+   * Which device drives which seat — M25 Phase 4.
+   *
+   * `devices[seat]` is what is holding that seat, `null` for a seat nothing
+   * has claimed **and** for one whose pad has gone: the two look identical to
+   * a panel drawing a card, and `awaiting` is what tells them apart. On the
+   * bridge because claim-by-press is a *device* fact with no DOM of its own
+   * until Phase 5 builds the panel, so this is the only way a spec can prove
+   * a pad claimed the seat it meant to.
+   */
+  readonly input: {
+    readonly claiming: boolean;
+    readonly devices: readonly (DeviceId | null)[];
+    /** The seat whose device went missing and is being held for it. */
+    readonly awaiting: number | null;
+    /** How many usable pads the pad layer is currently reading. */
+    readonly pads: number;
+  };
+
+  /**
+   * The couch session — M25 Phase 5.
+   *
+   * On the bridge because all three answers are decisions rather than DOM:
+   * whether this machine may be offered the mode, whether the join panel would
+   * let go, and who the guest is going to be. The last one especially — the
+   * guest's character is session state that deliberately never reaches
+   * `GameOptions`, so a spec that could only read the options record could not
+   * see it at all, and q68's rule would be unobservable from here exactly as it
+   * was from `installedCharacter` before Phase 2 gave the seat its own field.
+   */
+  readonly couch: {
+    /** Whether the title is offering the entrance. See `app/couch.ts`. */
+    readonly available: boolean;
+    /** Whether every seat is held, which is what arms Start. */
+    readonly ready: boolean;
+    /** Who seat 1 will ride as. Never written to the options record. */
+    readonly guest: PlayableCharacterId;
+  };
 
   /**
    * The on-screen controls (M11.5).
@@ -509,7 +567,26 @@ export class Game {
    * across a frame.
    */
   levelPlan: LevelPlan;
-  controller: EucController;
+
+  /**
+   * The controller named in that last paragraph moved to `seats[0].controller`
+   * at M25 Phase 1 (docs/PLANS.md §25.5). Nothing about the argument changed:
+   * `installLevel` rebuilds one per seat from the new plan, because a
+   * controller outliving its plan carries the last route's hazards into this
+   * one's road. See `app/seats.ts`.
+   *
+   * **The name survives here as a seat-0 alias on purpose**, on exactly the
+   * argument `setActions`/`snapshot` keep theirs below: `tests/m20.spec.ts`
+   * casts the game to `{ controller, copController, copBrain }` and compares
+   * the player's `derivedTopSpeed` against the cop's. A cast reaches past the
+   * compiler, so deleting this property would fail that spec at *runtime*,
+   * with a message about `undefined`, and the phase's "zero spec edits" gate
+   * would have been met by breaking a spec instead of by keeping it.
+   */
+  get controller(): EucController {
+    return this.seats[0].controller;
+  }
+
   /**
    * The audio layer (M8).
    *
@@ -577,13 +654,15 @@ export class Game {
    * property of the machine at exactly the moment the project needs it to be a
    * property of *whoever is holding one*.
    *
-   * They differ in lifetime, which is why one is `readonly` and one is not.
-   * `Paddle` holds no world — it is arithmetic about an arm — so it is built
-   * once, retuned by F4, and merely told to `cancel()` when the rider teleports.
-   * `TargetField` *is* a world, and is rebuilt with the sampler, the controller
-   * and the referee on every `installLevel`.
+   * They differ in lifetime, and at M25 Phase 1 they differ in *owner* too.
+   * `Paddle` holds no world — it is arithmetic about an arm — but it does
+   * belong to whoever is swinging it, so it moved onto the seat
+   * (`seats[0].paddle`): built once with the seat, retuned by F4, told to
+   * `cancel()` when that rider teleports. `TargetField` *is* a world, stays
+   * here, and is rebuilt with the sampler, the controllers and the referee on
+   * every `installLevel` — one field of targets for every seat, because two
+   * riders share one world.
    */
-  readonly paddle = new Paddle();
   targets: TargetField;
   /**
    * Knockabout's own personal bests — M14, §13 q15.
@@ -692,6 +771,22 @@ export class Game {
 
   private terrain: PlanTerrainSampler;
   private terrainView: TerrainView;
+  /**
+   * The world's potholes and its shrubs, built once per world and handed to
+   * every rider in it — M25 Phase 2.
+   *
+   * They were built per controller until a second rider existed, which was
+   * correct while "per controller" and "per world" meant the same thing. Both
+   * classes are immutable spatial indexes over the plan, so one pair for
+   * everybody is an allocation saved and, more to the point, is the type
+   * system agreeing with §25.5's "both riders rustle the same bush".
+   *
+   * Rebuilt with the sampler and the referees on a world swap, and for the
+   * same reason they always were: a hazard field outliving its plan puts the
+   * last route's potholes in this one's road.
+   */
+  private hazards: HazardField;
+  private softBodies: SoftBodyField;
   /** Which world is loaded. See `GameSnapshot.world`. */
   private levelId: LevelId;
   /** Its seed, normalised. Empty unless `levelId` is `generated`. */
@@ -727,15 +822,6 @@ export class Game {
     | null = null;
   private pendingRouteFrames = 0;
   /**
-   * The player's rig.
-   *
-   * **Not `readonly` from M14.5**, for the same reason `levelPlan`, `controller`
-   * and `challenge` stopped being at M12 Phase 4: a character swap is a
-   * teardown and a rebuild, not a mutation. `installCharacter` is the one place
-   * it is reassigned, and it is the only place that may be.
-   */
-  private rig: RidingRig;
-  /**
    * Which rider the rig in the scene is actually wearing.
    *
    * Written only where the rig is built, so it cannot drift from the geometry
@@ -743,6 +829,66 @@ export class Game {
    */
   private installedCharacter: CharacterId = DEFAULT_CHARACTER;
   private readonly actionState: ActionState;
+  /**
+   * The seats — M25 Phases 0 and 1 (docs/PLANS.md §25.5).
+   *
+   * Seat 0 is the player. Phase 0 routed every per-seat *read* of intent
+   * through `seats[0].source`; **Phase 1 moved the rider itself** — the
+   * controller, the three poses, the rig, the paddle and its head, the
+   * one-shot counters and the throttle/steer/crash edge flags — off this
+   * class and into the seat, and extracted the two slices that are per-rider
+   * rather than per-frame: `stepSeat` and `renderSeat`. The rest of this file
+   * still says `seats[0]` at the sites that are genuinely about the player,
+   * which is the honest spelling: in stage 1 the referees, the records, the
+   * chase and the HUD are seat 0's and no other's.
+   *
+   * Device wiring, the QA bridge's scripted writes, and the layout-change
+   * reset stay on the concrete `actionState` on purpose: lifecycle is not a
+   * seat concern (§25.3), and moving those too would put a router in this
+   * class that Phase 4 builds elsewhere.
+   *
+   * **Phase 2 made the array grow.** `spawnSecondRider` pushes a seat and
+   * `despawnSecondRider` pops it, both reachable only from the QA bridge; the
+   * step and the render frame iterate this array in index order, which is what
+   * keeps `advance(n)` deterministic with more than one rider in the world.
+   * **Phase 3 made the frame grow with it**: the render loop draws one pass
+   * per seat, so the array's length is the number of views on the screen.
+   * Everything that still says `seats[0]` says it because the thing it is
+   * about — the audio mix, the saved options record, the referees, the chase
+   * — is genuinely the world's rather than a rider's, and each of those sites
+   * says which.
+   */
+  private readonly seats: RiderSeat[];
+  /**
+   * Which device drives which seat, and every seat's concrete input object —
+   * M25 Phase 4 (docs/PLANS.md §25.5).
+   *
+   * **Deliberately beside the seats rather than on them.** A `RiderSeat` holds
+   * a `RiderSource`, which is `sample` + `consume` and nothing else (§25.3);
+   * writing a scripted value, clearing a device, deciding where a pad's
+   * carving lands — all of that is *lifecycle*, and this is where lifecycle
+   * lives. Phases 0 to 3 held it as a bare `ActionState[]` with a comment
+   * saying Phase 4 would replace it; this is that replacement, and the array
+   * is now inside `InputRouter` where the claims can see it.
+   *
+   * Seat 1's entry is an `ActionState` no device is wired to until one claims
+   * it, which makes it a scripted source by construction rather than by a new
+   * class: `setScripted` is the only thing that writes it in a QA session, and
+   * `sample`/`consume` behave exactly as they do for the player either way.
+   */
+  private readonly router: InputRouter;
+  /**
+   * Whether any seat asked to pause this tick, and whether any asked to mute
+   * — M25 Phase 4's any-seat-once aggregation (§25.9).
+   *
+   * Fields rather than locals threaded through `stepSeat`'s return, because
+   * the two answers are the *tick's* and not a rider's: what they record is
+   * "somebody pressed it", and the whole point is that it does not matter who
+   * or how many. Cleared at the top of every step, so a claim can never
+   * outlive the tick that made it.
+   */
+  private pauseAsked = false;
+  private muteAsked = false;
   private readonly keyboard: KeyboardInput;
   private readonly gamepad: GamepadInput;
   private readonly touch: TouchInput;
@@ -755,6 +901,53 @@ export class Game {
    * the controls back without reloading.
    */
   private readonly coarsePointer: MediaQueryList | null;
+  /**
+   * Whether a mouse, trackpad or stylus exists — M25 Phase 5.
+   *
+   * **`any-pointer`, not `pointer`, and the Phase 5 QA pass caught the
+   * difference.** `(pointer: fine)` asks about the machine's *primary*
+   * pointer, so a touchscreen laptop — coarse primary, fine trackpad —
+   * answers no, and that is precisely the hybrid machine §25.9 said must not
+   * lose the mode. The question the entrance actually wants is whether a
+   * precise pointer exists at all, which is what `any-pointer` answers.
+   *
+   * **Its own query rather than `!coarsePointer.matches`**, because those are
+   * different questions and a machine can answer no to both: a TV browser
+   * driven entirely by a pad has no pointer at all. A negated coarse query
+   * would answer yes for that television and offer a two-player panel to a
+   * device with one d-pad.
+   */
+  private readonly finePointer: MediaQueryList | null;
+  /**
+   * Whether a usable gamepad has been seen at any point this session — M25
+   * Phase 5, and the second half of `couchEligible`.
+   *
+   * **Sticky, and `Game`'s rather than the pad layer's.** `GamepadInput`
+   * answers "is one connected right now", which is the wrong question for an
+   * entrance: a pad that was plugged in a minute ago is evidence that this
+   * machine has pads, and hiding the button the moment somebody's battery
+   * dies would take the mode away from exactly the session that was about to
+   * use it. Switching pads off in the settings screen does not clear it
+   * either, for the same reason it does not clear the memory of the pad.
+   */
+  private padEverSeen = false;
+  /** The last answer `updateCouchAvailable` computed. See it for why. */
+  private couchAvailable = false;
+  /**
+   * Who the guest is going to be — M25 Phase 5, and **session state**.
+   *
+   * The one player-visible choice in this game that is deliberately never
+   * saved. `GameOptions.character` answers "who does the person whose browser
+   * this is ride as"; the guest is somebody else's answer, on somebody else's
+   * evening, and writing it down would mean the owner's own rider silently
+   * changed the next time they opened the game alone. The same firewall keeps
+   * a guest's first-ride prompts out of `seenPrompts` (`app/seats.ts`).
+   *
+   * Held here rather than on the seat because it outlives the seat: the panel
+   * lets both players pick before anybody is spawned, and the choice has to
+   * survive Back and a second visit within one session.
+   */
+  private guestCharacter: PlayableCharacterId = guestBeside(DEFAULT_CHARACTER);
   /**
    * `prefers-reduced-motion`, watched rather than read once — M14.
    *
@@ -771,15 +964,19 @@ export class Game {
   private readonly stopOptionsListener: () => void;
   private readonly stopStateListener: () => void;
 
-  private readonly hud: Hud;
-  private readonly hudModel: HudModel;
   private readonly menus: Menus;
-  private readonly onboarding: Onboarding;
-  /** Which device's names the first-ride prompts use. */
+  /**
+   * Which device's names the first-ride prompts use **when nothing has been
+   * claimed** — the machine-wide answer.
+   *
+   * It answers "what has this room been seen using", which is the only answer
+   * available in a single-player session: the keyboard, the pad and the
+   * touchscreen all cooperate on seat 0, so the prompts name whichever was
+   * last picked up. **A claimed seat has a better answer** and
+   * `promptDeviceFor` uses it — the reason this field's own note said Phase 4
+   * would be where a device starts belonging to a seat.
+   */
   private promptDevice: PromptDevice = 'keyboard';
-  /** The most recent HUD reading, for the QA bridge. */
-  private hudView: HudView;
-  private hudPrompt: string | null = null;
 
   // -- M10 --------------------------------------------------------------------
   /**
@@ -895,71 +1092,16 @@ export class Game {
   private readonly contextNotice: ScreenNotice;
 
   /**
-   * The pose at the two most recent steps, and the interpolation between them.
+   * A scripted camera obstruction, or `null` for the level's own geometry.
    *
-   * Three preallocated objects rather than three allocations per frame: at
-   * 120 Hz simulation and 60 Hz rendering that would be 180 short-lived
-   * objects a second, which is exactly the shape of garbage that shows up
-   * months later as an unexplained periodic hitch.
+   * Every seat's camera reads through it, because it is a QA affordance about
+   * the *world* rather than about a rider (see `setOcclusion`).
    */
-  private readonly previousPose: EucPose = createPose();
-  private readonly currentPose: EucPose = createPose();
-  private readonly renderPose: EucPose = createPose();
-
-  /**
-   * The chase camera, and its state at the two most recent steps.
-   *
-   * Same arrangement as the pose above, and for the same reason: the camera is
-   * stepped at the fixed rate so `advance(n)` is deterministic, and the render
-   * frame interpolates so the view does not stutter whenever the display
-   * cadence and the step rate disagree — which is almost always.
-   */
-  private readonly chase: ChaseCamera;
-  private readonly previousCamera: ChaseCameraState = createChaseCameraState();
-  private readonly currentCamera: ChaseCameraState = createChaseCameraState();
-  private readonly renderCamera: ChaseCameraState = createChaseCameraState();
-  private readonly chaseView: ChaseCameraView = createChaseCameraView();
-  /** One preallocated camera input, filled from the pose each step and frame. */
-  private readonly chaseInput: ChaseCameraInput = {
-    x: 0,
-    y: 0,
-    z: 0,
-    headingY: 0,
-    rollAngle: 0,
-    speed: 0,
-    groundY: 0,
-    airborne: false,
-    crashed: false,
-  };
   private scriptedOcclusion: number | null = null;
 
   /** Scratch for the pedal-strike spark origin. Filled in place, never held. */
   private readonly strikePoint = new THREE.Vector3();
-  /** Where the paddle head is this render frame, in world space — M14. */
-  private readonly paddleHead = new THREE.Vector3();
 
-  /** Diagnostic orbit state, at the two most recent steps. */
-  private orbitAngle = 0;
-  private previousOrbitAngle = 0;
-  private cameraMode: CameraMode = 'chase';
-
-  /**
-   * How many times each one-shot has been claimed. The automation wire reads it.
-   *
-   * **Every `PressedAction` needs a zero here and the map is typed loosely
-   * enough not to say so.** `this.consumed[action] += 1` on a missing key
-   * evaluates `undefined + 1`, which compiles, yields `NaN`, and survives the
-   * harness's `?? 0` — so every `after − before === 1` assertion silently reads
-   * false while the overlay shows `NaN`.
-   */
-  private readonly consumed: Record<string, number> = {
-    hop: 0,
-    swing: 0,
-    reset: 0,
-    cameraCycle: 0,
-    pause: 0,
-    muteAudio: 0,
-  };
 
   /**
    * Simulation seconds owed to the audio model, and the wall clock behind them.
@@ -976,12 +1118,6 @@ export class Game {
   private audioStepSeconds = 0;
   private lastFrameMs = -1;
   private frameSeconds = 0;
-  /** Previous crashed state, so the composition root can see the edge. */
-  private wasCrashed = false;
-  /** Throttle and steer from the most recent step, so the render frame need
-   *  not resample. `sample()` allocates, and the step has already paid. */
-  private lastThrottle = 0;
-  private lastSteer = 0;
   /**
    * Simulation seconds owed to the HUD, and whether a hop left the ground in
    * them.
@@ -993,7 +1129,6 @@ export class Game {
    * a single step's edge seen from the render frame is a coin toss.
    */
   private hudStepSeconds = 0;
-  private hoppedSinceHudUpdate = false;
   /** The FOV trim in radians, converted once per change rather than per frame. */
   private fieldOfViewTrimRadians = 0;
   /**
@@ -1017,7 +1152,9 @@ export class Game {
     simTimeSeconds: 0,
     loop: {} as LoopStats,
     actions: {} as ActionSnapshot,
-    consumed: this.consumed,
+    // Bound to seat 0's live counter map in the constructor, once, by
+    // reference — the seats do not exist yet at field-initialiser time.
+    consumed: {},
     euc: {} as EucSnapshot,
     cameraMode: 'chase',
     cameraDistance: 0,
@@ -1131,10 +1268,14 @@ export class Game {
     // every world after it, which is the least findable class of bug this file
     // can produce.
     this.terrainView = this.renderer.setLevel(this.levelPlan);
-    this.controller = new EucController(this.terrain, {
+    this.hazards = new HazardField(this.levelPlan.hazards ?? []);
+    this.softBodies = new SoftBodyField(this.levelPlan.softBodies ?? []);
+    // A local rather than a field, because it is about to become seat 0's and
+    // the seat cannot be built until the rig below exists — M25 Phase 1.
+    const controller = new EucController(this.terrain, {
       spawn: this.levelPlan.spawn,
-      hazards: new HazardField(this.levelPlan.hazards ?? []),
-      softBodies: new SoftBodyField(this.levelPlan.softBodies ?? []),
+      hazards: this.hazards,
+      softBodies: this.softBodies,
     });
 
     // The referee reads the same plan the sampler and the renderer do, which is
@@ -1171,12 +1312,48 @@ export class Game {
     // every boot — and because `installCharacter` would then dispose a rig that
     // had never drawn anything.
     this.installedCharacter = this.options.current.character;
-    this.rig = createRidingRig(
+    const rig = createRidingRig(
       riderLook(this.installedCharacter),
       machineLook(machineForCharacter(this.installedCharacter)),
     );
-    this.renderer.scene.add(this.rig.group);
+    this.renderer.scene.add(rig.group);
     this.renderer.setCharacter(this.installedCharacter);
+
+    // **Seat 0, and everything the player used to be** — M25 Phase 1
+    // (docs/PLANS.md §25.5). Built here rather than beside the other input
+    // objects below because a seat holds the controller and the rig, and both
+    // of those are the world's and the character's rather than the device's.
+    // `syncPoses()` at the end of this block is the first thing that reads it.
+    this.actionState = new ActionState();
+    // The router owns every seat's input from here on — M25 Phase 4. Seat 0's
+    // state is the shared one the keyboard, the pad and the touchscreen all
+    // cooperate on, which is what makes "no claims" the single-player game
+    // rather than a mode the router has to check for.
+    this.router = new InputRouter(this.actionState, {
+      onKeyboardSeat: (state, rides) => {
+        this.keyboard.setSink(state);
+        // The other half of `sinkForPad`'s rule, finally applied to the device
+        // it was always missing from — M25 Phase 5 QA.
+        this.keyboard.setSpectating(!rides);
+      },
+      onClaimsChange: () => {
+        this.updateGamepadStatus();
+        // The join panel is the other reader of the same fact. One producer,
+        // two writers, and neither is polled — a card that lit up a frame late
+        // is a player who pressed their button twice.
+        this.updateCouchPanel();
+      },
+    });
+    this.seats = [this.createSeat(
+      this.router.sourceFor(0),
+      controller,
+      rig,
+      this.installedCharacter,
+      this.options.current.seenPrompts,
+    )];
+    // A live reference, captured once, exactly as the field initialiser used
+    // to capture it: the overlay reads whatever the counters currently say.
+    this.debugContext.consumed = this.seats[0].consumed;
 
     // Constructed at boot, silent until a gesture. The model runs from the
     // first frame regardless of whether anything is audible, so the wheel is
@@ -1197,13 +1374,14 @@ export class Game {
     // camera obstruction since M0. The renderer still answers no gameplay
     // question, and the controller is asked no camera question: both of them
     // read one plan (invariants 2 and 3).
-    this.chase = new ChaseCamera();
-    this.chase.setOcclusionProbe(
-      (origin, direction, maxDistance) => this.terrain.raycast(origin, direction, maxDistance),
-    );
+    // **Every seat's camera, not one camera** — M25 Phase 3. Each seat built
+    // its own `ChaseCamera` in `createSeat`; this is where they learn what
+    // they can be hidden behind. A loop rather than a line, so a seat added
+    // later gets the same wiring from `spawnSecondRider` instead of a camera
+    // whose arm pulls in against nothing.
+    this.wireSeatCameras();
     this.syncPoses();
 
-    this.actionState = new ActionState();
     this.profiler = new FrameProfiler();
     this.overlay = new DebugOverlay();
     this.panel = new TuningPanel(this.tuning);
@@ -1213,17 +1391,10 @@ export class Game {
     // menu, exactly as that file's own header said it would be; the
     // context-loss panel below it stays, because it is stability tooling
     // rather than a placeholder.
-    this.hudModel = new HudModel({ speedUnit: this.options.current.speedUnit });
-    this.hudView = this.hudModel.update(0, {
-      speed: 0,
-      powerStage: 'normal',
-      overspeed: 0,
-      tiltBack: 0,
-      offCourse: false,
-      crashed: false,
-    });
-    this.hud = new Hud({ onDismissPrompt: () => this.dismissPrompt() });
-    this.onboarding = new Onboarding(this.options.current.seenPrompts);
+    // Seat 0's HUD, in its own container — M25 Phase 3. The model and the
+    // prompts were built with the seat; this is the DOM half, mounted here
+    // because the document belongs to the composition root.
+    this.mountSeatHud(this.seats[0]);
     this.menus = new Menus(this.options.current, {
       callbacks: {
         onStartRide: () => this.goTo('freeRide'),
@@ -1300,6 +1471,16 @@ export class Game {
         // and wrote the option afterwards would be two sources of truth for who
         // is on the wheel.
         onPickRider: (id) => this.options.set({ character: id }),
+
+        // -- M25 Phase 5 -----------------------------------------------------
+        // Four buttons, four transitions, and no session teardown here: what a
+        // couch session costs on the way in and gives back on the way out is
+        // `enterState`'s, because this panel has four exits and only one of
+        // them is a button on it.
+        onOpenCouch: () => this.goTo('couchJoin'),
+        onCloseCouch: () => this.goTo('title'),
+        onStartCouch: () => this.startCouch(),
+        onCycleCouchRider: (seat, delta) => this.cycleCouchRider(seat, delta),
       },
       seedMaxLength: MAX_SEED_LENGTH,
     });
@@ -1357,7 +1538,16 @@ export class Game {
       },
       // A key held when focus leaves never delivers its keyup, and the clock
       // kept running while nothing was drawn. Both are reset together.
-      onInputReset: () => this.loop.resetTime(),
+      //
+      // **Every seat, not only the keyboard's** — M25 Phase 4. The keyboard
+      // layer clears its own sink; focus leaving the window is the *world's*
+      // event, so a pad-driven rider must not come back from a tab switch
+      // still holding the throttle the browser stopped reporting.
+      onInputReset: () => {
+        this.router.clearAll();
+        this.loop.resetTime();
+      },
+      onClaimPress: () => this.claimSeatFor(KEYBOARD_DEVICE),
     });
 
     // The pad (M9). Keyboard remains authoritative and both are live at once —
@@ -1387,11 +1577,26 @@ export class Game {
         else this.updateTouchControls();
         this.updateGamepadStatus();
       },
-      onMenuAction: (action) => this.handleMenuAction(action),
+      onMenuAction: (action, padIndex) => this.handleMenuAction(action, padDeviceId(padIndex)),
       // The status line's fourth state: a pad the browser reports without the
       // standard mapping is a fact the player can act on (another browser, a
       // different connection), where "searching" reads as "plug one in".
       onUnusablePad: () => this.updateGamepadStatus(),
+      // **Where each pad's carving lands** — M25 Phase 4. With nothing
+      // claimed this resolves to exactly what M9 shipped; a couch session is
+      // a session that has made claims, not a flag either side checks.
+      routing: this.router,
+      onPadChange: (index, present) => {
+        // A pad arriving is evidence this machine has pads, which is half of
+        // whether it may be offered a couch — and the flag is sticky, so the
+        // entrance does not blink out when a battery dies (`padEverSeen`).
+        if (present && !this.padEverSeen) {
+          this.padEverSeen = true;
+          this.updateCouchAvailable();
+        }
+        if (!present) this.onPadLost(index);
+      },
+      onClaimPress: (index) => this.claimSeatFor(padDeviceId(index)),
     });
 
     // The touchscreen (M11.5). Split in two on purpose: `TouchInput` holds what
@@ -1419,6 +1624,10 @@ export class Game {
       ? window.matchMedia('(pointer: coarse)')
       : null;
     this.coarsePointer?.addEventListener('change', this.onPointerKindChange);
+    this.finePointer = typeof window.matchMedia === 'function'
+      ? window.matchMedia('(any-pointer: fine)')
+      : null;
+    this.finePointer?.addEventListener('change', this.onPointerKindChange);
     this.reducedMotion = typeof window.matchMedia === 'function'
       ? window.matchMedia('(prefers-reduced-motion: reduce)')
       : null;
@@ -1435,7 +1644,7 @@ export class Game {
 
     this.stopTuningListener = this.tuning.onChange(() => this.applyTuning());
     this.stopOptionsListener = this.options.onChange((options) => this.applyOptions(options));
-    this.stopStateListener = this.appState.onChange((to) => this.enterState(to.id));
+    this.stopStateListener = this.appState.onChange((to, from) => this.enterState(to.id, from.id));
     this.applyTuning();
     this.applyOptions(this.options.current);
     this.enterState(this.appState.current);
@@ -1443,6 +1652,184 @@ export class Game {
     // Measure once before the first frame so a boot that lands before layout
     // does not draw one frame through a degenerate projection.
     this.renderer.resize();
+    // **After that measure and not before it** — M25 Phase 5. The entrance
+    // predicate is a question about the canvas's width, and a canvas that has
+    // not been measured is zero pixels wide, so asking earlier hides the button
+    // on every machine until the first resize happens to change something.
+    this.updateCouchAvailable();
+  }
+
+  /**
+   * Assemble one seat — M25 Phase 1 (docs/PLANS.md §25.5).
+   *
+   * **The composition root composes.** `app/seats.ts` is types only and
+   * constructs nothing, so this is the single place a seat's preallocated
+   * poses, paddle, head vector and counter map come into existence. Phase 2
+   * calls it a second time; nothing else in this file may build a seat
+   * literal, or the two seats will differ in the field somebody forgot.
+   *
+   * The three things a seat cannot make for itself are handed in, because
+   * each belongs to a different owner: the **source** is the device layer's,
+   * the **controller** is the world's (rebuilt by `installLevel`), and the
+   * **rig** is the character's (rebuilt by `installCharacter`) — with the id
+   * that rig was built from beside it, so the two cannot drift.
+   */
+  private createSeat(
+    source: RiderSource,
+    controller: EucController,
+    rig: RidingRig,
+    character: CharacterId,
+    seenPrompts: readonly string[],
+  ): RiderSeat {
+    const hudModel = new HudModel({ speedUnit: this.options.current.speedUnit });
+    return {
+      source,
+      controller,
+      rig,
+      character,
+      previousPose: createPose(),
+      currentPose: createPose(),
+      renderPose: createPose(),
+      paddle: new Paddle(),
+      paddleHead: new THREE.Vector3(),
+      // Every `PressedAction` needs a zero — see the note in `app/seats.ts`.
+      // A missing key makes `consumed[action] += 1` evaluate `undefined + 1`,
+      // which compiles, yields `NaN`, and survives the harness's `?? 0`.
+      consumed: {
+        hop: 0,
+        swing: 0,
+        reset: 0,
+        cameraCycle: 0,
+        pause: 0,
+        muteAudio: 0,
+      },
+      lastThrottle: 0,
+      lastSteer: 0,
+      wasCrashed: false,
+
+      // -- The seat's half of the screen — M25 Phase 3 -----------------------
+
+      // Its own camera, with its own second of accumulated lag. The occlusion
+      // probe and the F4 tuning are pushed in by `installLevel` and
+      // `applyTuning`, which loop every seat — a camera wired here from a
+      // level that may be replaced would answer the *last* route's geometry.
+      chase: new ChaseCamera(),
+      previousCamera: createChaseCameraState(),
+      currentCamera: createChaseCameraState(),
+      renderCamera: createChaseCameraState(),
+      chaseView: createChaseCameraView(),
+      chaseInput: {
+        x: 0,
+        y: 0,
+        z: 0,
+        headingY: 0,
+        rollAngle: 0,
+        speed: 0,
+        groundY: 0,
+        airborne: false,
+        crashed: false,
+      },
+      cameraMode: 'chase',
+      orbitAngle: 0,
+      previousOrbitAngle: 0,
+
+      // The HUD's *model* is built here; the DOM it drives is mounted
+      // separately by `mountSeatHud`, because a second `.euc-hud` in the
+      // document is only correct while a second rider is in the world.
+      hud: null,
+      hudModel,
+      // **Seat 0 resumes the saved sequence; everybody else starts fresh.**
+      // The player finished these prompts months ago and a guest on the couch
+      // did not — and the guest's progress is session state that must never
+      // reach the saved record (`persistSeenPrompts`).
+      //
+      // Handed in rather than decided here, and not only for clarity: this
+      // factory builds seat 0 *before* `this.seats` exists, so anything that
+      // reasoned about the seat count would read `undefined` at boot.
+      onboarding: new Onboarding(seenPrompts),
+      // Primed rather than left undefined: `snapshotFor` may be asked for this
+      // seat before a frame has drawn it, and a HUD reading of `undefined` is
+      // an automation wire that reports a bug it does not have.
+      hudView: hudModel.update(0, {
+        speed: 0,
+        powerStage: 'normal',
+        overspeed: 0,
+        tiltBack: 0,
+        offCourse: false,
+        crashed: false,
+      }),
+      hudPrompt: null,
+      hoppedSinceHudUpdate: false,
+    };
+  }
+
+  /**
+   * Give a seat its own HUD, in its own half of the screen — M25 Phase 3.
+   *
+   * The DOM is mounted here rather than in `createSeat` because the document
+   * is the composition root's business and because a HUD's *lifetime* is the
+   * seat's half of the screen rather than the seat's model. Each seat's HUD
+   * lives inside its own container, and `game.css` owns what a container means
+   * — `Hud` itself still only writes text, toggles `hidden`, and sets one data
+   * attribute (`DESIGN.md`).
+   */
+  private mountSeatHud(seat: RiderSeat): void {
+    const index = this.seats.indexOf(seat);
+    const container = document.createElement('div');
+    container.className = 'euc-hud-seat';
+    container.dataset.seat = String(index);
+    // **The container must not take clicks.** It covers the whole viewport in
+    // single-player and half of it in a split, so without this it would sit
+    // between the player and the canvas — the exact failure `m9.spec.ts`'s
+    // `elementFromPoint` check exists to catch.
+    container.dataset.split = 'false';
+    document.body.appendChild(container);
+    seat.hud = new Hud({
+      parent: container,
+      onDismissPrompt: () => this.dismissPromptFor(seat),
+    });
+    seat.hud.setVisible(this.appState.spec.showsHud);
+    this.applySplitLayout();
+  }
+
+  /**
+   * Take a seat's HUD off the screen and out of the document.
+   *
+   * The container goes with it, so a dismissed rider leaves no `.euc-hud-seat`
+   * behind — which is what keeps a Playwright locator naming either class
+   * resolving to exactly as many elements as there are riders.
+   */
+  private unmountSeatHud(seat: RiderSeat): void {
+    const hud = seat.hud;
+    if (hud === null) return;
+    const container = hud.root.parentElement;
+    hud.dispose();
+    seat.hud = null;
+    if (container !== null && container.classList.contains('euc-hud-seat')) {
+      container.remove();
+    }
+    this.applySplitLayout();
+  }
+
+  /**
+   * Tell every HUD container which half of the screen it is, or that there are
+   * no halves — M25 Phase 3.
+   *
+   * **One data attribute, and the stylesheet owns every consequence of it** —
+   * the idiom `Hud.setTouchLayout` established and that `DESIGN.md` states as
+   * a rule. In particular the halves' geometry is keyed off this attribute and
+   * never off a viewport media query: an `@media (max-width: 34rem)` rule
+   * still measures the whole window, which is desktop-wide even when each pane
+   * is 500 px, so the lane collision that rule exists to prevent would come
+   * back inside both halves with every test still green.
+   */
+  private applySplitLayout(): void {
+    const split = this.seats.length > 1;
+    for (let index = 0; index < this.seats.length; index += 1) {
+      const hud = this.seats[index].hud;
+      if (hud === null) continue;
+      hud.setSplit(split ? (index === 0 ? 'left' : 'right') : null);
+    }
   }
 
   start(): void {
@@ -1462,6 +1849,18 @@ export class Game {
     const params = new URLSearchParams(search);
     if (params.get('debug') === '1') this.overlay.setVisible(true);
     if (params.get('panel') === '1') this.panel.setVisible(true);
+    // `?audiolatency=playback` — the Ubuntu Chrome wind diagnosis, on
+    // `?wobble=`'s exact terms: the machine that can answer the question is
+    // not this one, the F4 panel cannot reach a value fixed at context
+    // construction, and a URL works identically on every machine the owner
+    // plays on. See `parseLatencyHint` for what it means and why.
+    const latency = parseLatencyHint(params.get('audiolatency'));
+    if (latency !== null) this.audio.setLatencyHint(latency);
+    // `?audiosamples=off` — the other half of the same diagnosis: hold the
+    // pink-noise fallbacks so the one-time swap to the recorded loops never
+    // happens. See `AudioEngine.samplesDisabled` for the reasoning.
+    if (params.get('audiosamples') === 'off') this.audio.setSamplesDisabled();
+
     this.applyWobbleQuery(params);
   }
 
@@ -1546,14 +1945,250 @@ export class Game {
     return createLevel(levelId, seed, this.hazardProbe, this.targetProbe);
   }
 
-  /** Write semantic actions directly. See `ActionState.setScripted`. */
-  setActions(actions: ScriptedActions): void {
-    this.actionState.setScripted(actions, this.simTimeSeconds);
+  /**
+   * Write semantic actions into one seat. See `ActionState.setScripted`.
+   *
+   * **Not routed through `seat.source`, deliberately.** A `RiderSource` is
+   * `sample` + `consume` and nothing else (§25.3) — scripting is a *device*
+   * write, which is the router's half of the world and not the seat's. So
+   * this resolves the seat (which is what makes the address meaningful and
+   * what rejects a bad index) and then asks the router for the concrete input
+   * object behind it — the lifecycle half of the seam (§25.3). Seat 0's is the
+   * shared `ActionState` every device cooperates on; seat 1's is an
+   * `ActionState` no device is wired to until one claims it, which is what
+   * makes it scripted.
+   *
+   * **This is the method Phase 2 had to teach.** Until it did, an index of 1
+   * was validated and then thrown away, and `setActionsFor(1, …)` silently
+   * steered the player — the failure mode that would have made a two-rider
+   * spec pass while proving nothing.
+   */
+  setActionsFor(seat: number, actions: ScriptedActions): void {
+    this.requireSeat(seat);
+    this.router.stateFor(seat).setScripted(actions, this.simTimeSeconds);
   }
 
-  /** Hand the axes back to the keyboard. */
+  /** Write semantic actions directly. Seat 0 — see `setActionsFor`. */
+  setActions(actions: ScriptedActions): void {
+    this.setActionsFor(0, actions);
+  }
+
+  /**
+   * Hand the axes back to the devices — **every seat's, not seat 0's**.
+   *
+   * Identical to what it always did while one seat existed, and the honest
+   * reading once two do: a spec that has finished scripting and clears its
+   * input, or a harness that resets the ride, means "nobody is being driven
+   * from a script now". Leaving seat 1 on a held throttle after that would be
+   * a rider nothing in the test is still steering.
+   */
   clearActions(): void {
-    this.actionState.clearScripted();
+    this.router.clearScripted();
+  }
+
+  /**
+   * Resolve a seat index, or say so loudly — M25 Phase 1.
+   *
+   * The bridge is driven from a page-evaluated string, where a wrong index is
+   * `undefined` and every read off it is a different confusing error several
+   * lines later. One message naming the range is worth the branch.
+   */
+  private requireSeat(seat: number): RiderSeat {
+    const found = this.seats[seat];
+    if (found === undefined) {
+      throw new Error(`no such seat: ${seat} (seats: ${this.seats.length})`);
+    }
+    return found;
+  }
+
+  /** How many riders this game is currently simulating. One, until asked. */
+  get seatCount(): number {
+    return this.seats.length;
+  }
+
+  /**
+   * Seat a second rider in the world that is already running — M25 Phase 2
+   * (docs/PLANS.md §25.5). Returns the new seat's index.
+   *
+   * **The bridge and nothing else.** No URL parameter, no menu, no option:
+   * this is reachable from a spec and from the owner's own console, and that
+   * is the whole of it until Phase 5 puts a join panel in front of it. It is
+   * also why the phone contract is untouched — no path a phone player can
+   * take arrives here, and `tests/touch.spec.ts` pins that.
+   *
+   * What it builds is a *seat*, not a companion. The ghost and the cop share
+   * one mutually-exclusive slot in the renderer because the budget needed
+   * them to (`render/Renderer.ts`, `secondRider`); this rider is a full
+   * `RidingRig` of their own, added to the same scene the player's rig is in,
+   * stepped by the same `stepSeat` and drawn by the same `renderSeat`. The
+   * architecture proof of the phase is precisely that there is no second code
+   * path.
+   *
+   * Three things are handed over and one is shared, which is the seat model's
+   * whole claim (§25.3): the **source** is theirs (a scripted `ActionState`
+   * nothing is wired to), the **controller** is theirs, the **rig** is theirs
+   * — and the **world** is not. The same `TerrainSampler`, so both riders
+   * read one ground; and the same hazard and soft-body fields as seat 0's
+   * controller was built with, because both riders must rustle the same bush.
+   *
+   * `applyTuning()` afterwards rather than a pair of pushes: a fresh
+   * `EucController` starts on `defaultEucTuning()`, so a seat spawned into a
+   * session with F4 overrides live would otherwise ride a different physics
+   * from the player beside them — the exact defect the Phase 1 follow-up
+   * fixed for the seats that already existed.
+   *
+   * `character` is a *preference*, not an instruction: ask for the rider the
+   * player is already wearing and you get somebody else, because q68 says two
+   * riders on one screen are never the same character and seat 0 is the seat
+   * that never moves. Omit it and the same rule picks for you.
+   *
+   * **They are seated where the world starts, not beside wherever the player
+   * has ridden to.** The slot is derived from `plan.spawn` because that is the
+   * one pose a world guarantees and validates (§25.5), and because Phase 5's
+   * join panel enters the ride at the spawn with both riders on it. Spawn the
+   * second rider before setting off — or press `R` first — and they are beside
+   * you; do it three hundred metres out and they are back at the start, which
+   * is the honest answer rather than a surprising one.
+   */
+  spawnSecondRider(character?: PlayableCharacterId): number {
+    if (this.seats.length > 1) {
+      throw new Error(`a second rider is already seated (seats: ${this.seats.length})`);
+    }
+
+    const index = this.seats.length;
+    // **q68 at the door as well as at the chooser.** A named character is a
+    // preference, not an override: seat 0 is already dressed, so an arriving
+    // rider who asks for what the player is wearing is the one who moves.
+    // That is `installCharacter`'s resolution read from the other direction —
+    // **seat 0's character is the one that never moves** — and without it the
+    // rule was enforced from the settings screen and bypassable from the very
+    // call that seats the second player, which is not a rule.
+    //
+    // Compared against the *seat* rather than `installedCharacter` because
+    // q68 is about who is on screen. The two agree today; this is the one
+    // that stays right if they ever stop agreeing.
+    const taken = this.seats[0].character;
+    const id = character !== undefined && character !== taken
+      ? character
+      : this.characterBeside(taken);
+    const controller = new EucController(this.terrain, {
+      spawn: this.spawnForSeat(index),
+      // **The world's own fields, shared rather than rebuilt.** Both are
+      // immutable spatial indexes — every field on `HazardField` and
+      // `SoftBodyField` is `readonly` — so this is an allocation saved, and
+      // more importantly it is the statement that there is one world: a
+      // second rider given their own copy would still hit the same potholes,
+      // but nothing in the types would say they had to.
+      hazards: this.hazards,
+      softBodies: this.softBodies,
+    });
+
+    const rig = createRidingRig(riderLook(id), machineLook(machineForCharacter(id)));
+    this.renderer.scene.add(rig.group);
+
+    // A device-less `ActionState`, built by the router because the router is
+    // what a device will later be claimed *to*: `setScripted` is the only
+    // thing that writes it until then, which is what makes this seat scripted
+    // without inventing a second kind of source (§25.3).
+    // Index for index with `seats` by construction: the router held exactly
+    // as many states as there are seats when this method began, so the seat it
+    // appends is the one about to be pushed below.
+    const seated = this.router.addSeat();
+    if (seated !== index) {
+      throw new Error(`seat ${index} does not match its input ${seated}`);
+    }
+    // **An empty seen set**: a guest is entitled to the hints even on a
+    // machine whose owner finished them months ago (§25.5).
+    this.seats.push(this.createSeat(this.router.sourceFor(index), controller, rig, id, []));
+
+    // **After the push, and it has to be**: `applyTuning` and
+    // `wireSeatCameras` both loop the seats, so a camera wired before the seat
+    // existed is a camera that never gets either. This is the Phase 1
+    // follow-up's lesson applied ahead of time rather than after a QA pass.
+    this.applyTuning();
+    this.wireSeatCameras();
+    // Collapse the new seat's interpolation onto its spawn and draw it there,
+    // or the first frame smears a rig from the origin to wherever it now is —
+    // `installCharacter`'s reason, one seat along. Its camera snaps with it;
+    // seat 0's is untouched, so nobody's view moves because somebody sat down.
+    this.syncSeatPose(this.seats[index]);
+    this.syncCamera(this.seats[index]);
+    // **The screen splits here** — M25 Phase 3. The number of views and the
+    // number of riders are the same number by construction rather than by two
+    // places agreeing, which is why this is derived from `seats.length` rather
+    // than passed in.
+    this.renderer.setViewCount(this.seats.length);
+    this.mountSeatHud(this.seats[index]);
+    return index;
+  }
+
+  /**
+   * Send the second rider home again, and give the GPU back what they cost.
+   *
+   * The order is `installCharacter`'s and it is load-bearing for the same
+   * reason: **remove from the scene before disposing**, or the scene keeps a
+   * node whose geometry has been freed and `resources().sceneObjects` climbs
+   * by a whole rig every time. `RidingRig.dispose` detaches its own group as
+   * well, which makes the explicit removal belt-and-braces rather than
+   * redundant — the rule is what the plateau depends on, not the call.
+   *
+   * The controller and the source need no teardown: neither holds a GPU
+   * handle, a listener or a timer, so dropping the seat is the whole of it.
+   */
+  despawnSecondRider(): void {
+    if (this.seats.length < 2) throw new Error('there is no second rider to despawn');
+    const index = this.seats.length - 1;
+    const seat = this.seats[index];
+    // The HUD first, while the seat is still in the array: `unmountSeatHud`
+    // re-reads the split layout, and it must see the seat it is removing.
+    this.unmountSeatHud(seat);
+    this.renderer.scene.remove(seat.rig.group);
+    seat.rig.dispose();
+    // The fraction of a spark and of a droplet this rider was owed goes with
+    // them, so the next rider seated at this index does not inherit it — and
+    // their one-shot bookkeeping goes the same way, for the same reason: a
+    // seat dismissed mid-ragdoll would otherwise hand its crash to whoever
+    // sits down there next.
+    this.renderer.forgetEmitter(index);
+    this.audio.resetRider(index);
+    this.seats.length = index;
+    // The router drops the seat's input *and* any claim that pointed at it: a
+    // pad claimed to the rider who just left has no opinion about the rider
+    // who stayed, and inheriting one would hand the player's wheel to whoever
+    // was holding the guest's controller.
+    this.router.removeSeat();
+    // The screen goes back to one view, and every remaining HUD is told it is
+    // no longer a half.
+    this.renderer.setViewCount(this.seats.length);
+    this.applySplitLayout();
+  }
+
+  /**
+   * Somebody other than the rider named — q68's distinct-characters rule, as
+   * the default seat 1 wears when a caller states no preference.
+   *
+   * Derived from the roster rather than written down, so the day a sixth
+   * character ships this keeps meaning "not that one" instead of naming a
+   * rider who may no longer be first. The fallback is the roster's own first
+   * entry, which is unreachable while more than one character exists and is
+   * here because a total function is easier to reason about than one that
+   * cannot fail *yet*.
+   */
+  private characterBeside(taken: CharacterId): PlayableCharacterId {
+    return guestBeside(taken);
+  }
+
+  /**
+   * Where seat `index` starts in the world that is loaded.
+   *
+   * Seat 0 is the plan's own spawn, byte for byte. Everyone else gets a slot
+   * derived from it and checked against the terrain sampler
+   * (`simulation/spawnSlots.ts`) — the validated contract §25.9 asked for, so
+   * that a producer nobody had in mind cannot put the second rider inside a
+   * wall.
+   */
+  private spawnForSeat(index: number): LevelPlan['spawn'] {
+    return spawnSlot(this.levelPlan.spawn, index, this.terrain);
   }
 
   /**
@@ -1570,15 +2205,28 @@ export class Game {
    */
   setOcclusion(distance: number | null): void {
     this.scriptedOcclusion = distance;
-    if (distance === null) {
-      this.chase.setOcclusionProbe(
-        (origin, direction, maxDistance) => this.terrain.raycast(origin, direction, maxDistance),
-      );
-      return;
-    }
-    this.chase.setOcclusionProbe((_origin, _direction, maxDistance) => (
-      distance <= maxDistance ? distance : null
-    ));
+    // **Every seat**, because this scripts the *world* rather than a rider:
+    // "something solid is three metres up the arm" is a statement about the
+    // level, and a second camera left reading the real geometry would make the
+    // override look like it had failed on one half of the screen.
+    this.wireSeatCameras();
+  }
+
+  /**
+   * Point every seat's camera at whatever it is currently allowed to hide
+   * behind — M25 Phase 3.
+   *
+   * One place, called from the constructor, from `spawnSecondRider`, and from
+   * `setOcclusion`, so that "which probe is live" has a single answer no
+   * matter how many cameras are asking. The scripted override wins for all of
+   * them or none of them.
+   */
+  private wireSeatCameras(): void {
+    const scripted = this.scriptedOcclusion;
+    const probe: OcclusionProbe = scripted === null
+      ? (origin, direction, maxDistance) => this.terrain.raycast(origin, direction, maxDistance)
+      : (_origin, _direction, maxDistance) => (scripted <= maxDistance ? scripted : null);
+    for (const seat of this.seats) seat.chase.setOcclusionProbe(probe);
   }
 
   /**
@@ -1597,15 +2245,42 @@ export class Game {
    * reason `resetRider` does: otherwise the next frame draws a rig smeared
    * across the map and several seconds of the rider being chased from wherever
    * they used to be.
+   *
+   * **The rider it moves, and only that rider** — M25 Phase 2. This is seat
+   * 0's teleport (a seat-addressed sibling is Phase 4's business if a spec
+   * ever wants one), and the pose collapse is now that seat's alone: a second
+   * rider whose history was collapsed because somebody else was teleported
+   * would jump a frame for no reason a player could see.
    */
-  placeRider(position: { x: number; y: number; z: number }, headingY: number): void {
-    this.controller.reset({ position, headingY });
-    this.syncPoses();
-    this.renderer.clearParticles();
+  placeRider(
+    position: { x: number; y: number; z: number },
+    headingY: number,
+    index = 0,
+  ): void {
+    // **Addressed since M25 Phase 5's QA repair**, on `setActionsFor`'s and
+    // `snapshotFor`'s pattern and for their reason: a spec that has to stand
+    // the *guest* somewhere — in front of the one wall in the world that is
+    // known to be solid, say — could otherwise only move the player, and the
+    // per-seat rules that need a specific place would be untestable.
+    const seat = this.requireSeat(index);
+    seat.controller.reset({ position, headingY });
+    this.syncSeatPose(seat);
+    this.syncCamera(seat);
+    // The world's own half, for the seat the world is following — `resetRider`'s
+    // division exactly.
+    if (this.ownsTheFrame(seat)) this.renderer.clearParticles();
+    // **`seat.wasCrashed` is deliberately left alone**, unlike `resetRiderTo`
+    // which clears it. That is what makes a teleport heal itself: the
+    // controller comes back upright while this seat still remembers being
+    // down, so the next step's own falling edge fires `recovered` and the
+    // audio layer's crash flag clears through the one detector that owns it.
+    // A second clear here would be a defensive line with nothing to defend —
+    // and, worse, it would mask the two real ones (`resetRiderTo`,
+    // `despawnSecondRider`) from every spec that stands a rider somewhere.
     // The automation wire's own teleport, and the one a spec uses to set a shot
     // up beside a target. Without it the first swing afterwards sweeps from
     // wherever the rider was parked before.
-    this.paddle.cancel();
+    seat.paddle.cancel();
   }
 
   /**
@@ -1634,27 +2309,63 @@ export class Game {
     };
   }
 
+  /** The whole picture, from seat 0's chair. See `snapshotFor`. */
   snapshot(): GameSnapshot {
+    return this.snapshotFor(0);
+  }
+
+  /**
+   * The whole picture, from one seat's chair — M25 Phase 1 (§25.5).
+   *
+   * **The same `GameSnapshot`, not a narrower per-seat one.** Four of its
+   * fields are a rider's — `actions`, `consumed`, `euc`, and the three
+   * swing fields inside `paddle` — and every other field is the *world's*,
+   * which answers the same whichever seat asks. Splitting the type instead
+   * would mean a spec that wanted a seat's speed and the world's clock had to
+   * make two calls and correlate them, and this is a bridge rather than a
+   * frame path: it already allocates a large object and nothing in the loop
+   * calls it.
+   *
+   * `snapshot()` is `snapshotFor(0)` so every existing spec runs untouched,
+   * which is this phase's gate. Phase 2's divergence proof — two seats ridden
+   * apart, asserted apart — is `snapshotFor(0)` against `snapshotFor(1)`.
+   *
+   * **`camera` and `hud` became this seat's at Phase 3**, and both had to:
+   * each read `this.` and so answered for seat 0 whichever seat was asked,
+   * which is the same defect `rider.installed` had at Phase 2 and has the
+   * same consequence — a spec asserting that seat 1's view followed seat 1
+   * would have compared seat 0 with seat 0 and passed. What is still read off
+   * `this.` below is the world's: the referees, the route, the render
+   * counters, and the player's own saved options.
+   */
+  snapshotFor(index: number): GameSnapshot {
+    const seat = this.requireSeat(index);
     const info = this.renderer.renderer.info;
     return {
       tick: this.tick,
       simTimeSeconds: this.simTimeSeconds,
       loop: this.loop.stats(),
-      actions: this.actionState.sample(this.simTimeSeconds),
-      consumed: { ...this.consumed },
-      euc: this.controller.snapshot(),
+      actions: seat.source.sample(this.simTimeSeconds),
+      consumed: { ...seat.consumed },
+      euc: seat.controller.snapshot(),
+      // **This seat's camera, not the frame's** — M25 Phase 3. Every field
+      // below was `this.currentCamera` while one camera existed, which would
+      // have made `snapshotFor(1).camera` quietly report the *player's* view:
+      // the same defect `rider.installed` had at Phase 2, and the same
+      // consequence — a spec asserting that seat 1's camera followed seat 1
+      // would have compared seat 0 with seat 0 and passed.
       camera: {
-        mode: this.cameraMode,
-        orbitAngle: this.orbitAngle,
-        yaw: this.currentCamera.yaw,
-        distance: this.currentCamera.distance,
-        armDistance: this.currentCamera.armDistance,
-        fov: this.currentCamera.fov,
-        bank: this.currentCamera.bank,
-        lookAhead: this.currentCamera.lookAhead,
-        heightLag: this.currentCamera.heightLag,
-        dip: this.currentCamera.dip,
-        crashFrame: this.currentCamera.crashFrame,
+        mode: seat.cameraMode,
+        orbitAngle: seat.orbitAngle,
+        yaw: seat.currentCamera.yaw,
+        distance: seat.currentCamera.distance,
+        armDistance: seat.currentCamera.armDistance,
+        fov: seat.currentCamera.fov,
+        bank: seat.currentCamera.bank,
+        lookAhead: seat.currentCamera.lookAhead,
+        heightLag: seat.currentCamera.heightLag,
+        dip: seat.currentCamera.dip,
+        crashFrame: seat.currentCamera.crashFrame,
         scriptedOcclusion: this.scriptedOcclusion !== null,
       },
       particles: this.renderer.particleCounts(),
@@ -1691,15 +2402,31 @@ export class Game {
         acceptsRideInput: this.appState.acceptsRideInput,
         simulates: this.appState.simulates,
       },
-      hud: { ...this.hudView, prompt: this.hudPrompt, visible: this.hud.visible },
+      // This seat's HUD, on the same terms as its camera above.
+      hud: {
+        ...seat.hudView,
+        prompt: seat.hudPrompt,
+        visible: seat.hud?.visible ?? false,
+      },
       options: { ...this.options.current, persistent: this.options.persistent },
       gamepadConnected: this.gamepad.connected,
+      input: {
+        claiming: this.router.claiming,
+        devices: this.router.claimList(),
+        awaiting: this.router.awaitingSeat,
+        pads: this.gamepad.padCount,
+      },
+      couch: {
+        available: this.couchAvailable,
+        ready: this.couchReady,
+        guest: this.guestCharacter,
+      },
       touch: {
         visible: this.touchControls.visible,
         wanted: this.touchWanted,
         throttle: this.touch.throttle,
         steer: this.touch.steer,
-        promptDevice: this.promptDevice,
+        promptDevice: this.promptDeviceFor(index),
       },
       challenge: {
         ...this.challenge.state,
@@ -1716,10 +2443,12 @@ export class Game {
         sessionBest: this.lastTrackDay?.bestLapSeconds ?? null,
       },
       paddle: {
+        // `equipped` is the mode's answer and the same for every seat; the
+        // three below are this seat's own arm.
         equipped: this.paddleEquipped,
-        phase: this.paddle.phase,
-        head: this.paddle.headPosition,
-        reseeded: this.paddle.reseeded,
+        phase: seat.paddle.phase,
+        head: seat.paddle.headPosition,
+        reseeded: seat.paddle.reseeded,
       },
       targets: {
         total: this.targets.count,
@@ -1731,7 +2460,11 @@ export class Game {
         const best = this.probing ? null : this.chaseRecords.best(this.levelPlan.id);
         let offRoute = Infinity;
         if (this.spine !== null) {
-          this.spine.locate(this.currentPose.x, this.currentPose.z, -1, this.spineAt);
+          // Seat 0's, not `seat`'s: the chase is seat 0's in stage 1 (§25.3),
+          // and reporting seat 1's distance off the route under a phase and a
+          // gap that are seat 0's would be three numbers about two riders.
+          const chased = this.seats[0].currentPose;
+          this.spine.locate(chased.x, chased.z, -1, this.spineAt);
           offRoute = this.spineAt.offRoute;
         }
         return {
@@ -1758,9 +2491,18 @@ export class Game {
         };
       })(),
       rider: {
+        // The player's saved pick, which is the *options* answer and the same
+        // whichever seat asks. Seat 1's pick is session state and never
+        // reaches the record (§25.5 Phase 5).
         chosen: this.options.current.character,
-        installed: this.installedCharacter,
-        crashVoice: crashVoiceFor(this.installedCharacter),
+        // This seat's own rider, and its own voice — M25 Phase 2. It was
+        // `this.installedCharacter` while one seat existed, which would have
+        // made `snapshotFor(1).rider` quietly report the player and left
+        // q68's distinct-characters rule not merely unenforced but
+        // unobservable. For seat 0 the two are the same value by
+        // construction, so nothing a spec already asserts moves.
+        installed: seat.character,
+        crashVoice: crashVoiceFor(seat.character),
       },
 
       world: {
@@ -1898,7 +2640,13 @@ export class Game {
    */
   resetOptions(): void {
     this.options.reset();
-    this.onboarding.restart(this.options.current.seenPrompts);
+    // **Seat 0 restarts from the record; every other seat restarts empty** —
+    // M25 Phase 3. Restoring a guest's prompts from the player's saved list
+    // would be the options firewall leaking in the one direction it has never
+    // leaked: out of the record and onto somebody it is not about.
+    for (const seat of this.seats) {
+      seat.onboarding.restart(this.ownsTheFrame(seat) ? this.options.current.seenPrompts : []);
+    }
   }
 
   /**
@@ -2081,15 +2829,18 @@ export class Game {
       }
     }
 
-    const pose = this.currentPose;
+    // Whose lap the referee is timing. Seat 0's in stage 1 — a couch session
+    // is free ride and keeps no records (§25.6).
+    const seat = this.seats[0];
+    const pose = seat.currentPose;
     const events = this.trackDay.step(stepSeconds, {
       x: pose.x,
       y: pose.y,
       z: pose.z,
       speed: pose.speed,
-      landed: this.controller.touchedDown,
-      landingClean: this.controller.lastLandingQuality === 'clean',
-      crashed: this.controller.crashed,
+      landed: seat.controller.touchedDown,
+      landingClean: seat.controller.lastLandingQuality === 'clean',
+      crashed: seat.controller.crashed,
     });
 
     const state = this.trackDay.state;
@@ -2237,7 +2988,7 @@ export class Game {
     // immutable and standing is what a target is when a world is built.
     this.targets.reset();
     this.renderer.resetTargets();
-    this.paddle.cancel();
+    this.seats[0].paddle.cancel();
     this.knockaboutSeconds = 0;
     this.clearLastResults();
     this.chaseRun.abandon();
@@ -2456,13 +3207,15 @@ export class Game {
    * spawn on a slope does not bury him or drop him from a height.
    */
   private placeCopBehindRider(): void {
+    // The rider he is behind. Seat 0's in stage 1 — the cop is not a seat (§25.3).
+    const seat = this.seats[0];
     const cop = this.copController;
     if (cop === null || this.copBrain === null) return;
 
     const gap = this.tuning.get('CHASE.spawnGapMetres');
-    const heading = this.currentPose.headingY;
-    const x = this.currentPose.x - Math.sin(heading) * gap;
-    const z = this.currentPose.z - Math.cos(heading) * gap;
+    const heading = seat.currentPose.headingY;
+    const x = seat.currentPose.x - Math.sin(heading) * gap;
+    const z = seat.currentPose.z - Math.cos(heading) * gap;
     const ground = createGroundSample();
     this.terrain.sampleGround(x, z, ground);
     cop.reset({ position: { x, y: ground.height, z }, headingY: heading });
@@ -2501,6 +3254,8 @@ export class Game {
    * back on his wheel.
    */
   private regroupCop(): void {
+    // The rider he is regrouping on. Seat 0's in stage 1 (§25.3).
+    const seat = this.seats[0];
     const cop = this.copController;
     const brain = this.copBrain;
     const spine = this.spine;
@@ -2511,7 +3266,7 @@ export class Game {
     // the spine's at their own projection. `spineAt` was located by the caller
     // this same step.
     spine.sample(this.spineAt.distance, this.spineSample);
-    const along = Math.cos(this.currentPose.headingY - this.spineSample.headingY);
+    const along = Math.cos(seat.currentPose.headingY - this.spineSample.headingY);
     const direction = along >= 0 ? 1 : -1;
 
     const back = this.tuning.get('CHASE.trackerReturnMetres');
@@ -2528,8 +3283,8 @@ export class Game {
     // inside the bust radius is not.
     const routeGap = Math.abs(this.spineAt.distance - this.spineSample.distance);
     if (routeGap + 1e-6 < back) return;
-    const dx = this.spineSample.x - this.currentPose.x;
-    const dz = this.spineSample.z - this.currentPose.z;
+    const dx = this.spineSample.x - seat.currentPose.x;
+    const dz = this.spineSample.z - seat.currentPose.z;
     const candidateGap = Math.sqrt(dx * dx + dz * dz);
     const minimumGap = Math.max(
       this.chaseRun.bustRadiusMetres + 1,
@@ -2545,7 +3300,7 @@ export class Game {
         position: { x: this.spineSample.x, y: this.spineSample.y, z: this.spineSample.z },
         headingY: heading,
       },
-      Math.max(Math.abs(this.copCurrent.speed), Math.abs(this.currentPose.speed)),
+      Math.max(Math.abs(this.copCurrent.speed), Math.abs(seat.currentPose.speed)),
     );
 
     // The same body-was-moved bookkeeping `placeCopBehindRider` does: no
@@ -2557,8 +3312,8 @@ export class Game {
     this.writeCopView();
     brain.place(this.copView);
     this.copPaddle.cancel();
-    const placedX = this.copCurrent.x - this.currentPose.x;
-    const placedZ = this.copCurrent.z - this.currentPose.z;
+    const placedX = this.copCurrent.x - seat.currentPose.x;
+    const placedZ = this.copCurrent.z - seat.currentPose.z;
     this.copGap = Math.sqrt(placedX * placedX + placedZ * placedZ);
   }
 
@@ -2603,6 +3358,8 @@ export class Game {
     const cop = this.copController;
     const brain = this.copBrain;
     if (cop === null || brain === null || !this.copRiding) return;
+    // The rider he is chasing. Seat 0's in stage 1 (§25.3).
+    const seat = this.seats[0];
 
     copyPose(this.copCurrent, this.copPrevious);
     this.writeCopView();
@@ -2610,7 +3367,7 @@ export class Game {
     // The quarry, and it is null while the rider is down: a cop who kept
     // steering at a crashed rider would ride into them, and the run is either
     // already over or the rider is getting up.
-    const chasing = this.appState.current === 'chase' && !this.controller.crashed;
+    const chasing = this.appState.current === 'chase' && !seat.controller.crashed;
     // The brain's intent is read *once* and used twice — the wheel rides it and
     // the paddle swings on it. Calling `step` a second time to ask about the
     // swing would advance a state machine that is only allowed to advance once
@@ -2620,10 +3377,10 @@ export class Game {
       this.copView,
       chasing
         ? {
-          x: this.currentPose.x,
-          y: this.currentPose.y,
-          z: this.currentPose.z,
-          speed: this.currentPose.speed,
+          x: seat.currentPose.x,
+          y: seat.currentPose.y,
+          z: seat.currentPose.z,
+          speed: seat.currentPose.speed,
         }
         : null,
     );
@@ -2632,8 +3389,8 @@ export class Game {
     cop.step(stepSeconds, intent);
     cop.writePose(this.copCurrent);
 
-    const dx = this.copCurrent.x - this.currentPose.x;
-    const dz = this.copCurrent.z - this.currentPose.z;
+    const dx = this.copCurrent.x - seat.currentPose.x;
+    const dz = this.copCurrent.z - seat.currentPose.z;
     this.copGap = Math.sqrt(dx * dx + dz * dz);
 
     // **The strike.** The rider is a one-entry `HittableSet` and the paddle is
@@ -2645,9 +3402,9 @@ export class Game {
     // wobble caller. Nothing here reaches `injectWobble`, and a strike never
     // ends a run on its own (§13 q25).
     this.riderTarget.place(
-      this.currentPose.x,
-      this.currentPose.y,
-      this.currentPose.z,
+      seat.currentPose.x,
+      seat.currentPose.y,
+      seat.currentPose.z,
       this.tuning.get('CHASE.riderHitRadius'),
       chasing,
     );
@@ -2669,7 +3426,7 @@ export class Game {
     for (const hit of hits) {
       if (hit.id !== 'rider') continue;
       this.audio.hit();
-      this.controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
+      seat.controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
     }
   }
 
@@ -2681,6 +3438,8 @@ export class Game {
    */
   private stepChase(stepSeconds: number): void {
     if (this.appState.current !== 'chase') return;
+    // The rider the referee is judging. Seat 0's in stage 1 (§25.3).
+    const seat = this.seats[0];
 
     if (this.resultsIn > 0) {
       this.resultsIn -= stepSeconds;
@@ -2693,7 +3452,7 @@ export class Game {
 
     const spine = this.spine;
     if (spine === null) return;
-    spine.locate(this.currentPose.x, this.currentPose.z, -1, this.spineAt);
+    spine.locate(seat.currentPose.x, seat.currentPose.z, -1, this.spineAt);
 
     // How fast the rider's own motion is closing on the cop, for the touch
     // bust — M24. The rider's contribution alone, read off the step's real
@@ -2707,17 +3466,17 @@ export class Game {
     const riderClosingSpeed = Math.min(
       stepSeconds > 0
         ? (Math.hypot(
-          this.previousPose.x - this.copCurrent.x,
-          this.previousPose.z - this.copCurrent.z,
+          seat.previousPose.x - this.copCurrent.x,
+          seat.previousPose.z - this.copCurrent.z,
         ) - this.copGap) / stepSeconds
         : 0,
-      Math.abs(this.currentPose.speed),
+      Math.abs(seat.currentPose.speed),
     );
 
     const ended = this.chaseRun.step(stepSeconds, {
       offRoute: this.spineAt.offRoute,
       copDistance: this.copGap,
-      crashed: this.controller.crashed,
+      crashed: seat.controller.crashed,
       riderClosingSpeed,
       copCrashed: this.copController?.crashed ?? true,
     });
@@ -2738,7 +3497,7 @@ export class Game {
     // cost anything.
     if (state.outcome === 'touched') {
       this.audio.hit();
-      this.controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
+      this.seats[0].controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
     }
     this.lastChase = {
       survived: state.survived,
@@ -2989,8 +3748,8 @@ export class Game {
   }
 
   /** Can a swing start on this step? Legality, exactly as `canAcceptHop` is. */
-  private get canAcceptSwing(): boolean {
-    return this.paddleEquipped && !this.paddle.swinging && !this.controller.crashed;
+  private canAcceptSwing(seat: RiderSeat): boolean {
+    return this.paddleEquipped && !seat.paddle.swinging && !seat.controller.crashed;
   }
 
   /**
@@ -3006,20 +3765,20 @@ export class Game {
    * wobbling — the worst moment for the two to part company, and the one a
    * chase-camera screenshot is least able to show.
    */
-  private stepPaddle(stepSeconds: number, swingRequested: boolean): void {
+  private stepPaddle(seat: RiderSeat, stepSeconds: number, swingRequested: boolean): void {
     if (!this.paddleEquipped) return;
 
     // A crashed rider keeps hold of the paddle — the owner's call, and it
     // matches the wheel's own spin-out flourish — but they are not swinging it.
     // The ragdoll carries the mesh because the renderer attaches it to a hand
     // group, which needs nothing from here.
-    if (this.controller.crashed) {
-      if (this.paddle.swinging) this.paddle.cancel();
+    if (seat.controller.crashed) {
+      if (seat.paddle.swinging) seat.paddle.cancel();
       return;
     }
 
-    const pose = this.currentPose;
-    const hits = this.paddle.step(
+    const pose = seat.currentPose;
+    const hits = seat.paddle.step(
       stepSeconds,
       { x: pose.x, y: pose.y, z: pose.z, headingY: pose.headingY },
       swingRequested,
@@ -3030,23 +3789,26 @@ export class Game {
     // press the player made: a request refused because a swing was already
     // running is buffered rather than consumed, and a whoosh on it would be a
     // sound with no motion under it.
+    // Heard whoever swung — M25 Phase 5, q66. See the one-shot note in
+    // `stepSeat` for what stopped being singular and what did not.
     if (swingRequested) this.audio.swing();
 
-    // The knock-downs, on the simulation clock beside the gate flares, so
-    // `advance(n)` reaches the same frame of the same fall every run.
-    this.renderer.stepTargets(stepSeconds);
+    // `renderer.stepTargets` used to be here. It is the tick's now (M25 Phase
+    // 2) — a shared pool's clock, beside `stepParticles`, for the reasons
+    // spelled out at its new home in `step`.
 
     for (const hit of hits) {
       // `strike` is the authority on whether this scored: it returns false for
       // a target already down, so a second swing at a fallen one costs nothing
       // and scores nothing (§13 q21) without this loop having to remember.
       if (!this.targets.strike(hit.id)) continue;
+      // Seen and heard whoever swung — one mix, every rider's events (q66).
       this.renderer.strikeTarget(hit.id);
       this.audio.hit();
       // Presentation, through the suspension the pedal strike already kicks.
       // Nothing here reaches `injectWobble`, under the owner's standing rule.
-      this.controller.jolt(this.tuning.get('PADDLE.hitJolt'));
-      this.controller.shedSpeed(this.tuning.get('PADDLE.hitSpeedCost'));
+      seat.controller.jolt(this.tuning.get('PADDLE.hitJolt'));
+      seat.controller.shedSpeed(this.tuning.get('PADDLE.hitSpeedCost'));
     }
 
     // **The body knock — the second way a target goes down.** The owner's
@@ -3077,9 +3839,11 @@ export class Game {
         const reach = knockRadius + volume.radius;
         if (dx * dx + dz * dz > reach * reach) return;
         if (!this.targets.strike(volume.id)) return;
+        // The paddle hit above says why; this one can fire several times in
+        // a step, which is what the cue ring's headroom is sized against.
         this.renderer.strikeTarget(volume.id);
         this.audio.hit();
-        this.controller.softKnock(this.tuning.get('TARGET.bodyKnockSpeedCost'));
+        seat.controller.softKnock(this.tuning.get('TARGET.bodyKnockSpeedCost'));
       },
     );
   }
@@ -3093,6 +3857,8 @@ export class Game {
    * so `advance(n)` reaches the results screen on the same step every run.
    */
   private stepChallenge(stepSeconds: number): void {
+    // Whose ride the clock is timing. Seat 0's in stage 1.
+    const seat = this.seats[0];
     // **The countdown runs only in `challenge`, and the guard is load-bearing.**
     //
     // It was written outside this check so it would survive the run ending —
@@ -3115,7 +3881,7 @@ export class Game {
       }
     }
 
-    const pose = this.currentPose;
+    const pose = seat.currentPose;
     const events = this.challenge.step(stepSeconds, {
       // The contact patch, which is what the rig is positioned at and what the
       // gate volumes stand on. A centre-of-mass point would sit a metre up and
@@ -3124,11 +3890,11 @@ export class Game {
       y: pose.y,
       z: pose.z,
       speed: pose.speed,
-      landed: this.controller.touchedDown,
+      landed: seat.controller.touchedDown,
       // The controller's own verdict, not a threshold applied out here. See
       // `EucController.lastLandingQuality`.
-      landingClean: this.controller.lastLandingQuality === 'clean',
-      crashed: this.controller.crashed,
+      landingClean: seat.controller.lastLandingQuality === 'clean',
+      crashed: seat.controller.crashed,
     });
 
     const state = this.challenge.state;
@@ -3725,15 +4491,32 @@ export class Game {
     this.levelPlan = plan;
     this.terrainView = this.renderer.setLevel(plan);
     this.terrain = new PlanTerrainSampler(plan);
-    this.controller = new EucController(this.terrain, {
-      spawn: plan.spawn,
-      // Rebuilt with the world, like the sampler and the referee above it, and
-      // for the same reason: a hazard field outliving its plan would put the
-      // last route's potholes in this one's road — or its bushes in this
-      // one's plaza.
-      hazards: new HazardField(plan.hazards ?? []),
-      softBodies: new SoftBodyField(plan.softBodies ?? []),
-    });
+    // Rebuilt with the world, like the sampler and the referee above them, and
+    // for the same reason: a hazard field outliving its plan would put the last
+    // route's potholes in this one's road — or its bushes in this one's plaza.
+    // **One pair for every seat since Phase 2**, which is where §25.5's "both
+    // riders rustle the same bush" stops being a sentence and becomes the
+    // object graph; both classes are immutable, so nothing is shared that
+    // anyone can write to.
+    this.hazards = new HazardField(plan.hazards ?? []);
+    this.softBodies = new SoftBodyField(plan.softBodies ?? []);
+    // **Every seat's controller, not the player's** — M25 Phase 1 (§25.5).
+    // A loop rather than one assignment because the reason above is a reason
+    // about worlds, not about who is riding: a second seat left holding the
+    // previous plan's controller would ride the last route's hazards through
+    // this one's road, which is precisely the bug this rebuild prevents for
+    // seat 0.
+    //
+    // Each seat is rebuilt at **its own** slot in the new world, not at the
+    // plan's spawn: seats stacked on one point is what a naive loop would
+    // produce, and `resetSeats` below is what actually stands them there.
+    for (let index = 0; index < this.seats.length; index += 1) {
+      this.seats[index].controller = new EucController(this.terrain, {
+        spawn: this.spawnForSeat(index),
+        hazards: this.hazards,
+        softBodies: this.softBodies,
+      });
+    }
     this.challenge = new ChallengeRun(plan.id, plan.checkpoints);
     this.trackDay = new TrackDayRun(plan.id, plan.checkpoints, plan.lap ?? null);
     this.targets = new TargetField(plan.targets ?? []);
@@ -3749,16 +4532,25 @@ export class Game {
     // The paddle survives the swap because it holds no world, but a swing in
     // progress does not: the rider it belonged to is standing somewhere else
     // now, and `cancel` also throws away the previous head position so the
-    // first sweep in the new world cannot be a spear across it.
-    this.paddle.cancel();
+    // first sweep in the new world cannot be a spear across it. **Every seat's**
+    // — a swing left running on seat 1 is the same spear.
+    for (const seat of this.seats) seat.paddle.cancel();
+
+    // **Every seat's camera learns the new geometry** — M25 Phase 3. The probe
+    // closes over `this.terrain`, which the block above replaced, so a camera
+    // left holding the old closure would pull its arm in against a building
+    // that is no longer there. One loop, the same one the constructor uses.
+    this.wireSeatCameras();
 
     this.applyTuning();
     this.menus.setChallengeAvailable(this.challenge.available);
     this.renderer.setCheckpointProgress(this.challenge.state.nextIndex);
-    // Puts the rider at the new spawn and clears every trace of the old world
-    // the rider could still be carrying — smeared interpolation, sparks in the
-    // air, a tyre still roaring over a surface that is gone.
-    this.resetRider();
+    // Puts **every** rider at their own slot in the new world and clears every
+    // trace of the old one they could still be carrying — smeared
+    // interpolation, sparks in the air, a tyre still roaring over a surface
+    // that is gone. `New route` from the pause card comes through here, so
+    // this is what keeps a couch session together across a world swap.
+    this.resetSeats();
     this.publishWorld();
     this.syncWorldUrl();
   }
@@ -3777,23 +4569,76 @@ export class Game {
    * The order is the one `Renderer.setLevel` established and it is load-bearing
    * at both ends. **Remove before dispose**, or the scene keeps a node whose
    * geometry has been freed and `resources().sceneObjects` climbs by a whole
-   * rig every swap. **`syncPoses` after add**, or the next frame draws the new
-   * rig at the origin while the chase camera eases across the map after it —
-   * the same smear `Game.syncPoses` exists to prevent after a teleport.
+   * rig every swap. **The pose sync after add**, or the next frame draws the
+   * new rig at the origin while the chase camera eases across the map after it
+   * — the same smear `Game.syncPoses` exists to prevent after a teleport.
    *
    * The status light is re-stated for the same reason `installLevel` replays
    * `applyTuning`: a fresh rig starts on its own defaults, and the wheel would
    * otherwise go dark mid-warning.
    */
   private installCharacter(id: CharacterId): void {
+    // **The player's own seat, and deliberately not a loop over seats** —
+    // unlike `installLevel` above. A world is everyone's; a character is one
+    // rider's. `id` comes from `GameOptions.character`, which is the *player's*
+    // saved choice, and §25.5 Phase 5 is explicit that seat 1's pick is session
+    // state that never reaches the options record. A loop here would dress both
+    // riders as whoever seat 0 last chose, which is the one thing q68 forbids.
+    const seat = this.seats[0];
     this.installedCharacter = id;
-    this.renderer.scene.remove(this.rig.group);
-    this.rig.dispose();
-    this.rig = createRidingRig(riderLook(id), machineLook(machineForCharacter(id)));
-    this.renderer.scene.add(this.rig.group);
+    this.dressSeat(seat, id);
     this.renderer.setCharacter(id);
-    this.syncPoses();
-    this.rig.applyStatus(this.currentPose.alert, this.simTimeSeconds, 1 - this.currentPose.recoverBlend);
+    // The camera half of what used to be a `syncPoses()` here. Split at M25
+    // Phase 2 because that call looped **every** seat, so a rider who did
+    // nothing had their interpolation history collapsed and jumped a frame —
+    // exactly what `syncSeatPose`'s own note says it was extracted to stop.
+    // The two lines below `dressSeat` moved past `setCharacter`, which is
+    // provably free: that method touches only the ghost rig.
+    this.syncCamera(seat);
+
+    // **q68, held after the fact and not only at the join panel.** The rule is
+    // that two riders on one screen are never the same character, and the
+    // chooser is reachable from the title while a world is live — so a player
+    // can pick the very rider sitting beside them. Their choice wins, and
+    // whoever else was wearing it moves.
+    for (const other of this.seats) {
+      if (other === seat || other.character !== id) continue;
+      const moved = this.characterBeside(id);
+      this.dressSeat(other, moved);
+      // **The session field moves with the geometry**, which is `dressSeat`'s
+      // own rule (`seat.character` is written beside the rig) applied one level
+      // up: `guestCharacter` is what the panel draws and what a re-entry
+      // re-spawns from, so a guest re-dressed here and remembered as somebody
+      // else would come back wearing the wrong rider.
+      if (other === this.seats[1]) this.guestCharacter = moved;
+    }
+  }
+
+  /**
+   * Put one seat in a different character's geometry — M25 Phase 2.
+   *
+   * `installCharacter`'s body, made addressable so the q68 re-dress above can
+   * use the same path the player's own swap does rather than a second copy of
+   * it. Everything load-bearing about the order is stated on that method:
+   * remove before dispose, sync after add, status last.
+   *
+   * The pose sync here is **this seat's only** — a character swap moves nobody
+   * else, so nobody else's interpolation may be collapsed.
+   */
+  private dressSeat(seat: RiderSeat, id: CharacterId): void {
+    this.renderer.scene.remove(seat.rig.group);
+    seat.rig.dispose();
+    seat.rig = createRidingRig(riderLook(id), machineLook(machineForCharacter(id)));
+    // Written beside the rig, never anywhere else, so the id and the geometry
+    // cannot drift — the rule `installedCharacter` has followed since M14.5.
+    seat.character = id;
+    this.renderer.scene.add(seat.rig.group);
+    this.syncSeatPose(seat);
+    seat.rig.applyStatus(
+      seat.currentPose.alert,
+      this.simTimeSeconds,
+      1 - seat.currentPose.recoverBlend,
+    );
   }
 
   /** Tell the menus which world is loaded. */
@@ -3966,10 +4811,17 @@ export class Game {
   dispose(): void {
     this.loop.dispose();
     this.keyboard.dispose();
+    // **Before the pad layer, and it has to be** — M25 Phase 4. Disposing the
+    // pad forgets every pad it was reading, which is exactly the signal a
+    // claimed pad *dying* sends; a game being torn down must not answer that
+    // by pausing itself and opening a claim window on a screen that is going
+    // away. Forgetting the claims first makes the teardown say nothing.
+    this.router.clearClaims();
     this.gamepad.dispose();
     this.touch.dispose();
     this.touchControls.dispose();
     this.coarsePointer?.removeEventListener('change', this.onPointerKindChange);
+    this.finePointer?.removeEventListener('change', this.onPointerKindChange);
     this.reducedMotion?.removeEventListener('change', this.onReducedMotionChange);
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.audio.dispose();
@@ -3978,14 +4830,17 @@ export class Game {
     this.stopStateListener();
     this.overlay.dispose();
     this.panel.dispose();
-    this.hud.dispose();
+    for (const seat of this.seats) this.unmountSeatHud(seat);
     this.menus.dispose();
     this.appState.dispose();
     this.options.dispose();
     this.records.dispose();
     this.contextNotice.dispose();
     this.tuning.dispose();
-    this.rig.dispose();
+    // Every seat's rig, because invariant 10 is a claim about every geometry
+    // and material this class ever built — one loop now rather than a second
+    // line somebody has to remember when Phase 2 makes a seat 1.
+    for (const seat of this.seats) seat.rig.dispose();
     this.renderer.dispose();
   }
 
@@ -4032,6 +4887,12 @@ export class Game {
     if (!change.layoutChanged) return;
 
     this.layoutChanges += 1;
+    // A window dragged narrower stops being able to hold two halves — the
+    // "re-evaluated on resize" half of the entrance predicate (§25.5 Phase 5).
+    // It is deliberately not a reason to end a session already under way: the
+    // players can see their own halves, and taking the game away from them
+    // because a window lost forty pixels would be the rule outranking them.
+    this.updateCouchAvailable();
     // The full input reset contract (master starter 8.2): a layout or
     // orientation change clears keyboard-held, gamepad, and analog state as
     // well as buffered one-shots, then re-anchors the clock. An earlier pass
@@ -4041,7 +4902,12 @@ export class Game {
     // no longer see framed correctly. A key still physically down re-expresses
     // itself on its next repeat, so the transient clear costs nothing real.
     // Scripted QA-bridge values survive; they are not a device.
-    this.actionState.clearDevices();
+    //
+    // **Every seat's, since M25 Phase 4.** The window moved under both
+    // players' hands, so the contract that held for the player holds for each
+    // rider; the router is what turns "the player's input" into "every seat's"
+    // without this line having to know how many there are.
+    this.router.clearDevices();
     // **The touchscreen needs more than its action state cleared**, and this is
     // the case that motivated the whole rule: a rotation moves every control
     // out from under the hand using it, the `pointerup` that would have
@@ -4069,179 +4935,62 @@ export class Game {
     // player unable to see it happen. `AppState` answers this once, for every
     // state, and a unit test asserts that exactly one state says yes.
     const riding = this.appState.acceptsRideInput;
-    const sampledActions = riding
-      ? this.actionState.sample(this.simTimeSeconds)
-      : NEUTRAL_ACTIONS;
-
-    // Claim one-shots exactly once each, before the controller reads the step:
-    // a hop buffered on the previous frame belongs to this step, not the next.
-    let didReset = false;
-    let hopForController = false;
-    let swingForPaddle = false;
-    for (const action of riding ? PRESSED_ACTIONS : NO_ACTIONS) {
-      // The latch is a buffer, not merely an edge detector. Legality belongs
-      // to the controller, so an early Space press stays pending while the
-      // wheel is airborne and is claimed on the first grounded step that can
-      // actually begin another compression — unless the wheel is still on
-      // the way *up*, where the press is the M24 spin jump and is delivered
-      // now. The controller owns both answers.
-      if (action === 'hop'
-        && !this.controller.canAcceptHop
-        && !this.controller.canAcceptSpin) continue;
-      // The same contract for the swing, and the same reasoning: a press
-      // thrown during the recovery of the last swing stays latched and is
-      // claimed on the first step that can begin another one, so a player
-      // swinging at two targets in quick succession is early rather than
-      // ignored. Past the action buffer it lapses, which is what stops a
-      // forgotten press firing at a target half a route later.
-      if (action === 'swing' && !this.canAcceptSwing) continue;
-      if (!this.actionState.consume(action, this.simTimeSeconds)) continue;
-      this.consumed[action] += 1;
-      if (action === 'hop') hopForController = true;
-      if (action === 'swing') swingForPaddle = true;
-      if (action === 'reset') {
-        // A lap session resets to the start line's run-up exactly as a timed
-        // run does, and for the reason below: `TrackDayRun.restart` throws the
-        // lap in progress away, so a rider nine hundred metres round cannot
-        // teleport to eighteen metres short of the line and close it.
-        const timed = this.challenge.state.phase !== 'idle'
-          || this.trackDay.state.phase !== 'idle';
-        if (timed) this.resetChallengeRider();
-        else this.resetRider();
-        // **During a timed run, `R` restarts the run rather than merely moving
-        // the rider.** It is also the anti-exploit: the slice's route is a loop
-        // that closes back into the plaza, so any teleport near the finish
-        // that left the clock running would
-        // teleport a rider two minutes in to within seconds of the line. See
-        // `ChallengeRun.restart`, which is a no-op outside a run so free ride's
-        // own `R` cannot arm one.
-        this.challenge.restart();
-        this.trackDay.restart();
-        this.ghostRecorder.reset();
-        this.pendingSplit = null;
-        this.pendingLapFlash = null;
-        this.resultsIn = 0;
-        didReset = true;
-      }
-      if (action === 'cameraCycle') this.cycleCamera();
-      if (action === 'pause') this.goTo('paused');
-      // `M` is now the keyboard shortcut for the settings screen's mute
-      // toggle rather than a separate session flag, which is what
-      // `docs/PLANS.md` §4.7 said would happen when M9's faders landed:
-      // the key stays, and the state it flips is the saved one.
-      if (action === 'muteAudio') this.options.set({ muted: !this.options.current.muted });
+    // **Every seat, in index order** — M25 Phase 2. The order is fixed rather
+    // than incidental: two riders stepped in a different order on two runs
+    // would take the same shared scratch state in a different sequence, and
+    // `advance(n)` has to reach the same world every run for any of the browser
+    // suite's assertions to mean anything.
+    //
+    // A reset step integrates nothing and, for seat 0, aborts the whole tick —
+    // the single-seat semantics preserved exactly (see `stepSeat`). A *later*
+    // seat's reset does not: it is one rider respawning, and stopping the cop,
+    // the referees and the camera because somebody else pressed `R` would make
+    // the second player able to stall the first player's world.
+    let worldReset = false;
+    this.pauseAsked = false;
+    this.muteAsked = false;
+    for (let index = 0; index < this.seats.length; index += 1) {
+      const wasReset = this.stepSeat(this.seats[index], index, stepSeconds, riding);
+      if (wasReset && index === 0) worldReset = true;
     }
-
-    // The reset step integrates nothing. `resetRider` has already collapsed
-    // the poses and the camera onto the reset target; letting the rest of this step
-    // run would apply the actions sampled above — a throttle still held when
-    // R lands — *within the same step*, and "reset" would mean "almost the
-    // target, moving slightly". Held input deliberately survives the reset and
-    // takes effect from the next step: a rider holding W through a reset
-    // expects to pull away again, not to have to re-press.
-    if (didReset) return;
-
-    // Present a hop edge only on the step that legally claimed it. The sampled
-    // action can remain true while its latch waits in the buffer; handing that
-    // level to the controller would make an illegal airborne press look held.
-    const actions: ActionSnapshot = sampledActions.hop === hopForController
-      ? sampledActions
-      : { ...sampledActions, hop: hopForController };
-
-    this.lastThrottle = actions.throttle;
-    this.lastSteer = actions.steer;
-
-    copyPose(this.currentPose, this.previousPose);
-    this.controller.step(stepSeconds, actions);
-    this.controller.writePose(this.currentPose);
-
-    // -- M5's two contact events --------------------------------------------
+    // **Any seat, once** — M25 Phase 4. Before the `worldReset` return rather
+    // than after it, which is what keeps the single-seat semantics byte for
+    // byte: seat 0 pressing R and Start on the same tick paused *and* reset
+    // when both fired inside the claim loop, and nothing runs between the loop
+    // ending and this, so one seat reaches exactly the game it always did.
     //
-    // Read through the controller's getters rather than a snapshot, which
-    // allocates; and spent here in the fixed step rather than in the render
-    // frame, so `advance(n)` reaches the same camera dip and the same particle
-    // field every run. That determinism is what makes a frozen capture of a
-    // landing mean anything.
-    //
-    // **Before the camera is stepped, not after.** The camera writes its state
-    // at the end of its own step, so an impulse applied afterwards would not
-    // reach the snapshot until the following step — one frame of the landing
-    // happening and nothing moving, and a dip that appears to rise before it
-    // falls, which is exactly the oscillation the dip is not allowed to have.
-    if (this.controller.touchedDown) {
-      const impact = this.controller.lastLandingImpact;
-      this.chase.landingImpulse(impact);
-      this.renderer.emitLandingParticles(
-        this.currentPose.x,
-        this.currentPose.y,
-        this.currentPose.z,
-        this.controller.currentSurface,
-        impact / EUC.landingImpactReference,
-      );
-      this.audio.landing(impact / EUC.landingImpactReference, this.controller.currentSurface);
-    }
-    const strike = this.controller.pedalStrikeDepth;
-    if (strike !== 0) {
-      const side = strike > 0 ? 1 : -1;
-      pedalEdgeWorld(this.currentPose, side, this.strikePoint);
-      this.renderer.emitSparks(
-        this.strikePoint.x,
-        this.strikePoint.y,
-        this.strikePoint.z,
-        Math.abs(strike),
-        side,
-        this.currentPose.headingY,
-        stepSeconds,
-      );
-    }
-    // -- M13's third contact effect, and the only continuous one -------------
-    //
-    // Dispatched from the same place and in the same step as the two above,
-    // for the same reason: a rate spent on the render frame would throw a
-    // different sheet of water on every machine, and `advance(n)` has to reach
-    // the same field every run.
-    //
-    // Grounded is derived from the pose exactly as `readChaseInput` derives it,
-    // rather than from a second boolean that could disagree — a wheel in flight
-    // over a puddle is not in the puddle, which is the same rule that lets a
-    // hop clear a pothole with no hop-specific code.
-    this.renderer.emitSurfaceSpray(
-      this.currentPose.y - this.currentPose.groundY <= 1e-6,
-      this.currentPose.x,
-      this.currentPose.y,
-      this.currentPose.z,
-      this.controller.currentSurface,
-      this.currentPose.speed,
-      this.currentPose.headingY,
-      stepSeconds,
-    );
+    // `M` is the keyboard shortcut for the settings screen's mute toggle
+    // rather than a separate session flag, which is what `docs/PLANS.md` §4.7
+    // said would happen when M9's faders landed: the key stays, and the state
+    // it flips is the saved one.
+    if (this.pauseAsked) this.goTo('paused');
+    if (this.muteAsked) this.options.set({ muted: !this.options.current.muted });
+    if (worldReset) return;
+
+    // **One particle system, one advance, whatever the seat count.** The
+    // emitters inside the seat step run per rider and hand this shared pool
+    // per-seat arguments; this is the pool's own clock, so it belongs to the
+    // tick. It moved out of the seat slice at M25 Phase 1, past the audio
+    // one-shots and the swing — neither of which touches `sparks` or `dust`,
+    // so the move is an address change and not a frame of difference.
     this.renderer.stepParticles(stepSeconds);
 
-    // -- M8's four one-shots, dispatched from the same place, for the same
-    // reason: a single-step edge seen from the render frame is a coin toss,
-    // and `advance(n)` has to reach the same sounds every run.
+    // **And the knock-downs beside it, hoisted at M25 Phase 2.** A struck
+    // target's fall is a shared pool's animation, exactly as the particles
+    // are, and it spent its whole life inside `stepPaddle` — per seat, gated
+    // on `paddleEquipped` and on that rider not being crashed. Two
+    // paddle-carrying seats would therefore have run every fall at double
+    // rate, and one crashed rider would have stopped a fall the other rider
+    // was watching.
     //
-    // The pedal scrape is deliberately absent — it is continuous while the
-    // pedal is down, so it is a voice driven from the pose below rather than
-    // an event, exactly as its spark stream is.
-    if (this.controller.tookOff) {
-      this.audio.hop(this.controller.lastHopCharge);
-      this.hoppedSinceHudUpdate = true;
-    }
-    const collision = this.controller.obstacleImpact;
-    if (collision > 0) this.audio.impact(collision);
-    if (this.controller.crashed !== this.wasCrashed) {
-      // Only the start is dispatched here. The *end* of a crash is a state
-      // change rather than a step flag, and the director already watches for
-      // it to fire the recovery chirp — one edge detector, not two.
-      if (this.controller.crashed) this.audio.crash(this.currentPose.speed);
-      this.wasCrashed = this.controller.crashed;
-    }
-
-    // The swing, stepped here and nowhere else (M14), for the reason the timed
-    // run below is: it is fed the pose this step just produced, at the fixed
-    // rate, so a hit is reproducible under `advance(n)`.
-    this.stepPaddle(stepSeconds, swingForPaddle);
+    // The move is a deliberate one-frame change and Phase 1's zero-change gate
+    // is why it waited: a target now begins toppling on the step it was
+    // struck rather than on the next one, and it keeps toppling through the
+    // striker's own crash. Both readings are the better ones — the fall is the
+    // *target's*, not the swinger's — and neither is something a scoring rule
+    // can see, because `TargetField.strike` decides what counts and is
+    // untouched.
+    this.renderer.stepTargets(stepSeconds);
 
     // The cop, and then the chase's rules — M18, stepped here for the reason
     // everything above is: he is fed the pose this step just produced, at the
@@ -4263,22 +5012,374 @@ export class Game {
     this.stepChallenge(stepSeconds);
     this.stepTrackDay(stepSeconds);
 
-    // The camera reacts to the state that step just produced, and is stepped
-    // at the same fixed rate for the same reason the controller is: so that
-    // `advance(n)` reaches a named camera state deterministically.
-    copyChaseCameraState(this.currentCamera, this.previousCamera);
-    this.chase.step(stepSeconds, this.readChaseInput(this.currentPose));
-    this.chase.writeState(this.currentCamera);
+    // Every seat's camera reacts to the state that step just produced, and is
+    // stepped at the same fixed rate for the same reason the controller is: so
+    // that `advance(n)` reaches a named camera state deterministically.
+    //
+    // **Here rather than inside `stepSeat`**, and the difference is a real
+    // one: `stepSeat` returns early on a respawn, and a camera that skipped
+    // its step on that tick would interpolate from a state one step stale
+    // while the rider it follows had already been collapsed onto the spawn.
+    // `resetRiderTo` collapses the camera too, so this loop is what puts it
+    // back in step with the rider on the very next tick.
+    const orbitRate = this.tuning.get('INSPECTION_CAMERA.orbitRate');
+    for (const seat of this.seats) {
+      copyChaseCameraState(seat.currentCamera, seat.previousCamera);
+      seat.chase.step(stepSeconds, this.readChaseInput(seat, seat.currentPose));
+      seat.chase.writeState(seat.currentCamera);
 
-    // Diagnostic orbit. Also stepped rather than driven from wall time, so a
-    // frozen inspection capture lands on the angle that was asked for.
-    this.previousOrbitAngle = this.orbitAngle;
-    this.orbitAngle += this.tuning.get('INSPECTION_CAMERA.orbitRate') * stepSeconds;
+      // Diagnostic orbit. Also stepped rather than driven from wall time, so a
+      // frozen inspection capture lands on the angle that was asked for.
+      seat.previousOrbitAngle = seat.orbitAngle;
+      seat.orbitAngle += orbitRate * stepSeconds;
+    }
   };
 
-  /** Fill the preallocated camera input from a pose. Allocation-free. */
-  private readChaseInput(pose: EucPose): ChaseCameraInput {
-    const input = this.chaseInput;
+  /**
+   * One fixed step of one seat — M25 Phase 1 (docs/PLANS.md §25.5).
+   *
+   * Sample this seat's intent, claim its one-shots, integrate its
+   * controller, dispatch the contact effects and audio events that step
+   * produced, and swing its paddle. **Moved here verbatim from `step`**:
+   * every comment below is the one that was written where the line used to
+   * be, because the phase's gate is that nothing changed but the address.
+   *
+   * Two things deliberately stayed outside, and both are the tick's rather
+   * than a rider's. The **clocks** (`tick`, `simTimeSeconds`,
+   * `audioStepSeconds`, `hudStepSeconds`) advance once per step, so a
+   * second seat must never touch them — running the audio accumulator per
+   * seat would age the mix at twice the rate, invisibly, on the day Phase 2
+   * lands. The **particle pool's own advance** left with them: the emitters
+   * here are per seat and hand a shared pool per-seat arguments, but
+   * `stepParticles` is that pool's clock.
+   *
+   * Two couplings that read as "this belongs to the cop" and do not:
+   * `copyPose` at the top of the integration is what `stepChase` later
+   * differences against the cop to get the M24 touch bust's closing speed,
+   * and `chase.landingImpulse` must reach the camera in the same step as
+   * the landing that caused it (the note on that line says why).
+   *
+   * **Returns whether this was a reset step**, which integrates nothing. For
+   * seat 0 the caller then abandons the whole tick — the cop, the referees and
+   * the camera all stand still for a step, which is the single-seat semantics
+   * preserved exactly. For any later seat it is one rider respawning and the
+   * world carries on; `step` says why.
+   *
+   * **What is per seat here and what is not** — M25 Phase 2. Everything the
+   * method reaches through `seat.` is that rider's and always was. Everything
+   * it reaches through `this.` is one of four things, and the phase's job was
+   * to make each one deliberate:
+   *
+   *   - **Shared clocks**, read only: `simTimeSeconds`. Both riders see the
+   *     same instant in the same tick, which is the point of a fixed step.
+   *     The accumulating clocks (`tick`, `audioStepSeconds`, `hudStepSeconds`)
+   *     and the particle pool's advance are outside this method entirely,
+   *     because run per seat they would age at twice the rate — invisibly.
+   *   - **Shared world**, correct as-is: the terrain through the controller,
+   *     `targets` (whose `strike` is idempotent, so two riders racing for one
+   *     target is safe), and `strikePoint`, a scratch vector written and read
+   *     inside one statement pair with the seats stepped one at a time.
+   *   - **Singular consumers** — at Phase 2 the camera, the HUD flag and the
+   *     audio mix, all gated on `ownsTheFrame(seat)`. **Phase 3 gave the
+   *     first two to the seat**, so the camera dip and the prompt edge are
+   *     now simply addressed and the guard is gone from both. What still
+   *     runs for `ownsTheFrame` only is the mix — one `RideAudioInput`, one
+   *     selected crash voice, and q66's both-riders answer is Phase 5.
+   *   - **Global one-shots** — `pause` and `muteAudio` are claimed here and
+   *     *acted on* once per tick in `step`, however many seats pressed them
+   *     (M25 Phase 4, §25.9's any-seat-once). `cameraCycle` and the rider
+   *     half of `reset` are strictly per seat, because a second player's
+   *     respawn teleporting the first, or their view swinging the other
+   *     half of the screen, is not a design question. The referee half of
+   *     `reset` stays the world's, and a couch session runs no referee at
+   *     all.
+   */
+  private stepSeat(
+    seat: RiderSeat,
+    index: number,
+    stepSeconds: number,
+    riding: boolean,
+  ): boolean {
+    const sampledActions = riding
+      ? seat.source.sample(this.simTimeSeconds)
+      : NEUTRAL_ACTIONS;
+
+    // Claim one-shots exactly once each, before the controller reads the step:
+    // a hop buffered on the previous frame belongs to this step, not the next.
+    let didReset = false;
+    let hopForController = false;
+    let swingForPaddle = false;
+    for (const action of riding ? PRESSED_ACTIONS : NO_ACTIONS) {
+      // The latch is a buffer, not merely an edge detector. Legality belongs
+      // to the controller, so an early Space press stays pending while the
+      // wheel is airborne and is claimed on the first grounded step that can
+      // actually begin another compression — unless the wheel is still on
+      // the way *up*, where the press is the M24 spin jump and is delivered
+      // now. The controller owns both answers.
+      if (action === 'hop'
+        && !seat.controller.canAcceptHop
+        && !seat.controller.canAcceptSpin) continue;
+      // The same contract for the swing, and the same reasoning: a press
+      // thrown during the recovery of the last swing stays latched and is
+      // claimed on the first step that can begin another one, so a player
+      // swinging at two targets in quick succession is early rather than
+      // ignored. Past the action buffer it lapses, which is what stops a
+      // forgotten press firing at a target half a route later.
+      if (action === 'swing' && !this.canAcceptSwing(seat)) continue;
+      if (!seat.source.consume(action, this.simTimeSeconds)) continue;
+      seat.consumed[action] += 1;
+      if (action === 'hop') hopForController = true;
+      if (action === 'swing') swingForPaddle = true;
+      if (action === 'reset') {
+        // A lap session resets to the start line's run-up exactly as a timed
+        // run does, and for the reason below: `TrackDayRun.restart` throws the
+        // lap in progress away, so a rider nine hundred metres round cannot
+        // teleport to eighteen metres short of the line and close it.
+        //
+        // **Whoever pressed it, and only them** — M25 Phase 2. Both branches
+        // were seat 0's while seat 0 was the only seat; a second player's
+        // respawn teleporting the first is not something a later phase gets to
+        // decide, so the rider half is addressed here and the referee half
+        // below is not (a couch session runs no referee at all).
+        const timed = this.challenge.state.phase !== 'idle'
+          || this.trackDay.state.phase !== 'idle';
+        if (timed) this.resetChallengeRider(seat);
+        else this.resetRider(seat);
+        // **During a timed run, `R` restarts the run rather than merely moving
+        // the rider.** It is also the anti-exploit: the slice's route is a loop
+        // that closes back into the plaza, so any teleport near the finish
+        // that left the clock running would
+        // teleport a rider two minutes in to within seconds of the line. See
+        // `ChallengeRun.restart`, which is a no-op outside a run so free ride's
+        // own `R` cannot arm one.
+        this.challenge.restart();
+        this.trackDay.restart();
+        this.ghostRecorder.reset();
+        this.pendingSplit = null;
+        this.pendingLapFlash = null;
+        this.resultsIn = 0;
+        didReset = true;
+      }
+      if (action === 'cameraCycle') this.cycleCamera(seat);
+      // **The two global one-shots are collected, not fired** — M25 Phase 4
+      // (§25.9's any-seat-once). Every seat still *claims* its own latch here,
+      // because a latch left pending would fire on the next tick instead; what
+      // moved is the acting, to one place after every seat has stepped. Two
+      // players hitting Start together must pause once, and `muteAudio` is the
+      // one that made this non-optional: it is a toggle, so two claims in one
+      // tick silenced and un-silenced the game and looked like a dead key.
+      if (action === 'pause') this.pauseAsked = true;
+      if (action === 'muteAudio') this.muteAsked = true;
+    }
+
+    // The reset step integrates nothing. `resetRider` has already collapsed
+    // the poses and the camera onto the reset target; letting the rest of this step
+    // run would apply the actions sampled above — a throttle still held when
+    // R lands — *within the same step*, and "reset" would mean "almost the
+    // target, moving slightly". Held input deliberately survives the reset and
+    // takes effect from the next step: a rider holding W through a reset
+    // expects to pull away again, not to have to re-press.
+    if (didReset) return true;
+
+    // Present a hop edge only on the step that legally claimed it. The sampled
+    // action can remain true while its latch waits in the buffer; handing that
+    // level to the controller would make an illegal airborne press look held.
+    const actions: ActionSnapshot = sampledActions.hop === hopForController
+      ? sampledActions
+      : { ...sampledActions, hop: hopForController };
+
+    seat.lastThrottle = actions.throttle;
+    seat.lastSteer = actions.steer;
+
+    copyPose(seat.currentPose, seat.previousPose);
+    seat.controller.step(stepSeconds, actions);
+    seat.controller.writePose(seat.currentPose);
+
+    // -- M5's two contact events --------------------------------------------
+    //
+    // Read through the controller's getters rather than a snapshot, which
+    // allocates; and spent here in the fixed step rather than in the render
+    // frame, so `advance(n)` reaches the same camera dip and the same particle
+    // field every run. That determinism is what makes a frozen capture of a
+    // landing mean anything.
+    //
+    // **Before the camera is stepped, not after.** The camera writes its state
+    // at the end of its own step, so an impulse applied afterwards would not
+    // reach the snapshot until the following step — one frame of the landing
+    // happening and nothing moving, and a dip that appears to rise before it
+    // falls, which is exactly the oscillation the dip is not allowed to have.
+    if (seat.controller.touchedDown) {
+      const impact = seat.controller.lastLandingImpact;
+      // **This seat's own camera dips, and only it** — M25 Phase 3. At Phase 2
+      // this was `ownsTheFrame(seat)` guarding one shared camera, because a
+      // second rider's landing shoving the player's view down is the plainest
+      // possible way for two riders to stop being independent. The guard is
+      // gone rather than relaxed: every seat has a camera now, so the impulse
+      // is simply addressed and the two halves dip on their own landings.
+      seat.chase.landingImpulse(impact);
+      this.renderer.emitLandingParticles(
+        seat.currentPose.x,
+        seat.currentPose.y,
+        seat.currentPose.z,
+        seat.controller.currentSurface,
+        impact / EUC.landingImpactReference,
+      );
+      // **Every rider's landing is heard** — M25 Phase 5, q66. One mix, but the
+      // events in it belong to whoever produced them: a guest thumping down
+      // beside you and making no sound is the plainest way for a couch session
+      // to feel like one player and a decoration.
+      this.audio.landing(impact / EUC.landingImpactReference, seat.controller.currentSurface);
+    }
+    const strike = seat.controller.pedalStrikeDepth;
+    if (strike !== 0) {
+      const side = strike > 0 ? 1 : -1;
+      pedalEdgeWorld(seat.currentPose, side, this.strikePoint);
+      this.renderer.emitSparks(
+        index,
+        this.strikePoint.x,
+        this.strikePoint.y,
+        this.strikePoint.z,
+        Math.abs(strike),
+        side,
+        seat.currentPose.headingY,
+        stepSeconds,
+      );
+    }
+    // -- M13's third contact effect, and the only continuous one -------------
+    //
+    // Dispatched from the same place and in the same step as the two above,
+    // for the same reason: a rate spent on the render frame would throw a
+    // different sheet of water on every machine, and `advance(n)` has to reach
+    // the same field every run.
+    //
+    // Grounded is derived from the pose exactly as `readChaseInput` derives it,
+    // rather than from a second boolean that could disagree — a wheel in flight
+    // over a puddle is not in the puddle, which is the same rule that lets a
+    // hop clear a pothole with no hop-specific code.
+    //
+    // **`index` is which rider is throwing it** — M25 Phase 2. The pool, the
+    // rate and the draw call stay shared; the *owed fraction* is per rider,
+    // and it had to be, because this call fires on every step whether the
+    // wheel is in water or not and a dry rider zeroes the debt. One shared
+    // remainder plus a second seat would have deleted the spray outright.
+    this.renderer.emitSurfaceSpray(
+      index,
+      seat.currentPose.y - seat.currentPose.groundY <= 1e-6,
+      seat.currentPose.x,
+      seat.currentPose.y,
+      seat.currentPose.z,
+      seat.controller.currentSurface,
+      seat.currentPose.speed,
+      seat.currentPose.headingY,
+      stepSeconds,
+    );
+
+    // -- M8's four one-shots, dispatched from the same place, for the same
+    // reason: a single-step edge seen from the render frame is a coin toss,
+    // and `advance(n)` has to reach the same sounds every run.
+    //
+    // The pedal scrape is deliberately absent — it is continuous while the
+    // pedal is down, so it is a voice driven from the pose below rather than
+    // an event, exactly as its spark stream is.
+    //
+    // **Every rider's one-shots, and the mix is still one mix** — M25 Phase 5,
+    // q66's answer. Phase 2 guarded these on `ownsTheFrame` because an ungated
+    // second seat would have taken sound *away* from the player: one impact
+    // retrigger window shared between two riders, and an eight-cue pool with
+    // no headroom for two. Both are now paid for rather than avoided — the
+    // retrigger window is per rider (`AudioDirector.riderBook`) and the pool
+    // is sixteen — so the guards are gone rather than relaxed.
+    //
+    // What stays singular is what is genuinely the world's: the continuous
+    // tyre-and-wind bed follows seat 0 and nobody else, because a focus that
+    // followed the faster rider would chatter every time their speeds crossed
+    // (§25.9).
+    if (seat.controller.tookOff) {
+      this.audio.hop(seat.controller.lastHopCharge);
+      // The *prompt* edge is this seat's too, so a guest learning to hop
+      // retires their own hint and nobody else's.
+      seat.hoppedSinceHudUpdate = true;
+    }
+    const collision = seat.controller.obstacleImpact;
+    // **A rider on the ground does not report kerb strikes**, and that rule is
+    // the director's, per rider, since the Phase 5 QA repair — so this call is
+    // unconditional again, exactly as it was before the phase. The order
+    // matters and is deliberate: the strike is dispatched *before* the crash
+    // edge below, so the wall that put a rider down is still heard on the step
+    // it happened, and only their slide afterwards is silent.
+    if (collision > 0) this.audio.impact(collision, index);
+    if (seat.controller.crashed !== seat.wasCrashed) {
+      // **Both ends, per seat** — one edge detector rather than one per seat
+      // plus a spare in the audio layer. The start is a crash in this rider's
+      // own voice (q66), which q68's distinct-characters rule is what makes
+      // unambiguous: two riders on one screen are never the same character, so
+      // a fall you hear is a fall you can place. The end is the recovery
+      // chirp, and it is addressed for the same reason.
+      //
+      // It also moved the chirp from the render clock onto the fixed step,
+      // which is strictly better and matches every other one-shot here:
+      // `advance(n)` reaches the same sounds every run.
+      if (seat.controller.crashed) {
+        this.audio.crash(seat.currentPose.speed, crashVoiceFor(seat.character), index);
+      } else {
+        // **And the end, since the Phase 5 QA repair.** The director used to
+        // watch for this itself, from the falling edge of the shared
+        // `RideAudioInput.crashed` — which is seat 0's, so a guest who crashed
+        // and picked themselves up got no recovery chirp at all. The edge is
+        // already detected here, per seat, for the crash's *start*; both ends
+        // of it belong at the same detector rather than one here and one in a
+        // layer that cannot count riders.
+        this.audio.recovered(index);
+      }
+      seat.wasCrashed = seat.controller.crashed;
+    }
+
+    // The swing, stepped here and nowhere else (M14), for the reason the timed
+    // run below is: it is fed the pose this step just produced, at the fixed
+    // rate, so a hit is reproducible under `advance(n)`.
+    this.stepPaddle(seat, stepSeconds, swingForPaddle);
+
+    return false;
+  }
+
+  /**
+   * Is this the seat the world's singular things are following? — M25
+   * Phase 2, narrowed at Phase 3.
+   *
+   * **Most of its sites did not change meaning — they went away.** The
+   * predicate existed so that Phase 3 would have one name to find, and what
+   * it found was that a second rider's landing dipping the player's camera,
+   * and a second rider's hop retiring the player's prompt, were both symptoms
+   * of there being one camera and one prompt. Each seat has both now, so
+   * those two sites are addressed rather than guarded.
+   *
+   * What is left is what is genuinely the world's or the player's:
+   *
+   *   - the **continuous audio bed** — one `RideAudioInput`, fed from this
+   *     seat's speed, load and surface. Phase 5 took the *one-shots* off this
+   *     predicate (q66: every rider's events are heard, each crash in its own
+   *     character's voice) and deliberately left the bed on it: a focus that
+   *     followed the faster rider would chatter every time the two crossed;
+   *   - the **saved options record** — `seenPrompts` and the FOV trim answer
+   *     for the person whose browser this is, never for a guest;
+   *   - the **cop, the particle field and the referees**, which a couch
+   *     session does not run at all.
+   */
+  private ownsTheFrame(seat: RiderSeat): boolean {
+    return seat === this.seats[0];
+  }
+
+  /**
+   * Fill this seat's camera input from a pose. Allocation-free.
+   *
+   * **The struct is the seat's own since M25 Phase 3.** One shared scratch was
+   * correct while every caller filled it and consumed it inside a single
+   * statement; the split frame has two callers per frame that want the value
+   * to survive a `resolveChaseView`, and an invariant that has to hold for
+   * every future caller is worth two objects a session to delete.
+   */
+  private readChaseInput(seat: RiderSeat, pose: EucPose): ChaseCameraInput {
+    const input = seat.chaseInput;
     input.x = pose.x;
     input.y = pose.y;
     input.z = pose.z;
@@ -4298,111 +5399,21 @@ export class Game {
   }
 
   private readonly render = (alpha: number): void => {
-    // Interpolating between the two most recent states is the other half of a
-    // fixed-step loop; without it the view stutters whenever the display
-    // cadence and the step rate disagree, which is almost always.
-    const pose = this.renderPose;
-    const previous = this.previousPose;
-    const current = this.currentPose;
+    // **Every seat: interpolate it and draw it** — M25 Phase 2. `renderSeat`
+    // was already seat-pure at Phase 1 (its only two reaches outside the seat
+    // are the mode's paddle flag and the simulation clock, both read-only and
+    // both the same for everyone), so drawing a second rider is this loop and
+    // nothing else. Posing the rigs is done for every seat *before* the
+    // passes below, because both rigs are in the one scene and both are drawn
+    // by both passes — a rig posed inside the pass loop would be posed twice
+    // per frame for no gain.
+    for (const other of this.seats) this.renderSeat(other, alpha);
+    const seat = this.seats[0];
 
-    pose.x = previous.x + (current.x - previous.x) * alpha;
-    pose.y = previous.y + (current.y - previous.y) * alpha;
-    pose.z = previous.z + (current.z - previous.z) * alpha;
-    // Heading and wheel spin are deliberately unwrapped in the controller, so
-    // a plain lerp is correct. A wrapped angle would spin the rig a full turn
-    // every time it crossed the seam.
-    pose.headingY = previous.headingY + (current.headingY - previous.headingY) * alpha;
-    pose.rollAngle = previous.rollAngle + (current.rollAngle - previous.rollAngle) * alpha;
-    pose.riderRoll = previous.riderRoll + (current.riderRoll - previous.riderRoll) * alpha;
-    pose.riderPitch = previous.riderPitch + (current.riderPitch - previous.riderPitch) * alpha;
-    pose.riderLookYaw = previous.riderLookYaw
-      + (current.riderLookYaw - previous.riderLookYaw) * alpha;
-    pose.riderTurnTwist = previous.riderTurnTwist
-      + (current.riderTurnTwist - previous.riderTurnTwist) * alpha;
-    pose.technicalTurn = previous.technicalTurn
-      + (current.technicalTurn - previous.technicalTurn) * alpha;
-    pose.reverseBlend = previous.reverseBlend
-      + (current.reverseBlend - previous.reverseBlend) * alpha;
-    pose.wheelPitch = previous.wheelPitch + (current.wheelPitch - previous.wheelPitch) * alpha;
-    pose.wheelSpin = previous.wheelSpin + (current.wheelSpin - previous.wheelSpin) * alpha;
-    pose.groundPitch = previous.groundPitch + (current.groundPitch - previous.groundPitch) * alpha;
-    pose.groundRoll = previous.groundRoll + (current.groundRoll - previous.groundRoll) * alpha;
-    pose.suspensionOffset = previous.suspensionOffset
-      + (current.suspensionOffset - previous.suspensionOffset) * alpha;
-    pose.restFactor = previous.restFactor
-      + (current.restFactor - previous.restFactor) * alpha;
-    pose.speed = previous.speed + (current.speed - previous.speed) * alpha;
-    pose.crouch = previous.crouch + (current.crouch - previous.crouch) * alpha;
-    pose.tuck = previous.tuck + (current.tuck - previous.tuck) * alpha;
-    pose.airBlend = previous.airBlend + (current.airBlend - previous.airBlend) * alpha;
-    pose.airHeight = previous.airHeight + (current.airHeight - previous.airHeight) * alpha;
-    pose.groundY = previous.groundY + (current.groundY - previous.groundY) * alpha;
-    // Signed by the scraping side, so a value that crosses zero between two
-    // steps is a scrape that ended — which is exactly what interpolating it
-    // should mean. See the note on `EucPose.pedalStrike`.
-    pose.pedalStrike = previous.pedalStrike
-      + (current.pedalStrike - previous.pedalStrike) * alpha;
-    // M6. Every one of these is a scalar that is exactly zero while the rider
-    // is riding cleanly, so interpolating them costs nothing and changes
-    // nothing about the M2-M5 frame.
-    pose.wobble = previous.wobble + (current.wobble - previous.wobble) * alpha;
-    pose.wobbleFootCorrection = previous.wobbleFootCorrection
-      + (current.wobbleFootCorrection - previous.wobbleFootCorrection) * alpha;
-    pose.wobbleYaw = previous.wobbleYaw + (current.wobbleYaw - previous.wobbleYaw) * alpha;
-    pose.wobbleRoll = previous.wobbleRoll
-      + (current.wobbleRoll - previous.wobbleRoll) * alpha;
-    pose.wobbleFight = previous.wobbleFight
-      + (current.wobbleFight - previous.wobbleFight) * alpha;
-    // `wobbleSway` is already sin(phase), so it is continuous when the phase
-    // wraps from 2π to 0 and interpolates like every other pose scalar. The M13
-    // first pass sampled the current step after claiming adjacent sine samples
-    // could jump from +1 to -1; at 120 Hz and at most 7 Hz they cannot, and
-    // sampling instead of lerping gave the feet a one-step phase lead.
-    pose.wobbleSway = previous.wobbleSway
-      + (current.wobbleSway - previous.wobbleSway) * alpha;
-    pose.alert = previous.alert + (current.alert - previous.alert) * alpha;
-    pose.tiltBack = previous.tiltBack + (current.tiltBack - previous.tiltBack) * alpha;
-    pose.crashBlend = previous.crashBlend + (current.crashBlend - previous.crashBlend) * alpha;
-    pose.crashForward = previous.crashForward
-      + (current.crashForward - previous.crashForward) * alpha;
-    pose.crashLateral = previous.crashLateral
-      + (current.crashLateral - previous.crashLateral) * alpha;
-    pose.crashDrop = previous.crashDrop + (current.crashDrop - previous.crashDrop) * alpha;
-    pose.crashTumble = previous.crashTumble + (current.crashTumble - previous.crashTumble) * alpha;
-    pose.crashRoll = previous.crashRoll + (current.crashRoll - previous.crashRoll) * alpha;
-    pose.wheelCrashLean = previous.wheelCrashLean
-      + (current.wheelCrashLean - previous.wheelCrashLean) * alpha;
-    // M15. The flourish scalars and the ragdoll block interpolate like every
-    // other pose value — the particles are world positions, so a per-float
-    // lerp of the block is a lerp of each particle's path, which is exactly
-    // what the fixed step's own integration did between these two states.
-    pose.wheelCrashSpin = previous.wheelCrashSpin
-      + (current.wheelCrashSpin - previous.wheelCrashSpin) * alpha;
-    pose.wheelCrashPop = previous.wheelCrashPop
-      + (current.wheelCrashPop - previous.wheelCrashPop) * alpha;
-    pose.ragdollBlend = previous.ragdollBlend
-      + (current.ragdollBlend - previous.ragdollBlend) * alpha;
-    if (pose.ragdollBlend > 0) {
-      for (let index = 0; index < pose.ragdoll.length; index += 1) {
-        pose.ragdoll[index] = previous.ragdoll[index]
-          + (current.ragdoll[index] - previous.ragdoll[index]) * alpha;
-      }
-    }
-    pose.recoverBlend = previous.recoverBlend
-      + (current.recoverBlend - previous.recoverBlend) * alpha;
-
-    // The swing, recorded before the stance is solved so the arm is posed on
-    // this frame's angle rather than the last one's. The head is recomputed at
-    // the *interpolated* pose: the hit test swept through a fixed-step head, and
-    // drawing that one would leave the paddle up to a fifth of a metre behind
-    // its own rider at 50 mph.
-    if (this.paddleEquipped) {
-      this.paddle.writeHeadFor(pose, this.paddleHead);
-      this.rig.applySwing(this.paddleHead, this.paddle.angle, this.paddle.armCommitment);
-    } else {
-      this.rig.applySwing(null, 0, 0);
-    }
-    this.rig.apply(pose);
+    // Seat 0's interpolated pose, for the things that are still genuinely
+    // singular below: the cop, the audio mix and the ghost. Everything that
+    // split at Phase 3 reads its own seat's pose inside the pass loop.
+    const pose = seat.renderPose;
 
     // **The cop, at the same interpolated moment as the player** — M18. He is a
     // live rider stepped at the fixed rate, so drawing him at his stepped pose
@@ -4423,25 +5434,106 @@ export class Game {
       this.renderer.setCopVisible(false);
     }
 
+    // **One mix, still seat 0's.** q66's answer — every one-shot and warning
+    // for both riders — is Phase 5's plumbing, and it is plumbing rather than
+    // a gate: the engine has one `RideAudioInput` and one selected crash
+    // voice. Phase 3 splits the picture, not the sound.
+    this.updateAudio(pose);
+    this.updateGhost();
+
+    // Both HUDs, before the passes, because the DOM is drawn by the browser
+    // over the whole canvas rather than inside either half's scissor box.
+    // The step clock is read once and cleared once (see `updateHud`).
+    const hudSeconds = this.hudStepSeconds;
+    this.hudStepSeconds = 0;
+    for (let view = 0; view < this.seats.length; view += 1) {
+      this.updateHud(this.seats[view], view, hudSeconds);
+    }
+
+    // **The frame, one pass per seat** — M25 Phase 3 (docs/PLANS.md §25.5).
+    //
+    // Clear once, then draw each half. The three things moved between the
+    // passes are the three singular objects each half needs pointed at its own
+    // rider: the shadow cascade (one directional light, one depth target), the
+    // surround plane (one mesh, which is what stops the world running out
+    // under a rider who has ridden far from the origin), and the camera. None
+    // of them is duplicated — there is one world, and each pass is a different
+    // window onto it.
+    //
+    // The order inside is load-bearing: the shadow map is re-rendered inside
+    // `renderView`, so the focus has to move *before* the pass rather than
+    // after it, or each half would be lit for the rider drawn before it.
+    this.renderer.beginFrame();
+    for (let view = 0; view < this.seats.length; view += 1) {
+      const drawn = this.seats[view];
+      const at = drawn.renderPose;
+      this.renderer.setShadowFocus(at.x, at.y, at.z);
+      this.terrainView.setSurroundCentre(at.x, at.z);
+      this.placeCamera(drawn, view, alpha);
+      this.renderer.renderView(view);
+    }
+  };
+
+  /**
+   * One drawn frame of one seat — M25 Phase 1 (docs/PLANS.md §25.5).
+   *
+   * Interpolate this seat's two most recent poses into its render pose, put
+   * its paddle where that interpolated pose says, and draw its rig there.
+   * Moved from `render` at M25 Phase 1.
+   *
+   * Returns nothing and leaves `seat.renderPose` filled, because the frame's
+   * own work downstream reads it: since Phase 3 the shadow cascade, the
+   * surround plane and the camera are re-pointed at **this seat's** pose
+   * before this seat's pass, and the audio mix still reads seat 0's.
+   *
+   * **The interpolation is `lerpPose`'s, and must not be written out by hand
+   * again.** That helper (`simulation/EucController.ts`, and the cop's path
+   * since M18) walks `POSE_SCALARS`, which is *derived* from every numeric key
+   * of a fresh pose. Until 2026-08-23 this method interpolated the player with
+   * a hand-written block that named 43 of the type's 45 scalars, and the two
+   * it did not name were `attack` and `carveStance` — added at M23, both
+   * consumed by `RidingRig.apply`, and therefore frozen at their spawn value
+   * of zero for every frame the player has ever been drawn in. The cop wore
+   * both stances from the day he shipped; the player wore neither, and nothing
+   * failed, because an enumeration that stops covering a struct is silent by
+   * construction. One derived writer for both riders is the fix, and keeping
+   * it derived is the part that matters.
+   *
+   * Order inside is load-bearing three times over and each note says why:
+   * interpolate before the head is written, write the head before the stance
+   * is solved, solve the stance before the status light is stated.
+   */
+  private renderSeat(seat: RiderSeat, alpha: number): void {
+    // Interpolating between the two most recent states is the other half of a
+    // fixed-step loop; without it the view stutters whenever the display
+    // cadence and the step rate disagree, which is almost always.
+    //
+    // One helper, shared with the cop, and derived from the type rather than
+    // enumerated: see the note above this method for what the hand-written
+    // block it replaced had been quietly leaving out since M23.
+    const pose = seat.renderPose;
+    lerpPose(seat.previousPose, seat.currentPose, alpha, pose);
+
+    // The swing, recorded before the stance is solved so the arm is posed on
+    // this frame's angle rather than the last one's. The head is recomputed at
+    // the *interpolated* pose: the hit test swept through a fixed-step head, and
+    // drawing that one would leave the paddle up to a fifth of a metre behind
+    // its own rider at 50 mph.
+    if (this.paddleEquipped) {
+      seat.paddle.writeHeadFor(pose, seat.paddleHead);
+      seat.rig.applySwing(seat.paddleHead, seat.paddle.angle, seat.paddle.armCommitment);
+    } else {
+      seat.rig.applySwing(null, 0, 0);
+    }
+    seat.rig.apply(pose);
+
     // The machine's own status light (M6). Driven from the simulation clock
     // rather than wall time, so `advance(n)` reaches the same pulse every run.
     // The third argument is the power-on flare after a crash recovery: full
     // at the instant the rider is restored, gone as the recovery blend
     // finishes. It replaced the recovery chirp the owner silenced.
-    this.rig.applyStatus(pose.alert, this.simTimeSeconds, 1 - pose.recoverBlend);
-    // A single tight shadow cascade parked at the origin loses the rider's
-    // contact shadow within a couple of seconds of riding away from it.
-    this.renderer.setShadowFocus(pose.x, pose.y, pose.z);
-    // The surround is one plane and it follows the rider, so the world never
-    // runs out. It carries no mottle, so moving it is invisible.
-    this.terrainView.setSurroundCentre(pose.x, pose.z);
-    this.placeCamera(pose, alpha);
-    this.updateAudio(pose);
-    this.updateHud(pose);
-    this.updateGhost();
-
-    this.renderer.render();
-  };
+    seat.rig.applyStatus(pose.alert, this.simTimeSeconds, 1 - pose.recoverBlend);
+  }
 
   /**
    * The HUD and the first-ride prompt, once per drawn frame.
@@ -4458,16 +5550,29 @@ export class Game {
    * so the speed the player reads matches the speed they are watching rather
    * than the last fixed step's.
    */
-  private updateHud(pose: EucPose): void {
+  private updateHud(seat: RiderSeat, index: number, hudSeconds: number): void {
+    // **One HUD per seat since M25 Phase 3.** Everything below that was
+    // `this.seats[0]` is now the seat that was asked for; everything that
+    // reaches a *referee* is unchanged and shared, because a run, a lap, a
+    // score and a chase are the world's rather than a rider's.
+    //
+    // `hudSeconds` is passed in rather than read off the field, and that is
+    // the one thing about this method a second seat could have broken
+    // silently: `hudStepSeconds` is an accumulator advanced once per fixed
+    // step and zeroed by its consumer. Left as a field read, the first seat
+    // would have consumed the whole interval and every later seat would have
+    // been handed a dt of zero — the prompt timeout would never fire for the
+    // guest, and nothing would have failed.
+    const pose = seat.renderPose;
     const riding = this.appState.acceptsRideInput;
 
     const run = this.challenge.state;
     const lap = this.trackDay.state;
-    this.hudView = this.hudModel.update(this.simTimeSeconds, {
+    seat.hudView = seat.hudModel.update(this.simTimeSeconds, {
       speed: pose.speed,
-      powerStage: this.controller.powerWarning,
+      powerStage: seat.controller.powerWarning,
       tiltBack: pose.tiltBack,
-      offCourse: this.controller.offRoute,
+      offCourse: seat.controller.offRoute,
       crashed: pose.crashBlend > 1e-6,
       // The lane draws itself only while a run is live. `idle` is free ride,
       // where the reserved lane stays empty exactly as it has since M9.
@@ -4552,24 +5657,31 @@ export class Game {
       // a HUD that recomputed the ratio would be a second opinion about when
       // the wheel is in trouble, and it would disagree the first time anybody
       // touched F4.
-      overspeed: this.controller.overspeed,
+      overspeed: seat.controller.overspeed,
     });
 
-    const prompt = this.onboarding.update(this.simTimeSeconds, this.hudStepSeconds, {
+    const prompt = seat.onboarding.update(this.simTimeSeconds, hudSeconds, {
       riding,
-      throttle: this.lastThrottle,
-      steer: this.lastSteer,
+      throttle: seat.lastThrottle,
+      steer: seat.lastSteer,
       speed: pose.speed,
-      hopped: this.hoppedSinceHudUpdate,
+      hopped: seat.hoppedSinceHudUpdate,
       crashed: pose.crashBlend > 1e-6,
-      device: this.promptDevice,
+      // **This seat's device, not the machine's** — M25 Phase 4. See
+      // `promptDeviceFor`: the guest holding the keyboard must not be told to
+      // press A because the player beside them picked up a pad.
+      device: this.promptDeviceFor(index),
     });
-    this.hudStepSeconds = 0;
-    this.hoppedSinceHudUpdate = false;
-    this.hudPrompt = prompt.prompt;
-    this.persistSeenPrompts();
+    seat.hoppedSinceHudUpdate = false;
+    seat.hudPrompt = prompt.prompt;
+    // **Only seat 0's progress is ever written down.** A guest's prompts are
+    // session state (§25.5), and the saved record answers for the person whose
+    // browser this is. `takeSeenChanged` is consume-on-read, so seat 1's flag
+    // is deliberately left unread rather than read and discarded — nothing
+    // else looks at it, and a future reader should find it still set.
+    if (this.ownsTheFrame(seat)) this.persistSeenPrompts();
 
-    if (this.hud.visible) this.hud.update(this.hudView, prompt.text);
+    if (seat.hud?.visible === true) seat.hud.update(seat.hudView, prompt.text);
   }
 
   /**
@@ -4642,6 +5754,13 @@ export class Game {
    * avoid.
    */
   private updateAudio(pose: EucPose): void {
+    // **One mix, and two different questions asked of the seats** — M25 Phase
+    // 5, q66. The continuous bed is seat 0's: the motor, the tyre, the wind and
+    // the scrape are what *this* wheel is doing, and a bed that followed
+    // whichever rider was faster would chatter every time their speeds crossed
+    // (§25.9). The *warnings* are everybody's, two fields below, because a
+    // guest riding into tilt-back with no beep is being told nothing.
+    const seat = this.seats[0];
     const input = this.audio.input;
     input.speed = pose.speed;
     // What the player is *asking* for, not what the wheel achieved. A throttle
@@ -4649,14 +5768,15 @@ export class Game {
     // answers, and that lead is most of why the motor feels connected. Taken
     // from the last step rather than sampled again here, because `sample()`
     // allocates and the step has already paid for it.
-    input.throttle = this.lastThrottle;
-    input.load = this.controller.powerLoad;
-    input.powerStage = this.controller.powerWarning;
+    input.throttle = seat.lastThrottle;
+    input.load = seat.controller.powerLoad;
+    input.powerStage = loudestWarning(this.warningStates());
     // M20. The same number the HUD glyph blinks at, from the same getter on the
     // same frame — the two cues are one warning on two channels, and a player
     // riding muted has to be told exactly what a player with sound is told.
-    input.overspeed = this.controller.overspeed;
-    input.surface = this.controller.currentSurface;
+    // The nearest *upright* seat's since M25 Phase 5 (`app/riderMix.ts`).
+    input.overspeed = nearestCutout(this.warningStates());
+    input.surface = seat.controller.currentSurface;
     input.grounded = pose.y - pose.groundY <= 1e-6;
     // **Three clocks, and each one is the only correct answer to its case.**
     //
@@ -4715,6 +5835,31 @@ export class Game {
   }
 
   /**
+   * Every seat, as the two warning questions need them — M25 Phase 5.
+   *
+   * **The warnings are the one part of the mix that is not seat 0's** (q66):
+   * a silent tilt-back for the guest would be unfair in the most concrete way
+   * this game has, because the beep is how a rider knows to back off before
+   * the wheel decides for them. One director, one ladder, one beep — fed the
+   * worst answer among the riders rather than duplicated per seat, which is
+   * §25.5's "without doubling the continuous director" taken literally.
+   *
+   * The arithmetic itself is `app/riderMix.ts`, so that "a rider on the ground
+   * is not warned about" has a headless home; this is only the adapter from
+   * the seats to it. A generator rather than an array because it runs on every
+   * drawn frame and the answer is consumed immediately.
+   */
+  private *warningStates(): Generator<RiderWarningState> {
+    for (const seat of this.seats) {
+      yield {
+        crashed: seat.controller.crashed,
+        powerWarning: seat.controller.powerWarning,
+        overspeed: seat.controller.overspeed,
+      };
+    }
+  }
+
+  /**
    * Place the camera for one drawn frame.
    *
    * The chase camera's numbers were all decided in `step`; this interpolates
@@ -4730,12 +5875,13 @@ export class Game {
    * rotation. `tests/m3.spec.ts` proves the resulting screen tilt rather than
    * trusting this paragraph.
    */
-  private placeCamera(pose: EucPose, alpha: number): void {
-    const camera = this.renderer.camera;
+  private placeCamera(seat: RiderSeat, view: number, alpha: number): void {
+    const camera = this.renderer.cameraFor(view);
+    const pose = seat.renderPose;
 
-    if (this.cameraMode === 'orbit') {
-      const angle = this.previousOrbitAngle
-        + (this.orbitAngle - this.previousOrbitAngle) * alpha;
+    if (seat.cameraMode === 'orbit') {
+      const angle = seat.previousOrbitAngle
+        + (seat.orbitAngle - seat.previousOrbitAngle) * alpha;
       const radius = CAMERA.distanceAtRest * INSPECTION_CAMERA.distanceFactor;
       camera.position.set(
         pose.x + Math.sin(angle) * radius,
@@ -4747,24 +5893,35 @@ export class Game {
       // The diagnostic view holds the resting field of view: a speed-eased FOV
       // would make an inspection capture depend on how fast the rider happened
       // to be going when it was taken.
-      this.renderer.setFieldOfView(this.chase.tuning.fovAtRest);
+      this.renderer.setFieldOfView(view, seat.chase.tuning.fovAtRest);
       return;
     }
 
-    lerpChaseCameraState(this.previousCamera, this.currentCamera, alpha, this.renderCamera);
-    const view = this.chaseView;
-    resolveChaseView(this.renderCamera, this.readChaseInput(pose), this.chase.tuning, view);
+    lerpChaseCameraState(seat.previousCamera, seat.currentCamera, alpha, seat.renderCamera);
+    const resolved = seat.chaseView;
+    resolveChaseView(
+      seat.renderCamera,
+      this.readChaseInput(seat, pose),
+      seat.chase.tuning,
+      resolved,
+    );
 
-    camera.position.set(view.positionX, view.positionY, view.positionZ);
+    camera.position.set(resolved.positionX, resolved.positionY, resolved.positionZ);
     camera.up.set(0, 1, 0);
-    camera.lookAt(view.targetX, view.targetY, view.targetZ);
-    if (view.roll !== 0) camera.rotateZ(-view.roll);
+    camera.lookAt(resolved.targetX, resolved.targetY, resolved.targetZ);
+    if (resolved.roll !== 0) camera.rotateZ(-resolved.roll);
     // The player's field-of-view trim is applied here rather than inside the
     // camera, and that is the options firewall being kept at the last possible
     // moment: `chaseCamera.ts` eases between two authored angles and knows
     // nothing about a preference. A trim moves both ends together, so the
     // speed ease survives at every setting.
-    this.renderer.setFieldOfView(view.fov + this.fieldOfViewTrimRadians);
+    // **The player's trim, and only seat 0's.** `fieldOfViewTrimRadians` is a
+    // saved option, so it answers for the person whose browser this is; a
+    // guest's half takes the untrimmed angle. The renderer applies the split
+    // widening on top of whatever arrives, so the trim still moves both ends
+    // of the speed ease together (see `GameRenderer.splitFieldOfView`).
+    const trim = this.ownsTheFrame(seat) ? this.fieldOfViewTrimRadians : 0;
+    this.renderer.setFieldOfView(view, resolved.fov + trim);
   }
 
   private readonly onFrameSampled = (sample: FrameSample): void => {
@@ -4783,16 +5940,20 @@ export class Game {
     context.tick = this.tick;
     context.simTimeSeconds = this.simTimeSeconds;
     context.loop = this.loop.stats();
-    context.actions = this.actionState.sample(this.simTimeSeconds);
-    context.euc = this.controller.snapshot();
-    context.cameraMode = this.cameraMode;
-    context.cameraDistance = this.currentCamera.armDistance;
-    context.cameraFov = this.currentCamera.fov;
-    context.cameraLookAhead = this.currentCamera.lookAhead;
-    context.cameraBank = this.currentCamera.bank;
+    context.actions = this.seats[0].source.sample(this.simTimeSeconds);
+    context.euc = this.seats[0].controller.snapshot();
+    // The diagnostic reads seat 0 — the overlay is one panel about one rider,
+    // and F3 during a couch session is the owner debugging his own half.
+    context.cameraMode = this.seats[0].cameraMode;
+    context.cameraDistance = this.seats[0].currentCamera.armDistance;
+    context.cameraFov = this.seats[0].currentCamera.fov;
+    context.cameraLookAhead = this.seats[0].currentCamera.lookAhead;
+    context.cameraBank = this.seats[0].currentCamera.bank;
     // How far the camera is currently behind the rider's heading. The thing
     // the yaw-lag constants actually control, in the units they are set in.
-    context.cameraYawLag = wrapAngle(this.currentPose.headingY - this.currentCamera.yaw);
+    context.cameraYawLag = wrapAngle(
+      this.seats[0].currentPose.headingY - this.seats[0].currentCamera.yaw,
+    );
     context.viewportWidth = viewport.width;
     context.viewportHeight = viewport.height;
     context.pixelRatio = viewport.pixelRatio;
@@ -4811,14 +5972,27 @@ export class Game {
   // ---------------------------------------------------------------------------
 
   /**
-   * Quick reset — `R`.
+   * Quick reset — `R`, for one rider.
    *
-   * Puts the rider back at the spawn, stopped and upright, and clears the
-   * interpolation history so the frame after a reset does not draw a rig
-   * smeared between where the rider was and where they now are.
+   * Puts that rider back at their own slot in the world, stopped and upright,
+   * and clears the interpolation history so the frame after a reset does not
+   * draw a rig smeared between where they were and where they now are.
+   *
+   * **Addressed since M25 Phase 2.** It was seat 0's by construction while
+   * seat 0 was the only seat; the moment a second rider could press `R` it had
+   * to name whose reset it is, or one player's respawn would teleport the
+   * other. Since Phase 3 the camera snap and the HUD's dwell timers went with
+   * the rider — each seat has both — and what stays seat 0's inside
+   * `resetRiderTo` is what is genuinely the *world's*: the particle field, the
+   * mix, and where the cop stands.
    */
-  private resetRider(): void {
-    this.resetRiderTo(this.levelPlan.spawn);
+  private resetRider(seat: RiderSeat = this.seats[0]): void {
+    this.resetRiderTo(this.spawnForSeat(this.seats.indexOf(seat)), seat);
+  }
+
+  /** Stand every rider at their own slot — a world swap, not a respawn. */
+  private resetSeats(): void {
+    for (const seat of this.seats) this.resetRider(seat);
   }
 
   /**
@@ -4829,11 +6003,20 @@ export class Game {
    * into retry cost. A generated course already owns the position and heading
    * of its start checkpoint, so deriving the run-up from that checkpoint keeps
    * retries quick on every producer without adding a slice-specific spawn.
+   *
+   * **The run-up is a spawn like any other, so it gets slots like any other**
+   * — M25 Phase 2. The derived pose is the *base*, and `spawnSlot` puts each
+   * seat beside it exactly as it does at the level spawn. Without that, this
+   * branch and the plain reset beside it would disagree on the same key press:
+   * `R` outside a run gives every rider their own slot, and `R` inside one
+   * would stack them on a single point — the overlap the whole contract exists
+   * to prevent. Seat 0's slot is the derived pose unchanged, so a
+   * single-player retry lands exactly where it always has.
    */
-  private resetChallengeRider(): void {
+  private resetChallengeRider(seat: RiderSeat = this.seats[0]): void {
     const start = this.levelPlan.checkpoints.find((checkpoint) => checkpoint.kind === 'start');
     if (start === undefined) {
-      this.resetRider();
+      this.resetRider(seat);
       return;
     }
 
@@ -4841,18 +6024,65 @@ export class Game {
     const z = start.centre.z - Math.cos(start.headingY) * CHALLENGE.startRunupMetres;
     const ground = createGroundSample();
     this.terrain.sampleGround(x, z, ground);
-    this.resetRiderTo({
-      position: { x, y: ground.height, z },
-      headingY: start.headingY,
-    });
+    const runup = { position: { x, y: ground.height, z }, headingY: start.headingY };
+    this.resetRiderTo(spawnSlot(runup, this.seats.indexOf(seat), this.terrain), seat);
   }
 
-  /** Common half of the ordinary reset and the challenge run-up reset. */
-  private resetRiderTo(spawn: LevelPlan['spawn']): void {
-    this.controller.reset(spawn);
-    this.syncPoses();
-    this.orbitAngle = 0;
-    this.previousOrbitAngle = 0;
+  /**
+   * Common half of the ordinary reset and the challenge run-up reset.
+   *
+   * Split at M25 Phase 2 and re-cut at Phase 3. The first two parts are
+   * **this rider's** and run for whoever asked: the controller and the poses,
+   * then the camera snap and the HUD's dwell timers, which moved up from the
+   * frame's half when each seat got its own of both. What is left below the
+   * early return is genuinely the **world's** — one particle field, one mix,
+   * one cop — and runs only for the seat the world is following.
+   */
+  private resetRiderTo(spawn: LevelPlan['spawn'], seat: RiderSeat = this.seats[0]): void {
+    seat.controller.reset(spawn);
+    this.syncSeatPose(seat);
+    seat.lastThrottle = 0;
+    seat.lastSteer = 0;
+    seat.wasCrashed = false;
+    // A teleport, so the swing goes with the rider who was making it and the
+    // previous head position is thrown away — M14. The unconditional distance
+    // guard inside `Paddle` is the primary defence and does not depend on this
+    // line; this is the half that does not depend on a threshold being right.
+    // The two teleports it cannot cover are the automatic crash respawn, which
+    // fires inside the controller on a timer with no signal out, and a reset
+    // step, which returns from `step` before anything after it runs.
+    seat.paddle.cancel();
+
+    // -- This seat's own half of the screen — M25 Phase 3 --------------------
+    //
+    // Above the early return since Phase 3, and the move is the whole point of
+    // the phase: a camera and a set of HUD dwell timers belong to the rider
+    // who respawned. Left below it, a guest pressing `R` would keep the view
+    // they had a moment ago and ease across the world after a rider who was
+    // already standing at the spawn — and on a world swap, seat 1 would arrive
+    // in a new level with a camera still resolving against the old one.
+    this.syncCamera(seat);
+    seat.orbitAngle = 0;
+    seat.previousOrbitAngle = 0;
+    // A rider back at the reset target is not still being warned about the
+    // hill they were climbing, and is not still off the route they were off.
+    // **This seat's dwell timers, not every seat's** — clearing the other
+    // half's warning because somebody else respawned would hide a tilt-back
+    // the moment a guest pressed `R`.
+    seat.hudModel.reset();
+    // And this rider's one-shot bookkeeping, which is per rider for the same
+    // reason the dwell timers are — M25 Phase 5's QA repair. **Above the early
+    // return, and it has to be**: `audio.reset()` below clears the whole mix
+    // and runs only for seat 0, so a guest reset mid-ragdoll would otherwise
+    // keep a crash flag nothing will ever clear and go silent against walls
+    // for the rest of the session. Silent rather than a recovery chirp: a
+    // rider put back at the spawn stopped having a crash, they did not survive
+    // one.
+    this.audio.resetRider(this.seats.indexOf(seat));
+
+    // -- The world's half, and only for the seat the world is following ------
+    if (seat !== this.seats[0]) return;
+
     // Sparks and dust are consequences of a ride that no longer happened.
     // Leaving them would hang a burst of them in the air at a place the rider
     // is no longer standing, which is the visual equivalent of the smeared rig
@@ -4862,21 +6092,7 @@ export class Game {
     // thump still decaying, above a rider who is now standing still at the
     // spawn on pavement.
     this.audio.reset();
-    this.lastThrottle = 0;
-    this.lastSteer = 0;
     this.lastSuspensionOffset = 0;
-    this.wasCrashed = false;
-    // A rider back at the reset target is not still being warned about the hill they
-    // were climbing, and is not still off the route they were off.
-    this.hudModel.reset();
-    // A teleport, so the swing goes with the rider who was making it and the
-    // previous head position is thrown away — M14. The unconditional distance
-    // guard inside `Paddle` is the primary defence and does not depend on this
-    // line; this is the half that does not depend on a threshold being right.
-    // The two teleports it cannot cover are the automatic crash respawn, which
-    // fires inside the controller on a timer with no signal out, and a reset
-    // step, which returns from `step` before anything after it runs.
-    this.paddle.cancel();
     // And the cop goes back behind whoever he is chasing — M18. After
     // `syncPoses`, because it reads the rider's freshly written pose to decide
     // where "behind" is.
@@ -4929,9 +6145,16 @@ export class Game {
     return wrapAngle(Math.atan2(dx, dz) - pose.headingY);
   }
 
-  private cycleCamera(): void {
-    const next = (CAMERA_MODES.indexOf(this.cameraMode) + 1) % CAMERA_MODES.length;
-    this.cameraMode = CAMERA_MODES[next];
+  /**
+   * Cycle one seat's view — M25 Phase 3.
+   *
+   * **Per seat, not global** (§25.5). It was ungated at Phase 2 because there
+   * was one camera to cycle; with two, a guest pressing V to look at their own
+   * wheel must not swing the player's view into an orbit mid-corner.
+   */
+  private cycleCamera(seat: RiderSeat): void {
+    const next = (CAMERA_MODES.indexOf(seat.cameraMode) + 1) % CAMERA_MODES.length;
+    seat.cameraMode = CAMERA_MODES[next];
   }
 
   // ---------------------------------------------------------------------------
@@ -4951,8 +6174,32 @@ export class Game {
    * reachable from the title and from a pause — cannot be set up two slightly
    * different ways.
    */
-  private enterState(state: AppStateId): void {
+  private enterState(state: AppStateId, from: AppStateId = state): void {
     const spec = this.appState.spec;
+
+    // -- The couch session's two boundaries — M25 Phase 5 ---------------------
+    //
+    // **Both halves are here rather than at the buttons**, which is this
+    // method's whole reason for existing: the join panel is reachable from one
+    // button and left by four things (Back, Escape, the pad's B, and Start),
+    // and a session torn down at three of them is a second rider who survives
+    // the fourth.
+    //
+    // The seat is built on the way *in* to the panel and not on the way out of
+    // it, which buys three things at once: the claim machinery has two seats to
+    // hand devices to, both players watch the split they are about to ride
+    // appear behind the card, and the rider each card names is standing in the
+    // world wearing it. The cost is a rig for the length of a menu, and
+    // `despawnSecondRider` gives every byte of it back — which invariant 10's
+    // plateau test is what proves.
+    if (state === 'couchJoin' && from !== 'couchJoin') this.openCouch();
+    // Leaving for anywhere that is not the ride. `freeRide` is the one exit
+    // that keeps the guest, because it is the exit that *is* the couch session.
+    if (from === 'couchJoin' && state !== 'couchJoin' && state !== 'freeRide') this.closeCouch();
+    // And leaving the couch ride itself. Quit lands on `title` from the pause
+    // card; the results screen has no couch to come from in stage 1, and a
+    // world swap keeps both seats on purpose (`installLevel`).
+    if (state === 'title' && this.seats.length > 1) this.closeCouch();
 
     // **Every menu boundary is an input-reset moment** (master §8.2). A key
     // held as Escape lands never delivers its keyup to the game, so without
@@ -4960,7 +6207,17 @@ export class Game {
     // a different door. The loop's clock is re-anchored with it, or the time
     // spent reading a settings screen is replayed as simulation.
     if (spec.resetsInput) {
+      // `KeyboardInput.reset` first, because it owns the per-key bookkeeping
+      // that has to be cleared alongside the semantic state or the two
+      // disagree about which keys are down.
       this.keyboard.reset();
+      // **And then every seat, since M25 Phase 4.** The keyboard clears the
+      // one sink it is pointing at; a menu boundary is the *world* stopping,
+      // and a guest's buffered hop is exactly as stale as the player's. Before
+      // this, a one-shot latched by seat 1 survived a pause and fired on the
+      // first resumed step — the blur bug arriving through a third door, on a
+      // rider whose device had not even been the one that opened the menu.
+      this.router.clearAll();
       this.loop.resetTime();
     }
 
@@ -5038,7 +6295,7 @@ export class Game {
     // frame of the previous run's numbers.
     if (state === 'results') this.menus.setResults(this.buildResultsView());
 
-    this.hud.setVisible(spec.showsHud);
+    for (const seat of this.seats) seat.hud?.setVisible(spec.showsHud);
     this.menus.show(menuScreenFor(state));
     // While a menu is up the pad drives the menu, not the wheel.
     this.gamepad.setMenuMode(spec.showsMenu);
@@ -5048,8 +6305,13 @@ export class Game {
 
     // A rider who is not riding has no dwell timers worth keeping, and coming
     // back to the title must not leave a stale warning behind the card.
-    if (!spec.acceptsRideInput) this.hudModel.reset();
+    // Every seat: leaving the ride is the world's event, not a rider's.
+    if (!spec.acceptsRideInput) for (const seat of this.seats) seat.hudModel.reset();
 
+    // After `menus.show`, so the panel it writes into is the one on screen —
+    // and unconditionally, because the suppression flag has to be *cleared*
+    // on every other screen as reliably as it is set on this one.
+    this.updateCouchPanel();
     this.updateRunning();
   }
 
@@ -5061,8 +6323,22 @@ export class Game {
    * its own; discarding these intents left a controller able to ride but unable
    * to choose Start Ride or Settings.
    */
-  private handleMenuAction(action: 'up' | 'down' | 'left' | 'right' | 'confirm' | 'back'): void {
+  private handleMenuAction(
+    action: 'up' | 'down' | 'left' | 'right' | 'confirm' | 'back',
+    device: DeviceId,
+  ): void {
     if (!this.appState.showsMenu) return;
+
+    // **A claim press is not also a button press** — M25 Phase 5, and the pad's
+    // half of the rule the keyboard's half is on `Menus.onKeyDown`. Both read
+    // the same predicate: while the claim window is open, a device holding no
+    // seat is a person sitting down, not a person choosing something.
+    //
+    // Only `confirm`. A pad with no seat may still walk the panel and may still
+    // press B to leave — the guest is a person in the room, and refusing them
+    // the Back button until they have sat down would be the panel arguing with
+    // somebody who has decided not to play.
+    if (action === 'confirm' && this.claimsFirst(device)) return;
 
     if (action === 'up' || action === 'down' || action === 'left' || action === 'right') {
       this.menus.navigate(action);
@@ -5086,12 +6362,41 @@ export class Game {
     // And out of the rider chooser, which has exactly one way back for the
     // same reason: a control a device cannot operate is a parity bug.
     else if (this.appState.current === 'riderSelect') this.goTo('title');
+    // And out of the two-player join panel — M25 Phase 5's QA repair. Its own
+    // comment promised this ("a pad with no seat may still press B to leave")
+    // and the branch was never written, so a guest who changed their mind was
+    // stuck on the panel with nothing but the mouse. Every openable panel in
+    // this game has exactly three doors — its Back button, Escape, and the
+    // pad's B — and a missing one is a parity bug rather than a limitation.
+    else if (this.appState.current === 'couchJoin') this.goTo('title');
     // `resumeRide()`, not `goTo('freeRide')`. The pad's Back is the third door
     // out of a pause, alongside Escape and the Resume button, and it is the one
     // that was still hard-coded to free ride — so a player who paused a timed
     // run and pressed B lost the run, the clock, and the ghost recording, with
     // no confirmation and nothing on screen to say what had happened.
     else if (this.appState.current === 'paused') this.appState.resumeRide();
+  }
+
+  /**
+   * Which device's names one seat's first-ride prompts should use — M25
+   * Phase 4.
+   *
+   * **From that seat's own claim when it has one**, because in a couch session
+   * the machine-wide answer is wrong for at least one of the two players by
+   * construction: with a pad on seat 0 and the keyboard on seat 1, "what has
+   * this room been seen using" is `gamepad`, and the guest reading it is
+   * looking at a keyboard. A claimed seat knows what is in its player's hands,
+   * and nothing else does.
+   *
+   * Falls back to the machine-wide answer for an unclaimed seat, which is
+   * every seat in every single-player session — so this changes nothing until
+   * somebody claims something, and `touch` stays reachable exactly where it
+   * always was (a touchscreen is never a claimable device, §25.5 Phase 4).
+   */
+  private promptDeviceFor(index: number): PromptDevice {
+    const device = this.router.deviceFor(index);
+    if (device === null) return this.promptDevice;
+    return device === KEYBOARD_DEVICE ? 'keyboard' : 'gamepad';
   }
 
   /**
@@ -5131,7 +6436,7 @@ export class Game {
     // for one mode. One expression decides the button, the drawn paddle and
     // the swing legality together, so the three cannot disagree.
     this.touchControls.setSwingVisible(this.paddleEquipped);
-    this.hud.setTouchLayout(wanted);
+    for (const seat of this.seats) seat.hud?.setTouchLayout(wanted);
     // The prompts name the control the player actually has. A touchscreen
     // player told to "hold W" has been told nothing at all — and the pad keeps
     // priority, because somebody holding a pad is using the pad.
@@ -5155,28 +6460,316 @@ export class Game {
   /**
    * One writer for the controls section's pad status, fed from the current
    * device state rather than from the last transition event.
+   *
+   * **A seat waiting for a device outranks everything but the off switch** —
+   * M25 Phase 4. "Player 2's pad is gone" is the only one of these five a
+   * player can be surprised by mid-ride, and reading "gamepad connected"
+   * because the *other* pad is still fine would be the game agreeing that
+   * nothing had happened.
    */
   private updateGamepadStatus(): void {
+    const awaiting = this.router.awaitingSeat;
     this.menus.setGamepadStatus(
       !this.options.current.gamepadEnabled
         ? 'disabled'
-        : this.gamepad.connected
-          ? 'connected'
-          : this.gamepad.unusablePadSeen
-            ? 'unsupported'
-            : 'searching',
+        : awaiting !== null
+          ? 'lost'
+          : this.gamepad.connected
+            ? 'connected'
+            : this.gamepad.unusablePadSeen
+              ? 'unsupported'
+              : 'searching',
+      awaiting ?? undefined,
     );
   }
 
-  /** The prompt's dismiss button, and the seen flag that follows from it. */
-  private dismissPrompt(): void {
-    this.onboarding.dismiss();
-    this.persistSeenPrompts();
+  // ---------------------------------------------------------------------------
+  // Claims — M25 Phase 4 (docs/PLANS.md §25.5)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Open the claim window, and make every pad's current buttons stale.
+   *
+   * The two halves of *fresh press edge after the panel opens* are here in
+   * one call because they are one rule: the router refuses claims while the
+   * window is shut, and the pad layer refuses to see an already-held button
+   * as a press. Either alone would let the button that opened the panel seat
+   * a player who has not looked at it yet.
+   *
+   * Public because Phase 5's join panel and the pause card are what open it;
+   * until they exist the QA bridge is the caller, which is what lets Phase 4
+   * be proven before the screen that uses it is built.
+   */
+  beginClaiming(): void {
+    this.gamepad.primeAll();
+    this.router.openClaims();
+  }
+
+  /** Shut the claim window. Claims already made stand; they are session-only. */
+  endClaiming(): void {
+    this.router.closeClaims();
+  }
+
+  /** Every seat's device, indexed by seat. Null for empty *and* for waiting. */
+  claimedDevices(): readonly (DeviceId | null)[] {
+    return this.router.claimList();
+  }
+
+  /** Exchange the claimed devices between seats — the panel's Swap. */
+  swapSeatDevices(): boolean {
+    return this.router.swap();
+  }
+
+  /** Release one seat's device — the panel's Unclaim. */
+  unclaimSeat(seat: number): boolean {
+    this.requireSeat(seat);
+    return this.router.unclaim(seat);
+  }
+
+  /** Forget every claim. The end of a couch session, and of `dispose`. */
+  clearClaims(): void {
+    this.router.clearClaims();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Two players — M25 Phase 5 (docs/PLANS.md §25.5)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Would this device's confirm seat somebody rather than press something?
+   *
+   * **One predicate, two realisations**, because a confirm becomes a button
+   * press in two different places: the pad's goes through `handleMenuAction`,
+   * and the keyboard's is produced by the browser itself from a focused
+   * `<button>` and can only be stopped by `preventDefault`. Writing the rule
+   * twice is how one of them ends up not being updated; writing it once and
+   * asking it twice is the version that stays true.
+   *
+   * And the predicate is the router's own, not a restatement of it: a press is
+   * suppressed **exactly when it claims**, so the two can never drift into a
+   * press that is swallowed and seats nobody.
+   */
+  private claimsFirst(device: DeviceId): boolean {
+    return this.router.wouldClaim(device);
+  }
+
+  /**
+   * Whether the title may offer a two-player session, recomputed from scratch.
+   *
+   * Cheap and idempotent, so every producer of a change simply calls it rather
+   * than working out what the answer used to be: a layout change, the pointer
+   * kind changing, and the first pad of the session all move it, and none of
+   * them should have to know about the others.
+   */
+  private updateCouchAvailable(): void {
+    this.couchAvailable = couchEligible({
+      // The canvas's CSS width, not the screen's — it is the thing that gets
+      // divided in two, and it is what `beforeFrame` already re-measures.
+      viewportWidth: this.renderer.viewport().width,
+      finePointer: this.finePointer?.matches ?? false,
+      padSeen: this.padEverSeen,
+    });
+    // One field, two readers — the button and the QA bridge. A predicate
+    // evaluated twice is a predicate that can be answered two ways.
+    this.menus.setCouchAvailable(this.couchAvailable);
+  }
+
+  /**
+   * Sit the second rider down and open the claim window — the join panel's
+   * arrival, driven from `enterState` rather than from the button.
+   *
+   * The guest is re-derived here rather than only at boot, because the player
+   * may have changed who *they* are since the last visit and q68 says the two
+   * riders on one screen are never the same character. `spawnSecondRider`
+   * enforces the same rule at its own door, so this is the panel agreeing with
+   * the machinery rather than the only thing standing between them.
+   */
+  private openCouch(): void {
+    const taken = this.seats[0].character;
+    if (this.guestCharacter === taken) this.guestCharacter = guestBeside(taken);
+    if (this.seats.length < 2) this.spawnSecondRider(this.guestCharacter);
+    this.beginClaiming();
+    this.updateCouchPanel();
+  }
+
+  /**
+   * End the couch session: forget the claims, then take the seat away.
+   *
+   * **Claims first, and the order is load-bearing.** `clearClaims` hands the
+   * keyboard back to seat 0 through the router's own repoint; doing it after
+   * the seat has gone would mean `removeSeat` doing that work instead, which
+   * is a second path to the same state and the one Phase 4's QA pass found
+   * broken. One path, taken deliberately.
+   */
+  private closeCouch(): void {
+    this.endClaiming();
+    this.clearClaims();
+    if (this.seats.length > 1) this.despawnSecondRider();
+    this.updateCouchPanel();
+  }
+
+  /**
+   * Both seats are held; ride.
+   *
+   * Refused rather than throwing when they are not, exactly as `AppState.goTo`
+   * refuses an illegal transition: the callers are a click and a pad press, and
+   * a Start that arrived a frame after a pad went missing deserves to be
+   * ignored rather than to end the session with an exception.
+   *
+   * The seats are reset on the way in so that both riders begin at the spawn
+   * the world guarantees, whatever the panel spent its time doing — the
+   * promise `spawnSecondRider`'s own note makes about this exact moment.
+   */
+  private startCouch(): void {
+    if (!this.couchReady) return;
+    this.endClaiming();
+    this.resetSeats();
+    this.goTo('freeRide');
+  }
+
+  /**
+   * What is left for an empty seat to be claimed with.
+   *
+   * **Counted from the devices this machine has and the claims already made**,
+   * rather than assumed. The title's entrance is deliberately loose about
+   * whether a second device exists (see `app/couch.ts`), so this is where the
+   * panel finds out — and a panel that could not say "there is nothing left"
+   * would be telling a keyboard-only desktop to press a key that is already
+   * spoken for.
+   *
+   * A pad the player has switched off in the settings screen is not a spare:
+   * `padCount` is what the pad layer is *reading*, which is the same thing a
+   * claim would need.
+   */
+  private spareDevice(): CouchSpare {
+    const claimed = this.router.claimList();
+    const keyboard = this.router.seatFor(KEYBOARD_DEVICE) === null;
+    const padsHeld = claimed.filter((device) => device !== null && device !== KEYBOARD_DEVICE).length;
+    const pad = this.gamepad.padCount > padsHeld;
+    if (keyboard && pad) return 'both';
+    if (pad) return 'pad';
+    if (keyboard) return 'keyboard';
+    return 'none';
+  }
+
+  /** True once every seat has a device holding it. What arms Start. */
+  private get couchReady(): boolean {
+    if (this.seats.length < 2) return false;
+    return this.router.claimList().every((device) => device !== null);
+  }
+
+  /**
+   * Step one seat's rider along the roster.
+   *
+   * **The two cards do the same thing to two different records**, and that
+   * difference is the options firewall rather than a special case: seat 0's
+   * choice goes into the store, which is the one path that changes a rider and
+   * the one path that persists it, and the guest's is written here and nowhere
+   * else. Each card steps over the other's pick, so q68 is a property of the
+   * control and the panel has no invalid state to recover from.
+   */
+  private cycleCouchRider(seat: number, delta: 1 | -1): void {
+    if (seat === 0) {
+      this.options.set({ character: cycleGuest(this.options.current.character, this.guestCharacter, delta) });
+      return;
+    }
+    this.guestCharacter = cycleGuest(this.guestCharacter, this.seats[0].character, delta);
+    const guest = this.seats[seat];
+    if (guest !== undefined) this.dressSeat(guest, this.guestCharacter);
+    this.updateCouchPanel();
+  }
+
+  /**
+   * Draw the join panel from the router and the roster.
+   *
+   * Called from every producer of a change rather than polled — a claim, a
+   * rider step, a state transition — for `updateGamepadStatus`'s reason: one
+   * writer, fed from the current state rather than from the last event.
+   *
+   * **Both seats are described whether or not the second one exists.** The
+   * panel's markup is fixed at two cards, and a view that shrank to match the
+   * seat count would leave the second card showing whatever it said last time
+   * — which, on the frame after Back, is "Ready".
+   */
+  private updateCouchPanel(): void {
+    const devices = this.router.claimList();
+    const seats: CouchSeatView[] = [];
+    for (let index = 0; index < COUCH_SEATS; index += 1) {
+      const device = devices[index] ?? null;
+      // Asked once and both answers derived from it, so "is it a pad" and
+      // "which pad" cannot disagree.
+      const pad = device === null ? null : padIndexOf(device);
+      seats.push({
+        device: device === null ? null : pad === null ? 'keyboard' : 'gamepad',
+        // One-based for a player: the browser's pad 0 is the first gamepad.
+        padNumber: pad === null ? null : pad + 1,
+        awaiting: this.router.isAwaiting(index),
+        // **The options record for seat 0, the session field for seat 1** —
+        // which is the options firewall showing through the panel. It is also
+        // the typed answer: `RiderSeat.character` is a `CharacterId`, and the
+        // roster the cards cycle contains no cop.
+        character: index === 0 ? this.options.current.character : this.guestCharacter,
+      });
+    }
+    this.menus.setCouchView({ seats, ready: this.couchReady, spare: this.spareDevice() });
+    // The keyboard's half of *a claim press is not also a button press*. Asked
+    // fresh each time rather than latched, so the flag clears itself the moment
+    // the keyboard takes a seat — including when it takes seat 0 and the panel
+    // is still open for the guest.
+    this.menus.setSuppressConfirmKeys(this.claimsFirst(KEYBOARD_DEVICE));
+  }
+
+  /**
+   * A device pressed confirm. The router decides whether that means anything.
+   *
+   * Deliberately not gated on app state here: which screens can seat a player
+   * is the *claim window's* answer, and asking it twice — once in the device
+   * wiring and once in the router — is how the two come to disagree.
+   */
+  private claimSeatFor(device: DeviceId): void {
+    this.router.claimPress(device);
+  }
+
+  /**
+   * A pad this layer was reading has stopped being read — unplugged, dropped
+   * from the browser's list, or switched off in the settings screen.
+   *
+   * **The seat is retained, never dissolved** (§25.5 Phase 4). A flat battery
+   * is not a decision to leave the game, so the world stops, the status line
+   * names the seat that lost its pad, and the claim window reopens so that
+   * the same pad or a replacement rejoins by pressing a button. An unclaimed
+   * pad leaving is nothing — that is the single-player unplug M9 shipped, and
+   * it still just hands the axes back.
+   */
+  private onPadLost(index: number): void {
+    const seat = this.router.noteDeviceLost(padDeviceId(index));
+    // `noteDeviceLost` has already run `onClaimsChange`, which is what wrote
+    // the status line; nothing more is owed for a pad nobody was holding.
+    if (seat === null) return;
+    this.beginClaiming();
+    if (this.appState.acceptsRideInput) this.goTo('paused');
+  }
+
+  /**
+   * One seat's prompt dismiss button, and the seen flag that follows from it.
+   *
+   * Addressed since M25 Phase 3: each HUD's own button was wired to its own
+   * seat at mount, so a guest closing their hint cannot close the player's —
+   * and only seat 0's dismissal is written down (`persistSeenPrompts`).
+   */
+  private dismissPromptFor(seat: RiderSeat): void {
+    seat.onboarding.dismiss();
+    if (this.ownsTheFrame(seat)) this.persistSeenPrompts();
   }
 
   private persistSeenPrompts(): void {
-    if (!this.onboarding.takeSeenChanged()) return;
-    this.options.set({ seenPrompts: this.onboarding.seenPrompts() });
+    // **Seat 0's, always.** Every caller already gates on `ownsTheFrame`; this
+    // reads seat 0 directly rather than taking a seat so that there is no way
+    // to call it *about* somebody else. A guest's progress through the hints
+    // is session state and must never reach the saved record (§25.5).
+    const onboarding = this.seats[0].onboarding;
+    if (!onboarding.takeSeenChanged()) return;
+    this.options.set({ seenPrompts: onboarding.seenPrompts() });
   }
 
   private handleContextLost(): void {
@@ -5216,6 +6809,8 @@ export class Game {
   private readonly onPointerKindChange = (): void => {
     this.updateTouchControls();
     this.updateTouchStatus();
+    // A tablet docked to a keyboard gains a fine pointer without a resize.
+    this.updateCouchAvailable();
   };
 
   /**
@@ -5272,15 +6867,42 @@ export class Game {
    * frame smeared across the map.
    */
   private syncPoses(): void {
-    this.controller.writePose(this.currentPose);
-    copyPose(this.currentPose, this.previousPose);
-    copyPose(this.currentPose, this.renderPose);
-    this.rig.apply(this.renderPose);
+    for (const seat of this.seats) {
+      this.syncSeatPose(seat);
+      this.syncCamera(seat);
+    }
+  }
 
-    this.chase.reset(this.readChaseInput(this.currentPose));
-    this.chase.writeState(this.currentCamera);
-    copyChaseCameraState(this.currentCamera, this.previousCamera);
-    copyChaseCameraState(this.currentCamera, this.renderCamera);
+  /**
+   * The rider half, for one seat: collapse the interpolation history onto the
+   * controller's current truth and draw it there, so the next frame has no
+   * stale endpoint to smear from.
+   *
+   * **Separated from the camera at M25 Phase 2**, because a second rider made
+   * the two halves belong to different people. Collapsing every seat's history
+   * because *one* of them respawned would freeze the other's interpolation for
+   * a frame — a stutter nobody could explain, on a rider who did nothing.
+   */
+  private syncSeatPose(seat: RiderSeat): void {
+    seat.controller.writePose(seat.currentPose);
+    copyPose(seat.currentPose, seat.previousPose);
+    copyPose(seat.currentPose, seat.renderPose);
+    seat.rig.apply(seat.renderPose);
+  }
+
+  /**
+   * Snap one seat's camera onto the rider it follows — M25 Phase 3.
+   *
+   * Addressed rather than global for the reason the pose sync beside it is:
+   * collapsing *every* camera because one rider respawned would freeze the
+   * other half's interpolation for a frame, which is a stutter on a rider who
+   * did nothing.
+   */
+  private syncCamera(seat: RiderSeat): void {
+    seat.chase.reset(this.readChaseInput(seat, seat.currentPose));
+    seat.chase.writeState(seat.currentCamera);
+    copyChaseCameraState(seat.currentCamera, seat.previousCamera);
+    copyChaseCameraState(seat.currentCamera, seat.renderCamera);
   }
 
   /**
@@ -5405,10 +7027,16 @@ export class Game {
       crashWheelSpinRate: this.tuning.get('EUC.crashWheelSpinRate'),
       softBodyDrag: this.tuning.get('EUC.softBodyDrag'),
     };
-    // Dorkins is a second rider, not a second ride. Every developer tuning
-    // change that reaches the player must reach his shared controller in the
-    // same notification; otherwise F4 silently compares two physics profiles.
-    this.controller.setTuning(controllerTuning);
+    // **Every seat, then the cop.** F4 retunes the physics, not a rider: a
+    // developer change that reached one controller and not another would put
+    // two riders in one world on two different profiles, which is the silent
+    // comparison this notification exists to prevent. Dorkins is a second
+    // rider rather than a second ride, and so is seat 1 — the same argument
+    // the paddle block below makes, and the one thing M25 Phase 1 left as a
+    // singleton after claiming this method looped (§25.5).
+    for (const seat of this.seats) {
+      seat.controller.setTuning(controllerTuning);
+    }
     this.copController?.setTuning(controllerTuning);
 
     // The paddle's live subset — M14. Pushed here rather than read through the
@@ -5467,23 +7095,35 @@ export class Game {
       brain.fieldRangeMetres = this.tuning.get('CHASE.fieldRangeMetres');
     }
 
-    this.paddle.reach = this.tuning.get('PADDLE.reach');
-    this.paddle.headRadius = this.tuning.get('PADDLE.headRadius');
-    this.paddle.windupSeconds = this.tuning.get('PADDLE.windupSeconds');
-    this.paddle.activeSeconds = this.tuning.get('PADDLE.activeSeconds');
-    this.paddle.recoverSeconds = this.tuning.get('PADDLE.recoverSeconds');
-    this.paddle.startAngle = this.tuning.get('PADDLE.startAngle');
-    this.paddle.sweepRadians = this.tuning.get('PADDLE.sweepRadians');
+    // **Every seat's paddle**, because F4 retunes the weapon rather than a
+    // wielder — the same argument that gives the cop's paddle the identical
+    // numbers three lines down. A loop, so a seat 1 that ever carries one is
+    // not left swinging the defaults.
+    for (const seat of this.seats) {
+      seat.paddle.reach = this.tuning.get('PADDLE.reach');
+      seat.paddle.headRadius = this.tuning.get('PADDLE.headRadius');
+      seat.paddle.windupSeconds = this.tuning.get('PADDLE.windupSeconds');
+      seat.paddle.activeSeconds = this.tuning.get('PADDLE.activeSeconds');
+      seat.paddle.recoverSeconds = this.tuning.get('PADDLE.recoverSeconds');
+      seat.paddle.startAngle = this.tuning.get('PADDLE.startAngle');
+      seat.paddle.sweepRadians = this.tuning.get('PADDLE.sweepRadians');
+    }
     // The cop's paddle is the same weapon with the same numbers — M18. Two
     // instances because two wielders cannot share one swing state machine, not
     // because the thing they are holding differs.
-    this.copPaddle.reach = this.paddle.reach;
-    this.copPaddle.headRadius = this.paddle.headRadius;
-    this.copPaddle.windupSeconds = this.paddle.windupSeconds;
-    this.copPaddle.activeSeconds = this.paddle.activeSeconds;
-    this.copPaddle.recoverSeconds = this.paddle.recoverSeconds;
-    this.copPaddle.startAngle = this.paddle.startAngle;
-    this.copPaddle.sweepRadians = this.paddle.sweepRadians;
+    //
+    // Read off the tuning table rather than off seat 0's paddle, which is what
+    // these seven lines used to copy. Same values by construction — the block
+    // above sets that paddle from these very entries — and it stops the cop's
+    // weapon depending on a *seat* existing, which is the coupling M25 Phase 1
+    // would otherwise have written into the one subsystem it must not disturb.
+    this.copPaddle.reach = this.tuning.get('PADDLE.reach');
+    this.copPaddle.headRadius = this.tuning.get('PADDLE.headRadius');
+    this.copPaddle.windupSeconds = this.tuning.get('PADDLE.windupSeconds');
+    this.copPaddle.activeSeconds = this.tuning.get('PADDLE.activeSeconds');
+    this.copPaddle.recoverSeconds = this.tuning.get('PADDLE.recoverSeconds');
+    this.copPaddle.startAngle = this.tuning.get('PADDLE.startAngle');
+    this.copPaddle.sweepRadians = this.tuning.get('PADDLE.sweepRadians');
 
     // The audio layer's live subset, pushed the same way. Balance is what M8's
     // exit question is judged on and balance is judged by ear, so the levels
@@ -5510,10 +7150,12 @@ export class Game {
       overspeedLevel: this.tuning.get('AUDIO.overspeedLevel'),
     });
 
-    // Per-surface response, pushed the same way and for the same reason. Only
-    // the paths the registry actually exposes are read — a surface with no
-    // slider keeps its frozen default, and asking `LiveTuning` for a path it
-    // does not know about is an error rather than a silent zero.
+    // Per-surface response, pushed the same way and for the same reason — and
+    // to every seat and the cop for the same reason again: tarmac cannot be
+    // one thing under one rider and another thing under the rider beside them.
+    // Only the paths the registry actually exposes are read — a surface with
+    // no slider keeps its frozen default, and asking `LiveTuning` for a path
+    // it does not know about is an error rather than a silent zero.
     for (const id of SURFACE_IDS) {
       const overrides: Record<string, number> = {};
       for (const field of ['rollingResistance', 'grip', 'roughnessAmplitude'] as const) {
@@ -5521,7 +7163,9 @@ export class Game {
         if (this.tuning.specFor(path) !== undefined) overrides[field] = this.tuning.get(path);
       }
       if (Object.keys(overrides).length > 0) {
-        this.controller.setSurfaceResponse(id, overrides);
+        for (const seat of this.seats) {
+          seat.controller.setSurfaceResponse(id, overrides);
+        }
         this.copController?.setSurfaceResponse(id, overrides);
       }
     }
@@ -5616,7 +7260,10 @@ export class Game {
       this.fieldOfViewTrimRadians = THREE.MathUtils.degToRad(options.fieldOfViewTrim);
     }
     if (previous === null || options.speedUnit !== previous.speedUnit) {
-      this.hudModel.setSpeedUnit(options.speedUnit);
+      // Every seat: the unit is a preference about *reading numbers*, and two
+      // halves of one screen disagreeing about miles and kilometres would be
+      // a bug rather than a courtesy to the guest.
+      for (const seat of this.seats) seat.hudModel.setSpeedUnit(options.speedUnit);
     }
 
     // **Guarded, and the guard is the point.** This record is rewritten
@@ -5627,6 +7274,13 @@ export class Game {
     // swap is skipped and only the audio voice is (re)stated.
     if (previous !== null && options.character !== previous.character) {
       this.installCharacter(options.character);
+      // **The join panel is a reader of this record too** — M25 Phase 5. Seat
+      // 0's card names whoever the player has chosen, and the one control that
+      // changes it goes through the options store rather than writing the card,
+      // exactly as the rider chooser does. Written here rather than at that
+      // control so the panel cannot be left stale by a *second* way of changing
+      // the character arriving later.
+      this.updateCouchPanel();
     }
     if (previous === null || options.character !== previous.character) {
       this.audio.setCrashVoice(crashVoiceFor(options.character));
@@ -5645,7 +7299,17 @@ export class Game {
    * the camera with a stale record.
    */
   private pushCameraTuning(): void {
-    this.chase.setTuning({
+    // The split's own two numbers, pushed the way the quality ceiling is: the
+    // store belongs to this layer and the renderer is told, never asked.
+    this.renderer.setSplitFieldOfView(
+      this.tuning.get('CAMERA.splitFovGain'),
+      this.tuning.get('CAMERA.splitFovCap'),
+    );
+    // **Every seat's camera** — the Phase 1 follow-up's defect one object
+    // along. A camera not reached here would silently ignore every F4
+    // override, so one half of the screen would keep the shipped arm and
+    // field of view while the owner tuned the other.
+    for (const seat of this.seats) seat.chase.setTuning({
       distanceAtRest: this.tuning.get('CAMERA.distanceAtRest'),
       distanceAtSpeed: this.tuning.get('CAMERA.distanceAtSpeed'),
       armHeight: this.tuning.get('CAMERA.armHeight'),
@@ -5766,5 +7430,6 @@ function menuScreenFor(state: AppStateId): MenuScreen {
   if (state === 'results') return 'results';
   if (state === 'routes') return 'routes';
   if (state === 'riderSelect') return 'riders';
+  if (state === 'couchJoin') return 'couch';
   return 'none';
 }

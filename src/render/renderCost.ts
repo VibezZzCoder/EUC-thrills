@@ -311,19 +311,32 @@ const PADDLE_MEASURE_POINT = new THREE.Vector3(0, 1.4, 1);
  */
 export type SecondRider = 'none' | 'ghost' | 'cop';
 
+/**
+ * One frame's non-level cost, for however many riders are seated.
+ *
+ * `looks` is the whole seated roster rather than one rider: **one derived
+ * writer for one and for two**, so the split reserve cannot drift away from
+ * the single-player one by being a second copy of this function that somebody
+ * forgot to update. The ghost and the cop are built from `looks[0]` because
+ * both are the *player's* companion — a recording of them, or the officer
+ * chasing them — and neither has ever been per-seat.
+ */
 function measureNonLevelSceneFor(
   checkpoints: LevelPlan['checkpoints'],
-  look: RiderLook,
+  looks: readonly RiderLook[],
   second: SecondRider,
 ): SceneCost {
   const meshes: MeshCost[] = [];
 
+  const look = looks[0];
   // The machine follows the character exactly as `app/Game.ts` installs it —
   // M19. A reserve measured on the standard wheel alone would under-reserve
   // the moment the player picks Red Rider, which is the same silent failure
   // the rider-look loop already exists to prevent, one axis over.
   const machine = machineLook(machineForCharacter(look.id));
-  const rig = createRidingRig(look, machine);
+  const rigs = looks.map((seated) => (
+    createRidingRig(seated, machineLook(machineForCharacter(seated.id)))
+  ));
   const ghost = createGhostRider(look, machine);
   const cop = createCopRider();
   const gates = createCheckpointGates(checkpoints);
@@ -359,15 +372,22 @@ function measureNonLevelSceneFor(
     // owner is about to ride exists. `measureObject` is faithful to three and
     // skips an invisible subtree entirely, which is exactly what makes the
     // cheap state the wrong one to write a budget against.
-    rig.applySwing(PADDLE_MEASURE_POINT, 0, 1);
     // Through `apply`, because that is the method that consumes a recorded
     // swing — `applySwing` only says what to do, and the paddle is not shown
     // until the stance has been solved and the mesh aimed. Measuring after the
     // record and before the apply is measuring a hidden mesh.
-    rig.apply(createPose());
+    //
+    // **Every seated rig, armed.** A second seat is a whole second rider and a
+    // whole second machine in the same scene; the particle pools, the gates
+    // and the background are shared, which is why they are outside this loop.
+    for (const seated of rigs) {
+      seated.applySwing(PADDLE_MEASURE_POINT, 0, 1);
+      seated.apply(createPose());
+    }
 
     for (const root of [
-      rig.group, ghost.group, cop.group, gates.group, sparks.points, dust.points,
+      ...rigs.map((seated) => seated.group),
+      ghost.group, cop.group, gates.group, sparks.points, dust.points,
     ]) {
       meshes.push(...measureObject(root).meshes);
     }
@@ -385,7 +405,7 @@ function measureNonLevelSceneFor(
     gates.dispose();
     cop.dispose();
     ghost.dispose();
-    rig.dispose();
+    for (const seated of rigs) seated.dispose();
   }
 }
 
@@ -393,13 +413,51 @@ export function measureNonLevelScene(checkpoints: LevelPlan['checkpoints']): Sce
   // Every frame a player can actually reach: either playable rider, wearing
   // either second rider. Six builds, once, at build time.
   const perFrame = PLAYABLE_RIDER_LOOKS.flatMap((look) => (
-    (['ghost', 'cop'] as const).map((second) => measureNonLevelSceneFor(checkpoints, look, second))
+    (['ghost', 'cop'] as const).map((second) => (
+      measureNonLevelSceneFor(checkpoints, [look], second)
+    ))
   ));
   // Worst on each axis separately. A frame could in principle be cheaper in
   // calls and dearer in triangles, and reserving the per-axis maximum is the
   // only answer that is safe for both.
   const worstCalls = perFrame.reduce((a, b) => (b.totalDrawCalls > a.totalDrawCalls ? b : a));
   const worstTriangles = perFrame.reduce((a, b) => (b.totalTriangles > a.totalTriangles ? b : a));
+  return {
+    ...worstCalls,
+    totalTriangles: worstTriangles.totalTriangles,
+    shadowTriangles: worstTriangles.shadowTriangles,
+  };
+}
+
+/**
+ * The same reserve for a desktop split frame — M25 Phase 3, Contract 2.
+ *
+ * **Per pass, not per frame.** This is what one half of a split screen costs
+ * outside the level; `SPLIT_PASSES` above is what turns it into a frame. The
+ * two are kept apart so that a reader can check either half of the arithmetic
+ * and so that a third view, if the couch ever grows one, is a constant change.
+ *
+ * The sweep is over **unordered distinct pairs** of playable riders. Distinct
+ * because q68 forbids two riders on one screen wearing the same character;
+ * unordered because the cost of a scene holding two rigs does not depend on
+ * which of them sat down first — the two contribute the same meshes either
+ * way. Ten pairs against the single-player sweep's five riders, each still
+ * wearing the worse of the two companion slots.
+ */
+export function measureSplitNonLevelScene(checkpoints: LevelPlan['checkpoints']): SceneCost {
+  const pairs: (readonly [RiderLook, RiderLook])[] = [];
+  for (let first = 0; first < PLAYABLE_RIDER_LOOKS.length; first += 1) {
+    for (let second = first + 1; second < PLAYABLE_RIDER_LOOKS.length; second += 1) {
+      pairs.push([PLAYABLE_RIDER_LOOKS[first], PLAYABLE_RIDER_LOOKS[second]]);
+    }
+  }
+  const perPass = pairs.flatMap((pair) => (
+    (['ghost', 'cop'] as const).map((second) => (
+      measureNonLevelSceneFor(checkpoints, pair, second)
+    ))
+  ));
+  const worstCalls = perPass.reduce((a, b) => (b.totalDrawCalls > a.totalDrawCalls ? b : a));
+  const worstTriangles = perPass.reduce((a, b) => (b.totalTriangles > a.totalTriangles ? b : a));
   return {
     ...worstCalls,
     totalTriangles: worstTriangles.totalTriangles,
