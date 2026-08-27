@@ -2113,6 +2113,12 @@ test('the title and the join panel fit every desktop window that is offered them
     await unscrollable('.euc-menu--couch', viewport);
     await inside('.euc-menu--couch [data-couch-seat="0"]', viewport);
     await inside('.euc-menu--couch [data-couch-seat="1"]', viewport);
+    // The contact toggle — M26 Phase 2, added to this contract rather than
+    // measured in a second one. §26.6 asks for the panel to be re-measured at
+    // `COUCH_MIN_WIDTH_PX` and in the suite's own 1000×700 window every time it
+    // grows, and this loop is already standing in both; a separate fit spec
+    // would be a second opinion about the same panel.
+    await inside('.euc-menu--couch [data-couch-contact]', viewport);
     await inside('.euc-menu--couch [data-menu="couch-start"]', viewport);
     await inside('.euc-menu--couch [data-menu="couch-back"]', viewport);
     await page.locator('.euc-menu--couch [data-menu="couch-back"]').click();

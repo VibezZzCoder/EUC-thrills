@@ -52,11 +52,50 @@ export interface KeyboardInputOptions {
   onClaimPress?(): void;
 }
 
-/** True when a key belongs to whatever the player is typing into, not to us. */
-function isEditingTarget(target: EventTarget | null): boolean {
+/**
+ * True when a key belongs to whatever the player is typing into, not to us.
+ *
+ * **A checkbox is not something you type into** — M26 Phase 2, and this was
+ * already wrong before the join panel made it visible. The test was on the tag
+ * alone, so *any* focused `<input>` silenced this whole layer: the claim press,
+ * pause, mute and the debug keys all gated behind a control the player was
+ * merely standing on. The settings screen has carried three checkboxes since
+ * M9 and never showed it, because Escape is `ui/menus.ts`'s and leaves by
+ * another door.
+ *
+ * The join panel is where it bit. A room that clicked the contact toggle left
+ * focus on the box, and the second player's Enter — the one press the whole
+ * screen exists to receive — was read as typing and dropped. Nothing on the
+ * panel said why.
+ *
+ * **So the rule is per key, not per element**, and the first attempt at this
+ * fix is why it had to be. Exempting the checkbox outright let Space reach the
+ * binding tables, where it is `hop` — and `ALWAYS_SUPPRESSED` contains `Space`,
+ * so `preventDefault` ran and **the checkbox stopped toggling for a keyboard at
+ * all**. That is the shipped behaviour of every `<button>` in this game (Space
+ * on a focused button has been suppressed since M9; Enter is what activates
+ * one), and it is right for a button and wrong for a checkbox, whose one and
+ * only key is Space.
+ *
+ * A checkbox therefore owns exactly `Space` and nothing else. Enter — which a
+ * checkbox ignores — stays the game's, which is the whole point: Enter is the
+ * key the join panel's own status line asks the second player to press.
+ *
+ * `SELECT`, `TEXTAREA` and `range` are deliberately untouched. Arrows adjust a
+ * slider or a dropdown and this layer steers with them too, so those are
+ * controls that genuinely consume keys the game wants — which is the difference
+ * between "cannot be typed into" and "consumes no keys".
+ */
+function isEditingTarget(target: EventTarget | null, code: string): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
   const tag = target.tagName;
+  // Read off the tag and the `type` attribute rather than `instanceof
+  // HTMLInputElement`: this function is exercised headlessly, where the only
+  // DOM global the rig supplies is `HTMLElement` (`keyboard.test.ts`), and
+  // asking for a second constructor would make a rule about keys depend on how
+  // many classes the test environment happens to define.
+  if (tag === 'INPUT' && (target as HTMLInputElement).type === 'checkbox') return code === 'Space';
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
 
@@ -170,7 +209,7 @@ export class KeyboardInput {
   }
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
-    if (isEditingTarget(event.target)) return;
+    if (isEditingTarget(event.target, event.code)) return;
     // A modified key belongs to the browser or the OS. Reload, close tab, and
     // the developer console must all keep working while the game has focus.
     if (event.ctrlKey || event.metaKey || event.altKey) return;

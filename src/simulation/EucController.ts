@@ -4560,6 +4560,79 @@ export class EucController {
   }
 
   /**
+   * Apply one rider-contact separation in the ground plane, then pay the
+   * existing soft-body knock.
+   *
+   * The controller stores velocity as signed speed plus heading, so the push
+   * is added in Cartesian space and folded back into that representation. A
+   * reversing rider keeps the negative-speed representation. Contact cannot
+   * move a crashed rider or disturb the recovery invulnerability window.
+   *
+   * This deliberately calls `softKnock`, not `injectWobble`: the bush-grade
+   * energy stays owned by the existing fourth sanctioned wobble caller.
+   */
+  bump(pushX: number, pushZ: number, speedCost: number): void {
+    if (this.crashing || this.invulnerableTimer > 0) return;
+
+    // **A shove does not re-aim the rider, and the first version did.** It
+    // summed the push into the velocity and took `atan2` of the result, which
+    // is correct for a free body and wrong for one whose heading is where the
+    // player is *looking*. The error scaled inversely with speed: against
+    // 18 m/s a 1.2 m/s push is a couple of degrees, but a parked rider has no
+    // velocity for it to be a couple of degrees *of* — so `atan2` returned the
+    // push bearing itself, and the rider was spun to face exactly away from
+    // whoever touched them. Measured at **180° in a single 1/120 s step**, on
+    // whichever of the two was slower, which is the camera whipping round that
+    // the owner reported from his couch ride (2026-08-27).
+    //
+    // So only the component along the way the rider is already facing is a
+    // change of *speed*, and `headingY` is not touched at all. It reads
+    // correctly in every case the pair can produce: shunted from behind you
+    // speed up, run into from the front you are slowed and then rolled
+    // backwards, and a side graze — where this component is near zero — barely
+    // changes your speed at all. Coming apart sideways is the separation's job
+    // (`separate`), because that is a change of *place* and not of aim.
+    const forwardX = Math.sin(this.headingY);
+    const forwardZ = Math.cos(this.headingY);
+    this.speed += pushX * forwardX + pushZ * forwardZ;
+    this.softKnock(speedCost);
+  }
+
+  /**
+   * Move this rider bodily out of another one — M26 Phase 2's ride gate.
+   *
+   * **A separation is a change of place**, which is the half `bump` cannot do:
+   * the controller stores signed speed plus a heading and has nowhere to put a
+   * lateral velocity, so a sideways shove expressed as velocity could only ever
+   * come back out as a turn. This moves the machine instead, and leaves both
+   * the heading and the speed alone.
+   *
+   * `applyWallStandoff`'s rules, for its reasons — this is the same operation
+   * against a rider rather than a wall. The move is already rate-capped by the
+   * caller (`CONTACT.separationSpeed` metres per second, which is what that
+   * constant now means), and a destination whose ground is further than a
+   * mountable step away is **refused entirely**: nobody is nudged off a kerb or
+   * into a hole to stop two riders overlapping. A refusal is not a failure —
+   * the pair simply stays touching for that step, which is the same answer the
+   * standoff gives when a wall has nowhere to let go.
+   *
+   * Unlike the standoff this does **not** set `blocked`: being beside another
+   * rider is not scenery holding you off, and marking it would let a crowded
+   * couch quietly poison the respawn point that `updateSafePosition` records.
+   */
+  separate(deltaX: number, deltaZ: number): void {
+    if (this.crashing) return;
+    if (deltaX === 0 && deltaZ === 0) return;
+    const nextX = this.x + deltaX;
+    const nextZ = this.z + deltaZ;
+    this.sampler.sampleGround(nextX, nextZ, this.probe);
+    if (Math.abs(this.probe.height - this.ground.height) > this.tuning.maxStepUp) return;
+    this.x = nextX;
+    this.z = nextZ;
+    copyGroundSample(this.probe, this.ground);
+  }
+
+  /**
    * The rider bodily knocks a Knockabout target out — the fourth sanctioned
    * wobble caller.
    *

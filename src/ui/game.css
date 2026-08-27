@@ -2184,6 +2184,41 @@
   color: var(--ink);
 }
 
+/* The contact toggle — M26 Phase 2.
+
+   **Not `.euc-field`**, which is the settings screen's three-column grid of
+   label, control and numeric readout. Dropped into a panel whose every other
+   line is centred, that grid put the box hard against the right edge with 500
+   px of gap between it and the words it belongs to — a control that looks like
+   it labels the panel rather than itself. This is one centred cluster instead:
+   the box beside its own text, wrapped in the `<label>` so the sentence is
+   part of the target rather than a caption beside it.
+
+   The margin is the row's own, not the panel's: `.euc-couch__seats` sets no
+   bottom gap and the actions below are a separate block, so without it the
+   toggle reads as part of the seat cards it is not. */
+.euc-couch__contact {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0.25rem 0 0.1rem;
+}
+
+.euc-couch__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.euc-couch__toggle input[type="checkbox"] {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex: none;
+  accent-color: var(--accent);
+}
+
 /* ---------------------------------------------------------------------------
  * Reduced motion
  *
@@ -2620,6 +2655,17 @@
      couch entrance is refused below 1000 CSS px — but a wide touch screen
      with a pad attached is eligible, and its arrows must be finger-sized. */
   .euc-couch__step { min-width: 2.75rem; min-height: 2.75rem; }
+
+  /* The contact toggle, for the same reason and by a route worth naming: the
+     row began as `.euc-field` and lost that class when it was reshaped into a
+     centred cluster, which silently took it out of the general
+     `.euc-field input[type="checkbox"]` floor above. **A layout change can
+     revoke a rule written for a class you stopped wearing.** The `<label>` is
+     the target — it wraps the box and the sentence — so the floor belongs on
+     it, and the box matches every other checkbox in the game. */
+  .euc-couch__toggle { min-height: 2.75rem; }
+
+  .euc-couch__toggle input[type="checkbox"] { width: 1.5rem; height: 1.5rem; }
 
   /* The chooser's own targets. A card is already far past the floor, but
      the chip is a single line of small text and would not be. */

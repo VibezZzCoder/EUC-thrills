@@ -5828,6 +5828,28 @@ export const TARGET = {
 } as const;
 
 /**
+ * Rider-to-rider contact — M26.
+ *
+ * Contact is resolved in the ground plane as one symmetric soft-body bump:
+ * equal separation speed, equal speed cost, and no crash at any closing speed.
+ * These are developer-tunable physical quantities, never player options
+ * (AGENTS.md invariant 5). The couch session decides whether contact exists;
+ * the pure contact primitive only answers what one overlap costs.
+ *
+ * Every value is a starting point for the Phase 2 ride gate, not a conclusion.
+ */
+export const CONTACT = {
+  /** Centre-to-centre overlap radius, metres: two 0.35 m bodies plus skin. */
+  radiusMetres: 0.80,
+  /** Time before one continuously merged pair may produce another bump, s. */
+  cooldownSeconds: 0.40,
+  /** Equal-and-opposite velocity added to each body along the contact axis, m/s. */
+  separationSpeed: 1.2,
+  /** Speed each body sheds after separation is applied, m/s toward zero. */
+  speedCost: 1.5,
+} as const;
+
+/**
  * The police chase — M18.
  *
  * Every number the mode and the cop's brain read, in one group, because the
@@ -6203,6 +6225,7 @@ export const TUNING = deepFreeze({
   PUDDLE,
   PADDLE,
   TARGET,
+  CONTACT,
   CHASE,
   FX,
   AUDIO,
@@ -7879,6 +7902,54 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     note: 'How far the ride bed drops while the top warning sounds. This, not '
       + 'the beep level, is the real answer to "is the right thing the loudest '
       + 'thing?"',
+  },
+
+  // Rider contact — M26 Phase 0. These move during the parked-rider ride gate;
+  // they are physical developer tuning and never enter GameOptions.
+  {
+    path: 'CONTACT.radiusMetres',
+    group: 'Ride — contact',
+    label: 'Contact radius',
+    unit: 'm',
+    min: 0.4,
+    max: 1.5,
+    step: 0.02,
+    note: 'Centre-to-centre distance that counts as contact. Start at two rider '
+      + 'hit radii plus a thin skin; larger values make a bump happen before the '
+      + 'machines visibly meet.',
+  },
+  {
+    path: 'CONTACT.cooldownSeconds',
+    group: 'Ride — contact',
+    label: 'Contact cooldown',
+    unit: 's',
+    min: 0,
+    max: 2,
+    step: 0.02,
+    note: 'How long one continuously merged pair waits before another bump. It '
+      + 'must outlast the separation or one collision chatters.',
+  },
+  {
+    path: 'CONTACT.separationSpeed',
+    group: 'Ride — contact',
+    label: 'Separation push',
+    unit: 'm/s',
+    min: 0,
+    max: 6,
+    step: 0.1,
+    note: 'Velocity added to each rider away from the other. Tune for a readable '
+      + 'shove without turning contact into a launch.',
+  },
+  {
+    path: 'CONTACT.speedCost',
+    group: 'Ride — contact',
+    label: 'Contact speed cost',
+    unit: 'm/s',
+    min: 0,
+    max: 10,
+    step: 0.1,
+    note: 'Speed each rider loses after the separation push. A shoulder stays '
+      + 'well below the paddle strike cost and may never become a crash.',
   },
 
   // The chase — M18. A long block on purpose: the milestone is decided by one

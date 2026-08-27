@@ -3449,6 +3449,87 @@ test('the invulnerable window stops the ground that got you getting you again', 
   assert.ok(after.wobbleEnergy > 0, 'and the window really does close');
 });
 
+test('a bump never re-aims the rider, and spends one bush-grade soft knock', () => {
+  /*
+   * **This test used to assert the re-aiming, and the owner's couch ride is why
+   * it does not** (2026-08-27). `bump` summed the push into the velocity and
+   * took `atan2` of the result — correct for a free body, wrong for one whose
+   * heading is where the player is *looking*. The error scaled inversely with
+   * speed: a parked rider has no velocity for a 1.2 m/s push to be a couple of
+   * degrees *of*, so `atan2` returned the push bearing itself and spun them to
+   * face exactly away from whoever touched them. **180° in a single step**, and
+   * the camera went with it.
+   *
+   * Coming apart sideways is `separate`'s job now, because it is a change of
+   * place. What `bump` keeps is the part that really is a change of motion: the
+   * component of the push along the way the rider is already facing.
+   */
+  const bushEnergy = 0.73;
+  const euc = controller({ tuning: { softBodyWobbleEnergy: bushEnergy } });
+  const before = rideToSpeed(euc, 6);
+  const speedCost = 1.5;
+
+  // A pure side push — the worst case for the old build, and the one that has
+  // to change nothing but the wobble.
+  euc.bump(1.2, 0, speedCost);
+  const sideways = euc.snapshot();
+  assert.equal(sideways.headingY, before.headingY, 'a side shove re-aimed the rider');
+  assert.ok(
+    Math.abs(sideways.speed - (before.speed - speedCost)) < 1e-12,
+    'a side shove is all cost and no push along the heading',
+  );
+  assert.equal(sideways.wobbleEnergy, bushEnergy, 'the bump delivered exactly a bush\'s energy');
+  assert.equal(sideways.crashed, false, 'contact never creates a direct crash funnel');
+
+  // And a shove from behind speeds the rider up before the cost is taken, which
+  // is the half that *is* a change of motion. Facing +Z at rest by
+  // construction, so a +Z push is directly up the rider's own line.
+  const pushed = controller({ tuning: { softBodyWobbleEnergy: bushEnergy } });
+  const rolling = rideToSpeed(pushed, 6);
+  pushed.bump(0, 2, speedCost);
+  const shunted = pushed.snapshot();
+  assert.equal(shunted.headingY, rolling.headingY, 'a shunt re-aimed the rider');
+  assert.ok(
+    Math.abs(shunted.speed - (rolling.speed + 2 - speedCost)) < 1e-12,
+    'a shove along the heading is a change of speed',
+  );
+});
+
+test('a bump refuses to move or knock a crashed rider', () => {
+  const euc = controller({
+    tuning: { crashRecoverAutoSeconds: 99, crashRecoverEarliestSeconds: 99 },
+  });
+  const crashed = crashOnHazard(euc);
+  assert.equal(crashed.crashed, true, 'fixture never reached the required crash');
+
+  euc.bump(3, -2, 1.5);
+  const after = euc.snapshot();
+  assert.equal(after.speed, crashed.speed);
+  assert.equal(after.headingY, crashed.headingY);
+  assert.equal(after.wobbleEnergy, crashed.wobbleEnergy);
+});
+
+test('a bump refuses the whole recovery invulnerability window', () => {
+  const euc = controller({
+    tuning: {
+      crashRecoverAutoSeconds: 0.2,
+      crashRecoverEarliestSeconds: 0.1,
+      crashInvulnerableSeconds: 0.8,
+    },
+  });
+  const crashed = crashOnHazard(euc);
+  assert.equal(crashed.crashed, true, 'fixture never reached the required crash');
+  const recovered = rideUntil(euc, {}, (snapshot) => !snapshot.crashed, SECONDS(1));
+  assert.ok(recovered.reached, 'fixture never reached recovery');
+  assert.ok(recovered.snapshot.invulnerable > 0, 'fixture missed the invulnerable window');
+
+  euc.bump(3, -2, 1.5);
+  const after = euc.snapshot();
+  assert.equal(after.speed, recovered.snapshot.speed);
+  assert.equal(after.headingY, recovered.snapshot.headingY);
+  assert.equal(after.wobbleEnergy, recovered.snapshot.wobbleEnergy);
+});
+
 test('the safe position lags the trouble rather than tracking it', () => {
   // The delay is what makes "last validated safe position" useful instead of
   // merely recent: without it a wobble crash would restore the rider a tenth of

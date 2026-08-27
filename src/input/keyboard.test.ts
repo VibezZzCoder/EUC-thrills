@@ -206,6 +206,44 @@ test('a claim press is not read from something the player is typing into', () =>
   assert.equal(claims, 0, 'and a modified key belongs to the browser');
 });
 
+test('a checkbox owns Space and nothing else', () => {
+  /*
+   * **M26 Phase 2, and the rule is per key rather than per element.** The join
+   * panel's contact toggle is an `<input>`, so the tag-only test above gave it
+   * every key the moment a room clicked it — and the second player's Enter, the
+   * one press that screen exists to receive, was read as typing and dropped.
+   *
+   * The other direction is the half that a fix can silently break: exempting
+   * the checkbox outright sends Space to the binding tables, where it is `hop`
+   * and where `ALWAYS_SUPPRESSED` calls `preventDefault` on it — leaving the box
+   * unpressable by keyboard at all. Both are asserted, because a spec that only
+   * checked Enter would have shipped that.
+   */
+  let claims = 0;
+  let prevented = 0;
+  const { state, down } = rig({ onClaimPress: () => { claims += 1; } });
+  const box = () => Object.assign(
+    new (globalThis as { HTMLElement: new () => object }).HTMLElement(),
+    { tagName: 'INPUT', type: 'checkbox', isContentEditable: false },
+  );
+
+  down('Enter', { target: box(), preventDefault: () => { prevented += 1; } });
+  assert.equal(claims, 1, 'Enter on a checkbox is the guest sitting down');
+
+  down('Space', { target: box(), preventDefault: () => { prevented += 1; } });
+  assert.equal(claims, 1, 'Space belongs to the box, not to the claim');
+  assert.equal(state.isPending('hop', 0), false, 'and it never reached the bindings');
+  assert.equal(prevented, 0, 'so nothing suppressed the browser’s own toggle');
+
+  // A text input is unchanged: every key is the player typing.
+  const field = Object.assign(
+    new (globalThis as { HTMLElement: new () => object }).HTMLElement(),
+    { tagName: 'INPUT', isContentEditable: false },
+  );
+  down('Enter', { target: field });
+  assert.equal(claims, 1, 'the seed field still takes its own Enter');
+});
+
 test('moving the keyboard to another seat leaves nothing held on the one it left', () => {
   const { state, keyboard, down } = rig();
   const other = new ActionState();

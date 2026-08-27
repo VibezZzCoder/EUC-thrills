@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
 import {
-  INSPECTION_CAMERA, AUDIO, CAMERA, CHALLENGE, CHASE, EUC, INPUT, RIDER, TARGET, WHEEL,
+  INSPECTION_CAMERA, AUDIO, CAMERA, CHALLENGE, CHASE, CONTACT, EUC, INPUT, RIDER, TARGET, WHEEL,
 } from '../data/tuning.ts';
 import { LiveTuning } from '../data/liveTuning.ts';
 import { GameRenderer } from '../render/Renderer.ts';
@@ -73,6 +73,7 @@ import { clamp, wrapAngle } from '../shared/maths.ts';
 import { HazardField } from '../simulation/hazards.ts';
 import { SoftBodyField } from '../simulation/softBodies.ts';
 import { spawnSlot } from '../simulation/spawnSlots.ts';
+import { ContactPair, type ContactBody, type ContactTuning } from '../simulation/contact.ts';
 import {
   Paddle,
   type HittableSet,
@@ -358,6 +359,23 @@ export interface GameSnapshot {
     readonly ready: boolean;
     /** Who seat 1 will ride as. Never written to the options record. */
     readonly guest: PlayableCharacterId;
+  };
+
+  /**
+   * Rider-to-rider contact — M26 Phase 1 (§26.3).
+   *
+   * Two booleans that answer different questions on purpose. `enabled` is the
+   * couch session's own setting — default on, never a `GameOptions` field, and
+   * what Phase 2's join-panel toggle writes. `live` is `Game.contactLive`: the
+   * one expression the fixed step actually reads, which is `enabled` **and** a
+   * pair of seats to test. Single player reports `enabled: true, live: false`,
+   * which is the honest description of a setting with nothing to apply to.
+   */
+  readonly contact: {
+    /** What the room asked for. Session state; never saved. */
+    readonly enabled: boolean;
+    /** Whether the fixed step is resolving a pair. `Game.contactLive`. */
+    readonly live: boolean;
   };
 
   /**
@@ -889,6 +907,74 @@ export class Game {
    */
   private pauseAsked = false;
   private muteAsked = false;
+
+  // -- Rider contact (M26 Phase 1) -------------------------------------------
+
+  /**
+   * The one unordered seat pair, and its edge — M26 Phase 1 (§26.3).
+   *
+   * **One `ContactPair` for one pair, held across steps, because the whole
+   * mechanic is a piece of state**: the edge and the cooldown are what stop a
+   * merged pair being punished on every one of the 120 steps a second they
+   * spend overlapping. A pair rebuilt per step would be the cheap version
+   * §25.6 retracted, wearing the new file's name.
+   *
+   * Stage 1 has two seats, so one pair covers them. A third seat is three
+   * pairs and this becomes a keyed collection; it is deliberately not one
+   * today, because a collection with one entry hides which rule decides pair
+   * identity — and `contactLive` is where that decision is written down.
+   */
+  private readonly contactPair = new ContactPair();
+  /**
+   * Is contact on for this session? — §26.3, q71/q72. **Default on.**
+   *
+   * **Session state on `Game`, never a `GameOptions` field**, and the reason
+   * is invariant 5 rather than convenience: a contact switch is a *physical*
+   * quantity, and "no option is a physical quantity, so the ride is identical
+   * for every player" is exactly the rule that keeps the options store out of
+   * `simulation/`. It is held here on `guestCharacter`'s terms — a property of
+   * the couch session, chosen by the room, forgotten when the room goes home.
+   *
+   * **Reachable from the QA bridge and nothing else in this phase**, on
+   * `spawnSecondRider`'s discipline: no URL parameter, no menu, no option, on
+   * purpose. Phase 2 gives it the join panel's toggle, and with it q81's
+   * "resets to on at every session" — which needs a session boundary to reset
+   * at, and the panel is what defines one.
+   */
+  private contactEnabled = true;
+  /**
+   * The live values one contact resolution reads, refilled every step.
+   *
+   * **Filled from `LiveTuning` rather than left to `ContactPair.step`'s
+   * default, and that is the whole point of the field.** The default is the
+   * frozen `CONTACT` group from `data/tuning.ts`; `LiveTuning.set` writes into
+   * its own override map and never mutates that group, so a caller that takes
+   * the default rides boot-time constants and the four `LIVE_TUNABLES` entries
+   * do nothing at all — with every test still green, and the Phase 2 ride
+   * gate, whose entire purpose is tuning this feel at F4, silently untunable.
+   * `CHASE.strikeSpeedCost` is read at its use site for the same reason.
+   *
+   * One mutable struct rather than an object literal per step: at 120 Hz a
+   * literal here is 120 short-lived objects a second, which is the shape of
+   * garbage that shows up months later as an unexplained periodic hitch.
+   */
+  private readonly contactTuning: { -readonly [K in keyof ContactTuning]: ContactTuning[K] } = {
+    radiusMetres: CONTACT.radiusMetres,
+    cooldownSeconds: CONTACT.cooldownSeconds,
+    separationSpeed: CONTACT.separationSpeed,
+    speedCost: CONTACT.speedCost,
+  };
+  /**
+   * The two bodies handed to the pair, filled in place from the seats' poses.
+   *
+   * Scratch for the same reason as `copView` and `spineSample`: this runs in
+   * the fixed step and allocating here is allocating in the frame loop.
+   */
+  private readonly contactBodies: { -readonly [K in keyof ContactBody]: ContactBody[K] }[] = [
+    { x: 0, z: 0, velocityX: 0, velocityZ: 0 },
+    { x: 0, z: 0, velocityX: 0, velocityZ: 0 },
+  ];
+
   private readonly keyboard: KeyboardInput;
   private readonly gamepad: GamepadInput;
   private readonly touch: TouchInput;
@@ -1481,6 +1567,9 @@ export class Game {
         onCloseCouch: () => this.goTo('title'),
         onStartCouch: () => this.startCouch(),
         onCycleCouchRider: (seat, delta) => this.cycleCouchRider(seat, delta),
+        // M26 Phase 2. The same setter the QA bridge calls, because "the room
+        // turned contact off" is one fact with one writer however it arrived.
+        onSetCouchContact: (enabled) => this.setContactEnabled(enabled),
       },
       seedMaxLength: MAX_SEED_LENGTH,
     });
@@ -2420,6 +2509,16 @@ export class Game {
         available: this.couchAvailable,
         ready: this.couchReady,
         guest: this.guestCharacter,
+      },
+      // Rider contact — M26 Phase 1. **Both halves, because they answer
+      // different questions**: `enabled` is what the room asked for and what
+      // Phase 2's toggle writes, `live` is whether the step is actually
+      // resolving a pair. Reporting only the flag would make a spec unable to
+      // see that single player never runs contact; reporting only the verdict
+      // would make the flag itself unobservable.
+      contact: {
+        enabled: this.contactEnabled,
+        live: this.contactLive,
       },
       touch: {
         visible: this.touchControls.visible,
@@ -3732,6 +3831,49 @@ export class Game {
   }
 
   /**
+   * Is rider-to-rider contact being resolved this step? — M26 Phase 1 (§26.3).
+   *
+   * **`paddleEquipped`'s exact model, and for its exact reason.** Something has
+   * to decide whether contact exists, and the moment that decision is spelled
+   * out in more than one place the step, a future mode and a future diagnostic
+   * can each hold a different opinion — which is how a mechanic ends up on in
+   * the simulation and off in the HUD. One expression, read by the step and
+   * reported on `snapshot()`, so the two cannot disagree.
+   *
+   * Two clauses, and both are load-bearing:
+   *
+   *   - **`seatCount === 2`** is what keeps single player byte-identical.
+   *     There is no pair to test with one rider, and this is the clause that
+   *     says so rather than leaving `seats[1]` to be undefined somewhere
+   *     downstream. It is `=== 2` rather than `>= 2` deliberately: a third
+   *     seat is three pairs and a different question (§26.7), and answering it
+   *     wrongly-but-quietly is worse than not answering it.
+   *   - **`contactEnabled`** is the session's own answer, default on, and the
+   *     thing Phase 2's join-panel toggle writes.
+   */
+  get contactLive(): boolean {
+    return this.seatCount === 2 && this.contactEnabled;
+  }
+
+  /**
+   * Turn contact on or off for this session — **the QA bridge and nothing
+   * else in this phase**.
+   *
+   * `spawnSecondRider`'s discipline exactly: no URL parameter, no menu, no
+   * option, on purpose. The player-facing control is the join panel's toggle
+   * in Phase 2; until then this exists so a spec can prove the flag is a real
+   * gate rather than a constant, which is the only way the `contactEnabled`
+   * half of `contactLive` can be mutation-checked at all.
+   */
+  setContactEnabled(enabled: boolean): void {
+    this.contactEnabled = enabled;
+    // **The panel is redrawn from the flag, never from its own control** — so
+    // the checkbox agrees with the ride whichever of its two writers moved it
+    // (M26 Phase 2). Cheap and idempotent, `updateCouchAvailable`'s rule.
+    this.updateCouchPanel();
+  }
+
+  /**
    * Is this session riding a world a diagnostic changed?
    *
    * **One expression, and that is the point.** `?hazardprobe=` and
@@ -4947,10 +5089,19 @@ export class Game {
     // the referees and the camera because somebody else pressed `R` would make
     // the second player able to stall the first player's world.
     let worldReset = false;
+    // **And whether *any* seat respawned, which is a different question** — M26
+    // Phase 1's QA repair. `worldReset` is seat 0's alone by design, because a
+    // guest pressing `R` must not stall the player's cop, referees and camera;
+    // but "somebody teleported this tick" is a fact about the world, and the
+    // pair test below is the first thing that needed it. Enumerated rather than
+    // inferred from `worldReset`, which is M25's own lesson about per-seat
+    // contracts said one milestone later.
+    let seatReset = false;
     this.pauseAsked = false;
     this.muteAsked = false;
     for (let index = 0; index < this.seats.length; index += 1) {
       const wasReset = this.stepSeat(this.seats[index], index, stepSeconds, riding);
+      if (wasReset) seatReset = true;
       if (wasReset && index === 0) worldReset = true;
     }
     // **Any seat, once** — M25 Phase 4. Before the `worldReset` return rather
@@ -4965,6 +5116,29 @@ export class Game {
     // it flips is the saved one.
     if (this.pauseAsked) this.goTo('paused');
     if (this.muteAsked) this.options.set({ muted: !this.options.current.muted });
+
+    // **The pair, once, after both seats have stepped** — M26 Phase 1 (§26.3).
+    //
+    // Here rather than inside `stepSeat` for the reason the cop and the
+    // referees are here: a contact is a fact about *two* riders, and a slice
+    // that runs per seat would ask the question twice from two different
+    // worlds — seat 0's against a seat 1 that had not moved yet, then seat 1's
+    // against a seat 0 that had. One test, on the poses this step just
+    // produced, so `advance(n)` reaches the same contact every run.
+    //
+    // **Above the `worldReset` return, and the QA repair moved it here.** It
+    // sat below, on the reasoning that a respawn teleports a pose and a
+    // teleport must read as nothing rather than as a ram — which was the right
+    // rule attached to the wrong gate, because `worldReset` is seat 0's alone
+    // and a *guest* respawning fell straight through it onto whoever was
+    // standing at their spawn. The rule is now carried by `seatReset`, which
+    // names every seat; and the call sits above the return so that seat 0's own
+    // respawn — which never reaches this line otherwise — still clears the
+    // pair's edge instead of leaving a cooldown armed across the teleport.
+    // Contact is the only thing here that keeps state *between* steps, so it is
+    // the only one that has to hear about a step it must not resolve.
+    this.stepContact(stepSeconds, seatReset);
+
     if (worldReset) return;
 
     // **One particle system, one advance, whatever the seat count.** The
@@ -5367,6 +5541,82 @@ export class Game {
    */
   private ownsTheFrame(seat: RiderSeat): boolean {
     return seat === this.seats[0];
+  }
+
+  /**
+   * Resolve one rider-to-rider contact — M26 Phase 1 (§26.3).
+   *
+   * The composition root's whole share of the mechanic: read the live tuning,
+   * hand the pure pair the two bodies this step produced, and spend whatever
+   * it returns on each side's own controller. `simulation/contact.ts` knows
+   * nothing about seats and `EucController.bump` knows nothing about who hit
+   * it; this is the only place that knows both, which is what keeps the
+   * options firewall and invariant 1 intact by construction.
+   *
+   * **Velocity is derived from the pose the same way `bump` folds it back**,
+   * from signed speed along the clean heading. The clean heading and never
+   * `headingY + wobbleYaw`: the wobble lives on the machine child by M13's
+   * visual-ownership rule, and a contact resolved on the wobbled heading would
+   * shove two riders along an axis their bodies are not travelling on.
+   *
+   * A crashed rider, or one inside the recovery invulnerability window, is
+   * refused by `bump` itself rather than here — a contact is a fact about two
+   * positions, and what a rider *does* with one is the controller's answer.
+   * The edge is therefore spent even when both sides refuse it, which is the
+   * right reading: the pair met, and it is one meeting.
+   */
+  private stepContact(stepSeconds: number, seatReset: boolean): void {
+    // **A pair that is not being resolved has no history** — the QA repair's
+    // one rule, in the one place that knows when that is true.
+    //
+    // `ContactPair` clears its own cooldown the moment a pair separates, which
+    // is what makes the next overlap a new contact; it cannot do that on a step
+    // nobody hands it. So every reason to skip the test is also a reason to
+    // forget: contact switched off, the guest sent home, or a rider teleported
+    // this tick. Each of those used to leave a cooldown armed across a
+    // discontinuity, and the symptom was always the *next* session's first bump
+    // going missing rather than anything visible in the session that caused it.
+    if (!this.contactLive || seatReset) {
+      this.contactPair.clear();
+      return;
+    }
+
+    const first = this.seats[0];
+    const second = this.seats[1];
+
+    // **Read through `LiveTuning`, never `CONTACT` directly** — see
+    // `contactTuning`. The four F4 sliders exist for the Phase 2 ride gate and
+    // reach the ride through exactly these four lines.
+    const tuning = this.contactTuning;
+    tuning.radiusMetres = this.tuning.get('CONTACT.radiusMetres');
+    tuning.cooldownSeconds = this.tuning.get('CONTACT.cooldownSeconds');
+    tuning.separationSpeed = this.tuning.get('CONTACT.separationSpeed');
+    tuning.speedCost = this.tuning.get('CONTACT.speedCost');
+
+    writeContactBody(first.currentPose, this.contactBodies[0]);
+    writeContactBody(second.currentPose, this.contactBodies[1]);
+
+    const contact = this.contactPair.step(
+      stepSeconds,
+      this.contactBodies[0],
+      this.contactBodies[1],
+      tuning,
+    );
+    if (contact === null) return;
+
+    // **The separation first, and every step** — the two halves are on
+    // different clocks (`simulation/contact.ts`). Two riders in the same place
+    // is a fact that stays true until it stops being true, so it is answered
+    // whenever it is asked; the wobble and the speed shed are an event, and
+    // §26.3's cooldown is theirs alone. Each side moves its own half, along
+    // the axis, in opposite directions.
+    first.controller.separate(-contact.axisX * contact.pushMetres, -contact.axisZ * contact.pushMetres);
+    second.controller.separate(contact.axisX * contact.pushMetres, contact.axisZ * contact.pushMetres);
+
+    const charge = contact.charge;
+    if (charge === null) return;
+    first.controller.bump(charge.first.pushX, charge.first.pushZ, charge.first.speedCost);
+    second.controller.bump(charge.second.pushX, charge.second.pushZ, charge.second.speedCost);
   }
 
   /**
@@ -6585,6 +6835,20 @@ export class Game {
    * the machinery rather than the only thing standing between them.
    */
   private openCouch(): void {
+    // **Contact goes back on, every time, and that is a decision rather than a
+    // consequence** — q81, M26 Phase 2. The owner asked for it about the
+    // player: *"contact should reset to on in case players forget it
+    // exists… so they're not left wondering later why no contact."* A couch is
+    // a place where the person who turned something off is often not the person
+    // who came back, and a setting that persists off silently removes a feature
+    // from a room that has forgotten it exists. **Do not "improve" this by
+    // remembering the setting** — §26.3 and §26.10 both say so, and this is the
+    // line they are talking about.
+    //
+    // Here rather than in `closeCouch` because a session *starts* here: this is
+    // the same moment, and the same argument, as the guest being re-derived on
+    // the line below rather than only at boot.
+    this.setContactEnabled(true);
     const taken = this.seats[0].character;
     if (this.guestCharacter === taken) this.guestCharacter = guestBeside(taken);
     if (this.seats.length < 2) this.spawnSecondRider(this.guestCharacter);
@@ -6711,7 +6975,17 @@ export class Game {
         character: index === 0 ? this.options.current.character : this.guestCharacter,
       });
     }
-    this.menus.setCouchView({ seats, ready: this.couchReady, spare: this.spareDevice() });
+    this.menus.setCouchView({
+      seats,
+      ready: this.couchReady,
+      spare: this.spareDevice(),
+      // Session state, straight from the field — M26 Phase 2. Not
+      // `contactLive`: the panel is asking what the room chose, and the seat
+      // count it would also have to satisfy is exactly what this screen exists
+      // to arrange. A panel drawn from the verdict would show contact off to a
+      // room that had turned nothing off.
+      contact: this.contactEnabled,
+    });
     // The keyboard's half of *a claim press is not also a button press*. Asked
     // fresh each time rather than latched, so the flag clears itself the moment
     // the keyboard takes a seat — including when it takes seat 0 and the panel
@@ -7363,6 +7637,30 @@ function readNumberParam(
  */
 function crashVoiceFor(id: CharacterId): CrashVoiceId {
   return characterSpec(id).crashVoice;
+}
+
+/**
+ * Fill one contact body from a rider's pose, in place — M26 Phase 1.
+ *
+ * The controller stores travel as signed speed along a heading, so a contact
+ * body's Cartesian velocity is derived here rather than carried on the pose:
+ * `EucController.bump` folds a push back into exactly this representation, and
+ * deriving it the same way in both places is what makes the round trip through
+ * `simulation/contact.ts` mean what it says.
+ *
+ * Ground plane only. A rider hopping over another one is a case §26.7 leaves
+ * to a later phase; today a bump does not care about height, which is the
+ * arcade reading and matches every other proximity rule in this game (the
+ * touch bust included).
+ */
+function writeContactBody(
+  pose: EucPose,
+  body: { -readonly [K in keyof ContactBody]: ContactBody[K] },
+): void {
+  body.x = pose.x;
+  body.z = pose.z;
+  body.velocityX = Math.sin(pose.headingY) * pose.speed;
+  body.velocityZ = Math.cos(pose.headingY) * pose.speed;
 }
 
 /**

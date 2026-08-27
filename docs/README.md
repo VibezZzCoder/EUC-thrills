@@ -73,10 +73,14 @@ presses a button on their own controller — a gamepad, or this keyboard — to
 take a seat, picks their rider (you ride as different characters), and **Start
 riding** puts you in the world together, each in your own half of the screen
 with your own camera and HUD. Nothing is timed and no records are kept — it is
-free ride, shared. Either player can pause for both, each of you beeps,
-crashes and recovers on your own, and for now you ride straight through each
-other. The mode is desktop-only: it needs a window at least 1000 pixels wide
-to keep both halves readable, so a phone never sees the button.
+free ride, shared. Either player can pause for both, and each of you beeps,
+crashes, and recovers on your own. Riders bump each other: contact is on by
+default, and the join panel lets the room switch it off for that session. It
+comes back on every time the panel opens, because the person returning to the
+couch may not be the one who turned it off. However fast you meet, the bump is
+only a shove — it never knocks either of you down. The mode is desktop-only: it
+needs a window at least 1000 pixels wide to keep both halves readable, so a
+phone never sees the button.
 
 **Time trial** — race from the start line through five more checkpoints. The
 HUD points at the next one and shows the distance; each crossing gives you a
@@ -342,16 +346,19 @@ list.
 
 ### Accepted direction
 
-- **More couch multiplayer.** Free ride for two landed first (see **2
-  Players** above); couch versions of the chase, the race and Knockabout are
-  each real design work rather than a toggle, and come one at a time. A gentle
-  rider-to-rider bump is a named fast-follow — today the two of you ride
-  through each other on purpose. The shape stays what it was: local
-  multiplayer on desktop, single-player on mobile, and playing across two
-  devices is not cancelled but sits behind all of this.
+- **More couch multiplayer.** Free ride for two and the gentle bump have landed
+  (see **2 Players** above). Couch Knockabout is next: the existing paddle game
+  becomes a two-rider bout, built deliberately rather than by flipping a
+  switch. Couch chase and racing remain separate design work after that. The
+  shape stays what it was: local multiplayer on desktop, single-player on
+  mobile, and playing across two devices is not cancelled but sits behind all
+  of this.
 
 ### Recently landed
 
+- **Riders meet now.** In **2 Players**, riding into each other produces a
+  gentle shove instead of ghosting through. The room can switch contact off on
+  the join panel, and an ordinary bump never knocks either of you down.
 - **Local split-screen multiplayer, on one desktop** — the **2 Players** mode
   above: two riders, two views, one keyboard-and-pads, no accounts, no server,
   and nothing to connect to. The split frame carries its own, higher graphics

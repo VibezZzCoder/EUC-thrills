@@ -197,6 +197,19 @@ export interface MenuCallbacks {
    * in `app/Game.ts`, which is where the options firewall lives.
    */
   onCycleCouchRider(seat: number, delta: 1 | -1): void;
+
+  // -- M26 Phase 2 ------------------------------------------------------------
+  /**
+   * Turn rider-to-rider contact on or off for this couch session.
+   *
+   * **Deliberately not `onChange`**, which is the door to `GameOptions`. A
+   * second callback for a second kind of state is the options firewall drawn
+   * in the callback list: a contact toggle routed through the options path
+   * would be saved, would be a physical quantity in the player's record, and
+   * would reach `simulation/` through the store — all three of which
+   * invariant 5 exists to refuse.
+   */
+  onSetCouchContact(enabled: boolean): void;
 }
 
 /**
@@ -856,6 +869,18 @@ export interface CouchView {
   readonly ready: boolean;
   /** What an empty seat could still be claimed with. */
   readonly spare: CouchSpare;
+  /**
+   * Whether riders bump each other this session — M26 Phase 2 (§26.3).
+   *
+   * It arrives in the view rather than being read from the options record
+   * because **it is not one**. Contact is a physical quantity, invariant 5
+   * keeps physical quantities out of `GameOptions` so that the ride is
+   * identical for every player, and the resolution is the one
+   * `Game.paddleEquipped` already uses: the *session* decides. So this panel
+   * is the only screen in the game that chooses it, `app/Game.ts` holds it,
+   * and it resets to on every time the panel opens (q81).
+   */
+  readonly contact: boolean;
 }
 
 /**
@@ -920,6 +945,18 @@ function couchTemplate(): string {
     <legend class="euc-couch__legend">Seats</legend>
     ${seats}
   </fieldset>
+
+  <div class="euc-couch__contact">
+    <label class="euc-couch__toggle">
+      <input type="checkbox" data-couch-contact checked
+             aria-describedby="euc-couch-contact-note" />
+      <span>Riders bump into each other</span>
+    </label>
+    <p class="euc-field__note" id="euc-couch-contact-note">
+      On, you shove each other about. Off, you ride straight through. Nobody is
+      ever knocked down by a bump either way.
+    </p>
+  </div>
 
   <div class="euc-menu__actions">
     <button type="button" class="euc-button euc-button--primary" data-menu="couch-start" disabled>
@@ -1220,6 +1257,10 @@ export class Menus {
     // dragged: the whole point of a volume control is that the player hears
     // the result before letting go.
     this.settings.addEventListener('input', this.onInput);
+    // The join panel's own value-carrying control, on its own root — see
+    // `onCouchInput` for why this is not a branch of the handler above.
+    this.couch.addEventListener('input', this.onCouchInput);
+
     // **Scoped to the field, not to the window**, unlike everything else this
     // file listens for. Enter inside a text box means "I have finished typing
     // this", which is a fact about the box; a window-level handler would have
@@ -1552,6 +1593,16 @@ export class Menus {
       if (status && status.textContent !== line) status.textContent = line;
     }
 
+    // **The room's contact answer, drawn from the session and never from the
+    // control's own last value** — M26 Phase 2. The checkbox is a *report* of
+    // `Game.contactEnabled`, which is what makes q81's reset visible here: the
+    // flag going back to on when the panel opens redraws the box, and a panel
+    // that trusted the DOM would show the room a tick that no longer described
+    // the ride. Written only when it differs, like every other field on this
+    // panel, so a redraw does not fight a player mid-press.
+    const contact = this.couch.querySelector<HTMLInputElement>('[data-couch-contact]');
+    if (contact && contact.checked !== view.contact) contact.checked = view.contact;
+
     const start = this.couch.querySelector<HTMLButtonElement>('[data-menu="couch-start"]');
     // **Disabled rather than hidden.** A player who can see the control they
     // are working towards knows the panel is going somewhere; one that appears
@@ -1789,6 +1840,7 @@ export class Menus {
   dispose(): void {
     this.parent.removeEventListener('click', this.onClick);
     this.settings.removeEventListener('input', this.onInput);
+    this.couch.removeEventListener('input', this.onCouchInput);
     this.seedField?.removeEventListener('keydown', this.onSeedKeyDown);
     window.removeEventListener('keydown', this.onKeyDown, true);
     this.title.remove();
@@ -2015,6 +2067,30 @@ export class Menus {
     this.callbacks.onChange({
       [option]: percent ? numeric / 100 : numeric,
     } as Partial<GameOptions>);
+  };
+
+  /**
+   * The join panel's own controls that carry a value — M26 Phase 2.
+   *
+   * **A second handler rather than a branch inside `onInput`, and that is the
+   * options firewall made structural.** `onInput` exists to turn a control
+   * into a `Partial<GameOptions>`; every path through it ends at
+   * `callbacks.onChange`, and a contact toggle that arrived there would be
+   * saved to the player's record and would be a physical quantity in it — the
+   * two things invariant 5 refuses. Two functions on two roots cannot be
+   * confused by a future edit the way two branches of one function can, and
+   * the panel that must never write an option is not listened to by the code
+   * that writes options.
+   *
+   * `input` and not `change`, for the reason the settings root uses it: the
+   * pad's own `adjustControl` dispatches `input`, so a `change` listener would
+   * leave this control working for a mouse and dead for a gamepad.
+   */
+  private readonly onCouchInput = (event: Event): void => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    if (target.dataset.couchContact === undefined) return;
+    this.callbacks.onSetCouchContact(target.checked);
   };
 
   /**

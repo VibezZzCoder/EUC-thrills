@@ -536,7 +536,7 @@ test('hits arrive in the order the sweep reached them', () => {
   }
 });
 
-test('nothing in the paddle or target path can reach the wobble oscillator', () => {
+test('paddle and contact paths keep the wobble caller census pinned at four', () => {
   /*
    * The owner's standing rule from the M13 exit ride: **nothing but a real
    * hazard may trigger wobble in play, and any other trigger found later is
@@ -563,6 +563,7 @@ test('nothing in the paddle or target path can reach the wobble oscillator', () 
    * The count is the weaker half of this test. The half that matters is that
    * every caller is inside the controller: a call from `paddle.ts`,
    * `targets.ts` or `app/Game.ts` is the rule being broken, whatever the total.
+   * M26 contact must call `softKnock`, so adding `bump` must not move the count.
    */
   const root = join(import.meta.dirname, '..');
   const callers: string[] = [];
@@ -599,6 +600,12 @@ test('nothing in the paddle or target path can reach the wobble oscillator', () 
       + 'sanctioned ones are named above. A fifth is a new wobble trigger and needs '
       + 'the owner, not a re-pin.',
   );
+
+  const controller = readFileSync(join(root, 'simulation', 'EucController.ts'), 'utf8');
+  const bump = /\n  bump\([^)]*\): void \{([\s\S]*?)\n  \}/.exec(controller)?.[1];
+  assert.ok(bump, 'EucController.bump is missing');
+  assert.match(bump, /this\.softKnock\s*\(/, 'contact must spend the existing soft knock');
+  assert.doesNotMatch(bump, /this\.injectWobble\s*\(/, 'contact added a fifth wobble door');
 });
 
 test('a foreign hittable set works without the paddle knowing what it is', () => {
