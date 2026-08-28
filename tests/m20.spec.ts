@@ -67,6 +67,23 @@ test('leaving the route raises a banner with a way home and a visible countdown'
   const errors = collectErrors(page);
   await bootChase(page);
 
+  // **Freeze before riding**, the way `m9.spec.ts` does for every HUD reading.
+  //
+  // The loop is live between every pair of automation calls, and scripted
+  // actions stay set until they are replaced — so with the throttle down, the
+  // rider keeps riding away from the route through every round trip Node
+  // makes, by an amount that depends on how busy the machine is. Under four
+  // workers that put the rider far enough out that the coast below sometimes
+  // ended in a tree, and a crash takes this banner down *on purpose*
+  // (`ui/hudModel.ts`: a rider on the floor is neither about to leave the
+  // route nor about to cut out). `writeStray` then returns before it writes
+  // the count, which leaves the number frozen at exactly the value the
+  // assertion below had just read — `8` is not less than `8`, in a test whose
+  // subject is a countdown.
+  //
+  // Frozen, the only simulation that happens is the steps this test asks for.
+  await page.evaluate(() => window.qa.freeze());
+
   const banner = page.locator('[data-hud="stray"]');
   await expect(banner).toBeHidden();
 
@@ -92,16 +109,44 @@ test('leaving the route raises a banner with a way home and a visible countdown'
   expect(Number(first)).toBeGreaterThan(0);
   expect(Number(first)).toBeLessThanOrEqual(CHASE.strayGraceSeconds);
 
-  await page.evaluate(() => {
-    window.game.setActions({ throttle: 0, steer: 0 });
-    window.game.advance(360);
-  });
-  const later = await page.locator('[data-hud="stray-count"]').textContent();
-  expect(Number(later)).toBeLessThan(Number(first));
+  // Run the clock down and read the banner **on the turn that drew it**, the
+  // way the urgent test below already does. `advance()` renders synchronously,
+  // so the count is on screen by the time it returns; a separate round trip
+  // would only widen the window in which something else could move.
+  //
+  // In chunks until the number changes, rather than one fixed block of steps:
+  // the second on screen is `Math.ceil` of a clock, so how many steps it takes
+  // to tick is arithmetic about where in a second the rider crossed the line.
+  // Stopping at the first change also keeps the whole measurement well inside
+  // the eight-second grace, so the run cannot end underneath the assertion.
+  const counted = await page.evaluate((before) => {
+    const game = window.game;
+    game.setActions({ throttle: 0, steer: 0 });
+    const read = () => document.querySelector('[data-hud="stray-count"]')?.textContent ?? '';
+    for (let i = 0; i < 8; i += 1) {
+      game.advance(60);
+      if (read() !== before) break;
+    }
+    const snapshot = game.snapshot();
+    return {
+      text: read(),
+      arrow: document.querySelector('[data-hud="stray-arrow"]')?.textContent ?? '',
+      crashed: snapshot.euc.crashed,
+      straying: snapshot.chase.straying,
+    };
+  }, first);
 
-  // And it points somewhere. Eight glyphs, one of them.
-  const arrow = await page.locator('[data-hud="stray-arrow"]').textContent();
-  expect('↑↖←↙↓↘→↗').toContain(arrow ?? '');
+  // Both of these are the banner's own preconditions, and naming them is the
+  // difference between a failure that reads "8 is not less than 8" and one
+  // that says what actually happened to the rider.
+  expect(counted.crashed, 'the rider crashed while the clock ran, which hides the banner').toBe(false);
+  expect(counted.straying, 'the rider returned to the route, which resets the clock').toBe(true);
+  expect(Number(counted.text)).toBeLessThan(Number(first));
+
+  // And it points somewhere. Eight glyphs, one of them — asserted as
+  // membership rather than `toContain`, which any substring passes and the
+  // empty string of a banner that is not on screen passes first.
+  expect([...'↑↖←↙↓↘→↗']).toContain(counted.arrow);
 
   // The old subtle line does not repeat the banner underneath it.
   await expect(page.locator('[data-hud="objective"]')).toHaveText('');
@@ -112,14 +157,22 @@ test('leaving the route raises a banner with a way home and a visible countdown'
 test('the route warning stays on-screen with touch controls in both phone orientations', async ({ page }) => {
   const errors = collectErrors(page);
   await bootChase(page);
+  // Frozen and stopped for the reason the countdown test above is: a rider
+  // left at full throttle keeps riding while Node does its round trips, and
+  // the crash that eventually ends that ride hides the very banner this test
+  // resizes the window to look at. Rendering continues while the loop is
+  // frozen — `beforeFrame` with it, which is what carries the resize — so the
+  // layout under test is still the one the browser lays out.
+  await page.evaluate(() => window.qa.freeze());
   await page.evaluate(() => {
     window.game.setOptions({ touchControls: 'on' });
     const game = window.game;
     for (let i = 0; i < 60; i += 1) {
       game.setActions({ throttle: 1, steer: 1 });
       game.advance(30);
-      if (game.snapshot().chase.straying) return;
+      if (game.snapshot().chase.straying) break;
     }
+    game.setActions({ throttle: 0, steer: 0 });
   });
 
   for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {

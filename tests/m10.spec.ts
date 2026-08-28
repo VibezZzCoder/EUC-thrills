@@ -333,6 +333,23 @@ test.describe('M10 — the challenge', () => {
 
     // Four split rows: the start's zero row is deliberately not shown.
     await expect(page.locator('[data-menu="results-rows"] tr')).toHaveCount(5);
+
+    // **And the words over them are this mode's**, which is the half M26 Phase
+    // 6's QA pass found missing everywhere else: the caption and the three
+    // column headers were markup, so four later modes printed their own rows
+    // under a timed run's vocabulary. They are still the right words *here* —
+    // these rows really are checkpoints, really are times, and really are
+    // measured against a personal best — and this is the card that has to keep
+    // saying so while the other four say something different.
+    await expect(page.locator('[data-menu="results-table-caption"]')).toHaveText('Splits');
+    await expect(page.locator('[data-menu="results-column-label"]')).toHaveText('Checkpoint');
+    await expect(page.locator('[data-menu="results-column-value"]')).toHaveText('Time');
+    await expect(page.locator('[data-menu="results-column-delta"]')).toHaveText('vs best');
+    await expect(page.locator('[data-menu="results-table"]')).toHaveAttribute('data-compare', 'true');
+    // And it is a column with room in it, which is what `data-compare` buys:
+    // the three cards that compare nothing collapse this to zero.
+    const compare = await page.locator('[data-menu="results-column-delta"]').boundingBox();
+    expect(compare?.width ?? 0).toBeGreaterThan(40);
     expect(errors).toEqual([]);
   });
 

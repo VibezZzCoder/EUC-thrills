@@ -505,6 +505,36 @@
   line-height: 1;
 }
 
+/* The second row of the couch match's corner — the owner's 2026-08-28 ride:
+   *"It should show in-game below the knockdowns scores."*
+
+   Sized between the label and the score, and it is the same trade the lap
+   splits made: 0.8rem was the owner's *"kinda hard to read"* on a number in
+   the corner of a moving frame, so a tally two people are competing over gets
+   read-at-speed weight rather than footnote weight. Its own label sits beside
+   the number rather than above it, because the row is one fact and a third
+   stacked line in that corner would start to look like a second lane. */
+.euc-hud__score-aside {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  margin-top: 0.05rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.euc-hud__score-aside[hidden] { display: none; }
+
+.euc-hud__score-aside-label {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
 .euc-hud__timer {
   font-size: clamp(1.2rem, calc(3 * var(--hud-vw)), 1.9rem);
   font-weight: 700;
@@ -1453,6 +1483,19 @@
 
 .euc-results__table thead th:first-child { text-align: left; }
 
+/* **The comparison column, on the three cards that have nothing to compare.**
+   `table-layout: fixed` takes its columns from the first row, which is this
+   header row — so the widths further down are decoration and the only place
+   the split can be stated is here. A nameless empty third of the table reads
+   as a column whose contents failed to load; giving it no width instead puts
+   the figures against the right edge where the eye already is.
+
+   Left as three equal columns wherever `data-compare` is true, which is the
+   layout every card in this game has had since M10. */
+.euc-results__table[data-compare="false"] thead th:nth-child(2) { width: 34%; }
+.euc-results__table[data-compare="false"] thead th:last-child { width: 0; padding: 0; }
+.euc-results__table[data-compare="false"] .euc-results__row-delta { padding: 0; }
+
 .euc-results__table tbody tr { border-top: 1px solid var(--panel-edge); }
 
 .euc-results__row-label,
@@ -2066,6 +2109,89 @@
 @media (max-height: 40rem) {
   .euc-menu--title[data-couch="true"] .euc-button__note,
   .euc-menu--title[data-couch="true"] .euc-menu__tagline { display: none; }
+
+  /*
+   * And the join panel's own notes, for the reason above and by the same
+   * measurement — M26 Phase 5.
+   *
+   * The panel grew a second value-carrying control (the mode choice), and with
+   * the coarse-pointer floors on it went **29 px below the fold at 1000 x 520**.
+   * The notes are the biggest single saving and the right thing to drop: both
+   * controls are one line of plain words each — "Playing: Knockabout", "Riders
+   * bump into each other" — and a panel a player has to scroll past the Start
+   * button is worse than a panel that is briefer.
+   *
+   * 40 rem is 640 px, so the browser suite's own 1000 x 700 window and every
+   * ordinary desktop keep them; this is the short-window tier and nothing else.
+   */
+  .euc-menu--couch .euc-field__note,
+  .euc-menu--couch .euc-menu__tagline { display: none; }
+
+  /*
+   * And the results card's copy of the chooser, on the same measurement and
+   * for the same reason — the owner's 2026-08-28 ride.
+   *
+   * The card is in the scroll-by-design group and it still had a fit worth
+   * keeping: before the chooser it reached the fold at 1000 x 700, 1000 x 640,
+   * 1000 x 560 and every ordinary laptop, and the chooser cost **105 px** —
+   * enough to put `Back to title` below the fold at 640. Three savings, in the
+   * order of how little each one is missed, measured at 1000 x 560:
+   *
+   *   - **both notes, 40 px** — the chooser's is the same two sentences the
+   *     join panel just showed these two people, and `New route`'s is an
+   *     advertisement for a feature the player has now met;
+   *   - **the label beside the buttons rather than above them, 46 px** — a row
+   *     rather than a paragraph, gaps included;
+   *   - **the heading and the summary's padding, 21 px** — see below.
+   *
+   * Windows shorter than this scrolled before the chooser existed and still do;
+   * what the tier protects is every window that fitted.
+   */
+  .euc-menu--results .euc-field__note,
+  .euc-menu--results .euc-button__note { display: none; }
+
+  .euc-menu--results .euc-couch__mode {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    justify-items: stretch;
+    gap: 0.55rem;
+    margin: 0;
+  }
+
+  /* The last 21 px, and the one place on this card where size is decoration
+     rather than information: `Player 1 wins` is four words and reads at any
+     size, while `Back to title` below the fold is a button somebody has to go
+     looking for. The summary's own padding goes with it, on the same terms. */
+  .euc-results__heading { font-size: clamp(1.3rem, 3.4vw, 1.7rem); }
+  .euc-results__summary { padding: 0.7rem 1.1rem; }
+}
+
+/*
+ * And the shortest desktop windows get the title's own two-column trick — M26,
+ * the same ride.
+ *
+ * 34 rem is 544 px. The results card was already 29 px past the fold at
+ * 1000 x 520 and 49 px at 1600 x 500 *before* the chooser existed, so this
+ * finishes something rather than merely paying for it: three stacked actions
+ * become two rows, and both windows reach the last button without scrolling.
+ *
+ * `Ride it again` keeps the full width because it is the reason anybody reads
+ * a results screen — the same sentence the title's own tier makes about Start.
+ */
+@media (max-height: 34rem) {
+  .euc-menu--results .euc-menu__actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* The gaps between the rows, not the buttons themselves: every control here
+       keeps its own padding and its coarse-pointer floor. */
+    gap: 0.45rem;
+  }
+
+  .euc-menu--results [data-menu="retry"] { grid-column: 1 / -1; }
+
+  /* And the two big numbers keep their size while their box gives up its
+     breathing room, which is the right way round: the score is the thing being
+     read, the padding is the thing making it look composed. */
+  .euc-results__summary { padding: 0.45rem 0.9rem; }
 }
 
 /* ---------------------------------------------------------------------------
@@ -2128,6 +2254,13 @@
   background: #1b2430;
 }
 
+/* And an *empty* seat says so too, which it did not before the owner's
+   2026-08-27 ride: an unclaimed card was a claimed card with different words in
+   it. A dashed edge is the one border treatment that reads as "not filled in
+   yet" without borrowing the rider's colour, which belongs to the seat once
+   somebody is in it. */
+.euc-couch__seat[data-claimed="false"] { border-style: dashed; }
+
 .euc-couch__player {
   margin: 0;
   color: var(--ink);
@@ -2141,10 +2274,38 @@
   min-height: 2.4em;
   color: var(--ink-dim);
   font-size: 0.82rem;
-  line-height: 1.45;
+  line-height: 1.7;
 }
 
 .euc-couch__seat[data-claimed="true"] .euc-couch__status { color: var(--ink); }
+
+/* An empty seat's line is the instruction, so it is not dimmed: the sentence a
+   guest has to find is the one the panel was setting in its quietest ink. */
+.euc-couch__seat[data-claimed="false"] .euc-couch__status { color: var(--ink); }
+
+/* A key to press, drawn as a key — the owner's 2026-08-27 ride ("its just so
+   plaintext like"). `<kbd>` because that is what the element means; every
+   pixel of it is here so a pad face button and a keyboard key read as the same
+   *kind* of thing, which is exactly what the sentence is saying about them.
+
+   `inline-block` with a baseline nudge rather than `inline-flex`, so a cap
+   sitting inside a wrapping sentence still wraps with it. */
+.euc-key {
+  display: inline-block;
+  min-width: 1.55em;
+  padding: 0.06em 0.4em;
+  border: 1px solid var(--panel-edge);
+  border-bottom-width: 2px;
+  border-radius: 0.32em;
+  background: #202b38;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.92em;
+  line-height: 1.35;
+  text-align: center;
+  white-space: nowrap;
+}
 
 /* The rider card: two steppers with the name between them. `1fr` in the middle
    so the arrows stay put as names of different lengths pass through — a
@@ -2157,6 +2318,27 @@
   gap: 0.4rem;
 }
 
+/* The name and its swatch, as one centred cluster. The dot is the title chip's
+   own idea brought down here: the owner asked for the couch cards to say who
+   you are the way the main menu does, and a colour beside a name is a thing you
+   can match to the rider on the screen behind the panel. */
+.euc-couch__pick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.euc-couch__dot {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex: none;
+  border-radius: 50%;
+  background: var(--rider-swatch);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+}
+
 .euc-couch__name {
   color: var(--ink);
   font-size: 0.95rem;
@@ -2164,60 +2346,156 @@
   text-align: center;
 }
 
+/* **Filled, not outlined** — the owner's 2026-08-27 ride: *"the arrows for
+   swapping are kinda faint and players might not even realize u can swap
+   charachters."* A transparent box with dim ink is the game's own idiom for a
+   control that is *unavailable*, which is the opposite of what these are, and
+   it was competing with a panel that has a filled primary button on it. */
 .euc-couch__step {
-  min-width: 2rem;
-  min-height: 2rem;
+  min-width: 2.1rem;
+  min-height: 2.1rem;
   padding: 0;
   border: 1px solid var(--panel-edge);
   border-radius: 0.45rem;
-  background: transparent;
-  color: var(--ink-dim);
+  background: #202b38;
+  color: var(--ink);
   font: inherit;
-  font-size: 1.1rem;
+  font-size: 1.25rem;
+  font-weight: 700;
   line-height: 1;
   cursor: pointer;
-  transition: border-color 140ms ease, color 140ms ease;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
 }
 
 .euc-couch__step:hover {
   border-color: var(--rider-swatch);
+  background: #2a3746;
   color: var(--ink);
 }
 
-/* The contact toggle — M26 Phase 2.
+/* And the arrows are told what they are for, once per card. `aria-hidden`
+   because the buttons already carry the same fact in their own labels, and a
+   screen reader does not need it a third time. */
+.euc-couch__hint {
+  margin: 0;
+  color: var(--ink-dim);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+/* The mode choice — M26 Phase 5 (q78), rebuilt as a segmented pair on the
+   owner's 2026-08-27 ride.
 
    **Not `.euc-field`**, which is the settings screen's three-column grid of
    label, control and numeric readout. Dropped into a panel whose every other
-   line is centred, that grid put the box hard against the right edge with 500
-   px of gap between it and the words it belongs to — a control that looks like
-   it labels the panel rather than itself. This is one centred cluster instead:
-   the box beside its own text, wrapped in the `<label>` so the sentence is
-   part of the target rather than a caption beside it.
+   line is centred, that grid puts its control hard against the right edge with
+   500 px of gap between it and the words it belongs to — a control that looks
+   like it labels the panel rather than itself. This is a centred cluster
+   instead.
+
+   It replaced a `<select>` because a closed dropdown shows one of two choices
+   and hides the existence of the other: *"the game mode thing is kinda small
+   and secretive… it's kinda cumbersome to change modes."* Both are on screen
+   now, and the current one is lit.
 
    The margin is the row's own, not the panel's: `.euc-couch__seats` sets no
-   bottom gap and the actions below are a separate block, so without it the
-   toggle reads as part of the seat cards it is not. */
-.euc-couch__contact {
+   bottom gap and the actions below are a separate block. */
+.euc-couch__mode {
   display: grid;
-  gap: 0.3rem;
-  margin: 0.25rem 0 0.1rem;
+  gap: 0.35rem;
+  justify-items: center;
+  margin: 0.35rem 0 0.1rem;
 }
 
-.euc-couch__toggle {
+.euc-couch__mode-label {
+  color: var(--ink-dim);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.euc-couch__modes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+}
+
+/* Sized off the primary action rather than off the note beneath it: this is a
+   choice the panel wants noticed, and it was previously drawn at the weight of
+   a caption. `flex: 1 1 8rem` lets the pair share the panel's width and fall to
+   one per line only when there is genuinely no room. */
+.euc-couch__mode-button {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.55rem;
+  gap: 0.5rem;
+  flex: 1 1 8rem;
+  min-height: 2.5rem;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 0.5rem;
+  background: #202b38;
+  color: var(--ink);
+  font: inherit;
   font-size: 0.95rem;
+  font-weight: 600;
   cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
 }
 
-.euc-couch__toggle input[type="checkbox"] {
-  width: 1.15rem;
-  height: 1.15rem;
+/* A radio dot, because that is the thing this control actually is: one of two,
+   and the other one is right there. It is also the channel that is not colour
+   — the ring fills — which matters twice over here, since the pause menu draws
+   this control directly above a solid accent `Resume`. */
+.euc-couch__mode-button::before {
+  content: '';
+  width: 0.8rem;
+  height: 0.8rem;
   flex: none;
-  accent-color: var(--accent);
+  border: 2px solid var(--panel-edge);
+  border-radius: 50%;
+  background: transparent;
+  transition: border-color 140ms ease, background 140ms ease;
 }
+
+.euc-couch__mode-button:hover { border-color: var(--accent); background: #2a3746; }
+
+/* The chosen one, and it says so three ways — the filled dot, the accent tint,
+   and `aria-pressed` itself, which is the selector. **A tint rather than a
+   fill**: a solid accent would make this look like the primary action of the
+   screen, which on the pause menu is `Resume` and on the join panel is `Start
+   riding`. A choice is not a verb. */
+.euc-couch__mode-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: rgba(31, 111, 224, 0.22);
+}
+
+.euc-couch__mode-button[aria-pressed="true"]::before {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 2px #0d1014;
+}
+
+/* The pause menu's copy of the chooser — the same control, the same words, a
+   different verb (`switch-mode`). Given the panel's own top margin because it
+   sits between the heading and the action stack rather than inside either. */
+.euc-pause__couch { margin: 0 0 0.9rem; }
+
+/* And the results card's copy — the owner's 2026-08-28 ride. Same control,
+   same verb, one word of label different ("Play next", because the match is
+   over). It sits under the notes and above the actions, which is where a
+   player's eye already is when they have finished reading their score.
+
+   No `[hidden]` rule on either of these two, and that is deliberate rather
+   than an omission: neither block sets `display`, so the attribute's own
+   `display: none` is uncontested. `.euc-results__notes[hidden]` needs one
+   because it is a `<ul>` this file styles; these are bare wrappers. */
+.euc-results__couch { margin: 0.1rem 0 0; }
 
 /* ---------------------------------------------------------------------------
  * Reduced motion
@@ -2655,6 +2933,7 @@
      couch entrance is refused below 1000 CSS px — but a wide touch screen
      with a pad attached is eligible, and its arrows must be finger-sized. */
   .euc-couch__step { min-width: 2.75rem; min-height: 2.75rem; }
+  .euc-couch__mode-button { min-height: 2.75rem; }
 
   /* The contact toggle, for the same reason and by a route worth naming: the
      row began as `.euc-field` and lost that class when it was reshaped into a
@@ -2663,9 +2942,12 @@
      revoke a rule written for a class you stopped wearing.** The `<label>` is
      the target — it wraps the box and the sentence — so the floor belongs on
      it, and the box matches every other checkbox in the game. */
-  .euc-couch__toggle { min-height: 2.75rem; }
 
-  .euc-couch__toggle input[type="checkbox"] { width: 1.5rem; height: 1.5rem; }
+  /* And the mode choice, arriving already wearing the rule the toggle had to
+     be given back — the panel's coarse-pointer contract measures every target
+     on it, so this one was measured before it shipped rather than after. */
+
+
 
   /* The chooser's own targets. A card is already far past the floor, but
      the chip is a single line of small text and would not be. */

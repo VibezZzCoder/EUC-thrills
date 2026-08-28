@@ -229,6 +229,76 @@ test('the head sweeps from behind the rider’s right to in front of them', () =
   }
 });
 
+test('reachAgainst is the furthest a parked swing can put anybody down', () => {
+  /*
+   * **Arithmetic that two other files build on, held to the real sweep** — the
+   * owner's 2026-08-28 couch ride. `simulation/spawnSlots.ts` sets a match's
+   * spacing against this number and `app/Game.ts` stands two riders on it, so a
+   * `reachAgainst` that drifted from the weapon would put a duel back inside the
+   * host's opening arc without any test noticing.
+   *
+   * The sweep is searched rather than asserted at one point: the claim is a
+   * *maximum* over the whole plane, and the only honest way to check a maximum
+   * is to look for something further out.
+   */
+  const paddle = new Paddle();
+  const radius = 0.35;
+  const claimed = paddle.reachAgainst(radius);
+
+  /** Does one whole swing, from a parked wielder at the origin, reach here? */
+  const lands = (x: number, z: number): boolean => {
+    const one = new Paddle();
+    const pose: WielderPose = { x: 0, y: 0, z: 0, headingY: 0 };
+    const volume: HittableVolume = { id: 'body', x, y: PADDLE.pivotHeight, z, radius };
+    const set: HittableSet = {
+      eachNear(minX, minY, minZ, maxX, maxY, maxZ, visit) {
+        if (volume.x + radius < minX || volume.x - radius > maxX) return;
+        if (volume.y + radius < minY || volume.y - radius > maxY) return;
+        if (volume.z + radius < minZ || volume.z - radius > maxZ) return;
+        visit(volume);
+      },
+    };
+    one.step(DT, pose, false, set);
+    for (let step = 0; step < 200; step += 1) {
+      if (one.step(DT, pose, step === 0, set).length > 0) return true;
+      if (step > 0 && one.phase === 'idle') break;
+    }
+    return false;
+  };
+
+  let furthest = 0;
+  let where = '';
+  for (let x = -claimed - 0.5; x <= claimed + 0.5; x += 0.02) {
+    for (let z = -claimed - 0.5; z <= claimed + 0.5; z += 0.02) {
+      if (!lands(x, z)) continue;
+      const distance = Math.hypot(x, z);
+      if (distance <= furthest) continue;
+      furthest = distance;
+      where = `(${x.toFixed(2)}, ${z.toFixed(2)})`;
+    }
+  }
+
+  assert.ok(furthest > 0, 'the search found no hit at all, so it measured nothing');
+  assert.ok(
+    furthest <= claimed,
+    `a swing reached ${furthest.toFixed(3)} m at ${where}, past the claimed ${claimed.toFixed(3)}`,
+  );
+  // And it is not wildly conservative either, or a duel would be stood absurdly
+  // far apart to clear a bound nothing could reach. One sampling step of the
+  // sweep is the honest slack: the arc is checked at 120 Hz, not continuously.
+  assert.ok(
+    furthest > claimed - 0.05,
+    `the bound is ${(claimed - furthest).toFixed(3)} m loose, which is not a derivation`,
+  );
+  // The sideways extent is the one a spawn actually cares about, and it is the
+  // maximum: the arc passes straight through the wielder's right.
+  assert.equal(lands(-(claimed - 0.02), 0), true, 'the arc misses somebody dead on the right');
+  assert.equal(lands(-(claimed + 0.05), 0), false, 'the arc reached past its own bound');
+  // **And never to the left, which is the whole of the owner's report.** A
+  // right-handed forehand cannot answer somebody standing on the other side.
+  assert.equal(lands(claimed - 0.5, 0), false, 'the forehand reached the wielder’s left');
+});
+
 test('a swing is only a swing while it is active', () => {
   const field = new TargetField([
     // Squarely on the rest position, where the head is carried between swings.
@@ -625,4 +695,204 @@ test('a foreign hittable set works without the paddle knowing what it is', () =>
   const { hits } = swingOnce(riders, 6);
   assert.equal(hits.length >= 1, true, 'the paddle refused to hit a non-target volume');
   assert.equal(hits[0].id, 'rider-2');
+});
+
+// ---------------------------------------------------------------------------
+// The hard knock — M26 Phase 3 (§26.4, q74)
+// ---------------------------------------------------------------------------
+
+/** What one swing looked like, step by step, to the hard knock's threshold. */
+interface Sweep {
+  readonly phase: string;
+  readonly headSpeed: number;
+  readonly committed: boolean;
+  readonly travelX: number;
+  readonly travelZ: number;
+}
+
+/**
+ * Throw one swing and report what the threshold saw on every step.
+ *
+ * Deliberately separate from `swingOnce` above: that rig measures what the
+ * sweep *reached*, and this one measures how fast it was going when it did.
+ */
+function swingProfile(speed: number, paddle = new Paddle(), steps = 60): readonly Sweep[] {
+  const profile: Sweep[] = [];
+  for (let step = 0; step < steps; step += 1) {
+    paddle.step(DT, poseAt(step * DT, speed), step === 0, null);
+    profile.push({
+      phase: paddle.phase,
+      headSpeed: paddle.headSpeed,
+      committed: paddle.committed,
+      travelX: paddle.headTravelX,
+      travelZ: paddle.headTravelZ,
+    });
+  }
+  return profile;
+}
+
+/** The strike window's own steps, which are the only ones that can score. */
+function striking(profile: readonly Sweep[]): readonly Sweep[] {
+  // The first `active` step of a cycle is the hand-over from the wind-up and
+  // covers only the sliver of arc left in it, so it is a real step of the
+  // swing that moves almost nothing. Kept in the profile and dropped here,
+  // because "how fast is the head going mid-strike" is the question.
+  const active = profile.filter((step) => step.phase === 'active');
+  return active.slice(1);
+}
+
+/**
+ * The share the game shipped with between M26 Phase 3 and the owner's
+ * 2026-08-27 ride.
+ *
+ * **Set explicitly by every test below that is about the arithmetic**, because
+ * the shipped default is now zero — every landed strike is a knockdown — and a
+ * test that read the default would stop asking its own question the moment the
+ * owner answered a different one. The lever is what these prove: that the share
+ * still means what it means when somebody drags it at F4, so the day a ride
+ * asks for a wind-up back it is a slider rather than a rebuild.
+ */
+const WIND_UP_SHARE = 1.25;
+
+test('a parked wielder’s swing lands at exactly the arc speed, and commits', () => {
+  const paddle = new Paddle();
+  const parked = striking(swingProfile(0, paddle));
+  assert.ok(parked.length > 5, `too few strike steps to measure: ${parked.length}`);
+
+  // The whole premise of expressing the threshold as a share: a wielder who
+  // adds nothing lands at the swing's own arc speed, so 1.0 *is* a standing tap
+  // and every share above it asks for speed the wielder brought.
+  for (const step of parked) {
+    assert.ok(
+      Math.abs(step.headSpeed - paddle.arcSpeed) < 0.05,
+      `a parked swing should land at ${paddle.arcSpeed.toFixed(2)} m/s, not ${step.headSpeed}`,
+    );
+    // **And at the shipped share it puts them down** — the owner's 2026-08-27
+    // ride, in one assertion. This line read `false` from Phase 3 until that
+    // ride, and the sentence it carried — "a standing tap is a shove, never a
+    // knockdown" — is the exact thing he played and rejected: *"realize hitting
+    // and not dropping is not fun."*
+    assert.equal(step.committed, true, 'every landed strike is a knockdown at the shipped share');
+  }
+});
+
+test('the share is a lever, and above a standing tap it asks for speed', () => {
+  // The pre-ride behaviour, still reachable and still proven. Flat out commits
+  // somewhere in the arc; walking pace never does. Both ends are derived — the
+  // top speed from the rideability envelope, walking pace from the owner's own
+  // words for the bump (§26.10 q84) — so a retune of either the wheel or the
+  // weapon fails here rather than in a ride.
+  const wound = (speed: number): readonly Sweep[] => {
+    const paddle = new Paddle();
+    paddle.hardKnockShare = WIND_UP_SHARE;
+    return striking(swingProfile(speed, paddle));
+  };
+
+  assert.ok(
+    wound(RIDEABILITY.topSpeed).some((step) => step.committed),
+    'a swing thrown at the top speed must be able to put somebody down',
+  );
+  assert.ok(
+    wound(1.5).every((step) => !step.committed),
+    'walking pace is not a committed swing at any point in the arc',
+  );
+  assert.ok(
+    wound(0).every((step) => !step.committed),
+    'a standing tap is a shove once the share is above one',
+  );
+
+  // And the crossing sits at road speed rather than at either extreme, which is
+  // the only thing that makes the threshold a *choice* rather than an on/off
+  // switch. Reported rather than pinned to a decimal: it moves with the tuning
+  // and the band is what the design promises.
+  let crossing = Number.POSITIVE_INFINITY;
+  for (let speed = 0; speed <= RIDEABILITY.topSpeed; speed += 0.25) {
+    if (wound(speed).some((step) => step.committed)) {
+      crossing = speed;
+      break;
+    }
+  }
+  assert.ok(
+    crossing > 3 && crossing < 12,
+    `a committed swing should ask for road speed, not a crawl or a sprint: ${crossing} m/s`,
+  );
+});
+
+test('the threshold is a share of the swing and moves when the swing does', () => {
+  // M20's rule, made testable. A raw threshold in m/s is a constant secretly
+  // defined as today's `activeSeconds`; halve the strike window — which doubles
+  // the arc speed — and a raw one would turn every standing tap into a
+  // knockdown. Delete the `arcSpeed` factor in `committed` and this fails.
+  //
+  // Asked with the share wound up, for the reason `WIND_UP_SHARE` states: at
+  // the shipped zero there is no threshold left to move, so this is the one
+  // question the default cannot be used to ask.
+  const quick = new Paddle();
+  quick.activeSeconds = PADDLE.activeSeconds / 2;
+  quick.hardKnockShare = WIND_UP_SHARE;
+  const stock = new Paddle();
+  stock.hardKnockShare = WIND_UP_SHARE;
+  assert.ok(quick.arcSpeed > stock.arcSpeed * 1.9, 'the fixture must really be faster');
+
+  for (const step of striking(swingProfile(0, quick))) {
+    assert.equal(
+      step.committed,
+      false,
+      `a standing tap stayed a shove at ${step.headSpeed.toFixed(1)} m/s`,
+    );
+  }
+});
+
+test('a swing with no strike window can never commit', () => {
+  // `activeSeconds` is on F4 and can legitimately be dragged to zero. An arc
+  // speed of zero makes the threshold zero, and a threshold of zero would make
+  // every graze in the game a knockdown — which is the failure mode a share is
+  // otherwise wide open to.
+  const still = new Paddle();
+  still.activeSeconds = 0;
+  assert.equal(still.arcSpeed, 0);
+  assert.ok(swingProfile(RIDEABILITY.topSpeed, still).every((step) => !step.committed));
+});
+
+test('a teleport is never the hardest strike in the game', () => {
+  // The guard's other half. A step longer than a swing can produce reseeds and
+  // sweeps nothing, so its head speed has to be thrown away with it — left at
+  // the previous step's value, a respawn would arrive as a committed swing.
+  const paddle = new Paddle();
+  for (let step = 0; step < 20; step += 1) {
+    paddle.step(DT, poseAt(step * DT, RIDEABILITY.topSpeed), step === 0, null);
+  }
+  assert.ok(paddle.headSpeed > 0, 'the fixture must be sweeping before it teleports');
+
+  paddle.step(DT, { x: 0, y: 0, z: 5000, headingY: 0 }, false, null);
+  assert.equal(paddle.reseeded, true, 'the fixture must really be a teleport');
+  assert.equal(paddle.headSpeed, 0);
+  assert.equal(paddle.headTravelX, 0);
+  assert.equal(paddle.headTravelZ, 0);
+  assert.equal(paddle.committed, false);
+});
+
+test('a cancelled swing leaves no head speed behind it', () => {
+  const paddle = new Paddle();
+  for (let step = 0; step < 20; step += 1) {
+    paddle.step(DT, poseAt(step * DT, RIDEABILITY.topSpeed), step === 0, null);
+  }
+  paddle.cancel();
+  assert.equal(paddle.headSpeed, 0);
+  assert.equal(paddle.committed, false);
+});
+
+test('the head’s travel points the way the sweep is going', () => {
+  // The hard knock reads this to decide which way a struck rider falls, and a
+  // sign error here is invisible in every test that only asks whether they
+  // crashed. Riding down +Z, the authored forehand sweeps from behind the
+  // rider's right (−X) round to in front of them, so the head's own travel must
+  // carry a positive X component through the middle of the arc.
+  const parked = striking(swingProfile(0));
+  const sideways = parked.filter((step) => Math.abs(step.travelX) > Math.abs(step.travelZ));
+  assert.ok(sideways.length > 0, 'some of the arc must be crossing the rider');
+  assert.ok(
+    sideways.every((step) => step.travelX > 0),
+    'the forehand travels toward the rider’s left, never back toward their right',
+  );
 });

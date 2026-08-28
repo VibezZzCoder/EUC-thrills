@@ -290,7 +290,15 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     showsHud: false,
     showsMenu: true,
     resetsInput: true,
-    successors: Object.freeze(['title', 'freeRide'] as AppStateId[]),
+    // **Four exits since M26 Phase 5, and the list is the feature** — q78. The
+    // join panel used to lead exactly one place, because a couch session was
+    // free ride by definition; it now chooses what it is *for*, so `knockabout`
+    // is a destination and `routes` is the answer `enterKnockabout` gives a
+    // world with no discs in it. Enumerated here rather than left to `goTo` to
+    // discover, because this table is where "what may follow what" is decided
+    // and a transition missing from it fails silently: the button clicks, the
+    // panel stays, and nothing says why.
+    successors: Object.freeze(['title', 'freeRide', 'knockabout', 'routes'] as AppStateId[]),
   }),
   freeRide: Object.freeze({
     id: 'freeRide' as AppStateId,

@@ -75,18 +75,24 @@ async function bootChase(
   await page.waitForFunction(() => window.game.snapshot().hud.chase !== '');
 }
 
-test('touching the cop busts the rider, and the cop closing scores nothing', async ({ page }) => {
-  const errors = collectErrors(page);
-  // `?wobble=0` is M13's sanctioned diagnostic silencer, used here for what it
-  // exists for: the cop's led swing lands during any frontal ram, and whether
-  // its wobble happens to fell this scripted rider before or after the bodies
-  // meet is a race this spec is not about — `caught` and `touched` are both
-  // honest ends to a ram, and the attribution matrix between them is pinned
-  // headless in chase.test.ts. Silencing the oscillator makes the journey
-  // deterministic: the ram survives the knock and the *touch* ends the run.
-  await bootChase(page, '&wobble=0');
-
-  const result = await page.evaluate(({ touchReach }) => {
+/**
+ * Ram Officer Dorkins head-on and report which way the run ended.
+ *
+ * Dario's own shape: he rode *into* the officer and passed through, which is
+ * what prompted the promise. The cop spawns 20 m behind, so full reverse charges
+ * straight at him along the road while he closes.
+ */
+async function ramTheCop(page: Page): Promise<{
+  failed?: string;
+  outcome?: string;
+  phase?: string;
+  contactGap?: number;
+  state?: string;
+  crashed?: boolean;
+  crashCause?: string;
+  tail?: string;
+}> {
+  return page.evaluate(({ touchReach }) => {
     const game = window.game;
     game.clearActions();
 
@@ -116,6 +122,32 @@ test('touching the cop busts the rider, and the cop closing scores nothing', asy
       failed: `no bust: gaps ${trace.filter((_, i) => i % 12 === 0).join(', ')} against ${touchReach} m`,
     };
   }, { touchReach: CHASE.touchBustMetres });
+}
+
+test('touching the cop busts the rider, and the cop closing scores nothing', async ({ page }) => {
+  const errors = collectErrors(page);
+  /*
+   * **The fixture holds the cop's paddle off, and since 2026-08-27 it has to.**
+   *
+   * `?wobble=0` is M13's sanctioned diagnostic silencer and used to be enough:
+   * the cop's led swing lands during any frontal ram, and with the oscillator
+   * off his body knock could not fell this scripted rider, so the *touch* ended
+   * the run deterministically. The owner's ride made every landed strike a
+   * knockdown (`PADDLE.hardKnockShare`, §26.4), and a knockdown is a crash
+   * rather than a wobble — so the silencer stopped silencing the thing that
+   * matters and his paddle now usually gets there first.
+   *
+   * Winding the share to the top of its slider restores exactly what `wobble=0`
+   * used to buy, and it is the same fixture decision `m26.spec.ts` makes for the
+   * cop's stand-off: this spec is about **the touch bust** — its radius, its
+   * outcome and its card — not about what his paddle does on the way. The
+   * second test below is the one that says what the shipped game does to a
+   * rider who rams him.
+   */
+  await bootChase(page, '&wobble=0');
+  await page.evaluate(() => window.game.tuning.set('PADDLE.hardKnockShare', 3));
+
+  const result = await ramTheCop(page);
 
   expect(result.failed, result.failed ?? '').toBeUndefined();
   expect(result.outcome, JSON.stringify(result)).toBe('touched');
@@ -125,6 +157,35 @@ test('touching the cop busts the rider, and the cop closing scores nothing', asy
   await expect(page.locator('.euc-menu--results')).toBeVisible();
   await expect(page.locator('.euc-menu--results')).toContainText('Busted');
   await expect(page.locator('.euc-menu--results')).toContainText('touched Officer Dorkins');
+  expect(errors).toEqual([]);
+});
+
+test('riding into the cop ends the run on the values the game ships', async ({ page }) => {
+  /*
+   * **The promise, without the fixture** — and it is a public one: Dario asked
+   * that *"the police should arrest you if you touch the police officer"*, and
+   * M24 shipped it. What a player owes that promise is that riding into him ends
+   * the run and they are told they were busted.
+   *
+   * **Which of the two endings closes it is deliberately not asserted.** On the
+   * shipped values his paddle usually gets there first, because every landed
+   * strike is a knockdown since 2026-08-27 and §26.4 priced exactly this: his
+   * one-touch ending moves from 1.1 m to about 1.75 m. A crash beside him is a
+   * bust (`caught`) and a body-to-body arrival is a bust (`touched`); the run
+   * ends either way and the card says Busted either way. Pinning the label here
+   * would be pinning a race — which is what the test above exists to avoid, by
+   * removing the race instead of by tolerating it.
+   */
+  const errors = collectErrors(page);
+  await bootChase(page);
+
+  const result = await ramTheCop(page);
+
+  expect(result.failed, result.failed ?? '').toBeUndefined();
+  expect(result.phase, JSON.stringify(result)).toBe('busted');
+  expect(['touched', 'caught'], JSON.stringify(result)).toContain(result.outcome);
+  await expect(page.locator('.euc-menu--results')).toBeVisible();
+  await expect(page.locator('.euc-menu--results')).toContainText('Busted');
   expect(errors).toEqual([]);
 });
 

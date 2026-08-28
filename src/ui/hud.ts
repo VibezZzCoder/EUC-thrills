@@ -46,6 +46,10 @@ const TEMPLATE = `
 <div class="euc-hud__score" data-hud="score" hidden>
   <span class="euc-hud__score-label" data-hud="score-label"></span>
   <span class="euc-hud__score-value" data-hud="score-value">0 / 0</span>
+  <span class="euc-hud__score-aside" data-hud="score-aside" hidden>
+    <span class="euc-hud__score-aside-label" data-hud="score-aside-label"></span>
+    <span class="euc-hud__score-aside-value" data-hud="score-aside-value"></span>
+  </span>
 </div>
 
 <div class="euc-hud__challenge" data-hud="challenge" hidden>
@@ -106,6 +110,8 @@ export class Hud {
   private lastObjective = '';
   private lastModeLabel = '';
   private lastKnockabout = '';
+  private lastModeSubLabel = '';
+  private lastModeSub = '';
   private lastWarningLabel = '';
   private lastWarningLevel = '';
   private lastOffRoute = false;
@@ -237,6 +243,21 @@ export class Hud {
       this.nodes['score-value'].textContent = lane;
       this.nodes.score.hidden = lane === '';
       this.lastKnockabout = lane;
+    }
+    // The second row under it — the owner's 2026-08-28 ride, and a couch match
+    // is the only ride that has one. Two writes rather than one composed
+    // string, because the label is set-and-forget for a whole match while the
+    // count moves: the diff is what keeps the row free in every other mode, and
+    // the whole row is `hidden` there rather than merely empty, so it costs no
+    // grid line either.
+    if (view.modeSubLabel !== this.lastModeSubLabel) {
+      this.nodes['score-aside-label'].textContent = view.modeSubLabel;
+      this.nodes['score-aside'].hidden = view.modeSubLabel === '';
+      this.lastModeSubLabel = view.modeSubLabel;
+    }
+    if (view.modeSub !== this.lastModeSub) {
+      this.nodes['score-aside-value'].textContent = view.modeSub;
+      this.lastModeSub = view.modeSub;
     }
 
     if (view.objective !== this.lastObjective) {

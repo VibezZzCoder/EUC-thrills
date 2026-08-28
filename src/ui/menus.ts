@@ -28,6 +28,11 @@ import {
   type GameOptions,
   type TouchControlsMode,
 } from '../app/options.ts';
+import {
+  COUCH_RIDES,
+  COUCH_RIDE_LABELS,
+  type CouchRide,
+} from '../app/couch.ts';
 import { rowNeighbour, rowStep, type ControlRect } from './menuRows.ts';
 
 /**
@@ -198,18 +203,41 @@ export interface MenuCallbacks {
    */
   onCycleCouchRider(seat: number, delta: 1 | -1): void;
 
-  // -- M26 Phase 2 ------------------------------------------------------------
+  // -- M26 Phase 5 ------------------------------------------------------------
   /**
-   * Turn rider-to-rider contact on or off for this couch session.
+   * Choose what this couch session is for — q78.
    *
    * **Deliberately not `onChange`**, which is the door to `GameOptions`. A
-   * second callback for a second kind of state is the options firewall drawn
-   * in the callback list: a contact toggle routed through the options path
-   * would be saved, would be a physical quantity in the player's record, and
-   * would reach `simulation/` through the store — all three of which
-   * invariant 5 exists to refuse.
+   * separate callback for a different kind of state is the options firewall
+   * drawn in the callback list: what a session is for is not a saved
+   * preference, and a control routed through the options path would be saved,
+   * would reach `simulation/` through the store, and would be a physical
+   * quantity in the player's record — all three of which invariant 5 refuses.
+   *
+   * The ride crosses as a plain string and `Game` refuses one it does not offer
+   * (`app/couch.ts`'s `isCouchRide`), because a stale value left in the markup
+   * would otherwise reach the state machine as a mode nobody built.
+   *
+   * `onSetCouchContact` used to sit beside this one. It is gone with its
+   * control — the owner's 2026-08-27 ride: *"i think now that the toggle for
+   * the bump is completely unnecessary. remove it and keep it always on"*
+   * (§26.3, q81 amended).
    */
-  onSetCouchContact(enabled: boolean): void;
+  onSetCouchRide(ride: string): void;
+
+  // -- M26 Phase 5's ride repairs (2026-08-27) --------------------------------
+  /**
+   * Change what a *running* couch session is for, from the pause menu.
+   *
+   * **A different callback from `onSetCouchRide`, because it is a different
+   * verb.** That one writes a choice a panel will act on when Start is
+   * pressed; this one is the press — two people mid-session decide they would
+   * rather fight, and the alternative today is quitting to the title and
+   * seating both devices again. The owner asked for exactly that: *"2P pause
+   * menu should allow 2P mode to change to another 2p mode without having to
+   * quit to main menu."*
+   */
+  onSwitchCouchRide(ride: string): void;
 }
 
 /**
@@ -296,6 +324,44 @@ export type RouteStatus =
 /** Why the player arrived at Fresh route. The chooser must not erase it. */
 export type RoutePurpose = 'ride' | 'knockabout' | 'chase';
 
+/**
+ * What the rows underneath are, in words — M26 Phase 6's QA repair.
+ *
+ * **The card grew four more modes and kept Time Trial's vocabulary.** The
+ * caption said "Splits" and the columns said "Checkpoint", "Time" and "vs
+ * best" on every screen this game can end on, so a finished couch match
+ * printed `Knockdowns (first to 5) | 5 – 2` under a heading claiming it was a
+ * checkpoint time compared against a personal best — three words, none of them
+ * true, and all three of them read aloud by a screen reader ahead of every
+ * value in the table.
+ *
+ * This is `totalCaption`'s lesson arriving a second time and one row lower
+ * down: **words that describe numbers travel with the numbers.** The two big
+ * captions above the table learned it at M23 when a track day's headline
+ * stopped being "this run"; the table itself was left behind because nothing
+ * about a *timed* run was wrong with it, and four modes were added before
+ * anybody read it in one of theirs.
+ */
+export interface ResultsTable {
+  /** The `<caption>`. What the whole table is.  */
+  readonly caption: string;
+  /** The first column: what each row *is*. */
+  readonly label: string;
+  /** The second column: what each row's figure is. */
+  readonly value: string;
+  /**
+   * The third column, or `''`.
+   *
+   * Empty means the rows carry no comparison — which is true of three of the
+   * five modes, because only a timed run and a track day have a record to
+   * measure a row against. The column stays (the table is `table-layout:
+   * fixed`, and its widths are the same on every card) and loses its heading,
+   * because a heading over a column of blanks is the defect this type exists
+   * to remove rather than a smaller version of it.
+   */
+  readonly delta: string;
+}
+
 /** One checkpoint's line on the results screen. */
 export interface ResultsRow {
   readonly label: string;
@@ -332,6 +398,8 @@ export interface ResultsView {
   readonly best: string;           // '—' when this run is the first
   readonly deltaToBest: string;    // '' when this run is the record
   readonly ahead: boolean;
+  /** What the table below the summary is, in this mode's own words. */
+  readonly table: ResultsTable;
   readonly rows: readonly ResultsRow[];
   readonly notes: readonly string[];
 }
@@ -870,17 +938,80 @@ export interface CouchView {
   /** What an empty seat could still be claimed with. */
   readonly spare: CouchSpare;
   /**
-   * Whether riders bump each other this session — M26 Phase 2 (§26.3).
+   * What this session is *for* — M26 Phase 5 (q78).
    *
-   * It arrives in the view rather than being read from the options record
-   * because **it is not one**. Contact is a physical quantity, invariant 5
-   * keeps physical quantities out of `GameOptions` so that the ride is
-   * identical for every player, and the resolution is the one
-   * `Game.paddleEquipped` already uses: the *session* decides. So this panel
-   * is the only screen in the game that chooses it, `app/Game.ts` holds it,
-   * and it resets to on every time the panel opens (q81).
+   * Free ride or Knockabout, and a couch race when it is built. What two
+   * people sitting down are about to play is a property of the session, not a
+   * saved preference, so it lives on `Game` and never reaches `GameOptions`.
+   *
+   * **This is not a sixth ride.** M25's finding holds — two players is a
+   * session shape — so the couch carries the `freeRide` and `knockabout` rows
+   * the game already has, and this chooses which.
+   *
+   * `contact` sat beside this until the owner's 2026-08-27 ride retired the
+   * toggle it reported. Contact is still session state on `Game` and still not
+   * an option; it simply has no control any more, because it is always on.
    */
-  readonly contact: boolean;
+  readonly ride: CouchRide;
+}
+
+/**
+ * Light whichever mode button is the current one, wherever the chooser is.
+ *
+ * A *report* of what `Game` holds, in both places the chooser stands, written
+ * only where it differs — the panel's own rule, and the reason the pause menu's
+ * copy could not simply latch its own last press.
+ */
+function writeModeChooser(root: HTMLElement, ride: CouchRide): void {
+  for (const button of root.querySelectorAll<HTMLElement>('[data-couch-mode]')) {
+    const pressed = button.dataset.couchMode === ride ? 'true' : 'false';
+    if (button.getAttribute('aria-pressed') !== pressed) {
+      button.setAttribute('aria-pressed', pressed);
+    }
+  }
+}
+
+/**
+ * The couch's mode picker, wherever it is standing — M26 Phase 5's ride
+ * repairs (2026-08-27).
+ *
+ * **Two buttons, both visible, rather than a `<select>`**, and the owner's ride
+ * is the whole of the argument: *"the game mode thing is kinda small and
+ * secretive, makes it seems like we don't want players to change the default
+ * mode. it's kinda cumbersome to change modes."* A closed dropdown shows one
+ * choice and hides the fact that there is another; a segmented pair shows both
+ * and costs one press to move between them.
+ *
+ * It also fixes a thing nobody had reported, because the panel is walked with a
+ * gamepad: opening a native `<select>` from a pad is a control the pad cannot
+ * finish (M25 Phase 5 found the same shape one control earlier), while two
+ * buttons are two more stops on the walk `focusableSelector` already makes.
+ *
+ * **`aria-pressed`, not `role="radio"`.** A radiogroup takes every unselected
+ * option out of the tab order, and the pad cursor walks exactly that order —
+ * so the correct ARIA for a segmented control would have hidden the choice
+ * from the device most likely to be making it. Toggle buttons keep both stops
+ * and say the same thing to a screen reader.
+ *
+ * Emitted from `COUCH_RIDES` rather than written twice, so the couch race
+ * arrives in both places at once when it is built.
+ */
+const MODE_CHOOSER_NOTE = 'Free ride is riding, with nothing to win. Knockabout gives you both a '
+  + 'paddle: first to five knockdowns takes the match.';
+
+function modeChooserTemplate(action: string, idBase: string, label = 'Playing'): string {
+  const buttons = COUCH_RIDES.map((ride) => `
+        <button type="button" class="euc-couch__mode-button" data-menu="${action}"
+                data-couch-mode="${ride}" aria-pressed="false">${COUCH_RIDE_LABELS[ride]}</button>`).join('');
+  return `
+  <div class="euc-couch__mode">
+    <span class="euc-couch__mode-label" id="${idBase}-label">${label}</span>
+    <div class="euc-couch__modes" role="group" aria-labelledby="${idBase}-label"
+         aria-describedby="${idBase}-note">${buttons}
+    </div>
+    <p class="euc-field__note" id="${idBase}-note">${MODE_CHOOSER_NOTE}</p>
+  </div>
+`;
 }
 
 /**
@@ -925,10 +1056,14 @@ function couchTemplate(): string {
         <div class="euc-couch__rider">
           <button type="button" class="euc-couch__step" data-menu="couch-prev"
                   data-couch-step="${seat}" aria-label="Previous rider for player ${seat + 1}">&#8249;</button>
-          <span class="euc-couch__name" data-couch-rider="${seat}"></span>
+          <span class="euc-couch__pick">
+            <span class="euc-couch__dot" aria-hidden="true"></span>
+            <span class="euc-couch__name" data-couch-rider="${seat}"></span>
+          </span>
           <button type="button" class="euc-couch__step" data-menu="couch-next"
                   data-couch-step="${seat}" aria-label="Next rider for player ${seat + 1}">&#8250;</button>
         </div>
+        <p class="euc-couch__hint" aria-hidden="true">Change rider</p>
       </div>`).join('');
 
   return `
@@ -946,17 +1081,7 @@ function couchTemplate(): string {
     ${seats}
   </fieldset>
 
-  <div class="euc-couch__contact">
-    <label class="euc-couch__toggle">
-      <input type="checkbox" data-couch-contact checked
-             aria-describedby="euc-couch-contact-note" />
-      <span>Riders bump into each other</span>
-    </label>
-    <p class="euc-field__note" id="euc-couch-contact-note">
-      On, you shove each other about. Off, you ride straight through. Nobody is
-      ever knocked down by a bump either way.
-    </p>
-  </div>
+  ${modeChooserTemplate('couch-mode', 'euc-couch-mode')}
 
   <div class="euc-menu__actions">
     <button type="button" class="euc-button euc-button--primary" data-menu="couch-start" disabled>
@@ -1169,19 +1294,23 @@ const RESULTS_TEMPLATE = `
     </div>
   </div>
 
-  <table class="euc-results__table">
-    <caption class="euc-results__caption">Splits</caption>
+  <table class="euc-results__table" data-menu="results-table" data-compare="true">
+    <caption class="euc-results__caption" data-menu="results-table-caption">Splits</caption>
     <thead>
       <tr>
-        <th scope="col">Checkpoint</th>
-        <th scope="col">Time</th>
-        <th scope="col">vs best</th>
+        <th scope="col" data-menu="results-column-label">Checkpoint</th>
+        <th scope="col" data-menu="results-column-value">Time</th>
+        <th scope="col" data-menu="results-column-delta">vs best</th>
       </tr>
     </thead>
     <tbody data-menu="results-rows"></tbody>
   </table>
 
   <ul class="euc-results__notes" data-menu="results-notes" hidden></ul>
+
+  <div class="euc-results__couch" data-menu="results-couch" hidden>
+${modeChooserTemplate('switch-mode', 'euc-results-mode', 'Play next')}
+  </div>
 
   <div class="euc-menu__actions">
     <button type="button" class="euc-button euc-button--primary" data-menu="retry">Ride it again</button>
@@ -1194,6 +1323,9 @@ ${NEW_ROUTE_BUTTON}
 const PAUSE_TEMPLATE = `
 <div class="euc-menu__panel" role="dialog" aria-modal="true" aria-labelledby="euc-pause-heading">
   <h2 class="euc-menu__title" id="euc-pause-heading">Paused</h2>
+  <div class="euc-pause__couch" data-menu="pause-couch" hidden>
+${modeChooserTemplate('switch-mode', 'euc-pause-mode')}
+  </div>
   <div class="euc-menu__actions">
     <button type="button" class="euc-button euc-button--primary" data-menu="resume">Resume</button>
     <button type="button" class="euc-button" data-menu="end-session" hidden>
@@ -1257,9 +1389,15 @@ export class Menus {
     // dragged: the whole point of a volume control is that the player hears
     // the result before letting go.
     this.settings.addEventListener('input', this.onInput);
-    // The join panel's own value-carrying control, on its own root — see
-    // `onCouchInput` for why this is not a branch of the handler above.
-    this.couch.addEventListener('input', this.onCouchInput);
+    // **The join panel is deliberately not listened to here.** It had a root
+    // `input` listener of its own from M26 Phase 2 until 2026-08-27, kept off
+    // `onInput` because every path through that handler ends at
+    // `callbacks.onChange` — the door to `GameOptions` — and neither of the
+    // panel's settings is an option. Both of those controls are now buttons on
+    // the click dispatch, so the separation is structural rather than
+    // maintained: there is nothing on that panel for an options handler to
+    // hear. `tests/m26.spec.ts` asserts that, so a `<select>` arriving here
+    // fails rather than working by accident.
 
     // **Scoped to the field, not to the window**, unlike everything else this
     // file listens for. Enter inside a text box means "I have finished typing
@@ -1453,6 +1591,17 @@ export class Menus {
     const delta = this.results.querySelector<HTMLElement>('[data-menu="results-delta"]');
     if (delta) delta.dataset.ahead = view.ahead ? 'true' : 'false';
 
+    // **The table says what it is, in the mode's own words** — see
+    // `ResultsTable`. `data-compare` is the fact a stylesheet or a spec can
+    // ask about without parsing a heading: whether these rows are measured
+    // against anything.
+    this.setResultsText('results-table-caption', view.table.caption);
+    this.setResultsText('results-column-label', view.table.label);
+    this.setResultsText('results-column-value', view.table.value);
+    this.setResultsText('results-column-delta', view.table.delta);
+    const table = this.results.querySelector<HTMLElement>('[data-menu="results-table"]');
+    if (table) table.dataset.compare = view.table.delta === '' ? 'false' : 'true';
+
     const body = this.results.querySelector<HTMLElement>('[data-menu="results-rows"]');
     if (body) {
       body.textContent = '';
@@ -1590,18 +1739,21 @@ export class Menus {
 
       const status = card.querySelector<HTMLElement>(`[data-couch-status="${seat}"]`);
       const line = couchSeatLine(entry, view.spare);
-      if (status && status.textContent !== line) status.textContent = line;
+      const text = seatLineText(line);
+      // Compared as prose and drawn as segments — `renderSeatLine` says why the
+      // two cannot disagree, and the comparison is what keeps a redraw from
+      // rebuilding a line a player is halfway through reading.
+      if (status && status.textContent !== text) renderSeatLine(status, line);
     }
 
-    // **The room's contact answer, drawn from the session and never from the
-    // control's own last value** — M26 Phase 2. The checkbox is a *report* of
-    // `Game.contactEnabled`, which is what makes q81's reset visible here: the
-    // flag going back to on when the panel opens redraws the box, and a panel
-    // that trusted the DOM would show the room a tick that no longer described
-    // the ride. Written only when it differs, like every other field on this
-    // panel, so a redraw does not fight a player mid-press.
-    const contact = this.couch.querySelector<HTMLInputElement>('[data-couch-contact]');
-    if (contact && contact.checked !== view.contact) contact.checked = view.contact;
+    // The mode choice: a *report* of what `Game` holds, written only when it
+    // differs, so the pad walking the panel and a claim redrawing it cannot
+    // fight each other mid-press.
+    //
+    // The contact toggle used to be reported on the same terms. It is gone with
+    // its control (the owner's 2026-08-27 ride); contact is on, always, and
+    // nothing on this screen says otherwise.
+    writeModeChooser(this.couch, view.ride);
 
     const start = this.couch.querySelector<HTMLButtonElement>('[data-menu="couch-start"]');
     // **Disabled rather than hidden.** A player who can see the control they
@@ -1609,6 +1761,75 @@ export class Menus {
     // out of nowhere the instant the second seat fills is also one that can be
     // pressed by the very keystroke that filled it.
     if (start) start.disabled = !view.ready;
+  }
+
+  /**
+   * Show — or hide — the pause menu's mode switch, and light the current one.
+   *
+   * **Hidden rather than absent, and hidden by the same rule `end-session`
+   * uses**: a control that exists only in some sessions is a control the pad's
+   * walk has to be able to skip, and `focusableControls` skips a `hidden`
+   * subtree for free. Passing `null` is "this is not a couch session", which is
+   * every single-player pause in the game and therefore the common case.
+   *
+   * The chooser is a report here exactly as it is on the join panel: `Game`
+   * holds what the session is for, and a switch that latched its own last press
+   * would disagree with the ride the moment a mode entrance refused.
+   */
+  setPauseCouchRide(ride: CouchRide | null, blocked: readonly CouchRide[] = []): void {
+    this.writeCouchSwitch(this.pause, 'pause-couch', ride, blocked);
+  }
+
+  /**
+   * The same control on the results card — the owner's 2026-08-28 ride.
+   *
+   * **The same method, the same words, a different card**, and that is the
+   * whole design: a player who learned to change mode from the pause menu must
+   * not have to learn a second control at the end of a match. Its own label
+   * ("Play next" rather than "Playing") is the one thing that differs, because
+   * a finished match is not a session in progress and a chooser that said
+   * `Playing` over a results card would be reporting a ride nobody is on.
+   *
+   * `null` is every single-player results card in the game, which is almost all
+   * of them.
+   */
+  setResultsCouchRide(ride: CouchRide | null, blocked: readonly CouchRide[] = []): void {
+    this.writeCouchSwitch(this.results, 'results-couch', ride, blocked);
+  }
+
+  /** One writer for both copies of the switch, so the two cannot drift. */
+  private writeCouchSwitch(
+    panel: HTMLElement,
+    hook: string,
+    ride: CouchRide | null,
+    blocked: readonly CouchRide[],
+  ): void {
+    const block = panel.querySelector<HTMLElement>(`[data-menu="${hook}"]`);
+    if (block === null) return;
+    const hidden = ride === null;
+    if (block.hidden !== hidden) block.hidden = hidden;
+    if (ride === null) return;
+    writeModeChooser(block, ride);
+
+    // **A mode this world cannot carry is disabled rather than dead**, and
+    // `disabled` is the exact right spelling twice over: `focusableSelector`
+    // excludes it, so the pad's walk steps over a stop it could not use, and a
+    // pointer gets the game's own unavailable styling for free.
+    //
+    // The reason goes in the note, because the note is the only line either
+    // button shares — and a player who presses nothing and is told nothing is a
+    // player who thinks the game is broken (the fresh-route panel's rule).
+    for (const button of block.querySelectorAll<HTMLButtonElement>('[data-couch-mode]')) {
+      const id = button.dataset.couchMode;
+      const off = id !== undefined && blocked.includes(id as CouchRide);
+      if (button.disabled !== off) button.disabled = off;
+    }
+    const note = block.querySelector<HTMLElement>('.euc-field__note');
+    const text = blocked.includes('knockabout')
+      ? 'Knockabout needs a route with things to hit, and this one has none. '
+        + 'New route will build you one to fight on.'
+      : MODE_CHOOSER_NOTE;
+    if (note && note.textContent?.trim() !== text) note.textContent = text;
   }
 
   /**
@@ -1840,7 +2061,6 @@ export class Menus {
   dispose(): void {
     this.parent.removeEventListener('click', this.onClick);
     this.settings.removeEventListener('input', this.onInput);
-    this.couch.removeEventListener('input', this.onCouchInput);
     this.seedField?.removeEventListener('keydown', this.onSeedKeyDown);
     window.removeEventListener('keydown', this.onKeyDown, true);
     this.title.remove();
@@ -2003,6 +2223,19 @@ export class Menus {
     else if (action === 'couch') this.callbacks.onOpenCouch();
     else if (action === 'couch-back') this.callbacks.onCloseCouch();
     else if (action === 'couch-start') this.callbacks.onStartCouch();
+    // -- M26 Phase 5, and its 2026-08-27 ride repairs ------------------------
+    // **Two actions for two verbs, and they are dispatched apart on purpose.**
+    // The join panel's chooser records what the session *will* be; the pause
+    // menu's chooser changes what a running one *is*. One handler with a
+    // "which screen am I on" branch would be the same code deciding a question
+    // the DOM has already answered.
+    else if (action === 'couch-mode' || action === 'switch-mode') {
+      const ride = target.closest<HTMLElement>('[data-couch-mode]')?.dataset.couchMode;
+      if (ride !== undefined) {
+        if (action === 'couch-mode') this.callbacks.onSetCouchRide(ride);
+        else this.callbacks.onSwitchCouchRide(ride);
+      }
+    }
     else if (action === 'couch-prev' || action === 'couch-next') {
       const seat = target.closest<HTMLElement>('[data-couch-step]')?.dataset.couchStep;
       if (seat !== undefined) {
@@ -2067,30 +2300,6 @@ export class Menus {
     this.callbacks.onChange({
       [option]: percent ? numeric / 100 : numeric,
     } as Partial<GameOptions>);
-  };
-
-  /**
-   * The join panel's own controls that carry a value — M26 Phase 2.
-   *
-   * **A second handler rather than a branch inside `onInput`, and that is the
-   * options firewall made structural.** `onInput` exists to turn a control
-   * into a `Partial<GameOptions>`; every path through it ends at
-   * `callbacks.onChange`, and a contact toggle that arrived there would be
-   * saved to the player's record and would be a physical quantity in it — the
-   * two things invariant 5 refuses. Two functions on two roots cannot be
-   * confused by a future edit the way two branches of one function can, and
-   * the panel that must never write an option is not listened to by the code
-   * that writes options.
-   *
-   * `input` and not `change`, for the reason the settings root uses it: the
-   * pad's own `adjustControl` dispatches `input`, so a `change` listener would
-   * leave this control working for a mouse and dead for a gamepad.
-   */
-  private readonly onCouchInput = (event: Event): void => {
-    const target = event.target;
-    if (!(target instanceof HTMLInputElement)) return;
-    if (target.dataset.couchContact === undefined) return;
-    this.callbacks.onSetCouchContact(target.checked);
   };
 
   /**
@@ -2636,11 +2845,37 @@ export class Menus {
  * saying "press Enter" beside a seat the keyboard is already holding is a
  * screen the player concludes is broken.
  */
-const COUCH_SPARE_LINES: Readonly<Record<CouchSpare, string>> = Object.freeze({
-  both: 'Empty — press A or Start on a gamepad, or Enter on the keyboard.',
-  pad: 'Empty — press A or Start on a gamepad.',
-  keyboard: 'Empty — press Enter on the keyboard.',
-  none: 'Empty — plug in a gamepad, then press A or Start on it.',
+/**
+ * One piece of a seat's status line: prose, or a button to press.
+ *
+ * **A key is a different thing from a sentence about a key** — the owner's
+ * 2026-08-27 ride: *"the press A or start or Enter thing… its just so plaintext
+ * like…. not everyone is a hardcore gamer that knows how games function without
+ * looking at the screen."* A player scanning this panel has to find the thing
+ * to press, and the thing to press was the same weight as the words around it.
+ *
+ * Segments rather than markup so the line stays one composed value with one
+ * author (M12 Phase 4's rule): the panel decides that `A` is drawn as a cap and
+ * a screen reader still hears the sentence, because `renderSeatLine` writes the
+ * same words either way. That equality is what lets `setCouchView` keep
+ * comparing plain text before it redraws.
+ */
+type SeatLineSegment = string | { readonly key: string };
+
+const COUCH_SPARE_LINES: Readonly<Record<CouchSpare, readonly SeatLineSegment[]>> = Object.freeze({
+  both: Object.freeze<SeatLineSegment[]>([
+    'Empty — press ', { key: 'A' }, ' or ', { key: 'Start' },
+    ' on a gamepad, or ', { key: 'Enter' }, ' on the keyboard.',
+  ]),
+  pad: Object.freeze<SeatLineSegment[]>([
+    'Empty — press ', { key: 'A' }, ' or ', { key: 'Start' }, ' on a gamepad.',
+  ]),
+  keyboard: Object.freeze<SeatLineSegment[]>([
+    'Empty — press ', { key: 'Enter' }, ' on the keyboard.',
+  ]),
+  none: Object.freeze<SeatLineSegment[]>([
+    'Empty — plug in a gamepad, then press ', { key: 'A' }, ' or ', { key: 'Start' }, ' on it.',
+  ]),
 });
 
 /**
@@ -2649,13 +2884,39 @@ const COUCH_SPARE_LINES: Readonly<Record<CouchSpare, string>> = Object.freeze({
  * Three states and no more: waiting for a device that went away, empty, or
  * held by something that is named.
  */
-function couchSeatLine(seat: CouchSeatView, spare: CouchSpare): string {
+function couchSeatLine(seat: CouchSeatView, spare: CouchSpare): readonly SeatLineSegment[] {
   if (seat.awaiting) {
-    return 'Controller lost — press A on a pad, or Enter, to take this seat back.';
+    return [
+      'Controller lost — press ', { key: 'A' }, ' on a pad, or ', { key: 'Enter' },
+      ', to take this seat back.',
+    ];
   }
   if (seat.device === null) return COUCH_SPARE_LINES[spare];
-  if (seat.device === 'keyboard') return 'Keyboard. Ready.';
-  return `${seat.padNumber === null ? 'Gamepad' : `Gamepad ${seat.padNumber}`}. Ready.`;
+  if (seat.device === 'keyboard') return ['Keyboard. Ready.'];
+  return [`${seat.padNumber === null ? 'Gamepad' : `Gamepad ${seat.padNumber}`}. Ready.`];
+}
+
+/** The same line as plain prose — what a screen reader hears, and what a redraw compares. */
+function seatLineText(line: readonly SeatLineSegment[]): string {
+  return line.map((part) => (typeof part === 'string' ? part : part.key)).join('');
+}
+
+/**
+ * Draw one status line into its paragraph, keys as caps.
+ *
+ * Built as nodes rather than assigned as markup: the strings here are this
+ * file's own constants today, and a status line is exactly the kind of place a
+ * later edit interpolates a device name into. `textContent` is what a caller
+ * compares first, so this only ever runs on a line that really changed.
+ */
+function renderSeatLine(into: HTMLElement, line: readonly SeatLineSegment[]): void {
+  into.replaceChildren(...line.map((part) => {
+    if (typeof part === 'string') return document.createTextNode(part);
+    const cap = document.createElement('kbd');
+    cap.className = 'euc-key';
+    cap.textContent = part.key;
+    return cap;
+  }));
 }
 
 function routeStatusLine(status: RouteStatus): [string, string] {

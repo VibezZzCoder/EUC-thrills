@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { SIMULATION } from '../data/tuning.ts';
+import { EUC, SIMULATION } from '../data/tuning.ts';
 import { NEUTRAL_ACTIONS, type ActionSnapshot } from '../input/actions.ts';
 import { buildLevelPlan } from '../level/buildPlan.ts';
 import type { BoxCollider, LevelPlan } from '../level/plan.ts';
@@ -302,6 +302,82 @@ test('the cutout is a faceplant: over the front, not backwards or sideways', () 
     block[RD_HEAD * 3 + 2] > crashZ,
     'the settled body lies ahead of where the wheel cut, never behind it',
   );
+});
+
+// ---------------------------------------------------------------------------
+// How hard a crash throws you — the owner's 2026-08-27 couch ride
+// ---------------------------------------------------------------------------
+
+/**
+ * Knock a rider down sideways at `speed` and report how far the head is thrown
+ * across their heading, metres.
+ *
+ * `hardKnock` rather than a ride into something, because that is the crash the
+ * ride was about and the only one that can be delivered at an *arbitrary*
+ * speed: every other side fall in the game needs a wall, a pedal or nine metres
+ * a second to exist at all. Lateral, because the forward carry is speed by
+ * construction and always was — the two impulses this milestone changed are the
+ * ones that were not.
+ *
+ * **Measured over one step, and the first draft measured a quarter of a second
+ * instead.** That reading came back 0.741 m against 0.752 m — a fix that looked
+ * like it did nothing — because a body 1.5 m tall pivoting at the feet moves its
+ * head about that far sideways by *falling over*, whatever it was pushed with.
+ * Gravity was drowning the thing under test. One step is the launch and only
+ * the launch: verlet stores velocity as `pos − prev`, so the first step's
+ * lateral displacement *is* `vSide × dt`, and nothing else has happened yet.
+ */
+function sideLaunch(speed: number, crashLaunchFloor: number): number {
+  const euc = controller({ plan: flatPlan(), tuning: { crashLaunchFloor } });
+  const input = actions({ throttle: 1 });
+  // Ride up to the asked-for speed, then take it away — a parked rider is zero
+  // steps of this and a fast one is however many it takes.
+  for (let i = 0; i < 2400 && euc.snapshot().speed < speed; i += 1) euc.step(STEP, input);
+  assert.ok(
+    euc.snapshot().speed >= speed - 0.5,
+    `the fixture reached only ${euc.snapshot().speed.toFixed(2)} m/s of ${speed}`,
+  );
+  // Struck from the rider's right: the head's travel crosses them toward +X,
+  // which is the sign `hardKnock` turns into a fall to their left.
+  assert.equal(euc.hardKnock(1, 0), true, 'the fixture was not knocked down');
+  const startX = particles(euc)[RD_HEAD * 3];
+  euc.step(STEP, actions());
+  return Math.abs(particles(euc)[RD_HEAD * 3] - startX);
+}
+
+test('a knockdown at a standstill topples, and the same one at speed is thrown', () => {
+  /*
+   * The owner's report, in one number: *"the rider flies out even at very slow
+   * speed … as if they were colliding at very high speed. too exagerated."*
+   *
+   * `ragdollLaunchSide` was the whole of it — the only lateral term in the seed
+   * and a constant, so a rider knocked off a parked wheel was thrown exactly as
+   * hard as one hit at forty. Delete the `* launch` factor in `ragdoll.seed`
+   * and this fails, because the two readings become the same number.
+   */
+  const parked = sideLaunch(0, EUC.crashLaunchFloor);
+  const unscaled = sideLaunch(0, 1);
+  assert.ok(
+    parked > unscaled * 0.1,
+    `a standstill knockdown must still go over, not sag: ${parked.toFixed(4)} m of ${unscaled.toFixed(4)}`,
+  );
+  assert.ok(
+    parked < unscaled * 0.5,
+    `a parked rider is still being thrown like a moving one: ${parked.toFixed(4)} m of ${unscaled.toFixed(4)}`,
+  );
+});
+
+test('above the run-out speed the launch is exactly what it always was', () => {
+  /*
+   * **The reason the ramp ends at `crashRunOutSpeed` rather than at a number
+   * somebody chose.** Above it a side fall is already what the speed bands pick
+   * on their own, so every crash the game had before this change must be
+   * untouched — and "untouched" is testable rather than argued: at and above
+   * that speed the floor cannot move the answer at all, whatever it is set to.
+   */
+  const speed = EUC.crashRunOutSpeed;
+  assert.equal(sideLaunch(speed, EUC.crashLaunchFloor), sideLaunch(speed, 1));
+  assert.equal(sideLaunch(speed, 0), sideLaunch(speed, 1));
 });
 
 test('two identical crashes produce bit-identical tumbles', () => {

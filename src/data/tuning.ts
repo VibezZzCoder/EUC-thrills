@@ -2057,6 +2057,36 @@ export const EUC = {
   ragdollLaunchSide: 1.7,
   /** Extra head-over velocity when the wheel stops dead against a solid, m/s. */
   ragdollLaunchTumble: 1.5,
+  /**
+   * What share of those two a crash at a **standstill** keeps — the owner's
+   * 2026-08-27 couch ride.
+   *
+   * **The two impulses above are the only ones in the seed that are not made of
+   * speed**, and that is the defect he reported: *"the rider flies out even at
+   * very slow speed … as if they were colliding at very high speed. too
+   * exagerated."* Everything else scales — the forward carry is the ride
+   * velocity, the pop is a fraction of it, and the wheel's own flourish is
+   * gated at `crashWheelFlourishSpeed` — so a crawl already read as a crawl
+   * everywhere except the side shove and the head-over tumble, which fired at
+   * full strength from a dead stop.
+   *
+   * They now ride a ramp from this share at rest to full at
+   * **`crashRunOutSpeed`**, which is a derived speed rather than a chosen one
+   * and that is the point (M16's lesson). Above 9 m/s a side fall is *already*
+   * classified by speed alone, so pinning full strength there makes "every
+   * crash the speed bands chose is untouched" true by construction instead of
+   * by a coincidence between two numbers somebody has to keep in step.
+   *
+   * The floor exists because zero is not the right answer either: a rider
+   * knocked off a parked wheel still has to go over, and a launch that faded to
+   * nothing would leave them sagging where they stood. A quarter of the shove
+   * is a topple; the whole of it is being hit by a car.
+   *
+   * What this reaches, and nothing else: `pedalStrike`, `obstacle` and `struck`
+   * below 9 m/s — which since the same ride is every paddle strike in the game
+   * that lands on somebody who was not moving (`PADDLE.hardKnockShare`).
+   */
+  crashLaunchFloor: 0.25,
   /** Extra damping per second while a particle is inside soft foliage. */
   ragdollSoftDamping: 7.0,
 
@@ -5683,6 +5713,39 @@ export const PADDLE = {
    * than a rebuild.
    */
   hitSpeedCost: 0,
+  /**
+   * How committed a swing has to be to put a rider down — M26 Phase 3 (q74),
+   * **and it ships at zero since the owner's 2026-08-27 ride**.
+   *
+   * **Zero means every landed strike is a knockdown**, which is a reversal of
+   * what this constant was built to express and the owner's own words are the
+   * whole of the argument: *"realize hitting and not dropping is not fun. even
+   * at slow speed/stationary getting hit with paddle should knock u out"*. The
+   * same ride found the consequence in the chase — a cop whose paddle landed
+   * and did nothing — and named it a regression against the live build, where
+   * he *"almost had a heart attack"* seeing it broken (§26.11).
+   *
+   * The lever survives the reversal because the arithmetic under it is still
+   * the right arithmetic, and the day a ride asks for a wind-up back it is a
+   * slider rather than a rebuild. `PADDLE.hitSpeedCost` is the same shape and
+   * the same precedent: a knob shipped at the value that switches it off,
+   * because the owner's answer to the question it asks was "no".
+   *
+   * **A share of the paddle's own arc speed, never a number in m/s.** The head
+   * sweeps `reach · sweepRadians / activeSeconds` all by itself — about 25.7 m/s
+   * at the values above — and that is exactly the speed a *parked* wielder's tap
+   * lands at, so 1.0 *is* a standing tap and every share above it asks for speed
+   * the wielder brought. Expressed against the swing rather than against the
+   * world because M20's rule says so: a raw threshold in m/s is a constant
+   * secretly defined as today's `activeSeconds`, and the day somebody shortens
+   * the strike window it would quietly become "every tap" anyway.
+   *
+   * At 1.25 — what shipped between Phase 3 and the ride — a rider carrying
+   * roughly 7.5 m/s into a mid-arc strike put the other one down and a standing
+   * tap shoved. `simulation/paddle.test.ts` still proves that band, by setting
+   * the share rather than by reading it, which is what keeps the lever real.
+   */
+  hardKnockShare: 0,
 } as const;
 
 /**
@@ -5825,6 +5888,27 @@ export const TARGET = {
    * asked of a pothole — can I see it far enough ahead to set up the line.
    */
   readMetres: 40,
+} as const;
+
+/**
+ * A couch Knockabout match — M26 Phase 4 (`docs/PLANS.md` §26.5).
+ *
+ * **One number, and it is the one the ride gate tunes.** q76 settles the rest:
+ * knockdowns decide the match, there is no clock to run out (§13 q14's
+ * "elapsed is worth nothing" survives), discs are a side tally that can never
+ * win it, and nothing is stored (q77). None of those are quantities, so none of
+ * them are here — a group that grew a `discsAreWorth` would be a group that had
+ * quietly reopened a settled design decision as a slider.
+ */
+export const KNOCKABOUT = {
+  /**
+   * How many knockdowns win a couch match — q76's "first to five".
+   *
+   * Five because a match should be long enough to turn around and short enough
+   * to want another one straight away; whether that is right is what the
+   * owner's Phase 5 ride answers, which is why it is on F4.
+   */
+  matchKnockdowns: 5,
 } as const;
 
 /**
@@ -6225,6 +6309,7 @@ export const TUNING = deepFreeze({
   PUDDLE,
   PADDLE,
   TARGET,
+  KNOCKABOUT,
   CONTACT,
   CHASE,
   FX,
@@ -6964,6 +7049,20 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
       + 'something.',
   },
   {
+    path: 'PADDLE.hardKnockShare',
+    group: 'Ride — Knockabout',
+    label: 'Hard knock threshold',
+    unit: '× arc',
+    min: 0,
+    max: 3,
+    step: 0.05,
+    note: 'How fast the head must be moving through the world to put a rider '
+      + 'down, as a multiple of the swing’s own arc speed. Zero — where it '
+      + 'ships — means every landed strike is a knockdown. 1.0 is a standing '
+      + 'tap, so anything above it asks the wielder to carry speed into the '
+      + 'swing before it puts anybody down.',
+  },
+  {
     path: 'TARGET.bodyKnockRadius',
     group: 'Ride — Knockabout',
     label: 'Body knock radius',
@@ -7208,6 +7307,20 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     max: 0.8,
     step: 0.02,
     note: 'Upward launch as a fraction of crash speed. The comedy knob.',
+  },
+  {
+    path: 'EUC.crashLaunchFloor',
+    group: 'Ride — crash',
+    label: 'Slow-crash launch',
+    unit: '× full',
+    min: 0,
+    max: 1,
+    step: 0.05,
+    note: 'How much of the side shove and the head-over tumble a crash at a '
+      + 'standstill keeps. Those two are the only launch impulses with no '
+      + 'speed in them, so at 1 a rider knocked off a parked wheel is thrown '
+      + 'exactly as hard as one hit at forty. The ramp reaches full strength '
+      + 'at the run-out speed, above which nothing changes.',
   },
   {
     path: 'EUC.crashWheelFlourishSpeed',
@@ -7902,6 +8015,19 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     note: 'How far the ride bed drops while the top warning sounds. This, not '
       + 'the beep level, is the real answer to "is the right thing the loudest '
       + 'thing?"',
+  },
+
+  {
+    path: 'KNOCKABOUT.matchKnockdowns',
+    group: 'Ride — Knockabout',
+    label: 'Knockdowns to win',
+    unit: '',
+    min: 1,
+    max: 15,
+    step: 1,
+    note: 'How many knockdowns end a two-player match. Discs never count '
+      + 'toward it — they are a side tally, so nobody wins a fight by farming '
+      + 'scenery.',
   },
 
   // Rider contact — M26 Phase 0. These move during the parked-rider ride gate;

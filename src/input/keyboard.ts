@@ -81,10 +81,25 @@ export interface KeyboardInputOptions {
  * checkbox ignores — stays the game's, which is the whole point: Enter is the
  * key the join panel's own status line asks the second player to press.
  *
- * `SELECT`, `TEXTAREA` and `range` are deliberately untouched. Arrows adjust a
- * slider or a dropdown and this layer steers with them too, so those are
- * controls that genuinely consume keys the game wants — which is the difference
- * between "cannot be typed into" and "consumes no keys".
+ * **And a dropdown owns everything except `Enter`** — M26 Phase 5's QA repair,
+ * which is the checkbox rule photographed from the other side. `SELECT` was
+ * written into the blanket clause below on the argument that arrows adjust a
+ * dropdown and this layer steers with them too, and that argument is still
+ * right for the keys it was about: arrows walk the options, `Space` opens the
+ * popup, `Home`/`End` jump it, and letters type-ahead. It was wrong about
+ * `Enter`, and in exactly the place the checkbox had already been wrong —
+ * choosing Knockabout from the join panel's new mode control left focus on the
+ * `<select>`, and the second player's `Enter` was read as typing and dropped,
+ * so neither seat could be claimed and Start stayed disabled.
+ *
+ * A closed `<select>` does nothing with `Enter` (there is no form on this page
+ * for it to submit), and while its popup is open the browser keeps the keys —
+ * they never reach this listener at all. So `Enter` costs the control nothing
+ * and is worth the whole join panel, which is the same trade the checkbox made.
+ *
+ * `INPUT`, `TEXTAREA` and `range` stay untouched: those are controls that
+ * genuinely consume keys the game wants, which is the difference between
+ * "cannot be typed into" and "consumes no keys".
  */
 function isEditingTarget(target: EventTarget | null, code: string): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -96,7 +111,8 @@ function isEditingTarget(target: EventTarget | null, code: string): boolean {
   // asking for a second constructor would make a rule about keys depend on how
   // many classes the test environment happens to define.
   if (tag === 'INPUT' && (target as HTMLInputElement).type === 'checkbox') return code === 'Space';
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+  if (tag === 'SELECT') return code !== 'Enter';
+  return tag === 'INPUT' || tag === 'TEXTAREA';
 }
 
 export class KeyboardInput {

@@ -770,14 +770,26 @@ test.describe('M20.1 §4.5 — the Busted card obeys a thumb', () => {
     await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
     const before = await page.evaluate(() => window.game.snapshot().world.seed);
 
-    // Stand still and let Officer Dorkins do the busting — the owner's own
-    // route to this card. Frozen-stepped, the harness's first rule.
+    // Ride *into* Officer Dorkins and let the touch bust do the busting — M24's
+    // own ending, in Dario's own shape, and the cop spawns behind so full
+    // reverse charges straight at him. Frozen-stepped, the harness's first rule.
+    //
+    // **This used to stand still and wait**, which stopped ending the run at
+    // M26 Phase 3. Standing still was never a *designed* ending: it worked
+    // because one cop swing was counted on every active step of its own sweep,
+    // so a single swing delivered three body knocks at once, crossed
+    // `wobbleCrashEnergy` and busted the rider about a second after he arrived.
+    // With one swing worth one knock, a rider who does nothing rides the wobble
+    // out — which is exactly what §13 q25 said a strike should be, and leaves
+    // the stationary stand-off unresolved (§26.10 q85, the owner's to answer).
+    // This test is about the *card* and the thumb that taps it, so it takes the
+    // ending the mode actually ships rather than one that depended on a bug.
     await page.evaluate(() => {
       const game = window.game;
       game.loop.setRunning(false);
       for (let i = 0; i < 400; i += 1) {
-        game.setActions({});
-        game.advance(60);
+        game.setActions({ throttle: -1 });
+        game.advance(20);
         if (game.snapshot().app.state === 'results') break;
       }
       game.loop.setRunning(true);

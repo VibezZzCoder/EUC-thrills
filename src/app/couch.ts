@@ -130,3 +130,57 @@ export function cycleGuest(
   }
   return current;
 }
+
+/**
+ * What a couch session is *for* — M26 Phase 5, q78.
+ *
+ * **Two players is a session shape, not a mode** (M25's finding), so this is not
+ * a sixth ride: it names which of the existing rides the two seats are about to
+ * carry. `freeRide` and `knockabout` are the two the game has now, and the
+ * couch race is a definite with a chosen venue that is priced as its own
+ * milestone (§26.7) — it joins this list and the panel's own control when it is
+ * built, without a new menu.
+ *
+ * Held as couch-session state on `Game`, never a `GameOption`, on the contact
+ * toggle's exact terms: what a session is for is not a saved preference, and
+ * the options firewall keeps `simulation/` free of both.
+ */
+export type CouchRide = 'freeRide' | 'knockabout';
+
+/**
+ * The rides a couch may be started into, in the order the panel offers them.
+ *
+ * A list rather than a union walked by hand, because the control, the default
+ * and the specs all have to agree about what the choices are — and the day a
+ * third one lands, a list is one edit and a hand-walked union is three.
+ */
+export const COUCH_RIDES: readonly CouchRide[] = Object.freeze(['freeRide', 'knockabout']);
+
+/**
+ * What each ride is called on the panel.
+ *
+ * The title screen's own words for the same two rides, because a player who
+ * chose "Knockabout" from the title and "Knockabout" from the join panel should
+ * not have to work out whether they are the same thing.
+ */
+export const COUCH_RIDE_LABELS: Readonly<Record<CouchRide, string>> = Object.freeze({
+  freeRide: 'Free ride',
+  knockabout: 'Knockabout',
+});
+
+/**
+ * The ride a fresh session starts on.
+ *
+ * **Free ride, and for q81's reason rather than by accident.** The contact
+ * toggle resets to on every time the panel opens so that a room which forgot it
+ * exists is never left wondering why riders pass through each other; the same
+ * argument makes the *quietest* ride the default here. Two people sitting down
+ * together get the one with no rules attached, and choosing a fight is a thing
+ * you do on purpose.
+ */
+export const DEFAULT_COUCH_RIDE: CouchRide = 'freeRide';
+
+/** Is this string one of the rides a couch may be started into? */
+export function isCouchRide(value: string): value is CouchRide {
+  return (COUCH_RIDES as readonly string[]).includes(value);
+}

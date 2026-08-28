@@ -5,7 +5,10 @@ import { generateLevel } from '../level/generateRoute.ts';
 import { LEVEL_IDS, createLevel } from '../level/levels.ts';
 import type { BoxCollider, Heightfield, LevelPlan } from '../level/plan.ts';
 import { PlanTerrainSampler } from './planSampler.ts';
+import { CHASE } from '../data/tuning.ts';
+import { Paddle } from './paddle.ts';
 import {
+  DUEL_LATERAL_METRES,
   SLOT_LATERAL_METRES,
   SLOT_MIN_SEPARATION_METRES,
   SLOT_STEP_TOLERANCE_METRES,
@@ -57,17 +60,31 @@ function shippedPlans(): { label: string; plan: LevelPlan }[] {
 }
 
 /**
+ * The furthest a parked rider's paddle can put another rider down, metres.
+ *
+ * Read off the weapon rather than written here, and measured against the real
+ * sweep in `paddle.test.ts` — so a retune of the arm, the head or the body
+ * moves this and the duel spacing is checked against the moved number rather
+ * than against a copy of yesterday's.
+ */
+const PADDLE_REACH_METRES = new Paddle().reachAgainst(CHASE.riderHitRadius);
+
+/**
  * Assert seat 1's slot is somewhere two riders can actually set off from.
  *
  * Four claims, and each one is a different way the placement could be wrong:
  * they are not in the same place, the slot is on the authored course, the
  * ground under it is the spawn's ground rather than a step, and both riders
  * are pointed the same way.
+ *
+ * `lateral` is which question is being asked — a free ride's "together" or a
+ * match's "out of each other's reach". Every claim below is true of both; the
+ * clearance that is true of only one is asserted by its own test.
  */
-function assertSeatedBeside(label: string, plan: LevelPlan): void {
+function assertSeatedBeside(label: string, plan: LevelPlan, lateral?: number): void {
   const terrain = new PlanTerrainSampler(plan);
   const first = plan.spawn;
-  const second = spawnSlot(first, 1, terrain);
+  const second = spawnSlot(first, 1, terrain, lateral);
 
   const separation = Math.hypot(
     second.position.x - first.position.x,
@@ -78,6 +95,14 @@ function assertSeatedBeside(label: string, plan: LevelPlan): void {
     `${label}: the second rider was seated ${separation.toFixed(3)} m from the first — `
       + 'the last-resort fallback fired, which no shipped world may need',
   );
+  if (lateral === DUEL_LATERAL_METRES) {
+    assert.ok(
+      separation > PADDLE_REACH_METRES,
+      `${label}: a match starts the two riders ${separation.toFixed(3)} m apart, inside the `
+        + `${PADDLE_REACH_METRES.toFixed(3)} m a parked swing reaches — the host opens on a `
+        + 'guest who has not moved yet, and the guest cannot answer',
+    );
+  }
 
   terrain.sampleGround(first.position.x, first.position.z, sample);
   const groundHeight = sample.height;
@@ -145,6 +170,97 @@ test('the second rider is seated on the road, not merely near it', () => {
   assert.ok(
     Math.abs(separation - SLOT_LATERAL_METRES) < 1e-9,
     `the slice seated the second rider ${separation.toFixed(3)} m out rather than beside`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// A match's own spacing — the owner's 2026-08-28 couch ride
+// ---------------------------------------------------------------------------
+
+test('a match starts the two riders outside each other’s reach, on every world', () => {
+  /*
+   * **The defect this constant exists for, stated as arithmetic.** The paddle
+   * is in the right hand and seat 1 spawns on seat 0's right, so at
+   * `SLOT_LATERAL_METRES` the host began every couch match already holding the
+   * guest inside their arc — and the guest's own forehand swept the empty road
+   * on their right. The owner's words: *"P2 smacks the air as there's no one to
+   * the right of P2. This is unfair."*
+   *
+   * Every producer and the generated sweep, because a spacing that clears the
+   * weapon on the slice and falls back to the plan's spawn on a narrow beat
+   * would put two riders on one point — which is inside every reach there is.
+   */
+  assert.ok(
+    DUEL_LATERAL_METRES > PADDLE_REACH_METRES,
+    `a duel is stood ${DUEL_LATERAL_METRES} m apart, inside the `
+      + `${PADDLE_REACH_METRES.toFixed(3)} m a parked swing reaches`,
+  );
+  for (const { label, plan } of shippedPlans()) {
+    assertSeatedBeside(`${label} (duel)`, plan, DUEL_LATERAL_METRES);
+  }
+  for (const seed of SWEEP) {
+    assertSeatedBeside(`generated ${seed} (duel)`, generateLevel(seed).plan, DUEL_LATERAL_METRES);
+  }
+});
+
+test('the shipped spacing is the one that was inside the reach, which is why there are two', () => {
+  /*
+   * **The other half of the claim, and the one that makes the first mean
+   * something.** A spacing constant that could not be told from another is a
+   * constant nothing checks (`docs/LESSONS_LEARNED.md`, 2026-08-27) — so the
+   * default is asserted to be *inside* the reach, which is exactly the state
+   * the owner played and reported. Widening `SLOT_LATERAL_METRES` instead of
+   * adding a second value would fail here, and should: two people setting off
+   * on a free ride want to be together.
+   */
+  assert.ok(
+    SLOT_LATERAL_METRES < PADDLE_REACH_METRES,
+    'the free-ride spacing already clears the paddle, so the duel spacing changes nothing',
+  );
+  const plan = createLevel('slice', 'euc');
+  const terrain = new PlanTerrainSampler(plan);
+  const together = spawnSlot(plan.spawn, 1, terrain);
+  const apart = spawnSlot(plan.spawn, 1, terrain, DUEL_LATERAL_METRES);
+  const gap = (slot: typeof together): number => Math.hypot(
+    slot.position.x - plan.spawn.position.x,
+    slot.position.z - plan.spawn.position.z,
+  );
+  assert.ok(Math.abs(gap(together) - SLOT_LATERAL_METRES) < 1e-9);
+  assert.ok(Math.abs(gap(apart) - DUEL_LATERAL_METRES) < 1e-9);
+  // Same side, same heading: what a duel moves is the distance and nothing
+  // else. A guest turned round to face the host would be symmetric and would
+  // also start one of them riding away from the route.
+  assert.equal(Math.sign(apart.position.x - plan.spawn.position.x),
+    Math.sign(together.position.x - plan.spawn.position.x));
+  assert.equal(apart.headingY, together.headingY);
+});
+
+test('every slot a duel can fall back to is also outside the reach', () => {
+  /*
+   * The stagger is *not* widened with the lateral, which is a decision rather
+   * than an oversight: 3.2 m straight back already clears 2.15 m in both
+   * directions, and a fallback scaled to the duel would be six metres behind a
+   * spawn — off the start of a generated route, refused, and therefore worse.
+   *
+   * Asserted on a world built to force each fallback in turn, because the
+   * shipped worlds never need one.
+   */
+  const walled = fixture(flatField(12), [wallAt(-DUEL_LATERAL_METRES, 1.2)]);
+  const oneSide = spawnSlot(walled.spawn, 1, new PlanTerrainSampler(walled), DUEL_LATERAL_METRES);
+  assert.ok(
+    Math.hypot(oneSide.position.x, oneSide.position.z) > PADDLE_REACH_METRES,
+    'the pushed-to-the-other-side slot is inside the reach',
+  );
+
+  const boxed = fixture(flatField(12), [
+    wallAt(-DUEL_LATERAL_METRES, 1.2),
+    wallAt(DUEL_LATERAL_METRES, 1.2),
+  ]);
+  const behind = spawnSlot(boxed.spawn, 1, new PlanTerrainSampler(boxed), DUEL_LATERAL_METRES);
+  assert.ok(behind.position.z < -1e-9, 'the staggered fallback did not fire');
+  assert.ok(
+    Math.hypot(behind.position.x, behind.position.z) > PADDLE_REACH_METRES,
+    'the staggered slot is inside the reach',
   );
 });
 

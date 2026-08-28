@@ -125,6 +125,19 @@ export interface RiderSeat {
   readonly paddle: Paddle;
   /** Where this seat's paddle head is this render frame, in world space — M14. */
   readonly paddleHead: Vector3;
+  /**
+   * Which of this seat's swings has already landed on a rider — M26 Phase 3.
+   *
+   * **One swing lands on one rider once**, which is a disc's rule (§13 q21)
+   * said for something that is not removed from the world by being hit. It
+   * lives on the seat rather than on `Game` because it is only meaningful
+   * beside the paddle that produced it: a guest who leaves and comes back gets
+   * a new `Paddle` counting from zero, and a latch kept anywhere else would
+   * still be holding a number that new paddle is about to reach.
+   *
+   * `-1` is "no swing yet", which `Paddle.swingCount` never returns.
+   */
+  lastRiderStrikeSwing: number;
 
   /**
    * How many times each one-shot has been claimed by this seat. The

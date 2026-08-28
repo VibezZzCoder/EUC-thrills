@@ -921,10 +921,16 @@ export class AudioDirector {
    *
    * A dull thump plus a short mid burst: a padded face on a padded pad, nearer
    * a boxing mitt than a bat. It is not rate-limited either, and does not need
-   * to be — a target leaves the hittable set the instant it is struck, so the
-   * "this is a level, not an edge" hazard the kerb knock guards against cannot
-   * arise here. One swing can legitimately reach two targets, and that should
-   * sound like two hits.
+   * to be — but **the reason changed at M26 and the conclusion only just
+   * survived it.** It used to be that a target leaves the hittable set the
+   * instant it is struck, so the "this is a level, not an edge" hazard the kerb
+   * knock guards against could not arise. A *rider* is now something this
+   * paddle can hit, and a rider is not removed from the world by being hit: the
+   * same swing reports them on every active step its head stays in reach, which
+   * is two or three of them. The edge is drawn at the caller instead — one
+   * swing lands on one rider once (`RiderSeat.lastRiderStrikeSwing`) — so this
+   * cue is still handed one call per landed strike. One swing can legitimately
+   * reach two targets, and that should still sound like two hits.
    */
   hit(): void {
     const cue = this.claimCue();

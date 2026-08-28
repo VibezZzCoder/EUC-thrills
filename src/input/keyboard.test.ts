@@ -244,6 +244,39 @@ test('a checkbox owns Space and nothing else', () => {
   assert.equal(claims, 1, 'the seed field still takes its own Enter');
 });
 
+test('a dropdown owns every key except Enter', () => {
+  /*
+   * **M26 Phase 5's QA repair, and the checkbox spec above from the other
+   * side.** The join panel gained a `<select>` for what the couch is playing,
+   * and choosing Knockabout with the keyboard left focus on it — after which
+   * `Enter`, the press the panel exists to receive, was dropped and neither
+   * seat could be claimed. `SELECT` had been in the blanket clause on purpose,
+   * so this is a rule being narrowed rather than an omission being filled.
+   *
+   * Both halves again, because a fix that only freed `Enter` could as easily
+   * have freed everything: the arrows walk a dropdown's options and `Space`
+   * opens it, and both of those are also this game's — steering and `hop` —
+   * so a `<select>` that let them through would be unusable by keyboard.
+   */
+  let claims = 0;
+  let prevented = 0;
+  const { state, down } = rig({ onClaimPress: () => { claims += 1; } });
+  const menu = () => Object.assign(
+    new (globalThis as { HTMLElement: new () => object }).HTMLElement(),
+    { tagName: 'SELECT', isContentEditable: false },
+  );
+
+  down('Enter', { target: menu(), preventDefault: () => { prevented += 1; } });
+  assert.equal(claims, 1, 'Enter on the mode control is still the guest sitting down');
+
+  down('ArrowDown', { target: menu(), preventDefault: () => { prevented += 1; } });
+  assert.equal(state.isHeld('brake'), false, 'an arrow walks the options');
+  down('Space', { target: menu(), preventDefault: () => { prevented += 1; } });
+  assert.equal(state.isPending('hop', 0), false, 'and Space opens it rather than hopping');
+  assert.equal(claims, 1, 'neither of those is a claim');
+  assert.equal(prevented, 0, 'and nothing suppressed the browser’s own handling');
+});
+
 test('moving the keyboard to another seat leaves nothing held on the one it left', () => {
   const { state, keyboard, down } = rig();
   const other = new ActionState();

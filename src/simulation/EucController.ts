@@ -507,6 +507,7 @@ export interface EucTuning {
   ragdollLaunchCarry: number;
   ragdollLaunchSide: number;
   ragdollLaunchTumble: number;
+  crashLaunchFloor: number;
   ragdollSoftDamping: number;
   crashWheelFlourishSpeed: number;
   crashWheelSpinRate: number;
@@ -735,6 +736,7 @@ export function defaultEucTuning(): EucTuning {
     ragdollLaunchCarry: EUC.ragdollLaunchCarry,
     ragdollLaunchSide: EUC.ragdollLaunchSide,
     ragdollLaunchTumble: EUC.ragdollLaunchTumble,
+    crashLaunchFloor: EUC.crashLaunchFloor,
     ragdollSoftDamping: EUC.ragdollSoftDamping,
     crashWheelFlourishSpeed: EUC.crashWheelFlourishSpeed,
     crashWheelSpinRate: EUC.crashWheelSpinRate,
@@ -788,7 +790,18 @@ export type CrashCause =
    * rider at maximum speed also went through a pothole, the pothole is the
    * better story and the one the results card should name.
    */
-  | 'cutout';
+  | 'cutout'
+  /**
+   * A committed paddle strike put them down — M26 Phase 3 (q74, q75).
+   *
+   * **Not a funnel.** Every other cause above is decided inside `step`, out of
+   * conditions the controller can see for itself; this one arrives from
+   * outside through `hardKnock`, because a paddle is somebody else's and this
+   * file has never known that another rider exists. It is the only cause with
+   * a *wielder*, and the wielder is deliberately not recorded here: who swung
+   * is a fact for whatever is keeping score, not for the rider on the ground.
+   */
+  | 'struck';
 
 /**
  * Which non-graphic crash motion is playing (`EUC_RIDER_MOTION_REFERENCE.md`
@@ -3103,7 +3116,7 @@ export class EucController {
    * also falls sideways so the recovery pose never carries the rider through
    * the collider that stopped the wheel.
    */
-  private beginCrash(cause: CrashCause, speed: number): void {
+  private beginCrash(cause: CrashCause, speed: number, side = 0): void {
     const t = this.tuning;
 
     this.crashing = true;
@@ -3119,25 +3132,40 @@ export class EucController {
     // The cutout is directional by physics rather than by speed band: power
     // dies, the wheel stops balancing, momentum does the rest — forward, over
     // the front. Everything else keeps the speed-banded choice.
+    // A struck rider joins the pedal strike and the obstacle for their own
+    // reason and it is the same reason: they were deflected out from under
+    // their own wheel rather than left behind it. A paddle at chest height
+    // takes the body sideways at a crawl exactly as it does at speed, so this
+    // one is a side fall at any speed too (§26.4).
     this.crashMotion = cause === 'cutout'
       ? 'faceplant'
       : cause === 'pedalStrike'
           || cause === 'obstacle'
+          || cause === 'struck'
           || this.crashSpeed > t.crashRunOutSpeed
         ? 'sideFall'
         : this.crashSpeed > t.crashStepOffSpeed
           ? 'runOut'
           : 'stepOff';
 
-    // Which side they go down. A scrape throws them over the pedal that caught;
-    // otherwise they follow the lean they were carrying, and a rider who was
-    // dead upright steps off to their left (+X) — the foot that grounds at
-    // every stop in the owner's photographs.
-    this.crashSide = this.pedalStrike !== 0
-      ? Math.sign(this.pedalStrike)
-      : this.rollAngle !== 0
-        ? Math.sign(this.rollAngle)
-        : 1;
+    // Which side they go down. **A caller that knows better wins**, which today
+    // is the hard knock and only the hard knock: a rider struck from their right
+    // falls to their left, and deriving that from the lean they happened to be
+    // carrying would put them down *into* the paddle about half the time. It is
+    // invisible in a test that only asks whether they crashed and unmistakable
+    // on screen, which is why the side travels with the cause (§26.4).
+    //
+    // Otherwise: a scrape throws them over the pedal that caught; otherwise they
+    // follow the lean they were carrying, and a rider who was dead upright steps
+    // off to their left (+X) — the foot that grounds at every stop in the
+    // owner's photographs.
+    this.crashSide = side !== 0
+      ? side
+      : this.pedalStrike !== 0
+        ? Math.sign(this.pedalStrike)
+        : this.rollAngle !== 0
+          ? Math.sign(this.rollAngle)
+          : 1;
 
     // -- The ragdoll takes the body (M15) -----------------------------------
     // Seeded from the riding pose *before* the demand-clearing below unwinds
@@ -4648,6 +4676,41 @@ export class EucController {
     if (this.crashed) return;
     this.injectWobble(this.tuning.softBodyWobbleEnergy);
     this.shedSpeed(speedCost);
+  }
+
+  /**
+   * A committed paddle strike puts the rider down — M26 Phase 3 (q74).
+   *
+   * `softKnock`'s opposite number and its exact counterpart in shape: one
+   * public door, no idea who is on the other end of the weapon, and no
+   * knowledge that a second rider exists. **Whether a strike is committed is
+   * the paddle's question, not this file's** — the threshold is a share of the
+   * swing's own arc speed and lives with the swing (`simulation/paddle.ts`).
+   * All that arrives here is the head's ground-plane travel, because that is
+   * what decides which way the body goes.
+   *
+   * **Refused inside the recovery window** (q79). The rider who just got up is
+   * briefly untouchable, which is the same window `injectWobble` already
+   * respects and not a new timer — so nobody is pinned on the ground by a
+   * player standing over the spot. Returns whether the knock landed, so a
+   * caller can fall back to the soft one rather than guess.
+   *
+   * The side is derived here rather than handed in, because "which way is that
+   * rider's left" is this object's own arithmetic: forward at heading φ is
+   * `(sin φ, cos φ)`, so the rider's left is `(cos φ, −sin φ)`, and a positive
+   * projection of the head's travel onto it means the paddle swept toward
+   * their left and takes them down that way. `crashSide` is +1 for the left,
+   * matching the dead-upright step-off it already defaults to.
+   */
+  hardKnock(travelX: number, travelZ: number): boolean {
+    if (this.crashing || this.invulnerableTimer > 0) return false;
+    const lateral = travelX * Math.cos(this.headingY) - travelZ * Math.sin(this.headingY);
+    // A strike with no lateral travel at all — a head coming straight at the
+    // rider's chest — has no side to offer, so `beginCrash` falls back to the
+    // lean it was already going to use. Zero rather than a guess.
+    const side = lateral > 0 ? 1 : lateral < 0 ? -1 : 0;
+    this.beginCrash('struck', this.speed, side);
+    return true;
   }
 
   // -- What the audio layer reads (M8) --------------------------------------

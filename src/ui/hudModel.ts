@@ -211,6 +211,35 @@ export interface HudInput {
    */
   readonly knockabout?: { readonly struck: number; readonly total: number };
   /**
+   * How the couch match is going — M26 Phase 5, q80. Absent in every other
+   * ride, and absent in single-player Knockabout.
+   *
+   * **Both scores, in every half, this seat's first.** q80's answer, and the
+   * reason it is phrased that way rather than "Player 1 – Player 2": each half
+   * belongs to one person, and a scoreboard they have to work out which end of
+   * is theirs is a scoreboard they look across the divider to read. `seat` is
+   * whose half this is; the lane is composed from their point of view.
+   *
+   * It takes precedence over `knockabout` above, because a match *is* a
+   * Knockabout run and the discs it also counts are the side tally rather than
+   * the thing on the line.
+   */
+  readonly match?: {
+    readonly seat: number;
+    readonly target: number;
+    /**
+     * Both tallies per seat — `MatchScore`'s own shape, handed over whole.
+     *
+     * **`discs` joined `knockdowns` on 2026-08-28, from the owner's couch
+     * ride**: *"No feedback on Targets Struck. The only screen that shows
+     * targets struck in 2p mode knockabout is the final screen after somebody
+     * wins."* A side tally that can never win the match (q76) is still a thing
+     * two people are competing over for the whole of it, and a score nobody can
+     * see until it is settled is not a score anybody is playing for.
+     */
+    readonly scores: readonly { readonly knockdowns: number; readonly discs: number }[];
+  };
+  /**
    * How the chase is going — M18. Absent in every other ride.
    *
    * Absent rather than zeroed, exactly as `knockabout` is and for the same
@@ -315,6 +344,21 @@ export interface HudView {
    * DOM cannot infer that `5:00` is survival time rather than a target score.
    */
   readonly modeLabel: string;
+  /**
+   * The small line *under* the mode lane's number — the owner's 2026-08-28
+   * ride. Empty means it is not drawn, which is every ride but a couch match.
+   *
+   * **A second row rather than a second corner.** The two numbers a match is
+   * played on are the knockdowns and the discs, they belong to the same two
+   * people in the same order, and splitting them across the screen would make
+   * a player read q80's "your number first" rule twice in two places. Under
+   * the score, in smaller type, is what "below the knockdowns scores" meant.
+   *
+   * It is composed from the same fold as the lane above it, so the two rows
+   * cannot disagree about whose number is first.
+   */
+  readonly modeSubLabel: string;
+  readonly modeSub: string;
   /** The out-of-bounds banner — M20, §4.4. */
   readonly stray: StrayHudView;
   /** The max-speed warning glyph — M20. */
@@ -496,6 +540,33 @@ function knockaboutLane(run: { struck: number; total: number } | undefined): str
 }
 
 /**
+ * One tally of a couch match, from one seat's point of view — M26 Phase 5, q80.
+ *
+ * **This seat's number first, then everybody else's.** Written as a fold over
+ * the other seats rather than as `scores[0]` and `scores[1]`, so the day a
+ * four-player couch is measured (§26.7 says it has not been) this lane already
+ * reads for whoever is looking at it instead of quietly naming two of four.
+ *
+ * An en dash with thin spaces either side, on `knockaboutLane`'s own argument:
+ * `3 – 1` reads as a score at a glance where `3-1` reads as arithmetic.
+ *
+ * **`of` is the parameter that stopped this being one lane** — the owner's
+ * 2026-08-28 ride put the disc tally on screen beside the knockdowns, and two
+ * rows composed by two functions are two chances to disagree about which end
+ * of the match a player is sitting at. One fold, read twice.
+ */
+function matchTally(
+  match: NonNullable<HudInput['match']>,
+  of: (score: { readonly knockdowns: number; readonly discs: number }) => number,
+): string {
+  const scores = match.scores;
+  const mine = scores[match.seat] === undefined ? 0 : of(scores[match.seat]);
+  const theirs = scores.filter((_, seat) => seat !== match.seat).map(of);
+  if (theirs.length === 0) return `${mine}`;
+  return [mine, ...theirs].join(' – ');
+}
+
+/**
  * The chase clock, composed once — M18.
  *
  * **Counting down, and to the second rather than to the hundredth.** The timed
@@ -545,10 +616,57 @@ function overspeedView(overspeed: number): OverspeedHudView {
 }
 
 /** The label above the one corner shared by Knockabout and the police chase. */
-function modeLaneLabel(input: Pick<HudInput, 'knockabout' | 'chase'>): string {
+function modeLaneLabel(input: Pick<HudInput, 'knockabout' | 'chase' | 'match'>): string {
   if (input.chase !== undefined) return 'Survive';
+  // **Ahead of `knockabout`**, because a match is a Knockabout run and the
+  // discs are its side tally rather than the thing on the line — M26 Phase 5.
+  // The label says whose number is first so the half never has to be counted
+  // from the other end of the screen (q80).
+  if (input.match !== undefined) return `You – them (to ${input.match.target})`;
   if (input.knockabout !== undefined) return 'Targets';
   return '';
+}
+
+/**
+ * Which of the two things this corner can be showing — M26 Phase 5.
+ *
+ * One place decides, so the label and the value cannot disagree about whether
+ * this is a route being cleared or a fight being had. A method rather than a
+ * free function only because it sits beside the other lane composers the view
+ * is assembled from.
+ */
+function modeLane(input: HudInput): string {
+  if (input.match !== undefined) return matchTally(input.match, (score) => score.knockdowns);
+  return knockaboutLane(input.knockabout);
+}
+
+/** The second row, switched off. Frozen and shared: every ride but a match. */
+const NO_SUB_LANE = Object.freeze({ label: '', value: '' });
+
+/**
+ * The row under the mode lane, and what it is called — the owner's 2026-08-28
+ * ride.
+ *
+ * **Only a match has one, and only because a match has two things to count.**
+ * A single-player Knockabout's discs are already the headline
+ * (`knockaboutLane`), a chase counts one clock, and a lane whose second row was
+ * sometimes a repeat of its first would be furniture rather than information.
+ *
+ * `Targets` is the single-player lane's own word for the same objects, so a
+ * player who rode the mode alone first does not have to learn a second name for
+ * the things they are knocking over. The count is **struck against placed**,
+ * exactly as that lane says it — the two sides' scores are what the pair are
+ * competing on, and the total is what tells them how much of the route is
+ * left. Both go in one row: `1 – 10 of 17`.
+ */
+function modeSubLane(input: HudInput): { readonly label: string; readonly value: string } {
+  if (input.match === undefined) return NO_SUB_LANE;
+  const struck = matchTally(input.match, (score) => score.discs);
+  const total = input.knockabout?.total;
+  return {
+    label: 'Targets',
+    value: total === undefined ? struck : `${struck} of ${total}`,
+  };
 }
 
 /** What the lane says at the line when the lap will not count. */
@@ -770,6 +888,7 @@ export class HudModel {
     if (input.crashed) {
       this.resetCues();
       this.onRouteSince = nowSeconds;
+      const down = modeSubLane(input);
       return {
         speed: formatSpeed(input.speed, this.speedUnit),
         speedUnit: this.speedUnit,
@@ -779,9 +898,11 @@ export class HudModel {
         warningLabel: '',
         offRoute: false,
         challenge: this.runLane(nowSeconds, input),
-        knockabout: knockaboutLane(input.knockabout),
+        knockabout: modeLane(input),
         chase: chaseLane(input.chase),
         modeLabel: modeLaneLabel(input),
+        modeSubLabel: down.label,
+        modeSub: down.value,
         // Both M20 cues go with the rest of them, and for the paragraph above:
         // a rider on the floor is neither about to leave the route nor about to
         // cut out, and the controller has already zeroed both anyway.
@@ -831,6 +952,7 @@ export class HudModel {
     // own wording whenever it is actually engaged rather than merely latched.
     const warning: HudWarning = input.tiltBack > 0.02 ? 'tiltBack' : this.warning;
 
+    const sub = modeSubLane(input);
     return {
       speed: formatSpeed(input.speed, this.speedUnit),
       speedUnit: this.speedUnit,
@@ -840,9 +962,11 @@ export class HudModel {
       warningLabel: WARNING_LABELS[warning],
       offRoute: this.offRoute,
       challenge: this.runLane(nowSeconds, input),
-      knockabout: knockaboutLane(input.knockabout),
+      knockabout: modeLane(input),
       chase: chaseLane(input.chase),
       modeLabel: modeLaneLabel(input),
+      modeSubLabel: sub.label,
+      modeSub: sub.value,
       stray: this.strayView(nowSeconds, input.chase),
       overspeed: overspeedView(input.overspeed),
     };

@@ -157,6 +157,9 @@ export interface RagdollTuning {
   ragdollLaunchSide: number;
   ragdollLaunchTumble: number;
   ragdollSoftDamping: number;
+  /** The two unscaled launch impulses' floor and the speed they reach full at. */
+  crashLaunchFloor: number;
+  crashRunOutSpeed: number;
 }
 
 /** What `seed` needs to place and launch the body. All plain numbers. */
@@ -250,6 +253,22 @@ export class CrashRagdoll {
     const speed = Math.abs(input.speed);
     const direction = input.speed >= 0 ? 1 : -1;
     const pop = Math.min(speed * t.ragdollLaunchPop, t.ragdollLaunchPopMax);
+    // **How much of the two speed-blind impulses this crash has earned** — the
+    // owner's 2026-08-27 ride (`data/tuning.ts`, `EUC.crashLaunchFloor`). The
+    // side shove and the head-over tumble are the only launch terms with no
+    // velocity in them, so they were the only ones that read the same at a
+    // standstill as at forty. A ramp from the floor at rest to full at
+    // `crashRunOutSpeed` leaves every speed-classified side fall exactly as it
+    // was — above that speed the ramp is already 1 — and softens only the three
+    // crashes that are side falls because of their *cause*.
+    //
+    // Guarded rather than divided blind: `crashRunOutSpeed` is on the tuning
+    // table and a zero would otherwise make this `Infinity` on one step and
+    // `NaN` on a crash at rest.
+    const launch = t.crashRunOutSpeed > 0
+      ? t.crashLaunchFloor
+        + (1 - t.crashLaunchFloor) * Math.min(1, Math.max(0, speed / t.crashRunOutSpeed))
+      : 1;
 
     for (let index = 0; index < RAGDOLL_PARTICLES; index += 1) {
       const upper = index === RD_CHEST || index === RD_HEAD
@@ -265,7 +284,8 @@ export class CrashRagdoll {
         // momentum plus a head-over shove while the feet are checked with the
         // wheel — which is a forward flip, resolved by the constraints.
         vForward = upper
-          ? speed * direction * t.ragdollLaunchCarry + direction * t.ragdollLaunchTumble
+          ? speed * direction * t.ragdollLaunchCarry
+            + direction * t.ragdollLaunchTumble * launch
           : speed * direction * 0.2;
         vUp = pop;
       } else if (input.cause === 'faceplant') {
@@ -277,12 +297,13 @@ export class CrashRagdoll {
         // pitch-forward-and-plow. No side component and barely any pop: a
         // cutout goes *down*, face first, and slides.
         vForward = upper
-          ? speed * direction * t.ragdollLaunchCarry + direction * t.ragdollLaunchTumble
+          ? speed * direction * t.ragdollLaunchCarry
+            + direction * t.ragdollLaunchTumble * launch
           : speed * direction * 0.55;
         vUp = upper ? pop * 0.35 : 0;
       } else if (input.cause === 'sideFall') {
         vForward = speed * direction * 0.8;
-        vSide = input.side * t.ragdollLaunchSide * (upper ? 1.3 : 0.8);
+        vSide = input.side * t.ragdollLaunchSide * launch * (upper ? 1.3 : 0.8);
         vUp = pop * 0.6;
       } else if (input.cause === 'runOut') {
         vForward = speed * direction;
@@ -520,5 +541,7 @@ export function defaultRagdollTuning(): RagdollTuning {
     ragdollLaunchSide: EUC.ragdollLaunchSide,
     ragdollLaunchTumble: EUC.ragdollLaunchTumble,
     ragdollSoftDamping: EUC.ragdollSoftDamping,
+    crashLaunchFloor: EUC.crashLaunchFloor,
+    crashRunOutSpeed: EUC.crashRunOutSpeed,
   };
 }

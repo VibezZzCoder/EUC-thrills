@@ -2113,12 +2113,21 @@ test('the title and the join panel fit every desktop window that is offered them
     await unscrollable('.euc-menu--couch', viewport);
     await inside('.euc-menu--couch [data-couch-seat="0"]', viewport);
     await inside('.euc-menu--couch [data-couch-seat="1"]', viewport);
-    // The contact toggle — M26 Phase 2, added to this contract rather than
-    // measured in a second one. §26.6 asks for the panel to be re-measured at
+    // The mode choice — M26 Phase 5, added to this contract rather than measured
+    // in a second one. §26.6 asks for the panel to be re-measured at
     // `COUCH_MIN_WIDTH_PX` and in the suite's own 1000×700 window every time it
     // grows, and this loop is already standing in both; a separate fit spec
     // would be a second opinion about the same panel.
-    await inside('.euc-menu--couch [data-couch-contact]', viewport);
+    //
+    // It is the growth that cost something: with the coarse-pointer floors on,
+    // the panel went 29 px below the fold at 1000 x 520, and the fix is the
+    // note-hiding tier M25's own title layout already used at this height.
+    // **Both ends of the row are measured**, because it became a segmented pair
+    // on 2026-08-27 and a two-button row can only overflow at one end.
+    await inside('.euc-menu--couch [data-couch-mode="freeRide"]', viewport);
+    await inside('.euc-menu--couch [data-couch-mode="knockabout"]', viewport);
+    // The contact toggle was measured here too until the same ride retired it.
+    // Nothing replaces that line: a control that does not exist has no fit.
     await inside('.euc-menu--couch [data-menu="couch-start"]', viewport);
     await inside('.euc-menu--couch [data-menu="couch-back"]', viewport);
     await page.locator('.euc-menu--couch [data-menu="couch-back"]').click();

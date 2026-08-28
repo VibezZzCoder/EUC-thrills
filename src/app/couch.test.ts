@@ -1,7 +1,16 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { COUCH_MIN_WIDTH_PX, couchEligible, cycleGuest, guestBeside } from './couch.ts';
+import {
+  COUCH_MIN_WIDTH_PX,
+  COUCH_RIDES,
+  COUCH_RIDE_LABELS,
+  DEFAULT_COUCH_RIDE,
+  couchEligible,
+  cycleGuest,
+  guestBeside,
+  isCouchRide,
+} from './couch.ts';
 import { CHARACTER_IDS, DEFAULT_CHARACTER } from '../data/riders.ts';
 
 const DESKTOP = { viewportWidth: 1280, finePointer: true, padSeen: false };
@@ -73,4 +82,34 @@ test('a two-rider roster with one taken has exactly one reachable card', () => {
   // fall off the roster.
   assert.ok(CHARACTER_IDS.includes(cycleGuest(only, taken, 1)));
   assert.ok(CHARACTER_IDS.includes(cycleGuest(only, taken, -1)));
+});
+
+// ---------------------------------------------------------------------------
+// What a couch session is for — M26 Phase 5 (q78)
+// ---------------------------------------------------------------------------
+
+test('the panel offers exactly the rides the game can start into', () => {
+  // A list rather than a hand-walked union, so the control, the default and the
+  // specs cannot drift. The couch race joins it when it is built (§26.7).
+  assert.deepEqual([...COUCH_RIDES], ['freeRide', 'knockabout']);
+  assert.ok(COUCH_RIDES.includes(DEFAULT_COUCH_RIDE), 'the default must be offerable');
+  assert.equal(DEFAULT_COUCH_RIDE, 'freeRide', 'the quietest ride is the one you get by default');
+});
+
+test('every ride the panel offers has a name a player would recognise', () => {
+  for (const ride of COUCH_RIDES) {
+    const label = COUCH_RIDE_LABELS[ride];
+    assert.ok(label.length > 0, `${ride} has no label`);
+    assert.notEqual(label, ride, `${ride} is showing its own identifier`);
+  }
+});
+
+test('a ride the panel does not offer is refused rather than trusted', () => {
+  // The select's value crosses a DOM boundary as a string, and a stale option
+  // left in the markup would otherwise reach `Game` as a mode nobody built.
+  for (const ride of COUCH_RIDES) assert.equal(isCouchRide(ride), true);
+  assert.equal(isCouchRide('chase'), false);
+  assert.equal(isCouchRide('trackDay'), false);
+  assert.equal(isCouchRide(''), false);
+  assert.equal(isCouchRide('FREERIDE'), false);
 });

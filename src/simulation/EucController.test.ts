@@ -4642,3 +4642,111 @@ test('a wheel stopped inside a bush can drive itself out — M24', () => {
     `the hedge stopped cushioning (clear coast ${clear.toFixed(1)}, hedged ${hedged.toFixed(1)})`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// The hard knock — M26 Phase 3 (docs/PLANS.md §26.4, q74/q75/q79)
+// ---------------------------------------------------------------------------
+
+/**
+ * How far the crash has thrown the rider sideways, signed.
+ *
+ * `crashSide` is private and it is the whole point of these tests, so it is
+ * read where the renderer reads it: `crashLateral` is `crashSide` times a
+ * positive spread times a positive blend, so the two share a sign once the
+ * separation has begun. A few tenths of a second of stepping is what gets the
+ * blend off zero.
+ */
+function crashLateralAfter(euc: EucController, seconds = 0.4): number {
+  ride(euc, SECONDS(seconds), {});
+  const pose = createPose();
+  euc.writePose(pose);
+  return pose.crashLateral;
+}
+
+test('a committed strike puts the rider down sideways, parked or flat out', () => {
+  // A side fall **at any speed**, on the pedal strike's own argument: the body
+  // was deflected out from under the wheel rather than left behind it. A parked
+  // rider is the case that would otherwise fall through to `stepOff`, so it is
+  // the one worth pinning.
+  const parked = controller();
+  assert.equal(parked.hardKnock(1, 0), true);
+  const down = parked.snapshot();
+  assert.equal(down.crashed, true);
+  assert.equal(down.crashCause, 'struck');
+  assert.equal(down.crashMotion, 'sideFall', 'a struck rider never steps off tidily');
+
+  const moving = controller();
+  rideToSpeed(moving, 12);
+  assert.equal(moving.hardKnock(1, 0), true);
+  assert.equal(moving.snapshot().crashMotion, 'sideFall');
+});
+
+test('a struck rider falls the way the paddle was travelling', () => {
+  // **Invisible in a test that only asks whether they crashed, and unmistakable
+  // on screen** (§26.4): a rider struck from their right must not fall to their
+  // right, back into the swing. Riding down +Z, the rider's left is +X, so a
+  // head travelling in +X sweeps them to their left and a head travelling in −X
+  // sweeps them to their right.
+  const left = controller();
+  assert.equal(left.hardKnock(1, 0), true);
+  assert.ok(crashLateralAfter(left) > 0, 'a head crossing to +X lays them down to their left');
+
+  const right = controller();
+  assert.equal(right.hardKnock(-1, 0), true);
+  assert.ok(crashLateralAfter(right) < 0, 'and a head crossing to −X to their right');
+
+  // The heading is part of that arithmetic and not an assumption about +X.
+  // Turned to face +X, the rider's left is −Z, so the same world-space head
+  // travel now lays them down the other way.
+  const turned = controller();
+  ride(turned, SECONDS(2), { throttle: 0.4, steer: -1 });
+  const heading = turned.snapshot().headingY;
+  assert.ok(Math.abs(heading) > 0.5, `the fixture must really have turned: ${heading}`);
+  const expected = Math.sign(Math.cos(heading));
+  assert.equal(turned.hardKnock(1, 0), true);
+  assert.equal(
+    Math.sign(crashLateralAfter(turned)),
+    expected,
+    'the side is the head’s travel across *this* rider, not across the world',
+  );
+});
+
+test('a strike straight down the nose falls back to the lean', () => {
+  // A head coming at the chest with no lateral travel has no side to offer.
+  // Zero rather than a guess, and `beginCrash` then uses the rule it has always
+  // used — which for a dead-upright rider is a step off to their left.
+  const euc = controller();
+  assert.equal(euc.hardKnock(0, 1), true);
+  assert.ok(crashLateralAfter(euc) > 0, 'the default side is the rider’s left');
+});
+
+test('nobody is knocked down twice, or while they are getting up', () => {
+  // q79's "briefly untouchable" is the window that already exists, not a new
+  // timer. Delete either clause of the guard and one of these two fails.
+  const euc = controller();
+  assert.equal(euc.hardKnock(1, 0), true);
+  assert.equal(euc.hardKnock(1, 0), false, 'a rider already on the ground cannot be re-struck');
+
+  const recovered = rideUntil(euc, {}, (snapshot) => !snapshot.crashed, SECONDS(30));
+  assert.equal(recovered.reached, true, 'the fixture must actually get back up');
+  assert.equal(
+    euc.hardKnock(1, 0),
+    false,
+    'and cannot be put straight back down inside the recovery window',
+  );
+
+  // The window is finite, so the refusal is a grace period rather than immunity.
+  ride(euc, SECONDS(EUC.crashInvulnerableSeconds + 0.1), {});
+  assert.equal(euc.hardKnock(1, 0), true, 'once the window closes they are fair game again');
+});
+
+test('a hard knock is not a wobble door', () => {
+  // The standing rule from the M13 exit ride, checked at the new caller: a
+  // struck rider goes down, and nothing on the way there feeds the oscillator.
+  // `softKnock` is the *soft* half's door and stays the fourth and last one.
+  const euc = controller({ tuning: { wobbleMasterGain: 1 } });
+  ride(euc, SECONDS(2), { throttle: 1 });
+  assert.equal(euc.snapshot().wobbleEnergy, 0, 'the fixture starts unwobbled');
+  euc.hardKnock(1, 0);
+  assert.equal(euc.snapshot().wobbleEnergy, 0);
+});

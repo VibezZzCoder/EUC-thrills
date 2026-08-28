@@ -35,8 +35,46 @@ import type { GroundSample, TerrainSampler } from './world.ts';
  * beat is 4.6 m of half-width and BelVar's asphalt is 5 m — so 1.6 m leaves
  * either rider well inside the road even on the tightest of them, and the
  * validation below is what proves it rather than this comment.
+ *
+ * **The default, and since 2026-08-28 not the only one.** Two people setting
+ * off together want to be together; two people about to hit each other with
+ * sticks want to be out of range until somebody rides. `DUEL_LATERAL_METRES`
+ * is the second answer and `spawnSlot`'s `lateral` argument is how a caller
+ * says which question it is asking.
  */
 export const SLOT_LATERAL_METRES = 1.6;
+
+/**
+ * How far apart a **match** stands two riders, metres — the owner's 2026-08-28
+ * couch ride.
+ *
+ * **The one thing wrong with a couch Knockabout's first second was arithmetic
+ * nobody had done.** The paddle is in the right hand, seat 1 spawns on seat 0's
+ * right, and a parked swing reaches 2.15 m sideways
+ * (`Paddle.reachAgainst(CHASE.riderHitRadius)`, measured) — so at
+ * `SLOT_LATERAL_METRES` the host began every match already holding the guest
+ * inside their arc, while the guest's own forehand swept the empty road on
+ * *their* right. The owner's words: *"player 1 can spawn smack player 2 …
+ * P2 smacks the air as there's no one to the right of P2. This is unfair."*
+ *
+ * Three metres is that reach plus the better part of a rider's width of
+ * daylight, and it is bounded above by the narrowest corridor any producer
+ * offers at a spawn — the generator's trail beat is 4.6 m of half-width and
+ * BelVar's asphalt is 5 m — so both riders are still well inside the road. The
+ * validation below is what proves that rather than this comment, and
+ * `spawnSlots.test.ts` is what proves the clearance: a spacing that stopped
+ * clearing the weapon would fail a test rather than ship.
+ *
+ * **It buys a fair *start*, not a fair fight.** Whoever is on the other's left
+ * is in position first, at every distance, because that is what a right-handed
+ * forehand is; what this removes is the free hit nobody had to ride for.
+ *
+ * The *stagger* fallbacks below clear the same reach without being widened,
+ * which is worth knowing rather than assuming: 3.2 m straight back is outside
+ * 2.15 m in both directions, so every candidate a duel can land on is one
+ * neither rider can open on.
+ */
+export const DUEL_LATERAL_METRES = 3.0;
 
 /**
  * How far *behind* a staggered fallback slot sits, metres.
@@ -112,13 +150,28 @@ interface Candidate {
  *
  * **Heading is copied, never derived.** Both riders face the way the world
  * says to set off, which is the whole reason a plan states a heading at all;
- * fanning them apart would make one of them start pointing at the verge.
+ * fanning them apart would make one of them start pointing at the verge. That
+ * survived the 2026-08-28 duel-spacing fix on purpose: turning the guest round
+ * to face the host would be symmetric and would also start one of them riding
+ * away from the route, on a generated world whose spawn has the surround
+ * behind it.
+ *
+ * **`lateral` is how far out the first rank of slots sits**, and the only
+ * thing a caller may move. Everything else — the order, the ground test, the
+ * stagger, the fallback — is the same for a duel as for a free ride, because
+ * what changes between them is how far apart two riders should be and not what
+ * counts as somewhere to stand.
  *
  * Allocates two ground samples per call. It is called when a world is
  * installed and when a rider is seated, never in the frame loop — the same
  * terms `Game.resetChallengeRider` places a timed run's run-up on.
  */
-export function spawnSlot(base: Spawn, index: number, terrain: TerrainSampler): Spawn {
+export function spawnSlot(
+  base: Spawn,
+  index: number,
+  terrain: TerrainSampler,
+  lateral: number = SLOT_LATERAL_METRES,
+): Spawn {
   if (index <= 0) return base;
 
   const origin = createGroundSample();
@@ -137,7 +190,7 @@ export function spawnSlot(base: Spawn, index: number, terrain: TerrainSampler): 
 
   const probe = createGroundSample();
   for (const strict of [true, false]) {
-    for (const candidate of candidatesFor(index)) {
+    for (const candidate of candidatesFor(index, lateral)) {
       const x = base.position.x + leftX * candidate.lateral - forwardX * candidate.back;
       const z = base.position.z + leftZ * candidate.lateral - forwardZ * candidate.back;
       if (!slotIsGround(terrain, probe, x, z, origin, strict)) continue;
@@ -164,14 +217,14 @@ export function spawnSlot(base: Spawn, index: number, terrain: TerrainSampler): 
  * the screen agree with the two riders' places on the road.
  *
  * Rank is what lets this answer for a third and fourth rider without being
- * rewritten: seats 1 and 2 sit one lateral offset out, seats 3 and 4 sit two.
+ * rewritten: seats 1 and 2 sit one `spacing` out, seats 3 and 4 sit two.
  * Stage 1 never asks, and a function that quietly returned the same slot to
  * everybody would be a poor thing to discover when it does.
  */
-function* candidatesFor(index: number): Generator<Candidate> {
+function* candidatesFor(index: number, spacing: number): Generator<Candidate> {
   const rank = Math.ceil(index / 2);
   const preferred = index % 2 === 1 ? -1 : 1;
-  const lateral = rank * SLOT_LATERAL_METRES;
+  const lateral = rank * spacing;
   const back = rank * SLOT_STAGGER_METRES;
 
   yield { lateral: preferred * lateral, back: 0 };

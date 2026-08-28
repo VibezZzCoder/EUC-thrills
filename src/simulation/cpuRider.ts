@@ -936,7 +936,30 @@ export class CpuRider {
       const closingDistance = direct
         ? quarryRange
         : Math.max(Math.abs(routeGap), quarryRange);
-      cap = Math.min(cap, allow(quarrySpeed, closingDistance - strikeStandOff));
+      const standOff = allow(quarrySpeed, closingDistance - strikeStandOff);
+      // **Matching a stationary quarry is a deadlock unless he is already
+      // facing them, because a stationary wheel cannot turn** — M26 Phase 3's
+      // chase finding, and it is older than that phase.
+      //
+      // Measured against a rider who simply stops: he closes, overshoots by a
+      // metre, brakes to match their zero, and comes to rest with them **121°
+      // off his nose** — outside `swingConeRadians`, so he never swings again,
+      // and stationary, so `EucController` gives him no yaw to fix it with. He
+      // stood there for the whole three hundred seconds of the escape clock.
+      // It was invisible until M26 stopped one swing being counted on every
+      // active step of its own sweep: the single swing he *did* land used to
+      // deliver three body knocks at once, which crossed `wobbleCrashEnergy`
+      // and busted the rider about a second after he arrived.
+      //
+      // So this cap may hold him at arm's length, and it may not hold him
+      // still while he is pointed the wrong way. The floor is applied to *this*
+      // constraint alone rather than to `cap`, so a wall, a corner or a hazard
+      // can still stop him dead — raising the whole cap here would drive him
+      // into the thing some other rule had just braked for.
+      const facingQuarry = Math.abs(wrapAngle(
+        Math.atan2(quarry.x - view.x, quarry.z - view.z) - view.headingY,
+      )) <= this.swingConeRadians;
+      cap = Math.min(cap, facingQuarry ? standOff : Math.max(standOff, TURN_TO_FACE_SPEED));
     }
 
     // Off the road is somewhere to leave, not somewhere to hurry through: the
@@ -1364,6 +1387,18 @@ const DETOUR_SPAN_MAX_METRES = 48;
 /** How far ahead of the wheel the detour's aim point is held, metres. */
 const DETOUR_AIM_METRES = 8;
 /** The fastest a detour rides, m/s. Feeling along a wall, not chasing. */
+/**
+ * The least speed the strike stand-off may hold a cop to while his quarry is
+ * outside his swing cone, m/s — M26 Phase 3.
+ *
+ * Walking pace: enough travel for the shared controller to give him yaw, and
+ * slow enough that circling back to face somebody reads as circling rather
+ * than as a second charge. `DETOUR_SPEED` and `FLANK_PROBE_SPEED` are the same
+ * device — a floor under one constraint so a cop can keep manoeuvring — and
+ * this is the third of them.
+ */
+const TURN_TO_FACE_SPEED = 2;
+
 const DETOUR_SPEED = 8;
 /** A flank's straight-at-them legs stay below the obstacle crash speed. */
 const FLANK_PROBE_SPEED = EUC.obstacleCrashSpeed * 0.9;

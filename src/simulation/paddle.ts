@@ -174,6 +174,7 @@ export class Paddle {
   startAngle: number = PADDLE.startAngle;
   sweepRadians: number = PADDLE.sweepRadians;
   maxStepSweep: number = PADDLE.maxStepSweep;
+  hardKnockShare: number = PADDLE.hardKnockShare;
 
   private phaseValue: SwingPhase = 'idle';
   /** Side latched when an idle paddle accepts a swing request. */
@@ -209,6 +210,39 @@ export class Paddle {
   /** Set by the guard or by `reseed`, cleared once acted on. Diagnostics read it. */
   private reseededThisStep = false;
 
+  /**
+   * How many swings this paddle has started — M26 Phase 3, and it is an
+   * identity rather than a statistic.
+   *
+   * **The sweep is a level and a strike is an event, and telling a caller
+   * which swing it is looking at is the only way it can know the difference.**
+   * A target disc needs no such thing because `TargetField.strike` refuses the
+   * second hit itself; a rider is not removed from the world by being hit, so
+   * the same swing reports them on every active step its head stays within
+   * reach — three of them, at the shipped constants, against somebody standing
+   * still. A caller that spent each one delivered three knocks for one swing.
+   */
+  private swingsAccepted = 0;
+
+  /**
+   * How fast the head moved through the world over the step just taken, m/s,
+   * and along which ground-plane vector — M26 Phase 3.
+   *
+   * **Already computed, never before kept.** The swept segment's length is the
+   * head's world displacement, which is the very quantity the teleport guard
+   * measures three lines later; these fields only stop it being thrown away.
+   * That matters because q74 defines a committed swing as *the head's world
+   * speed at the moment it lands*, and "swing energy" is not a variable this
+   * codebase has: every swing is one authored arc at one authored rate, so the
+   * only thing that can vary is what the wielder's own travel adds to it.
+   *
+   * Zero on any step that reseeded, because that step swept nothing and a
+   * teleport must never read as the hardest strike in the game.
+   */
+  private headSpeedValue = 0;
+  private travelX = 0;
+  private travelZ = 0;
+
   private readonly hits: PaddleHit[] = [];
   private readonly headScratch = { x: 0, y: 0, z: 0 };
 
@@ -229,6 +263,17 @@ export class Paddle {
   /** The side chosen for the current or most recently completed swing. */
   get swingSide(): SwingSide {
     return this.swingSideValue;
+  }
+
+  /**
+   * Which swing this is, counting from the first one this paddle accepted.
+   *
+   * What a caller latches on so that one swing lands on one rider once. Never
+   * reset — a cancelled swing's number is spent, and a fresh wielder gets a
+   * fresh paddle counting from zero.
+   */
+  get swingCount(): number {
+    return this.swingsAccepted;
   }
 
   /** How far through the current phase, 0..1. Idle is always 0. */
@@ -325,6 +370,96 @@ export class Paddle {
   }
 
   /**
+   * How fast the head travels when the wielder does not, m/s.
+   *
+   * The swing's own arc speed — `reach · |sweepRadians| / activeSeconds` — and
+   * therefore exactly what a parked wielder's tap lands at. It is the unit the
+   * hard-knock threshold is expressed in, so that threshold keeps meaning
+   * "harder than a standing tap" through every retune of the weapon.
+   */
+  get arcSpeed(): number {
+    return this.activeSeconds > 0
+      ? (this.reach * Math.abs(this.sweepRadians)) / this.activeSeconds
+      : 0;
+  }
+
+  /** The head's world speed over the step just taken, m/s. Zero on a reseed. */
+  get headSpeed(): number {
+    return this.headSpeedValue;
+  }
+
+  /** The head's ground-plane travel over the step just taken, metres. */
+  get headTravelX(): number {
+    return this.travelX;
+  }
+
+  get headTravelZ(): number {
+    return this.travelZ;
+  }
+
+  /**
+   * Was the step just taken a **committed** swing — M26 Phase 3, q74.
+   *
+   * The one question the hard knock asks, and the wielder is not part of it:
+   * the paddle does not know whether a player or a cop is holding it, which is
+   * what makes "everyone gets it, cop included" (q75) a property of the weapon
+   * rather than a rule written twice.
+   *
+   * **This is *your* speed and not the speed between you**, which is the owner's
+   * choice rather than the obvious one. Chasing somebody down at matched speed
+   * still lands hard, because your own motion is in the head's world speed
+   * either way. A relative form is a one-line change if a ride ever says
+   * otherwise; closing speed is the option that was declined, and swapping it
+   * in quietly would be a design change wearing a bug fix's clothes.
+   *
+   * A swing whose arc speed is zero — `activeSeconds` dragged to nothing at F4
+   * — is never committed, because otherwise the threshold would be zero and
+   * every graze would be a knockdown. **That is not the same case as the share
+   * itself being zero**, and keeping the two apart is the whole of the branch
+   * below: a paddle with no strike window sweeps nothing and can land nothing,
+   * while a share of zero is the owner asking for every landed strike to count.
+   * Written as its own return rather than left to `x >= 0` so that the shipped
+   * answer is legible here instead of being an accident of the comparison —
+   * and so a mutation of it fails a test.
+   */
+  get committed(): boolean {
+    const arc = this.arcSpeed;
+    if (!(arc > 0)) return false;
+    // **Zero is the shipped default and it means "any landed strike"** — the
+    // owner's 2026-08-27 ride (`data/tuning.ts`, `PADDLE.hardKnockShare`).
+    //
+    // "Any landed strike" is still not "any step": a swing that was cancelled
+    // and a step longer than a swing both leave the head speed at zero on
+    // purpose, and a share of zero compared with `>=` would have turned both of
+    // those into the hardest strike in the game. Neither can report a hit, so
+    // it was a hole nothing could fall through today — which is exactly the
+    // kind that opens later, and `paddle.test.ts` has been asserting the
+    // teleport half of it since Phase 3.
+    if (!(this.hardKnockShare > 0)) return this.headSpeedValue > 0;
+    return this.headSpeedValue >= arc * this.hardKnockShare;
+  }
+
+  /**
+   * How far from its wielder a swing can reach a body of `radius`, metres.
+   *
+   * **The arithmetic, written where the weapon is, because two other files
+   * need it and neither may guess.** The head hangs `pivotOffset` to the
+   * wielder's right and swings `reach` beyond that, the sweep passes straight
+   * through the wielder's right at some point in every swing, and a hit is a
+   * capsule of `headRadius` against a sphere of `radius` — so the furthest a
+   * parked wielder can put somebody down is the sum of the four. Measured
+   * against the real sweep in `paddle.test.ts`, which is what makes it a
+   * derivation rather than a plausible sentence.
+   *
+   * A *parked* wielder: riding adds the head's translation forward along the
+   * road and nothing at all to the sideways extent, which is why this is the
+   * number `simulation/spawnSlots.ts` sets a duel's spacing against.
+   */
+  reachAgainst(radius: number): number {
+    return this.pivotOffset + this.reach + this.headRadius + Math.max(0, radius);
+  }
+
+  /**
    * The longest step the head can legitimately take, metres.
    *
    * Its own arc speed plus a wielder travelling at `speed`, over one fixed step.
@@ -332,10 +467,7 @@ export class Paddle {
    * assert `maxStepSweep` still clears it after somebody retunes either side.
    */
   legitimateStepSweep(speed: number): number {
-    const arc = this.activeSeconds > 0
-      ? (this.reach * Math.abs(this.sweepRadians)) / this.activeSeconds
-      : 0;
-    return (arc + Math.max(0, speed)) / SIMULATION.hz;
+    return (this.arcSpeed + Math.max(0, speed)) / SIMULATION.hz;
   }
 
   /**
@@ -369,6 +501,9 @@ export class Paddle {
     this.elapsed = 0;
     this.seeded = false;
     this.activeDuringStep = false;
+    this.headSpeedValue = 0;
+    this.travelX = 0;
+    this.travelZ = 0;
   }
 
   /**
@@ -406,8 +541,21 @@ export class Paddle {
       this.previousZ = this.headZ;
       this.seeded = true;
       this.reseededThisStep = true;
+      // A step that swept nothing has no head speed and no travel. Left at the
+      // previous step's values a teleport would present as the fastest swing
+      // the game can produce, which is the one reading the hard knock must
+      // never take (M26 Phase 3).
+      this.headSpeedValue = 0;
+      this.travelX = 0;
+      this.travelZ = 0;
       return NO_HITS;
     }
+
+    // Kept rather than recomputed: this is the same displacement the guard just
+    // measured, and the hard-knock threshold reads it (M26 Phase 3).
+    this.headSpeedValue = dt > 0 ? travelled / dt : 0;
+    this.travelX = dx;
+    this.travelZ = dz;
 
     if (!this.activeDuringStep || hittables === null) return NO_HITS;
     return this.sweep(hittables);
@@ -444,6 +592,7 @@ export class Paddle {
       // would make the whole cycle cost nothing.
       if (!swingRequested) return;
       this.swingSideValue = swingSide;
+      this.swingsAccepted += 1;
       this.phaseValue = 'windup';
       this.elapsed = 0;
     }

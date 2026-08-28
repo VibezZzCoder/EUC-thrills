@@ -853,3 +853,145 @@ test('leaving a session drops the flash, so the next run does not inherit it', (
   const armed = hud.update(1, at({ challenge: running({ phase: 'armed' }) }));
   assert.equal(armed.challenge.splitLabel, '', 'the lap flash survived into a time trial');
 });
+
+// ---------------------------------------------------------------------------
+// The couch match's lane — M26 Phase 5 (q80)
+// ---------------------------------------------------------------------------
+
+test('a match lane reads this seat’s score first, in either half', () => {
+  // q80: both scores in every half, so neither player looks across the divider.
+  // The two halves therefore show mirrored numbers on purpose — each one is
+  // written from the point of view of the person sitting in front of it.
+  const model = new HudModel();
+  const scores = [{ knockdowns: 3, discs: 0 }, { knockdowns: 1, discs: 0 }];
+
+  const host = model.update(0, {
+    ...RIDING,
+    match: { seat: 0, target: 5, scores },
+  });
+  assert.equal(host.knockabout, '3 – 1');
+  assert.equal(host.modeLabel, 'You – them (to 5)');
+
+  const guest = new HudModel().update(0, {
+    ...RIDING,
+    match: { seat: 1, target: 5, scores },
+  });
+  assert.equal(guest.knockabout, '1 – 3', 'the guest’s half read the host’s score first');
+});
+
+test('a match takes the headline from the disc count and gives it the row below', () => {
+  // One corner, one *headline* in it. A match is a Knockabout run, so both
+  // inputs arrive together and the fight is what is on the line.
+  //
+  // **The discs are still on screen since 2026-08-28**, one row down, because
+  // the owner's couch ride found them nowhere until the match was over: *"No
+  // feedback on Targets Struck… It should show in-game below the knockdowns
+  // scores."* A side tally that can never win the match is still a thing two
+  // people compete over for the whole of it.
+  const model = new HudModel();
+  const view = model.update(0, {
+    ...RIDING,
+    knockabout: { struck: 4, total: 17 },
+    match: {
+      seat: 0,
+      target: 5,
+      scores: [{ knockdowns: 2, discs: 3 }, { knockdowns: 0, discs: 1 }],
+    },
+  });
+  assert.equal(view.knockabout, '2 – 0');
+  assert.notEqual(view.modeLabel, 'Targets');
+  assert.equal(view.modeSubLabel, 'Targets');
+  assert.equal(view.modeSub, '3 – 1 of 17');
+});
+
+test('the row below the score is read from the same end as the score above it', () => {
+  // The two rows are one fold read twice (`matchTally`), which is the whole
+  // reason `of` is a parameter: two composers would be two chances to disagree
+  // about which end of the match a player is sitting at, and q80's rule has to
+  // hold in both rows or it holds in neither.
+  const scores = [{ knockdowns: 3, discs: 2 }, { knockdowns: 1, discs: 9 }];
+  const host = new HudModel().update(0, { ...RIDING, match: { seat: 0, target: 5, scores } });
+  const guest = new HudModel().update(0, { ...RIDING, match: { seat: 1, target: 5, scores } });
+
+  assert.equal(host.knockabout, '3 – 1');
+  assert.equal(host.modeSub, '2 – 9');
+  assert.equal(guest.knockabout, '1 – 3');
+  assert.equal(guest.modeSub, '9 – 2', 'the guest’s half read the host’s discs first');
+});
+
+test('every ride that is not a match draws no second row at all', () => {
+  // Empty rather than zeroed, exactly as the lane above it is absent rather
+  // than zeroed: a single-player Knockabout's discs are already its headline,
+  // and a chase counts one clock. A second row that repeated the first would
+  // be furniture.
+  const free = new HudModel().update(0, RIDING);
+  assert.equal(free.modeSubLabel, '');
+  assert.equal(free.modeSub, '');
+
+  const solo = new HudModel().update(0, { ...RIDING, knockabout: { struck: 2, total: 17 } });
+  assert.equal(solo.modeSubLabel, '', 'single-player Knockabout grew a row it does not need');
+
+  const chase = new HudModel().update(0, {
+    ...RIDING,
+    chase: {
+      remaining: 90, straying: false, copClose: false, strayGrace: 0, homeRadians: 0,
+    },
+  });
+  assert.equal(chase.modeSubLabel, '');
+});
+
+test('a rider on the floor keeps both rows, because the match did not stop', () => {
+  // The crashed branch is a second view builder, and every field it forgets is
+  // a field that blinks out at the exact moment a player wants to read it —
+  // which in a match is the moment they were knocked down.
+  const view = new HudModel().update(0, {
+    ...RIDING,
+    crashed: true,
+    knockabout: { struck: 4, total: 17 },
+    match: {
+      seat: 1,
+      target: 5,
+      scores: [{ knockdowns: 2, discs: 3 }, { knockdowns: 0, discs: 1 }],
+    },
+  });
+  assert.equal(view.knockabout, '0 – 2');
+  assert.equal(view.modeSub, '1 – 3 of 17');
+});
+
+test('a match on a world whose disc count is unknown still shows the two tallies', () => {
+  // The total comes off the single-player lane's own input, which is present
+  // for every real match — `Game` fills both from the same step. Absent, the
+  // row drops the `of 17` rather than the scores: a player watching a fight can
+  // do without knowing how much scenery is left, and cannot do without knowing
+  // who is winning the thing the row is about.
+  const view = new HudModel().update(0, {
+    ...RIDING,
+    match: {
+      seat: 0,
+      target: 5,
+      scores: [{ knockdowns: 0, discs: 5 }, { knockdowns: 0, discs: 6 }],
+    },
+  });
+  assert.equal(view.modeSub, '5 – 6');
+});
+
+test('single-player Knockabout is untouched by the match lane', () => {
+  const view = new HudModel().update(0, { ...RIDING, knockabout: { struck: 2, total: 17 } });
+  assert.equal(view.knockabout, '2 / 17');
+  assert.equal(view.modeLabel, 'Targets');
+});
+
+test('the match lane counts every seat, so a wider couch reads for whoever looks', () => {
+  // Written as a fold over the other seats rather than as `scores[0]` and
+  // `scores[1]`, so the day a four-player couch is measured (§26.7 says it has
+  // not been) this lane is already the right shape instead of quietly naming
+  // two of four.
+  const scores = [
+    { knockdowns: 1, discs: 7 },
+    { knockdowns: 4, discs: 0 },
+    { knockdowns: 2, discs: 3 },
+  ];
+  const view = new HudModel().update(0, { ...RIDING, match: { seat: 2, target: 5, scores } });
+  assert.equal(view.knockabout, '2 – 1 – 4');
+  assert.equal(view.modeSub, '3 – 7 – 0', 'the row below counts two of four as well');
+});

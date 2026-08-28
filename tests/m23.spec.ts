@@ -715,6 +715,14 @@ test('pitting from the pause card ends the session and reports the best lap', as
   // Three rows: the two sector lines and the line that closed the lap. The
   // opening crossing's zero is deliberately not shown.
   await expect(page.locator('[data-menu="results-rows"] tr')).toHaveCount(3);
+  // Sectors of a lap, measured against the record the session *arrived* with —
+  // and neither of those is what this table said before M26 Phase 6's QA pass
+  // (see `ResultsTable`). "vs best" would be a lie on a card whose own best is
+  // the lap printed above it.
+  await expect(page.locator('[data-menu="results-table-caption"]')).toHaveText('Best lap sectors');
+  await expect(page.locator('[data-menu="results-column-label"]')).toHaveText('Sector');
+  await expect(page.locator('[data-menu="results-column-delta"]')).toHaveText('vs record');
+  await expect(page.locator('[data-menu="results-table"]')).toHaveAttribute('data-compare', 'true');
   await expect(page.locator('[data-menu="results-notes"] li').first()).toHaveText(/laps counted/);
 
   // Retry means the mode that just ended, which for a fourth mode is the thing
