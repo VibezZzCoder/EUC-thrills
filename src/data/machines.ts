@@ -43,7 +43,7 @@ import type { CharacterId } from './riders.ts';
  */
 
 /** Every machine the renderer can build. */
-export type MachineId = 'standard' | 'red-rider' | 'adonisb2' | 'maribel';
+export type MachineId = 'standard' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel';
 
 export interface MachineSpec {
   readonly id: MachineId;
@@ -59,6 +59,17 @@ export const MACHINES: readonly MachineSpec[] = Object.freeze([
     name: 'Standard wheel',
     blurb: 'The fictional suspension EUC the game has always shipped. '
       + 'Grey shell, blue accents, one honest headlight.',
+  }),
+  /**
+   * Trollina rides the standard machine, not a custom wheel. Her entry exists
+   * only so that the same shell can carry her pink accent palette without
+   * mutating Cool Rider's blue look or teaching a rig factory her name.
+   */
+  Object.freeze({
+    id: 'trollina' as MachineId,
+    name: "Trollina's wheel",
+    blurb: 'The standard suspension EUC in Trollina pink. Same machine, '
+      + 'louder joke.',
   }),
   /**
    * Red Rider's own machine, and the reason this table exists.
@@ -159,6 +170,7 @@ export function machineContract(): Readonly<Record<MachineContractKey, number>> 
  * would read as a stolen bike.
  */
 export function machineForCharacter(character: CharacterId): MachineId {
+  if (character === 'trollina') return 'trollina';
   if (character === 'red-rider') return 'red-rider';
   if (character === 'adonisb2') return 'adonisb2';
   // M23 Phase A2. Her id, her spec above and her `MachineLook` row arrived in

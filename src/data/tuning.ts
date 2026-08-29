@@ -3257,6 +3257,14 @@ export const BLOCKOUT_COLOURS = {
   pedal: 0x9aa0a8,
   /** Cool Rider's identity blue, previewed on the wheel's accent strip. */
   accent: 0x1f6fe0,
+  /**
+   * Trollina's standard-wheel livery. The albedo starts at her dress pink but
+   * owns a separate tuning key because reflective trim and cloth do not land
+   * at the same value under the midday sun. The deeper emissive keeps the
+   * strip pink without turning it into a lamp or crowding the red status cue.
+   */
+  machineTrollinaAccent: 0xc22c8a,
+  machineTrollinaEmissive: 0x7d1658,
   headlight: 0xfff0d0,
   taillight: 0xff2233,
 

@@ -414,6 +414,27 @@ export const STANDARD_MACHINE_LOOK: MachineLook = {
   },
 };
 
+// -- Trollina's standard-wheel livery ---------------------------------------
+
+/**
+ * The standard wheel in Trollina's palette — deliberately a livery, not a
+ * fifth wheel design. Everything except the trim material is shared by
+ * reference with `STANDARD_MACHINE_LOOK`; the trim spread retains the exact
+ * three patches and material response while exchanging blue albedo/emissive
+ * for pink. This keeps geometry, lights, draw calls and physics identical and
+ * makes it impossible for the variant to drift accidentally through copied
+ * profile numbers.
+ */
+export const TROLLINA_MACHINE_LOOK: MachineLook = {
+  ...STANDARD_MACHINE_LOOK,
+  machine: 'trollina',
+  trim: {
+    ...STANDARD_MACHINE_LOOK.trim,
+    colour: BLOCKOUT_COLOURS.machineTrollinaAccent,
+    emissive: BLOCKOUT_COLOURS.machineTrollinaEmissive,
+  },
+};
+
 // -- Red Rider's wheel — M19 Phase 3 ----------------------------------------
 
 /**
@@ -1761,6 +1782,7 @@ export const MARIBEL_MACHINE_LOOK: MachineLook = {
 
 const MACHINE_LOOKS: readonly MachineLook[] = Object.freeze([
   STANDARD_MACHINE_LOOK,
+  TROLLINA_MACHINE_LOOK,
   RED_RIDER_MACHINE_LOOK,
   ADONISB2_MACHINE_LOOK,
   MARIBEL_MACHINE_LOOK,
