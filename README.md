@@ -124,11 +124,11 @@ you cross the line.
 
 **Knockabout** — carry a padded paddle along a Fresh route and knock down the
 yellow targets on its verges. Time a swing while holding a line near a target
-for a clean hit; riding into one also works, but the clumsy hit sheds speed and
-adds a recoverable wobble. Your score is targets struck out of the route's
-total, the clock counts for nothing, and a target you pass stays standing until
-you come back for it. The city has no targets, so choosing Knockabout there
-opens the route generator.
+for a clean hit; riding through any visible part of a stand also works, but the
+clumsy hit sheds speed and adds a recoverable wobble. Your score is targets
+struck out of the route's total, the clock counts for nothing, and a target you
+pass stays standing until you come back for it. The city has no targets, so
+choosing Knockabout there opens the route generator.
 
 **Police chase** — Officer Dorkins starts behind you on a Fresh route, and you
 survive five minutes to escape.

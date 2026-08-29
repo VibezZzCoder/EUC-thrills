@@ -5798,9 +5798,9 @@ export const TARGET = {
    * speed range asked for more precision than the ride is about, and the owner
    * chose contact over tuning the swing wider: riding into a target counts,
    * and it costs the rider a bush — one soft wobble and a speed cost, never a
-   * crash. This is the rider trunk's half-width, tested against the strike
-   * disc's own bounds, so "into" means brushing the pad, not sharing a lane
-   * with it.
+   * crash. This is the rider trunk's half-width, swept against the visible
+   * stand: its post and cantilever arm, plus the strike disc at their end.
+   * The exact union keeps a visible hit while refusing a nearby empty lane.
    */
   bodyKnockRadius: 0.35,
   /**
@@ -5819,11 +5819,12 @@ export const TARGET = {
   /** Drawn thickness of the disc, metres. Render only. */
   discThickness: 0.09,
   /**
-   * The stand's post radius, metres. Render only.
+   * The stand's post radius, metres. Shared by render and body contact.
    *
    * Raised from 0.055 after looking at one: at the `readMetres` the gate is
    * ridden against, a post that thin is a hairline the renderer resolves away
-   * and the pad reads as floating.
+   * and the pad reads as floating. The same radius grows the post-and-arm
+   * segment for the body-knock test; paddle collision remains disc-only.
    */
   postRadius: 0.075,
   /**

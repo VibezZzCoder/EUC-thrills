@@ -1,4 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { TARGET } from '../data/tuning.ts';
 import type { Target } from '../level/plan.ts';
 import type { HittableSet, HittableVolume } from './paddle.ts';
 
@@ -48,14 +49,122 @@ import type { HittableSet, HittableVolume } from './paddle.ts';
 const GRID_TARGET_CELL = 8;
 const GRID_MAX_SPAN = 256;
 
-/** A target with its query arithmetic already done, and its bounds grown by it. */
-interface PreparedTarget extends HittableVolume {
+/** The visible rigid stand used only by the rider/EUC body-contact path. */
+export interface TargetBodyVolume extends HittableVolume {
+  readonly centre: Target['centre'];
+  readonly base: Target['base'];
+}
+
+/** A target with both query shapes' arithmetic already done. */
+interface PreparedTarget extends TargetBodyVolume {
+  /** Disc-only bounds. `HittableSet.eachNear` must remain paddle-only. */
   readonly minX: number;
   readonly maxX: number;
   readonly minY: number;
   readonly maxY: number;
   readonly minZ: number;
   readonly maxZ: number;
+  /** Whole visible rigid stand: post and arm, plus the disc at their end. */
+  readonly bodyMinX: number;
+  readonly bodyMaxX: number;
+  readonly bodyMinY: number;
+  readonly bodyMaxY: number;
+  readonly bodyMinZ: number;
+  readonly bodyMaxZ: number;
+}
+
+function clampUnit(value: number): number {
+  return value < 0 ? 0 : value > 1 ? 1 : value;
+}
+
+/** Squared XZ distance from a point to a finite segment. */
+function pointSegmentDistanceSquared(
+  pointX: number,
+  pointZ: number,
+  fromX: number,
+  fromZ: number,
+  toX: number,
+  toZ: number,
+): number {
+  const segmentX = toX - fromX;
+  const segmentZ = toZ - fromZ;
+  const lengthSquared = segmentX * segmentX + segmentZ * segmentZ;
+  const along = lengthSquared > 0
+    ? clampUnit(((pointX - fromX) * segmentX + (pointZ - fromZ) * segmentZ) / lengthSquared)
+    : 0;
+  const dx = pointX - (fromX + segmentX * along);
+  const dz = pointZ - (fromZ + segmentZ * along);
+  return dx * dx + dz * dz;
+}
+
+/** Squared XZ distance between two finite segments, including degeneracies. */
+function segmentDistanceSquared(
+  a0X: number,
+  a0Z: number,
+  a1X: number,
+  a1Z: number,
+  b0X: number,
+  b0Z: number,
+  b1X: number,
+  b1Z: number,
+): number {
+  const aX = a1X - a0X;
+  const aZ = a1Z - a0Z;
+  const bX = b1X - b0X;
+  const bZ = b1Z - b0Z;
+  const cross = aX * bZ - aZ * bX;
+  if (cross !== 0) {
+    const betweenX = b0X - a0X;
+    const betweenZ = b0Z - a0Z;
+    const alongA = (betweenX * bZ - betweenZ * bX) / cross;
+    const alongB = (betweenX * aZ - betweenZ * aX) / cross;
+    if (alongA >= 0 && alongA <= 1 && alongB >= 0 && alongB <= 1) return 0;
+  }
+
+  return Math.min(
+    pointSegmentDistanceSquared(a0X, a0Z, b0X, b0Z, b1X, b1Z),
+    pointSegmentDistanceSquared(a1X, a1Z, b0X, b0Z, b1X, b1Z),
+    pointSegmentDistanceSquared(b0X, b0Z, a0X, a0Z, a1X, a1Z),
+    pointSegmentDistanceSquared(b1X, b1Z, a0X, a0Z, a1X, a1Z),
+  );
+}
+
+/**
+ * Whether the rider/EUC's swept plan-space body touches the visible stand.
+ *
+ * The stand is the union the player sees: a thin post-and-arm capsule from the
+ * foot to the pad, and the round pad at its end. This intentionally is not the
+ * paddle shape; a swing still reaches only the disc sphere through `eachNear`.
+ */
+export function sweptBodyHitsTarget(
+  fromX: number,
+  fromZ: number,
+  toX: number,
+  toZ: number,
+  bodyRadius: number,
+  target: Pick<Target, 'centre' | 'base' | 'radius'>,
+): boolean {
+  const standReach = bodyRadius + TARGET.postRadius;
+  if (segmentDistanceSquared(
+    fromX,
+    fromZ,
+    toX,
+    toZ,
+    target.base.x,
+    target.base.z,
+    target.centre.x,
+    target.centre.z,
+  ) <= standReach * standReach) return true;
+
+  const discReach = bodyRadius + target.radius;
+  return pointSegmentDistanceSquared(
+    target.centre.x,
+    target.centre.z,
+    fromX,
+    fromZ,
+    toX,
+    toZ,
+  ) <= discReach * discReach;
 }
 
 export class TargetField implements HittableSet {
@@ -91,12 +200,20 @@ export class TargetField implements HittableSet {
       y: target.centre.y,
       z: target.centre.z,
       radius: target.radius,
+      centre: target.centre,
+      base: target.base,
       minX: target.centre.x - target.radius,
       maxX: target.centre.x + target.radius,
       minY: target.centre.y - target.radius,
       maxY: target.centre.y + target.radius,
       minZ: target.centre.z - target.radius,
       maxZ: target.centre.z + target.radius,
+      bodyMinX: Math.min(target.base.x - TARGET.postRadius, target.centre.x - target.radius),
+      bodyMaxX: Math.max(target.base.x + TARGET.postRadius, target.centre.x + target.radius),
+      bodyMinY: Math.min(target.base.y, target.centre.y - target.radius),
+      bodyMaxY: Math.max(target.base.y, target.centre.y + target.radius),
+      bodyMinZ: Math.min(target.base.z - TARGET.postRadius, target.centre.z - target.radius),
+      bodyMaxZ: Math.max(target.base.z + TARGET.postRadius, target.centre.z + target.radius),
     }));
 
     const indexOf = new Map<string, number>();
@@ -118,10 +235,10 @@ export class TargetField implements HittableSet {
     let minZ = Infinity;
     let maxZ = -Infinity;
     for (const prepared of this.targets) {
-      if (prepared.minX < minX) minX = prepared.minX;
-      if (prepared.maxX > maxX) maxX = prepared.maxX;
-      if (prepared.minZ < minZ) minZ = prepared.minZ;
-      if (prepared.maxZ > maxZ) maxZ = prepared.maxZ;
+      if (prepared.bodyMinX < minX) minX = prepared.bodyMinX;
+      if (prepared.bodyMaxX > maxX) maxX = prepared.bodyMaxX;
+      if (prepared.bodyMinZ < minZ) minZ = prepared.bodyMinZ;
+      if (prepared.bodyMaxZ > maxZ) maxZ = prepared.bodyMaxZ;
     }
     // A world with no targets is the normal case, not an edge case: §13 q12
     // puts them in generated routes only, so the slice, the proving ground and
@@ -231,6 +348,37 @@ export class TargetField implements HittableSet {
     maxZ: number,
     visit: (volume: HittableVolume) => void,
   ): void {
+    this.eachPreparedNear(minX, minY, minZ, maxX, maxY, maxZ, false, visit);
+  }
+
+  /**
+   * Every standing target whose whole visible stand overlaps this box.
+   *
+   * This is the body/EUC broadphase only. Paddle callers stay on `eachNear`,
+   * whose candidate bounds remain the round strike disc and nothing else.
+   */
+  eachBodyNear(
+    minX: number,
+    minY: number,
+    minZ: number,
+    maxX: number,
+    maxY: number,
+    maxZ: number,
+    visit: (volume: TargetBodyVolume) => void,
+  ): void {
+    this.eachPreparedNear(minX, minY, minZ, maxX, maxY, maxZ, true, visit);
+  }
+
+  private eachPreparedNear(
+    minX: number,
+    minY: number,
+    minZ: number,
+    maxX: number,
+    maxY: number,
+    maxZ: number,
+    body: boolean,
+    visit: (volume: PreparedTarget) => void,
+  ): void {
     if (this.targets.length === 0) return;
     this.queryStamp += 1;
     const stamp = this.queryStamp;
@@ -251,9 +399,15 @@ export class TargetField implements HittableSet {
           this.visitStamp[index] = stamp;
           if (this.down[index] === 1) continue;
           const prepared = this.targets[index];
-          if (prepared.maxX < minX || prepared.minX > maxX) continue;
-          if (prepared.maxY < minY || prepared.minY > maxY) continue;
-          if (prepared.maxZ < minZ || prepared.minZ > maxZ) continue;
+          const candidateMinX = body ? prepared.bodyMinX : prepared.minX;
+          const candidateMaxX = body ? prepared.bodyMaxX : prepared.maxX;
+          const candidateMinY = body ? prepared.bodyMinY : prepared.minY;
+          const candidateMaxY = body ? prepared.bodyMaxY : prepared.maxY;
+          const candidateMinZ = body ? prepared.bodyMinZ : prepared.minZ;
+          const candidateMaxZ = body ? prepared.bodyMaxZ : prepared.maxZ;
+          if (candidateMaxX < minX || candidateMinX > maxX) continue;
+          if (candidateMaxY < minY || candidateMinY > maxY) continue;
+          if (candidateMaxZ < minZ || candidateMinZ > maxZ) continue;
           visit(prepared);
         }
       }
@@ -262,10 +416,10 @@ export class TargetField implements HittableSet {
 
   /** Visit every grid cell a target's bounds touch. Returns how many. */
   private eachCell(prepared: PreparedTarget, visit: (cell: number) => void): number {
-    const fromColumn = this.columnAt(prepared.minX);
-    const toColumn = this.columnAt(prepared.maxX);
-    const fromRow = this.rowAt(prepared.minZ);
-    const toRow = this.rowAt(prepared.maxZ);
+    const fromColumn = this.columnAt(prepared.bodyMinX);
+    const toColumn = this.columnAt(prepared.bodyMaxX);
+    const fromRow = this.rowAt(prepared.bodyMinZ);
+    const toRow = this.rowAt(prepared.bodyMaxZ);
     let visited = 0;
     for (let row = fromRow; row <= toRow; row += 1) {
       for (let column = fromColumn; column <= toColumn; column += 1) {

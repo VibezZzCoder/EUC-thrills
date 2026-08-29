@@ -366,8 +366,9 @@ export interface Hazard {
  * half: `simulation/challenge.ts` tests a point — the wheel's contact patch —
  * against one expected volume, and a target reusing that would score when the
  * wheel drove through its ground footprint whether or not anybody swung, which
- * makes the swing decoration. A target is struck by a **swept segment test on
- * the paddle head** (`simulation/paddle.ts`) and by nothing else.
+ * makes the swing decoration. A paddle strike is a **swept segment test on the
+ * paddle head** (`simulation/paddle.ts`); Knockabout's separate body-knock path
+ * sweeps the rider/EUC against the visible stand without making it solid.
  *
  * **A target is detection and render data, never a collider.** This is the M7
  * trap for the fourth time and in its worst form yet. The sampler resolves a
@@ -382,10 +383,11 @@ export interface Hazard {
  * thing from disagreeing.** `base` is where the stand's foot meets the ground on
  * the verge; `centre` is the strike disc, cantilevered in over the road. The
  * renderer derives the arm's direction and length from `centre - base`, so there
- * is no separate heading anybody can set inconsistently, and the simulation
- * reads `centre` and `radius` alone — a sphere. Which side of the road the
- * target stands on is a fact about those two points rather than a sign somebody
- * has to get right.
+ * is no separate heading anybody can set inconsistently. The paddle reads the
+ * sphere at `centre`; the body-knock path reads both points as the visible
+ * post-and-arm ending at that sphere. Which side of the road the target stands
+ * on is a fact about those two points rather than a sign somebody has to get
+ * right.
  *
  * **Both heights come off the ground under the *foot*, and that is a decision
  * rather than an oversight.** `base.y` is `buildPlan`'s `fieldHeightAt` there —
@@ -410,12 +412,11 @@ export interface Target {
   /**
    * Strike-disc centre, world space, at strike height above the road under it.
    *
-   * This is the whole of what the simulation knows about a target: a sphere of
-   * `radius` at this point. `render/` draws a disc here and the post and arm
-   * that hold it up.
+   * The paddle's hittable shape is a sphere of `radius` at this point. The
+   * body-knock path also reads `base`, covering the visible stand between them.
    */
   centre: Vec3;
-  /** Strike-disc radius, metres. The hittable sphere, not the drawn plate. */
+  /** Strike-disc radius, metres. The paddle's hittable sphere. */
   radius: number;
   /**
    * Where the stand's foot meets the ground, world space, on the verge.

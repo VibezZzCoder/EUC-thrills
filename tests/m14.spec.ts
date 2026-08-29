@@ -260,10 +260,10 @@ test('riding into a target knocks it out, at a bush’s price — never a crash'
     const game = window.game;
     const plan = game.buildLevel('generated', 'route-41');
     const stand = (plan.targets ?? [])[3];
-    // `TargetField.eachNear` is only a broadphase: its AABB deliberately
-    // returns the corner of the square around the two circular bodies. Prove
-    // the body-knock owner applies the exact plan-distance test rather than
-    // treating every broadphase candidate as contact.
+    // `TargetField.eachBodyNear` is only a broadphase: its AABB deliberately
+    // includes empty corners around the visible stand. Prove the body-knock
+    // owner applies the exact union rather than treating every candidate as
+    // contact.
     const combinedRadius = bodyKnockRadius + stand.radius;
     const nearMiss = {
       x: stand.centre.x + combinedRadius * 0.9,
@@ -275,12 +275,12 @@ test('riding into a target knocks it out, at a bush’s price — never a crash'
     game.advance(1);
     const diagonalNearMissStruck = game.snapshot().targets.struck;
 
-    // Straight at the pad, no swing. The owner's 2026-08-12 ride: the paddle
-    // asked for more precision than the mode is about, so body contact is the
+    // Straight at the visible post, no swing. The owner's 2026-08-12 ride: the
+    // paddle asked for more precision than the mode is about, so body contact is the
     // second way a target goes down. A target is still never a collider — the
     // wheel is not stopped — but the knock costs the rider a bush: one soft
     // wobble plus a speed cost, and no crash at any speed.
-    const start = { x: stand.centre.x, z: stand.centre.z - 8 };
+    const start = { x: stand.base.x, z: stand.base.z - 8 };
     const ground = game.sampleGround(start.x, start.z);
     game.placeRider({ x: start.x, y: ground.height, z: start.z }, 0);
     game.clearActions();
@@ -307,7 +307,7 @@ test('riding into a target knocks it out, at a bush’s price — never a crash'
       hud: snapshot.hud.knockabout,
       speedBefore,
       speedAfter,
-      passed: snapshot.euc.position.z > stand.centre.z,
+      passed: snapshot.euc.position.z > stand.base.z,
       crashed: snapshot.euc.crashed,
       blocked: snapshot.euc.blocked,
     };

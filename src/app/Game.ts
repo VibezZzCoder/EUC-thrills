@@ -80,7 +80,7 @@ import {
   type HittableVolume,
   type SwingPhase,
 } from '../simulation/paddle.ts';
-import { TargetField } from '../simulation/targets.ts';
+import { TargetField, sweptBodyHitsTarget } from '../simulation/targets.ts';
 import {
   KnockaboutMatch,
   type MatchResult,
@@ -4607,22 +4607,28 @@ export class Game {
     // level furniture the wheel passes straight through.
     const knockRadius = this.tuning.get('TARGET.bodyKnockRadius');
     if (knockRadius <= 0) return;
-    this.targets.eachNear(
-      pose.x - knockRadius,
-      pose.y,
-      pose.z - knockRadius,
-      pose.x + knockRadius,
-      pose.y + TARGET.bodyKnockHeight,
-      pose.z + knockRadius,
+    const previous = seat.previousPose;
+    this.targets.eachBodyNear(
+      Math.min(previous.x, pose.x) - knockRadius,
+      Math.min(previous.y, pose.y),
+      Math.min(previous.z, pose.z) - knockRadius,
+      Math.max(previous.x, pose.x) + knockRadius,
+      Math.max(previous.y, pose.y) + TARGET.bodyKnockHeight,
+      Math.max(previous.z, pose.z) + knockRadius,
       (volume) => {
-        // `eachNear` is the grid broadphase: it returns every target whose
-        // bounding box overlaps this box. The corner of that box is outside
-        // the two circular bodies, so it is not contact. Keep the broadphase
-        // cheap and make the mode owner decide the exact plan-distance test.
-        const dx = volume.x - pose.x;
-        const dz = volume.z - pose.z;
-        const reach = knockRadius + volume.radius;
-        if (dx * dx + dz * dz > reach * reach) return;
+        // `eachBodyNear` is only the grid broadphase. The exact proxy is the
+        // visible rigid object: a thin post-and-arm capsule ending in the
+        // round pad. Sweep from the previous fixed-step pose so a fast pass
+        // cannot cross the post between two samples. The paddle never sees
+        // this shape — its `HittableSet.eachNear` remains disc-only.
+        if (!sweptBodyHitsTarget(
+          previous.x,
+          previous.z,
+          pose.x,
+          pose.z,
+          knockRadius,
+          volume,
+        )) return;
         if (!this.targets.strike(volume.id)) return;
         // Ridden into rather than swung at, and it still belongs to whoever did
         // it — the two ways a disc goes down have been the same downstream
