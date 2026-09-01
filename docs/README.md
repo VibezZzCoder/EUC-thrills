@@ -67,33 +67,49 @@ costs speed rather than the whole run.
 **Start ride** — free ride in the world currently loaded. No clock, no
 objective, nothing to fail.
 
-**2 Players (desktop)** — two riders, side by side on one screen. On a
-desktop-shaped machine the title screen offers **2 Players**: each player
+**2–4 Players (desktop)** — up to four riders on one screen. On a
+desktop-shaped machine the title screen offers **2–4 Players**: each player
 presses a button on their own controller — a gamepad, or this keyboard — to
 take a seat, picks their rider (you ride as different characters), chooses
-what the two of you are doing, and **Start riding** puts you in the world
-together, each in your own half of the screen with your own camera and HUD.
-Either player can pause for both, and each of you beeps, crashes, and recovers
-on your own. Riders are solid to each other: ride into your friend and you
-both get shoved apart, however fast you met, and an ordinary bump never knocks
-either of you down. Nothing a couch session does is saved. The mode is
-desktop-only: it needs a window at least 1000 pixels wide to keep both halves
-readable, so a phone never sees the button.
+what the room is doing, and **Start riding** puts you in the world together,
+each in your own pane with your own camera and HUD. Two of you split the
+screen in halves; three or four get a two-by-two grid, and with three the
+spare quadrant becomes the room's scoreboard. Any player can pause for
+everybody, and each of you beeps, crashes, and recovers on your own. Riders
+are solid to each other: ride into a friend and you both get shoved apart,
+however fast you met, and an ordinary bump never knocks anybody down. Nothing
+a couch session does is saved. The mode is desktop-only: it needs a window at
+least 1000 pixels wide to keep the panes readable, so a phone never sees the
+button.
 
-The join panel offers two things to do, and the pause menu and the results
+The join panel offers three things to do, and the pause menu and the results
 card both let you swap between them without going back to the title:
 
 - **Free ride** — the world, shared. No clock, no objective, nothing to fail,
   and no paddles.
-- **Knockabout** — a bout. You each carry a paddle, and **the first to five
-  knockdowns takes the match**. A committed swing that lands puts the other
-  rider on the floor; a rider who has just gone down is briefly untouchable, so
-  nobody is held there. The route's yellow targets are still out there and
-  still worth hitting — the corner of your half counts both your knockdowns and
-  your targets struck — but **no number of targets wins a bout**, and a target
-  either of you knocks down is gone for both of you. If you both reach five on
-  the same instant, the match is **drawn**. It needs a course with targets on
-  it, so choosing it in the city opens the route generator first.
+- **Race** — three laps of **BelVar Circuit**, up to four of you. Everybody
+  sits frozen on the grid through a countdown and launches on GO; from there
+  it is Track Day's lap rules for each rider — the line always ends a lap, a
+  lap that skipped a sector line does not count, and the grass verge is a
+  mistake rather than cheating — with one clock for the whole room. Your pane
+  shows your position, lap, and the gap to the rider ahead; quick reset (`R`)
+  is a decision, and it costs you the lap you are on and nobody else's. When
+  the leader takes the flag everybody else finishes the lap they are on, a
+  finished rider keeps riding under a banner with their place locked, and the
+  card lists the room by laps, then by time — two riders who cross together
+  share the place. No records, no ghost. Choosing it anywhere else takes the
+  room to BelVar.
+- **Knockabout** — a bout, for exactly two of you. You each carry a paddle,
+  and **the first to five knockdowns takes the match**. A committed swing
+  that lands puts the other rider on the floor; a rider who has just gone
+  down is briefly untouchable, so nobody is held there. The route's yellow
+  targets are still out there and still worth hitting — the corner of your
+  half counts both your knockdowns and your targets struck — but **no number
+  of targets wins a bout**, and a target either of you knocks down is gone
+  for both of you. If you both reach five on the same instant, the match is
+  **drawn**. It needs a course with targets on it, so choosing it in the city
+  opens the route generator first. A third player takes it off the menu; its
+  four-player rules are not designed yet.
 
 **Time trial** — race from the start line through five more checkpoints. The
 HUD points at the next one and shows the distance; each crossing gives you a
@@ -252,7 +268,7 @@ gentler one, not a twitchier one.
 | 180° spin jump | `Space` again on the way up |
 | Crouch, and charge a bigger hop | `Shift` |
 | Swing the paddle — Knockabout only | `F` |
-| Quick reset — back to the start, or restart the run | `R` |
+| Quick reset — back to the start, or restart the run (in a race, it costs you the lap) | `R` |
 | Mute · camera view · pause | `M` · `C` · `Esc` |
 
 Every key except `Esc` can be reassigned in **Settings → Controls**. `Esc`
@@ -359,17 +375,22 @@ list.
 
 ### Accepted direction
 
-- **More couch multiplayer.** Free ride for two, the bump, and a two-rider
-  Knockabout bout have all landed (see **2 Players** above). **A couch race is
-  next**, at BelVar Circuit, and it is real design rather than a switch: two
-  riders need standings, a results card that reads for two, and an answer to
-  what a lap referee does with more than one of you. Couch chase stays behind
-  it. The shape is unchanged — local multiplayer on desktop, single-player on
-  mobile — and playing across two devices is not cancelled but sits behind all
-  of this.
+- **More couch multiplayer.** Free ride, the bump, a two-rider Knockabout
+  bout, and now a four-seat race have all landed (see **2–4 Players** above).
+  What is left is real design rather than a switch: **Knockabout for three or
+  four** (free-for-all or teams, and where four paddles start fairly), and
+  **couch chase** behind it. The shape is unchanged — local multiplayer on
+  desktop, single-player on mobile — and playing across two devices is not
+  cancelled but sits behind all of this.
 
 ### Recently landed
 
+- **A couch race, and four seats.** Up to four riders on one desktop screen —
+  halves for two, a grid for three or four — and a three-lap race at BelVar
+  Circuit with a countdown, live standings, per-rider lap rules, one shared
+  clock, and a results card that reads for the whole room. Measured against
+  its own, third graphics budget, so neither the single-player frame nor the
+  two-player one gave anything up for it.
 - **Knockabout for two.** The paddle mode became a bout: first to five
   knockdowns, targets counted but never decisive, and a draw if you get there
   together. Both halves of the screen show both scores.
@@ -407,8 +428,9 @@ list.
 - **A course that is alive.** Moving traffic or animals on a route of their own,
   which could also be the natural home for a different time of day.
 - **More racing.** Preset skill-level and developer ghosts, AI riders sharing a
-  course, and more venues to lap. Track Day is the first of this and is
-  deliberately one rider against the clock; nothing about it is a race yet.
+  course, and more venues to lap. Track Day and the couch race at BelVar are
+  the first of this; a race against something other than a friend on the same
+  screen is still an idea.
 - **More world.** Downtown, hillside, industrial, deeper woodland, and more
   riverside — while protecting the city-to-trail transition riders already like.
 - **More rider voices.** Varied crash reactions and occasional hop, carve,

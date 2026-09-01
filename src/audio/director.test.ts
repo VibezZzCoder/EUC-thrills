@@ -1404,3 +1404,32 @@ test('the beep ducks the bed, and never as deep as it retriggers', () => {
     'the duck flattened the ride, which is what the shallow depth exists to avoid',
   );
 });
+
+// ---------------------------------------------------------------------------
+// The cue ring at its cap — QA repair, 2026-08-31
+// ---------------------------------------------------------------------------
+
+test('the cue ring holds thirty-two, refuses the rest politely, and drains', () => {
+  // The ring is twice the four-seat worst case (four one-shots a rider), and
+  // §27.6's derivation is only believable if the boundary itself has been
+  // stood on: the previous coverage stopped at eight claims. `raceCount` is
+  // the honest battering ram — it is deliberately not rate-limited, because
+  // the referee limits it — so a runaway caller is exactly what the cap is
+  // for.
+  const director = new AudioDirector();
+  for (let i = 0; i < 40; i += 1) director.raceCount();
+  assert.equal(director.cueCount, 32, 'the ring did not stop at its cap');
+  // The thirty-third claim was refused, not thrown, and it did not overwrite
+  // anybody: every claimed slot is still the countdown tone.
+  for (let c = 0; c < director.cueCount; c += 1) {
+    assert.equal(director.cues[c].kind, 'count');
+  }
+
+  // Drained by the consumer, the ring is whole again — a saturated update
+  // must cost that update's overflow and nothing after it.
+  director.clearCues();
+  assert.equal(director.cueCount, 0);
+  director.raceGo();
+  assert.equal(director.cueCount, 1);
+  assert.equal(director.cues[0].kind, 'go');
+});

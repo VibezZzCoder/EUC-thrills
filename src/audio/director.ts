@@ -308,7 +308,16 @@ export type CueKind =
    * are still filled in and are the fallback before the sample bank lands,
    * which is the same arrangement `crash` has had since M8.
    */
-  | 'overspeed';
+  | 'overspeed'
+  /**
+   * The race grid's count and its release — M27 Phase 3.
+   *
+   * Their own kinds rather than a `beep` with different numbers, because
+   * §27.3 asks for their own cue, their own timer and their own duck: routing
+   * a new warning through the power ladder is exactly how M13's removed
+   * beeping came back once already.
+   */
+  | 'count' | 'go';
 
 /**
  * A one-shot, fully resolved.
@@ -409,8 +418,19 @@ interface RiderBook {
  * two riders crashing together would have dropped whichever sounds arrived
  * last, silently, and only ever on the loudest frame in the game. Sixteen
  * restores the same 2× margin the number was chosen with.
+ *
+ * **Doubled again at M27 Phase 1, by re-walking that arithmetic rather than
+ * by pattern-matching it.** §27.2 priced a four-seat couch's worst case at
+ * sixteen and §27.6 asked for "ring to 16" — written from a reading of this
+ * file that was one milestone stale, because M25 had already taken it there.
+ * The number the *argument* produces at four seats is thirty-two: four riders
+ * × four one-shots each is the worst case, and this ceiling has been twice the
+ * worst case since it was first chosen. Leaving it at sixteen would have been
+ * the exact defect the M25 paragraph above describes, one couch wider — a
+ * silent drop on the loudest frame in the game, which is the frame nobody is
+ * listening critically on.
  */
-const MAX_CUES_PER_UPDATE = 16;
+const MAX_CUES_PER_UPDATE = 32;
 
 /** The live subset of `AUDIO` the tuning panel may move. See LIVE_TUNABLES. */
 export interface AudioTuning {
@@ -445,6 +465,9 @@ export interface AudioTuning {
    */
   swingLevel: number;
   hitLevel: number;
+  /** The race grid's count and release — M27 Phase 3. */
+  raceCountLevel: number;
+  raceGoLevel: number;
   /**
    * The siren's point-blank ceiling (M18). Live because the standing rule —
    * nothing may be annoying — is judged by the owner's ear on a real ride,
@@ -471,6 +494,8 @@ export function defaultAudioTuning(): AudioTuning {
     overspeedLevel: AUDIO.overspeedLevel,
     swingLevel: AUDIO.swingLevel,
     hitLevel: AUDIO.hitLevel,
+    raceCountLevel: AUDIO.raceCountLevel,
+    raceGoLevel: AUDIO.raceGoLevel,
     sirenLevel: AUDIO.sirenLevel,
   };
 }
@@ -914,6 +939,50 @@ export class AudioDirector {
     cue.toneHz = 0;
     cue.toneSeconds = 0;
     this.demandTransientDuck(AUDIO.duckSwing);
+  }
+
+  /**
+   * One tick of a race countdown — M27 Phase 3 (§27.3, q88).
+   *
+   * **A tone, and nothing else.** No thump (nothing has been struck), no noise
+   * burst (nothing is moving), and emphatically not a `beep`: the power
+   * ladder's pattern is a *warning* and this is an instruction, and M13's
+   * standing rule is that a removed beep must not come back wearing another
+   * feature's name.
+   *
+   * Not rate-limited, because the referee is: the count fires once per whole
+   * second of a clock that runs on the fixed step, so `advance(n)` reproduces
+   * a start beat for beat.
+   */
+  raceCount(): void {
+    this.emitRaceTone('count', this.tuning.raceCountLevel, AUDIO.raceCountToneHz, AUDIO.raceCountToneSeconds);
+  }
+
+  /** The release. The same shape an octave up, and the one instruction. */
+  raceGo(): void {
+    this.emitRaceTone('go', this.tuning.raceGoLevel, AUDIO.raceGoToneHz, AUDIO.raceGoToneSeconds);
+  }
+
+  private emitRaceTone(kind: CueKind, gain: number, hz: number, seconds: number): void {
+    if (!(gain > 0)) return;
+    const cue = this.claimCue();
+    if (!cue) return;
+    cue.kind = kind;
+    // **`ui`, not `sfx`.** A countdown is the game speaking to the room rather
+    // than the world making a noise, which is the same argument that puts the
+    // recovery chirp and the over-speed alarm on that bus.
+    cue.bus = 'ui';
+    cue.gain = gain;
+    cue.delaySeconds = 0;
+    cue.thumpFromHz = 0;
+    cue.thumpToHz = 0;
+    cue.thumpSeconds = 0;
+    cue.noiseHz = 0;
+    cue.noiseQ = 0;
+    cue.noiseSeconds = 0;
+    cue.toneHz = hz;
+    cue.toneSeconds = seconds;
+    this.demandTransientDuck(AUDIO.duckRaceCue);
   }
 
   /**

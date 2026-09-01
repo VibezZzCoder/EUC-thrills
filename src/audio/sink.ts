@@ -26,8 +26,22 @@ import { NOISE_SECONDS, alignLoopToQuantum, fillNoise } from './noise.ts';
  * `dispose` empties both before closing the context.
  */
 
-/** How many one-shots may sound at once. */
-const MAX_VOICES = 24;
+/**
+ * How many one-shots may sound at once.
+ *
+ * **Derived from the cue ring, and re-derived at M27 Phase 1.** One cue can
+ * open three sources — a tone, a thump and a noise burst — so the ceiling the
+ * director's own worst case implies is three times it. At two seats that
+ * worst case was eight cues, and twenty-four was exactly it: no headroom, and
+ * a fourth simultaneous crash would have been counted in `droppedVoices` and
+ * heard by nobody. Four seats make the worst case sixteen, so this is forty-
+ * eight on the same arithmetic.
+ *
+ * It stays a *cap* rather than a promise: `droppedVoices` exists because the
+ * honest failure of a graph that is asked for more than it can hold is a
+ * counted refusal rather than an unbounded node pile.
+ */
+const MAX_VOICES = 48;
 
 /** Web Audio cannot ramp to zero exponentially; this is practical silence. */
 const SILENT = 0.0001;

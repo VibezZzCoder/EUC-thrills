@@ -236,6 +236,8 @@ export class AudioEngine {
     swing: 0,
     hit: 0,
     overspeed: 0,
+    count: 0,
+    go: 0,
   };
 
   constructor(target: Window | null = typeof window === 'undefined' ? null : window) {
@@ -578,6 +580,16 @@ export class AudioEngine {
   }
 
   /** The paddle went through the air (M14). A miss is silence after this. */
+  /** One tick of a race countdown — M27 Phase 3. */
+  raceCount(): void {
+    this.director.raceCount();
+  }
+
+  /** The release. */
+  raceGo(): void {
+    this.director.raceGo();
+  }
+
   swing(): void {
     this.director.swing();
   }

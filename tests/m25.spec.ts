@@ -1109,8 +1109,12 @@ test('an even canvas still splits down the middle, and a resize re-tiles it', as
   });
 
   expect(retiled.even.viewport.width).toBe(1280);
-  expect(retiled.even.panes[0]).toEqual({ x: 0, width: 640 });
-  expect(retiled.even.panes[1]).toEqual({ x: 640, width: 640 });
+  // **The two-seat frame is still full-height halves**, which is the frame
+  // Contract 2 was measured on. `viewBounds` gained `y` and `height` at M27
+  // Phase 1 for the 2x2 grid three and four seats draw into; a half's answer
+  // did not move, and this is where that is asserted rather than assumed.
+  expect(retiled.even.panes[0]).toEqual({ x: 0, y: 0, width: 640, height: 720 });
+  expect(retiled.even.panes[1]).toEqual({ x: 640, y: 0, width: 640, height: 720 });
   for (const aspect of retiled.even.aspects) {
     expect(aspect).toBeCloseTo(640 / retiled.even.viewport.height, 6);
   }
@@ -1733,14 +1737,23 @@ test('the join panel seats a pad and the keyboard, then rides', async ({ page })
 
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => window.game.snapshot().couch.ready);
+  // **Three seats now, and the third is the empty chair M27 Phase 1 puts out**
+  // — this fixture has two pads, so after the keyboard and pad 0 have sat down
+  // there is still a device in the room that could take another seat, and
+  // `Game.growCouch` offers one. It is a chair, not a claim: Start is armed on
+  // two held seats and nobody awaiting, which is q95's three-player session
+  // read from the other end.
   expect(await page.evaluate(() => window.game.snapshot().input.devices))
-    .toEqual(['pad:0', 'keyboard']);
+    .toEqual(['pad:0', 'keyboard', null]);
   await expect(start).toBeEnabled();
 
   // Whoever pressed first sits first, and the panel says what is holding each
   // seat in words a player can act on.
   await expect(page.locator('[data-couch-status="0"]')).toHaveText(/Gamepad 1/);
   await expect(page.locator('[data-couch-status="1"]')).toHaveText(/Keyboard/);
+  // And the chair nobody took says what would fill it, rather than promising a
+  // press the room has already spent.
+  await expect(page.locator('[data-couch-status="2"]')).toHaveText(/Empty/);
 
   await start.click();
   await page.waitForFunction(() => window.game.snapshot().app.state === 'freeRide');
@@ -1756,6 +1769,10 @@ test('the join panel seats a pad and the keyboard, then rides', async ({ page })
       huds: document.querySelectorAll('.euc-hud-seat').length,
     };
   });
+  // **The empty chair is gone.** A seat is a render pass and a quarter of the
+  // screen, so `trimUnclaimedSeats` takes the ones nobody sat in away on the
+  // way into the ride — the two people who pressed get halves, exactly as they
+  // did before the couch could hold four.
   expect(riding.seats).toBe(2);
   expect(riding.devices).toEqual(['pad:0', 'keyboard']);
   expect(riding.claiming).toBe(false);
@@ -2107,12 +2124,19 @@ test('the title and the join panel fit every desktop window that is offered them
     await inside('.euc-menu--title [data-menu="settings"]', viewport);
     await inside('.euc-menu--title .euc-credit', viewport);
 
-    // And the panel behind that button, whose own two cards and armed Start
-    // have to be reachable without scrolling on the same windows.
+    // And the panel behind that button, whose own cards and armed Start have
+    // to be reachable without scrolling on the same windows. **All four cards
+    // since M27 Phase 4** — the growth to four put the back row 91 px below
+    // the fold at 1000 x 520 before the card floor came down to 10.5 rem, and
+    // a loop that measured only the front row would have watched it happen
+    // (QA repair, 2026-08-31: the independent pass asked for the cards this
+    // contract skipped).
     await openJoinPanel(page);
     await unscrollable('.euc-menu--couch', viewport);
     await inside('.euc-menu--couch [data-couch-seat="0"]', viewport);
     await inside('.euc-menu--couch [data-couch-seat="1"]', viewport);
+    await inside('.euc-menu--couch [data-couch-seat="2"]', viewport);
+    await inside('.euc-menu--couch [data-couch-seat="3"]', viewport);
     // The mode choice — M26 Phase 5, added to this contract rather than measured
     // in a second one. §26.6 asks for the panel to be re-measured at
     // `COUCH_MIN_WIDTH_PX` and in the suite's own 1000×700 window every time it
@@ -2125,6 +2149,7 @@ test('the title and the join panel fit every desktop window that is offered them
     // **Both ends of the row are measured**, because it became a segmented pair
     // on 2026-08-27 and a two-button row can only overflow at one end.
     await inside('.euc-menu--couch [data-couch-mode="freeRide"]', viewport);
+    await inside('.euc-menu--couch [data-couch-mode="race"]', viewport);
     await inside('.euc-menu--couch [data-couch-mode="knockabout"]', viewport);
     // The contact toggle was measured here too until the same ride retired it.
     // Nothing replaces that line: a control that does not exist has no fit.

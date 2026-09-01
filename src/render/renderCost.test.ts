@@ -7,6 +7,9 @@ import {
   NON_LEVEL_RESERVE,
   PART_COSTS,
   PROP_PART_IDS,
+  QUAD_NON_LEVEL_RESERVE,
+  QUAD_PASSES,
+  RENDER_BUDGET_QUAD,
   RENDER_BUDGET,
   RENDER_BUDGET_SPLIT,
   SPLIT_NON_LEVEL_RESERVE,
@@ -21,6 +24,7 @@ import type { LevelPlan } from '../level/plan.ts';
 import {
   planRenderCost,
   withinRenderBudget,
+  withinQuadRenderBudget,
   withinSplitRenderBudget,
 } from '../level/renderBudget.ts';
 import { createProvingGround } from '../level/provingGround.ts';
@@ -31,8 +35,11 @@ import {
   measureNonLevelScene,
   measurePartTriangles,
   measurePropKinds,
+  measureQuadNonLevelScene,
   measureSplitNonLevelScene,
+  playableSubsets,
 } from './renderCost.ts';
+import { PLAYABLE_RIDER_LOOKS } from './riderLook.ts';
 
 /**
  * The render-cost model, regenerated from the built scene — M12 Phase 0.
@@ -300,6 +307,195 @@ test('a route at the generator’s own triangle line still fits a split frame', 
     worst <= RENDER_BUDGET_SPLIT.maxTriangles,
     `a route at the generator's 80% line would cost ${worst} triangles in a split `
       + `frame, past the ${RENDER_BUDGET_SPLIT.maxTriangles} ceiling`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// M27 Phase 0 — the four-seat measurement (the scope lock's numbers)
+// ---------------------------------------------------------------------------
+
+test('the seated sweep enumerates every unordered distinct seating exactly once', () => {
+  // The enumeration is the measurement's identity: a sweep that repeated a
+  // seating would waste builds, and one that skipped a seating could miss the
+  // worst frame silently — which is the one direction a reserve may not be
+  // wrong. C(n, k), computed rather than hardcoded, because the roster grows
+  // and the reserves re-pin with it; §27.5's "exactly five such subsets" is
+  // the n = 5 reading of the same arithmetic.
+  const choose = (n: number, k: number): number => {
+    let result = 1;
+    for (let i = 0; i < k; i += 1) result = (result * (n - i)) / (i + 1);
+    return result;
+  };
+  const roster = PLAYABLE_RIDER_LOOKS.length;
+  for (const seats of [2, 4]) {
+    const subsets = playableSubsets(seats);
+    assert.equal(subsets.length, choose(roster, seats), `C(${roster}, ${seats})`);
+    const seen = new Set<string>();
+    for (const subset of subsets) {
+      const ids = subset.map((look) => look.id);
+      assert.equal(new Set(ids).size, seats, 'a seating repeated a character (q68)');
+      const key = [...ids].sort().join('+');
+      assert.ok(!seen.has(key), `the seating ${key} was enumerated twice`);
+      seen.add(key);
+    }
+  }
+});
+
+test('the quad reserve is what a scene holding four riders actually costs', () => {
+  // The same model==measured pin both existing reserves carry. This one backs
+  // no ceiling yet — `RENDER_BUDGET_QUAD` is Phase 1's, behind the owner's
+  // scope lock — but a measurement on file that can drift is not on file, so
+  // it is asserted from the day it exists.
+  const measured = measureQuadNonLevelScene(slice.checkpoints);
+  assert.equal(
+    QUAD_NON_LEVEL_RESERVE.drawCalls,
+    measured.totalDrawCalls,
+    'four rigs, four machines, the gates, the particles and the background '
+      + 'changed cost; the §27 scope-lock numbers are written against this and '
+      + 'have to follow it — regenerate with `node tools/render-cost.mjs --write`',
+  );
+  assert.equal(QUAD_NON_LEVEL_RESERVE.triangles, measured.totalTriangles);
+});
+
+test('a quad pass costs two more riders than a split pass, and nothing else grows', () => {
+  // The shape of the reserve, exactly as the split one is asserted one section
+  // up: the scene the quad sweep builds shares one set of gates, one pair of
+  // particle pools, one background and one companion slot with the split
+  // scene, and only the rigs multiply. If any of the shared things quietly
+  // became per-rig, this reserve would grow past two riders' worth without
+  // anything else failing — so the difference is bounded, not just signed.
+  assert.ok(
+    QUAD_NON_LEVEL_RESERVE.drawCalls > SPLIT_NON_LEVEL_RESERVE.drawCalls,
+    'two more seated riders cost no draw calls, so nothing was seated',
+  );
+  assert.ok(QUAD_NON_LEVEL_RESERVE.triangles > SPLIT_NON_LEVEL_RESERVE.triangles);
+  assert.ok(
+    QUAD_NON_LEVEL_RESERVE.drawCalls < SPLIT_NON_LEVEL_RESERVE.drawCalls * 2,
+    `a quad pass costs ${QUAD_NON_LEVEL_RESERVE.drawCalls} calls against `
+      + `${SPLIT_NON_LEVEL_RESERVE.drawCalls} for two riders — that is the whole two-rig `
+      + 'reserve twice over, so something shared (the particle pools, the gates, the '
+      + 'background, the companion slot) has stopped being shared',
+  );
+  assert.ok(
+    QUAD_NON_LEVEL_RESERVE.triangles < SPLIT_NON_LEVEL_RESERVE.triangles * 2,
+    `${QUAD_NON_LEVEL_RESERVE.triangles - SPLIT_NON_LEVEL_RESERVE.triangles} extra `
+      + 'triangles is more than two riders and two machines',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// M27 Phase 1 — Contract 3, the grid ceiling (the scope lock, answered)
+//
+// Phase 0 stood a tripwire here asserting that `RENDER_BUDGET_QUAD` and
+// `QUAD_PASSES` did *not* exist, so that pinning a ceiling before the owner's
+// desktop had answered would fail loudly rather than settle q98 by
+// implementation. He answered on 2026-08-31 — (a), four seats everywhere, no
+// per-world cap — and the tripwire was deleted deliberately, with the lock in
+// hand, and replaced by the assertions below.
+// ---------------------------------------------------------------------------
+
+test('the slice fits Contract 3, all four passes counted', () => {
+  const verdict = withinQuadRenderBudget(slice);
+  assert.deepEqual(verdict.breaches, []);
+  assert.ok(verdict.ok);
+  // The frame is the sum of its passes — §25.4's definition, at four — and the
+  // verdict must have applied it rather than reporting one pass.
+  assert.equal(
+    verdict.frame.drawCalls,
+    (verdict.level.drawCalls + QUAD_NON_LEVEL_RESERVE.drawCalls) * QUAD_PASSES,
+  );
+  assert.equal(
+    verdict.frame.triangles,
+    (verdict.level.triangles + QUAD_NON_LEVEL_RESERVE.triangles) * QUAD_PASSES,
+  );
+});
+
+test('a three-seat frame is three passes under the same ceiling', () => {
+  // §27.5, exactly: what makes a frame this kind of frame is the 2x2 grid,
+  // not how many people are sitting in it. A three-seat session is cheaper
+  // than a four-seat one and is judged here rather than against two-and-a-half
+  // contracts — and the pass count has to actually reach the arithmetic, which
+  // is what the inequality below is for.
+  const three = withinQuadRenderBudget(slice, 3);
+  const four = withinQuadRenderBudget(slice, 4);
+  assert.equal(
+    three.frame.drawCalls,
+    (three.level.drawCalls + QUAD_NON_LEVEL_RESERVE.drawCalls) * 3,
+  );
+  assert.ok(three.frame.drawCalls < four.frame.drawCalls);
+  assert.ok(three.ok);
+  // And it cannot be asked for a frame the ceiling was never priced for: a
+  // fifth pass is clamped rather than silently judged.
+  assert.equal(withinQuadRenderBudget(slice, 9).frame.drawCalls, four.frame.drawCalls);
+});
+
+test('no grid frame the library can build breaches the Contract 3 ceiling', () => {
+  // Contract 1's set-union argument at four passes. The bound is what governs:
+  // the measured frames are written against particular worlds, and q98 (a)
+  // means a four-seat session can be opened on a generated one.
+  const bound = (LIBRARY_MAX_DRAW_CALLS + QUAD_NON_LEVEL_RESERVE.drawCalls) * QUAD_PASSES;
+  assert.ok(
+    bound <= RENDER_BUDGET_QUAD.maxDrawCalls,
+    `a grid frame of a level drawing on every surface, material and prop part at `
+      + `once would cost ${bound} draw calls, past the ${RENDER_BUDGET_QUAD.maxDrawCalls} `
+      + `Contract 3 ceiling. Every new character costs four times here, so this is the `
+      + `bound that has to move before a rider does.`,
+  );
+});
+
+test('a route at the generator’s own triangle line still fits a grid frame', () => {
+  // The half q98 (a) is actually about. The owner declined to cap generated
+  // worlds at two seats, so the frame that has to fit is the heaviest one a
+  // four-seat session can open — a route at the generator's 80% line, four
+  // times over — and not BelVar, which is 41% cheaper on this axis.
+  const line = RENDER_BUDGET.maxTriangles * 0.8;
+  const worst = (line + QUAD_NON_LEVEL_RESERVE.triangles) * QUAD_PASSES;
+  assert.ok(
+    worst <= RENDER_BUDGET_QUAD.maxTriangles,
+    `a route at the generator's 80% line would cost ${worst} triangles in a grid `
+      + `frame, past the ${RENDER_BUDGET_QUAD.maxTriangles} ceiling`,
+  );
+});
+
+test('Contract 3 is a third ceiling, and neither of the first two moved for it', () => {
+  // §27.5: three ceilings, all pinned, none with exemptions. The phone's is
+  // the one that is never bent, and the two numbers below are the two halves
+  // of the promise M25 made and M27 inherited — asserted rather than
+  // remembered, because a contract relaxed to buy a milestone is exactly the
+  // kind of change that reads as reasonable in a diff.
+  assert.equal(RENDER_BUDGET.maxDrawCalls, 160);
+  assert.equal(RENDER_BUDGET.maxTriangles, 460_000);
+  assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls, 460);
+  assert.equal(RENDER_BUDGET_SPLIT.maxTriangles, 1_000_000);
+  assert.ok(RENDER_BUDGET_QUAD.maxDrawCalls > RENDER_BUDGET_SPLIT.maxDrawCalls);
+  assert.ok(RENDER_BUDGET_QUAD.maxTriangles > RENDER_BUDGET_SPLIT.maxTriangles);
+  // And it is not four halves: the level is drawn four times but the world —
+  // the gates, the particle pools, the background — is still shared, so a grid
+  // frame costs less than two split frames.
+  assert.ok(RENDER_BUDGET_QUAD.maxDrawCalls < RENDER_BUDGET_SPLIT.maxDrawCalls * 4);
+});
+
+test('the pinned ceiling has room for the next character, four times over', () => {
+  // Contract 2's own margin argument, restated at four passes because this is
+  // the number that decides whether the next rider is a design question or a
+  // budget one. A character costs 60 calls and 23,138 triangles a pass (the
+  // split reserve minus the single-player one), which is 240 and 92,552 in a
+  // grid frame — and the headroom below is what the ceiling actually leaves.
+  const bound = (LIBRARY_MAX_DRAW_CALLS + QUAD_NON_LEVEL_RESERVE.drawCalls) * QUAD_PASSES;
+  const callsPerCharacter = (SPLIT_NON_LEVEL_RESERVE.drawCalls - NON_LEVEL_RESERVE.drawCalls);
+  const headroom = RENDER_BUDGET_QUAD.maxDrawCalls - bound;
+  assert.ok(
+    headroom > 0,
+    'Contract 3 is written exactly at its own bound, so the next prop part breaches it',
+  );
+  // Not a promise that a whole character fits — Contract 2 does not make that
+  // promise either — but a statement of what the margin is in the unit that
+  // matters, so a future edit that halves it has to say so.
+  assert.ok(
+    headroom >= 52,
+    `${headroom} calls of headroom against ${callsPerCharacter * QUAD_PASSES} for a `
+      + 'character in a grid frame; Contract 2 left the equivalent of 1.44 characters '
+      + 'and this leaves less',
   );
 });
 

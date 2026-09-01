@@ -31,6 +31,7 @@ import {
 import {
   COUCH_RIDES,
   COUCH_RIDE_LABELS,
+  COUCH_SEATS,
   type CouchRide,
 } from '../app/couch.ts';
 import { rowNeighbour, rowStep, type ControlRect } from './menuRows.ts';
@@ -189,7 +190,7 @@ export interface MenuCallbacks {
   // -- M25 Phase 5 ------------------------------------------------------------
   /** Open the two-player join panel from the title. */
   onOpenCouch(): void;
-  /** Leave the join panel for the title. The second seat goes with it. */
+  /** Leave the join panel for the title. The guest seats go with it. */
   onCloseCouch(): void;
   /** Both seats are held; ride. */
   onStartCouch(): void;
@@ -197,9 +198,9 @@ export interface MenuCallbacks {
    * Step one seat's rider card along the roster.
    *
    * The seat is a number rather than "player" or "guest" because this screen
-   * has no opinion about which of the two is the machine's owner — and because
-   * what the two cards *do* differs (seat 0's choice is saved, seat 1's is not)
-   * in `app/Game.ts`, which is where the options firewall lives.
+   * has no opinion about which card is the machine's owner — and because what
+   * the cards *do* differs (seat 0's choice is saved, the guests' are not) in
+   * `app/Game.ts`, which is where the options firewall lives.
    */
   onCycleCouchRider(seat: number, delta: 1 | -1): void;
 
@@ -343,6 +344,18 @@ export type RoutePurpose = 'ride' | 'knockabout' | 'chase';
  * anybody read it in one of theirs.
  */
 export interface ResultsTable {
+  /**
+   * A fourth column, or empty for the four modes that have three — M27 Phase 4.
+   *
+   * The race's best lap: §27.4 asks the card for position, rider, time, gap
+   * **and** best lap, which is one more figure than five milestones of this
+   * table had a column for. Empty hides the heading *and* the cells rather
+   * than leaving a nameless column, which is the defect M26 Phase 6 found in
+   * this very table — three modes had been drawing an unlabelled empty third
+   * since M10 because `table-layout: fixed` takes its columns from the first
+   * row and nobody was looking.
+   */
+  readonly extra?: string;
   /** The `<caption>`. What the whole table is.  */
   readonly caption: string;
   /** The first column: what each row *is*. */
@@ -364,6 +377,8 @@ export interface ResultsTable {
 
 /** One checkpoint's line on the results screen. */
 export interface ResultsRow {
+  /** The fourth column's value. Ignored unless `ResultsTable.extra` is set. */
+  readonly extra?: string;
   readonly label: string;
   readonly time: string;
   readonly delta: string;   // '' when there is no record to compare
@@ -508,8 +523,8 @@ const TITLE_TEMPLATE = `
       <span class="euc-button__label">Start ride</span>
     </button>
     <button type="button" class="euc-button" data-menu="couch" hidden>
-      <span class="euc-button__label">2 Players</span>
-      <span class="euc-button__note">Two riders, one screen — share the keyboard and a pad</span>
+      <span class="euc-button__label">2–4 Players</span>
+      <span class="euc-button__note">Up to four riders, one screen — the keyboard and your pads</span>
     </button>
     <button type="button" class="euc-button" data-menu="challenge">
       <span class="euc-button__label">Time trial</span>
@@ -915,6 +930,17 @@ export interface CouchSeatView {
   readonly awaiting: boolean;
   /** Who this seat will ride as. */
   readonly character: PlayableCharacterId;
+  /**
+   * Whether this chair is out — M27 Phase 1.
+   *
+   * The panel draws `COUCH_SEATS` cards whatever happens, and a *seat* is a
+   * rider standing in the world; one is only created when the room still has a
+   * device that could take it (`Game.growCouch`). So a card can be showing a
+   * chair that is not out yet, and it has to say something different from "an
+   * empty seat, press to sit down" — which is a promise to a room that has
+   * nothing left to press with.
+   */
+  readonly seated: boolean;
 }
 
 /**
@@ -940,19 +966,33 @@ export interface CouchView {
   /**
    * What this session is *for* — M26 Phase 5 (q78).
    *
-   * Free ride or Knockabout, and a couch race when it is built. What two
-   * people sitting down are about to play is a property of the session, not a
-   * saved preference, so it lives on `Game` and never reaches `GameOptions`.
+   * Free ride, Knockabout, or the race — **which was built at M27 Phase 3**,
+   * where this comment used to say "when it is built". What a room sitting
+   * down is about to play is a property of the session, not a saved
+   * preference, so it lives on `Game` and never reaches `GameOptions`.
    *
-   * **This is not a sixth ride.** M25's finding holds — two players is a
-   * session shape — so the couch carries the `freeRide` and `knockabout` rows
-   * the game already has, and this chooses which.
+   * **This is not a sixth ride.** M25's finding holds — a couch is a session
+   * shape — so the couch carries the `freeRide`, `knockabout` and `trackDay`
+   * rows the game already has, and this chooses which.
    *
    * `contact` sat beside this until the owner's 2026-08-27 ride retired the
    * toggle it reported. Contact is still session state on `Game` and still not
    * an option; it simply has no control any more, because it is always on.
    */
   readonly ride: CouchRide;
+  /**
+   * Rides this room cannot start into — M27 Phase 1.
+   *
+   * The join panel had no blocked list while every couch was two seats and
+   * every world it could open on had discs. Both stopped being true at once:
+   * Knockabout is a two-player fight until q94 is opened, so a room of three
+   * must not be *offered* the mode its own door would then refuse. The pause
+   * menu's switch has answered this since M26; this is the same fact at the
+   * entrance.
+   */
+  readonly blocked: readonly CouchRide[];
+  /** Why, so the note under the buttons can say which of the two it is. */
+  readonly blockReason: CouchBlockReason;
 }
 
 /**
@@ -996,8 +1036,32 @@ function writeModeChooser(root: HTMLElement, ride: CouchRide): void {
  * Emitted from `COUCH_RIDES` rather than written twice, so the couch race
  * arrives in both places at once when it is built.
  */
-const MODE_CHOOSER_NOTE = 'Free ride is riding, with nothing to win. Knockabout gives you both a '
-  + 'paddle: first to five knockdowns takes the match.';
+/**
+ * Why a ride is off the menu, as a fact rather than as a sentence.
+ *
+ * **Two reasons since M27 Phase 1, and they are not interchangeable.** A world
+ * with nothing to hit is fixed by building a route; a couch with three people
+ * on it is not fixed by anything the player can do this session, and telling
+ * them to make a new route would send them off to try. `Game` knows which is
+ * true; only this file knows how to say it.
+ */
+export type CouchBlockReason = 'no-targets' | 'too-many-seats' | null;
+
+/** The note under the mode chooser, whichever answer it is giving. */
+function couchBlockNote(reason: CouchBlockReason): string {
+  if (reason === 'no-targets') {
+    return 'Knockabout needs a route with things to hit, and this one has none. '
+      + 'New route will build you one to fight on.';
+  }
+  if (reason === 'too-many-seats') {
+    return 'Knockabout is a two-player fight. Race and free ride take everybody.';
+  }
+  return MODE_CHOOSER_NOTE;
+}
+
+const MODE_CHOOSER_NOTE = 'Free ride is riding, with nothing to win. Race is three laps of '
+  + 'BelVar Circuit from a standing grid. Knockabout gives two players a paddle: '
+  + 'first to five knockdowns takes the match.';
 
 function modeChooserTemplate(action: string, idBase: string, label = 'Playing'): string {
   const buttons = COUCH_RIDES.map((ride) => `
@@ -1037,19 +1101,24 @@ function modeChooserTemplate(action: string, idBase: string, label = 'Playing'):
  * seat them *and* activate whatever button happened to have focus, which at
  * the moment the panel arms is Start.
  *
- * **Both cards cycle the roster and the two can never agree** (q68). Seat 1's
- * card steps over seat 0's pick rather than landing on it and being corrected,
- * so there is no invalid state for the panel to recover from. What differs
- * between the two cards is invisible here and load-bearing there: the player's
- * choice is written to `GameOptions`, and the guest's is session state that
- * never reaches the saved record.
+ * **Every card cycles the roster and no two can ever agree** (q68). Each
+ * card steps over the riders its neighbours are wearing rather than landing on
+ * one and being corrected, so there is no invalid state for the panel to
+ * recover from. What differs between the cards is invisible here and
+ * load-bearing there: the player's choice is written to `GameOptions`, and the
+ * guests' are session state that never reaches the saved record.
  *
  * The status lines are `role="status"` for the reason the route panel's is:
  * "Player 2 is in" is an announcement, and a player using a screen reader is
  * exactly the player who cannot see the card light up.
  */
 function couchTemplate(): string {
-  const seats = [0, 1].map((seat) => `
+  // **Emitted from `COUCH_SEATS` rather than written twice** — M27 Phase 1, on
+  // `modeChooserTemplate`'s exact argument. The panel's markup was fixed at two
+  // cards while the couch was two seats; the day the constant moved, a
+  // hand-written pair would have been a panel that could not show the seats the
+  // game had.
+  const seats = Array.from({ length: COUCH_SEATS }, (_unused, seat) => `
       <div class="euc-couch__seat" data-couch-seat="${seat}" data-claimed="false">
         <h3 class="euc-couch__player">Player ${seat + 1}</h3>
         <p class="euc-couch__status" data-couch-status="${seat}" role="status"></p>
@@ -1069,11 +1138,11 @@ function couchTemplate(): string {
   return `
 <div class="euc-menu__panel euc-couch" role="dialog" aria-modal="true"
      aria-labelledby="euc-couch-heading">
-  <h2 class="euc-menu__title euc-couch__heading" id="euc-couch-heading">Two players</h2>
+  <h2 class="euc-menu__title euc-couch__heading" id="euc-couch-heading">Players</h2>
   <p class="euc-menu__tagline">
-    One screen, one world, two riders. Each player takes their own controller — a
-    gamepad, or this keyboard — and presses to sit down. Nothing is being timed;
-    go wherever you like.
+    One screen, one world, and two to four riders. Each player takes their own
+    controller — a gamepad, or this keyboard — and presses to sit down. Nothing
+    is being timed; go wherever you like.
   </p>
 
   <fieldset class="euc-couch__seats">
@@ -1301,6 +1370,7 @@ const RESULTS_TEMPLATE = `
         <th scope="col" data-menu="results-column-label">Checkpoint</th>
         <th scope="col" data-menu="results-column-value">Time</th>
         <th scope="col" data-menu="results-column-delta">vs best</th>
+        <th scope="col" data-menu="results-column-extra" hidden></th>
       </tr>
     </thead>
     <tbody data-menu="results-rows"></tbody>
@@ -1313,7 +1383,8 @@ ${modeChooserTemplate('switch-mode', 'euc-results-mode', 'Play next')}
   </div>
 
   <div class="euc-menu__actions">
-    <button type="button" class="euc-button euc-button--primary" data-menu="retry">Ride it again</button>
+    <button type="button" class="euc-button euc-button--primary" data-menu="retry"
+            data-focus-first>Ride it again</button>
 ${NEW_ROUTE_BUTTON}
     <button type="button" class="euc-button" data-menu="results-title">Back to title</button>
   </div>
@@ -1327,7 +1398,8 @@ const PAUSE_TEMPLATE = `
 ${modeChooserTemplate('switch-mode', 'euc-pause-mode')}
   </div>
   <div class="euc-menu__actions">
-    <button type="button" class="euc-button euc-button--primary" data-menu="resume">Resume</button>
+    <button type="button" class="euc-button euc-button--primary" data-menu="resume"
+            data-focus-first>Resume</button>
     <button type="button" class="euc-button" data-menu="end-session" hidden>
       <span class="euc-button__label">End session</span>
       <span class="euc-button__note">Pit in and see your best lap</span>
@@ -1601,6 +1673,12 @@ export class Menus {
     this.setResultsText('results-column-delta', view.table.delta);
     const table = this.results.querySelector<HTMLElement>('[data-menu="results-table"]');
     if (table) table.dataset.compare = view.table.delta === '' ? 'false' : 'true';
+    const extra = view.table.extra ?? '';
+    const extraHead = this.results.querySelector<HTMLElement>('[data-menu="results-column-extra"]');
+    if (extraHead) {
+      extraHead.textContent = extra;
+      extraHead.hidden = extra === '';
+    }
 
     const body = this.results.querySelector<HTMLElement>('[data-menu="results-rows"]');
     if (body) {
@@ -1627,6 +1705,15 @@ export class Menus {
         rowDelta.dataset.ahead = row.ahead ? 'true' : 'false';
         rowDelta.textContent = row.delta;
         tr.appendChild(rowDelta);
+
+        // The fourth column exists only while the table names it, so a mode
+        // with three columns emits three cells rather than a blank fourth.
+        if (extra !== '') {
+          const rowExtra = document.createElement('td');
+          rowExtra.className = 'euc-results__row-extra';
+          rowExtra.textContent = row.extra ?? '';
+          tr.appendChild(rowExtra);
+        }
 
         body.appendChild(tr);
       }
@@ -1714,7 +1801,7 @@ export class Menus {
   }
 
   /**
-   * Draw both seats, and arm or disarm Start.
+   * Draw every seat, and arm or disarm Start.
    *
    * Every sentence on the panel is composed here from the facts in the view,
    * for the reason the fresh-route panel's refusals are: a caller that could
@@ -1754,6 +1841,18 @@ export class Menus {
     // its control (the owner's 2026-08-27 ride); contact is on, always, and
     // nothing on this screen says otherwise.
     writeModeChooser(this.couch, view.ride);
+    // **And grey out what this room cannot have** — M27 Phase 1, the pause
+    // menu's rule brought to the entrance. `disabled` is the same right
+    // spelling here as there: the pad's walk steps over a stop it could not
+    // use, and a pointer gets the game's own unavailable styling for free.
+    for (const button of this.couch.querySelectorAll<HTMLButtonElement>('[data-couch-mode]')) {
+      const id = button.dataset.couchMode;
+      const off = id !== undefined && view.blocked.includes(id as CouchRide);
+      if (button.disabled !== off) button.disabled = off;
+    }
+    const modeNote = this.couch.querySelector<HTMLElement>('.euc-field__note');
+    const modeText = couchBlockNote(view.blockReason);
+    if (modeNote && modeNote.textContent?.trim() !== modeText) modeNote.textContent = modeText;
 
     const start = this.couch.querySelector<HTMLButtonElement>('[data-menu="couch-start"]');
     // **Disabled rather than hidden.** A player who can see the control they
@@ -1776,8 +1875,12 @@ export class Menus {
    * holds what the session is for, and a switch that latched its own last press
    * would disagree with the ride the moment a mode entrance refused.
    */
-  setPauseCouchRide(ride: CouchRide | null, blocked: readonly CouchRide[] = []): void {
-    this.writeCouchSwitch(this.pause, 'pause-couch', ride, blocked);
+  setPauseCouchRide(
+    ride: CouchRide | null,
+    blocked: readonly CouchRide[] = [],
+    reason: CouchBlockReason = null,
+  ): void {
+    this.writeCouchSwitch(this.pause, 'pause-couch', ride, blocked, reason);
   }
 
   /**
@@ -1793,8 +1896,12 @@ export class Menus {
    * `null` is every single-player results card in the game, which is almost all
    * of them.
    */
-  setResultsCouchRide(ride: CouchRide | null, blocked: readonly CouchRide[] = []): void {
-    this.writeCouchSwitch(this.results, 'results-couch', ride, blocked);
+  setResultsCouchRide(
+    ride: CouchRide | null,
+    blocked: readonly CouchRide[] = [],
+    reason: CouchBlockReason = null,
+  ): void {
+    this.writeCouchSwitch(this.results, 'results-couch', ride, blocked, reason);
   }
 
   /** One writer for both copies of the switch, so the two cannot drift. */
@@ -1803,6 +1910,7 @@ export class Menus {
     hook: string,
     ride: CouchRide | null,
     blocked: readonly CouchRide[],
+    reason: CouchBlockReason = null,
   ): void {
     const block = panel.querySelector<HTMLElement>(`[data-menu="${hook}"]`);
     if (block === null) return;
@@ -1825,10 +1933,7 @@ export class Menus {
       if (button.disabled !== off) button.disabled = off;
     }
     const note = block.querySelector<HTMLElement>('.euc-field__note');
-    const text = blocked.includes('knockabout')
-      ? 'Knockabout needs a route with things to hit, and this one has none. '
-        + 'New route will build you one to fight on.'
-      : MODE_CHOOSER_NOTE;
+    const text = couchBlockNote(reason);
     if (note && note.textContent?.trim() !== text) note.textContent = text;
   }
 
@@ -2142,14 +2247,34 @@ export class Menus {
     this.setPadCursor(null);
   }
 
+  /**
+   * Where a panel starts, which is **not always its first focusable node**.
+   *
+   * DOM order is the default and was the whole rule until the owner's
+   * 2026-08-31 couch ride. The couch mode switch is drawn *above* the actions
+   * on the pause card and the results card — the right place for it to read —
+   * so "the first focusable node" put the cursor on **Free ride** while a race
+   * was running, one confirm press away from ending everybody's race for them.
+   * A player pausing on the last lap and pressing A to carry on lost the race.
+   *
+   * So a panel may name where focus starts, and the two that carry a control
+   * which changes what the whole room is doing must. `data-focus-first` is
+   * honoured only while it is on screen and focusable, so a named button that
+   * is hidden or disabled falls back to the DOM order rather than swallowing
+   * the focus; a panel that names nothing behaves exactly as it always has.
+   */
   private focusFirst(panel: HTMLElement | null): void {
     if (panel === null) return;
-    const first = [...panel.querySelectorAll(focusableSelector())]
-      .find((node): node is HTMLElement => node instanceof HTMLElement && node.offsetParent !== null);
+    const shown = (node: Element): node is HTMLElement =>
+      node instanceof HTMLElement && node.offsetParent !== null;
+    const named = panel.querySelector('[data-focus-first]');
+    const first = (named !== null && shown(named) && named.matches(focusableSelector()) ? named : null)
+      ?? [...panel.querySelectorAll(focusableSelector())].find(shown)
+      ?? null;
     first?.focus();
     // A pad that opened this panel keeps its cursor across the boundary; a
     // mouse that opened it gets the ringless panel `:focus-visible` promises.
-    this.setPadCursor(this.padDriving ? first ?? null : null);
+    this.setPadCursor(this.padDriving ? first : null);
   }
 
   private readonly onClick = (event: MouseEvent): void => {
@@ -2370,7 +2495,7 @@ export class Menus {
       // screen that has somewhere to go back to.
       else if (this.screen === 'riders') this.callbacks.onCloseRiders();
       // The join panel goes back the way every other openable panel does. The
-      // second seat leaves with it, which is `app/Game.ts`'s business.
+      // guest seats leave with it, which is `app/Game.ts`'s business.
       else if (this.screen === 'couch') this.callbacks.onCloseCouch();
       else return;
 
@@ -2881,10 +3006,18 @@ const COUCH_SPARE_LINES: Readonly<Record<CouchSpare, readonly SeatLineSegment[]>
 /**
  * What one seat's status line says — M25 Phase 5.
  *
- * Three states and no more: waiting for a device that went away, empty, or
- * held by something that is named.
+ * Four states since M27 Phase 1: a chair that is not out, waiting for a device
+ * that went away, empty, or held by something that is named.
  */
 function couchSeatLine(seat: CouchSeatView, spare: CouchSpare): readonly SeatLineSegment[] {
+  // **Before the empty line, because it is a different sentence.** A card for
+  // a chair the room cannot fill must not print "press A to sit down": there
+  // is no spare device, that is precisely why the chair is not out, and the
+  // instruction would be a promise the panel cannot keep. It says what would
+  // change the answer instead.
+  if (!seat.seated) {
+    return ['Free for a third or fourth player — plug in another gamepad.'];
+  }
   if (seat.awaiting) {
     return [
       'Controller lost — press ', { key: 'A' }, ' on a pad, or ', { key: 'Enter' },

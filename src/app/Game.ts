@@ -37,7 +37,7 @@ import {
   routeSeedFrom,
   type LevelId,
 } from '../level/levels.ts';
-import type { LevelPlan } from '../level/plan.ts';
+import type { Checkpoint, LevelPlan } from '../level/plan.ts';
 import type { TerrainView } from '../render/terrain.ts';
 import { SURFACE_IDS } from '../data/surfaces.ts';
 import {
@@ -72,7 +72,12 @@ import {
 import { clamp, wrapAngle } from '../shared/maths.ts';
 import { HazardField } from '../simulation/hazards.ts';
 import { SoftBodyField } from '../simulation/softBodies.ts';
-import { DUEL_LATERAL_METRES, SLOT_LATERAL_METRES, spawnSlot } from '../simulation/spawnSlots.ts';
+import {
+  DUEL_LATERAL_METRES,
+  SLOT_LATERAL_METRES,
+  raceGridSlot,
+  spawnSlot,
+} from '../simulation/spawnSlots.ts';
 import { ContactPair, type ContactBody, type ContactTuning } from '../simulation/contact.ts';
 import {
   Paddle,
@@ -124,6 +129,13 @@ import {
   type TrackDayState,
 } from '../simulation/trackDay.ts';
 import {
+  RaceRun,
+  type RaceEvent,
+  type RaceResult,
+  type RaceRiderInput,
+  type RaceState,
+} from '../simulation/raceRun.ts';
+import {
   GhostPlayer,
   GhostRecorder,
   createGhostSample,
@@ -132,6 +144,7 @@ import {
   type GhostSample,
 } from '../simulation/ghost.ts';
 import { Hud } from '../ui/hud.ts';
+import { IdlePane } from '../ui/idlePane.ts';
 import {
   HudModel,
   formatDelta,
@@ -149,17 +162,21 @@ import {
   type ResultsTable,
   type ResultsView,
   type RoutePurpose,
+  type CouchBlockReason,
   type RouteStatus,
 } from '../ui/menus.ts';
 import {
+  COUCH_RIDE_LABELS,
   COUCH_SEATS,
   DEFAULT_COUCH_RIDE,
   couchEligible,
   cycleGuest,
   guestBeside,
+  guestRoster,
   isCouchRide,
   type CouchRide,
 } from './couch.ts';
+import { paneGridFor } from '../shared/paneGrid.ts';
 
 /**
  * The two answers the pause menu's mode switch takes for "what can this world
@@ -181,6 +198,46 @@ const KNOCKABOUT_ONLY: readonly CouchRide[] = Object.freeze(['knockabout']);
  * — and a mode whose two cards disagreed about what its own table is would be
  * a worse bug than the one `ResultsTable` was written to fix.
  */
+/**
+ * The race's own words — M27 Phase 3.
+ *
+ * `data-compare` is empty because the rows are measured against nothing
+ * stored: a couch race keeps no records (q92), so a "vs best" column would be
+ * a heading over a column that can never have anything in it. M26 Phase 6's
+ * lesson, applied before the card shipped rather than after somebody read it.
+ */
+/**
+ * What one standings row says beside a rider's name — M27 Phase 4.
+ *
+ * Three answers, and each is the most useful thing that is true at the time: a
+ * finished rider gets their gap (or `Winner`), a rider still out gets the lap
+ * they are on, and a grid nobody has left yet gets nothing at all — a column of
+ * `Lap 1 / 3` before GO is furniture.
+ *
+ * A free function beside the composition root rather than a method, because it
+ * composes words: the *choice* of which fact to show is the card's, and
+ * `ui/idlePane.ts` is handed the answer already made (M12's rule, applied to a
+ * row rather than to a sentence).
+ */
+function raceStandingDetail(rider: RaceState['riders'][number], laps: number): string {
+  if (rider.finished) {
+    const gap = rider.gapSeconds ?? 0;
+    return gap > 0 ? `+${gap.toFixed(2)}` : 'Winner';
+  }
+  return rider.lap > 0 ? `Lap ${rider.lap} / ${laps}` : '';
+}
+
+const RACE_TABLE: ResultsTable = Object.freeze({
+  caption: 'Finishing order',
+  label: 'Position',
+  value: 'Race time',
+  delta: 'Gap',
+  // The fourth column §27.4 asks for. It is the one figure on this card that
+  // belongs to a rider rather than to the race, and it is what a room actually
+  // argues about after the order is settled.
+  extra: 'Best lap',
+});
+
 const SPLITS_TABLE: ResultsTable = Object.freeze({
   caption: 'Splits',
   label: 'Checkpoint',
@@ -241,7 +298,7 @@ export type { CameraMode };
  * "nothing recorded" answer, which is what the card has always drawn from an
  * empty `lastResult`.
  */
-type ResultsMode = 'match' | 'knockabout' | 'chase' | 'trackDay' | 'challenge';
+type ResultsMode = 'race' | 'match' | 'knockabout' | 'chase' | 'trackDay' | 'challenge';
 
 type RouteDestination = 'freeRide' | 'challenge' | 'knockabout' | 'chase';
 type RouteArrival = RouteDestination | 'choose';
@@ -410,6 +467,8 @@ export interface GameSnapshot {
     readonly ready: boolean;
     /** Who seat 1 will ride as. Never written to the options record. */
     readonly guest: PlayableCharacterId;
+    /** Who every guest card is showing, seat 1 first — M27 Phase 1. */
+    readonly guests: readonly PlayableCharacterId[];
     /** What the session on the panel is for — M26 Phase 5, q78. */
     readonly ride: CouchRide;
   };
@@ -479,6 +538,14 @@ export interface GameSnapshot {
    * rather than of the state, so a spec can assert that the city declines to be
    * lapped without entering anything.
    */
+  /**
+   * The race referee's whole state — M27 Phase 3.
+   *
+   * `'idle'` in every session that is not a race, which is how a spec asks
+   * "is this a race" without asking the app state, and how the HUD gates its
+   * countdown on the referee's phase rather than on the row it rides.
+   */
+  readonly race: RaceState;
   readonly trackDay: TrackDayState & {
     readonly available: boolean;
     /** Lap length along the centreline, metres. Zero on a world with no lap. */
@@ -719,6 +786,31 @@ export class Game {
    * plan is either a route or a lap and never both.
    */
   trackDay: TrackDayRun;
+  /**
+   * The race referee — M27 Phase 3, and `trackDay`'s sibling on those terms.
+   *
+   * **A third referee, not a flag through the second.** `TrackDayRun` stays
+   * solo-shaped on purpose (one rider, one reference, `arm()` snapshotting the
+   * record its card compares against) and a race has no records at all (q92),
+   * no ghost (q93), and one clock for the whole room rather than one per
+   * rider. `Game` picks between them by **seat count**, which is the pattern
+   * `knockaboutMatch.ts` established one milestone ago.
+   *
+   * Public and mutable for `trackDay`'s two reasons: a browser spec asserts
+   * the rules rather than the pixels, and a world swap replaces it.
+   */
+  race: RaceRun;
+  /** What the last finished race did, for the results card. Never stored. */
+  private lastRace: RaceResult | null = null;
+  /**
+   * Which grid slot each seat takes, rotated one place per race — §27.3.
+   *
+   * **Session state and nothing else.** The one asymmetry a start line leaves
+   * is row position, and the owner's answer was to equalise it by rotation
+   * rather than to pretend it is not there. Nothing persists: a room that
+   * closes the couch starts again from the front row.
+   */
+  private gridRotation = 0;
   readonly records: RecordsStore;
 
   /**
@@ -827,7 +919,8 @@ export class Game {
    * and the set that carries both — M26 Phase 3.
    *
    * One of each rather than one per seat: `SeatHittables` says why they are
-   * safe to share, and stage 1 has exactly two seats in any case.
+   * safe to share — and the paddles they serve are a Knockabout's, which arms
+   * at exactly two seats whatever the couch holds (q94).
    */
   private readonly seatQuarry = new RiderTarget();
   private readonly seatHittables = new SeatHittables();
@@ -861,10 +954,8 @@ export class Game {
    * not — a definition that depends on loop position is the bug rather than
    * the fix.
    */
-  private readonly aimPoses: { x: number; y: number; z: number }[] = [
-    { x: 0, y: 0, z: 0 },
-    { x: 0, y: 0, z: 0 },
-  ];
+  private readonly aimPoses: { x: number; y: number; z: number }[] =
+    Array.from({ length: COUCH_SEATS }, () => ({ x: 0, y: 0, z: 0 }));
 
   /**
    * Which seats' paddles found the other rider this tick, still unspent — M26
@@ -893,8 +984,35 @@ export class Game {
    * after the seat loop and beside contact. Fixed capacity because a strike is
    * one per seat per step (`RiderSeat.lastRiderStrikeSwing` is the latch that
    * makes that true) and this runs every tick of every couch match.
+   *
+   * **Sized from `COUCH_SEATS` since M27 Phase 1.** It was two entries while
+   * the couch was two seats, and the capacity guard that fills it drops a
+   * strike it has no room for — silently, which at four seats would have been
+   * seat 2's swing going missing in exactly the frame two other people were
+   * already fighting. Knockabout still arms at two seats and nothing else
+   * equips a paddle, so today the extra room is never used; a pool bounded by
+   * the seat count rather than by the mode is what keeps that true when it
+   * stops being true.
    */
-  private readonly strikeWielders: number[] = [-1, -1];
+  /**
+   * Which seats teleported on the step being resolved — M27 Phase 3.
+   *
+   * The per-seat half of `seatReset`. Sized from `COUCH_SEATS` beside the
+   * other scratch pools and written every step by the seat loop, so nothing
+   * downstream can read a stale answer from a step that did not run.
+   */
+  private readonly seatResetThisStep: boolean[] = new Array<boolean>(COUCH_SEATS).fill(false);
+  /** Scratch for `raceInputs`: the per-seat slots, one each, made once. */
+  private readonly racePool: { -readonly [K in keyof RaceRiderInput]: RaceRiderInput[K] }[] =
+    Array.from({ length: COUCH_SEATS }, () => ({ x: 0, y: 0, z: 0, reset: false }));
+  /**
+   * The list `raceInputs` hands the referee — the pool's first `seats` slots.
+   * Rebuilt only when the seat count changes; between changes the same array
+   * goes out every step, because the old `slice(0, seats)` was an allocation
+   * at 120 Hz under a comment claiming there were none (QA repair, 2026-08-31).
+   */
+  private readonly raceBodies: { -readonly [K in keyof RaceRiderInput]: RaceRiderInput[K] }[] = [];
+  private readonly strikeWielders: number[] = new Array<number>(COUCH_SEATS).fill(-1);
   private strikeCount = 0;
   private readonly spineAt: SpineLocation = createSpineLocation();
   /** Scratch for the HUD's "which way is the route" arrow (M20). Allocation-free. */
@@ -1069,12 +1187,20 @@ export class Game {
    * spend overlapping. A pair rebuilt per step would be the cheap version
    * §25.6 retracted, wearing the new file's name.
    *
-   * Stage 1 has two seats, so one pair covers them. A third seat is three
-   * pairs and this becomes a keyed collection; it is deliberately not one
-   * today, because a collection with one entry hides which rule decides pair
-   * identity — and `contactLive` is where that decision is written down.
+   * **It became the keyed collection its own comment predicted at M27 Phase
+   * 1.** Stage 1 had two seats, so one pair covered them; four seats are six
+   * pairs, and every one of them needs its own cooldown or two riders leaning
+   * on each other would spend the charge a third pair had just armed. The key
+   * is the unordered seat pair — `low * COUCH_SEATS + high`, computed in
+   * `contactPairFor` and nowhere else, so pair identity is one expression
+   * exactly as `contactLive` is one expression.
+   *
+   * Created on demand rather than allocated square, because five of sixteen
+   * slots would never be used and a `Map` keyed by a number allocates nothing
+   * to read. Cleared as a whole whenever the step declines to resolve
+   * *anything* (see `stepContact`), which is the same rule one pair obeyed.
    */
-  private readonly contactPair = new ContactPair();
+  private readonly contactPairs = new Map<number, ContactPair>();
   /**
    * Is contact on for this session? — §26.3, q71/q72. **Default on.**
    *
@@ -1126,15 +1252,18 @@ export class Game {
     speedCost: CONTACT.speedCost,
   };
   /**
-   * The two bodies handed to the pair, filled in place from the seats' poses.
+   * One body per seat, filled in place from the seats' poses.
    *
    * Scratch for the same reason as `copView` and `spineSample`: this runs in
    * the fixed step and allocating here is allocating in the frame loop.
+   *
+   * **Sized from `COUCH_SEATS` rather than from the seats present**, so the
+   * pool never grows or shrinks with a join: a seat that sits down mid-session
+   * finds its scratch already there, and the array cannot silently bound a
+   * loop that meant to walk the seats (the shape `aimPoses` had, below).
    */
-  private readonly contactBodies: { -readonly [K in keyof ContactBody]: ContactBody[K] }[] = [
-    { x: 0, z: 0, velocityX: 0, velocityZ: 0 },
-    { x: 0, z: 0, velocityX: 0, velocityZ: 0 },
-  ];
+  private readonly contactBodies: { -readonly [K in keyof ContactBody]: ContactBody[K] }[] =
+    Array.from({ length: COUCH_SEATS }, () => ({ x: 0, z: 0, velocityX: 0, velocityZ: 0 }));
 
   private readonly keyboard: KeyboardInput;
   private readonly gamepad: GamepadInput;
@@ -1193,8 +1322,22 @@ export class Game {
    * Held here rather than on the seat because it outlives the seat: the panel
    * lets both players pick before anybody is spawned, and the choice has to
    * survive Back and a second visit within one session.
+   *
+   * **One per guest seat since M27 Phase 1.** An array rather than three named
+   * fields for `COUCH_RIDES`' reason: the panel, the spawn and the specs all
+   * have to agree about what the choices are, and a list is one edit where
+   * hand-walked members are three.
+   *
+   * It holds the **guests only** — length `COUCH_SEATS - 1`, seat `n` at index
+   * `n - 1` — because seat 0's rider is the options record and the whole point
+   * of this field is that a guest's is not. The offset lives in
+   * `guestCharacterFor` and `setGuestCharacter` and nowhere else.
+   *
+   * Seeded so that a couch nobody has touched already obeys q68: each seat
+   * takes the first rider none of the seats before it is wearing.
    */
-  private guestCharacter: PlayableCharacterId = guestBeside(DEFAULT_CHARACTER);
+  private readonly guestCharacters: PlayableCharacterId[] =
+    guestRoster(DEFAULT_CHARACTER, COUCH_SEATS);
   /**
    * `prefers-reduced-motion`, watched rather than read once — M14.
    *
@@ -1210,6 +1353,16 @@ export class Game {
   private readonly stopTuningListener: () => void;
   private readonly stopOptionsListener: () => void;
   private readonly stopStateListener: () => void;
+
+  /**
+   * The card in the quadrant nobody is sitting in — M27 Phase 1 (q95).
+   *
+   * Built on demand and disposed with the session, because a three-seat couch
+   * is the only shape that has a hole: one and two seats fill their frames,
+   * and four seats have four riders in four panes. Null the rest of the time,
+   * which is most of the time.
+   */
+  private idlePane: IdlePane | null = null;
 
   private readonly menus: Menus;
   /**
@@ -1546,6 +1699,11 @@ export class Game {
     // controller: this path constructs the fields that one replaces, and
     // anything added to one and not the other makes the first world of a
     // session behave unlike every world after it.
+    // And the race's referee, on the same argument one file along: a boot
+    // straight onto the circuit is a world a race could be started on, and
+    // building it only in `installLevel` would make the first world of a
+    // session the one world that cannot hold one.
+    this.race = new RaceRun(this.levelPlan.checkpoints, this.levelPlan.lap ?? null);
     this.targets = new TargetField(this.levelPlan.targets ?? []);
     // And the chase's world half, on exactly that argument — M18. A boot
     // straight onto a generated route through `?level=generated&seed=` is a
@@ -1588,7 +1746,16 @@ export class Game {
         // The join panel is the other reader of the same fact. One producer,
         // two writers, and neither is polled — a card that lit up a frame late
         // is a player who pressed their button twice.
+        // **A third *player* is what takes the fight off the menu** (q94), now
+        // that the width question counts people: `spawnRider`'s copy of this
+        // guard fires when a chair arrives, which on the panel is one player
+        // too early. Before the redraw, so the chooser is painted with the
+        // ride the room actually has.
+        if (this.rideBlockedForSeats(this.couchRide)) this.couchRide = DEFAULT_COUCH_RIDE;
         this.updateCouchPanel();
+        // And the third reader: on the panel the split *is* the claims, so a
+        // player pressing their button is what opens their pane.
+        this.applyViewCount();
       },
     });
     this.seats = [this.createSeat(
@@ -1687,6 +1854,12 @@ export class Game {
           // seats still on the couch are armed for a fresh match and one seat
           // gets the single-player run, with no mode flag either way.
           switch (this.resultsMode()) {
+            // **Race again re-grids, rotates and re-counts, on the same
+            // world** (§27.4). `enterTrackDay` is the one door: it arms the
+            // referee by seat count and lays the grid out with the rotation
+            // one place further on, so nobody sits on the front row twice
+            // before everybody has.
+            case 'race': this.enterTrackDay(); break;
             case 'match':
             case 'knockabout': this.enterKnockabout(); break;
             case 'chase': this.enterChase(); break;
@@ -1930,8 +2103,9 @@ export class Game {
    * **The composition root composes.** `app/seats.ts` is types only and
    * constructs nothing, so this is the single place a seat's preallocated
    * poses, paddle, head vector and counter map come into existence. Phase 2
-   * calls it a second time; nothing else in this file may build a seat
-   * literal, or the two seats will differ in the field somebody forgot.
+   * `spawnRider` calls it again for every later seat; nothing else in this
+   * file may build a seat literal, or the seats will differ in the field
+   * somebody forgot.
    *
    * The three things a seat cannot make for itself are handed in, because
    * each belongs to a different owner: the **source** is the device layer's,
@@ -2053,6 +2227,10 @@ export class Game {
     seat.hud = new Hud({
       parent: container,
       onDismissPrompt: () => this.dismissPromptFor(seat),
+      // One countdown voice for the whole room — the race clock is shared,
+      // and four assertive regions saying "3" on the same step would have a
+      // screen reader interrupt itself three times (`HudOptions`' doc).
+      announcesCountdown: index === 0,
     });
     seat.hud.setVisible(this.appState.spec.showsHud);
     this.applySplitLayout();
@@ -2089,13 +2267,122 @@ export class Game {
    * is 500 px, so the lane collision that rule exists to prevent would come
    * back inside both halves with every test still green.
    */
+  /**
+   * **How many people are in this room** — seats, except on the join panel,
+   * where it is the players who have actually claimed.
+   *
+   * Read by everything that means *the room* rather than *the furniture*: how
+   * many passes the frame draws, and whether the room is too wide for a
+   * two-seat fight (`joinBlockReason`). Both were asking the seat count, and
+   * both were wrong on the one screen where the two differ.
+   *
+   * A claim can only point at a seat that already exists
+   * (`InputRouter.nextSeatToFill` walks the seats there are and answers `null`
+   * when they are all taken), so the panel has to put a chair out *before*
+   * anybody can sit in it. Views follow riders, so the screen used to split one
+   * pane ahead of the room: two players claimed, three panes drawn, one of them
+   * for a chair nobody had taken — the owner's 2026-08-31 ride, and his call on
+   * which way to fix it. While the panel is open the split follows the
+   * **claims** instead, so a pane arrives as each player presses their button.
+   *
+   * The empty chair keeps its rider: `renderSeat` poses every seat whatever the
+   * view count, so the next player still stands in the world where the room can
+   * see who they would be. What they do not have is a window of their own.
+   *
+   * Everywhere else this is the seat count exactly as it has always been —
+   * `trimUnclaimedSeats` takes the empty chairs away on the way into a ride, so
+   * the two answers agree from the first frame anybody is riding.
+   */
+  private roomSize(): number {
+    if (this.appState.current !== 'couchJoin') return this.seats.length;
+    const claimed = this.router.claimList().filter((device) => device !== null).length;
+    return Math.max(1, Math.min(claimed, this.seats.length));
+  }
+
+  /** Draw the passes `roomSize` asks for, and lay the HUD out to match. */
+  private applyViewCount(): void {
+    this.renderer.setViewCount(this.roomSize());
+    this.applySplitLayout();
+  }
+
   private applySplitLayout(): void {
-    const split = this.seats.length > 1;
+    // **The same grid the passes are drawn on** (`shared/paneGrid.ts`), asked
+    // of the renderer rather than restated here: the HUD panes and the render
+    // panes are two views of one partition, and two places computing "which
+    // quarter is this" is how a lane ends up over the wrong rider. Asked of the
+    // *view* count rather than the seat count since the join panel's split
+    // began following the claims (`viewSeats`) — a chair nobody has taken has
+    // no pane to be a half of.
+    const views = this.renderer.viewCount;
+    const grid = paneGridFor(views);
+    const split = views > 1;
     for (let index = 0; index < this.seats.length; index += 1) {
       const hud = this.seats[index].hud;
       if (hud === null) continue;
-      hud.setSplit(split ? (index === 0 ? 'left' : 'right') : null);
+      if (!split || index >= views) {
+        hud.setSplit(null);
+        continue;
+      }
+      // Reading order, exactly as the panes are numbered: seat 0 top-left,
+      // seat 1 top-right, seat 2 bottom-left, seat 3 bottom-right.
+      const side = index % grid.columns === 0 ? 'left' : 'right';
+      const row = grid.rows === 1
+        ? null
+        : Math.floor(index / grid.columns) === 0 ? 'top' : 'bottom';
+      hud.setSplit(side, row);
     }
+    this.updateIdlePane();
+  }
+
+  /**
+   * Fill or remove the quadrant nobody is sitting in — M27 Phase 1 (q95).
+   *
+   * **Asked of the renderer's own partition**, not of the seat count: "is
+   * there a hole" is a fact about the grid, and a second opinion here is how
+   * a card ends up floating over a pane somebody is riding in. Today only a
+   * three-seat frame has one.
+   *
+   * The card is shown only while the HUD is — it is a HUD element in every
+   * sense but the seat, so it disappears with the menus for the same reason.
+   */
+  private updateIdlePane(): void {
+    const hole = this.seats.length > 1 ? this.renderer.idleViewBounds() : null;
+    if (hole === null) {
+      this.idlePane?.dispose();
+      this.idlePane = null;
+      return;
+    }
+    const pane = this.idlePane ?? (this.idlePane = new IdlePane());
+    // **The standings while a race is on, the world card otherwise** — M27
+    // Phase 4 (q95). Gated on the referee's own phase, exactly as the per-pane
+    // lane is: the box belongs to the room, and what the room is arguing about
+    // is whichever of the two is true.
+    const race = this.race.state;
+    if (race.phase === 'idle') {
+      pane.setCouchStatus({
+        ride: COUCH_RIDE_LABELS[this.couchRide],
+        level: this.levelId,
+        seed: this.seed,
+        // The people, not the chairs: on the join panel a chair is put out
+        // before anybody sits in it, and this card names who is *here*.
+        riders: this.seats.slice(0, this.roomSize())
+          .map((seat) => characterSpec(seat.character).name),
+      });
+    } else {
+      pane.setStandings({
+        title: race.phase === 'countdown' ? 'On the grid' : `${race.laps} laps`,
+        riders: [...race.riders]
+          .sort((a, b) => a.position - b.position || a.seat - b.seat)
+          .map((rider) => ({
+            position: rider.position,
+            name: this.seats[rider.seat] === undefined
+              ? `Player ${rider.seat + 1}`
+              : characterSpec(this.seats[rider.seat].character).name,
+            detail: raceStandingDetail(rider, race.laps),
+          })),
+      });
+    }
+    pane.setVisible(this.appState.spec.showsHud);
   }
 
   start(): void {
@@ -2316,9 +2603,9 @@ export class Game {
    * you; do it three hundred metres out and they are back at the start, which
    * is the honest answer rather than a surprising one.
    */
-  spawnSecondRider(character?: PlayableCharacterId): number {
-    if (this.seats.length > 1) {
-      throw new Error(`a second rider is already seated (seats: ${this.seats.length})`);
+  spawnRider(character?: PlayableCharacterId): number {
+    if (this.seats.length >= COUCH_SEATS) {
+      throw new Error(`the couch is full (seats: ${this.seats.length} of ${COUCH_SEATS})`);
     }
 
     const index = this.seats.length;
@@ -2333,8 +2620,14 @@ export class Game {
     // Compared against the *seat* rather than `installedCharacter` because
     // q68 is about who is on screen. The two agree today; this is the one
     // that stays right if they ever stop agreeing.
-    const taken = this.seats[0].character;
-    const id = character !== undefined && character !== taken
+    //
+    // **Every seated rider since M27 Phase 1, not only seat 0's.** With four
+    // seats the rule is "nobody on this screen is wearing this", and a check
+    // against the host alone would have let seats 2 and 3 arrive as twins —
+    // which reads as a rendering bug rather than as a rule that was never
+    // widened.
+    const taken = this.seatedCharacters();
+    const id = character !== undefined && !taken.includes(character)
       ? character
       : this.characterBeside(taken);
     const controller = new EucController(this.terrain, {
@@ -2379,12 +2672,20 @@ export class Game {
     // seat 0's is untouched, so nobody's view moves because somebody sat down.
     this.syncSeatPose(this.seats[index]);
     this.syncCamera(this.seats[index]);
-    // **The screen splits here** — M25 Phase 3. The number of views and the
-    // number of riders are the same number by construction rather than by two
-    // places agreeing, which is why this is derived from `seats.length` rather
-    // than passed in.
-    this.renderer.setViewCount(this.seats.length);
+    // **The screen splits here** — M25 Phase 3. The number of views is derived
+    // rather than passed in, so it cannot drift from the room: `viewSeats` is
+    // the one place that decides it, and on the join panel it counts the
+    // players rather than the chairs.
+    this.applyViewCount();
     this.mountSeatHud(this.seats[index]);
+    // **A chair that arrives can take the mode away with it** — M27 Phase 1
+    // (q94). Knockabout is a two-seat fight until its four-player rules are
+    // opened, so a third seat moves the session back to the ride everybody can
+    // have, visibly, on the panel's own chooser. **Here rather than in
+    // `growCouch`**, because that is the panel's path and this is every path:
+    // a seat can also arrive through the bridge, and a rule that only held on
+    // one of the two would be a rule about a screen rather than about a room.
+    if (this.rideBlockedForSeats(this.couchRide)) this.couchRide = DEFAULT_COUCH_RIDE;
     return index;
   }
 
@@ -2401,7 +2702,7 @@ export class Game {
    * The controller and the source need no teardown: neither holds a GPU
    * handle, a listener or a timer, so dropping the seat is the whole of it.
    */
-  despawnSecondRider(): void {
+  despawnRider(): void {
     if (this.seats.length < 2) throw new Error('there is no second rider to despawn');
     const index = this.seats.length - 1;
     const seat = this.seats[index];
@@ -2417,6 +2718,17 @@ export class Game {
     // sits down there next.
     this.renderer.forgetEmitter(index);
     this.audio.resetRider(index);
+    // **And their contact history** — QA repair, 2026-08-31. `stepContact`
+    // clears every pair on a discontinuity, but only on a step it is handed —
+    // and once this seat is gone, its pairs are outside the seat loop and
+    // nothing ever runs their cooldowns down again. A seat despawned and
+    // refilled between steps would hand the replacement rider an armed
+    // cooldown, and their first real bump would go missing. The pair objects
+    // stay in the map (`contactPairFor` promises a rejoining seat the same
+    // object) — cleared, which is what that comment always claimed they were.
+    for (let other = 0; other < COUCH_SEATS; other += 1) {
+      if (other !== index) this.contactPairs.get(contactKey(index, other))?.clear();
+    }
     this.seats.length = index;
     // The router drops the seat's input *and* any claim that pointed at it: a
     // pad claimed to the rider who just left has no opinion about the rider
@@ -2425,8 +2737,105 @@ export class Game {
     this.router.removeSeat();
     // The screen goes back to one view, and every remaining HUD is told it is
     // no longer a half.
-    this.renderer.setViewCount(this.seats.length);
-    this.applySplitLayout();
+    this.applyViewCount();
+  }
+
+  /**
+   * Which rides this room cannot have — one expression, two screens and a door.
+   *
+   * **Two clauses that refuse for different reasons, and both are about the
+   * ride rather than about the control.** A world with nothing to knock down
+   * cannot become a Knockabout (M26: `enterKnockabout` answers a bare world by
+   * opening the routes panel, which is not a successor of `paused`, so the
+   * press would move both riders and change nothing). And a couch wider than
+   * two seats cannot become one either (q94, M27 Phase 1): four-player
+   * Knockabout — free-for-all or teams, first to what, N-way spawn fairness
+   * against a 2.15 m reach, multi-way draws — is real design nobody has
+   * opened, and a mode that quietly seated four people in a two-seat fight
+   * would be settling it by implementation.
+   *
+   * The join panel reads it too, so a room of three is never *offered* the
+   * fight it would then be refused.
+   */
+  private blockedCouchRides(): readonly CouchRide[] {
+    return this.couchBlockReason() === null ? NO_RIDES_BLOCKED : KNOCKABOUT_ONLY;
+  }
+
+  /**
+   * *Why* the room cannot have it — the half the screen turns into words.
+   *
+   * The seat count is asked first because it is the one the player cannot fix:
+   * a world with no discs is answered by building a route, and telling a room
+   * of three to go and build one would send them off to try something that
+   * changes nothing.
+   */
+  private couchBlockReason(): CouchBlockReason {
+    // **People, not chairs** (`roomSize`), for `joinBlockReason`'s reason and
+    // one more: `switchCouchRide` refuses through the *other* gate, so a seat
+    // count here would mean the door and the control it draws asking two
+    // different questions and agreeing only because this card is never on
+    // screen while the two differ. This file says three times that they must
+    // refuse and offer on identical terms; now they do.
+    if (this.roomSize() > 2) return 'too-many-seats';
+    if (this.targets.count === 0) return 'no-targets';
+    return null;
+  }
+
+  /**
+   * The same question **at the join panel**, where only one of the two clauses
+   * applies — M27 Phase 1.
+   *
+   * **A world with nothing to hit is not a refusal here, and never was.** The
+   * entrance already answers it: `enterKnockabout` sends a bare world to the
+   * routes panel, which is a legal successor of the join panel and is the
+   * player being offered a route to fight on. The pause menu's switch refuses
+   * instead because `routes` is *not* a successor of `paused` — a difference
+   * between two screens, not between two opinions about the mode.
+   *
+   * The seat clause does apply, and it is the one this method exists for:
+   * a room of three may not be offered a two-seat fight (q94).
+   */
+  private joinBlockedCouchRides(): readonly CouchRide[] {
+    return this.joinBlockReason() === null ? NO_RIDES_BLOCKED : KNOCKABOUT_ONLY;
+  }
+
+  private joinBlockReason(): CouchBlockReason {
+    // **People, not chairs** (`roomSize`) — the owner's 2026-08-31 ride. The
+    // panel puts the next chair out as soon as the last one is claimed, so two
+    // players with a spare pad plugged in were a room of *three seats*, and a
+    // two-player couch was refused the two-player fight. The seat count is the
+    // right question everywhere a ride is running, because `trimUnclaimedSeats`
+    // has taken the empty chairs away by then; here it is the wrong one.
+    return this.roomSize() > 2 ? 'too-many-seats' : null;
+  }
+
+  /** Is this ride one the room's *width* rules out? The door's half of q94. */
+  private rideBlockedForSeats(ride: CouchRide): boolean {
+    return this.joinBlockedCouchRides().includes(ride);
+  }
+
+  /**
+   * The pre-M27 names for the two methods above — exact aliases, kept.
+   *
+   * **The bridge addresses seats, and "second" stopped being a seat number**
+   * the day the couch could hold four (§27.6). The plural surface is
+   * `spawnRider` / `despawnRider`; these two are what every M25 and M26 spec
+   * calls, and they are aliases rather than deprecations for `setActions`'
+   * reason — a spec that says "seat the other rider" is not wrong, it is
+   * merely one seat's worth of the question, and rewriting two hundred call
+   * sites to prove a rename would be churn nobody reads.
+   *
+   * `spawnSecondRider` no longer refuses a third seat. It never meant "seat
+   * exactly the second one"; it meant "seat the next one", and the guard it
+   * carried was the couch's width rather than the method's contract. That
+   * width is `spawnRider`'s to enforce, and it does.
+   */
+  spawnSecondRider(character?: PlayableCharacterId): number {
+    return this.spawnRider(character);
+  }
+
+  despawnSecondRider(): void {
+    this.despawnRider();
   }
 
   /**
@@ -2440,8 +2849,39 @@ export class Game {
    * here because a total function is easier to reason about than one that
    * cannot fail *yet*.
    */
-  private characterBeside(taken: CharacterId): PlayableCharacterId {
+  private characterBeside(taken: readonly CharacterId[]): PlayableCharacterId {
     return guestBeside(taken);
+  }
+
+  /**
+   * Who every seat currently is — the list q68 is asked against.
+   *
+   * **The seats, not the panel's records**, because q68 is a rule about what
+   * is on screen: a guest whose rig has been re-dressed is wearing what the
+   * rig says, and asking the stored preference instead would let two riders
+   * agree on paper and collide in the world.
+   */
+  private seatedCharacters(): CharacterId[] {
+    return this.seats.map((seat) => seat.character);
+  }
+
+  /**
+   * The character a guest seat is set to wear, and the one writer for it.
+   *
+   * The `seat - 1` offset lives here and in `setGuestCharacter`, so nothing
+   * else has to remember that the array holds guests rather than seats. A seat
+   * outside the couch answers with the first guest's rider rather than
+   * throwing: the callers are a panel redraw and a spawn, and neither should
+   * fail because a seat count moved underneath it.
+   */
+  private guestCharacterFor(seat: number): PlayableCharacterId {
+    return this.guestCharacters[Math.max(0, seat - 1)] ?? this.guestCharacters[0];
+  }
+
+  private setGuestCharacter(seat: number, id: PlayableCharacterId): void {
+    const index = seat - 1;
+    if (index < 0 || index >= this.guestCharacters.length) return;
+    this.guestCharacters[index] = id;
   }
 
   /**
@@ -2712,7 +3152,13 @@ export class Game {
         ride: this.couchRide,
         available: this.couchAvailable,
         ready: this.couchReady,
-        guest: this.guestCharacter,
+        // **Seat 1's, and the whole list beside it** — M27 Phase 1. `guest` is
+        // what every M25 and M26 spec reads and it still means exactly what it
+        // meant: who the second card is showing. `guests` is the plural
+        // surface, one entry per guest card in seat order, because a spec that
+        // cannot see seat 3's rider cannot fail when seat 3 wears seat 2's.
+        guest: this.guestCharacterFor(1),
+        guests: [...this.guestCharacters],
       },
       // Rider contact — M26 Phase 1. **Both halves, because they answer
       // different questions**: `enabled` is what the room asked for and what
@@ -2737,6 +3183,10 @@ export class Game {
         resultsIn: this.resultsIn,
         recordedSamples: this.ghostRecorder.sampleCount,
       },
+      // The race — M27 Phase 3. Reported whole rather than as a summary,
+      // because a spec asserting the *rules* needs the standings and the
+      // phase, and a second summary would be a place for the two to disagree.
+      race: this.race.state,
       trackDay: {
         ...this.trackDay.state,
         available: this.trackDay.available,
@@ -2987,6 +3437,13 @@ export class Game {
     this.chaseRun.abandon();
     this.match.abandon();
     this.trackDay.abandon();
+    // **And the race**, which the other three entrances learned to stand down
+    // a milestone after they were written (the 2026-09-01 audit). No shipped
+    // path reaches this with a race armed — every exit from one goes through
+    // `title`, `freeRide`, `installLevel` or `enterTrackDay`, all of which
+    // abandon it — but an entrance that stands down four of the five referees
+    // is a list waiting to be one short again.
+    this.race.abandon();
     this.resetChallengeRider();
     this.loadRecordReference();
     this.challenge.arm();
@@ -3036,6 +3493,7 @@ export class Game {
    * *mean* to (see `rideDestination` on why a track day goes to free ride).
    */
   private resultsMode(): ResultsMode {
+    if (this.lastRace !== null) return 'race';
     if (this.lastMatch !== null) return 'match';
     if (this.lastKnockabout !== null) return 'knockabout';
     if (this.lastChase !== null) return 'chase';
@@ -3044,6 +3502,7 @@ export class Game {
   }
 
   private clearLastResults(): void {
+    this.lastRace = null;
     this.lastResult = null;
     this.lastResultWasRecord = false;
     this.lastResultGhostDropped = false;
@@ -3085,6 +3544,15 @@ export class Game {
     // referee against a plan that is about to be replaced.
     if (this.pendingRoute !== null) return;
 
+    // **Refuse before arming, not after** — M27 Phase 3. Everything below arms
+    // a referee, stands riders on a grid and swaps a world, and the `goTo` at
+    // the end is the only thing that can say no. A transition missing from
+    // `APP_STATE_SPECS` fails *silently* (the join panel's own comment records
+    // that), so without this line a refused entrance leaves a race armed in a
+    // free ride: no countdown on screen, riders frozen at a grid nobody can
+    // see, and nothing saying why. M23's stranded-card lesson, one door along.
+    if (this.appState.current !== 'trackDay' && !this.appState.canGoTo('trackDay')) return;
+
     if (this.levelId !== 'track') {
       this.installLevel(
         'track',
@@ -3092,21 +3560,45 @@ export class Game {
         createLevel('track', DEFAULT_SEED, this.hazardProbe, this.targetProbe),
       );
     }
-    // After the swap, because `installLevel` rebuilt the referee this asks.
-    if (!this.trackDay.available) return;
+    // After the swap, because `installLevel` rebuilt the referees this asks.
+    // **Whichever referee this session is actually going to run**, on
+    // `enterKnockabout`'s rule: the mode's front door asks the referee it is
+    // about to arm, not a sibling that happens to answer the same today.
+    const racing = this.seatCount > 1;
+    if (!(racing ? this.race.available : this.trackDay.available)) return;
 
     this.clearLastResults();
     this.chaseRun.abandon();
     this.match.abandon();
     this.challenge.abandon();
-    // The rider goes to the start line's own run-up rather than the level
-    // spawn, exactly as a timed run does: an out lap that begins in the same
-    // place every time is what makes the first flying lap comparable with the
-    // fortieth. On this venue the two happen to be seventy metres apart, and
-    // relying on that would be relying on a layout that iterates.
-    this.resetChallengeRider();
-    this.loadLapReference();
-    this.trackDay.arm();
+
+    if (racing) {
+      // **A race, decided once, here** — M27 Phase 3, and by seat count and
+      // nothing else (§27.1). One rider on this circuit is the Track Day the
+      // mode has always been; two or more are a race, and the referee below is
+      // simply never armed for the other one.
+      //
+      // No reference, no ghost recorder, no lap store: a race keeps nothing
+      // (q92) and has no ghost (q93), so the three lines a track day spends on
+      // records are the three lines a race must not.
+      this.trackDay.abandon();
+      this.placeRaceGrid();
+      // A latched reset from before the lights is not this race's business —
+      // the flag outlives a step now, so the one place it must not outlive is
+      // the start of a race.
+      this.seatResetThisStep.fill(false);
+      this.race.arm(this.seatCount);
+    } else {
+      this.race.abandon();
+      // The rider goes to the start line's own run-up rather than the level
+      // spawn, exactly as a timed run does: an out lap that begins in the same
+      // place every time is what makes the first flying lap comparable with the
+      // fortieth. On this venue the two happen to be seventy metres apart, and
+      // relying on that would be relying on a layout that iterates.
+      this.resetChallengeRider();
+      this.loadLapReference();
+      this.trackDay.arm();
+    }
     // Point the gates at the armed line before `goTo` makes them visible, or a
     // retry shows the previous session's last sector for one frame.
     this.renderer.setCheckpointProgress(0);
@@ -3116,6 +3608,107 @@ export class Game {
     this.pendingSplit = null;
     this.setRoutePurpose('ride');
     this.goTo('trackDay');
+  }
+
+  /**
+   * Stand every rider on the grid, rotated one place per race — M27 Phase 3.
+   *
+   * **The grid is laid out in the start line's frame, not the plan's spawn.**
+   * A race starts where the lap does; BelVar's spawn is seventy metres away
+   * and a future circuit's could be anywhere.
+   *
+   * The rotation is what makes the one asymmetry a start line leaves — row
+   * position — fair across a session rather than pretended away (§27.3). Seats
+   * take slots `(seat + rotation) % seats`, so nobody sits on the front row
+   * twice before everybody has.
+   */
+  private placeRaceGrid(): void {
+    const line = this.startLine();
+    if (line === null) return;
+    const seats = this.seats.length;
+    for (let index = 0; index < seats; index += 1) {
+      const slot = (index + this.gridRotation) % seats;
+      this.resetRiderTo(raceGridSlot(line, slot, this.terrain), this.seats[index]);
+    }
+    this.gridRotation = (this.gridRotation + 1) % Math.max(1, seats);
+  }
+
+  /**
+   * The circuit's start line, or null on a world that has no lap.
+   *
+   * Sorted rather than trusted, and the *first* rather than the one that says
+   * `'start'`, because `TrackDayRun`'s own availability rule already requires
+   * those to be the same checkpoint — asking twice is how the two come to
+   * disagree.
+   */
+  private startLine(): Checkpoint | null {
+    const lines = [...this.levelPlan.checkpoints].sort((a, b) => a.routeIndex - b.routeIndex);
+    return lines.length === 0 ? null : lines[0];
+  }
+
+  /**
+   * The race's card — M27 Phase 3, completed by Phase 4.
+   *
+   * **Position, rider, time, gap.** The table speaks the race's own words
+   * rather than the time trial's, which is M26 Phase 6's vocabulary lesson
+   * applied at birth: `data-compare` says the rows are measured against
+   * nothing stored, because a couch race stores nothing (q92) and the column
+   * that would say "vs best" has no best to name.
+   *
+   * A shared win prints as one heading with nobody's name in it (q86's draw
+   * shape, inherited from the match card): `Race drawn`, plus a note, because
+   * a heading with no name reads as a bug on a screen the player has never
+   * seen before.
+   */
+  private buildRaceResults(result: RaceResult): ResultsView {
+    const notes: string[] = [];
+    if (result.winner === null) notes.push('You crossed the line on the same step');
+    notes.push('Couch races are not saved');
+
+    const rows = result.order.map((finish) => {
+      const rider = this.seats[finish.seat];
+      const name = rider === undefined
+        ? `Player ${finish.seat + 1}`
+        : characterSpec(rider.character).name;
+      return {
+        label: `${finish.position}. ${name}`,
+        time: finish.finished ? formatRunTime(finish.seconds ?? 0) : 'Did not finish',
+        // The winner's own row carries no gap: "+0.00" is a number that says
+        // nothing, and the position beside it already says they won.
+        delta: finish.finished && (finish.gapSeconds ?? 0) > 0
+          ? `+${(finish.gapSeconds ?? 0).toFixed(2)}`
+          : '',
+        // A rider who never closed a lap has no best lap, and an em dash says
+        // so where a `0:00.00` would read as an impossibly quick one.
+        extra: finish.bestLapSeconds === null ? '—' : formatRunTime(finish.bestLapSeconds),
+        ahead: finish.position === 1,
+      };
+    });
+
+    const winnerRow = result.order.find((finish) => finish.position === 1);
+    const winnerName = winnerRow === undefined || this.seats[winnerRow.seat] === undefined
+      ? 'Nobody'
+      : characterSpec(this.seats[winnerRow.seat].character).name;
+
+    return {
+      heading: result.winner === null ? 'Race drawn' : `${winnerName} wins`,
+      isRecord: false,
+      totalCaption: 'Laps',
+      bestCaption: 'Race time',
+      total: `${result.laps}`,
+      // **The winner's clock, not the room's.** `result.seconds` is when the
+      // *race* ended — the last finisher, or the grace running out — and a
+      // headline reading "Race time" over the back-marker's number would be
+      // the field's time wearing the winner's label (QA repair, 2026-08-31).
+      // The order is laps-then-clock sorted, so the first row is the winner —
+      // or, in a dead heat, one of the riders sharing the winning time.
+      best: formatRunTime(result.order[0]?.seconds ?? result.seconds),
+      deltaToBest: '',
+      ahead: false,
+      table: RACE_TABLE,
+      rows,
+      notes,
+    };
   }
 
   /**
@@ -3154,6 +3747,15 @@ export class Game {
    */
   private stepTrackDay(stepSeconds: number): void {
     if (this.appState.current !== 'trackDay') return;
+
+    // **The referee this session answers to, asked once, by its own phase** —
+    // M27 Phase 3, and `stepKnockabout`'s shape exactly. A race and a track day
+    // are alternatives; a mode that had to check whether the other was running
+    // would be two modes wearing one state.
+    if (this.race.state.phase !== 'idle') {
+      this.stepRace(stepSeconds);
+      return;
+    }
 
     if (this.resultsIn > 0) {
       this.resultsIn -= stepSeconds;
@@ -3196,6 +3798,107 @@ export class Game {
         crouch: pose.crouch,
       });
     }
+  }
+
+  /**
+   * One fixed step of a race — M27 Phase 3.
+   *
+   * `stepTrackDay`'s sibling, including the results guard on the first line
+   * and for the reason recorded there. The referee is stepped **once, with
+   * every seat's position**, after the seat loop has moved all of them: a fact
+   * about more than one rider cannot honestly be resolved until they have all
+   * moved (M23), and here that fact is the standings.
+   *
+   * There is no ghost recording and no reference: a race keeps nothing (q92)
+   * and has none (q93).
+   */
+  private stepRace(stepSeconds: number): void {
+    if (this.resultsIn > 0) {
+      this.resultsIn -= stepSeconds;
+      if (this.resultsIn <= 0) {
+        this.resultsIn = 0;
+        this.goTo('results');
+        return;
+      }
+    }
+
+    const events = this.race.step(stepSeconds, this.raceInputs());
+    for (const event of events) this.handleRaceEvent(event);
+
+    // The gates light for the leader, which is the only answer a single
+    // cascade of markers can give a room — and it is the right one: the
+    // player behind is looking at where the race is, not at their own sector.
+    const leader = this.race.state.riders.find((rider) => rider.position === 1);
+    if (leader !== undefined) this.renderer.setCheckpointProgress(leader.lapsCompleted);
+    this.renderer.stepCheckpoints(stepSeconds);
+
+    if (this.race.state.phase === 'ended' && this.lastRace === null) this.finishRace();
+  }
+
+  /**
+   * Every seat's position for the referee, allocation-free.
+   *
+   * The array is scratch and the objects in it are the seats' own slots, on
+   * `contactBodies`' argument: this runs 120 times a second for as long as a
+   * race lasts.
+   */
+  private raceInputs(): readonly RaceRiderInput[] {
+    const seats = this.seats.length;
+    for (let index = 0; index < seats; index += 1) {
+      const pose = this.seats[index].currentPose;
+      const input = this.racePool[index];
+      input.x = pose.x;
+      input.y = pose.y;
+      input.z = pose.z;
+      input.reset = this.seatResetThisStep[index] ?? false;
+      // Consumed: the latch above holds a reset until the referee has been
+      // handed it, which is this line and nowhere else.
+      this.seatResetThisStep[index] = false;
+    }
+    // The list must be exactly `seats` long — a longer one would hand the
+    // referee stale slots for seats that left, where the old short `slice`
+    // honestly said "untouched". Truncation and growth both land here, on a
+    // seat-count change, never in the steady state.
+    if (this.raceBodies.length !== seats) {
+      this.raceBodies.length = 0;
+      for (let index = 0; index < seats; index += 1) this.raceBodies.push(this.racePool[index]);
+    }
+    return this.raceBodies;
+  }
+
+  /** A countdown tick, a release, a lap, or a finish. */
+  private handleRaceEvent(event: RaceEvent): void {
+    if (event.kind === 'go') {
+      // **The fourth menu-boundary door** (§27.3). Every seat's intent was
+      // replaced with neutral through the freeze, but a one-shot latched
+      // during it is still sitting in its buffer — and a hop that fires on the
+      // first racing step is a jump-start nobody pressed for. The three doors
+      // M25 Phase 4 enumerated are blur/visibility, a layout-changing resize
+      // and a menu boundary; GO is the fourth, and it is the same clear.
+      this.router.clearPending();
+      this.audio.raceGo();
+      return;
+    }
+    if (event.kind === 'count') {
+      this.audio.raceCount();
+      return;
+    }
+    if (event.kind === 'lap') {
+      // The leader's lap flares the line for the room, on the gates' own
+      // argument above: one cascade, pointed at the race.
+      this.renderer.flareCheckpoint(0);
+    }
+  }
+
+  /**
+   * The race is over: keep the card and start the results countdown.
+   *
+   * `finishMatch`'s shape, and nothing is written to a record store —
+   * §27.3 q92, which is q77's rule holding at its third mode.
+   */
+  private finishRace(): void {
+    this.lastRace = this.race.result();
+    this.resultsIn = CHALLENGE.resultsDelaySeconds;
   }
 
   /** A line was crossed. Flare it, flash it, and file a lap if one ended. */
@@ -3286,14 +3989,36 @@ export class Game {
    * pressed a button asking for exactly this screen.
    */
   private endTrackDaySession(): void {
-    if (this.appState.current !== 'paused') return;
-    if (this.appState.rideReturn !== 'trackDay') return;
+    if (!this.canEndTrackDaySession()) return;
     const result = this.trackDay.end();
     if (result === null) return;
     this.lastTrackDay = result;
     this.resultsIn = 0;
     this.pendingLapFlash = null;
     this.goTo('results');
+  }
+
+  /**
+   * May this pause pit out of a session? — the control and the door, once.
+   *
+   * **Three clauses, and the third is M27 Phase 3's.** A race rides on the
+   * `trackDay` row (§27.1), so the first two were true of a paused race — and
+   * `endTrackDaySession` asks the *lap* referee to end, which during a race is
+   * idle, so the control was drawn for a session its own handler would not
+   * serve. That is M26's rule stated exactly: **the door and the control must
+   * refuse on identical terms**, which is why this is one expression read by
+   * both rather than two that agree today.
+   *
+   * **Hidden rather than made to work**, and that is a decision rather than
+   * the easy fix: pitting in is a track day's idea — an out lap, a flying lap,
+   * a lap you stop after — and a race is quit by changing what the couch is
+   * doing. §27.4 already says so, which is why the card has a print for a
+   * rider who left through the mode switch.
+   */
+  private canEndTrackDaySession(): boolean {
+    return this.appState.current === 'paused'
+      && this.appState.rideReturn === 'trackDay'
+      && this.race.state.phase === 'idle';
   }
 
   /**
@@ -3327,6 +4052,9 @@ export class Game {
     this.clearLastResults();
     this.chaseRun.abandon();
     this.trackDay.abandon();
+    // A race belongs to the circuit, and a fight is not one (see
+    // `startChallenge` for why this line exists on all three entrances).
+    this.race.abandon();
     this.resultsIn = 0;
     // **Which referee this run answers to, decided once, here** — M26 Phase 4
     // (§26.5). Seat count and nothing else: two riders are a match, one rider
@@ -3648,6 +4376,8 @@ export class Game {
 
     this.clearLastResults();
     this.trackDay.abandon();
+    // And the race, for `startChallenge`'s reason.
+    this.race.abandon();
     this.resultsIn = 0;
     // Deliberately **not** `resetChallengeRider`: there is no start gate to run
     // up to, and the chase begins where the world begins — which is also what
@@ -4231,17 +4961,34 @@ export class Game {
    *
    * Two clauses, and both are load-bearing:
    *
-   *   - **`seatCount === 2`** is what keeps single player byte-identical.
+   *   - **`seatCount >= 2`** is what keeps single player byte-identical.
    *     There is no pair to test with one rider, and this is the clause that
    *     says so rather than leaving `seats[1]` to be undefined somewhere
-   *     downstream. It is `=== 2` rather than `>= 2` deliberately: a third
-   *     seat is three pairs and a different question (§26.7), and answering it
-   *     wrongly-but-quietly is worse than not answering it.
+   *     downstream. It read `=== 2` from M26 until M27 Phase 1, deliberately,
+   *     because "a third seat is three pairs and a different question" and
+   *     answering it wrongly-but-quietly would have been worse than not
+   *     answering it. **M27 answers it**: every unordered pair of seats is
+   *     resolved, each with its own cooldown, which is the same mechanic at
+   *     its real N rather than a second one. Contact is unconditional couch
+   *     behaviour (the toggle was removed on the owner's M26 ride), so a room
+   *     of four bumps exactly as a room of two does.
    *   - **`contactEnabled`** is the session's own answer, default on, and the
    *     thing Phase 2's join-panel toggle writes.
    */
+  /**
+   * Is the grid still held? — M27 Phase 3 (q96).
+   *
+   * One expression, read by the step and reported on `snapshot()`, on
+   * `contactLive`'s exact argument below: the moment "are we frozen" is
+   * spelled out in two places, the step and the HUD can hold different
+   * opinions about whether the race has started.
+   */
+  get raceFrozen(): boolean {
+    return this.race.state.phase === 'countdown';
+  }
+
   get contactLive(): boolean {
-    return this.seatCount === 2 && this.contactEnabled;
+    return this.seatCount >= 2 && this.contactEnabled;
   }
 
   /**
@@ -4266,8 +5013,12 @@ export class Game {
    */
   setCouchRide(ride: string): void {
     if (!isCouchRide(ride)) return;
+    // The panel greys the button, and this refuses the press — the door and the
+    // control on identical terms, which is `switchCouchRide`'s own rule.
+    if (this.rideBlockedForSeats(ride)) return;
     this.couchRide = ride;
     this.updateCouchPanel();
+    this.updateIdlePane();
   }
 
   /**
@@ -4303,7 +5054,16 @@ export class Game {
    */
   switchCouchRide(ride: string): void {
     if (!isCouchRide(ride)) return;
-    if (this.seatCount !== COUCH_SEATS) return;
+    // **Any couch, not a full one** — M27 Phase 1. The test read
+    // `!== COUCH_SEATS` while a couch was always exactly two seats, so it was
+    // simultaneously "this is a couch" and "this couch is full"; the day the
+    // constant moved to four it became a switch that only worked for rooms of
+    // exactly four people. What it always meant is `seatCount >= 2`.
+    if (this.seatCount < 2) return;
+    // And the mode has to be one this room can ride: Knockabout is a two-seat
+    // fight until its four-player rules are opened (q94), so a room of three
+    // is refused here as well as offered nothing to press.
+    if (this.rideBlockedForSeats(ride)) return;
     const from = this.couchRideOnScreen();
     if (from === null) return;
     // **A world with nothing to hit cannot become a Knockabout from here**, and
@@ -4322,10 +5082,19 @@ export class Game {
       // Already what it is: leave the way the screen's own primary action
       // leaves, so the button under the finger still does the obvious thing.
       if (this.appState.current === 'paused') this.appState.resumeRide();
+      else if (from === 'race') this.enterTrackDay();
       else this.enterKnockabout();
       return;
     }
     this.couchRide = ride;
+    if (ride === 'race') {
+      // **The same door the join panel takes** — `enterTrackDay` swaps to the
+      // circuit, arms the referee by seat count and lays out the grid. Racing
+      // is the one couch ride that changes the world, which is why it cannot
+      // be a `goTo`: the room asked for a race and a race has a venue.
+      this.enterTrackDay();
+      return;
+    }
     if (ride === 'knockabout') {
       // `enterKnockabout` arms the referee and stands both riders at their own
       // slots itself, which is the whole of what this branch needs — and since
@@ -4364,10 +5133,19 @@ export class Game {
   private couchRideOnScreen(): CouchRide | null {
     const current = this.appState.current;
     if (current === 'paused') {
+      // **A paused race is `trackDay` on the state machine and `race` to the
+      // room** — M27 Phase 3, and the referee's own phase is what tells them
+      // apart. `isCouchRide('trackDay')` is false and should stay false: the
+      // state is a *row*, and a race is a session shape riding on it.
+      if (this.appState.rideReturn === 'trackDay') {
+        return this.race.state.phase === 'idle' ? null : 'race';
+      }
       return isCouchRide(this.appState.rideReturn) ? this.appState.rideReturn : null;
     }
     if (current !== 'results') return null;
-    return this.resultsMode() === 'match' ? 'knockabout' : null;
+    const mode = this.resultsMode();
+    if (mode === 'race') return 'race';
+    return mode === 'match' ? 'knockabout' : null;
   }
 
   /**
@@ -4825,11 +5603,13 @@ export class Game {
     // builder a value the compiler already knows is there. They cannot
     // disagree with the mode: they are the same four fields it just tested,
     // read in the same synchronous breath.
+    const raceCard = this.lastRace;
     const match = this.lastMatch;
     const knockabout = this.lastKnockabout;
     const chase = this.lastChase;
     const trackDay = this.lastTrackDay;
     const mode = this.resultsMode();
+    if (mode === 'race' && raceCard !== null) return this.buildRaceResults(raceCard);
     if (mode === 'match' && match !== null) return this.buildMatchResults(match);
     if (mode === 'knockabout' && knockabout !== null) {
       return this.buildKnockaboutResults(knockabout);
@@ -5115,6 +5895,11 @@ export class Game {
     const mode = this.resultsMode();
     if (mode === 'match' || mode === 'knockabout') return 'knockabout';
     if (mode === 'chase') return 'chase';
+    // **A race cannot follow a fresh route either, and for the track day's
+    // reason one line down**: a generated course carries no lap, so a race on
+    // one could never start. The room gets the new place with nothing keeping
+    // score on it, which is what New route asked for.
+    if (mode === 'race') return 'freeRide';
     // **A track day cannot follow a fresh route, so New route means free ride
     // here.** A generated course is point-to-point by construction (§13 q6) and
     // carries no lap for the referee to judge, so resuming the mode on one
@@ -5292,6 +6077,9 @@ export class Game {
     // that reason. `enterTrackDay` calls this before it arms, so the abandon
     // here is of whatever the *previous* world was doing.
     if (this.trackDay.state.phase !== 'idle') this.trackDay.abandon();
+    // And a race belongs to the circuit it was run on, for the same reason.
+    this.race.abandon();
+    this.lastRace = null;
     // The match's world is the discs and the two riders in it, and both are
     // being replaced.
     this.match.abandon();
@@ -5341,6 +6129,10 @@ export class Game {
     }
     this.challenge = new ChallengeRun(plan.id, plan.checkpoints);
     this.trackDay = new TrackDayRun(plan.id, plan.checkpoints, plan.lap ?? null);
+    // **The race's referee is rebuilt with the world too** — M27 Phase 3, on
+    // the line above's exact argument: a referee holding the last circuit's
+    // envelope would judge this one's laps against a ring that is not here.
+    this.race = new RaceRun(plan.checkpoints, plan.lap ?? null);
     this.targets = new TargetField(plan.targets ?? []);
 
     // **The chase's world half, rebuilt with everything else and for the same
@@ -5425,14 +6217,19 @@ export class Game {
     // whoever else was wearing it moves.
     for (const other of this.seats) {
       if (other === seat || other.character !== id) continue;
-      const moved = this.characterBeside(id);
+      // **Away from everybody**, not merely away from the rider that displaced
+      // them: at four seats the first free character may already be on the
+      // rider two panes over, and moving into them would trade one collision
+      // for another. The list is re-read each time round because the loop is
+      // itself changing it.
+      const moved = this.characterBeside(this.seatedCharacters());
       this.dressSeat(other, moved);
       // **The session field moves with the geometry**, which is `dressSeat`'s
       // own rule (`seat.character` is written beside the rig) applied one level
-      // up: `guestCharacter` is what the panel draws and what a re-entry
+      // up: `guestCharacters` is what the panel draws and what a re-entry
       // re-spawns from, so a guest re-dressed here and remembered as somebody
       // else would come back wearing the wrong rider.
-      if (other === this.seats[1]) this.guestCharacter = moved;
+      this.setGuestCharacter(this.seats.indexOf(other), moved);
     }
   }
 
@@ -5653,6 +6450,11 @@ export class Game {
     this.overlay.dispose();
     this.panel.dispose();
     for (const seat of this.seats) this.unmountSeatHud(seat);
+    // Invariant 10: every element this layer creates has an explicit disposal
+    // path. `unmountSeatHud` re-reads the layout above, so this runs after the
+    // loop rather than inside it.
+    this.idlePane?.dispose();
+    this.idlePane = null;
     this.menus.dispose();
     this.appState.dispose();
     this.options.dispose();
@@ -5791,6 +6593,18 @@ export class Game {
     }
     for (let index = 0; index < this.seats.length; index += 1) {
       const wasReset = this.stepSeat(this.seats[index], index, stepSeconds, riding);
+      // **Per seat as well as aggregated** — M27 Phase 3. `seatReset` answers
+      // "did anybody teleport", which is what contact and the strike buffer
+      // need; a race referee needs to know *which* seat, because `R` is
+      // self-harm and voids exactly one rider's lap (§27.3).
+      // **Latched, not overwritten.** Seat 0's reset short-circuits this tick
+      // at `worldReset` below — *before* the referees run — so writing the
+      // flag afresh every step threw it away on the one seat it never reached:
+      // the host pressed `R`, the race never heard about it, and the lap they
+      // should have lost was banked (the 2026-09-01 audit). Latched here and
+      // cleared by the reader (`raceInputs`), so a reset survives exactly as
+      // long as it takes the referee to be told, and no longer.
+      if (wasReset) this.seatResetThisStep[index] = true;
       if (wasReset) seatReset = true;
       if (wasReset && index === 0) worldReset = true;
     }
@@ -5973,7 +6787,14 @@ export class Game {
     stepSeconds: number,
     riding: boolean,
   ): boolean {
-    const sampledActions = riding
+    // **Frozen until GO** — M27 Phase 3 (§27.3, q96). Every seat's intent is
+    // replaced with neutral *at the composition root*, so nothing reaches
+    // `EucController`: the controller learns no mode, no phase and no seat
+    // count, and the ride stays bit-identical (invariant 5's spirit). It is
+    // the same substitution a paused game already makes, pointed at a
+    // different question.
+    const held = riding && !this.raceFrozen;
+    const sampledActions = held
       ? seat.source.sample(this.simTimeSeconds)
       : NEUTRAL_ACTIONS;
 
@@ -5982,7 +6803,11 @@ export class Game {
     let didReset = false;
     let hopForController = false;
     let swingForPaddle = false;
-    for (const action of riding ? PRESSED_ACTIONS : NO_ACTIONS) {
+    // The one-shots are frozen with the axes, or a hop pressed on "2" would be
+    // buffered through the count and spent on the first racing step. What
+    // happens to a press *made* during the freeze is the fourth door's answer
+    // (`handleRaceEvent`), not this loop's.
+    for (const action of held ? PRESSED_ACTIONS : NO_ACTIONS) {
       // The latch is a buffer, not merely an edge detector. Legality belongs
       // to the controller, so an early Space press stays pending while the
       // wheel is airborne and is claimed on the first grounded step that can
@@ -6344,12 +7169,12 @@ export class Game {
     // only thing between one session's collision and the next one's first
     // bump.
     if (!this.contactLive || seatReset) {
-      this.contactPair.clear();
+      // Every pair, not merely the ones that met this step: the whole point is
+      // that a cooldown must not survive a discontinuity, and a pair the loop
+      // never reached is a pair whose timer nothing ran down.
+      for (const pair of this.contactPairs.values()) pair.clear();
       return;
     }
-
-    const first = this.seats[0];
-    const second = this.seats[1];
 
     // **Read through `LiveTuning`, never `CONTACT` directly** — see
     // `contactTuning`. The four F4 sliders exist for the Phase 2 ride gate and
@@ -6360,13 +7185,49 @@ export class Game {
     tuning.separationSpeed = this.tuning.get('CONTACT.separationSpeed');
     tuning.speedCost = this.tuning.get('CONTACT.speedCost');
 
-    writeContactBody(first.currentPose, this.contactBodies[0]);
-    writeContactBody(second.currentPose, this.contactBodies[1]);
+    // Every seat's body written once, before any pair is resolved — the
+    // `aimPoses` rule, for the same reason. A body filled inside the pair loop
+    // would be written from a pose a previous pair's separation had already
+    // moved, so the third pair would be judged against a world the first two
+    // had edited and the exchange would depend on pair order.
+    const seats = this.seats.length;
+    for (let index = 0; index < seats; index += 1) {
+      writeContactBody(this.seats[index].currentPose, this.contactBodies[index]);
+    }
 
-    const contact = this.contactPair.step(
+    // **Every unordered pair, and the pushes accumulate** — M27 Phase 1. Three
+    // riders meeting at a corner are three pairs, and each one is entitled to
+    // its own separation: resolving only the first would leave the third rider
+    // inside somebody, which is the merged-pair state the mechanic exists to
+    // end. `EucController.separate` and `bump` are both additive nudges rather
+    // than assignments, so two pairs pushing one rider add up the way two
+    // shoves would.
+    for (let first = 0; first < seats; first += 1) {
+      for (let second = first + 1; second < seats; second += 1) {
+        this.stepContactPair(stepSeconds, first, second, tuning);
+      }
+    }
+  }
+
+  /**
+   * Resolve one unordered pair of seats — M27 Phase 1.
+   *
+   * Split out of `stepContact` when the couch grew past one pair, because the
+   * body of the loop is exactly what the two-seat method used to be and a
+   * nested loop around forty lines is a method nobody re-reads.
+   */
+  private stepContactPair(
+    stepSeconds: number,
+    firstIndex: number,
+    secondIndex: number,
+    tuning: ContactTuning,
+  ): void {
+    const first = this.seats[firstIndex];
+    const second = this.seats[secondIndex];
+    const contact = this.contactPairFor(firstIndex, secondIndex).step(
       stepSeconds,
-      this.contactBodies[0],
-      this.contactBodies[1],
+      this.contactBodies[firstIndex],
+      this.contactBodies[secondIndex],
       tuning,
     );
     if (contact === null) return;
@@ -6384,6 +7245,29 @@ export class Game {
     if (charge === null) return;
     first.controller.bump(charge.first.pushX, charge.first.pushZ, charge.first.speedCost);
     second.controller.bump(charge.second.pushX, charge.second.pushZ, charge.second.speedCost);
+  }
+
+  /**
+   * The `ContactPair` that belongs to one unordered pair of seats.
+   *
+   * **Pair identity in one expression**, which is the thing the old single-pair
+   * field's comment said a collection must not hide. The key is symmetric by
+   * construction — the lower seat index is always the high digit — so (1, 3)
+   * and (3, 1) are the same pair and cannot end up with two cooldowns
+   * disagreeing about whether these two have already charged each other.
+   *
+   * Created on demand and kept for the session. A pair whose seats leave keeps
+   * its (cleared) entry, which costs one object and is what makes a rejoining
+   * seat 3 meet the same object rather than a fresh one mid-bump.
+   */
+  private contactPairFor(first: number, second: number): ContactPair {
+    const key = contactKey(first, second);
+    let pair = this.contactPairs.get(key);
+    if (pair === undefined) {
+      pair = new ContactPair();
+      this.contactPairs.set(key, pair);
+    }
+    return pair;
   }
 
   /**
@@ -6466,6 +7350,13 @@ export class Game {
     for (let view = 0; view < this.seats.length; view += 1) {
       this.updateHud(this.seats[view], view, hudSeconds);
     }
+    // **The room's card is a HUD lane too, and it changes while nobody sits
+    // down** — M27 Phase 4. It was written only on a layout change and a state
+    // transition, which is right for "who is on the couch" and wrong for a
+    // standings board: the positions move every lap and nothing about the
+    // seats moves with them. `IdlePane.setCard` diffs the composed text, so a
+    // frame that changes nothing writes no DOM.
+    this.updateIdlePane();
 
     // **The frame, one pass per seat** — M25 Phase 3 (docs/PLANS.md §25.5).
     //
@@ -6481,7 +7372,13 @@ export class Game {
     // `renderView`, so the focus has to move *before* the pass rather than
     // after it, or each half would be lit for the rider drawn before it.
     this.renderer.beginFrame();
-    for (let view = 0; view < this.seats.length; view += 1) {
+    // **One pass per *view*, not per seat.** The two are the same number from
+    // the first frame anybody is riding; on the join panel the split follows
+    // the claims (`viewSeats`), so a chair nobody has taken has a rider posed
+    // in the world and no window of its own — and asking the renderer for a
+    // view it does not have is an exception, not a blank pane.
+    const views = this.renderer.viewCount;
+    for (let view = 0; view < views && view < this.seats.length; view += 1) {
       const drawn = this.seats[view];
       const at = drawn.renderPose;
       this.renderer.setShadowFocus(at.x, at.y, at.z);
@@ -6616,6 +7513,37 @@ export class Game {
       knockabout: this.appState.current === 'knockabout'
         ? { struck: this.targets.struckCount, total: this.targets.count }
         : undefined,
+      // **The race grid's count, gated on the referee's own phase** — M27
+      // Phase 3, and on the match lane's argument one line down: a countdown
+      // only exists inside a race, and asking the app state instead would put
+      // it on screen through a pause (M23's lap-lane lesson) or leave it there
+      // after the mode switch walked out.
+      //
+      // Absent, not zeroed: a race that has already started draws nothing, and
+      // zero is the moment the room is released.
+      countdown: this.race.state.phase === 'countdown'
+        ? this.race.state.countdown
+        : undefined,
+      // **The standings, in this seat's own pane** — M27 Phase 4 (§27.4), and
+      // gated on the referee's own phase for M23's lap-lane reason: a player
+      // pauses *to read a number*, and a lane keyed on the app state would
+      // blank the moment they did.
+      //
+      // An idle referee draws nothing, which is every ride but a race.
+      race: this.race.state.phase === 'idle'
+        ? undefined
+        : (() => {
+          const rider = this.race.state.riders[index];
+          if (rider === undefined) return undefined;
+          return {
+            position: rider.position,
+            seats: this.race.state.riders.length,
+            lap: Math.max(1, rider.lap),
+            laps: this.race.state.laps,
+            gapSeconds: rider.gapSeconds,
+            finished: rider.finished,
+          };
+        })(),
       // **The match, in both halves, this seat's first** — M26 Phase 5, q80.
       // Gated on the referee's own phase rather than on the app state, which
       // is `AGENTS.md`'s rule and here it is also the shorter expression: a
@@ -7225,10 +8153,10 @@ export class Game {
     // `despawnSecondRider` gives every byte of it back — which invariant 10's
     // plateau test is what proves.
     if (state === 'couchJoin' && from !== 'couchJoin') this.openCouch();
-    // Leaving for anywhere that is not the ride. **Three exits keep the guest
-    // now, and the third is the one that had to be found** — M26 Phase 5.
-    // `freeRide` and `knockabout` are both exits that *are* the couch session,
-    // which is q78 arriving. `routes` is not a ride at all, and it keeps the
+    // Leaving for anywhere that is not the ride. **Four exits keep the guest
+    // now** — M26 Phase 5 found the third and the race added the fourth.
+    // `freeRide`, `knockabout` and `trackDay` are all exits that *are* the
+    // couch session, which is q78 arriving. `routes` is not a ride at all, and it keeps the
     // guest anyway: **the game boots into the slice, which carries no discs**,
     // so the very first couch Knockabout a player asks for is answered by
     // `enterKnockabout` sending them to the routes panel to pick a world that
@@ -7240,17 +8168,36 @@ export class Game {
     // Enumerated rather than written as "not a menu", which reads as the same
     // rule and is not: the pause screen and the results card are menus too, and
     // neither is reachable from here.
+    //
+    // **`trackDay` is the third couch ride's door, and it was missing** — the
+    // owner's 2026-08-31 ride. M27 Phase 3 added the race to `COUCH_RIDES` and
+    // gave it the entrance one row along from Knockabout's, but this list was
+    // written a milestone earlier and named the two exits that existed then.
+    // So choosing Race on the panel armed the referee by seat count, laid the
+    // grid out, and then *this line sent every guest home on the way in*: a
+    // race for three riders drawn in one view, every device falling through to
+    // seat 0. **A list of the exits that are the session has to grow on the
+    // day the session gains an exit** — and the reason it went unseen is that
+    // the pause card's mode switch reaches the race from `freeRide`, which
+    // this rule has always kept, so the ride the owner played first was fine.
     if (
       from === 'couchJoin'
       && state !== 'couchJoin'
       && state !== 'freeRide'
       && state !== 'knockabout'
+      && state !== 'trackDay'
       && state !== 'routes'
     ) this.closeCouch();
     // And leaving the couch ride itself. Quit lands on `title` from the pause
     // card; the results screen has no couch to come from in stage 1, and a
     // world swap keeps both seats on purpose (`installLevel`).
     if (state === 'title' && this.seats.length > 1) this.closeCouch();
+
+    // **The panel and the ride count the split differently** (`viewSeats`), so
+    // crossing that boundary is a moment the number can change without a seat
+    // being added or taken away. Cheap and idempotent: `setViewCount` returns
+    // early when the answer has not moved.
+    this.applyViewCount();
 
     // **Every menu boundary is an input-reset moment** (master §8.2). A key
     // held as Escape lands never delivers its keyup to the game, so without
@@ -7297,9 +8244,7 @@ export class Game {
     if (!timing) this.renderer.setGhostVisible(false);
 
     // The pit-in control exists only while there is a session to pit out of.
-    this.menus.setEndSessionAvailable(
-      state === 'paused' && this.appState.rideReturn === 'trackDay',
-    );
+    this.menus.setEndSessionAvailable(this.canEndTrackDaySession());
 
     // **And the couch's mode switch exists only while there is a couch** — the
     // owner's 2026-08-27 ride. Asked of the seat count rather than of how the
@@ -7312,19 +8257,20 @@ export class Game {
     // `switchCouchRide` asks it there: the door and the control must refuse and
     // offer on identical terms, or a button is drawn that its own handler will
     // not serve.
-    const switchable = this.seatCount === COUCH_SEATS ? this.couchRideOnScreen() : null;
+    const switchable = this.seatCount >= 2 ? this.couchRideOnScreen() : null;
     // **The same question `switchCouchRide` refuses on, asked once and handed
     // to the screen.** A world with no discs sends `enterKnockabout` to the
     // routes panel, and `routes` is not a successor of `paused` — so a switch
     // to Knockabout from here would silently do nothing while having already
     // moved both riders to the spawn. The control says so instead.
-    const blocked = this.targets.count === 0 ? KNOCKABOUT_ONLY : NO_RIDES_BLOCKED;
-    this.menus.setPauseCouchRide(state === 'paused' ? switchable : null, blocked);
+    const blocked = this.blockedCouchRides();
+    const blockReason = this.couchBlockReason();
+    this.menus.setPauseCouchRide(state === 'paused' ? switchable : null, blocked, blockReason);
     // **And the same control at the end of a match** — the owner's 2026-08-28
     // ride. `couchRideOnScreen` already knows a results card is a Knockabout
     // one, so this is the same two arguments pointed at the other panel rather
     // than a second opinion about when a couch may change its mind.
-    this.menus.setResultsCouchRide(state === 'results' ? switchable : null, blocked);
+    this.menus.setResultsCouchRide(state === 'results' ? switchable : null, blocked, blockReason);
 
     // **Only two states actually end a run, and they are named rather than
     // derived.** `title` is quitting and `freeRide` is choosing the untimed
@@ -7392,11 +8338,27 @@ export class Game {
       this.pendingLapFlash = null;
     }
 
+    // **And a race, on exactly that argument a third time** — M27 Phase 3. The
+    // couch's mode switch leaves a race by `goTo('freeRide')` without
+    // re-entering a mode, which is the same path that left a match running in
+    // a free ride at M26; the referee is part of the run, so it ends where the
+    // run does. Everything downstream gates on the referee's own phase, so a
+    // race left armed would keep a countdown on screen in a free ride.
+    if ((state === 'title' || state === 'freeRide') && this.race.state.phase !== 'idle') {
+      this.race.abandon();
+      this.resultsIn = 0;
+    }
+
     // The results panel is filled before it is shown, or the player reads one
     // frame of the previous run's numbers.
     if (state === 'results') this.menus.setResults(this.buildResultsView());
 
     for (const seat of this.seats) seat.hud?.setVisible(spec.showsHud);
+    // The idle quadrant is a HUD element in every sense but the seat, so it
+    // comes and goes with the rest of them — and it is re-read here rather
+    // than only on a layout change, because the ride it names can change
+    // without any seat moving (the pause menu's mode switch).
+    this.updateIdlePane();
     this.menus.show(menuScreenFor(state));
     // While a menu is up the pad drives the menu, not the wheel.
     this.gamepad.setMenuMode(spec.showsMenu);
@@ -7705,11 +8667,45 @@ export class Game {
     // this one is for; two people sitting down get the ride with no rules
     // attached, and choosing a fight stays something you do on purpose.
     this.couchRide = DEFAULT_COUCH_RIDE;
-    const taken = this.seats[0].character;
-    if (this.guestCharacter === taken) this.guestCharacter = guestBeside(taken);
-    if (this.seats.length < 2) this.spawnSecondRider(this.guestCharacter);
+    // **q68 re-derived for the whole couch** — M27 Phase 1. The player may have
+    // changed who *they* are since the last visit, and with four cards the
+    // repair is not "move the guest": it is "deal the guests again", because
+    // one guest stepping aside can land on another guest.
+    const host = this.seats[0].character;
+    if (this.guestCharacters.includes(host as PlayableCharacterId)) {
+      const dealt = guestRoster(host, COUCH_SEATS);
+      for (let index = 0; index < this.guestCharacters.length; index += 1) {
+        this.guestCharacters[index] = dealt[index];
+      }
+    }
+    if (this.seats.length < 2) this.spawnRider(this.guestCharacterFor(1));
     this.beginClaiming();
+    this.growCouch();
     this.updateCouchPanel();
+  }
+
+  /**
+   * Put out one more chair, if there is room on the couch and a device left to
+   * fill it — M27 Phase 1.
+   *
+   * **The panel offers exactly as many seats as the room can actually fill.**
+   * Four cards are drawn whatever happens (`updateCouchPanel` says why), but a
+   * *seat* is a rider standing in the world and a pane in the frame, so one is
+   * only created when somebody could sit in it. A machine with a keyboard and
+   * one pad therefore sees precisely what M25 shipped — two seats, two panes —
+   * and a room with three pads sees a third chair appear the moment the second
+   * player sits down.
+   *
+   * Three clauses, and each is refusing a different bad state: past
+   * `COUCH_SEATS` is a couch nobody measured, an unclaimed seat already out is
+   * the chair this would be duplicating, and no spare device is a chair nobody
+   * in the room can take.
+   */
+  private growCouch(): void {
+    if (this.seats.length >= COUCH_SEATS) return;
+    if (this.router.claimList().some((device) => device === null)) return;
+    if (this.spareDevice() === 'none') return;
+    this.spawnRider(this.guestCharacterFor(this.seats.length));
   }
 
   /**
@@ -7724,7 +8720,10 @@ export class Game {
   private closeCouch(): void {
     this.endClaiming();
     this.clearClaims();
-    if (this.seats.length > 1) this.despawnSecondRider();
+    // Every guest, not "the" guest: a room that grew to four leaves four rigs
+    // and four panes behind, and a loop that ran once would have left two of
+    // them standing in a single-player world.
+    while (this.seats.length > 1) this.despawnRider();
     this.updateCouchPanel();
   }
 
@@ -7743,6 +8742,10 @@ export class Game {
   private startCouch(): void {
     if (!this.couchReady) return;
     this.endClaiming();
+    // **Before the reset, not after.** `resetSeats` stands every seat on its
+    // own slot, and standing a rider nobody is steering on a slot only to
+    // delete them a line later is work the frame can see.
+    this.trimUnclaimedSeats();
     this.resetSeats();
     // **The panel's one branch, and it is a mode entrance rather than a
     // `goTo`** — M26 Phase 5, q78. Knockabout has an entrance for a reason:
@@ -7756,6 +8759,15 @@ export class Game {
     // entrance that reaches past the mode's own front door.
     if (this.couchRide === 'knockabout') {
       this.enterKnockabout();
+      return;
+    }
+    // **The race is the same shape one row along** — M27 Phase 3, q78's socket
+    // filled. `enterTrackDay` swaps to the circuit, arms the referee by seat
+    // count and lays the grid out; reaching past it with a `goTo` would be a
+    // race with no rules attached, which is the exact mistake the Knockabout
+    // line above exists to avoid.
+    if (this.couchRide === 'race') {
+      this.enterTrackDay();
       return;
     }
     this.goTo('freeRide');
@@ -7786,10 +8798,47 @@ export class Game {
     return 'none';
   }
 
-  /** True once every seat has a device holding it. What arms Start. */
+  /**
+   * Two or more seats are held and nobody is waiting for a controller back.
+   * What arms Start.
+   *
+   * **It counts claims rather than requiring every seat to be full** since
+   * M27 Phase 1, and the difference is q95: three players are a session the
+   * owner asked for, and a room with a spare pad on the table has an empty
+   * chair out (`growCouch`) that nobody is obliged to take. Requiring every
+   * *seat* would make Start unreachable for exactly the rooms that have more
+   * controllers than people.
+   *
+   * The awaiting clause is what a dead pad means. A claimed pad that vanishes
+   * holds its seat and reopens the window (§25.5 Phase 4), and a room whose
+   * fourth player is hunting for batteries is not ready to set off — the same
+   * refusal the two-seat rule made by accident, now made on purpose.
+   */
   private get couchReady(): boolean {
     if (this.seats.length < 2) return false;
-    return this.router.claimList().every((device) => device !== null);
+    const claims = this.router.claimList();
+    const held = claims.filter((device) => device !== null).length;
+    if (held < 2) return false;
+    for (let seat = 0; seat < claims.length; seat += 1) {
+      if (this.router.isAwaiting(seat)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Take away the chairs nobody sat in, on the way into the ride.
+   *
+   * **A seat is a pass and a pane**, so an empty one is a quarter of the frame
+   * spent on a rider nobody is steering and a quarter of the screen the room
+   * cannot see out of. The claims are contiguous from seat 0 by construction
+   * (`InputRouter.nextSeatToFill` always fills the lowest free seat), so the
+   * unclaimed seats are exactly the ones at the top and dropping them shuffles
+   * nobody.
+   */
+  private trimUnclaimedSeats(): void {
+    while (this.seats.length > 1 && this.router.deviceFor(this.seats.length - 1) === null) {
+      this.despawnRider();
+    }
   }
 
   /**
@@ -7803,14 +8852,37 @@ export class Game {
    * control and the panel has no invalid state to recover from.
    */
   private cycleCouchRider(seat: number, delta: 1 | -1): void {
+    // **Every other card's pick, not just the one next door** — M27 Phase 1.
+    // With four cards the rider to step over is whoever any of the other three
+    // is wearing, and a walk that skipped one of them would offer a rider the
+    // panel would then have to take away.
+    const taken = this.couchCharacters().filter((_, index) => index !== seat);
     if (seat === 0) {
-      this.options.set({ character: cycleGuest(this.options.current.character, this.guestCharacter, delta) });
+      this.options.set({ character: cycleGuest(this.options.current.character, taken, delta) });
       return;
     }
-    this.guestCharacter = cycleGuest(this.guestCharacter, this.seats[0].character, delta);
+    const moved = cycleGuest(this.guestCharacterFor(seat), taken, delta);
+    this.setGuestCharacter(seat, moved);
+    // A card may belong to a chair nobody has put out yet (`growCouch`), which
+    // is not a reason to refuse the arrow: the choice is remembered and worn
+    // the moment that seat is spawned.
     const guest = this.seats[seat];
-    if (guest !== undefined) this.dressSeat(guest, this.guestCharacter);
+    if (guest !== undefined) this.dressSeat(guest, moved);
     this.updateCouchPanel();
+  }
+
+  /**
+   * Who each of the panel's cards is currently showing, seat by seat.
+   *
+   * **The cards, not the seats** — the panel draws `COUCH_SEATS` of them and
+   * only some have riders in the world yet, so this is the list q68 has to be
+   * true of on screen. Seat 0 is the options record for the reason
+   * `updateCouchPanel` states; the rest are session state.
+   */
+  private couchCharacters(): CharacterId[] {
+    const cards: CharacterId[] = [this.options.current.character];
+    for (let seat = 1; seat < COUCH_SEATS; seat += 1) cards.push(this.guestCharacterFor(seat));
+    return cards;
   }
 
   /**
@@ -7820,10 +8892,10 @@ export class Game {
    * rider step, a state transition — for `updateGamepadStatus`'s reason: one
    * writer, fed from the current state rather than from the last event.
    *
-   * **Both seats are described whether or not the second one exists.** The
-   * panel's markup is fixed at two cards, and a view that shrank to match the
-   * seat count would leave the second card showing whatever it said last time
-   * — which, on the frame after Back, is "Ready".
+   * **Every seat is described whether or not it exists yet.** The panel's
+   * markup is fixed at `COUCH_SEATS` cards, and a view that shrank to match
+   * the seat count would leave the later cards showing whatever they said
+   * last time — which, on the frame after Back, is "Ready".
    */
   private updateCouchPanel(): void {
     const devices = this.router.claimList();
@@ -7838,11 +8910,16 @@ export class Game {
         // One-based for a player: the browser's pad 0 is the first gamepad.
         padNumber: pad === null ? null : pad + 1,
         awaiting: this.router.isAwaiting(index),
-        // **The options record for seat 0, the session field for seat 1** —
+        // **The options record for seat 0, the session field for the guests** —
         // which is the options firewall showing through the panel. It is also
         // the typed answer: `RiderSeat.character` is a `CharacterId`, and the
         // roster the cards cycle contains no cop.
-        character: index === 0 ? this.options.current.character : this.guestCharacter,
+        character: index === 0 ? this.options.current.character : this.guestCharacterFor(index),
+        // **Whether there is a chair here at all** — M27 Phase 1. Four cards
+        // are always drawn and a seat exists only when somebody could sit in
+        // it (`growCouch`), so the card for a chair that is not out yet says
+        // so rather than claiming to be an empty seat waiting for a press.
+        seated: index < this.seats.length,
       });
     }
     this.menus.setCouchView({
@@ -7850,6 +8927,8 @@ export class Game {
       ready: this.couchReady,
       spare: this.spareDevice(),
       ride: this.couchRide,
+      blocked: this.joinBlockedCouchRides(),
+      blockReason: this.joinBlockReason(),
     });
     // The keyboard's half of *a claim press is not also a button press*. Asked
     // fresh each time rather than latched, so the flag clears itself the moment
@@ -7866,7 +8945,15 @@ export class Game {
    * wiring and once in the router — is how the two come to disagree.
    */
   private claimSeatFor(device: DeviceId): void {
-    this.router.claimPress(device);
+    const claimed = this.router.claimPress(device);
+    // **Only on the panel, and only after a claim that landed.** A pad
+    // rejoining mid-ride comes through here too (§25.5 Phase 4), and a couch
+    // that grew a seat because somebody found their controller again would be
+    // adding a rider to a running session nobody asked for.
+    if (claimed && this.appState.current === 'couchJoin') {
+      this.growCouch();
+      this.updateCouchPanel();
+    }
   }
 
   /**
@@ -8268,6 +9355,15 @@ export class Game {
     // The match's one number, on the same terms: it is what the owner's Phase 5
     // ride is for, and a knob that is not here cannot move during it.
     this.match.matchKnockdowns = this.tuning.get('KNOCKABOUT.matchKnockdowns');
+    // **The race's three, on the same terms** — M27 Phase 3. They are what the
+    // owner's Phase 5 ride gate is for, and a knob that is not pushed here
+    // cannot move during it. Pushed rather than read by the referee for the
+    // reason the match's one is: the store belongs to this layer, and a
+    // referee that reached into it would be a second reader of a value the F4
+    // panel can move underneath it.
+    this.race.laps = this.tuning.get('RACE.laps');
+    this.race.countdownSeconds = this.tuning.get('RACE.countdownSeconds');
+    this.race.finishGraceSeconds = this.tuning.get('RACE.finishGraceSeconds');
 
     // The audio layer's live subset, pushed the same way. Balance is what M8's
     // exit question is judged on and balance is judged by ear, so the levels
@@ -8443,11 +9539,13 @@ export class Game {
    * the camera with a stale record.
    */
   private pushCameraTuning(): void {
-    // The split's own two numbers, pushed the way the quality ceiling is: the
-    // store belongs to this layer and the renderer is told, never asked.
+    // The split's own numbers, pushed the way the quality ceiling is: the
+    // store belongs to this layer and the renderer is told, never asked. Three
+    // since M27 Phase 1 — a gain per frame shape, and one cap for both.
     this.renderer.setSplitFieldOfView(
       this.tuning.get('CAMERA.splitFovGain'),
       this.tuning.get('CAMERA.splitFovCap'),
+      this.tuning.get('CAMERA.quadFovGain'),
     );
     // **Every seat's camera** — the Phase 1 follow-up's defect one object
     // along. A camera not reached here would silently ignore every F4
@@ -8523,6 +9621,15 @@ function crashVoiceFor(id: CharacterId): CrashVoiceId {
  * arcade reading and matches every other proximity rule in this game (the
  * touch bust included).
  */
+/**
+ * One unordered pair of seats as one map key — `contactPairFor`'s identity
+ * expression, shared with `despawnRider`'s clear so the two cannot drift.
+ * Symmetric by construction: the lower seat index is always the high digit.
+ */
+function contactKey(first: number, second: number): number {
+  return Math.min(first, second) * COUCH_SEATS + Math.max(first, second);
+}
+
 function writeContactBody(
   pose: EucPose,
   body: { -readonly [K in keyof ContactBody]: ContactBody[K] },

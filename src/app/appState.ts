@@ -278,10 +278,12 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
    * both players until they are both holding something, and the moment they
    * are, the only thing left to do is go.
    *
-   * **`freeRide` and not the other four.** Stage 1 is two riders in one world
-   * with nothing being refereed (§25.6): a couch chase, race or Knockabout is
-   * real design rather than a second seat, and each one is named in the plan
-   * as its own future milestone.
+   * **Three rides now, and the chase is still not one of them.** This said
+   * "`freeRide` and not the other four" while stage 1 was two riders in one
+   * world with nothing being refereed (§25.6); Knockabout arrived at M26 Phase
+   * 5 and the race at M27 Phase 3, so the panel starts whichever of the three
+   * the room chose (`CouchRide`). A couch chase is still real unopened design,
+   * as are Knockabout's four-player rules (q94).
    */
   couchJoin: Object.freeze({
     id: 'couchJoin' as AppStateId,
@@ -290,15 +292,22 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     showsHud: false,
     showsMenu: true,
     resetsInput: true,
-    // **Four exits since M26 Phase 5, and the list is the feature** — q78. The
-    // join panel used to lead exactly one place, because a couch session was
-    // free ride by definition; it now chooses what it is *for*, so `knockabout`
-    // is a destination and `routes` is the answer `enterKnockabout` gives a
-    // world with no discs in it. Enumerated here rather than left to `goTo` to
-    // discover, because this table is where "what may follow what" is decided
-    // and a transition missing from it fails silently: the button clicks, the
-    // panel stays, and nothing says why.
-    successors: Object.freeze(['title', 'freeRide', 'knockabout', 'routes'] as AppStateId[]),
+    // **Five exits since M27 Phase 3, and the list is the feature** — q78, and
+    // then §27.1. The join panel used to lead exactly one place, because a
+    // couch session was free ride by definition; it now chooses what it is
+    // *for*, so `knockabout` is a destination, `trackDay` is where the race
+    // rides (a race is a session shape on that row, not a sixth state — §27.1
+    // supersedes §21.9's "race needs a new `AppStateId`"), and `routes` is the
+    // answer `enterKnockabout` gives a world with no discs in it.
+    //
+    // Enumerated here rather than left to `goTo` to discover, because this
+    // table is where "what may follow what" is decided **and a transition
+    // missing from it fails silently**: the button clicks, the panel stays,
+    // and nothing says why. It cost a debugging session at M27 Phase 3 to
+    // rediscover that, one row after the row that recorded it.
+    successors: Object.freeze(
+      ['title', 'freeRide', 'trackDay', 'knockabout', 'routes'] as AppStateId[],
+    ),
   }),
   freeRide: Object.freeze({
     id: 'freeRide' as AppStateId,

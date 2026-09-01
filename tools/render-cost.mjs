@@ -33,8 +33,8 @@ const { SLICE_BEATS, SLICE_GRAPH, SLICE_POCKETS, createSliceLevel } = await impo
 const { createProvingGround } = await import(join(src, 'level/provingGround.ts'));
 const { createTrackLevel, TRACK_LAP_METRES } = await import(join(src, 'level/trackLevel.ts'));
 const { planRenderCost } = await import(join(src, 'level/renderBudget.ts'));
-const { LIBRARY_MAX_DRAW_CALLS, NON_LEVEL_RESERVE, PART_COSTS, RENDER_BUDGET, RENDER_BUDGET_SPLIT, SPLIT_PASSES, propPartCounts } = await import(join(src, 'data/renderCost.ts'));
-const { measureLevelScene, measureNonLevelScene, measureSplitNonLevelScene } = await import(join(src, 'render/renderCost.ts'));
+const { LIBRARY_MAX_DRAW_CALLS, NON_LEVEL_RESERVE, PART_COSTS, QUAD_PASSES, RENDER_BUDGET, RENDER_BUDGET_QUAD, RENDER_BUDGET_SPLIT, SPLIT_PASSES, propPartCounts } = await import(join(src, 'data/renderCost.ts'));
+const { measureLevelScene, measureNonLevelScene, measureQuadNonLevelScene, measureSplitNonLevelScene } = await import(join(src, 'render/renderCost.ts'));
 
 const write = process.argv.includes('--write');
 
@@ -173,6 +173,13 @@ const provingPredicted = planRenderCost(proving);
 // the reason the ceiling exists at all: a couch session can be started on any
 // world, including a generated one, so the number has to survive the dearest.
 const splitReserve = measureSplitNonLevelScene(slice.checkpoints);
+
+// **The four-seat quadrant frame** — M27 Phase 0, the scope-lock measurement
+// (docs/PLANS.md §27.5–§27.6). A measurement and a report, not a contract:
+// there is no quad ceiling to compare against until the owner's scope lock
+// opens Phase 1, so this section models the two worst cases §27.5 names and
+// sets them beside §27.2's own estimates, which is what the lock is judged on.
+const quadReserve = measureQuadNonLevelScene(slice.checkpoints);
 
 const track = createTrackLevel();
 const trackMeasured = measureLevelScene(track);
@@ -429,6 +436,107 @@ out('for Contract 1. **Contract 1 is untouched by any of this**: single-player')
 out('frames are one pass and are measured, reserved and bounded above.');
 out();
 
+// ---------------------------------------------------------------------------
+// Contract 3 — the four-seat grid frame (M27 Phase 0 measured it, Phase 1
+// pinned it)
+// ---------------------------------------------------------------------------
+
+// Four passes because a quadrant grid is one pass per seat, exactly as the
+// halves are — each with its own shadow render (docs/PLANS.md §27.2, §27.9).
+// Imported from `data/` since Phase 1: §27.5's "`SPLIT_PASSES` becomes a fact
+// per frame shape" is built, and a local copy here would be a second opinion
+// about the shape of the frame this report is describing.
+// §27.2's desk arithmetic, quoted so the measurement can sit beside it. The
+// plan extended the split reserve by two more riders at +60 calls and +23,138
+// triangles each and said in the same breath that it was extending rather
+// than concluding; these literals are that extension, kept verbatim.
+const PLAN_ESTIMATE = {
+  reserve: { drawCalls: 268, triangles: 122_700 },
+  belvarFrame: { drawCalls: 1_220, triangles: 1_170_000 },
+  generatedFrame: { drawCalls: 1_350, triangles: 1_960_000 },
+};
+
+const quadTriangleLine = RENDER_BUDGET.maxTriangles * 0.8;
+const belvarQuadPass = {
+  drawCalls: trackPredicted.drawCalls + quadReserve.totalDrawCalls,
+  triangles: trackPredicted.triangles + quadReserve.totalTriangles,
+};
+const belvarQuadFrame = {
+  drawCalls: belvarQuadPass.drawCalls * QUAD_PASSES,
+  triangles: belvarQuadPass.triangles * QUAD_PASSES,
+};
+const generatedQuadPass = {
+  drawCalls: LIBRARY_MAX_DRAW_CALLS + quadReserve.totalDrawCalls,
+  triangles: quadTriangleLine + quadReserve.totalTriangles,
+};
+const generatedQuadFrame = {
+  drawCalls: generatedQuadPass.drawCalls * QUAD_PASSES,
+  triangles: generatedQuadPass.triangles * QUAD_PASSES,
+};
+
+out('## Contract 3 — the four-seat grid frame');
+out();
+out('**Measured at M27 Phase 0, pinned at Phase 1.** The owner answered q98 on');
+out('2026-08-31 — **(a): four seats everywhere, no per-world seat cap** — so the');
+out('ceiling below is written against the *heavier* of the two frames measured');
+out('here, and BelVar is a datapoint rather than a second contract. Contracts 1');
+out('and 2 are untouched; all three are pinned and none has exemptions (§27.5).');
+out('Whether a given desktop *eats* the frame is a fact no agent may derive or');
+out('report: `tools/perf-window.js --views 4`, foreground, and the verdict is the');
+out('owner\'s alone.');
+out();
+out('```');
+out(`                            measured        §27.2's estimate`);
+out(`quad reserve, one pass   ${pad(quadReserve.totalDrawCalls, 6)} calls   ${pad(quadReserve.totalTriangles, 9)} tri    ~${PLAN_ESTIMATE.reserve.drawCalls} calls  ~${PLAN_ESTIMATE.reserve.triangles.toLocaleString('en-GB')} tri`);
+out('```');
+out();
+out('The reserve is four whole rigs and machines in one scene — the gates, the');
+out('particle pools and the background still shared — measured over unordered');
+out('distinct four-subsets of the playable roster, each wearing the worse of the');
+out('ghost and cop slots: the split reserve\'s discipline at four rigs.');
+out();
+out('**The venue the race needs — BelVar Circuit, four passes:**');
+out();
+out('```');
+out(`level (BelVar Circuit)   ${pad(trackPredicted.drawCalls, 6)} calls   ${pad(trackPredicted.triangles, 9)} triangles`);
+out(`everything else          ${pad(quadReserve.totalDrawCalls, 6)} calls   ${pad(quadReserve.totalTriangles, 9)} triangles`);
+out(`                         ------           ---------`);
+out(`one pass                 ${pad(belvarQuadPass.drawCalls, 6)} calls   ${pad(belvarQuadPass.triangles, 9)} triangles`);
+out(`x ${QUAD_PASSES} passes               ${pad(belvarQuadFrame.drawCalls, 6)} calls   ${pad(belvarQuadFrame.triangles, 9)} triangles`);
+out(`§27.2's estimate         ${pad(`~${PLAN_ESTIMATE.belvarFrame.drawCalls}`, 6)} calls   ${pad(`~${PLAN_ESTIMATE.belvarFrame.triangles.toLocaleString('en-GB')}`, 9)} triangles`);
+out('```');
+out();
+out('**The world four-seat free ride can open — the generated worst, four passes.**');
+out('The level line is Contract 2\'s own: the library set-union bound on calls');
+out(`(${LIBRARY_MAX_DRAW_CALLS}), and the generator's 80% triangle line (${quadTriangleLine.toLocaleString('en-GB')}) that`);
+out('`level/generatedLevel.test.ts` holds routes under:');
+out();
+out('```');
+out(`level (generated worst)  ${pad(LIBRARY_MAX_DRAW_CALLS, 6)} calls   ${pad(quadTriangleLine, 9)} triangles`);
+out(`everything else          ${pad(quadReserve.totalDrawCalls, 6)} calls   ${pad(quadReserve.totalTriangles, 9)} triangles`);
+out(`                         ------           ---------`);
+out(`one pass                 ${pad(generatedQuadPass.drawCalls, 6)} calls   ${pad(generatedQuadPass.triangles, 9)} triangles`);
+out(`x ${QUAD_PASSES} passes               ${pad(generatedQuadFrame.drawCalls, 6)} calls   ${pad(generatedQuadFrame.triangles, 9)} triangles`);
+out(`§27.2's estimate         ${pad(`~${PLAN_ESTIMATE.generatedFrame.drawCalls}`, 6)} calls   ${pad(`~${PLAN_ESTIMATE.generatedFrame.triangles.toLocaleString('en-GB')}`, 9)} triangles`);
+out('```');
+out();
+out('**The pinned ceiling, and where it comes from.** The generated worst case is');
+out('what binds, because q98 (a) declined to cap generated worlds at two seats:');
+out();
+out('```');
+out(`set-union bound          ${pad(generatedQuadFrame.drawCalls, 6)} calls   ${pad(generatedQuadFrame.triangles, 9)} triangles`);
+out(`RENDER_BUDGET_QUAD       ${pad(RENDER_BUDGET_QUAD.maxDrawCalls, 6)} calls   ${pad(RENDER_BUDGET_QUAD.maxTriangles, 9)} triangles`);
+out(`headroom                 ${pad(RENDER_BUDGET_QUAD.maxDrawCalls - generatedQuadFrame.drawCalls, 6)} calls   ${pad(RENDER_BUDGET_QUAD.maxTriangles - generatedQuadFrame.triangles, 9)} triangles`);
+out('```');
+out();
+out('The headroom is derived rather than generous: every new character costs four');
+out('times in a grid frame, and Contract 2 left the equivalent of 1.44 characters');
+out('on the draw-call axis and 2.4 on the triangle axis. These are those margins,');
+out(`scaled. For scale, Contract 2 — the two-seat ceiling, never touched — is`);
+out(`${RENDER_BUDGET_SPLIT.maxDrawCalls} calls / ${RENDER_BUDGET_SPLIT.maxTriangles.toLocaleString('en-GB')} triangles, and Contract 1 — the phone, never bent — is`);
+out(`${RENDER_BUDGET.maxDrawCalls} calls / ${RENDER_BUDGET.maxTriangles.toLocaleString('en-GB')} triangles.`);
+out();
+
 if (write) {
   const sourceTarget = join(src, 'data/renderCost.ts');
   const sourceBefore = readFileSync(sourceTarget, 'utf8');
@@ -453,6 +561,10 @@ if (write) {
   sourceAfter = rewriteReserve(
     sourceAfter, 'SPLIT_NON_LEVEL_RESERVE',
     splitReserve.totalDrawCalls, splitReserve.totalTriangles,
+  );
+  sourceAfter = rewriteReserve(
+    sourceAfter, 'QUAD_NON_LEVEL_RESERVE',
+    quadReserve.totalDrawCalls, quadReserve.totalTriangles,
   );
   writeFileSync(sourceTarget, sourceAfter);
 

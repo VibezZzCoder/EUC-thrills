@@ -430,32 +430,48 @@ export function measureNonLevelScene(checkpoints: LevelPlan['checkpoints']): Sce
 }
 
 /**
- * The same reserve for a desktop split frame — M25 Phase 3, Contract 2.
+ * Every unordered distinct seating of `seats` playable riders — M27 Phase 0.
  *
- * **Per pass, not per frame.** This is what one half of a split screen costs
- * outside the level; `SPLIT_PASSES` above is what turns it into a frame. The
- * two are kept apart so that a reader can check either half of the arithmetic
- * and so that a third view, if the couch ever grows one, is a constant change.
+ * Lifted out of `measureSplitNonLevelScene` when the four-seat measurement
+ * needed the same walk at a different size, because a second copy of a
+ * combination enumerator is how the two sweeps would drift. Unordered because
+ * the cost of a scene holding N rigs does not depend on who sat down first;
+ * distinct because q68 forbids two riders on one screen wearing the same
+ * character. Lexicographic over the roster order, which keeps the pair sweep's
+ * result byte-identical to the loop this replaced: `reduce` keeps the first of
+ * two equal worsts, so enumeration order is part of the measurement's identity.
  *
- * The sweep is over **unordered distinct pairs** of playable riders. Distinct
- * because q68 forbids two riders on one screen wearing the same character;
- * unordered because the cost of a scene holding two rigs does not depend on
- * which of them sat down first — the two contribute the same meshes either
- * way. Ten pairs against the single-player sweep's five riders, each still
- * wearing the worse of the two companion slots.
+ * Exported for `renderCost.test.ts`, which asserts the enumeration rather than
+ * trusting it — C(5,2) is ten and C(5,4) is five today, and both grow with the
+ * roster.
  */
-export function measureSplitNonLevelScene(checkpoints: LevelPlan['checkpoints']): SceneCost {
-  const pairs: (readonly [RiderLook, RiderLook])[] = [];
-  for (let first = 0; first < PLAYABLE_RIDER_LOOKS.length; first += 1) {
-    for (let second = first + 1; second < PLAYABLE_RIDER_LOOKS.length; second += 1) {
-      pairs.push([PLAYABLE_RIDER_LOOKS[first], PLAYABLE_RIDER_LOOKS[second]]);
+export function playableSubsets(seats: number): (readonly RiderLook[])[] {
+  const subsets: (readonly RiderLook[])[] = [];
+  const picked: RiderLook[] = [];
+  const walk = (from: number): void => {
+    if (picked.length === seats) {
+      subsets.push([...picked]);
+      return;
     }
-  }
-  const perPass = pairs.flatMap((pair) => (
-    (['ghost', 'cop'] as const).map((second) => (
-      measureNonLevelSceneFor(checkpoints, pair, second)
-    ))
-  ));
+    const room = seats - picked.length;
+    for (let index = from; index <= PLAYABLE_RIDER_LOOKS.length - room; index += 1) {
+      picked.push(PLAYABLE_RIDER_LOOKS[index]);
+      walk(index + 1);
+      picked.pop();
+    }
+  };
+  walk(0);
+  return subsets;
+}
+
+/**
+ * Worst on each axis separately, over every frame a sweep produced.
+ *
+ * A frame could in principle be cheaper in calls and dearer in triangles, and
+ * reserving the per-axis maximum is the only answer that is safe for both —
+ * the same rule `measureNonLevelScene` has applied since M14.5, stated once.
+ */
+function worstOnEachAxis(perPass: readonly SceneCost[]): SceneCost {
   const worstCalls = perPass.reduce((a, b) => (b.totalDrawCalls > a.totalDrawCalls ? b : a));
   const worstTriangles = perPass.reduce((a, b) => (b.totalTriangles > a.totalTriangles ? b : a));
   return {
@@ -463,6 +479,58 @@ export function measureSplitNonLevelScene(checkpoints: LevelPlan['checkpoints'])
     totalTriangles: worstTriangles.totalTriangles,
     shadowTriangles: worstTriangles.shadowTriangles,
   };
+}
+
+/** One sweep, any seat count: every distinct seating, wearing either companion. */
+function measureSeatedNonLevelScene(
+  checkpoints: LevelPlan['checkpoints'],
+  seats: number,
+): SceneCost {
+  const perPass = playableSubsets(seats).flatMap((seated) => (
+    (['ghost', 'cop'] as const).map((second) => (
+      measureNonLevelSceneFor(checkpoints, seated, second)
+    ))
+  ));
+  return worstOnEachAxis(perPass);
+}
+
+/**
+ * The same reserve for a desktop split frame — M25 Phase 3, Contract 2.
+ *
+ * **Per pass, not per frame.** This is what one half of a split screen costs
+ * outside the level; `SPLIT_PASSES` above is what turns it into a frame. The
+ * two are kept apart so that a reader can check either half of the arithmetic
+ * and so that a third view, if the couch ever grows one, is a constant change.
+ *
+ * The sweep is over **unordered distinct pairs** of playable riders — see
+ * `playableSubsets` for both words. Ten pairs against the single-player
+ * sweep's five riders, each still wearing the worse of the two companion
+ * slots.
+ */
+export function measureSplitNonLevelScene(checkpoints: LevelPlan['checkpoints']): SceneCost {
+  return measureSeatedNonLevelScene(checkpoints, 2);
+}
+
+/**
+ * The reserve for one pass of a **four-seat quadrant frame** — M27 Phase 0,
+ * the scope-lock measurement (`docs/PLANS.md` §27.5–§27.6).
+ *
+ * Four whole rigs and four whole machines in the one scene; the gates, the
+ * particle pools and the background still shared and still counted once. The
+ * sweep is over unordered distinct **four-subsets** of the playable roster —
+ * five of them today — each still wearing the worse of the two companion
+ * slots, exactly as the split reserve does. Keeping the companion is not a
+ * claim that a quad session shows a ghost (q93 says a race never does); it is
+ * the same conservatism both existing reserves are built on — a reserve is
+ * written against the dearest state the frame could reach, and dropping the
+ * slot here would also make the §27.2 estimate, which extrapolates from the
+ * companion-carrying split reserve, a comparison of unlike things.
+ *
+ * **This measurement is not yet a contract.** `RENDER_BUDGET_QUAD` is
+ * Phase 1's to pin, and Phase 1 opens only if the owner's scope lock does.
+ */
+export function measureQuadNonLevelScene(checkpoints: LevelPlan['checkpoints']): SceneCost {
+  return measureSeatedNonLevelScene(checkpoints, 4);
 }
 
 // ---------------------------------------------------------------------------

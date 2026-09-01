@@ -271,3 +271,85 @@ function slotIsGround(
   }
   return true;
 }
+
+/**
+ * Where seat `index` lines up on a race grid — M27 Phase 3 (§27.3, §27.4).
+ *
+ * **Rows of two behind the start line**, front row first, and every number in
+ * it is one this file already had: `SLOT_LATERAL_METRES` is how far apart two
+ * riders stand and `SLOT_STAGGER_METRES` is how far back a row goes. §27.4
+ * asked for the grid's geometry to come from the existing constants rather
+ * than a new group, and this is why: a grid is a placement, and placements on
+ * this project are measured in exactly two distances.
+ *
+ * **The line is the pose, not the spawn.** A race starts where the lap does,
+ * so the grid is laid out in the start line's own frame — `centre` and
+ * `headingY` from the `'start'` checkpoint — and not at `plan.spawn`, which on
+ * BelVar is seventy metres away and on a future circuit might be anywhere.
+ *
+ * **Every row sits fully behind the line**, one stagger per row starting at
+ * one, so nobody begins inside the line's own volume. That is not tidiness: a
+ * rider standing in the gate at GO would have their first crossing swallowed
+ * by the referee's `insideStart` latch, and the standing start's out-lap
+ * depends on that crossing happening.
+ *
+ * The one asymmetry a start line leaves is row position, and §27.3 equalises
+ * it by rotating the grid between races rather than by pretending it is not
+ * there. Front row is seats 0 and 1; `Game` decides who gets which.
+ *
+ * Validated by `slotIsGround` like every producer before it, with the same
+ * two passes and the same last-resort fallback — the line's own centre, which
+ * is a place a rider can certainly stand because a gate is on the road.
+ */
+export function raceGridSlot(
+  line: { readonly centre: { readonly x: number; readonly y: number; readonly z: number }; readonly headingY: number },
+  index: number,
+  terrain: TerrainSampler,
+): Spawn {
+  const base: Spawn = {
+    position: { x: line.centre.x, y: line.centre.y, z: line.centre.z },
+    headingY: line.headingY,
+  };
+
+  const origin = createGroundSample();
+  terrain.sampleGround(base.position.x, base.position.z, origin);
+
+  // +X is the rider's LEFT (AGENTS.md), so the left of a heading `h` is
+  // `(cos h, -sin h)` — `spawnSlot`'s frame, restated here rather than shared
+  // because the two functions differ in everything except this.
+  const leftX = Math.cos(line.headingY);
+  const leftZ = -Math.sin(line.headingY);
+  const forwardX = Math.sin(line.headingY);
+  const forwardZ = Math.cos(line.headingY);
+
+  const row = Math.floor(Math.max(0, index) / 2);
+  const column = Math.max(0, index) % 2;
+  // Column 0 to the leading rider's right, on `candidatesFor`'s argument: the
+  // screen puts seat 0 top-left and the grid should agree with the screen.
+  const lateral = (column === 0 ? -1 : 1) * SLOT_LATERAL_METRES;
+  const back = (row + 1) * SLOT_STAGGER_METRES;
+
+  const probe = createGroundSample();
+  for (const strict of [true, false]) {
+    for (const candidate of [
+      { lateral, back },
+      { lateral: -lateral, back },
+      // A grid that cannot fit its width falls back to single file, which is a
+      // worse race and a legal one — and is still every rider on the road.
+      { lateral: 0, back },
+      { lateral: 0, back: back + SLOT_STAGGER_METRES },
+    ]) {
+      const x = base.position.x + leftX * candidate.lateral - forwardX * candidate.back;
+      const z = base.position.z + leftZ * candidate.lateral - forwardZ * candidate.back;
+      if (!slotIsGround(terrain, probe, x, z, origin, strict)) continue;
+      terrain.sampleGround(x, z, probe);
+      return { position: { x, y: probe.height, z }, headingY: line.headingY };
+    }
+  }
+
+  terrain.sampleGround(base.position.x, base.position.z, probe);
+  return {
+    position: { x: base.position.x, y: probe.height, z: base.position.z },
+    headingY: line.headingY,
+  };
+}

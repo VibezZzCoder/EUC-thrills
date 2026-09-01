@@ -27,6 +27,7 @@ import type { HudView } from './hudModel.ts';
  */
 
 const TEMPLATE = `
+<div class="euc-hud__count" data-hud="count" role="status" aria-live="assertive" hidden></div>
 <div class="euc-hud__objective">
   <div class="euc-hud__stray" data-hud="stray" data-urgent="false" role="status"
        aria-live="polite" hidden>
@@ -88,6 +89,17 @@ export interface HudOptions {
   onDismissPrompt?(): void;
   /** Where to mount. Injected so a test can hand in a detached container. */
   parent?: HTMLElement;
+  /**
+   * Whether this HUD's countdown is announced to assistive tech.
+   *
+   * **True for exactly one pane of a couch** — the first seat's, chosen by the
+   * composition root. Every pane *shows* the countdown, but four
+   * `aria-live="assertive"` regions changing on the same step would have a
+   * screen reader announce "3" four times over itself (QA repair, 2026-08-31).
+   * The room shares one clock, so it gets one voice. Defaults true: a solo
+   * HUD, and every test that mounts one directly, is the announcing one.
+   */
+  announcesCountdown?: boolean;
 }
 
 export class Hud {
@@ -115,6 +127,7 @@ export class Hud {
   private lastWarningLabel = '';
   private lastWarningLevel = '';
   private lastOffRoute = false;
+  private lastCountdown = '';
   private lastPrompt = '';
   private lastStrayVisible = false;
   private lastStrayArrow = '';
@@ -147,6 +160,13 @@ export class Hud {
     }
 
     this.nodes['prompt-dismiss']?.addEventListener('click', this.onDismiss);
+
+    // A pane that is not the room's announcer still *shows* the count — the
+    // attribute comes off, the element stays (see `HudOptions`).
+    if (options.announcesCountdown === false) {
+      this.nodes.count.removeAttribute('aria-live');
+      this.nodes.count.removeAttribute('role');
+    }
 
     (options.parent ?? document.body).appendChild(root);
     this.root = root;
@@ -185,15 +205,30 @@ export class Hud {
    * desktop-wide while each pane is 500 px — so the objective-versus-clock
    * collision that rule exists to prevent would silently return inside both
    * halves of every split frame.
+   *
+   * **`row` is M27 Phase 1's second axis.** Three or four seats are a 2x2 grid
+   * (`shared/paneGrid.ts`), so a pane is a side *and* a row; two halves pass
+   * `null` and keep every rule they had, which is what makes a two-seat frame
+   * the frame Contract 2 was measured on. The horizontal treatment is shared
+   * deliberately — a quadrant is exactly as wide as a half, so `--hud-vw` is
+   * already right for it and only the box changes.
    */
-  setSplit(side: 'left' | 'right' | null): void {
+  setSplit(side: 'left' | 'right' | null, row: 'top' | 'bottom' | null = null): void {
     const value = side ?? 'none';
-    if (this.root.dataset.split === value) return;
+    const rowValue = side === null ? 'none' : row ?? 'none';
+    // **Both halves of the answer, or neither.** The early return used to test
+    // the side alone, which was complete while a pane could only be a half;
+    // a pane that keeps its side and changes its row — seat 1 when a third
+    // player sits down — would have kept the full-height geometry and drawn
+    // its lanes over the rider below it.
+    if (this.root.dataset.split === value && this.root.dataset.row === rowValue) return;
     this.root.dataset.split = value;
+    this.root.dataset.row = rowValue;
     const container = this.root.parentElement;
     if (container === null) return;
     container.dataset.split = side === null ? 'false' : 'true';
     container.dataset.side = value;
+    container.dataset.row = rowValue;
   }
 
   setVisible(visible: boolean): void {
@@ -286,6 +321,22 @@ export class Hud {
       this.nodes['prompt-text'].textContent = promptText;
       this.nodes.prompt.hidden = promptText === '';
       this.lastPrompt = promptText;
+    }
+
+    if (view.countdown !== this.lastCountdown) {
+      // **Its own element, centred, hidden when empty** — M27 Phase 3. It is
+      // outside the lane grid because a countdown is not a lane: it is the one
+      // moment in the mode when the room should be looking at the middle of
+      // their own pane rather than at a corner of it.
+      //
+      // `aria-live="assertive"` and not `polite`, uniquely on this element:
+      // every other cue here reports a state a player can read when they get
+      // to it, and this one is an instruction with a deadline. On a couch only
+      // the first seat's pane carries the attribute at all — one shared clock,
+      // one voice (`HudOptions.announcesCountdown`).
+      this.nodes.count.textContent = view.countdown;
+      this.nodes.count.hidden = view.countdown === '';
+      this.lastCountdown = view.countdown;
     }
 
     this.writeStray(view.stray);

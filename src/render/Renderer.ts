@@ -8,7 +8,7 @@ import {
 } from '../data/surfaces.ts';
 import type { SurfaceId } from '../simulation/world.ts';
 import type { GhostSample } from '../simulation/ghost.ts';
-import type { EucPose } from '../simulation/EucController.ts';
+import { createPose, type EucPose } from '../simulation/EucController.ts';
 import type { LevelPlan } from '../level/plan.ts';
 import { createCheckpointGates, type CheckpointGates } from './checkpointGates.ts';
 import { createTargets, type TargetFamily } from './targets.ts';
@@ -16,11 +16,13 @@ import { createGhostRider, type GhostRider } from './ghostRider.ts';
 import { createCopRider, type CopRider } from './copRider.ts';
 import { machineForCharacter } from '../data/machines.ts';
 import { machineLook } from './machineLook.ts';
-import { riderLook } from './riderLook.ts';
+import { createRidingRig, type RidingRig } from './ridingRig.ts';
+import { PLAYABLE_RIDER_LOOKS, riderLook } from './riderLook.ts';
 import { DEFAULT_CHARACTER, type CharacterId } from '../data/riders.ts';
 import { createParticleField, type ParticleField } from './particles.ts';
 import { createSky, type SkyTexture } from './sky.ts';
 import { createTerrain, type TerrainView } from './terrain.ts';
+import { paneBounds, paneGridFor, type PaneRect } from '../shared/paneGrid.ts';
 
 /**
  * Renderer, scene, camera, and the daytime lighting rig.
@@ -78,6 +80,12 @@ export interface ContextLossCallbacks {
   onRestored(): void;
 }
 
+/** The armed state of the M27 Phase 0 quad probe. See the field on the class. */
+interface PerfQuadProbe {
+  readonly rigs: { readonly rig: RidingRig; readonly at: { x: number; y: number; z: number } }[];
+  readonly cameras: THREE.PerspectiveCamera[];
+}
+
 /**
  * Overlap at which a scrape throws its full spark rate. Read from `EUC` so the
  * rider's boot lift and the sparks normalise against the same number: a scrape
@@ -129,9 +137,36 @@ export class GameRenderer {
   private splitFovGain: number = CAMERA.splitFovGain;
   private splitFovCap: number = CAMERA.splitFovCap;
 
+  /**
+   * The same widening for a quadrant, which needs almost none — M27 Phase 1.
+   *
+   * A separate number rather than a shape-aware expression, because the two
+   * shapes have different geometry and the owner judges each by eye: a half
+   * loses 38 horizontal degrees and a quadrant loses none at all (§27.2). It
+   * ships at `CAMERA.quadFovGain` and moves through the same F4 push.
+   */
+  private quadFovGain: number = CAMERA.quadFovGain;
+
   private readonly sun: THREE.DirectionalLight;
   private readonly hemisphere: THREE.HemisphereLight;
   private readonly disposables: { dispose(): void }[] = [];
+
+  /**
+   * The M27 Phase 0 quad probe — an *instrument*, never a mode.
+   *
+   * `tools/perf-window.js --views 4` needs the honest four-seat frame — four
+   * full passes of the real world, each with its own shadow render, through
+   * four quadrant cameras — before any seat model for four exists, because the
+   * scope lock that would *open* that seat model is decided on this frame
+   * (`docs/PLANS.md` §27.6). So the renderer owns the whole arrangement: three
+   * planted rigs standing beside the ridden one, three probe cameras framing
+   * them chase-style, and a 2×2 pass loop. No seat, no input, no HUD, no
+   * option, no URL — the surface is the QA bridge's `game.renderer`, which is
+   * `spawnSecondRider`'s discipline exactly, and it is what keeps the phone
+   * contract's unreachability argument intact (`tests/touch.spec.ts` still
+   * pins one rider, one view, one HUD on mobile).
+   */
+  private perfProbe: PerfQuadProbe | null = null;
 
   /** The world, built from a `LevelPlan`. Disposed and rebuilt with the level. */
   private terrain: TerrainView | null = null;
@@ -990,10 +1025,23 @@ export class GameRenderer {
    * to survive. Both numbers are F4-tunable through `setSplitFieldOfView`,
    * because §25.5 gives the owner's own look the final say and a number he can
    * only report is a number he has to wait on.
+   *
+   * **The treatment is per frame *shape*, not per split — M27 Phase 1.** The
+   * paragraphs above are an argument about a *half*, and every one of their
+   * numbers comes from halving the aspect. A quadrant halves both axes, so it
+   * keeps the canvas's own 16:9 and loses no horizontal angle at all; running
+   * the gain on it would hand four players a wider view than one player gets,
+   * which is a different game rather than the same one shared. So the gain is
+   * the shape's own (`quadFovGain` ships near unity) and **the cap is one
+   * number for both**, because the cap is a statement about how wide this
+   * project will ever draw before the tuning table's first line starts
+   * mattering, and that does not depend on how the screen is cut.
    */
   private splitFieldOfView(radians: number): number {
-    if (this.viewCameras.length < 2) return radians;
-    return Math.min(this.splitFovCap, radians * this.splitFovGain);
+    const views = this.viewCameras.length;
+    if (views < 2) return radians;
+    const gain = paneGridFor(views).rows > 1 ? this.quadFovGain : this.splitFovGain;
+    return Math.min(this.splitFovCap, radians * gain);
   }
 
   /**
@@ -1003,10 +1051,15 @@ export class GameRenderer {
    * store belongs to the app layer, and a renderer that read it would be a
    * second reader of a value the F4 panel can move underneath it.
    */
-  setSplitFieldOfView(gain: number, capRadians: number): void {
-    if (gain === this.splitFovGain && capRadians === this.splitFovCap) return;
+  setSplitFieldOfView(gain: number, capRadians: number, quadGain: number): void {
+    if (
+      gain === this.splitFovGain
+      && capRadians === this.splitFovCap
+      && quadGain === this.quadFovGain
+    ) return;
     this.splitFovGain = gain;
     this.splitFovCap = capRadians;
+    this.quadFovGain = quadGain;
     // The cameras are holding a previously widened angle; the next frame
     // rewrites them, but a paused game does not have a next frame.
     for (const camera of this.viewCameras) camera.updateProjectionMatrix();
@@ -1068,15 +1121,45 @@ export class GameRenderer {
    * necessarily equal — 1001 splits into 500 and 501 — which is why the
    * aspects below are taken from these same widths rather than from a halved
    * canvas.
+   *
+   * **The rule gained its second axis at M27 Phase 1 and did not otherwise
+   * change.** Three or four seats are a 2x2 grid (four 480x1080 strips are
+   * unusable), so the same rounded boundary is now taken on the height too and
+   * the arithmetic moved to `shared/paneGrid.ts`, where a headless sweep can
+   * check odd widths and odd heights together without a GPU. One and two views
+   * come back exactly where they always did — full canvas, then vertical
+   * halves at full height — which is what keeps Contract 2 a statement about
+   * the frame the game still draws.
+   *
+   * `y` is measured **up from the bottom**, because that is the frame
+   * `setViewport` and `setScissor` take. Panes are numbered in reading order,
+   * so pane 0 is top-left and its `y` is the middle boundary rather than zero.
    */
-  viewBounds(view: number): { x: number; width: number } {
+  viewBounds(view: number): PaneRect {
     const views = this.viewCameras.length;
     if (view < 0 || view >= views) {
       throw new Error(`no such view: ${view} (views: ${views})`);
     }
-    const start = Math.round((this.lastWidth * view) / views);
-    const end = Math.round((this.lastWidth * (view + 1)) / views);
-    return { x: start, width: end - start };
+    return paneBounds(this.lastWidth, this.lastHeight, paneGridFor(views), view);
+  }
+
+  /**
+   * Where the pane nobody is sitting in would be — M27 Phase 1 (q95).
+   *
+   * A three-seat frame is a 2x2 grid with a hole, and the hole is the room's
+   * shared scoreboard: DOM over a quadrant no pass draws. `Game` needs the box
+   * to place that card, and it must be **the same arithmetic the passes use**
+   * or the card would sit a pixel off the seam it is supposed to fill.
+   *
+   * Null whenever the grid is full or has no hole at all, which is every other
+   * seat count — the caller asks rather than counting seats itself.
+   */
+  idleViewBounds(): PaneRect | null {
+    const views = this.viewCameras.length;
+    const grid = paneGridFor(views);
+    const panes = grid.columns * grid.rows;
+    if (views >= panes) return null;
+    return paneBounds(this.lastWidth, this.lastHeight, grid, views);
   }
 
   /**
@@ -1098,7 +1181,11 @@ export class GameRenderer {
     if (this.lastWidth === 0 || this.lastHeight === 0) return;
     for (let view = 0; view < this.viewCameras.length; view += 1) {
       const camera = this.viewCameras[view];
-      camera.aspect = this.viewBounds(view).width / this.lastHeight;
+      // The pane's own height too since M27 Phase 1 — a quadrant is half as
+      // tall as the canvas, and a camera left on the canvas height while
+      // drawing into a quadrant is the same stretch in the other direction.
+      const pane = this.viewBounds(view);
+      camera.aspect = pane.height === 0 ? 1 : pane.width / pane.height;
       camera.updateProjectionMatrix();
     }
   }
@@ -1203,18 +1290,30 @@ export class GameRenderer {
    * the device-pixel ratio itself.
    */
   renderView(view: number): void {
+    // The armed quad probe takes over the frame — M27 Phase 0. `Game` still
+    // believes the session is single-view (one seat, one camera, unsplit HUD,
+    // ungained FOV — `splitFieldOfView` sees one view camera and stays out)
+    // and calls this exactly once per frame with the shadow focus and the
+    // surround centre already pointed at the ridden rider; the probe answers
+    // with the four quadrant passes instead of the one full-canvas pass.
+    if (this.perfProbe !== null && this.viewCameras.length === 1) {
+      this.renderPerfQuadFrame(this.perfProbe);
+      return;
+    }
     const camera = this.cameraFor(view);
     if (this.viewCameras.length === 1) {
       this.renderer.setScissorTest(false);
       this.renderer.setViewport(0, 0, this.lastWidth, this.lastHeight);
     } else {
-      // Whole pixels from `viewBounds`, which tiles the canvas exactly once.
+      // Whole pixels from `viewBounds`, which tiles the canvas exactly once —
+      // on both axes since M27 Phase 1, so a quadrant's own y and height come
+      // from the same partition rather than from a second opinion here.
       const pane = this.viewBounds(view);
-      this.renderer.setViewport(pane.x, 0, pane.width, this.lastHeight);
+      this.renderer.setViewport(pane.x, pane.y, pane.width, pane.height);
       // Without the scissor, a pass would draw its sky and its fog across the
       // whole canvas and only the depth-tested geometry would stay in its
       // half.
-      this.renderer.setScissor(pane.x, 0, pane.width, this.lastHeight);
+      this.renderer.setScissor(pane.x, pane.y, pane.width, pane.height);
       this.renderer.setScissorTest(true);
     }
     this.renderer.render(this.scene, camera);
@@ -1233,7 +1332,174 @@ export class GameRenderer {
     for (let view = 0; view < this.viewCameras.length; view += 1) this.renderView(view);
   }
 
+  // -------------------------------------------------------------------------
+  // The M27 Phase 0 quad probe — see the `perfProbe` field for what it is for
+  // -------------------------------------------------------------------------
+
+  /**
+   * Arm the probe: plant three rigs beside `at` and draw every frame from now
+   * on as a 2×2 quadrant grid, until `clearPerfQuadProbe`.
+   *
+   * Planting again re-plants — `tools/perf-window.js` offers that as a button
+   * so the owner can carry the grid to whatever corner of a world he wants to
+   * measure. The rigs stand at `at.y` because the probe plants them beside a
+   * rider who is on the ground there; the renderer cannot ask the ground
+   * itself (`TerrainSampler` is the simulation's, invariant 3), and an
+   * instrument does not need it to.
+   */
+  plantPerfQuadProbe(at: { x: number; y: number; z: number }, headingY: number): void {
+    if (this.viewCameras.length !== 1) {
+      throw new Error('the quad probe is a solo instrument; a couch split is active');
+    }
+    this.clearPerfQuadProbe();
+
+    // Three distinct playables, none of them the ridden character, so the
+    // scene holds four different riders and four different machines — the
+    // frame the four-seat measurement is about (q68's spirit). The ridden
+    // character is `ghostCharacter`: `setCharacter` stores it for the ghost's
+    // sake and it is the one place the renderer knows who is riding.
+    const looks = PLAYABLE_RIDER_LOOKS
+      .filter((look) => look.id !== this.ghostCharacter)
+      .slice(0, 3);
+    const sin = Math.sin(headingY);
+    const cos = Math.cos(headingY);
+    // Offsets in the rider's frame (+X their left, +Z forward): a loose grid
+    // beside and behind, near enough that pane 0's surround centre and shadow
+    // neighbourhood cover everyone, far enough apart to read as four riders.
+    const offsets = [
+      { x: 2.2, z: 0 },
+      { x: -2.2, z: -1.6 },
+      { x: 0.4, z: -3.2 },
+    ];
+
+    const probe: PerfQuadProbe = { rigs: [], cameras: [] };
+    for (const [index, look] of looks.entries()) {
+      const rig = createRidingRig(look, machineLook(machineForCharacter(look.id)));
+      // Not 'riding-rig': `tools/rider-views.mjs` finds the player's rig by
+      // that name and relies on it being unique in the scene.
+      rig.group.name = `perf-probe-rig-${index}`;
+      const offset = offsets[index];
+      const x = at.x + offset.x * cos + offset.z * sin;
+      const z = at.z - offset.x * sin + offset.z * cos;
+      // From `createPose()`, never a bare literal — it seeds `recoverBlend`
+      // to 1, and a pose built from zeros is a faded ghost of a rider.
+      // `restFactor` 1 is the one-foot-down stand, so a planted rig reads as
+      // parked rather than as frozen mid-ride.
+      const pose = createPose();
+      pose.x = x;
+      pose.y = at.y;
+      pose.z = z;
+      pose.groundY = at.y;
+      pose.headingY = headingY;
+      pose.restFactor = 1;
+      rig.apply(pose);
+      this.scene.add(rig.group);
+      probe.rigs.push({ rig, at: { x, y: at.y, z } });
+
+      // A chase-style frame on the planted rig: the spring arm's rest length
+      // and height, looking at the chest — hip height plus
+      // `CAMERA.targetHeightOffset`, the 1.27 m the tuning table's own note
+      // derives. Static, because the subject is; nothing else writes these
+      // cameras (`setFieldOfView` and `applyViewAspects` walk `viewCameras`,
+      // which the probe deliberately never touches).
+      const camera = new THREE.PerspectiveCamera(
+        THREE.MathUtils.radToDeg(CAMERA.fovAtRest),
+        1,
+        CAMERA.near,
+        CAMERA.far,
+      );
+      camera.position.set(
+        x - sin * CAMERA.distanceAtRest,
+        at.y + CAMERA.armHeight,
+        z - cos * CAMERA.distanceAtRest,
+      );
+      camera.lookAt(x, at.y + 1.27, z);
+      probe.cameras.push(camera);
+    }
+    this.perfProbe = probe;
+  }
+
+  /** Disarm: give the rigs back, and the game camera its full-canvas aspect. */
+  clearPerfQuadProbe(): void {
+    if (this.perfProbe === null) return;
+    for (const planted of this.perfProbe.rigs) {
+      // Remove before disposing — the plateau rule (`Game.despawnSecondRider`
+      // records why): `RidingRig.dispose` self-detaches, and the explicit
+      // removal is the rule rather than the call.
+      this.scene.remove(planted.rig.group);
+      planted.rig.dispose();
+    }
+    this.perfProbe = null;
+    this.applyViewAspects();
+  }
+
+  /** Whether the probe is armed. The self-test's question, answered plainly. */
+  get perfQuadArmed(): boolean {
+    return this.perfProbe !== null;
+  }
+
+  /**
+   * Where one probe pane sits, in CSS pixels with WebGL's bottom-left origin.
+   *
+   * Rounded boundaries on **both** axes, for the reason `viewBounds` records
+   * on one: `round(size * n / 2)` makes every edge a single number shared by
+   * the pane that ends there and the pane that starts there, so the four
+   * panes tile the canvas exactly once at any width and any height, odd ones
+   * included. Panes 0|1 are the top row, 2|3 the bottom.
+   *
+   * **It is `viewBounds`' arithmetic, not a copy of it, since M27 Phase 1.**
+   * The probe measured a four-pass frame a milestone before any seat could ask
+   * for one, so it had to own the grid itself; now the real partition draws
+   * the same grid, and two functions rounding the same edges independently is
+   * exactly how a probe ends up measuring a frame the game does not draw.
+   */
+  perfQuadBounds(pane: number): PaneRect {
+    if (this.perfProbe === null) throw new Error('the quad probe is not armed');
+    if (!Number.isInteger(pane) || pane < 0 || pane > 3) {
+      throw new Error(`no such probe pane: ${pane} (panes: 4)`);
+    }
+    return paneBounds(this.lastWidth, this.lastHeight, paneGridFor(4), pane);
+  }
+
+  /**
+   * The four passes. Pane 0 is the ridden rider through the game's own camera,
+   * with the shadow focus and surround centre the caller already pointed at
+   * them; panes 1–3 each move the shadow focus to their planted rig first,
+   * exactly as `Game.render` moves it between real seat passes — the surround
+   * plane stays centred on the ridden rider, whom the rigs stand beside by
+   * construction. The focus is left on the last rig at frame end and the next
+   * frame's caller re-points it, the same hand-back the real split performs.
+   */
+  private renderPerfQuadFrame(probe: PerfQuadProbe): void {
+    for (let pane = 0; pane < 4; pane += 1) {
+      const rect = this.perfQuadBounds(pane);
+      let camera: THREE.PerspectiveCamera;
+      if (pane === 0) {
+        camera = this.camera;
+      } else {
+        const planted = probe.rigs[pane - 1];
+        this.setShadowFocus(planted.at.x, planted.at.y, planted.at.z);
+        camera = probe.cameras[pane - 1];
+      }
+      // Each pane's aspect is its own rect's — a quadrant of an even canvas is
+      // the canvas's own 16:9, which is §27.2's whole geometric argument, and
+      // an odd canvas gives its four panes their honest slightly-different
+      // answers. Pane 0 writes the game camera and `applyViewAspects` writes
+      // it back on the next layout change; the next probe frame re-asserts.
+      const aspect = rect.height === 0 ? 1 : rect.width / rect.height;
+      if (camera.aspect !== aspect) {
+        camera.aspect = aspect;
+        camera.updateProjectionMatrix();
+      }
+      this.renderer.setViewport(rect.x, rect.y, rect.width, rect.height);
+      this.renderer.setScissor(rect.x, rect.y, rect.width, rect.height);
+      this.renderer.setScissorTest(true);
+      this.renderer.render(this.scene, camera);
+    }
+  }
+
   dispose(): void {
+    this.clearPerfQuadProbe();
     const canvas = this.renderer.domElement;
     canvas.removeEventListener('webglcontextlost', this.onContextLost);
     canvas.removeEventListener('webglcontextrestored', this.onContextRestored);

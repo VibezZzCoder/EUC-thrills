@@ -4,6 +4,7 @@ import { boot, bootToTitle, collectErrors } from './harness.ts';
 import { CHARACTERS } from '../src/data/riders.ts';
 import { CHASE, CONTACT, PADDLE } from '../src/data/tuning.ts';
 import { Paddle } from '../src/simulation/paddle.ts';
+import { COUCH_RIDES } from '../src/app/couch.ts';
 import { DUEL_LATERAL_METRES, SLOT_LATERAL_METRES } from '../src/simulation/spawnSlots.ts';
 
 /**
@@ -1204,11 +1205,21 @@ test('a pad walks the join panel, and presses the mode it wants', async ({ page 
    * down or not — and the owner's 2026-08-27 ride changed two rows at once: the
    * mode `<select>` became a pair of buttons and the contact toggle went away.
    *
-   * Written by geometry rather than by list: the four rider arrows are one
-   * visual row because the two cards sit side by side, the two mode buttons are
-   * one row because they are a segmented control, and the actions are one column
+   * Written by geometry rather than by list: the rider arrows are one visual
+   * row because the cards sit side by side, the two mode buttons are one row
+   * because they are a segmented control, and the actions are one column
    * because `.euc-menu__actions` is only multi-column on the title and the pause
    * card.
+   *
+   * **Rewritten at M27 Phase 1, because the panel grew from two cards to four**
+   * (§27.6 predicted exactly this and asked for it). The row is eight arrows
+   * wide now, and every one of them is named below rather than stepped over —
+   * the first version of this walk asserted only that Down left the row, which
+   * stayed green through a build where Down went *sideways*. It went sideways
+   * because the cards' statuses wrap to different numbers of lines and the
+   * arrows floated after them, so `ui/menuRows.ts` saw two rows where a player
+   * sees one; the repair pins the rider row to the bottom of every card
+   * (`game.css`). Naming the stops is what makes that provable.
    */
   const errors = collectErrors(page);
   await onePad(page);
@@ -1226,18 +1237,52 @@ test('a pad walks the join panel, and presses the mode it wants', async ({ page 
     )?.focus();
   });
 
+  // **Every stop of the row, left to right.** Eight arrows across four cards,
+  // and they are one row: if the cards ever stop lining up, Right walks into
+  // the wrong card's arrow and this says which one.
+  const arrowStops = [
+    ['0', 'couch-prev'], ['0', 'couch-next'],
+    ['1', 'couch-prev'], ['1', 'couch-next'],
+    ['2', 'couch-prev'], ['2', 'couch-next'],
+    ['3', 'couch-prev'], ['3', 'couch-next'],
+  ] as const;
+  for (const [seat, hook] of arrowStops.slice(1)) {
+    await pulsePad(page, PAD_DPAD_RIGHT);
+    await expect(
+      page.locator(`[data-couch-seat="${seat}"] [data-menu="${hook}"]`),
+      `right walks the rider row to seat ${seat}'s ${hook}`,
+    ).toBeFocused();
+  }
+
+  await pulsePad(page, PAD_DPAD_DOWN);
+  await expect(
+    page.locator(`${MODE_BUTTON}[data-couch-mode="knockabout"]`),
+    'down from the far end of the rider row reaches the mode row, keeping the column',
+  ).toBeFocused();
+  // Back to the near end, and down again — the column is kept on both sides.
+  await page.evaluate(() => {
+    document.querySelector<HTMLElement>(
+      '[data-couch-seat="0"] [data-menu="couch-prev"]',
+    )?.focus();
+  });
   await pulsePad(page, PAD_DPAD_DOWN);
   await expect(
     page.locator(`${MODE_BUTTON}[data-couch-mode="freeRide"]`),
     'down from the rider arrows reaches the mode row',
   ).toBeFocused();
-  // **The row is two stops wide now, and that is the change.** A `<select>` was
-  // one stop the d-pad *adjusted*; a segmented pair is two stops the d-pad
-  // *walks*, so Right is a move rather than a value change.
+  // **The row is three stops wide now, and that is the change.** A `<select>`
+  // was one stop the d-pad *adjusted*; a segmented row is a stop per mode the
+  // d-pad *walks*, so Right is a move rather than a value change — and M27
+  // Phase 3 put the race between the two that were already there.
+  await pulsePad(page, PAD_DPAD_RIGHT);
+  await expect(
+    page.locator(`${MODE_BUTTON}[data-couch-mode="race"]`),
+    'and Right crosses to the race',
+  ).toBeFocused();
   await pulsePad(page, PAD_DPAD_RIGHT);
   await expect(
     page.locator(`${MODE_BUTTON}[data-couch-mode="knockabout"]`),
-    'and Right crosses to the other mode',
+    'and Right again reaches Knockabout at the end of the row',
   ).toBeFocused();
   await pulsePad(page, PAD_DPAD_DOWN);
   await expect(
@@ -1336,7 +1381,10 @@ test('a stale mode value never reaches the state machine', async ({ page }) => {
   });
 
   expect(after.ride, 'a ride nobody built reached the state machine').toBe('knockabout');
-  expect(after.left, 'the synthetic control was cleaned up').toBe(2);
+  // **Derived from the list, not written down.** M27 Phase 3 added the race
+  // and this number moved with it; a hard-coded 2 says only that the panel is
+  // the size it was on the day this was written.
+  expect(after.left, 'the synthetic control was cleaned up').toBe(COUCH_RIDES.length);
   expect(errors).toEqual([]);
 });
 
@@ -1783,7 +1831,12 @@ test('the tick’s aim is taken before anybody moves', async ({ page }) => {
     return {
       before,
       after,
-      aimed: internal.aimPoses.map((p) => ({ x: p.x, y: p.y, z: p.z })),
+      // **Sliced to the seats that exist** — M27 Phase 1 sized this scratch
+      // pool from `COUCH_SEATS` rather than from a pair, so the array is four
+      // long in a two-seat duel and the last two entries are the zeros nothing
+      // has written. Reading the pool's *capacity* here would be reading an
+      // implementation detail; what the claim is about is the seats.
+      aimed: internal.aimPoses.slice(0, game.seatCount).map((p) => ({ x: p.x, y: p.y, z: p.z })),
       quarry: { x: quarry.x, z: quarry.z },
     };
   });
@@ -3376,7 +3429,14 @@ test('a paused couch swaps mode without going back to the title', async ({ page 
     .toBeLessThan(0.01);
 
   expect(swapped.inMatch.hidden, 'a couch pause menu is not offering the switch').toBe(false);
-  expect(swapped.inMatch.pressed).toEqual(['freeRide:false', 'knockabout:true']);
+  // **Every mode the couch offers, in the panel's own order** — M27 Phase 3
+  // put the race between the two that were here, and the list is emitted from
+  // `COUCH_RIDES` at both ends so a fourth mode moves both together. Exactly
+  // one is pressed, which is the claim: the chooser is a *report* of what the
+  // session is, not three buttons remembering their own last press.
+  expect(swapped.inMatch.pressed).toEqual(
+    COUCH_RIDES.map((ride) => `${ride}:${ride === 'knockabout'}`),
+  );
 
   expect(swapped.free.state, 'the switch never left the pause menu').toBe('freeRide');
   expect(swapped.free.paddles, 'the paddles came with them into a free ride').toBe(false);
@@ -3791,7 +3851,7 @@ test('a finished match becomes a free ride without going back to the title', asy
   expect(card.hidden, 'a couch results card is not offering the switch').toBe(false);
   expect(card.label, 'the card reports a session that is over as one in progress')
     .toBe('Play next');
-  expect(card.pressed).toEqual(['freeRide:false', 'knockabout:true']);
+  expect(card.pressed).toEqual(COUCH_RIDES.map((ride) => `${ride}:${ride === 'knockabout'}`));
 
   await page.locator(
     '.euc-menu--results [data-menu="switch-mode"][data-couch-mode="freeRide"]',

@@ -134,6 +134,27 @@
   inset: 0 0 0 auto;
 }
 
+/* ---------------------------------------------------------------------------
+ * The grid's second axis — M27 Phase 1
+ *
+ * Three or four seats are a 2x2 grid (`shared/paneGrid.ts`), so a pane gains a
+ * row. `data-row` is absent — written as "none" — for one and two seats, which
+ * is what leaves every rule above exactly as M25 measured it.
+ *
+ * **`top`/`bottom` must release the opposite edge, not merely set a height.**
+ * `inset: 0 auto 0 0` above pins top *and* bottom, and a box pinned at both
+ * ends ignores `height` entirely — the pane would silently stay full height
+ * and its lanes would sit over the rider below. So each row sets its own edge
+ * to `auto` before the height means anything.
+ * ------------------------------------------------------------------------ */
+.euc-hud-seat[data-split="true"][data-row="top"],
+.euc-hud-seat[data-split="true"][data-row="bottom"] {
+  height: 50%;
+}
+
+.euc-hud-seat[data-split="true"][data-row="top"] { top: 0; bottom: auto; }
+.euc-hud-seat[data-split="true"][data-row="bottom"] { top: auto; bottom: 0; }
+
 /* A seam, so two half-frames read as two views rather than as one wide one
    that has gone wrong. Drawn on the right half's leading edge, inside the
    container, so it needs no element of its own in either HUD. */
@@ -144,6 +165,113 @@
   width: 2px;
   background: rgb(0 0 0 / 45%);
 }
+
+/* The horizontal one, on the bottom row's leading edge, by the same argument.
+   `::after` rather than `::before` so the bottom-right pane can draw both. */
+.euc-hud-seat[data-split="true"][data-row="bottom"]::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: rgb(0 0 0 / 45%);
+}
+
+/* ---------------------------------------------------------------------------
+ * The idle quadrant — M27 Phase 1 (q95)
+ *
+ * Three seats draw three passes into a four-pane grid, so the bottom-right
+ * quarter is canvas nothing wrote. It gets the room's shared card: DOM over a
+ * pane, costing no pass. Placed by percentage for `ui/idlePane.ts`'s reason —
+ * the renderer rounds its boundary to a pixel and the browser lays this out,
+ * and writing a measured `left` from script every resize is the layout-in-JS
+ * rule DESIGN.md forbids.
+ *
+ * `pointer-events: none` on the same argument as `.euc-hud-seat`: this covers
+ * a quarter of everything the player is riding into.
+ * ------------------------------------------------------------------------ */
+.euc-idle {
+  position: fixed;
+  inset: auto 0 0 auto;
+  width: 50%;
+  height: 50%;
+  display: grid;
+  place-items: center;
+  padding: 1.2rem;
+  pointer-events: none;
+  z-index: 10;
+  /* The seams the drawn panes carry, so the hole reads as the fourth pane of a
+     grid rather than as a gap in one. */
+  border-top: 2px solid rgb(0 0 0 / 45%);
+  border-left: 2px solid rgb(0 0 0 / 45%);
+  background: #0b0f14;
+}
+
+.euc-idle[hidden] { display: none; }
+
+.euc-idle__card {
+  display: grid;
+  gap: 0.55rem;
+  align-content: center;
+  justify-items: start;
+  max-width: 26ch;
+}
+
+.euc-idle__title {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(0.95rem, calc(2.4 * var(--hud-vw, 0.5vw)), 1.25rem);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.euc-idle__rows {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 0.7rem;
+  margin: 0;
+  font-size: clamp(0.78rem, calc(1.7 * var(--hud-vw, 0.5vw)), 0.95rem);
+}
+
+.euc-idle__label {
+  margin: 0;
+  color: var(--ink-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.72em;
+  align-self: center;
+}
+
+.euc-idle__value {
+  margin: 0;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------------------
+ * The race countdown — M27 Phase 3 (§27.3, q88)
+ *
+ * Centred in the pane rather than placed in a lane, because a countdown is not
+ * a lane: it is the one moment in the mode where the room should be looking at
+ * the middle of their own quarter of the screen. `position: absolute` against
+ * the HUD's own box, so a quadrant's count sits in the quadrant.
+ *
+ * Sized in `--hud-vw` like everything else here, so a quarter-pane count is a
+ * quarter-pane count and not a full-screen one drawn into a corner.
+ * ------------------------------------------------------------------------ */
+.euc-hud__count {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+  font-size: clamp(3rem, calc(11 * var(--hud-vw)), 7rem);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0.12em 0.5em rgb(0 0 0 / 60%);
+  pointer-events: none;
+}
+
+.euc-hud__count[hidden] { display: none; }
 
 .euc-hud {
   position: fixed;
@@ -1493,7 +1621,14 @@
    Left as three equal columns wherever `data-compare` is true, which is the
    layout every card in this game has had since M10. */
 .euc-results__table[data-compare="false"] thead th:nth-child(2) { width: 34%; }
-.euc-results__table[data-compare="false"] thead th:last-child { width: 0; padding: 0; }
+/* **`nth-child(3)`, not `:last-child`** — M27 Phase 4. The comparison column
+   is the *third*, and it stopped being the last one the day the table grew a
+   fourth for the race's best lap. `:last-child` is structural and does not
+   care that the fourth heading is `display: none`, so the zero-width rule
+   silently moved onto a column nobody could see and gave the empty
+   comparison column back its 200 px — on four cards that had been correct
+   since M10. Name the column you mean. */
+.euc-results__table[data-compare="false"] thead th:nth-child(3) { width: 0; padding: 0; }
 .euc-results__table[data-compare="false"] .euc-results__row-delta { padding: 0; }
 
 .euc-results__table tbody tr { border-top: 1px solid var(--panel-edge); }
@@ -1527,6 +1662,40 @@
   color: var(--ink);
   opacity: 0.8;
 }
+
+/* ---------------------------------------------------------------------------
+ * A fourth column, when a mode has four things to say — M27 Phase 4
+ *
+ * The race's best lap. **The widths are re-declared for this case rather than
+ * left to fall through**, because `table-layout: fixed` takes its columns from
+ * the *first row* — M26 Phase 6's finding, and the reason three modes drew an
+ * unlabelled empty third for six milestones. A four-cell row under
+ * three-column widths would put the fourth column wherever there happened to
+ * be room.
+ * ------------------------------------------------------------------------ */
+/* **The heading has to actually leave**, and `[hidden]` alone does not do it
+   here: `table-layout: fixed` takes its columns from the first row, so a
+   fourth `<th>` that is merely invisible still claims a quarter of the table
+   and squeezes the three real columns — which is M26 Phase 6's finding
+   (three modes drew a nameless empty third for six milestones) arriving from
+   the other direction. The explicit rule is this stylesheet's idiom for
+   exactly this trap; `ui/notice.ts` records why the UA rule cannot be relied
+   on once a class has set `display`. */
+.euc-results__table th[hidden] { display: none; }
+
+.euc-results__row-extra {
+  padding: 0.42rem 0.5rem;
+  font-size: 0.92rem;
+  width: 22%;
+  text-align: right;
+  font-weight: 700;
+  color: var(--ink);
+  opacity: 0.8;
+}
+
+.euc-results__table:has(.euc-results__row-extra) .euc-results__row-label { width: 34%; }
+.euc-results__table:has(.euc-results__row-extra) .euc-results__row-time { width: 22%; }
+.euc-results__table:has(.euc-results__row-extra) .euc-results__row-delta { width: 22%; }
 
 .euc-results__row-delta[data-ahead="true"],
 .euc-results__delta[data-ahead="true"] {
@@ -2218,7 +2387,17 @@
 
 .euc-couch__seats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  /* **Four cards across, and the minimum is measured rather than chosen** —
+     M27 Phase 1. At 13rem the four seats a couch now offers wrapped to two
+     rows and pushed 91 px of the panel below the fold at 1000 x 520, which is
+     M23's "a new button is a fit problem before it is a markup problem" one
+     panel along. The panel is `min(52rem, 100%)` wide and the couch entrance
+     is refused below 1000 CSS px, so the narrowest row this rule ever has to
+     lay out is 832 px: four columns at 10.5 rem plus three 0.9 rem gaps is
+     715 px, which clears it with room for the panel's own padding. Below that
+     `auto-fit` still wraps, because a rule that could only ever be right at
+     one width is a rule nobody has checked. */
+  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
   gap: 0.9rem;
   margin: 0;
   padding: 0;
@@ -2239,7 +2418,19 @@
 .euc-couch__seat {
   display: grid;
   gap: 0.55rem;
-  align-content: start;
+  /* **The rider row is pinned to the bottom of the card, and that is a gamepad
+     rule rather than a taste** — M27 Phase 1. The cards are grid items and
+     already stretch to one another's height; what was not equal was where the
+     *arrows* sat inside them, because `align-content: start` floated every row
+     after however many lines that card's status line happened to wrap to. With
+     two cards both saying "Ready." that was invisible; with four, two of them
+     holding a longer sentence, the eight arrows stopped being one visual row —
+     and `ui/menuRows.ts` clusters by geometry, so the pad's Down went sideways
+     to the next card instead of down to the mode buttons. DESIGN.md §9g's rule
+     with the cause one level further in: a layout change is an input change,
+     and a row is only a row if it lines up. The status takes the slack. */
+  grid-template-rows: auto 1fr auto auto;
+  align-content: stretch;
   padding: 0.9rem;
   border: 1px solid var(--panel-edge);
   border-radius: 0.7rem;

@@ -291,6 +291,20 @@ export class LapEnvelope {
   private readonly minZ: Float64Array;
   private readonly maxZ: Float64Array;
   private readonly spans: number;
+  /**
+   * Arc length from the ring's first point to the start of each span, metres.
+   *
+   * **Added at M27 Phase 2, and it is referee work rather than new geometry**
+   * (§27.4 says so in as many words): a race orders riders who are all
+   * mid-lap, and "who is further round" is a question no boolean can answer.
+   * The ring was already here and already sampled at a fixed 2 m by
+   * `buildLevelPlan`; this is the running total nobody had needed yet.
+   *
+   * One entry per span plus a final total, so `distance[span + 1]` is always
+   * readable and the last entry is the lap length as walked rather than as
+   * declared — which is also the assertion that the two agree.
+   */
+  private readonly distance: Float64Array;
 
   readonly length: number;
 
@@ -311,6 +325,7 @@ export class LapEnvelope {
       this.x[index] = points[index].x;
       this.z[index] = points[index].z;
     }
+    this.distance = new Float64Array(spans + 1);
     for (let span = 0; span < spans; span += 1) {
       // The wider of the two ends, so a span between corridors of different
       // widths is never narrower than either of them thinks it is.
@@ -320,7 +335,64 @@ export class LapEnvelope {
       this.maxX[span] = Math.max(this.x[span], this.x[span + 1]) + reach;
       this.minZ[span] = Math.min(this.z[span], this.z[span + 1]) - reach;
       this.maxZ[span] = Math.max(this.z[span], this.z[span + 1]) + reach;
+      this.distance[span + 1] = this.distance[span] + Math.hypot(
+        this.x[span + 1] - this.x[span],
+        this.z[span + 1] - this.z[span],
+      );
     }
+  }
+
+  /**
+   * How far round the lap this point is, metres from the line — M27 Phase 2.
+   *
+   * The nearest point on the centreline, and the arc length to it. This is
+   * what orders two riders who have both closed the same number of laps and
+   * are somewhere out on the circuit, which is the standings question for all
+   * but the last second of a race.
+   *
+   * **A full scan, on `contains`' argument rather than in spite of it.** No
+   * cursor, no remembered span, no window: a stateful accelerator has to be
+   * right when a rider resets, respawns, or is put back on the line, and is
+   * wrong in a way that only shows up as a standings order nobody can explain.
+   * The circuit never crosses itself, so the whole-ring answer is unambiguous,
+   * and the arithmetic is the same shape the boolean already pays for.
+   *
+   * A point off the circuit still answers — the nearest place on the line to
+   * where they are, which is the honest reading of "how far round is somebody
+   * standing in the gravel". Whether that lap counts is `voided`'s question,
+   * not this one's.
+   */
+  progressAt(x: number, z: number): number {
+    let bestSquared = Infinity;
+    let best = 0;
+    for (let span = 0; span < this.spans; span += 1) {
+      const ax = this.x[span];
+      const az = this.z[span];
+      const dx = this.x[span + 1] - ax;
+      const dz = this.z[span + 1] - az;
+      const lengthSquared = dx * dx + dz * dz;
+      const t = lengthSquared > 0
+        ? Math.min(1, Math.max(0, ((x - ax) * dx + (z - az) * dz) / lengthSquared))
+        : 0;
+      const nx = x - (ax + dx * t);
+      const nz = z - (az + dz * t);
+      const squared = nx * nx + nz * nz;
+      if (squared >= bestSquared) continue;
+      bestSquared = squared;
+      best = this.distance[span] + t * (this.distance[span + 1] - this.distance[span]);
+    }
+    return best;
+  }
+
+  /**
+   * The ring's length as walked, which is what `progressAt` counts along.
+   *
+   * `length` above is the course's own declared figure and the two agree to
+   * within a rounding error; this is the one a progress number is a fraction
+   * of, exposed so a test can say so rather than assume it.
+   */
+  get walkedLength(): number {
+    return this.spans === 0 ? 0 : this.distance[this.spans];
   }
 
   /** Whether the point is on the circuit, verge included. */

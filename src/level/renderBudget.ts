@@ -4,6 +4,9 @@ import {
   NON_LEVEL_RESERVE,
   PART_COSTS,
   RENDER_BUDGET,
+  QUAD_NON_LEVEL_RESERVE,
+  QUAD_PASSES,
+  RENDER_BUDGET_QUAD,
   RENDER_BUDGET_SPLIT,
   SPLIT_NON_LEVEL_RESERVE,
   SPLIT_PASSES,
@@ -267,6 +270,58 @@ export function withinRenderBudget(plan: LevelPlan): BudgetVerdict {
       `${frame.triangles} triangles against a ceiling of ${RENDER_BUDGET.maxTriangles} `
       + `(${level.cellsDrawn} ground cells, ${level.fieldPatches} surround patches, `
       + `${level.markingQuads} paint quads)`,
+    );
+  }
+
+  return { ok: breaches.length === 0, frame, level, breaches };
+}
+
+/**
+ * Does this plan fit **Contract 3**, the desktop grid ceiling? — M27 Phase 1
+ * (`docs/PLANS.md` §27.5).
+ *
+ * A third sibling on `withinSplitRenderBudget`'s exact terms, and a sibling
+ * rather than a flag for the same reason: a verdict must mean one thing, and a
+ * parameter choosing which of three ceilings a plan was judged against is a
+ * verdict whose meaning depends on its caller.
+ *
+ * **`passes` states the frame's shape; it does not choose the ceiling.** Three
+ * or four seats are both this contract (§27.5: "a three-seat frame is three
+ * passes under the quad ceiling"), because what makes a frame this kind of
+ * frame is the 2x2 grid rather than how many people are sitting in it. It is
+ * clamped to the contract's own maximum so that a caller cannot ask for a
+ * verdict about a frame this ceiling was never priced for.
+ *
+ * `withinRenderBudget` is still what every generated route is validated
+ * against, because a route has to be rideable on a phone before it is
+ * rideable on a couch — three contracts, none with exemptions.
+ */
+export function withinQuadRenderBudget(
+  plan: LevelPlan,
+  passes: number = QUAD_PASSES,
+): BudgetVerdict {
+  const drawn = Math.min(QUAD_PASSES, Math.max(1, Math.floor(passes)));
+  const level = planRenderCost(plan);
+  const frame: RenderCost = {
+    drawCalls: (level.drawCalls + QUAD_NON_LEVEL_RESERVE.drawCalls) * drawn,
+    triangles: (level.triangles + QUAD_NON_LEVEL_RESERVE.triangles) * drawn,
+  };
+
+  const breaches: string[] = [];
+  if (frame.drawCalls > RENDER_BUDGET_QUAD.maxDrawCalls) {
+    breaches.push(
+      `${frame.drawCalls} grid draw calls against a ceiling of `
+      + `${RENDER_BUDGET_QUAD.maxDrawCalls} (${level.drawCalls} from the level and `
+      + `${QUAD_NON_LEVEL_RESERVE.drawCalls} reserved for four riders, the gates and the `
+      + `particles, each drawn ${drawn} times)`,
+    );
+  }
+  if (frame.triangles > RENDER_BUDGET_QUAD.maxTriangles) {
+    breaches.push(
+      `${frame.triangles} grid triangles against a ceiling of `
+      + `${RENDER_BUDGET_QUAD.maxTriangles} (${level.cellsDrawn} ground cells, `
+      + `${level.fieldPatches} surround patches, ${level.markingQuads} paint quads, `
+      + `drawn ${drawn} times)`,
     );
   }
 

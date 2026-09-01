@@ -211,6 +211,38 @@ export interface HudInput {
    */
   readonly knockabout?: { readonly struck: number; readonly total: number };
   /**
+   * The race grid's count, seconds remaining — M27 Phase 3 (q88).
+   *
+   * Absent in every other ride *and* in a race that has already started, which
+   * is the same distinction `knockabout` above draws: absent draws nothing,
+   * and zero is the moment the room is released. Seconds rather than a
+   * rendered number, because how a countdown is spelled is this layer's
+   * business and how long is left is the referee's.
+   */
+  readonly countdown?: number;
+  /**
+   * How this seat's race is going — M27 Phase 4 (§27.4).
+   *
+   * Absent in every other ride, on `knockabout`'s and `match`'s terms: absent
+   * draws no lane, and a race in its first metre draws `P1 / 4` and `Lap 1 / 3`
+   * because those are the numbers a rider on a grid wants to see.
+   *
+   * **This seat's point of view**, exactly as `match` is: the lane belongs to
+   * one person's quarter of the screen, and a scoreboard somebody has to work
+   * out which end of is theirs is a scoreboard they look across the seam to
+   * read (q80's argument, one mode along).
+   */
+  readonly race?: {
+    readonly position: number;
+    readonly seats: number;
+    readonly lap: number;
+    readonly laps: number;
+    /** Seconds behind the leader, or null while nobody has finished. */
+    readonly gapSeconds: number | null;
+    /** True once this rider has crossed for the last time (q97). */
+    readonly finished: boolean;
+  };
+  /**
    * How the couch match is going — M26 Phase 5, q80. Absent in every other
    * ride, and absent in single-player Knockabout.
    *
@@ -300,6 +332,23 @@ export interface HudInput {
   readonly trackDay?: TrackDayHudInput;
 }
 
+/**
+ * How a race grid's count is spelled — M27 Phase 3.
+ *
+ * `GO` rather than `0`, because zero is a number and this is an instruction —
+ * and the ceiling rather than a round, so "3" is on screen for the whole of
+ * the third second and the last thing a player sees before GO is "1".
+ *
+ * Absent means no countdown, which is every ride but a race about to start;
+ * that distinction is the caller's and is drawn the way `modeLane` draws its
+ * own (§14's "absent, not zeroed").
+ */
+function countdownLabel(input: HudInput): string {
+  const seconds = input.countdown;
+  if (seconds === undefined) return '';
+  return seconds > 0 ? `${Math.ceil(seconds)}` : 'GO';
+}
+
 export interface HudView {
   /** Already rounded and ready to write. No units — the unit has its own element. */
   readonly speed: string;
@@ -308,6 +357,14 @@ export interface HudView {
   readonly reversing: boolean;
   /** One line, top-centre. Empty means the lane is not drawn at all. */
   readonly objective: string;
+  /**
+   * The race count, already spelled — M27 Phase 3.
+   *
+   * Empty means no countdown is on screen, which is every ride but a race
+   * about to start. `GO` rather than `0`, because zero is a number and this is
+   * an instruction.
+   */
+  readonly countdown: string;
   readonly warning: HudWarning;
   /** The warning's own words. Empty when there is no warning. */
   readonly warningLabel: string;
@@ -616,7 +673,14 @@ function overspeedView(overspeed: number): OverspeedHudView {
 }
 
 /** The label above the one corner shared by Knockabout and the police chase. */
-function modeLaneLabel(input: Pick<HudInput, 'knockabout' | 'chase' | 'match'>): string {
+function modeLaneLabel(input: Pick<HudInput, 'knockabout' | 'chase' | 'match' | 'race'>): string {
+  // **The race first, because it is the only one of these that can be over
+  // while the rider is still riding** (q97): a finished rider keeps their
+  // position on screen under a banner, and a lane that went on counting laps
+  // would be describing a race they are no longer in.
+  if (input.race !== undefined) {
+    return input.race.finished ? 'Finished' : `Lap ${input.race.lap} / ${input.race.laps}`;
+  }
   if (input.chase !== undefined) return 'Survive';
   // **Ahead of `knockabout`**, because a match is a Knockabout run and the
   // discs are its side tally rather than the thing on the line — M26 Phase 5.
@@ -636,8 +700,27 @@ function modeLaneLabel(input: Pick<HudInput, 'knockabout' | 'chase' | 'match'>):
  * is assembled from.
  */
 function modeLane(input: HudInput): string {
+  if (input.race !== undefined) return positionLabel(input.race.position);
   if (input.match !== undefined) return matchTally(input.match, (score) => score.knockdowns);
   return knockaboutLane(input.knockabout);
+}
+
+/**
+ * `1st`, `2nd`, `3rd`, `4th` — M27 Phase 4.
+ *
+ * An ordinal rather than `P2`, because the lane is one glance in a quarter of
+ * a screen and "second" is the word a room says out loud. The general form is
+ * here rather than a four-entry table for the same reason `guestBeside` is
+ * derived: a fifth seat would silently print nothing from a table.
+ */
+function positionLabel(position: number): string {
+  const tens = position % 100;
+  if (tens >= 11 && tens <= 13) return `${position}th`;
+  const ones = position % 10;
+  if (ones === 1) return `${position}st`;
+  if (ones === 2) return `${position}nd`;
+  if (ones === 3) return `${position}rd`;
+  return `${position}th`;
 }
 
 /** The second row, switched off. Frozen and shared: every ride but a match. */
@@ -660,6 +743,23 @@ const NO_SUB_LANE = Object.freeze({ label: '', value: '' });
  * left. Both go in one row: `1 – 10 of 17`.
  */
 function modeSubLane(input: HudInput): { readonly label: string; readonly value: string } {
+  if (input.race !== undefined) {
+    // **The live gap, and only once there is one to be behind.** Before the
+    // leader finishes there is no number here that means anything — a gap
+    // measured mid-lap is a distance dressed as a time — so the row says how
+    // many people are in the race instead, which is the other thing a rider
+    // glancing at a quarter-pane actually wants. Once the leader is home the
+    // referee's gap is live for everybody: counting up for a rider still out,
+    // frozen by their own crossing (QA repair, 2026-08-31 — it used to wait
+    // for *this* rider's finish, so the promise above was never kept).
+    //
+    // `Winner` needs the finish as well as the zero: a rider still riding on
+    // the leader's own step has a gap of zero and has won nothing.
+    const gap = input.race.gapSeconds;
+    if (gap === null) return { label: 'Riders', value: `${input.race.seats}` };
+    if (input.race.finished && gap <= 0) return { label: 'Gap', value: 'Winner' };
+    return { label: 'Gap', value: `+${Math.max(0, gap).toFixed(2)}` };
+  }
   if (input.match === undefined) return NO_SUB_LANE;
   const struck = matchTally(input.match, (score) => score.discs);
   const total = input.knockabout?.total;
@@ -894,6 +994,7 @@ export class HudModel {
         speedUnit: this.speedUnit,
         reversing: false,
         objective: this.objectiveFor(input),
+        countdown: countdownLabel(input),
         warning: 'none',
         warningLabel: '',
         offRoute: false,
@@ -958,6 +1059,7 @@ export class HudModel {
       speedUnit: this.speedUnit,
       reversing: input.speed < -0.1,
       objective: this.objectiveFor(input),
+      countdown: countdownLabel(input),
       warning,
       warningLabel: WARNING_LABELS[warning],
       offRoute: this.offRoute,
@@ -1029,8 +1131,21 @@ export class HudModel {
    * quiet so the finish itself is the only thing happening on screen.
    */
   private objectiveFor(
-    input: Pick<HudInput, 'challenge' | 'trackDay' | 'chase'>,
+    input: Pick<HudInput, 'challenge' | 'trackDay' | 'chase' | 'race'>,
   ): string {
+    // **The finished rider's banner** — q97. They keep riding, so the pane is
+    // not dead; what changes is that the line above them names where they came
+    // rather than what is left to do. It takes the objective lane because that
+    // lane is already the one sentence the mode is allowed to say, and a race
+    // that has ended for this rider has exactly one thing to tell them.
+    // **The finished rider's banner** — q97. They keep riding, so the pane is
+    // not dead; what changes is that the line above them names where they came
+    // rather than what is left to do. It takes the objective lane because that
+    // lane is already the one sentence the mode is allowed to say, and a race
+    // that has ended for this rider has exactly one thing to tell them.
+    if (input.race !== undefined && input.race.finished) {
+      return `Finished — ${positionLabel(input.race.position)}`;
+    }
     const challenge = input.challenge;
     const chase = input.chase;
     // **The chase takes the line before the timed run gets a look at it**, and

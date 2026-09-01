@@ -43,32 +43,32 @@ test('a pad that has been seen is a second device even with no mouse', () => {
 
 test('the guest is never the rider the player is already wearing', () => {
   for (const id of CHARACTER_IDS) {
-    assert.notEqual(guestBeside(id), id, `${id} was offered themselves`);
+    assert.notEqual(guestBeside([id]), id, `${id} was offered themselves`);
   }
   // Including the one rider nobody may choose — the cop is a `CharacterId`.
-  assert.ok(CHARACTER_IDS.includes(guestBeside('cop')));
+  assert.ok(CHARACTER_IDS.includes(guestBeside(['cop'])));
 });
 
 test('cycling the guest card walks the roster and steps over the player', () => {
   const taken = DEFAULT_CHARACTER;
-  let id = guestBeside(taken);
+  let id = guestBeside([taken]);
   const seen = new Set<string>();
   // One full lap of the roster's *reachable* entries, which is every character
   // but the player's own.
   for (let step = 0; step < CHARACTER_IDS.length - 1; step += 1) {
     assert.notEqual(id, taken, 'the card stopped on the player’s own rider');
     seen.add(id);
-    id = cycleGuest(id, taken, 1);
+    id = cycleGuest(id, [taken], 1);
   }
   assert.equal(seen.size, CHARACTER_IDS.length - 1, 'the card cannot reach every other rider');
-  assert.equal(id, guestBeside(taken), 'a full lap did not come back to the start');
+  assert.equal(id, guestBeside([taken]), 'a full lap did not come back to the start');
 });
 
 test('cycling backwards is the exact inverse of cycling forwards', () => {
   const taken = CHARACTER_IDS[2];
   for (const start of CHARACTER_IDS) {
     if (start === taken) continue;
-    assert.equal(cycleGuest(cycleGuest(start, taken, 1), taken, -1), start, `${start} did not return`);
+    assert.equal(cycleGuest(cycleGuest(start, [taken], 1), [taken], -1), start, `${start} did not return`);
   }
 });
 
@@ -76,12 +76,12 @@ test('a two-rider roster with one taken has exactly one reachable card', () => {
   // The degenerate case a wrapping search has to survive: every step lands on
   // the taken rider except one. Proven against the real roster by taking every
   // entry but two out of consideration — `cycleGuest` may not spin.
-  const taken = CHARACTER_IDS[0];
   const only = CHARACTER_IDS[1];
   // Walking from the only reachable card must return it rather than hang or
   // fall off the roster.
-  assert.ok(CHARACTER_IDS.includes(cycleGuest(only, taken, 1)));
-  assert.ok(CHARACTER_IDS.includes(cycleGuest(only, taken, -1)));
+  const others = CHARACTER_IDS.filter((id) => id !== only);
+  assert.ok(CHARACTER_IDS.includes(cycleGuest(only, others, 1)));
+  assert.ok(CHARACTER_IDS.includes(cycleGuest(only, others, -1)));
 });
 
 // ---------------------------------------------------------------------------
@@ -90,8 +90,14 @@ test('a two-rider roster with one taken has exactly one reachable card', () => {
 
 test('the panel offers exactly the rides the game can start into', () => {
   // A list rather than a hand-walked union, so the control, the default and the
-  // specs cannot drift. The couch race joins it when it is built (§26.7).
-  assert.deepEqual([...COUCH_RIDES], ['freeRide', 'knockabout']);
+  // specs cannot drift. **The couch race joined at M27 Phase 3**, exactly as
+  // §26.7 said it would — this list and the panel's own control, no new menu.
+  //
+  // The order is the order the panel offers them and is asserted as such: free
+  // ride first because it is the default and the quietest, the race second
+  // because it is what most rooms sitting down together came for, Knockabout
+  // last because choosing a fight is a thing you do on purpose.
+  assert.deepEqual([...COUCH_RIDES], ['freeRide', 'race', 'knockabout']);
   assert.ok(COUCH_RIDES.includes(DEFAULT_COUCH_RIDE), 'the default must be offerable');
   assert.equal(DEFAULT_COUCH_RIDE, 'freeRide', 'the quietest ride is the one you get by default');
 });

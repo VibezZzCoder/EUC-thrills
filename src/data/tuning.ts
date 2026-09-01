@@ -2358,6 +2358,26 @@ export const CAMERA = {
    */
   splitFovGain: 1.22,
   splitFovCap: 1.52,
+
+  /**
+   * The same question for a **quadrant**, whose answer is "almost nothing" —
+   * M27 Phase 1 (§27.2).
+   *
+   * Everything above is an argument about a *half*, and every number in it
+   * comes from halving the aspect on one axis. Three or four seats halve both
+   * axes, so each pane keeps the canvas's own 16:9 and the keyhole the gain
+   * exists to reopen never closes: a 960x540 quadrant of a 1920x1080 canvas
+   * frames exactly what the full canvas frames, at a quarter of the pixels.
+   *
+   * So it ships at 1 — **the value that switches the treatment off**, which is
+   * this project's way of recording a decision where it will be found rather
+   * than leaving four players silently sharing two players' widening. It is
+   * live-tunable beside the other two because §27.6 gives the same owner look
+   * the final say on the grid's projection that §25.5 gave it on the split's,
+   * and because a shape nobody has ridden yet is exactly the shape worth being
+   * able to move by eye.
+   */
+  quadFovGain: 1,
   /** Spring-arm length, metres, eased with speed. */
   distanceAtRest: 4.2,
   distanceAtSpeed: 6.0,
@@ -5109,6 +5129,27 @@ export const AUDIO = {
   hitNoiseHz: 1150,
   hitNoiseSeconds: 0.10,
 
+  /**
+   * The race countdown, and the release — M27 Phase 3 (§27.3).
+   *
+   * **Its own cue, its own timer, its own duck**, and the plan says so in as
+   * many words for M20's reason: routing a new warning through `beepPattern`
+   * is how the removed over-speed beeping came back. This is a tone, not a
+   * beep pattern, and nothing here touches the power ladder.
+   *
+   * Two pitches, an octave apart, so a room hears the difference between "not
+   * yet" and "go" without being told which is which — the count is the lower
+   * one because a rising interval is what every start light in the world does.
+   * Short, because a countdown that rings into the first corner is the kind of
+   * thing the standing annoyance rule removes rather than tunes.
+   */
+  raceCountLevel: 0.34,
+  raceCountToneHz: 660,
+  raceCountToneSeconds: 0.12,
+  raceGoLevel: 0.46,
+  raceGoToneHz: 1320,
+  raceGoToneSeconds: 0.30,
+
   crashLevel: 0.80,
   crashThumpFromHz: 130,
   crashThumpToHz: 38,
@@ -5178,6 +5219,14 @@ export const AUDIO = {
   // must not push the ride down every time the player tries. A landed hit is
   // the payoff and ducks like a landing does.
   duckSwing: 0.06,
+  /**
+   * How far the bed ducks under the countdown — M27 Phase 3.
+   *
+   * Deeper than a swing and shallower than a crash: the room is meant to hear
+   * it over four wheels idling on a grid, and it is the one moment in a race
+   * where nothing else is happening.
+   */
+  duckRaceCue: 0.16,
   duckHit: 0.22,
   duckCrash: 0.55,
   /** The crash duck alone releases slowly: the aftermath is part of the crash. */
@@ -5921,6 +5970,58 @@ export const KNOCKABOUT = {
 } as const;
 
 /**
+ * The couch race — M27 (`docs/PLANS.md` §27.3, §27.4).
+ *
+ * Three numbers, and every one of them is an owner answer rather than a
+ * default. The group is deliberately small on `KNOCKABOUT`'s exact argument: a
+ * `RACE.gridRows` or a `RACE.pointsForSecond` would be a slider that had
+ * quietly reopened a settled design decision, and §27.9 lists what this
+ * milestone does *not* do.
+ *
+ * All three reach F4, because §27.6's Phase 5 ride gate is what judges them
+ * and a number the owner can only report is a number he has to wait on. The
+ * suite holds each of them to M26's rule — **a tunable is only testable by
+ * moving it** — so two far-apart settings of every one of these must be
+ * visibly distinguishable.
+ */
+export const RACE = {
+  /**
+   * How many laps a race is — q91's "fixed three laps, no picker".
+   *
+   * Three because BelVar's lap is 40-70 seconds, which makes a 2-4 minute
+   * race: long enough for a mistake to cost something and short enough to want
+   * another one immediately. **No picker UI** — the join panel does not reflow
+   * for a number nobody asked to choose.
+   */
+  laps: 3,
+
+  /**
+   * The standing start's count, seconds — q88, q96.
+   *
+   * Every seat's intent is replaced with neutral at the composition root until
+   * this reaches zero, so nobody creeps and nobody jump-starts. **Zero is a
+   * legal setting and means an instant start**, which is the same code path
+   * rather than a branch: one shape is what makes the knob testable.
+   */
+  countdownSeconds: 3,
+
+  /**
+   * How long the race waits for the field after the leader finishes, seconds.
+   *
+   * **Ships at 0, and 0 switches the cap off** — `PADDLE.hardKnockShare`'s
+   * precedent, and the rule `AGENTS.md` states: a tunable shipped at the value
+   * that disables it is a decision recorded where it will be found. q89's
+   * answer is the kart convention — the leader's finish ends the race and
+   * everybody else finishes the lap they are on — and the owner chose it
+   * knowing a rider a lap down can hold the room up for one lap. If a real
+   * couch is ever annoyed by that wait, this is the named constant it becomes,
+   * not a design argument: riders still out past leader-finish plus this are
+   * classified by progress.
+   */
+  finishGraceSeconds: 0,
+} as const;
+
+/**
  * Rider-to-rider contact — M26.
  *
  * Contact is resolved in the ground plane as one symmetric soft-body bump:
@@ -6319,6 +6420,7 @@ export const TUNING = deepFreeze({
   PADDLE,
   TARGET,
   KNOCKABOUT,
+  RACE,
   CONTACT,
   CHASE,
   FX,
@@ -7730,6 +7832,18 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
       + 'to the same value.',
   },
   {
+    path: 'CAMERA.quadFovGain',
+    group: 'Camera',
+    label: 'Quad FOV gain',
+    unit: 'x',
+    min: 0.8,
+    max: 1.6,
+    step: 0.01,
+    note: 'The same widening for a three- or four-way grid, which needs almost '
+      + 'none: a quadrant keeps the whole screen\'s 16:9 and loses no '
+      + 'horizontal angle. Ships at 1.0 — off. The cap above still applies.',
+  },
+  {
     path: 'CAMERA.lookAheadSeconds',
     group: 'Camera',
     label: 'Look-ahead',
@@ -8002,6 +8116,29 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
       + 'annoying — keep it under the hit.',
   },
   {
+    path: 'AUDIO.raceCountLevel',
+    group: 'Audio',
+    label: 'Race countdown',
+    unit: '',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    note: 'The 3-2-1 tone on a race grid. Its own cue and its own duck — it '
+      + 'shares nothing with the power ladder, so turning it down cannot '
+      + 'revive the over-speed beeping M13 removed.',
+  },
+  {
+    path: 'AUDIO.raceGoLevel',
+    group: 'Audio',
+    label: 'Race GO',
+    unit: '',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    note: 'The release, an octave above the count. Louder on purpose: it is '
+      + 'the one instruction in the mode and four people are listening for it.',
+  },
+  {
     path: 'AUDIO.hitLevel',
     group: 'Audio',
     label: 'Paddle hit',
@@ -8041,6 +8178,43 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
 
   // Rider contact — M26 Phase 0. These move during the parked-rider ride gate;
   // they are physical developer tuning and never enter GameOptions.
+  {
+    path: 'RACE.laps',
+    group: 'Ride — race',
+    label: 'Laps',
+    unit: '',
+    min: 1,
+    max: 10,
+    step: 1,
+    note: 'How many laps a couch race is. Three makes a 2-4 minute race at '
+      + 'BelVar. There is deliberately no picker on the join panel — this is '
+      + 'the knob, and the ride gate is what it is for.',
+  },
+  {
+    path: 'RACE.countdownSeconds',
+    group: 'Ride — race',
+    label: 'Countdown',
+    unit: 's',
+    min: 0,
+    max: 10,
+    step: 0.5,
+    note: 'How long the grid is held before GO. Nobody can steer, throttle or '
+      + 'hop until it runs out. Zero is a legal setting and means an instant '
+      + 'start.',
+  },
+  {
+    path: 'RACE.finishGraceSeconds',
+    group: 'Ride — race',
+    label: 'Finish grace',
+    unit: 's',
+    min: 0,
+    max: 60,
+    step: 1,
+    note: 'How long the race waits for the field after the leader crosses. '
+      + 'Ships at 0, which switches the cap off and lets everybody finish the '
+      + 'lap they are on; anything above it ends the race there and classifies '
+      + 'whoever is still out by how far round they are.',
+  },
   {
     path: 'CONTACT.radiusMetres',
     group: 'Ride — contact',

@@ -7,11 +7,14 @@ import type { BoxCollider, Heightfield, LevelPlan } from '../level/plan.ts';
 import { PlanTerrainSampler } from './planSampler.ts';
 import { CHASE } from '../data/tuning.ts';
 import { Paddle } from './paddle.ts';
+import { insideCheckpoint } from './challenge.ts';
 import {
   DUEL_LATERAL_METRES,
   SLOT_LATERAL_METRES,
   SLOT_MIN_SEPARATION_METRES,
+  SLOT_STAGGER_METRES,
   SLOT_STEP_TOLERANCE_METRES,
+  raceGridSlot,
   spawnSlot,
 } from './spawnSlots.ts';
 import type { SurfaceId } from './world.ts';
@@ -151,6 +154,52 @@ test('all four LevelPlan producers seat a second rider beside the first', () => 
   for (const { label, plan } of plans) assertSeatedBeside(label, plan);
 });
 
+test('all four producers seat a full couch, each rider on the road and clear of the rest', () => {
+  // **M27 Phase 1's contract, and the reason it is stated over the producers
+  // rather than over the proving ground.** The generality test below proves
+  // the *slot function* answers for four riders on a flat instrument; this
+  // proves the four worlds a couch can actually be opened on have somewhere to
+  // put them. A slot that falls back to the plan's own spawn on a narrow beat
+  // is two riders on one point, which the separation clause catches — and a
+  // fallback nobody notices is exactly how a four-seat free ride would ship
+  // with two players standing inside each other on one of the four worlds.
+  for (const { label, plan } of shippedPlans()) {
+    const terrain = new PlanTerrainSampler(plan);
+    const seats = [0, 1, 2, 3].map((index) => spawnSlot(plan.spawn, index, terrain));
+    const sample = createGroundSample();
+    terrain.sampleGround(seats[0].position.x, seats[0].position.z, sample);
+    const groundHeight = sample.height;
+
+    for (let seat = 1; seat < seats.length; seat += 1) {
+      terrain.sampleGround(seats[seat].position.x, seats[seat].position.z, sample);
+      assert.equal(sample.offCourse, false, `${label}: seat ${seat} starts off the course`);
+      assert.ok(
+        Math.abs(sample.height - groundHeight) <= SLOT_STEP_TOLERANCE_METRES,
+        `${label}: seat ${seat} starts ${(sample.height - groundHeight).toFixed(3)} m off seat 0's `
+          + 'ground, which is a step rather than a road',
+      );
+      assert.equal(
+        seats[seat].headingY,
+        seats[0].headingY,
+        `${label}: seat ${seat} starts facing a different way`,
+      );
+    }
+
+    for (let a = 0; a < seats.length; a += 1) {
+      for (let b = a + 1; b < seats.length; b += 1) {
+        const gap = Math.hypot(
+          seats[a].position.x - seats[b].position.x,
+          seats[a].position.z - seats[b].position.z,
+        );
+        assert.ok(
+          gap >= SLOT_MIN_SEPARATION_METRES,
+          `${label}: seats ${a} and ${b} start ${gap.toFixed(3)} m apart`,
+        );
+      }
+    }
+  }
+});
+
 test('every generated route in the sweep seats a second rider beside the first', () => {
   for (const seed of SWEEP) {
     assertSeatedBeside(`generated ${seed}`, generateLevel(seed).plan);
@@ -287,6 +336,81 @@ test('a third and fourth rider get their own slots, on alternating sides', () =>
       );
       assert.ok(gap >= SLOT_MIN_SEPARATION_METRES, `seats ${a + 1} and ${b + 1} overlap`);
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The race grid — M27 Phase 3
+// ---------------------------------------------------------------------------
+
+test('a race grid lines four riders up behind the line, in rows of two', () => {
+  // The venue the race is for, and the only world that has a lap today. The
+  // claim is the one every producer here makes: everybody is on the road,
+  // everybody is clear of everybody, and nobody is standing in the gate.
+  const plan = createLevel('track', 'euc');
+  const terrain = new PlanTerrainSampler(plan);
+  const line = [...plan.checkpoints].sort((a, b) => a.routeIndex - b.routeIndex)[0];
+  assert.equal(line.kind, 'start', 'the fixture is not the start line');
+
+  const grid = [0, 1, 2, 3].map((index) => raceGridSlot(line, index, terrain));
+  const sample = createGroundSample();
+
+  // The rider's own frame: forward is the line's heading, so "behind" is a
+  // negative forward component and "beside" is the lateral one.
+  const forwardX = Math.sin(line.headingY);
+  const forwardZ = Math.cos(line.headingY);
+  const leftX = Math.cos(line.headingY);
+  const leftZ = -Math.sin(line.headingY);
+  const behind = (slot: { position: { x: number; z: number } }) => -(
+    (slot.position.x - line.centre.x) * forwardX + (slot.position.z - line.centre.z) * forwardZ
+  );
+  const beside = (slot: { position: { x: number; z: number } }) => (
+    (slot.position.x - line.centre.x) * leftX + (slot.position.z - line.centre.z) * leftZ
+  );
+
+  for (const [index, slot] of grid.entries()) {
+    terrain.sampleGround(slot.position.x, slot.position.z, sample);
+    assert.equal(sample.offCourse, false, `grid slot ${index} is off the course`);
+    assert.equal(slot.headingY, line.headingY, `grid slot ${index} faces the wrong way`);
+    assert.ok(
+      behind(slot) >= SLOT_STAGGER_METRES - 1e-6,
+      `grid slot ${index} is ${behind(slot).toFixed(2)} m behind the line — inside the gate`,
+    );
+  }
+
+  // Rows of two: the back row is a stagger further back than the front row.
+  assert.ok(behind(grid[2]) > behind(grid[0]) + 1e-6, 'row two is not behind row one');
+  assert.ok(Math.abs(behind(grid[0]) - behind(grid[1])) < 1e-6, 'the front row is staggered');
+  assert.ok(Math.abs(behind(grid[2]) - behind(grid[3])) < 1e-6, 'the back row is staggered');
+  // And the two columns are on opposite sides of the centreline.
+  assert.ok(beside(grid[0]) < 0, 'seat 0 should line up on the leading rider’s right');
+  assert.ok(beside(grid[1]) > 0, 'seat 1 should line up on the leading rider’s left');
+
+  for (let a = 0; a < grid.length; a += 1) {
+    for (let b = a + 1; b < grid.length; b += 1) {
+      const gap = Math.hypot(
+        grid[a].position.x - grid[b].position.x,
+        grid[a].position.z - grid[b].position.z,
+      );
+      assert.ok(gap >= SLOT_MIN_SEPARATION_METRES, `grid slots ${a} and ${b} overlap`);
+    }
+  }
+});
+
+test('a race grid puts nobody inside the start line’s own volume', () => {
+  // The rule that is not about tidiness: a rider standing in the gate at GO
+  // has their first crossing swallowed by the referee's `insideStart` latch,
+  // and the standing start's out-lap depends on that crossing happening.
+  const plan = createLevel('track', 'euc');
+  const terrain = new PlanTerrainSampler(plan);
+  const line = [...plan.checkpoints].sort((a, b) => a.routeIndex - b.routeIndex)[0];
+  for (const index of [0, 1, 2, 3]) {
+    const slot = raceGridSlot(line, index, terrain);
+    assert.equal(
+      insideCheckpoint(line, slot.position.x, slot.position.y, slot.position.z),
+      false,
+      `grid slot ${index} starts inside the line`,
+    );
   }
 });
 
