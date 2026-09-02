@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { crashFor, type CrashVoiceId, type SampleBank } from './sink.ts';
 
 /**
- * The five crash recordings, asserted as *files* rather than as wiring.
+ * The six crash recordings, asserted as *files* rather than as wiring.
  *
  * M19 §19.8 is the only place in this project where an owner requirement is
  * about a file's bytes — "the same length as Cool Rider's, a different file,
@@ -25,6 +25,14 @@ import { crashFor, type CrashVoiceId, type SampleBank } from './sink.ts';
  * everywhere except in the bytes — `lastCrashVoice` would report `maribel`
  * either way — so the different-files test is what proves the interim is
  * actually over.
+ *
+ * M28 §28.10 added the sixth, and it is the one the different-files test was
+ * written *against*: the owner asked for Red Rider's crash — his own wipeout
+ * with his own voice removed — as a new file for Wheel in Motion, and a byte
+ * copy is exactly what this file refuses. So his is a second render of the
+ * same treatment from a different voice-free donor, identical to Red Rider's
+ * everywhere except the 0.8 s that was rebuilt, and the sibling test below
+ * says both halves of that.
  */
 
 const AUDIO = join(import.meta.dirname, '..', '..', 'assets', 'live', 'audio');
@@ -53,6 +61,7 @@ const trollina = readWav('crash_trollina.wav');
 const redRider = readWav('crash_red_rider.wav');
 const adonisb2 = readWav('crash_adonisb2.wav');
 const maribel = readWav('crash_maribel.wav');
+const wheelInMotion = readWav('crash_wheel_in_motion.wav');
 
 test('every rider\'s crash is exactly as long as Cool Rider\'s', () => {
   // `audio/director.ts` ducks the mix on one envelope whoever is riding, so a
@@ -72,9 +81,13 @@ test('every rider\'s crash is exactly as long as Cool Rider\'s', () => {
   // begins at 3.518 — which is why her impact lands at 0.492 s and not at
   // 0.347 s where the owner's does. See `tools/make-crash-maribel.mjs`.
   assert.equal(maribel.length, coolRider.length);
+  // And his is the owner's file re-rendered, so its length is the owner's by
+  // construction — asserted anyway, because this is the rule that survives a
+  // hand-replaced file.
+  assert.equal(wheelInMotion.length, coolRider.length);
 });
 
-test('the five crashes are five different recordings', () => {
+test('the six crashes are six different recordings', () => {
   // Cheap, and it closes the gap every other test in this file leaves open: a
   // build where one crash was copied over another passes the length rule, the
   // loudness rule, and `crashFor`'s four-buffer check, and ships a rider
@@ -82,6 +95,7 @@ test('the five crashes are five different recordings', () => {
   const files: readonly (readonly [string, Int16Array])[] = [
     ['cool-rider', coolRider], ['trollina', trollina],
     ['red-rider', redRider], ['adonisb2', adonisb2], ['maribel', maribel],
+    ['wheel-in-motion', wheelInMotion],
   ];
   for (let i = 0; i < files.length; i += 1) {
     for (let j = i + 1; j < files.length; j += 1) {
@@ -127,6 +141,51 @@ test('Red Rider\'s crash is the owner\'s recording, changed only where the voice
   // leaving the words in. 0.7 s of a 44.1 kHz file is ~30,000 samples, and the
   // substituted band is dense, so anything under this is a broken run.
   assert.ok(changed > 30_000, `only ${changed} samples differ — the substitution did not run`);
+});
+
+test('Wheel in Motion\'s crash is Red Rider\'s, changed only where the voice was — and changed', () => {
+  // **The sibling render, in both directions** (M28 §28.10). The owner asked
+  // for "the same crash as Red Rider but a new file", and the file has to be
+  // both things at once: outside the voice window it is the owner's recording
+  // sample for sample, which means it is *identical to Red Rider's* there;
+  // inside the window it is a different voice-free stretch of the same take,
+  // which means it *differs* from Red Rider's there — and from the owner's,
+  // since the voice is what was taken out. A byte copy fails the second half;
+  // a third rider's recording fails the first.
+  let first = -1;
+  let last = -1;
+  let changedFromRed = 0;
+  for (let i = 0; i < redRider.length; i += 1) {
+    if (redRider[i] !== wheelInMotion[i]) {
+      if (first === -1) first = i;
+      last = i;
+      changedFromRed += 1;
+    }
+  }
+  assert.ok(changedFromRed > 30_000, `only ${changedFromRed} samples differ from Red Rider's — this is his file again`);
+  assert.ok(first / RATE >= 0.75, `he differs from Red Rider from ${(first / RATE).toFixed(3)} s, before the voice`);
+  assert.ok(last / RATE <= 1.57, `he differs from Red Rider to ${(last / RATE).toFixed(3)} s, after the voice`);
+
+  // And against the owner's: the same window, and the voice not in it. The
+  // owner's loudest sample is at 0.347 s, outside the window, and is copied
+  // across verbatim — so the rebuilt window may not out-peak it.
+  let changedFromOwner = 0;
+  let firstOwn = -1;
+  let lastOwn = -1;
+  for (let i = 0; i < coolRider.length; i += 1) {
+    if (coolRider[i] !== wheelInMotion[i]) {
+      if (firstOwn === -1) firstOwn = i;
+      lastOwn = i;
+      changedFromOwner += 1;
+    }
+  }
+  assert.ok(changedFromOwner > 30_000, 'the voice is still in it');
+  assert.ok(firstOwn / RATE >= 0.75 && lastOwn / RATE <= 1.57, 'he differs from the owner outside the voice window');
+  let windowPeak = 0;
+  for (let i = firstOwn; i <= lastOwn; i += 1) windowPeak = Math.max(windowPeak, Math.abs(wheelInMotion[i]));
+  let ownerPeak = 0;
+  for (let i = 0; i < coolRider.length; i += 1) ownerPeak = Math.max(ownerPeak, Math.abs(coolRider[i]));
+  assert.ok(windowPeak <= ownerPeak, 'the rebuilt window peaks above the loudest sample of the owner\'s recording');
 });
 
 const peakBetween = (samples: Int16Array, from = 0, to = samples.length): number => {
@@ -201,7 +260,7 @@ test('Adonisb2\'s crash hits inside the first second', () => {
   );
 });
 
-test('Red Rider\'s crash does not carry the owner\'s voice band', () => {
+test('neither Red Rider\'s crash nor Wheel in Motion\'s carries the owner\'s voice band', () => {
   // **The assertion that carries §19.8's actual requirement.**
   //
   // The location test above proves *where* bytes changed; it would pass just as
@@ -233,33 +292,38 @@ test('Red Rider\'s crash does not carry the owner\'s voice band', () => {
     return out;
   };
 
-  let first = redRider.length;
-  let last = 0;
-  for (let i = 0; i < coolRider.length; i += 1) {
-    if (coolRider[i] !== redRider[i]) { first = Math.min(first, i); last = Math.max(last, i); }
-  }
-  // Inside the crossfades both signals are partly the same audio by design, so
-  // the measurement is taken over the core, 60 ms clear of each seam.
-  const margin = Math.round(0.06 * RATE);
-  const from = first + margin;
-  const to = last - margin;
-  assert.ok(to > from, 'the changed window is too short to measure');
-
   const source = midBand(coolRider);
-  const his = midBand(redRider);
-  let dot = 0;
-  let a = 0;
-  let b = 0;
-  for (let i = from; i < to; i += 1) {
-    dot += source[i] * his[i];
-    a += source[i] ** 2;
-    b += his[i] ** 2;
+  // The same measurement over both renders — M28's sibling file is the same
+  // treatment from a different donor, and it has to clear the same bar on its
+  // own rather than inherit Red Rider's result.
+  for (const [name, file] of [['Red Rider', redRider], ['Wheel in Motion', wheelInMotion]] as const) {
+    let first = file.length;
+    let last = 0;
+    for (let i = 0; i < coolRider.length; i += 1) {
+      if (coolRider[i] !== file[i]) { first = Math.min(first, i); last = Math.max(last, i); }
+    }
+    // Inside the crossfades both signals are partly the same audio by design,
+    // so the measurement is taken over the core, 60 ms clear of each seam.
+    const margin = Math.round(0.06 * RATE);
+    const from = first + margin;
+    const to = last - margin;
+    assert.ok(to > from, `${name}'s changed window is too short to measure`);
+
+    const his = midBand(file);
+    let dot = 0;
+    let a = 0;
+    let b = 0;
+    for (let i = from; i < to; i += 1) {
+      dot += source[i] * his[i];
+      a += source[i] ** 2;
+      b += his[i] ** 2;
+    }
+    const correlation = dot / (Math.sqrt(a * b) + 1e-18);
+    assert.ok(
+      Math.abs(correlation) < 0.25,
+      `the speech band of ${name}'s crash still correlates ${correlation.toFixed(3)} with the owner's`,
+    );
   }
-  const correlation = dot / (Math.sqrt(a * b) + 1e-18);
-  assert.ok(
-    Math.abs(correlation) < 0.25,
-    `the speech band of his crash still correlates ${correlation.toFixed(3)} with the owner's`,
-  );
 });
 
 test('her crash carries her voice, and then her wheel beeping on the floor', () => {
@@ -397,7 +461,7 @@ test('her voice does not own the band the ride bed leaves empty', () => {
   );
 });
 
-test('the five voices reach five different buffers', () => {
+test('the six voices reach six different buffers', () => {
   // §19.8's headless evidence, grown by one in §22.8. `crashFor` carried a
   // fallback while Red Rider's file was being built, and the failure it could
   // hide — his voice quietly resolving to the owner's — is invisible to
@@ -411,18 +475,19 @@ test('the five voices reach five different buffers', () => {
     crashRedRider: 'red-rider-buffer',
     crashAdonisb2: 'adonisb2-buffer',
     crashMaribel: 'maribel-buffer',
+    crashWheelInMotion: 'wheel-in-motion-buffer',
     sirenFar: 'siren-far',
     sirenClose: 'siren-close',
   } as unknown as SampleBank;
 
-  const voices: CrashVoiceId[] = ['cool-rider', 'trollina', 'red-rider', 'adonisb2', 'maribel'];
+  const voices: CrashVoiceId[] = ['cool-rider', 'trollina', 'red-rider', 'adonisb2', 'maribel', 'wheel-in-motion'];
   const reached = voices.map((voice) => crashFor(voice, bank));
   assert.deepEqual(
     reached,
     [
       'cool-rider-buffer', 'trollina-buffer', 'red-rider-buffer',
-      'adonisb2-buffer', 'maribel-buffer',
+      'adonisb2-buffer', 'maribel-buffer', 'wheel-in-motion-buffer',
     ],
   );
-  assert.equal(new Set(reached).size, 5);
+  assert.equal(new Set(reached).size, 6);
 });

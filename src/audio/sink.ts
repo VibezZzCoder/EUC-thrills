@@ -150,6 +150,16 @@ export interface SampleBank {
    * would quietly restore it while `lastCrashVoice` said `maribel`.
    */
   readonly crashMaribel: AudioBuffer;
+  /**
+   * Wheel in Motion's (M28) — the sibling of `crashRedRider`: the owner's
+   * wipeout with the owner's voice removed, rendered again from a different
+   * voice-free donor so that it is a different file (`docs/PLANS.md` §28.10).
+   *
+   * Required on the same terms as the three above. His seat carried
+   * `'red-rider'` as an explicit interim through Phases 0–2; a bank missing
+   * this key would quietly restore it while `lastCrashVoice` said otherwise.
+   */
+  readonly crashWheelInMotion: AudioBuffer;
   /** The chase siren's far wail loop (M18). */
   readonly sirenFar: AudioBuffer;
   /** And its close wail, crossfaded in by range. */
@@ -206,6 +216,8 @@ export function crashFor(voice: CrashVoiceId, bank: SampleBank): AudioBuffer {
       return bank.crashAdonisb2;
     case 'maribel':
       return bank.crashMaribel;
+    case 'wheel-in-motion':
+      return bank.crashWheelInMotion;
     case 'cool-rider':
       return bank.crash;
   }

@@ -3946,6 +3946,67 @@ export const BLOCKOUT_COLOURS = {
   maribelMachine: 0x1b1c21,
 
   /**
+   * Wheel in Motion — M28 Phase 1. A real rider's kit, read off his own
+   * photograph first and the target render second (brief §5), and authored
+   * under the value floor `DESIGN.md` §7k set: every field below has headroom
+   * under the sun, and the black gear is a mid-dark grey in albedo.
+   *
+   * **The print ground is the ceiling of the jersey.** His jersey is two
+   * saturated hues on one garment — blue and yellow — and neither can be
+   * painted *up* from the other (a vertex colour and a texel are both
+   * multipliers). So the garment is a printed one: a near-white base with the
+   * blue field, the yellow sweeps and his mark laid on as ink
+   * (`render/wimAtlas.ts`), which makes this the one albedo every other jersey
+   * colour hangs from. It sits above the yellow in every channel on purpose.
+   *
+   * **His blue is not Cool Rider's blue** — the owner's own note. Cool Rider's
+   * panels are `riderPanel` 0x2f7fe8, hue 214°, lit further by an emissive;
+   * the photograph clusters his jersey at hue 203° (a cyan-leaning azure,
+   * `#1f8bd0` lit). It is stated here as its own value, cooler than his and
+   * with no emissive — and since the owner's look pass (2026-09-01) it is
+   * the shell's blue and the trousers' too: *"just same blue and yellow as
+   * clothes"*, *"make his pants same blue as shirt."*
+   */
+  wheelInMotionPrint: 0xfbfbf7,
+  wheelInMotionBlue: 0x1490dc,
+  wheelInMotionYellow: 0xfad414,
+  /**
+   * His wheel's orange (Phase 2, `docs/PLANS.md` §28.5) — and nowhere on the
+   * rider. The target render dressed his helmet in it and Phase 1 followed;
+   * the owner struck it on the ride (2026-09-01): *"leave orange for the
+   * wheel."* The orange in his mark is the file's own.
+   */
+  wheelInMotionOrange: 0xf07a1a,
+  /**
+   * The visor. Dark mirrored with a subtle sheen — the photograph's lens,
+   * not the render's green window. The page over it can only darken, so this
+   * is the visor's brightest value and the gradient works down from it.
+   */
+  wheelInMotionLens: 0x3a4652,
+  /** The knee and shin shell — white plastic, a step under the print ground. */
+  wheelInMotionGuard: 0xe8e9e4,
+  /** Boots, gloves, the pack and its straps, the gaiter, the knee cups. */
+  wheelInMotionGear: 0x2e3136,
+  /**
+   * His wheel — M28 Phase 2 (`render/machineLook.ts`).
+   *
+   * The brief's §11 relationship, **black base + blue structures + orange
+   * pads**, in the direction the multiplier honours. `machineWheelInMotion`
+   * is the shell: a graphite black with headroom, like Adonisb2's, so the
+   * painter can still take the recesses down. The blue is the leg pads' own
+   * material — `machineWheelInMotionBlue`, the cyan-leaning azure the
+   * photograph's side structures cluster at, a step lighter than his
+   * jersey's `wheelInMotionBlue` because moulded plastic under the sun reads
+   * a stop brighter than knit — and the orange is `wheelInMotionOrange`
+   * above, reached as a tint over the pale trim base
+   * `machineWheelInMotionTrim`, which is also the white of the plate his
+   * mark sits on.
+   */
+  machineWheelInMotion: 0x24262b,
+  machineWheelInMotionBlue: 0x1eaaf0,
+  machineWheelInMotionTrim: 0xf4f3ef,
+
+  /**
    * The ghost, and the checkpoint gates (M10).
    *
    * **Authored here rather than in the render modules that draw them, because

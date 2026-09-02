@@ -2,8 +2,10 @@
 import type * as THREE from 'three';
 import { BLOCKOUT_COLOURS } from '../data/tuning.ts';
 import { DEFAULT_MACHINE, type MachineId } from '../data/machines.ts';
-import { tintOver, type Tint, type UvRect } from './blockoutKit.ts';
+import { loftProfile, tintOver, type Tint, type UvRect } from './blockoutKit.ts';
 import { ATLAS_REGIONS, createMaribelAtlas, type AtlasRegionName } from './maribelAtlas.ts';
+import type { PatchSpan } from './wimAtlas.ts';
+import { createWimMachineAtlas, wimMachineRegion, type WimMachineLayout } from './wimMachineAtlas.ts';
 
 /**
  * What a machine *looks like* — M19 Phase 2's axis.
@@ -90,6 +92,12 @@ export interface MachinePatch {
   readonly taper?: number;
   /** Vertex multiplier over the trim material's colour. 1 is the colour. */
   readonly shade?: number;
+  /** Space the patch's columns by arc rather than by angle — `PatchOptions.uByArc`. */
+  readonly uByArc?: boolean;
+  /** Swell the band's height toward its middle — `PatchOptions.bulge`. */
+  readonly bulge?: number;
+  /** Slide the band's centre line at its middle, in ring indices — `PatchOptions.bow`. */
+  readonly bow?: number;
   /**
    * The same multiplier per channel — and the reason it exists is M22.
    *
@@ -215,6 +223,19 @@ export interface MachineLook {
     readonly blocks?: readonly (readonly MachinePadRing[])[];
     /** Sections around each block. The shared pad uses 12. */
     readonly segments?: number;
+    /**
+     * A page of the look's `atlas` for the pad's own loft — M28 Phase 2.
+     *
+     * The pad material samples the sheet and the block is folded onto this
+     * page, its seam turned to the inboard face where the shell hides it
+     * (`render/euc.ts`). The right pad wears the page mirrored, as a `pad`
+     * patch always has. For a pad whose art is shapes rather than bands:
+     * Wheel in Motion's interlocking comma-and-hook set is the only one so
+     * far, and four blind rounds asked for it as the thing that makes his
+     * wheel his. With a page the material is the pale trim base and the
+     * blue is ink, because the page is a multiplier.
+     */
+    readonly art?: string;
     /**
      * Vertex repaint of the merged per-side pad, in pad-local space — A1d.
      *
@@ -1780,12 +1801,566 @@ export const MARIBEL_MACHINE_LOOK: MachineLook = {
 
 };
 
+// -- Wheel in Motion's wheel — M28 Phase 2 -----------------------------------
+
+/**
+ * The trim's two paints, both reached **down** from a pale base.
+ *
+ * The direction rule at the top of this file, on a machine whose loudest
+ * colour is a saturated orange over near-black: black cannot be painted up
+ * to orange, so the trim material is the pale `machineWheelInMotionTrim` and
+ * every orange piece on the wheel is that base tinted. The same base is the
+ * white of the plate his mark sits on, which is why the plate needs no ink
+ * of its own — the page under it is clear.
+ */
+const WIM_TRIM_BASE = BLOCKOUT_COLOURS.machineWheelInMotionTrim;
+const WIM_TRIM_ORANGE = tintOver(WIM_TRIM_BASE, BLOCKOUT_COLOURS.wheelInMotionOrange);
+/** The blue corner pieces on the shell — the pads' own blue, as a tint over the same base. */
+const WIM_TRIM_BLUE = tintOver(WIM_TRIM_BASE, BLOCKOUT_COLOURS.machineWheelInMotionBlue);
+/** The louvre slots in the blades: a step down from the blade's blue, the same hue. */
+const WIM_TRIM_LOUVRE = tintOver(WIM_TRIM_BASE, 0x0c6ea4);
+
+/**
+ * The louvres, three per blade, four blades. Cut across the blade's upper
+ * part and clear of the chine step; each is 14 mm tall on 34 mm centres,
+ * inset from the blade's edges.
+ */
+const WIM_LOUVRES: readonly MachinePatch[] = Object.freeze([
+  ...[[-Math.PI / 2 + 0.36, -Math.PI / 2 + 0.66], [-Math.PI / 2 - 0.66, -Math.PI / 2 - 0.36]].flatMap(([u0, u1]) => (
+    [0.420, 0.454, 0.526].map((from) => ({
+      u0, u1, from, to: from + 0.014, lift: 0.016, sink: -0.008, uSegments: 2, vSegments: 1, tint: WIM_TRIM_LOUVRE,
+    }))
+  )),
+  ...[[Math.PI / 2 + 0.38, Math.PI / 2 + 0.66], [Math.PI / 2 - 0.66, Math.PI / 2 - 0.38]].flatMap(([u0, u1]) => (
+    [0.372, 0.406, 0.440].map((from) => ({
+      u0, u1, from, to: from + 0.014, lift: 0.016, sink: -0.008, uSegments: 2, vSegments: 1, tint: WIM_TRIM_LOUVRE,
+    }))
+  )),
+]);
+/** The deck's near-black: a step under the shell, so the block on top has an edge. */
+const WIM_DECK = tintOver(BLOCKOUT_COLOURS.machineWheelInMotion, 0x121317);
+/**
+ * The arch skirt — the 86 mm that meets the tyre — a stop *above* the shell,
+ * not below it. Painted down, the darkest band on the machine sat exactly on
+ * the boundary with a tyre one sRGB level away from the shell, and at chase
+ * range the two were one black mass (the second blind round measured 1.05×
+ * between them in linear light). Both references show light machined
+ * structure there: bumper plate, hub surround.
+ */
+const WIM_CORE: Tint = [1.85, 1.85, 1.90];
+const WIM_CAVITY: Tint = [0.28, 0.28, 0.30];
+const WIM_EDGE: Tint = [1.30, 1.30, 1.32];
+/** Where the deck starts, shared by the profile and the painter that must not repaint it. */
+const WIM_DECK_BOTTOM = 0.596;
+
+/**
+ * The performance body — the photograph's big black box, held wide and
+ * parallel-sided from the arch to the shoulder.
+ *
+ * **The flank is parallel from 0.508 to 0.575 on purpose, and that is the
+ * plate's doing.** A patch on a converging band is a trapezoid in metres —
+ * measured on the first draft of this profile, a span that was 168 mm wide
+ * at 547 mm was 148 mm wide at 578, because the shoulder had already begun
+ * to round — and a rectangular mark on a trapezoid is keystoned, which is the
+ * stretching the brief forbids done downstream of the texture. So the three
+ * rings under the plate carry the same section, the crown rounds in the last
+ * 30 mm, and the top is the flat block the photograph shows rather than a
+ * dome. Squarer than Maribel's shell through the body (5.2 against 5.0) and a
+ * touch longer, because his is the boxier machine of the two.
+ */
+const WIM_SHELL_RINGS: readonly MachineShellRing[] = Object.freeze([
+  { y: 0.250, halfWidth: 0.052, halfDepth: 0.130, square: 3.0 },
+  { y: 0.318, halfWidth: 0.098, halfDepth: 0.216, square: 3.8 },
+  { y: 0.372, halfWidth: 0.114, halfDepth: 0.254, square: 4.6 },
+  { y: 0.428, halfWidth: 0.116, halfDepth: 0.262, square: 5.2 },
+  { y: 0.488, halfWidth: 0.116, halfDepth: 0.262, square: 5.2 },
+  // The chine: an 8 mm step across the flank, one edge for the sun to catch.
+  { y: 0.500, halfWidth: 0.116, halfDepth: 0.262, square: 5.2 },
+  { y: 0.508, halfWidth: 0.112, halfDepth: 0.254, square: 4.8 },
+  { y: 0.545, halfWidth: 0.112, halfDepth: 0.254, square: 4.8 },
+  { y: 0.575, halfWidth: 0.112, halfDepth: 0.254, square: 4.8 },
+  { y: 0.592, halfWidth: 0.088, halfDepth: 0.192, square: 3.6 },
+  { y: 0.604, halfWidth: 0.070, halfDepth: 0.150, square: 3.0 },
+]);
+
+/**
+ * The plate on his left flank, in radians about +X and metres of height.
+ *
+ * 150 mm of arc at its mid height, by 60 mm up, on the parallel band above
+ * the pads: a 150 mm sticker on a 500 mm wheel, biased forward of the flank's
+ * centre the way the target render places it, and above the shins rather
+ * than behind them (Maribel's badge paid for the other placement).
+ *
+ * **Measured with `loftPoint`, not assumed, and the angles are not what they
+ * look like.** A superellipse this square is nearly flat across the flank,
+ * so `u` rises almost vertically out of the centreline and then crawls: the
+ * first 0.002 rad buys 19 mm of flank rearward, the next 0.21 buys 132 mm
+ * forward. A span that read as forward-biased in radians (−0.03 … 0.23) sat
+ * 59 mm behind the centre and 137 ahead. These are the numbers that put
+ * the plate's rear edge 28 mm ahead of the flank's centre and its front edge
+ * 180 mm ahead of it — forward of where the standing rider's shin covers the
+ * flank (the third blind round measured the plate 82% hidden at rest behind
+ * the pad's centre; forward, half of it reads at rest and all of it in
+ * motion). Still the same 151 mm of arc on the same three identical rings.
+ */
+export const WIM_MACHINE_PLATE: PatchSpan = Object.freeze({ u0: 0.005, u1: 0.45, from: 0.512, to: 0.572 });
+
+/**
+ * The upper pad's top, pad-local metres — 502 mm off the ground. The plate
+ * starts 10 mm above it, and the pads hold the shared pad's outer face below
+ * it (`riderClearance.test.ts`, `riderEuc.test.ts`).
+ */
+export const WIM_PAD_TOP = 0.062;
+
+/**
+ * The power pad: one long block at shin height, in metres about
+ * `WHEEL.padCentreHeight`. The photograph's flank is *mostly pad* — the
+ * pad set covers the upper half of the body from the bumper to the
+ * shoulder — so this one runs 160 mm tall and 340 mm long, chunky-ended
+ * (the end rings stay 16 mm thick, so the block is a block and not a pill),
+ * and its outer face is the shared pad's, ring for ring: `halfWidth` never
+ * exceeds 0.028, so the plane the shins rest against has not moved. Its
+ * face wears the `pads` page of his sheet.
+ */
+const WIM_PAD_RINGS: readonly MachinePadRing[] = Object.freeze([
+  { y: -0.098, halfWidth: 0.016, halfDepth: 0.150, square: 3.4 },
+  { y: -0.084, halfWidth: 0.027, halfDepth: 0.168, square: 4.0 },
+  { y: 0.000, halfWidth: 0.028, halfDepth: 0.170, square: 4.2 },
+  { y: 0.050, halfWidth: 0.027, halfDepth: 0.166, square: 4.0 },
+  { y: WIM_PAD_TOP, halfWidth: 0.016, halfDepth: 0.146, square: 3.4 },
+]);
+
+/** What his machine sheet is painted against. */
+export const WIM_MACHINE_LAYOUT: WimMachineLayout = Object.freeze({
+  shell: loftProfile(WIM_SHELL_RINGS.map((ring) => ({ ...ring }))),
+  plate: WIM_MACHINE_PLATE,
+  pad: loftProfile(WIM_PAD_RINGS.map((ring) => ({ ...ring }))),
+});
+
+/**
+ * Wheel in Motion's machine — the sixth `MachineLook` row, and the fourth
+ * taken from a real rider's own wheel with his permission.
+ *
+ * His brief (§11) is explicit about what the wheel is and what carries it:
+ * *"black base + bright blue/cyan structures + orange pads/components — that
+ * color relationship is more important than reproducing every bolt."* And
+ * the owner's ruling on the ride that accepted the rider's look: *"leave
+ * orange for the wheel"* — the rider carries none, so the pads here are what
+ * makes his pair blue-and-orange. What the photograph shows, and what each
+ * part costs, in the §19.3 order of what carries at chase distance:
+ *
+ * - **Black bodywork over a graphite base** — the colour field, free. The
+ *   inverse of Red Rider's build: the identity colours are not the shell's,
+ *   so the shell is dark enough to read black and light enough to paint
+ *   down (`BLOCKOUT_COLOURS.machineWheelInMotion`).
+ * - **Cyan-blue structures** — the leg pads' own material, the Maribel axis:
+ *   one big power pad per flank, 160 mm tall and 340 mm long, the surface
+ *   the orange rides; and, on the trim, the photograph's blue corner pieces
+ *   — a tall piece at each rear shoulder and a bumper at each front lower
+ *   corner — so the blue is on the wheel from behind and from in front, not
+ *   only from the side where the rider's shins stand in front of it.
+ * - **Orange power pads** — trim patches lifted off the blue pad: a broad
+ *   curved pad over the front half of each flank and a short insert on the
+ *   rear half, which is the photograph's orange-C-beside-blue-C read at
+ *   forty pixels. The blade under the lamp and a piece at each rear lower
+ *   corner are the same orange, so his pair is blue-and-orange from behind,
+ *   where the camera is, and not blue-and-black.
+ * - **His mark on both flanks** — a white square-cornered plate above the
+ *   pads, his file's own pixels turned to read from either side
+ *   (`render/wimMachineAtlas.ts`), on the one band of the shell whose rings
+ *   are parallel.
+ * - **A flat black deck** on top — a block, not a saddle: he stands, and the
+ *   photograph's top is a flat pad. The saddle slot, tinted near-black.
+ * - **Black polymer pedals**, broad; the tyre plain black road rubber.
+ *
+ * What the references show and this look deliberately does not build: the
+ * manufacturer's shell and wordmark on the real wheel's body, the pad
+ * maker's marks, the third-party sticker on the flank, and the grip-tape
+ * texture of the side panels (`NOTICE.md`). The narrow orange rim accent the
+ * photograph's tyre carries is omitted too, and the reason is the direction
+ * rule: the tyre is one near-black material, a multiplier cannot reach
+ * orange from it, and a ring on any other material would ride the sprung
+ * body while the tyre does not. It is the last item in §28.5's hierarchy and
+ * the first to go.
+ */
+export const WHEEL_IN_MOTION_MACHINE_LOOK: MachineLook = {
+  machine: 'wheel-in-motion',
+
+  shell: {
+    colour: BLOCKOUT_COLOURS.machineWheelInMotion,
+    // Satin: moulded plastic over a frame, under the same sun as his matte
+    // printed jersey.
+    roughness: 0.50,
+    profile: WIM_SHELL_RINGS,
+  },
+
+  top: {
+    // The flat deck the photograph shows in the carry handle's place — the
+    // saddle slot (merged into the shell mesh, no draw call), 14 mm proud of
+    // the shell's crown and 4 mm wider than it, so it reads as a block sat on
+    // the body rather than a rounding of it. Its crown at 0.618 is well
+    // inside the crouched-hip ceiling the seated wheels are pinned under.
+    kind: 'saddle',
+    profile: [
+      { y: WIM_DECK_BOTTOM, halfWidth: 0.064, halfDepth: 0.158, square: 4.8 },
+      { y: 0.610, halfWidth: 0.074, halfDepth: 0.176, square: 5.6 },
+      { y: 0.618, halfWidth: 0.058, halfDepth: 0.146, square: 4.4 },
+    ],
+    tint: WIM_DECK,
+  },
+
+  pads: {
+    // The pale base: the pad wears the `pads` page, and its cyan, its orange
+    // and its black grip field are the page's inks (a page is a multiplier,
+    // so the blue cannot be the material and the orange still reach it).
+    colour: BLOCKOUT_COLOURS.machineWheelInMotionTrim,
+    // Moulded plastic, not foam: firmer than Maribel's pads and softer than
+    // the shell.
+    roughness: 0.62,
+    blocks: [WIM_PAD_RINGS],
+    // Printed — the photograph's interlocking comma-and-hook set. The first
+    // three blind rounds built the orange as patches on the blue block:
+    // rectangles, then hooks of three rectangles, then bowed hooks — and
+    // each round measured what a patch cannot be: a swept shape. On a
+    // helmet, a patch is for shape and print is for colour (DESIGN §7m);
+    // on a pad it is the same rule, and it is fewer triangles.
+    art: 'pads',
+    segments: 16,
+    // Three planes, one stop apart: a moulded block reads as a block because
+    // its top catches the sun and its underside does not.
+    paintPad: (geometry): void => {
+      const position = geometry.getAttribute('position');
+      const colour = geometry.getAttribute('color');
+      for (let i = 0; i < position.count; i += 1) {
+        const y = position.getY(i);
+        const lift = y > 0.052 ? 1.24 : y < -0.086 ? 0.66 : 1;
+        if (lift === 1) continue;
+        colour.setXYZ(i, colour.getX(i) * lift, colour.getY(i) * lift, colour.getZ(i) * lift);
+      }
+    },
+  },
+
+  atlas: {
+    build: () => createWimMachineAtlas(WIM_MACHINE_LAYOUT),
+    region: wimMachineRegion,
+  },
+
+  tyre: {
+    // Road rubber, plain. The photograph's tyre carries a shallow street
+    // tread and a narrow orange rim line; the tread is Maribel's identity on
+    // this roster and the rim line cannot be reached by paint (see the look's
+    // own comment), so the tyre is the standard black, a touch glossier.
+    roughness: 0.90,
+  },
+
+  trim: {
+    colour: WIM_TRIM_BASE,
+    // No glow anywhere on the trim: the lamp and the status light are the two
+    // lights this machine has, and orange plastic that glowed would be a
+    // third thing competing with the amber rung.
+    emissive: 0x000000,
+    emissiveIntensity: 0,
+    // Matte moulded plastic. At 0.42 the far-side orange fin caught the sun
+    // in the leaned pose and blew out to a beige off the palette (the fifth
+    // blind round measured RGB 243/202/163 against the near fins' 216/120/40);
+    // the photograph's pads are matte.
+    roughness: 0.58,
+    metalness: 0.06,
+    patches: [
+      // -- His mark, both flanks ---------------------------------------------
+      // The plate. Lifted 4 mm — a sticker, not a moulding — and sampled six
+      // rows deep across the two ring intervals it spans, so the outer face
+      // follows the flank instead of chording inside it (Maribel's second
+      // black strip, `machineLook.ts` above). Square corners: the file's own.
+      {
+        u0: WIM_MACHINE_PLATE.u0,
+        u1: WIM_MACHINE_PLATE.u1,
+        from: WIM_MACHINE_PLATE.from,
+        to: WIM_MACHINE_PLATE.to,
+        lift: 0.004,
+        sink: -0.014,
+        uSegments: 8,
+        vSegments: 6,
+        // The page runs with arc, not angle: on this shell a column of the
+        // patch spaced evenly in radians is 73 mm at the plate's rear edge and
+        // 7 mm at its front (`PatchOptions.uByArc`), and a mark centred on
+        // the page came out crushed into the front half of the plate.
+        uByArc: true,
+        art: 'plate',
+      },
+      // The right flank is the mirror: θ → π − θ, ends swapped, so the page
+      // runs toward the viewer's left from that side too and the one turned
+      // stamp reads WiM from both.
+      {
+        u0: Math.PI - WIM_MACHINE_PLATE.u1,
+        u1: Math.PI - WIM_MACHINE_PLATE.u0,
+        from: WIM_MACHINE_PLATE.from,
+        to: WIM_MACHINE_PLATE.to,
+        lift: 0.004,
+        sink: -0.014,
+        uSegments: 8,
+        vSegments: 6,
+        uByArc: true,
+        art: 'plate',
+      },
+
+      // -- Blue on the shoulder, behind the plate -----------------------------
+      // The calf zone: the band above the pad, where the photograph's biggest
+      // shoulder pads sit and the rider's calves grip, was bare black — the
+      // pad's top is the shins' contact plane and may not rise, so the colour
+      // goes on the shell behind the plate instead, one piece per flank in
+      // the pads' blue, clear of the rear blades by 19 mm.
+      {
+        u0: -0.62,
+        u1: -0.02,
+        from: 0.510,
+        to: 0.580,
+        lift: 0.010,
+        sink: -0.008,
+        uSegments: 4,
+        vSegments: 3,
+        taper: 0.06,
+        tint: WIM_TRIM_BLUE,
+      },
+      {
+        u0: Math.PI + 0.02,
+        u1: Math.PI + 0.62,
+        from: 0.510,
+        to: 0.580,
+        lift: 0.010,
+        sink: -0.008,
+        uSegments: 4,
+        vSegments: 3,
+        taper: 0.06,
+        tint: WIM_TRIM_BLUE,
+      },
+
+      // -- Blue structure on the shell: the blades ---------------------------
+      // The photograph's blue side pieces are tall louvred blades at the
+      // body's ends — two thirds of the flank's height, the verifier
+      // measured — and the first cut's four corner chips were a third of it,
+      // at opposite heights. Each end is one tall blade now: the rear pair
+      // from the chine's foot to the shoulder, the front pair from the arch
+      // to under the lamp (the lamp and the nose blade own the nose above
+      // 0.50 and between ±0.30). They are the wheel's blue from behind,
+      // where the camera is, and from in front — the pads alone are blue
+      // only from the side, and the rider's shins stand in front of them.
+      // Blue is reachable from the pale trim base, so a blade is a tinted
+      // patch in the one trim draw call, lifted for relief. The rear pair
+      // stops 0.30 rad short of rear centre so the status light keeps its
+      // dark margin (§19.7); the rows follow the chine step at 0.500/0.508.
+      {
+        u0: -Math.PI / 2 + 0.30,
+        u1: -Math.PI / 2 + 0.72,
+        from: 0.400,
+        to: 0.560,
+        lift: 0.012,
+        sink: -0.010,
+        uSegments: 4,
+        vSegments: 6,
+        taper: 0.08,
+        tint: WIM_TRIM_BLUE,
+      },
+      {
+        u0: -Math.PI / 2 - 0.72,
+        u1: -Math.PI / 2 - 0.30,
+        from: 0.400,
+        to: 0.560,
+        lift: 0.012,
+        sink: -0.010,
+        uSegments: 4,
+        vSegments: 6,
+        taper: 0.08,
+        tint: WIM_TRIM_BLUE,
+      },
+      {
+        u0: Math.PI / 2 + 0.32,
+        u1: Math.PI / 2 + 0.72,
+        from: 0.262,
+        to: 0.496,
+        lift: 0.012,
+        sink: -0.010,
+        uSegments: 4,
+        vSegments: 6,
+        taper: 0.08,
+        tint: WIM_TRIM_BLUE,
+      },
+      {
+        u0: Math.PI / 2 - 0.72,
+        u1: Math.PI / 2 - 0.32,
+        from: 0.262,
+        to: 0.496,
+        lift: 0.012,
+        sink: -0.010,
+        uSegments: 4,
+        vSegments: 6,
+        taper: 0.08,
+        tint: WIM_TRIM_BLUE,
+      },
+      // The louvres: three slots cut across the upper part of each blade, a
+      // step down from the blade's blue, proud of it by 4 mm. Three bold
+      // slots and not a ladder of hairlines — the shin plate's own rule.
+      ...WIM_LOUVRES,
+
+      // -- Orange, on the shell: the appendages -------------------------------
+      // The photograph's orange is not paint: a low wing and a high bracket,
+      // moulded plastic standing off the body and breaking its outline —
+      // 12% of the wheel's height outside the box in the render. The second
+      // blind round measured the build's orange at a quarter of its blue
+      // with every piece at 12 mm of relief, surface not silhouette. These
+      // stand 40 mm off, tapered to a wedge, all at the nose and tail so
+      // they push fore and aft and never outboard: the shins' contact plane
+      // is the pad's and is untouched.
+      // The fin under the lamp, between the two front blades.
+      {
+        u0: Math.PI / 2 - 0.30,
+        u1: Math.PI / 2 + 0.30,
+        from: 0.430,
+        to: 0.468,
+        lift: 0.040,
+        sink: -0.010,
+        uSegments: 6,
+        vSegments: 2,
+        taper: 0.55,
+        tint: WIM_TRIM_ORANGE,
+      },
+      // The low wing at each rear corner, under the blue blades and down to
+      // the tyre's shoulder: the pads' orange carried round to the one face
+      // the chase camera looks at, so his pair is blue-and-orange from
+      // behind and not blue-and-black.
+      {
+        u0: -Math.PI / 2 + 0.32,
+        u1: -Math.PI / 2 + 0.72,
+        from: 0.262,
+        to: 0.392,
+        lift: 0.036,
+        sink: -0.010,
+        uSegments: 4,
+        vSegments: 4,
+        taper: 0.45,
+        tint: WIM_TRIM_ORANGE,
+      },
+      {
+        u0: -Math.PI / 2 - 0.72,
+        u1: -Math.PI / 2 - 0.32,
+        from: 0.262,
+        to: 0.392,
+        lift: 0.036,
+        sink: -0.010,
+        uSegments: 4,
+        vSegments: 4,
+        taper: 0.45,
+        tint: WIM_TRIM_ORANGE,
+      },
+      // The high bracket at each rear shoulder, above the blades and clear
+      // of the status light's margin.
+      {
+        u0: -Math.PI / 2 + 0.30,
+        u1: -Math.PI / 2 + 0.72,
+        from: 0.560,
+        to: 0.596,
+        lift: 0.036,
+        sink: -0.010,
+        uSegments: 4,
+        vSegments: 3,
+        taper: 0.50,
+        tint: WIM_TRIM_ORANGE,
+      },
+      {
+        u0: -Math.PI / 2 - 0.72,
+        u1: -Math.PI / 2 - 0.30,
+        from: 0.560,
+        to: 0.596,
+        lift: 0.036,
+        sink: -0.010,
+        uSegments: 4,
+        vSegments: 3,
+        taper: 0.50,
+        tint: WIM_TRIM_ORANGE,
+      },
+    ],
+  },
+
+  headlight: {
+    // The standard lamp, six rows deep across the chine (0.500 → 0.508) for
+    // the reason Maribel's is.
+    patches: [{
+      u0: Math.PI / 2 - 0.44,
+      u1: Math.PI / 2 + 0.44,
+      from: 0.502,
+      to: 0.530,
+      lift: 0.004,
+      sink: -0.012,
+      uSegments: 6,
+      vSegments: 6,
+      taper: 0.40,
+    }],
+    emissive: BLOCKOUT_COLOURS.headlight,
+    emissiveIntensity: 1.4,
+  },
+
+  paintShell: (geometry): void => {
+    const position = geometry.getAttribute('position');
+    const colour = geometry.getAttribute('color');
+    for (let i = 0; i < position.count; i += 1) {
+      const x = position.getX(i);
+      const y = position.getY(i);
+      const z = position.getZ(i);
+
+      // The deck, tinted at build and repainted identically here so the bands
+      // below cannot half-recolour it. Above the shell's last ring only the
+      // deck exists; inside the overlap the deck is the narrow thing.
+      if (y > 0.605
+        || (y > WIM_DECK_BOTTOM && Math.abs(x) < 0.066 && Math.abs(z) < 0.160)) {
+        colour.setXYZ(i, WIM_DECK[0], WIM_DECK[1], WIM_DECK[2]);
+        continue;
+      }
+      // The nose recess the lamp sits in.
+      if (z > 0.16 && Math.abs(x) < 0.075 && y > 0.494 && y < 0.540) {
+        colour.setXYZ(i, WIM_CAVITY[0], WIM_CAVITY[1], WIM_CAVITY[2]);
+        continue;
+      }
+      // The rear spine: taillight surround and the status light's bezel —
+      // §19.7, and orange is the amber rung's neighbour on this wheel, so the
+      // field behind the light is the darkest paint on it.
+      if (z < -0.15 && Math.abs(x) < 0.075 && y > 0.400) {
+        colour.setXYZ(i, WIM_CAVITY[0], WIM_CAVITY[1], WIM_CAVITY[2]);
+        continue;
+      }
+      // The arch skirt, all the way round: the structure under the bodywork.
+      if (y < 0.336) {
+        colour.setXYZ(i, WIM_CORE[0], WIM_CORE[1], WIM_CORE[2]);
+        continue;
+      }
+      // The top chamfer, and only it — the one band brighter than the base,
+      // which is what keeps the box's edge legible at chase distance
+      // (Adonisb2's lesson, on a shell just as dark).
+      if (y > 0.574) {
+        colour.setXYZ(i, WIM_EDGE[0], WIM_EDGE[1], WIM_EDGE[2]);
+      }
+    }
+  },
+
+  paintPedal: (geometry): void => {
+    const colour = geometry.getAttribute('color');
+    // Broad black polymer platforms — the photograph's grip-taped pedals,
+    // and the machine's most-seen surface from the chase camera. Scaled, not
+    // overwritten, so the grip inset, the lip and the hinge keep every value
+    // relation `render/euc.ts` authored; a step lighter than Adonisb2's so
+    // the two black-pedalled machines are not one.
+    for (let i = 0; i < colour.count; i += 1) {
+      colour.setXYZ(i, colour.getX(i) * 0.16, colour.getY(i) * 0.16, colour.getZ(i) * 0.165);
+    }
+  },
+};
+
 const MACHINE_LOOKS: readonly MachineLook[] = Object.freeze([
   STANDARD_MACHINE_LOOK,
   TROLLINA_MACHINE_LOOK,
   RED_RIDER_MACHINE_LOOK,
   ADONISB2_MACHINE_LOOK,
   MARIBEL_MACHINE_LOOK,
+  WHEEL_IN_MOTION_MACHINE_LOOK,
 ]);
 
 /**

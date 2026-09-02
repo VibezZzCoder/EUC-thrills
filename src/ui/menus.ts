@@ -18,6 +18,11 @@ import {
   MV_LOGO_WIDTH,
 } from '../data/mvLogoAsset.ts';
 import {
+  WIM_LOGO_HEIGHT,
+  WIM_LOGO_PNG_BASE64,
+  WIM_LOGO_WIDTH,
+} from '../data/wimLogoAsset.ts';
+import {
   FOV_TRIM_MAX,
   FOV_TRIM_MIN,
   QUALITY_LEVELS,
@@ -594,6 +599,25 @@ const MV_CARD_MARK = (() => {
   };
 })();
 
+/**
+ * Where Wheel in Motion's mark sits on his card, in the same 96 × 96 units —
+ * M28 Phase 0, on `MV_CARD_MARK`'s rule: the height is derived from the
+ * artwork's pixels and never typed, because a hand-typed height is a stretch
+ * waiting for somebody to change the width. His mark is wide (2.27 : 1 against
+ * hers at 1.2 : 1), so it spans the jersey's chest rather than sitting on a
+ * collar: 26 units wide across a torso that runs 18–78, centred, at the height
+ * the target render prints it — below the collar, above the belly.
+ */
+const WIM_CARD_MARK = (() => {
+  const width = 26;
+  return {
+    x: (96 - width) / 2,
+    y: 79,
+    width,
+    height: Number(((width * WIM_LOGO_HEIGHT) / WIM_LOGO_WIDTH).toFixed(2)),
+  };
+})();
+
 const RIDER_CARDS: Readonly<Record<PlayableCharacterId, { blurb: string; portrait: string }>> = {
   'cool-rider': {
     blurb: 'Black moto gear, reflective blue, full-face lid. '
@@ -842,6 +866,65 @@ const RIDER_CARDS: Readonly<Record<PlayableCharacterId, { blurb: string; portrai
         <image href="data:image/png;base64,${MV_LOGO_PNG_BASE64}"
                x="${MV_CARD_MARK.x}" y="${MV_CARD_MARK.y}"
                width="${MV_CARD_MARK.width}" height="${MV_CARD_MARK.height}"
+               preserveAspectRatio="xMidYMid meet"/>
+      </svg>`,
+  },
+  /**
+   * Wheel in Motion — M28, the sixth card, and the `Record` doing its job a
+   * third time: the compiler refused the widened `PlayableCharacterId` until
+   * this entry existed (`docs/PLANS.md` §28.7).
+   *
+   * Three shapes, decided at 58 px — the size a phone card gets. **The lid
+   * is the road shell the helmeted cards share, in his blue with a yellow
+   * chin bar** over a dark visor: Phase 1 drew an off-road lid here — peak,
+   * goggles, an orange chin bar — and the owner's look pass (2026-09-01)
+   * struck it with the rider's ("a normal helmet like the other characters",
+   * "don't use orange on helmet"); orange is his wheel's. Blue over yellow on
+   * the head is his colour pair before a letter is read. **The jersey is blue
+   * over yellow** — the two saturated hues the reference photograph and the
+   * target render agree on, with the yellow arriving as shoulder panels the
+   * way the print does, and the two pack straps over them, so the card is
+   * not a blue card with a yellow stripe painted on. **And his mark sits on
+   * the chest**, as an `<image>` of `src/data/wimLogoAsset.ts`, byte for
+   * byte — the second use of the rights-boundary exception `DESIGN.md` §9d
+   * records for artwork this project may not redraw, for the reason it was
+   * recorded: the brief forbids a drawing of it, and a portrait of him
+   * without it is a portrait of a blue helmet.
+   *
+   * The visor is the dark mirror the photograph shows (`docs/PLANS.md`
+   * §28.2's lens rule), with one cool sheen across it, because the card is a
+   * portrait of the rider the chooser puts on the wheel and the two must
+   * agree. The mark's white plate is the artwork's own ground and not
+   * something added here. Nothing drawn is a letter, and his name is
+   * rendered by the name span below the portrait, the rule Red Rider's entry
+   * established. The colours are the authored albedos
+   * `BLOCKOUT_COLOURS.wheelInMotion*` — one blue for jersey, shell and
+   * trousers, the yellow, the gear black, the visor.
+   */
+  'wheel-in-motion': {
+    blurb: 'Blue lid with yellow stripes and a yellow chin over a dark visor, a blue-and-yellow jersey '
+      + 'with his mark on the chest, blue trousers and white knee armour. A real rider with a channel, in the game by permission.',
+    portrait: `
+      <svg viewBox="0 0 96 96" class="euc-rider-card__art" aria-hidden="true" focusable="false">
+        <path d="M18 76c6-5 17-8 30-8s24 3 30 8v20H18z" fill="#1490dc"/>
+        <path d="M18 76c4-3.4 9.6-6 16.6-7.2L30 96H18z" fill="#fad414"/>
+        <path d="M78 76c-4-3.4-9.6-6-16.6-7.2L66 96h12z" fill="#fad414"/>
+        <path d="M29.4 70.8c1.6-.8 3.2-1.4 5-1.9L32.6 96H28z" fill="#2e3136"/>
+        <path d="M66.6 70.8c-1.6-.8-3.2-1.4-5-1.9L63.4 96H68z" fill="#2e3136"/>
+        <path d="M20 58c0-19 12-31 28-31s28 12 28 31c0 6-2 11-5 14H25c-3-3-5-8-5-14z" fill="#1490dc"/>
+        <path d="M23 52c3-14 12-22 25-22s22 8 25 22c-6-4-15-6-25-6s-19 2-25 6z" fill="#3ba6ea"/>
+        <path d="M28.5 50.5L43.5 33.5h3.5L32.5 50.5z" fill="#fad414"/>
+        <path d="M67.5 50.5L52.5 33.5H49L63.5 50.5z" fill="#fad414"/>
+        <path d="M26 55c4-4 12-7 22-7s18 3 22 7c-1 7-3 11-6 13H32c-3-2-5-6-6-13z" fill="#2b343c"/>
+        <path d="M28 56c4-3 11-5 20-5s16 2 20 5c-1 5-2 8-4 9H32c-2-1-3-4-4-9z" fill="#3a4652"/>
+        <path d="M30 57.4c3.6-1.8 8.4-2.8 14-2.8h2.4L36.6 65H32c-1.2-1-2-2.6-2-4.2z"
+              fill="#6b8c96" opacity="0.6"/>
+        <path d="M26.4 66.4c5.4 3 13 4.8 21.6 4.8s16.2-1.8 21.6-4.8c-.6 2.4-1.6 4.2-3.2 5.6H29.6
+                 c-1.6-1.4-2.6-3.2-3.2-5.6z" fill="#fad414"/>
+        <rect x="44" y="67.8" width="8" height="3" rx="1" fill="#2e3136"/>
+        <image href="data:image/png;base64,${WIM_LOGO_PNG_BASE64}"
+               x="${WIM_CARD_MARK.x}" y="${WIM_CARD_MARK.y}"
+               width="${WIM_CARD_MARK.width}" height="${WIM_CARD_MARK.height}"
                preserveAspectRatio="xMidYMid meet"/>
       </svg>`,
   },

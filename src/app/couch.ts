@@ -116,7 +116,7 @@ export function couchEligible(machine: CouchMachine): boolean {
  * **`taken` became a list at M27 Phase 1**, because q68 was always a statement
  * about a screen rather than about a pair: two riders who look identical are
  * confusing at two seats and unusable at four, where a player has to find
- * themselves in a quadrant. The roster holds five playable characters and the
+ * themselves in a quadrant. The roster holds six playable characters and the
  * couch holds four seats, so distinctness is always satisfiable — but the
  * fallback below is what makes that a fact about the data rather than an
  * assumption in the code.
@@ -173,7 +173,7 @@ export function guestRoster(host: CharacterId, seats: number): PlayableCharacter
  * cards from colliding: at four seats each card steps over the three riders
  * its neighbours are wearing, so the panel still has no invalid state to
  * recover from and nobody ever sees a rider offered and then taken away. With
- * five playables and four seats the walk always finds somebody; with a full
+ * six playables and four seats the walk always finds somebody; with a full
  * couch and a smaller roster it would return `current`, which is the honest
  * answer for a control with nowhere to go.
  */

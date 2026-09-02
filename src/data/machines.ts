@@ -43,7 +43,8 @@ import type { CharacterId } from './riders.ts';
  */
 
 /** Every machine the renderer can build. */
-export type MachineId = 'standard' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel';
+export type MachineId =
+  'standard' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion';
 
 export interface MachineSpec {
   readonly id: MachineId;
@@ -121,6 +122,25 @@ export const MACHINES: readonly MachineSpec[] = Object.freeze([
     blurb: 'Tall black performance bodywork, a purple pad stack over a '
       + 'treaded street tyre, and her grinning devil on both flanks.',
   }),
+  /**
+   * Wheel in Motion's machine — M28 Phase 2, and the fourth taken from a real
+   * rider's own wheel with his permission.
+   *
+   * His brief ranks the wheel third in what carries the identity and is
+   * explicit that it "should not become a generic shared wheel with only a
+   * recolor": a large black performance body, bright cyan-blue side
+   * structures, strong orange power pads, broad black pedals, and a heavily
+   * personalised look. What ships is the game's own fictional performance
+   * form wearing *that colour relationship* — black base, blue structures,
+   * orange pads — with his mark on both flanks, and no manufacturer's shell,
+   * wordmark or pad maker's device (`docs/PLANS.md` §28.5, `NOTICE.md`).
+   */
+  Object.freeze({
+    id: 'wheel-in-motion' as MachineId,
+    name: "Wheel in Motion's wheel",
+    blurb: 'Tall black performance bodywork under cyan-blue pads and orange '
+      + 'power pads, his mark on both flanks. Loud on purpose.',
+  }),
 ]);
 
 export const MACHINE_IDS: readonly MachineId[] =
@@ -180,6 +200,11 @@ export function machineForCharacter(character: CharacterId): MachineId {
   // saying so. She rode the standard machine for exactly one build, and the
   // owner's ride of it is why this line exists (`docs/PLANS.md` §23.9c).
   if (character === 'maribel-vargas') return 'maribel';
+  // M28 Phase 2. His id, his spec above and his `MachineLook` row arrived in
+  // one edit, as Maribel's did and for the same reason. He rode the standard
+  // wheel through Phases 0 and 1 by a declaration that stood on this line —
+  // a decision stated, not a fallback nobody chose (`docs/PLANS.md` §28.9).
+  if (character === 'wheel-in-motion') return 'wheel-in-motion';
   return DEFAULT_MACHINE;
 }
 

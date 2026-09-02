@@ -12,6 +12,7 @@ import {
 } from './blockoutKit.ts';
 import {
   COOL_RIDER_LOOK,
+  type LoftPage,
   type RiderLook,
   type RiderMaterialRole,
   type RiderMaterialSpec,
@@ -522,14 +523,13 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   };
 
   const bodyMaterial = materialFor('body');
-  const limbMaterial = materialFor('limbs');
   const headMaterial = materialFor('head');
   const gearMaterial = materialFor('gear');
   const handMaterial = materialFor(look.parts.hands);
   // Arms and legs stopped being one garment when Trollina put on tights
-  // (M14.5 second pass): the legs take their own role while the neck and arms
-  // stay on `limbs`. Cool Rider names `limbs` for both and builds identically.
-  const legMaterial = materialFor(look.parts.legs);
+  // (M14.5 second pass): the legs take their own role (`look.parts.legs`)
+  // while the neck and arms stay on `limbs`. Cool Rider names `limbs` for both
+  // and builds identically; `limb()` below resolves the material from the role.
   const { profiles, shades, panels } = look;
 
   /**
@@ -574,16 +574,26 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
    * Red Rider's thigh graphic is exactly that mark. Passing the side costs
    * nothing and every existing painter ignores it.
    */
+  //
+  // **It takes the role rather than the material** since M28, because a limb
+  // in a mapped material has to be folded onto its page — Wheel in Motion's
+  // sleeves are printed on the arm lofts themselves — and whether that happens
+  // is a question about the role's material, asked of the atlas.
   const limb = (
     profile: LoftProfile,
-    material: THREE.Material,
+    role: RiderMaterialRole,
     shade: number,
     paintwork?: (geometry: THREE.BufferGeometry, side: number) => void,
     side = 1,
+    page?: LoftPage,
   ): THREE.Mesh => {
-    const geometry = track(loftGeometry(profile, { radialSegments: density.limb, shade }));
+    const geometry = track(paged(
+      loftGeometry(profile, { radialSegments: density.limb, shade, splitSeam: mapsRole(role) }),
+      role,
+      typeof page === 'function' ? page(side) : page,
+    ));
     paintwork?.(geometry, side);
-    const mesh = new THREE.Mesh(geometry, material);
+    const mesh = new THREE.Mesh(geometry, materialFor(role));
     return shadowed(mesh);
   };
 
@@ -720,7 +730,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       bendToward: FORWARD,
     }, solvedUpper, solvedLower);
     hip.quaternion.copy(solvedUpper);
-    hip.add(limb(profiles.thigh, legMaterial, shades.legs, look.paint?.thigh, side));
+    hip.add(limb(profiles.thigh, look.parts.legs, shades.legs, look.paint?.thigh, side, atlas?.lofts?.thigh));
 
     // The half of a knee guard that lives above the knee, on the bone it is
     // strapped to. See `RiderLook.panels.thighPad`: this is one joint further
@@ -733,7 +743,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     knee.name = `rider-knee-${sideName}`;
     knee.position.y = -RIDER_BLOCKOUT.thighLength;
     knee.quaternion.copy(solvedLower);
-    knee.add(limb(profiles.shin, legMaterial, shades.legs, look.paint?.shin, side));
+    knee.add(limb(profiles.shin, look.parts.legs, shades.legs, look.paint?.shin, side, atlas?.lofts?.shin));
     hip.add(knee);
 
     const ankle = new THREE.Group();
@@ -792,7 +802,16 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // *cap* at the neck: an open collar is a hole into the inside of the jacket,
   // and at chase-camera height the player looks down into it. A dress with a
   // neckline tapers closed instead and carries no collar at all.
-  const torsoParts = [loftGeometry(profiles.torso, { radialSegments: density.torso })];
+  // **Paged, when the body material samples the sheet** — M28. A loft in a
+  // mapped material lands on the page the look names for it (or the blank
+  // one), and is built with its seam split so the page can wrap the body
+  // instead of reversing inside the last facet (`RiderAtlas.lofts`).
+  const lofts = atlas?.lofts;
+  const torsoParts = [paged(
+    loftGeometry(profiles.torso, { radialSegments: density.torso, splitSeam: mapsRole('body') }),
+    'body',
+    lofts?.torso,
+  )];
   // The seat: merged into the garment when it *is* the garment (Cool Rider's
   // trousers), its own non-casting mesh when it is a different one (Trollina's
   // tights — the role split is the invisibility her carve-clip fix rests on;
@@ -800,9 +819,17 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // the torso above it carries the silhouette, and the ghost has no use for a
   // second dark volume inside the first.
   if (look.parts.seat === 'body') {
-    torsoParts.push(loftGeometry(profiles.seat, { radialSegments: density.torso, shade: shades.seat }));
+    torsoParts.push(paged(
+      loftGeometry(profiles.seat, {
+        radialSegments: density.torso,
+        shade: shades.seat,
+        splitSeam: mapsRole('body'),
+      }),
+      'body',
+      lofts?.seat,
+    ));
   }
-  if (panels.collar) torsoParts.push(patchOn(profiles.torso, panels.collar, 1));
+  if (panels.collar) torsoParts.push(paged(patchOn(profiles.torso, panels.collar, 1), 'body', panels.collar.art));
   const torsoGeometry = track(mergeGeometries(torsoParts));
   // The body repaint — M23. Run after the merge rather than on the garment
   // loft alone, so a panel that runs from the chest to the hip is one field
@@ -814,7 +841,15 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   pelvis.add(torso);
   if (look.parts.seat !== 'body') {
     const seat = new THREE.Mesh(
-      track(loftGeometry(profiles.seat, { radialSegments: density.torso, shade: shades.seat })),
+      track(paged(
+        loftGeometry(profiles.seat, {
+          radialSegments: density.torso,
+          shade: shades.seat,
+          splitSeam: mapsRole(look.parts.seat),
+        }),
+        look.parts.seat,
+        lofts?.seat,
+      )),
       materialFor(look.parts.seat),
     );
     seat.name = 'rider-seat';
@@ -905,7 +940,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     // livery reaches the arms: a panel group here is built per side but names
     // one material for both, so it can hold one colour and Maribel wears two
     // (`RiderLook.paint.upperArm`).
-    shoulder.add(limb(profiles.upperArm, limbMaterial, 1, look.paint?.upperArm, side));
+    shoulder.add(limb(profiles.upperArm, 'limbs', 1, look.paint?.upperArm, side, atlas?.lofts?.upperArm));
 
     // The accent runs down the *outer* sleeve, not around the whole arm.
     //
@@ -933,7 +968,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     elbow.name = `rider-elbow-${sideName}`;
     elbow.position.y = -RIDER_BLOCKOUT.upperArmLength;
     elbow.quaternion.copy(solvedLower);
-    elbow.add(limb(profiles.forearm, limbMaterial, 1, look.paint?.forearm, side));
+    elbow.add(limb(profiles.forearm, 'limbs', 1, look.paint?.forearm, side, atlas?.lofts?.forearm));
     // Elbow armour, on the side the elbow actually points: the chains bend
     // backward, so this is the face a rider lands on.
     if (panels.elbowPad) {
@@ -946,7 +981,12 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     // Merged *before* the paint hook, so a look's repaint covers every part.
     const handParts = [loftGeometry(profiles.hand, { radialSegments: density.hand })];
     for (const build of look.build?.hand ?? []) handParts.push(build(side));
-    const handGeometry = track(mergeGeometries(handParts));
+    const handPage = atlas?.lofts?.hand;
+    const handGeometry = track(paged(
+      mergeGeometries(handParts),
+      look.parts.hands,
+      typeof handPage === 'function' ? handPage(side) : handPage,
+    ));
     look.paint?.hand?.(handGeometry, side);
     const hand = shadowed(new THREE.Mesh(
       handGeometry,
@@ -994,12 +1034,17 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // An actual neck. Without one the head floats a visible gap above the
   // shoulders, and a figure whose head is not attached to it reads as broken
   // rather than as temporary.
+  const neckRole = look.parts.neck ?? 'limbs';
   const neckMesh = shadowed(new THREE.Mesh(
-    track(loftGeometry(profiles.neck, { radialSegments: density.neck, shade: shades.neck })),
+    track(paged(
+      loftGeometry(profiles.neck, { radialSegments: density.neck, shade: shades.neck, splitSeam: mapsRole(neckRole) }),
+      neckRole,
+      atlas?.lofts?.neck,
+    )),
     // Its own mesh already, so the role costs nothing: Red Rider's gaiter is
     // the gear material where everyone before him wore `limbs` (see
     // `RiderLook.parts.neck` for why a shade could not say "black").
-    materialFor(look.parts.neck ?? 'limbs'),
+    materialFor(neckRole),
   ));
   neck.add(neckMesh);
 
@@ -1014,8 +1059,17 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // the collar, and a **rear spoiler** — which matters more than the other
   // three put together, because the back of the head is the part of the rider
   // the chase camera is looking at. On Trollina it is one patch: the hairline.
-  const headParts = [loftGeometry(profiles.head, { radialSegments: density.head })];
-  for (const patch of panels.head) headParts.push(patchOn(profiles.head, patch, 1));
+  //
+  // Paged part by part, as `panelMesh` does — the shell onto the page the look
+  // names for it, each feature onto its own `art` — because a merged head
+  // folded onto one page wears the shell's print across its brow (M28: the
+  // first printed lid).
+  const headParts = [paged(
+    loftGeometry(profiles.head, { radialSegments: density.head, splitSeam: mapsRole('head') }),
+    'head',
+    atlas?.lofts?.head,
+  )];
+  for (const patch of panels.head) headParts.push(paged(patchOn(profiles.head, patch, 1), 'head', patch.art));
   const head = shadowed(new THREE.Mesh(track(mergeGeometries(headParts)), headMaterial));
   neck.add(head);
 

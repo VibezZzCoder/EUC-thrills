@@ -23,7 +23,7 @@ The same origin is carried inside the build itself — as a banner at the top of
 
 The two licences are stated separately on purpose: MIT is a software licence and does not read sensibly when applied to models, textures, and sound. If you reuse one but not the other, the terms are unambiguous.
 
-**One limit belongs here rather than in a footnote.** A CC BY 4.0 grant conveys this project's own rights in the assets this project authored. It does not convey — and cannot convey — rights in a real person's name, likeness, or persona. **Three of the five riders are real people appearing with their permission** — Red Rider, Adonisb2 and Maribel Vargas — and the licence above does not extend to any of those identities. Two of them also contributed a recording and one of those two a logo, none of which the licence covers. See *Reference material* below.
+**One limit belongs here rather than in a footnote.** A CC BY 4.0 grant conveys this project's own rights in the assets this project authored. It does not convey — and cannot convey — rights in a real person's name, likeness, or persona. **Four of the six riders are real people appearing with their permission** — Red Rider, Adonisb2, Maribel Vargas and Wheel in Motion — and the licence above does not extend to any of those identities. Two of them also contributed a recording and two of them a logo, none of which the licence covers. See *Reference material* below.
 
 ## Third-party software
 
@@ -62,6 +62,8 @@ What ships is 3.4 s of *her* recording, taken as one continuous slice, level-mat
 
 She recorded it at the owner's request and gave permission for it to be in this game, and that is the whole of what is claimed. It is **not** covered by the CC BY 4.0 claim above, no copyright over it is claimed by this project, and no licence in this repository conveys any right to it beyond redistribution with the game. A reuser who wants that recording for anything else should ask her. Her original video is held privately under `references/` and is not redistributed.
 
+`crash_wheel_in_motion` (the sixth rider's crash) is the sibling of `crash_red_rider`, and it stands exactly where that file stands: **inside the CC BY 4.0 claim**, derived from the project owner's own recording and from nothing else. The sixth rider's crash was to be the same as the third's — the owner's wipeout with the owner's voice removed — and this project's own test suite refuses to ship two crashes that are the same file sample for sample, so it is a second render of the same treatment: the same 0.8 s of the same 3.4 s tumble has the band that carries speech replaced with voice-free texture taken from a *different* stretch of the same take, and every sample outside that window is the original recording unchanged — which makes it identical to `crash_red_rider` everywhere except that 0.8 s. It contains **no recording of Wheel in Motion's own voice**, and no such recording is used anywhere in this game. Nothing generated, modelled, or third-party enters it, which is why it is not listed under *Generated audio* below.
+
 ## Generated audio
 
 One shipped file is outside the CC BY 4.0 claim above **because part of it is machine-generated**, and is listed separately because that standing differs from everything else in this project. (It is not the only file outside the claim — `crash_adonisb2` and `crash_maribel` are too, for an unrelated reason the section above gives.)
@@ -72,17 +74,19 @@ One shipped file is outside the CC BY 4.0 claim above **because part of it is ma
 
 This is the same reasoning the project applies to the AI-generated art-direction references under `references/`, applied to a shipped file rather than to a working one. It is recorded here rather than left implicit because a redistributor cannot tell by listening.
 
-Two shipped files a reader might expect in this table are deliberately absent, and the reason differs for each. `crash_red_rider` carries no generated layer at all and stays inside the CC BY 4.0 claim. `crash_adonisb2` carries none either and stays *outside* it, because it is somebody else's recording rather than this project's. Four riders crash in this game and only one of those four sounds is machine-made; *Third-party audio recordings* above says what the other three are.
+Four shipped files a reader might expect in this table are deliberately absent, and the reason differs. `crash_red_rider` and `crash_wheel_in_motion` carry no generated layer at all and stay inside the CC BY 4.0 claim. `crash_adonisb2` and `crash_maribel` carry none either and stay *outside* it, because they are somebody else's recordings rather than this project's. Six riders crash in this game and only one of those six sounds is machine-made; *Third-party audio recordings* above says what the other five are.
 
 ## Fictional designs and real-world brands
 
 Electric unicycles in this game are **original fictional designs**. They are informed by the general characteristics of real-world EUC categories — compact commuters, suspension trail wheels, long-range touring wheels — but they do not copy any specific commercial product's shell geometry, panel design, decals, naming, or protected product identity.
 
-**Two machines are qualified, and in both cases the qualification is about a person rather than a manufacturer.**
+**Three machines are qualified, and in every case the qualification is about a person rather than a manufacturer.**
 
 Red Rider's wheel is modelled on the machine he customized himself, from reference material he supplied, with his permission — including the red livery and the identification plate carrying his own name. It is still no manufacturer's product: it reproduces no commercial shell, no panel design, and no protected product identity, and the commercial gear mark visible in his photograph is deliberately not reproduced. The only branding on him or his wheel is his own name.
 
 Adonisb2's wheel is modelled the same way and on the same footing: a blocky off-road form and the green plate with the stylized eyes that personalize his own machine, from reference material he supplied, with his permission. The plate's artwork is drawn from scratch in this project's own style rather than copied. It reproduces no manufacturer's shell, no panel design and no protected product identity, the third-party sticker artwork visible in his photograph and in the supplied mockup is deliberately not reproduced, and his wheel carries no name or wordmark at all.
+
+Wheel in Motion's wheel is the third, on the same footing: a tall black performance body with bright cyan-blue side structures and orange power pads — the colour relationship of the machine he customized himself — from the photograph he supplied, with his permission, and with his own channel's mark on a plate on both flanks. It is the game's own fictional performance form wearing that personalization: it reproduces no manufacturer's shell, no panel design and no protected product identity; the manufacturer's wordmark on the real wheel's bodywork, the pad maker's marks and the third-party sticker on its flank are deliberately not reproduced; and the only mark on him or his wheel is his own.
 
 Maribel Vargas's riding kit follows the same rule, and it needs stating because her reference photographs carry more commercial branding than either of theirs. Her racing suit and helmet in this game keep **colour blocking, panel placement and silhouette** — a black-over-grey one-piece, a matte dark shell, a mirrored blue-cyan visor, and the aqua-and-coral asymmetry that is her own — and reproduce **no manufacturer's mark of any kind**: not the helmet maker's wordmark, not the suit maker's wordmark down the arm and leg, and not its chest device.
 
@@ -141,6 +145,20 @@ The fifth rider is **not** an original creation, the same narrow terms apply, an
 **No broader right is claimed or granted.** Maribel Vargas is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place her name, likeness, persona, or logo under any licence, and no licence in this file conveys them. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs her agreement, which is not the project's to give.
 
 **Her name and the public Instagram persona credited above are the only identity published.** No other account of hers, and nothing about where she lives or works, is disclosed anywhere in this project or its distributions, and the conversation that granted the permission is internal evidence rather than a public-facing asset.
+
+### Wheel in Motion — a real person, represented with permission
+
+**Wheel in Motion is represented with permission, at his own request.** He is a real electric-unicycle rider with a YouTube channel of that name. He asked to appear in the game in a public conversation — in reply to the project owner stating, in that same thread, that a real person is added only when that person asks for themselves — and the project owner verified the request against his channel before agreeing. The character is based on the reference photograph he supplied; the permission conversation and the reference material are retained with the project privately, under `references/`, never redistributed and never shown in the game.
+
+**His public presence:** Wheel in Motion publishes on YouTube as [Wheel In Motion](https://www.youtube.com/@RealWheelInMotion). The link is listed here as credit at the project owner's direction; it is the same public persona that appears in the game, not an additional identity.
+
+**His mark appears in this game with his permission, and it is his channel's mark — © its owner, all rights reserved — not this project's.** The lettering — a blue **W**, a white **i** and an orange **M** — is the avatar of the persona's accounts across his socials, and the master he supplied is embedded in `src/data/wimLogoAsset.ts` as a scripted crop of that file (the mark's own bounding box with a margin, halved in size, no pixel of the mark removed, redrawn or recoloured), unpacked at boot and composited into the character's texture sheets unchanged. It is never redrawn, traced, re-proportioned, recoloured or filled, and it keeps its own aspect on every surface it lands on. It appears in five places, and nowhere else: his chest, the sticker on his backpack, the shell of his right knee guard, a white plate on both flanks of his wheel, and his chooser card. **The CC BY 4.0 grant above does not cover his mark.** Permission to use it in *this game* is not permission for reuse anywhere else, and a reuser needs his agreement.
+
+**His crash is not a recording of him.** No recording of his voice exists in this game; his character crashes to `crash_wheel_in_motion`, the project owner's own wipeout with the owner's voice removed — see *Third-party audio recordings* above. If he supplies a recording of his own, this entry will change to say so.
+
+**No broader right is claimed or granted.** Wheel in Motion is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place his name, likeness, persona, or mark under any licence, and no licence in this file conveys them. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs his agreement, which is not the project's to give.
+
+**"Wheel in Motion" — with the public YouTube channel credited above — is the only identity published.** No legal name and no other account of his is disclosed anywhere in this project or its distributions, and the conversation that granted the permission is internal evidence rather than a public-facing asset.
 
 ## Attribution
 

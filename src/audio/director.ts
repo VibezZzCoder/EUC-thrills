@@ -296,7 +296,8 @@ export function createAudioFrame(): AudioFrame {
  * It lives in *this* file rather than in `sink.ts` since M25 Phase 5, because
  * a `TransientCue` names the voice it wants and a cue is this file's.
  */
-export type CrashVoiceId = 'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel';
+export type CrashVoiceId =
+  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion';
 
 export type CueKind =
   | 'hop' | 'landing' | 'curb' | 'crash' | 'recover' | 'beep' | 'swing' | 'hit'

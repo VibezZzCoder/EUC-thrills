@@ -183,7 +183,7 @@ any of them.
 
 ## Riders
 
-There are five, the line under the title screen's buttons says who you are, and
+There are six, the line under the title screen's buttons says who you are, and
 that line opens the chooser. The difference is **entirely cosmetic** — each has
 their own crash sound, none is faster, and the custom wheels ride identically to
 the standard one, down to the last number.
@@ -225,6 +225,17 @@ kart circuit asks for rather than traced from anything she rides. Her public
 racing persona is credited as
 [@baymv_](https://www.instagram.com/baymv_) at her and the project owner's
 direction.
+
+**Wheel in Motion** is a real rider with a YouTube channel of that name, and
+he asked in public — in the same thread where the author had just said that a
+real person is only added when that person asks for themselves. The author
+checked, and he had. He rides in his blue-and-yellow jersey and a blue lid
+with yellow stripes, his channel's mark on his chest, his pack and his wheel,
+on a black wheel with cyan-blue pads and orange power pads modelled on his
+own customized machine. His crash is the author's own wipeout with the
+author's voice removed, until he sends one of his own. His channel is credited
+as [Wheel In Motion](https://www.youtube.com/@RealWheelInMotion) at his and
+the project owner's direction.
 
 For every real rider, no legal or private identity is published anywhere in this
 project, and their likenesses appear here with permission for this game only —
@@ -385,6 +396,10 @@ list.
 
 ### Recently landed
 
+- **A sixth rider, with his own wheel** — Wheel in Motion, a YouTuber who
+  asked in public to be in the game. His channel's mark rides on his chest,
+  his pack and his wheel, and the wheel is modelled on his own customized
+  machine: black, cyan-blue and orange.
 - **A couch race, and four seats.** Up to four riders on one desktop screen —
   halves for two, a grid for three or four — and a three-lap race at BelVar
   Circuit with a countdown, live standings, per-rider lap rules, one shared
@@ -452,21 +467,24 @@ to be.
 
 ## Licence
 
-Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the ten shipped
-sounds derive from public-domain (CC0) recordings; two crashes derive from the
-author's own recording — the third rider's is that same wipeout with the
-author's voice removed. Two shipped sounds sit outside the CC BY 4.0 claim: the
-second rider's crash is a composed one-shot whose voice is machine-generated,
-and the fourth rider's crash is **his own contributed recording of his own
-fall**, used in this game with his permission and with no copyright over it
-claimed by this project. Cool Rider is an original fictional character whose
-clothes and style draw on what the project owner wears; Red Rider and Adonisb2
-are real people represented with permission, and no licence in this project
-covers their names, likenesses, or personas. Full terms, attribution, and
-per-file provenance are in [`LICENSE`](LICENSE) and [`NOTICE.md`](NOTICE.md).
+Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the eleven
+shipped sounds derive from public-domain (CC0) recordings; three crashes derive
+from the author's own recording — the third and sixth riders' are that same
+wipeout with the author's voice removed, rendered twice from different
+voice-free stretches so that they are two files. Three shipped sounds sit
+outside the CC BY 4.0 claim: the second rider's crash is a composed one-shot
+whose voice is machine-generated, and the fourth and fifth riders' crashes are
+**their own contributed recordings**, used in this game with their permission
+and with no copyright over them claimed by this project. Cool Rider is an
+original fictional character whose clothes and style draw on what the project
+owner wears; Red Rider, Adonisb2, Maribel Vargas and Wheel in Motion are real
+people represented with permission, and no licence in this project covers
+their names, likenesses, personas, or the two riders' own logos. Full terms,
+attribution, and per-file provenance are in [`LICENSE`](LICENSE) and
+[`NOTICE.md`](NOTICE.md).
 
-The wheels in this game are original fictional designs — two are modelled, with
-their riders' permission, on their own customized machines, without reproducing
-any manufacturer's identity or any third-party sticker artwork. This project is
+The wheels in this game are original fictional designs — three are modelled,
+with their riders' permission, on their own customized machines, without
+reproducing any manufacturer's identity or any third-party sticker artwork. This project is
 not affiliated with, endorsed by, or associated with any electric unicycle
 manufacturer or retailer.

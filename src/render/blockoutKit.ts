@@ -224,6 +224,24 @@ export interface LoftOptions {
   capTop?: boolean;
   /** Vertex multiplier on the material colour. 1 is the material as authored. */
   shade?: number;
+  /**
+   * Give the seam column its own vertices, so the texture coordinate runs
+   * 0 → 1 the whole way round instead of wrapping inside the last facet — M28.
+   *
+   * **A loft that is going to be paged needs this; nothing else does.** With
+   * the seam shared, the facet between the last column and column 0 runs its
+   * `u` from `(n−1)/n` back to `0`, which on a mapped body draws the *entire*
+   * page reversed and squeezed into one strip down the rider's left. That is
+   * exactly the "seam column runs backwards" note `DESIGN.md` §7i records as
+   * the reason a loft was never printed on before Wheel in Motion's jersey.
+   *
+   * The cost is one duplicate column of vertices, and the shading crack that
+   * would come with it is closed by hand: after the normals are computed, the
+   * two seam columns are averaged and share one normal, so the surface is as
+   * smooth as the shared-seam build. Off by default — every loft on every
+   * other rider and machine builds byte-identically with it off.
+   */
+  splitSeam?: boolean;
 }
 
 /** Is this end ring small enough to close to a point rather than a flat disc? */
@@ -243,6 +261,9 @@ export function loftGeometry(profile: LoftProfile, options: LoftOptions = {}): T
   const radial = Math.max(3, Math.round(options.radialSegments ?? 16));
   const subdivisions = Math.max(0, Math.round(options.subdivisions ?? 0));
   const shade = options.shade ?? 1;
+  const splitSeam = options.splitSeam ?? false;
+  /** Vertex columns per row: one more than the facets when the seam is split. */
+  const columns = splitSeam ? radial + 1 : radial;
 
   const rows: number[] = [];
   for (let i = 0; i < profile.length - 1; i += 1) {
@@ -260,9 +281,10 @@ export function loftGeometry(profile: LoftProfile, options: LoftOptions = {}): T
   const topPole = isPole(profile[profile.length - 1]!);
   const vSpan = Math.max(1e-6, profile.length - 1);
 
-  // One vertex per (u, v), with the u = 2π column folded back onto u = 0.
+  // One vertex per (u, v), with the u = 2π column folded back onto u = 0 —
+  // or, with `splitSeam`, given its own column at u = 1 so a page can wrap.
   for (const v of rows) {
-    for (let i = 0; i < radial; i += 1) {
+    for (let i = 0; i < columns; i += 1) {
       loftPoint(profile, (i / radial) * Math.PI * 2, v, point);
       positions.push(point.x, point.y, point.z);
       colours.push(shade, shade, shade);
@@ -274,7 +296,7 @@ export function loftGeometry(profile: LoftProfile, options: LoftOptions = {}): T
       uvs.push(i / radial, v / vSpan);
     }
   }
-  const at = (row: number, i: number): number => row * radial + (i % radial);
+  const at = (row: number, i: number): number => row * columns + (splitSeam ? i : i % radial);
   for (let row = 0; row < rows.length - 1; row += 1) {
     for (let i = 0; i < radial; i += 1) {
       const a = at(row, i);
@@ -311,6 +333,22 @@ export function loftGeometry(profile: LoftProfile, options: LoftOptions = {}): T
   geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
+  if (splitSeam) {
+    // The two seam columns sit on one point and were averaged from one side
+    // each; give them the mean so the seam shades as if it were shared.
+    const normal = geometry.getAttribute('normal');
+    for (let row = 0; row < rows.length; row += 1) {
+      const a = at(row, 0);
+      const b = at(row, radial);
+      const x = normal.getX(a) + normal.getX(b);
+      const y = normal.getY(a) + normal.getY(b);
+      const z = normal.getZ(a) + normal.getZ(b);
+      const length = Math.hypot(x, y, z) || 1;
+      normal.setXYZ(a, x / length, y / length, z / length);
+      normal.setXYZ(b, x / length, y / length, z / length);
+    }
+    normal.needsUpdate = true;
+  }
   return geometry;
 }
 
@@ -352,6 +390,22 @@ export interface PatchOptions {
   /** Slide the band's centre line at its middle, in ring indices. */
   bow?: number;
   shade?: number;
+  /**
+   * Run the patch's `s` with **arc** along the body rather than with angle —
+   * M28 Phase 2, and the reason is the plate on Wheel in Motion's wheel.
+   *
+   * A patch's columns are spaced evenly in `u`, which on a circle is evenly
+   * in metres and on a square-5 superellipse is nothing of the kind: across
+   * a 0.21 rad span on that shell's flank the first of eight columns covered
+   * 73 mm of a 151 mm plate and the last 7 mm, so a mark centred on the page
+   * came out crushed into the plate's front half with its trailing letter
+   * 1.6× the width of its leading one (a blind critic measured it; the
+   * verifier found the cause here). With this set the mid-row's cumulative
+   * arc is sampled once at build and each column lands at its arc fraction,
+   * so the page runs at one scale across the whole patch. Opt-in, so every
+   * existing patch on every rider and machine is byte-identical.
+   */
+  uByArc?: boolean;
 }
 
 /**
@@ -407,9 +461,60 @@ export function patchGeometry(profile: LoftProfile, options: PatchOptions): THRE
     return index;
   };
 
+  /**
+   * `s` to `u`: linear in angle, or — `uByArc` — linear in metres along the
+   * mid row, by inverting the cumulative arc sampled once here.
+   */
+  const uAt = (() => {
+    if (!options.uByArc) return (s: number): number => options.u0 + (options.u1 - options.u0) * s;
+    const steps = 192;
+    const vMid = (options.v0 + options.v1) / 2;
+    const arcs = new Float64Array(steps + 1);
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    loftPoint(profile, options.u0, vMid, a);
+    for (let k = 1; k <= steps; k += 1) {
+      loftPoint(profile, options.u0 + (options.u1 - options.u0) * (k / steps), vMid, b);
+      arcs[k] = arcs[k - 1]! + a.distanceTo(b);
+      a.copy(b);
+    }
+    const total = arcs[steps]!;
+    /** Arc from `ua` to `ub` along the mid row, finely enough to follow a flat face's centre. */
+    const arcBetween = (ua: number, ub: number): number => {
+      loftPoint(profile, ua, vMid, a);
+      let length = 0;
+      for (let k = 1; k <= 24; k += 1) {
+        loftPoint(profile, ua + (ub - ua) * (k / 24), vMid, b);
+        length += a.distanceTo(b);
+        a.copy(b);
+      }
+      return length;
+    };
+    return (s: number): number => {
+      const target = Math.min(1, Math.max(0, s)) * total;
+      let k = 1;
+      while (k < steps && arcs[k]! < target) k += 1;
+      // Inside the coarse step, bisect on the true arc rather than
+      // interpolating in `u`: across the flat centre of a square
+      // superellipse one step of 0.001 rad is 26 mm of surface with almost
+      // all of it in the middle, and a linear guess there lands a column
+      // 12 mm off the even spacing this option exists to give.
+      const ua = options.u0 + (options.u1 - options.u0) * ((k - 1) / steps);
+      const ub = options.u0 + (options.u1 - options.u0) * (k / steps);
+      let low = ua;
+      let high = ub;
+      for (let it = 0; it < 16; it += 1) {
+        const mid = (low + high) / 2;
+        if (arcs[k - 1]! + arcBetween(ua, mid) < target) low = mid;
+        else high = mid;
+      }
+      return (low + high) / 2;
+    };
+  })();
+
   /** The patch's own (s, t) square mapped onto the body's (u, v). */
   const coords = (s: number, t: number): [number, number] => {
-    const u = options.u0 + (options.u1 - options.u0) * s;
+    const u = uAt(s);
     // How far along the span this column is from either end: 1 in the middle,
     // 0 at the edges. Both the swell and the bow are measured against it.
     const middle = 1 - Math.abs(s - 0.5) * 2;

@@ -459,7 +459,7 @@ export const NON_LEVEL_RESERVE = deepFreeze({
  */
 export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
   drawCalls: 148,
-  triangles: 76_412,
+  triangles: 78_482,
 });
 
 /**
@@ -489,7 +489,7 @@ export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
  */
 export const QUAD_NON_LEVEL_RESERVE = deepFreeze({
   drawCalls: 268,
-  triangles: 115_382,
+  triangles: 123_068,
 });
 
 /**

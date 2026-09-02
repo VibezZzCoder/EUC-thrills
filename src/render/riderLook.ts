@@ -13,6 +13,12 @@ import {
   type UvRect,
 } from './blockoutKit.ts';
 import { ATLAS_REGIONS, createMaribelAtlas, type AtlasRegionName } from './maribelAtlas.ts';
+import {
+  WIM_REGIONS,
+  createWimAtlas,
+  type WimRegionName,
+  type WimSheetLayout,
+} from './wimAtlas.ts';
 
 /**
  * What a rider *looks* like, as data — one entry per character.
@@ -264,6 +270,9 @@ export interface RiderExtra {
  * without putting a texture lookup on its whole body — and a look with no
  * atlas at all, which is every look but hers, builds exactly as it did.
  */
+/** A loft's page: one name, or one per side for a limb whose two sides differ. */
+export type LoftPage = string | ((side: number) => string);
+
 export interface RiderAtlas {
   /**
    * One texture per rig, over pixels the module memoises.
@@ -284,6 +293,37 @@ export interface RiderAtlas {
    * not take the rig down.
    */
   region(art: string | undefined): UvRect;
+  /**
+   * The page each **body loft** lands on, when its material samples the sheet
+   * — M28, and the second thing a rider can be printed on.
+   *
+   * Maribel's sheet reaches her through patches and extras only: her suit is
+   * black leather and every mark on it rides a patch, so the lofts under them
+   * were never mapped. Wheel in Motion's jersey is the other case — two
+   * saturated hues *are* the garment, blue and yellow over the whole torso and
+   * both sleeves — and a field that size is a loft's job, not a patch's. So a
+   * look may name a page for a loft, and `render/rider.ts` folds the loft's
+   * own square (`u` right round the body from the rider's left, `v` up the
+   * rings) onto it, built with `splitSeam` so the page wraps instead of
+   * reversing inside the last facet.
+   *
+   * A loft in a mapped material with no page named here lands on the blank
+   * page, exactly as an unpaged patch does: it renders as its vertex colours
+   * say and cannot sample the whole sheet. `wheelInMotion.test.ts` asserts
+   * the fold for every mesh, as `maribel.test.ts` does for hers.
+   */
+  readonly lofts?: {
+    readonly torso?: string;
+    readonly seat?: string;
+    /** A limb's page may differ by side (+1 left, −1 right): his sleeves do. */
+    readonly upperArm?: LoftPage;
+    readonly forearm?: LoftPage;
+    readonly thigh?: LoftPage;
+    readonly shin?: LoftPage;
+    readonly neck?: string;
+    readonly head?: string;
+    readonly hand?: LoftPage;
+  };
 }
 
 export interface RiderLook {
@@ -5990,12 +6030,947 @@ export const MARIBEL_LOOK: RiderLook = Object.freeze({
   armCarriage: Object.freeze({ splay: -0.006, rise: -0.010 }),
 });
 
+// -- Wheel in Motion ----------------------------------------------------------
+//
+// M28 Phase 1 — the sixth playable look, the fourth real person, and the first
+// whose *garment* is printed rather than painted. `references/Wheel-In-Motion/`
+// holds the photograph he posted, his channel's mark and an AI target render;
+// the brief's recognition order (§14) is the build order here: the blue-and-
+// yellow jersey, the blue lid over a dark visor, his mark, the large white
+// knee and shin armour, the pack straps, blue trousers, black boots and
+// gloves. His wheel is Phase 2 (`docs/PLANS.md` §28.9).
+//
+// **Three things decide the shape of this section** (`docs/PLANS.md` §28.4):
+//
+//   - **Two saturated hues on one jersey cannot be reached from either**, so
+//     the body material is a near-white printing ground and the whole torso
+//     and both sleeves are folded onto pages of his sheet (`RiderAtlas.lofts`,
+//     `render/wimAtlas.ts`). Blue is ink, yellow is ink, his mark is his file.
+//   - **The legs are Adonisb2's inversion one step paler**: the same pale
+//     ground, painted down to the jersey's blue above the guard, held at
+//     guard-white under the shell, and down to boot-black below it — three
+//     colours from one material at zero draw calls.
+//   - **The lid is the roster's road shell in his colours.** The owner's look
+//     pass (2026-09-01) struck the off-road lid Phase 1 built — peak, chin
+//     bar volume, orange trim — on sight: Cool Rider's rings and patches, a
+//     yellow chin bar and yellow sweeps as one extra in the print material
+//     wearing a flat yellow page, a dark visor in the aperture. Orange is
+//     his wheel's (Phase 2) and his mark's, and nothing else on him.
+//
+// Parity: at or under Cool Rider's meshes and calls (`redRider.test.ts`), with
+// the pack in the shoulders' buffer — no sleeve group, no elbow group; his
+// sleeves are print.
+
+/**
+ * Where the knee guard's upper shell begins on the thigh — 0.73, and the
+ * clearance contract chose it: 0.70 put the shell's proud top corner 78 mm
+ * under the pelvis in the deepest attack-carve-crouch fold against a 75 mm
+ * fitted-bodice ceiling, and 0.72 sat on the ceiling exactly
+ * (`riderClearance.test.ts`); Adonisb2's 0.75 was tuned to the same contract
+ * with a 20 mm shell, and his shell's lift is what finally cleared it.
+ */
+const WIM_GUARD_TOP = 0.735;
+/**
+ * The knee cup's two edges, thigh side then shin side, in each bone's space.
+ *
+ * **Small, and that is the gauntlet's finding.** The first round inherited
+ * Adonisb2's 65 mm cup and the blind gear critic read the whole brace as
+ * black-dominant — the render's brace is white with a modest black cup set
+ * into it. The cup is 54 mm now, and the white runs above and below it.
+ */
+const WIM_CUP_TOP = -0.380;
+const WIM_CUP_BOTTOM = -0.030;
+/** Where the boot's shaft begins on the shin: laced boots, low on the shin. */
+const WIM_BOOT_TOP = 0.72;
+
+/** A profile's cross-section at a height — `adonisb2ShellRing`, for any profile. */
+function ringOf(profile: LoftProfile, y: number): LoftProfile[number] {
+  const first = profile[0]!;
+  const last = profile[profile.length - 1]!;
+  if (y <= first.y) return first;
+  if (y >= last.y) return last;
+  let lower = first;
+  let upper = last;
+  for (let i = 1; i < profile.length; i += 1) {
+    if (profile[i]!.y < y) continue;
+    lower = profile[i - 1]!;
+    upper = profile[i]!;
+    break;
+  }
+  const f = (y - lower.y) / (upper.y - lower.y);
+  const blend = (a: number, b: number): number => a + (b - a) * f;
+  return {
+    y,
+    halfWidth: blend(lower.halfWidth, upper.halfWidth),
+    halfDepth: blend(lower.halfDepth, upper.halfDepth),
+    x: blend(lower.x, upper.x),
+    z: blend(lower.z, upper.z),
+    square: blend(lower.square, upper.square),
+  };
+}
+
+/**
+ * The jersey: Cool Rider's jacket silhouette, re-rung every 30 mm.
+ *
+ * **The rings are for the print, not the outline.** A loft's texture row is a
+ * ring index, so on the ten-ring jacket one page row covers 6 mm at the hem
+ * and 135 mm through the chest, and a mark spanning two of those intervals is
+ * stretched inside itself. Sampling the same silhouette at even heights makes
+ * `v` linear in metres everywhere the print carries structure, which is what
+ * lets `render/wimAtlas.ts` stamp his mark at its own aspect from arithmetic.
+ * The hem lip and the collar taper keep their authored rings.
+ */
+const WIM_JERSEY = loftProfile((() => {
+  const heights = [-0.010, 0.018];
+  for (let y = 0.050; y < 0.470 + 1e-6; y += 0.030) heights.push(Math.round(y * 1000) / 1000);
+  heights.push(0.500, 0.528, 0.548);
+  return heights.map((y) => ringOf(JACKET, y));
+})());
+
+/**
+ * A limb re-rung at chosen heights, keeping `limbProfile`'s taper — for a
+ * limb that is going to be **printed on**.
+ *
+ * **A page over a patch is ring-index space, and the second gauntlet round
+ * measured what that costs.** `limbProfile` puts its padding seams down as
+ * ring *pairs* a few millimetres apart, and one of its default stops landed a
+ * millimetre from a seam ring; a printed shell spanning that region gave forty
+ * per cent of its page's height to eight millimetres of leg, and his mark on
+ * the knee shell came back crushed to 1.3 : 1 with the *i* squeezed out of it
+ * (`DESIGN.md` §7i's "not linear in metres", paid for). The jersey never
+ * suffered because it was re-rung evenly for the same reason. So the legs are
+ * too: even rings across everything a page lands on, and a close pair only
+ * where a paint boundary needs one, placed outside the printed spans.
+ */
+function limbAtHeights(
+  length: number,
+  radii: readonly [number, number, number],
+  heights: readonly number[],
+  options: { flatten: number; square: number },
+): LoftProfile {
+  const [top, mid, end] = radii;
+  const radiusAt = (t: number): number => (
+    t < 0.5 ? top + (mid - top) * (t / 0.5) : mid + (end - mid) * ((t - 0.5) / 0.5)
+  );
+  const rings = heights.map((y) => {
+    const radius = radiusAt(Math.min(1, Math.max(0, -y / length)));
+    return { y, halfWidth: radius, halfDepth: radius * options.flatten, square: options.square };
+  });
+  // The hemispherical close, as `limbProfile` makes it.
+  for (const [t, scale] of [[0.5, 0.86], [0.85, 0.54], [1, 0]] as const) {
+    rings.push({
+      y: -length - end * 0.55 * t,
+      halfWidth: end * scale,
+      halfDepth: end * scale * options.flatten,
+      square: options.square,
+    });
+  }
+  return loftProfile(rings);
+}
+
+/**
+ * The thigh: even 20 mm rings under the shell (−0.400 → −0.300), a pair at
+ * the guard-white paint boundary just above the shell's top edge, even rings
+ * up to the hip.
+ */
+const WIM_THIGH = limbAtHeights(
+  RIDER_BLOCKOUT.thighLength,
+  [0.079, 0.072, 0.061],
+  [
+    0, -0.040, -0.080, -0.120, -0.160, -0.200, -0.240, -0.270,
+    -RIDER_BLOCKOUT.thighLength * WIM_GUARD_TOP + 0.002,
+    -RIDER_BLOCKOUT.thighLength * WIM_GUARD_TOP - 0.002,
+    -0.300, -0.320, -0.340, -0.360, -0.380, -0.400,
+  ],
+  { flatten: 0.94, square: 2.4 },
+);
+/**
+ * The shin: a pair at the cup's lower edge, even rings under the plate, a
+ * pair at the boot's collar, and a boot-sized end radius.
+ */
+const WIM_SHIN = limbAtHeights(
+  RIDER_BLOCKOUT.shinLength,
+  [0.064, 0.058, 0.053],
+  [
+    0, WIM_CUP_BOTTOM + 0.002, WIM_CUP_BOTTOM - 0.002,
+    -0.050, -0.080, -0.110, -0.140, -0.170, -0.200, -0.224, -0.250,
+    -RIDER_BLOCKOUT.shinLength * WIM_BOOT_TOP + 0.002,
+    -RIDER_BLOCKOUT.shinLength * WIM_BOOT_TOP - 0.002,
+    // A second ring under the collar, so its band is two rows with a hard
+    // edge and not one painted ring interpolating into its neighbours.
+    -RIDER_BLOCKOUT.shinLength * WIM_BOOT_TOP - 0.014,
+    -0.300, -0.340, -0.380,
+  ],
+  { flatten: 0.92, square: 2.4 },
+);
+
+/**
+ * Smooth long sleeves: no padding seams, because the jersey has none — and
+ * a **dome over the shoulder joint**, which every other arm on the roster
+ * leaves as a flat capped disc under its shoulder panels. He wears no such
+ * panel (his shoulders are print), and the gauntlet saw the disc: "a yellow
+ * flap juts past the arm silhouette with a knife edge". The dome is the
+ * deltoid, and it takes the sleeve page's yellow yoke with it.
+ */
+const WIM_UPPER_ARM = loftProfile([
+  { y: 0.034, halfWidth: 0, halfDepth: 0 },
+  { y: 0.028, halfWidth: 0.030, halfDepth: 0.029, square: 2.3 },
+  { y: 0.014, halfWidth: 0.050, halfDepth: 0.048, square: 2.3 },
+  ...limbProfile(RIDER_BLOCKOUT.upperArmLength, [0.058, 0.050, 0.043], [], {
+    flatten: 0.95,
+    square: 2.3,
+  }).slice().reverse(),
+]);
+const WIM_FOREARM = limbProfile(RIDER_BLOCKOUT.forearmLength, [0.047, 0.041, 0.033], [], {
+  flatten: 0.94,
+  square: 2.3,
+});
+
+/**
+ * The lid: the roster's road shell in rings of his own — Cool Rider's
+ * `HELMET` from the temples up, a base ring under it so the shell sits down
+ * on the shoulders (he wears no collar), and a chin that leads the visor *in
+ * the profile itself* rather than as a patch.
+ *
+ * **Two look passes by the owner** (2026-09-01). Phase 1 built the off-road
+ * lid the brief's §7 asked for — a peak and a chin bar as volumes leaving
+ * the shell — and on the ride he saw a snout: *"it's like... a pig!"* The
+ * first pass replaced it with Cool Rider's rings and hung the yellow on as
+ * lifted patches, a chin bar and four raked sweeps, and he saw those too:
+ * *"those yellow panels protruding... it should blend better. the adonis
+ * character is a good example of a helmet done right."* Adonisb2's stripes
+ * stand three millimetres off a computed shell; this goes the whole way. The
+ * shell is folded onto a page of his sheet (`RiderAtlas.lofts.head`), so
+ * every colour on it is print lying on the surface (`render/wimAtlas.ts`,
+ * `paintHelmet`), and the only geometry on the head is the shell and Cool
+ * Rider's brow and base rim, in blue. Not his spoiler: on the third ride the
+ * owner saw *"a bump on the back protruding... not sure why its there"*,
+ * and a printed lid needs no blade to give the chase camera something.
+ *
+ * The chin: the rings from the jaw to the visor's lower edge carry more
+ * depth and sit further forward than Cool Rider's, so the leading edge at
+ * 132 mm up stands 148 mm ahead of the neck against 137 at the visor — the
+ * lead Cool Rider's 15 mm chin-bar patch supplies, as a swell of the shell
+ * with no rim to catch the light. The crown gains two rings so the dome
+ * rounds off at the density the print asks for.
+ */
+const WIM_HELMET = loftProfile([
+  // The three lowest rings hold the jaw's width — the mockup's cheek pads run
+  // near-parallel to a broad base (75% of the shell's widest at 90% of its
+  // height; the first cut pinched to 58% there, a bulb on a stalk from the
+  // chase camera). Depth, lead and `square` are the rings the owner's third
+  // ride accepted, untouched.
+  { y: 0.058, halfWidth: 0.088, halfDepth: 0.072, square: 2.3, z: 0.012 },
+  { y: 0.088, halfWidth: 0.094, halfDepth: 0.086, square: 2.4, z: 0.018 },
+  { y: 0.112, halfWidth: 0.104, halfDepth: 0.118, square: 2.5, z: 0.022 },
+  { y: 0.132, halfWidth: 0.112, halfDepth: 0.128, square: 2.6, z: 0.020 },
+  { y: 0.158, halfWidth: 0.119, halfDepth: 0.130, square: 2.6, z: 0.010 },
+  { y: 0.215, halfWidth: 0.124, halfDepth: 0.133, square: 2.5, z: 0.004 },
+  { y: 0.268, halfWidth: 0.113, halfDepth: 0.119, square: 2.3 },
+  { y: 0.290, halfWidth: 0.101, halfDepth: 0.106, square: 2.25 },
+  { y: 0.308, halfWidth: 0.084, halfDepth: 0.088, square: 2.2 },
+  { y: 0.324, halfWidth: 0.064, halfDepth: 0.067, square: 2.2 },
+  { y: 0.336, halfWidth: 0.040, halfDepth: 0.042, square: 2.2 },
+  { y: 0.348, halfWidth: 0, halfDepth: 0 },
+]);
+
+/** The print ground: the ceiling every ink on him hangs from. Matte, like a jersey. */
+const WIM_PRINT: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.wheelInMotionPrint,
+  roughness: 0.82,
+  metalness: 0.0,
+});
+
+/**
+ * The lid: the print ground under the helmet page, glossier than the jersey.
+ * A spec of its own rather than `WIM_PRINT` so the shell is plastic while
+ * the jersey stays cloth; it samples the sheet because `head` is a mapped
+ * role, and the page carries every colour on it.
+ */
+const WIM_LID: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.wheelInMotionPrint,
+  roughness: 0.46,
+  metalness: 0.0,
+});
+
+/** Boots, gloves, the pack and its straps, the gaiter: the glossier black. */
+const WIM_GEAR: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.wheelInMotionGear,
+  roughness: 0.62,
+  metalness: 0.0,
+});
+
+// -- Wheel in Motion's paintwork ----------------------------------------------
+//
+// The legs are print-ground based, so every tint below paints *down* — the
+// direction the multiplier honours.
+
+/**
+ * Pale → the jersey's blue. His trousers are the jersey's own blue by the
+ * owner's call (2026-09-01) — *"make his pants same blue as shirt"* — not
+ * the photograph's denim. `shades.seat` is overridden to this same tint, so
+ * hem and hip agree.
+ */
+const WIM_TROUSER_TINT = tintOver(BLOCKOUT_COLOURS.wheelInMotionPrint, BLOCKOUT_COLOURS.wheelInMotionBlue);
+/**
+ * Pale → the guard's white under the shell — *above* the ground, as the shell
+ * patches are (`WIM_GUARD_SHADE`), so the armour is the brightest thing on
+ * the lower body: three gauntlet rounds read it at the ground's value as grey.
+ */
+const WIM_GUARD_SHADE = 1.30;
+const WIM_GUARD_TINT = tintOver(BLOCKOUT_COLOURS.wheelInMotionPrint, BLOCKOUT_COLOURS.wheelInMotionGuard, WIM_GUARD_SHADE);
+/** Pale → the knee cup's near-black — must equal the `cap` page's ink (the hinge rule). */
+const WIM_CAP_TINT = tintOver(BLOCKOUT_COLOURS.wheelInMotionPrint, BLOCKOUT_COLOURS.wheelInMotionGear);
+/** Pale → the boot's shaft. */
+const WIM_BOOT_TINT = WIM_CAP_TINT;
+/** Panel lines on a boot: the gear colour one step up, the M19 grammar. */
+// 2.2×, not 1.3×: on a gear black that lands at sRGB 3 under the sun, a
+// 1.3× step is one 8-bit level — the third blind round measured the boot's
+// collar, laces and the glove's cuff and knuckles as invisible. 2.2× is
+// twenty levels and still under the sole's own step and the guard's white.
+const WIM_BOOT_PANEL_TINT = tintOver(BLOCKOUT_COLOURS.wheelInMotionGear, BLOCKOUT_COLOURS.wheelInMotionGear, 2.2);
+/** The same step up, reached from the pale shin the shaft is painted on. */
+const WIM_BOOT_PANEL_ON_SHIN_TINT = tintOver(BLOCKOUT_COLOURS.wheelInMotionPrint, BLOCKOUT_COLOURS.wheelInMotionGear, 2.2);
+
+/**
+ * Is this point on the leg under the guard's shell? Adonisb2's arc — from a
+ * little inboard of straight ahead, across the front, round the outboard
+ * flank toward the back — for his reason: from behind, the player sees the
+ * outboard side of both legs and almost none of the front.
+ */
+function underWimGuard(x: number, z: number, side: number): boolean {
+  const angle = Math.atan2(side * x, z);
+  return angle > -0.75 && angle < 2.60;
+}
+
+/** Trouser blue, except where the shell covers the lower thigh; the cup's black under the cup. */
+function paintWimThigh(geometry: THREE.BufferGeometry, side: number): void {
+  const top = -RIDER_BLOCKOUT.thighLength * WIM_GUARD_TOP;
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    const under = underWimGuard(position.getX(i), position.getZ(i), side);
+    const tint = !under || y > top
+      ? WIM_TROUSER_TINT
+      : y <= WIM_CUP_TOP
+        ? WIM_CAP_TINT
+        : WIM_GUARD_TINT;
+    colour.setXYZ(i, tint[0], tint[1], tint[2]);
+  }
+}
+
+/** Guard-white under the shell, trouser blue behind it, the boot's shaft below the collar. */
+function paintWimShin(geometry: THREE.BufferGeometry, side: number): void {
+  const cuff = -RIDER_BLOCKOUT.shinLength * WIM_BOOT_TOP;
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    const x = position.getX(i);
+    const z = position.getZ(i);
+    let tint: Tint;
+    if (y < cuff) {
+      // The boot's shaft — with its collar and its laces as the lighter
+      // panel lines a boot needs to read as one rather than as dark trouser
+      // (the gauntlet's "no shaft" finding): a band at the top of the shaft,
+      // and a strip up its front.
+      const collar = y > cuff - 0.016;
+      // Wide enough to catch the front columns: at 18 segments the nearest
+      // sit at |x| = 12.8 mm, and an 11 mm window painted no vertex at all.
+      const laces = z > 0 && Math.abs(x) < 0.017 * (Math.hypot(x, z) / 0.05);
+      tint = collar || laces ? WIM_BOOT_PANEL_ON_SHIN_TINT : WIM_BOOT_TINT;
+    } else if (!underWimGuard(x, z, side)) {
+      tint = WIM_TROUSER_TINT;
+    } else if (y > WIM_CUP_BOTTOM) {
+      tint = WIM_CAP_TINT;
+    } else {
+      tint = WIM_GUARD_TINT;
+    }
+    colour.setXYZ(i, tint[0], tint[1], tint[2]);
+  }
+}
+
+/** Ankle band, toe cap, instep strap — and laces, as one lighter line up the front. */
+function paintWimBoot(geometry: THREE.BufferGeometry): void {
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox;
+  if (box === null) return;
+  const height = Math.max(1e-3, box.max.y - box.min.y);
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const t = (position.getY(i) - box.min.y) / height;
+    const z = position.getZ(i);
+    const x = position.getX(i);
+    const ankleBand = t > 0.62 && t < 0.82;
+    const toeCap = t < 0.34 && z > 0.055;
+    const laces = t > 0.36 && t < 0.62 && z > 0.02 && Math.abs(x) < 0.014;
+    if (ankleBand || toeCap || laces) {
+      colour.setXYZ(i, WIM_BOOT_PANEL_TINT[0], WIM_BOOT_PANEL_TINT[1], WIM_BOOT_PANEL_TINT[2]);
+    }
+  }
+}
+
+/** A cuff line at the wrist and a knuckle panel: what makes a black stub a glove. */
+/**
+ * His glove — the shared `GLOVE` with two rows at the knuckle break and one
+ * under the cuff, halfWidth and halfDepth interpolated from it so the
+ * silhouette is unchanged. `paintWimHand` had painted a knuckle panel on a
+ * band no ring of the shared glove crossed (dead paint) and a cuff on one
+ * ring between two unpainted ones (a hump, not an edge); the rows here are
+ * what its bands land on. Four rings a hand, 80 triangles, no mesh.
+ */
+const WIM_GLOVE = loftProfile([
+  { y: 0, halfWidth: 0.040, halfDepth: 0.035, square: 2.6 },
+  { y: -0.016, halfWidth: 0.044, halfDepth: 0.038, square: 2.8 },
+  { y: -0.022, halfWidth: 0.046, halfDepth: 0.040, square: 2.8 },
+  { y: -0.028, halfWidth: 0.043, halfDepth: 0.037, square: 2.8 },
+  // A wrist: the part has a waist between the cuff and the knuckles, so the
+  // cuff reads as a step in the outline and not a hump on a tube — the
+  // third blind round's glove finding, in Maribel's hand's grammar.
+  { y: -0.036, halfWidth: 0.031, halfDepth: 0.024, square: 2.8 },
+  { y: -0.046, halfWidth: 0.036, halfDepth: 0.026, square: 2.85 },
+  // The widest ring at the knuckles, flattened toward 2:1.
+  { y: -0.058, halfWidth: 0.041, halfDepth: 0.022, square: 2.85 },
+  { y: -0.072, halfWidth: 0.040, halfDepth: 0.022, square: 2.9 },
+  { y: -0.088, halfWidth: 0.033, halfDepth: 0.024, square: 2.8 },
+  { y: -0.098, halfWidth: 0.023, halfDepth: 0.020, square: 2.6 },
+  { y: -0.105, halfWidth: 0, halfDepth: 0 },
+]);
+
+function paintWimHand(geometry: THREE.BufferGeometry): void {
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    const z = position.getZ(i);
+    const cuff = y > -0.024 && y < -0.012;
+    const knuckles = y < -0.040 && y > -0.062 && z > 0.012;
+    if (cuff || knuckles) colour.setXYZ(i, WIM_BOOT_PANEL_TINT[0], WIM_BOOT_PANEL_TINT[1], WIM_BOOT_PANEL_TINT[2]);
+  }
+}
+
+/**
+ * The seat, painted trouser blue — the one body painter that reads a *shade* as an
+ * address. The seat loft is merged into the torso mesh at `shades.seat`, and
+ * every other vertex in that mesh is the jersey at 1 or the collar above it;
+ * so the vertices carrying exactly the seat shade are the seat, and they are
+ * repainted to the same tint the thighs wear, which is what keeps the hip join
+ * seamless (`riderClearance.test.ts` holds the two equal).
+ */
+const WIM_SEAT_SHADE = 0.86;
+function paintWimTorso(geometry: THREE.BufferGeometry): void {
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < colour.count; i += 1) {
+    if (Math.abs(colour.getX(i) - WIM_SEAT_SHADE) > 1e-6) continue;
+    colour.setXYZ(i, WIM_TROUSER_TINT[0], WIM_TROUSER_TINT[1], WIM_TROUSER_TINT[2]);
+  }
+}
+
+/** The thigh shell and the shin plate, as the sheet needs them for his mark's aspect. */
+/** The shell ends on the even ring at −0.300; the paint boundary sits 6 mm above it as the shell's own rim. */
+/**
+ * The shell wraps from a little inboard of the front round the outboard flank
+ * toward the back — and no further back than −1.95 rad: in the deepest fold
+ * the thigh lies flat and its back faces up, so the shell's rearmost corner is
+ * the one the clearance contract measures.
+ */
+const WIM_THIGH_SHELL = Object.freeze({
+  u0: -1.95,
+  u1: 0.90,
+  from: -0.400,
+  to: -0.300,
+});
+/** The plate stops 50 mm above the boot's collar, so the boot is a boot and not the end of the greave. */
+const WIM_SHIN_PLATE = Object.freeze({ u0: -2.00, u1: 0.70, from: -0.224, to: WIM_CUP_BOTTOM });
+/** The sticker on the pack: a back-anchored patch over the pack's face. */
+const WIM_PACK_STICKER = Object.freeze({ u0: -0.34, u1: 0.34, from: 0.270, to: 0.395 });
+
+/** What his sheet is painted against — the bodies its pages wrap. */
+export const WIM_SHEET_LAYOUT: WimSheetLayout = Object.freeze({
+  torso: WIM_JERSEY,
+  upperArm: WIM_UPPER_ARM,
+  forearm: WIM_FOREARM,
+  thigh: WIM_THIGH,
+  shin: WIM_SHIN,
+  head: WIM_HELMET,
+  thighShell: WIM_THIGH_SHELL,
+  shinPlate: WIM_SHIN_PLATE,
+  packSticker: WIM_PACK_STICKER,
+  // 190 mm across the upper chest, its bottom edge 328 mm above the hip: the
+  // render's placement — the mark fills the chest between the pack straps,
+  // which sit outboard of it.
+  chestMark: Object.freeze({ width: 0.190, bottom: 0.328 }),
+});
+
+export const WHEEL_IN_MOTION_LOOK: RiderLook = Object.freeze({
+  id: 'wheel-in-motion' as CharacterId,
+  // A little denser than the men, for the print: the jersey's page follows
+  // a chest that curves two ways, and a sleeve stripe on fourteen sections
+  // is a fourteen-sided stripe. The head densest of all, because the lid is
+  // printed too and its silhouette is what the chase camera looks at.
+  // Triangles are the free axis.
+  density: Object.freeze({ limb: 18, torso: 30, head: 32 }),
+  /**
+   * His sheet, and the roles that sample it. **Three of the five are one
+   * material** — body, limbs and the accent role all point at the print
+   * ground — so his torso, arms and legs are one mapped material and the
+   * guards ride it with pages of their own; the visor and the lid are the
+   * other two, each a print ground of its own gloss. Only the black gear
+   * carries no map.
+   */
+  atlas: Object.freeze({
+    build: () => createWimAtlas(WIM_SHEET_LAYOUT),
+    roles: Object.freeze(['body', 'limbs', 'accent', 'face', 'head'] as RiderMaterialRole[]),
+    region: (art: string | undefined): UvRect => (
+      art !== undefined && art in WIM_REGIONS ? WIM_REGIONS[art as WimRegionName] : WIM_REGIONS.blank
+    ),
+    // The garment and the lid: the torso, both sleeves and the helmet shell
+    // are printed on the lofts. The seat, the legs and the hands are paint or
+    // plain gear and land on blank.
+    lofts: Object.freeze({ torso: 'jersey', upperArm: 'sleeve', forearm: 'forearm', head: 'helmet' }),
+  }),
+  materials: Object.freeze({
+    body: WIM_PRINT,
+    limbs: WIM_PRINT,
+    accent: WIM_PRINT,
+    // The lid is printed: the shell's blue, its yellow and the mouth vent
+    // are all the helmet page's, over this print ground — the owner's call
+    // (*"just same blue and yellow as clothes"*), and the way the yellow
+    // lies flat on the shell instead of standing off it.
+    head: WIM_LID,
+    face: Object.freeze({
+      // The visor: dark mirrored, with the lens page carrying the sheen.
+      colour: BLOCKOUT_COLOURS.wheelInMotionLens,
+      roughness: 0.10,
+      metalness: 0.30,
+      emissive: 0x10161c,
+      emissiveIntensity: 0.30,
+    }),
+    gear: WIM_GEAR,
+  }),
+  profiles: Object.freeze({
+    torso: WIM_JERSEY,
+    seat: SEAT,
+    thigh: WIM_THIGH,
+    shin: WIM_SHIN,
+    upperArm: WIM_UPPER_ARM,
+    forearm: WIM_FOREARM,
+    neck: NECK,
+    head: WIM_HELMET,
+    boot: BOOT,
+    bootSole: BOOT_SOLE,
+    hand: WIM_GLOVE,
+  }),
+  // `seat` is an address, not a colour: `paintWimTorso` repaints every vertex
+  // carrying it to the trouser blue the thighs wear. `legs` at 1 because the
+  // legs' base is the print ground and every colour on them is paint.
+  // `sole` above 1: a pale-edged sole under a black boot, which is what
+  // separates the boot from the shin's shaft at chase distance.
+  shades: Object.freeze({ seat: WIM_SEAT_SHADE, legs: 1.0, collar: 1.0, sole: 1.9, neck: 0.42 }),
+  parts: Object.freeze({
+    hands: 'gear' as RiderMaterialRole,
+    neck: 'gear' as RiderMaterialRole,
+    kneePad: 'body' as RiderMaterialRole,
+    // The inversion: the legs are the print ground, painted down.
+    legs: 'limbs' as RiderMaterialRole,
+    seat: 'body' as RiderMaterialRole,
+  }),
+  panels: Object.freeze({
+    // **No collar.** A motocross jersey has a low crew neck, and the rolled
+    // collar every jacket on the roster wears drew a hard crease across the
+    // top of his shoulders in the gauntlet's captures — "a lid sitting on a
+    // body". The loft's own cap closes the neck; the gaiter meets the jersey.
+    // The backpack — Adonisb2's proven pack in black gear, the casting group
+    // because the pack changes his outline — and the two straps that carry
+    // it, over the shoulders.
+    //
+    // **Two straps, over the shoulders, and nothing else** — the owner's look
+    // pass (2026-09-01). Phase 1 ran Adonisb2's shoulder wraps round the
+    // *flank* at shoulder height and hung a sternum strap, buckles and a belt
+    // on the chest; the owner saw straps under the armpits and a harness the
+    // photograph does not carry: *"just need the two straps (one left one
+    // right) to go over the shoulders and not under the armpits."* A strap
+    // here is four patches that meet edge to edge: up the chest outboard of
+    // the mark (`torso`, below), across the shoulder on the trapezius slope,
+    // down the back into the pack's top corner, and a lower wrap round the
+    // flank into the pack's side. The angles are measured, not guessed: the
+    // chest run's outboard edge is 0.57 rad from the outboard point and the
+    // rear run's is −1.03, and the crossing spans exactly that.
+    //
+    // **The crossing sits on the slope, not on the neck ring** — the owner's
+    // third pass: *"the backpack straps connect like one of those dog body
+    // harnesses... it like goes around his collar."* The second pass ran the
+    // crossing on the loft's top two rings, and the top ring *is* the
+    // collar: a band round it is a collar whatever it joins. The crossing
+    // now runs between 520 and 536 mm, where the slope is 105–135 mm from
+    // the midline — the middle of the shoulder — and both runs stop there
+    // instead of climbing to the neck.
+    shoulders: Object.freeze({
+      role: 'gear' as RiderMaterialRole,
+      casts: true,
+      patches: Object.freeze([
+        // Slim: 52 mm proud, rounded off at the corners, from the small of
+        // the back to the shoulder blades — round two called the 72 mm
+        // version an oversized slab standing off the body.
+        Object.freeze({
+          anchor: 'back' as PatchAnchor,
+          u0: -0.44,
+          u1: 0.44,
+          from: 0.150,
+          to: 0.448,
+          uSegments: 6,
+          vSegments: 6,
+          lift: 0.060,
+          taper: 0.30,
+          shade: 0.98,
+        }),
+        Object.freeze({
+          anchor: 'back' as PatchAnchor,
+          u0: -0.34,
+          u1: 0.34,
+          from: 0.362,
+          to: 0.436,
+          uSegments: 4,
+          vSegments: 3,
+          lift: 0.068,
+          taper: 0.34,
+          shade: 1.10,
+        }),
+        // The rear run: from behind the pack's top corner (the pack is ±0.44
+        // rad wide, its corner at 0.096 m; this straddles it) up the shoulder
+        // blade to the rim.
+        Object.freeze({
+          anchor: 'back' as PatchAnchor,
+          u0: 0.30,
+          u1: 0.54,
+          mirrored: true,
+          from: 0.400,
+          to: 0.536,
+          uSegments: 3,
+          vSegments: 4,
+          lift: 0.010,
+          shade: 1.08,
+        }),
+        // Over the shoulder: across the slope, from the rear run round the
+        // outboard point to the chest run — the piece that makes the strap
+        // pass over the shoulder rather than end at it.
+        Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -1.03,
+          u1: 0.57,
+          mirrored: true,
+          from: 0.520,
+          to: 0.536,
+          uSegments: 8,
+          vSegments: 1,
+          lift: 0.010,
+          shade: 1.08,
+        }),
+      ]),
+    }),
+    // The chest run of each strap, flat on the jersey and outboard of the
+    // mark — the render and the photograph both put the mark between them —
+    // from the shoulder crossing down to the ribs, and then round the flank
+    // into the pack. Nothing else on the chest: no sternum strap, no
+    // buckles, no belt.
+    torso: Object.freeze({
+      role: 'gear' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -1.00,
+          u1: -0.76,
+          mirrored: true,
+          from: 0.240,
+          to: 0.536,
+          uSegments: 3,
+          vSegments: 7,
+          lift: 0.010,
+          shade: 1.08,
+        }),
+        // The lower wrap: from the chest run's outboard edge, round the flank
+        // at rib height, into the pack's side face. A strap that stops on
+        // the chest hangs there — the owner's second pass: *"straps are just
+        // dangling in front of him. should connect to the back at the sides
+        // as well."* — and his third put it where it sits: the pass before
+        // ran it at the pack's bottom edge, 150 mm above the hip, *"too low,
+        // could go a bit higher above his hip more towards ribs height."*
+        // Its span is the pack's own edge (±0.44 rad about the back) to the
+        // chest run's edge, so the pieces meet without a gap or a lap.
+        Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -Math.PI / 2 + 0.44,
+          u1: 0.57,
+          mirrored: true,
+          from: 0.240,
+          to: 0.286,
+          uSegments: 8,
+          vSegments: 1,
+          lift: 0.010,
+          shade: 1.08,
+        }),
+      ]),
+    }),
+    // **His mark on the pack** — the one surface the chase camera looks at
+    // for the whole ride, and the one thing the gauntlet's distance critic
+    // and logo critic both asked for: nothing in the references shows his
+    // back, so this is a sticker on his own bag rather than a print on the
+    // jersey (brief §9 allows the mark on "other appropriate surfaces"). It
+    // rides the `waist` slot — a group on the torso profile — because the
+    // pack's own group is black gear and a sticker needs the print material.
+    waist: Object.freeze({
+      role: 'body' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        Object.freeze({
+          anchor: 'back' as PatchAnchor,
+          u0: WIM_PACK_STICKER.u0,
+          u1: WIM_PACK_STICKER.u1,
+          from: WIM_PACK_STICKER.from,
+          to: WIM_PACK_STICKER.to,
+          uSegments: 4,
+          vSegments: 3,
+          lift: 0.065,
+          sink: -0.020,
+          taper: 0.10,
+          shade: 1,
+          art: 'packMark',
+        }),
+      ]),
+    }),
+    // The knee guard's upper half, on the thigh: a white shell that reads
+    // LARGE at the chase camera (brief §10), its dark cup, and the outboard
+    // pivot. Every patch here is a printed one — the shell wears the page
+    // with his mark and its strap, the cup and the pivot wear the near-black
+    // `cap` page — so the group is drawn in the print material.
+    thighPad: Object.freeze({
+      role: 'body' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        // Lopsided *outboard* on both legs: negative `u` from the front is
+        // toward the rider's left, which is outboard on the left leg, and
+        // `mirrored` turns it outboard on the right (Maribel's note records
+        // the inboard pair the other sign produces).
+        // His mark on the right shell only, as the render carries it — and
+        // on the page that reads upright there, because a mirrored patch runs
+        // its page the other way on the other leg (`render/wimAtlas.ts`,
+        // `markRaster`). The left shell wears the same page without the mark.
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: WIM_THIGH_SHELL.u0,
+          u1: WIM_THIGH_SHELL.u1,
+          mirrored: true,
+          from: WIM_THIGH_SHELL.from,
+          to: WIM_THIGH_SHELL.to,
+          uSegments: 8,
+          vSegments: 5,
+          // 18 mm, not 24: in the deepest attack-carve-crouch fold the thigh
+          // lies nearly flat, so the shell's *lift* is what raises its top
+          // corner toward the pelvis, and the seam's position barely moves it
+          // — the clearance contract measured 75 mm against a 75 mm ceiling
+          // at both 0.72 and 0.73 until the lift came down, and 76 mm again
+          // when the span widened to wrap the leg.
+          lift: 0.015,
+          taper: 0.26,
+          shade: WIM_GUARD_SHADE,
+          art: 'guardUpper',
+          artOn: -1,
+          artElse: 'guardPlain',
+        }),
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: WIM_THIGH_SHELL.u0,
+          u1: WIM_THIGH_SHELL.u1,
+          mirrored: true,
+          from: -0.400,
+          to: WIM_CUP_TOP,
+          uSegments: 7,
+          vSegments: 2,
+          // 32 mm: the cup's front-top corner is the clearance contract's
+          // highest white vertex on the left leg in the deep carve fold
+          // (a 38 mm cup sat on the 75 mm ceiling exactly).
+          lift: 0.032,
+          taper: 0.30,
+          shade: 1,
+          art: 'cap',
+        }),
+        // The hinge strut down the outside of the thigh — the brace's
+        // outer arm in the render, the piece that says the guard is
+        // articulated and not a pad — and its pivot, a step prouder still.
+        Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -0.16,
+          u1: 0.16,
+          from: -0.400,
+          to: WIM_THIGH_SHELL.to + 0.004,
+          uSegments: 2,
+          vSegments: 4,
+          lift: 0.026,
+          taper: 0.10,
+          shade: WIM_GUARD_SHADE,
+          art: 'guardFlat',
+        }),
+        Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -0.24,
+          u1: 0.24,
+          from: -0.372,
+          to: -0.332,
+          uSegments: 4,
+          vSegments: 2,
+          lift: 0.031,
+          taper: 0.78,
+          shade: WIM_GUARD_SHADE,
+          art: 'guardFlat',
+        }),
+      ]),
+    }),
+    // The lower half: the cup's lip across the hinge, the long white plate
+    // with the vent ladder printed on it, the two pivot bosses, the strap.
+    kneePad: Object.freeze({
+      role: 'body' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: WIM_THIGH_SHELL.u0,
+          u1: WIM_THIGH_SHELL.u1,
+          mirrored: true,
+          from: WIM_CUP_BOTTOM,
+          to: 0.000,
+          uSegments: 8,
+          vSegments: 1,
+          lift: 0.038,
+          taper: 0.28,
+          shade: 1,
+          art: 'cap',
+        }),
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: WIM_SHIN_PLATE.u0,
+          u1: WIM_SHIN_PLATE.u1,
+          mirrored: true,
+          from: WIM_SHIN_PLATE.from,
+          to: WIM_SHIN_PLATE.to,
+          uSegments: 7,
+          vSegments: 7,
+          lift: 0.018,
+          taper: 0.40,
+          shade: WIM_GUARD_SHADE,
+          art: 'guardLower',
+        }),
+        ...[-0.104, -0.148].map((from) => Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -0.24,
+          u1: 0.24,
+          from,
+          to: from + 0.028,
+          uSegments: 4,
+          vSegments: 2,
+          lift: 0.027,
+          taper: 0.78,
+          shade: WIM_GUARD_SHADE,
+          art: 'guardFlat',
+        })),
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: -Math.PI,
+          u1: Math.PI,
+          from: -0.240,
+          to: -0.226,
+          uSegments: 14,
+          vSegments: 1,
+          lift: 0.020,
+          taper: 0.28,
+          shade: 1,
+          art: 'cap',
+        }),
+      ]),
+    }),
+    // The shell's own features, merged, Cool Rider's and blue: the brow over
+    // the aperture and the base rim, brought down to his lower base ring.
+    // Each wears the flat blue page, because a merged feature keeps its own
+    // unit square and would otherwise sample the shell's print across
+    // itself. There is no chin bar: the chin is the profile's, and its
+    // yellow is the page's. And no rear spoiler — the owner's third pass
+    // (*"a bump on the back protruding... looks odd"*): a blade that earns
+    // its place on a plain shell is a lump on a printed one, whose chevrons
+    // already give the chase camera its read.
+    head: Object.freeze([
+      Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: -0.86,
+        u1: 0.86,
+        from: 0.236,
+        to: 0.256,
+        uSegments: 7,
+        vSegments: 1,
+        lift: 0.011,
+        taper: 0.3,
+        art: 'blue',
+      }),
+      Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: 0,
+        u1: Math.PI * 2,
+        from: 0.058,
+        to: 0.076,
+        uSegments: 18,
+        vSegments: 1,
+        lift: 0.004,
+        shade: 1.08,
+        art: 'blue',
+      }),
+    ]),
+    // The visor: Cool Rider's, sunk into the aperture and lifted only a
+    // little, so it reads as glass in a recess — wearing the lens page for
+    // its one soft sheen (the photograph's dark mirror, not the render's
+    // green window).
+    face: Object.freeze({
+      role: 'face' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: -0.80,
+        u1: 0.80,
+        // The mockup's split: crown 36%, visor 33%, chin 31% of the shell.
+        // The first cut's visor was 21% and the chin 39% — a letterbox over
+        // a tall yellow muzzle, the second blind round measured. Two numbers.
+        from: 0.149,
+        to: 0.243,
+        uSegments: 9,
+        vSegments: 3,
+        lift: 0.007,
+        sink: -0.014,
+        taper: 0.22,
+        art: 'lens',
+      })]),
+    }),
+  }),
+  // Nothing bolted on: the lid's yellow was an extra for one pass and is
+  // print now, which is one draw call fewer than Cool Rider's rig.
+  extras: Object.freeze([]),
+  paint: Object.freeze({
+    torso: paintWimTorso,
+    thigh: paintWimThigh,
+    shin: paintWimShin,
+    boot: paintWimBoot,
+    hand: paintWimHand,
+  }),
+  // The photograph stands relaxed; a touch of splay keeps the pack open behind the arms.
+  armCarriage: Object.freeze({ splay: 0.012, rise: 0 }),
+});
+
 export const RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   COOL_RIDER_LOOK,
   TROLLINA_LOOK,
   RED_RIDER_LOOK,
   ADONISB2_LOOK,
   MARIBEL_LOOK,
+  WHEEL_IN_MOTION_LOOK,
   COP_LOOK,
 ]);
 
@@ -6014,6 +6989,7 @@ export const PLAYABLE_RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   RED_RIDER_LOOK,
   ADONISB2_LOOK,
   MARIBEL_LOOK,
+  WHEEL_IN_MOTION_LOOK,
 ]);
 
 /** Resolve a look, falling back to Cool Rider the way `characterSpec` does. */

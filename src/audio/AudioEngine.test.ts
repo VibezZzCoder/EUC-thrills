@@ -52,7 +52,7 @@ test('setSamplesDisabled is reported, and refuses the fetch it may have raced', 
   // boot order puts the fetch before the query parse on some paths.
   engine.setSampleUrls({
     tyreOffroad: '', tyreSolid: '', windHowl: '', crash: '', crashTrollina: '',
-    crashRedRider: '', crashAdonisb2: '', crashMaribel: '', sirenFar: '',
+    crashRedRider: '', crashAdonisb2: '', crashMaribel: '', crashWheelInMotion: '', sirenFar: '',
     sirenClose: '', overspeedBeep: '',
   });
   assert.equal(engine.snapshot().samplesLoaded, false);

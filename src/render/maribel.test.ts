@@ -7,7 +7,7 @@ import { createPlaceholderRider } from './rider.ts';
 import { measureObject } from './renderCost.ts';
 import { COOL_RIDER_LOOK, MARIBEL_LOOK, PLAYABLE_RIDER_LOOKS, RIDER_LOOKS, riderLook } from './riderLook.ts';
 import { loftGeometry } from './blockoutKit.ts';
-import { ATLAS_REGIONS, ATLAS_SIZE, maribelAtlasPixels } from './maribelAtlas.ts';
+import { ATLAS_REGIONS, ATLAS_SIZE, createMaribelAtlas, maribelAtlasPixels } from './maribelAtlas.ts';
 import { machineLook } from './machineLook.ts';
 import { MACHINE_IDS } from '../data/machines.ts';
 import { BLOCKOUT_COLOURS, RIDER, RIDER_BLOCKOUT } from '../data/tuning.ts';
@@ -739,7 +739,7 @@ function meshesOf(root: THREE.Object3D): THREE.Mesh[] {
   return found;
 }
 
-test('the sheet exists only for the look that asked for one', () => {
+test('the sheet exists only for the looks that asked for one', () => {
   // **The no-op pin for M23 Phase A1b**, and the reason it is worth a test:
   // the kit now writes a `uv` attribute on every geometry it makes, for every
   // character in the game. That is harmless by design — a material with no
@@ -747,16 +747,21 @@ test('the sheet exists only for the look that asked for one', () => {
   // claim that should be checked rather than asserted in a comment, because
   // the failure mode is somebody else's rider quietly wearing her chest print.
   //
-  // Two halves. No other look's material may carry a map at all; and no other
-  // look's geometry may have been *folded* onto a page, which shows as texture
-  // coordinates that still span their own unit square.
+  // Two halves. No unprinted look's material may carry a map at all; and no
+  // unprinted look's geometry may have been *folded* onto a page, which shows
+  // as texture coordinates that still span their own unit square. **A look
+  // with a sheet of its own is the other case** — hers, and Wheel in Motion's
+  // since M28 — and each of those has its own file asserting that every
+  // mapped mesh lands on a page (`wheelInMotion.test.ts` for his).
   for (const look of RIDER_LOOKS) {
-    if (look.id === MARIBEL_LOOK.id) continue;
+    if (look.atlas !== undefined) continue;
     const rider = createPlaceholderRider(look);
     try {
       for (const mesh of meshesOf(rider.root)) {
         const material = mesh.material as THREE.MeshStandardMaterial;
-        assert.equal(material.map, null, `${look.id}'s ${mesh.name} samples a texture`);
+        // `=== null` rather than `assert.equal(map, null)`: a failing
+        // equality would inspect a four-megabyte texture into the message.
+        assert.ok(material.map === null, `${look.id}'s ${mesh.name} samples a texture`);
         const uv = mesh.geometry.getAttribute('uv');
         assert.ok(uv, `${look.id}'s ${mesh.name} lost its texture coordinates`);
         let low = Infinity;
@@ -840,6 +845,19 @@ test('her wheel wears her mark and no other machine acquires one', () => {
         BLOCKOUT_COLOURS.maribelPurple,
         'her pads are not her purple',
       );
+      continue;
+    }
+    // Wheel in Motion's wheel is the second to carry its rider's own mark, on
+    // the same footing (M28 §28.5) — and on a sheet of its own, so nothing of
+    // hers reaches him: his patches ask for `plate`, never `machineMark`.
+    if (id === 'wheel-in-motion') {
+      assert.ok(look.atlas, 'his machine has no sheet');
+      assert.ok(look.trim.patches.some((patch) => patch.art === 'plate'), 'his wheel carries no mark');
+      assert.ok(
+        look.trim.patches.every((patch) => patch.art === undefined || patch.art === 'plate'),
+        'his wheel asks for a page that is not his plate',
+      );
+      assert.notEqual(look.atlas.build, createMaribelAtlas, 'his wheel wears her sheet');
       continue;
     }
     assert.equal(look.atlas, undefined, `${id} acquired a printed sheet`);

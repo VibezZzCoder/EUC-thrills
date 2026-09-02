@@ -1960,9 +1960,13 @@
  * could actually hold. It cost a column at 1280 wide and cost *two* on a
  * landscape phone the moment the phone card stopped carrying a blurb. A
  * definite column breaks the loop — the track is the viewport's business, and
- * how many cards fit in it is the grid's.
+ * how many cards fit in it is the grid's. *
+ * **Re-derived from six at M28 Phase 0.** Six cards at the 12rem floor plus five
+ * 0.9rem gaps need 76.5rem, so that is the cap; the sideways threshold below
+ * moved with it. The arithmetic is the same and the number is not, which is the
+ * point of writing the arithmetic down.
  */
-.euc-menu--riders { grid-template-columns: min(64rem, 100%); }
+.euc-menu--riders { grid-template-columns: min(76.5rem, 100%); }
 
 .euc-menu--riders .euc-menu__panel { width: 100%; }
 
@@ -2933,8 +2937,14 @@
  * fitting, which is why it reads as a strange number: it is derived, and a
  * sixth rider moves it again. Every tablet in portrait and most in landscape
  * lands here, which is the intent — this anatomy is the one that fits.
+ *
+ * **And the sixth rider moved it — M28 Phase 0.** Six cards need 76.5rem of
+ * column (the cap above) and the same 3.4rem of panel padding and margin
+ * around it that five needed, so a row of the whole roster now stops fitting
+ * at 80rem of viewport. A 1280-pixel window is exactly 80rem and keeps the
+ * full-height cards; everything narrower is sideways.
  */
-@media (max-width: 67rem), (max-height: 42rem) {
+@media (max-width: 79.99rem), (max-height: 42rem) {
   .euc-riders__grid {
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
     gap: 0.6rem;
@@ -3007,6 +3017,18 @@
  * necessity at 800 pixels of height — it is one at 375, where three rows of
  * two must clear a landscape phone's 342 usable pixels — and one size for
  * every phone beats a fourth tier.
+ *
+ * **Six cards fit this tier without a change — M28 Phase 0, measured rather
+ * than assumed.** The plan expected the sixth rider to break it, reading the
+ * 77-pixel figure above as the phone card's height; it is the *tablet* card's
+ * (3.6rem portrait), and the phone card is 68 pixels tall on its 2.9rem
+ * portrait plus padding. Six of those and five 0.6rem gaps are 453 pixels
+ * against the 442 the paragraph above budgets — and the budget was
+ * conservative: on a real 375×667 the heading, tagline, Done and gaps take
+ * 166, and the last card's bottom lands at 577 with Done ending at 632, 35
+ * pixels clear of the fold. `tests/m22.spec.ts` holds that at every phone
+ * and tablet size; a seventh rider would need the shorter portrait this note
+ * used to promise the sixth.
  */
 @media (max-width: 44rem), (max-height: 30rem) {
   .euc-rider-card__blurb { display: none; }

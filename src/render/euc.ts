@@ -355,12 +355,20 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
       vertexColors: true,
     }),
   );
+  // The look's printed sheet, if it has one — M23 Phase A2. One texture per
+  // machine, tracked for disposal beside the materials, exactly as the
+  // rider's is (`render/rider.ts`). Built here, ahead of the pad material,
+  // because a pad may wear a page of it too (M28).
+  const sheet = look.atlas === undefined ? null : look.atlas.build();
+  if (sheet !== null) textures.push(sheet);
+  const padsPrinted = sheet !== null && look.pads?.art !== undefined;
   const padMaterial = trackMaterial(
     new THREE.MeshStandardMaterial({
       color: look.pads?.colour ?? BLOCKOUT_COLOURS.pad,
       roughness: look.pads?.roughness ?? 0.85,
       metalness: 0.0,
       vertexColors: true,
+      map: padsPrinted ? sheet : null,
     }),
   );
   const pedalMaterial = trackMaterial(
@@ -392,11 +400,6 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
   // The look's trim material — Cool Rider's reflective blue on the standard
   // machine, satin armour red on Red Rider's. One material for every trim
   // patch a look authors, which is what holds the slot at one draw call.
-  // The look's printed sheet, if it has one — M23 Phase A2. One texture per
-  // machine, tracked for disposal beside the materials, exactly as the rider's
-  // is (`render/rider.ts`).
-  const sheet = look.atlas === undefined ? null : look.atlas.build();
-  if (sheet !== null) textures.push(sheet);
   const trimMaterial = trackMaterial(
     new THREE.MeshStandardMaterial({
       color: look.trim.colour,
@@ -665,8 +668,25 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
     // pad mesh — a pad is a slot in the draw-call budget, not a part count.
     const padGeometry = track(mergeGeometries(padBlocks.map((profile) => loftGeometry(
       profile,
-      { radialSegments: look.pads?.segments ?? 12 },
+      // A pad that wears a page needs its seam split, like any paged loft
+      // (`render/rider.ts`), or the last facet draws the page reversed.
+      { radialSegments: look.pads?.segments ?? 12, splitSeam: padsPrinted },
     ))));
+    if (padsPrinted && look.atlas !== undefined && look.pads?.art !== undefined) {
+      // Turn the page so its centre is the outboard face's centre and its
+      // seam lies on the inboard face, buried in the shell. The loft's `u`
+      // starts at +X, which is the LEFT pad's outboard face and the right
+      // pad's inboard one — so the left pad turns by half a wrap and the
+      // right pad by none, and the right pad wears the page mirrored, as
+      // every `pad` patch always has.
+      const uv = padGeometry.getAttribute('uv');
+      const turn = side > 0 ? 0.5 : 0;
+      for (let i = 0; i < uv.count; i += 1) {
+        const u = uv.getX(i) + turn;
+        uv.setX(i, u >= 1 ? u - 1 : u);
+      }
+      mapUvInto(padGeometry, look.atlas.region(look.pads.art));
+    }
     look.pads?.paintPad?.(padGeometry, side);
     const pad = shadowed(new THREE.Mesh(padGeometry, padMaterial));
     pad.position.set(side * PAD_CENTRE_X, WHEEL.padCentreHeight, 0);

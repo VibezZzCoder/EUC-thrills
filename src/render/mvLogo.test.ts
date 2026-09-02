@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import zlib from 'node:zlib';
 import {
@@ -12,6 +12,7 @@ import {
   MV_LOGO_WIDTH,
 } from '../data/mvLogoAsset.ts';
 import { bytesFromBase64, decodePng, inflate } from './pngDecode.ts';
+import { validateStrictPng } from './pngStrict.ts';
 import { ATLAS_SIZE, MARK_ASPECT, maribelAtlasPixels } from './maribelAtlas.ts';
 
 /**
@@ -31,10 +32,14 @@ import { ATLAS_SIZE, MARK_ASPECT, maribelAtlasPixels } from './maribelAtlas.ts';
  * rather than shipping a subtly different mark.
  */
 
-const PACK = 'references/Maribel-Vargas/MV_LOGO_ASSET_PACK';
-const SOURCE = `${PACK}/logo/MV_logo_transparent_CLEAN.png`;
+/** `inflateSync` with `info: true`, typed — the Node typings do not know it. */
+function inflateInfo(data: Uint8Array): { buffer: Buffer; engine: { bytesWritten: number } } {
+  return zlib.inflateSync(data, { info: true }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+}
 
-test('the embedded logo is the pack\'s own file, byte for byte', () => {
+const PACK = 'references/Maribel-Vargas/MV_LOGO_ASSET_PACK';
+
+test('the embedded logo hashes to the number recorded beside it', () => {
   const bytes = bytesFromBase64(MV_LOGO_PNG_BASE64);
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   assert.equal(
@@ -42,6 +47,20 @@ test('the embedded logo is the pack\'s own file, byte for byte', () => {
     MV_LOGO_SHA256,
     'the base64 payload no longer hashes to the SHA-256 recorded beside it',
   );
+});
+
+test('the embedded logo is the pack\'s own file, byte for byte (private tree only)', (t) => {
+  // The pack lives under `references/`, which never publishes; in the public
+  // source export this test skips and says why, rather than failing every
+  // contributor's `npm test` on a file they were never given (found by Codex's
+  // QA on the exported tree, 2026-09-02). `tools/public-suite.test.mjs` runs
+  // this file from a folder with no `references/` to keep it that way.
+  if (!existsSync(`${PACK}/integrity_manifest.json`)) {
+    t.skip(`${PACK} is not here — the private pack never publishes`);
+    return;
+  }
+  const bytes = bytesFromBase64(MV_LOGO_PNG_BASE64);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
 
   // And that recorded hash is the pack's, not one this project computed for
   // whatever it happens to be carrying. The manifest is the pack's own.
@@ -50,6 +69,22 @@ test('the embedded logo is the pack\'s own file, byte for byte', () => {
   assert.ok(published, 'the pack manifest no longer lists the master file');
   assert.equal(sha256, published.sha256, 'the embedded bytes are not the pack master');
   assert.equal(bytes.length, published.bytes, 'the embedded payload is the wrong length');
+});
+
+test('the file carries pixels and nothing else — no text chunk, no byte after IEND', () => {
+  // The manifest hash says the embedded bytes are the pack's file; it does not
+  // say what that file contains. Added 2026-09-01 with `pngStrict.ts`, after
+  // an adversarial pass showed the sibling logo's pipeline accepted compressed
+  // private text in a zTXt chunk and after IEND. The same check runs in the
+  // embed tool; the refusal fixtures live in `pngStrict.test.ts`.
+  const bytes = bytesFromBase64(MV_LOGO_PNG_BASE64);
+  const png = validateStrictPng(bytes);
+  assert.equal(png.width, MV_LOGO_WIDTH);
+  assert.equal(png.height, MV_LOGO_HEIGHT);
+  assert.deepEqual(png.chunks, ['IHDR', 'IDAT', 'IDAT', 'IDAT', 'IDAT', 'IEND']);
+  const inflated = inflateInfo(png.idat);
+  assert.equal(inflated.engine.bytesWritten, png.idat.length, 'bytes inside IDAT past the zlib stream');
+  assert.equal(inflated.buffer.length, MV_LOGO_HEIGHT * (MV_LOGO_WIDTH * 4 + 1));
 });
 
 test('the shipped decoder agrees with zlib, texel for texel', () => {
@@ -62,18 +97,11 @@ test('the shipped decoder agrees with zlib, texel for texel', () => {
   assert.equal(image.height, MV_LOGO_HEIGHT);
   assert.equal(image.rgba.length, MV_LOGO_WIDTH * MV_LOGO_HEIGHT * 4);
 
-  // Reference: Node's zlib on the same IDAT, unfiltered by hand.
-  const file = readFileSync(SOURCE);
-  const parts: Buffer[] = [];
-  let at = 8;
-  while (at + 8 <= file.length) {
-    const length = file.readUInt32BE(at);
-    const type = file.toString('ascii', at + 4, at + 8);
-    if (type === 'IDAT') parts.push(file.subarray(at + 8, at + 8 + length));
-    if (type === 'IEND') break;
-    at += 12 + length;
-  }
-  const raw = zlib.inflateSync(Buffer.concat(parts));
+  // Reference: Node's zlib on the embedded IDAT, unfiltered by hand. The
+  // stream is the payload's own — the same bytes as the pack file where the
+  // pack exists (the test above), and present where it does not.
+  const stream = Buffer.from(validateStrictPng(bytes).idat);
+  const raw = zlib.inflateSync(stream);
   const stride = MV_LOGO_WIDTH * 4;
   const reference = Buffer.alloc(MV_LOGO_HEIGHT * stride);
   let read = 0;
@@ -108,7 +136,7 @@ test('the shipped decoder agrees with zlib, texel for texel', () => {
 
   // The inflate is also exercised on its own, because `decodePng` would hide a
   // length mismatch behind a filter error.
-  const mine = inflate(Buffer.concat(parts), MV_LOGO_HEIGHT * (stride + 1));
+  const mine = inflate(stream, MV_LOGO_HEIGHT * (stride + 1));
   assert.equal(mine.length, raw.length);
   for (let i = 0; i < raw.length; i += 1) {
     if (mine[i] !== raw[i]) {

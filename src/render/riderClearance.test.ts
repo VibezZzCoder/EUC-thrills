@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import * as THREE from 'three';
 import { BLOCKOUT_COLOURS, EUC, RIDER_BLOCKOUT } from '../data/tuning.ts';
 import { createPlaceholderRider, createStanceInput, type StanceInput } from './rider.ts';
-import { ADONISB2_LOOK, MARIBEL_LOOK, TROLLINA_LOOK } from './riderLook.ts';
+import { ADONISB2_LOOK, MARIBEL_LOOK, TROLLINA_LOOK, WHEEL_IN_MOTION_LOOK } from './riderLook.ts';
 import type { LoftProfile } from './blockoutKit.ts';
 
 /**
@@ -663,6 +663,162 @@ test("Adonisb2's trousers agree with his seat across the hip join", () => {
       );
     }
     assert.ok(checked > 50, `only ${checked} trouser vertices found`);
+  } finally {
+    rider.dispose();
+  }
+});
+
+test("Wheel in Motion's guard white never reaches the jacket hem", () => {
+  // Adonisb2's contract, for the guard-over-trouser version of the garment
+  // problem (`docs/PLANS.md` §28.8): his legs are the pale print ground
+  // painted *down* to the jersey's blue above the guard, so the population
+  // that must stay below the hem is the pale one — guard-white paint on the
+  // limb, and the shell patches at 1 — against trouser blue and cup-dark,
+  // which sit far below 0.5 in the red channel.
+  const rider = createPlaceholderRider(WHEEL_IN_MOTION_LOOK);
+  const hem = WHEEL_IN_MOTION_LOOK.profiles.torso[0]!.y;
+
+  const stances: Array<{ stance: Partial<StanceInput>; limit: number; reason: string }> = [];
+  for (const rollAngle of CARVES) {
+    for (const riderPitch of LEANS) {
+      stances.push({
+        stance: { rollAngle, riderPitch, torsoPitch: torsoPitchFor(riderPitch) },
+        limit: hem - 0.020,
+        reason: '20 mm hem buffer',
+      });
+      stances.push({
+        stance: {
+          rollAngle: rollAngle * 0.8,
+          riderPitch: riderPitch * 0.8,
+          torsoPitch: torsoPitchFor(riderPitch * 0.8),
+          crouch: 1,
+        },
+        limit: hem - 0.020,
+        reason: '20 mm hem buffer',
+      });
+    }
+    for (const riderPitch of PRESENTATION_LEANS) {
+      for (const fold of PRESENTATION_FOLDS) {
+        stances.push({
+          stance: { rollAngle, riderPitch, torsoPitch: torsoPitchFor(riderPitch), ...fold },
+          limit: 0.075,
+          reason: '75 mm fitted-bodice ceiling',
+        });
+        stances.push({
+          stance: {
+            rollAngle: rollAngle * 0.8,
+            riderPitch: riderPitch * 0.8,
+            torsoPitch: torsoPitchFor(riderPitch * 0.8),
+            crouch: 1,
+            ...fold,
+          },
+          limit: 0.075,
+          reason: '75 mm fitted-bodice ceiling',
+        });
+      }
+    }
+  }
+  stances.push({ stance: { restFactor: 1, torsoPitch: torsoPitchFor(0) }, limit: hem - 0.020, reason: '20 mm hem buffer' });
+  stances.push({ stance: { crash: 1, torsoPitch: torsoPitchFor(0) }, limit: hem - 0.020, reason: '20 mm hem buffer' });
+
+  try {
+    const point = new THREE.Vector3();
+    let sampled = 0;
+    for (const { stance: overrides, limit, reason } of stances) {
+      const stance = Object.assign(createStanceInput(), overrides);
+      rider.applyStanceReaction(stance);
+      rider.root.updateMatrixWorld(true);
+      const pelvis = rider.pelvis;
+
+      let highestWhite = -Infinity;
+      for (const side of ['left', 'right']) {
+        const hip = rider.root.getObjectByName(`rider-hip-${side}`)!;
+        const knee = rider.root.getObjectByName(`rider-knee-${side}`)!;
+        const meshes: THREE.Mesh[] = [];
+        for (const joint of [hip, knee]) {
+          for (const child of joint.children) {
+            if ((child as THREE.Mesh).isMesh === true) meshes.push(child as THREE.Mesh);
+          }
+        }
+        for (const mesh of meshes) {
+          const positions = mesh.geometry.getAttribute('position');
+          const colours = mesh.geometry.getAttribute('color');
+          for (let i = 0; i < positions.count; i += 1) {
+            if (colours.getX(i) < 0.5) continue;
+            point.fromBufferAttribute(positions, i);
+            mesh.localToWorld(point);
+            pelvis.worldToLocal(point);
+            sampled += 1;
+            highestWhite = Math.max(highestWhite, point.y);
+          }
+        }
+      }
+      assert.ok(
+        highestWhite < limit,
+        `carve ${(overrides.rollAngle ?? 0).toFixed(2)}, lean `
+          + `${(overrides.riderPitch ?? 0).toFixed(2)}, crouch ${overrides.crouch ?? 0}, `
+          + `attack ${overrides.attack ?? 0}, carveStance ${overrides.carveStance ?? 0}: `
+          + `guard white rises to ${(highestWhite * 1000).toFixed(0)} mm against `
+          + `${(limit * 1000).toFixed(0)} mm (${reason})`,
+      );
+    }
+    assert.ok(sampled > 1000, `only ${sampled} pale vertices sampled — the guards are missing`);
+  } finally {
+    rider.dispose();
+  }
+});
+
+test("Wheel in Motion's trousers agree with his seat across the hip join", () => {
+  // Cool Rider's property, recovered by arithmetic on a print-ground leg: the
+  // thigh's blue is a vertex tint on the pale material, and the seat inside
+  // the torso mesh is the *same* tint, written by the body painter over the
+  // seat shade it uses as an address. Where the leg can graze the hem, both
+  // sides of the join must be one value.
+  const look = WHEEL_IN_MOTION_LOOK;
+  assert.equal(look.materials[look.parts.legs], look.materials.body, 'his legs must be the print material');
+  assert.equal(look.parts.seat, 'body', 'his seat is inside the torso mesh');
+
+  const rider = createPlaceholderRider(look);
+  try {
+    const thigh = rider.root.getObjectByName('rider-hip-left')!.children.find(
+      (child) => (child as THREE.Mesh).isMesh === true,
+    ) as THREE.Mesh;
+    const torso = rider.pelvis.children.find(
+      (child) => (child as THREE.Mesh).isMesh === true && (child as THREE.Mesh).castShadow,
+    ) as THREE.Mesh;
+    const print = new THREE.Color(BLOCKOUT_COLOURS.wheelInMotionPrint);
+    const trousers = new THREE.Color(BLOCKOUT_COLOURS.wheelInMotionBlue);
+    const painted = (colours: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, i: number, shade: number): THREE.Color => (
+      new THREE.Color(print.r * colours.getX(i) * shade, print.g * colours.getY(i) * shade, print.b * colours.getZ(i) * shade)
+    );
+    const close = (a: THREE.Color, b: THREE.Color): boolean => (
+      Math.abs(a.r - b.r) < 2e-3 && Math.abs(a.g - b.g) < 2e-3 && Math.abs(a.b - b.b) < 2e-3
+    );
+
+    // The upper half of the thigh is the only part that can reach the hem.
+    const positions = thigh.geometry.getAttribute('position');
+    const colours = thigh.geometry.getAttribute('color');
+    let checked = 0;
+    for (let i = 0; i < positions.count; i += 1) {
+      if (positions.getY(i) < -RIDER_BLOCKOUT.thighLength * 0.5) continue;
+      checked += 1;
+      const value = painted(colours, i, look.shades.legs);
+      assert.ok(close(value, trousers), `trouser vertex ${i} paints to (${value.r.toFixed(4)}, ${value.g.toFixed(4)}, ${value.b.toFixed(4)}), not the trouser blue`);
+    }
+    assert.ok(checked > 50, `only ${checked} trouser vertices found`);
+
+    // And the seat — the vertices of the torso mesh below the hem — is that
+    // blue too, which is what the body painter exists to do.
+    const seatPositions = torso.geometry.getAttribute('position');
+    const seatColours = torso.geometry.getAttribute('color');
+    let seat = 0;
+    for (let i = 0; i < seatPositions.count; i += 1) {
+      if (seatPositions.getY(i) > look.profiles.torso[0]!.y - 0.030) continue;
+      seat += 1;
+      const value = painted(seatColours, i, 1);
+      assert.ok(close(value, trousers), `seat vertex ${i} paints to (${value.r.toFixed(4)}, ${value.g.toFixed(4)}, ${value.b.toFixed(4)}), not the trouser blue`);
+    }
+    assert.ok(seat > 20, `only ${seat} seat vertices found below the hem`);
   } finally {
     rider.dispose();
   }

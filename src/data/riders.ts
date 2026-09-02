@@ -55,7 +55,7 @@ export type CharacterId = PlayableCharacterId | 'cop';
  * principle.
  */
 export type PlayableCharacterId =
-  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel-vargas';
+  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel-vargas' | 'wheel-in-motion';
 
 /**
  * Which recorded crash one-shot a rider comes with.
@@ -66,7 +66,7 @@ export type PlayableCharacterId =
  * Two riders could legitimately share a voice; a rider without one could not.
  */
 export type CrashVoiceId =
-  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel';
+  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion';
 
 /**
  * **`'maribel'` arrived with her recording, in the same edit, exactly as
@@ -81,6 +81,11 @@ export type CrashVoiceId =
  * fallback in `audio/sink.ts`, and swapping it on 2026-08-20 was one line in
  * this file and one arm in `crashFor`. That is the shape to reuse: park a new
  * rider on an existing voice **in the data**, never in the resolver.
+ *
+ * **`'wheel-in-motion'` followed the same path** (M28): seated on
+ * `'red-rider'` at Phase 0, spent at Phase 3 for a file of his own — a second
+ * render of the same voice-scrubbed wipeout, because the owner asked for
+ * "the same crash as Red Rider but a new file" (`docs/PLANS.md` §28.10).
  */
 
 export interface CharacterSpec {
@@ -230,6 +235,39 @@ export const CHARACTERS: readonly PlayableCharacterSpec[] = Object.freeze([
       + 'on a purple wheel. A real racer, in the game because she asked.',
     swatch: '#a95ff0',
     crashVoice: 'maribel' as CrashVoiceId,
+  }),
+  /**
+   * Wheel in Motion — M28, the sixth rider and the fourth **real person**
+   * here, and the first whose public identity is a *channel*: an EUC YouTuber
+   * who rides under this name, credited in `NOTICE.md` by the link the owner
+   * supplied (`@RealWheelInMotion`) the way Red Rider has an Instagram handle
+   * and Adonisb2 a TikTok one. The persona is the name, the mark and the
+   * kit; the person behind it is in the brief's provenance section under
+   * `references/Wheel-In-Motion/` and nowhere published — his surname is a
+   * forbidden token in `tools/private-tokens.mjs` for exactly that reason.
+   *
+   * **`crashVoice: 'red-rider'` is the declared interim**, the M23 A0 shape:
+   * parked on the one crash in the game with no voice in it at all, in the
+   * data and never in the resolver, until Phase 3 renders his own file
+   * (`docs/PLANS.md` §28.10 — a sibling render of the same wipeout over a
+   * different voice-free donor, because the suite refuses a byte copy). If his
+   * own recording arrives (q99) it takes the Adonisb2 path instead.
+   *
+   * **The swatch is yellow, not blue, and that is the roster's doing.** Blue
+   * is his first colour, and Cool Rider owns blue at 214° on the dot row
+   * (`ui/menus.ts`). Yellow is his second, it sits in the widest gap the row
+   * has left — red at 0°, green at 94°, nothing between — and it carries the
+   * near-black "Riding now" pill, which a saturated blue cannot. A swatch is
+   * lit by nothing; the albedos the sun falls on are `BLOCKOUT_COLOURS.
+   * wheelInMotion*`, picked separately in Phase 1.
+   */
+  Object.freeze({
+    id: 'wheel-in-motion' as PlayableCharacterId,
+    name: 'Wheel in Motion',
+    blurb: 'Blue lid with yellow stripes over a dark visor, a blue-and-yellow jersey with his '
+      + 'mark on the chest, and white knee armour. A real rider with a channel, in the game by permission.',
+    swatch: '#f0c419',
+    crashVoice: 'wheel-in-motion' as CrashVoiceId,
   }),
 ]);
 

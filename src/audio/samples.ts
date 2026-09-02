@@ -7,6 +7,7 @@ import crashTrollinaUrl from '../../assets/live/audio/crash_trollina.wav?url';
 import crashRedRiderUrl from '../../assets/live/audio/crash_red_rider.wav?url';
 import crashAdonisb2Url from '../../assets/live/audio/crash_adonisb2.wav?url';
 import crashMaribelUrl from '../../assets/live/audio/crash_maribel.wav?url';
+import crashWheelInMotionUrl from '../../assets/live/audio/crash_wheel_in_motion.wav?url';
 import sirenFarUrl from '../../assets/live/audio/siren_far_loop.wav?url';
 import sirenCloseUrl from '../../assets/live/audio/siren_close_loop.wav?url';
 import overspeedBeepUrl from '../../assets/live/audio/overspeed_beep.wav?url';
@@ -100,6 +101,26 @@ export interface SampleUrls {
    */
   readonly crashMaribel: string;
   /**
+   * Wheel in Motion's (M28) — Red Rider's crash again, as a different file.
+   *
+   * The owner asked for exactly that: the same crash as Red Rider's, his own
+   * wipeout with his own voice removed, as a new file for the sixth rider
+   * until the rider supplies a recording of his own. `crashVoices.test.ts`
+   * refuses a byte copy by design, so `tools/make-crash-red-rider.mjs` was
+   * run a second time with `--avoid` keeping it off the donor Red Rider's
+   * render took: the same 0.76–1.56 s window, the same band, voice-free
+   * texture from 1.74 s of the same take instead of 2.56 s. Outside that
+   * window the two files are the owner's recording sample for sample, and
+   * identical to each other; inside it they differ, and the test says both.
+   * Same length as `crash` to the sample.
+   *
+   * Standing is Red Rider's exactly: inside the CC BY 4.0 claim, nothing
+   * generated, and **no recording of Wheel in Motion's voice anywhere in
+   * it** (`NOTICE.md`). If his own recording arrives, this file is
+   * superseded on the Adonisb2/Maribel path and nothing here changes.
+   */
+  readonly crashWheelInMotion: string;
+  /**
    * The chase siren's two wails (M18) — the far carrier and the close
    * panic, crossfaded by the cop's range. Both CC0 Freesound recordings,
    * owner-auditioned A/B/C/D on 2026-08-13 and recorded in NOTICE.md's
@@ -133,6 +154,7 @@ export const SAMPLE_URLS: SampleUrls = {
   crashRedRider: crashRedRiderUrl,
   crashAdonisb2: crashAdonisb2Url,
   crashMaribel: crashMaribelUrl,
+  crashWheelInMotion: crashWheelInMotionUrl,
   sirenFar: sirenFarUrl,
   sirenClose: sirenCloseUrl,
   overspeedBeep: overspeedBeepUrl,

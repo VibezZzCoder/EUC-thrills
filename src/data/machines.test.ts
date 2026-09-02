@@ -65,6 +65,9 @@ test('every rider gets their settled default machine and the cop stays standard'
   assert.equal(machineForCharacter('maribel-vargas'), 'maribel');
   assert.equal(machineForCharacter('cool-rider'), 'standard');
   assert.equal(machineForCharacter('trollina'), 'trollina');
+  // M28 Phase 2: his own wheel, seated the day it landed — this line stood at
+  // `standard` through Phases 0 and 1 so the swap would be an edit on purpose.
+  assert.equal(machineForCharacter('wheel-in-motion'), 'wheel-in-motion');
   // The chase's threat does not ride somebody else's personal machine.
   assert.equal(machineForCharacter('cop'), 'standard');
 });
