@@ -6247,21 +6247,67 @@ function limbAtHeights(
 }
 
 /**
+ * The hip dome over the thigh's top, in the thigh's frame (`y` 0 is the hip
+ * joint): 60 mm of rounded close, the Drunkard's fix (`DRUNKARD_HIP_DOME`)
+ * on the second rider whose trousers are not black. The rig drops the
+ * inside hip 85 mm under the pelvis in a carve and the outside hip 150 mm
+ * in a technical corner, and counter-rolls the seat's hem up on the outside
+ * by 26 mm more, so a thigh that ends in a flat cap at the joint ends in a
+ * flat cap below the hem with the seat's underside showing over it — every
+ * rider does it, and the owner found it on him (2026-09-03, after the
+ * Drunkard's release: *"WiM had the problem!"*). His trouser blue shows the
+ * cut the way amber does. Sized with `WIM_SEAT`'s hem so the dome still
+ * reaches into the seat through the technical corner's drop and lift;
+ * `riderClearance.test.ts` sweeps both riders.
+ */
+const WIM_HIP_DOME_APEX = 0.060;
+const WIM_HIP_DOME: LoftRing[] = [[0.018, 0.90], [0.036, 0.78], [0.050, 0.52], [WIM_HIP_DOME_APEX, 0]].map(([y, scale]) => ({
+  y: y!,
+  halfWidth: 0.079 * scale!,
+  halfDepth: 0.079 * 0.94 * scale!,
+  square: 2.4,
+}));
+
+/**
  * The thigh: even 20 mm rings under the shell (−0.400 → −0.300), a pair at
  * the guard-white paint boundary just above the shell's top edge, even rings
- * up to the hip.
+ * up to the hip, and the hip dome over the joint. The dome's rings sit above
+ * `y` 0, so the shell's page (`WIM_THIGH_SHELL`, −0.400 → −0.300) is
+ * addressed by height exactly as before.
  */
-const WIM_THIGH = limbAtHeights(
-  RIDER_BLOCKOUT.thighLength,
-  [0.079, 0.072, 0.061],
-  [
-    0, -0.040, -0.080, -0.120, -0.160, -0.200, -0.240, -0.270,
-    -RIDER_BLOCKOUT.thighLength * WIM_GUARD_TOP + 0.002,
-    -RIDER_BLOCKOUT.thighLength * WIM_GUARD_TOP - 0.002,
-    -0.300, -0.320, -0.340, -0.360, -0.380, -0.400,
-  ],
-  { flatten: 0.94, square: 2.4 },
-);
+const WIM_THIGH = loftProfile([
+  ...limbAtHeights(
+    RIDER_BLOCKOUT.thighLength,
+    [0.079, 0.072, 0.061],
+    [
+      0, -0.040, -0.080, -0.120, -0.160, -0.200, -0.240, -0.270,
+      -RIDER_BLOCKOUT.thighLength * WIM_GUARD_TOP + 0.002,
+      -RIDER_BLOCKOUT.thighLength * WIM_GUARD_TOP - 0.002,
+      -0.300, -0.320, -0.340, -0.360, -0.380, -0.400,
+    ],
+    { flatten: 0.94, square: 2.4 },
+  ),
+  ...WIM_HIP_DOME,
+]);
+
+/**
+ * The seat: Cool Rider's rings with the hem 30 mm lower and the bottom two
+ * rings a size wider, so the taper still closes over the thighs instead of
+ * pinching them — the other half of the hip fix, as `DRUNKARD_SEAT`. In the
+ * technical corner the outside hip drops 150 mm and the counter-roll lifts
+ * that side's hem 26 mm, and the dome has to reach the hem through both —
+ * 118 + 60 against 150 + 26. Every vertex of it carries `WIM_SEAT_SHADE`
+ * and is repainted trouser blue by `paintWimTorso`, so the extra 30 mm is
+ * trouser and not a hem line; it lands on the sheet's blank page like the
+ * rest of the seat.
+ */
+const WIM_SEAT = loftProfile([
+  { y: -0.118, halfWidth: 0.76 * TORSO_HALF_WIDTH, halfDepth: 0.78 * TORSO_HALF_DEPTH, square: 2.6 },
+  { y: -0.088, halfWidth: 0.84 * TORSO_HALF_WIDTH, halfDepth: 0.85 * TORSO_HALF_DEPTH, square: 2.6 },
+  { y: -0.055, halfWidth: 0.92 * TORSO_HALF_WIDTH, halfDepth: 0.91 * TORSO_HALF_DEPTH, square: 2.7 },
+  { y: -0.020, halfWidth: 0.97 * TORSO_HALF_WIDTH, halfDepth: 0.95 * TORSO_HALF_DEPTH, square: 2.7 },
+  { y: 0.030, halfWidth: 0.93 * TORSO_HALF_WIDTH, halfDepth: 0.90 * TORSO_HALF_DEPTH, square: 2.6 },
+]);
 /**
  * The shin: a pair at the cup's lower edge, even rings under the plate, a
  * pair at the boot's collar, and a boot-sized end radius.
@@ -6630,7 +6676,7 @@ export const WHEEL_IN_MOTION_LOOK: RiderLook = Object.freeze({
   }),
   profiles: Object.freeze({
     torso: WIM_JERSEY,
-    seat: SEAT,
+    seat: WIM_SEAT,
     thigh: WIM_THIGH,
     shin: WIM_SHIN,
     upperArm: WIM_UPPER_ARM,
@@ -8856,6 +8902,7 @@ export {
   DRUNKARD_PACK,
   DRUNKARD_BOX_TOP,
   DRUNKARD_HIP_DOME_APEX,
+  WIM_HIP_DOME_APEX,
   DRUNKARD_JERSEY,
   DRUNKARD_STRAP,
   DRUNKARD_GLOVE_VERTICES,

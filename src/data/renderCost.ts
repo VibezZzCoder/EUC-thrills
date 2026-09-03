@@ -343,6 +343,14 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  *
  * What has moved, most recent first:
  *
+ *   - **Wheel in Motion's hip dome (2026-09-03, after the Drunkard's
+ *     release): the quad reserve 136,620 → 137,244 triangles, the split
+ *     reserve and every draw call unmoved.** The owner checked the rest of
+ *     the roster for the Drunkard's leg gap and found it on the other rider
+ *     whose trousers are not black; his thighs now close in the same 60 mm
+ *     dome and his seat's hem is 30 mm lower. Four rings on each thigh and
+ *     one on the seat; he is in the worst four looks, so the quad reserve
+ *     carries it, and not in the worst pair, so the split does not.
  *   - **The Drunkard after the owner's first ride and Codex's QA
  *     (2026-09-03): the quad reserve 134,044 → 136,620 and the split
  *     reserve 85,698 → 88,274 triangles, zero draw calls on all three.**
@@ -517,7 +525,7 @@ export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
  */
 export const QUAD_NON_LEVEL_RESERVE = deepFreeze({
   drawCalls: 268,
-  triangles: 136_620,
+  triangles: 137_244,
 });
 
 /**

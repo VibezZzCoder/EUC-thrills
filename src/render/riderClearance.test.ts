@@ -16,6 +16,8 @@ import {
   MARIBEL_LOOK,
   TROLLINA_LOOK,
   WHEEL_IN_MOTION_LOOK,
+  WIM_HIP_DOME_APEX,
+  type RiderLook,
 } from './riderLook.ts';
 import { loftGeometry, type LoftProfile } from './blockoutKit.ts';
 
@@ -1573,7 +1575,24 @@ test("the Drunkard's pack clears his skull and his hat through every fold, the l
   }
 });
 
-test("the Drunkard's thighs end in a hip dome that stays inside his seat through every held corner", () => {
+/**
+ * The riders whose trousers show the hip cut, and what closes it on each:
+ * the dome's apex height, and the pelvis roll the rig writes for that look
+ * (the Drunkard's carries his sway and over-lean; Wheel in Motion's is the
+ * plain counter-roll, and his sweep has no sway to add).
+ */
+const HIP_DOME_RIDERS: ReadonlyArray<{
+  name: string;
+  look: RiderLook;
+  apexY: number;
+  sways: readonly number[];
+  pelvisRoll: (stance: StanceInput) => number;
+}> = [
+  { name: 'the Drunkard', look: DRUNKARD_LOOK, apexY: DRUNKARD_HIP_DOME_APEX, sways: [-1, 0, 1], pelvisRoll: drunkardPelvisRoll },
+  { name: 'Wheel in Motion', look: WHEEL_IN_MOTION_LOOK, apexY: WIM_HIP_DOME_APEX, sways: [0], pelvisRoll: pelvisCounterRoll },
+];
+
+for (const { name, look, apexY, sways, pelvisRoll } of HIP_DOME_RIDERS) test(`${name}'s thighs end in a hip dome that stays inside his seat through every held corner`, () => {
   // The owner's ride (2026-09-03): "in some tight turns the legs kinda
   // detach from the torso (upper back end of the legs)". The rig drops the
   // inside hip 85 mm under the pelvis in a carve and the outside hip 150 mm
@@ -1582,23 +1601,26 @@ test("the Drunkard's thighs end in a hip dome that stays inside his seat through
   // then ends in a flat cap below the hem, with the seat's underside
   // showing over it. Every rider does it (70 % of the cap below the hem in
   // a full carve on Cool Rider, Wheel in Motion and him alike) and hides it
-  // in black; his amber cannot. So his thigh closes in a dome over the
-  // joint and his seat's hem is 30 mm lower, and this proves the two meet:
-  // through every held stance at every sway, the dome's apex stays at
-  // least 20 mm above the hem — the leg is continuous into the trousers.
-  // The build measures 38 mm at its worst (a grip-limit carve composed with
-  // a full technical turn and the sway leaning him the other way).
-  const thigh = DRUNKARD_LOOK.profiles.thigh;
-  const seat = DRUNKARD_LOOK.profiles.seat;
+  // in black; amber cannot, and neither can trouser blue — the owner checked
+  // the rest of the roster after the Drunkard's release and found it on
+  // Wheel in Motion. So each of their thighs closes in a dome over the
+  // joint and their seat's hem is 30 mm lower, and this proves the two
+  // meet: through every held stance (at every sway, where the look has
+  // one), the dome's apex stays at least 20 mm above the hem — the leg is
+  // continuous into the trousers. The Drunkard measures 38 mm at his worst
+  // (a grip-limit carve composed with a full technical turn and the sway
+  // leaning him the other way).
+  const thigh = look.profiles.thigh;
+  const seat = look.profiles.seat;
   const apex = thigh[thigh.length - 1]!;
-  assert.equal(apex.y, DRUNKARD_HIP_DOME_APEX, 'the thigh does not end at the dome\'s apex');
+  assert.equal(apex.y, apexY, 'the thigh does not end at the dome\'s apex');
   assert.equal(apex.halfWidth, 0, 'the dome does not close');
-  assert.ok(thigh.some((ring) => ring.y > 0.02 && ring.y < DRUNKARD_HIP_DOME_APEX && ring.halfWidth > 0.05), 'the dome has no shoulder — it is a spike');
+  assert.ok(thigh.some((ring) => ring.y > 0.02 && ring.y < apexY && ring.halfWidth > 0.05), 'the dome has no shoulder — it is a spike');
   const hem = seat[0]!.y;
   const coolHem = COOL_RIDER_LOOK.profiles.seat[0]!.y;
-  assert.ok(hem <= coolHem - 0.025, `his hem at ${(hem * 1000).toFixed(0)} mm is not 25 mm under Cool Rider's at ${(coolHem * 1000).toFixed(0)}`);
+  assert.ok(hem <= coolHem - 0.025, `the hem at ${(hem * 1000).toFixed(0)} mm is not 25 mm under Cool Rider's at ${(coolHem * 1000).toFixed(0)}`);
 
-  const rider = createPlaceholderRider(DRUNKARD_LOOK);
+  const rider = createPlaceholderRider(look);
   try {
     const thighs: THREE.Mesh[] = [];
     for (const side of ['left', 'right']) {
@@ -1611,15 +1633,15 @@ test("the Drunkard's thighs end in a hip dome that stays inside his seat through
     let lowest = Infinity;
     let where = '';
     let asserted = 0;
-    for (const overrides of drunkardHeldStances([-1, 0, 1])) {
+    for (const overrides of drunkardHeldStances(sways)) {
       const stance = Object.assign(createStanceInput(), overrides);
-      rider.pelvis.rotation.z = drunkardPelvisRoll(stance);
+      rider.pelvis.rotation.z = pelvisRoll(stance);
       rider.applyStanceReaction(stance);
       rider.root.updateMatrixWorld(true);
       for (const mesh of thighs) {
         const positions = mesh.geometry.getAttribute('position');
         for (let i = 0; i < positions.count; i += 1) {
-          if (positions.getY(i) < DRUNKARD_HIP_DOME_APEX - 1e-6) continue;
+          if (positions.getY(i) < apexY - 1e-6) continue;
           mesh.localToWorld(point.fromBufferAttribute(positions, i));
           rider.pelvis.worldToLocal(point);
           const above = point.y - hem;
@@ -1631,7 +1653,7 @@ test("the Drunkard's thighs end in a hip dome that stays inside his seat through
       }
       asserted += 1;
     }
-    assert.ok(asserted > 500, `only ${asserted} stances asserted`);
+    assert.ok(asserted >= 160 * sways.length, `only ${asserted} stances asserted`);
     assert.ok(lowest >= 0.020, `the hip dome's apex comes down to ${(lowest * 1000).toFixed(1)} mm above the hem — ${where} (20 mm required)`);
   } finally {
     rider.dispose();
