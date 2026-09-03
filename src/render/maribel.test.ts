@@ -860,6 +860,21 @@ test('her wheel wears her mark and no other machine acquires one', () => {
       assert.notEqual(look.atlas.build, createMaribelAtlas, 'his wheel wears her sheet');
       continue;
     }
+    // The Drunkard's wheel is the third with a sheet, and the first whose
+    // sheet carries no mark of anybody's: its one printed thing is the pad's
+    // page (the hop cone, `render/drunkardMachineAtlas.ts`), on a sheet of
+    // its own — no patch of his asks for `machineMark`, and nothing of hers
+    // reaches him (M29 §29.6).
+    if (id === 'drunkard') {
+      assert.ok(look.atlas, 'his machine has no sheet');
+      assert.equal(look.pads?.art, 'pads', 'his pads are not printed');
+      assert.ok(
+        look.trim.patches.every((patch) => patch.art === undefined),
+        'his wheel asks for a page on the trim — the cone is on the pads',
+      );
+      assert.notEqual(look.atlas.build, createMaribelAtlas, 'his wheel wears her sheet');
+      continue;
+    }
     assert.equal(look.atlas, undefined, `${id} acquired a printed sheet`);
     for (const patch of look.trim.patches) {
       assert.equal(patch.art, undefined, `${id} has a patch asking for atlas art`);

@@ -4,8 +4,20 @@ import { test } from 'node:test';
 import * as THREE from 'three';
 import { BLOCKOUT_COLOURS, EUC, RIDER_BLOCKOUT } from '../data/tuning.ts';
 import { createPlaceholderRider, createStanceInput, type StanceInput } from './rider.ts';
-import { ADONISB2_LOOK, MARIBEL_LOOK, TROLLINA_LOOK, WHEEL_IN_MOTION_LOOK } from './riderLook.ts';
-import type { LoftProfile } from './blockoutKit.ts';
+import { createBlockoutEUC } from './euc.ts';
+import {
+  ADONISB2_LOOK,
+  COOL_RIDER_LOOK,
+  DRUNKARD_GLOVE_VERTICES,
+  DRUNKARD_HAT,
+  DRUNKARD_HEAD,
+  DRUNKARD_HIP_DOME_APEX,
+  DRUNKARD_LOOK,
+  MARIBEL_LOOK,
+  TROLLINA_LOOK,
+  WHEEL_IN_MOTION_LOOK,
+} from './riderLook.ts';
+import { loftGeometry, type LoftProfile } from './blockoutKit.ts';
 
 /**
  * The skirt clears the legs, measured — M14.5 second look pass.
@@ -1229,6 +1241,398 @@ test('her hip slider crosses the seat only where the pad itself hides it', () =>
       `her hip slider's inner face is only ${(deepestInboard * 1000).toFixed(1)} mm inside the seat `
         + '— a pad clear on both faces floats off her hip',
     );
+  } finally {
+    rider.dispose();
+  }
+});
+
+/**
+ * The Drunkard — M29 Phase 2, and the two things on him that swing through
+ * the envelope in frames the rest of this file never measured.
+ *
+ * **The can in his fist** hangs off the left elbow, whose target every arm
+ * reaction moves — the carve's splay, the wobble's bracing, the sway's own
+ * `swayArmSplay` — beside a thigh the IK folds toward it in every deep
+ * stance. **The hat's tubes** hang off the neck, which the look-around yaws,
+ * the stabiliser pitches and, for the first time on the roster, the ride
+ * style *rolls* (`neck.rotation.z` through his `motion.swayHeadTilt`). A
+ * clearance contract must apply every transform the rig writes between the
+ * two things it compares (invariant 15), so the sway joins the sweep here:
+ * `StanceInput.styleSway` over −1..1, which is the first time a look's own
+ * motion table has been part of one.
+ *
+ * The pelvis roll is written the way `ridingRig.ts` writes it for *him*:
+ * the counter-roll less the share the over-lean forgets, less the sway's
+ * own roll — the term this file restored for Trollina, restated with the
+ * two channels his table adds to it.
+ */
+function drunkardPelvisRoll(stance: StanceInput): number {
+  const motion = DRUNKARD_LOOK.motion!;
+  const sway = Math.max(-1, Math.min(1, stance.styleSway));
+  return pelvisCounterRoll(stance) * (1 - motion.overLean) - sway * motion.swayPelvisRoll;
+}
+
+/** The held envelope this file sweeps, plus the sway, as stances for the rig. */
+function drunkardHeldStances(sways: readonly number[]): Array<Partial<StanceInput> & { label: string }> {
+  const stances: Array<Partial<StanceInput> & { label: string }> = [];
+  for (const rollAngle of CARVES) {
+    for (const riderPitch of LEANS) {
+      for (const technicalTurn of TECHNICAL_TURNS) {
+        for (const styleSway of sways) {
+          stances.push({
+            label: `carve ${rollAngle.toFixed(2)}, lean ${riderPitch.toFixed(2)}, technical ${technicalTurn.toFixed(2)}, sway ${styleSway.toFixed(2)}`,
+            rollAngle,
+            riderPitch,
+            torsoPitch: torsoPitchFor(riderPitch),
+            technicalTurn,
+            styleSway,
+          });
+        }
+      }
+    }
+  }
+  for (const sign of [-1, 1]) {
+    for (const technicalTurn of [0.44, 0.81, 1]) {
+      for (const styleSway of sways) {
+        stances.push({
+          label: `technical corner ${(sign * TECHNICAL_ROLL).toFixed(2)}, technical ${(sign * technicalTurn).toFixed(2)}, sway ${styleSway.toFixed(2)}`,
+          rollAngle: sign * TECHNICAL_ROLL,
+          riderPitch: 0,
+          torsoPitch: torsoPitchFor(0),
+          technicalTurn: sign * technicalTurn,
+          styleSway,
+        });
+      }
+    }
+  }
+  for (const rollAngle of CARVES) {
+    for (const riderPitch of PRESENTATION_LEANS) {
+      for (const fold of PRESENTATION_FOLDS) {
+        for (const crouch of [0, 1]) {
+          for (const styleSway of sways) {
+            stances.push({
+              label: `carve ${rollAngle.toFixed(2)}, lean ${riderPitch.toFixed(2)}, attack ${fold.attack}, carveStance ${fold.carveStance}, crouch ${crouch}, sway ${styleSway.toFixed(2)}`,
+              rollAngle,
+              riderPitch,
+              torsoPitch: torsoPitchFor(riderPitch),
+              ...fold,
+              crouch,
+              styleSway,
+            });
+          }
+        }
+      }
+    }
+  }
+  stances.push({ label: 'rest', restFactor: 1, torsoPitch: torsoPitchFor(0) });
+  stances.push({ label: 'crash, settled', crash: 1, torsoPitch: torsoPitchFor(0) });
+  // The stagger: his wobble fought bigger and looser, at both phases.
+  for (const wobbleFight of [0.5, 1]) {
+    for (const wobbleSway of [-1, 1]) {
+      stances.push({ label: `wobble ${wobbleFight}, phase ${wobbleSway}`, wobbleFight, wobbleSway, torsoPitch: torsoPitchFor(0) });
+    }
+  }
+  return stances;
+}
+
+test("the can in the Drunkard's fist clears his thigh and the wheel's pads through the held envelope", () => {
+  // 40 mm from the thigh's surface and 80 mm from either pad, in every held
+  // stance and at every sway. The build measures 83 mm and 138 mm at its
+  // worst (a full attack-carve fold with the sway leaning him onto the can's
+  // side); the floors are half of that so a re-carriage of the arms that
+  // brings the can onto his leg — the cheap way to make him look more
+  // relaxed — fails here instead of on the owner's ride.
+  const rider = createPlaceholderRider(DRUNKARD_LOOK);
+  const euc = createBlockoutEUC();
+  euc.group.updateMatrixWorld(true);
+  try {
+    const hand = rider.root.getObjectByName('rider-hand-left') as THREE.Mesh;
+    const hip = rider.root.getObjectByName('rider-hip-left')!;
+    const thigh = hip.children.find((child) => (child as THREE.Mesh).isMesh === true && child.name === '') as THREE.Mesh;
+    assert.ok(hand && thigh, 'the left hand and thigh are missing');
+    const positions = hand.geometry.getAttribute('position');
+    assert.ok(positions.count > DRUNKARD_GLOVE_VERTICES + 100, 'the left hand carries no can');
+    const pads: THREE.Vector3[] = [];
+    for (const side of ['left', 'right']) {
+      const pad = euc.group.getObjectByName(`euc-pad-${side}`) as THREE.Mesh;
+      assert.ok(pad, `the ${side} pad is missing`);
+      const padPositions = pad.geometry.getAttribute('position');
+      for (let j = 0; j < padPositions.count; j += 1) {
+        pads.push(pad.localToWorld(new THREE.Vector3().fromBufferAttribute(padPositions, j)));
+      }
+    }
+    const point = new THREE.Vector3();
+    let asserted = 0;
+    for (const overrides of drunkardHeldStances([-1, 0, 1])) {
+      const stance = Object.assign(createStanceInput(), overrides);
+      rider.pelvis.rotation.z = drunkardPelvisRoll(stance);
+      rider.applyStanceReaction(stance);
+      rider.root.updateMatrixWorld(true);
+      let thighClearance = Infinity;
+      let padClearance = Infinity;
+      for (let i = DRUNKARD_GLOVE_VERTICES; i < positions.count; i += 1) {
+        hand.localToWorld(point.fromBufferAttribute(positions, i));
+        for (const pad of pads) padClearance = Math.min(padClearance, point.distanceTo(pad));
+        thigh.worldToLocal(point);
+        // Only where the thigh is: beside the joint or below its rounded end
+        // a leg vertex is not what the can could touch.
+        if (point.y > 0.02 || point.y < -RIDER_BLOCKOUT.thighLength - 0.05) continue;
+        thighClearance = Math.min(thighClearance, -depthInside(DRUNKARD_LOOK.profiles.thigh, point));
+      }
+      asserted += 1;
+      assert.ok(
+        thighClearance >= 0.040,
+        `${overrides.label}: the can comes within ${(thighClearance * 1000).toFixed(1)} mm of his thigh (40 mm required)`,
+      );
+      assert.ok(
+        padClearance >= 0.080,
+        `${overrides.label}: the can comes within ${(padClearance * 1000).toFixed(1)} mm of a pad (80 mm required)`,
+      );
+    }
+    assert.ok(asserted > 500, `only ${asserted} stances asserted`);
+  } finally {
+    rider.dispose();
+    euc.dispose();
+  }
+});
+
+test("the hat's tubes clear the shoulders through the look-around and the sway's full amplitude", () => {
+  // Every kit vertex — the cans, the tubes down to the stub in his mouth,
+  // the peak — that comes down to the jersey's height stays 10 mm clear of
+  // the jersey's surface, measured in the pelvis frame against the torso
+  // profile's own section at the vertex's height, through every held
+  // stance, every look into a turn and over the shoulder, and the sway at
+  // −1, −½, 0, ½ and 1. The slope from the shoulder ring to the neck ring
+  // is that surface, so a tube that dropped onto a shoulder would first
+  // show up here. The deepest the kit reaches is the stub in his mouth, in
+  // a hard brake composed with a grip-limit carve, a full technical turn, a
+  // full sway and a look into the turn, where the stabiliser, the tilt and
+  // the yaw all lower the mouth at once — and it is ahead of the collar,
+  // over the chest, not on a shoulder. And the sway is proven
+  // live in the sweep: the mouth end of the tubes moves between −1 and 1,
+  // so a future sway that stopped reaching the neck could not pass by
+  // never moving anything.
+  const rider = createPlaceholderRider(DRUNKARD_LOOK);
+  try {
+    const kit = rider.root.getObjectByName('rider-drunkard-hat-kit') as THREE.Mesh;
+    assert.ok(kit, 'the hat kit is missing');
+    const positions = kit.geometry.getAttribute('position');
+    const neckRing = DRUNKARD_LOOK.profiles.torso[DRUNKARD_LOOK.profiles.torso.length - 1]!.y;
+    const point = new THREE.Vector3();
+    // The lowest kit vertex at rest: the stub in his mouth.
+    let lowestIndex = 0;
+    for (let i = 1; i < positions.count; i += 1) if (positions.getY(i) < positions.getY(lowestIndex)) lowestIndex = i;
+    const mouthAt = new Map<number, THREE.Vector3>();
+    let asserted = 0;
+    const sways = [-1, -0.5, 0, 0.5, 1];
+    for (const base of drunkardHeldStances(sways)) {
+      for (const lookYaw of [-EUC.riderLookIntoTurn, 0, EUC.riderLookIntoTurn]) {
+        for (const reverse of [0, 1]) {
+          const stance = Object.assign(createStanceInput(), base, { lookYaw, reverse });
+          rider.pelvis.rotation.z = drunkardPelvisRoll(stance);
+          rider.applyStanceReaction(stance);
+          rider.root.updateMatrixWorld(true);
+          let deepest = -Infinity;
+          for (let i = 0; i < positions.count; i += 1) {
+            kit.localToWorld(point.fromBufferAttribute(positions, i));
+            rider.pelvis.worldToLocal(point);
+            // Only at the jersey's height: above its top ring the section
+            // the measure would use is the collar's, and a vertex over the
+            // cap is not near a shoulder.
+            if (point.y <= neckRing) deepest = Math.max(deepest, depthInside(DRUNKARD_LOOK.profiles.torso, point));
+            if (i === lowestIndex && lookYaw === 0 && reverse === 0 && base.label.startsWith('carve 0.00, lean 0.00, technical 0.00')) {
+              mouthAt.set(stance.styleSway, point.clone());
+            }
+          }
+          asserted += 1;
+          assert.ok(
+            deepest <= -0.010,
+            `${base.label}, look ${lookYaw.toFixed(2)}, reverse ${reverse}: the hat kit comes within `
+              + `${(-deepest * 1000).toFixed(1)} mm of the jersey's surface at the shoulders (10 mm required)`,
+          );
+        }
+      }
+    }
+    assert.ok(asserted > 3000, `only ${asserted} stances asserted`);
+    const left = mouthAt.get(-1);
+    const right = mouthAt.get(1);
+    assert.ok(left && right, 'the neutral stance was not swept at both sways');
+    assert.ok(
+      left.distanceTo(right) > 0.020,
+      `the sway moves the tubes by only ${(left.distanceTo(right) * 1000).toFixed(1)} mm between −1 and 1 — the channel is not live`,
+    );
+  } finally {
+    rider.dispose();
+  }
+});
+
+/**
+ * The folds the head contract sweeps on top of the held envelope: every
+ * fore-aft fold the rig can hold, at every lean up to the launch reaction,
+ * crouched and not. The tuck is a held crouch with nothing but the ground
+ * gating it (`EucController.tuck`), so a launch held in a crouch is an
+ * ordinary thing to do — and it is where the neck reaches its full
+ * extension (the general stabilisation saturates on the launch lean and the
+ * tuck's own on top of it).
+ */
+function drunkardFoldStances(sways: readonly number[]): Array<Partial<StanceInput> & { label: string }> {
+  const stances: Array<Partial<StanceInput> & { label: string }> = [];
+  for (const rollAngle of CARVES) {
+    for (const riderPitch of [0, 0.15, 0.35, EUC.maxRiderPitch]) {
+      for (const fold of HAIR_FOLDS) {
+        for (const crouch of [0, 1]) {
+          for (const styleSway of sways) {
+            stances.push({
+              label: `fold carve ${rollAngle.toFixed(2)}, lean ${riderPitch.toFixed(2)}, tuck ${fold.tuck}, attack ${fold.attack}, carveStance ${fold.carveStance}, crouch ${crouch}, sway ${styleSway.toFixed(2)}`,
+              rollAngle,
+              riderPitch,
+              torsoPitch: torsoPitchFor(riderPitch),
+              ...fold,
+              crouch,
+              styleSway,
+            });
+          }
+        }
+      }
+    }
+  }
+  return stances;
+}
+
+test("the Drunkard's pack clears his skull and his hat through every fold, the launch and the look", () => {
+  // Codex's QA after Phase 2: the pint gauntlet round 1 stood over the
+  // pack's box put its front face 48 mm inside the skull in an ordinary
+  // attack stance. The pack rides the pelvis and the head rides the neck,
+  // and the neck counter-pitches against the torso's whole hinge — 0.68 rad
+  // at attack-plus-lean, 0.95 in a launch held in a crouch — so the skull's
+  // back, 190 mm from the joint, sweeps an arc that owns everything within
+  // ~470 mm of the pelvis behind it. Every neck axis is swept here: the
+  // pitch through the folds and the launch, the yaw through the look, the
+  // roll through the sway and the stagger's loll. 20 mm from any point of
+  // the pack's own surface, measured as the built pack's vertices against
+  // the skull's and the shell's lofts; the build measures 28 mm at its
+  // worst (the launch-crouch with the look into the turn and a full sway)
+  // and 68 mm in any held stance.
+  const rider = createPlaceholderRider(DRUNKARD_LOOK);
+  const skull = loftGeometry(DRUNKARD_HEAD, { radialSegments: 22 });
+  const hat = loftGeometry(DRUNKARD_HAT, { radialSegments: 28 });
+  try {
+    const pack = rider.root.getObjectByName('rider-drunkard-pack') as THREE.Mesh;
+    assert.ok(pack, 'the pack is missing');
+    const packPositions = pack.geometry.getAttribute('position');
+    const packColour = pack.geometry.getAttribute('color');
+    // The pack body is page-coloured at 1; the hose and the valve are tints.
+    // Only the top of the body can meet the head, so only its upper rings
+    // are sampled — the box's front is buried in the jersey anyway.
+    const cloud: THREE.Vector3[] = [];
+    for (let i = 0; i < packPositions.count; i += 1) {
+      if (packColour.getX(i) < 0.999 || packPositions.getY(i) < 0.35) continue;
+      cloud.push(new THREE.Vector3().fromBufferAttribute(packPositions, i));
+    }
+    assert.ok(cloud.length > 60, `only ${cloud.length} pack vertices above 350 mm`);
+    const crown = Math.max(...cloud.map((p) => p.y));
+    const point = new THREE.Vector3();
+    let worst = Infinity;
+    let where = '';
+    let asserted = 0;
+    const sways = [-1, 0, 1];
+    for (const base of [...drunkardHeldStances(sways), ...drunkardFoldStances(sways)]) {
+      for (const lookYaw of [-EUC.riderLookIntoTurn, 0, EUC.riderLookIntoTurn]) {
+        const stance = Object.assign(createStanceInput(), base, { lookYaw });
+        rider.pelvis.rotation.z = drunkardPelvisRoll(stance);
+        rider.applyStanceReaction(stance);
+        rider.root.updateMatrixWorld(true);
+        let gap = Infinity;
+        for (const geometry of [skull, hat]) {
+          const positions = geometry.getAttribute('position');
+          for (let i = 0; i < positions.count; i += 1) {
+            rider.neck.localToWorld(point.fromBufferAttribute(positions, i));
+            rider.pelvis.worldToLocal(point);
+            // Nothing 80 mm over the crown can touch it.
+            if (point.y > crown + 0.08) continue;
+            for (const q of cloud) gap = Math.min(gap, point.distanceTo(q));
+          }
+        }
+        asserted += 1;
+        if (gap < worst) {
+          worst = gap;
+          where = `${base.label}, look ${lookYaw.toFixed(2)}, neck ${rider.neck.rotation.x.toFixed(3)}`;
+        }
+      }
+    }
+    assert.ok(asserted > 4000, `only ${asserted} stances asserted`);
+    assert.ok(worst >= 0.020, `the pack comes within ${(worst * 1000).toFixed(1)} mm of his head — ${where} (20 mm required)`);
+    // And the pack never climbs back into the arc: its crown stays under
+    // the shoulder ring by a stated margin. The number the pint broke.
+    const shoulder = DRUNKARD_LOOK.profiles.torso.find((ring) => ring.y >= 0.50)!.y;
+    assert.ok(crown <= shoulder - 0.030, `the pack's crown at ${(crown * 1000).toFixed(0)} mm is within 30 mm of the shoulder ring at ${(shoulder * 1000).toFixed(0)}`);
+  } finally {
+    skull.dispose();
+    hat.dispose();
+    rider.dispose();
+  }
+});
+
+test("the Drunkard's thighs end in a hip dome that stays inside his seat through every held corner", () => {
+  // The owner's ride (2026-09-03): "in some tight turns the legs kinda
+  // detach from the torso (upper back end of the legs)". The rig drops the
+  // inside hip 85 mm under the pelvis in a carve and the outside hip 150 mm
+  // in a technical corner, and counter-rolls the seat's hem up on the
+  // outside on top of that; a thigh that ends in a flat cap at the joint
+  // then ends in a flat cap below the hem, with the seat's underside
+  // showing over it. Every rider does it (70 % of the cap below the hem in
+  // a full carve on Cool Rider, Wheel in Motion and him alike) and hides it
+  // in black; his amber cannot. So his thigh closes in a dome over the
+  // joint and his seat's hem is 30 mm lower, and this proves the two meet:
+  // through every held stance at every sway, the dome's apex stays at
+  // least 20 mm above the hem — the leg is continuous into the trousers.
+  // The build measures 38 mm at its worst (a grip-limit carve composed with
+  // a full technical turn and the sway leaning him the other way).
+  const thigh = DRUNKARD_LOOK.profiles.thigh;
+  const seat = DRUNKARD_LOOK.profiles.seat;
+  const apex = thigh[thigh.length - 1]!;
+  assert.equal(apex.y, DRUNKARD_HIP_DOME_APEX, 'the thigh does not end at the dome\'s apex');
+  assert.equal(apex.halfWidth, 0, 'the dome does not close');
+  assert.ok(thigh.some((ring) => ring.y > 0.02 && ring.y < DRUNKARD_HIP_DOME_APEX && ring.halfWidth > 0.05), 'the dome has no shoulder — it is a spike');
+  const hem = seat[0]!.y;
+  const coolHem = COOL_RIDER_LOOK.profiles.seat[0]!.y;
+  assert.ok(hem <= coolHem - 0.025, `his hem at ${(hem * 1000).toFixed(0)} mm is not 25 mm under Cool Rider's at ${(coolHem * 1000).toFixed(0)}`);
+
+  const rider = createPlaceholderRider(DRUNKARD_LOOK);
+  try {
+    const thighs: THREE.Mesh[] = [];
+    for (const side of ['left', 'right']) {
+      const hip = rider.root.getObjectByName(`rider-hip-${side}`)!;
+      const mesh = hip.children.find((child) => (child as THREE.Mesh).isMesh === true && child.name === '') as THREE.Mesh | undefined;
+      assert.ok(mesh, `no thigh under rider-hip-${side}`);
+      thighs.push(mesh);
+    }
+    const point = new THREE.Vector3();
+    let lowest = Infinity;
+    let where = '';
+    let asserted = 0;
+    for (const overrides of drunkardHeldStances([-1, 0, 1])) {
+      const stance = Object.assign(createStanceInput(), overrides);
+      rider.pelvis.rotation.z = drunkardPelvisRoll(stance);
+      rider.applyStanceReaction(stance);
+      rider.root.updateMatrixWorld(true);
+      for (const mesh of thighs) {
+        const positions = mesh.geometry.getAttribute('position');
+        for (let i = 0; i < positions.count; i += 1) {
+          if (positions.getY(i) < DRUNKARD_HIP_DOME_APEX - 1e-6) continue;
+          mesh.localToWorld(point.fromBufferAttribute(positions, i));
+          rider.pelvis.worldToLocal(point);
+          const above = point.y - hem;
+          if (above < lowest) {
+            lowest = above;
+            where = `${overrides.label}, ${mesh.parent!.name}`;
+          }
+        }
+      }
+      asserted += 1;
+    }
+    assert.ok(asserted > 500, `only ${asserted} stances asserted`);
+    assert.ok(lowest >= 0.020, `the hip dome's apex comes down to ${(lowest * 1000).toFixed(1)} mm above the hem — ${where} (20 mm required)`);
   } finally {
     rider.dispose();
   }

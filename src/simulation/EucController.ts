@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { EUC, PHYSICS, SIMULATION, TERRAIN, WHEEL } from '../data/tuning.ts';
 import { SURFACES, SURFACE_IDS } from '../data/surfaces.ts';
+import { SOBER_STYLE, type RideStyle } from '../data/rideStyles.ts';
 import type { ActionSnapshot } from '../input/actions.ts';
 import { approach, clamp, clamp01, lerp } from '../shared/maths.ts';
 import { roughnessAt } from './roughness.ts';
@@ -1086,6 +1087,36 @@ export interface EucPose {
   recoverBlend: number;
   /** Tilt-back, 0..1. The machine tipping its pedals back under the rider. */
   tiltBack: number;
+
+  // -- The ride style (M29) -------------------------------------------------
+  /**
+   * The Drunken Master's sway, -1..1 — the weave's normalised yaw rate, so
+   * the body leans into the path's curve as a rider leans into a turn.
+   * Already gated by the controller (speed, air, wobble, crash), so the rig
+   * spends it as a plain multiplier on the look's `motion` table and learns
+   * nothing about who is riding. Exactly zero on every sober seat: it is a
+   * product with the style's rates, and a sober style's rates are zero.
+   */
+  styleSway: number;
+  /**
+   * The stumble's machine yaw, radians, **already spent on the position** —
+   * `wobbleYaw`'s twin, summed with it wherever the machine and the pedal
+   * targets take the wobble, and kept out of `headingY` for the same reason:
+   * the camera reads the clean heading and nothing accumulates into a turn.
+   */
+  styleYaw: number;
+  /** The stumble's machine roll, radians, signed toward rider-left with the yaw. */
+  styleRoll: number;
+  /**
+   * How far into a stumble the rider is, 0..1 — the shimmy's envelope.
+   *
+   * Published so the rig can brace against a stumble the way it braces
+   * against a wobble without dividing an amplitude back out of `styleYaw`,
+   * which is M13's `wobbleSway` lesson: the rig does not know the numbers
+   * the controller ran with. The stumble carries no energy, so `wobble` and
+   * `wobbleFight` stay at zero through it; this is the only trace it leaves.
+   */
+  styleStumble: number;
 }
 
 export function createPose(): EucPose {
@@ -1136,6 +1167,10 @@ export function createPose(): EucPose {
     ragdoll: new Float32Array(RAGDOLL_FLOATS),
     recoverBlend: 1,
     tiltBack: 0,
+    styleSway: 0,
+    styleYaw: 0,
+    styleRoll: 0,
+    styleStumble: 0,
   };
 }
 
@@ -1236,6 +1271,10 @@ export function copyPose(from: EucPose, to: EucPose): void {
   to.ragdoll.set(from.ragdoll);
   to.recoverBlend = from.recoverBlend;
   to.tiltBack = from.tiltBack;
+  to.styleSway = from.styleSway;
+  to.styleYaw = from.styleYaw;
+  to.styleRoll = from.styleRoll;
+  to.styleStumble = from.styleStumble;
 }
 
 /** The full readout, for the QA bridge and the debug overlay. Allocates. */
@@ -1381,6 +1420,19 @@ export interface EucSnapshot {
   /** How strongly Cool Rider is correcting through their feet, 0..1. */
   readonly wobbleFootCorrection: number;
 
+  // -- The ride style (M29) -------------------------------------------------
+  /** The sway, -1..1. Zero on every sober seat. */
+  readonly styleSway: number;
+  /** The weave's heading offset, rad, and its change this step as a yaw rate, rad/s. Zero on every sober seat. */
+  readonly styleHeading: number;
+  readonly styleWeaveRate: number;
+  /** The stumble's machine yaw and roll, radians, and its 0..1 envelope. */
+  readonly styleYaw: number;
+  readonly styleRoll: number;
+  readonly styleStumble: number;
+  /** Stumbles since the last reset. The audio layer's edge, when it arrives. */
+  readonly stumbles: number;
+
   /** The power ladder's single scalar. 1.0 is tilt-back. */
   readonly loadFactor: number;
   readonly powerStage: PowerStage;
@@ -1418,6 +1470,8 @@ export class EucController {
 
   private readonly sampler: TerrainSampler;
   private spawn: Spawn;
+  /** M29 — the seat's ride style. `SOBER_STYLE` until the composition root says otherwise. */
+  private style: RideStyle = SOBER_STYLE;
 
   private x = 0;
   private y = 0;
@@ -1637,6 +1691,36 @@ export class EucController {
   private justTookOff = false;
   private justTouchedDown = false;
 
+  // -- The ride style (M29) ---------------------------------------------------
+  //
+  // One clock, advanced by the fixed step and never by wall time, so
+  // `advance(n)` reaches the same sway and the same stumble every run. Every
+  // published number below is a product with a field of `this.style`, and
+  // every factor is finite, so a sober style makes each of them exactly zero
+  // — the six sober digests in the test file hold that claim.
+
+  /** The weave's two sine phases, radians. */
+  private stylePhaseA = 0;
+  private stylePhaseB = 0;
+  /** The hands-off gate, 0..1, eased at the style's fade rate. */
+  private styleGate = 0;
+  /** The sway, -1..1: the gate times the two-sine oscillator. */
+  private styleSway = 0;
+  /** The weave's heading offset as of the last step, rad — what `headingY` currently carries of it. */
+  private styleHeading = 0;
+  /** The offset's change this step as a yaw rate, rad/s — what joins the steering request. */
+  private styleWeaveRate = 0;
+  /** Metres ridden since the last stumble. */
+  private styleMetres = 0;
+  /** Seconds into the current stumble, and how long it is. Inactive when equal. */
+  private stumbleTime = 0;
+  private stumbleLength = 0;
+  private stumbles = 0;
+  /** The stumble's outputs: machine yaw and roll (radians) and its envelope. */
+  private styleYaw = 0;
+  private styleRoll = 0;
+  private styleStumble = 0;
+
   // -- Wobble, power, crash, recovery (M6) ------------------------------------
 
   /** Wobble energy, where `wobbleCrashEnergy` is a crash. */
@@ -1798,6 +1882,53 @@ export class EucController {
     Object.assign(this.tuning, values);
   }
 
+  /**
+   * Dress this controller in a ride style — M29 (`docs/PLANS.md` §29.4).
+   *
+   * A third mechanism beside `setTuning` and the options firewall, and
+   * deliberately neither of them. Tuning is *how the wheel rides*, the same
+   * for every seat; an option is *how the game presents itself*, and never
+   * reaches this file. A style is *who is on the wheel*: roster data the
+   * composition root reads off `rideStyleFor(seat.character)` at every place
+   * a seat's character or controller is written, and nothing else may
+   * install one — no option, no URL, no F4 control (safeguards S2, S6, S7).
+   * The default is `SOBER_STYLE`, every field zero, so a controller nobody
+   * dressed rides exactly as the six pinned sober digests say.
+   *
+   * **Phase 0: stored, and read by nothing.** The plumbing exists so the
+   * digests can prove it inert before Phase 1 gives the record a reader.
+   *
+   * **Phase 1, after an independent QA pass: a change of *kind* clears the
+   * live state.** The record is numbers, and `stepStyle` is built so that a
+   * sober record makes every term a product with zero — but a product with
+   * zero cannot *undo* a sway that was already standing, a stumble already
+   * running, or a heading offset already delivered, and a sober record's
+   * zero fade rate is exactly what stops the gate from ever closing them.
+   * Dressing a drunk seat sober left the sway frozen at −0.86 five seconds
+   * later and a stumble's bracing on the new rig's first frame. So when the
+   * style crosses between the identity and a styled record, every output is
+   * cleared, the clock and the metres start over and the stumble count is
+   * the new rider's — while a re-dress that only *retunes* a styled record
+   * (F4 dragging a slider, which arrives here as a fresh copy on every
+   * change) keeps its continuity, because a slider is not a new rider.
+   */
+  setRideStyle(style: RideStyle): void {
+    const wasStyled = isStyled(this.style);
+    this.style = style;
+    if (isStyled(style) !== wasStyled) {
+      this.clearStyleMotion();
+      this.stylePhaseA = 0;
+      this.stylePhaseB = 0;
+      this.styleMetres = 0;
+      this.stumbles = 0;
+    }
+  }
+
+  /** The style this controller was dressed with. Tests read it; the game never needs to. */
+  get rideStyle(): RideStyle {
+    return this.style;
+  }
+
   /** Change one surface's response while the game runs. Also F4. */
   setSurfaceResponse(id: SurfaceId, values: Partial<SurfaceResponse>): void {
     const surface = this.surfaces[id];
@@ -1901,6 +2032,7 @@ export class EucController {
     // built up both belong to a ride that no longer happened. Crash *recovery*
     // is a different operation and keeps them — see `respawn`.
     this.crashes = 0;
+    this.stumbles = 0;
     this.clearInstability();
     this.crashCause = 'none';
     this.crashMotion = 'none';
@@ -2156,9 +2288,20 @@ export class EucController {
     // is disarmed below `stoppedSpeed` anyway, so the sense can only change
     // while the rider is stopped and the reverse gate is being asked twice.
     const travelRelative = t.reverseSteerTravelRelative > 0 && speed < 0 ? -1 : 1;
-    const requestedYawRate = steeringArmed
+    const steeredYawRate = steeringArmed
       ? -steer * maxYawRate * (airborne ? t.airYawFactor : 1) * travelRelative
       : 0;
+    // -- 5b. The ride style's weave (M29) -----------------------------------
+    // Added to the *request*, ahead of the clamp below, so grip bounds it like
+    // any steering and a weave can never ask for more lateral force than a
+    // rider could. Its own clock and gates live in `stepStyle`. The branch
+    // rather than an unconditional `+` is exactness, not caution: a sober
+    // style makes the term `0`, and `-0 + 0` is `+0`, which is a sign bit
+    // the sober digests would see.
+    this.stepStyle(dt, steer, speed, airborne);
+    const requestedYawRate = this.styleWeaveRate === 0
+      ? steeredYawRate
+      : steeredYawRate + this.styleWeaveRate;
 
     // Clamping *lateral acceleration* rather than steering input is the key
     // detail of the whole steering model: the turn goes wide because of a limit
@@ -2210,6 +2353,24 @@ export class EucController {
     this.lateralAccel = lateralAccel;
     this.lateralLimited = lateralLimited;
     this.headingY += yawRate * dt;
+
+    // **The weave's offset is what the clamp delivered, not what was asked**
+    // (M29, after the QA pass). The steering alone would have got
+    // `steeredDelivered` through the clamp; whatever the delivered total
+    // differs from that by is the weave's share, and only that share is
+    // recorded — so a return correction the clamp refused during a full-lock
+    // carve stays owed and is repaid once the carve ends, instead of being
+    // written off as a heading the rider keeps. Inside the same branch as the
+    // request, so a sober seat's step is textually what it was.
+    if (this.styleWeaveRate !== 0) {
+      let steeredDelivered = steeredYawRate;
+      if (!airborne && Math.abs(speed) > 1e-6) {
+        const magnitude = Math.abs(steeredYawRate);
+        steeredDelivered = (steeredYawRate < 0 ? -1 : 1)
+          * Math.min(magnitude, steeringLimit / Math.abs(speed));
+      }
+      this.styleHeading += (yawRate - steeredDelivered) * dt;
+    }
 
     // The spin jump's sweep — M24. Written straight onto the heading rather
     // than through `yawRate` on purpose: the yaw rate feeds lean and the
@@ -2421,7 +2582,10 @@ export class EucController {
     // into a turn, and the chase camera reads the clean heading so its aim does
     // not saw back and forth at four hertz. In the air `wobbleYaw` is zero —
     // there is no contact patch to oscillate against.
-    const travelHeading = this.headingY + this.wobbleYaw;
+    // The stumble's yaw rides the same line for the same reasons (M29): the
+    // contact patch really shimmies, the camera never sees it, and a symmetric
+    // burst cannot accumulate into a turn.
+    const travelHeading = this.headingY + this.wobbleYaw + this.styleYaw;
     const travelX = airborne ? this.airDirX : Math.sin(travelHeading);
     const travelZ = airborne ? this.airDirZ : Math.cos(travelHeading);
     const intended = speed * dt;
@@ -3081,6 +3245,173 @@ export class EucController {
   }
 
   /**
+   * The ride style's clock — M29 (`docs/PLANS.md` §29.4).
+   *
+   * **The wheel goes where the player points it, and everything the player is
+   * not doing looks drunk.** This is the whole of the Drunken Master's
+   * simulation: an oscillator for the weave and the sway, a metre count for
+   * the stumble, and the gates that keep it a joke rather than a hand on the
+   * wheel. Nothing here touches speed, grip, lean, wobble energy, a crash or a
+   * knock — the neutrality suite measures that it does not, and the sober
+   * digests hold that a sober style makes every line here a `+ 0`.
+   *
+   *   - **The weave** is a bounded heading *offset*, `weaveHeading` times the
+   *     sway, held to a constant lateral excursion above cruising. What joins
+   *     the steering request — ahead of the lateral clamp, so grip bounds it
+   *     — is the offset's change per step as a yaw rate. An offset rather
+   *     than a rate is what makes the weave drift-free by construction: when
+   *     the gate closes the offset eases to zero and the heading is back
+   *     exactly where it was, where a rate gated off mid-cycle left a
+   *     residual heading every time (measured: 2°, 19 m over a minute).
+   *   - **The sway** is the weave's normalised yaw rate — two incommensurate
+   *     cosines, so it never reads as a metronome — and it is the same number
+   *     the rig leans the body by, which is what phase-locks the body to the
+   *     path.
+   *   - **The gate** is zero below walking pace, full at cruising, zero in
+   *     reverse (the speed is signed), zero in the air, fading out as a real
+   *     wobble becomes an event and back in as it damps, zero in a crash and
+   *     the invulnerable window after one, and faded by `(1 − |steer|)²` so a
+   *     player threading a gap never feels a hand on the wheel. Eased at the
+   *     style's fade rate, so nothing switches — and so a stick let go brings
+   *     the weave back as a settling, not a kick.
+   *   - **The stumble** fires every `stumbleEvery` metres of riding — metres
+   *     on the fixed step, so `advance(n)` reaches the same one every run —
+   *     never in the air, in a wobble, in a crash or below walking pace, and
+   *     never twice inside its spacing. It is a sine-enveloped shimmy of the
+   *     machine's yaw and roll, spent on the travel heading like the wobble's
+   *     and never on `headingY`; it enters no oscillator and cannot crash.
+   *
+   * Every `+ 0` below normalises a negative zero for `stepWobble`'s reason.
+   */
+  private stepStyle(dt: number, steer: number, speed: number, airborne: boolean): void {
+    const s = this.style;
+    const t = this.tuning;
+
+    // -- The gate -----------------------------------------------------------
+    const riding = !airborne && !this.crashing && this.invulnerableTimer <= 0;
+    // A real wobble owns the machine. A fade rather than a switch, and off the
+    // *state* threshold rather than off zero: energy decays exponentially and
+    // never quite reaches zero, so a gate on `> 0` would silence the joke for
+    // the rest of the ride after the first pothole.
+    const wobbleFree = 1 - clamp01(this.wobbleEnergy / Math.max(1e-6, t.wobbleStateEnergy));
+    // Signed speed, so reverse is below the floor. Eased out at the top so the
+    // weave arrives rather than switches on at cruising.
+    const pace = clamp01(
+      (speed - s.weaveSpeedFloor) / Math.max(1e-6, s.weaveSpeedFull - s.weaveSpeedFloor),
+    );
+    const handsOff = (1 - Math.abs(steer)) ** 2;
+    const gateTarget = riding ? pace * (2 - pace) * wobbleFree * handsOff : 0;
+    // A rate, not a time constant: at the sober zero the gate never opens.
+    this.styleGate += (gateTarget - this.styleGate) * Math.min(1, s.weaveFadeRate * dt);
+
+    // -- The oscillator -----------------------------------------------------
+    // The clock runs whenever the controller steps, gate or no gate. A
+    // version that held the phase while the gate was under half open — to
+    // put the first lobe under a full gate and centre the band on the line
+    // — turned a *partial* gate into a constant steer: at a steady 4 m/s the
+    // gate sits at 0.36, the frozen cosine sat at 1, and the rider drifted
+    // 0.69 m in a minute with the heading never returning. A clock that
+    // always runs has no DC term to leak.
+    this.stylePhaseA += 2 * Math.PI * s.weaveRateA * dt;
+    if (this.stylePhaseA >= 2 * Math.PI) this.stylePhaseA -= 2 * Math.PI;
+    this.stylePhaseB += 2 * Math.PI * s.weaveRateB * dt;
+    if (this.stylePhaseB >= 2 * Math.PI) this.stylePhaseB -= 2 * Math.PI;
+    // Cosines: the weave starts turning the moment the gate opens rather than
+    // sitting at a zero crossing, and the gate's own ease is the fade-in.
+    const oscillator = (Math.cos(this.stylePhaseA) + Math.cos(this.stylePhaseB)) / 2;
+    this.styleSway = this.styleGate * oscillator + 0;
+
+    // -- The weave ----------------------------------------------------------
+    // Held to a constant lateral excursion above cruising: the eye reads
+    // metres of sideways travel, not radians per second, and a weave that grew
+    // with speed would be the kerb-finder the gates exist to prevent.
+    const excursionHold = Math.min(1, s.weaveSpeedFull / Math.max(1e-6, Math.abs(speed)));
+    const target = s.weaveHeading * excursionHold * this.styleSway + 0;
+    // **The request chases the target; the offset records what was
+    // delivered.** The first cut set `styleHeading = target` and asked for
+    // the difference as a rate, which is right until the lateral clamp binds
+    // — a full-lock turn clips the weave's return correction along with the
+    // steering, and an offset that believes it was delivered leaves the
+    // heading 0.68° off for the rest of the ride (an independent QA pass
+    // measured 2.8 m of divergence ten seconds later). So the offset is
+    // advanced in `step` by the yaw the clamp actually let through, and the
+    // request here is bounded — at most `weaveHeading × weaveFadeRate` per
+    // second, a third of a second to return the whole amplitude — so a debt
+    // the clamp refused is repaid as a settling rather than a kick once it
+    // stops binding. `dt > 0` here, and a sober style makes every factor
+    // exactly zero, so the quotient and the clamp both give `+0`.
+    const maxRate = s.weaveHeading * s.weaveFadeRate;
+    this.styleWeaveRate = clamp((target - this.styleHeading) / dt, -maxRate, maxRate) + 0;
+
+    // -- The stumble --------------------------------------------------------
+    if (this.stumbleTime < this.stumbleLength) {
+      this.stumbleTime += dt;
+      if (!riding || this.stumbleTime >= this.stumbleLength) {
+        // Over, or interrupted by a take-off, a crash or a restore: a stumble
+        // is a moment on the ground, and none of those is one.
+        this.stumbleTime = this.stumbleLength;
+        this.styleStumble = 0;
+        this.styleYaw = 0;
+        this.styleRoll = 0;
+      } else {
+        // A sine envelope, zero at both ends, so the machine leaves and
+        // returns to where it was — and **the shimmy is odd about the
+        // burst's midpoint**, so envelope × shimmy integrates to exactly
+        // nothing for *any* length and rate, not only for the pair that
+        // ships. The first cut ran the carrier from the burst's start, which
+        // cancels at 3 Hz × 0.5 s by coincidence and drifted 4.3 m a minute
+        // at a perfectly legal 1 Hz (the QA pass's finding). A symmetric
+        // envelope times an odd carrier is a product whose halves are
+        // mirror images with opposite signs, on the fixed step as well as on
+        // paper: the F4 step is 0.05 s, which is six samples, so the samples
+        // pair up too.
+        const along = this.stumbleTime / this.stumbleLength;
+        const envelope = Math.sin(Math.PI * along) * wobbleFree;
+        const shimmy = Math.sin(
+          2 * Math.PI * s.stumbleRate * (this.stumbleTime - this.stumbleLength / 2),
+        );
+        this.styleStumble = envelope;
+        this.styleYaw = s.stumbleYaw * envelope * shimmy + 0;
+        this.styleRoll = s.stumbleRoll * envelope * shimmy + 0;
+      }
+    } else {
+      this.styleStumble = 0;
+      this.styleYaw = 0;
+      this.styleRoll = 0;
+    }
+    // Metres of *riding*, counted only where a stumble could happen, so the
+    // spacing is a spacing on the road and not on the clock.
+    if (riding && s.stumbleEvery > 0) {
+      this.styleMetres += Math.abs(speed) * dt;
+      if (
+        this.styleMetres >= s.stumbleEvery
+        && speed >= s.weaveSpeedFloor
+        && wobbleFree > 0.99
+        && this.stumbleTime >= this.stumbleLength
+      ) {
+        // Back to zero rather than minus the spacing: a stumble held back by
+        // a gate does not owe the road a sooner one.
+        this.styleMetres = 0;
+        this.stumbleTime = 0;
+        this.stumbleLength = s.stumbleSeconds;
+        this.stumbles += 1;
+      }
+    }
+  }
+
+  /** Every style output to zero and a running stumble ended. The clock and the metres are left alone. */
+  private clearStyleMotion(): void {
+    this.styleGate = 0;
+    this.styleSway = 0;
+    this.styleHeading = 0;
+    this.styleWeaveRate = 0;
+    this.stumbleTime = this.stumbleLength;
+    this.styleStumble = 0;
+    this.styleYaw = 0;
+    this.styleRoll = 0;
+  }
+
+  /**
    * Add an impulse to the oscillator.
    *
    * One door for every discrete source, so that "what can make the wheel
@@ -3247,6 +3578,9 @@ export class EucController {
     this.wobbleRate = 0;
     this.wobbleSmoothness = 0;
     this.wobbleFootCorrection = 0;
+    // The style's theatre stops with the rider: a crash pose starts clean,
+    // and a stumble that was running is over rather than paused (M29).
+    this.clearStyleMotion();
   }
 
   /**
@@ -3516,6 +3850,12 @@ export class EucController {
     this.wobbleProbeDistance = 0;
     this.steerSign = 0;
     this.steerHold = 0;
+    // The style's clock starts over with the ride (M29): a reset or a respawn
+    // reaches the same sway and the same first stumble every run.
+    this.clearStyleMotion();
+    this.stylePhaseA = 0;
+    this.stylePhaseB = 0;
+    this.styleMetres = 0;
 
     this.loadFactor = 0;
     this.landingLoad = 0;
@@ -4479,6 +4819,21 @@ export class EucController {
     return this.crashing;
   }
 
+  /**
+   * Stumbles since the last reset — the snapshot's `stumbles`, readable
+   * without one.
+   *
+   * `app/Game.ts` reads it on every fixed step for every seat to find the
+   * rising edge that fires the stumble cue (M29 Phase 4, q112), and a
+   * snapshot per seat per step is an allocation the step must not make. It
+   * moves only on a seat riding a styled ride (`stepStyle`); a sober seat
+   * reads 0 for the life of the controller. Named apart from the private
+   * counter it reads because a getter cannot share its field's name.
+   */
+  get stumbleCount(): number {
+    return this.stumbles;
+  }
+
   /** True on exactly the step the wheel touched down. */
   get touchedDown(): boolean {
     return this.justTouchedDown;
@@ -4855,6 +5210,12 @@ export class EucController {
     target.wobbleYaw = this.wobbleYaw;
     target.wobbleRoll = this.wobbleRoll;
     target.wobbleSway = this.wobbleSway;
+    // The ride style's four channels (M29). Products with the style's fields,
+    // so a sober seat writes four exact zeros here.
+    target.styleSway = this.styleSway;
+    target.styleYaw = this.styleYaw;
+    target.styleRoll = this.styleRoll;
+    target.styleStumble = this.styleStumble;
     // **Both wobble remaps live here, and only here** (M13). The rig used to
     // re-derive this one from the frozen tuning table, which detached the
     // rider's pose from the F4 panel and, worse, divided by a threshold the
@@ -5053,6 +5414,14 @@ export class EucController {
       wobbleSmoothness: this.wobbleSmoothness,
       wobbleFootCorrection: this.wobbleFootCorrection,
 
+      styleSway: this.styleSway,
+      styleHeading: this.styleHeading,
+      styleWeaveRate: this.styleWeaveRate,
+      styleYaw: this.styleYaw,
+      styleRoll: this.styleRoll,
+      styleStumble: this.styleStumble,
+      stumbles: this.stumbles,
+
       loadFactor: this.loadFactor,
       powerStage: this.powerStage,
       tiltBack: this.tiltBack,
@@ -5072,6 +5441,12 @@ export class EucController {
       safeHeading: this.safeHeading,
     };
   }
+}
+
+/** Any field non-zero: a styled record, as opposed to the identity. */
+function isStyled(style: RideStyle): boolean {
+  for (const value of Object.values(style)) if (value !== 0) return true;
+  return false;
 }
 
 /**

@@ -123,6 +123,23 @@ test('chooser, title and pause fit every supported phone and tablet size with no
     { width: 768, height: 1024 }, { width: 1024, height: 768 },
     { width: 820, height: 1180 }, { width: 1180, height: 820 },
     { width: 834, height: 1194 }, { width: 1194, height: 834 },
+    // **Windows between the devices — M29 Phase 1, from an independent QA
+    // pass.** A desktop window can be any size, and 740×650 is one where two
+    // columns of blurbed sideways cards make four rows that clip the seventh
+    // card and put Done below the fold, while every device above fit. Each of
+    // these three sits just inside a column count's height limit for the
+    // blurbed card (two columns, three columns, four columns), so the compact
+    // tier's derived breakpoints in `game.css` are held here at the exact
+    // places they were derived for rather than at the devices they happened
+    // to be checked on.
+    { width: 740, height: 650 }, { width: 740, height: 481 },
+    { width: 1000, height: 560 }, { width: 1280, height: 485 },
+    // And the *other* side of each derived breakpoint, at the narrowest width
+    // of its column count — where the blurb wraps most and the card is
+    // tallest — one pixel above the height at which the compact card takes
+    // over. A limit set too high would fail here with the blurbs cut off;
+    // a limit set too low fails above with Done below the fold.
+    { width: 705, height: 833 }, { width: 940, height: 753 }, { width: 1236, height: 585 },
   ];
 
   // A layout change is an input-reset moment by contract (master §8.2): the

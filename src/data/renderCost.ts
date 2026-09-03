@@ -343,6 +343,34 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  *
  * What has moved, most recent first:
  *
+ *   - **The Drunkard after the owner's first ride and Codex's QA
+ *     (2026-09-03): the quad reserve 134,044 → 136,620 and the split
+ *     reserve 85,698 → 88,274 triangles, zero draw calls on all three.**
+ *     His face extra now casts (the skull is in it, and a non-casting face
+ *     was a ghost with a hat floating over a neck), so the ghost draws its
+ *     2,432 triangles once per scene; his thighs close in a hip dome and
+ *     his seat's hem is 30 mm lower (the leg gap in tight corners); the
+ *     pint over the pack is gone (the head's arc owned it) and the pack
+ *     closes with a 16 mm lid. On his own he is 21 meshes / 39 calls
+ *     (Cool Rider: 24 / 40) — the one call is the face's shadow pass.
+ *   - **The Drunkard's look — M29 Phase 2 (2026-09-03): the quad reserve
+ *     123,068 → 126,286 triangles at the build, 128,164 after gauntlet
+ *     round 1 (bigger cans on brackets, a full brim, a longer outboard tube
+ *     route, the vessel above the pack, the grin as four seated lofts),
+ *     132,372 after round 2 and 134,044 after round 3 (the geometric foam
+ *     cap, the can rings, the ear conchas, the derived grip); the split
+ *     reserve 78,482 → 85,698 as the worst pair's composition changed; zero
+ *     draw calls at every step; the single reserve unmoved.** The
+ *     seventh rider is 21 meshes / 38 calls / 21,024 triangles on his own
+ *     (19,802 before the round; Cool Rider: 24 / 40 / 10,896) — two casting
+ *     extras (the hat kit: two cans, two swept tubes and the peak; the pack
+ *     with its hose and valve) and one non-casting face extra in place of
+ *     the shoulder, sleeve, elbow-pad and visor groups, his whole print on
+ *     one sheet (`render/drunkardAtlas.ts`) and every colour on his legs
+ *     and hands as paint. He is not the worst look on any axis alone
+ *     (Maribel holds triangles), and not in the worst pair; he is in the
+ *     worst four, which is where the tubes' triangles land — once per
+ *     seat, as §27.5's arithmetic says.
  *   - **Maribel's look and her wheel — M23 Phase A1b/A2 (2026-08-18): 33,648 →
  *     36,112 triangles, zero draw calls.** The one look on the roster whose
  *     mesh-parity target the owner waived outright — *"break the graphics
@@ -459,7 +487,7 @@ export const NON_LEVEL_RESERVE = deepFreeze({
  */
 export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
   drawCalls: 148,
-  triangles: 78_482,
+  triangles: 88_274,
 });
 
 /**
@@ -489,7 +517,7 @@ export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
  */
 export const QUAD_NON_LEVEL_RESERVE = deepFreeze({
   drawCalls: 268,
-  triangles: 123_068,
+  triangles: 136_620,
 });
 
 /**

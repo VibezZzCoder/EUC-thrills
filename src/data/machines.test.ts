@@ -68,6 +68,9 @@ test('every rider gets their settled default machine and the cop stays standard'
   // M28 Phase 2: his own wheel, seated the day it landed — this line stood at
   // `standard` through Phases 0 and 1 so the swap would be an edit on purpose.
   assert.equal(machineForCharacter('wheel-in-motion'), 'wheel-in-motion');
+  // M29 Phase 3: his own wheel, seated the day it landed — this line stood at
+  // `standard` through Phases 0 to 2 so the swap would be an edit on purpose.
+  assert.equal(machineForCharacter('drunkard'), 'drunkard');
   // The chase's threat does not ride somebody else's personal machine.
   assert.equal(machineForCharacter('cop'), 'standard');
 });

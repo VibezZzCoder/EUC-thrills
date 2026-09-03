@@ -71,6 +71,13 @@ export interface SinkCounts {
    */
   readonly overspeedSamplePlays: number;
   /**
+   * Stumbles that started the *recording* — M29 Phase 4, the third of the
+   * kind and for the same reason as the two above: `played.stumble` on the
+   * director side increments identically when the thump-and-ping stand-in
+   * sounds, so only this can say the cans actually knocked.
+   */
+  readonly stumbleSamplePlays: number;
+  /**
    * Whose recording the last one started (M14.5), or `null` before the first.
    *
    * `crashSamplePlays` counts both riders identically — it is counted at the
@@ -160,6 +167,25 @@ export interface SampleBank {
    * this key would quietly restore it while `lastCrashVoice` said otherwise.
    */
   readonly crashWheelInMotion: AudioBuffer;
+  /**
+   * The Drunkard's (M29) — composed on Trollina's mechanism from a generated
+   * take, by `tools/make-crash-drunkard.mjs` (`docs/PLANS.md` §29.12).
+   *
+   * Required on the same terms as the four above. His seat carried
+   * `'red-rider'` as an explicit interim through Phases 0–3; a bank missing
+   * this key would quietly restore it while `lastCrashVoice` said otherwise.
+   */
+  readonly crashDrunkard: AudioBuffer;
+  /**
+   * His stumble — two cans knocking and a hic, 0.40 s (M29 Phase 4, q112).
+   *
+   * **Required, like `overspeedBeep` and for the same reason**: the `stumble`
+   * cue has a synthesized stand-in, so forgetting to put this in the bank
+   * would be silent — he would go on stumbling to a thump and a ping while
+   * every counter said the recording was wired. Required, and the compiler
+   * notices.
+   */
+  readonly stumbleDrunkard: AudioBuffer;
   /** The chase siren's far wail loop (M18). */
   readonly sirenFar: AudioBuffer;
   /** And its close wail, crossfaded in by range. */
@@ -218,6 +244,8 @@ export function crashFor(voice: CrashVoiceId, bank: SampleBank): AudioBuffer {
       return bank.crashMaribel;
     case 'wheel-in-motion':
       return bank.crashWheelInMotion;
+    case 'drunkard':
+      return bank.crashDrunkard;
     case 'cool-rider':
       return bank.crash;
   }
@@ -279,6 +307,8 @@ export class WebAudioSink {
   private crashSamplePlays = 0;
   /** Over-speed beeps that started the recording rather than the fallback. */
   private overspeedSamplePlays = 0;
+  /** Stumbles that started the recording rather than the stand-in (M29). */
+  private stumbleSamplePlays = 0;
   private lastCrashVoice: CrashVoiceId | null = null;
   private readonly scrapeFilter: BiquadFilterNode;
   private readonly scrapeGain: GainNode;
@@ -461,6 +491,7 @@ export class WebAudioSink {
       droppedVoices: this.droppedVoices,
       crashSamplePlays: this.crashSamplePlays,
       overspeedSamplePlays: this.overspeedSamplePlays,
+      stumbleSamplePlays: this.stumbleSamplePlays,
       lastCrashVoice: this.lastCrashVoice,
     };
   }
@@ -643,6 +674,17 @@ export class WebAudioSink {
     if (cue.kind === 'overspeed' && this.bank) {
       this.playSampleOnce(this.bank.overspeedBeep, cue, at, destination);
       this.overspeedSamplePlays += 1;
+      return;
+    }
+
+    // The Drunkard's stumble is a recording on the beep's terms — M29 Phase 4.
+    // No voice lookup: only a seat riding drunk ever stumbles, so the cue
+    // needs no rider on it, and no rate rotation: the hic is a pitched word
+    // and the cans are a tuned pair, and a detune on either turns a beat the
+    // player hears eleven times a minute into a different joke each time.
+    if (cue.kind === 'stumble' && this.bank) {
+      this.playSampleOnce(this.bank.stumbleDrunkard, cue, at, destination);
+      this.stumbleSamplePlays += 1;
       return;
     }
 

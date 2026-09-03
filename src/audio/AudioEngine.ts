@@ -86,6 +86,13 @@ export interface AudioSnapshot {
    * own alarm, or the stand-in for it?
    */
   readonly overspeedSamplePlays: number;
+  /**
+   * Stumbles that started the shipped recording rather than the stand-in
+   * (M29 Phase 4) — the third of `crashSamplePlays`' kind, and the counter
+   * `tests/m29.spec.ts` reads to prove the cans knocked on the step the
+   * controller counted the stumble.
+   */
+  readonly stumbleSamplePlays: number;
   /** Whose crash recording started last, or null before the first (M14.5). */
   readonly lastCrashVoice: CrashVoiceId | null;
   /** Whose crash recording the next one will start. */
@@ -238,6 +245,7 @@ export class AudioEngine {
     overspeed: 0,
     count: 0,
     go: 0,
+    stumble: 0,
   };
 
   constructor(target: Window | null = typeof window === 'undefined' ? null : window) {
@@ -382,7 +390,8 @@ export class AudioEngine {
       try {
         const [
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
-          crashMaribel, crashWheelInMotion, sirenFar, sirenClose, overspeedBeep,
+          crashMaribel, crashWheelInMotion, crashDrunkard, stumbleDrunkard, sirenFar, sirenClose,
+          overspeedBeep,
         ] = await Promise.all([
           fetch(urls.tyreOffroad).then((response) => response.arrayBuffer()),
           fetch(urls.tyreSolid).then((response) => response.arrayBuffer()),
@@ -393,6 +402,8 @@ export class AudioEngine {
           fetch(urls.crashAdonisb2).then((response) => response.arrayBuffer()),
           fetch(urls.crashMaribel).then((response) => response.arrayBuffer()),
           fetch(urls.crashWheelInMotion).then((response) => response.arrayBuffer()),
+          fetch(urls.crashDrunkard).then((response) => response.arrayBuffer()),
+          fetch(urls.stumbleDrunkard).then((response) => response.arrayBuffer()),
           fetch(urls.sirenFar).then((response) => response.arrayBuffer()),
           fetch(urls.sirenClose).then((response) => response.arrayBuffer()),
           fetch(urls.overspeedBeep).then((response) => response.arrayBuffer()),
@@ -400,7 +411,8 @@ export class AudioEngine {
         if (this.disposed) return;
         this.sampleData = {
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
-          crashMaribel, crashWheelInMotion, sirenFar, sirenClose, overspeedBeep,
+          crashMaribel, crashWheelInMotion, crashDrunkard, stumbleDrunkard, sirenFar, sirenClose,
+          overspeedBeep,
         };
         this.installSamples();
       } catch {
@@ -425,7 +437,8 @@ export class AudioEngine {
         // on a second call failing.
         const [
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
-          crashMaribel, crashWheelInMotion, sirenFar, sirenClose, overspeedBeep,
+          crashMaribel, crashWheelInMotion, crashDrunkard, stumbleDrunkard, sirenFar, sirenClose,
+          overspeedBeep,
         ] = await Promise.all([
           context.decodeAudioData(data.tyreOffroad),
           context.decodeAudioData(data.tyreSolid),
@@ -436,6 +449,8 @@ export class AudioEngine {
           context.decodeAudioData(data.crashAdonisb2),
           context.decodeAudioData(data.crashMaribel),
           context.decodeAudioData(data.crashWheelInMotion),
+          context.decodeAudioData(data.crashDrunkard),
+          context.decodeAudioData(data.stumbleDrunkard),
           context.decodeAudioData(data.sirenFar),
           context.decodeAudioData(data.sirenClose),
           context.decodeAudioData(data.overspeedBeep),
@@ -443,7 +458,8 @@ export class AudioEngine {
         if (this.disposed) return;
         const bank: SampleBank = {
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
-          crashMaribel, crashWheelInMotion, sirenFar, sirenClose, overspeedBeep,
+          crashMaribel, crashWheelInMotion, crashDrunkard, stumbleDrunkard, sirenFar, sirenClose,
+          overspeedBeep,
         };
         this.sink?.setSampleBank(bank);
       } catch {
@@ -602,6 +618,14 @@ export class AudioEngine {
   }
 
   /**
+   * The Drunkard stumbled — M29 Phase 4 (q112). Dispatched by the composition
+   * root's per-seat edge on the controller's stumble count, like the crash.
+   */
+  stumble(seat = 0): void {
+    this.director.stumble(seat);
+  }
+
+  /**
    * Whose crash one-shot plays (M14.5).
    *
    * A plain string across the boundary, exactly as `quality` and `speedUnit`
@@ -696,6 +720,7 @@ export class AudioEngine {
       played: { ...this.played },
       crashSamplePlays: counts?.crashSamplePlays ?? 0,
       overspeedSamplePlays: counts?.overspeedSamplePlays ?? 0,
+      stumbleSamplePlays: counts?.stumbleSamplePlays ?? 0,
       lastCrashVoice: counts?.lastCrashVoice ?? null,
       crashVoice: this.crashVoice,
       bedGain: frame.bedGain,

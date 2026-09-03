@@ -1,11 +1,12 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import type * as THREE from 'three';
-import { BLOCKOUT_COLOURS } from '../data/tuning.ts';
+import { BLOCKOUT_COLOURS, WHEEL } from '../data/tuning.ts';
 import { DEFAULT_MACHINE, type MachineId } from '../data/machines.ts';
 import { loftProfile, tintOver, type Tint, type UvRect } from './blockoutKit.ts';
 import { ATLAS_REGIONS, createMaribelAtlas, type AtlasRegionName } from './maribelAtlas.ts';
 import type { PatchSpan } from './wimAtlas.ts';
 import { createWimMachineAtlas, wimMachineRegion, type WimMachineLayout } from './wimMachineAtlas.ts';
+import { createDrunkardMachineAtlas, drunkardMachineRegion, type DrunkardMachineLayout } from './drunkardMachineAtlas.ts';
 
 /**
  * What a machine *looks like* — M19 Phase 2's axis.
@@ -2354,6 +2355,314 @@ export const WHEEL_IN_MOTION_MACHINE_LOOK: MachineLook = {
   },
 };
 
+// -- The Drunkard's wheel — M29 Phase 3 ---------------------------------------
+
+/**
+ * The trim's one paint, reached **down** from the cream base: the trim
+ * material is `machineDrunkardTrim` (the cream stripes are the base itself,
+ * unpainted) and every amber piece on the shell is that base tinted — the
+ * direction rule at the top of this file, on a wheel whose loudest colour
+ * is amber over a dark brown body.
+ */
+const DRUNKARD_TRIM_BASE = BLOCKOUT_COLOURS.machineDrunkardTrim;
+const DRUNKARD_TRIM_AMBER = tintOver(DRUNKARD_TRIM_BASE, BLOCKOUT_COLOURS.machineDrunkardAmber);
+/**
+ * The nose recess and the status light's bezel: the shell taken down to a
+ * near-black. 0.30 leaves the brown's hue in the paint and lands the bezel
+ * well under half the shell's value, which is the ratio his bezel test pins
+ * — the light sits in an amber field on this wheel (§29.3 fact 11), so the
+ * field directly behind it is the darkest paint on the machine.
+ */
+const DRUNKARD_CAVITY: Tint = [0.30, 0.30, 0.32];
+
+/**
+ * The shared pad, ring for ring, as `render/euc.ts` authors it — the same
+ * fractions of `WHEEL.padThickness`, `padLength` and `padHeight`, restated
+ * here because the machine's sheet has to know the block it wraps in
+ * metres (`DrunkardMachineLayout.pad`) and `euc.ts` keeps its profile
+ * private. **The outer face does not move**: `halfWidth` peaks at exactly
+ * `0.8 × padThickness`, the plane the rider's shins rest against, and
+ * `render/drunkard.test.ts` measures the built pad against the standard
+ * wheel's so a drifted fraction here fails rather than floats the shins.
+ */
+const DRUNKARD_PAD_RINGS: readonly MachinePadRing[] = Object.freeze(
+  ([
+    [-1.00, 0.34, 0.68, 2.4],
+    [-0.80, 0.92, 0.87, 2.9],
+    [-0.22, 1.00, 1.00, 3.2],
+    [0.16, 0.97, 0.99, 3.2],
+    [0.55, 0.86, 0.93, 2.9],
+    [0.86, 0.60, 0.78, 2.6],
+    [1.00, 0.30, 0.62, 2.3],
+  ] as const).map(([t, thick, length, square]) => ({
+    y: t * (WHEEL.padHeight / 2),
+    halfWidth: WHEEL.padThickness * 0.8 * thick,
+    halfDepth: (WHEEL.padLength / 2) * length,
+    square,
+  })),
+);
+
+/**
+ * The shared pad's own section count, so the pad costs what the shared pad
+ * costs (plus the seam column a page needs) — and the number the sheet
+ * paints against, because the page lands on the facets, not on the curve
+ * (`render/drunkardMachineAtlas.ts`, `padFace`).
+ */
+const DRUNKARD_PAD_SEGMENTS = 12;
+
+/** What his machine sheet is painted against. */
+export const DRUNKARD_MACHINE_LAYOUT: DrunkardMachineLayout = Object.freeze({
+  pad: loftProfile(DRUNKARD_PAD_RINGS.map((ring) => ({ ...ring }))),
+  segments: DRUNKARD_PAD_SEGMENTS,
+});
+
+/**
+ * The shoulder arc's split, radians from the left flank's centre: forward
+ * of it the arc is the render's amber return running to the nose, behind
+ * it the cream the plan asks for. The rear end stops 1.05 rad from the
+ * flank's centre — 0.52 rad (30°) short of the rear centre, so the 100 mm
+ * status light keeps 13 mm of dark shell each side and its bezel (§19.7).
+ * Gauntlet round 2 took it back from −0.55: nothing coloured lay within
+ * 50° of the chase camera's axis, the wheel was a black egg with two grey
+ * chips from the player's view, where Wheel in Motion's rear blades run to
+ * 17° off it on purpose.
+ */
+const DRUNKARD_SHOULDER_SPLIT = 0.30;
+const DRUNKARD_SHOULDER_REAR = -1.05;
+const DRUNKARD_SHOULDER_NOSE = 1.10;
+/** The shoulder band's height: the standard strips' own position, above the pad's top at 0.54. */
+const DRUNKARD_SHOULDER = { from: 0.545, to: 0.575 } as const;
+
+/**
+ * One flank's trim, authored for the rider's left (centre `u = 0`) and
+ * mirrored for the right by `θ → π − θ` with the ends swapped — a machine is
+ * symmetric, and a stripe on one flank only would read as a defect.
+ */
+function drunkardFlank(mirror: boolean): readonly MachinePatch[] {
+  const span = (u0: number, u1: number): { u0: number; u1: number } => (
+    mirror ? { u0: Math.PI - u1, u1: Math.PI - u0 } : { u0, u1 }
+  );
+  return [
+    // The shoulder arc, cream behind the split. Three rows across a span
+    // with a ring at 0.5547 inside it: two rows would chord across that knee
+    // (invariant 14, Maribel's second black strip). Eight columns over
+    // 1.35 rad — 0.17 rad a column, a 0.7 mm chord sag under a 5 mm lift.
+    {
+      ...span(DRUNKARD_SHOULDER_REAR, DRUNKARD_SHOULDER_SPLIT),
+      ...DRUNKARD_SHOULDER,
+      lift: 0.005,
+      sink: -0.010,
+      uSegments: 8,
+      vSegments: 3,
+    },
+    // The amber return: the same arc carried forward to the nose corner,
+    // where the render's amber shoulder band runs.
+    {
+      ...span(DRUNKARD_SHOULDER_SPLIT, DRUNKARD_SHOULDER_NOSE),
+      ...DRUNKARD_SHOULDER,
+      lift: 0.005,
+      sink: -0.010,
+      uSegments: 6,
+      vSegments: 3,
+      tint: DRUNKARD_TRIM_AMBER,
+    },
+    // The lower stripe: the render's cream panel under the pad, on the slope
+    // between the skirt and the body, below the pad's foot at 0.34 and above
+    // the pedal hanger, which meets the skirt at 0.25. Gauntlet round 2
+    // ran it from the shoulder arc's rear end right round to the nose
+    // (0.96, where the plate ends) and made it 64 mm tall: the target's
+    // cream is one contoured panel per flank, the largest of its three
+    // fields, and ours was a 39 mm ribbon severed from the plate by 22 mm
+    // of shell. Three rows, because the 0.332 shell ring falls inside the
+    // span now (invariant 14).
+    {
+      ...span(DRUNKARD_SHOULDER_REAR, 0.96),
+      from: 0.286,
+      to: 0.350,
+      lift: 0.006,
+      sink: -0.010,
+      uSegments: 10,
+      vSegments: 3,
+    },
+    // The forward plate: a cream bar standing ahead of the pad's front end
+    // (the pad reaches 150 mm forward at the flank; the plate's rear edge
+    // at 0.62 rad sits at 175 mm), from the lower stripe's top to under the
+    // shoulder band — the render's cream plate at the flank's front lower
+    // corner, one L with the stripe. 48 mm of arc rather than 23 (round 2:
+    // 0.19 of the headlight bar's width where the target's plate is 0.43,
+    // a 6.6:1 stick with a lift half its own width). Its front edge at
+    // 0.96 rad stays clear of the nose lobe at 0.99.
+    {
+      ...span(0.62, 0.96),
+      from: 0.350,
+      to: 0.500,
+      lift: 0.006,
+      sink: -0.010,
+      uSegments: 4,
+      vSegments: 4,
+    },
+  ];
+}
+
+/**
+ * The Drunkard's machine — the seventh `MachineLook` row, and the first
+ * custom wheel on the roster that is modelled on nothing: he is a wholly
+ * fictional parody rider (`docs/PLANS.md` §29.6, `NOTICE.md`).
+ *
+ * **The standard body, in beer.** The brief §10 wants a plausibly rideable
+ * EUC with its own colour identity and forbids the keg; the target render is
+ * a rounded mid-size body, which is the standard wheel's silhouette. So: no
+ * cosmetic profile, no saddle (`top: handle`), contract dimensions untouched.
+ * What the render shows, and what each part costs, in the §19.3 order of
+ * what carries at chase distance:
+ *
+ * - **Dark brown bodywork** — the colour field, free
+ *   (`BLOCKOUT_COLOURS.machineDrunkard`), with the nose recess and the
+ *   status light's bezel painted down to near-black (`paintShell`).
+ * - **Amber pads with the hop cone** — the pads' own material is the cream
+ *   trim base and the pad wears the `pads` page of the machine's sheet: an
+ *   amber field with a brown roundel at the pad's centre carrying the cone
+ *   (`render/drunkardMachineAtlas.ts`; the seam turned inboard, the right
+ *   pad mirrored — the M28 mechanism). The shared pad's own block, ring for
+ *   ring: the shins' plane is untouched. The cone is what makes the pad his
+ *   rather than a recoloured Maribel's.
+ * - **Cream trim, two stripes a flank and the shoulder arc** — the render's
+ *   cream panel under the pad, its cream plate at the flank's front corner,
+ *   and a cream arc on the shoulder that turns amber forward of its split,
+ *   where the render's amber shoulder band runs to the nose. Under the lamp,
+ *   the render's amber panel pair flanking the dark nose spine, in the nose
+ *   blade's slot. All in the one trim draw call, lifted for relief.
+ * - **The standard white lamp**; the taillight shared; the tyre plain black;
+ *   broad black pedals (`paintPedal`).
+ *
+ * **No amber light strip** — the brief §10's optional, ruled out in §29.2:
+ * the status light's amber rung is a gameplay signal, and a decorative amber
+ * lamp beside it on an amber-padded wheel is a lamp that lies to the player.
+ * No glow anywhere on the trim, for the same reason. No text or lettering
+ * anywhere on the wheel, and no real brewery's device or trade dress.
+ */
+export const DRUNKARD_MACHINE_LOOK: MachineLook = {
+  machine: 'drunkard',
+
+  shell: {
+    colour: BLOCKOUT_COLOURS.machineDrunkard,
+    // Satin, like the standard shell it is: moulded plastic under the same
+    // sun as his matte printed jersey.
+    roughness: 0.48,
+  },
+
+  top: { kind: 'handle' },
+
+  pads: {
+    // The pale base: the pad wears the `pads` page, and its amber, its
+    // brown roundel and its green cone are the page's inks (a page is a
+    // multiplier, so the amber cannot be the material and the cream still
+    // reach it).
+    colour: DRUNKARD_TRIM_BASE,
+    // Moulded foam, printed: between the shared pad's 0.85 and Wheel in
+    // Motion's moulded plastic at 0.62.
+    roughness: 0.72,
+    blocks: [DRUNKARD_PAD_RINGS],
+    art: 'pads',
+    segments: DRUNKARD_PAD_SEGMENTS,
+  },
+
+  atlas: {
+    build: () => createDrunkardMachineAtlas(DRUNKARD_MACHINE_LAYOUT),
+    region: drunkardMachineRegion,
+  },
+
+  trim: {
+    colour: DRUNKARD_TRIM_BASE,
+    // No glow anywhere on the trim: the lamp and the status light are the
+    // two lights this machine has, and cream or amber plastic that glowed
+    // would be a third thing competing with the amber rung.
+    emissive: 0x000000,
+    emissiveIntensity: 0,
+    // Matte moulded trim: Wheel in Motion's 0.58, which stopped his far-side
+    // fin blowing out to beige at the sun's mirror angle in the leaned pose.
+    roughness: 0.58,
+    metalness: 0.06,
+    patches: [
+      ...drunkardFlank(false),
+      ...drunkardFlank(true),
+      // The nose: the render's amber panel pair under the lamp, one lobe
+      // each side of the dark spine the nose recess paints (0.24 rad of
+      // bodywork between them, 26 mm either side of the centreline), in
+      // the standard nose blade's slot and reaching as far round the nose
+      // corners as the blade did. Four rows over a span with the 0.4646
+      // ring inside it, for the chord reason the shoulder's has three.
+      {
+        u0: Math.PI / 2 + 0.12,
+        u1: Math.PI / 2 + 0.58,
+        from: 0.395,
+        to: 0.485,
+        lift: 0.006,
+        sink: -0.010,
+        uSegments: 4,
+        vSegments: 4,
+        taper: 0.30,
+        tint: DRUNKARD_TRIM_AMBER,
+      },
+      {
+        u0: Math.PI / 2 - 0.58,
+        u1: Math.PI / 2 - 0.12,
+        from: 0.395,
+        to: 0.485,
+        lift: 0.006,
+        sink: -0.010,
+        uSegments: 4,
+        vSegments: 4,
+        taper: 0.30,
+        tint: DRUNKARD_TRIM_AMBER,
+      },
+    ],
+  },
+
+  headlight: {
+    // The standard lamp, exactly: the render's white bar.
+    patches: STANDARD_MACHINE_LOOK.headlight.patches,
+    emissive: BLOCKOUT_COLOURS.headlight,
+    emissiveIntensity: 1.4,
+  },
+
+  paintShell: (geometry): void => {
+    const position = geometry.getAttribute('position');
+    const colour = geometry.getAttribute('color');
+    for (let i = 0; i < position.count; i += 1) {
+      const x = position.getX(i);
+      const y = position.getY(i);
+      const z = position.getZ(i);
+      // The nose recess the lamp sits in, and the dark spine between the two
+      // amber lobes under it: the standard body's nose face is at z > 0.16
+      // from the lamp's foot to the crown's rounding.
+      if (z > 0.16 && Math.abs(x) < 0.075 && y > 0.390 && y < 0.540) {
+        colour.setXYZ(i, DRUNKARD_CAVITY[0], DRUNKARD_CAVITY[1], DRUNKARD_CAVITY[2]);
+        continue;
+      }
+      // The rear spine: taillight surround and the status light's bezel —
+      // §19.7, and fact 11: the pads are amber on this wheel, so the field
+      // behind the light's amber rung is the darkest paint on it.
+      if (z < -0.15 && Math.abs(x) < 0.075 && y > 0.400) {
+        colour.setXYZ(i, DRUNKARD_CAVITY[0], DRUNKARD_CAVITY[1], DRUNKARD_CAVITY[2]);
+      }
+    }
+  },
+
+  paintPedal: (geometry): void => {
+    const colour = geometry.getAttribute('color');
+    // Broad black polymer platforms — the render's ordinary pedals under his
+    // boots, the machine's most-seen surface from the chase camera. Scaled,
+    // not overwritten, so the grip inset, the lip and the hinge keep every
+    // value relation `render/euc.ts` authored; warmer and a step lighter
+    // than Wheel in Motion's 0.16 and Adonisb2's 0.11, so three
+    // black-pedalled machines are not one.
+    for (let i = 0; i < colour.count; i += 1) {
+      colour.setXYZ(i, colour.getX(i) * 0.20, colour.getY(i) * 0.185, colour.getZ(i) * 0.16);
+    }
+  },
+};
+
 const MACHINE_LOOKS: readonly MachineLook[] = Object.freeze([
   STANDARD_MACHINE_LOOK,
   TROLLINA_MACHINE_LOOK,
@@ -2361,6 +2670,7 @@ const MACHINE_LOOKS: readonly MachineLook[] = Object.freeze([
   ADONISB2_MACHINE_LOOK,
   MARIBEL_MACHINE_LOOK,
   WHEEL_IN_MOTION_MACHINE_LOOK,
+  DRUNKARD_MACHINE_LOOK,
 ]);
 
 /**

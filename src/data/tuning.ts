@@ -4007,6 +4007,95 @@ export const BLOCKOUT_COLOURS = {
   machineWheelInMotionTrim: 0xf4f3ef,
 
   /**
+   * The Drunkard — M29 Phase 2 (`docs/PLANS.md` §29.5). A fictional parody
+   * rider whose target render is the authority, in the brief's palette:
+   * amber, cream, brown, hop green.
+   *
+   * **The print ground is cream, and it is the ceiling of the whole rider.**
+   * A vertex colour and a texel are multipliers, so the one colour that is
+   * lighter than every other in every channel has to be the base: the foam
+   * on his hat, the foam line on the pack, the cans' top bands, the cream
+   * yoke and the sleeve stripes are this ground *left unpainted*, and the
+   * amber, the browns and the hop green are ink on it (`render/
+   * drunkardAtlas.ts`) or paint (`RiderLook.paint`). Warm rather than white —
+   * Wheel in Motion's ground is `0xfbfbf7`; his sits a stop under it with a
+   * yellow cast so the foam reads as beer foam beside the amber rather than
+   * as the guard-white of the rider before him.
+   *
+   * **The amber is the card's swatch** (`0xe8951f`, hue 35°, q106): the
+   * identity colour, 13° from Wheel in Motion's yellow and separated from it
+   * by saturation and depth. It is the jersey field, the hat shell, the can
+   * labels, the trousers, the tubes and the pack's window, all one value so
+   * that the sun paints the differences.
+   *
+   * **The browns have headroom** (`DESIGN.md` §7k). `drunkardBrown` is the
+   * printed brown — the waist band, the pack's frame, the knee pads — a
+   * mid-dark chocolate that renders as brown under the sun rather than as a
+   * hole. `drunkardGear` is the boots, gloves, straps, valve and soles: a
+   * step darker so the kit sits under the garment in value, and still far
+   * from the `0x24262d` this project has learned not to author.
+   *
+   * **The hop green is the one accent** (brief §4): on the chest, the knees
+   * and the can labels, and nowhere on any other rider's sheet — his test
+   * samples theirs for this exact ink.
+   *
+   * **The skin is the face material's base**, and the palest things on the
+   * face — the tooth strip and the lens glints — are vertex *lifts* over it,
+   * the cop's own lens trick, so the shades need no second material and the
+   * lens is the one near-black on him, small and glossy by tint.
+   */
+  drunkardPrint: 0xf4e9cf,
+  drunkardAmber: 0xe8951f,
+  drunkardBrown: 0x5a3b1c,
+  drunkardGear: 0x46301b,
+  drunkardHop: 0x5f9a2c,
+  drunkardSkin: 0xd8a273,
+  drunkardLens: 0x1e1c22,
+  /**
+   * The garment's cream — gauntlet round 1: the print ground is the *foam*,
+   * and the target's jersey cream measures 1.4–1.9× more saturated than its
+   * foam (boot-to-boot, the one like-for-like pair: 0.182 against 0.126).
+   * Red held at 244 so no value is lost; a paint down from the ground in the
+   * green and blue only (0.887, 0.696 as multipliers), which is what lets it
+   * be ink and tint under the same rule as everything else on him.
+   */
+  drunkardIvory: 0xf4ddb0,
+  /**
+   * His wheel — M29 Phase 3 (`render/machineLook.ts`, `docs/PLANS.md` §29.6).
+   *
+   * The brief's §10 wheel, in the direction the multiplier honours: a dark
+   * brown body, amber pads, cream trim. `machineDrunkard` is the shell — a
+   * near-black *brown* with headroom, just under `drunkardGear` and a step
+   * under `drunkardBrown`, so the painter can still take the status
+   * light's bezel and the nose recess down from it and the body still reads
+   * brown beside the tyre's neutral black rather than as a second tyre.
+   *
+   * `machineDrunkardAmber` is the pads' amber, reached as ink over the cream
+   * trim base (a printed pad is the pale base and its amber is the page's):
+   * the same hue as the jersey's `drunkardAmber` (35°) and a stop under it,
+   * so the rider stays the brightest amber in the frame and the pad reads as
+   * moulded plastic rather than the garment continued. It is deliberately
+   * not the status light's amber rung (`statusWarn`, 29° and fully
+   * saturated); the light sits in an amber field on this wheel, and the dark
+   * painted bezel is what protects it (fact 11).
+   *
+   * `machineDrunkardTrim` is the cream: the trim material's base, the pad
+   * material under its page, and what every amber and brown on the wheel is
+   * painted down from. A stop under the rider's `drunkardPrint` so the foam
+   * on his hat stays the palest thing on him — and, since gauntlet round 2,
+   * a *paint* down from that ground in the green and blue rather than a
+   * value step: `0xefe3c6` kept only 60 % of the garment ivory's warmth, and
+   * under the blue sky fill and the tone curve it rendered as a neutral
+   * grey-white, the headlight's own family, on every skyward face. This is
+   * the rider's ivory lane (HSV saturation 0.289 against `drunkardIvory`'s
+   * 0.279, hue 43°), luma 0.741 — still over the 0.7 the test holds it to.
+   * Every ink over it (`render/drunkardMachineAtlas.ts`) still solves under 1.
+   */
+  machineDrunkard: 0x42301e,
+  machineDrunkardAmber: 0xd98a1d,
+  machineDrunkardTrim: 0xf2deac,
+
+  /**
    * The ghost, and the checkpoint gates (M10).
    *
    * **Authored here rather than in the render modules that draw them, because
@@ -5189,6 +5278,21 @@ export const AUDIO = {
   hitThumpSeconds: 0.16,
   hitNoiseHz: 1150,
   hitNoiseSeconds: 0.10,
+
+  /**
+   * The Drunkard's stumble — two cans knocking and a hic — M29 Phase 4 (q112).
+   *
+   * Three-eighths of `crashLevel`, and placed by the ladder rather than by
+   * ear: under the kerb (0.46) and the hit (0.42), because those are events
+   * and this is a *beat* that comes round eleven times a minute at top speed;
+   * above the hop (0.20), because a joke nobody can hear is the one thing the
+   * owner's q112 "yes" did not ask for. The recording is peak-normalised to
+   * −6 dBFS, so at this level its peak lands about 6 dB under the crash
+   * recording's (`crashLevel × crashSampleTrim` on a −7 dBFS file). Zero is
+   * the annoyance kill-switch: the stumble still moves the wheel and the cue
+   * still counts, it just stops sounding.
+   */
+  stumbleLevel: 0.30,
 
   /**
    * The race countdown, and the release — M27 Phase 3 (§27.3).
@@ -6453,6 +6557,102 @@ export const CHASE = {
 } as const;
 
 /**
+ * The Drunken Master's numbers — M29 (`docs/PLANS.md` §29.4).
+ *
+ * **A style is theatre; a stat would be a different rider.** Nothing in this
+ * block is a physical quantity of the wheel: no speed, no grip, no launch, no
+ * damping, no threshold. It is the shape of what the path and the pose do
+ * when the player is *not* doing something — a slow weave when the stick is
+ * centred, a half-second shimmy every so many metres — and it reaches exactly
+ * one rider, through `data/rideStyles.ts` → `DRUNK_STYLE` → the roster's
+ * `rideStyleFor('drunkard')`. Every other seat rides on `SOBER_STYLE`, which
+ * is every one of these at zero, and the six sober digests in
+ * `simulation/EucController.test.ts` hold that a zero here is a `+ 0` there.
+ *
+ * The F4 group below reaches these through the live-tuning path like any
+ * other block (safeguard S7) — the sliders move *his* numbers, and no control
+ * on the panel can put a style on a seat.
+ */
+export const DRUNK = {
+  // -- The weave ------------------------------------------------------------
+  //
+  // The path with the hands off: a slow, *irregular* S made of two sines at
+  // incommensurate rates, so it never reads as a metronome. It is a bounded,
+  // zero-mean *heading offset*, and the controller feeds the offset's
+  // per-step change to the steering request ahead of the lateral clamp — so
+  // grip bounds it like any steering, and so the heading returns exactly to
+  // where it was whenever the gate closes. The first cut was a yaw *rate*,
+  // and a rate gated on and off mid-cycle left a residual heading every time:
+  // measured at up to 2° and 19 m of sideways drift over a minute hands-off.
+  /**
+   * Peak heading offset at full gate, rad — about 1.3°.
+   *
+   * Above `weaveSpeedFull` the amplitude falls as `weaveSpeedFull / speed`,
+   * which holds the *lateral excursion* — the thing the eye reads — constant
+   * rather than letting it grow with speed, and the neutrality suite bounds
+   * that excursion at 0.35 m **from the line the ride started on**, standing
+   * start and gate ramp included, at every speed. **The band is one-sided,
+   * and that is arithmetic rather than a bug**: the lateral position is the
+   * integral of the heading offset, the offset's first quarter-lobe is spent
+   * under the opening gate, and what is left integrates to a band that runs
+   * from the line to twice the amplitude on one side of it. So the number
+   * here is half the excursion the plan states, not the whole of it. It was
+   * 0.030 until an independent QA pass measured from a fixed origin rather
+   * than around the trace's own midpoint and found 0.56 m; 0.022 with the
+   * gate full from 5 m/s is where a full-throttle start, a half-throttle
+   * start and a held 22 m/s all sit inside 0.33 m (measured, nine
+   * combinations swept). Zero is a legal value that leaves the sway, the
+   * stumble, the stagger and the sip standing; the owner's ride is where
+   * this gets its number.
+   */
+  weaveHeading: 0.022,
+  /** The first sine, Hz — a 6.3 s period. */
+  weaveRateA: 0.16,
+  /** The second sine, Hz — an 8.7 s period, incommensurate with the first. */
+  weaveRateB: 0.115,
+  /** Below walking pace there is no weave, m/s. Also zero in reverse and at rest. */
+  weaveSpeedFloor: 3.0,
+  /**
+   * Full amplitude from here, m/s — a jog rather than the plan's cruising
+   * 8, because the ramp between the floor and this is the part of the first
+   * lobe the band loses (see `weaveHeading`): 3 → 8 at full throttle is a
+   * second and a half of gate ramp, 3 → 5 is half that, and the fixed-origin
+   * excursion came down with it.
+   */
+  weaveSpeedFull: 5.0,
+  /**
+   * How fast the weave and the body sway fade at the gates, 1/s — about a
+   * third of a second, so letting go of the stick brings the weave back as a
+   * settling rather than a switch, and a hop or a wobble takes it away the
+   * same way.
+   */
+  weaveFadeRate: 3.0,
+
+  // -- The stumble ----------------------------------------------------------
+  //
+  // Every so many metres of riding — counted on the fixed step, so
+  // `advance(n)` reaches the same one every run — a short 3 Hz roll-yaw
+  // shimmy of the *machine*, with the feet, knees and arms answering it the
+  // way they answer a wobble. **A wobble's look with none of its energy**: it
+  // enters no oscillator, damps nothing, stacks with nothing, and cannot
+  // crash. Never in the air, in a wobble, in a crash, or below walking pace.
+  /** Metres of riding between stumbles. 0 is never. */
+  stumbleEvery: 110,
+  /** How long one lasts, s. */
+  stumbleSeconds: 0.5,
+  /** The shimmy, Hz. Real EUC wobble is 3–8 Hz and this sits at its slow end. */
+  stumbleRate: 3.0,
+  /** Peak machine roll, rad — under `EUC.wobbleMaxRoll`'s 0.14. */
+  stumbleRoll: 0.10,
+  /**
+   * Peak machine yaw, rad — spent on the travel heading like `wobbleYaw` is,
+   * so the contact patch really shimmies, and never on `headingY`, so the
+   * camera does not saw and nothing accumulates into a turn.
+   */
+  stumbleYaw: 0.07,
+} as const;
+
+/**
  * The one frozen tuning root (AGENTS.md invariant 4).
  *
  * The named exports above stay, because a controller reading `WHEEL.tyreWidth`
@@ -6484,6 +6684,7 @@ export const TUNING = deepFreeze({
   RACE,
   CONTACT,
   CHASE,
+  DRUNK,
   FX,
   AUDIO,
   CHALLENGE,
@@ -7042,6 +7243,130 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     note: 'Size of each probe impulse as a fraction of a crash. Above the state '
       + 'threshold it is a genuine event; at 1 it wipes out on contact, which is '
       + 'the deep pothole rather than the thing this phase is judging.',
+  },
+  // The Drunkard's ride style — M29. His numbers and nobody else's: the
+  // sliders reach `DRUNK_STYLE` through `Game.applyTuning`, which re-reads the
+  // roster for every seat, so a sober seat cannot catch a style from the
+  // panel (safeguard S7). The annoyance gate is the owner's ride, and every
+  // amplitude here is one constant with zero as a legal value.
+  {
+    path: 'DRUNK.weaveHeading',
+    group: 'Ride — the Drunkard',
+    label: 'Weave',
+    unit: 'rad',
+    min: 0,
+    max: 0.12,
+    step: 0.002,
+    note: 'Peak heading offset of the hands-off weave at cruising speed. Held '
+      + 'to a constant lateral excursion above it. Zero removes the weave and keeps '
+      + 'the sway, the stumble, the stagger and the sip.',
+  },
+  {
+    path: 'DRUNK.weaveRateA',
+    group: 'Ride — the Drunkard',
+    label: 'Weave rate A',
+    unit: 'Hz',
+    min: 0.05,
+    max: 0.5,
+    step: 0.005,
+    note: 'The first of the two sines. Keep the two incommensurate or the '
+      + 'weave reads as a metronome.',
+  },
+  {
+    path: 'DRUNK.weaveRateB',
+    group: 'Ride — the Drunkard',
+    label: 'Weave rate B',
+    unit: 'Hz',
+    min: 0.05,
+    max: 0.5,
+    step: 0.005,
+    note: 'The second sine.',
+  },
+  {
+    path: 'DRUNK.weaveSpeedFloor',
+    group: 'Ride — the Drunkard',
+    label: 'Weave from',
+    unit: 'm/s',
+    min: 0,
+    max: 10,
+    step: 0.25,
+    note: 'No weave below this speed — walking pace. Reverse and rest are '
+      + 'always zero.',
+  },
+  {
+    path: 'DRUNK.weaveSpeedFull',
+    group: 'Ride — the Drunkard',
+    label: 'Weave full at',
+    unit: 'm/s',
+    min: 0.5,
+    max: 22,
+    step: 0.25,
+    note: 'Full amplitude from this speed. Above it the excursion is held '
+      + 'constant rather than growing with speed.',
+  },
+  {
+    path: 'DRUNK.weaveFadeRate',
+    group: 'Ride — the Drunkard',
+    label: 'Weave fade',
+    unit: '1/s',
+    min: 0.5,
+    max: 12,
+    step: 0.25,
+    note: 'How fast the weave and the sway come and go at their gates — the '
+      + 'stick, the air, a wobble, a crash.',
+  },
+  {
+    path: 'DRUNK.stumbleEvery',
+    group: 'Ride — the Drunkard',
+    label: 'Stumble every',
+    unit: 'm',
+    min: 0,
+    max: 400,
+    step: 5,
+    note: 'Metres of riding between stumbles, counted on the fixed step. '
+      + 'Zero is never.',
+  },
+  {
+    path: 'DRUNK.stumbleSeconds',
+    group: 'Ride — the Drunkard',
+    label: 'Stumble length',
+    unit: 's',
+    min: 0.1,
+    max: 1.5,
+    step: 0.05,
+    note: 'How long one shimmy lasts.',
+  },
+  {
+    path: 'DRUNK.stumbleRate',
+    group: 'Ride — the Drunkard',
+    label: 'Stumble rate',
+    unit: 'Hz',
+    min: 1,
+    max: 8,
+    step: 0.25,
+    note: 'The shimmy frequency. A wobble is 3–8 Hz; this is its look with '
+      + 'none of its energy.',
+  },
+  {
+    path: 'DRUNK.stumbleRoll',
+    group: 'Ride — the Drunkard',
+    label: 'Stumble roll',
+    unit: 'rad',
+    min: 0,
+    max: 0.3,
+    step: 0.01,
+    note: 'Peak machine roll during a stumble.',
+  },
+  {
+    path: 'DRUNK.stumbleYaw',
+    group: 'Ride — the Drunkard',
+    label: 'Stumble yaw',
+    unit: 'rad',
+    min: 0,
+    max: 0.2,
+    step: 0.005,
+    note: 'Peak machine yaw during a stumble, spent on the travel heading '
+      + 'like a wobble and never on the camera heading.',
   },
   {
     path: 'EUC.hazardCrashSpeed',

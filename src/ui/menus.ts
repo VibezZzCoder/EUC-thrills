@@ -928,6 +928,67 @@ const RIDER_CARDS: Readonly<Record<PlayableCharacterId, { blurb: string; portrai
                preserveAspectRatio="xMidYMid meet"/>
       </svg>`,
   },
+  /**
+   * The Drunkard — M29 Phase 0, the seventh card, and the `Record` doing its
+   * job a fourth time: the compiler refused the widened `PlayableCharacterId`
+   * until this entry existed (`docs/PLANS.md` §29.8).
+   *
+   * Three shapes, decided at 58 px. **The hat** is the whole identity: an
+   * amber crown under a darker peak with a can strapped to each side, cream
+   * at the top where the foam would be, and the two drinking tubes drawn as
+   * arcs from the cans to the mouth, meeting under the peak — the beer-hat
+   * silhouette reads before any detail does. **The shades and the grin**:
+   * dark lenses with a bridge and one glint each rather than a band, because
+   * a dark slab across a face is a blindfold (the cop's lens rule, §29.3
+   * fact 9), over the widest grin on the roster. **The jersey** is amber over
+   * cream shoulders with a brown waist band, and his mark — a hop cone,
+   * drawn, three scale lines — sits on the chest where the print will put
+   * it. No `<image>`: nothing on him is a right this project may not redraw,
+   * so `DESIGN.md` §9d's exception stays used exactly twice.
+   *
+   * No brand, no lettering, no real can: the cans are amber cylinders with a
+   * cream top band and nothing written on them. The colours are the card's
+   * own; the albedos the sun falls on are `BLOCKOUT_COLOURS.drunkard*`.
+   * **Phase 2 built the look and the card followed it**: the foam mound on
+   * the crown, dripping onto the shell, turned out to be the hat's strongest
+   * read in every capture, so the card's hat carries a cream cap with drips;
+   * and the tubes are amber on the rider (the same ink as the shell), so
+   * they are drawn a stop darker than the hat here rather than cream, which
+   * on the rider they never were.
+   */
+  drunkard: {
+    blurb: 'A two-can beer hat, three drinking tubes and a backpack full of the wrong drink. '
+      + 'Not a real rider — the joke the comments kept asking for, kept off everybody who is.',
+    portrait: `
+      <svg viewBox="0 0 96 96" class="euc-rider-card__art" aria-hidden="true" focusable="false">
+        <path d="M28 46c0-11 9-19 20-19s20 8 20 19c0 13-9 23-20 23S28 59 28 46z" fill="#d9a578"/>
+        <path d="M24 44c2-14 11-22 24-22s22 8 24 22c-7-3-15-5-24-5s-17 2-24 5z" fill="#e8951f"/>
+        <path d="M30 31c4-6 10-9 18-9s14 3 18 9c-2 1.5-3 4-4.5 3.5c-1.5-.5-1.5-3-3-2.5c-1.5.5-1 3-2.5 3
+                 c-1.5 0-2-2.5-3.5-2.5s-2 2.5-3.5 2.5c-1.5 0-2-2.5-3.5-3c-1.5-.5-1.5 2-3 2.5c-1.5.5-2.5-2-4.5-3.5z"
+              fill="#f3e2b8"/>
+        <rect x="11" y="23" width="12" height="21" rx="2.5" fill="#e8951f"/>
+        <rect x="11" y="23" width="12" height="4.5" rx="1.8" fill="#f3e2b8"/>
+        <rect x="73" y="23" width="12" height="21" rx="2.5" fill="#e8951f"/>
+        <rect x="73" y="23" width="12" height="4.5" rx="1.8" fill="#f3e2b8"/>
+        <path d="M20 44c8-3 18-5 28-5s20 2 28 5c-1 3-3 4.5-5 4.5H25c-2 0-4-1.5-5-4.5z" fill="#b86a12"/>
+        <path d="M17 44c0 12 13 19 30 21M79 44c0 12-13 19-30 21"
+              stroke="#c8781a" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+        <rect x="30.5" y="50" width="15" height="9" rx="3" fill="#1f2126"/>
+        <rect x="50.5" y="50" width="15" height="9" rx="3" fill="#1f2126"/>
+        <rect x="45" y="52.6" width="6" height="2.2" rx="1" fill="#1f2126"/>
+        <path d="M33.5 52.6c2-1.4 5-1.9 8-1.5M53.5 52.6c2-1.4 5-1.9 8-1.5"
+              stroke="#9fb4c2" stroke-width="1.4" stroke-linecap="round" fill="none" opacity="0.7"/>
+        <path d="M38.5 63.5c3 5.5 16 5.5 19 0c-2 2-17 2-19 0z" fill="#241f22"/>
+        <path d="M18 78c6-5 17-8 30-8s24 3 30 8v18H18z" fill="#e8951f"/>
+        <path d="M18 78c4-3.4 9.6-6 16.6-7.2L30 96H18z" fill="#f3e2b8"/>
+        <path d="M78 78c-4-3.4-9.6-6-16.6-7.2L66 96h12z" fill="#f3e2b8"/>
+        <rect x="18" y="91.5" width="60" height="4.5" fill="#7a4a12"/>
+        <path d="M48 75.5c4 3 6.5 7 6.5 10.5c0 4-3 7.5-6.5 8.5c-3.5-1-6.5-4.5-6.5-8.5c0-3.5 2.5-7.5 6.5-10.5z"
+              fill="#5f9a2c"/>
+        <path d="M48 79v13M44 83.5l4 2 4-2M44 88.5l4 2 4-2"
+              stroke="#3e6b1c" stroke-width="1.2" stroke-linecap="round" fill="none"/>
+      </svg>`,
+  },
 };
 
 /**
@@ -974,7 +1035,8 @@ function ridersTemplate(): string {
      aria-labelledby="euc-riders-heading">
   <h2 class="euc-menu__title euc-riders__heading" id="euc-riders-heading">Choose your rider</h2>
   <p class="euc-menu__tagline">
-    Looks only — every rider rides exactly the same, and your best times carry across.
+    Same wheel for everyone — same speed, grip and brakes, and your best times carry across.
+    The Drunkard weaves when your hands are off; the wheel still goes where you point it.
     Swap whenever you like; the game remembers.
   </p>
 

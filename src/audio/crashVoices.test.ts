@@ -33,6 +33,13 @@ import { crashFor, type CrashVoiceId, type SampleBank } from './sink.ts';
  * same treatment from a different voice-free donor, identical to Red Rider's
  * everywhere except the 0.8 s that was rebuilt, and the sibling test below
  * says both halves of that.
+ *
+ * M29 §29.12 added the seventh, and a first: a file that is not a crash at
+ * all. The Drunkard's crash is composed on Trollina's mechanism from a
+ * generated take, so what this file has to prove about it is the Trollina
+ * provenance shape — the same length, the same loudness, and *not a slice of
+ * any shipped recording*. Beside it ships his stumble, the `stumble` cue's
+ * 0.40 s recording, with its own length and level rules.
  */
 
 const AUDIO = join(import.meta.dirname, '..', '..', 'assets', 'live', 'audio');
@@ -62,6 +69,8 @@ const redRider = readWav('crash_red_rider.wav');
 const adonisb2 = readWav('crash_adonisb2.wav');
 const maribel = readWav('crash_maribel.wav');
 const wheelInMotion = readWav('crash_wheel_in_motion.wav');
+const drunkard = readWav('crash_drunkard.wav');
+const stumble = readWav('stumble_drunkard.wav');
 
 test('every rider\'s crash is exactly as long as Cool Rider\'s', () => {
   // `audio/director.ts` ducks the mix on one envelope whoever is riding, so a
@@ -85,9 +94,13 @@ test('every rider\'s crash is exactly as long as Cool Rider\'s', () => {
   // construction — asserted anyway, because this is the rule that survives a
   // hand-replaced file.
   assert.equal(wheelInMotion.length, coolRider.length);
+  // And his is composed onto a length *read* from Cool Rider's file rather
+  // than typed (Maribel's rule, `tools/make-crash-drunkard.mjs`) — asserted
+  // anyway, for the reason above.
+  assert.equal(drunkard.length, coolRider.length);
 });
 
-test('the six crashes are six different recordings', () => {
+test('the seven crashes are seven different recordings', () => {
   // Cheap, and it closes the gap every other test in this file leaves open: a
   // build where one crash was copied over another passes the length rule, the
   // loudness rule, and `crashFor`'s four-buffer check, and ships a rider
@@ -95,8 +108,10 @@ test('the six crashes are six different recordings', () => {
   const files: readonly (readonly [string, Int16Array])[] = [
     ['cool-rider', coolRider], ['trollina', trollina],
     ['red-rider', redRider], ['adonisb2', adonisb2], ['maribel', maribel],
-    ['wheel-in-motion', wheelInMotion],
+    ['wheel-in-motion', wheelInMotion], ['drunkard', drunkard],
   ];
+  // Twenty-one pairs at seven; the loop is what grows, not a list of names.
+  assert.equal((files.length * (files.length - 1)) / 2, 21);
   for (let i = 0; i < files.length; i += 1) {
     for (let j = i + 1; j < files.length; j += 1) {
       const [nameA, a] = files[i];
@@ -227,6 +242,10 @@ test('no crash recording is louder than the one it replaces', () => {
   // her recording — and the only thing standing between that and a crash
   // louder than every other rider's is the RMS match.
   assert.ok(peakBetween(maribel) <= peakBetween(coolRider), 'her crash peaks above the owner\'s');
+  // The Drunkard's is a whole-file comparison on Trollina's terms: composed,
+  // sharing no samples with the owner's, and peak-capped by its tool where
+  // Cool Rider's peaks. Measured: −7.0 dBFS against his −1.8.
+  assert.ok(peakBetween(drunkard) <= peakBetween(coolRider), 'the Drunkard\'s crash peaks above the owner\'s');
 });
 
 test('Adonisb2\'s crash hits inside the first second', () => {
@@ -461,11 +480,13 @@ test('her voice does not own the band the ride bed leaves empty', () => {
   );
 });
 
-test('the six voices reach six different buffers', () => {
-  // §19.8's headless evidence, grown by one in §22.8. `crashFor` carried a
-  // fallback while Red Rider's file was being built, and the failure it could
-  // hide — his voice quietly resolving to the owner's — is invisible to
-  // `lastCrashVoice`, which reports the *choice* rather than the buffer.
+test('the seven voices reach seven different buffers', () => {
+  // §19.8's headless evidence, grown by one in §22.8 and again in §29.12.
+  // `crashFor` carried a fallback while Red Rider's file was being built, and
+  // the failure it could hide — a voice quietly resolving to somebody else's
+  // — is invisible to `lastCrashVoice`, which reports the *choice* rather
+  // than the buffer. The Drunkard rode on `'red-rider'` by a declared interim
+  // in the data for three phases, and this is where its end is visible.
   const bank = {
     tyreOffroad: 'tyre-offroad',
     tyreSolid: 'tyre-solid',
@@ -476,18 +497,116 @@ test('the six voices reach six different buffers', () => {
     crashAdonisb2: 'adonisb2-buffer',
     crashMaribel: 'maribel-buffer',
     crashWheelInMotion: 'wheel-in-motion-buffer',
+    crashDrunkard: 'drunkard-buffer',
+    stumbleDrunkard: 'stumble-buffer',
     sirenFar: 'siren-far',
     sirenClose: 'siren-close',
   } as unknown as SampleBank;
 
-  const voices: CrashVoiceId[] = ['cool-rider', 'trollina', 'red-rider', 'adonisb2', 'maribel', 'wheel-in-motion'];
+  const voices: CrashVoiceId[] = [
+    'cool-rider', 'trollina', 'red-rider', 'adonisb2', 'maribel', 'wheel-in-motion', 'drunkard',
+  ];
   const reached = voices.map((voice) => crashFor(voice, bank));
   assert.deepEqual(
     reached,
     [
       'cool-rider-buffer', 'trollina-buffer', 'red-rider-buffer',
-      'adonisb2-buffer', 'maribel-buffer', 'wheel-in-motion-buffer',
+      'adonisb2-buffer', 'maribel-buffer', 'wheel-in-motion-buffer', 'drunkard-buffer',
     ],
   );
-  assert.equal(new Set(reached).size, 6);
+  assert.equal(new Set(reached).size, 7);
+});
+
+// ---------------------------------------------------------------------------
+// The Drunkard — M29 §29.12: the Trollina provenance shape, and the stumble
+// ---------------------------------------------------------------------------
+
+/** Normalised cross-correlation of two files at lag zero, over the shorter. */
+const correlation = (a: Int16Array, b: Int16Array): number => {
+  let dot = 0;
+  let aa = 0;
+  let bb = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i += 1) {
+    dot += a[i] * b[i];
+    aa += a[i] * a[i];
+    bb += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(aa * bb) + 1e-18);
+};
+
+const rmsDb = (samples: Int16Array): number => {
+  let sum = 0;
+  for (let i = 0; i < samples.length; i += 1) sum += (samples[i] / 32768) ** 2;
+  return 20 * Math.log10(Math.sqrt(sum / samples.length) + 1e-18);
+};
+
+test('the Drunkard\'s crash is a composition, not a slice of any shipped recording', () => {
+  // **The Trollina provenance shape, asserted on the bytes.** His file is
+  // generated-plus-synthesized and stands outside the CC BY 4.0 claim; the
+  // failure this catches is the opposite build — somebody shipping a
+  // re-levelled copy of a real rider's recording under his name, which would
+  // pass the length rule, the loudness rule and the seven-buffers rule while
+  // putting a real person's fall (or the owner's voice) in a parody's mouth.
+  // A copy, or a copy with a different gain, correlates near 1 at lag zero;
+  // two unrelated 3.4 s files correlate near 0. The tool printed |r| ≤ 0.025
+  // against every shipped crash when the file was authored (2026-09-02:
+  // −0.014, 0.004, −0.017, −0.006, 0.019, −0.016), and 0.05 is twice the
+  // worst of those with room for a re-render to move it.
+  const others: readonly (readonly [string, Int16Array])[] = [
+    ['Cool Rider', coolRider], ['Trollina', trollina], ['Red Rider', redRider],
+    ['Adonisb2', adonisb2], ['Maribel', maribel], ['Wheel in Motion', wheelInMotion],
+  ];
+  for (const [name, file] of others) {
+    const r = correlation(drunkard, file);
+    assert.ok(
+      Math.abs(r) < 0.05,
+      `the Drunkard's crash correlates ${r.toFixed(4)} with ${name}'s — it is a slice of it`,
+    );
+  }
+});
+
+test('the Drunkard\'s crash is as loud as Cool Rider\'s, and no louder at the peak', () => {
+  // Trollina's rule, stated for him: RMS-matched so swapping rider cannot
+  // change how loud a crash is, and peak-capped where Cool Rider's peaks
+  // rather than peak-matched (peak-matched, hers played 4.3 dB louder). The
+  // tool reads both numbers off `crash_wipeout.wav` rather than typing them,
+  // so the bound here is ±1 dB against the same file — a replaced file that
+  // was normalised by hand to full scale fails by 20 dB. Measured: −22.33
+  // against −22.33 dBFS.
+  assert.ok(
+    Math.abs(rmsDb(drunkard) - rmsDb(coolRider)) <= 1,
+    `his crash is ${rmsDb(drunkard).toFixed(2)} dBFS RMS against Cool Rider's ${rmsDb(coolRider).toFixed(2)}`,
+  );
+  assert.ok(peakBetween(drunkard) <= peakBetween(coolRider), 'his crash peaks above the owner\'s');
+});
+
+test('the stumble is 0.40 s at −6 dBFS, and its cans are not cut out of the crash', () => {
+  // The `stumble` cue's recording (q112). Its length is the one number the
+  // sink's teardown timing and `AUDIO.stumbleLevel` were both set against —
+  // a stumble that ran a second would ring into the next weave — and its
+  // level is peak-normalised to −6 dBFS because no shipped one-shot is its
+  // sibling to match. Half a dB either side is a re-render moving nothing;
+  // a hand-replaced file at full scale fails.
+  assert.equal(stumble.length, 17_640, 'the stumble is not 0.40 s at 44.1 kHz');
+  const peakDb = 20 * Math.log10(peakBetween(stumble) / 32768);
+  assert.ok(peakDb >= -6.5 && peakDb <= -5.5, `the stumble peaks at ${peakDb.toFixed(2)} dBFS, not −6`);
+
+  // And it is its own render, not a window of the crash. The hic *is* the
+  // same beat of the same take by design (the manifest says so — measured, the
+  // whole file correlates 0.84 with the crash's hic at 2.86 s), so the claim
+  // is made on the cans: the first 0.10 s — both clanks, before the hic
+  // enters — equals no 4,410-sample window of the crash sample for sample.
+  // The crash's own can pair sits at 1.30 s under the OOF at a different
+  // level, and its best correlation with this window is 0.17; a cut-out
+  // window would be 1.0 and exactly equal.
+  const window = 4_410;
+  const cans = stumble.subarray(0, window);
+  let equalWindows = 0;
+  for (let lag = 0; lag + window <= drunkard.length; lag += 1) {
+    let k = 0;
+    while (k < window && drunkard[lag + k] === cans[k]) k += 1;
+    if (k === window) equalWindows += 1;
+  }
+  assert.equal(equalWindows, 0, 'the stumble\'s cans are a window cut straight out of the crash');
 });

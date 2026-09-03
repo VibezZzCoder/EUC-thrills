@@ -54,7 +54,9 @@ it surprises you:
   puts you down. A deep hole at speed is simply a crash, and hopping clears any
   of them. Bushes are foliage rather than walls: the wheel pushes through, loses
   speed, and takes one jolt. Clean speed, rough ground, kerbs, landings, pedal
-  strikes, and the carve you are enjoying never start the weave.
+  strikes, and the carve you are enjoying never start the weave. (The Drunkard
+  weaves on his own with your hands off the stick, and that is the character,
+  not the wheel — see **Riders**.)
 
 Crashes are non-graphic but not stiff: the rider tumbles, catches the ground
 with their limbs, and settles into a comic rest while the wheel can bounce and
@@ -183,10 +185,13 @@ any of them.
 
 ## Riders
 
-There are six, the line under the title screen's buttons says who you are, and
-that line opens the chooser. The difference is **entirely cosmetic** — each has
-their own crash sound, none is faster, and the custom wheels ride identically to
-the standard one, down to the last number.
+There are seven, the line under the title screen's buttons says who you are,
+and that line opens the chooser. Six of them differ only in **looks and
+sound** — each has their own crash sound, none is faster, and the custom wheels
+ride identically to the standard one, down to the last number. The seventh,
+The Drunkard, shares that same speed, grip and braking but rides his own way
+on purpose: a slow weave and the odd stumble that really do move him about
+the road. See The Drunkard below for what that is and is not.
 
 **Cool Rider** wears black moto gear with reflective blue panels and a
 full-face helmet; his clothes and riding style are based on what the project
@@ -236,6 +241,21 @@ own customized machine. His crash is the author's own wipeout with the
 author's voice removed, until he sends one of his own. His channel is credited
 as [Wheel In Motion](https://www.youtube.com/@RealWheelInMotion) at his and
 the project owner's direction.
+
+**The Drunkard** is not a real person, and that is the point of him. People
+kept asking for a rider with a beer; the real riders above are here with their
+permission and are not going to be drawn drinking, so the joke got a rider of
+its own — a wholly fictional parody in a two-can beer hat with drinking tubes,
+a hydration pack full of the wrong drink, a can in his free hand, and a
+beer-themed wheel: amber, cream and brown, a hop cone where a logo would go,
+and no real brand anywhere on him. **He rides like he looks.** Take your hands
+off the stick at speed and he weaves a slow, lazy S down the road, sways with
+it, and stumbles every so often; touch the stick and the wheel goes exactly
+where you point it, because underneath the theatre he is the same wheel as
+everybody else — the same top speed, grip and brakes, measured to a tenth of a
+percent, and your best times carry across. If the weave looks like a bug, it is
+not; it is him. He is fictional and based on nobody, and nothing in this game
+endorses riding under the influence.
 
 For every real rider, no legal or private identity is published anywhere in this
 project, and their likenesses appear here with permission for this game only —
@@ -396,6 +416,10 @@ list.
 
 ### Recently landed
 
+- **A seventh rider, who rides like he looks** — The Drunkard, a fictional
+  parody rider in a two-can beer hat on a beer-themed wheel of his own, with a
+  crash voice composed for him. Hands off the stick he weaves and staggers for
+  show; on the stick he is the same wheel as everybody, measured.
 - **A sixth rider, with his own wheel** — Wheel in Motion, a YouTuber who
   asked in public to be in the game. His channel's mark rides on his chest,
   his pack and his wheel, and the wheel is modelled on his own customized
@@ -467,17 +491,20 @@ to be.
 
 ## Licence
 
-Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the eleven
+Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the fourteen
 shipped sounds derive from public-domain (CC0) recordings; three crashes derive
 from the author's own recording — the third and sixth riders' are that same
 wipeout with the author's voice removed, rendered twice from different
-voice-free stretches so that they are two files. Three shipped sounds sit
-outside the CC BY 4.0 claim: the second rider's crash is a composed one-shot
-whose voice is machine-generated, and the fourth and fifth riders' crashes are
+voice-free stretches so that they are two files. Five shipped sounds sit
+outside the CC BY 4.0 claim: two of the seven crashes are composed one-shots
+whose voices are machine-generated — the second rider's and the seventh's, the
+two characters who exist nowhere to be recorded — and so is the seventh
+rider's short stumble sound; and the fourth and fifth riders' crashes are
 **their own contributed recordings**, used in this game with their permission
 and with no copyright over them claimed by this project. Cool Rider is an
 original fictional character whose clothes and style draw on what the project
-owner wears; Red Rider, Adonisb2, Maribel Vargas and Wheel in Motion are real
+owner wears, and The Drunkard is an original fictional character based on
+nobody; Red Rider, Adonisb2, Maribel Vargas and Wheel in Motion are real
 people represented with permission, and no licence in this project covers
 their names, likenesses, personas, or the two riders' own logos. Full terms,
 attribution, and per-file provenance are in [`LICENSE`](LICENSE) and
@@ -485,6 +512,7 @@ attribution, and per-file provenance are in [`LICENSE`](LICENSE) and
 
 The wheels in this game are original fictional designs — three are modelled,
 with their riders' permission, on their own customized machines, without
-reproducing any manufacturer's identity or any third-party sticker artwork. This project is
+reproducing any manufacturer's identity or any third-party sticker artwork,
+and the seventh rider's is modelled on nothing at all. This project is
 not affiliated with, endorsed by, or associated with any electric unicycle
 manufacturer or retailer.

@@ -90,16 +90,26 @@ export interface GameOptions {
    * plainly presentation; a character sounds like it could be gameplay, so the
    * constraint is written down rather than assumed: *this field may only ever
    * reach `render/` and `audio/`, and it carries appearance and a crash voice
-   * and nothing else.* Both riders are built to one `RIDER_BLOCKOUT` skeleton,
-   * ride through one controller, and are bit-identical to the simulation —
-   * which is what keeps the firewall's substantive promise intact (two players
-   * on the same seed have the same ride) rather than merely its structural one.
+   * — and, since M29, for one rider, a ride style — and nothing else.* Every
+   * rider is built to one `RIDER_BLOCKOUT` skeleton, rides through one
+   * controller, and is bit-identical to the simulation — which is what keeps
+   * the firewall's substantive promise intact (two players on the same seed
+   * have the same ride) rather than merely its structural one.
    *
-   * If a rider ever gets a physical quantity of its own, it stops being an
-   * option that day: invariant 5 forbids player configuration reaching
-   * `simulation/` at all, and a per-rider number would belong in
-   * `data/tuning.ts` where it is the same for everybody. That is
-   * `docs/PLANS.md` §13 q3, and it is the owner's to open.
+   * The ride style is the one exception, and it is shaped so that the promise
+   * survives it: a style is theatre on the path and the pose, competitively
+   * neutral by measurement (`docs/PLANS.md` §29.4), the identity by default,
+   * and it is installed from the roster by the composition root — never from
+   * this record. `Game` never reads a style off an option; it reads
+   * `data/riders.ts`' `rideStyleFor` against the seat's character, so the
+   * field still carries a name and nothing physical.
+   *
+   * If a rider ever gets a physical quantity of its own — a speed, a grip, a
+   * brake — it stops being an option that day: invariant 5 forbids player
+   * configuration reaching `simulation/` at all, and a per-rider number would
+   * belong in `data/tuning.ts` where it is the same for everybody. That is
+   * `docs/PLANS.md` §13 q3, and it is the owner's to open; he opened it once,
+   * for one rider, as a style and never a stat.
    *
    * It is deliberately *not* level identity either. A personal best records
    * where a run happened; folding the rider into a level id would orphan every

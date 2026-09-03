@@ -253,7 +253,20 @@ test('a pad drives the rider chooser as the grid the player sees', async ({ page
     return { rider: active.dataset.rider ?? active.dataset.menu ?? '', left: active.getBoundingClientRect().left };
   });
   expect(Math.abs(below.left - columnBefore)).toBeLessThan(2);
-  await pulse(page, DPAD.down);
+  // And keeps walking down until Done — however many rows the roster makes at
+  // this width. A bounded walk rather than "one more press" since M29 Phase
+  // 0: seven cards at 1000×700 are three columns in rows of 3, 3 and 1, and
+  // from the second row's middle card a press of down lands on the ragged
+  // last row's nearest card (`ui/menuRows.ts`' rule), not on Done. The bound
+  // is the roster — more presses than cards means the walk is jammed, which
+  // is the M24 defect this paragraph exists to pin.
+  const cardCount = await page.locator('[data-rider]').count();
+  let presses = 0;
+  while (!(await page.locator('[data-menu="riders-back"]').evaluate((el) => el === document.activeElement))) {
+    expect(presses, 'down never reached Done').toBeLessThan(cardCount);
+    await pulse(page, DPAD.down);
+    presses += 1;
+  }
   await expect(page.locator('[data-menu="riders-back"]')).toBeFocused();
 
   // The regression pin at the jam site itself: from the roster's *last* card,

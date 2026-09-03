@@ -2,18 +2,25 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { EUC, PHYSICS, SIMULATION, TERRAIN, WHEEL } from '../data/tuning.ts';
+import { DRUNK_STYLE, SOBER_STYLE, type RideStyle } from '../data/rideStyles.ts';
 import { SURFACES } from '../data/surfaces.ts';
 import { NEUTRAL_ACTIONS, type ActionSnapshot } from '../input/actions.ts';
 import { buildLevelPlan } from '../level/buildPlan.ts';
+import { generateLevel } from '../level/generateRoute.ts';
+import { TRACK_LAP_SEGMENT_IDS, createTrackLevel } from '../level/trackLevel.ts';
 import type { Hazard, HazardKind, LevelPlan } from '../level/plan.ts';
 import type { SegmentSpec } from '../level/segments.ts';
 import { RIDEABILITY } from '../level/routeValidator.ts';
+import { CpuRider, type CpuView } from './cpuRider.ts';
 import { HazardField } from './hazards.ts';
+import { RouteSpine } from './routeSpine.ts';
 import { SoftBodyField } from './softBodies.ts';
 import {
   EucController,
   createPose,
+  defaultEucTuning,
   ladder,
+  type EucPose,
   type EucSnapshot,
   type EucTuning,
 } from './EucController.ts';
@@ -4749,4 +4756,1431 @@ test('a hard knock is not a wobble door', () => {
   assert.equal(euc.snapshot().wobbleEnergy, 0, 'the fixture starts unwobbled');
   euc.hardKnock(1, 0);
   assert.equal(euc.snapshot().wobbleEnergy, 0);
+});
+
+// ---------------------------------------------------------------------------
+// M29 — the sober digests (safeguard S1, `docs/PLANS.md` §29.4, §29.8)
+// ---------------------------------------------------------------------------
+
+/**
+ * **Recorded on 2026-09-02 from the tree as it stood before a ride style
+ * existed, and never to be re-pinned without saying why.**
+ *
+ * M29 gives one rider a *ride style* — theatre on the path and the pose that
+ * the owner asked for by name and that every other rider must never catch as
+ * a bug. The style is threaded through the controller as a record of numbers
+ * whose sober value is zero in every field, so with the sober style installed
+ * every term it adds is exactly `+ 0` and the trajectory is bit-for-bit what
+ * it was before the style was written. That is a claim about arithmetic, and
+ * the way to hold a claim about arithmetic is to hash the whole ride.
+ *
+ * Six scripted rides, each hashing every pose field the renderer reads at
+ * every fixed step — and the ragdoll's floats, and the two snapshot facts a
+ * pose does not carry (the wobble energy and whether the rider is down) —
+ * folded into one 64-bit digest and pinned below as a number. The scenarios
+ * cover the branches a style could plausibly reach: a straight at full
+ * throttle, a slalom, a hop and its landing, a shallow pothole and the wobble
+ * it starts, a deep pothole's crash and the automatic recovery out of it,
+ * and a brake to a stop into reverse with a corner in it.
+ *
+ * **If one of these moves, a sober controller's ride moved.** That is a red
+ * test rather than a report from somebody's couch, which is the whole point:
+ * a change that means to move the ride re-pins the digest *and* says so in
+ * the changelog; a change that does not mean to has been caught. The field
+ * list is spelled out rather than read off `createPose()`, so a pose channel
+ * added later (the style's own three, for instance) is not silently folded
+ * into a hash that was recorded without it — a new channel gets its own
+ * assertion that it is zero on a sober seat, not a re-pin here.
+ */
+
+/** The pose fields as `createPose()` listed them on 2026-09-02. Frozen on purpose. */
+const DIGEST_FIELDS = Object.freeze([
+  'x', 'y', 'z', 'headingY', 'rollAngle', 'riderRoll', 'riderPitch', 'riderLookYaw',
+  'riderTurnTwist', 'technicalTurn', 'reverseBlend', 'wheelPitch', 'wheelSpin',
+  'groundPitch', 'groundRoll', 'suspensionOffset', 'restFactor', 'speed',
+  'crouch', 'tuck', 'attack', 'carveStance', 'airBlend', 'airHeight', 'groundY', 'pedalStrike',
+  'wobble', 'wobbleFootCorrection', 'wobbleYaw', 'wobbleRoll', 'wobbleSway', 'wobbleFight',
+  'alert', 'crashBlend', 'crashForward', 'crashLateral', 'crashDrop', 'crashTumble', 'crashRoll',
+  'wheelCrashLean', 'wheelCrashSpin', 'wheelCrashPop', 'ragdollBlend', 'recoverBlend', 'tiltBack',
+] as const);
+
+/**
+ * A 64-bit FNV-1a over the exact bytes of every number fed to it, as two
+ * independent 32-bit lanes. Bytes rather than decimal strings, so a change
+ * in the last bit of a double is a change in the digest — the identity this
+ * suite asserts is bit-for-bit, not "close".
+ */
+class RideDigest {
+  private readonly bytes = new DataView(new ArrayBuffer(8));
+  private a = 0x811c9dc5;
+  private b = 0x050c5d1f;
+
+  number(value: number): void {
+    this.bytes.setFloat64(0, value, true);
+    for (let i = 0; i < 8; i += 1) this.byte(this.bytes.getUint8(i));
+  }
+
+  float32(value: number): void {
+    this.bytes.setFloat32(0, value, true);
+    for (let i = 0; i < 4; i += 1) this.byte(this.bytes.getUint8(i));
+  }
+
+  private byte(value: number): void {
+    this.a = Math.imul(this.a ^ value, 0x01000193) >>> 0;
+    this.b = Math.imul(this.b ^ value, 0x01000193) >>> 0;
+  }
+
+  hex(): string {
+    return this.a.toString(16).padStart(8, '0') + this.b.toString(16).padStart(8, '0');
+  }
+}
+
+/** One fixed step, hashed: every listed pose field, the ragdoll, and two snapshot facts. */
+function digestStep(euc: EucController, pose: EucPose, digest: RideDigest, input: ActionSnapshot): void {
+  euc.step(STEP, input);
+  euc.writePose(pose);
+  for (const field of DIGEST_FIELDS) digest.number(pose[field]);
+  for (let i = 0; i < pose.ragdoll.length; i += 1) digest.float32(pose.ragdoll[i]);
+  const snapshot = euc.snapshot();
+  digest.number(snapshot.wobbleEnergy);
+  digest.number(snapshot.crashed ? 1 : 0);
+}
+
+interface DigestRun {
+  readonly digest: string;
+  readonly steps: number;
+  /** Two human-readable facts, so a moved digest says roughly *what* moved. */
+  readonly finalZ: number;
+  readonly finalSpeed: number;
+  readonly crashes: number;
+}
+
+/**
+ * Each scenario is a script of held inputs against a fresh `controller()` —
+ * the suite's own fixture, wobble gate open and cutout off, exactly as every
+ * test above rides — and returns the digest of the whole ride.
+ */
+type DigestScenario = () => { euc: EucController; script: readonly [Partial<ActionSnapshot>, number][] };
+
+const SOBER_SCENARIOS = Object.freeze({
+  // A straight at full throttle, through the launch and into the drag limit.
+  straight: () => ({
+    euc: controller(),
+    script: [[{ throttle: 1 }, SECONDS(30)]],
+  }),
+  // A slalom: full-lock flips every second at speed, then two steady partial carves.
+  slalom: () => ({
+    euc: controller(),
+    script: [
+      [{ throttle: 1 }, SECONDS(4)],
+      ...Array.from({ length: 12 }, (_, i): [Partial<ActionSnapshot>, number] =>
+        [{ throttle: 1, steer: i % 2 === 0 ? 1 : -1 }, SECONDS(1)]),
+      [{ throttle: 1, steer: 0.35 }, SECONDS(6)],
+      [{ throttle: 1, steer: -0.35 }, SECONDS(6)],
+    ],
+  }),
+  // A hop at speed and the landing after it.
+  hop: () => ({
+    euc: controller(),
+    script: [
+      [{ throttle: 1 }, SECONDS(4)],
+      [{ throttle: 1, hop: true }, 1],
+      [{ throttle: 1 }, SECONDS(5)],
+    ],
+  }),
+  // A shallow pothole at 40 m, the wobble it starts, and the ride out of it.
+  pothole: () => ({
+    euc: controller({ plan: hazardPlan(), hazards: [potholeAhead(40, 'potholeShallow')] }),
+    script: [[{ throttle: 1 }, SECONDS(14)]],
+  }),
+  // A deep pothole at 40 m: the crash, the tumble, the automatic recovery, and riding on.
+  crash: () => ({
+    euc: controller({ plan: hazardPlan(), hazards: [potholeAhead(40, 'potholeDeep')] }),
+    script: [
+      [{ throttle: 1 }, SECONDS(8)],
+      [{}, SECONDS(10)],
+      [{ throttle: 1 }, SECONDS(6)],
+    ],
+  }),
+  // A brake to a stop, the second ask that engages reverse, a reverse corner, and forward again.
+  reverse: () => ({
+    euc: controller(),
+    script: [
+      [{ throttle: 1 }, SECONDS(5)],
+      [{ throttle: -1 }, SECONDS(8)],
+      [{ throttle: -1, steer: 0.5 }, SECONDS(4)],
+      [{ throttle: 1 }, SECONDS(4)],
+    ],
+  }),
+  // `satisfies` rather than an annotation on the constant: `Object.freeze` is
+  // generic and would otherwise infer the scripts as loose arrays, while the
+  // literal keys stay literal for the pin table below.
+} satisfies Record<string, DigestScenario>);
+
+/**
+ * Run one scenario and digest it.
+ *
+ * `dress` is M29 Phase 1's addition and is the whole of safeguard S4's first
+ * half: a controller that is handed a style — the sober one explicitly, or a
+ * drunk one and then sobered again — has to reproduce the pin below, because
+ * *installing* a style is exactly the operation the composition root performs
+ * on every seat at every re-dress. The default is no dressing at all, which is
+ * the ride the pins were recorded from.
+ */
+function runSoberScenario(
+  name: keyof typeof SOBER_SCENARIOS,
+  dress?: (euc: EucController) => void,
+): DigestRun {
+  const { euc, script } = SOBER_SCENARIOS[name]();
+  dress?.(euc);
+  const pose = createPose();
+  const digest = new RideDigest();
+  let steps = 0;
+  for (const [held, count] of script) {
+    const input = actions(held);
+    for (let i = 0; i < count; i += 1) digestStep(euc, pose, digest, input);
+    steps += count;
+  }
+  const final = euc.snapshot();
+  return {
+    digest: digest.hex(),
+    steps,
+    finalZ: Number(final.position.z.toFixed(4)),
+    finalSpeed: Number(final.speed.toFixed(4)),
+    crashes: final.crashes,
+  };
+}
+
+/**
+ * The pins. **Recorded before `RideStyle` existed** — the order of Phase 0
+ * was the digests first and the plumbing second, so these numbers are the
+ * sober controller's own and not the sober *style's*.
+ */
+const SOBER_DIGESTS: Readonly<Record<keyof typeof SOBER_SCENARIOS, DigestRun>> = Object.freeze({
+  straight: { digest: '64740a2c3edb5a2e', steps: 3600, finalZ: 617.723, finalSpeed: 22.2523, crashes: 0 },
+  slalom: { digest: '721e285c258f46d2', steps: 3360, finalZ: 430.1683, finalSpeed: 22.2518, crashes: 0 },
+  hop: { digest: '72470d1feac04b99', steps: 1081, finalZ: 145.7091, finalSpeed: 21.9176, crashes: 0 },
+  pothole: { digest: '0f8857054baee20f', steps: 1680, finalZ: 253.6453, finalSpeed: 19.0448, crashes: 0 },
+  crash: { digest: '0dc4dda173d57cdb', steps: 2880, finalZ: 205.8304, finalSpeed: 20.9002, crashes: 1 },
+  reverse: { digest: 'ca074ad161f7f7d7', steps: 2520, finalZ: 28.1827, finalSpeed: 17.151, crashes: 0 },
+});
+
+test('the six sober rides digest to the numbers recorded before any ride style existed', () => {
+  // Every scenario is run before anything is asserted, so a failure names
+  // all the rides that moved rather than the first one the loop met.
+  const moved: string[] = [];
+  for (const name of Object.keys(SOBER_SCENARIOS) as (keyof typeof SOBER_SCENARIOS)[]) {
+    const run = runSoberScenario(name);
+    try {
+      assert.deepEqual(run, SOBER_DIGESTS[name]);
+    } catch {
+      moved.push(`"${name}": ${JSON.stringify(run)} against the pin ${JSON.stringify(SOBER_DIGESTS[name])}`);
+    }
+  }
+  assert.deepEqual(
+    moved,
+    [],
+    `a sober ride moved:\n  ${moved.join('\n  ')}\nA sober controller's ride is not allowed to `
+      + 'change by accident (docs/PLANS.md §29.4 S1); if the change is meant, re-pin and say so.',
+  );
+});
+
+test('the digest is deterministic, and it is sensitive to the ride rather than to the fixture', () => {
+  // Two runs of one scenario agree — the hash is of the ride and nothing
+  // else — and a ride that really differs hashes differently, so a green
+  // pin above is evidence and not a constant that happens to match itself.
+  assert.equal(runSoberScenario('slalom').digest, runSoberScenario('slalom').digest);
+
+  const { euc, script } = SOBER_SCENARIOS.straight();
+  euc.setTuning({ dragCoefficient: EUC.dragCoefficient * 1.001 });
+  const pose = createPose();
+  const digest = new RideDigest();
+  for (const [held, count] of script) {
+    const input = actions(held);
+    for (let i = 0; i < count; i += 1) digestStep(euc, pose, digest, input);
+  }
+  assert.notEqual(digest.hex(), SOBER_DIGESTS.straight.digest, 'a tenth of a percent of drag must move the digest');
+});
+
+test('the six scenarios exercise the branches they are named for', () => {
+  // A digest of a ride that never left the ground would hold a hop scenario
+  // to nothing. Each scenario is checked once for the state it exists to
+  // cover, so the pins above are pins of the rides they claim to be.
+  const reached = (name: keyof typeof SOBER_SCENARIOS, done: (s: EucSnapshot) => boolean): boolean => {
+    const { euc, script } = SOBER_SCENARIOS[name]();
+    let hit = false;
+    for (const [held, count] of script) {
+      const input = actions(held);
+      for (let i = 0; i < count; i += 1) {
+        euc.step(STEP, input);
+        if (done(euc.snapshot())) hit = true;
+      }
+    }
+    return hit;
+  };
+  assert.equal(reached('straight', (s) => s.speed > 22), true, 'the straight reaches top speed');
+  assert.equal(reached('slalom', (s) => s.lateralLimited), true, 'the slalom hits the lateral limit');
+  assert.equal(reached('hop', (s) => s.state === 'airborne'), true, 'the hop leaves the ground');
+  assert.equal(reached('hop', (s) => s.landings === 1), true, 'and lands');
+  assert.equal(reached('pothole', (s) => s.state === 'wobbling'), true, 'the shallow hole starts a wobble');
+  assert.equal(reached('pothole', (s) => s.crashed), false, 'and is survivable');
+  assert.equal(reached('crash', (s) => s.crashed && s.crashCause === 'hazard'), true, 'the deep hole crashes');
+  assert.equal(reached('crash', (s) => s.ragdolling), true, 'the crash ragdolls');
+  const { euc: recovered, script: crashScript } = SOBER_SCENARIOS.crash();
+  for (const [held, count] of crashScript) {
+    const input = actions(held);
+    for (let i = 0; i < count; i += 1) recovered.step(STEP, input);
+  }
+  assert.equal(recovered.snapshot().crashed, false, 'and the rider is back up and riding by the end');
+  assert.ok(recovered.snapshot().speed > 3, `riding on at ${recovered.snapshot().speed} m/s`);
+  assert.equal(reached('reverse', (s) => s.reversing && s.speed < -1), true, 'reverse engages and rolls');
+  assert.equal(reached('reverse', (s) => s.reversing && Math.abs(s.yawRate) > 0.2), true, 'and corners in reverse');
+});
+
+test('a controller is born sober, a style is stored where it was put, and a reset keeps it', () => {
+  // The Phase 0 plumbing, end to end: nothing reads the record yet, so this
+  // is the whole of what can be asserted about it — and the digests above are
+  // what assert that storing one changed nothing. A reset is `R`, and the seat
+  // is still the same character afterwards, so the style must survive it.
+  const euc = controller();
+  assert.equal(euc.rideStyle, SOBER_STYLE, 'born sober, by default and not by data');
+
+  const style: RideStyle = Object.freeze({ ...SOBER_STYLE, weaveHeading: 0.1 });
+  euc.setRideStyle(style);
+  assert.equal(euc.rideStyle, style);
+  euc.reset();
+  assert.equal(euc.rideStyle, style, 'a reset changes the ride, not who is riding');
+
+  euc.setRideStyle(SOBER_STYLE);
+  assert.equal(euc.rideStyle, SOBER_STYLE, 'and a seat can be sobered again');
+});
+
+// ---------------------------------------------------------------------------
+// M29 Phase 1 — the Drunken Master: neutrality, the gates, and the stumble
+// (`docs/PLANS.md` §29.4, §29.9 — safeguards S1, S3, S4 and S6)
+// ---------------------------------------------------------------------------
+
+/**
+ * **A style is theatre. A stat would be a different rider to race against.**
+ *
+ * The section above pins what a *sober* controller does. This one measures the
+ * one rider who is not sober, and every assertion in it is a number rather than
+ * a claim, because "he only *looks* drunk" is precisely the kind of promise a
+ * couch cannot check. M26 spent a milestone making the couch fair and M27 put
+ * four people on it; the Drunkard may not spend that back.
+ *
+ * The measurements §29.4 asks for, in its own order: the style carries no
+ * tuning key; a hands-off straight reaches a mark in the same time; the heading
+ * integrated over a minute of hands-off cruising drifts under 2°; the peak
+ * lateral excursion is under 0.35 m at every speed; the same hazard reaches the
+ * same wobble energy and the same crash verdict; `softKnock` and `hardKnock`
+ * return the same outcomes; and a continuously-steered lap is the same lap.
+ *
+ * Then the gates — walking pace, reverse, air, wobble, crash, steer — and the
+ * stumble's own five promises, because §29.4's fun contract ("never annoying")
+ * is entirely a claim about when the joke is *off*.
+ *
+ * Every number below was measured on 2026-09-02 against `DRUNK_STYLE` as it
+ * stood that day. The bounds are the plan's where the plan states one, and the
+ * measurement with margin where it does not; the measured value is written
+ * beside each, so a bound that starts passing for a new reason is visible.
+ */
+
+/**
+ * Ride at a held speed and report the lateral band the weave carved.
+ *
+ * Throttle on below the target and off above it — a cruise control crude
+ * enough to leave the weave completely alone, which is the point: any steering
+ * input at all would fade the gate by `(1 − |steer|)²` and the number that
+ * came back would be an answer to a different question.
+ */
+function lateralBand(
+  euc: EucController,
+  target: number,
+  settleSteps: number,
+  measureSteps: number,
+): { readonly band: number; readonly peakSway: number; readonly fromLine: number } {
+  let fromLine = 0;
+  const hold = (steps: number): { lo: number; hi: number; peak: number } => {
+    let lo = Infinity;
+    let hi = -Infinity;
+    let peak = 0;
+    for (let i = 0; i < steps; i += 1) {
+      euc.step(STEP, actions({ throttle: euc.snapshot().speed < target ? 1 : 0 }));
+      const now = euc.snapshot();
+      lo = Math.min(lo, now.position.x);
+      hi = Math.max(hi, now.position.x);
+      peak = Math.max(peak, Math.abs(now.styleSway));
+      // From the line the ride started on, every step of it — the settle
+      // included. An independent QA pass found the first cut of this test
+      // measuring half the band around the trace's own midpoint, which
+      // passed a rider sitting 0.56 m off the line he launched on.
+      fromLine = Math.max(fromLine, Math.abs(now.position.x));
+    }
+    return { lo, hi, peak };
+  };
+  hold(settleSteps);
+  const measured = hold(measureSteps);
+  return { band: measured.hi - measured.lo, peakSway: measured.peak, fromLine };
+}
+
+/** A fresh controller already dressed in a style. */
+function drunkController(
+  style: RideStyle = DRUNK_STYLE,
+  options: Parameters<typeof controller>[0] = {},
+): EucController {
+  const euc = controller(options);
+  euc.setRideStyle(style);
+  return euc;
+}
+
+test("the drunk style carries no key the wheel's tuning table has, and every number is finite", () => {
+  // Neutrality *by construction*, and the cheapest of the seven safeguards to
+  // hold: a style with no tuning field cannot change top speed, launch,
+  // braking, the lateral limit, the power ladder, wobble energy, a crash
+  // threshold or the knock arithmetic, because it has nothing to say about
+  // them. A future field named `topSpeed` would fail here on the day it was
+  // written rather than on the day somebody lost a race to it.
+  const tuning = new Set(Object.keys(defaultEucTuning()));
+  const shared = Object.keys(DRUNK_STYLE).filter((key) => tuning.has(key));
+  assert.deepEqual(shared, [], `a ride style may not name a tuning field: ${shared.join(', ')}`);
+
+  // And every field is a finite number, which is what makes each term the
+  // controller adds a product that a sober zero annihilates rather than a
+  // `NaN` that would poison the trajectory of whoever was handed it.
+  for (const [key, value] of Object.entries(DRUNK_STYLE)) {
+    assert.equal(Number.isFinite(value), true, `${key} is ${value}`);
+  }
+  assert.equal(Object.isFrozen(DRUNK_STYLE), true);
+  assert.equal(Object.keys(DRUNK_STYLE).length, Object.keys(SOBER_STYLE).length);
+});
+
+test('the time to a mark is the same drunk or sober, to a tenth of a percent', () => {
+  // §29.4's first measured neutrality claim: a hands-off straight at full
+  // throttle, timed to a mark. The weave is a *heading* offset and never a
+  // speed term, so the wheel covers the same ground at the same rate and only
+  // wanders a little across it — the extra path length of a 0.03 rad weave is
+  // about 5 parts in 10,000, well inside a fixed step.
+  const mark = 500;
+  const stepsTo = (euc: EucController): number => {
+    const input = actions({ throttle: 1 });
+    let steps = 0;
+    while (euc.snapshot().position.z < mark) {
+      euc.step(STEP, input);
+      steps += 1;
+      assert.ok(steps < 20000, `never reached ${mark} m`);
+    }
+    return steps;
+  };
+  const sober = stepsTo(controller());
+  const drunk = stepsTo(drunkController());
+  // Measured 2026-09-02: 2966 steps each, *exactly equal* — the bound is the
+  // plan's 0.1% because that is what §29.4 promises the owner, but the wheel
+  // is currently doing better than the promise, and a drift away from equality
+  // is worth reading here before it reaches the bound.
+  assert.ok(
+    Math.abs(drunk - sober) / sober <= 0.001,
+    `${drunk} steps drunk against ${sober} sober is ${((drunk - sober) / sober * 100).toFixed(3)}%`,
+  );
+});
+
+test('a minute of hands-off cruising drifts under two degrees and comes back to straight', () => {
+  // The reason the weave is an *offset* and not a rate. A yaw rate gated on
+  // and off mid-cycle leaves a residual heading every time it closes — the
+  // first cut measured 2° and 19 m of sideways drift over this same minute —
+  // and a rider who ends up pointing somewhere else is a hand on the wheel,
+  // which is the one thing §29.4 forbids.
+  const euc = drunkController();
+  const input = actions({ throttle: 1 });
+  let worst = 0;
+  let worstX = 0;
+  for (let i = 0; i < SECONDS(60); i += 1) {
+    euc.step(STEP, input);
+    worst = Math.max(worst, Math.abs(euc.snapshot().headingY));
+    worstX = Math.max(worstX, Math.abs(euc.snapshot().position.x));
+  }
+  const degrees = worst * 180 / Math.PI;
+  // Measured 2026-09-02 (after the QA repairs): peak 0.44°, residual 0.0000°,
+  // peak |x| 0.333 m from the line.
+  assert.ok(degrees < 2, `heading reached ${degrees.toFixed(4)}° during the minute`);
+  // The heading the rider *keeps* is the heading minus the live offset — the
+  // offset is the weave still in progress, and it is owed back to the line
+  // the moment the gate closes. What must be zero is everything else.
+  const final = euc.snapshot();
+  const residual = Math.abs(final.headingY - final.styleHeading) * 180 / Math.PI;
+  assert.ok(residual < 0.05, `the minute left ${residual.toFixed(6)}° that the weave does not owe`);
+  // The sideways position is bounded from the line the ride started on, the
+  // launch included — §29.4's number, measured the way the QA pass asked.
+  assert.ok(worstX < 0.35, `wandered ${worstX.toFixed(4)} m from the line`);
+});
+
+test("the hands-off weave stays inside a shoulder's width at every speed", () => {
+  // §29.4's stated bound — peak lateral excursion under 0.35 m — held at six
+  // speeds from below the floor to the top of the range, because the amplitude
+  // is speed-dependent twice over: `pace` ramps it in from walking pace, and
+  // above cruising `weaveSpeedFull / speed` holds the *excursion* constant
+  // rather than letting a fixed heading offset grow into metres at 22 m/s.
+  // That second term is the one a reader would not think to check, and the
+  // 22 m/s row is the whole reason this test holds six speeds and not one.
+  //
+  //
+  // **Measured from the line the ride started on, launch included** — the
+  // independent QA pass's correction. The band is one-sided by arithmetic
+  // (the offset's first quarter-lobe is spent under the opening gate, so the
+  // lateral integral runs from the line to one side of it), which is why
+  // half the peak-to-peak band is not the excursion and never was: the first
+  // cut measured 0.31 m around the trace's own midpoint while the rider sat
+  // 0.56 m off his line.
+  //
+  // Measured 2026-09-02, peak |x| from the line over the whole hold:
+  //   4 m/s 0.07 · 6 m/s 0.22 · 8 m/s 0.25 · 12 m/s 0.22 · 16 m/s 0.22 ·
+  //   22 m/s 0.32
+  for (const target of [4, 6, 8, 12, 16, 22]) {
+    const euc = drunkController();
+    const { band, peakSway, fromLine } = lateralBand(euc, target, SECONDS(20), SECONDS(40));
+    assert.ok(
+      fromLine < 0.35,
+      `at ${target} m/s the weave reached ${fromLine.toFixed(4)} m from the line`,
+    );
+    if (target >= 6) {
+      // And it really is weaving. A gate that silently closed would pass the
+      // bound above perfectly, which is the failure mode this half exists for.
+      assert.ok(
+        band > 0.2,
+        `at ${target} m/s the band is only ${band.toFixed(4)} m wide — it has stopped happening`,
+      );
+    }
+    if (target >= 8) {
+      assert.ok(peakSway > 0.9, `the sway only reached ${peakSway.toFixed(4)} at ${target} m/s`);
+    }
+  }
+});
+
+test('the same hazard reaches the same wobble energy and the same crash verdict', () => {
+  // The neutrality claim that matters most on a couch: a pothole is a pothole.
+  // Both hazard scenarios are ridden twice, sober and drunk, and the peak
+  // energy and the crash verdict are compared.
+  //
+  // **The full style, weave and all** — §29.4 anticipated that the weave might
+  // move the wheel far enough sideways to change *whether* the hole is hit,
+  // and offered a weave-zeroed fallback. It is not needed: the hole is on the
+  // spawn line, the weave's excursion is a quarter of a metre and the hazard's
+  // radius is a metre, so the hit happens either way and the energy it deposits
+  // is identical to the last bit (measured 2026-09-02: 0.550 against 0.550 on
+  // the shallow hole, delta exactly 0; the deep hole crashes at 0 energy in
+  // both, cause `hazard`, one crash each).
+  const run = (kind: HazardKind, style: RideStyle | null): {
+    peakEnergy: number; crashes: number; cause: string;
+  } => {
+    const euc = controller({ plan: hazardPlan(), hazards: [potholeAhead(40, kind)] });
+    if (style) euc.setRideStyle(style);
+    const script: readonly [Partial<ActionSnapshot>, number][] = kind === 'potholeDeep'
+      ? [[{ throttle: 1 }, SECONDS(8)], [{}, SECONDS(10)], [{ throttle: 1 }, SECONDS(6)]]
+      : [[{ throttle: 1 }, SECONDS(14)]];
+    let peakEnergy = 0;
+    let cause = 'none';
+    for (const [held, count] of script) {
+      const input = actions(held);
+      for (let i = 0; i < count; i += 1) {
+        euc.step(STEP, input);
+        const now = euc.snapshot();
+        peakEnergy = Math.max(peakEnergy, now.wobbleEnergy);
+        if (now.crashCause !== 'none') cause = now.crashCause;
+      }
+    }
+    return { peakEnergy, crashes: euc.snapshot().crashes, cause };
+  };
+
+  const shallowSober = run('potholeShallow', null);
+  const shallowDrunk = run('potholeShallow', DRUNK_STYLE);
+  assert.ok(shallowSober.peakEnergy > 0.1, 'the shallow hole is a real wobble to compare');
+  assert.ok(
+    Math.abs(shallowDrunk.peakEnergy - shallowSober.peakEnergy) < 1e-9,
+    `the drunk rider took ${shallowDrunk.peakEnergy} out of the hole, sober took ${shallowSober.peakEnergy}`,
+  );
+  assert.equal(shallowDrunk.crashes, shallowSober.crashes);
+  assert.equal(shallowDrunk.cause, shallowSober.cause);
+
+  const deepSober = run('potholeDeep', null);
+  const deepDrunk = run('potholeDeep', DRUNK_STYLE);
+  assert.equal(deepSober.crashes, 1, 'the deep hole is a real crash to compare');
+  assert.equal(deepDrunk.crashes, deepSober.crashes, 'and it is the same crash');
+  assert.equal(deepDrunk.cause, deepSober.cause);
+  assert.ok(Math.abs(deepDrunk.peakEnergy - deepSober.peakEnergy) < 1e-9);
+});
+
+test('both knock doors answer a drunk rider exactly as they answer a sober one', () => {
+  // `softKnock` and `hardKnock` are the couch's two contact outcomes and the
+  // arithmetic M26 spent a milestone making symmetric. Neither reads the style
+  // — the proof is that two controllers in the same state answer identically.
+  const atSpeed = (style: RideStyle | null): EucController => {
+    const euc = controller();
+    if (style) euc.setRideStyle(style);
+    const input = actions({ throttle: 1 });
+    for (let i = 0; i < SECONDS(6); i += 1) euc.step(STEP, input);
+    return euc;
+  };
+
+  const soberSoft = atSpeed(null);
+  const drunkSoft = atSpeed(DRUNK_STYLE);
+  // The same state to start with, because a knock's outcome is a function of
+  // it: same speed, same energy. (Measured 2026-09-02: 21.329212534324984 m/s
+  // on both, which is the sober digests' claim restated one more time.)
+  assert.equal(drunkSoft.snapshot().speed, soberSoft.snapshot().speed);
+  soberSoft.softKnock(5);
+  drunkSoft.softKnock(5);
+  assert.equal(drunkSoft.snapshot().speed, soberSoft.snapshot().speed, 'the soft knock cost the same speed');
+  assert.equal(drunkSoft.snapshot().wobbleEnergy, soberSoft.snapshot().wobbleEnergy, 'and the same wobble');
+  assert.ok(soberSoft.snapshot().wobbleEnergy > 0, 'a soft knock is a wobble door, so there is something to compare');
+
+  const soberHard = atSpeed(null);
+  const drunkHard = atSpeed(DRUNK_STYLE);
+  const soberLanded = soberHard.hardKnock(1, 0);
+  const drunkLanded = drunkHard.hardKnock(1, 0);
+  assert.equal(soberLanded, true, 'a hard knock lands on a rider who is up');
+  assert.equal(drunkLanded, soberLanded, 'and it lands on him too');
+  assert.equal(drunkHard.snapshot().crashCause, soberHard.snapshot().crashCause);
+  assert.equal(drunkHard.snapshot().crashMotion, soberHard.snapshot().crashMotion);
+  assert.equal(drunkHard.snapshot().crashes, soberHard.snapshot().crashes);
+});
+
+test('S6 — the style never writes wobble energy', () => {
+  // The wobble door has four sanctioned callers and the census that says so
+  // lives in `simulation/paddle.test.ts`, which this milestone does not touch.
+  // This is the other half of the claim: a rider who weaves for a minute, and
+  // stumbles eleven times doing it, never puts a single joule into the
+  // oscillator — the stumble is *a wobble's look with none of its energy*, so
+  // it enters nothing, damps nothing, stacks with nothing and cannot crash.
+  const euc = drunkController();
+  const input = actions({ throttle: 1 });
+  for (let i = 0; i < SECONDS(60); i += 1) {
+    euc.step(STEP, input);
+    const now = euc.snapshot();
+    // `Object.is` rather than `=== 0`: a negative zero here would mean some
+    // arithmetic had reached the field, which is the thing being denied.
+    assert.ok(
+      Object.is(now.wobbleEnergy, 0),
+      `step ${i} put ${now.wobbleEnergy} into the oscillator`,
+    );
+    assert.equal(now.state === 'wobbling', false, `step ${i} entered the wobbling state`);
+  }
+  const final = euc.snapshot();
+  assert.equal(final.crashes, 0);
+  // Measured 2026-09-02: 11 stumbles in the minute, so the loop above really
+  // did watch the thing it claims cannot leak.
+  assert.ok(final.stumbles >= 8, `only ${final.stumbles} stumbles happened in the minute`);
+});
+
+test('the weave is exactly zero below walking pace', () => {
+  // The first gate, and the only one that can be *exactly* zero rather than
+  // eased to nothing: a wheel that never got above the floor never opened the
+  // gate at all, so `styleGate` is still the zero it was born with and every
+  // product hanging off it is a true `+0`.
+  const euc = drunkController();
+  for (let i = 0; i < SECONDS(20); i += 1) {
+    euc.step(STEP, actions({ throttle: euc.snapshot().speed < 2 ? 1 : 0 }));
+    const now = euc.snapshot();
+    assert.ok(Object.is(now.styleSway, 0), `step ${i}: sway ${now.styleSway} at ${now.speed} m/s`);
+    assert.ok(Object.is(now.styleHeading, 0), `step ${i}: heading offset ${now.styleHeading}`);
+    assert.ok(Object.is(now.styleWeaveRate, 0), `step ${i}: weave rate ${now.styleWeaveRate}`);
+  }
+  // And the ride really did happen below the floor rather than never starting.
+  assert.ok(euc.snapshot().distanceTravelled > 20, 'the wheel rolled');
+  assert.ok(euc.snapshot().speed < DRUNK_STYLE.weaveSpeedFloor, 'and stayed under walking pace');
+});
+
+test('the weave eases to nothing in reverse', () => {
+  // **Not exactly zero, and it should not be.** The gate is eased at
+  // `weaveFadeRate` rather than switched, which §29.4 asks for by name so that
+  // "nothing switches"; a rider braking through the floor into reverse
+  // therefore carries a decaying remnant rather than a step to zero. What is
+  // asserted is the decay: the remnant is already small when reverse engages
+  // and is gone by any standard a player could see.
+  //
+  // Measured 2026-09-02 over the `reverse` scenario's 1289 steps of negative
+  // speed: 0.0591 at the first, 0.0109 after half a second, 7.7e-6 after two.
+  const euc = drunkController();
+  const script: readonly [Partial<ActionSnapshot>, number][] = [
+    [{ throttle: 1 }, SECONDS(5)],
+    [{ throttle: -1 }, SECONDS(8)],
+    [{ throttle: -1, steer: 0.5 }, SECONDS(4)],
+    [{ throttle: 1 }, SECONDS(4)],
+  ];
+  let reversing = 0;
+  let firstSway = 0;
+  let afterHalf = 0;
+  let afterTwo = 0;
+  for (const [held, count] of script) {
+    const input = actions(held);
+    for (let i = 0; i < count; i += 1) {
+      euc.step(STEP, input);
+      const now = euc.snapshot();
+      if (now.speed >= 0) continue;
+      reversing += 1;
+      const sway = Math.abs(now.styleSway);
+      if (reversing === 1) firstSway = sway;
+      if (reversing * STEP > 0.5) afterHalf = Math.max(afterHalf, sway);
+      if (reversing * STEP > 2) afterTwo = Math.max(afterTwo, sway);
+    }
+  }
+  assert.ok(reversing > SECONDS(8), `only ${reversing} steps were spent rolling backwards`);
+  assert.ok(firstSway < 0.1, `reverse began with ${firstSway.toFixed(4)} of sway still on the wheel`);
+  assert.ok(afterHalf < 0.02, `half a second into reverse the sway was still ${afterHalf.toFixed(5)}`);
+  assert.ok(afterTwo < 1e-4, `two seconds into reverse the sway was still ${afterTwo.toExponential(3)}`);
+});
+
+test('the weave eases to nothing in the air, at the rate the style names', () => {
+  // Airborne is the gate whose closing a player *watches*, and a flight is
+  // short — 72 steps at 120 Hz on this hop — so the honest assertion is not
+  // "zero" but "already shutting, at the declared rate". The gate is eased by
+  // `weaveFadeRate` per second toward a target of zero, and the oscillator it
+  // multiplies never exceeds one, so at the nth airborne step the sway cannot
+  // exceed `(1 − weaveFadeRate·dt)ⁿ`. That bound is arithmetic rather than a
+  // measurement, so it fails the moment the air gate stops being applied —
+  // and it is not vacuous, because the sway *starts* the flight near its peak.
+  //
+  // Measured 2026-09-02: 0.751 at take-off, 0.078 at touchdown, and the worst
+  // ratio against the envelope 0.770 of the way to it.
+  const euc = drunkController();
+  const script: readonly [Partial<ActionSnapshot>, number][] = [
+    [{ throttle: 1 }, SECONDS(4)],
+    [{ throttle: 1, hop: true }, 1],
+    [{ throttle: 1 }, SECONDS(5)],
+  ];
+  const decay = 1 - Math.min(1, DRUNK_STYLE.weaveFadeRate * STEP);
+  let airborne = 0;
+  let firstSway = 0;
+  let lastSway = 0;
+  for (const [held, count] of script) {
+    const input = actions(held);
+    for (let i = 0; i < count; i += 1) {
+      euc.step(STEP, input);
+      const now = euc.snapshot();
+      if (now.state !== 'airborne') continue;
+      airborne += 1;
+      const sway = Math.abs(now.styleSway);
+      if (airborne === 1) firstSway = sway;
+      lastSway = sway;
+      assert.ok(
+        sway <= decay ** airborne + 1e-12,
+        `airborne step ${airborne}: sway ${sway} is above the fade envelope ${decay ** airborne}`,
+      );
+    }
+  }
+  assert.ok(airborne > SECONDS(0.4), `the hop only spent ${airborne} steps in the air`);
+  assert.ok(firstSway > 0.5, `the flight began with only ${firstSway.toFixed(4)} of sway to shut off`);
+  assert.ok(lastSway < firstSway * 0.25, `landed still carrying ${lastSway.toFixed(4)} of ${firstSway.toFixed(4)}`);
+});
+
+test('every style channel is exactly zero while the rider is down', () => {
+  // A crash clears the style outright rather than fading it, because the
+  // theatre stops with the rider: `beginCrash` calls the same clear the reset
+  // does, and a stumble that was running is over rather than paused.
+  const euc = drunkController(DRUNK_STYLE, {
+    plan: hazardPlan(),
+    hazards: [potholeAhead(40, 'potholeDeep')],
+  });
+  const script: readonly [Partial<ActionSnapshot>, number][] = [
+    [{ throttle: 1 }, SECONDS(8)],
+    [{}, SECONDS(10)],
+    [{ throttle: 1 }, SECONDS(6)],
+  ];
+  let crashed = 0;
+  for (const [held, count] of script) {
+    const input = actions(held);
+    for (let i = 0; i < count; i += 1) {
+      euc.step(STEP, input);
+      const now = euc.snapshot();
+      if (!now.crashed) continue;
+      crashed += 1;
+      assert.ok(Object.is(now.styleSway, 0), `crashed step ${crashed}: sway ${now.styleSway}`);
+      assert.ok(Object.is(now.styleHeading, 0), `crashed step ${crashed}: heading ${now.styleHeading}`);
+      assert.ok(Object.is(now.styleWeaveRate, 0), `crashed step ${crashed}: rate ${now.styleWeaveRate}`);
+      assert.ok(Object.is(now.styleYaw, 0), `crashed step ${crashed}: yaw ${now.styleYaw}`);
+      assert.ok(Object.is(now.styleRoll, 0), `crashed step ${crashed}: roll ${now.styleRoll}`);
+      assert.ok(Object.is(now.styleStumble, 0), `crashed step ${crashed}: stumble ${now.styleStumble}`);
+    }
+  }
+  // Measured 2026-09-02: 301 crashed steps, every channel a true `+0` on all
+  // of them, and the rider back up and riding by the end.
+  assert.ok(crashed > SECONDS(2), `only ${crashed} steps were spent on the ground`);
+  assert.equal(euc.snapshot().crashed, false, 'and the recovery happened');
+});
+
+test('the weave fades away under the stick and settles back when it is let go', () => {
+  // §29.4's fun contract in one measurement: a player threading a gap never
+  // feels a hand on the wheel. The fade is `(1 − |steer|)²`, so half the weave
+  // is gone at a third of a stick and full lock leaves essentially none of it.
+  //
+  // Measured 2026-09-02: hands-off peak 0.998; full lock 7.1e-4, which is
+  // 0.071% of it; and within two to four seconds of release the sway is back
+  // past a third of its hands-off peak — the recovery is the *gate* easing in
+  // at 3/s (99.8% back in two seconds), and what the window is waiting for is
+  // the two incommensurate cosines to come back round to an excursion.
+  const euc = drunkController();
+  const open = actions({ throttle: 1 });
+  for (let i = 0; i < SECONDS(20); i += 1) euc.step(STEP, open);
+  let handsOff = 0;
+  for (let i = 0; i < SECONDS(8); i += 1) {
+    euc.step(STEP, open);
+    handsOff = Math.max(handsOff, Math.abs(euc.snapshot().styleSway));
+  }
+  assert.ok(handsOff > 0.9, `the hands-off baseline only reached ${handsOff.toFixed(4)}`);
+
+  // Two seconds of full lock to let the gate close, then measure two more.
+  const locked = actions({ throttle: 1, steer: 1 });
+  for (let i = 0; i < SECONDS(2); i += 1) euc.step(STEP, locked);
+  let underLock = 0;
+  for (let i = 0; i < SECONDS(2); i += 1) {
+    euc.step(STEP, locked);
+    underLock = Math.max(underLock, Math.abs(euc.snapshot().styleSway));
+  }
+  assert.ok(
+    underLock < handsOff * 0.05,
+    `full lock left ${(underLock / handsOff * 100).toFixed(3)}% of the weave on the wheel`,
+  );
+
+  let back = 0;
+  for (let i = 0; i < SECONDS(4); i += 1) {
+    euc.step(STEP, open);
+    back = Math.max(back, Math.abs(euc.snapshot().styleSway));
+  }
+  assert.ok(
+    back > handsOff * 0.3,
+    `four seconds after letting go the weave was only ${(back / handsOff * 100).toFixed(1)}% back`,
+  );
+});
+
+test('the stumble arrives at the same step every run, a spacing of road apart', () => {
+  // "Counted on the fixed step, so `advance(n)` reaches the same one every
+  // run" — the promise the browser spec will lean on, made here where it is
+  // cheap. Two fresh controllers, identical scripts, and the same step.
+  //
+  // Measured 2026-09-02: step 858 (0-based), at 110.107 m of distance
+  // travelled against a 110 m spacing, 11 stumbles in a minute, and every
+  // gap between consecutive ones 110.07–110.15 m.
+  const firstStumbleStep = (): { step: number; distance: number } => {
+    const euc = drunkController();
+    const input = actions({ throttle: 1 });
+    for (let step = 0; step < SECONDS(60); step += 1) {
+      euc.step(STEP, input);
+      if (euc.snapshot().stumbles > 0) return { step, distance: euc.snapshot().distanceTravelled };
+    }
+    assert.fail('no stumble inside a minute of riding');
+  };
+  const first = firstStumbleStep();
+  const second = firstStumbleStep();
+  assert.equal(second.step, first.step, 'two identical rides stumbled on different steps');
+  assert.equal(second.distance, first.distance);
+  assert.ok(
+    Math.abs(first.distance - DRUNK_STYLE.stumbleEvery) < 2,
+    `the first stumble came at ${first.distance.toFixed(3)} m, not near the ${DRUNK_STYLE.stumbleEvery} m spacing`,
+  );
+
+  // And never twice inside the spacing: the metre count goes back to zero
+  // rather than to minus the spacing, so a stumble held back by a gate does
+  // not owe the road a sooner one.
+  const euc = drunkController();
+  const input = actions({ throttle: 1 });
+  const gaps: number[] = [];
+  let seen = 0;
+  let lastDistance = 0;
+  for (let step = 0; step < SECONDS(120); step += 1) {
+    euc.step(STEP, input);
+    const now = euc.snapshot();
+    if (now.stumbles === seen) continue;
+    seen = now.stumbles;
+    if (lastDistance > 0) gaps.push(now.distanceTravelled - lastDistance);
+    lastDistance = now.distanceTravelled;
+  }
+  assert.ok(gaps.length > 15, `only ${gaps.length + 1} stumbles in two minutes`);
+  for (const gap of gaps) {
+    assert.ok(
+      gap >= DRUNK_STYLE.stumbleEvery - 1,
+      `two stumbles were only ${gap.toFixed(3)} m apart`,
+    );
+  }
+});
+
+test('a stumble lasts its half second, peaks where the style says, and sums to nothing', () => {
+  // The shape of the burst, and the reason it is safe to spend on the travel
+  // heading. A sine envelope zero at both ends, a symmetric shimmy inside it:
+  // the machine leaves and returns to exactly where it was, so the contact
+  // patch really shimmies and the ride ends up nowhere new.
+  //
+  // Measured 2026-09-02: 59 steps of envelope against the 60 a half second
+  // asks for, peak |yaw| 0.88 of `stumbleYaw`, and the worst per-stumble sum
+  // 3.0e-16 rad — floating-point dust rather than a drift.
+  //
+  // **The peak is under the style's number, and that is the shape's
+  // guarantee, not a shortfall.** The shimmy is odd about the burst's
+  // midpoint — the QA pass found the first cut's carrier cancelling only at
+  // the shipped 3 Hz × 0.5 s and drifting 4.3 m a minute at a legal 1 Hz —
+  // so the carrier crosses zero exactly where the envelope peaks, and the
+  // product's peak lands a little either side of the middle.
+  const euc = drunkController();
+  const input = actions({ throttle: 1 });
+  const lengths: number[] = [];
+  const sums: number[] = [];
+  const peaks: number[] = [];
+  let running = false;
+  let length = 0;
+  let sum = 0;
+  let peak = 0;
+  for (let step = 0; step < SECONDS(120); step += 1) {
+    euc.step(STEP, input);
+    const now = euc.snapshot();
+    if (now.styleStumble > 0) {
+      running = true;
+      length += 1;
+      sum += now.styleYaw;
+      peak = Math.max(peak, Math.abs(now.styleYaw));
+      // The roll rides the same envelope and the same shimmy, so the two are
+      // in a fixed ratio all the way through — one oscillator, not two.
+      assert.ok(
+        Math.abs(now.styleRoll * DRUNK_STYLE.stumbleYaw - now.styleYaw * DRUNK_STYLE.stumbleRoll) < 1e-12,
+        'the stumble roll and yaw came off different clocks',
+      );
+    } else if (running) {
+      running = false;
+      lengths.push(length);
+      sums.push(sum);
+      peaks.push(peak);
+      length = 0;
+      sum = 0;
+      peak = 0;
+    }
+  }
+  assert.ok(lengths.length > 15, `only ${lengths.length} complete stumbles in two minutes`);
+  const wanted = Math.round(DRUNK_STYLE.stumbleSeconds * SIMULATION.hz);
+  for (const measured of lengths) {
+    assert.ok(
+      Math.abs(measured - wanted) <= 2,
+      `a stumble ran ${measured} steps against the ${wanted} its half second asks for`,
+    );
+  }
+  for (const measured of sums) {
+    assert.ok(Math.abs(measured) < 1e-9, `a stumble's yaw summed to ${measured.toExponential(3)} rad`);
+  }
+  for (const measured of peaks) {
+    assert.ok(
+      measured > 0.8 * DRUNK_STYLE.stumbleYaw && measured <= DRUNK_STYLE.stumbleYaw + 1e-12,
+      `a stumble peaked at ${measured} rad against the style's ${DRUNK_STYLE.stumbleYaw}`,
+    );
+  }
+});
+
+test('a stumble sums to nothing at every length and rate the panel allows, not only the shipped pair', () => {
+  // The QA pass's finding 6, as a test: with the weave off so the stumble is
+  // the only thing moving the wheel, a minute of riding at each of five
+  // legal F4 pairs ends within a centimetre of the line it started on. The
+  // first cut drifted 4.27 m at 1 Hz × 0.5 s and 0.3 m at 3 Hz × 0.45 s;
+  // the odd carrier makes every pair 0.0003 m or less (measured).
+  for (const [rate, seconds] of [[1, 0.5], [3, 0.5], [3, 0.45], [3, 0.55], [5, 0.35], [8, 1.5]] as const) {
+    const euc = drunkController({ ...DRUNK_STYLE, weaveHeading: 0, stumbleRate: rate, stumbleSeconds: seconds });
+    const input = actions({ throttle: 1 });
+    let sum = 0;
+    for (let i = 0; i < SECONDS(60); i += 1) {
+      euc.step(STEP, input);
+      sum += euc.snapshot().styleYaw;
+    }
+    const final = euc.snapshot();
+    assert.ok(final.stumbles >= 8, `${rate} Hz × ${seconds} s: only ${final.stumbles} stumbles in a minute`);
+    assert.ok(
+      Math.abs(final.position.x) < 0.01,
+      `${rate} Hz × ${seconds} s: drifted ${final.position.x.toFixed(4)} m over ${final.stumbles} stumbles`,
+    );
+    assert.ok(Math.abs(sum) < 1e-9, `${rate} Hz × ${seconds} s: the yaw summed to ${sum.toExponential(3)}`);
+    assert.ok(Object.is(final.headingY, 0) || Math.abs(final.headingY) < 1e-12, 'the heading never saw it');
+  }
+});
+
+test('a full-lock carve through the grip limit leaves no heading the weave does not owe', () => {
+  // The QA pass's finding 1. The lateral clamp clips the *sum* of the
+  // steering and the weave, and a full-lock carve at speed is where it binds;
+  // the first cut recorded the weave's return correction as delivered when
+  // the clamp had thrown it away, and a rider came out of every hard corner
+  // 0.68° off the heading a sober rider took out of the same corner, and
+  // 2.8 m away ten seconds later. The offset now advances by what the clamp
+  // let through, so the debt is repaid once the clamp stops binding: the
+  // residual after the corner is 0.0004° (measured), and it is measured
+  // *against a sober rider driven identically* so the corner itself is not
+  // in the number. Both directions, and the offset's own sign is checked at
+  // the moment of release so the test is known to be looking at a debt.
+  for (const steer of [1, -1]) {
+    const sober = controller();
+    const drunk = drunkController();
+    for (const euc of [sober, drunk]) {
+      for (let i = 0; i < SECONDS(4); i += 1) euc.step(STEP, actions({ throttle: 1 }));
+      for (let i = 0; i < SECONDS(10); i += 1) euc.step(STEP, actions({ throttle: 1, steer }));
+    }
+    assert.ok(drunk.snapshot().lateralLimited || sober.snapshot().lateralLimited, 'the carve reached the grip limit');
+    const owedAtRelease = drunk.snapshot().styleHeading;
+    assert.ok(Math.abs(owedAtRelease) > 1e-4, `nothing was owed at release (${owedAtRelease}) — the clamp never bit the weave`);
+    for (const euc of [sober, drunk]) {
+      for (let i = 0; i < SECONDS(10); i += 1) euc.step(STEP, actions({ throttle: 1 }));
+    }
+    const d = drunk.snapshot();
+    const residual = Math.abs(d.headingY - sober.snapshot().headingY - d.styleHeading) * 180 / Math.PI;
+    assert.ok(residual < 0.02, `steer ${steer}: ${residual.toFixed(5)}° of heading survived the corner unowed`);
+  }
+});
+
+test('S4 — dressing a drunk seat sober clears the sway, the stumble and the offset on the spot', () => {
+  // The QA pass's finding 2. A sober record is every field at zero, and a
+  // product with zero cannot undo a sway that was already standing or a
+  // stumble already running — and a zero fade rate is exactly what stopped
+  // the gate from ever closing them: the sway sat frozen at −0.86 five
+  // seconds after a swap, the new rig's first frame wore the old stumble's
+  // bracing, and the first sober step asked for 1.4 rad/s of yaw to return
+  // an offset nobody owned any more. `setRideStyle` now clears the live
+  // state when the style changes *kind*, and this rides the exact sequence
+  // the chooser produces: ride drunk, swap, keep riding — no reset.
+  const euc = drunkController();
+  const input = actions({ throttle: 1 });
+  for (let i = 0; i < SECONDS(8); i += 1) euc.step(STEP, input);
+  assert.ok(Math.abs(euc.snapshot().styleSway) > 0.1, 'the seat was swaying up to the swap');
+  euc.setRideStyle(SOBER_STYLE);
+  euc.step(STEP, input);
+  const first = euc.snapshot();
+  for (const [name, value] of Object.entries({
+    styleSway: first.styleSway, styleHeading: first.styleHeading, styleWeaveRate: first.styleWeaveRate,
+    styleYaw: first.styleYaw, styleRoll: first.styleRoll, styleStumble: first.styleStumble,
+  })) {
+    assert.ok(Object.is(value, 0), `the first sober step still carried ${name} = ${value}`);
+  }
+  assert.equal(first.stumbles, 0, 'the stumble count is the new rider\'s');
+  for (let i = 0; i < SECONDS(5); i += 1) euc.step(STEP, input);
+  assert.ok(Object.is(euc.snapshot().styleSway, 0), 'and five seconds later the sway is still exactly zero');
+
+  // A swap in the middle of a stumble ends it there and then.
+  const mid = drunkController();
+  let swapped = false;
+  for (let i = 0; i < SECONDS(30) && !swapped; i += 1) {
+    mid.step(STEP, input);
+    if (mid.snapshot().styleStumble > 0.5) {
+      mid.setRideStyle(SOBER_STYLE);
+      swapped = true;
+    }
+  }
+  assert.equal(swapped, true, 'a stumble was reached to swap inside of');
+  mid.step(STEP, input);
+  assert.ok(Object.is(mid.snapshot().styleStumble, 0) && Object.is(mid.snapshot().styleYaw, 0),
+    'the stumble did not survive the swap');
+
+  // And a retune of the *same kind* keeps its continuity — a slider is not a
+  // new rider. The F4 path hands the controller a fresh copy on every change.
+  const tuned = drunkController();
+  for (let i = 0; i < SECONDS(8); i += 1) tuned.step(STEP, input);
+  const before = tuned.snapshot().styleSway;
+  tuned.setRideStyle({ ...DRUNK_STYLE, stumbleEvery: 50 });
+  tuned.step(STEP, input);
+  assert.ok(Math.abs(tuned.snapshot().styleSway - before) < 0.05, 'a retune did not restart the sway');
+});
+
+test('a stumble never fires in the air, in a crash, or below walking pace', () => {
+  // Three gates, each ridden with a **five-metre spacing** rather than the
+  // shipped 110 m. That substitution is what makes these assertions able to
+  // fail: at the real spacing a hop is over long before the next stumble is
+  // due, so a test that watched one would be green whether the gate existed
+  // or not. At five metres a rider covers two spacings inside a single hop.
+  const tight: RideStyle = Object.freeze({ ...DRUNK_STYLE, stumbleEvery: 5 });
+
+  // In the air: metres are counted only while riding, so a flight banks none —
+  // and a stumble that was running when the wheel left the ground is over,
+  // not paused. (Measured 2026-09-02: a stumble at 0.999 of its envelope one
+  // step before take-off, and nothing live on any of the 72 airborne steps.)
+  const hopper = drunkController(tight);
+  const hopScript: readonly [Partial<ActionSnapshot>, number][] = [
+    [{ throttle: 1 }, SECONDS(4)],
+    [{ throttle: 1, hop: true }, 1],
+    [{ throttle: 1 }, SECONDS(5)],
+  ];
+  let airborne = 0;
+  let stumblesAtTakeOff = -1;
+  let liveAtTakeOff = 0;
+  for (const [held, count] of hopScript) {
+    const input = actions(held);
+    for (let i = 0; i < count; i += 1) {
+      const before = hopper.snapshot();
+      hopper.step(STEP, input);
+      const now = hopper.snapshot();
+      if (now.state !== 'airborne') continue;
+      if (airborne === 0) {
+        stumblesAtTakeOff = before.stumbles;
+        liveAtTakeOff = before.styleStumble;
+      }
+      airborne += 1;
+      assert.ok(Object.is(now.styleStumble, 0), `airborne step ${airborne} was stumbling`);
+      assert.ok(Object.is(now.styleYaw, 0), `airborne step ${airborne} carried ${now.styleYaw} of stumble yaw`);
+      assert.ok(Object.is(now.styleRoll, 0), `airborne step ${airborne} carried ${now.styleRoll} of stumble roll`);
+      assert.equal(now.stumbles, stumblesAtTakeOff, `a stumble started at airborne step ${airborne}`);
+    }
+  }
+  assert.ok(airborne > SECONDS(0.4), `the hop only lasted ${airborne} steps`);
+  assert.ok(stumblesAtTakeOff > 0, 'the tight spacing really was firing stumbles before the hop');
+  assert.ok(liveAtTakeOff > 0.5, 'and one was running as the wheel left the ground, so the cut is visible');
+
+  // In a crash: the same claim over ten times as many steps, and the rider is
+  // travelling for most of them.
+  const faller = drunkController(tight, {
+    plan: hazardPlan(),
+    hazards: [potholeAhead(40, 'potholeDeep')],
+  });
+  const crashScript: readonly [Partial<ActionSnapshot>, number][] = [
+    [{ throttle: 1 }, SECONDS(8)],
+    [{}, SECONDS(10)],
+    [{ throttle: 1 }, SECONDS(6)],
+  ];
+  let down = 0;
+  let stumblesAtImpact = -1;
+  for (const [held, count] of crashScript) {
+    const input = actions(held);
+    for (let i = 0; i < count; i += 1) {
+      const before = faller.snapshot();
+      faller.step(STEP, input);
+      const now = faller.snapshot();
+      if (!now.crashed) continue;
+      if (down === 0) stumblesAtImpact = before.stumbles;
+      down += 1;
+      assert.equal(now.stumbles, stumblesAtImpact, `a stumble started on crashed step ${down}`);
+    }
+  }
+  assert.ok(down > SECONDS(2), `only ${down} steps were spent on the ground`);
+  assert.ok(stumblesAtImpact > 0, 'the tight spacing was firing before the hole, too');
+
+  // Below walking pace: over a hundred metres of road at 2 m/s, and not one.
+  const crawler = drunkController(tight);
+  for (let i = 0; i < SECONDS(60); i += 1) {
+    crawler.step(STEP, actions({ throttle: crawler.snapshot().speed < 2 ? 1 : 0 }));
+  }
+  const crawled = crawler.snapshot();
+  assert.ok(crawled.distanceTravelled > 100, `only ${crawled.distanceTravelled.toFixed(1)} m were crawled`);
+  assert.equal(crawled.stumbles, 0, `${crawled.stumbles} stumbles happened under walking pace`);
+});
+
+test("the stumble is spent on the travel heading and never on the rider's own", () => {
+  // Fact 14's rule, measured: `styleYaw` joins `wobbleYaw` on the travel
+  // heading, so the contact patch shimmies while `headingY` — the number the
+  // camera and the whole rig are hung off — never learns the stumble happened.
+  //
+  // The control is the same style with the stumble switched off, which leaves
+  // the weave untouched: if a single radian of shimmy leaked into `headingY`
+  // the two traces would separate at the first stumble and never rejoin.
+  // Measured 2026-09-02: the worst difference over a minute is exactly 0.
+  const withStumble = drunkController();
+  const without = drunkController({ ...DRUNK_STYLE, stumbleEvery: 0 });
+  const input = actions({ throttle: 1 });
+  let worst = 0;
+  for (let step = 0; step < SECONDS(60); step += 1) {
+    withStumble.step(STEP, input);
+    without.step(STEP, input);
+    worst = Math.max(worst, Math.abs(withStumble.snapshot().headingY - without.snapshot().headingY));
+  }
+  assert.ok(worst < 1e-6, `the stumble moved the heading by ${worst.toExponential(3)} rad`);
+  assert.ok(withStumble.snapshot().stumbles > 8, 'the control really did have stumbles to hide');
+  assert.equal(without.snapshot().stumbles, 0, 'and the control really had none');
+});
+
+test('S4 — a seat dressed sober, or sobered again, rides the sober digests', () => {
+  // Safeguard S4's first half: swap hygiene. The composition root re-dresses a
+  // seat whenever the character changes, so "sober" has to mean the same thing
+  // whether it was never anything else, was installed explicitly, or arrived
+  // by way of the Drunkard. All three reproduce the pins recorded before a
+  // ride style existed — which is S1 asserted a second time, from the swap.
+  const moved: string[] = [];
+  for (const name of Object.keys(SOBER_SCENARIOS) as (keyof typeof SOBER_SCENARIOS)[]) {
+    const installed = runSoberScenario(name, (euc) => euc.setRideStyle(SOBER_STYLE));
+    if (installed.digest !== SOBER_DIGESTS[name].digest) moved.push(`${name} (sober installed)`);
+    const resobered = runSoberScenario(name, (euc) => {
+      euc.setRideStyle(DRUNK_STYLE);
+      euc.setRideStyle(SOBER_STYLE);
+      // A re-dress at the chooser is followed by the ride starting over, which
+      // is the reset that also clears the style's own clock and metre count.
+      euc.reset();
+    });
+    if (resobered.digest !== SOBER_DIGESTS[name].digest) moved.push(`${name} (drunk then sobered)`);
+  }
+  assert.deepEqual(
+    moved,
+    [],
+    `a re-dressed sober seat did not ride the sober digest: ${moved.join(', ')}`,
+  );
+});
+
+test('S4 — a sober seat re-dressed drunk mid-ride starts weaving', () => {
+  // The other direction, and the half that would fail silently: a style that
+  // only took effect at a reset would leave the guest who just picked him
+  // riding like Cool Rider until the next restart, and nothing on screen would
+  // say so. (Measured 2026-09-02: the sway is non-zero on the very first step
+  // after the swap and reaches 0.874 inside five seconds.)
+  const euc = controller();
+  const input = actions({ throttle: 1 });
+  for (let i = 0; i < SECONDS(10); i += 1) euc.step(STEP, input);
+  assert.ok(Object.is(euc.snapshot().styleSway, 0), 'the seat was sober up to the swap');
+
+  euc.setRideStyle(DRUNK_STYLE);
+  let peak = 0;
+  for (let i = 0; i < SECONDS(5); i += 1) {
+    euc.step(STEP, input);
+    peak = Math.max(peak, Math.abs(euc.snapshot().styleSway));
+  }
+  assert.ok(peak > 0.25, `five seconds after the swap the sway had only reached ${peak.toFixed(4)}`);
+});
+
+test('S3 — a style is per seat, never per room', () => {
+  // Four controllers alive at once, stepped in lockstep on one script, with
+  // the Drunkard in seat 2. Three of them reproduce the straight's pinned
+  // digest exactly and the fourth does not — which is the shape of the bug
+  // this safeguard exists for: a style stored on a shared object, or read off
+  // anything but the seat's own controller, would move all four.
+  const seats = [0, 1, 2, 3].map(() => controller());
+  seats[2].setRideStyle(DRUNK_STYLE);
+  const poses = seats.map(() => createPose());
+  const digests = seats.map(() => new RideDigest());
+  const input = actions({ throttle: 1 });
+  for (let step = 0; step < SOBER_DIGESTS.straight.steps; step += 1) {
+    for (let seat = 0; seat < seats.length; seat += 1) {
+      digestStep(seats[seat], poses[seat], digests[seat], input);
+    }
+  }
+  for (const seat of [0, 1, 3]) {
+    assert.equal(
+      digests[seat].hex(),
+      SOBER_DIGESTS.straight.digest,
+      `seat ${seat} rode somebody else's ride`,
+    );
+  }
+  assert.notEqual(digests[2].hex(), SOBER_DIGESTS.straight.digest, 'seat 2 rode sober');
+  // And the difference is visible where the joke lives: only seat 2 wandered.
+  for (const seat of [0, 1, 3]) {
+    assert.ok(Object.is(seats[seat].snapshot().position.x, 0), `seat ${seat} wandered sideways`);
+  }
+  assert.ok(seats[2].snapshot().stumbles > 0, 'and only seat 2 stumbled');
+});
+
+test('the four new pose channels are exactly zero on a sober seat, in every scenario', () => {
+  // The promise the digest block above makes in prose: a pose channel added
+  // after the pins were recorded is *not* folded into the hash — it gets its
+  // own assertion that it is zero on a sober seat. This is that assertion, on
+  // all six scripted rides and every step of each, including the airborne, the
+  // wobbling and the crashed ones where a style's clock is at its busiest.
+  const pose = createPose();
+  for (const name of Object.keys(SOBER_SCENARIOS) as (keyof typeof SOBER_SCENARIOS)[]) {
+    const { euc, script } = SOBER_SCENARIOS[name]();
+    let step = 0;
+    for (const [held, count] of script) {
+      const input = actions(held);
+      for (let i = 0; i < count; i += 1) {
+        euc.step(STEP, input);
+        euc.writePose(pose);
+        step += 1;
+        assert.ok(Object.is(pose.styleSway, 0), `${name} step ${step}: styleSway ${pose.styleSway}`);
+        assert.ok(Object.is(pose.styleYaw, 0), `${name} step ${step}: styleYaw ${pose.styleYaw}`);
+        assert.ok(Object.is(pose.styleRoll, 0), `${name} step ${step}: styleRoll ${pose.styleRoll}`);
+        assert.ok(Object.is(pose.styleStumble, 0), `${name} step ${step}: styleStumble ${pose.styleStumble}`);
+      }
+    }
+  }
+});
+
+/**
+ * A route ridden end to end by the harness's own follower, sober or drunk.
+ *
+ * `simulation/cpuRider.test.ts`'s `rideAlone`, trimmed to what a neutrality
+ * measurement needs. The follower steers *continuously*, which is exactly why
+ * §29.4 asks for this measurement: with a stick in hand the weave's gate is
+ * faded by `(1 − |steer|)²` for most of the lap, so what is left to measure is
+ * whether the style costs or buys anything on a course somebody is driving.
+ */
+function followRoute(plan: LevelPlan, spine: RouteSpine, style: RideStyle | null): {
+  readonly seconds: number;
+  readonly crashes: number;
+  readonly finished: boolean;
+} {
+  const sampler = new PlanTerrainSampler(plan);
+  const euc = new EucController(sampler, {
+    spawn: plan.spawn,
+    hazards: new HazardField(plan.hazards ?? []),
+    softBodies: new SoftBodyField(plan.softBodies ?? []),
+  });
+  if (style) euc.setRideStyle(style);
+  const brain = new CpuRider(spine, plan, sampler);
+  brain.skill = 1;
+
+  const pose = createPose();
+  euc.writePose(pose);
+  const view: { -readonly [K in keyof CpuView]: CpuView[K] } = {
+    x: pose.x,
+    y: pose.y,
+    z: pose.z,
+    headingY: pose.headingY,
+    speed: 0,
+    grounded: true,
+    crashed: false,
+    curbAhead: 0,
+    lateralLimitG: EUC.maxLateralG,
+  };
+  brain.place(view);
+
+  const finish = spine.length - 12;
+  let crashes = 0;
+  let wasCrashed = false;
+  let seconds = 0;
+  for (let step = 0; step < SECONDS(300); step += 1) {
+    euc.writePose(pose);
+    view.x = pose.x;
+    view.y = pose.y;
+    view.z = pose.z;
+    view.headingY = pose.headingY;
+    view.speed = pose.speed;
+    view.grounded = pose.y - pose.groundY <= 1e-6;
+    view.crashed = euc.crashed;
+    view.curbAhead = euc.curbHeightAhead;
+    view.lateralLimitG = euc.lateralLimit;
+    if (euc.crashed && !wasCrashed) crashes += 1;
+    wasCrashed = euc.crashed;
+
+    euc.step(STEP, brain.step(STEP, view, null));
+    seconds += STEP;
+    if (brain.routeDistance >= finish) return { seconds, crashes, finished: true };
+  }
+  return { seconds, crashes, finished: false };
+}
+
+test("a driven lap costs him nothing — and the follower's own spread says how little", () => {
+  // §29.4's second measured claim, with one substitution and one addition.
+  //
+  // **The substitution: a generated route, not BelVar.** The plan asks for a
+  // scripted BelVar lap through the harness's route-follower, and the follower
+  // cannot ride BelVar: `RouteSpine.fromPlan` refuses a circuit's
+  // `start, split, split…` spelling on purpose, because accepting it silently
+  // builds a truncated 713 m spine across a 930 m lap. So the eight pinned
+  // seeds `simulation/cpuRider.test.ts` already sweeps stand in — a kilometre
+  // of continuously-steered road each, chosen before the fact.
+  //
+  // **What the per-seed number is, and is not.** A route-follower is a closed
+  // loop: it re-steers around wherever the wheel actually is, so a small
+  // perturbation changes which line it takes into the next corner and lap
+  // times separate chaotically. Measured 2026-09-02 over fourteen seeds, the
+  // drunk rider's per-seed difference reached 0.73% while a style with the
+  // weave switched off entirely — whose stumble provably moves the heading
+  // by nothing — reached 0.49% on the same seeds. A per-seed bound on *this*
+  // follower measures the follower, so the claims held here are the
+  // aggregate ones: the mean difference is inside the plan's 0.5%, and nobody
+  // gains systematically, because the signed mean is near zero and both
+  // signs occur. **The plan's per-course bound is held where the plan put
+  // it — on BelVar — in the test below**, through a follower whose steering
+  // is a plain pursuit rather than a corridor planner.
+  //
+  // Measured over these eight seeds on 2026-09-02: mean |Δ| 0.169%, signed
+  // mean +0.070% (a hair *slower* on average), five of eight faster.
+  const seeds = Array.from({ length: 8 }, (_, index) => `sweep-${index}`);
+  const differences: number[] = [];
+
+  for (const seed of seeds) {
+    const { plan } = generateLevel(seed);
+    const spine = RouteSpine.fromPlan(plan);
+    assert.ok(spine !== null, `${seed} has no spine to follow`);
+
+    const sober = followRoute(plan, spine, null);
+    const drunk = followRoute(plan, spine, DRUNK_STYLE);
+    for (const [label, run] of [['sober', sober], ['drunk', drunk]] as const) {
+      assert.equal(run.finished, true, `${seed}: the ${label} rider never reached the end`);
+      assert.equal(run.crashes, 0, `${seed}: the ${label} rider crashed ${run.crashes} times`);
+    }
+    differences.push((drunk.seconds - sober.seconds) / sober.seconds);
+  }
+
+  const mean = (values: readonly number[]): number =>
+    values.reduce((total, value) => total + value, 0) / values.length;
+  const meanAbsolute = mean(differences.map(Math.abs));
+  assert.ok(
+    meanAbsolute < 0.005,
+    `a driven lap moved by ${(meanAbsolute * 100).toFixed(4)}% on average`,
+  );
+  assert.ok(
+    Math.abs(mean(differences)) < 0.0025,
+    `the drunk rider is systematically ${(mean(differences) * 100).toFixed(4)}% off the sober lap`,
+  );
+  assert.ok(
+    differences.some((value) => value > 0) && differences.some((value) => value < 0),
+    'every seed went the same way, which is a stat and not chaos',
+  );
+});
+
+/**
+ * BelVar's lap as a polyline, and a rider driven round it by pure pursuit.
+ *
+ * `RouteSpine` refuses a circuit on purpose, so the harness's own
+ * route-point arithmetic is reproduced here instead: every lap segment's
+ * entry-to-exit arc sampled every two metres, a 9 m look-ahead, steering
+ * proportional to the bearing error, throttle off above 12 m/s. The shape is
+ * the independent QA pass's BelVar probe, which is where §29.4's per-course
+ * bound was first held on the course it names; it runs one lap in about a
+ * third of a second.
+ */
+function lapBelVar(style: RideStyle | null): { readonly seconds: number; readonly crashes: number; readonly finished: boolean } {
+  const plan = createTrackLevel();
+  const points: { x: number; z: number }[] = [];
+  for (const id of TRACK_LAP_SEGMENT_IDS) {
+    const segment = plan.segments.find((candidate) => candidate.id === id);
+    assert.ok(segment, `BelVar has no segment ${id}`);
+    const turn = segment.exit.headingY - segment.entry.headingY;
+    const dx = segment.exit.position.x - segment.entry.position.x;
+    const dz = segment.exit.position.z - segment.entry.position.z;
+    const chord = Math.hypot(dx, dz);
+    const length = Math.abs(turn) < 1e-9 ? chord : chord * (turn / 2) / Math.sin(turn / 2);
+    const curve = turn / length;
+    const count = Math.max(1, Math.round(length / 2));
+    for (let i = 0; i <= count; i += 1) {
+      const along = length * i / count;
+      const h0 = segment.entry.headingY;
+      const h = h0 + curve * along;
+      points.push(Math.abs(curve) < 1e-9
+        ? { x: segment.entry.position.x + Math.sin(h0) * along, z: segment.entry.position.z + Math.cos(h0) * along }
+        : { x: segment.entry.position.x + (Math.cos(h0) - Math.cos(h)) / curve, z: segment.entry.position.z + (Math.sin(h) - Math.sin(h0)) / curve });
+    }
+  }
+  const euc = new EucController(new PlanTerrainSampler(plan), {
+    spawn: { position: { x: points[0].x, y: 0, z: points[0].z }, headingY: Math.atan2(points[1].x - points[0].x, points[1].z - points[0].z) },
+    hazards: new HazardField(plan.hazards ?? []),
+    softBodies: new SoftBodyField(plan.softBodies ?? []),
+  });
+  if (style) euc.setRideStyle(style);
+  const last = points[points.length - 1];
+  let index = 0;
+  let steps = 0;
+  while (steps < SECONDS(250)) {
+    const now = euc.snapshot();
+    const { x, z } = now.position;
+    while (index < points.length - 1 && Math.hypot(points[index].x - x, points[index].z - z) < 9) index += 1;
+    if (index >= points.length - 1 && Math.hypot(last.x - x, last.z - z) < 9) {
+      return { seconds: steps * STEP, crashes: now.crashes, finished: true };
+    }
+    let error = Math.atan2(points[index].x - x, points[index].z - z) - now.headingY;
+    while (error > Math.PI) error -= 2 * Math.PI;
+    while (error < -Math.PI) error += 2 * Math.PI;
+    const input = actions({
+      throttle: now.speed > 12 ? 0 : Math.max(0.25, 1 - Math.abs(error)),
+      steer: Math.max(-1, Math.min(1, -error * 1.8)),
+    });
+    euc.step(STEP, input);
+    euc.step(STEP, input);
+    steps += 2;
+  }
+  return { seconds: steps * STEP, crashes: euc.snapshot().crashes, finished: false };
+}
+
+test('a driven BelVar lap is the same lap drunk or sober, to half a percent — the plan\'s own course', () => {
+  // §29.4's per-course bound, on the course it names. Measured 2026-09-02:
+  // sober 79.87 s, drunk 79.92 s, +0.063%, both clean.
+  const sober = lapBelVar(null);
+  const drunk = lapBelVar(DRUNK_STYLE);
+  for (const [label, lap] of [['sober', sober], ['drunk', drunk]] as const) {
+    assert.equal(lap.finished, true, `the ${label} rider never finished the lap`);
+    assert.equal(lap.crashes, 0, `the ${label} rider crashed ${lap.crashes} times`);
+  }
+  const difference = (drunk.seconds - sober.seconds) / sober.seconds;
+  assert.ok(Math.abs(difference) < 0.005, `the drunk lap is ${(difference * 100).toFixed(4)}% off the sober lap`);
 });

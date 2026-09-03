@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import * as THREE from 'three';
 import { RIDER_BLOCKOUT, WHEEL } from '../data/tuning.ts';
-import { createPose } from '../simulation/EucController.ts';
+import { copyPose, createPose, type EucPose } from '../simulation/EucController.ts';
 import {
   RD_CHEST,
   RD_FOOT_L,
@@ -19,6 +19,7 @@ import {
 } from '../simulation/ragdoll.ts';
 import { createBlockoutEUC } from './euc.ts';
 import { createPlaceholderRider, createStanceInput } from './rider.ts';
+import { COOL_RIDER_LOOK, DRUNKARD_LOOK } from './riderLook.ts';
 import { createRidingRig } from './ridingRig.ts';
 
 test('the stopped pedal-side boot follows the complete machine roll', () => {
@@ -353,4 +354,117 @@ test('a full ragdoll blend puts the pelvis and both boots on their particles', (
   assert.ok(Math.abs(rig.euc.group.rotation.y - 1.1) < 1e-9);
 
   rig.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// M29 — the ride style reaches the rig, and only the rider with a table
+// ---------------------------------------------------------------------------
+
+test("the style moves the Drunkard's body and leaves Cool Rider's exactly where it was", () => {
+  // Phase 1's own proof, stated as pose deltas: **a rider who weaves in Cool
+  // Rider's clothes is the cheapest possible evidence that the style is keyed
+  // to the seat and not to the geometry** (`docs/PLANS.md` §29.9). The same
+  // four channels are written into two rigs that differ only by a look, and
+  // the joints the sway owns move on one and are bit-identical on the other —
+  // because `look.motion ?? MOTION_STILL` makes every one of those terms a
+  // product of two zeros for everybody else (safeguard S5).
+  //
+  // The two hundred pose assertions above this line are the other half of the
+  // claim, and they are asserted the way they always were: by still passing.
+  const drunk = createRidingRig(DRUNKARD_LOOK);
+  const cool = createRidingRig(COOL_RIDER_LOOK);
+  const motion = DRUNKARD_LOOK.motion!;
+
+  // One ordinary riding pose, carrying a carve so the counter-roll the
+  // over-lean forgets a share of is actually on the pelvis.
+  const still = createPose();
+  still.speed = 12;
+  still.rollAngle = 0.25;
+  still.riderRoll = 0.2;
+
+  const styled = createPose();
+  copyPose(still, styled);
+  styled.styleSway = 1;
+  styled.styleYaw = 0.05;
+  styled.styleRoll = 0.05;
+  styled.styleStumble = 1;
+
+  const read = (rig: ReturnType<typeof createRidingRig>, pose: EucPose) => {
+    rig.apply(pose);
+    rig.group.updateMatrixWorld(true);
+    const left = rig.group.getObjectByName('rider-hand-left')!;
+    const right = rig.group.getObjectByName('rider-hand-right')!;
+    return {
+      pelvisRoll: rig.rider.pelvis.rotation.z,
+      neckTilt: rig.rider.neck.rotation.z,
+      machineYaw: rig.euc.group.rotation.y,
+      machineRoll: rig.euc.group.rotation.z,
+      handSpread: left.getWorldPosition(new THREE.Vector3())
+        .distanceTo(right.getWorldPosition(new THREE.Vector3())),
+    };
+  };
+
+  const drunkStill = read(drunk, still);
+  const drunkStyled = read(drunk, styled);
+  const coolStill = read(cool, still);
+  const coolStyled = read(cool, styled);
+
+  // The pelvis: the sway rolls it into the weave, negative toward +X, which is
+  // the rider's left and the side a positive sway is turning toward. Nothing
+  // else on this axis moves between the two poses, so the difference is the
+  // table's own amplitude exactly.
+  assert.ok(
+    Math.abs((drunkStyled.pelvisRoll - drunkStill.pelvisRoll) + motion.swayPelvisRoll) < 1e-9,
+    `the sway rolled his pelvis by ${drunkStyled.pelvisRoll - drunkStill.pelvisRoll}`
+      + ` instead of ${-motion.swayPelvisRoll}`,
+  );
+  // The head tilts with it. `wobbleSway` is zero in this pose, so the stagger's
+  // loll contributes nothing and the tilt is the sway's alone.
+  assert.ok(
+    Math.abs(drunkStyled.neckTilt + motion.swayHeadTilt) < 1e-9,
+    `the sway tilted his head by ${drunkStyled.neckTilt} instead of ${-motion.swayHeadTilt}`,
+  );
+  assert.ok(Math.abs(drunkStill.neckTilt) < 1e-9, 'and a still pose leaves the head level');
+
+  // Cool Rider: a double zero on both joints. Not "small" — identical, because
+  // the terms are multiplications by a table of zeros rather than a branch.
+  assert.equal(coolStyled.pelvisRoll, coolStill.pelvisRoll, "the sway reached Cool Rider's pelvis");
+  assert.equal(coolStyled.neckTilt, coolStill.neckTilt, "the sway reached Cool Rider's head");
+  // `=== 0` rather than `assert.equal`: this axis is a product of the still
+  // table, so it lands on a negative zero, and the render layer has no reason
+  // to normalise one — the controller does that for the channels a *digest*
+  // hashes, and a rendered rotation of -0 is the same rotation.
+  assert.ok(coolStyled.neckTilt === 0, `Cool Rider's head tilted by ${coolStyled.neckTilt}`);
+
+  // The stumble is the *controller's*, keyed to the seat, so the machine's yaw
+  // and roll take it on either rig — a sober seat simply never sends one.
+  for (const [label, styledRead, stillRead] of [
+    ['the Drunkard', drunkStyled, drunkStill],
+    ['Cool Rider', coolStyled, coolStill],
+  ] as const) {
+    assert.ok(
+      Math.abs(styledRead.machineYaw - styled.styleYaw) < 1e-9,
+      `${label}: the machine yawed ${styledRead.machineYaw} for a ${styled.styleYaw} stumble`,
+    );
+    assert.ok(Math.abs(stillRead.machineYaw) < 1e-9, `${label}: a still pose yawed the machine`);
+    assert.ok(
+      Math.abs((styledRead.machineRoll - stillRead.machineRoll) + styled.styleRoll) < 1e-9,
+      `${label}: the machine rolled ${styledRead.machineRoll - stillRead.machineRoll}`
+        + ` for a ${styled.styleRoll} stumble`,
+    );
+  }
+
+  // And the stumble borrows the bracing stance: its envelope arrives as a
+  // wobble *fight* with none of a wobble's energy, so the arms come out on
+  // both rigs — wider on his, by the stagger's multiplier.
+  const drunkOpening = drunkStyled.handSpread - drunkStill.handSpread;
+  const coolOpening = coolStyled.handSpread - coolStill.handSpread;
+  assert.ok(coolOpening > 0.01, `the borrowed brace opened Cool Rider's arms by only ${coolOpening} m`);
+  assert.ok(
+    drunkOpening > coolOpening,
+    `the stagger opened his arms by ${drunkOpening} m against Cool Rider's ${coolOpening} m`,
+  );
+
+  drunk.dispose();
+  cool.dispose();
 });

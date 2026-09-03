@@ -31,8 +31,10 @@ test('the sixth rider is on the dot row and in the chooser, and choosing him is 
   const errors = collectErrors(page);
   await bootToTitle(page);
 
-  expect(CHARACTER_IDS.length).toBe(6);
-  expect(CHARACTER_IDS[CHARACTER_IDS.length - 1]).toBe('wheel-in-motion');
+  // Sixth, by position rather than by being last: M29 appended a seventh
+  // (`tests/m29.spec.ts` is that rider's copy of this test).
+  expect(CHARACTER_IDS.length).toBeGreaterThanOrEqual(6);
+  expect(CHARACTER_IDS[5]).toBe('wheel-in-motion');
   await expect(page.locator('[data-rider-dot]')).toHaveCount(CHARACTERS.length);
   await expect(page.locator('[data-rider-dot="wheel-in-motion"]')).toHaveCount(1);
 

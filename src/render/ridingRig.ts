@@ -17,7 +17,7 @@ import {
 import { createBlockoutEUC, type BlockoutEUC } from './euc.ts';
 import { STANDARD_MACHINE_LOOK, type MachineLook } from './machineLook.ts';
 import { createPlaceholderRider, createStanceInput, type PlaceholderRider } from './rider.ts';
-import { COOL_RIDER_LOOK, type RiderLook } from './riderLook.ts';
+import { COOL_RIDER_LOOK, MOTION_STILL, type RiderLook } from './riderLook.ts';
 import { createPaddle } from './paddle.ts';
 
 /**
@@ -118,6 +118,10 @@ export function createRidingRig(
 ): RidingRig {
   const group = new THREE.Group();
   group.name = 'riding-rig';
+  // The look's answer to the ride style's channels — M29. `MOTION_STILL` for
+  // every look but the Drunkard's, so the two lines below that read it are
+  // products of zero on everybody else's rig.
+  const motion = look.motion ?? MOTION_STILL;
 
   const groundPivot = new THREE.Group();
   groundPivot.name = 'riding-ground-pivot';
@@ -219,7 +223,10 @@ export function createRidingRig(
       // The crash flourish's spin-out rides the same machine-only yaw (M15):
       // a hard stop sends the riderless wheel pirouetting while the ragdoll
       // flies, and both angles are zero in every other frame of the game.
-      euc.group.rotation.y = pose.wobbleYaw + pose.wheelCrashSpin;
+      // The stumble's yaw joins the wobble's here (M29): the same machine-only
+      // axis, the same pedal targets, and nothing on the rider root or the
+      // camera. Zero on every sober seat by the controller's arithmetic.
+      euc.group.rotation.y = pose.wobbleYaw + pose.styleYaw + pose.wheelCrashSpin;
       // Its bounce lifts the whole machine — tyre included, because the tyre
       // has left the ground — and is likewise zero outside a hard crash.
       euc.group.position.y = pose.wheelCrashPop;
@@ -315,7 +322,7 @@ export function createRidingRig(
       // The riderless wheel lies down on top of that, about the same axis and
       // for the same reason it is applied to the EUC alone: the rider is no
       // longer standing on it.
-      euc.group.rotation.z = -pose.wobbleRoll
+      euc.group.rotation.z = -(pose.wobbleRoll + pose.styleRoll)
         + RIDER_BLOCKOUT.restWheelLean * pose.restFactor
         - pose.wheelCrashLean;
 
@@ -338,8 +345,19 @@ export function createRidingRig(
       const reverseStance = clamp01(pose.reverseBlend)
         * (1 - clamp01(pose.restFactor))
         * (1 - clamp01(pose.crashBlend));
-      rider.pelvis.rotation.z = -(pose.riderRoll - pose.rollAngle)
-        - reverseStance * RIDER_BLOCKOUT.reverseShoulderRoll;
+      // The ride style spends two things on this axis (M29), both from the
+      // look's `motion` table and both zero on every look but one: the
+      // over-lean forgets a share of the counter-roll so he leans *with* the
+      // wheel in a carve, and the sway rolls the pelvis into the weave —
+      // negative toward +X, the rider's left, which is where a positive sway
+      // is turning. The sway channel is already gated by the controller, and
+      // the rest and crash blends fade it here as `rider.ts` fades its own.
+      const styleSway = clamp01(1 - clamp01(pose.restFactor))
+        * (1 - clamp01(pose.crashBlend))
+        * Math.max(-1, Math.min(1, pose.styleSway));
+      rider.pelvis.rotation.z = -(pose.riderRoll - pose.rollAngle) * (1 - motion.overLean)
+        - reverseStance * RIDER_BLOCKOUT.reverseShoulderRoll
+        - styleSway * motion.swayPelvisRoll;
       // The rider root rides the sprung mass, the ground does not, so the
       // ground plane sits at minus the suspension offset in the root's frame —
       // which is where the resting boot has to land.
@@ -374,7 +392,10 @@ export function createRidingRig(
       lastAirHeight = pose.airHeight;
       stance.pedalStrike = pose.pedalStrike;
       stance.wobbleFootCorrection = pose.wobbleFootCorrection;
-      stance.wobbleYaw = pose.wobbleYaw;
+      // The pedal targets follow the stumble as they follow the wobble (M29):
+      // one yaw, summed here, so the boots ride the shimmying pedals through
+      // articulated knees instead of the rider root inheriting it.
+      stance.wobbleYaw = pose.wobbleYaw + pose.styleYaw;
       // Hand over the transform the pedals actually inherit, after every roll
       // owner has composed it. Passing only `pose.wobbleRoll` left the stopped
       // rider solving their right boot to an untilted pedal while the EUC's
@@ -385,7 +406,12 @@ export function createRidingRig(
       // the `wobbling` threshold; both remaps are the controller's, which is
       // the only place that knows the tuning the step actually ran with.
       stance.wobbleSway = pose.wobbleSway;
-      stance.wobbleFight = pose.wobbleFight;
+      // The stumble borrows the bracing stance (M29): its envelope is handed
+      // over as a fight the way a real wobble's is, so the arms and hips
+      // answer it the way they answer a wobble — with none of a wobble's
+      // energy, which is why `pose.wobble` stays at zero through it.
+      stance.wobbleFight = Math.max(pose.wobbleFight, pose.styleStumble);
+      stance.styleSway = pose.styleSway;
       stance.crash = pose.crashBlend;
       rider.applyStanceReaction(stance);
       // Last, because the paddle aims itself from the grip's world matrix and

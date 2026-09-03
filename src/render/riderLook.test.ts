@@ -6,7 +6,13 @@ import { ALL_CHARACTERS, CHARACTER_IDS } from '../data/riders.ts';
 import { RIDER, RIDER_BLOCKOUT, WHEEL } from '../data/tuning.ts';
 import { loftPoint, vAtHeight } from './blockoutKit.ts';
 import { createPlaceholderRider } from './rider.ts';
-import { COOL_RIDER_LOOK, RIDER_LOOKS, riderLook } from './riderLook.ts';
+import {
+  COOL_RIDER_LOOK,
+  DRUNKARD_LOOK,
+  MOTION_STILL,
+  RIDER_LOOKS,
+  riderLook,
+} from './riderLook.ts';
 
 /**
  * What a second rider is allowed to be — M14.5.
@@ -242,4 +248,65 @@ test('repeated builds and disposals of alternating riders plateau', () => {
   const first = count();
   for (let i = 0; i < 6; i += 1) count();
   assert.equal(count(), first);
+});
+
+// ---------------------------------------------------------------------------
+// M29 — safeguard S5: only one rider has a motion table
+// ---------------------------------------------------------------------------
+
+test('only the Drunkard carries a motion table, and the still one is a true zero', () => {
+  // §29.4's safeguard S5, and the cheapest guarantee in the milestone: the
+  // ride style reaches the rig as `look.motion ?? MOTION_STILL`, exactly the
+  // shape `armCarriage` already uses, so a look with no table contributes a
+  // product of zero to every joint the style touches. That is only true while
+  // the table stays absent everywhere else — a `motion` copied onto a second
+  // look during a Phase 2 spread would give a sober rider the Drunkard's sway
+  // the first time somebody rode past a stumble, and nothing on screen would
+  // name the cause.
+  for (const look of RIDER_LOOKS) {
+    if (look.id === 'drunkard') continue;
+    assert.equal(
+      look.motion,
+      undefined,
+      `${look.id} has a motion table and is not the one rider allowed one`,
+    );
+  }
+  // Including the cop, who is a look the renderer must build and a rider the
+  // player may never be — `rideStyleFor('cop')` returns the sober style and
+  // this is the rig's half of the same promise.
+  assert.equal(riderLook('cop').motion, undefined);
+  assert.equal(COOL_RIDER_LOOK.motion, undefined);
+
+  // The fallback is a true zero in every field, frozen, so "no table" and "a
+  // table of zeros" are the same ride rather than nearly the same one.
+  assert.equal(Object.isFrozen(MOTION_STILL), true);
+  for (const [key, value] of Object.entries(MOTION_STILL)) {
+    assert.ok(Object.is(value, 0), `MOTION_STILL.${key} is ${value}`);
+  }
+});
+
+test("the Drunkard's motion table is complete, finite, and never negative", () => {
+  // The table is nine amplitudes the owner's ride will move, so the useful
+  // claims are structural rather than numeric: it names exactly the fields
+  // `MOTION_STILL` does — a typo would otherwise land as `undefined` and
+  // multiply a channel into `NaN` on the first weaving step — and every one
+  // is a finite magnitude. Signs are the rig's, not the table's: `rider.ts`
+  // and `ridingRig.ts` decide which way a positive sway leans.
+  const motion = DRUNKARD_LOOK.motion;
+  assert.ok(motion, 'the Drunkard has no motion table');
+  assert.equal(Object.isFrozen(motion), true);
+  assert.deepEqual(Object.keys(motion).sort(), Object.keys(MOTION_STILL).sort());
+  for (const [key, value] of Object.entries(motion)) {
+    assert.equal(Number.isFinite(value), true, `motion.${key} is ${value}`);
+    assert.ok(value >= 0, `motion.${key} is negative (${value})`);
+  }
+  // And it is not silently the still table: at least one amplitude is real,
+  // or every assertion above would pass on a rider who does not move.
+  assert.ok(
+    Object.values(motion).some((value) => value > 0),
+    "the Drunkard's table is all zeros",
+  );
+  // The over-lean is the one entry that is a *fraction* of a counter-roll
+  // rather than an amplitude, and a value past 1 would invert the upper body.
+  assert.ok(motion.overLean <= 1, `overLean is ${motion.overLean}`);
 });

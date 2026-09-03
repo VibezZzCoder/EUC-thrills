@@ -1433,3 +1433,81 @@ test('the cue ring holds thirty-two, refuses the rest politely, and drains', () 
   assert.equal(director.cueCount, 1);
   assert.equal(director.cues[0].kind, 'go');
 });
+
+// ---------------------------------------------------------------------------
+// The Drunkard's stumble — M29 Phase 4 (q112)
+// ---------------------------------------------------------------------------
+
+test('a stumble claims one cue of its own kind, on the sfx bus, at its own level', () => {
+  // The failure this catches: the cue routed through `beep` or `hit` — which
+  // is how M13's removed beeping came back once — or claimed on the `ui` bus,
+  // where the effects slider could not silence a joke that plays eleven
+  // times a minute at top speed.
+  const cue = fireOne((d) => d.stumble(1));
+  assert.equal(cue.kind, 'stumble');
+  assert.equal(cue.bus, 'sfx');
+  assert.equal(cue.gain, AUDIO.stumbleLevel);
+  assert.equal(cue.delaySeconds, 0);
+  // No voice: only a drunk seat stumbles, so the sink needs no rider on it —
+  // and `claimCue` must have cleared any name a crash left in the ring.
+  assert.equal(cue.voice, null);
+});
+
+test('the stumble\'s stand-in is a knock and a clink, both short', () => {
+  // Before the bank lands the sink synthesizes from the cue's fields, exactly
+  // as a crash and an over-speed beep do. The stand-in has to *exist* — a cue
+  // with every synthesis field at zero is silence, and a player on a slow
+  // connection would see him shimmy to nothing — and it has to be brief:
+  // a tone that rang would read as the wheel's alarm.
+  const cue = fireOne((d) => d.stumble());
+  assert.ok(cue.thumpSeconds > 0 && cue.thumpFromHz > 0, 'no knock in the stand-in');
+  assert.ok(cue.toneSeconds > 0 && cue.toneHz > 0, 'no clink in the stand-in');
+  assert.ok(cue.toneSeconds <= 0.1, 'the clink rings long enough to read as an alarm');
+  assert.ok(cue.thumpSeconds <= 0.15, 'the knock is longer than a can hitting a hat');
+  assert.ok(cue.toneHz < AUDIO.beepCutoffHz, 'the clink sits above the beep lowpass and would be filtered to nothing');
+  assert.equal(cue.noiseSeconds, 0, 'a stumble is not a burst');
+});
+
+test('a stumble ducks the bed like a hop, never like a crash', () => {
+  // Rule 4 and the annoyance rule together: a bed that stepped aside for
+  // every stumble would pump at his stumble rate. The dip must be there —
+  // the same order test above holds for the rest of the ladder — and it must
+  // be the hop's, the smallest rung an event takes.
+  const measure = (fire: (director: AudioDirector) => void): number => {
+    const director = new AudioDirector();
+    const input = riding({ speed: 10, throttle: 1 });
+    run(director, 1, input);
+    fire(director);
+    let lowest = Infinity;
+    for (let i = 0; i < 60; i += 1) {
+      director.update(STEP, input);
+      director.clearCues();
+      lowest = Math.min(lowest, director.frame.bedGain);
+    }
+    return lowest;
+  };
+  const stumble = measure((d) => d.stumble());
+  const hop = measure((d) => d.hop(1));
+  const crash = measure((d) => d.crash(10));
+  assert.ok(stumble < AUDIO.bedTrim, 'a stumble does not duck at all');
+  assert.equal(stumble, hop, 'a stumble ducks differently from a hop');
+  assert.ok(stumble > crash, 'a stumble ducks like a crash');
+});
+
+test('a stumble is a one-shot with no state: it holds nothing and clears nothing', () => {
+  // Two stumbles on one update are two cues (a couch with one drunk seat
+  // cannot produce this, but a director that rate-limited them would be
+  // carrying per-rider state nothing asked for), and a stumble on a crashed
+  // seat is still a cue — the controller ends a stumble on a crash, so the
+  // count cannot move while he is down, and the director need not guard it.
+  const director = new AudioDirector();
+  director.stumble(0);
+  director.stumble(0);
+  assert.equal(director.cueCount, 2);
+  director.clearCues();
+  director.crash(10, 'drunkard', 0);
+  director.clearCues();
+  director.stumble(0);
+  assert.equal(director.cueCount, 1);
+  assert.equal(director.cues[0].kind, 'stumble');
+});

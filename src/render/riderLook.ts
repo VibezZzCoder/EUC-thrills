@@ -5,10 +5,15 @@ import type { CharacterId } from '../data/riders.ts';
 import {
   limbProfile,
   loftGeometry,
+  loftNormal,
+  loftPoint,
   loftProfile,
   mergeGeometries,
+  shaded,
   tintOver,
+  vAtHeight,
   type LoftProfile,
+  type LoftRing,
   type Tint,
   type UvRect,
 } from './blockoutKit.ts';
@@ -19,6 +24,20 @@ import {
   type WimRegionName,
   type WimSheetLayout,
 } from './wimAtlas.ts';
+import {
+  DRUNKARD_REGIONS,
+  KIT_LABEL,
+  KIT_PEAK,
+  KIT_PLAIN,
+  KIT_STRAP,
+  PACK_PLAIN,
+  createDrunkardAtlas,
+  handCanPageS,
+  hatFoamEdge,
+  type DrunkardRegionName,
+  type DrunkardSheetLayout,
+  type PageRect,
+} from './drunkardAtlas.ts';
 
 /**
  * What a rider *looks* like, as data — one entry per character.
@@ -597,7 +616,66 @@ export interface RiderLook {
     readonly rise: number;
   };
 
+  /**
+   * How this rider moves when the ride style moves them — M29 (`docs/PLANS.md`
+   * §29.4). Absent on every look but the Drunkard's, and `render/rider.ts`
+   * reads `look.motion ?? MOTION_STILL`, so a look with no table contributes
+   * exactly nothing to any approved pose — the same shape `armCarriage` has,
+   * and the rig never learns who it is posing. `riderLook.test.ts` asserts
+   * the absence on everyone else (safeguard S5).
+   */
+  readonly motion?: RiderMotion;
 }
+
+/**
+ * The amplitudes a ride style's channels are spent at — M29.
+ *
+ * The *controller* decides when and how much the body is asked to move
+ * (`EucPose.styleSway`, gated by speed, air, wobble and crash); this table is
+ * the look's answer in metres and radians. Every entry is a multiplier on a
+ * channel that is zero for a sober seat, so a sober rider wearing this table
+ * would still not move — and a drunk seat wearing a look without it does not
+ * either, which is Phase 1's proof that the style is keyed to the seat and the
+ * table to the look.
+ */
+export interface RiderMotion {
+  /** The sway's pelvis roll into the weave, rad per unit of sway. */
+  readonly swayPelvisRoll: number;
+  /** The head's tilt with it, rad per unit of sway — the loll the chase camera sees first. */
+  readonly swayHeadTilt: number;
+  /** The low-side arm out and the high-side arm in, metres per unit of sway. */
+  readonly swayArmSplay: number;
+  /** A little fore-aft alternation of the hands with the sway, metres. */
+  readonly swayArmSwing: number;
+  /**
+   * The stagger — his real wobble fought bigger and looser: multipliers on
+   * the reactions the rig already has. 0 is Cool Rider's own bracing.
+   */
+  readonly staggerArms: number;
+  readonly staggerHips: number;
+  /** The head lolling into the wobble's swing, rad at full fight. */
+  readonly staggerHeadLoll: number;
+  /** The sip: head tilted back to the hat's tubes at rest, rad. */
+  readonly sipNeckPitch: number;
+  /**
+   * The over-lean, 0..1: how much of the upper body's counter-roll in a carve
+   * he forgets, so he leans *with* the wheel. Zero is a legal value.
+   */
+  readonly overLean: number;
+}
+
+/** No motion at all: every look's table but his, by omission. */
+export const MOTION_STILL: RiderMotion = Object.freeze({
+  swayPelvisRoll: 0,
+  swayHeadTilt: 0,
+  swayArmSplay: 0,
+  swayArmSwing: 0,
+  staggerArms: 0,
+  staggerHips: 0,
+  staggerHeadLoll: 0,
+  sipNeckPitch: 0,
+  overLean: 0,
+});
 
 // -- Cool Rider --------------------------------------------------------------
 //
@@ -6964,6 +7042,1826 @@ export const WHEEL_IN_MOTION_LOOK: RiderLook = Object.freeze({
   armCarriage: Object.freeze({ splay: 0.012, rise: 0 }),
 });
 
+// -- The Drunkard ------------------------------------------------------------
+//
+// M29 Phase 2 (`docs/PLANS.md` §29.5). The seventh rider, the first parody,
+// wholly fictional — and the one look on the roster whose target render is
+// the *authority* rather than an interpretation of one: the concept image
+// the owner generated (held privately, not distributed) invented the
+// character, so a departure from it is a defect and not a liberty. The joke is a rider who has misunderstood what a hydration
+// system is for, and the brief's recognition hierarchy is the build order:
+// the two-can hat, the tubes, the beer pack, the amber-cream-brown palette,
+// the can in his fist, the hop green.
+//
+// **Three things decide the shape of this section.**
+//
+//   - **The ground is cream and everything else is paint or print on it.** A
+//     vertex colour and a texel are multipliers, so the one colour lighter
+//     than every other in every channel — the foam — is the base
+//     (`BLOCKOUT_COLOURS.drunkardPrint`), and the amber jersey, the brown
+//     waist band, the amber shell, the can labels, the pack's window and the
+//     knee pads are one printed material on one sheet
+//     (`render/drunkardAtlas.ts`, `RiderAtlas.lofts` for the torso, both
+//     arms and the head). The legs are the same ground painted down, Wheel
+//     in Motion's inversion one step warmer.
+//   - **Three things justify geometry**, and two are the top of the brief's
+//     hierarchy: the hat kit (two cans, two tubes, the peak — one casting
+//     extra on the neck), the face (one non-casting extra on the neck, in the
+//     hat's shadow), and the pack with its hose (one casting extra on the
+//     pelvis). Every other part is an existing form in his palette.
+//   - **The caricature is rings and carriage, not a skeleton.** The belly is
+//     a deeper `halfDepth` through the jersey's middle rings, forward, with
+//     the back left where it is; the loose shoulders are `armCarriage`. The
+//     stance and the lean are the rig's and do not move for anybody; the
+//     casual lean arrives as §29.4's sway, through the `motion` table Phase 1
+//     built and the owner accepted.
+//
+// Cost, stated: against Cool Rider's 35 meshes / 58 calls he lands at 27
+// meshes / 55 calls — two casting extras (six) in place of the shoulder,
+// sleeve and elbow-pad groups (nine), one non-casting face extra (one) in
+// place of the visor (one). Triangles are the free axis and the tubes, the
+// cans and a denser head are where they go; `drunkard.test.ts` states the
+// number.
+
+/** The cream ground: the ceiling of every ink and every tint on him. Matte, like a jersey. */
+const DRUNKARD_PRINT: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.drunkardPrint,
+  roughness: 0.80,
+  metalness: 0.0,
+});
+/** The hat: the same ground at a shell's gloss, under the hat page. */
+const DRUNKARD_LID: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.drunkardPrint,
+  roughness: 0.44,
+  metalness: 0.0,
+});
+/**
+ * The skin: the face extra and the neck. Its base is the skin itself, and the
+ * palest things on the face — the tooth strip, the lens glints — are vertex
+ * *lifts* over it, the cop's own lens trick (`copFaceParts`), so the shades
+ * need no second material: the lenses are tinted down to the one near-black
+ * on him and the glint is skin lifted to the print ground's value.
+ */
+const DRUNKARD_SKIN: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.drunkardSkin,
+  roughness: 0.74,
+  metalness: 0.0,
+});
+/** Boots, gloves, the soles, and — lifted 1.6× to the printed brown — the straps: the brown gear. */
+const DRUNKARD_GEAR: RiderMaterialSpec = Object.freeze({
+  colour: BLOCKOUT_COLOURS.drunkardGear,
+  roughness: 0.66,
+  metalness: 0.0,
+});
+
+// -- His tints ----------------------------------------------------------------
+//
+// Every tint below paints *down* from the print ground except the two lifts
+// on the face, which are stated as lifts.
+
+/** Pale → the amber the jersey's field is inked in: the trousers, the tubes, the hose. */
+const DRUNKARD_AMBER_TINT = tintOver(BLOCKOUT_COLOURS.drunkardPrint, BLOCKOUT_COLOURS.drunkardAmber);
+/** Pale → the printed brown: the knee-pad paint under the pads (the hinge rule, M22). */
+const DRUNKARD_BROWN_TINT = tintOver(BLOCKOUT_COLOURS.drunkardPrint, BLOCKOUT_COLOURS.drunkardBrown);
+/** Pale → the gear brown: the gloves and the bite valve, which ride the print material. */
+const DRUNKARD_GEAR_TINT = tintOver(BLOCKOUT_COLOURS.drunkardPrint, BLOCKOUT_COLOURS.drunkardGear);
+/**
+ * The glove's cuff and knuckle lines: the gear brown 1.6× up, reached from
+ * the pale glove — Wheel in Motion's boot-panel grammar, where 1.3× was one
+ * 8-bit level under the sun and invisible.
+ */
+const DRUNKARD_GEAR_LINE_TINT = tintOver(BLOCKOUT_COLOURS.drunkardPrint, BLOCKOUT_COLOURS.drunkardGear, 1.6);
+/** Panel lines on the gear boot itself: the same step, from the gear base. */
+const DRUNKARD_BOOT_LINE_TINT = tintOver(BLOCKOUT_COLOURS.drunkardGear, BLOCKOUT_COLOURS.drunkardGear, 1.6);
+/** The cream the can's rim and top band wear: the ground itself — the foam. */
+const DRUNKARD_CREAM_TINT: Tint = [1, 1, 1];
+/**
+ * Pale → the garment's ivory: the trouser panels, the boot collar and its
+ * laces (gauntlet round 1). The foam keeps the bare ground; the cloth is a
+ * stop warmer so the two stop being one white.
+ */
+const DRUNKARD_GARMENT_TINT = tintOver(BLOCKOUT_COLOURS.drunkardPrint, BLOCKOUT_COLOURS.drunkardIvory);
+/**
+ * Pale → the hop green: the glove's cuff band, the target's one accent on a
+ * surface that *wraps* — the only green on him the chase camera can see.
+ */
+const DRUNKARD_HOP_TINT = tintOver(BLOCKOUT_COLOURS.drunkardPrint, BLOCKOUT_COLOURS.drunkardHop);
+
+/** Skin → the stubble band on the jaw: a cooler, darker skin. */
+const DRUNKARD_STUBBLE_TINT = tintOver(BLOCKOUT_COLOURS.drunkardSkin, 0xb6885f);
+/**
+ * Skin → hair brown: the short hair under the hat's rim. Blue at 44 rather
+ * than the first cut's 24: a 5 % blue channel through the tone curve on a
+ * shaded face lands on 0 and reads as a hole (gauntlet round 1).
+ */
+const DRUNKARD_HAIR_TINT = tintOver(BLOCKOUT_COLOURS.drunkardSkin, 0x4f3a2c);
+/**
+ * Skin → the goatee and the moustache: a step lighter than the rim hair,
+ * because they sit against the mouth's dark rather than against lit skin —
+ * the target's beard measures 22–37 % of its skin's luminance and the first
+ * cut's rendered at 5 %, one black mass with the mouth.
+ */
+const DRUNKARD_GOATEE_TINT = tintOver(BLOCKOUT_COLOURS.drunkardSkin, 0x6b563f);
+/** Skin → the lower lip: brighter than the beard, darker than the skin, so the mouth has a bottom edge. */
+const DRUNKARD_LIP_TINT = tintOver(BLOCKOUT_COLOURS.drunkardSkin, 0xa8705c);
+/**
+ * Skin → the ear's concha (gauntlet round 3): a paint *down* from the skin,
+ * the way the target's ear face sits under its cheek (75 against 92), at a
+ * luma between the goatee's and the lip's. The ear had no albedo break at
+ * all — a 4 % shade, two of 255 — and in profile it was invisible.
+ */
+const DRUNKARD_EAR_SHADE = tintOver(BLOCKOUT_COLOURS.drunkardSkin, 0x8a6446);
+/** Skin → the lens: the one near-black on him, and a small one. */
+const DRUNKARD_LENS_TINT = tintOver(BLOCKOUT_COLOURS.drunkardSkin, BLOCKOUT_COLOURS.drunkardLens);
+/** Skin → the shades' frame and bridge: a dark warm grey, a step off the lens so the frame reads. */
+const DRUNKARD_FRAME_TINT = tintOver(BLOCKOUT_COLOURS.drunkardSkin, 0x33292c);
+/** Skin → the print ground, a *lift*: the tooth strip and the lens glints. */
+const DRUNKARD_PALE_LIFT = tintOver(BLOCKOUT_COLOURS.drunkardSkin, BLOCKOUT_COLOURS.drunkardPrint);
+/**
+ * Skin → the open mouth behind the teeth. `0x5e2f24` rather than the first
+ * cut's `0x4a1d18` (gauntlet round 2): at 3.4 % green and 5.3 % blue the
+ * cavity rendered (6, 0, 0) — channel-clipped, the exact value of the lens
+ * — where the target's cavity sits 1.24× *above* its own lenses. Every
+ * channel now clears the 5 %-clips-to-zero line round 1 established for the
+ * hair, and the order lens < frame < mouth < rim hair < goatee < ear < lip
+ * holds.
+ */
+const DRUNKARD_MOUTH_TINT = tintOver(BLOCKOUT_COLOURS.drunkardSkin, 0x5e2f24);
+/**
+ * The nose, brighter than the face so it catches the sun: 1.14× rather than
+ * the first cut's 1.05×, which moved a shaded cheek by two 8-bit levels and
+ * left the nose a 3 px highlight.
+ */
+const DRUNKARD_NOSE_TINT: Tint = [1.14, 1.12, 1.09];
+
+// -- His profiles --------------------------------------------------------------
+
+/**
+ * The belly: where it sits, how far it spreads, and how much deeper the
+ * jersey's rings are through it. Centred 190 mm above the hip — below the
+ * chest, above the belt — with the depth added *forward only*: each ring's
+ * `z` moves by the same amount its half-depth grows, so the back stays
+ * exactly where Cool Rider's is and the pack derived from it does not move.
+ */
+const DRUNKARD_BELLY_CENTRE = 0.190;
+const DRUNKARD_BELLY_SPREAD = 0.115;
+const DRUNKARD_BELLY_DEPTH = 0.22;
+
+/**
+ * The jersey: Cool Rider's jacket silhouette, re-rung every 30 mm for the
+ * print (Wheel in Motion's reason — a page row is a ring index), with the
+ * belly through its middle rings.
+ */
+const DRUNKARD_JERSEY = loftProfile((() => {
+  const heights = [-0.010, 0.018];
+  for (let y = 0.050; y < 0.470 + 1e-6; y += 0.030) heights.push(Math.round(y * 1000) / 1000);
+  heights.push(0.500, 0.528, 0.548);
+  return heights.map((y) => {
+    const ring = ringOf(JACKET, y);
+    const bump = Math.exp(-(((y - DRUNKARD_BELLY_CENTRE) / DRUNKARD_BELLY_SPREAD) ** 2));
+    const deeper = ring.halfDepth * DRUNKARD_BELLY_DEPTH * bump;
+    return {
+      ...ring,
+      halfWidth: ring.halfWidth * (1 + 0.06 * bump),
+      halfDepth: ring.halfDepth + deeper,
+      z: ring.z + deeper,
+    };
+  });
+})());
+
+/** Where the knee pad's brown begins on the thigh, as a fraction of its length. */
+const DRUNKARD_PAD_TOP = 0.87;
+/**
+ * Where the trousers' dark outer-thigh block begins, as a fraction of the
+ * thigh's length (gauntlet round 3): the target's block starts 33 % down the
+ * thigh and runs into the knee band, one of its three brown anchors below
+ * the belt, and the trousers had no outboard brown at all.
+ */
+const DRUNKARD_THIGH_BLOCK_TOP = 0.33;
+/** The pad's lower edge on the shin, and the boot shaft's collar, in each bone's space. */
+const DRUNKARD_PAD_BOTTOM = -0.088;
+const DRUNKARD_BOOT_TOP = 0.72;
+
+/**
+ * The hip dome over the thigh's top, in the thigh's frame (`y` 0 is the hip
+ * joint): 60 mm of rounded close, the way `DRUNKARD_UPPER_ARM` domes the
+ * shoulder and for the same reason — no garment covers the end of this bone
+ * in every stance. The rig drops the inside hip 85 mm under the pelvis in a
+ * carve and the outside hip 150 mm in a technical corner, and the pelvis
+ * counter-rolls the seat's hem *up* on the outside by 26 mm more, so a
+ * thigh that ends in a flat cap at the joint ends in a flat cap below the
+ * hem, with the seat's dark underside showing over it — the owner's ride,
+ * 2026-09-03: "in some tight turns the legs kinda detach from the torso
+ * (upper back end of the legs)". Every rider does exactly this (measured:
+ * 70 % of the cap below the hem in a full carve on Cool Rider, Wheel in
+ * Motion and him alike) and hides it in black; his amber cannot. Sized with
+ * `DRUNKARD_SEAT`'s hem so the dome still reaches into the seat through the
+ * technical corner's drop and lift; `drunkard.test.ts` sweeps it.
+ */
+const DRUNKARD_HIP_DOME_APEX = 0.060;
+const DRUNKARD_HIP_DOME: LoftRing[] = [[0.018, 0.90], [0.036, 0.78], [0.050, 0.52], [DRUNKARD_HIP_DOME_APEX, 0]].map(([y, scale]) => ({
+  y: y!,
+  halfWidth: 0.083 * scale!,
+  halfDepth: 0.083 * 0.94 * scale!,
+  square: 2.4,
+}));
+
+/**
+ * The thigh: even 40 mm rings (nothing is printed on the legs, so the rings
+ * are for the silhouette), a pair at the pad's top edge so the brown starts
+ * on a seam, a little more radius than Cool Rider's — he is a heavier man —
+ * and the hip dome over the joint.
+ */
+const DRUNKARD_THIGH = loftProfile([
+  ...limbAtHeights(
+    RIDER_BLOCKOUT.thighLength,
+    [0.083, 0.076, 0.064],
+    [
+      0, -0.040, -0.080, -0.120, -0.160, -0.200, -0.240, -0.280, -0.320,
+      -RIDER_BLOCKOUT.thighLength * DRUNKARD_PAD_TOP + 0.002,
+      -RIDER_BLOCKOUT.thighLength * DRUNKARD_PAD_TOP - 0.002,
+      -0.375, -0.400,
+    ],
+    { flatten: 0.94, square: 2.4 },
+  ),
+  ...DRUNKARD_HIP_DOME,
+]);
+
+/**
+ * The seat: Cool Rider's rings with the hem 30 mm lower and the bottom two
+ * rings a size wider, so the taper still closes over the thighs instead of
+ * pinching them. The other half of the hip fix (`DRUNKARD_HIP_DOME`): in
+ * the technical corner the outside hip drops 150 mm and the counter-roll
+ * lifts that side's hem 26 mm, and the dome has to reach the hem through
+ * both — 118 + 60 against 150 + 26. Painted trouser amber by
+ * `paintDrunkardTorso` off the seat shade, so the extra 30 mm is trouser,
+ * not a hem line, and it stops 14 mm above the outer-thigh block's top.
+ */
+const DRUNKARD_SEAT = loftProfile([
+  { y: -0.118, halfWidth: 0.76 * TORSO_HALF_WIDTH, halfDepth: 0.78 * TORSO_HALF_DEPTH, square: 2.6 },
+  { y: -0.088, halfWidth: 0.84 * TORSO_HALF_WIDTH, halfDepth: 0.85 * TORSO_HALF_DEPTH, square: 2.6 },
+  { y: -0.055, halfWidth: 0.92 * TORSO_HALF_WIDTH, halfDepth: 0.91 * TORSO_HALF_DEPTH, square: 2.7 },
+  { y: -0.020, halfWidth: 0.97 * TORSO_HALF_WIDTH, halfDepth: 0.95 * TORSO_HALF_DEPTH, square: 2.7 },
+  { y: 0.030, halfWidth: 0.93 * TORSO_HALF_WIDTH, halfDepth: 0.90 * TORSO_HALF_DEPTH, square: 2.6 },
+]);
+/**
+ * The shin: a pair at the pad's lower edge, a pair at the boot's collar and
+ * one more ring under it so the collar band is two rows with a hard edge.
+ */
+const DRUNKARD_SHIN = limbAtHeights(
+  RIDER_BLOCKOUT.shinLength,
+  [0.066, 0.060, 0.054],
+  [
+    0, -0.040, DRUNKARD_PAD_BOTTOM + 0.002, DRUNKARD_PAD_BOTTOM - 0.002,
+    -0.120, -0.150, -0.180, -0.210, -0.235, -0.256,
+    -RIDER_BLOCKOUT.shinLength * DRUNKARD_BOOT_TOP + 0.002,
+    -RIDER_BLOCKOUT.shinLength * DRUNKARD_BOOT_TOP - 0.002,
+    -RIDER_BLOCKOUT.shinLength * DRUNKARD_BOOT_TOP - 0.014,
+    -0.310, -0.340, -0.380,
+  ],
+  { flatten: 0.92, square: 2.4 },
+);
+
+/**
+ * Smooth sleeves with a dome over the shoulder joint (Wheel in Motion's
+ * deltoid, for the same reason: no shoulder panel covers the arm's top disc),
+ * a size up from his because the man is heavier.
+ */
+const DRUNKARD_UPPER_ARM = loftProfile([
+  { y: 0.034, halfWidth: 0, halfDepth: 0 },
+  { y: 0.028, halfWidth: 0.032, halfDepth: 0.031, square: 2.3 },
+  { y: 0.014, halfWidth: 0.053, halfDepth: 0.051, square: 2.3 },
+  ...limbProfile(RIDER_BLOCKOUT.upperArmLength, [0.062, 0.053, 0.045], [], {
+    flatten: 0.95,
+    square: 2.3,
+  }).slice().reverse(),
+]);
+const DRUNKARD_FOREARM = limbProfile(RIDER_BLOCKOUT.forearmLength, [0.050, 0.043, 0.035], [], {
+  flatten: 0.94,
+  square: 2.3,
+});
+
+/**
+ * The hat: an amber open-face shell. `y = 0` is the neck joint.
+ *
+ * Its base ring sits at the brow — 208 mm up, above the shades, where the
+ * cop's helmet sits — with a lip under it that flares out as a brim, then
+ * the widest ring at the temples (the cans stand on its flanks) and a dome
+ * that rounds off at the density the printed foam asks for. The peak is a
+ * piece of the hat *kit* rather than a patch on this shell: a patch stands
+ * off the surface along its normal, and a peak is a plate leaving the rim
+ * horizontally (`drunkardHatKit`).
+ */
+const DRUNKARD_HAT = loftProfile([
+  { y: 0.208, halfWidth: 0.110, halfDepth: 0.118, square: 2.5, z: 0.008 },
+  { y: 0.218, halfWidth: 0.126, halfDepth: 0.136, square: 2.6, z: 0.010 },
+  { y: 0.240, halfWidth: 0.129, halfDepth: 0.139, square: 2.6, z: 0.008 },
+  { y: 0.270, halfWidth: 0.130, halfDepth: 0.140, square: 2.5, z: 0.004 },
+  { y: 0.305, halfWidth: 0.121, halfDepth: 0.129, square: 2.4 },
+  { y: 0.338, halfWidth: 0.101, halfDepth: 0.107, square: 2.3 },
+  { y: 0.364, halfWidth: 0.070, halfDepth: 0.074, square: 2.2 },
+  { y: 0.380, halfWidth: 0.032, halfDepth: 0.034, square: 2.2 },
+  { y: 0.388, halfWidth: 0, halfDepth: 0 },
+]);
+/** The shell's widest half-width: the flank the cans stand outboard of. */
+const DRUNKARD_HAT_WIDEST = Math.max(...DRUNKARD_HAT.map((ring) => ring.halfWidth));
+
+/**
+ * The skin head under the hat: an authored face from the chin to the brow —
+ * a round jaw, full cheeks — and, above the hat's rim, **the hat's own rings
+ * inset** (the M22 rule: a part meant to sit inside another is derived from
+ * it, so the claim that the skull is under the shell is structural).
+ */
+const DRUNKARD_HEAD_INSET = 0.012;
+const DRUNKARD_HEAD = loftProfile([
+  { y: 0.086, halfWidth: 0.050, halfDepth: 0.054, square: 2.4, z: 0.016 },
+  { y: 0.104, halfWidth: 0.076, halfDepth: 0.082, square: 2.5, z: 0.016 },
+  { y: 0.128, halfWidth: 0.094, halfDepth: 0.100, square: 2.5, z: 0.014 },
+  { y: 0.160, halfWidth: 0.106, halfDepth: 0.112, square: 2.5, z: 0.010 },
+  { y: 0.200, halfWidth: 0.111, halfDepth: 0.117, square: 2.5, z: 0.006 },
+  ...DRUNKARD_HAT.filter((ring) => ring.y >= 0.240).map((ring) => ({
+    y: ring.y,
+    halfWidth: Math.max(0, ring.halfWidth - DRUNKARD_HEAD_INSET),
+    halfDepth: Math.max(0, ring.halfDepth - DRUNKARD_HEAD_INSET),
+    square: ring.square,
+    z: ring.z,
+  })),
+]);
+
+/** Where a profile's front surface is at a height: the ring's lead plus its depth. */
+function frontAt(profile: LoftProfile, y: number): number {
+  const ring = ringOf(profile, y);
+  return ring.z + ring.halfDepth;
+}
+
+/**
+ * Where a profile's front surface is at a height *and* a lateral offset: the
+ * superellipse solved for `z`, so a feature that runs across a cheek can be
+ * seated on the cheek at every station instead of standing off it at the
+ * corners (the first grin's corners stood 17 mm proud at 1.3× its width, and
+ * a tube end laid across them). Past the ring's half-width it returns the
+ * ring's centre line — the surface has gone round the side.
+ */
+function surfaceZAt(profile: LoftProfile, y: number, x: number): number {
+  const ring = ringOf(profile, y);
+  const a = Math.abs(x - ring.x) / Math.max(1e-6, ring.halfWidth);
+  if (a >= 1) return ring.z;
+  return ring.z + ring.halfDepth * (1 - a ** ring.square) ** (1 / ring.square);
+}
+
+/**
+ * The grin's half-width across the face, metres: 1.30× the first cut's,
+ * which measured 41 % of the shades' width against the target's 60 %.
+ */
+const DRUNKARD_MOUTH_HALF = 0.064;
+/**
+ * The mouth's centre height, and how far its corners rise above it (the
+ * laugh's lift). 23 mm rather than round 1's 7 mm (gauntlet round 2): a
+ * feature's top edge lifts by `rise − halfHeight` at the corner, so at 7 mm
+ * the tooth strip's lit edge rose 0.45 mm — sub-pixel, a flat white bar —
+ * while the target's band lifts 12–17 % of the mouth's width. At 23 mm the
+ * strip's corners rise 14 mm (11 % of the 128 mm grin) and the cavity's top
+ * edge rises 7 mm instead of falling 9.
+ */
+const DRUNKARD_MOUTH_Y = 0.128;
+const DRUNKARD_MOUTH_CORNER_RISE = 0.023;
+
+/**
+ * The mouth corner, in the neck's frame: where the hat tubes end — on the
+ * cheek at the grin's corner, seated on the head's own surface at that
+ * offset, and clear of the tooth strip (the first cut's tube ends lay
+ * across the strip's corners and took 31 % of the grin with them).
+ */
+function drunkardMouthCorner(side: number): THREE.Vector3 {
+  const x = side * (DRUNKARD_MOUTH_HALF + 0.010);
+  const y = DRUNKARD_MOUTH_Y + DRUNKARD_MOUTH_CORNER_RISE;
+  return new THREE.Vector3(x, y, surfaceZAt(DRUNKARD_HEAD, y, x) + 0.002);
+}
+
+/**
+ * The hat kit's numbers, stated once for the builder and the tests.
+ *
+ * **Gauntlet round 1 resized the cans against the head.** The target's can
+ * is 0.37–0.42 of its dome's width and stands off the shell with sky in the
+ * gap; the first cut's was 0.25, buried 10 mm into the shell, and read as an
+ * ear cup at chase distance. Now: radius 45 mm (0.35 of the 260 mm dome —
+ * short of the target on purpose, because this rider's head is far bigger
+ * against his shoulders than the target's, and 0.37 would take the can
+ * past the target's can-to-shoulder ratio), a 12 mm standoff from the
+ * widest ring held by a bracket band, and the bottom 8 mm under the brim
+ * so the can breaks the head's silhouette beside the temple the way the
+ * target's hangs beside the cheek. The outboard face stands
+ * `standoff + 2 × radius` = 102 mm outboard of the widest ring — what reads
+ * at chase distance; the cradle's outboard rail (round 2) takes the kit's
+ * widest point to 108 mm, and the pin is a 50 mm floor. The brim is a
+ * full-circumference plate (the target is a hard hat), derived from the
+ * shell's ring at its height.
+ *
+ * **Gauntlet round 2 gave the cans a mount.** Round 1's bracket was a
+ * 15 × 14 mm peg (0.085 of the can's height, wrapping 0 % of its surface),
+ * and a 165 mm can on a peg reads as a can stuck to a head. The target's
+ * cans sit in a black C-shaped cradle — an inboard rail, a cup under the
+ * base, an outboard rail — with a bold retaining strap round the waist,
+ * and that hardware is a large part of why it reads as a *drinking hat*.
+ * Every piece is derived from `DRUNKARD_CAN`'s own rings in the can's
+ * frame (the M22 rule) and merges into the kit's one buffer.
+ */
+export const DRUNKARD_KIT = Object.freeze({
+  canRadius: 0.045,
+  canHeight: 0.165,
+  canStandoff: 0.012,
+  canBottom: 0.200,
+  canAxisX: DRUNKARD_HAT_WIDEST + 0.012 + 0.045,
+  canZ: 0.006,
+  /**
+   * Thick enough to read (brief §8): 13 mm. The target's tube is a tenth of
+   * its dome's width; 9 mm was 0.07 and rendered as a 3 px wire at chase.
+   */
+  tubeRadius: 0.013,
+  /**
+   * The straw — the last 70 mm across the cheek into the grin's corner
+   * (round 2). The target steps its tube down through a tan ferrule to a
+   * pale straw of 0.52 the tube's diameter before the mouth, which is what
+   * keeps the gag reading as sipping; the first cut drove the full 26 mm
+   * amber bore into a mouth that opens 24 mm. 0.013 × 0.52 = 0.0068.
+   */
+  strawRadius: 0.0068,
+  /** The ferrule joining tube to straw: 1.5× the tube's radius (the target's fitting is 1.5× its tube) and 14 mm long. */
+  ferrule: Object.freeze({ half: 0.0175, length: 0.014 }),
+  /**
+   * The brim: the shell's own ring at the peak's height (half-width 0.1188,
+   * front 0.137, rear −0.1188) pushed out 65 mm at the front — the first
+   * cut's peak, so the front silhouette does not move — and 20 mm at the
+   * sides and rear, which is what fits inboard of the cans' standoff.
+   */
+  peak: Object.freeze({ y: 0.2135, z: 0.0316, halfWidth: 0.139, halfDepth: 0.1704 }),
+  /**
+   * The cradle's inboard rail, holding each can off the shell: its centre
+   * height and half-height. 22 mm (a 44 mm plate) rather than round 1's
+   * 7 mm peg: the target's inboard rail is ~90 mm, and 44 is the half
+   * measure that does not swallow the can.
+   */
+  bracket: Object.freeze({ y: 0.282, half: 0.022 }),
+  /**
+   * The retaining strap round the can's waist: its centre as a fraction of
+   * the can's height up from its base, its height, and how far it stands
+   * proud of the can. 36 mm is 0.22 of the can (the target's strap is 0.21);
+   * 5 mm proud against the target's 3–4.
+   */
+  strap: Object.freeze({ centre: 0.46, height: 0.036, proud: 0.005 }),
+  /**
+   * The cradle's cup under the base and its outboard rail: the bar's
+   * half-width, how far the cup drops below the can's base, and how deep the
+   * rail is buried in the can so no seam shows (the way the arm is).
+   */
+  cradle: Object.freeze({ bar: 0.007, cupDrop: 0.018, railBury: 0.002 }),
+  /**
+   * The foam mound as geometry (gauntlet round 3): a cap over the shell's
+   * crown whose rim is the painted foam's own edge (`hatFoamEdge`, the same
+   * hash, so the two cannot disagree), stood off the shell along its normal
+   * by `proud(y)` — `temple` at and below `gradeFrom`, grading to `crown`
+   * by `gradeTo` and held to the apex — and closed with a `lip` skirt back
+   * onto the shell so the edge is a visible step rather than a knife. The
+   * foam was paint only, and a paint cannot break a silhouette: from every
+   * angle the helmet's outline was one smooth ovoid and the hat read as a
+   * two-tone helmet, where the target's mound stands ~10 mm proud of its
+   * dome at the edge. 6 mm at the temple, because the cans' inboard face
+   * is 12 mm off the widest ring: max lateral 136 mm, 6 mm clear of the
+   * can at 142 and inboard of the brim's 139; 14 mm over the crown, where
+   * the silhouette is read. Triangles only — it merges into the kit.
+   */
+  foam: Object.freeze({ crown: 0.014, temple: 0.006, gradeFrom: 0.270, gradeTo: 0.320, lip: 0.003, columns: 48, rows: 5 }),
+  mouthCorner: drunkardMouthCorner,
+  /**
+   * A tube's route, in the neck's frame: up out of the can's top (the first
+   * knot 13 mm *inside* the can, under a grommet — round 2: an open tube end
+   * standing on a domed cap floated 10 mm clear of it at the rear), up into
+   * a **hoop over the can**, then **down the rear flank, outboard of the
+   * can's own outer face** — every knot of the descent outboard of the can
+   * *and* behind the hat's widest ring — hooking forward under the ear to a
+   * knot beside the jaw where the straw takes over.
+   *
+   * Round 1 took the descent outboard in `x` but left it at `z` 0.14–0.17,
+   * ahead of a face whose front is at 0.07–0.15: the leg flew out along the
+   * +x/+z diagonal, which is the quarter camera's own axis, and 52 % of the
+   * route lay over the face in that view. Round 2 moved it onto the rear
+   * flank. **Round 3 measured that flank against the chase camera**: the
+   * descent sat 17–29 mm inboard of the can's axis and 124–156 mm behind
+   * it, so from the player's seat 93 % of the tube inside the can's height
+   * band projected *in front of* the can, splitting its cream band with an
+   * amber bar; and the loop's plane was fore-aft — the chase camera's own
+   * depth axis — so its apex, 44 mm over the crown in 3D, rose 8 px over
+   * the helmet with zero sky inside it. Now the crown of the hoop is 117 mm
+   * over the shell's apex with its plane tilted into x–y, so the chase sees
+   * an open loop over each can, and the whole descent runs at 0.260–0.262,
+   * outboard of the can's outer face at 0.232. Cost stated: the kit's
+   * half-width goes 237 → 275 mm past the shoulder line (round 1's
+   * can-to-shoulder argument was about the *cans*, which do not move).
+   * `drunkard.test.ts` projects the built tube at the three capture
+   * azimuths and `riderClearance.test.ts` sweeps it against the shoulders.
+   */
+  tube: (side: number): THREE.Vector3[] => [
+    new THREE.Vector3(side * (DRUNKARD_HAT_WIDEST + 0.012 + 0.045), 0.352, 0.006),
+    new THREE.Vector3(side * 0.205, 0.420, 0.000),
+    // The hoop's inboard shoulder and its apex: 104 and 117 mm over the
+    // crown, the apex 30 mm outboard of the shoulder so the loop opens.
+    new THREE.Vector3(side * 0.160, 0.492, -0.030),
+    new THREE.Vector3(side * 0.205, 0.505, -0.075),
+    // The outboard leg, past the can's outer face (0.187 + 0.045 = 0.232)
+    // by the tube's own radius plus a 2 px chase gap, and the descent
+    // behind the head at the depth round 2 chose.
+    new THREE.Vector3(side * 0.262, 0.430, -0.125),
+    new THREE.Vector3(side * 0.260, 0.300, -0.150),
+    new THREE.Vector3(side * 0.236, 0.174, -0.118),
+    // The hand-off under the ear: without this knot the last segment swept
+    // 100 mm inboard and 148 mm forward over 28 mm of drop and read as a
+    // buttress at the jaw.
+    new THREE.Vector3(side * 0.200, 0.158, -0.040),
+    new THREE.Vector3(side * 0.136, 0.146, 0.030),
+  ],
+  /**
+   * The straw: from the tube's last knot beside the jaw, in across the cheek
+   * to the corner of the grin, with a short stub into the mouth. Split from
+   * the tube below the 165 mm line, so the silhouette pin samples only the
+   * fat stretch, and thinner and cream (`strawRadius`, the garment's ivory).
+   */
+  straw: (side: number): THREE.Vector3[] => [
+    new THREE.Vector3(side * 0.136, 0.146, 0.030),
+    // A knot standing 13 mm off the cheek, so the straw approaches the
+    // grin through the air and only its last 30 mm lie on the face: run
+    // straight from the jaw to the corner its middle sat 2 mm off the
+    // cheek with its inner vertices 4 mm into the skin.
+    new THREE.Vector3(side * 0.100, 0.152, 0.080),
+    drunkardMouthCorner(side),
+    new THREE.Vector3(side * 0.052, DRUNKARD_MOUTH_Y + 0.004, surfaceZAt(DRUNKARD_HEAD, DRUNKARD_MOUTH_Y + 0.004, side * 0.052) - 0.009),
+  ],
+});
+
+/**
+ * A hat can in its own frame, `y` 0 at its bottom: chamfered rims, a
+ * straight body, a necked top — the chamfers and the neck as fractions of
+ * the radius and the height, so a resize keeps its rim.
+ */
+const DRUNKARD_CAN = loftProfile((() => {
+  const r = DRUNKARD_KIT.canRadius;
+  const h = DRUNKARD_KIT.canHeight;
+  return [
+    { y: 0, halfWidth: 0, halfDepth: 0 },
+    { y: h * 0.024, halfWidth: r * 0.82, halfDepth: r * 0.82, square: 2 },
+    { y: h * 0.072, halfWidth: r, halfDepth: r, square: 2 },
+    // Three rings through the barrel (gauntlet round 2): a page row is a
+    // ring index, so the barrel — 76 % of the can — was one ring span and
+    // took a sixth of the label's rows, 0.12 rows per millimetre, and the
+    // cone on it came out as a vertical smear. Four spans give it 0.33.
+    { y: h * 0.262, halfWidth: r, halfDepth: r, square: 2 },
+    { y: h * 0.452, halfWidth: r, halfDepth: r, square: 2 },
+    { y: h * 0.642, halfWidth: r, halfDepth: r, square: 2 },
+    { y: h * 0.832, halfWidth: r, halfDepth: r, square: 2 },
+    { y: h * 0.912, halfWidth: r * 0.91, halfDepth: r * 0.91, square: 2 },
+    { y: h * 0.968, halfWidth: r * 0.82, halfDepth: r * 0.82, square: 2 },
+    { y: h, halfWidth: 0, halfDepth: 0 },
+  ];
+})());
+
+/** Fold a geometry's own unit square onto a sub-rectangle of the page its extra will wear. */
+function foldOnto<T extends THREE.BufferGeometry>(geometry: T, rect: PageRect): T {
+  const uv = geometry.getAttribute('uv');
+  for (let i = 0; i < uv.count; i += 1) {
+    uv.setXY(i, rect.s0 + uv.getX(i) * (rect.s1 - rect.s0), rect.t0 + uv.getY(i) * (rect.t1 - rect.t0));
+  }
+  uv.needsUpdate = true;
+  return geometry;
+}
+
+/**
+ * A swept tube along a spline, carrying the colour attribute the merge needs,
+ * tinted. `segments` overrides the derived count for a short piece — a
+ * 90 mm finger at 22 segments is ten times the cost for nothing.
+ */
+function sweptTube(points: readonly THREE.Vector3[], radius: number, tint: Tint, segments?: number): THREE.BufferGeometry {
+  // Centripetal, so the spline cannot loop between knots that turn hard —
+  // a uniform Catmull-Rom overshoots at the mouth corner.
+  const curve = new THREE.CatmullRomCurve3([...points], false, 'centripetal');
+  // One segment per ~24 mm of route, never fewer than 22: a route half a
+  // metre long at 14 segments was a polyline, and the tubes are a
+  // silhouette (brief §8). Derived from the length so a longer route (the
+  // hat tubes' outboard descent, gauntlet round 1) keeps the same facet.
+  const along = segments ?? Math.max(22, Math.round(curve.getLength() / 0.024));
+  const tube = shaded(new THREE.TubeGeometry(curve, along, radius, 6, false));
+  return tinted(tube, tint);
+}
+
+/**
+ * A short cylinder along a direction, in the neck's frame: a loft built up
+ * its own `y`, turned onto `axis` and stood at `at`. The ferrule on each
+ * hat tube.
+ */
+function collarAlong(at: THREE.Vector3, axis: THREE.Vector3, half: number, length: number, tint: Tint): THREE.BufferGeometry {
+  const collar = tinted(loftGeometry(loftProfile([
+    { y: -length / 2, halfWidth: half * 0.9, halfDepth: half * 0.9, square: 2 },
+    { y: -length / 2 + 0.002, halfWidth: half, halfDepth: half, square: 2 },
+    { y: length / 2 - 0.002, halfWidth: half, halfDepth: half, square: 2 },
+    { y: length / 2, halfWidth: half * 0.9, halfDepth: half * 0.9, square: 2 },
+  ]), { radialSegments: 8, capBottom: true, capTop: true }), tint);
+  const turn = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis.clone().normalize());
+  collar.applyQuaternion(turn);
+  collar.translate(at.x, at.y, at.z);
+  return collar;
+}
+
+/**
+ * The hat kit: two cans on the shell's flanks, each in its cradle with a
+ * retaining strap and a grommet on its top; a tube from each grommet over
+ * the crown and down the rear flank to a ferrule beside the jaw, and a
+ * straw from there into the grin; and the peak — one casting extra in the
+ * print material, wearing the kit page.
+ *
+ * Each can is built in its own frame and turned a quarter so the label's
+ * front (`s = 0.25`, where the hop cone is) looks outboard on both sides;
+ * its texture square is folded onto the label band before the merge, and
+ * the strap, built in the same frame, onto the peak's amber row. The tubes,
+ * the straws and the cradle's brown wear the page's plain strip and carry
+ * their colour as a vertex tint.
+ */
+function drunkardHatKit(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const { canAxisX, canBottom, canZ, canRadius, canHeight } = DRUNKARD_KIT;
+  /** A part built in the can's own frame, turned and stood where the can is. */
+  const inCanFrame = (side: number, geometry: THREE.BufferGeometry): THREE.BufferGeometry => {
+    geometry.rotateY(side * Math.PI / 2);
+    geometry.translate(side * canAxisX, canBottom, canZ);
+    return geometry;
+  };
+  for (const side of [-1, 1]) {
+    const can = inCanFrame(side, loftGeometry(DRUNKARD_CAN, { radialSegments: 14, splitSeam: true }));
+    parts.push(foldOnto(can, KIT_LABEL));
+
+    // The tube, its ferrule and the straw: one route in three gauges. The
+    // ferrule is stood on the joint along the straw's own tangent, so the
+    // step down from 13 to 6.8 mm is a fitting and not a bare shoulder.
+    const tubeKnots = DRUNKARD_KIT.tube(side);
+    const strawKnots = DRUNKARD_KIT.straw(side);
+    parts.push(foldOnto(sweptTube(tubeKnots, DRUNKARD_KIT.tubeRadius, DRUNKARD_AMBER_TINT), KIT_PLAIN));
+    const strawCurve = new THREE.CatmullRomCurve3([...strawKnots], false, 'centripetal');
+    const joint = strawKnots[0]!;
+    const tangent = strawCurve.getTangentAt(0);
+    parts.push(foldOnto(collarAlong(joint, tangent, DRUNKARD_KIT.ferrule.half, DRUNKARD_KIT.ferrule.length, DRUNKARD_GEAR_LINE_TINT), KIT_PLAIN));
+    parts.push(foldOnto(sweptTube(strawKnots, DRUNKARD_KIT.strawRadius, DRUNKARD_GARMENT_TINT), KIT_PLAIN));
+
+    // The grommet the tube leaves the can through (round 2): a dark collar
+    // on the can's axis, seated on the can's own cap ring — the first ring
+    // down from the apex whose half-width clears the collar by 4 mm — and
+    // standing 11 mm proud of it with a lip wider than its body, the way
+    // the target's tube plugs into a fitting rather than resting on a dome.
+    const apex = canBottom + canHeight;
+    const grommet = tinted(loftGeometry(loftProfile([
+      { y: apex - 0.0065, halfWidth: 0.020, halfDepth: 0.020, square: 2, x: side * canAxisX, z: canZ },
+      { y: apex + 0.004, halfWidth: 0.021, halfDepth: 0.021, square: 2, x: side * canAxisX, z: canZ },
+      { y: apex + 0.008, halfWidth: 0.0235, halfDepth: 0.0235, square: 2, x: side * canAxisX, z: canZ },
+      { y: apex + 0.011, halfWidth: 0.0175, halfDepth: 0.0175, square: 2, x: side * canAxisX, z: canZ },
+    ]), { radialSegments: 10, capBottom: true, capTop: true }), DRUNKARD_GEAR_TINT);
+    parts.push(foldOnto(grommet, KIT_PLAIN));
+
+    // The cradle's inboard rail: a gear-brown plate from the shell's flank
+    // to the can's inboard face at the can's middle, derived from the
+    // shell's own ring at that height (the M22 rule) — a can standing off a
+    // shell with nothing holding it floats. Buried 6 mm into the shell and
+    // 4 mm into the can so neither joint shows a seam.
+    const { y: bracketY, half } = DRUNKARD_KIT.bracket;
+    const flank = ringOf(DRUNKARD_HAT, bracketY).halfWidth;
+    const inboardFace = canAxisX - canRadius;
+    const bracketX = side * ((flank - 0.006 + inboardFace + 0.004) / 2);
+    const reach = (inboardFace + 0.004 - (flank - 0.006)) / 2;
+    const bracket = tinted(loftGeometry(loftProfile([
+      { y: bracketY - half, halfWidth: reach, halfDepth: 0.011, square: 3.5, x: bracketX, z: canZ },
+      { y: bracketY + half, halfWidth: reach, halfDepth: 0.011, square: 3.5, x: bracketX, z: canZ },
+    ]), { radialSegments: 8, capBottom: true, capTop: true }), DRUNKARD_GEAR_TINT);
+    parts.push(foldOnto(bracket, KIT_PLAIN));
+
+    // The retaining strap round the can's waist, in the can's frame: the
+    // can's own ring at that height stood `proud` off it, chamfered at both
+    // edges. Untinted, on the peak's amber row — the vertex colour stays at
+    // 1, which is load-bearing: the tests select tube vertices by the amber
+    // *tint*, and a strap tinted amber would enrol itself as tube.
+    const { centre, height, proud } = DRUNKARD_KIT.strap;
+    const strapY = canHeight * centre;
+    const strapRing = ringOf(DRUNKARD_CAN, strapY);
+    const strapHalf = strapRing.halfWidth + proud;
+    const strap = loftGeometry(loftProfile([
+      { y: strapY - height / 2, halfWidth: strapHalf - 0.002, halfDepth: strapHalf - 0.002, square: 2 },
+      { y: strapY - height / 2 + 0.002, halfWidth: strapHalf, halfDepth: strapHalf, square: 2 },
+      { y: strapY + height / 2 - 0.002, halfWidth: strapHalf, halfDepth: strapHalf, square: 2 },
+      { y: strapY + height / 2, halfWidth: strapHalf - 0.002, halfDepth: strapHalf - 0.002, square: 2 },
+    ]), { radialSegments: 14, capBottom: true, capTop: true });
+    parts.push(foldOnto(inCanFrame(side, strap), KIT_STRAP));
+
+    // The cradle's cup under the base — the can's bottom ring, proud by the
+    // strap's margin, dropped `cupDrop` below the base and closed top and
+    // bottom — and its outboard rail, a bar buried `railBury` into the can's
+    // outboard face from the cup up to the strap's top. Gear brown, the
+    // target's black cradle.
+    const { bar, cupDrop, railBury } = DRUNKARD_KIT.cradle;
+    const cupHalf = canRadius + proud;
+    const cup = loftGeometry(loftProfile([
+      { y: -cupDrop, halfWidth: cupHalf, halfDepth: cupHalf, square: 2 },
+      { y: 0.004, halfWidth: cupHalf, halfDepth: cupHalf, square: 2 },
+    ]), { radialSegments: 14, capBottom: true, capTop: true });
+    parts.push(foldOnto(inCanFrame(side, tinted(cup, DRUNKARD_GEAR_TINT)), KIT_PLAIN));
+    const railX = side * (canAxisX + canRadius - railBury);
+    const rail = tinted(loftGeometry(loftProfile([
+      { y: canBottom - cupDrop + 0.002, halfWidth: bar, halfDepth: bar * 2, square: 3.5, x: railX, z: canZ },
+      { y: canBottom + strapY + height / 2, halfWidth: bar, halfDepth: bar * 2, square: 3.5, x: railX, z: canZ },
+    ]), { radialSegments: 8, capBottom: true, capTop: true }), DRUNKARD_GEAR_TINT);
+    parts.push(foldOnto(rail, KIT_PLAIN));
+  }
+  parts.push(foldOnto(drunkardHatFoam(), KIT_PLAIN));
+  const { y, z, halfWidth, halfDepth } = DRUNKARD_KIT.peak;
+  const peak = loftGeometry(loftProfile([
+    { y: y - 0.0075, halfWidth: 0, halfDepth: 0, z },
+    { y: y - 0.004, halfWidth: halfWidth * 0.95, halfDepth: halfDepth * 0.95, square: 2.3, z },
+    { y, halfWidth, halfDepth, square: 2.3, z },
+    { y: y + 0.004, halfWidth: halfWidth * 0.95, halfDepth: halfDepth * 0.95, square: 2.3, z },
+    { y: y + 0.0075, halfWidth: 0, halfDepth: 0, z },
+  ]), { radialSegments: 20 });
+  parts.push(foldOnto(peak, KIT_PEAK));
+  return mergeGeometries(parts);
+}
+
+/**
+ * The foam cap on the hat's crown (`DRUNKARD_KIT.foam`): a grid, not a
+ * loft, because a loft's ring is one height all the way round and a foam
+ * edge drips. `columns` columns round the shell (`s = k / columns`, the
+ * same `s` `paintWrapped` hands the hat page, so the rim lands on the
+ * painted edge), `rows` rows from the rim up to the apex, each vertex the
+ * shell's own point at that `(u, v)` pushed out along its normal, and one
+ * skirt row under the rim at zero proud. Untinted on the kit page's plain
+ * strip — the same bare cream the painted foam already wears, so no page
+ * changes and the paint direction rule is untouched. The winding follows
+ * the loft's: `cross(tangent v, tangent u)` is outward (`loftNormal`).
+ */
+function drunkardHatFoam(): THREE.BufferGeometry {
+  const { columns, rows, crown, temple, gradeFrom, gradeTo, lip } = DRUNKARD_KIT.foam;
+  const proud = (y: number): number => {
+    const grade = Math.min(1, Math.max(0, (y - gradeFrom) / (gradeTo - gradeFrom)));
+    return temple + (crown - temple) * grade;
+  };
+  const apexV = DRUNKARD_HAT.length - 1;
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  const point = new THREE.Vector3();
+  const normal = new THREE.Vector3();
+  // Rows: the skirt (row 0, on the shell), the rim (row 1, proud), then up
+  // to the apex. Every row has `columns + 1` vertices so the seam is split
+  // and the page can wrap.
+  const rowCount = rows + 2;
+  for (let j = 0; j < rowCount; j += 1) {
+    for (let k = 0; k <= columns; k += 1) {
+      const s = k / columns;
+      const u = s * Math.PI * 2;
+      const edge = hatFoamEdge(s);
+      const rimV = vAtHeight(DRUNKARD_HAT, edge);
+      const v = j === 0
+        ? vAtHeight(DRUNKARD_HAT, edge - lip)
+        : rimV + (apexV - rimV) * ((j - 1) / rows);
+      loftPoint(DRUNKARD_HAT, u, v, point);
+      loftNormal(DRUNKARD_HAT, u, v, normal);
+      const out = j === 0 ? 0 : proud(point.y);
+      point.addScaledVector(normal, out);
+      positions.push(point.x, point.y, point.z);
+      normals.push(normal.x, normal.y, normal.z);
+      uvs.push(s, j / (rowCount - 1));
+    }
+  }
+  const at = (row: number, k: number): number => row * (columns + 1) + k;
+  for (let j = 0; j < rowCount - 1; j += 1) {
+    for (let k = 0; k < columns; k += 1) {
+      const a = at(j, k);
+      const b = at(j, k + 1);
+      const c = at(j + 1, k);
+      const d = at(j + 1, k + 1);
+      indices.push(a, d, b, a, c, d);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  return shaded(geometry);
+}
+
+/**
+ * The ear's rings, in the face's frame for the left ear (`x` mirrored by
+ * side): named so the concha can be derived from them (the M22 rule).
+ */
+const DRUNKARD_EAR: readonly (LoftRing & { readonly x: number; readonly z: number })[] = Object.freeze([
+  { y: 0.164, halfWidth: 0.009, halfDepth: 0.013, square: 2.2, x: 0.104, z: 0.006 },
+  { y: 0.184, halfWidth: 0.013, halfDepth: 0.018, square: 2.3, x: 0.114, z: 0.008 },
+  { y: 0.206, halfWidth: 0.009, halfDepth: 0.013, square: 2.2, x: 0.108, z: 0.006 },
+]);
+
+/** A squashed ball for a face feature — Trollina's, restated here so this section reads on its own. */
+function drunkardBall(halfWidth: number): LoftProfile {
+  return loftProfile([
+    { y: -halfWidth * 1.1, halfWidth: 0, halfDepth: 0 },
+    { y: -halfWidth * 0.78, halfWidth: halfWidth * 0.60, halfDepth: halfWidth * 0.60, square: 2 },
+    { y: -halfWidth * 0.28, halfWidth: halfWidth * 0.96, halfDepth: halfWidth * 0.96, square: 2 },
+    { y: halfWidth * 0.28, halfWidth: halfWidth * 0.96, halfDepth: halfWidth * 0.96, square: 2 },
+    { y: halfWidth * 0.78, halfWidth: halfWidth * 0.60, halfDepth: halfWidth * 0.60, square: 2 },
+    { y: halfWidth * 1.1, halfWidth: 0, halfDepth: 0 },
+  ]);
+}
+
+/**
+ * His face, one skin mesh under the hat: the head, dark wraparound shades
+ * with a frame, a bridge and a glint on each lens (a dark slab across a face
+ * is a blindfold — the cop's lens rule, §29.3 fact 9), a wide grin with a
+ * cream tooth strip proud of it, a goatee, stubble as a tint band on the
+ * jaw, a nose, ears, and short hair under the rim. Every piece a loft, no
+ * patches on a face (A1d's reason: a patch outline has six corners at any
+ * segment count). Every feature sits at a depth derived from the head's own
+ * rings (`frontAt`), so a ring change moves the face with it.
+ *
+ * Non-casting: it lives in the hat's shadow, and the ghost has the hat.
+ */
+function drunkardFaceParts(): THREE.BufferGeometry {
+  const head = loftGeometry(DRUNKARD_HEAD, { radialSegments: 22 });
+  // The stubble band round the jaw, and the hair under the hat's rim at the
+  // back and sides: tints on the head's own vertices.
+  {
+    const position = head.getAttribute('position');
+    const colour = head.getAttribute('color');
+    for (let i = 0; i < position.count; i += 1) {
+      const y = position.getY(i);
+      const z = position.getZ(i);
+      if (y > 0.092 && y < 0.150 && z > 0.02) {
+        colour.setXYZ(i, DRUNKARD_STUBBLE_TINT[0], DRUNKARD_STUBBLE_TINT[1], DRUNKARD_STUBBLE_TINT[2]);
+      } else if (y <= 0.200 && ((y > 0.170 && z < 0.045) || (y > 0.150 && z < 0.010) || (y > 0.118 && z < -0.060))) {
+        colour.setXYZ(i, DRUNKARD_HAIR_TINT[0], DRUNKARD_HAIR_TINT[1], DRUNKARD_HAIR_TINT[2]);
+      }
+    }
+  }
+  const parts: THREE.BufferGeometry[] = [head];
+  const front = (y: number): number => frontAt(DRUNKARD_HEAD, y);
+
+  for (const side of [-1, 1]) {
+    // The frame: a dark rounded rectangle, one size up from the lens in it.
+    // Centred 51 mm out with the inner edge at 13 mm, so 26 mm of skin shows
+    // between the two frames — the target's keystone bridge is 15 % of its
+    // frame's width; the first cut's 8 mm was 4.5 % and read as one band.
+    parts.push(tinted(loftGeometry(loftProfile([
+      { y: 0.174, halfWidth: 0.024, halfDepth: 0.005, square: 3.0, x: side * 0.051, z: front(0.174) - 0.006 },
+      { y: 0.182, halfWidth: 0.038, halfDepth: 0.010, square: 3.2, x: side * 0.051, z: front(0.182) - 0.002 },
+      { y: 0.210, halfWidth: 0.038, halfDepth: 0.010, square: 3.2, x: side * 0.051, z: front(0.210) - 0.002 },
+      { y: 0.218, halfWidth: 0.024, halfDepth: 0.005, square: 3.0, x: side * 0.051, z: front(0.218) - 0.006 },
+    ]), { radialSegments: 10 }), DRUNKARD_FRAME_TINT));
+    // The lens: dark, proud of the frame.
+    parts.push(tinted(loftGeometry(loftProfile([
+      { y: 0.180, halfWidth: 0.020, halfDepth: 0.004, square: 3.0, x: side * 0.051, z: front(0.180) + 0.001 },
+      { y: 0.187, halfWidth: 0.031, halfDepth: 0.007, square: 3.1, x: side * 0.051, z: front(0.187) + 0.003 },
+      { y: 0.205, halfWidth: 0.031, halfDepth: 0.007, square: 3.1, x: side * 0.051, z: front(0.205) + 0.003 },
+      { y: 0.212, halfWidth: 0.020, halfDepth: 0.004, square: 3.0, x: side * 0.051, z: front(0.212) + 0.001 },
+    ]), { radialSegments: 10 }), DRUNKARD_LENS_TINT));
+    // The glint: a small pale lens proud of the dark one, high and outboard
+    // — the reflection that says glass rather than hole.
+    const glint = tinted(loftGeometry(drunkardBall(0.0075), { radialSegments: 8 }), DRUNKARD_PALE_LIFT);
+    glint.scale(1.5, 0.7, 0.45);
+    glint.translate(side * 0.065, 0.203, front(0.203) + 0.0105);
+    parts.push(glint);
+    // An ear: a flattened bump standing just proud of the head's side, with
+    // a concha sunk into its outboard face (gauntlet round 3 — a convex
+    // lozenge at a 4 % shade carried no albedo break and no internal
+    // spread, and in the profile capture the ear was flat skin with the
+    // tube across it). Ten radial segments rather than eight: an 8-gon
+    // shows its corners at the 42 × 34 px it fills in that view. The
+    // bottom ring is seated with a shadow (0.88) where it meets the jaw.
+    const ear = loftGeometry(loftProfile(DRUNKARD_EAR.map((ring) => ({ ...ring, x: side * ring.x }))), { radialSegments: 10, shade: 0.96 });
+    {
+      const position = ear.getAttribute('position');
+      const colour = ear.getAttribute('color');
+      for (let i = 0; i < position.count; i += 1) {
+        if (position.getY(i) < DRUNKARD_EAR[0]!.y + 1e-6) colour.setXYZ(i, 0.88, 0.88, 0.88);
+      }
+    }
+    parts.push(ear);
+    // The concha: a dark almond derived from the ear's own rings, its face
+    // 4 mm inside the ear's outboard face — sunk, not proud, so the ear's
+    // reach (the widest thing on the face) does not change.
+    parts.push(tinted(loftGeometry(loftProfile(
+      [[0.172, 0], [0.184, 1], [0.198, 2]].map(([y, i]) => {
+        const ring = DRUNKARD_EAR[i]!;
+        return { y, halfWidth: 0.0045, halfDepth: 0.0085, square: 2.2, x: side * (ring.x + ring.halfWidth - 0.004), z: ring.z + 0.002 };
+      }),
+    ), { radialSegments: 6 }), DRUNKARD_EAR_SHADE));
+  }
+
+  // The brow bar joining the two frames, in the frame's own dark — across
+  // the *top* of the frames rather than their middle, so the skin between
+  // them is open from the frame's bottom edge up to it (the target's bridge
+  // is open over ~80 % of the frame's height; the first cut's solid mid
+  // bridge closed it to 0 %).
+  parts.push(tinted(loftGeometry(loftProfile([
+    { y: 0.199, halfWidth: 0.014, halfDepth: 0.005, square: 3, z: front(0.199) + 0.002 },
+    { y: 0.2065, halfWidth: 0.026, halfDepth: 0.007, square: 3, z: front(0.2065) + 0.004 },
+    { y: 0.214, halfWidth: 0.014, halfDepth: 0.005, square: 3, z: front(0.214) + 0.002 },
+  ]), { radialSegments: 6 }), DRUNKARD_FRAME_TINT));
+
+  // The nose: a skin wedge under the bridge, brighter so it catches the sun.
+  parts.push(tinted(loftGeometry(loftProfile([
+    { y: 0.146, halfWidth: 0.011, halfDepth: 0.007, square: 2.4, z: front(0.146) + 0.002 },
+    { y: 0.160, halfWidth: 0.017, halfDepth: 0.011, square: 2.5, z: front(0.160) + 0.012 },
+    { y: 0.178, halfWidth: 0.012, halfDepth: 0.007, square: 2.4, z: front(0.178) + 0.004 },
+  ]), { radialSegments: 8 }), DRUNKARD_NOSE_TINT));
+
+  // The grin — open-mouthed delight is the brief's whole expression (§3:
+  // cheerful, never miserable) — as four features that run *across* the
+  // face and are seated on it station by station (`drunkardAcross`): the
+  // mouth's dark, the tooth strip inside it with dark showing above and
+  // below (the target's order: line, teeth, cavity), a lower lip under it,
+  // and the moustache over it. The first cut's mouth was one ellipsoid at
+  // one depth, buried in the head above its middle, so no dark ever showed
+  // above the cream and the corners could not rise.
+  parts.push(drunkardAcross({
+    halfWidth: DRUNKARD_MOUTH_HALF, y: DRUNKARD_MOUTH_Y, halfHeight: 0.016, thickness: 0.010,
+    sink: -0.004, rise: DRUNKARD_MOUTH_CORNER_RISE, tint: DRUNKARD_MOUTH_TINT,
+  }));
+  parts.push(drunkardAcross({
+    halfWidth: 0.055, y: DRUNKARD_MOUTH_Y + 0.0035, halfHeight: 0.0055, thickness: 0.006,
+    sink: 0.0045, rise: DRUNKARD_MOUTH_CORNER_RISE * 0.85, tint: DRUNKARD_PALE_LIFT,
+  }));
+  parts.push(drunkardAcross({
+    halfWidth: 0.050, y: DRUNKARD_MOUTH_Y - 0.0185, halfHeight: 0.0045, thickness: 0.006,
+    sink: 0.001, rise: DRUNKARD_MOUTH_CORNER_RISE * 0.6, tint: DRUNKARD_LIP_TINT,
+  }));
+  // The moustache: the beard's dark as a short bar in the slot between the
+  // nose and the grin, narrower than the tooth strip — the cop's near-black
+  // first cut "read as a letterbox slot at chase distance".
+  // Its ends rise (+4 mm) with the grin's corners, which now lift 23 mm:
+  // at round 1's −3 mm droop the two features crossed at the corners.
+  parts.push(drunkardAcross({
+    halfWidth: 0.026, y: 0.1478, halfHeight: 0.0032, thickness: 0.006,
+    sink: 0.002, rise: 0.004, tint: DRUNKARD_GOATEE_TINT,
+  }));
+
+  // The goatee: a spade under the lip — widest just under the chin's
+  // curve, narrowing to a point that lands on the collar's top edge (the
+  // target's hangs below the chin and converges to one point over the
+  // collar). 52 mm wide at its widest, 0.29 of the shades' span (the
+  // target's beard is 0.31; round 1's 28 mm was 0.16 and read as a drip
+  // off the chin), and its top ring butts the lip's underside across its
+  // whole width — the target's beard wraps the lower lip with no bare skin
+  // between. **It hangs down off the chin, not back onto the throat**
+  // (gauntlet round 3): round 2's spine dropped 34.5 mm while receding 43,
+  // leaving the chin 51° back from vertical and landing on the throat 14 mm
+  // above the collar, so in the front capture the beard projected 33 × 22
+  // px — a blunt wedge, 2.5× too short for its width — and foreshortened
+  // to a blob the moment the head pitched. Now the drop is 54.5 mm against
+  // the 52 mm width, the underside runs almost straight down from the
+  // chin's front, and the four rings below the head's lowest ring are still
+  // derived from the *neck's* rings (M22, a clamp below 86 mm floats),
+  // only with a larger normal offset — a beard hangs off a chin rather than
+  // hugging a throat.
+  parts.push(tinted(loftGeometry(loftProfile([
+    { y: 0.052, halfWidth: 0, halfDepth: 0, z: frontAt(NECK, 0.052) + 0.019 },
+    { y: 0.061, halfWidth: 0.007, halfDepth: 0.008, square: 2.4, z: frontAt(NECK, 0.061) + 0.021 },
+    { y: 0.070, halfWidth: 0.012, halfDepth: 0.010, square: 2.5, z: frontAt(NECK, 0.070) + 0.023 },
+    { y: 0.080, halfWidth: 0.017, halfDepth: 0.011, square: 2.5, z: frontAt(NECK, 0.080) + 0.025 },
+    { y: 0.090, halfWidth: 0.022, halfDepth: 0.012, square: 2.6, z: front(0.090) + 0.002 },
+    { y: 0.099, halfWidth: 0.026, halfDepth: 0.011, square: 2.6, z: front(0.099) + 0.001 },
+    { y: 0.1065, halfWidth: 0.023, halfDepth: 0.008, square: 2.6, z: front(0.1065) - 0.001 },
+  ]), { radialSegments: 10 }), DRUNKARD_GOATEE_TINT));
+
+  return mergeGeometries(parts);
+}
+
+/**
+ * A face feature that runs *across* the face — a mouth, a tooth strip, a
+ * lip, a moustache — built as a loft whose rings are stations from the left
+ * corner to the right, each seated on the head's own surface at that
+ * offset (`surfaceZAt`, the M22 rule read across rather than down), then
+ * turned to lie along `x`. `halfHeight` is the feature's vertical half-extent
+ * at its middle, tapering to nothing at the corners; `sink` moves its
+ * centre line behind (negative) or ahead of the surface; `rise` lifts the
+ * corners above the centre by that much (a laugh), or drops them.
+ */
+function drunkardAcross(spec: {
+  readonly halfWidth: number;
+  readonly y: number;
+  readonly halfHeight: number;
+  readonly thickness: number;
+  readonly sink: number;
+  readonly rise: number;
+  readonly tint: Tint;
+}): THREE.BufferGeometry {
+  // Thirteen stations: with a 23 mm corner rise the nine-station parabola
+  // was a four-segment polyline per half (gauntlet round 2).
+  const stations = 13;
+  const rings: LoftRing[] = [];
+  for (let i = 0; i < stations; i += 1) {
+    const t = -1 + (2 * i) / (stations - 1);
+    const x = t * spec.halfWidth;
+    const y = spec.y + spec.rise * t * t;
+    // A crescent: full height at the middle, a point at each corner, and
+    // the band holding 78 % of its thickness at the last interior station
+    // (a square-root lens held 66 % and its ends dissolved into the dark
+    // — the target's band keeps half its thickness at the corners).
+    const height = spec.halfHeight * Math.max(0, 1 - t * t) ** 0.3;
+    rings.push({
+      y: x,
+      halfWidth: Math.max(0, height),
+      halfDepth: spec.thickness / 2,
+      square: 2.2,
+      x: -y,
+      z: surfaceZAt(DRUNKARD_HEAD, y, x) + spec.sink,
+    });
+  }
+  // The loft's axis is `y`; turned a quarter it lies along `x`, and a
+  // ring's `x` offset (authored as `-y`) becomes its height.
+  const geometry = loftGeometry(loftProfile(rings), { radialSegments: 10 });
+  geometry.rotateZ(-Math.PI / 2);
+  return tinted(geometry, spec.tint);
+}
+
+// -- The pack and hose ----------------------------------------------------------
+
+/**
+ * The pack's centre-line depth, derived from the jersey's own back: its
+ * inner face is buried 10 mm into the deepest of the back's rings across
+ * its height, so a ring change moves the pack with the back (the M22 rule).
+ */
+const DRUNKARD_PACK_HALF_DEPTH = 0.045;
+const DRUNKARD_PACK_Z = (() => {
+  const point = new THREE.Vector3();
+  let back = Infinity;
+  for (const y of [0.20, 0.26, 0.32, 0.38, 0.44]) {
+    loftPoint(DRUNKARD_JERSEY, -Math.PI / 2, vAtHeight(DRUNKARD_JERSEY, y), point);
+    back = Math.min(back, point.z);
+  }
+  return back - DRUNKARD_PACK_HALF_DEPTH + 0.010;
+})();
+
+/**
+ * The pack: a loft box on Adonisb2's proven anatomy — between the shoulder
+ * blades and the small of the back, a lid a step prouder over it — standing
+ * off the back as a closed volume rather than a lifted slab (A1d's fourth
+ * finding: only a volume grows out of a body). Its page wraps it, and the
+ * window is printed on the face that looks backward.
+ */
+/**
+ * **No vessel above the box** — Codex's QA after Phase 2 (2026-09-03), and
+ * it undoes gauntlet round 1's pint. Round 1 stood a pint 138 mm over the
+ * box so its crown broke the shoulder line, and the head's arc owns that
+ * space: the neck counter-pitches 0.68 rad in an ordinary attack stance
+ * and up to 0.97 in a launch held in a crouch, and the skull's back is
+ * 190 mm from the neck joint, so it sweeps down to ~470 mm behind the
+ * pelvis in the composite. Measured, the pint's front face was 48 mm
+ * inside the skull on every fast ride, and no crown height saved it — at
+ * 485 mm it was still 31 mm inside. So the box keeps its window face and
+ * the beer band all round, and closes with a 16 mm lid 54 mm under the
+ * shoulder ring; `riderClearance.test.ts` sweeps the skull and the hat
+ * against the whole pack through the folds and the launch.
+ */
+/** The box's top ring: the lid begins here, and so does the band's top on the page (`PACK_BAND.top`, pinned to this). */
+const DRUNKARD_BOX_TOP = 0.446;
+
+const DRUNKARD_PACK = loftProfile([
+  { y: 0.168, halfWidth: 0.060, halfDepth: 0.028, square: 2.6, z: DRUNKARD_PACK_Z },
+  { y: 0.182, halfWidth: 0.092, halfDepth: 0.043, square: 3.4, z: DRUNKARD_PACK_Z },
+  { y: 0.205, halfWidth: 0.096, halfDepth: DRUNKARD_PACK_HALF_DEPTH, square: 3.6, z: DRUNKARD_PACK_Z },
+  // Three rings through the window, each the ring it sits between: the page
+  // row is a ring index, and the window at two rings had sixteen texel rows
+  // for its foam line — a 12.5 mm quantum that flattened every drip.
+  { y: 0.255, halfWidth: 0.096, halfDepth: DRUNKARD_PACK_HALF_DEPTH, square: 3.6, z: DRUNKARD_PACK_Z },
+  { y: 0.305, halfWidth: 0.096, halfDepth: DRUNKARD_PACK_HALF_DEPTH, square: 3.6, z: DRUNKARD_PACK_Z },
+  { y: 0.355, halfWidth: 0.096, halfDepth: DRUNKARD_PACK_HALF_DEPTH, square: 3.6, z: DRUNKARD_PACK_Z },
+  { y: 0.405, halfWidth: 0.096, halfDepth: DRUNKARD_PACK_HALF_DEPTH, square: 3.6, z: DRUNKARD_PACK_Z },
+  { y: 0.418, halfWidth: 0.100, halfDepth: 0.049, square: 3.6, z: DRUNKARD_PACK_Z },
+  { y: DRUNKARD_BOX_TOP, halfWidth: 0.100, halfDepth: 0.049, square: 3.6, z: DRUNKARD_PACK_Z },
+  // The lid: a rounded close in the printed brown, low enough that the
+  // skull clears it at the neck's full extension with the look and the
+  // sway composed.
+  { y: 0.452, halfWidth: 0.088, halfDepth: 0.043, square: 3.0, z: DRUNKARD_PACK_Z },
+  { y: 0.458, halfWidth: 0.060, halfDepth: 0.030, square: 2.6, z: DRUNKARD_PACK_Z },
+  { y: 0.462, halfWidth: 0, halfDepth: 0, z: DRUNKARD_PACK_Z },
+]);
+
+/**
+ * The straps' vertex shade over the gear brown: 1.60 lifts `0x46301b` to
+ * `#583d24`, two levels off the printed brown the pack's frame, the belt and
+ * the pads wear (`0x5a3b1c`) — one dark for the whole harness. At the first
+ * cut's 1.08 the straps were 17 levels of red under the pack they hold and
+ * read as black webbing on a brown box (gauntlet round 1).
+ */
+const DRUNKARD_STRAP_SHADE = 1.60;
+/**
+ * The bite valve's tint (gauntlet round 2): the garment's ivory at 0.45,
+ * a pale moulded fitting on dark webbing. Round 1 gave it the glove's line
+ * brown (gear × 1.6) while the straps were at 1.08, then lifted the straps
+ * to 1.60 — and gear × 1.60 over the print ground *is* gear × 1.6 to 0.3 %:
+ * the valve and the strap it lands on became one colour in every light and
+ * the fitting vanished. Stated against the strap rather than as a hex, and
+ * `drunkard.test.ts` pins the ratio: the valve's worn red is at least 2.5×
+ * the strap's. 0.45 also keeps its red under the 0.5 the hose selector
+ * starts at, so the census can still tell valve from hose.
+ */
+const DRUNKARD_VALVE_TINT = tintOver(BLOCKOUT_COLOURS.drunkardPrint, BLOCKOUT_COLOURS.drunkardIvory, 0.45);
+
+/** The strap's chest run and the crossing on the slope — Wheel in Motion's measured angles, inherited. */
+const DRUNKARD_STRAP = Object.freeze({
+  chestOuter: -1.00,
+  chestInner: -0.76,
+  crossingFrom: 0.520,
+  crossingTo: 0.536,
+  wrapFrom: 0.240,
+  wrapTo: 0.286,
+  /** The pack's side face, as an angle either side of straight back: where the wraps and the rear run end. */
+  packHalfAngle: 0.45,
+});
+
+/**
+ * The hose, in the pelvis frame: from the pack's top corner over the RIGHT
+ * shoulder to the collarbone (q105's mirror ruling — the free side is not
+ * the crowded side), where it ends in a bite valve clipped to the strap.
+ * It crosses the slope at 132 mm from the midline, on the strap's crossing
+ * and clear of the arm's dome, 12 mm under the strap's crossing height so
+ * it lies on the strap with its top under the neck ring, which is the pin.
+ * It never reaches the mouth: a tube from the pelvis to the neck spans two
+ * joints (§29.2).
+ *
+ * 24 mm across (gauntlet round 3; 17 at rounds 1–2), 92 % of the hat
+ * tube's 26: brief §8 lists the hydration tube beside the two hat tubes
+ * with one thickness requirement, and at 17 mm it was a 3 px thread at
+ * chase against the hat tubes' 5 — decoration, not plumbing.
+ */
+const DRUNKARD_HOSE_RADIUS = 0.012;
+/** The collarbone: on the chest run's line, 478 mm up, 20 mm off the jersey. */
+const DRUNKARD_VALVE: THREE.Vector3 = (() => {
+  const point = new THREE.Vector3();
+  const normal = new THREE.Vector3();
+  const v = vAtHeight(DRUNKARD_JERSEY, 0.478);
+  loftPoint(DRUNKARD_JERSEY, Math.PI / 2 + 0.90, v, point);
+  loftNormal(DRUNKARD_JERSEY, Math.PI / 2 + 0.90, v, normal);
+  return point.addScaledVector(normal, 0.020);
+})();
+/**
+ * How far the hose's centre line stands off the jersey where it runs over
+ * the body: the strap's lift (10 mm) plus the hose's radius (12 mm) plus
+ * 5.5 mm for the spline's sag between knots — stated as that sum so a
+ * fatter hose cannot re-enter the strap sheet. The first cut stated its
+ * clearance as an offset in `y` while the strap is lifted along the
+ * *normal*, which on the chest and the back is nearly horizontal — so the
+ * hose's axis was coincident with the strap sheet and half the tube ran
+ * behind it (gauntlet round 1).
+ */
+const DRUNKARD_HOSE_LIFT = 0.010 + DRUNKARD_HOSE_RADIUS + 0.0055;
+/** A point on the jersey at an angle and a height, stood off along its normal by the hose's lift. */
+function drunkardOnJersey(u: number, y: number): THREE.Vector3 {
+  const point = new THREE.Vector3();
+  const normal = new THREE.Vector3();
+  const v = vAtHeight(DRUNKARD_JERSEY, y);
+  loftPoint(DRUNKARD_JERSEY, u, v, point);
+  loftNormal(DRUNKARD_JERSEY, u, v, normal);
+  return point.addScaledVector(normal, DRUNKARD_HOSE_LIFT);
+}
+
+/** The valve's half-width at its middle ring: wider than the chest strap's half-band (round 2), and the test pins that. */
+const DRUNKARD_VALVE_HALF_WIDTH = 0.019;
+
+export const DRUNKARD_HOSE = Object.freeze({
+  radius: DRUNKARD_HOSE_RADIUS,
+  crossingX: -0.132,
+  valve: DRUNKARD_VALVE,
+  valveHalfWidth: DRUNKARD_VALVE_HALF_WIDTH,
+  valveTint: DRUNKARD_VALVE_TINT,
+  strapShade: DRUNKARD_STRAP_SHADE,
+  /**
+   * From the box's top right corner (the pint it left from is gone — see
+   * `DRUNKARD_BOX_TOP`), over the shoulder blade, across the slope at
+   * 508 mm (12 mm under the strap's crossing at 520 — round 3 dropped it
+   * from 515 with the radius, or the fatter tube's top overran the neck
+   * ring by 0.2 mm), down the chest run to the valve. The three over-body
+   * knots are derived from the jersey (`drunkardOnJersey`), so the hose
+   * lies *on* the strap rather than through it, and its top stays under
+   * the neck ring — the pin.
+   */
+  points: (): THREE.Vector3[] => [
+    new THREE.Vector3(-0.100 + 0.008, DRUNKARD_BOX_TOP - 0.006, DRUNKARD_PACK_Z - 0.006),
+    drunkardOnJersey(-2.231, 0.488),
+    drunkardOnJersey(-3.060, 0.508),
+    drunkardOnJersey(2.309, 0.497),
+    DRUNKARD_VALVE.clone(),
+  ],
+});
+
+/** The pack, its hose and the bite valve — one casting extra on the pelvis, wearing the pack page. */
+function drunkardPack(): THREE.BufferGeometry {
+  const pack = loftGeometry(DRUNKARD_PACK, { radialSegments: 24, splitSeam: true });
+  const hose = foldOnto(sweptTube(DRUNKARD_HOSE.points(), DRUNKARD_HOSE_RADIUS, DRUNKARD_AMBER_TINT), PACK_PLAIN);
+  // The bite valve: a knob at the hose's end in the pale valve tint (see
+  // `DRUNKARD_VALVE_TINT` for why not a brown), and 38 mm across where the
+  // chest strap under it is 30 mm (gauntlet round 2): a fitting narrower
+  // than the band it sits on has no side silhouette, and in the chest's
+  // shade a value step alone is worth six levels. Its end rings grew 2 mm
+  // with the hose (round 3) so the fitting stays proud of a 24 mm tube.
+  const { x, y, z } = DRUNKARD_HOSE.valve;
+  const valve = tinted(loftGeometry(loftProfile([
+    { y: y - 0.017, halfWidth: 0, halfDepth: 0, x, z },
+    { y: y - 0.013, halfWidth: 0.014, halfDepth: 0.012, square: 2.4, x, z },
+    { y: y - 0.002, halfWidth: DRUNKARD_VALVE_HALF_WIDTH, halfDepth: 0.015, square: 2.6, x, z },
+    { y: y + 0.010, halfWidth: 0.017, halfDepth: 0.014, square: 2.4, x, z },
+    { y: y + 0.016, halfWidth: 0, halfDepth: 0, x, z },
+  ]), { radialSegments: 10 }), DRUNKARD_VALVE_TINT);
+  return mergeGeometries([pack, hose, foldOnto(valve, PACK_PLAIN)]);
+}
+
+// -- The can in his fist --------------------------------------------------------
+
+/**
+ * The can in his LEFT fist (q105), in the hand's frame: `y` 0 at the wrist,
+ * the fingers closing at −105 mm. The can stands upright through the fist,
+ * its axis 18 mm ahead of the glove's so its body shows through the
+ * fingers, gripped by its top third: its top 43 mm under the wrist and its
+ * bottom 115 mm below the fingertips — the way a can is carried at the
+ * side, and the length that reads at chase distance (gauntlet round 1:
+ * held by the middle, 42 mm showed and the glove hid the rest from behind
+ * — an 8 px sliver where the hat cans read at 23). Printed, since round 2,
+ * on its own page (`DRUNKARD_HAND_CAN_BANDS`, `paintHandCan`): cream rim,
+ * amber label with the hop cone, the cream top dripping into the amber.
+ *
+ * **The same can as the hat cans** (gauntlet round 3): 90 mm across by
+ * 165 mm — `DRUNKARD_KIT.canRadius` and `canHeight` — where rounds 1–2's
+ * 66 × 135 was 0.73× its own hat can and narrower than the fist (92 mm)
+ * and the forearm (86 mm) holding it, so at chase it read as a two-tone
+ * cuff on the end of the glove. The target's fist can is ~1.4× its hat
+ * can, so this is still the conservative step. `top` and `z` are
+ * unchanged: the grip, the fingertip boundary and the show-through all
+ * stay anchored where rounds 1–2 put them.
+ */
+export const DRUNKARD_HAND_CAN = Object.freeze({ radius: 0.045, top: -0.055, bottom: -0.220, z: 0.018 });
+
+/** The look's densities — stated once, because the glove's vertex count below is derived from the hand's. */
+const DRUNKARD_DENSITY = Object.freeze({ limb: 18, torso: 30, head: 28, hand: 12 });
+
+/**
+ * How many vertices the glove loft has in the merged hand: the can's
+ * vertices follow it, so the hand painter knows which is which by index
+ * rather than by an address shade. Derived from the same profile and
+ * density the rig builds with, so it cannot drift from them.
+ */
+const DRUNKARD_GLOVE_VERTICES = (() => {
+  const glove = loftGeometry(WIM_GLOVE, { radialSegments: DRUNKARD_DENSITY.hand });
+  const count = glove.getAttribute('position').count;
+  glove.dispose();
+  return count;
+})();
+
+/** A geometry the hand merge accepts as nothing: the right hand carries no can. */
+function emptyPart(): THREE.BufferGeometry {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute([], 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute([], 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute([], 2));
+  return geometry;
+}
+
+/**
+ * The can's label bands, metres from its bottom and its top: a cream rim, a
+ * brown line, the amber label, the cream top with its foam dripping down
+ * into the amber. **Print, since gauntlet round 2** — the can wears its own
+ * wrapped page (`DRUNKARD_REGIONS.handCan`, `paintHandCan`) the way the hat
+ * cans do, so it can carry the target's foam edge and its hop cone; round
+ * 1's vertex-coloured bands could carry neither, and the hand can was the
+ * one printed-looking object on him with no print.
+ */
+const DRUNKARD_HAND_CAN_RIM = 0.010;
+const DRUNKARD_HAND_CAN_LINE = 0.004;
+/**
+ * 80 mm of cream from the top: the boundary lands 30 mm below the
+ * fingertips (round 1's 60 mm put it 10 mm below, and at chase distance
+ * that was a 3 px cap on an amber stub the same amber as the trousers —
+ * gauntlet round 2), so the visible can is two-tone; the foam tongues take
+ * it a further 12 mm down. Not the 90 mm the round asked for, because the
+ * hop cone under the cream needs amber to sit in: 41 mm at round 2's can,
+ * 71 since round 3 grew the can.
+ */
+const DRUNKARD_HAND_CAN_TOP_BAND = 0.080;
+/** How far the top band's foam drips down into the amber, metres. */
+const DRUNKARD_HAND_CAN_DRIP = 0.012;
+/** The label's bands in the can's own frame, metres up from its base — what its page is painted against. */
+export const DRUNKARD_HAND_CAN_BANDS = Object.freeze({
+  rim: DRUNKARD_HAND_CAN_RIM,
+  line: DRUNKARD_HAND_CAN_LINE,
+  top: DRUNKARD_HAND_CAN.top - DRUNKARD_HAND_CAN.bottom - DRUNKARD_HAND_CAN_TOP_BAND,
+  drip: DRUNKARD_HAND_CAN_DRIP,
+});
+
+/**
+ * The can in its own frame, `y` 0 at its base: chamfered rims and a necked
+ * top like the hat can's, and the barrel re-rung every ~10 mm between the
+ * brown line and the cream boundary — a page row is a ring index, and the
+ * cone lives in that band.
+ */
+const DRUNKARD_HAND_CAN_PROFILE = loftProfile((() => {
+  const { radius, top, bottom, z } = DRUNKARD_HAND_CAN;
+  const height = top - bottom;
+  const { rim, line, top: cream } = DRUNKARD_HAND_CAN_BANDS;
+  const full = { halfWidth: radius, halfDepth: radius, square: 2, z };
+  const barrel: LoftRing[] = [];
+  for (let k = 0; k <= 4; k += 1) barrel.push({ y: rim + line + ((cream - rim - line) * k) / 4, ...full });
+  return [
+    { y: 0, halfWidth: 0, halfDepth: 0, z },
+    { y: 0.003, halfWidth: radius * 0.82, halfDepth: radius * 0.82, square: 2, z },
+    { y: rim, ...full },
+    ...barrel,
+    { y: height - 0.011, halfWidth: radius * 0.91, halfDepth: radius * 0.91, square: 2, z },
+    { y: height - 0.004, halfWidth: radius * 0.82, halfDepth: radius * 0.82, square: 2, z },
+    { y: height, halfWidth: 0, halfDepth: 0, z },
+  ];
+})());
+
+function drunkardHandCan(side: number): THREE.BufferGeometry {
+  if (side < 0) return emptyPart();
+  // Its own seam column, so the page can wrap it: without one the last
+  // facet's texture runs backwards across the whole label.
+  const can = loftGeometry(DRUNKARD_HAND_CAN_PROFILE, { radialSegments: 12, splitSeam: true });
+  can.translate(0, DRUNKARD_HAND_CAN.bottom, 0);
+  return can;
+}
+
+/** How many vertices the can loft has in the merged hand, derived as the glove's is: the grip's follow it. */
+const DRUNKARD_CAN_VERTICES = (() => {
+  const can = drunkardHandCan(1);
+  const count = can.getAttribute('position').count;
+  can.dispose();
+  return count;
+})();
+
+/**
+ * The grip (gauntlet round 2): two finger bars and a thumb wrapping the
+ * can's front, in the hand's frame — the target's glove laps over the can's
+ * body, and the fist loft (a closed mitten with no fingers) stood 29 mm
+ * *behind* the can's front face, so nothing of the glove was ever in front
+ * of the can from any camera. Every knot is **derived from the can's own
+ * circle** (axis `x` 0, `z` `DRUNKARD_HAND_CAN.z`) at a stated bury, so
+ * the bars bed into whatever radius the can has — round 3 grew it 33 →
+ * 45 mm, and rounds 1–2's absolute knots would have sat 17 mm under the
+ * new skin, a grip swallowed whole (the derivation rule, M22, on a prop).
+ * The bars end at the fist's own tip (−105 mm), so the 85 mm of can below
+ * the fist and the cream under the fingertips are untouched. Three swept
+ * tubes at six segments each, merged into the hand at no draw call (the
+ * Maribel grammar, `build.hand`).
+ */
+const DRUNKARD_GRIP = Object.freeze({ finger: 0.008, thumb: 0.009, upper: -0.079, lower: -0.097 });
+function drunkardHandGrip(side: number): THREE.BufferGeometry {
+  if (side < 0) return emptyPart();
+  const { finger, thumb, upper, lower } = DRUNKARD_GRIP;
+  const { radius, z: canZ } = DRUNKARD_HAND_CAN;
+  // A knot on the can's circle: `deg` from straight ahead (+z) toward the
+  // signed x of the old layout (negative = the bar's root side), buried
+  // `bury` under the can's skin. The wrap knots bury 2 mm of the tube's
+  // 8 mm radius, so most of each ring stands clear of the skin — fingers
+  // lapping the can, not floating off it and not drowned in it.
+  const at = (deg: number, bury: number, y: number): THREE.Vector3 => {
+    const a = (deg * Math.PI) / 180;
+    return new THREE.Vector3(side * Math.sin(a) * (radius - bury), y, canZ + Math.cos(a) * (radius - bury));
+  };
+  const bar = (y: number, rootDeg: number): THREE.Vector3[] => [
+    // The root dives 8 mm in at the flank, where the can and the fist
+    // overlap, so the bar grows out of the glove rather than hanging in
+    // front of it.
+    at(rootDeg, 0.008, y),
+    at(-65, 0.002, y),
+    at(-21, 0.002, y - 0.002),
+    at(26, 0.002, y - 0.002),
+    at(69, 0.002, y),
+  ];
+  const parts = [
+    sweptTube(bar(upper, -100), finger, DRUNKARD_GEAR_TINT, 6),
+    // The lower bar's root sits a few degrees shallower: at the fist's
+    // taper the flank overlap is thinner and a deeper root read as a
+    // detached finger in rounds 1–2's absolute layout.
+    sweptTube(bar(lower, -92), finger, DRUNKARD_GEAR_TINT, 6),
+    sweptTube([
+      at(101, 0.008, -0.058),
+      at(86, 0.004, -0.070),
+      at(63, 0.004, -0.084),
+    ], thumb, DRUNKARD_GEAR_TINT, 6),
+  ];
+  return mergeGeometries(parts);
+}
+
+// -- His paintwork ---------------------------------------------------------------
+//
+// The legs and the hands are print-ground based, so every tint below paints
+// *down* — the direction the multiplier honours.
+
+/** The seat, painted trouser amber: the one body painter that reads a shade as an address (Wheel in Motion's). */
+const DRUNKARD_SEAT_SHADE = 0.86;
+function paintDrunkardTorso(geometry: THREE.BufferGeometry): void {
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < colour.count; i += 1) {
+    if (Math.abs(colour.getX(i) - DRUNKARD_SEAT_SHADE) > 1e-6) continue;
+    colour.setXYZ(i, DRUNKARD_AMBER_TINT[0], DRUNKARD_AMBER_TINT[1], DRUNKARD_AMBER_TINT[2]);
+  }
+}
+
+/** Is this point on the leg under the knee pad's arc — the front, either side of it? */
+function underDrunkardPad(x: number, z: number): boolean {
+  return Math.abs(Math.atan2(x, z)) < 1.20;
+}
+
+/**
+ * The cream panel's edges, radians from straight ahead toward the outside
+ * of the leg, and the outer-thigh block's (gauntlet round 3). The panel was
+ * 0.45–1.05 rad, which on an 18-column leg was exactly two columns (34°
+ * and 51°) — one pale lobe, 9 % of the thigh flat, where the target's
+ * cream is 31 % of it. Now 0.18–0.92: the target's measured inboard edge
+ * (10.4°) and an outer edge past the 51° column, so the flat cream runs
+ * 14→51° (the target's 38° of arc) with one ramp each side. The block
+ * starts where the panel stops, so cream meets brown with no amber gap,
+ * the way the target's do, and stops at 2.10 rad (120°): the target never
+ * shows the rear of the leg.
+ */
+const DRUNKARD_PANEL = Object.freeze({ inner: 0.18, outer: 0.92 });
+const DRUNKARD_THIGH_BLOCK_END = 2.10;
+
+/** Is this point on the cream panel: a stripe down the *outboard* front of the leg — the render's cream trouser panels. */
+function onDrunkardPanel(x: number, z: number, side: number): boolean {
+  const angle = Math.atan2(side * x, z);
+  return angle > DRUNKARD_PANEL.inner && angle < DRUNKARD_PANEL.outer;
+}
+
+/** Amber trousers with the cream panel and the dark outer-thigh block; brown under the pad's arc at the knee end. */
+function paintDrunkardThigh(geometry: THREE.BufferGeometry, side: number): void {
+  const padTop = -RIDER_BLOCKOUT.thighLength * DRUNKARD_PAD_TOP;
+  const blockTop = -RIDER_BLOCKOUT.thighLength * DRUNKARD_THIGH_BLOCK_TOP;
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    const x = position.getX(i);
+    const z = position.getZ(i);
+    const outer = Math.atan2(side * x, z);
+    const tint = y <= padTop && underDrunkardPad(x, z)
+      ? DRUNKARD_BROWN_TINT
+      : y <= blockTop && outer >= DRUNKARD_PANEL.outer && outer < DRUNKARD_THIGH_BLOCK_END
+        ? DRUNKARD_BROWN_TINT
+        : onDrunkardPanel(x, z, side) && y > padTop + 0.02
+          ? DRUNKARD_GARMENT_TINT
+          : DRUNKARD_AMBER_TINT;
+    colour.setXYZ(i, tint[0], tint[1], tint[2]);
+  }
+}
+
+/** Brown under the pad, amber with the panel below it, then the boot's amber shaft with a cream collar and laces. */
+function paintDrunkardShin(geometry: THREE.BufferGeometry, side: number): void {
+  const cuff = -RIDER_BLOCKOUT.shinLength * DRUNKARD_BOOT_TOP;
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    const x = position.getX(i);
+    const z = position.getZ(i);
+    let tint: Tint;
+    if (y < cuff) {
+      // The shaft: amber, a cream collar band at its top and a cream lace
+      // strip up its front — what says boot rather than trouser.
+      const collar = y > cuff - 0.016;
+      const laces = z > 0 && Math.abs(x) < 0.016 * (Math.hypot(x, z) / 0.05);
+      tint = collar || laces ? DRUNKARD_GARMENT_TINT : DRUNKARD_AMBER_TINT;
+    } else if (y >= DRUNKARD_PAD_BOTTOM && underDrunkardPad(x, z)) {
+      tint = DRUNKARD_BROWN_TINT;
+    } else if (onDrunkardPanel(x, z, side) && y < DRUNKARD_PAD_BOTTOM - 0.02) {
+      tint = DRUNKARD_GARMENT_TINT;
+    } else {
+      tint = DRUNKARD_AMBER_TINT;
+    }
+    colour.setXYZ(i, tint[0], tint[1], tint[2]);
+  }
+}
+
+/** The gear boot: an ankle band and laces one step lighter — the M19 grammar. */
+function paintDrunkardBoot(geometry: THREE.BufferGeometry): void {
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox;
+  if (box === null) return;
+  const height = Math.max(1e-3, box.max.y - box.min.y);
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  for (let i = 0; i < position.count; i += 1) {
+    const t = (position.getY(i) - box.min.y) / height;
+    const z = position.getZ(i);
+    const x = position.getX(i);
+    const ankleBand = t > 0.62 && t < 0.82;
+    const laces = t > 0.36 && t < 0.62 && z > 0.02 && Math.abs(x) < 0.014;
+    if (ankleBand || laces) {
+      colour.setXYZ(i, DRUNKARD_BOOT_LINE_TINT[0], DRUNKARD_BOOT_LINE_TINT[1], DRUNKARD_BOOT_LINE_TINT[2]);
+    }
+  }
+}
+
+/**
+ * The hand: the glove painted down to the gear brown with its knuckle line,
+ * a hop-green cuff band (the target's wrist band, on both wrists — the one
+ * green on him that wraps, so it is the one the chase camera sees), and —
+ * on the left, after the glove's own vertices — the can, left at the print
+ * ground and **re-folded onto its own page** (round 2), then the grip's
+ * fingers in the glove's brown.
+ *
+ * The rig folds the whole hand onto the blank page before this runs
+ * (`rider.ts`, `paged`), so the can's texture coordinates are unfolded from
+ * it here, affinely per axis, and folded onto `handCan` — with the
+ * circumference run through `handCanPageS`, so the faces a camera sees get
+ * three quarters of the page's width. Done here rather than in `rider.ts`
+ * so the loft's own seam column survives and Maribel's `build.hand`
+ * contract is untouched.
+ */
+function paintDrunkardHand(geometry: THREE.BufferGeometry): void {
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  const uv = geometry.getAttribute('uv');
+  const blank = DRUNKARD_REGIONS.blank;
+  const page = DRUNKARD_REGIONS.handCan;
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i);
+    let tint: Tint;
+    if (i < DRUNKARD_GLOVE_VERTICES) {
+      const z = position.getZ(i);
+      const cuff = y > -0.024 && y < -0.012;
+      const knuckles = y < -0.040 && y > -0.062 && z > 0.012;
+      tint = cuff ? DRUNKARD_HOP_TINT : knuckles ? DRUNKARD_GEAR_LINE_TINT : DRUNKARD_GEAR_TINT;
+    } else if (i < DRUNKARD_GLOVE_VERTICES + DRUNKARD_CAN_VERTICES) {
+      tint = DRUNKARD_CREAM_TINT;
+      const u01 = (uv.getX(i) - blank.u0) / (blank.u1 - blank.u0);
+      const v01 = (uv.getY(i) - blank.v0) / (blank.v1 - blank.v0);
+      uv.setXY(i, page.u0 + (page.u1 - page.u0) * handCanPageS(u01), page.v0 + (page.v1 - page.v0) * v01);
+    } else {
+      tint = DRUNKARD_GEAR_TINT;
+    }
+    colour.setXYZ(i, tint[0], tint[1], tint[2]);
+  }
+  uv.needsUpdate = true;
+}
+
+/**
+ * The knee pad's patch, as the sheet needs it for the cone's aspect.
+ *
+ * Gauntlet round 2: ±0.58 rad rather than ±1.15 — the pad was 161 mm wide
+ * by 93 tall (1.74:1) and read as a rolled cuff; the target's cup is
+ * 0.77–0.93:1. Now 91 × 92 mm. And its foot at −0.086, the *upper* ring of
+ * the shin's seam pair, not −0.088 between them: a patch's `t` is linear in
+ * ring index, and authored between the pair the bottom 27 % of the knee
+ * page mapped onto 2.9 mm of pad — the cone's whole tip crushed into the
+ * rim. The painted brown under it still runs to −0.088.
+ */
+const DRUNKARD_KNEE_PAD = Object.freeze({ u0: -0.58, u1: 0.58, from: DRUNKARD_PAD_BOTTOM + 0.002, to: -0.010, lift: 0.022 });
+
+/** What his sheet is painted against — the bodies its pages wrap. */
+export const DRUNKARD_SHEET_LAYOUT: DrunkardSheetLayout = Object.freeze({
+  torso: DRUNKARD_JERSEY,
+  upperArm: DRUNKARD_UPPER_ARM,
+  forearm: DRUNKARD_FOREARM,
+  shin: DRUNKARD_SHIN,
+  hat: DRUNKARD_HAT,
+  // 118 mm across, centred 370 mm above the hip — 35 % of the chest's
+  // projected width, the target's 34 % by the collar-to-belt ruler; the
+  // first cut's 56 mm was 17 % and a badge nobody saw. The mark now sizes
+  // the amber centre panel, not the other way round: the panel widens
+  // below it and the flanks run to the belt (`paintJersey`).
+  chestHop: Object.freeze({ width: 0.118, centre: 0.370 }),
+  kneePad: DRUNKARD_KNEE_PAD,
+  can: DRUNKARD_CAN,
+  handCan: DRUNKARD_HAND_CAN_PROFILE,
+  handCanBands: DRUNKARD_HAND_CAN_BANDS,
+  pack: DRUNKARD_PACK,
+});
+
+export const DRUNKARD_LOOK: RiderLook = Object.freeze({
+  id: 'drunkard' as CharacterId,
+  // Wheel in Motion's densities for the print, and a denser hand for the can
+  // through the fist. Triangles are the free axis.
+  density: DRUNKARD_DENSITY,
+  /**
+   * His sheet, and the roles that sample it: the print ground (body and
+   * limbs are one material) and the hat. The skin and the gear carry no map.
+   */
+  atlas: Object.freeze({
+    build: () => createDrunkardAtlas(DRUNKARD_SHEET_LAYOUT),
+    roles: Object.freeze(['body', 'head'] as RiderMaterialRole[]),
+    region: (art: string | undefined): UvRect => (
+      art !== undefined && art in DRUNKARD_REGIONS ? DRUNKARD_REGIONS[art as DrunkardRegionName] : DRUNKARD_REGIONS.blank
+    ),
+    // The garment and the hat are printed on the lofts; the seat, the legs
+    // and the hands are paint and land on blank.
+    lofts: Object.freeze({ torso: 'jersey', upperArm: 'sleeve', forearm: 'forearm', head: 'hat' }),
+  }),
+  materials: Object.freeze({
+    body: DRUNKARD_PRINT,
+    limbs: DRUNKARD_PRINT,
+    accent: DRUNKARD_SKIN,
+    head: DRUNKARD_LID,
+    // The same spec as the skin, deliberately: the shades are lofts in the
+    // face extra, so the aperture role has nothing of its own to draw and
+    // a second material would be a second material for nothing.
+    face: DRUNKARD_SKIN,
+    gear: DRUNKARD_GEAR,
+  }),
+  profiles: Object.freeze({
+    torso: DRUNKARD_JERSEY,
+    seat: DRUNKARD_SEAT,
+    thigh: DRUNKARD_THIGH,
+    shin: DRUNKARD_SHIN,
+    upperArm: DRUNKARD_UPPER_ARM,
+    forearm: DRUNKARD_FOREARM,
+    neck: NECK,
+    head: DRUNKARD_HAT,
+    boot: BOOT,
+    bootSole: BOOT_SOLE,
+    hand: WIM_GLOVE,
+  }),
+  // `seat` is an address, repainted to the trouser amber; `legs` at 1 because
+  // every colour on them is paint; the sole a step under the gear boot.
+  shades: Object.freeze({ seat: DRUNKARD_SEAT_SHADE, legs: 1.0, collar: 1.0, sole: 0.78, neck: 1.0 }),
+  parts: Object.freeze({
+    // The hands ride the print material so the glove can be painted brown
+    // and the can in the left fist amber and cream by the same painter — a
+    // can merged into a dark gear glove could never be amber.
+    hands: 'body' as RiderMaterialRole,
+    neck: 'accent' as RiderMaterialRole,
+    kneePad: 'body' as RiderMaterialRole,
+    legs: 'limbs' as RiderMaterialRole,
+    seat: 'body' as RiderMaterialRole,
+  }),
+  panels: Object.freeze({
+    // No collar: a crew-neck jersey, the loft's own cap closes the neck.
+    //
+    // **The two pack straps, and nothing else on the chest** — Wheel in
+    // Motion's four-patch anatomy and all three of the owner's M28 rulings,
+    // inherited as pins: the chest run outboard of the centre panel, the
+    // crossing on the trapezius slope and never on the neck ring, the rear
+    // run down into the pack's top, and the lower wrap round the flank at
+    // rib height into the pack's side. One non-casting group in gear: a
+    // strap carries no outline, and the pack extra carries the silhouette.
+    torso: Object.freeze({
+      role: 'gear' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([
+        Object.freeze({
+          anchor: 'front' as PatchAnchor,
+          u0: DRUNKARD_STRAP.chestOuter,
+          u1: DRUNKARD_STRAP.chestInner,
+          mirrored: true,
+          from: DRUNKARD_STRAP.wrapFrom,
+          to: DRUNKARD_STRAP.crossingTo,
+          uSegments: 3,
+          vSegments: 7,
+          lift: 0.010,
+          shade: DRUNKARD_STRAP_SHADE,
+        }),
+        Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -Math.PI / 2 + DRUNKARD_STRAP.packHalfAngle,
+          u1: Math.PI / 2 + DRUNKARD_STRAP.chestOuter,
+          mirrored: true,
+          from: DRUNKARD_STRAP.wrapFrom,
+          to: DRUNKARD_STRAP.wrapTo,
+          uSegments: 8,
+          vSegments: 1,
+          lift: 0.010,
+          shade: DRUNKARD_STRAP_SHADE,
+        }),
+        Object.freeze({
+          anchor: 'back' as PatchAnchor,
+          u0: 0.30,
+          u1: 0.54,
+          mirrored: true,
+          from: 0.400,
+          to: DRUNKARD_STRAP.crossingTo,
+          uSegments: 3,
+          vSegments: 4,
+          lift: 0.010,
+          shade: DRUNKARD_STRAP_SHADE,
+        }),
+        Object.freeze({
+          anchor: 'outboard' as PatchAnchor,
+          u0: -Math.PI / 2 + 0.54,
+          u1: Math.PI / 2 + DRUNKARD_STRAP.chestOuter,
+          mirrored: true,
+          from: DRUNKARD_STRAP.crossingFrom,
+          to: DRUNKARD_STRAP.crossingTo,
+          uSegments: 8,
+          vSegments: 1,
+          lift: 0.010,
+          shade: DRUNKARD_STRAP_SHADE,
+        }),
+      ]),
+    }),
+    // Round brown knee pads carrying the hop cone — knee pads only, no shin
+    // plate, no thigh pad; the render has none. The cup's brown is painted
+    // onto both bones under it (the hinge rule).
+    kneePad: Object.freeze({
+      role: 'body' as RiderMaterialRole,
+      casts: false,
+      patches: Object.freeze([Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: DRUNKARD_KNEE_PAD.u0,
+        u1: DRUNKARD_KNEE_PAD.u1,
+        from: DRUNKARD_KNEE_PAD.from,
+        to: DRUNKARD_KNEE_PAD.to,
+        // Ten columns and five rows on a pad half as wide (round 2): the
+        // bottom edge in ten columns instead of eight, the cone's rows on
+        // enough rows to bend with the shin. A patch is a constant-thickness
+        // shell of the body it lies on — `PatchOptions` has no crown axis —
+        // so the target's dome is not available here; the aspect is.
+        uSegments: 10,
+        vSegments: 5,
+        lift: DRUNKARD_KNEE_PAD.lift,
+        // A taper and a swell together are a rounded pad rather than a band.
+        taper: 0.36,
+        bulge: 0.20,
+        shade: 1,
+        art: 'knee',
+      })]),
+    }),
+    // Nothing on the shell: the foam, the brim band and the amber are print,
+    // and the peak lives in the kit.
+    head: Object.freeze([]),
+  }),
+  extras: Object.freeze([
+    Object.freeze({
+      name: 'rider-drunkard-hat-kit',
+      joint: 'neck' as const,
+      role: 'body' as RiderMaterialRole,
+      casts: true,
+      art: 'kit',
+      build: drunkardHatKit,
+    }),
+    // Casting, because the skull is in this mesh (Codex QA after Phase 2):
+    // `castShadow` is what the ghost draws, and a non-casting face left the
+    // ghost with a hat floating 110 mm over a neck — and his shadow with the
+    // same hole. One more shadow-pass call, still under Cool Rider's 40.
+    Object.freeze({
+      name: 'rider-drunkard-face',
+      joint: 'neck' as const,
+      role: 'accent' as RiderMaterialRole,
+      casts: true,
+      build: drunkardFaceParts,
+    }),
+    Object.freeze({
+      name: 'rider-drunkard-pack',
+      joint: 'pelvis' as const,
+      role: 'body' as RiderMaterialRole,
+      casts: true,
+      art: 'pack',
+      build: drunkardPack,
+    }),
+  ]),
+  build: Object.freeze({
+    hand: Object.freeze([drunkardHandCan, drunkardHandGrip]),
+  }),
+  paint: Object.freeze({
+    torso: paintDrunkardTorso,
+    thigh: paintDrunkardThigh,
+    shin: paintDrunkardShin,
+    boot: paintDrunkardBoot,
+    hand: paintDrunkardHand,
+  }),
+  // Loose and wide, on Trollina's side of the table: the brief's relaxed
+  // shoulders, and the splay is also what keeps the can in his fist clear of
+  // his own thigh through the held envelope (`riderClearance.test.ts`).
+  armCarriage: Object.freeze({ splay: 0.050, rise: 0.015 }),
+  motion: Object.freeze({
+    // Raised from 0.09 / 0.14 / 0.05 after the first in-app look: at chase
+    // distance the sway was there in the numbers and hard to read on the
+    // body. The stumble read at once. His ride is the gate on all nine.
+    swayPelvisRoll: 0.12,
+    swayHeadTilt: 0.20,
+    swayArmSplay: 0.07,
+    swayArmSwing: 0.04,
+    staggerArms: 0.8,
+    staggerHips: 0.6,
+    staggerHeadLoll: 0.20,
+    sipNeckPitch: 0.35,
+    overLean: 0.25,
+  }),
+});
+
+/** The pieces the tests measure against: the profiles the built rig is derived from. */
+export {
+  DRUNKARD_HAT,
+  DRUNKARD_HEAD,
+  DRUNKARD_PACK,
+  DRUNKARD_BOX_TOP,
+  DRUNKARD_HIP_DOME_APEX,
+  DRUNKARD_JERSEY,
+  DRUNKARD_STRAP,
+  DRUNKARD_GLOVE_VERTICES,
+  DRUNKARD_CAN_VERTICES,
+};
+
 export const RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   COOL_RIDER_LOOK,
   TROLLINA_LOOK,
@@ -6971,6 +8869,7 @@ export const RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   ADONISB2_LOOK,
   MARIBEL_LOOK,
   WHEEL_IN_MOTION_LOOK,
+  DRUNKARD_LOOK,
   COP_LOOK,
 ]);
 
@@ -6990,6 +8889,7 @@ export const PLAYABLE_RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   ADONISB2_LOOK,
   MARIBEL_LOOK,
   WHEEL_IN_MOTION_LOOK,
+  DRUNKARD_LOOK,
 ]);
 
 /** Resolve a look, falling back to Cool Rider the way `characterSpec` does. */

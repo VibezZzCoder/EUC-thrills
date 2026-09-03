@@ -14,21 +14,29 @@
  *     holds ids, names, prose and CSS colours; the *geometry* of a look lives
  *     in `render/riderLook.ts`, which may import the blockout kit, and the
  *     albedo values live with every other colour in `data/tuning.ts`.
- *   - **Appearance only.** A rider is a look and a crash voice. Nothing here
- *     is a physical quantity, nothing here reaches `simulation/`, and the two
- *     riders are bit-identical to ride. That is what lets the choice live in
- *     `GameOptions` at all without breaching the options firewall (invariant 5)
- *     — see the note beside `GameOptions.character`.
+ *   - **Appearance, a crash voice — and, since M29, a ride style.** Nothing
+ *     here is a physical quantity, and nothing here reaches `simulation/` by
+ *     any road but one: `rideStyleFor` at the bottom of this file, which the
+ *     composition root reads to dress a seat's controller. A style is theatre
+ *     on the path and the pose, competitively neutral by measurement
+ *     (`docs/PLANS.md` §29.4) — every rider is still the same ride to race
+ *     against, which is what lets the choice live in `GameOptions` at all
+ *     without breaching the options firewall (invariant 5); see the note
+ *     beside `GameOptions.character`.
  *   - **A rider is not level identity.** The choice never enters a `LevelPlan`
  *     id, a `RouteRecord`, or an encoded ghost. A personal best records *where*
  *     a run happened, not who was on the wheel, and folding a rider into that
  *     key would orphan every existing time the first time somebody switched.
  *
- * If a rider ever needs to *ride* differently, none of the above holds and it
- * is not a change to this file: a physical quantity belongs in `data/tuning.ts`
- * where it is the same for every player, and the owner has to open it
- * (`docs/PLANS.md` §13 q3).
+ * If a rider ever needs a different *outcome* — a speed, a grip, a brake —
+ * none of the above holds and it is not a change to this file: a physical
+ * quantity belongs in `data/tuning.ts` where it is the same for every player,
+ * and the owner has to open it (`docs/PLANS.md` §13 q3). He opened it once, on
+ * 2026-09-02, for one rider and as narrowly as it can be answered: a style,
+ * never a stat, and the sober digests in `simulation/EucController.test.ts`
+ * are the fence around everybody else.
  */
+import { DRUNK_STYLE, SOBER_STYLE, type RideStyle } from './rideStyles.ts';
 
 /**
  * Every rider the game ships, as an id the store and the URL can carry.
@@ -55,7 +63,8 @@ export type CharacterId = PlayableCharacterId | 'cop';
  * principle.
  */
 export type PlayableCharacterId =
-  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel-vargas' | 'wheel-in-motion';
+  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel-vargas' | 'wheel-in-motion'
+  | 'drunkard';
 
 /**
  * Which recorded crash one-shot a rider comes with.
@@ -66,7 +75,7 @@ export type PlayableCharacterId =
  * Two riders could legitimately share a voice; a rider without one could not.
  */
 export type CrashVoiceId =
-  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion';
+  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard';
 
 /**
  * **`'maribel'` arrived with her recording, in the same edit, exactly as
@@ -269,6 +278,53 @@ export const CHARACTERS: readonly PlayableCharacterSpec[] = Object.freeze([
     swatch: '#f0c419',
     crashVoice: 'wheel-in-motion' as CrashVoiceId,
   }),
+  /**
+   * The Drunkard — M29, the seventh rider, the first **parody**, and the
+   * third fictional one after Cool Rider and Trollina.
+   *
+   * Wholly original: the owner's own idea, rendered by an image generator
+   * from his description and based on nobody (`docs/PLANS.md` §29.17 q109).
+   * He owns the beer joke the comments kept asking for — a two-can hat with
+   * drinking tubes, a backpack of the wrong drink, a hop cone for a mark — so
+   * that no real rider on this roster ever has to. No brand, no real can, no
+   * real person; `NOTICE.md` gains its one disclaiming sentence at Phase 5.
+   *
+   * **He rides drunk, and that is the owner's scope change** (2026-09-02):
+   * the brief forbade it, the players asked for it, and §29.4 answers it as
+   * a *ride style* — theatre on the path and the pose, competitively neutral
+   * by measurement — installed through `rideStyleFor` below. **Phase 0 seats
+   * him sober**: his entry in `RIDE_STYLES` is `SOBER_STYLE` until Phase 1,
+   * so the wiring can be proven inert before it is given anything to carry.
+   *
+   * **The look is Cool Rider's, by an explicit spread** (`DRUNKARD_LOOK` in
+   * `render/riderLook.ts`), because `riderLook.test.ts` refuses a seat
+   * without a look and a silent fallback would be the wrong rider shipping
+   * without saying so (§22.5's rule). Phase 2 replaces it. He rides the
+   * standard wheel until Phase 3, and `machineForCharacter` says so where
+   * the next reader meets it.
+   *
+   * **`crashVoice: 'drunkard'` is his own from 2026-09-03** (M29 Phase 4).
+   * He was seated on `'red-rider'` — the M23 A0 shape, used a third time:
+   * the one crash with no voice in it, in the data and never in the resolver
+   * — until his was composed the way Trollina's was (a generated take through
+   * the owner's connector, q104 = a; the owner chose candidate C, `verse`).
+   * The interim is spent: one line here and one arm in `audio/sink.ts`'s
+   * `crashFor`, exactly as the note on `CrashVoiceId` says it should be.
+   *
+   * The swatch is amber (q106), hue 35°: 13° from Wheel in Motion's yellow
+   * and 35° from Red Rider's red on the dot row, separated from both by depth
+   * and saturation as well, and carrying the near-black "Riding now" pill. A
+   * swatch is lit by nothing; the albedos are `BLOCKOUT_COLOURS.drunkard*`,
+   * picked in Phase 2.
+   */
+  Object.freeze({
+    id: 'drunkard' as PlayableCharacterId,
+    name: 'The Drunkard',
+    blurb: 'A two-can beer hat, three drinking tubes and a backpack full of the wrong drink. '
+      + 'Not a real rider — the joke the comments kept asking for, kept off everybody who is.',
+    swatch: '#e8951f',
+    crashVoice: 'drunkard' as CrashVoiceId,
+  }),
 ]);
 
 /**
@@ -334,4 +390,49 @@ export function characterSpec(id: CharacterId): CharacterSpec {
  */
 export function isPlayableCharacter(id: CharacterId): id is PlayableCharacterId {
   return (CHARACTER_IDS as readonly CharacterId[]).includes(id);
+}
+
+/**
+ * Which ride style each character's controller is dressed with — M29
+ * (`docs/PLANS.md` §29.4).
+ *
+ * A `Record` over every id rather than a branch, so a rider added without a
+ * line here fails to compile — the same shape `ui/menus.ts` uses for the
+ * cards. **Sober is spelled out for everyone, the cop included**, because
+ * "sober by data" is safeguard S3: the chase's controller is not sober by
+ * being forgotten but by this table saying so.
+ *
+ * **Phase 0 seated every entry at `SOBER_STYLE`, his included, and the six
+ * sober digests in `simulation/EucController.test.ts` proved the plumbing
+ * inert. Phase 1 made the one edit** — `drunkard: DRUNK_STYLE` — and the
+ * digests did not move, which is safeguard S1 for the style itself: a sober
+ * seat rides bit-for-bit as it did before the style had a reader.
+ */
+const RIDE_STYLES: Readonly<Record<CharacterId, RideStyle>> = Object.freeze({
+  'cool-rider': SOBER_STYLE,
+  trollina: SOBER_STYLE,
+  'red-rider': SOBER_STYLE,
+  adonisb2: SOBER_STYLE,
+  'maribel-vargas': SOBER_STYLE,
+  'wheel-in-motion': SOBER_STYLE,
+  drunkard: DRUNK_STYLE,
+  cop: SOBER_STYLE,
+});
+
+/**
+ * The one reader of the table above, and the one source of a style anywhere
+ * in the game. Falls back to sober for an id this build has never heard of,
+ * for `characterSpec`'s reason: a stale store is hostile input, and the wrong
+ * answer here would be a rider who weaves because a lookup missed.
+ *
+ * **`drunk` is the numbers, never the decision** (S7). `Game.applyTuning`
+ * builds a copy of `DRUNK_STYLE` off the F4 store and passes it here for
+ * every seat, so the sliders move his numbers through the existing
+ * live-tuning path — and this function still says *who* gets them: a sober
+ * row gets `SOBER_STYLE` whatever numbers arrive, which is what makes the
+ * panel unable to put a style on a seat.
+ */
+export function rideStyleFor(character: CharacterId, drunk: RideStyle = DRUNK_STYLE): RideStyle {
+  const style = RIDE_STYLES[character] ?? SOBER_STYLE;
+  return style === DRUNK_STYLE ? drunk : style;
 }

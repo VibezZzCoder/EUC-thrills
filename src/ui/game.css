@@ -1965,8 +1965,16 @@
  * 0.9rem gaps need 76.5rem, so that is the cap; the sideways threshold below
  * moved with it. The arithmetic is the same and the number is not, which is the
  * point of writing the arithmetic down.
+ *
+ * **And from seven at M29 Phase 0.** Seven 12rem cards plus six 0.9rem gaps
+ * need 89.4rem. The consequence is stated rather than hidden: a 1280-pixel
+ * window is 80rem, which held six full-height cards in one row and cannot
+ * hold seven — measured, the seventh wrapped onto a second row of full-height
+ * cards 209 pixels past the fold at 1280×720 — so from seven on a 1280 window
+ * takes the sideways cards below, the anatomy every tablet already had. The
+ * full-height row comes back at 92.8rem (1485 pixels) of viewport.
  */
-.euc-menu--riders { grid-template-columns: min(76.5rem, 100%); }
+.euc-menu--riders { grid-template-columns: min(89.4rem, 100%); }
 
 .euc-menu--riders .euc-menu__panel { width: 100%; }
 
@@ -2943,8 +2951,16 @@
  * around it that five needed, so a row of the whole roster now stops fitting
  * at 80rem of viewport. A 1280-pixel window is exactly 80rem and keeps the
  * full-height cards; everything narrower is sideways.
+ *
+ * **And the seventh moved it past 1280 — M29 Phase 0.** Seven cards need
+ * 89.4rem of column and the same 3.4rem around it, so the row stops fitting
+ * at 92.8rem of viewport, and a 1280-pixel window (80rem) is sideways from
+ * here on: at 1280×720 that is four columns of tablet cards in two rows, with
+ * Done well clear of the fold, where two rows of *full-height* cards ended
+ * 209 pixels past it. The threshold is derived, as it always was, and an
+ * eighth rider will move it again.
  */
-@media (max-width: 79.99rem), (max-height: 42rem) {
+@media (max-width: 92.79rem), (max-height: 42rem) {
   .euc-riders__grid {
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
     gap: 0.6rem;
@@ -3029,8 +3045,49 @@
  * pixels clear of the fold. `tests/m22.spec.ts` holds that at every phone
  * and tablet size; a seventh rider would need the shorter portrait this note
  * used to promise the sixth.
+ *
+ * **The seventh rider needed it, and here it is — M29 Phase 0, measured
+ * rather than predicted.** The plan expected a 43-pixel overrun; the real
+ * one was 12 pixels in portrait (Done ending at 679 on a 375×667 phone) and
+ * 17 in landscape, where a seventh card is a fourth row of two on 667×375.
+ * The portrait comes down from 2.9rem to 2.4rem and the card's vertical
+ * padding from 0.6rem to 0.4rem, and the card is 54 pixels tall — bound now
+ * by its name-and-pill column (39 pixels) rather than by the portrait, which
+ * is why 2.4rem and not the 2.3rem the plan named: anything up to ~2.45rem
+ * costs no height at all, so the portrait keeps every pixel that is free.
+ * Seven of those cards leave Done 45 pixels clear of the fold in portrait and
+ * 24 in landscape, and every card is ten pixels past the 44-pixel tap floor.
+ * Two columns of sideways cards on portrait phones was the other honest
+ * option and was measured too: it clears the fold by more (67 pixels) and
+ * pays for it by wrapping "Wheel in Motion" and "Maribel Vargas" onto two
+ * lines, which the one-column card never does — so the column anatomy stays
+ * and the portrait shrinks, the trade the two notes above already argued.
+ *
+ * **And the tier covers the windows *between* the sampled devices** (M29
+ * Phase 1, an independent QA pass). At 740×650 — narrower than a tablet,
+ * shorter than a laptop — the sideways card with its blurb is 128 pixels
+ * tall, two columns are all that fit, and seven cards are four rows: the
+ * seventh card clipped and Done entirely below the fold, while the compact
+ * anatomy only began at 44rem of width or 30rem of height. The rule is now
+ * derived from what the grid actually does rather than from the devices it
+ * was checked on. Columns are `auto-fit` at an 18rem floor with a 0.6rem gap
+ * inside 3.4rem of panel chrome, so a viewport under 58.6rem of width holds
+ * two columns and under 77rem three. **The height each column count needs
+ * was measured at its *narrowest* width, because that is where the blurb
+ * wraps most and the card is tallest**: two columns at 705 px are four rows
+ * of 178-pixel cards and need 826 px (51.6rem); three columns at 940 px are
+ * three rows of 195-pixel cards and need 742 px (46.4rem); four columns at
+ * 1236 px are two rows and need 578 px (36.1rem). At the wide end of each
+ * count the cards are shorter (128 px at 1000, 111 px at 740), so the limits
+ * below are conservative there by design — a window that would just have
+ * fit the blurbs gets the compact card instead, which is the cheaper error.
+ * Below each pair the blurb goes and the card turns compact, which four rows
+ * of fit inside 27rem. `tests/m22.spec.ts` holds both sides of every pair.
  */
-@media (max-width: 44rem), (max-height: 30rem) {
+@media (max-width: 44rem), (max-height: 30rem),
+  ((max-width: 58.6rem) and (max-height: 52rem)),
+  ((max-width: 77rem) and (max-height: 47rem)),
+  ((max-width: 92.79rem) and (max-height: 36.5rem)) {
   .euc-rider-card__blurb { display: none; }
 
   .euc-rider-card {
@@ -3038,9 +3095,10 @@
       "art name"
       "art state";
     align-items: center;
+    padding: 0.4rem 0.8rem;
   }
 
-  .euc-rider-card__art { width: 2.9rem; }
+  .euc-rider-card__art { width: 2.4rem; }
 
   .euc-rider-card__state { justify-self: start; }
 }
@@ -3064,8 +3122,21 @@
  * better reading: the primary action is unmistakably primary, the modes sit
  * together on one line, and a hidden Time trial (which is every world that
  * cannot be timed) simply closes the gap instead of leaving a hole.
+ *
+ * **And the desktop window between the devices — M29 Phase 1, 2026-09-02.**
+ * Below the couch threshold (1000 px) the title has no second column: eight
+ * buttons and their notes stack in one, and that stack needs about 700 px
+ * of height at 740 wide and 790 at 705, where the notes wrap most (measured
+ * on the live page). Every device size in the fit contract is either wide
+ * enough for the couch's two columns, tall enough for the stack, or short
+ * enough for this tier — and a 740×650 window is none of the three, which
+ * the same QA pass that found the chooser's gap exposed once the fit
+ * contract was pointed at it. So this tier also takes any window narrower
+ * than the couch threshold and shorter than 50rem (800 px): three columns
+ * without notes need 415 px, so it fits everything it now covers. Portrait
+ * tablets are taller than 800 and keep their stack.
  */
-@media (max-height: 30rem) {
+@media (max-height: 30rem), ((max-width: 62.49rem) and (max-height: 50rem)) {
   .euc-menu {
     padding: max(0.75rem, env(safe-area-inset-top)) 1rem max(0.75rem, env(safe-area-inset-bottom));
   }

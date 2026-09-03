@@ -44,7 +44,7 @@ import type { CharacterId } from './riders.ts';
 
 /** Every machine the renderer can build. */
 export type MachineId =
-  'standard' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion';
+  'standard' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard';
 
 export interface MachineSpec {
   readonly id: MachineId;
@@ -141,6 +141,24 @@ export const MACHINES: readonly MachineSpec[] = Object.freeze([
     blurb: 'Tall black performance bodywork under cyan-blue pads and orange '
       + 'power pads, his mark on both flanks. Loud on purpose.',
   }),
+  /**
+   * The Drunkard's machine — M29 Phase 3, and the first custom wheel on the
+   * roster that is nobody's: he is a wholly fictional parody rider, and his
+   * wheel is modelled on nothing (`docs/PLANS.md` §29.6, `NOTICE.md`).
+   *
+   * The brief §10 wants a beer-themed wheel that is still clearly an EUC and
+   * forbids the keg; the target render is a rounded mid-size body, which is
+   * the standard wheel's own silhouette. So this is the standard body in
+   * beer: dark brown bodywork, amber leg pads printed with the hop cone,
+   * cream trim, the standard white lamp, black tyre and pedals. No real
+   * brewery's name, mark or trade dress anywhere on it, and no lettering.
+   */
+  Object.freeze({
+    id: 'drunkard' as MachineId,
+    name: "The Drunkard's wheel",
+    blurb: 'The standard body in dark brown under amber pads, a hop cone on '
+      + 'each, cream trim. Beer-themed, and still a wheel.',
+  }),
 ]);
 
 export const MACHINE_IDS: readonly MachineId[] =
@@ -205,6 +223,12 @@ export function machineForCharacter(character: CharacterId): MachineId {
   // wheel through Phases 0 and 1 by a declaration that stood on this line —
   // a decision stated, not a fallback nobody chose (`docs/PLANS.md` §28.9).
   if (character === 'wheel-in-motion') return 'wheel-in-motion';
+  // M29 Phase 3. His id, his spec above and his `MachineLook` row arrived in
+  // one edit, as Maribel's and Wheel in Motion's did and for the same
+  // reason. The standard-wheel declaration that stood on this line through
+  // Phases 0 to 2 was the interim, stated rather than fallen through
+  // (`docs/PLANS.md` §29.8, §29.11).
+  if (character === 'drunkard') return 'drunkard';
   return DEFAULT_MACHINE;
 }
 

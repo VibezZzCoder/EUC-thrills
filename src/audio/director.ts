@@ -297,10 +297,22 @@ export function createAudioFrame(): AudioFrame {
  * a `TransientCue` names the voice it wants and a cue is this file's.
  */
 export type CrashVoiceId =
-  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion';
+  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard';
 
 export type CueKind =
   | 'hop' | 'landing' | 'curb' | 'crash' | 'recover' | 'beep' | 'swing' | 'hit'
+  /**
+   * The Drunkard's stumble — M29 Phase 4 (q112, answered yes).
+   *
+   * A kind of its own for the reason `overspeed` is: the sink reaches for a
+   * *recording* on it (two cans knocking and a hic, `stumble_drunkard.wav`)
+   * and the thump-and-tone fields carry a stand-in for the seconds before the
+   * bank lands. It is not routed through the wobble, because `DESIGN.md` §6d
+   * says wobble has no synthetic voice; this is the one audio decision the
+   * owner opened on top of that rule, and it is the *style's* sound, not the
+   * wobble's.
+   */
+  | 'stumble'
   /**
    * The max-speed warning — M20.
    *
@@ -432,6 +444,15 @@ interface RiderBook {
  * listening critically on.
  */
 const MAX_CUES_PER_UPDATE = 32;
+
+/**
+ * The stumble fallback's clink, Hz — the first can of the pair
+ * `tools/make-crash-drunkard.mjs` synthesizes (`clank(2100)`), so the stand-in
+ * is the recording's own pitch through the wrong synthesis rather than a
+ * different sound. Under `AUDIO.beepCutoffHz` (2600), so the square's
+ * harmonics are gone and what is left is a soft ping, not a piezo.
+ */
+const STUMBLE_FALLBACK_CLINK_HZ = 2100;
 
 /** The live subset of `AUDIO` the tuning panel may move. See LIVE_TUNABLES. */
 export interface AudioTuning {
@@ -1018,6 +1039,44 @@ export class AudioDirector {
     cue.toneHz = 0;
     cue.toneSeconds = 0;
     this.demandTransientDuck(AUDIO.duckHit);
+  }
+
+  /**
+   * The Drunkard stumbled — M29 Phase 4 (q112). Two cans knock and he hics.
+   *
+   * Dispatched by the composition root's own per-seat edge on the controller's
+   * stumble count, the way a crash is; `seat` is accepted so the call site
+   * reads like every other addressed one-shot, and it is unused here because
+   * a stumble owns no per-rider state — nothing about it retriggers, holds or
+   * needs clearing. There is no voice on the cue either: only a seat riding
+   * the Drunken Master ever stumbles, so the recording is his by construction
+   * and `sink.play` reaches straight for `bank.stumbleDrunkard`.
+   *
+   * **The duck is a hop's, not a crash's.** At top speed he stumbles eleven
+   * times a minute; a bed that stepped aside for each one would pump, which
+   * is rule 4 and the annoyance rule at once. The joke is a beat heard *over*
+   * the ride, so it takes the smallest dip the ladder has.
+   */
+  stumble(_seat = 0): void {
+    const cue = this.claimCue();
+    if (!cue) return;
+    cue.kind = 'stumble';
+    cue.bus = 'sfx';
+    cue.gain = AUDIO.stumbleLevel;
+    cue.delaySeconds = 0;
+    // The stand-in before the bank lands — a knock and a clink, both short.
+    // A thump on the hop's shape (150→60 Hz) is the can hitting the hat, and
+    // the tone is the first can of the tool's pair at its own 2100 Hz through
+    // the beep lowpass, 50 ms because a clink that rings reads as an alarm.
+    cue.thumpFromHz = AUDIO.hopThumpFromHz;
+    cue.thumpToHz = AUDIO.hopThumpToHz;
+    cue.thumpSeconds = 0.08;
+    cue.noiseHz = 0;
+    cue.noiseQ = 1;
+    cue.noiseSeconds = 0;
+    cue.toneHz = STUMBLE_FALLBACK_CLINK_HZ;
+    cue.toneSeconds = 0.05;
+    this.demandTransientDuck(AUDIO.duckHop);
   }
 
   // -------------------------------------------------------------------------

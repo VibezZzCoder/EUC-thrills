@@ -18,6 +18,7 @@ import {
   type RiderMaterialSpec,
   type RiderPanelGroup,
   type RiderPatch,
+  MOTION_STILL,
 } from './riderLook.ts';
 
 /**
@@ -215,6 +216,16 @@ export interface StanceInput {
    * carrying a paddle but not swinging looks like a rider carrying a paddle.
    */
   swingBlend: number;
+  /**
+   * The ride style's sway, -1..1 — M29 (`docs/PLANS.md` §29.4).
+   *
+   * Already gated by the controller (speed, air, wobble, crash, the
+   * invulnerable window), so this module spends it as a plain multiplier on
+   * the look's `motion` table and never asks who is riding. Exactly zero on
+   * every sober seat, and `MOTION_STILL` on every look but one, so the sway
+   * is a double zero for everybody it was not written for.
+   */
+  styleSway: number;
 }
 
 export function createStanceInput(): StanceInput {
@@ -250,6 +261,7 @@ export function createStanceInput(): StanceInput {
     reverse: 0,
     swingAngle: 0,
     swingBlend: 0,
+    styleSway: 0,
   };
 }
 
@@ -1224,6 +1236,16 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       // cannot disagree with the state and F4 reaches the rider.
       const fighting = clamp01(stance.wobbleFight);
       const wobble = fighting * (1 - rest) * (1 - crashing);
+      // -- The ride style (M29) ---------------------------------------------
+      // The Drunken Master's body: the sway leans the head and swings the
+      // arms with the weave, the stagger fights a real wobble bigger and
+      // looser, and the sip tilts the head back at rest. All of it is the
+      // look's `motion` table times a channel the controller already gated,
+      // and `MOTION_STILL` is every look's table but his — so on any approved
+      // pose every term below is a product of two zeros. The pelvis roll and
+      // the over-lean are spent in `ridingRig.ts`, which owns that axis.
+      const motion = look.motion ?? MOTION_STILL;
+      const sway = clamp(stance.styleSway, -1, 1) * (1 - rest) * (1 - crashing);
       // -- Backwards riding -------------------------------------------------
       // The look-behind stance: chest open, head over the left shoulder, arms
       // a little wider, knees flexed. Suppressed by rest and crash for the
@@ -1295,7 +1317,8 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
           // an unreachable knee fold (and through short garment hems).
           + attack * RIDER_BLOCKOUT.attackHipDrop * (1 - amount)
           // "Rider lowers centre of mass ... knees bend deeper" (§13.2, §13.3).
-          + wobble * RIDER_BLOCKOUT.wobbleHipDrop
+          // The stagger takes the hips lower still (M29).
+          + wobble * RIDER_BLOCKOUT.wobbleHipDrop * (1 + motion.staggerHips)
           // Backwards is less stable than forwards, and flexed knees are how
           // that reads (motion reference §9; the look-behind stance).
           + reverse * RIDER_BLOCKOUT.reverseSquat,
@@ -1491,8 +1514,12 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
           // "Arms move outward", then "arms widen" (§13.1, §13.2) — and on the
           // way back down, "arms gradually return inward" (§13.3), which is the
           // same line running backwards as the energy decays.
-          + wobble * RIDER_BLOCKOUT.wobbleArmSplay
+          // The stagger: arms out like a man on ice (M29).
+          + wobble * RIDER_BLOCKOUT.wobbleArmSplay * (1 + motion.staggerArms)
           + crashing * RIDER_BLOCKOUT.crashArmSplay
+          // The sway: the low-side arm drifts out and the high-side arm in,
+          // which is what keeps the pair from ever reading as mirrored bars.
+          + sway * Math.sign(arm.side) * motion.swayArmSplay
           // The tuck opens the arms only slightly. The reference hands are
           // back and low, not out — a wide tuck reads as a tightrope walker.
           + tuck * RIDER_BLOCKOUT.tuckArmSplay
@@ -1514,10 +1541,12 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
           // outside glove reaches across the machine, the inside one trails.
           + (inside
             ? -carving * RIDER_BLOCKOUT.carveStanceInsideBack
-            : carving * RIDER_BLOCKOUT.carveStanceOutsideForward);
+            : carving * RIDER_BLOCKOUT.carveStanceOutsideForward)
+          // And a little fore-aft alternation with the sway (M29).
+          + sway * Math.sign(arm.side) * motion.swayArmSwing;
         const rise = (inside ? 0 : amount * RIDER_BLOCKOUT.armCarveOutsideRise)
           + air * RIDER_BLOCKOUT.airArmRise
-          + wobble * RIDER_BLOCKOUT.wobbleArmRise
+          + wobble * RIDER_BLOCKOUT.wobbleArmRise * (1 + motion.staggerArms)
           // And drop, so the hands do not ride up as the torso hinges over
           // them — the one way a tuck could still find the handlebar pose.
           - tuck * RIDER_BLOCKOUT.tuckArmDrop
@@ -1628,7 +1657,10 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
         tuckPitch * RIDER_BLOCKOUT.tuckHeadStabilization,
         0,
         RIDER_BLOCKOUT.tuckHeadStabilizationMax,
-      ) - (stance.falling ? air * RIDER_BLOCKOUT.airHeadDown : 0);
+      ) - (stance.falling ? air * RIDER_BLOCKOUT.airHeadDown : 0)
+      // The sip (M29): stopped, the head goes back to the hat's tubes — the
+      // one thing the style moves at a standstill, on the rest blend alone.
+      - rest * motion.sipNeckPitch;
       // Yaw: the rider looks where they intend to go (motion reference 22).
       // The controller already carries the sign and the smoothing; this joint
       // only spends it.
@@ -1741,7 +1773,13 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
         neck.rotation.y *= 1 - rag;
         neck.rotation.z = -Math.atan2(RAG_TARGET.x, towardY) * rag;
       } else {
-        neck.rotation.z = 0;
+        // The ride style's head (M29): a tilt with the sway, and the loll
+        // into a wobble's swing. Zero for every look without a `motion`
+        // table, which is every look but one — so this axis keeps its one
+        // owner and its old value for everyone the M15 comment was written
+        // about. Negative leans toward +X, the rider's left, with the sway.
+        neck.rotation.z = -sway * motion.swayHeadTilt
+          - wobble * footPhase * motion.staggerHeadLoll;
       }
     },
     dispose(): void {

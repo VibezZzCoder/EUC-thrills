@@ -161,6 +161,15 @@ export interface RiderSeat {
 
   /** Previous crashed state, so the composition root can see this seat's edge. */
   wasCrashed: boolean;
+  /**
+   * The controller's stumble count as last seen by the fixed step, so the
+   * composition root can see this seat's rising edge and fire the stumble
+   * cue (M29 Phase 4, q112). Zeroed wherever a controller is born or a seat
+   * is re-dressed, because a fresh controller starts at zero and an edge
+   * measured against the old count would either fire on nothing or miss the
+   * first real one.
+   */
+  lastStumbles: number;
 
   // -- The seat's half of the screen — M25 Phase 3 ---------------------------
 

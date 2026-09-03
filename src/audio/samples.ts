@@ -8,6 +8,8 @@ import crashRedRiderUrl from '../../assets/live/audio/crash_red_rider.wav?url';
 import crashAdonisb2Url from '../../assets/live/audio/crash_adonisb2.wav?url';
 import crashMaribelUrl from '../../assets/live/audio/crash_maribel.wav?url';
 import crashWheelInMotionUrl from '../../assets/live/audio/crash_wheel_in_motion.wav?url';
+import crashDrunkardUrl from '../../assets/live/audio/crash_drunkard.wav?url';
+import stumbleDrunkardUrl from '../../assets/live/audio/stumble_drunkard.wav?url';
 import sirenFarUrl from '../../assets/live/audio/siren_far_loop.wav?url';
 import sirenCloseUrl from '../../assets/live/audio/siren_close_loop.wav?url';
 import overspeedBeepUrl from '../../assets/live/audio/overspeed_beep.wav?url';
@@ -26,8 +28,10 @@ import overspeedBeepUrl from '../../assets/live/audio/overspeed_beep.wav?url';
  * recordings in NOTICE.md's third-party table, the toko rotation loop
  * synthesized locally by `tools/make-toko.mjs` (original CC BY 4.0, no
  * external source), and Trollina's crash, which is composed by
- * `tools/make-crash-trollina.mjs` from a generated vocal take and is the one
- * shipped file **not** covered by the CC BY 4.0 claim. NOTICE.md says why.
+ * `tools/make-crash-trollina.mjs` from a generated vocal take and was, until
+ * M29, the one shipped file **not** covered by the CC BY 4.0 claim. The
+ * Drunkard's crash and his stumble (M29 Phase 4) are the second and third,
+ * on her exact terms. NOTICE.md says why.
  *
  * Red Rider's crash is the one to *not* read across from hers. It is the
  * owner's own recording with 0.8 s of one band re-textured from elsewhere in
@@ -121,6 +125,40 @@ export interface SampleUrls {
    */
   readonly crashWheelInMotion: string;
   /**
+   * The Drunkard's (M29) — Trollina's path, walked a second time.
+   *
+   * He is a wholly fictional parody rider, so nobody could record his fall:
+   * `tools/make-crash-drunkard.mjs` composes it on her tool's exact mechanism
+   * from a take generated through the owner's OpenRouter connector
+   * (`openai/gpt-audio`, voice `verse` — candidate C of three, chosen by the
+   * owner's ear on 2026-09-02), five beats cut and re-timed onto Cool Rider's
+   * 3.4 s arc, lifted one semitone, over slapstick synthesized from first
+   * principles: two cans clanking, a fizz as one lets go, a tube slurp as the
+   * settle. RMS-matched to Cool Rider's, peak-capped where his peaks, and the
+   * same length to the sample. `crashVoices.test.ts` proves it is not a slice
+   * of any shipped recording (|r| ≤ 0.025 against each of the other six at
+   * authoring).
+   *
+   * Standing is Trollina's exactly: a machine-generated vocal, **outside the
+   * CC BY 4.0 claim**, with its own row in NOTICE.md's *Generated audio*
+   * table — that row arrives with Phase 5. Everything under the voice is
+   * original project work, as hers is.
+   */
+  readonly crashDrunkard: string;
+  /**
+   * His stumble (M29 Phase 4, q112) — the `stumble` cue's recording, 0.40 s.
+   *
+   * The same tool, the same take: the crash's two can-clanks and the take's
+   * own *hic*, peak-normalised to −6 dBFS rather than matched to anything,
+   * because no shipped one-shot is its sibling — `AUDIO.stumbleLevel` is
+   * where its loudness is decided. The one file in this table that is not a
+   * crash and does not share `crash`'s length, and the one played per
+   * *stumble* rather than per fall, up to eleven times a minute at top
+   * speed. Generated vocal, so its standing is `crashDrunkard`'s: outside the
+   * CC BY 4.0 claim, and on the same NOTICE.md row.
+   */
+  readonly stumbleDrunkard: string;
+  /**
    * The chase siren's two wails (M18) — the far carrier and the close
    * panic, crossfaded by the cop's range. Both CC0 Freesound recordings,
    * owner-auditioned A/B/C/D on 2026-08-13 and recorded in NOTICE.md's
@@ -155,6 +193,8 @@ export const SAMPLE_URLS: SampleUrls = {
   crashAdonisb2: crashAdonisb2Url,
   crashMaribel: crashMaribelUrl,
   crashWheelInMotion: crashWheelInMotionUrl,
+  crashDrunkard: crashDrunkardUrl,
+  stumbleDrunkard: stumbleDrunkardUrl,
   sirenFar: sirenFarUrl,
   sirenClose: sirenCloseUrl,
   overspeedBeep: overspeedBeepUrl,

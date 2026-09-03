@@ -12,10 +12,12 @@ import { riderLook } from '../render/riderLook.ts';
 import {
   DEFAULT_CHARACTER,
   characterSpec,
+  rideStyleFor,
   type CharacterId,
   type CrashVoiceId,
   type PlayableCharacterId,
 } from '../data/riders.ts';
+import type { RideStyle } from '../data/rideStyles.ts';
 import {
   ChaseCamera,
   copyChaseCameraState,
@@ -1717,6 +1719,12 @@ export class Game {
     // every boot — and because `installCharacter` would then dispose a rig that
     // had never drawn anything.
     this.installedCharacter = this.options.current.character;
+    // **And the ride style with it** — M29 (`docs/PLANS.md` §29.4 S2). The
+    // boot path is the fourth place a seat's controller is born, and the note
+    // above the controller says what happens to anything added to one birth
+    // and not the others: the first world of a session rides unlike every
+    // world after it. Read off the roster, never off an option.
+    controller.setRideStyle(this.rideStyleFromStore(this.installedCharacter));
     const rig = createRidingRig(
       riderLook(this.installedCharacter),
       machineLook(machineForCharacter(this.installedCharacter)),
@@ -2146,6 +2154,7 @@ export class Game {
       lastThrottle: 0,
       lastSteer: 0,
       wasCrashed: false,
+      lastStumbles: 0,
 
       // -- The seat's half of the screen — M25 Phase 3 -----------------------
 
@@ -2641,6 +2650,11 @@ export class Game {
       hazards: this.hazards,
       softBodies: this.softBodies,
     });
+    // The style is the character's, read off the roster the moment the
+    // character is decided — M29 S2. A controller born sober and dressed
+    // later would be one frame of the wrong ride, and a seat nobody
+    // re-dressed would be the leak the safeguard exists to close.
+    controller.setRideStyle(this.rideStyleFromStore(id));
 
     const rig = createRidingRig(riderLook(id), machineLook(machineForCharacter(id)));
     this.renderer.scene.add(rig.group);
@@ -4337,6 +4351,10 @@ export class Game {
       hazards: new HazardField(plan.hazards ?? []),
       softBodies: new SoftBodyField(plan.softBodies ?? []),
     });
+    // Sober by data rather than by default — M29 S3. The roster says so for
+    // him as for everyone, and the chase's threat never inherits a style
+    // because a default happened to be the right one.
+    this.copController.setRideStyle(this.rideStyleFromStore('cop'));
     this.copBrain = new CpuRider(this.spine, plan, this.terrain);
   }
 
@@ -6126,6 +6144,16 @@ export class Game {
         hazards: this.hazards,
         softBodies: this.softBodies,
       });
+      // A fresh controller is born sober; the seat's character is not — M29
+      // S2 / S4. The style is re-read off the roster for whoever is still
+      // sitting here, so a *Fresh route* neither sobers a drunk seat nor
+      // leaves a sober one holding a style from a controller that no longer
+      // exists.
+      this.seats[index].controller.setRideStyle(this.rideStyleFromStore(this.seats[index].character));
+      // A fresh controller counts stumbles from zero; the seat's edge must too
+      // — M29 Phase 4. (The edge also re-baselines on a count that fell, so
+      // this is the stated rule rather than the only defence.)
+      this.seats[index].lastStumbles = 0;
     }
     this.challenge = new ChallengeRun(plan.id, plan.checkpoints);
     this.trackDay = new TrackDayRun(plan.id, plan.checkpoints, plan.lap ?? null);
@@ -6251,6 +6279,18 @@ export class Game {
     // Written beside the rig, never anywhere else, so the id and the geometry
     // cannot drift — the rule `installedCharacter` has followed since M14.5.
     seat.character = id;
+    // **And the ride style beside both** — M29 (`docs/PLANS.md` §29.4 S2).
+    // A swap rebuilds the rig and keeps the controller, so a style installed
+    // when a rider was chosen would stay on the wheel when the rider changed
+    // — the one place a leak into a sober seat could come from, closed by
+    // the same writer that changes the character. Roster data, never an
+    // option: `rideStyleFor` is the only source — read through the store,
+    // because a re-dress that installed the shipped record threw away every
+    // F4 override the seat was riding on (the QA pass's finding 5).
+    seat.controller.setRideStyle(this.rideStyleFromStore(id));
+    // `setRideStyle` zeroes the controller's stumble count when the style
+    // changes kind, so the seat's edge starts over with it — M29 Phase 4.
+    seat.lastStumbles = seat.controller.stumbleCount;
     this.renderer.scene.add(seat.rig.group);
     this.syncSeatPose(seat);
     seat.rig.applyStatus(
@@ -7030,6 +7070,18 @@ export class Game {
         this.audio.recovered(index);
       }
       seat.wasCrashed = seat.controller.crashed;
+    }
+    // **The stumble's edge, per seat, at the same detector** — M29 Phase 4
+    // (q112). Only a seat riding the Drunken Master ever moves this count, so
+    // the cue carries no voice: whoever stumbled is the Drunkard. A rising
+    // edge fires; a count that went *down* is a rebuilt or reset controller
+    // (`reset`, `setRideStyle` across a re-dress, `installLevel`) and is
+    // taken as the new baseline without a sound, so a fresh zero never fires
+    // and a stumble counted on the step after one is not missed.
+    const stumbles = seat.controller.stumbleCount;
+    if (stumbles !== seat.lastStumbles) {
+      if (stumbles > seat.lastStumbles) this.audio.stumble(index);
+      seat.lastStumbles = stumbles;
     }
 
     // The swing, stepped here and nowhere else (M14), for the reason the timed
@@ -8004,6 +8056,9 @@ export class Game {
     seat.lastThrottle = 0;
     seat.lastSteer = 0;
     seat.wasCrashed = false;
+    // `controller.reset` zeroed its stumble count; the seat's edge follows it
+    // so the first stumble of the new run is a rise from zero — M29 Phase 4.
+    seat.lastStumbles = 0;
     // A teleport, so the swing goes with the rider who was making it and the
     // previous head position is thrown away — M14. The unconditional distance
     // guard inside `Paddle` is the primary defence and does not depend on this
@@ -9132,6 +9187,36 @@ export class Game {
   }
 
   /**
+   * The style a seat of this character rides on *right now* — M29 S2 and S7.
+   *
+   * The one place in this file that reads `rideStyleFor`, and every writer
+   * of a style goes through it: the five births and dressings and the F4
+   * re-dress in `applyTuning`. The roster decides who gets a style; the
+   * Drunkard's numbers are read off the live store on every call, so a
+   * dressing after a slider was moved installs the numbers the panel shows
+   * rather than the shipped record — the independent QA pass found the
+   * chooser quietly resetting a zeroed weave to 0.03 and a 20 m stumble
+   * spacing to 110 on the way back to him. Eleven reads per dressing, and a
+   * dressing is rare; `applyTuning` runs on every slider move and would
+   * rather do the same eleven than hold a second copy that can go stale.
+   */
+  private rideStyleFromStore(character: CharacterId): RideStyle {
+    return rideStyleFor(character, {
+      weaveHeading: this.tuning.get('DRUNK.weaveHeading'),
+      weaveRateA: this.tuning.get('DRUNK.weaveRateA'),
+      weaveRateB: this.tuning.get('DRUNK.weaveRateB'),
+      weaveSpeedFloor: this.tuning.get('DRUNK.weaveSpeedFloor'),
+      weaveSpeedFull: this.tuning.get('DRUNK.weaveSpeedFull'),
+      weaveFadeRate: this.tuning.get('DRUNK.weaveFadeRate'),
+      stumbleEvery: this.tuning.get('DRUNK.stumbleEvery'),
+      stumbleSeconds: this.tuning.get('DRUNK.stumbleSeconds'),
+      stumbleRate: this.tuning.get('DRUNK.stumbleRate'),
+      stumbleRoll: this.tuning.get('DRUNK.stumbleRoll'),
+      stumbleYaw: this.tuning.get('DRUNK.stumbleYaw'),
+    });
+  }
+
+  /**
    * Push the current tuning values into the systems that own them.
    *
    * Called once at construction and on every change, rather than polled every
@@ -9264,6 +9349,20 @@ export class Game {
       seat.controller.setTuning(controllerTuning);
     }
     this.copController?.setTuning(controllerTuning);
+
+    // **The Drunkard's numbers, on the same loop** — M29 safeguard S7. The
+    // `DRUNK` group's sliders move a *copy* of `DRUNK_STYLE` built off the
+    // store, and it reaches every seat and the cop through `rideStyleFor`,
+    // which still decides who gets it: a sober row gets `SOBER_STYLE` whatever
+    // numbers arrive, so no control on this panel can put a style on a seat.
+    // Every seat, then the cop, for the physics push's reason above; and
+    // through this method rather than written to a controller, for the
+    // probe's reason — `installLevel` rebuilds every controller on a world
+    // swap and replays this, so an override survives a fresh route.
+    for (const seat of this.seats) {
+      seat.controller.setRideStyle(this.rideStyleFromStore(seat.character));
+    }
+    this.copController?.setRideStyle(this.rideStyleFromStore('cop'));
 
     // The paddle's live subset — M14. Pushed here rather than read through the
     // tuning table inside the swing, on the pattern the controller above uses:
