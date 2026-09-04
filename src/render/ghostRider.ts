@@ -4,6 +4,7 @@ import { BLOCKOUT_COLOURS, CHALLENGE, EUC, WHEEL } from '../data/tuning.ts';
 import { approach } from '../shared/maths.ts';
 import { createPose, type EucPose } from '../simulation/EucController.ts';
 import type { GhostSample } from '../simulation/ghost.ts';
+import { riderRollFor, settleStep } from '../simulation/riderLean.ts';
 import { createRidingRig, type RidingRig } from './ridingRig.ts';
 import { STANDARD_MACHINE_LOOK, type MachineLook } from './machineLook.ts';
 import { COOL_RIDER_LOOK, type RiderLook } from './riderLook.ts';
@@ -139,7 +140,7 @@ function ghostDensity(look: RiderLook): RiderLook {
  * |---|---|
  * | `x`, `y`, `z`, `headingY`, `rollAngle`, `speed`, `crouch` | **recorded** |
  * | `groundY` | **recorded** |
- * | `riderRoll` | derived — the controller's own split of `rollAngle` |
+ * | `riderRoll` | derived — the controller's own lean schedule, from `rollAngle` and `speed` |
  * | `wheelSpin` | derived — integrated from `speed` against `sample.t` |
  * | `airHeight`, `airBlend` | derived — from `y - groundY` |
  * | `tuck` | derived — a grounded crouch, with a named imperfection |
@@ -243,6 +244,10 @@ export function createGhostRider(
   let lastSampleTime: number | null = null;
   let wheelSpin = 0;
   let airBlend = 0;
+  /** The previous sample's wheel roll, for the settle's rate (M30 Phase 3b). */
+  let lastSampleRoll = 0;
+  /** The lean schedule's settle, integrated over the recording's own clock. */
+  let leanSettle = 1;
 
   const wheelRadius = WHEEL.tyreDiameter / 2;
 
@@ -272,6 +277,10 @@ export function createGhostRider(
       if (previous === null || sample.t < previous) {
         wheelSpin = 0;
         airBlend = 0;
+        // The settle is rewound with them: a restarted ghost is placed on a
+        // held bank, not mid-flick (M30 Phase 3b).
+        leanSettle = 1;
+        lastSampleRoll = sample.rollAngle;
       }
       lastSampleTime = sample.t;
 
@@ -286,11 +295,86 @@ export function createGhostRider(
       pose.crouch = sample.crouch;
 
       // -- Derived ----------------------------------------------------------
-      // The upper body's share of the lean, taken from the *same* factor
-      // `EucController.writePose` uses. Copying the number would let the ghost
-      // and the player drift apart on a tuning change; reading the constant
-      // cannot.
-      pose.riderRoll = sample.rollAngle * EUC.riderUpperBodyRollFactor;
+      // The upper body's share of the lean, through the *same* schedule
+      // `EucController.writePose` uses (M30 Phase 3, `simulation/riderLean.ts`).
+      // Calling the shared function rather than copying its arithmetic is what
+      // keeps the ghost and the player from drifting apart when the *table*
+      // changes. The frozen table, deliberately: a ghost is a replay of the
+      // shipped wheel, and the F4 panel is a diagnostic the ghost has never
+      // followed (it did not follow `riderUpperBodyRollFactor` before M30
+      // either) — with `EUC.carveLeanShareTop` slid to 0.5 the player's torso
+      // sits 18° off the ghost's in a grip-limit corner, which is the panel
+      // showing on the one rider it reaches.
+      //
+      // Two arguments are not recorded and are honest substitutions rather
+      // than guesses (q116, and `DESIGN.md`'s rule that a neutral pose beats
+      // an invented one):
+      //
+      //   - The **force lean** is given the recorded `rollAngle`. A recording
+      //     carries the wheel's roll, not the cornering force, and **from M30
+      //     Phase 2 those are different numbers**: the bank saturates at
+      //     `atan(maxLateralG)` and the rider carries the rest, so a ghost
+      //     replaying a saturated corner leans as far as the machine and no
+      //     further. At full lock on a `?mph=65` build — the deepest corner
+      //     the game can record — the player's torso is at `atan(1.05)`
+      //     = 46.4° and the ghost's at `atan(0.75)` = 36.9°: **9.5° less**,
+      //     and only where the corner is at the grip limit. Below it the two
+      //     are equal to the bit and the derivation adds nothing of its own.
+      //     **Left as it is, per q116**: closing it means a ninth recorded
+      //     field on every ghost track for a pose the player is not looking
+      //     at, and `DESIGN.md`'s rule is that a neutral pose beats an
+      //     invented one. What remains beside it is the recording's own: 20 Hz
+      //     samples and `ghostAngleStep`'s quantisation put the ghost's torso
+      //     within about 2.3° of the player's over an ordinary ride (M30's QA
+      //     measured it), a gap the torso now shows about five times larger
+      //     than it did at a 0.18 share because it takes the whole of a
+      //     recorded roll instead of a fifth.
+      //   - `technicalTurn` stays **neutral**, exactly as it was before M30:
+      //     the recording has never carried it, and above `carveLeanSpeed` —
+      //     which is `technicalTurnFadeSpeed` — the technique has faded out
+      //     anyway, so it can only matter in the slow band it always did.
+      //
+      // **And the settle, from M30 Phase 3b**: the same `settleStep` the
+      // controller runs, integrated over the sample's own clock rather than
+      // the simulation's, exactly as `wheelSpin` and `airBlend` above are.
+      // The rate is taken from consecutive samples' `rollAngle`, which is the
+      // only rate a recording can offer: at 20 Hz a flick is three or four
+      // samples wide and `ghostAngleStep`'s 0.005 rad quantisation is worth
+      // 0.1 rad/s of jitter — a fifth of `carveLeanHoldRate`, so a ghost
+      // holding a bank still reads as holding it. A ghost therefore
+      // transitions like the player, one sample at a time.
+      //
+      // **Close across frame rates, not identical — and the difference is
+      // named rather than claimed away** (M30 Phase 3b QA, correcting this
+      // block's first draft). `Game.updateGhost` calls
+      // `GhostPlayer.sample(elapsed)` once per *rendered* frame, and that
+      // method writes `out.t = runSeconds` — so `sample.t` is the display
+      // clock, not the recorder's, and `sample.rollAngle` is a lerp between
+      // two recorded knots. A frame that straddles a knot therefore reads the
+      // *average* slope across it instead of either side's, and the target
+      // that slope feeds is clamped at both ends and non-linear between them,
+      // so two frame rates enter the ramp from different heights and a linear
+      // ramp cannot close the gap again. Measured over a recorded flick:
+      // worst |settle(hz) − settle(20 Hz)| **0.294**, at 90 Hz; worst torso
+      // roll between a 60 Hz and a 144 Hz replay of one track **4.01°**, on
+      // six frames out of 420. A **held** bank is untouched — the settle is
+      // exactly 1 at every rate, which is what the baselines and the capture
+      // sets depend on — so only transition frames move, by a few degrees,
+      // behind a 42% alpha. Stepping the integration knot by knot would
+      // remove it and is deliberately not done: it would buy those degrees
+      // with a second clock and a second code path beside the controller's,
+      // on the one rider nobody is riding.
+      const rollRate = dt > 0 ? (sample.rollAngle - lastSampleRoll) / dt : 0;
+      leanSettle = settleStep(leanSettle, rollRate, dt, EUC);
+      lastSampleRoll = sample.rollAngle;
+      pose.riderRoll = riderRollFor(
+        sample.rollAngle,
+        sample.rollAngle,
+        0,
+        sample.speed,
+        EUC,
+        leanSettle,
+      );
 
       // The tyre turns by the distance travelled over its radius, which is
       // what the controller integrates from its resolved displacement. Against

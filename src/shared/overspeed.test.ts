@@ -113,11 +113,31 @@ test('the first beep lands no earlier than the owner\'s 40 mph', () => {
   // *means*. If the ride's top speed moves, this figure moves with it by
   // design — and if the share is ever edited by hand, this is what notices.
   // "No earlier than 40mph" is the owner's own inequality after riding the
-  // 30 mph build, so the floor is hard and the ceiling is just tidiness.
+  // 30 mph build, so the floor is hard.
+  //
+  // **The day the design anticipated arrived at M30 Phase 4**: 65 mph shipped,
+  // the share was not touched, and the first beep moved from 40.4 mph to 52.2
+  // on its own. His floor is honoured with twelve miles an hour to spare, and
+  // the ceiling that used to sit at 41 was only ever tidiness — it is replaced
+  // by the two claims that are actually load-bearing: the beep is still the
+  // same *fraction* of the way to the edge, and it still leaves a usable band
+  // between itself and the cutout.
   const top = Math.sqrt((EUC.leanToAccel * Math.sin(EUC.maxLeanPitch)) / EUC.dragCoefficient);
   const firstBeepMph = top * EUC.overspeedBeepShare * 2.236936;
+  const cutoutMph = top * EUC.cutoutSpeedShare * 2.236936;
   assert.ok(
-    firstBeepMph >= 40 && firstBeepMph < 41,
+    firstBeepMph >= 40,
     `the beeps start at ${firstBeepMph.toFixed(1)} mph, and the owner asked for no earlier than 40`,
+  );
+  assert.ok(
+    Math.abs(firstBeepMph - 52.2) < 0.5,
+    `the beeps start at ${firstBeepMph.toFixed(1)} mph, where the shipped 65 mph wheel puts them `
+      + 'at 52.2 — if the wheel moved this moves with it and is re-pinned here, and if the share '
+      + 'was edited by hand this is what noticed',
+  );
+  assert.ok(
+    cutoutMph - firstBeepMph > 8,
+    `only ${(cutoutMph - firstBeepMph).toFixed(1)} mph between the first beep and the cutout — `
+      + 'the warning has to leave room to act on it',
   );
 });

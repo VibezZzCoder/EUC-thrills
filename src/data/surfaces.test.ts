@@ -132,7 +132,11 @@ test('grass is meaningfully slower than pavement, not marginally', () => {
   const pavement = topSpeed(SURFACES.pavement.rollingResistance);
   const grass = topSpeed(SURFACES.grass.rollingResistance);
 
-  assert.ok(pavement > 21.5 && pavement < 23, `pavement top speed drifted to ${pavement}`);
+  // 29.06 m/s — the shipped 65 mph wheel (M30 Phase 4; 22.3 and 50 mph before
+  // it, and the band moved with the wheel rather than being widened to cover
+  // both). Stated as a band because the point is that the *arithmetic* still
+  // lands on the wheel this project ships, not that any one digit is fixed.
+  assert.ok(pavement > 28.5 && pavement < 29.5, `pavement top speed drifted to ${pavement}`);
   // Under 10% and the owner cannot feel it with their eyes shut, which is the
   // gate this milestone is judged by.
   assert.ok(

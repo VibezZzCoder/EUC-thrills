@@ -41,10 +41,30 @@ import { createPaddle } from './paddle.ts';
  * ```
  *
  * Rotating the rider as one piece creates the exaggerated plank pose the owner
- * rejected. The lower body follows the wheel, the inside knee bends farther,
- * and the pelvis counter-rolls so the shoulders stay near level. Pivoting the
- * whole rig anywhere other than the contact patch would also swing the tyre out
- * from under itself.
+ * rejected — and the thing he rejected was 1.22 of the wheel's roll *at every
+ * speed*, a rider planked over at walking pace. The lower body follows the
+ * wheel, the inside knee bends farther, and the pelvis counter-rolls so the
+ * shoulders stay near level. Pivoting the whole rig anywhere other than the
+ * contact patch would also swing the tyre out from under itself.
+ *
+ * **From M30 Phase 3 the counter-roll is a schedule, not a constant**
+ * (`simulation/riderLean.ts`, `docs/PLANS.md` §30.3c). Below 6 m/s it is what
+ * it always was, to the bit — the slow technique above is unchanged. As the
+ * speed climbs the rider's share climbs with it, and at `carveLeanFullSpeed`
+ * on the shipped `carveLeanShareTop` of 1.0 the rider takes the *whole* of the
+ * cornering lean. That is the M30 pose, and it is not the plank — a rider hung
+ * out with the machine at 45 mph is the corner the owner asked for, where the
+ * same angle at 3 mph was the defect.
+ *
+ * **From M30 Phase 2 the whole of the lean is more than the wheel's bank**
+ * (§30.3b): the machine saturates at `atan(maxLateralG · grip)` — 36.9° on
+ * pavement — and the rider carries the rest of the force, so the hinge this
+ * file writes is *negative* through a fast corner and the torso hangs inside
+ * the wheel's line by up to 9.5°. It is exactly zero only where the wheel is
+ * unsaturated, which below the grip limit is every corner. Above a share of
+ * 1.0 it hangs further in again. **`riderRoll` arrives on the pose already scheduled**: the rig
+ * spends the difference it is handed and never re-derives it from `rollAngle`,
+ * which is also what lets the ghost and the player share one expression.
  *
  * **The ground pivot at M4 goes *under* the lean pivot, not over it**, because
  * lean is relative to the surface: a rider carving across a slope leans off the

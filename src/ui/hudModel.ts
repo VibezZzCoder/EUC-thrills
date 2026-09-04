@@ -280,7 +280,7 @@ export interface HudInput {
    * and on the clock for it, and whether the cop is close enough to be about to
    * swing. Everything else about the chase — his position, the record, the
    * outcome — belongs to the results card rather than to a lane the player
-   * reads at 50 mph.
+   * reads at 65 mph.
    */
   readonly chase?: {
     readonly remaining: number;
@@ -458,8 +458,11 @@ export interface StrayHudView {
  *
  * **Non-obstructive by construction**, which is what the owner asked for: it is
  * a glyph and two words in the same top-centre column as the banner above,
- * never in the middle of the frame, and it does not exist at all below 40 mph —
- * so a player who never goes near the top of the range never sees it once.
+ * never in the middle of the frame, and it does not exist at all below
+ * `EUC.overspeedBeepShare` (0.785) of the derived top speed — 52 mph on the
+ * shipped 65 mph wheel, and 40 mph on the 50 mph wheel this was written for.
+ * It is a share, not an absolute, so it keeps its place in the range whatever
+ * wheel ships — a player who never goes near the top of it never sees it once.
  *
  * `pulseSeconds` is the beep period from `shared/overspeed.ts`, handed to CSS
  * as an animation duration. That is the one place this file lets a value become

@@ -153,6 +153,17 @@ test.describe('M9 — HUD, menus, options', () => {
       // hunting for a hill: the HUD's contract is with the power stage, and
       // which terrain produced it is M6's business, not M9's.
       game.tuning.set('EUC.powerComfortSpeed', 2);
+      // **And the limit too, since M30 Phase 4.** The ladder's load is a
+      // *share* of `powerLimitSpeed`, and that constant scaled with the shipped
+      // top speed (25.1 → 32.68) exactly as M16's rule says it must — so
+      // driving only the comfort speed no longer drives the load anywhere: the
+      // wheel reaches 26 m/s of a 32.7 m/s limit and sits on the normal rung.
+      // Setting both is what this fixture's own comment already meant by
+      // "drive the load straight from the controller's own tuning"; the second
+      // constant was simply left at a default that used to be low enough.
+      // Twenty is below anything the shipped wheel does on the flat, which is
+      // the relationship 25.1 had to the 50 mph wheel.
+      game.tuning.set('EUC.powerLimitSpeed', 20);
       game.setActions({ throttle: 1 });
       game.advance(900);
       const snap = game.snapshot();

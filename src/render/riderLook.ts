@@ -6140,12 +6140,20 @@ export const MARIBEL_LOOK: RiderLook = Object.freeze({
 // sleeves are print.
 
 /**
- * Where the knee guard's upper shell begins on the thigh — 0.73, and the
- * clearance contract chose it: 0.70 put the shell's proud top corner 78 mm
- * under the pelvis in the deepest attack-carve-crouch fold against a 75 mm
- * fitted-bodice ceiling, and 0.72 sat on the ceiling exactly
- * (`riderClearance.test.ts`); Adonisb2's 0.75 was tuned to the same contract
- * with a 20 mm shell, and his shell's lift is what finally cleared it.
+ * Where the knee guard's upper shell begins on the thigh — 0.73. The
+ * clearance contract of the day chose it: 0.70 put the shell's proud top
+ * corner 78 mm under the pelvis in the deepest attack-carve-crouch fold
+ * against a 75 mm fitted-bodice ceiling, and 0.72 sat on the ceiling exactly;
+ * Adonisb2's 0.75 was tuned to the same contract with a 20 mm shell.
+ *
+ * **That justification is history, not the reason the number stands** (M30
+ * Phase 3, q121). The contract it cites measured a bare height in the pelvis
+ * frame and had never applied the pelvis hinge; re-derived on the jacket
+ * loft's own section with the hinge written (`riderClearance.test.ts`, the
+ * hem-ring and shell metrics), the "78 mm under a 75 mm ceiling" was a knee
+ * lifted 293 mm in front of the body by a crouch, and 0.70 clears the honest
+ * floor by about 130 mm as 0.735 clears it by 138. The value is kept as the
+ * look he accepted; move it for the look, never for that ceiling.
  */
 const WIM_GUARD_TOP = 0.735;
 /**
@@ -8345,7 +8353,39 @@ function drunkardPack(): THREE.BufferGeometry {
  * unchanged: the grip, the fingertip boundary and the show-through all
  * stay anchored where rounds 1–2 put them.
  */
-export const DRUNKARD_HAND_CAN = Object.freeze({ radius: 0.045, top: -0.055, bottom: -0.220, z: 0.018 });
+export const DRUNKARD_HAND_CAN = Object.freeze({
+  radius: 0.045,
+  top: -0.055,
+  bottom: -0.220,
+  z: 0.018,
+  /**
+   * **How far outboard of the fist's axis he carries it, metres** — 8 mm, and
+   * it is a clearance measurement rather than a look decision (M30 Phase 2's
+   * QA, `render/riderClearanceRidden.test.ts`).
+   *
+   * Phase 2's hang brings the pelvis — and the fist under it — inside the
+   * machine's line at speed, and the can's inboard flank near its base is the
+   * one thing on him that comes near his thigh. With the ride's *phase* swept
+   * as well as its steering, the worst approach on a `?mph=65` build at the
+   * shipped share was **28.3 mm against a 40 mm floor**. §30.3d's rule points
+   * at the slider, q114 points at this: the can's carry is the lever, and the
+   * floor is never the lever.
+   *
+   * The direction is measured, not chosen. Perturbing the carried can a
+   * millimetre at a time through the production rig at the worst pose, the gap
+   * moves **0.96 mm per mm outboard**, 0.27 per mm up and 0.13 per mm back —
+   * outboard is very nearly the thigh's own normal there, and the other two
+   * would need tens of millimetres and would move the grip off the fingertips
+   * and the can out of the fist. 7 mm is the smallest whole millimetre that
+   * holds the floor (40.1 mm, converged over 600 phase rungs); 8 mm is what is
+   * carried, because a tenth of a millimetre is a number, not a margin.
+   *
+   * The grip is derived from this circle (`drunkardHandGrip`), so the fingers
+   * come with it: what moves is where the fist holds the can, not the can
+   * inside the fist.
+   */
+  x: 0.008,
+});
 
 /** The look's densities — stated once, because the glove's vertex count below is derived from the hand's. */
 const DRUNKARD_DENSITY = Object.freeze({ limb: 18, torso: 30, head: 28, hand: 12 });
@@ -8433,7 +8473,9 @@ function drunkardHandCan(side: number): THREE.BufferGeometry {
   // Its own seam column, so the page can wrap it: without one the last
   // facet's texture runs backwards across the whole label.
   const can = loftGeometry(DRUNKARD_HAND_CAN_PROFILE, { radialSegments: 12, splitSeam: true });
-  can.translate(0, DRUNKARD_HAND_CAN.bottom, 0);
+  // Outboard by the carry, mirrored by the side so a right-fist can would sit
+  // where its own thigh needs it rather than 16 mm nearer.
+  can.translate(side * DRUNKARD_HAND_CAN.x, DRUNKARD_HAND_CAN.bottom, 0);
   return can;
 }
 
@@ -8464,7 +8506,7 @@ const DRUNKARD_GRIP = Object.freeze({ finger: 0.008, thumb: 0.009, upper: -0.079
 function drunkardHandGrip(side: number): THREE.BufferGeometry {
   if (side < 0) return emptyPart();
   const { finger, thumb, upper, lower } = DRUNKARD_GRIP;
-  const { radius, z: canZ } = DRUNKARD_HAND_CAN;
+  const { radius, z: canZ, x: canX } = DRUNKARD_HAND_CAN;
   // A knot on the can's circle: `deg` from straight ahead (+z) toward the
   // signed x of the old layout (negative = the bar's root side), buried
   // `bury` under the can's skin. The wrap knots bury 2 mm of the tube's
@@ -8472,7 +8514,11 @@ function drunkardHandGrip(side: number): THREE.BufferGeometry {
   // lapping the can, not floating off it and not drowned in it.
   const at = (deg: number, bury: number, y: number): THREE.Vector3 => {
     const a = (deg * Math.PI) / 180;
-    return new THREE.Vector3(side * Math.sin(a) * (radius - bury), y, canZ + Math.cos(a) * (radius - bury));
+    return new THREE.Vector3(
+      side * (canX + Math.sin(a) * (radius - bury)),
+      y,
+      canZ + Math.cos(a) * (radius - bury),
+    );
   };
   const bar = (y: number, rootDeg: number): THREE.Vector3[] => [
     // The root dives 8 mm in at the flank, where the can and the fist

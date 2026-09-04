@@ -85,24 +85,39 @@ export const DEFAULT_LEVEL: LevelId = 'slice';
 export const DEFAULT_SEED = 'euc';
 
 /**
- * The three builders, each also taking M13 Phase 2's diagnostic hazard cadence.
+ * The four builders, each also taking M13 Phase 2's diagnostic hazard cadence.
  *
  * The second parameter is a *diagnostic*, not level identity: it is absent
  * unless `?hazardprobe=` supplied it, it is never part of a seed, and it never
  * reaches `records.ts` — a probe ride is not a run worth keeping and the level
  * id it is filed under does not change. That is the same line `?wobble=` sits
  * on and the opposite side from the seed, which *is* identity (`AGENTS.md`).
+ *
+ * **The fourth parameter is M30 Phase 1's `?mph=`, and only the generator uses
+ * it.** The three hand-authored worlds ignore it on purpose: spacing a road for
+ * a wheel is something a *generator* does, and the slice, the proving ground
+ * and BelVar were laid out by hand and accepted by the owner as they are. What
+ * they get instead is a **test** — `topSpeedRoutes.test.ts` judges the slice
+ * under the 65 mph wheel and `trackLevel.test.ts` judges the lap — because
+ * §30.5 item 2's rule is that a rule the accepted level fails is a wrong rule,
+ * and the finding is something to tell the owner rather than something to bend
+ * a hand-authored world for.
  */
 const BUILDERS: Readonly<Record<
   LevelId,
-  (seed: string, hazardProbeMetres?: number, targetProbeMetres?: number) => LevelPlan
+  (
+    seed: string,
+    hazardProbeMetres?: number,
+    targetProbeMetres?: number,
+    topSpeedMph?: number,
+  ) => LevelPlan
 >> = {
   slice: (_seed, hazardProbeMetres, targetProbeMetres) =>
     createSliceLevel(hazardProbeMetres, targetProbeMetres),
   proving: (_seed, hazardProbeMetres, targetProbeMetres) =>
     createProvingGround(hazardProbeMetres, targetProbeMetres),
-  generated: (seed, hazardProbeMetres, targetProbeMetres) =>
-    generateLevel(seed, hazardProbeMetres, targetProbeMetres).plan,
+  generated: (seed, hazardProbeMetres, targetProbeMetres, topSpeedMph) =>
+    generateLevel(seed, hazardProbeMetres, targetProbeMetres, topSpeedMph).plan,
   track: (_seed, hazardProbeMetres, targetProbeMetres) =>
     createTrackLevel(hazardProbeMetres, targetProbeMetres),
 };
@@ -129,8 +144,14 @@ export function createLevel(
   seed: string = DEFAULT_SEED,
   hazardProbeMetres?: number,
   targetProbeMetres?: number,
+  topSpeedMph?: number,
 ): LevelPlan {
-  return (BUILDERS[id] ?? BUILDERS[DEFAULT_LEVEL])(seed, hazardProbeMetres, targetProbeMetres);
+  return (BUILDERS[id] ?? BUILDERS[DEFAULT_LEVEL])(
+    seed,
+    hazardProbeMetres,
+    targetProbeMetres,
+    topSpeedMph,
+  );
 }
 
 /** Read a level id out of a query string. Absent or unknown is the default. */
@@ -252,8 +273,49 @@ export function chaseProbeFromQuery(search: string): boolean {
   return value === '' || value === '1' || value === 'true' || value === 'on';
 }
 
+/**
+ * `?mph=<n>` — M30 Phase 0's top-speed switch (`docs/PLANS.md` §30.3a).
+ *
+ * The owner's 65 mph test rides a wheel whose flat-pavement terminal is the
+ * number typed here, and it exists as a URL for `?wobble=`'s reason: the gate
+ * device is a phone and F4 is a keyboard surface. It is `?wobble=` and
+ * `?hazardprobe=` at once — **read at boot**, held on `Game` for the session
+ * (Phase 1's generator takes it from there), and written as a **preset into
+ * the live-tuning store** (`simulation/topSpeedPreset.ts`) rather than onto
+ * any controller, so `installLevel`'s `applyTuning()` replay carries it across
+ * every world swap on its own. It joins `Game.probing`: a personal best is
+ * keyed by level id and has no tuning fingerprint, so a 65 mph best on the
+ * 50 mph leaderboard would be a cheat by accident (§30.2 fact 8).
+ *
+ * **`?hazardprobe=`'s exact grammar**: the whole value or nothing, because
+ * `parseFloat('65mph') === 65` would make a malformed URL silently mean a
+ * different, valid one. Absent, malformed, or outside 20–90 mph all mean the
+ * same thing and mean it silently: no switch, and the wheel every player gets.
+ * The window is not arbitrary: under 20 the wheel is slower than the M16
+ * low-speed band it would be tested against, and over 90 the preset's drag
+ * leaves the F4 sliders' own ranges, which `LiveTuning.set` would clamp into a
+ * wheel nobody asked for (`topSpeedPreset.test.ts` pins that both ends fit).
+ *
+ * **It is not level identity, not an option, and not a mode.** `worldLink`
+ * never writes it, it never enters `GameOptions`, and the top speed stays a
+ * physical quantity out of the options' reach (invariant 5).
+ */
+export function topSpeedFromQuery(search: string): number | undefined {
+  const requested = new URLSearchParams(search).get('mph');
+  if (requested === null) return undefined;
+  const value = requested.trim();
+  if (!DECIMAL_NUMBER.test(value)) return undefined;
+  const mph = Number(value);
+  if (!Number.isFinite(mph) || mph < MIN_TOP_SPEED_MPH || mph > MAX_TOP_SPEED_MPH) return undefined;
+  return mph;
+}
+
 /** One ordinary decimal number, with an optional scientific exponent. */
 const DECIMAL_NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
+
+/** The slowest and fastest wheel `?mph=` will build, mph — see `topSpeedFromQuery`. */
+export const MIN_TOP_SPEED_MPH = 20;
+export const MAX_TOP_SPEED_MPH = 90;
 
 /** The closest together the diagnostic will put two hazards, metres. */
 export const MIN_HAZARD_PROBE_METRES = 5;
@@ -262,12 +324,19 @@ export const MIN_HAZARD_PROBE_METRES = 5;
  * The closest together the diagnostic will put two targets, metres.
  *
  * Higher than the hazard floor, and derived from the mechanic rather than
- * chosen: a whole swing cycle is about 0.44 s, which at top speed is nearly ten
- * metres of road. Two targets closer together than that cannot both be struck
- * however well the player rides, so a probe that placed them would be asking
- * the owner to judge a reachability question the generator will never pose.
+ * chosen: a whole swing cycle is `PADDLE.windupSeconds` + `activeSeconds` +
+ * `recoverSeconds`, about 0.44 s, which at the shipped top speed (29.0576 m/s,
+ * 65 mph) is 12.79 metres of road — this constant is that figure rounded up.
+ * Two targets closer together than that cannot both be struck however well the
+ * player rides, so a probe that placed them would be asking the owner to judge
+ * a reachability question the generator will never pose.
+ *
+ * **It was 12 for the 22.3 m/s wheel** (9.8 m a cycle, plus the margin the
+ * round number carried) and M30 Phase 4 rode past it: at 65 the old value sat
+ * *below* its own stated floor. Re-derive it from the sentence above whenever
+ * the top speed moves, the same way `HAZARD.readMetres` is re-read.
  */
-export const MIN_TARGET_PROBE_METRES = 12;
+export const MIN_TARGET_PROBE_METRES = 13;
 
 // ---------------------------------------------------------------------------
 // A seed as something a player types — M12 Phase 4
@@ -351,11 +420,14 @@ export function requestRoute(
   rawSeed: string,
   hazardProbeMetres?: number,
   targetProbeMetres?: number,
+  topSpeedMph?: number,
 ): RouteOutcome {
   const seed = normaliseSeed(rawSeed);
   if (seed.length === 0) return { ok: false, seed, refusal: 'blank' };
 
-  const generated = generateLevel(seed, hazardProbeMetres, targetProbeMetres);
+  // The session's wheel, so the route a player asked for is spaced for the
+  // wheel they will ride it on — M30 Phase 1, `?mph=` and nothing else.
+  const generated = generateLevel(seed, hazardProbeMetres, targetProbeMetres, topSpeedMph);
   if (generated.report.usedFallback) return { ok: false, seed, refusal: 'no-route' };
   return { ok: true, seed, plan: generated.plan };
 }

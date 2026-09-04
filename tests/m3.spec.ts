@@ -101,10 +101,27 @@ test('at speed the player is looking at ground they have not reached yet', async
     return { centre: window.qa.groundAtScreenCentre(), camera: window.qa.cameraTransform() };
   });
 
+  // **Six seconds rather than thirteen since M30 Phase 4.** The shipped wheel
+  // is 65 mph, so thirteen seconds of held throttle carries the rider off the
+  // end of the slice's spawn straight, across the grass and into something —
+  // and a crashed rider's camera is the crash camera, which is a different
+  // question with a look-ahead of 0.03. Six seconds reaches 25.9 m/s still on
+  // the road, which is the state this spec is about; the fixture asserts that
+  // rather than assuming it.
   const flying = await page.evaluate(() => {
-    window.qa.drive([{ actions: { throttle: 1 }, steps: 120 * 13 }]);
-    return { centre: window.qa.groundAtScreenCentre(), camera: window.qa.cameraTransform() };
+    window.qa.drive([{ actions: { throttle: 1 }, steps: 120 * 6 }]);
+    const euc = window.game.snapshot().euc;
+    return {
+      centre: window.qa.groundAtScreenCentre(),
+      camera: window.qa.cameraTransform(),
+      crashed: euc.crashed,
+      surface: euc.surface,
+      speed: euc.speed,
+    };
   });
+  expect(flying.crashed, 'the fixture crashed before it was measured').toBe(false);
+  expect(flying.surface, 'the fixture left the road before it was measured').toBe('pavement');
+  expect(flying.speed).toBeGreaterThan(20);
   await testInfo.attach('m3-look-ahead-at-speed', {
     body: await page.screenshot(),
     contentType: 'image/png',

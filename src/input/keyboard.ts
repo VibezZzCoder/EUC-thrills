@@ -111,6 +111,14 @@ function isEditingTarget(target: EventTarget | null, code: string): boolean {
   // asking for a second constructor would make a rule about keys depend on how
   // many classes the test environment happens to define.
   if (tag === 'INPUT' && (target as HTMLInputElement).type === 'checkbox') return code === 'Space';
+  // A focused slider owns the arrows, Home/End and Page keys that move it, and
+  // nothing else: the F4 panel's own sliders are `<input type="range">`, and
+  // with this gate written as "any INPUT" the panel could not be closed while
+  // the slider just adjusted still had focus — F4 and F3 were swallowed until
+  // the player clicked the canvas (Codex's M30 Phase 3 QA, on the new lean
+  // slider; the gate itself predates M30). A slider does not need F4, so the
+  // panel toggles pass; every ride key still stays out of the game.
+  if (tag === 'INPUT' && (target as HTMLInputElement).type === 'range') return DEBUG_BINDINGS[code] === undefined;
   if (tag === 'SELECT') return code !== 'Enter';
   return tag === 'INPUT' || tag === 'TEXTAREA';
 }

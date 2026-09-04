@@ -349,8 +349,9 @@ export class Paddle {
    * **For the render frame, which interpolates.** The head the hit test swept
    * through belongs to a fixed step; the rider drawn on screen is somewhere
    * between two of them. Drawing the paddle at the stepped head would leave it
-   * lagging its own rider by up to a frame at 50 mph — about a fifth of a metre
-   * — so the renderer asks for the head at the *interpolated* pose instead,
+   * lagging its own rider by up to a frame at 65 mph — about a quarter of a
+   * metre — so the renderer asks for the head at the *interpolated* pose
+   * instead,
    * through the same arithmetic and the same angle.
    *
    * Writes into a caller-owned object; allocates nothing.

@@ -393,13 +393,17 @@ test('hazards are spread far enough apart to recover between', () => {
     assert.equal(hazardSpacingRefusal(placements), null, seed);
   }
   // Derived from the wobble model and the top speed rather than chosen, so a
-  // retune moves it — and M16 did, from about 43 m to about 63 m. The rule is
+  // retune moves it — and two have: M16 took it from about 43 m to about 63 m,
+  // and M30 Phase 4's 65 mph wheel from 63 m to about 82 m. The rule is
   // "far enough apart that the first wobble has decayed before the second
-  // arrives", which is a *time*; raising the top speed by half raises the
-  // ground that time covers by the same half. Fairness scaling with speed on
-  // its own is the reason this is derived rather than authored.
+  // arrives", which is a *time*; raising the top speed raises the ground that
+  // time covers in the same proportion. Fairness scaling with speed on its own
+  // is the reason this is derived rather than authored, and it is why a faster
+  // wheel could be given *more* hazards without becoming less fair — the
+  // owner's word on 2026-09-03, and `HAZARD.densityTopSpeedExponent` is the
+  // other half of that bargain.
   assert.ok(
-    HAZARD_RULES.separationMetres > 58 && HAZARD_RULES.separationMetres < 68,
+    HAZARD_RULES.separationMetres > 77 && HAZARD_RULES.separationMetres < 88,
     `the separation is ${HAZARD_RULES.separationMetres.toFixed(1)} m — recompute it from `
       + 'hazardShallowEnergy, hazardDeepEnergy, wobbleCrashEnergy, wobbleDampingAggressive '
       + 'and the top speed',
@@ -869,12 +873,39 @@ const ADVERSARIAL_2026_08_09 = [
   // doubled their radial segments so their rim stops reading as a decagon
   // (+160) and her helmet liner lost its two nape lobes (−448). Non-level
   // rider cost on one character.
-  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 137, triangles: 329_474, hazards: 6, targets: 22 },
-  { seed: 'route-278', axis: 'second densest', drawCalls: 136, triangles: 326_150, hazards: 4, targets: 19 },
-  { seed: 'sweep-89', axis: 'third densest', drawCalls: 137, triangles: 323_286, hazards: 6, targets: 26 },
-  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 137, triangles: 318_788, hazards: 6, targets: 19 },
-  { seed: 'euc-180', axis: 'longest required route', drawCalls: 136, triangles: 304_554, hazards: 8, targets: 21 },
-  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 136, triangles: 273_688, hazards: 7, targets: 22 },
+  // **Re-recorded 2026-09-04 for M30 Phase 4 — the shipped 65 mph wheel**, and
+  // this is the one fact 10 named in advance: "the one thing that can ever move
+  // a number in `src/data/renderCost.ts` is a shipped 65 re-spacing hazards on
+  // the pinned adversarial seeds, which Phase 4 re-pins by measurement if and
+  // when it happens." It happened. Every column below moved and none of them
+  // is a rider change:
+  //
+  //   - **hazards up** (6→7, 4→10, 6→9, 6→10, 8→8, 7→8; 37→52 over the six),
+  //     because the density taste scales with the top speed by
+  //     `HAZARD.densityTopSpeedExponent` and the fairness floor widened from
+  //     63 m to 82 m underneath it — the offer outruns the refusals, which is
+  //     what the exponent was chosen for;
+  //   - **targets down** (22→18, 19→17, 26→23, 19→18, 21→19, 22→18), because a
+  //     target's separation is two swing cycles of *travel* and the faster
+  //     wheel covers them in more road. Nothing about the stands changed;
+  //   - **draw calls**: `route-278` gained one (136→137) — it drew its first
+  //     standing-water pool, which is a single merged mesh the whole route
+  //     shares. Nobody else moved;
+  //   - **triangles**: −1,422 / −128 / −766 / +100 / −768 / −1,436, i.e. under
+  //     half a percent each and in both directions. A pothole and a stand cost
+  //     a hundred-odd triangles apiece, so trading three or four stands for
+  //     three or four holes very nearly cancels.
+  //
+  // The non-level reserve did **not** move (88 calls, 53,274 triangles), which
+  // is the check that this is a generated-route change and not a character one.
+  // Contract 1 is untouched: the worst seed still spends 85.6% of the draw-call
+  // ceiling and 71.3% of the triangle ceiling.
+  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 137, triangles: 328_052, hazards: 7, targets: 18 },
+  { seed: 'route-278', axis: 'second densest', drawCalls: 137, triangles: 326_022, hazards: 10, targets: 17 },
+  { seed: 'sweep-89', axis: 'third densest', drawCalls: 137, triangles: 322_520, hazards: 9, targets: 23 },
+  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 137, triangles: 318_888, hazards: 10, targets: 18 },
+  { seed: 'euc-180', axis: 'longest required route', drawCalls: 136, triangles: 303_786, hazards: 8, targets: 19 },
+  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 136, triangles: 272_252, hazards: 8, targets: 18 },
 ] as const;
 
 
@@ -1300,7 +1331,18 @@ test('the validator rejects a hazard nothing gets past', () => {
 
 test('the validator rejects two hazards too close to recover between', () => {
   const layout = hazardFixture();
-  const first = (layout.hazards ?? [])[0];
+  const gap = HAZARD_RULES.separationMetres / 8;
+  // **The pair is carried by a hazard whose segment has room for it**, rather
+  // than by whichever hazard the seed happened to place first. The separation
+  // is derived from the top speed, so an eighth of it grew from 7.9 m to
+  // 10.3 m when 65 mph shipped (M30 Phase 4) and stopped fitting on the
+  // segment the old fixture used. Which hazard carries the pair was never part
+  // of the claim; that a pair this close is refused, is.
+  const first = (layout.hazards ?? []).find((spec) => {
+    const segment = layout.placed.find((placed) => placed.spec.id === spec.segment);
+    return segment !== undefined && spec.s + gap + spec.radius < segment.spec.length;
+  });
+  assert.ok(first !== undefined, `no hazard in the fixture has ${gap.toFixed(1)} m of segment left`);
   const carrier = layout.placed.find((segment) => segment.spec.id === first.segment);
   assert.ok(carrier !== undefined);
   // A twin a few metres along the same corridor, on the other side of the road
@@ -1308,7 +1350,7 @@ test('the validator rejects two hazards too close to recover between', () => {
   const twin: HazardSpec = {
     ...first,
     id: `${first.id}-twin`,
-    s: first.s + HAZARD_RULES.separationMetres / 8,
+    s: first.s + gap,
     t: -first.t,
   };
   assert.ok(twin.s + twin.radius < carrier.spec.length, 'the fixture segment is too short');
@@ -1421,7 +1463,9 @@ test('clearance comes from the machine, not from a number somebody chose', () =>
 });
 
 test('the rideability limits are the controller\'s own constants', () => {
-  assert.ok(RIDEABILITY.topSpeed > 21 && RIDEABILITY.topSpeed < 23, 'drag against drive');
+  // 29.7 m/s — the drag-only top of the shipped 65 mph wheel (M30 Phase 4;
+  // 22.3 and 50 mph before it). Re-derived with the wheel, not widened.
+  assert.ok(RIDEABILITY.topSpeed > 29 && RIDEABILITY.topSpeed < 30.5, 'drag against drive');
   assert.ok(RIDEABILITY.maxRequiredGradient < RIDEABILITY.stallGradient);
   assert.ok(RIDEABILITY.hopAirtime > 0.5 && RIDEABILITY.hopAirtime < 1.0);
   // A tighter corner has a lower ceiling, and a straight has none.

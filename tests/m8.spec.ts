@@ -240,12 +240,16 @@ test.describe('M8 — audio', () => {
     }
     // A hub motor's electrical fundamental near this wheel's top speed —
     // rotational frequency times fifteen pole pairs, which at 22.3 m/s on a
-    // 0.5 m tyre is a little over 200 Hz. The band moved with the top speed at
-    // M16 (from 110–160) and the model behind it did not: the pitch is derived
-    // from how fast the tyre is actually turning, so a faster wheel is a
-    // higher note for the same physical reason a real one is.
-    expect(last.motorHz).toBeGreaterThan(160);
-    expect(last.motorHz).toBeLessThan(230);
+    // 0.5 m tyre is a little over 200 Hz and at the shipped 65 mph wheel's
+    // 29.06 m/s is 277. The band moved with the top speed at M16 (110–160 →
+    // 160–230) and again at M30 Phase 4 (→ 210–290), and the model behind it
+    // moved neither time: the pitch is derived from how fast the tyre is
+    // actually turning, so a faster wheel is a higher note for the same
+    // physical reason a real one is. This six-second trace ends at 25.9 m/s
+    // and reads 240 Hz — the band brackets the top rather than the sample, so
+    // it stays a claim about the wheel.
+    expect(last.motorHz).toBeGreaterThan(210);
+    expect(last.motorHz).toBeLessThan(290);
 
     // And the motor is *silent* on the real ride — rule 5. The pitch model
     // above stays correct because it still drives the (zero-gain) stack and

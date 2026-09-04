@@ -6,6 +6,7 @@ import {
   seedFromQuery,
   chaseProbeFromQuery,
   targetProbeFromQuery,
+  topSpeedFromQuery,
 } from '../level/levels.ts';
 import { PROVENANCE, provenanceLine } from '../data/provenance.ts';
 
@@ -118,6 +119,11 @@ function start(): void {
       // M14 phase 2's, read here for the same reason and on the same terms.
       targetProbeFromQuery(window.location.search),
       chaseProbeFromQuery(window.location.search),
+      // M30 Phase 0's `?mph=<n>` — read here for the probes' reason (Phase 1
+      // hands it to the boot world's generator) and written into the
+      // live-tuning store by the constructor, so it survives every world swap
+      // the way `?wobble=` does. See `level/levels.ts:topSpeedFromQuery`.
+      topSpeedFromQuery(window.location.search),
     );
   } catch (error) {
     fail('EUC Thrills could not start.', error);

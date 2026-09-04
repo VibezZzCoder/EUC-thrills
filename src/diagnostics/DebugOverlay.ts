@@ -169,7 +169,20 @@ export class DebugOverlay {
         + `wheel ${MS.format(euc.wheelPitch)})`,
     );
     this.set('longitudinal', `${MS.format(euc.longitudinalAccel)} m/s²`);
-    this.set('roll', `${MS.format(euc.rollAngle)} rad  (upper ${MS.format(euc.riderRoll)})`);
+    // Four numbers because M30 made them four: the wheel's bank, the lean the
+    // cornering *force* asks for (`riderLean`), the share of it the upper body
+    // takes, and — from Phase 3b — how settled the bank is, which is what
+    // decides whether the body is on the schedule at all. The first three are
+    // equal in pairs on the shipped build and come apart when the wheel
+    // saturates (§30.7) or the F4 share leaves 1.0; the fourth is 1 in a held
+    // carve and falls to 0 through a flick, which is the row to watch while
+    // tuning the settle sliders. Called `force` rather than `lean` because the
+    // row above already spends that word on the fore-aft `leanPitch`.
+    this.set(
+      'roll',
+      `${MS.format(euc.rollAngle)} rad  (force ${MS.format(euc.riderLean)}`
+        + `, upper ${MS.format(euc.riderRoll)}, settle ${MS.format(euc.leanSettle)})`,
+    );
     this.set(
       'lateral',
       `${MS.format(euc.lateralAccel)} m/s²  yaw ${MS.format(euc.yawRate)} rad/s`

@@ -33,12 +33,12 @@ it surprises you:
 
 - **You lean to go.** The throttle tips the wheel forward and the wheel pushes
   back; there is no engine note to chase, only load.
-- **It does about 50 mph flat out, and is handy at walking pace.** Top speed
-  takes a long straight and about eight seconds of held throttle. At the other
+- **It does about 65 mph flat out, and is handy at walking pace.** Top speed
+  takes a long straight and about eleven seconds of held throttle. At the other
   end, a full-lock turn at walking pace fits inside a lane, and backwards
   riding reaches about 15 mph — asked for from a standstill, twice.
-- **It beeps above 40 mph, and it means it.** About one beep a second at 40,
-  faster as you climb, a stream of them at the top. Ignore them all the way to
+- **It beeps above 52 mph, and it means it.** About one beep a second when they
+  start, faster as you climb, a stream of them at the top. Ignore them all the way to
   the ceiling and the motor lets go and you go over the front, exactly as a
   real one does. Backing off even slightly is enough. Riders call sitting just
   underneath that limit *riding the beeps*. With the sound off, a warning

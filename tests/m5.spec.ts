@@ -439,16 +439,19 @@ test('a full-lock carve on pavement scrapes, throws sparks, and lifts that boot'
       // reaches the ground is the right one.
       return window.qa.scrapeTrace(1, Number(warmup), Number(hold));
     },
-    // **Short, since M16, and the reason is geometry rather than impatience.**
-    // A full-lock carve's radius is `speed² / lateralLimit`, so the 22.3 m/s
-    // top speed draws a 67 m circle — and the pad is 80 m wide, so an eight
-    // second warm-up followed by four seconds of lock rode the rider off the
-    // side of it and onto grass, where the lower grip caps the lean *below*
-    // pedal clearance and nothing scrapes. That is a real property of the game
-    // and it has its own test below; it is not what this one is about. One and
-    // a half seconds of run-up reaches about 10 m/s, which is well past the
-    // ~4.3 m/s where full lock starts pegging the lean at the grip limit, and
-    // the circle it draws stays on the pavement.
+    // **Short since M16, and shorter since M30 Phase 4 — the reason is geometry
+    // rather than impatience.** A full-lock carve's radius is
+    // `speed² / lateralCeiling`, and the shipped 65 mph wheel rides that carve
+    // at 27.04 m/s around a **71 m** radius (`docs/PLANS.md` §30.7's measured
+    // table; M16's 22.3 m/s wheel drew 67.5 m). The pad is 80 m wide, so the
+    // eight-second warm-up this test used to take, followed by four seconds of
+    // lock, rides the rider off the side of it and onto grass, where the lower
+    // grip caps the lean *below* pedal clearance and nothing scrapes. That is a
+    // real property of the game and it has its own test below; it is not what
+    // this one is about. Phase 4 therefore cut the run-up to one and a half
+    // seconds: it reaches about 10 m/s, which is well past the ~4.3 m/s where
+    // full lock starts pegging the lean at the grip limit, and the circle it
+    // draws stays on the pavement.
     [start.x, start.z, start.headingY, STEPS(1.5), STEPS(1.25)] as const,
   );
 
@@ -551,7 +554,12 @@ test('a reset clears every particle in the air', async ({ page }) => {
       window.qa.resetRide();
       return { scraping, afterReset: window.game.snapshot().particles };
     },
-    [start.x, start.z, start.headingY, STEPS(8), STEPS(2)] as const,
+    // **One and a half seconds since M30 Phase 4**, matching the sparks spec
+    // above and for the identical reason, one top speed later: an eight-second
+    // warm-up at 65 mph rides straight off the 80 m pad and onto the grass,
+    // where the lower grip caps the lean below pedal clearance and nothing
+    // scrapes at all. The note on that spec has the arithmetic.
+    [start.x, start.z, start.headingY, STEPS(1.5), STEPS(1.25)] as const,
   );
 
   expect(counts.scraping.sparks).toBeGreaterThan(0);
@@ -586,7 +594,8 @@ test('the same hop reaches the same particle field twice', async ({ page }) => {
       };
       return [once(), once()];
     },
-    [start.x, start.z, start.headingY, STEPS(8), STEPS(2)] as const,
+    // One and a half seconds since M30 Phase 4 — see the reset spec above.
+    [start.x, start.z, start.headingY, STEPS(1.5), STEPS(1.25)] as const,
   );
 
   expect(runs[0].sparks).toBeGreaterThan(0);

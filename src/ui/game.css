@@ -495,9 +495,11 @@
  * `--beep-period` is written by `ui/hud.ts` from the same arithmetic the audio
  * director schedules the beeps with (`shared/overspeed.ts`), so the blink and
  * the sound are the same cue on two channels rather than two cues. It starts
- * at about one flash a second just past 40 mph and reaches seven a second at
- * the edge — the real alarm's own cadences — which is the "riding the beeps"
- * feel made visible.
+ * at about one flash a second just past `EUC.overspeedBeepShare` (0.785) of
+ * the derived top speed — 52 mph on the shipped 65 mph wheel, 40 mph on the
+ * 50 mph wheel this was written for — and reaches seven a second at the edge:
+ * the real alarm's own cadences, which is the "riding the beeps" feel made
+ * visible.
  * ------------------------------------------------------------------------ */
 
 .euc-hud__overspeed {

@@ -1,17 +1,21 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
+import { generateLevel } from './generateRoute.ts';
 import {
   DEFAULT_SEED,
   MAX_SEED_LENGTH,
   ROUTE_SEED_SPACE,
+  createLevel,
   hazardProbeFromQuery,
   levelFromQuery,
   normaliseSeed,
   requestRoute,
   routeSeedFrom,
   seedFromQuery,
+  topSpeedFromQuery,
 } from './levels.ts';
+import { planDigest } from './planDigest.ts';
 
 test('a level query only accepts the three levels the game owns', () => {
   assert.equal(levelFromQuery('?level=slice'), 'slice');
@@ -34,6 +38,65 @@ test('a hazard probe accepts one complete finite metre value and nothing partial
     '?hazardprobe=Infinity', '?hazardprobe=NaN',
   ]) {
     assert.equal(hazardProbeFromQuery(query), undefined, query);
+  }
+});
+
+test('the top-speed switch takes one complete mph value inside its window and nothing else', () => {
+  // M30 Phase 0 — `?hazardprobe=`'s grammar, with a window instead of a floor.
+  assert.equal(topSpeedFromQuery('?mph=65'), 65);
+  assert.equal(topSpeedFromQuery('?mph=58.5'), 58.5);
+  assert.equal(topSpeedFromQuery('?mph=20'), 20);
+  assert.equal(topSpeedFromQuery('?mph=90'), 90);
+  assert.equal(topSpeedFromQuery('?level=track&mph=6.5e1'), 65);
+  for (const query of [
+    '', '?mph', '?mph=', '?mph=19.99', '?mph=90.01', '?mph=65mph', '?mph=0x41',
+    '?mph=Infinity', '?mph=NaN', '?mph=-65', '?MPH=65',
+  ]) {
+    assert.equal(topSpeedFromQuery(query), undefined, query);
+  }
+});
+
+test('the switch reaches the generator through both of the doors Game builds worlds with', () => {
+  // M30 Phase 1. `Game` builds a world two ways — `createLevel` by id at boot
+  // and on a mode swap, `requestRoute` by seed for a fresh route — and both now
+  // carry `?mph=`. A route that arrived through one door and not the other
+  // would leave a session riding a world spaced for a wheel it is not on, which
+  // is precisely the unfairness the switch exists to avoid.
+  //
+  // **The switch's working value is `?mph=50` since M30 Phase 4**, because 65
+  // is the frozen table now — so the door test asks for the *slower* wheel.
+  // Asking for 65 would compare the shipped road with itself and pass on an
+  // identity rather than on the parameter arriving.
+  const slow = generateLevel('route-41', undefined, undefined, 50).plan;
+  const shipped = generateLevel('route-41').plan;
+
+  const byLevel = createLevel('generated', 'route-41', undefined, undefined, 50);
+  assert.deepStrictEqual(byLevel.hazards, slow.hazards);
+  assert.notDeepStrictEqual(byLevel.hazards, shipped.hazards);
+  assert.deepStrictEqual(byLevel.targets, slow.targets);
+
+  const outcome = requestRoute('route-41', undefined, undefined, 50);
+  assert.ok(outcome.ok);
+  if (!outcome.ok) return;
+  assert.deepStrictEqual(outcome.plan.hazards, slow.hazards);
+  assert.notDeepStrictEqual(outcome.plan.hazards, shipped.hazards);
+  // The seed is still the seed: the switch is not level identity, so the world
+  // is filed under exactly the id it would have been without it.
+  assert.equal(outcome.plan.id, shipped.id);
+});
+
+test('the hand-authored worlds are the same worlds under the switch', () => {
+  // Only a generator spaces a road for a wheel — `BUILDERS` says why. The slice,
+  // the proving ground and BelVar were laid out by hand and accepted as they
+  // are, so `?mph=` has to reach them as nothing at all.
+  for (const id of ['slice', 'proving', 'track'] as const) {
+    for (const mph of [20, 50, 65, 90]) {
+      assert.equal(
+        planDigest(createLevel(id, DEFAULT_SEED, undefined, undefined, mph)),
+        planDigest(createLevel(id)),
+        `${id} changed under ?mph=${mph}`,
+      );
+    }
   }
 });
 

@@ -8,6 +8,8 @@ import { roughnessAt } from './roughness.ts';
 import { HazardField, NO_HAZARDS } from './hazards.ts';
 import { CrashRagdoll, RAGDOLL_FLOATS } from './ragdoll.ts';
 import { NO_SOFT_BODIES, SoftBodyField } from './softBodies.ts';
+import { lateralCeilingG } from './lateralCeiling.ts';
+import { riderRollFor, settleStep } from './riderLean.ts';
 import {
   copyGroundSample,
   createGroundSample,
@@ -50,7 +52,10 @@ import {
  * Three specific restraints are worth naming so a later reader does not mistake
  * them for oversights:
  *
- *   - **Grip is lateral only.** It multiplies `maxLateralG` and nothing else.
+ *   - **Grip is lateral only.** It multiplies the lateral ceiling and nothing
+ *     else — `maxLateralG` until M30 Phase 2, and the speed schedule of
+ *     `simulation/lateralCeiling.ts` since, which returns exactly
+ *     `maxLateralG` below `carveSpeed`.
  *     Folding it into brake authority would change an approved M2 number for a
  *     reason `docs/PLANS.md` does not state; rolling resistance already
  *     separates the surfaces longitudinally. Flagged for the owner.
@@ -262,6 +267,12 @@ export interface EucTuning {
   /** Shape of the decay between the two yaw rates. See `data/tuning.ts`. */
   yawFalloffExponent: number;
   maxLateralG: number;
+  /** The lateral ceiling at and above `carveGripFullSpeed`, in g. `data/tuning.ts`. */
+  carveGripTopG: number;
+  /** Shape of the rise between the two grip anchors. `data/tuning.ts`. */
+  carveGripExponent: number;
+  /** Speed where the lateral ceiling reaches `carveGripTopG`, m/s. `data/tuning.ts`. */
+  carveGripFullSpeed: number;
   /** Extra lateral authority for a hard low-speed technical turn, in g. */
   technicalTurnBonusG: number;
   /** Speed by which the technical-turn allowance has faded to nothing, m/s. */
@@ -273,7 +284,22 @@ export interface EucTuning {
   technicalTurnUpperBodyRollFactor: number;
 
   rollResponseSeconds: number;
+  /** Upper-body share of the wheel's roll below `carveLeanSpeed`. `data/tuning.ts`. */
   riderUpperBodyRollFactor: number;
+  /** Speed where the rider's lean begins to follow the wheel, m/s. `data/tuning.ts`. */
+  carveLeanSpeed: number;
+  /** Speed where the lean share reaches `carveLeanShareTop`, m/s. `data/tuning.ts`. */
+  carveLeanFullSpeed: number;
+  /** Share of the cornering lean the upper body takes at speed. `data/tuning.ts`. */
+  carveLeanShareTop: number;
+  /** Roll rate at or below which the bank counts as held, rad/s. `data/tuning.ts`. */
+  carveLeanHoldRate: number;
+  /** Roll rate at and above which the body is back at the old pose, rad/s. `data/tuning.ts`. */
+  carveLeanSwingRate: number;
+  /** Seconds from the old pose to the full lean once the bank holds. `data/tuning.ts`. */
+  carveLeanSettleIn: number;
+  /** Seconds from the full lean back to the old pose on a swing. `data/tuning.ts`. */
+  carveLeanSettleOut: number;
   maxRiderPitch: number;
   riderCruisePitchFactor: number;
   riderAccelerationPitchGain: number;
@@ -548,6 +574,9 @@ export function defaultEucTuning(): EucTuning {
     carveSpeed: EUC.carveSpeed,
     yawFalloffExponent: EUC.yawFalloffExponent,
     maxLateralG: EUC.maxLateralG,
+    carveGripTopG: EUC.carveGripTopG,
+    carveGripExponent: EUC.carveGripExponent,
+    carveGripFullSpeed: EUC.carveGripFullSpeed,
     technicalTurnBonusG: EUC.technicalTurnBonusG,
     technicalTurnFadeSpeed: EUC.technicalTurnFadeSpeed,
     technicalTurnSteerStart: EUC.technicalTurnSteerStart,
@@ -558,6 +587,13 @@ export function defaultEucTuning(): EucTuning {
 
     rollResponseSeconds: EUC.rollResponseSeconds,
     riderUpperBodyRollFactor: EUC.riderUpperBodyRollFactor,
+    carveLeanSpeed: EUC.carveLeanSpeed,
+    carveLeanFullSpeed: EUC.carveLeanFullSpeed,
+    carveLeanShareTop: EUC.carveLeanShareTop,
+    carveLeanHoldRate: EUC.carveLeanHoldRate,
+    carveLeanSwingRate: EUC.carveLeanSwingRate,
+    carveLeanSettleIn: EUC.carveLeanSettleIn,
+    carveLeanSettleOut: EUC.carveLeanSettleOut,
     maxRiderPitch: EUC.maxRiderPitch,
     riderCruisePitchFactor: EUC.riderCruisePitchFactor,
     riderAccelerationPitchGain: EUC.riderAccelerationPitchGain,
@@ -1310,6 +1346,30 @@ export interface EucSnapshot {
   readonly wheelPitch: number;
   readonly rollAngle: number;
   readonly riderRoll: number;
+  /**
+   * The lean the cornering force asks for, radians — `atan(a / g)` followed
+   * through `rollResponseSeconds`, signed like `rollAngle` (M30 Phase 3).
+   *
+   * Below the ordinary ceiling — `atan(maxLateralG · grip)`, 36.9° on
+   * pavement — this equals `rollAngle` to the bit, because the wheel's roll
+   * chases the same target with the same constants. Above it (M30 Phase 2,
+   * `docs/PLANS.md` §30.7) the wheel's bank saturates and this one does not,
+   * so `|riderLean| > |rollAngle|` and **the rider hangs inside the machine's
+   * line** — by 9.5° at the 1.05 g top on pavement. `ridingRig.ts` spends the
+   * difference on the pelvis hinge.
+   */
+  readonly riderLean: number;
+  /**
+   * How settled the wheel's bank is, 0..1 — the lean schedule's second clock
+   * (M30 Phase 3b, `simulation/riderLean.ts`).
+   *
+   * One while the bank is held, which is every capture baseline and every
+   * settled carve; zero through the swing of a flick, where the upper body
+   * holds the slow-band pose the owner approved at M16 instead of whipping
+   * with the machine. It multiplies the speed blend, so it can only ever move
+   * the pose *down* the same schedule.
+   */
+  readonly leanSettle: number;
   readonly yawRate: number;
   readonly lateralAccel: number;
   /** True while the lateral-acceleration ceiling is widening the turn. */
@@ -1498,6 +1558,25 @@ export class EucController {
   private technicalTurn = 0;
   private longitudinalAccel = 0;
   private rollAngle = 0;
+  /**
+   * The rider's own lean into the corner, radians (M30 Phase 3).
+   *
+   * Mirrored at every `rollAngle` write, and through the same response — but
+   * toward the **whole** cornering force rather than the wheel's saturated
+   * bank (M30 Phase 2), which is what makes it a separate number and not a
+   * copy. See `EucSnapshot`'s field for the hang it produces, and
+   * `simulation/riderLean.ts` for the schedule that turns it into a pose.
+   */
+  private riderLean = 0;
+  /**
+   * The lean schedule's settle, 0..1 (M30 Phase 3b). See `EucSnapshot`.
+   *
+   * **Starts and resets at 1**, the held bank: a rider placed on the line and
+   * a rider back from a crash are both stationary, the schedule's blend is
+   * zero down there anyway, and 1 is the value at which the schedule is
+   * bit-identical to what it was before this clock existed.
+   */
+  private leanSettle = 1;
   private yawRate = 0;
   private lateralAccel = 0;
   private lateralLimited = false;
@@ -1961,6 +2040,8 @@ export class EucController {
     this.technicalTurn = 0;
     this.longitudinalAccel = 0;
     this.rollAngle = 0;
+    this.riderLean = 0;
+    this.leanSettle = 1;
     this.yawRate = 0;
     this.lateralAccel = 0;
     this.lateralLimited = false;
@@ -2051,7 +2132,12 @@ export class EucController {
 
     const response = this.surfaceResponse();
     this.rollingResistance = response.rollingResistance * this.tuning.rollingResistanceScale;
-    this.lateralLimitG = this.tuning.maxLateralG * response.grip;
+    // The schedule at the speed the reset lands at (M30 Phase 2) — `reset`
+    // takes a running start, so a fresh ride at 24 m/s must report the grip it
+    // actually has rather than the standing one. At and below `carveSpeed` the
+    // schedule returns `maxLateralG` outright, which is every reset the game
+    // itself performs.
+    this.lateralLimitG = lateralCeilingG(this.speed, this.tuning) * response.grip;
     // A reset onto a slope must land already tilted, or the first frame after
     // `R` draws the rig level on a hill and eases into the truth.
     this.writeGroundTilt(1);
@@ -2308,7 +2394,16 @@ export class EucController {
     // the rider can feel and learn, not because the game quietly threw away
     // part of the input. Surface grip scales both the ordinary limit and the
     // hard low-speed technique, so the same corner stays wider across grass.
-    this.lateralLimitG = t.maxLateralG * response.grip;
+    //
+    // **The ceiling rises with the speed** (M30 Phase 2,
+    // `simulation/lateralCeiling.ts`): the clamp is unchanged *in kind* and
+    // grip still multiplies it, but a wheel doing 22 m/s holds 1.05 g where one
+    // doing 9 holds 0.75, because otherwise a 65 mph build has grip it can
+    // never spend on any corner the generator draws. At and below
+    // `carveSpeed` the schedule returns `maxLateralG` outright, so every
+    // number in the approved M16 band — the ordinary clamp, the technical-turn
+    // bonus below and the whole reverse band — is what it was.
+    this.lateralLimitG = lateralCeilingG(speed, t) * response.grip;
     const absSteer = Math.abs(steer);
     const hardSteer = clamp01(
       (absSteer - t.technicalTurnSteerStart)
@@ -2387,14 +2482,69 @@ export class EucController {
     }
 
     // -- 6. Roll ------------------------------------------------------------
-    // The angle a rider actually leans to balance a cornering force. At the
+    // The angle a rider and machine lean to balance a cornering force. At the
     // 0.75 g pavement ceiling this is about 37 degrees, which is where a real
     // carve looks committed rather than like a crash in progress; on grass the
     // ceiling is lower, so the same corner is taken at less lean and more
     // radius, which is exactly the tell the exit question is about.
+    //
+    // **Since M30 Phase 2 it is two angles, not one.** This is the whole force
+    // lean and the rider takes it; the wheel takes the saturated one below.
+    const leanTarget = Math.atan(lateralAccel / t.gravity);
+    // **And the wheel's bank saturates at the ORDINARY ceiling** (M30 Phase 2,
+    // §30.3b's fourth scope answer). The give above buys a tighter line, not a
+    // machine leaned further onto its pedals: past `atan(maxLateralG · grip)`
+    // — 36.9° on pavement — the wheel holds its angle and the *rider* carries
+    // the rest of the force lean, which is the hang the owner asked for.
+    //
+    // The bound is today's whole steering limit rather than `maxLateralG`
+    // alone, because M16's technical-turn bonus is part of what the wheel could
+    // always bank to (a hard corner at 9 km/h reaches 0.80 rad, well past the
+    // grip line, and that pose is approved and pinned). The bonus is zero at
+    // and above `technicalTurnFadeSpeed` 6 m/s and the schedule starts at
+    // `carveSpeed` 9, so the two never overlap.
+    //
+    // Below the ceiling `bankAccel` **is** `lateralAccel` — the same double,
+    // including its sign bit at zero — so `bankTarget` is `leanTarget` to the
+    // bit and every ride under the ordinary limit is byte-identical.
+    const ordinaryLimit = (t.maxLateralG * response.grip + technicalLimitG) * t.gravity;
+    const bankAccel = Math.abs(lateralAccel) > ordinaryLimit
+      ? (lateralAccel < 0 ? -ordinaryLimit : ordinaryLimit)
+      : lateralAccel;
+    const bankTarget = Math.atan(bankAccel / t.gravity);
+    const rollBefore = this.rollAngle;
     this.rollAngle = approach(
       this.rollAngle,
-      Math.atan(lateralAccel / t.gravity),
+      bankTarget,
+      t.rollResponseSeconds,
+      Infinity,
+      dt,
+    );
+    // **The settle** (M30 Phase 3b, `docs/PLANS.md` §30.8): how fast the
+    // wheel's bank is *changing*, which is the one thing the speed schedule
+    // cannot see and the whole of the owner's "there is no transition"
+    // finding. Read off the roll the step just wrote — an authored rate rather
+    // than a second state variable, so nothing can drift from what the wheel
+    // actually did. A zero-length step has no rate to report and leaves the
+    // settle where it was.
+    this.leanSettle = settleStep(
+      this.leanSettle,
+      dt > 0 ? (this.rollAngle - rollBefore) / dt : 0,
+      dt,
+      t,
+    );
+    // The rider's own lean: the **whole** force lean, `atan(a / g)`, chased
+    // through the same clock as the wheel so the body and the machine arrive in
+    // the corner together — there is no second response constant (M30 Phase 3,
+    // §30.3c). Below the ordinary ceiling its target is the wheel's target to
+    // the bit and the two lines are one; above it the wheel is saturated and
+    // this one is not, so `|riderLean| > |rollAngle|` and the rider hangs
+    // inside the machine's line — the pose of §30.1's photographs, and the hang
+    // the owner asked Phase 2 for. `ridingRig.ts` spends the difference on the
+    // pelvis hinge, which is what keeps the boots on the pedals.
+    this.riderLean = approach(
+      this.riderLean,
+      leanTarget,
       t.rollResponseSeconds,
       Infinity,
       dt,
@@ -3680,6 +3830,29 @@ export class EucController {
     // Every riding pose unwinds toward neutral so the rider who comes back is
     // not still braced against a corner they were taking two seconds ago.
     this.rollAngle = approach(this.rollAngle, 0, t.rollResponseSeconds, Infinity, dt);
+    this.riderLean = approach(this.riderLean, 0, t.rollResponseSeconds, Infinity, dt);
+    // `leanSettle` is deliberately *not* stepped here (M30 Phase 3b), and a
+    // fifth writer would be a claim that the wheel flipping itself upright on
+    // the ground is a transition the body should answer.
+    //
+    // **What makes that safe is the ragdoll, not silence** (corrected by the
+    // Phase 3b QA, which caught this comment claiming nothing reads the
+    // scheduled lean during an unwind — something does). `writePose` writes
+    // `riderRoll` from the frozen settle *above* its `crashBlend <= 0` early
+    // return, and `render/ridingRig.ts` still hinges the pelvis on it. It is
+    // benign for two reasons, both measured rather than assumed. The pose is
+    // blended out from under it: `crashBlend` climbs to 1 over
+    // `crashSeparationSeconds`, the ragdoll's own offsets and tumble take the
+    // rider root over at that rate, and every stance channel in
+    // `render/rider.ts` is faded by `1 - crashBlend` outright — so all the
+    // frozen share can still put on screen is a pelvis hinge on a body that is
+    // already being thrown, for the first fraction of a second of the fall.
+    // And what it shows there cannot be wrong in kind:
+    // `riderRoll` stays a *share* of `rollAngle`, which the line above unwinds
+    // monotonically toward zero, so a frozen share of it unwinds monotonically
+    // too — four crash traces across two steering magnitudes measured **zero**
+    // sign breaks and zero out-leans over the whole run, crash included. Then
+    // `respawn` puts the settle back at 1.
     this.riderPitch = approach(this.riderPitch, 0, t.riderPitchResponseSeconds, Infinity, dt);
     this.slopeLean = approach(this.slopeLean, 0, t.groundTiltResponseSeconds, Infinity, dt);
     this.airPitch = approach(this.airPitch, 0, t.airPitchResponseSeconds, Infinity, dt);
@@ -3759,6 +3932,11 @@ export class EucController {
     this.technicalTurn = 0;
     this.longitudinalAccel = 0;
     this.rollAngle = 0;
+    this.riderLean = 0;
+    // Back on the line with the bank held: the rider who comes back is posed
+    // by the schedule from a standstill, not by whatever the flick that ended
+    // in a crash left behind (M30 Phase 3b).
+    this.leanSettle = 1;
     this.yawRate = 0;
     this.lateralAccel = 0;
     this.lateralLimited = false;
@@ -3818,7 +3996,11 @@ export class EucController {
 
     const response = this.surfaceResponse();
     this.rollingResistance = response.rollingResistance * t.rollingResistanceScale;
-    this.lateralLimitG = t.maxLateralG * response.grip;
+    // The schedule, as `reset` reads it. A respawn keeps the rider's speed at
+    // zero, so this is `maxLateralG` in every case the game reaches — written
+    // through the schedule anyway, because three write sites that agree by
+    // arithmetic and not by expression is how one of them drifts.
+    this.lateralLimitG = lateralCeilingG(this.speed, t) * response.grip;
     this.writeGroundTilt(1);
     this.suspensionVelocity = 0;
     this.suspensionCompression = 0;
@@ -4380,14 +4562,14 @@ export class EucController {
 
     if (this.airborne) {
       // A second press in flight is the 180° spin jump — M24, the owner's
-      // accepted trick input (Wyatt Neal's "spam it for crazy spins" made
-      // literal). The press that used to be dropped here now arms a scripted
-      // π of heading sweep, spent in section 5 where the heading integrates;
-      // held steer past the threshold picks the direction, and one flight
-      // holds one spin — re-pressing mid-sweep neither queues nor reverses,
-      // the same rule the grounded hop applies to its own re-presses. The
-      // charge bookkeeping below is unchanged: a rider cannot preload
-      // against air.
+      // accepted trick input (a community "spam it for crazy spins" ask on
+      // the 1st Facebook post, FEEDBACK-TRIAGE §5, made literal). The press
+      // that used to be dropped here now arms a scripted π of heading sweep,
+      // spent in section 5 where the heading integrates; held steer past the
+      // threshold picks the direction, and one flight holds one spin —
+      // re-pressing mid-sweep neither queues nor reverses, the same rule the
+      // grounded hop applies to its own re-presses. The charge bookkeeping
+      // below is unchanged: a rider cannot preload against air.
       if (requested && this.canAcceptSpin) {
         this.spinArmed = true;
         this.spinRemaining = Math.PI;
@@ -5169,10 +5351,16 @@ export class EucController {
     target.z = this.z;
     target.headingY = this.headingY;
     target.rollAngle = this.rollAngle;
-    target.riderRoll = this.rollAngle * lerp(
-      this.tuning.riderUpperBodyRollFactor,
-      this.tuning.technicalTurnUpperBodyRollFactor,
-      Math.abs(this.technicalTurn),
+    // The schedule of `simulation/riderLean.ts`, and the *only* expression:
+    // `snapshot()` below writes the identical call, and a test asserts the two
+    // agree. Below `carveLeanSpeed` this is the pre-M30 lerp to the bit.
+    target.riderRoll = riderRollFor(
+      this.rollAngle,
+      this.riderLean,
+      this.technicalTurn,
+      this.speed,
+      t,
+      this.leanSettle,
     );
     // The rider carries the slope lean; the wheel's share is of the action
     // pitch alone, because the pedals stay level with gravity on a hill.
@@ -5353,11 +5541,16 @@ export class EucController {
       carveStance: this.carveStance,
       wheelPitch: this.riderPitch * t.wheelPitchFactor + this.airPitch - tiltPitch,
       rollAngle: this.rollAngle,
-      riderRoll: this.rollAngle * lerp(
-        t.riderUpperBodyRollFactor,
-        t.technicalTurnUpperBodyRollFactor,
-        Math.abs(this.technicalTurn),
+      riderRoll: riderRollFor(
+        this.rollAngle,
+        this.riderLean,
+        this.technicalTurn,
+        this.speed,
+        t,
+        this.leanSettle,
       ),
+      riderLean: this.riderLean,
+      leanSettle: this.leanSettle,
       yawRate: this.yawRate,
       lateralAccel: this.lateralAccel,
       lateralLimited: this.lateralLimited,

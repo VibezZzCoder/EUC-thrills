@@ -979,7 +979,12 @@ test('the can is in his left fist only, printed at the label\'s colours, gripped
       // behind the can's front face.
       assert.ok(worn.r < gear.r * 1.05 + 0.01, `grip vertex ${i} is not the glove's brown`);
       const y = position.getY(i);
-      const proud = Math.hypot(position.getX(i), position.getZ(i) - DRUNKARD_HAND_CAN.z) - DRUNKARD_HAND_CAN.radius;
+      // About the can's own axis, which since M30 Phase 2's QA is carried
+      // `x` outboard of the fist's (the left hand is `side` +1 here).
+      const proud = Math.hypot(
+        position.getX(i) - DRUNKARD_HAND_CAN.x,
+        position.getZ(i) - DRUNKARD_HAND_CAN.z,
+      ) - DRUNKARD_HAND_CAN.radius;
       if (y > -0.105 && y < DRUNKARD_HAND_CAN.top && proud > 0.001) gripping += 1;
     }
     assert.ok(amberVertices >= 24, `only ${amberVertices} amber vertices on the can`);

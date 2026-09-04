@@ -4,7 +4,8 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { PADDLE, SIMULATION, TARGET } from '../data/tuning.ts';
-import { RIDEABILITY } from '../level/routeValidator.ts';
+import { MAX_TOP_SPEED_MPH } from '../level/levels.ts';
+import { RIDEABILITY, rideabilityAt } from '../level/routeValidator.ts';
 import type { Target } from '../level/plan.ts';
 import { Paddle, type HittableSet, type HittableVolume, type WielderPose } from './paddle.ts';
 import { TargetField } from './targets.ts';
@@ -87,11 +88,13 @@ test('the teleport guard clears the longest step a real swing can take', () => {
   const legitimate = paddle.legitimateStepSweep(RIDEABILITY.topSpeed);
 
   // Read off the current constants, never quoted: M16 halved the drag and
-  // moved top speed by half, and the plan's own printed numbers went stale the
-  // same day. `RIDEABILITY.topSpeed` is the symbol every placement contract in
-  // the project already names for exactly this reason.
+  // moved top speed by half, M30 Phase 4 halved it again for the owner's 65,
+  // and the plan's own printed numbers went stale each time.
+  // `RIDEABILITY.topSpeed` is the symbol every placement contract in the
+  // project already names for exactly this reason — this band is re-derived
+  // with the wheel rather than widened to cover both.
   assert.ok(
-    RIDEABILITY.topSpeed > 20 && RIDEABILITY.topSpeed < 25,
+    RIDEABILITY.topSpeed > 29 && RIDEABILITY.topSpeed < 30.5,
     `top speed is ${RIDEABILITY.topSpeed} m/s, which is not the wheel this was derived against`,
   );
   assert.ok(
@@ -111,6 +114,36 @@ test('the teleport guard clears the longest step a real swing can take', () => {
   // teleport worth catching is the crash respawn to a safe position, which is
   // metres away by construction.
   assert.ok(PADDLE.maxStepSweep < 3, 'a guard this loose would let a short respawn through');
+});
+
+test('the teleport guard still clears the swing at the top of the ?mph= window', () => {
+  // `docs/PLANS.md` §30.5 item 4, **re-derived at M30 Phase 4**. It used to
+  // ask this of 65 mph, because 65 was a diagnostic the owner might ride for
+  // the length of a session while the frozen table stayed at 50. 65 is the
+  // frozen table now and the test above is the claim about it; what is still
+  // one URL away is the rest of `?mph=`'s range, whose fastest wheel is 90 mph
+  // (`MAX_TOP_SPEED_MPH`). If the guard ever fell below the longest legitimate
+  // step up there, an ordinary swing at the top of the switch's range would be
+  // discarded as a teleport and the paddle would pass through everything.
+  //
+  // The switch is not a tuning change, so nothing here moves a constant: this
+  // is the arithmetic checked at the top of the range the owner may ride.
+  const paddle = new Paddle();
+  const fastest = paddle.legitimateStepSweep(rideabilityAt(MAX_TOP_SPEED_MPH).topSpeed);
+  const shipped = paddle.legitimateStepSweep(RIDEABILITY.topSpeed);
+
+  assert.ok(
+    PADDLE.maxStepSweep > fastest,
+    `the guard (${PADDLE.maxStepSweep} m) is below the longest legitimate step at `
+      + `${MAX_TOP_SPEED_MPH} mph (${fastest.toFixed(3)} m, against ${shipped.toFixed(3)} m on `
+      + 'the shipped wheel)',
+  );
+  assert.ok(
+    PADDLE.maxStepSweep >= fastest * 1.5,
+    `the guard has only ${(PADDLE.maxStepSweep / fastest).toFixed(2)}× margin at `
+      + `${MAX_TOP_SPEED_MPH} mph (${(PADDLE.maxStepSweep / shipped).toFixed(2)}× on the shipped `
+      + 'wheel) — a guard tuned to the edge disarms itself on the first constant that moves',
+  );
 });
 
 test('the swept segment approximates the arc to well under a millimetre of consequence', () => {
@@ -335,9 +368,36 @@ function continuousActivePath(speed: number, subSteps: number): { x: number; y: 
   return points;
 }
 
+/**
+ * The fastest a wielder can be carried and still have the swing *swept* rather
+ * than reseeded, m/s — `maxStepSweep · hz` less the head's own arc speed
+ * (`legitimateStepSweep(0) · hz` is that arc speed, read off the paddle rather
+ * than restated).
+ *
+ * **The absurd-speed case is derived from this rather than from a multiple of
+ * the top speed** (M30 Phase 4). It used to ride four times top speed, which
+ * was 89 m/s on the 50 mph wheel and inside the guard, and is 119 m/s on the
+ * shipped 65 — past the guard, where the paddle correctly stops sweeping and
+ * the case measured the guard instead of the sweep. What the case was always
+ * reaching for is the *fastest carriage the sweep still has to be honest at*,
+ * so that is what it rides now, and the assertion below keeps it absurd: it
+ * has to stay at least twice anything the wheel can do.
+ */
+const SWEEP_CEILING_SPEED = PADDLE.maxStepSweep * SIMULATION.hz
+  - new Paddle().legitimateStepSweep(0) * SIMULATION.hz;
+
+test('the swept-segment ceiling is far past any speed the game can carry a wielder at', () => {
+  assert.ok(
+    SWEEP_CEILING_SPEED > RIDEABILITY.topSpeed * 2,
+    `the sweep stops sweeping at ${SWEEP_CEILING_SPEED.toFixed(1)} m/s, only `
+      + `${(SWEEP_CEILING_SPEED / RIDEABILITY.topSpeed).toFixed(2)}× the wheel's own top speed — `
+      + 'at that margin an ordinary swing is one tuning change away from being read as a teleport',
+  );
+});
+
 for (const [label, speedOf] of [
   ['at top speed', () => RIDEABILITY.topSpeed],
-  ['at four times top speed', () => RIDEABILITY.topSpeed * 4],
+  ['at the fastest carriage the sweep still sweeps', () => SWEEP_CEILING_SPEED * 0.95],
   ['from a standstill', () => 0],
 ] as const) {
   test(`the smallest shipped target is struck from every phase of the sweep, ${label}`, () => {

@@ -92,6 +92,20 @@ interface Approach {
    * merely got smaller.
    */
   closingAfter: number;
+  /**
+   * The gap itself, `settle` steps after the first charge, metres.
+   *
+   * **Added at M30 Phase 4, and it is the honest instrument.** `closingAfter`
+   * above is a *rate* read at one sample, and on the shipped 65 mph wheel a
+   * converging pair at ride speed is not thrown apart and left — the
+   * separation runs every step, so the two are *held* at the radius and ride
+   * along it, with the gap moving by a millimetre either way while the
+   * instantaneous rate flickers sign. A rate at one phase measures the
+   * harness; the gap says whether the mechanic is doing its job.
+   */
+  gapAfter: number;
+  /** The faster rider's own speed on the step the first charge landed, m/s. */
+  speedAtContact: number;
   /** Each rider's signed heading change from where it was placed, radians. */
   firstTurn: number;
   secondTurn: number;
@@ -124,6 +138,25 @@ async function bootPair(page: import('@playwright/test').Page, query = ''): Prom
  * ridden somewhere, short enough that nothing else has happened to them.
  */
 const SETTLE_STEPS = 30;
+
+/**
+ * How far apart the head-on *duel* pair starts, metres — the exchange fixture
+ * below, not the graze one above.
+ *
+ * **Sixty rather than thirty since M30 Phase 4, and the reason is that a
+ * strike is a timing window rather than a distance.** The pair ride at each
+ * other from rest, so the runway decides the speed they meet at, and the
+ * `lead` the swing is thrown on is `speed × (windup + active/2)` — a few tenths
+ * of a metre either way. Thirty metres put them together at about 7 m/s each
+ * on the shipped 65 mph wheel and both swings passed through empty air
+ * (measured: swung on step 254, closest approach 0.04 m, neither struck);
+ * sixty puts them together at about 10 m/s each and both land, which is the
+ * exchange this spec is about. Nothing about the geometry moved — the lateral
+ * offset is still `DUEL_RIGHT_METRES`, inside the paddle's reach and outside
+ * the contact radius. The `duel` fixture above keeps its own thirty, because
+ * it swings from a *held* pose rather than from a closing pass.
+ */
+const EXCHANGE_RUNWAY_METRES = 60;
 
 /**
  * Stand the pair on the road facing each other's line, then ride.
@@ -229,6 +262,8 @@ async function approach(
     let minGap = Infinity;
     let closingAtContact = 0;
     let closingAfter = 0;
+    let gapAfter = Number.NaN;
+    let speedAtContact = 0;
     let sinceCharge = -1;
     let previous = { first: read(0), second: read(1) };
 
@@ -250,11 +285,12 @@ async function approach(
         charges += 1;
         if (charges === 1) {
           closingAtContact = closing;
+          speedAtContact = Math.max(Math.abs(first.speed), Math.abs(second.speed));
           sinceCharge = 0;
         }
       } else if (sinceCharge >= 0) {
         sinceCharge += 1;
-        if (sinceCharge === input.settle) closingAfter = closing;
+        if (sinceCharge === input.settle) { closingAfter = closing; gapAfter = gap; }
       }
       previous = { first, second };
     }
@@ -265,6 +301,8 @@ async function approach(
       endGap: gapOf(previous.first, previous.second),
       closingAtContact,
       closingAfter,
+      gapAfter,
+      speedAtContact,
       firstTurn: wrap(previous.first.heading - firstHeading),
       secondTurn: wrap(previous.second.heading - secondHeading),
       first: previous.first,
@@ -281,13 +319,35 @@ test('two riders who ride into each other are pushed apart, and neither goes dow
   const errors = collectErrors(page);
   await bootPair(page);
 
+  //
+  // **The throttle came down 0.6 → 0.35 at M30 Phase 4, and the bound it has
+  // to sit under is derived rather than chosen.** A pair placed converging by
+  // `CONVERGE_RADIANS` each closes laterally at `2 · v · sin(converge)`, and
+  // the separation can only hold them apart while that is under
+  // `CONTACT.separationSpeed` — which puts the ceiling at
+  // `separationSpeed / (2 sin 0.12)` = **5.0 m/s**. The same 0.6 of throttle
+  // that carried 4.9 m/s on the 50 mph wheel carries 5.6 on the shipped 65,
+  // straight past it, and the pair was sampled 3 cm *inside* the radius. That
+  // is the residual the paragraph below has always named — a pair closing
+  // faster than the push penetrates, and the answer is the owner's F4 slider,
+  // not a bent assertion here — arriving at a lower throttle than before
+  // because a throttle is a lean and the same lean now carries further. So the
+  // fixture rides under its own derived ceiling, and asserts that it did.
   const met = await approach(page, {
     gap: APPROACH_GAP_METRES,
     converge: CONVERGE_RADIANS,
-    throttle: 0.6,
+    throttle: 0.35,
     steps: 420,
     facing: 'same',
   });
+
+  const holdable = CONTACT.separationSpeed / (2 * Math.sin(CONVERGE_RADIANS));
+  expect(
+    met.speedAtContact,
+    `the pair met at ${met.speedAtContact.toFixed(2)} m/s, closing laterally faster than `
+      + `${CONTACT.separationSpeed} m/s of push can answer — anything above `
+      + `${holdable.toFixed(2)} m/s penetrates, and this fixture is the graze, not the crash`,
+  ).toBeLessThan(holdable);
 
   // **They really met, and the charge is what says so rather than the gap.**
   // The separation resolves inside the step that detects the overlap, so a
@@ -308,8 +368,20 @@ test('two riders who ride into each other are pushed apart, and neither goes dow
   // already opening on the step the bump lands, and an instrument that reads
   // "closing" there is measuring the push rather than the approach. The
   // approach is measured where it happens — over the gap itself.
+  //
+  // **And so is the aftermath, since M30 Phase 4.** `closingAfter` was a rate
+  // at one sample, and on the shipped 65 mph wheel the same script reads
+  // +0.33 m/s at that sample while the *gap* over the same quarter second
+  // moves by **one millimetre outward**. Neither rider is going anywhere: the
+  // separation runs every step, so a pair that keeps converging is *held* at
+  // the radius and rides along it, and the instantaneous rate flickers sign
+  // with the standoff's own jitter. A quarter of a second after the bump they
+  // are still at least at the radius, which is the mechanic working — being
+  // thrown apart and left was never the claim, and at 0.35 throttle the same
+  // script reads the rate negative and the gap two millimetres *in*.
   expect(APPROACH_GAP_METRES - met.minGap).toBeGreaterThan(1);
-  expect(met.closingAfter).toBeLessThan(0);
+  expect(met.gapAfter).toBeGreaterThan(CONTACT.radiusMetres - 0.01);
+  expect(met.gapAfter).toBeGreaterThanOrEqual(met.minGap);
 
   // **They never got inside each other** — the owner's ride, 2026-08-27:
   // *"from certain angles you can clip and/or go through the other player."*
@@ -459,10 +531,23 @@ test('the cooldown slider is the fourth one, and it was the one nothing moved', 
   const errors = collectErrors(page);
   await bootPair(page, 'level=proving');
 
+  //
+  // **The throttle came down 0.12 → 0.09 at M30 Phase 4**, and it is the
+  // fixture's premise rather than its taste. This test needs a pair that
+  // *oscillates* against the separation — that is the only state in which a
+  // cooldown of zero can charge more often than the shipped one. A throttle is
+  // a lean, and the same lean on the shipped 65 mph wheel carries a rider
+  // faster: at 0.12 the pair now closes at 2.3 m/s, overpowers the 1.2 m/s
+  // push, merges to a 0.21 m gap and is charged exactly once whatever the
+  // cooldown says — so the slider became untestable again for the opposite
+  // reason it was untestable before. At 0.09 they meet at 1.8 m/s, are held at
+  // the 0.80 m radius, and the shipped cooldown charges once against three
+  // with it switched off, which is the distinguishable pair the lesson asks
+  // for.
   const script = {
     gap: 10,
     converge: 0,
-    throttle: 0.12,
+    throttle: 0.09,
     steps: 900,
     facing: 'opposed' as const,
   };
@@ -2997,7 +3082,7 @@ async function exchange(
     };
   }, {
     ...options,
-    ahead: 30,
+    ahead: EXCHANGE_RUNWAY_METRES,
     right: DUEL_RIGHT_METRES,
     windup: PADDLE.windupSeconds,
     active: PADDLE.activeSeconds,

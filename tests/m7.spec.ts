@@ -167,9 +167,9 @@ test('both routes through the fork are rideable, and the alley is the faster one
   //
   // **Speed-capped since M16, at the old full throttle's top speed.** This
   // driver has two gains and no eyes; it was calibrated against a wheel that
-  // ran out of pull at 15 m/s, and at the new 22.3 m/s it arrives at the
-  // alley's drops far too fast and crashes — which measures the follower, not
-  // the fork. The cap brakes it back to 15 and leaves its acceleration and its
+  // ran out of pull at 15 m/s, and at the shipped 29.06 m/s (65 mph — 22.3 m/s
+  // when M16 wrote this) it arrives at the alley's drops far too fast and
+  // crashes — which measures the follower, not the fork. The cap brakes it back to 15 and leaves its acceleration and its
   // hill climbing untouched, so both routes are still driven equally badly in
   // the same way they always were. A human rider keeps the whole new range.
   const run = async (ids: readonly string[]) => page.evaluate(([route]) => {
@@ -438,8 +438,9 @@ test('the return climb loads the power ladder on the way home', async ({ page })
   // **Measured against the same wheel on the flat, since M16.** This used to
   // assert the amber rung by name, and at 15 m/s a five-metre ramp reached it:
   // the wheel spent about four seconds on the hill, which is long enough for a
-  // 0.55 s load response to build. At 22.3 m/s the same ramp is crested in two,
-  // and the ladder — correctly — barely notices a climb this short. What §4.1
+  // 0.55 s load response to build. At M16's 22.3 m/s the same ramp was crested
+  // in two, and at the shipped 29.06 m/s it goes by quicker still, so the
+  // ladder — correctly — barely notices a climb this short. What §4.1
   // actually promises is that "hill climbing consumes power headroom", and that
   // is still emphatically true: the ramp costs about four times what the flat
   // run-up into it costs. A *sustained* climb still reaches the rungs, and

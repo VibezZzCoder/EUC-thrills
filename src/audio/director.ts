@@ -496,6 +496,19 @@ export interface AudioTuning {
    * and zero is the kill-switch that judgment might reach for.
    */
   sirenLevel: number;
+  /**
+   * The wheel's flat-pavement top speed, m/s — where every speed curve in
+   * the bed saturates (M30 Phase 0). Live, unlike the rest of `AUDIO`'s
+   * speed constants, because `?mph=` rebuilds the wheel for a session: left
+   * on a frozen 22.3 the wind, the tyre and the whine of a 65 mph wheel
+   * would all be at their ceiling from 50 mph up, which is exactly the
+   * M16 defect the constant's own note describes. The frozen default is
+   * 29.0576 since M30 Phase 4 — 65 is the wheel that ships — so it is now
+   * `?mph=50` that would be silent about its own last third if this were
+   * not live. Defaults to the constant, so a build that never writes it is
+   * byte-identical.
+   */
+  speedReference: number;
 }
 
 export function defaultAudioTuning(): AudioTuning {
@@ -519,6 +532,7 @@ export function defaultAudioTuning(): AudioTuning {
     raceCountLevel: AUDIO.raceCountLevel,
     raceGoLevel: AUDIO.raceGoLevel,
     sirenLevel: AUDIO.sirenLevel,
+    speedReference: AUDIO.speedReference,
   };
 }
 
@@ -853,7 +867,7 @@ export class AudioDirector {
     const cue = this.claimCue();
     if (!cue) return;
     cue.voice = voice;
-    const scale = lerp(0.55, 1, clamp01(Math.abs(speed) / AUDIO.speedReference));
+    const scale = lerp(0.55, 1, clamp01(Math.abs(speed) / this.tuning.speedReference));
     cue.kind = 'crash';
     cue.bus = 'sfx';
     cue.gain = AUDIO.crashLevel * scale;
@@ -1224,7 +1238,7 @@ export class AudioDirector {
 
     this.frame.tyreActive = this.activeSlot;
     const power = Math.hypot(this.slotEnvelope[0], this.slotEnvelope[1]);
-    const speedFraction = clamp01(Math.abs(input.speed) / AUDIO.speedReference);
+    const speedFraction = clamp01(Math.abs(input.speed) / this.tuning.speedReference);
     this.resolveTyreSlot(0, power, speedFraction);
     this.resolveTyreSlot(1, power, speedFraction);
   }
@@ -1257,7 +1271,7 @@ export class AudioDirector {
     // The toko asset contains one tap per revolution at `tyreReferenceSpeed`.
     // Its old shared ±10% tape sweep made a walking wheel tap almost as fast
     // as a flat-out one and agreed with the tyre only at one accidental speed.
-    slot.tokoRate = speedFraction * AUDIO.speedReference / AUDIO.tyreReferenceSpeed;
+    slot.tokoRate = speedFraction * this.tuning.speedReference / AUDIO.tyreReferenceSpeed;
     // Brightening with speed is what stops a fast pass over pavement sounding
     // like a slow one played louder.
     slot.centreHz = voice.centreHz * lerp(1, AUDIO.tyreCutoffRise, speedFraction);
@@ -1300,7 +1314,7 @@ export class AudioDirector {
     // different curves: the third harmonic arrives early and is the body of
     // the sound, the sixth arrives late and is the only thing in the bed that
     // means "fast" rather than "moving". Together they are the spool-up.
-    const speedFraction = clamp01(Math.abs(input.speed) / AUDIO.speedReference);
+    const speedFraction = clamp01(Math.abs(input.speed) / this.tuning.speedReference);
     this.singGain = approach(
       this.singGain,
       // Floored at the idle share rather than starting from zero: the third
@@ -1370,7 +1384,7 @@ export class AudioDirector {
 
   private updateWind(dt: number, input: RideAudioInput): void {
     const t = this.tuning;
-    const ramp = mapRange(Math.abs(input.speed), AUDIO.windOnsetSpeed, AUDIO.speedReference, 0, 1);
+    const ramp = mapRange(Math.abs(input.speed), AUDIO.windOnsetSpeed, t.speedReference, 0, 1);
     const boost = input.grounded ? 1 : AUDIO.windAirBoost;
     this.windGain = approach(
       this.windGain,

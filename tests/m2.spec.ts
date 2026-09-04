@@ -9,6 +9,8 @@ import {
   SIMULATION,
   WHEEL,
 } from '../src/data/tuning.ts';
+import { lateralCeilingG } from '../src/simulation/lateralCeiling.ts';
+import { riderRollFor } from '../src/simulation/riderLean.ts';
 
 /**
  * M2 — the EUC controller on the ground.
@@ -429,9 +431,15 @@ test('pressing D steers toward the right of the screen, and leans into it', asyn
   // releases the steering and lets the camera catch up first, which is a
   // stronger claim anyway: the rider turned right, and once the camera has
   // finished following, what was ahead of them is on their left.
+  // **150 steps rather than 90 since M30 Phase 4.** The yaw lag eases from
+  // `yawLagAtRest` to `yawLagAtSpeed` over `CAMERA.speedReference`, and that
+  // reference moved with the shipped top speed (22.3 → 29.06 m/s), so this
+  // ride's speed now sits lower up the curve and the camera takes longer to
+  // finish. The claim is that it *finishes*, so the settle is lengthened
+  // rather than the 0.02 rad tolerance widened.
   const settled = await page.evaluate((landmark) => {
     window.game.setActions({ steer: 0 });
-    window.game.advance(90);
+    window.game.advance(150);
     window.game.clearActions();
     return {
       probe: window.qa.screenProbe(3),
@@ -459,16 +467,39 @@ test('pressing D steers toward the right of the screen, and leans into it', asyn
   expect(carving.lean.alongScreenRight).toBeGreaterThan(0.15);
 });
 
-test('a hard carve tilts the lower body while the torso stays near level and the inside knee bends', async ({ page }, testInfo) => {
+test('a hard carve tilts the lower body, the torso takes its scheduled share of the lean, and the inside knee bends', async ({ page }, testInfo) => {
+  // **Renamed at M30 Phase 3** (`docs/PLANS.md` §30.8 item 4). The torso used
+  // to stay near level here — the assertion was `|riderRoll| < 0.25 |rollAngle|`
+  // — and that is exactly what the milestone removed: the rider's share of the
+  // lean now rises with *absolute* speed, from today's 0.18 below
+  // `carveLeanSpeed` (6 m/s) to `carveLeanShareTop` at `carveLeanFullSpeed`
+  // (22.25 m/s). This ride comes out of the carve at 18.8 m/s, which is inside
+  // that blend (share 0.82 of the wheel's 0.644 rad, pelvis 0.114 rad), so what
+  // the spec claims now is the **schedule at the speed it rides**: the
+  // snapshot's `riderRoll` is `riderRollFor` of the snapshot's own fields, and
+  // the share is strictly between the two anchors — neither the old plank nor
+  // the one line the M30 carve reaches at speed (`tests/m30.spec.ts`).
+  //
+  // The low-speed technical-turn spec below it is untouched: below 6 m/s the
+  // expression is the pre-M30 one to the bit.
   await boot(page);
 
+  //
+  // **The warm-up was shortened 2.5 s → 1.2 s at M30 Phase 4.** The shipped
+  // wheel is 65 mph, and the old fixture's carve came out at 25 m/s — *past*
+  // `carveLeanFullSpeed`, where the share is 1.0, the wheel's bank saturates
+  // and the rider hangs. That is a real pose and it is asserted in
+  // `tests/m30.spec.ts`, twice; what would be lost is the only browser
+  // coverage of the *blend* between the two anchors, which is what this spec
+  // is for. So the entry is slowed until the carve rides inside the band
+  // again, and the band membership is asserted below rather than assumed.
   const carve = await page.evaluate((steps) => {
     window.qa.resetRide();
-    window.qa.drive([{ actions: { throttle: 1 }, steps }]);
+    window.qa.drive([{ actions: { throttle: 1 }, steps: steps.warmUp }]);
     const straight = window.qa.rigTransform();
-    const turning = window.qa.drive([{ actions: { throttle: 1, steer: 1 }, steps }])[0];
+    const turning = window.qa.drive([{ actions: { throttle: 1, steer: 1 }, steps: steps.carve }])[0];
     return { straight, turning, rig: window.qa.rigTransform() };
-  }, STEPS(2.5));
+  }, { warmUp: STEPS(1.2), carve: STEPS(2.5) });
 
   expect(Math.abs(carve.straight.leanRoll)).toBeLessThan(0.01);
   expect(Math.abs(carve.turning.euc.rollAngle)).toBeGreaterThan(0.15);
@@ -484,9 +515,33 @@ test('a hard carve tilts the lower body while the torso stays near level and the
   expect(Math.abs(extra)).toBeGreaterThan(0);
   expect(Math.sign(extra)).toBe(-Math.sign(carve.turning.euc.rollAngle));
   expect(carve.rig.pelvisRoll).toBeCloseTo(-extra, 4);
-  expect(Math.abs(carve.turning.euc.riderRoll)).toBeLessThan(
-    Math.abs(carve.turning.euc.rollAngle) * 0.25,
+
+  // The one expression, evaluated on the snapshot's own fields: what the
+  // controller wrote is what `simulation/riderLean.ts` says for this wheel
+  // roll, this force lean, this technique blend and this speed. A copy of the
+  // arithmetic here would agree with a controller that had drifted; this call
+  // is the module the game itself uses.
+  const euc = carve.turning.euc;
+  expect(euc.riderRoll).toBeCloseTo(
+    riderRollFor(euc.rollAngle, euc.riderLean, euc.technicalTurn, euc.speed, EUC),
+    6,
   );
+  // Mid-schedule: this ride is above `carveLeanSpeed` and below
+  // `carveLeanFullSpeed`, so the share is strictly inside both anchors — the
+  // torso is neither the old plank nor yet one line with the wheel.
+  expect(Math.abs(euc.speed)).toBeGreaterThan(EUC.carveLeanSpeed);
+  expect(Math.abs(euc.speed)).toBeLessThan(EUC.carveLeanFullSpeed);
+  const share = euc.riderRoll / euc.rollAngle;
+  expect(share).toBeGreaterThan(EUC.riderUpperBodyRollFactor);
+  expect(share).toBeLessThan(EUC.carveLeanShareTop);
+  // The calibration, in the record rather than in a comment that goes stale:
+  // a tuning change to the ride moves this ride's speed, and the share with it.
+  const calibration = `${euc.speed.toFixed(2)} m/s: wheel ${euc.rollAngle.toFixed(3)} rad, `
+    + `rider ${euc.riderRoll.toFixed(3)} (share ${share.toFixed(3)}), `
+    + `pelvis ${carve.rig.pelvisRoll.toFixed(3)}`;
+  testInfo.annotations.push({ type: 'lean schedule', description: calibration });
+  console.log(`[m2 hard carve] ${calibration}`);
+
   expect(Math.abs(carve.rig.leanRoll + carve.rig.pelvisRoll)).toBeCloseTo(
     Math.abs(carve.turning.euc.riderRoll),
     3,
@@ -730,11 +785,30 @@ test('a fast turn goes wide because the lateral limit binds, not because input w
     return window.qa.rideTrace({ throttle: 1, steer: 1 }, steps * 10, 12);
   }, STEPS(1));
 
-  const ceiling = EUC.maxLateralG * PHYSICS.gravity;
+  // **The ceiling is a schedule, not a constant** (M30 Phase 2,
+  // `simulation/lateralCeiling.ts`): the wheel holds `maxLateralG` up to 9 m/s
+  // and `carveGripTopG` from 22.25 on, so the bound this sweep asserts has to
+  // be read at the speed each sample was taken at. The half-a-metre-a-second
+  // allowance is the intra-step one — the clamp reads the speed at the top of
+  // the step and the snapshot reports it after the pedal scrub, so a sample's
+  // own speed is slightly *below* the speed its limit was computed from, and a
+  // bound read at the sample's speed alone would be a hair tight.
+  const ceilingAt = (speed: number): number => (
+    lateralCeilingG(Math.abs(speed) + 0.5, EUC) * PHYSICS.gravity
+  );
   for (const sample of trace) {
-    expect(Math.abs(sample.lateralAccel)).toBeLessThanOrEqual(ceiling + 1e-6);
+    expect(Math.abs(sample.lateralAccel)).toBeLessThanOrEqual(ceilingAt(sample.speed) + 1e-6);
   }
   expect(trace.some((sample) => sample.lateralLimited)).toBe(true);
+
+  // And the give is real rather than merely permitted: at speed this carve
+  // holds well past the ordinary 0.75 g the wheel had below 9 m/s, which is
+  // the whole of what the phase does to the ride.
+  const ordinary = EUC.maxLateralG * PHYSICS.gravity;
+  const fast = trace.filter((sample) => sample.speed > 18 && sample.lateralLimited);
+  expect(fast.length).toBeGreaterThan(0);
+  expect(Math.max(...fast.map((sample) => Math.abs(sample.lateralAccel))))
+    .toBeGreaterThan(ordinary * 1.2);
 
   // And the turn is a real, closed arc rather than a spiral: the widest radius
   // seen is bounded by the ceiling at the speed the wheel is actually doing.
@@ -759,18 +833,33 @@ test('riding a full circle comes back to where it started', async ({ page }) => 
     // Settle into a steady carve first; the first seconds are the wheel
     // getting up to speed, and their radius is meaningless.
     //
-    // **A quarter throttle since M16, to hold the circle the same size.** The
-    // radius is `speed² / lateralLimit`, so the raised top speed drew a 30 m
-    // radius at the old 0.45 and took the lap off the pad and across terrain
-    // that is not flat — which distorts a geometric claim about a circle. 0.23
-    // settles at almost exactly the 10 m/s this test has always measured, and
-    // the circle is the one it was written against.
+    // **Sixty seconds of settling since M30 Phase 4, not twenty**, and the
+    // reason is worth stating because it is not "more is safer". A throttle
+    // this far below full approaches its own equilibrium slowly — the drive
+    // and the resistance are close — so twenty seconds left the wheel 0.6 m/s
+    // short and still gaining. That draws a *spiral*, not a circle, and it
+    // does so twice over since M30 Phase 2, because between `carveSpeed` and
+    // `carveLeanFullSpeed` the lateral ceiling itself rises with speed: a
+    // still-accelerating wheel is widening its radius through the speed term
+    // and again through the limit. At sixty seconds the speed is 9.9765 m/s
+    // and moves by 0.0006 across the whole measured lap. If this ever drifts
+    // again, look at whether the ride has settled before assuming the
+    // geometry is wrong.
+    // **A fraction of throttle since M16, re-derived at M30 Phase 4, to hold
+    // the circle the same size.** The radius is `speed² / lateralLimit`, so a
+    // raised top speed draws a wider circle at the same throttle and takes the
+    // lap off the pad and across terrain that is not flat — which distorts a
+    // geometric claim about a circle. The throttle that settles at the 10 m/s
+    // this test has always measured is the one that balances drag there:
+    // `16·sin(0.5·t) − 0.35 = drag · 100`, which was 0.45 before M16, 0.23 on
+    // the 50 mph wheel and **0.152** on the shipped 65. The circle is the one
+    // it was written against at all three.
     // Stay below the hard technical-turn threshold: this is a closed-circle
     // geometry fixture, not a pedal-scrape endurance test.
-    window.qa.drive([{ actions: { throttle: 0.23, steer: 0.5 }, steps: 120 * 20 }]);
+    window.qa.drive([{ actions: { throttle: 0.152, steer: 0.5 }, steps: 120 * 60 }]);
     const start = window.game.snapshot().euc;
 
-    const samples = window.qa.rideTrace({ throttle: 0.23, steer: 0.5 }, 120 * 40, 6);
+    const samples = window.qa.rideTrace({ throttle: 0.152, steer: 0.5 }, 120 * 40, 6);
     const closed = samples.find(
       // Steering right, so the heading counts down through a full turn.
       (sample) => start.headingY - sample.headingY >= Math.PI * 2,

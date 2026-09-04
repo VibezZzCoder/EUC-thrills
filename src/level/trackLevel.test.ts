@@ -6,6 +6,8 @@ import { MATERIALS, SURFACES } from '../data/surfaces.ts';
 import { CHALLENGE, EUC, PHYSICS, RIDER_BLOCKOUT, TERRAIN, WHEEL } from '../data/tuning.ts';
 import { NEUTRAL_ACTIONS, type ActionSnapshot } from '../input/actions.ts';
 import { ChallengeRun } from '../simulation/challenge.ts';
+import { lateralCeilingG } from '../simulation/lateralCeiling.ts';
+import { topSpeedPreset } from '../simulation/topSpeedPreset.ts';
 import { EucController } from '../simulation/EucController.ts';
 import { PlanTerrainSampler } from '../simulation/planSampler.ts';
 import { createGroundSample } from '../simulation/world.ts';
@@ -107,6 +109,40 @@ const TOP_SPEED = Math.sqrt((Math.sin(EUC.maxLeanPitch) * EUC.leanToAccel) / EUC
 /** Fastest a clean line can hold an arc of this radius on asphalt, m/s. */
 function cornerSpeed(radius: number): number {
   return Math.sqrt(EUC.maxLateralG * SURFACES.pavement.grip * PHYSICS.gravity * radius);
+}
+
+/**
+ * The same corner at the ceiling the wheel **actually** has there, m/s.
+ *
+ * `cornerSpeed` above is the *ordinary* grip line, `maxLateralG`, and it is the
+ * number BelVar's geometry was authored against: every corner on this circuit
+ * except one is taken at or below `EUC.carveSpeed`, where M30 Phase 2's
+ * schedule returns `maxLateralG` outright and the two functions are the same
+ * number to the bit. The sweeper is the exception — it is the one corner on the
+ * lap taken flat out — and up there the give is worth 17.5% of its held speed.
+ *
+ * So both exist, and which one a claim uses says what the claim is about: the
+ * authored geometry reads `cornerSpeed`, and "what can a rider hold through
+ * here" reads this. Solved as a fixed point because the ceiling is a function
+ * of the speed it caps; iterated from the schedule's own floor, which is a
+ * ceiling no speed can be under, so every iterate is a speed the road allows
+ * (the same argument, and the same direction, as `speedAtLateralLimit` in
+ * `simulation/cpuRider.ts`).
+ *
+ * **Added at M30 Phase 4, on Phase 1's own instruction** — the recorded note
+ * below said to re-measure the sweeper's cost "when Phase 2 raises the lateral
+ * ceiling". Phase 2 raised it and 65 then shipped, so both halves came due at
+ * once.
+ */
+function heldCornerSpeed(radius: number): number {
+  const grip = SURFACES.pavement.grip;
+  let speed = Math.sqrt(
+    Math.min(EUC.maxLateralG, EUC.carveGripTopG) * grip * PHYSICS.gravity * radius,
+  );
+  for (let pass = 0; pass < 8; pass += 1) {
+    speed = Math.sqrt(lateralCeilingG(speed, EUC) * grip * PHYSICS.gravity * radius);
+  }
+  return speed;
 }
 
 // ---------------------------------------------------------------------------
@@ -332,8 +368,99 @@ test('the main straight reaches the M20 overspeed band before the sweeper', () =
   // And the sweeper is a lift rather than a stop: a rider has to give some of
   // that back, but not most of it, or the corner is a braking zone wearing a
   // sweeper's radius.
-  const held = cornerSpeed(sweeper.radius);
-  assert.ok(held / reached > 0.75, `the sweeper costs ${(1 - held / reached) * 100}% of the straight`);
+  //
+  // **Re-measured at M30 Phase 4, and the answer is the give.** M30 Phase 1
+  // recorded that on a 65 mph wheel this corner costs 35% of the straight
+  // instead of 17% — "a braking zone wearing a sweeper's radius" — and flagged
+  // it as a fact to tell the owner before he chose. He chose 65, and by the
+  // time it shipped Phase 2 had raised the lateral ceiling at speed: this is
+  // the one corner on the lap fast enough for that to reach, and it holds
+  // 21.6 m/s under the schedule against 18.4 at the ordinary grip line. So the
+  // sweeper gives back **24%** on the shipped wheel and stays a lift. Without
+  // the give it would be 35%; the two numbers are asserted together, because
+  // "Phase 2 is what kept BelVar's sweeper a sweeper at 65" is the finding and
+  // one number alone cannot say it.
+  const held = heldCornerSpeed(sweeper.radius);
+  const ordinary = cornerSpeed(sweeper.radius);
+  assert.ok(
+    held / reached > 0.75,
+    `the sweeper costs ${((1 - held / reached) * 100).toFixed(0)}% of the straight`,
+  );
+  assert.ok(
+    ordinary / reached < 0.75,
+    `the ordinary grip line already holds ${((ordinary / reached) * 100).toFixed(0)}% of the `
+      + 'straight, so the give is no longer what makes this corner a lift — re-read the note above',
+  );
+  assert.ok(
+    Math.abs(1 - held / reached - 0.24) < 0.02,
+    `the sweeper costs ${((1 - held / reached) * 100).toFixed(1)}% of the straight, recorded at 24%`,
+  );
+});
+
+test('the lap still works at the M30 switch\'s 50 mph, and what it costs', () => {
+  // `docs/PLANS.md` §30.5 item 2 for the venue rather than for a route. BelVar
+  // has no `RouteLayout` — it is a closed lap of arcs with no jumps, so there is
+  // nothing for `validateRoute` to judge — and its three speed facts are the
+  // ones above, re-asked of the wheel the switch builds.
+  //
+  // **The switch's wheel is 50 since M30 Phase 4**, 65 having become the frozen
+  // table. The claim is unchanged and reads the other way: the slower wheel is
+  // the one the lap has to keep working on, and the number that moves is the
+  // straight, because the straight is the drag.
+  //
+  // **Two of the three cannot move and one does.** The corner speeds are a
+  // function of `maxLateralG`, the grip and the radius — and `?mph=` touches
+  // none of those, so the sweeper's held speed and the hairpin's racing line
+  // are the same numbers at every top speed the switch offers, which is exactly
+  // the third scope answer (the schedules plateau) showing up as arithmetic.
+  const last = TRACK_GEOMETRY.find((element) => element.id === 'last');
+  const sweeper = TRACK_GEOMETRY.find((element) => element.id === 'sweeper');
+  const main = TRACK_GEOMETRY.find((element) => element.id === 'main');
+  const hairpin = TRACK_GEOMETRY.find((element) => element.id === 'hairpin');
+  assert.ok(last !== undefined && sweeper !== undefined && main !== undefined
+    && hairpin !== undefined);
+
+  const preset = topSpeedPreset(50);
+  const entry = cornerSpeed(last.radius);
+  const reached = speedAfter(entry, main.length, preset.dragCoefficient);
+  const band = preset.dragOnlyTop * EUC.overspeedBeepShare;
+  const held = heldCornerSpeed(sweeper.radius);
+
+  // §23.7 item 1 still holds: the cutout is the mechanic only a circuit can
+  // showcase, and a rider who gets the last corner right still arrives at the
+  // sweeper's braking point inside the warning band.
+  assert.ok(
+    reached > band,
+    `at 50 mph the main straight tops out at ${reached.toFixed(1)} m/s, short of the `
+      + `${band.toFixed(1)} m/s warning band — the straight is no longer long enough to `
+      + 'showcase the cutout on the wheel the switch builds',
+  );
+
+  // The sweeper's held speed and the hairpin's line are the wheel's grip, not
+  // its drag, so they are what they were.
+  assert.equal(held, heldCornerSpeed(sweeper.radius));
+  assert.ok(held > 21 && held < 22, `the sweeper holds ${held.toFixed(2)} m/s`);
+  const line = cornerSpeed(hairpin.radius + TRACK.asphaltHalf);
+  assert.ok(line < EUC.carveSpeed + 3 && line > 6, `the hairpin's line holds ${line.toFixed(1)} m/s`);
+
+  // **And the finding, re-measured rather than carried forward.** Phase 1
+  // recorded that at 65 a rider gives back 35% of the straight through the
+  // sweeper against 17% at 50, which read as a braking zone wearing a
+  // sweeper's radius, and said to re-measure it "when Phase 2 raises the
+  // lateral ceiling". Phase 2 did, and the sweeper is the one corner on this
+  // lap fast enough to feel it: the shipped 65 wheel gives back **24%** and the
+  // 50 mph wheel **3%**, both at the ceiling the schedule really allows there
+  // (21.6 m/s, against 18.4 at the ordinary grip line). So the lap is *less*
+  // differentiated between the two wheels than Phase 1 feared, and the sweeper
+  // stays a sweeper on the wheel that shipped.
+  const givenBack = 1 - held / reached;
+  assert.ok(
+    givenBack >= 0 && givenBack < 0.1,
+    `at 50 the sweeper costs ${(givenBack * 100).toFixed(0)}% of the straight `
+      + `(${(100 * (1 - held / speedAfter(entry, main.length, EUC.dragCoefficient))).toFixed(0)}% `
+      + 'on the shipped 65 wheel). This is a measurement, not a bound — re-measure and '
+      + 're-record it whenever the lateral ceiling or the top speed moves.',
+  );
 });
 
 test('the hairpin is slow enough to want the pivot and wide enough to ride', () => {
@@ -1614,13 +1741,19 @@ function rideAlongside(
   return { closest, covered, crashed };
 }
 
-/** Speed after accelerating from `from` over `distance` on flat asphalt. */
-function speedAfter(from: number, distance: number): number {
+/**
+ * Speed after accelerating from `from` over `distance` on flat asphalt.
+ *
+ * The drag is a parameter from M30 Phase 1 and defaults to the frozen table's,
+ * so every caller written before the `?mph=` switch existed measures exactly
+ * what it measured. Only the 65 mph test passes another.
+ */
+function speedAfter(from: number, distance: number, drag: number = EUC.dragCoefficient): number {
   const drive = Math.sin(EUC.maxLeanPitch) * EUC.leanToAccel;
   let speed = from;
   const step = 0.25;
   for (let along = 0; along < distance; along += step) {
-    const accel = drive - EUC.dragCoefficient * speed * speed - SURFACES.pavement.rollingResistance;
+    const accel = drive - drag * speed * speed - SURFACES.pavement.rollingResistance;
     speed = Math.sqrt(Math.max(0, speed * speed + 2 * Math.max(0, accel) * step));
   }
   return speed;

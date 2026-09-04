@@ -1,7 +1,8 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test, type Page } from '@playwright/test';
 import { PROVING_GROUND, boot as bootGame, collectErrors } from './harness.ts';
-import { CAMERA, LIGHTING, SIMULATION, TERRAIN, WHEEL } from '../src/data/tuning.ts';
+import { CAMERA, EUC, LIGHTING, SIMULATION, TERRAIN, WHEEL } from '../src/data/tuning.ts';
+import { lateralCeilingG } from '../src/simulation/lateralCeiling.ts';
 import { SURFACES, TERRAIN_SURFACE_IDS } from '../src/data/surfaces.ts';
 
 /**
@@ -195,11 +196,16 @@ test('riding off the pavement onto grass costs speed, immediately and visibly', 
     // **Onto the grass at the road's own speed, not at an arbitrary one.**
     // Until M16 this crossed at 14.5 m/s, which was then within a few per cent
     // of what pavement could hold — so the surface difference showed up as an
-    // immediate loss. At the raised top speed 14.5 m/s is only two thirds of
-    // what the road has left to give, and the wheel simply carries on
-    // accelerating across the boundary. The claim is about what each surface
-    // *tops out* at, so the run has to be at the top before it crosses.
-    window.qa.rideUntil({ throttle: 1, steer: 0 }, 'speed', 20.5, 8000);
+    // immediate loss. At M16's raised top speed 14.5 m/s was only two thirds
+    // of what the road had left to give, and the wheel simply carried on
+    // accelerating across the boundary; the entry became 20.5 m/s, which was
+    // 92 % of pavement's 22.35. **M30 Phase 4 raised the road again to 65 mph
+    // and the same arithmetic moves the entry to 26.5 m/s** — pavement tops
+    // out at 29.06 and grass at 23.70, so anything under 23.7 would once more
+    // be a speed the wheel is still *gaining* on the grass. The claim is about
+    // what each surface tops out at, so the run has to be at the top before it
+    // crosses, and the entry is derived from the two tops rather than typed.
+    window.qa.rideUntil({ throttle: 1, steer: 0 }, 'speed', 26.5, 8000);
     const onRoad = window.qa.snap().euc;
     // Ninety degrees of heading, then straight until the pad runs out.
     window.qa.drive([{ actions: { throttle: 1, steer: 1 }, steps: 200 }]);
@@ -208,14 +214,23 @@ test('riding off the pavement onto grass costs speed, immediately and visibly', 
   });
 
   expect(crossing.onRoad.surface).toBe('pavement');
-  expect(crossing.onRoad.speed).toBeGreaterThan(20);
+  expect(crossing.onRoad.speed).toBeGreaterThan(26);
 
   const onGrass = crossing.trace.filter((sample) => sample.surface === 'grass');
   expect(onGrass.length).toBeGreaterThan(4);
 
   const settled = onGrass[onGrass.length - 1];
   expect(settled.rollingResistance).toBeCloseTo(SURFACES.grass.rollingResistance, 5);
-  expect(settled.lateralLimitG).toBeCloseTo(0.75 * SURFACES.grass.grip, 5);
+  // The ceiling is the M30 Phase 2 speed schedule now, and this sample is at
+  // grass's own top speed, well above `carveSpeed` — so the number to compare
+  // against is the schedule at that speed. What the surface owns is the
+  // multiplier, which is the claim this line makes. Three places rather than
+  // five: the clamp reads the speed at the top of the step and the snapshot
+  // reports it after the pedal scrub.
+  expect(settled.lateralLimitG).toBeCloseTo(
+    lateralCeilingG(Math.abs(settled.speed), EUC) * SURFACES.grass.grip,
+    3,
+  );
   // Immediately: the wheel is losing speed from the first metres of grass,
   // rather than merely gaining it more slowly.
   expect(onGrass[4].speed).toBeLessThan(onGrass[0].speed);

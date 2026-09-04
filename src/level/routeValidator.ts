@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { CHALLENGE, EUC, HAZARD, PADDLE, PHYSICS, RIDER, TARGET, TERRAIN, WHEEL } from '../data/tuning.ts';
 import { SURFACES } from '../data/surfaces.ts';
+import { topSpeedPreset } from '../simulation/topSpeedPreset.ts';
 import type { SurfaceId } from '../simulation/world.ts';
 import { DEFAULT_SPACING, fieldHeightAt, type HazardSpec, type TargetSpec } from './buildPlan.ts';
 import type { BoxCollider, Checkpoint, HazardKind, LevelPlan } from './plan.ts';
@@ -122,66 +123,148 @@ export const ROUTE_CLEARANCE = {
 } as const;
 
 /**
- * The wheel's own limits, derived, as the speed model and the gradient rule need.
+ * The six numbers off the wheel that every rideability limit is derived from.
+ *
+ * **Spelled out as plain `number` fields rather than as a `Pick<typeof EUC, …>`**
+ * — M30 Phase 1, and it is not a style choice. The tuning table is `as const`,
+ * so a `Pick` of it would carry *literal* types and `{ ...EUC, dragCoefficient:
+ * 0.00867 }` would not type-check against them. What this interface says is
+ * "any wheel", which is exactly what `rideabilityAt` hands it.
  */
-export const RIDEABILITY = {
+export interface RideabilityInputs {
+  readonly leanToAccel: number;
+  readonly maxLeanPitch: number;
+  readonly dragCoefficient: number;
+  readonly maxLateralG: number;
+  readonly hopLaunchSpeed: number;
+  readonly hopChargeHeightBonus: number;
+}
+
+/** The wheel's own limits, derived, as the speed model and the gradient rule need. */
+export interface Rideability {
   /** Acceleration at full lean, m/s². */
-  get driveAccel(): number {
-    return EUC.leanToAccel * Math.sin(EUC.maxLeanPitch);
-  },
-  /**
-   * Where drag balances drive, m/s. The wheel's top speed, emergent.
-   *
-   * `drag = dragCoefficient * v * |v|`, so `v = sqrt(driveAccel / dragCoefficient)`.
-   * Read out of the controller's own constants rather than quoted from a
-   * comment, so it follows a tuning change.
-   */
-  get topSpeed(): number {
-    return Math.sqrt(this.driveAccel / EUC.dragCoefficient);
-  },
+  readonly driveAccel: number;
+  /** Where drag balances drive, m/s. The wheel's top speed, emergent. */
+  readonly topSpeed: number;
   /** Lateral acceleration ceiling, m/s². The carve limit. */
-  get lateralAccel(): number {
-    return EUC.maxLateralG * PHYSICS.gravity;
-  },
-  /**
-   * The gradient at which full lean exactly cancels gravity — the stall grade.
-   *
-   * Above it the wheel cannot climb at all. A required route may not go
-   * anywhere near it: at the stall grade the rider has no authority left for
-   * steering or for recovering a wobble, so the ceiling below reserves half of
-   * it. The slice's steepest required grade is a long way inside that, which is
-   * the check that keeps the reserve honest rather than arbitrary.
-   */
-  get stallGradient(): number {
-    return Math.asin(Math.min(1, this.driveAccel / PHYSICS.gravity));
-  },
+  readonly lateralAccel: number;
+  /** The gradient at which full lean exactly cancels gravity — the stall grade. */
+  readonly stallGradient: number;
   /** Half the stall grade: the wheel keeps half its authority in reserve. */
-  get maxRequiredGradient(): number {
-    return this.stallGradient / 2;
-  },
+  readonly maxRequiredGradient: number;
+  /** How long the wheel is off the ground on a fully charged hop, seconds. */
+  readonly hopAirtime: number;
   /**
-   * How long the wheel is off the ground on a fully charged hop, seconds.
+   * The quadratic drag this wheel pays, 1/m.
    *
-   * `hopLaunchSpeed` gives the height at zero charge; `hopChargeHeightBonus`
-   * raises the *height*, so the launch speed at full charge is the square root
-   * of the ratio. Airtime is the up and the down.
+   * On the interface because the segment speed model integrates the ride's own
+   * curve and read `EUC.dragCoefficient` straight off the frozen table until
+   * M30 Phase 1 — which made a route generated for a 65 mph wheel accelerate
+   * like a 50 mph one on the way to a jump it then had to clear.
    */
-  get hopAirtime(): number {
-    const height = (EUC.hopLaunchSpeed ** 2 / (2 * PHYSICS.gravity))
-      * (1 + EUC.hopChargeHeightBonus);
-    return 2 * Math.sqrt((2 * height) / PHYSICS.gravity);
-  },
+  readonly dragCoefficient: number;
   /** How far a fully charged hop carries at a given speed, metres. */
-  hopDistanceAt(speed: number): number {
-    return speed * this.hopAirtime;
-  },
+  hopDistanceAt(speed: number): number;
   /** The fastest a corridor of this curvature may be taken, m/s. */
-  curveSpeedLimit(curvature: number): number {
-    const magnitude = Math.abs(curvature);
-    if (magnitude < 1e-9) return Infinity;
-    return Math.sqrt(this.lateralAccel / magnitude);
-  },
-} as const;
+  curveSpeedLimit(curvature: number): number;
+}
+
+/**
+ * The rideability of one wheel.
+ *
+ * **Every member is a lazy getter, exactly as `RIDEABILITY` was before M30**,
+ * so the default instance below is byte-identical in behaviour: it still reads
+ * the frozen table at the moment it is asked rather than at module load, which
+ * is what lets a test move a constant and see the limits follow.
+ */
+export function rideabilityFor(euc: RideabilityInputs): Rideability {
+  return {
+    get driveAccel(): number {
+      return euc.leanToAccel * Math.sin(euc.maxLeanPitch);
+    },
+    /**
+     * `drag = dragCoefficient * v * |v|`, so `v = sqrt(driveAccel / dragCoefficient)`.
+     * Read out of the controller's own constants rather than quoted from a
+     * comment, so it follows a tuning change.
+     */
+    get topSpeed(): number {
+      return Math.sqrt(this.driveAccel / euc.dragCoefficient);
+    },
+    get lateralAccel(): number {
+      return euc.maxLateralG * PHYSICS.gravity;
+    },
+    /**
+     * Above the stall grade the wheel cannot climb at all. A required route may
+     * not go anywhere near it: at the stall grade the rider has no authority
+     * left for steering or for recovering a wobble, so the ceiling below
+     * reserves half of it. The slice's steepest required grade is a long way
+     * inside that, which is the check that keeps the reserve honest rather than
+     * arbitrary.
+     */
+    get stallGradient(): number {
+      return Math.asin(Math.min(1, this.driveAccel / PHYSICS.gravity));
+    },
+    get maxRequiredGradient(): number {
+      return this.stallGradient / 2;
+    },
+    /**
+     * `hopLaunchSpeed` gives the height at zero charge; `hopChargeHeightBonus`
+     * raises the *height*, so the launch speed at full charge is the square root
+     * of the ratio. Airtime is the up and the down.
+     */
+    get hopAirtime(): number {
+      const height = (euc.hopLaunchSpeed ** 2 / (2 * PHYSICS.gravity))
+        * (1 + euc.hopChargeHeightBonus);
+      return 2 * Math.sqrt((2 * height) / PHYSICS.gravity);
+    },
+    get dragCoefficient(): number {
+      return euc.dragCoefficient;
+    },
+    hopDistanceAt(speed: number): number {
+      return speed * this.hopAirtime;
+    },
+    curveSpeedLimit(curvature: number): number {
+      const magnitude = Math.abs(curvature);
+      if (magnitude < 1e-9) return Infinity;
+      return Math.sqrt(this.lateralAccel / magnitude);
+    },
+  };
+}
+
+/**
+ * The shipped wheel — the frozen table's own instance, and every default.
+ *
+ * Every rule in this file and every pass in `generateRoute.ts` reads this
+ * unless a caller handed it another, so a build with no `?mph=` override is
+ * byte-identical to the one before M30 Phase 1.
+ */
+export const RIDEABILITY: Rideability = rideabilityFor(EUC);
+
+/**
+ * The wheel a session with `?mph=<n>` is actually riding — M30 Phase 1.
+ *
+ * `undefined` returns **the default instance itself**, not a copy of it: a
+ * default build passes no override and must be byte-identical, and identity is
+ * the cheapest way to say so and the easiest to test.
+ *
+ * Otherwise it is the frozen table with one number replaced — the drag
+ * `simulation/topSpeedPreset.ts` derives for that pavement terminal, which is
+ * the same single write the live-tuning store gets (§30.3a). Nothing else about
+ * the wheel moves, because nothing else in the preset is a rideability input:
+ * the power ladder and the two speed references are presentation and feel, and
+ * the lateral ceiling is deliberately left alone until Phase 2.
+ */
+export function rideabilityAt(topSpeedMph: number | undefined): Rideability {
+  if (topSpeedMph === undefined) return RIDEABILITY;
+  return rideabilityFor({
+    leanToAccel: EUC.leanToAccel,
+    maxLeanPitch: EUC.maxLeanPitch,
+    dragCoefficient: topSpeedPreset(topSpeedMph).dragCoefficient,
+    maxLateralG: EUC.maxLateralG,
+    hopLaunchSpeed: EUC.hopLaunchSpeed,
+    hopChargeHeightBonus: EUC.hopChargeHeightBonus,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // What a validator is handed
@@ -341,6 +424,7 @@ export interface RouteVerdict {
 export function speedProfile(
   placed: readonly PlacedSegment[],
   throughIds: readonly string[],
+  rideability: Rideability = RIDEABILITY,
 ): Map<string, number> {
   const byId = new Map(placed.map((segment) => [segment.spec.id, segment]));
   const profile = new Map<string, number>();
@@ -352,8 +436,8 @@ export function speedProfile(
     const { spec } = segment;
     const surface = SURFACES[spec.surface];
     const limit = Math.min(
-      RIDEABILITY.topSpeed,
-      RIDEABILITY.curveSpeedLimit(spec.curvature ?? 0),
+      rideability.topSpeed,
+      rideability.curveSpeedLimit(spec.curvature ?? 0),
     );
 
     const steps = Math.max(1, Math.ceil(spec.length / 2));
@@ -361,8 +445,12 @@ export function speedProfile(
     for (let step = 0; step < steps; step += 1) {
       const s = (step + 0.5) * ds;
       const gradient = gradientAt(spec, s);
-      const accel = RIDEABILITY.driveAccel
-        - EUC.dragCoefficient * speed * speed
+      // **The wheel it was handed, drag included** — M30 Phase 1. This line
+      // read `EUC.dragCoefficient` off the frozen table until the generator
+      // learned about `?mph=`, which would have made a route spaced for a
+      // 65 mph wheel accelerate like a 50 mph one on the run-up to its jumps.
+      const accel = rideability.driveAccel
+        - rideability.dragCoefficient * speed * speed
         - surface.rollingResistance * TERRAIN.rollingResistanceScale
         - PHYSICS.gravity * Math.sin(gradient);
       const squared = speed * speed + 2 * accel * ds;
@@ -577,7 +665,11 @@ function checkRunLength(requiredLength: number): RouteFailure[] {
  * speed the forward pass says the rider arrives with. A jump nobody can clear
  * is a route the player cannot finish, and it is invisible in a screenshot.
  */
-function checkLandable(layout: RouteLayout, speeds: ReadonlyMap<string, number>): RouteFailure[] {
+function checkLandable(
+  layout: RouteLayout,
+  speeds: ReadonlyMap<string, number>,
+  rideability: Rideability,
+): RouteFailure[] {
   const failures: RouteFailure[] = [];
   const byId = new Map(layout.placed.map((segment) => [segment.spec.id, segment]));
 
@@ -593,7 +685,7 @@ function checkLandable(layout: RouteLayout, speeds: ReadonlyMap<string, number>)
     const catchPoint = landing.entry.position;
     const gap = Math.hypot(catchPoint.x - takeoff.x, catchPoint.z - takeoff.z);
     const speed = speeds.get(jump.lipId) ?? 0;
-    const reach = RIDEABILITY.hopDistanceAt(speed);
+    const reach = rideability.hopDistanceAt(speed);
 
     if (gap > reach) {
       failures.push({
@@ -862,9 +954,12 @@ function checkShoulders(layout: RouteLayout): { failures: RouteFailure[]; steepe
 }
 
 /** Nothing on the required path steeper than the wheel can ride with authority left. */
-function checkGradient(layout: RouteLayout): { failures: RouteFailure[]; steepest: number } {
+function checkGradient(
+  layout: RouteLayout,
+  rideability: Rideability,
+): { failures: RouteFailure[]; steepest: number } {
   const byId = new Map(layout.placed.map((segment) => [segment.spec.id, segment]));
-  const ceiling = RIDEABILITY.maxRequiredGradient;
+  const ceiling = rideability.maxRequiredGradient;
   let steepest = 0;
   let worst = '';
 
@@ -979,177 +1074,307 @@ function checkSurfaces(layout: RouteLayout): RouteFailure[] {
  * honest half: the ground must not *hide* a hazard within the distance in which
  * the machine could physically respond to it.
  */
-export const HAZARD_RULES = {
-  /**
-   * Fraction of a corridor's half width that hazards may occupy.
-   *
-   * **It is the innermost a verge band can ever reach**, read off
-   * `generateRoute.ts`'s own `vergeBands` rather than chosen: a band runs from
-   * `halfWidth · (0.62 + width · 0.26)` outward, so nothing inside 0.62 of the
-   * half width can be turned into grass or gravel by a later draw. Bounding a
-   * hazard by it is what keeps the **hazards** stream independent of the
-   * **surfaces** stream — the alternative is placing hazards after the verge
-   * pass and reading the bands, which makes rerolling the surfaces move the
-   * potholes and quietly turns two domains into one.
-   */
-  lateralFraction: 0.62,
-  /**
-   * How much of its authority the rider keeps in reserve when responding.
-   *
-   * The doctrine `RIDEABILITY.maxRequiredGradient` already applies to climbing,
-   * applied to dodging: a hazard that can only be missed by spending the whole
-   * lateral budget is a hazard that leaves nothing for the wobble, the line, or
-   * the corner it sits in.
-   */
-  authorityReserve: 0.5,
-  /**
-   * How far the raster can carry a spill past the circle it was authored as.
-   *
-   * A spill is painted by **cell centres** (`buildPlan.ts`), so a selected cell
-   * occupies ground up to a half-diagonal outside the mathematical footprint.
-   * The rider is slowed by the cell, not by the circle, so every rule that asks
-   * "how much road does this take away" has to charge for the cell.
-   */
-  get rasterMargin(): number {
-    return DEFAULT_SPACING * Math.SQRT1_2;
-  },
-  /**
-   * How far the ground may stand above a line of sight before it hides.
-   *
-   * The step the wheel can lever itself onto, which is the smallest rise this
-   * project anywhere treats as a feature rather than as noise. Below it a crest
-   * is a ripple in an eased profile; above it, it is a brow.
-   */
-  get sightBlockMetres(): number {
-    return ROUTE_CLEARANCE.maxStepUp;
-  },
-  /**
-   * Height the sight line is drawn from, metres.
-   *
-   * `RIDER.hipHeight` — the one height the table states for a rider *in the
-   * riding pose*. It is deliberately the conservative choice: the real eye is
-   * most of a torso higher, so anything a hip cannot see over is certainly
-   * hidden, and the rule refuses more than a truthful eye height would. The
-   * chase camera sits higher again and is `render/`'s, which this file may not
-   * reach into.
-   */
-  get eyeMetres(): number {
-    return RIDER.hipHeight;
-  },
-  /** Along-route spacing of the required route's sampled profile, metres. */
-  profileStep: 2,
-  /**
-   * How far a footprint must stay clear of either socket of its own segment.
-   *
-   * One machine width. Two pieces may legitimately disagree about the ground's
-   * height at a join by up to `SEAM_TOLERANCE`, and a hazard straddling that is
-   * a hole drawn across a ledge — visually shared between two beats and, on the
-   * simulation side, a footprint whose floor is on the wrong side of a step.
-   */
-  get socketClearMetres(): number {
-    return ROUTE_CLEARANCE.minGap;
-  },
-  /**
-   * How far a footprint must stay clear of a checkpoint gate, metres.
-   *
-   * The gate's own half depth plus a machine width. A gate is the one place on
-   * the route where the line is *forced* — the rider must go through it — so a
-   * hazard in its mouth removes the choice the avoidable-line rule exists to
-   * guarantee, at exactly the point where there is no choice left to spend.
-   */
-  get gateClearMetres(): number {
-    return CHALLENGE.gateHalfDepth + ROUTE_CLEARANCE.minGap;
-  },
-  /**
-   * The distance in which the machine can steer one clear lane aside, metres.
-   *
-   * `d = ½·a·(t/2)²·2` for an accelerate-then-settle lane change, solved for
-   * time and multiplied by the speed: `2·√(minGap / a)·v`, at half the lateral
-   * authority. Steering rather than braking because steering is the response
-   * that avoids *every* kind — braking below `hazardCrashSpeed` saves a rider
-   * from a deep hole and does nothing about a spill — and because at the speeds
-   * where a deep hole is fatal it is also the longer of the two, so requiring
-   * it is the stricter reading.
-   */
-  respondMetres(speed: number): number {
-    const lateral = RIDEABILITY.lateralAccel * this.authorityReserve;
-    return 2 * Math.sqrt(ROUTE_CLEARANCE.minGap / lateral) * Math.max(0, speed);
-  },
-  /**
-   * How far apart two hazards have to be, metres.
-   *
-   * **Derived from the wobble, and it is the milestone's own fairness question
-   * in arithmetic.** A shallow hazard injects `hazardShallowEnergy` (0.55) and
-   * the worst survivable thing that can follow it is a deep hole below the
-   * crash speed, which injects `hazardDeepEnergy` (0.88) — so the first must
-   * have decayed to under `wobbleCrashEnergy − hazardDeepEnergy` before the
-   * second arrives, or the crash was unavoidable from the moment the rider met
-   * the first. Energy decays as `e·exp(−damping·t)` and the slowest damping the
-   * model offers is `wobbleDampingAggressive`, which is the rider still hard on
-   * the throttle — the case that has to be survivable, not the case that is
-   * easy. At top speed that is about 43 m.
-   *
-   * Floored at one response distance, so a retune that made the wobble decay
-   * instantly could not collapse this to zero and stack two holes in a metre.
-   */
-  get separationMetres(): number {
-    const headroom = Math.max(1e-3, EUC.wobbleCrashEnergy - EUC.hazardDeepEnergy);
-    const seconds = Math.max(
-      0,
-      Math.log(Math.max(headroom, EUC.hazardShallowEnergy) / headroom)
-        / EUC.wobbleDampingAggressive,
-    );
-    return Math.max(
-      this.respondMetres(RIDEABILITY.topSpeed),
-      seconds * RIDEABILITY.topSpeed,
-    );
-  },
-  /**
-   * How many hazards a hundred metres of required route may carry.
-   *
-   * The separation above already caps this near two, so this is the tighter
-   * *pace* rule rather than a second fairness rule. One per hundred metres is a
-   * hazard about every six seconds at riding speed, which is the same argument
-   * `Game.applyWobbleQuery` makes for its own sixty-metre probe cadence: often
-   * enough that the mechanic is in every run, rare enough that the ride between
-   * them is still a ride. §13 q9's "nothing may be annoying" is a design
-   * constraint on this milestone and a slalom is annoying.
-   *
-   * **Two rather than three**, which is what the separation alone would allow
-   * over a hundred metres. Each of three at the minimum gap is individually
-   * survivable and together they are a *combination* — and a combination is a
-   * set piece, which is precisely the thing this generator does not author. It
-   * composes beats somebody designed and lays neutral joins between them; a
-   * three-hazard sequence would be the one piece of level design it invented.
-   */
-  perHundredMetres: 2,
-  /**
-   * Extra lane the generator insists on beyond what the contract measures, m.
-   *
-   * **The one blocker `placeHazards` cannot see.** It runs before a `LevelPlan`
-   * exists, so it measures the road against the segments' own authored blocks
-   * and not against `plan.solids`, which `buildLevelPlan` derives from dressing
-   * placed afterwards. A solid prop stands clear of every corridor by
-   * construction, so at worst a bin's corner reaches a little way over the kerb
-   * line — a sweep step covers it, and a hazard that still closed the road with
-   * a prop's help is a legitimate rejection rather than a placement bug.
-   */
-  get laneSlack(): number {
-    return SWEEP_LATERAL_METRES;
-  },
-  /**
-   * How finely the hazard lane sweep walks along the road, metres.
-   *
-   * Half a machine width, rather than the three metres the whole-route
-   * clearance walk uses. That walk is looking for a wall somewhere in a
-   * kilometre; this one is measuring an eight-metre window around a circle, and
-   * a pinch the machine could not use must not be able to hide between two
-   * stations.
-   */
-  get laneStepMetres(): number {
-    return ROUTE_CLEARANCE.minGap / 2;
-  },
-} as const;
+export interface HazardRules {
+  readonly lateralFraction: number;
+  readonly authorityReserve: number;
+  readonly rasterMargin: number;
+  readonly sightBlockMetres: number;
+  readonly eyeMetres: number;
+  readonly profileStep: number;
+  readonly socketClearMetres: number;
+  readonly gateClearMetres: number;
+  readonly perHundredMetres: number;
+  readonly laneSlack: number;
+  readonly laneStepMetres: number;
+  /** The distance in which the machine can steer one clear lane aside, metres. */
+  respondMetres(speed: number): number;
+  /** How far apart two hazards have to be, metres. */
+  readonly separationMetres: number;
+  /** How likely the generator is to try a hazard at each eligible station. */
+  readonly chancePerStation: number;
+}
+
+/**
+ * The hazard rules for one wheel — M30 Phase 1.
+ *
+ * **Two of these twelve members are a *fairness* floor that reads the wheel, a
+ * third is a *taste* that reads it, and the rest do not read it at all.** A
+ * route ridden under `?mph=65` has to be *spaced* for 65, because both of the
+ * first two state a **time** and pay it in metres: `respondMetres` is how far
+ * the machine travels while it steers one lane aside, and `separationMetres` is
+ * how far it travels while the first hazard's wobble decays enough that the
+ * second is survivable. Neither is a distance somebody chose, so neither may be
+ * left behind when the top speed moves — that is the M16 lesson written down
+ * (`generatedLevel.test.ts`, "hazards are spread far enough apart to recover
+ * between").
+ *
+ * `chancePerStation` is the third, and it is a different kind of thing: how
+ * *dense* the road is, which nothing derives. It is anchored on the shipped
+ * wheel and scaled **up** with the top speed (`HAZARD.densityTopSpeedExponent`
+ * carries the decision and its reason), so a faster wheel meets more holes
+ * rather than fewer. Deriving it from the live separation, as M13 did, made a
+ * faster wheel's longer recovery empty the road — the floor and the density
+ * were reading one number for two unrelated questions.
+ *
+ * Everything else here is a fact about the *road* or about the machine's
+ * geometry — a corridor's verge bands, a spill's raster, a socket, a gate, the
+ * rider's hip height — and is the same at every speed. `HAZARD.readMetres`, the
+ * sight walk's look-back, is deliberately not here at all: it is 40 m measured
+ * by eye on the handset (`DESIGN.md` §6j, `docs/PLANS.md` §30.2 fact 7), and a
+ * number measured by eye does not scale with an arithmetic.
+ */
+export function hazardRulesFor(rideability: Rideability): HazardRules {
+  return {
+    /**
+     * Fraction of a corridor's half width that hazards may occupy.
+     *
+     * **It is the innermost a verge band can ever reach**, read off
+     * `generateRoute.ts`'s own `vergeBands` rather than chosen: a band runs from
+     * `halfWidth · (0.62 + width · 0.26)` outward, so nothing inside 0.62 of the
+     * half width can be turned into grass or gravel by a later draw. Bounding a
+     * hazard by it is what keeps the **hazards** stream independent of the
+     * **surfaces** stream — the alternative is placing hazards after the verge
+     * pass and reading the bands, which makes rerolling the surfaces move the
+     * potholes and quietly turns two domains into one.
+     */
+    lateralFraction: 0.62,
+    /**
+     * How much of its authority the rider keeps in reserve when responding.
+     *
+     * The doctrine `RIDEABILITY.maxRequiredGradient` already applies to climbing,
+     * applied to dodging: a hazard that can only be missed by spending the whole
+     * lateral budget is a hazard that leaves nothing for the wobble, the line, or
+     * the corner it sits in.
+     */
+    authorityReserve: 0.5,
+    /**
+     * How far the raster can carry a spill past the circle it was authored as.
+     *
+     * A spill is painted by **cell centres** (`buildPlan.ts`), so a selected cell
+     * occupies ground up to a half-diagonal outside the mathematical footprint.
+     * The rider is slowed by the cell, not by the circle, so every rule that asks
+     * "how much road does this take away" has to charge for the cell.
+     */
+    get rasterMargin(): number {
+      return DEFAULT_SPACING * Math.SQRT1_2;
+    },
+    /**
+     * How far the ground may stand above a line of sight before it hides.
+     *
+     * The step the wheel can lever itself onto, which is the smallest rise this
+     * project anywhere treats as a feature rather than as noise. Below it a crest
+     * is a ripple in an eased profile; above it, it is a brow.
+     */
+    get sightBlockMetres(): number {
+      return ROUTE_CLEARANCE.maxStepUp;
+    },
+    /**
+     * Height the sight line is drawn from, metres.
+     *
+     * `RIDER.hipHeight` — the one height the table states for a rider *in the
+     * riding pose*. It is deliberately the conservative choice: the real eye is
+     * most of a torso higher, so anything a hip cannot see over is certainly
+     * hidden, and the rule refuses more than a truthful eye height would. The
+     * chase camera sits higher again and is `render/`'s, which this file may not
+     * reach into.
+     */
+    get eyeMetres(): number {
+      return RIDER.hipHeight;
+    },
+    /** Along-route spacing of the required route's sampled profile, metres. */
+    profileStep: 2,
+    /**
+     * How far a footprint must stay clear of either socket of its own segment.
+     *
+     * One machine width. Two pieces may legitimately disagree about the ground's
+     * height at a join by up to `SEAM_TOLERANCE`, and a hazard straddling that is
+     * a hole drawn across a ledge — visually shared between two beats and, on the
+     * simulation side, a footprint whose floor is on the wrong side of a step.
+     */
+    get socketClearMetres(): number {
+      return ROUTE_CLEARANCE.minGap;
+    },
+    /**
+     * How far a footprint must stay clear of a checkpoint gate, metres.
+     *
+     * The gate's own half depth plus a machine width. A gate is the one place on
+     * the route where the line is *forced* — the rider must go through it — so a
+     * hazard in its mouth removes the choice the avoidable-line rule exists to
+     * guarantee, at exactly the point where there is no choice left to spend.
+     */
+    get gateClearMetres(): number {
+      return CHALLENGE.gateHalfDepth + ROUTE_CLEARANCE.minGap;
+    },
+    /**
+     * The distance in which the machine can steer one clear lane aside, metres.
+     *
+     * `d = ½·a·(t/2)²·2` for an accelerate-then-settle lane change, solved for
+     * time and multiplied by the speed: `2·√(minGap / a)·v`, at half the lateral
+     * authority. Steering rather than braking because steering is the response
+     * that avoids *every* kind — braking below `hazardCrashSpeed` saves a rider
+     * from a deep hole and does nothing about a spill — and because at the speeds
+     * where a deep hole is fatal it is also the longer of the two, so requiring
+     * it is the stricter reading.
+     */
+    respondMetres(speed: number): number {
+      const lateral = rideability.lateralAccel * this.authorityReserve;
+      return 2 * Math.sqrt(ROUTE_CLEARANCE.minGap / lateral) * Math.max(0, speed);
+    },
+    /**
+     * How far apart two hazards have to be, metres.
+     *
+     * **Derived from the wobble, and it is the milestone's own fairness question
+     * in arithmetic.** A shallow hazard injects `hazardShallowEnergy` (0.55) and
+     * the worst survivable thing that can follow it is a deep hole below the
+     * crash speed, which injects `hazardDeepEnergy` (0.88) — so the first must
+     * have decayed to under `wobbleCrashEnergy − hazardDeepEnergy` before the
+     * second arrives, or the crash was unavoidable from the moment the rider met
+     * the first. Energy decays as `e·exp(−damping·t)` and the slowest damping the
+     * model offers is `wobbleDampingAggressive`, which is the rider still hard on
+     * the throttle — the case that has to be survivable, not the case that is
+     * easy. At top speed that is about 43 m.
+     *
+     * Floored at one response distance, so a retune that made the wobble decay
+     * instantly could not collapse this to zero and stack two holes in a metre.
+     */
+    get separationMetres(): number {
+      const headroom = Math.max(1e-3, EUC.wobbleCrashEnergy - EUC.hazardDeepEnergy);
+      const seconds = Math.max(
+        0,
+        Math.log(Math.max(headroom, EUC.hazardShallowEnergy) / headroom)
+          / EUC.wobbleDampingAggressive,
+      );
+      return Math.max(
+        this.respondMetres(rideability.topSpeed),
+        seconds * rideability.topSpeed,
+      );
+    },
+    /**
+     * How many hazards a hundred metres of required route may carry.
+     *
+     * The separation above already caps this near two, so this is the tighter
+     * *pace* rule rather than a second fairness rule. One per hundred metres is a
+     * hazard about every six seconds at riding speed, which is the same argument
+     * `Game.applyWobbleQuery` makes for its own sixty-metre probe cadence: often
+     * enough that the mechanic is in every run, rare enough that the ride between
+     * them is still a ride. §13 q9's "nothing may be annoying" is a design
+     * constraint on this milestone and a slalom is annoying.
+     *
+     * **Two rather than three**, which is what the separation alone would allow
+     * over a hundred metres. Each of three at the minimum gap is individually
+     * survivable and together they are a *combination* — and a combination is a
+     * set piece, which is precisely the thing this generator does not author. It
+     * composes beats somebody designed and lays neutral joins between them; a
+     * three-hazard sequence would be the one piece of level design it invented.
+     */
+    perHundredMetres: 2,
+    /**
+     * Extra lane the generator insists on beyond what the contract measures, m.
+     *
+     * **The one blocker `placeHazards` cannot see.** It runs before a `LevelPlan`
+     * exists, so it measures the road against the segments' own authored blocks
+     * and not against `plan.solids`, which `buildLevelPlan` derives from dressing
+     * placed afterwards. A solid prop stands clear of every corridor by
+     * construction, so at worst a bin's corner reaches a little way over the kerb
+     * line — a sweep step covers it, and a hazard that still closed the road with
+     * a prop's help is a legitimate rejection rather than a placement bug.
+     */
+    get laneSlack(): number {
+      return SWEEP_LATERAL_METRES;
+    },
+    /**
+     * How finely the hazard lane sweep walks along the road, metres.
+     *
+     * Half a machine width, rather than the three metres the whole-route
+     * clearance walk uses. That walk is looking for a wall somewhere in a
+     * kilometre; this one is measuring an eight-metre window around a circle, and
+     * a pinch the machine could not use must not be able to hide between two
+     * stations.
+     */
+    get laneStepMetres(): number {
+      return ROUTE_CLEARANCE.minGap / 2;
+    },
+    /**
+     * How likely the generator is to try a hazard at each eligible station.
+     *
+     * **Anchored on the 50 mph wheel, scaled up with this one** — M30, and the
+     * one member of this table that is a taste rather than a derivation. A
+     * station is `profileStep` metres of road, so the anchor
+     * `DENSITY_ANCHOR_RULES.profileStep / DENSITY_ANCHOR_RULES.separationMetres`
+     * is M13's own expression evaluated on the wheel M13 authored against: a
+     * rider on the 50 mph wheel meets a hazard about every two recovery
+     * distances. The whole point is that the density must **not** follow the
+     * fairness floor, because a faster wheel's longer recovery would otherwise
+     * empty the road.
+     *
+     * **The anchor was `HAZARD_RULES` — the *shipped* wheel — until M30
+     * Phase 4, and that spelling was one shipped-table edit away from the very
+     * defect it was written to prevent.** It held while 50 was the frozen
+     * table; the day 65 became it, "anchored on the shipped wheel" started to
+     * mean "anchored on 65", the ratio below went to exactly one, and the
+     * anchor itself fell by the same 1.30 the separation rose by — so the
+     * shipped road *thinned*, 81 hazards to 63 across the sixteen-seed sweep
+     * and six to five on `route-41`. Exactly the direction the owner ruled out
+     * on 2026-09-03 (*"i want the roads to be dangerous… i want there to be
+     * more"*), and exactly the shape the Phase 1 amendment had already fixed
+     * once when the density was derived from the live separation. The lesson is
+     * that a *taste* is anchored on the road it was measured against, which is
+     * a fixed wheel and not whichever wheel happens to be shipped; the anchor
+     * is now frozen at M16's 0.0147 and the shipped 65 road is byte-identical
+     * to the `?mph=65` road the owner rode.
+     *
+     * The ratio is this wheel's top speed over that anchor wheel's, raised to
+     * `HAZARD.densityTopSpeedExponent`, whose comment carries the decision, the
+     * measured ladder it was chosen off, and the reason it is steep: the offer
+     * has to outrun the contracts that refuse most of it. At the shipped 3 the
+     * 65 mph wheel is offered 2.21× the anchor density and lands 1.42× the
+     * holes; `?mph=50` lands back on the anchor road.
+     *
+     * **This is an offer, not a count.** The separation floor above and the
+     * zone, sight, surface and lane rules in `placeHazards` refuse a good part
+     * of the extra, which is exactly the shape wanted: taste asks for more,
+     * fairness decides how much of it a road can take.
+     */
+    get chancePerStation(): number {
+      const anchor = DENSITY_ANCHOR_RULES.profileStep / DENSITY_ANCHOR_RULES.separationMetres;
+      const ratio = rideability.topSpeed / DENSITY_ANCHOR.topSpeed;
+      return anchor * ratio ** HAZARD.densityTopSpeedExponent;
+    },
+  };
+}
+
+/** The shipped wheel's hazard rules — every default, and the pinned records'. */
+export const HAZARD_RULES: HazardRules = hazardRulesFor(RIDEABILITY);
+
+/**
+ * The drag the hazard **density** is anchored on — M16's 50 mph table, frozen.
+ *
+ * Not `EUC.dragCoefficient`, on purpose and since M30 Phase 4: that constant is
+ * the *shipped* wheel and has now moved twice, while the density anchor is a
+ * statement about the road M13 authored and the exponent's ladder was measured
+ * against. See `HazardRules.chancePerStation` for what went wrong the one time
+ * the two were spelled as the same thing.
+ */
+export const DENSITY_ANCHOR_DRAG_COEFFICIENT = 0.0147;
+
+/**
+ * The 50 mph wheel the density taste is measured against.
+ *
+ * Every other input is read off the live table, so a change to the drive, the
+ * hop or the lateral ceiling moves this wheel with the rest of the game; only
+ * the drag — the one number that *is* the top speed — is held.
+ */
+export const DENSITY_ANCHOR: Rideability = rideabilityFor({
+  get leanToAccel(): number { return EUC.leanToAccel; },
+  get maxLeanPitch(): number { return EUC.maxLeanPitch; },
+  dragCoefficient: DENSITY_ANCHOR_DRAG_COEFFICIENT,
+  get maxLateralG(): number { return EUC.maxLateralG; },
+  get hopLaunchSpeed(): number { return EUC.hopLaunchSpeed; },
+  get hopChargeHeightBonus(): number { return EUC.hopChargeHeightBonus; },
+});
+
+/** That wheel's hazard rules — read for the density anchor and nothing else. */
+export const DENSITY_ANCHOR_RULES: HazardRules = hazardRulesFor(DENSITY_ANCHOR);
 
 /**
  * How much road a footprint actually takes away, metres.
@@ -1656,10 +1881,11 @@ function checkHazardSight(layout: RouteLayout, context: HazardContext): RouteFai
  */
 export function hazardSpacingRefusal(
   placements: readonly { readonly id: string; readonly distance: number }[],
+  rules: HazardRules = HAZARD_RULES,
 ): string | null {
   const ordered = [...placements].sort((a, b) => a.distance - b.distance);
 
-  const separation = HAZARD_RULES.separationMetres;
+  const separation = rules.separationMetres;
   for (let index = 1; index < ordered.length; index += 1) {
     const gap = ordered[index].distance - ordered[index - 1].distance;
     if (gap < separation) {
@@ -1675,9 +1901,9 @@ export function hazardSpacingRefusal(
       if (ordered[other].distance - ordered[index].distance > HAZARD_WINDOW_METRES) break;
       inWindow += 1;
     }
-    if (inWindow > HAZARD_RULES.perHundredMetres) {
+    if (inWindow > rules.perHundredMetres) {
       return `${inWindow} hazards inside ${HAZARD_WINDOW_METRES} m from ${ordered[index].id}, `
-        + `past the ${HAZARD_RULES.perHundredMetres} this route may carry — a run of them at `
+        + `past the ${rules.perHundredMetres} this route may carry — a run of them at `
         + 'the minimum gap is a set piece, and this generator does not author set pieces';
     }
   }
@@ -1689,14 +1915,14 @@ export function hazardSpacingRefusal(
 const HAZARD_WINDOW_METRES = 100;
 
 /** Hazards are far enough apart to recover between, and sparse enough to ride. */
-function checkHazardDensity(context: HazardContext): RouteFailure[] {
+function checkHazardDensity(context: HazardContext, rules: HazardRules): RouteFailure[] {
   const placements: { id: string; distance: number }[] = [];
   for (const spec of context.specs) {
     const distance = context.distanceOf.get(spec.id);
     if (distance !== undefined) placements.push({ id: spec.id, distance });
   }
 
-  const refusal = hazardSpacingRefusal(placements);
+  const refusal = hazardSpacingRefusal(placements, rules);
   return refusal === null ? [] : [{ contract: 'hazard-density', detail: refusal }];
 }
 
@@ -1771,7 +1997,7 @@ function checkHazardZone(layout: RouteLayout, context: HazardContext): RouteFail
 }
 
 /** The four hazard contracts, or nothing at all on a world that carries none. */
-function checkHazards(layout: RouteLayout): RouteFailure[] {
+function checkHazards(layout: RouteLayout, rules: HazardRules): RouteFailure[] {
   const context = hazardContext(layout);
   if (context === null) {
     // A plan may not carry hazards a layout never placed: that is a build that
@@ -1783,7 +2009,7 @@ function checkHazards(layout: RouteLayout): RouteFailure[] {
     ...checkHazardZone(layout, context),
     ...checkHazardLine(layout, context),
     ...checkHazardSight(layout, context),
-    ...checkHazardDensity(context),
+    ...checkHazardDensity(context, rules),
   ];
 }
 
@@ -1813,105 +2039,133 @@ function checkHazards(layout: RouteLayout): RouteFailure[] {
  * so reusing it here would ship `target-sight` and no reach guarantee at all.
  * What reach actually means is arithmetic about the paddle, and it is below.
  */
-export const TARGET_RULES = {
-  /**
-   * How far outside the rideable half-width a stand's foot goes, metres.
-   *
-   * Just past the kerb line. Far enough that the stand is plainly furniture on
-   * the verge rather than an obstacle in the road — nothing here is a collider,
-   * so what this buys is the player *believing* the right thing about where the
-   * obstacle is — and near enough that the pad's own cantilever brings it back
-   * within a swing of a line they were already riding.
-   */
-  vergeStandoff: 0.55,
-  /**
-   * How far inside the paddle's own reach a pad has to sit, metres.
-   *
-   * The reach is measured from the swing pivot to the centre of the head, and a
-   * pad exactly at that distance is a pad only a perfect line and a perfect
-   * moment can touch. This is the margin that makes it a shot rather than a
-   * coincidence, and it is why the contract is not simply `<= PADDLE.reach`.
-   */
-  reachMargin: 0.30,
-  /**
-   * The furthest a pad may sit from the corridor's centreline, metres.
-   *
-   * The whole reach arithmetic in one place: the pivot is offset onto the
-   * rider's right by `PADDLE.pivotOffset` and the head is `PADDLE.reach` beyond
-   * it, less the margin above. Read off the paddle's own constants rather than
-   * chosen, so dragging the reach slider on F4 and opening a fresh route gives
-   * the owner a world whose targets are placed for the paddle he just tuned.
-   */
-  get reachLimit(): number {
-    return PADDLE.reach + PADDLE.pivotOffset - this.reachMargin;
-  },
-  /**
-   * How far the ground under a foot may sit from the ground under its own pad,
-   * metres.
-   *
-   * **This is what makes the rigid stand honest.** `level/plan.ts` resolves both
-   * of a target's heights from one sample under the foot, because one rigid
-   * shape is one `InstancedMesh` and two draw calls where a per-station shape is
-   * a merged mesh rebuilt whenever anything moves. The price of that is a stand
-   * on a raised verge holding its pad the same amount high — so the verge and
-   * the road under the pad have to be within a kerb of each other, and here is
-   * where that is checked rather than assumed. A kerb is exactly the right
-   * measure: it is the step the wheel can lever itself onto, which is this
-   * project's own smallest rise that counts as a feature.
-   */
-  get standStepMetres(): number {
-    return ROUTE_CLEARANCE.maxStepUp;
-  },
-  /**
-   * How far apart two targets have to be, metres.
-   *
-   * **Derived from the swing, and it is this milestone's fairness question in
-   * arithmetic.** A whole swing cycle is wind-up plus strike plus recovery, and
-   * during it no second swing can begin — so two targets closer together than
-   * one cycle of travel cannot both be struck however well the route is ridden,
-   * and placing them would be authoring a miss.
-   *
-   * Doubled, because one cycle is the floor at which the second is *barely*
-   * reachable and the difference between a choice and a combination is having
-   * time to spare. That is `HAZARD_RULES.perHundredMetres`'s argument in the
-   * other units: three hazards at the minimum gap is a combination, a
-   * combination is a set piece, and a set piece is the one thing this generator
-   * does not author.
-   *
-   * At the shipped constants and the shipped top speed that is a little under
-   * twenty metres, so the density rule below is the binding one on an ordinary
-   * route and this is what stops a burst.
-   */
-  get separationMetres(): number {
-    const cycle = PADDLE.windupSeconds + PADDLE.activeSeconds + PADDLE.recoverSeconds;
-    return 2 * cycle * RIDEABILITY.topSpeed;
-  },
-  /**
-   * How many targets a hundred metres of required route may carry — §13 q20.
-   *
-   * Two, the owner's answer, read from the table both this and `placeTargets`
-   * consult so the pass and its post-condition cannot disagree.
-   */
-  get perHundredMetres(): number {
-    return TARGET.perHundredMetres;
-  },
-  /**
-   * How far a stand must stay clear of either socket of its own segment, and of
-   * a checkpoint gate.
-   *
-   * `HAZARD_RULES`'s two, verbatim and for the same reasons. A seam is where two
-   * pieces may legitimately disagree about the ground's height, which is exactly
-   * where a rigid stand would float or sink; and a gate is the one place on the
-   * route where the line is *forced*, so a pad hanging into its mouth is a swing
-   * the player cannot choose to set up for.
-   */
-  get socketClearMetres(): number {
-    return HAZARD_RULES.socketClearMetres;
-  },
-  get gateClearMetres(): number {
-    return HAZARD_RULES.gateClearMetres;
-  },
-} as const;
+export interface TargetRules {
+  readonly vergeStandoff: number;
+  readonly reachMargin: number;
+  readonly reachLimit: number;
+  readonly standStepMetres: number;
+  /** How far apart two targets have to be, metres. */
+  readonly separationMetres: number;
+  readonly perHundredMetres: number;
+  readonly socketClearMetres: number;
+  readonly gateClearMetres: number;
+}
+
+/**
+ * The target rules for one wheel — M30 Phase 1, `hazardRulesFor`'s twin.
+ *
+ * **One member of the eight reads the wheel**: `separationMetres`, which is two
+ * swing cycles of *travel*. It is the same fairness-is-a-time argument the
+ * hazard separation makes, in the paddle's units — two targets closer than one
+ * cycle apart cannot both be struck however well the route is ridden, and a
+ * faster wheel covers a cycle in more road. Everything else is a fact about the
+ * paddle's reach, the verge, the ground, or the owner's density answer, and is
+ * the same at every speed.
+ */
+export function targetRulesFor(rideability: Rideability): TargetRules {
+  return {
+    /**
+     * How far outside the rideable half-width a stand's foot goes, metres.
+     *
+     * Just past the kerb line. Far enough that the stand is plainly furniture on
+     * the verge rather than an obstacle in the road — nothing here is a collider,
+     * so what this buys is the player *believing* the right thing about where the
+     * obstacle is — and near enough that the pad's own cantilever brings it back
+     * within a swing of a line they were already riding.
+     */
+    vergeStandoff: 0.55,
+    /**
+     * How far inside the paddle's own reach a pad has to sit, metres.
+     *
+     * The reach is measured from the swing pivot to the centre of the head, and a
+     * pad exactly at that distance is a pad only a perfect line and a perfect
+     * moment can touch. This is the margin that makes it a shot rather than a
+     * coincidence, and it is why the contract is not simply `<= PADDLE.reach`.
+     */
+    reachMargin: 0.30,
+    /**
+     * The furthest a pad may sit from the corridor's centreline, metres.
+     *
+     * The whole reach arithmetic in one place: the pivot is offset onto the
+     * rider's right by `PADDLE.pivotOffset` and the head is `PADDLE.reach` beyond
+     * it, less the margin above. Read off the paddle's own constants rather than
+     * chosen, so dragging the reach slider on F4 and opening a fresh route gives
+     * the owner a world whose targets are placed for the paddle he just tuned.
+     */
+    get reachLimit(): number {
+      return PADDLE.reach + PADDLE.pivotOffset - this.reachMargin;
+    },
+    /**
+     * How far the ground under a foot may sit from the ground under its own pad,
+     * metres.
+     *
+     * **This is what makes the rigid stand honest.** `level/plan.ts` resolves both
+     * of a target's heights from one sample under the foot, because one rigid
+     * shape is one `InstancedMesh` and two draw calls where a per-station shape is
+     * a merged mesh rebuilt whenever anything moves. The price of that is a stand
+     * on a raised verge holding its pad the same amount high — so the verge and
+     * the road under the pad have to be within a kerb of each other, and here is
+     * where that is checked rather than assumed. A kerb is exactly the right
+     * measure: it is the step the wheel can lever itself onto, which is this
+     * project's own smallest rise that counts as a feature.
+     */
+    get standStepMetres(): number {
+      return ROUTE_CLEARANCE.maxStepUp;
+    },
+    /**
+     * How far apart two targets have to be, metres.
+     *
+     * **Derived from the swing, and it is this milestone's fairness question in
+     * arithmetic.** A whole swing cycle is wind-up plus strike plus recovery, and
+     * during it no second swing can begin — so two targets closer together than
+     * one cycle of travel cannot both be struck however well the route is ridden,
+     * and placing them would be authoring a miss.
+     *
+     * Doubled, because one cycle is the floor at which the second is *barely*
+     * reachable and the difference between a choice and a combination is having
+     * time to spare. That is `HAZARD_RULES.perHundredMetres`'s argument in the
+     * other units: three hazards at the minimum gap is a combination, a
+     * combination is a set piece, and a set piece is the one thing this generator
+     * does not author.
+     *
+     * At the shipped constants and the shipped top speed that is a little under
+     * twenty metres, so the density rule below is the binding one on an ordinary
+     * route and this is what stops a burst.
+     */
+    get separationMetres(): number {
+      const cycle = PADDLE.windupSeconds + PADDLE.activeSeconds + PADDLE.recoverSeconds;
+      return 2 * cycle * rideability.topSpeed;
+    },
+    /**
+     * How many targets a hundred metres of required route may carry — §13 q20.
+     *
+     * Two, the owner's answer, read from the table both this and `placeTargets`
+     * consult so the pass and its post-condition cannot disagree.
+     */
+    get perHundredMetres(): number {
+      return TARGET.perHundredMetres;
+    },
+    /**
+     * How far a stand must stay clear of either socket of its own segment, and of
+     * a checkpoint gate.
+     *
+     * `HAZARD_RULES`'s two, verbatim and for the same reasons. A seam is where two
+     * pieces may legitimately disagree about the ground's height, which is exactly
+     * where a rigid stand would float or sink; and a gate is the one place on the
+     * route where the line is *forced*, so a pad hanging into its mouth is a swing
+     * the player cannot choose to set up for.
+     */
+    get socketClearMetres(): number {
+      return HAZARD_RULES.socketClearMetres;
+    },
+    get gateClearMetres(): number {
+      return HAZARD_RULES.gateClearMetres;
+    },
+  };
+}
+
+/** The shipped wheel's target rules — every default, and the pinned records'. */
+export const TARGET_RULES: TargetRules = targetRulesFor(RIDEABILITY);
 
 /** Where a target's foot and pad sit laterally, from its authored offset. */
 export function targetLaterals(t: number): { foot: number; pad: number } {
@@ -1995,19 +2249,20 @@ export function targetStandRefusal(
 export function targetSpacingRefusal(
   placements: readonly { id: string; distance: number }[],
   requiredLength: number,
+  rules: TargetRules = TARGET_RULES,
 ): string | null {
   const sorted = [...placements].sort((a, b) => a.distance - b.distance);
   for (let index = 1; index < sorted.length; index += 1) {
     const gap = sorted[index].distance - sorted[index - 1].distance;
-    if (gap < TARGET_RULES.separationMetres) {
+    if (gap < rules.separationMetres) {
       return `${sorted[index - 1].id} and ${sorted[index].id} are ${gap.toFixed(1)} m apart, `
-        + `inside the ${TARGET_RULES.separationMetres.toFixed(1)} m one swing cycle needs`;
+        + `inside the ${rules.separationMetres.toFixed(1)} m one swing cycle needs`;
     }
   }
-  const allowed = Math.ceil((requiredLength / 100) * TARGET_RULES.perHundredMetres) + 1;
+  const allowed = Math.ceil((requiredLength / 100) * rules.perHundredMetres) + 1;
   if (sorted.length > allowed) {
     return `${sorted.length} targets over ${requiredLength.toFixed(0)} m is past the `
-      + `${TARGET_RULES.perHundredMetres} per hundred metres §13 q20 allows`;
+      + `${rules.perHundredMetres} per hundred metres §13 q20 allows`;
   }
   return null;
 }
@@ -2020,7 +2275,7 @@ export function targetSpacingRefusal(
  * aspirational. A route with no targets returns nothing at all, which is the
  * normal case for the slice, the proving ground and every fixture.
  */
-function checkTargets(layout: RouteLayout): RouteFailure[] {
+function checkTargets(layout: RouteLayout, rules: TargetRules): RouteFailure[] {
   const specs = layout.targets;
   if (specs === undefined || specs.length === 0) return [];
 
@@ -2065,12 +2320,12 @@ function checkTargets(layout: RouteLayout): RouteFailure[] {
     // Sockets and gates. A stand straddling a seam is a rigid post founded on
     // two pieces that are allowed to disagree about the ground; a stand at a
     // gate is a swing the player has no room to choose.
-    if (spec.s < TARGET_RULES.socketClearMetres
-      || carrier.spec.length - spec.s < TARGET_RULES.socketClearMetres) {
+    if (spec.s < rules.socketClearMetres
+      || carrier.spec.length - spec.s < rules.socketClearMetres) {
       failures.push({
         contract: 'target-stand',
         detail: `${spec.id} is ${spec.s.toFixed(1)} m into a ${carrier.spec.length} m beat, `
-          + `inside the ${TARGET_RULES.socketClearMetres.toFixed(1)} m a socket needs`,
+          + `inside the ${rules.socketClearMetres.toFixed(1)} m a socket needs`,
       });
     }
 
@@ -2079,7 +2334,7 @@ function checkTargets(layout: RouteLayout): RouteFailure[] {
       const distance = start + spec.s;
       placements.push({ id: spec.id, distance });
       for (const gate of gateDistances) {
-        if (Math.abs(distance - gate) < TARGET_RULES.gateClearMetres) {
+        if (Math.abs(distance - gate) < rules.gateClearMetres) {
           failures.push({
             contract: 'target-stand',
             detail: `${spec.id} stands in the mouth of a checkpoint gate`,
@@ -2092,19 +2347,42 @@ function checkTargets(layout: RouteLayout): RouteFailure[] {
 
   let requiredLength = 0;
   for (const id of layout.throughIds) requiredLength += byId.get(id)?.spec.length ?? 0;
-  const spacing = targetSpacingRefusal(placements, requiredLength);
+  const spacing = targetSpacingRefusal(placements, requiredLength, rules);
   if (spacing !== null) failures.push({ contract: 'target-density', detail: spacing });
 
   return failures;
 }
 
-export function validateRoute(layout: RouteLayout): RouteVerdict {
+/**
+ * Judge a route — against the shipped wheel, or against the one a session is
+ * riding.
+ *
+ * **The second argument is M30 Phase 1 and it is the whole of it.** A route
+ * ridden under `?mph=65` is spaced for 65 (hazards ~82 m apart rather than
+ * ~63, targets ~26 m rather than ~20) and its speed model runs the 65 mph
+ * drag, so the run-up to a jump is the run-up the rider will actually have.
+ * Without it the test ride would be the 50 mph routes with a faster wheel on
+ * them, which is unfair by the game's own fairness rule and makes the density
+ * cost of 65 something that can be computed and not ridden.
+ *
+ * Omitted — which is every default build, every pinned record and every
+ * fixture — it is the frozen table's own instance and nothing moves.
+ */
+export function validateRoute(
+  layout: RouteLayout,
+  rideability: Rideability = RIDEABILITY,
+): RouteVerdict {
   const byId = new Map(layout.placed.map((placed) => [placed.spec.id, placed]));
   let requiredLength = 0;
   for (const id of layout.throughIds) requiredLength += byId.get(id)?.spec.length ?? 0;
 
-  const speeds = speedProfile(layout.placed, layout.throughIds);
-  const gradient = checkGradient(layout);
+  // One instance of each per verdict rather than one per rule, so a contract
+  // and the pass that has to satisfy it cannot be judged by two wheels.
+  const hazardRules = rideability === RIDEABILITY ? HAZARD_RULES : hazardRulesFor(rideability);
+  const targetRules = rideability === RIDEABILITY ? TARGET_RULES : targetRulesFor(rideability);
+
+  const speeds = speedProfile(layout.placed, layout.throughIds, rideability);
+  const gradient = checkGradient(layout, rideability);
   const elevation = checkElevation(layout);
   const banks = checkBanks(layout);
   const shoulders = checkShoulders(layout);
@@ -2112,7 +2390,7 @@ export function validateRoute(layout: RouteLayout): RouteVerdict {
   const failures: RouteFailure[] = [
     ...checkClearance(layout),
     ...checkRunLength(requiredLength),
-    ...checkLandable(layout, speeds),
+    ...checkLandable(layout, speeds, rideability),
     ...checkReconnect(layout),
     ...checkSeams(layout),
     ...banks.failures,
@@ -2120,8 +2398,8 @@ export function validateRoute(layout: RouteLayout): RouteVerdict {
     ...gradient.failures,
     ...checkSurfaces(layout),
     ...elevation.failures,
-    ...checkHazards(layout),
-    ...checkTargets(layout),
+    ...checkHazards(layout, hazardRules),
+    ...checkTargets(layout, targetRules),
   ];
 
   const budget = withinRenderBudget(layout.plan);

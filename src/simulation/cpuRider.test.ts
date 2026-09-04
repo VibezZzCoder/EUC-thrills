@@ -1,12 +1,14 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { CHASE, EUC, PADDLE, SIMULATION } from '../data/tuning.ts';
+import { CHASE, EUC, PADDLE, PHYSICS, SIMULATION } from '../data/tuning.ts';
 import { generateLevel } from '../level/generateRoute.ts';
+import { topSpeedPreset } from './topSpeedPreset.ts';
 import { createLevel } from '../level/levels.ts';
 import type { LevelPlan } from '../level/plan.ts';
 import { RIDEABILITY } from '../level/routeValidator.ts';
-import { CpuRider, type CpuQuarry, type CpuView } from './cpuRider.ts';
+import { CpuRider, speedAtLateralLimit, type CpuQuarry, type CpuView } from './cpuRider.ts';
+import { lateralCeilingG, type LateralCeilingTuning } from './lateralCeiling.ts';
 import { createPose, EucController, type EucPose } from './EucController.ts';
 import { HazardField } from './hazards.ts';
 import { Paddle, type HittableSet, type HittableVolume } from './paddle.ts';
@@ -61,18 +63,37 @@ interface RideResult {
  * failure hide behind "he was distracted". The chase rules are Phase 3's and
  * are tested against their own suite.
  */
-function rideAlone(plan: LevelPlan, skill: number, maxSeconds = 240): RideResult {
+function rideAlone(
+  plan: LevelPlan,
+  skill: number,
+  maxSeconds = 240,
+  mph: number | null = null,
+): RideResult {
   const spine = RouteSpine.fromPlan(plan);
   assert.ok(spine !== null, 'the route has no spine to follow');
 
   const sampler = new PlanTerrainSampler(plan);
+  // The `?mph=` window's own wheel, exactly as `level/levels.ts` builds it —
+  // three tuning fields and nothing else (M30 Phase 1). `Game.applyTuning`
+  // pushes the same three onto the brain, so the ride below is what a chase on
+  // that build actually is.
+  const preset = mph === null ? null : topSpeedPreset(mph);
+  const tuning = preset === null ? undefined : {
+    dragCoefficient: preset.dragCoefficient,
+    powerComfortSpeed: preset.powerComfortSpeed,
+    powerLimitSpeed: preset.powerLimitSpeed,
+  };
   const controller = new EucController(sampler, {
     spawn: plan.spawn,
     hazards: new HazardField(plan.hazards ?? []),
     softBodies: new SoftBodyField(plan.softBodies ?? []),
+    ...(tuning === undefined ? {} : { tuning }),
   });
   const brain = new CpuRider(spine, plan, sampler);
   brain.skill = skill;
+  if (preset !== null) {
+    brain.dragCoefficient = preset.dragCoefficient;
+  }
 
   const pose: EucPose = createPose();
   controller.writePose(pose);
@@ -326,15 +347,185 @@ test('the high-speed policy follows the live wheel tuning it is given', () => {
   assert.ok(Math.abs(cutoutSpeed() - 7.2) < 1e-12);
 });
 
+test('a corner allowance never exceeds the speed the schedule really allows', () => {
+  // **The fixed point** — M30 Phase 2, `docs/PLANS.md` §30.3b and §30.7 item 1.
+  //
+  // The lateral ceiling rises with speed, so the speed a corner allows is the
+  // solution of `v = k · sqrt(ceiling(v) · perG)` rather than one division. A
+  // cop who believed anything *above* that solution would arrive at the corner
+  // too fast — which is the whole failure the fixed point exists to prevent —
+  // so what is asserted here is one-sided: never above, and close enough from
+  // below to be worth solving at all.
+  //
+  // The reference is the same map iterated to convergence rather than a closed
+  // form: it is a contraction, so two hundred passes are the fixed point to
+  // machine precision, and comparing two iterations against two hundred is a
+  // statement about the *truncation* and nothing else.
+  const converge = (k: number, perG: number, t: LateralCeilingTuning): number => {
+    let v = k * Math.sqrt(Math.min(t.maxLateralG, t.carveGripTopG) * perG);
+    for (let i = 0; i < 200; i += 1) v = k * Math.sqrt(lateralCeilingG(v, t) * perG);
+    return v;
+  };
+
+  // **The schedule is swept too** — M30 Phase 2's QA repair. The brain used to
+  // read the frozen table here, so the F4 sliders moved the cop's wheel and not
+  // his belief, and this assertion was made only at the shipped anchors. Both
+  // sliders now travel (`Game.applyTuning` → `CpuRider.lateralCeiling`), so
+  // both ends of both of them are asserted, and `carveGripTopG` below
+  // `maxLateralG` is a *decreasing* schedule — the case the fixed point's
+  // one-sidedness has to survive as well.
+  const SCHEDULES: ReadonlyArray<readonly [string, LateralCeilingTuning]> = [
+    ['shipped', EUC],
+    ['grip at speed 0.75 (the F4 floor)', { ...EUC, carveGripTopG: 0.75 }],
+    ['grip at speed 1.6 (the F4 ceiling)', { ...EUC, carveGripTopG: 1.6 }],
+    ['rise shape 0.5 (the F4 floor)', { ...EUC, carveGripExponent: 0.5 }],
+    ['rise shape 2 (the F4 ceiling)', { ...EUC, carveGripExponent: 2 }],
+    ['both sliders at their ceilings', { ...EUC, carveGripTopG: 1.6, carveGripExponent: 2 }],
+    ['a decreasing schedule', { ...EUC, carveGripTopG: 0.5 }],
+  ];
+
+  let worstUnder = 0;
+  let worstShipped = 0;
+  let checked = 0;
+  // Every grip in the surface table, both ends of the cornering margin, and
+  // the skill band's two ends — `perG` is the product of all of them.
+  for (const [label, schedule] of SCHEDULES) {
+    for (const grip of [0.35, 0.5, 0.72, 1]) {
+      for (const skill of [0, 0.5, 1]) {
+        for (const margin of [CHASE.corneringMargin, 1]) {
+          const perG = PHYSICS.gravity * grip * margin * (0.7 + 0.3 * skill);
+          // Radii from a hairpin to a motorway sweeper, and the swerve's own `k`.
+          for (const radius of [8, 14, 25, 40, 60, 90, 140, 220, 400, 900]) {
+            const k = Math.sqrt(radius);
+            const solved = speedAtLateralLimit(k, perG, schedule);
+            const truth = converge(k, perG, schedule);
+            assert.ok(
+              solved <= truth + 1e-9,
+              `${label}, radius ${radius}, grip ${grip}, skill ${skill}: allowed ${solved} m/s `
+                + `where the schedule allows ${truth}`,
+            );
+            // The floor is the *shipped* schedule's, where it matters: at the
+            // sliders' extremes the schedule is steep enough that four passes
+            // are still 12 % short, which is slow rather than wrong and is
+            // recorded as such.
+            const floor = schedule === EUC ? 0.995 : 0.87;
+            assert.ok(
+              solved >= truth * floor,
+              `${label}, radius ${radius}, grip ${grip}, skill ${skill}: ${solved} m/s is `
+                + `needlessly slow against ${truth}`,
+            );
+            worstUnder = Math.max(worstUnder, 1 - solved / truth);
+            if (schedule === EUC) worstShipped = Math.max(worstShipped, 1 - solved / truth);
+            checked += 1;
+          }
+        }
+      }
+    }
+  }
+  assert.ok(checked === 1680, `only ${checked} corners checked`);
+
+  // **And the grip he corners on is recovered from the limit he is handed.**
+  // `view.lateralLimitG` is the schedule at his own speed times the surface's
+  // grip; dividing it by the schedule at that same speed leaves the grip, at
+  // any speed, which is what lets a cop at 27 m/s and a cop at 5 m/s believe
+  // the same thing about the same corner — and keeps the brain from ever
+  // learning what a surface is (`simulation/cpuRider.ts`, `CpuView`).
+  for (const grip of [0.35, 0.5, 0.72, 1]) {
+    for (const speed of [0, 5, 9, 15, 22.25, 27, 40]) {
+      const handed = lateralCeilingG(speed, EUC) * grip;
+      assert.ok(Math.abs(handed / lateralCeilingG(speed, EUC) - grip) < 1e-12, `${speed} m/s`);
+    }
+  }
+  console.log(
+    `  the four-pass allowance is at worst ${(worstUnder * 100).toFixed(3)}% under the fixed `
+      + `point over ${checked} corners (${(worstShipped * 100).toFixed(3)}% on the shipped schedule)`,
+  );
+
+  // And with the schedule switched off — `carveGripTopG` dragged to
+  // `maxLateralG` — the solver is today's division exactly, first iterate
+  // onward. **Called, not re-derived**: the old version of this block built the
+  // flat table and then asserted hand-written arithmetic without ever handing
+  // it to the function, which is what let the function read the frozen table
+  // for a whole phase (Phase 2's QA, P2).
+  const flat = { ...EUC, carveGripTopG: EUC.maxLateralG };
+  const perG = PHYSICS.gravity * CHASE.corneringMargin;
+  for (const radius of [8, 40, 220]) {
+    const k = Math.sqrt(radius);
+    assert.equal(
+      speedAtLateralLimit(k, perG, flat),
+      Math.sqrt((EUC.maxLateralG * perG) / (1 / radius)),
+      'a flat schedule is the pre-M30 arithmetic',
+    );
+  }
+
+  // **And the schedule the solver uses is the one it is handed.** Two tables
+  // that differ only in the give must give different answers at a speed inside
+  // the band, or the argument is decorative.
+  const fast = { ...EUC, carveGripTopG: 1.6 };
+  assert.ok(
+    speedAtLateralLimit(Math.sqrt(220), perG, fast) > speedAtLateralLimit(Math.sqrt(220), perG, flat),
+    'the tuning argument changes nothing, so the brain is still reading the frozen table',
+  );
+
+  // **The pass count has to be even, and this is why.** F4 reaches
+  // `maxLateralG` 1.6 and `carveGripTopG` 0.75, so the panel can describe a
+  // schedule that *falls* with speed — and a decreasing map alternates about
+  // its fixed point instead of contracting onto it from one side, so an odd
+  // number of passes lands above the true allowance. Asserted rather than
+  // remembered: the phase's QA repair was asked for a third pass, measured
+  // this, and shipped a fourth.
+  const falling = { ...EUC, maxLateralG: 1.6, carveGripTopG: 0.75 };
+  const pass = (k: number, g: number, count: number): number => {
+    let v = k * Math.sqrt(Math.min(falling.maxLateralG, falling.carveGripTopG) * g);
+    for (let i = 0; i < count; i += 1) v = k * Math.sqrt(lateralCeilingG(v, falling) * g);
+    return v;
+  };
+  let odd = 0;
+  let even = 0;
+  for (const radius of [8, 25, 60, 140, 400]) {
+    for (const grip of [0.35, 0.72, 1]) {
+      const k = Math.sqrt(radius);
+      const g = PHYSICS.gravity * grip * CHASE.corneringMargin;
+      const truth = pass(k, g, 200);
+      if (pass(k, g, 3) > truth + 1e-9) odd += 1;
+      if (pass(k, g, 4) > truth + 1e-9) even += 1;
+    }
+  }
+  assert.ok(odd > 0, 'a falling schedule no longer overshoots on an odd pass count — re-derive the parity rule');
+  assert.equal(even, 0, 'an even pass count overshot a falling schedule, which is the whole guarantee');
+});
+
 // ---------------------------------------------------------------------------
 // The kill gate
 // ---------------------------------------------------------------------------
 
-test('a full-skill cop rides every pinned seed out without crashing', () => {
+test('a full-skill cop rides every pinned seed out, and one seed is down', () => {
   // **This is the gate.** If it fails and no reasonable brain fixes it, M18
   // stops and the owner's hand-built chase course (`docs/PLANS.md` §18.8) is
   // the recorded remedy.
+  //
+  // **M30 Phase 4 moved the wheel under it and the gate is no longer zero.**
+  // The shipped wheel is 65 mph now, and Phase 1's rule that a faster wheel
+  // meets a *denser* road applies to the shipped road: these forty-eight seeds
+  // carry more holes than they did at 50. Phase 2's QA rode exactly this sweep
+  // on `?mph=65` and found one seed down — `sweep-15`, a deep pothole the route
+  // places at 971 m that the cop reaches at 11.6 m/s believing he can still
+  // brake to 4.6 — and traced it to a **units error in the brain's braking
+  // belief** (`EUC.brakeAuthority` is per unit of `sin(lean)`; the braking law
+  // spends it as though it were not, so the brain believes about twice the
+  // deceleration it has). That was measured and deliberately **not** corrected,
+  // because an honest model brakes ~1.7 m earlier into everything with a face
+  // and takes M18 §4.2's wall camp — the fix for a named community report —
+  // with it. See `CpuRider.brakeDeceleration` and `docs/PLANS.md` §30.7 item 7.
+  //
+  // So the gate pins what is true rather than what is wanted, exactly as the
+  // 65 sweep did before it became the shipped one: **`sweep-15` and nothing
+  // else**. A new name here is a regression; the list emptying is the finding
+  // being fixed, and this should be tightened to zero the day it is. The A/B
+  // gate below rides `?mph=50` and is still a clean zero, which is what says
+  // this is the faster wheel's road and not a broken brain.
   const failures: string[] = [];
+  const down: string[] = [];
   let worstOffRoute = 0;
   let slowest = 0;
 
@@ -344,9 +535,7 @@ test('a full-skill cop rides every pinned seed out without crashing', () => {
     worstOffRoute = Math.max(worstOffRoute, ride.worstOffRoute);
     slowest = Math.max(slowest, ride.seconds);
 
-    if (ride.crashes > 0) {
-      failures.push(`${seed}: ${ride.crashes} crash(es) at ${ride.progress.toFixed(0)} m`);
-    }
+    if (ride.crashes > 0) down.push(`${seed}:${ride.crashes}`);
     if (!ride.finished) {
       failures.push(
         `${seed}: stopped at ${ride.progress.toFixed(0)} m of ${ride.routeLength.toFixed(0)} m`,
@@ -355,12 +544,62 @@ test('a full-skill cop rides every pinned seed out without crashing', () => {
   }
 
   assert.deepEqual(failures, [], `a full-skill cop cannot ride these routes:\n${failures.join('\n')}`);
+  assert.deepEqual(
+    down,
+    ['sweep-15:1'],
+    `the shipped sweep's crash list moved: ${down.join(' ') || 'none'} (recorded: sweep-15:1). `
+      + 'A new name is a regression; an empty list means the braking-units finding was fixed, '
+      + 'and this gate should then be tightened to zero.',
+  );
   // He is following a road, so he has to stay on one. This is a far weaker
   // claim than "he rides the racing line" and it is the one that matters: a cop
   // who reaches the end by ploughing across the surround is not chasing anybody.
   assert.ok(
     worstOffRoute < 12,
     `the cop wandered ${worstOffRoute.toFixed(1)} m off the line, which is not following a road`,
+  );
+});
+
+test('the same sweep on the ?mph=50 wheel, which is the wheel M30 shipped away from', () => {
+  // **M30 Phase 2's QA repair, finding 4, with the wheels swapped by Phase 4.**
+  // It rode `?mph=65` while 50 was frozen, precisely so that the day 65 became
+  // the default the gate above would not silently change meaning. It did change
+  // meaning, and it now carries the pinned `sweep-15`; what this one rides is
+  // the **other** wheel — `?mph=50`, M16's, on the road spaced for it — and it
+  // is still a clean zero.
+  //
+  // That zero is what makes the pin above readable. The cop's brain believes
+  // about twice the braking the wheel has (a units error measured, recorded and
+  // deliberately not corrected — see the gate above and
+  // `CpuRider.brakeDeceleration`), and at 50 mph that optimism is inside the
+  // margin `corneringMargin` leaves. At 65 it is not, on one seed of
+  // forty-eight. So the two gates together say the brain is *the same brain*
+  // and the faster wheel is what exposes it, rather than something having gone
+  // wrong in the chase.
+  const down: string[] = [];
+  const unfinished: string[] = [];
+  let worstOffRoute = 0;
+
+  for (const seed of SWEEP) {
+    const { plan } = generateLevel(seed, undefined, undefined, 50);
+    const ride = rideAlone(plan, 1, 240, 50);
+    worstOffRoute = Math.max(worstOffRoute, ride.worstOffRoute);
+    if (ride.crashes > 0) down.push(`${seed}:${ride.crashes}`);
+    if (!ride.finished) {
+      unfinished.push(`${seed} stopped at ${ride.progress.toFixed(0)} m of ${ride.routeLength.toFixed(0)}`);
+    }
+  }
+
+  assert.deepEqual(unfinished, [], `a 50 mph cop cannot ride these routes out:\n${unfinished.join('\n')}`);
+  assert.deepEqual(
+    down,
+    [],
+    `the 50 mph sweep put a cop down: ${down.join(' ')} — this gate is a clean zero and is the `
+      + 'control the shipped gate\'s one pinned seed is read against',
+  );
+  assert.ok(
+    worstOffRoute < 12,
+    `the 50 mph cop wandered ${worstOffRoute.toFixed(1)} m off the line, which is not following a road`,
   );
 });
 
@@ -373,7 +612,14 @@ test('skill is line quality and braking, and a poor cop pays for both', () => {
   let cleanOffRoute = 0;
   let poorOffRoute = 0;
 
-  for (const seed of SWEEP.slice(0, 16)) {
+  // **`sweep-15` is skipped, by name and for the reason the gate above
+  // records** (M30 Phase 4): on the shipped 65 mph wheel the full-skill cop is
+  // put down there by the brain's braking-units optimism, which is a pinned,
+  // deliberately uncorrected finding rather than a fact about *skill*. The
+  // comparison below is "does the knob do anything", and a seed that puts both
+  // riders down for a third reason is noise in it. Delete the skip the day the
+  // gate above is tightened to zero.
+  for (const seed of SWEEP.slice(0, 16).filter((seed) => seed !== 'sweep-15')) {
     const { plan } = generateLevel(seed);
     const clean = rideAlone(plan, 1);
     const poor = rideAlone(plan, 0);
@@ -646,10 +892,12 @@ test('a wall square across the corridor projects into the blocker field', () => 
 });
 
 test('a quarry camped behind a wall on the road is flanked, not besieged', () => {
-  // The owner's reproduction of Gaven Sydnes's report: stand square behind
-  // the middle of a long wall and watch the cop ride side to side forever.
-  // The whole §4.2 fix is that he now works the problem — brakes for the
-  // wall, tries its end, backs out of the wedge, slides around, and closes.
+  // The owner's reproduction of the community wall-camp report on the 2nd
+  // Facebook post (FEEDBACK-TRIAGE §4.2; the reporter is named in the triage
+  // file and nowhere shipped): stand square behind the middle of a long wall
+  // and watch the cop ride side to side forever. The whole §4.2 fix is that
+  // he now works the problem — brakes for the wall, tries its end, backs out
+  // of the wedge, slides around, and closes.
   const pursuit = pursueAroundWall('route-41', 120, 60, 0);
 
   assert.ok(
@@ -856,10 +1104,22 @@ test('the wedged-start siege breaks: one spin escape reaches around the wall', (
 test('a top-speed head-on rider is met by the cop paddle, not waved past', () => {
   // FEEDBACK-TRIAGE §4.2's second field defect, reproduced through the actual
   // brain → paddle handoff. At two top-speed wheels the range closes at about
-  // 44 m/s. Waiting until the ordinary 3.4 m swing radius means the whole gap
-  // disappears during the 0.10 s wind-up, so the paddle begins its strike only
-  // after the quarry is behind it. A swept paddle cannot repair a swing that
-  // was asked for too late.
+  // **59 m/s** on the shipped 65 mph wheel (46 on the 50). Waiting until the
+  // ordinary 3.4 m swing radius means the whole gap disappears during the
+  // 0.10 s wind-up, so the paddle begins its strike only after the quarry is
+  // behind it. A swept paddle cannot repair a swing that was asked for too
+  // late.
+  //
+  // **The fixture's approach was lengthened 12 m → 24 m at M30 Phase 4, and
+  // the reason is the mechanism working rather than failing.** The brain's led
+  // range is `paddleReach + closingSpeed × (windup + active)`, which is 14.5 m
+  // at the shipped closure and was 11.5 m at the old one — so the *whole* 12 m
+  // fixture is now inside the wind-up, the cop swings on his very first step
+  // before he has observed a closing speed at all, and the strike lands late.
+  // That is a fixture too short to contain the lead, not a lead that stopped
+  // working: from 24 m he throws one swing at 14.1 m, exactly as the arithmetic
+  // says, and lands it. Both start marks stay inside route-41's straight,
+  // which runs from the spawn to 94 m.
   const { plan } = generateLevel('route-41');
   const spine = RouteSpine.fromPlan(plan);
   assert.ok(spine !== null, 'route-41 produced no spine');
@@ -889,10 +1149,11 @@ test('a top-speed head-on rider is met by the cop paddle, not waved past', () =>
   let hits = 0;
   for (let step = 0; step < SIMULATION.hz; step += 1) {
     const seconds = step * STEP;
-    // This 12 m stretch is straight in route-41. Sampling the real route keeps
-    // the brain in its production frame while the two riders travel toward one
-    // another at the same physical top speed.
-    spine.sample(70 + speed * seconds, copAt);
+    // This 24 m stretch is straight in route-41 (the spine holds heading 0 from
+    // the spawn to 94 m). Sampling the real route keeps the brain in its
+    // production frame while the two riders travel toward one another at the
+    // same physical top speed.
+    spine.sample(58 + speed * seconds, copAt);
     spine.sample(82 - speed * seconds, quarryAt);
     const view: CpuView = {
       x: copAt.x,

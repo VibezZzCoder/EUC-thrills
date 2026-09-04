@@ -2,7 +2,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import * as THREE from 'three';
-import { RIDER_BLOCKOUT, WHEEL } from '../data/tuning.ts';
+import { EUC, RIDER_BLOCKOUT, WHEEL } from '../data/tuning.ts';
 import { copyPose, createPose, type EucPose } from '../simulation/EucController.ts';
 import {
   RD_CHEST,
@@ -17,6 +17,7 @@ import {
   RD_SHOULDER_L,
   RD_SHOULDER_R,
 } from '../simulation/ragdoll.ts';
+import { riderRollFor } from '../simulation/riderLean.ts';
 import { createBlockoutEUC } from './euc.ts';
 import { createPlaceholderRider, createStanceInput } from './rider.ts';
 import { COOL_RIDER_LOOK, DRUNKARD_LOOK } from './riderLook.ts';
@@ -467,4 +468,87 @@ test("the style moves the Drunkard's body and leaves Cool Rider's exactly where 
 
   drunk.dispose();
   cool.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// M30 Phase 3 — the lean schedule, at the pelvis (`docs/PLANS.md` §30.3c)
+// ---------------------------------------------------------------------------
+
+test('the lean schedule arrives at the pelvis, and the over-lean composes with it', () => {
+  // The rig's half of item 3. `riderRoll` reaches `ridingRig.ts` **already
+  // scheduled** — the rig spends the difference `-(riderRoll - rollAngle)` and
+  // never re-derives it — so the whole of the change here is that the
+  // difference it is handed shrinks with speed and reaches zero at the top.
+  //
+  // The Drunkard is the interesting rider because his `motion.overLean` of
+  // 0.25 forgets a quarter of that counter-roll (M29 S5). It **composes**
+  // rather than fighting the schedule: a quarter of a shrinking number, which
+  // at the top of the schedule is a quarter of nothing, so at speed he
+  // converges with everybody else and the joke costs the pose nothing.
+  const drunk = createRidingRig(DRUNKARD_LOOK);
+  const sober = createRidingRig(COOL_RIDER_LOOK);
+  const motion = DRUNKARD_LOOK.motion!;
+  assert.equal(motion.overLean, 0.25, 'the share of the counter-roll he forgets');
+
+  // A real carve at the pavement grip ceiling, posed through the controller's
+  // own schedule rather than by hand — a hard-coded `riderRoll` here would be
+  // this file agreeing with a number instead of with the simulation.
+  const rollAngle = Math.atan(EUC.maxLateralG);
+  const pose = (speed: number): EucPose => {
+    const target = createPose();
+    target.speed = speed;
+    target.rollAngle = rollAngle;
+    // `riderLean` is given the wheel's own roll here, which is the pose of an
+    // *unsaturated* corner — the two are equal to the bit below the ordinary
+    // ceiling, and this file is about the Drunkard's `overLean` share of the
+    // hinge rather than about how large the hinge gets. The controller asserts
+    // the saturated case (M30 Phase 2, `EucController.test.ts`).
+    target.riderRoll = riderRollFor(rollAngle, rollAngle, 0, speed, EUC);
+    return target;
+  };
+  const hinge = (rig: ReturnType<typeof createRidingRig>, target: EucPose): number => {
+    rig.apply(target);
+    return rig.rider.pelvis.rotation.z;
+  };
+
+  // **At the top of the schedule: one line, and nobody counter-rolls.** At the
+  // shipped `carveLeanShareTop` of 1.0 the rider takes the whole of the lean,
+  // so the difference is zero and 0.75 of zero is zero — the Drunkard's hinge
+  // is the sober rider's exactly, which is the "he converges" claim.
+  const committed = pose(EUC.carveLeanFullSpeed + 2);
+  assert.equal(committed.riderRoll, rollAngle, 'the scheduled pose is one line with the wheel');
+  assert.ok(Math.abs(hinge(sober, committed)) < 1e-15, 'the sober pelvis hinge is zero');
+  assert.ok(Math.abs(hinge(drunk, committed)) < 1e-15, 'and so is his');
+
+  // **In the mid band: his hinge is 0.75 of the sober rider's**, on the same
+  // pose, because that is the whole of what `overLean` does.
+  const midSpeed = (EUC.carveLeanSpeed + EUC.carveLeanFullSpeed) / 2;
+  const mid = pose(midSpeed);
+  const soberMid = hinge(sober, mid);
+  const drunkMid = hinge(drunk, mid);
+  assert.ok(
+    Math.abs(soberMid + (mid.riderRoll - rollAngle)) < 1e-12,
+    `the sober hinge is the difference the schedule handed it: ${soberMid}`,
+  );
+  assert.ok(Math.abs(soberMid) > 0.1, `and it is a real counter-roll at ${midSpeed} m/s: ${soberMid}`);
+  assert.ok(
+    Math.abs(drunkMid - soberMid * (1 - motion.overLean)) < 1e-12,
+    `he counter-rolls ${drunkMid} where the sober rider counter-rolls ${soberMid}`,
+  );
+
+  // And the slow band is untouched: the counter-roll down here is what M16
+  // shipped, and it is the largest of the three because the share is smallest.
+  const slow = pose(EUC.carveLeanSpeed - 1);
+  const soberSlow = hinge(sober, slow);
+  assert.ok(
+    Math.abs(soberSlow + rollAngle * (EUC.riderUpperBodyRollFactor - 1)) < 1e-12,
+    'the slow band counter-rolls the pre-M30 amount',
+  );
+  assert.ok(
+    Math.abs(soberSlow) > Math.abs(soberMid) && Math.abs(soberMid) > 1e-12,
+    'and the counter-roll shrinks monotonically as the schedule climbs',
+  );
+
+  drunk.dispose();
+  sober.dispose();
 });

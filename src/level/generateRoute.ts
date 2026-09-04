@@ -22,18 +22,24 @@ import {
   hazardBlockRadius,
   hazardLaneThrough,
   hazardPoint,
+  hazardRulesFor,
   hazardSightBlocked,
   hazardSpacingRefusal,
+  rideabilityAt,
   TARGET_RULES,
+  targetRulesFor,
   targetSpacingRefusal,
   targetStandRefusal,
   hazardZoneRefusal,
   routeProfile,
   validateRoute,
+  type HazardRules,
+  type Rideability,
   type RouteJump,
   type RouteLayout,
   type RouteShortcut,
   type RouteVerdict,
+  type TargetRules,
 } from './routeValidator.ts';
 import {
   DEFAULT_SHOULDER,
@@ -627,21 +633,37 @@ const HAZARD_SURFACES: ReadonlySet<SurfaceId> = new Set<SurfaceId>([
 /**
  * How likely a hazard is at each eligible station, and how the kinds divide.
  *
- * The chance is **derived from the separation** rather than chosen: a station
- * is `HAZARD_RULES.profileStep` metres of road, so a per-station chance of
+ * The chance is **anchored on the wobble model and scaled by a taste**, and the
+ * split matters — it is `HazardRules.chancePerStation` and it is stated there.
+ * The *anchor* is M13's derivation on the shipped wheel: a station is
+ * `HAZARD_RULES.profileStep` metres of road, so a per-station chance of
  * `profileStep / separationMetres` makes the average wait beyond the fairness
- * floor equal to one more separation. A rider therefore meets a hazard about
- * every two recovery distances — twelve or so on a route of eleven hundred
- * metres — and the number follows the wobble model rather than a taste.
+ * floor equal to one more separation, and a rider meets a hazard about every
+ * two recovery distances — twelve or so on a route of eleven hundred metres.
+ * That half follows the wobble model, and evaluating it on the default instance
+ * is what keeps a default build byte-identical.
  *
- * The kind weights are the one genuinely editorial choice here, and they say
- * the same thing §13 q8 does: **the wipeout is the rare one**. Two of the three
- * kinds are recoverable and carry the mechanic; a deep hole ends a run, and a
- * route that ends runs every eighty metres is not a route anybody rides twice.
+ * The *scaling* with the wheel is not derived from anything: a faster wheel is
+ * given a denser road on purpose (`HAZARD.densityTopSpeedExponent` carries the
+ * decision and its reason), because the reason to ride faster is the thrill and
+ * an emptier road is the opposite of one. The fairness floor beside it does not
+ * move with that taste, so what a fast route actually carries is the taste's
+ * offer minus whatever the floor and the four contracts below refuse.
+ *
+ * The kind weights are the other editorial choice here, and they say the same
+ * thing §13 q8 does: **the wipeout is the rare one**. Two of the three kinds are
+ * recoverable and carry the mechanic; a deep hole ends a run, and a route that
+ * ends runs every eighty metres is not a route anybody rides twice.
  */
 const HAZARD_PLACEMENT = {
-  get chancePerStation(): number {
-    return HAZARD_RULES.profileStep / HAZARD_RULES.separationMetres;
+  /**
+   * **The rules' own number, read rather than recomputed** — M30. It was
+   * `profileStep / separationMetres` over the *live* rules until the density
+   * was decoupled from the fairness floor; that expression made a faster wheel
+   * empty the road, which is the one thing the switch must not do.
+   */
+  chancePerStation(rules: HazardRules): number {
+    return rules.chancePerStation;
   },
   weights: {
     potholeShallow: 0.45,
@@ -718,6 +740,7 @@ function placeHazards(
   checkpoints: readonly CheckpointSpec[],
   jumps: readonly RouteJump[],
   hazards: RandomStream,
+  rules: HazardRules,
 ): HazardSpec[] {
   const profile = routeProfile(placed, throughIds);
   const byId = new Map(placed.map((segment) => [segment.spec.id, segment]));
@@ -737,28 +760,28 @@ function placeHazards(
 
   const specs: HazardSpec[] = [];
   const placements: { id: string; distance: number }[] = [];
-  const minGap = ROUTE_CLEARANCE.minGap + HAZARD_RULES.laneSlack;
+  const minGap = ROUTE_CLEARANCE.minGap + rules.laneSlack;
 
   for (const station of profile.stations) {
     const wanted = hazards.next();
     const which = hazards.next();
     const side = hazards.next();
     const across = hazards.next();
-    if (wanted >= HAZARD_PLACEMENT.chancePerStation) continue;
+    if (wanted >= HAZARD_PLACEMENT.chancePerStation(rules)) continue;
 
     const carrier = byId.get(station.segmentId);
     if (carrier === undefined) continue;
 
     // -- What kind, and does it fit the road at all? ------------------------
     const kind = hazardKindFrom(which);
-    const room = HAZARD_RULES.lateralFraction * carrier.spec.halfWidth;
+    const room = rules.lateralFraction * carrier.spec.halfWidth;
     let radius = hazardRadius(kind);
     if (kind === 'spill') {
       // A spill shrinks to fit and a pothole does not — `HAZARD.minSpillRadius`
       // carries the argument. The raster margin is subtracted because what has
       // to fit inside the road is the cells the overpaint will select, not the
       // circle they were selected by.
-      radius = Math.min(radius, room - HAZARD_RULES.rasterMargin);
+      radius = Math.min(radius, room - rules.rasterMargin);
       if (radius < HAZARD.minSpillRadius) continue;
     }
     const block = hazardBlockRadius(kind, radius);
@@ -784,7 +807,10 @@ function placeHazards(
     };
 
     // -- The four contracts, in cheapest-first order ------------------------
-    if (hazardSpacingRefusal([...placements, { id: spec.id, distance: station.distance }]) !== null) {
+    if (hazardSpacingRefusal(
+      [...placements, { id: spec.id, distance: station.distance }],
+      rules,
+    ) !== null) {
       continue;
     }
     if (hazardZoneRefusal(spec, carrier, {
@@ -795,7 +821,7 @@ function placeHazards(
       distance: station.distance,
       // One profile step, so a gate the contract can only locate to within half
       // a step can never look nearer to it than it looked here.
-      slack: HAZARD_RULES.profileStep,
+      slack: rules.profileStep,
     }) !== null) {
       continue;
     }
@@ -877,6 +903,7 @@ function placeTargets(
   placed: readonly PlacedSegment[],
   throughIds: readonly string[],
   targets: RandomStream,
+  rules: TargetRules,
 ): TargetSpec[] {
   const profile = routeProfile(placed, throughIds);
   const byId = new Map(placed.map((segment) => [segment.spec.id, segment]));
@@ -939,7 +966,7 @@ function placeTargets(
 
     // The foot goes just outside the corridor, a little further out on some
     // stations than others so a route does not read as a fence.
-    const standoff = TARGET_RULES.vergeStandoff * (1 + reach * 0.6);
+    const standoff = rules.vergeStandoff * (1 + reach * 0.6);
     const t = (side < 0.5 ? -1 : 1) * (carrier.spec.halfWidth + standoff);
     const spec: TargetSpec = {
       id: `target-${station.segmentId}-${station.s.toFixed(0)}`,
@@ -949,18 +976,19 @@ function placeTargets(
     };
 
     // -- The contracts' own predicates, in cheapest-first order -------------
-    if (station.s < TARGET_RULES.socketClearMetres
-      || carrier.spec.length - station.s < TARGET_RULES.socketClearMetres) continue;
+    if (station.s < rules.socketClearMetres
+      || carrier.spec.length - station.s < rules.socketClearMetres) continue;
 
     let nearGate = false;
     for (const gate of gateDistances) {
-      if (Math.abs(station.distance - gate) < TARGET_RULES.gateClearMetres) nearGate = true;
+      if (Math.abs(station.distance - gate) < rules.gateClearMetres) nearGate = true;
     }
     if (nearGate) continue;
 
     if (targetSpacingRefusal(
       [...placements, { id: spec.id, distance: station.distance }],
       requiredLength,
+      rules,
     ) !== null) continue;
 
     if (targetStandRefusal(carrier, station.s, t, groundAt) !== null) continue;
@@ -981,7 +1009,10 @@ interface LayResult {
   readonly reason: string;
 }
 
-function layRoute(streams: ReturnType<typeof createSeedStreams>): LayResult {
+function layRoute(
+  streams: ReturnType<typeof createSeedStreams>,
+  hazardRules: HazardRules,
+): LayResult {
   const route = streams.route;
   const terrain = streams.terrain;
   const surfaces = streams.surfaces;
@@ -1302,7 +1333,14 @@ function layRoute(streams: ReturnType<typeof createSeedStreams>): LayResult {
   // made — see `placeHazards` for why running after the verge bands does not
   // make it a function of the surfaces seed.
   const checkpoints = routeCheckpoints(placed, throughIds);
-  const hazardSpecs = placeHazards(placed, throughIds, checkpoints, jumps, streams.hazards);
+  const hazardSpecs = placeHazards(
+    placed,
+    throughIds,
+    checkpoints,
+    jumps,
+    streams.hazards,
+    hazardRules,
+  );
 
   return {
     reason: '',
@@ -1653,18 +1691,46 @@ const SLICE_PIECE_OF: ReadonlyMap<string, string> = (() => {
  * in a browser and under `node --test` alike. That is not a nicety — a ghost is
  * only comparable against the same ground, so a seed that meant two different
  * places would quietly invalidate every personal best in the game.
+ *
+ * **`topSpeedMph` is M30 Phase 1's fourth argument** and it sits beside the two
+ * probe cadences for the same reason they do: it is a diagnostic the session
+ * holds (`?mph=`, `Game.topSpeedMph`), never level identity, and it has to
+ * reach the world because the world is settled before the first frame. What it
+ * changes is the *spacing* and the *density*, which are two different questions
+ * and are answered separately. Hazard and target separation are times paid in
+ * metres, so a faster wheel is given a wider fairness floor; the hazard density
+ * is a taste anchored on the shipped wheel and scaled **up** with the top speed
+ * (`HAZARD.densityTopSpeedExponent`), so a 65 route meets more holes rather
+ * than fewer — measured over sixty seeds, 5.07 per route at 50 against 6.98 at
+ * 65, and 80 % more of them per minute of riding. And its jumps are judged
+ * against the run-up a 65 mph wheel actually builds.
+ *
+ * **It is the same road either way.** The hazards stream spends the same four
+ * draws at every station whether or not one lands and the targets stream the
+ * same three, and neither runs until the geometry is decided — so the segments,
+ * the heightfield, the dressing and the checkpoints are byte-identical between
+ * a 50 and a 65 build of one seed, and only the set of holes and stands differs.
+ * `topSpeedRoutes.test.ts` asserts that over a seed sweep.
  */
 export function generateLevel(
   seed: string | SeedSet,
   hazardProbeMetres?: number,
   targetProbeMetres?: number,
+  topSpeedMph?: number,
 ): GeneratedLevel {
   const label = seedLabel(seed);
   const rejections: { attempt: number; reasons: string[]; contracts: string[] }[] = [];
+  // One wheel per build, read once: the placement passes and the contracts that
+  // are their post-conditions must not be able to disagree about which wheel
+  // this route is for. `undefined` is the frozen table's own instance, so a
+  // default build is byte-identical to the one before M30 Phase 1.
+  const rideability: Rideability = rideabilityAt(topSpeedMph);
+  const hazardRules = topSpeedMph === undefined ? HAZARD_RULES : hazardRulesFor(rideability);
+  const targetRules = topSpeedMph === undefined ? TARGET_RULES : targetRulesFor(rideability);
 
   for (let attempt = 0; attempt < GENERATION.maxAttempts; attempt += 1) {
     const streams = createSeedStreams(attemptSeed(seed, attempt));
-    const attempted = layRoute(streams);
+    const attempted = layRoute(streams, hazardRules);
     const laid = attempted.route;
     if (laid === null) {
       rejections.push({ attempt, reasons: [attempted.reason], contracts: ['layout'] });
@@ -1735,7 +1801,7 @@ export function generateLevel(
     // records: the diagnostic owns the verge while it is on, and a world with
     // two authors is a world no rule describes.
     const targetSpecs = targetProbeMetres === undefined
-      ? placeTargets(plan, laid.placed, laid.throughIds, streams.targets)
+      ? placeTargets(plan, laid.placed, laid.throughIds, streams.targets, targetRules)
       : [];
     const resolvedTargets = targetSpecs.length === 0
       ? []
@@ -1765,7 +1831,7 @@ export function generateLevel(
       adjacency: laid.adjacency,
       pieceOf: laid.pieceOf,
     };
-    const verdict = validateRoute(layout);
+    const verdict = validateRoute(layout, rideability);
     if (!verdict.valid) {
       rejections.push({
         attempt,
@@ -1798,8 +1864,11 @@ export function generateLevel(
   }
 
   // -- The fallback, validated rather than grandfathered --------------------
+  // **The fallback is judged by the wheel that asked for the route too.** It is
+  // an emitted world (master §6.4), so a session riding at 65 that falls back to
+  // the slice is riding the slice at 65 and the verdict has to say so.
   const layout = sliceRouteLayout();
-  const verdict = validateRoute(layout);
+  const verdict = validateRoute(layout, rideability);
   const cost = withinBudgetNumbers(layout);
   return {
     plan: layout.plan,

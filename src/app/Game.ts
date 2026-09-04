@@ -40,6 +40,7 @@ import {
   type LevelId,
 } from '../level/levels.ts';
 import type { Checkpoint, LevelPlan } from '../level/plan.ts';
+import { topSpeedPreset } from '../simulation/topSpeedPreset.ts';
 import type { TerrainView } from '../render/terrain.ts';
 import { SURFACE_IDS } from '../data/surfaces.ts';
 import {
@@ -1056,6 +1057,27 @@ export class Game {
    * an option, and not level identity.
    */
   private readonly targetProbe: number | undefined;
+  /**
+   * `?mph=<n>` — M30 Phase 0's top-speed switch, mph, or undefined.
+   *
+   * `?wobble=` and `?hazardprobe=` at once (`docs/PLANS.md` §30.3a): read at
+   * boot on `hazardProbeFromQuery`'s grammar, held here for the session, and
+   * written as a preset into the live-tuning store in the constructor, which
+   * is what carries it across every world swap — `installLevel` replays
+   * `applyTuning()` onto every fresh controller, camera and director. It
+   * joins `probing`, because a personal best has no tuning fingerprint. Not
+   * an option, not level identity, never in `GameOptions` (invariant 5).
+   *
+   * **From M30 Phase 1 it is also handed to the generator**, at every
+   * `requestRoute` and `createLevel` in this file: hazard and target
+   * separation are *times* paid in metres, so a route ridden at 65 mph is
+   * spaced for 65 (≈82 m and ≈26 m rather than ≈63 and ≈20) and its jumps are
+   * judged against the run-up a 65 mph wheel actually builds. Without it the
+   * test ride would be the 50 mph routes with a faster wheel on them, which is
+   * unfair by the game's own rule. The three hand-authored worlds ignore it and
+   * are covered by tests instead (`level/levels.ts`, `BUILDERS`).
+   */
+  private readonly topSpeedMph: number | undefined;
 
   private terrain: PlanTerrainSampler;
   private terrainView: TerrainView;
@@ -1608,11 +1630,29 @@ export class Game {
      * right" before the mode exists to answer it inside.
      */
     chaseProbe = false,
+    /**
+     * `?mph=<n>` — M30 Phase 0's top-speed switch. Absent for every player.
+     *
+     * A constructor argument like the probes rather than an `applyDebugQuery`
+     * write like `?wobble=`, because it is handed to the boot world's
+     * generator a few lines below (M30 Phase 1) and the boot world is built
+     * here. Every later world build reads `this.topSpeedMph` for the same
+     * reason the probes do — anything added to one path must be added to the
+     * other, or the first world of a session is spaced unlike every world
+     * after it.
+     */
+    topSpeedMph?: number,
   ) {
     this.hazardProbe = hazardProbe;
     this.targetProbe = targetProbe;
     this.chaseProbe = chaseProbe;
+    this.topSpeedMph = topSpeedMph;
     this.tuning = new LiveTuning();
+    // **Into the store before anything reads it.** The first `applyTuning()`
+    // below pushes the preset to the boot world's controller, cameras and
+    // director exactly as every later `installLevel` will, so the first world
+    // of a session rides the same wheel as every world after it.
+    if (topSpeedMph !== undefined) this.applyTopSpeedPreset(topSpeedMph);
 
     // **Options are read before anything they configure is built.** Quality
     // decides a pixel ratio and whether the sun casts, and both are cheaper to
@@ -1651,7 +1691,7 @@ export class Game {
     // failing seed lands on the shipped slice **and says so**, on the title
     // screen, rather than looking like the route the link promised.
     const boot = levelId === 'generated'
-      ? requestRoute(seed, hazardProbe, targetProbe)
+      ? requestRoute(seed, hazardProbe, targetProbe, topSpeedMph)
       : null;
     if (boot !== null && boot.ok) {
       this.levelId = 'generated';
@@ -1659,7 +1699,7 @@ export class Game {
       this.levelPlan = boot.plan;
     } else {
       this.levelId = levelId === 'generated' ? DEFAULT_LEVEL : levelId;
-      this.levelPlan = createLevel(this.levelId, seed, hazardProbe, targetProbe);
+      this.levelPlan = createLevel(this.levelId, seed, hazardProbe, targetProbe, topSpeedMph);
       if (boot !== null) this.routeStatus = { kind: 'no-route', seed: boot.seed };
     }
     this.terrain = new PlanTerrainSampler(this.levelPlan);
@@ -2466,6 +2506,35 @@ export class Game {
     this.tuning.set('EUC.wobbleMasterGain', gain);
   }
 
+  /**
+   * `?mph=<n>` — write the top-speed preset into the live-tuning store (M30
+   * Phase 0, `docs/PLANS.md` §30.3a).
+   *
+   * **Six writes, one recipe, and the recipe lives in `simulation/`** where
+   * `node --test` can hold it to M16's numbers: `topSpeedPreset` derives the
+   * drag from the pavement terminal and scales the four constants M16 found
+   * by hand. Written into the store rather than onto a controller for
+   * `applyWobbleQuery`'s reason — `installLevel` builds a fresh controller on
+   * every world swap and replays `applyTuning()` onto it — and it is the same
+   * store F4 writes, so the panel and the parameter cannot disagree. The
+   * beeps, the cutout and the cop's cap are shares of `derivedTopSpeed` and
+   * follow the drag on their own; nothing here names them.
+   *
+   * Spelled out as six literal paths rather than a loop over the preset's
+   * record, because `data/liveTuning.test.ts` greps this file for every
+   * store write and checks each path against the registry — the check that
+   * turns an unregistered path from a refused boot into a headless failure.
+   */
+  private applyTopSpeedPreset(mph: number): void {
+    const preset = topSpeedPreset(mph);
+    this.tuning.set('EUC.dragCoefficient', preset.dragCoefficient);
+    this.tuning.set('EUC.powerComfortSpeed', preset.powerComfortSpeed);
+    this.tuning.set('EUC.powerLimitSpeed', preset.powerLimitSpeed);
+    this.tuning.set('CAMERA.speedReference', preset.speedReference);
+    this.tuning.set('AUDIO.speedReference', preset.speedReference);
+    this.tuning.set('CAMERA.crashDistance', preset.crashDistance);
+  }
+
   // ---------------------------------------------------------------------------
   // QA bridge
   // ---------------------------------------------------------------------------
@@ -2504,7 +2573,7 @@ export class Game {
     // plateau perfectly while leaking the family it never built (M13 Phase 2);
     // undefined for every session that did not ask for the diagnostic, which
     // leaves M12's use of this untouched.
-    return createLevel(levelId, seed, this.hazardProbe, this.targetProbe);
+    return createLevel(levelId, seed, this.hazardProbe, this.targetProbe, this.topSpeedMph);
   }
 
   /**
@@ -3571,7 +3640,7 @@ export class Game {
       this.installLevel(
         'track',
         '',
-        createLevel('track', DEFAULT_SEED, this.hazardProbe, this.targetProbe),
+        createLevel('track', DEFAULT_SEED, this.hazardProbe, this.targetProbe, this.topSpeedMph),
       );
     }
     // After the swap, because `installLevel` rebuilt the referees this asks.
@@ -5196,9 +5265,16 @@ export class Game {
    * of them named the hazard probe directly — which meant adding a second probe
    * silently reopened the loophole in all three at once. Anything similar
    * joins this getter rather than the call sites.
+   *
+   * **`?mph=` joined at M30 Phase 0** for the same reason one layer down: it
+   * changes the *wheel* without changing the level id, and a record has no
+   * tuning fingerprint, so a 65 mph best filed on the 50 mph leaderboard
+   * would be a cheat by accident (§30.2 fact 8).
    */
   private get probing(): boolean {
-    return this.hazardProbe !== undefined || this.targetProbe !== undefined;
+    return this.hazardProbe !== undefined
+      || this.targetProbe !== undefined
+      || this.topSpeedMph !== undefined;
   }
 
   /**
@@ -5935,7 +6011,7 @@ export class Game {
       this.installLevel(
       'slice',
       '',
-      createLevel('slice', DEFAULT_SEED, this.hazardProbe, this.targetProbe),
+      createLevel('slice', DEFAULT_SEED, this.hazardProbe, this.targetProbe, this.topSpeedMph),
     );
     }
     this.setRouteStatus({ kind: 'idle' });
@@ -6003,7 +6079,7 @@ export class Game {
       for (let attempt = 0; attempt < 4; attempt += 1) {
         const seed = routeSeedFrom(Math.floor(Math.random() * ROUTE_SEED_SPACE));
         if (seed === this.seed) continue;
-        const outcome = requestRoute(seed, this.hazardProbe, this.targetProbe);
+        const outcome = requestRoute(seed, this.hazardProbe, this.targetProbe, this.topSpeedMph);
         if (!outcome.ok) continue;
         // Surprise me is allowed to choose another seed, and Knockabout asked
         // specifically for things to hit. A legal target-free generated world
@@ -6045,7 +6121,7 @@ export class Game {
       return;
     }
 
-    const outcome = requestRoute(work.seed, this.hazardProbe, this.targetProbe);
+    const outcome = requestRoute(work.seed, this.hazardProbe, this.targetProbe, this.topSpeedMph);
     if (!outcome.ok) {
       this.setRouteStatus({ kind: 'no-route', seed: work.seed });
       return;
@@ -7370,8 +7446,8 @@ export class Game {
 
     // **The cop, at the same interpolated moment as the player** — M18. He is a
     // live rider stepped at the fixed rate, so drawing him at his stepped pose
-    // would leave him juddering beside a player who is smooth, and at 50 mph
-    // one step is a fifth of a metre. `setCopVisible` is the single writer of
+    // would leave him juddering beside a player who is smooth, and at 65 mph
+    // one step is a quarter of a metre. `setCopVisible` is the single writer of
     // the second-rider slot, so showing him hides the ghost by construction.
     if (this.copRiding) {
       lerpPose(this.copPrevious, this.copCurrent, alpha, this.copRender);
@@ -7483,8 +7559,8 @@ export class Game {
     // The swing, recorded before the stance is solved so the arm is posed on
     // this frame's angle rather than the last one's. The head is recomputed at
     // the *interpolated* pose: the hit test swept through a fixed-step head, and
-    // drawing that one would leave the paddle up to a fifth of a metre behind
-    // its own rider at 50 mph.
+    // drawing that one would leave the paddle up to a quarter of a metre behind
+    // its own rider at 65 mph.
     if (this.paddleEquipped) {
       seat.paddle.writeHeadFor(pose, seat.paddleHead);
       seat.rig.applySwing(seat.paddleHead, seat.paddle.angle, seat.paddle.armCommitment);
@@ -9260,6 +9336,13 @@ export class Game {
       carveSpeed: this.tuning.get('EUC.carveSpeed'),
       yawFalloffExponent: this.tuning.get('EUC.yawFalloffExponent'),
       maxLateralG: this.tuning.get('EUC.maxLateralG'),
+      // The give at speed (M30 Phase 2). `carveGripFullSpeed` is deliberately
+      // absent, for the same reason the lean schedule's two speed anchors are:
+      // this map may only carry paths `LIVE_TUNABLES` registers, and that
+      // anchor is absolute on purpose so a `?mph=` build cannot move it. It
+      // keeps `defaultEucTuning()`'s value.
+      carveGripTopG: this.tuning.get('EUC.carveGripTopG'),
+      carveGripExponent: this.tuning.get('EUC.carveGripExponent'),
       technicalTurnBonusG: this.tuning.get('EUC.technicalTurnBonusG'),
       technicalTurnFadeSpeed: this.tuning.get('EUC.technicalTurnFadeSpeed'),
       technicalTurnSteerStart: this.tuning.get('EUC.technicalTurnSteerStart'),
@@ -9271,6 +9354,23 @@ export class Game {
       ),
       rollResponseSeconds: this.tuning.get('EUC.rollResponseSeconds'),
       riderUpperBodyRollFactor: this.tuning.get('EUC.riderUpperBodyRollFactor'),
+      // The lean schedule's top share, live because the owner's ride decides
+      // it (q115). Its two speed anchors — `carveLeanSpeed` and
+      // `carveLeanFullSpeed` — are deliberately absent for the reason every
+      // other unregistered field is: this map only carries paths that exist in
+      // `LIVE_TUNABLES`, and everything it omits keeps the value
+      // `defaultEucTuning()` gave the controller. Both anchors are absolute
+      // rather than a share of the top speed, so a `?mph=` build must not be
+      // able to move them (M30 Phase 3, `docs/PLANS.md` §30.3).
+      carveLeanShareTop: this.tuning.get('EUC.carveLeanShareTop'),
+      // The settle's three panel constants (M30 Phase 3b). `carveLeanHoldRate`
+      // is absent for the same reason as the two speed anchors above: this map
+      // may only carry paths `LIVE_TUNABLES` registers — `LiveTuning.get`
+      // throws at boot on any other — and the gate's floor is not a number a
+      // ride has an opinion about. It keeps `defaultEucTuning()`'s value.
+      carveLeanSettleIn: this.tuning.get('EUC.carveLeanSettleIn'),
+      carveLeanSettleOut: this.tuning.get('EUC.carveLeanSettleOut'),
+      carveLeanSwingRate: this.tuning.get('EUC.carveLeanSwingRate'),
       maxRiderPitch: this.tuning.get('EUC.maxRiderPitch'),
       riderCruisePitchFactor: this.tuning.get('EUC.riderCruisePitchFactor'),
       riderAccelerationPitchGain: this.tuning.get('EUC.riderAccelerationPitchGain'),
@@ -9310,6 +9410,9 @@ export class Game {
       hazardDeepSpeedCost: this.tuning.get('EUC.hazardDeepSpeedCost'),
       hazardCrashSpeed: this.tuning.get('EUC.hazardCrashSpeed'),
       powerComfortSpeed: this.tuning.get('EUC.powerComfortSpeed'),
+      // Live since M30 Phase 0 so `?mph=` can scale the whole ladder, as M16
+      // did by hand; the pair are one shape and must move together.
+      powerLimitSpeed: this.tuning.get('EUC.powerLimitSpeed'),
       powerSlopeLoad: this.tuning.get('EUC.powerSlopeLoad'),
       powerTiltBackLoad: this.tuning.get('EUC.powerTiltBackLoad'),
       tiltBackLeanBack: this.tuning.get('EUC.tiltBackLeanBack'),
@@ -9405,7 +9508,28 @@ export class Game {
       brain.driveAcceleration = controllerTuning.leanToAccel
         * Math.sin(controllerTuning.maxLeanPitch);
       brain.dragCoefficient = controllerTuning.dragCoefficient;
+      // The braking authority, so F4's `EUC.brakeAuthority` reaches the brain
+      // as well as the wheel (M30 Phase 2's QA). Raw, exactly as the brain has
+      // always read it — see the field's own note for the unit finding that
+      // came with this push and the reason it was not acted on here.
+      brain.brakeDeceleration = controllerTuning.brakeAuthority;
       brain.cutoutSpeedShare = controllerTuning.cutoutSpeedShare;
+      // **And the give's whole schedule** (M30 Phase 2's QA repair). It shipped
+      // missing, so *Grip at speed* and *Grip rise shape* reached the cop's
+      // wheel through `setTuning` above and never reached his belief about a
+      // corner — at the slider's floor, the setting the A/B is ridden at, he
+      // believed a 90 m bend held 18 % more than it did. Every field
+      // `lateralCeilingG` reads travels, not only Phase 2's three, because
+      // `maxLateralG` and `carveSpeed` are sliders too. `carveGripFullSpeed` is
+      // not on the panel for the reason stated where `controllerTuning` omits
+      // it, so the brain takes the same default the controller keeps.
+      brain.lateralCeiling = {
+        maxLateralG: controllerTuning.maxLateralG,
+        carveSpeed: controllerTuning.carveSpeed,
+        carveGripTopG: controllerTuning.carveGripTopG,
+        carveGripExponent: controllerTuning.carveGripExponent,
+        carveGripFullSpeed: EUC.carveGripFullSpeed,
+      };
       brain.corneringMargin = this.tuning.get('CHASE.corneringMargin');
       brain.brakeSafety = this.tuning.get('CHASE.brakeSafety');
       brain.hazardClearanceMetres = this.tuning.get('CHASE.hazardClearanceMetres');
@@ -9487,6 +9611,10 @@ export class Game {
       hitLevel: this.tuning.get('AUDIO.hitLevel'),
       sirenLevel: this.tuning.get('AUDIO.sirenLevel'),
       overspeedLevel: this.tuning.get('AUDIO.overspeedLevel'),
+      // Where every speed curve in the bed saturates — the wheel's own top
+      // speed, pushed live since M30 Phase 0 so `?mph=` moves it. At the
+      // default it equals the frozen constant and nothing changes.
+      speedReference: this.tuning.get('AUDIO.speedReference'),
     });
 
     // Per-surface response, pushed the same way and for the same reason — and
@@ -9658,6 +9786,10 @@ export class Game {
       // The full speed widening stays: it is the strongest speed cue in the
       // game and the owner explicitly retained it when shake was removed.
       fovAtSpeed: this.tuning.get('CAMERA.fovAtSpeed'),
+      // The speed both of the above are fully spent at — the wheel's own top
+      // speed, pushed live since M30 Phase 0 so `?mph=` frames 65 as 65
+      // rather than as 50. At the default it equals the frozen constant.
+      speedReference: this.tuning.get('CAMERA.speedReference'),
       lookAheadSeconds: this.tuning.get('CAMERA.lookAheadSeconds'),
       yawLagAtRest: this.tuning.get('CAMERA.yawLagAtRest'),
       yawLagAtSpeed: this.tuning.get('CAMERA.yawLagAtSpeed'),

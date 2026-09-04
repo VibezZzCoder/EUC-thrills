@@ -691,10 +691,11 @@ export const PHYSICS = {
  * physical fidelity. The consequences worth knowing, on flat ground:
  *
  *   - Full lean gives `leanToAccel * sin(maxLeanPitch)` = about 7.7 m/s^2 away
- *     from a standstill, and quadratic drag balances it at roughly 22 m/s
- *     (about 80 km/h, 50 mph) — raised at M16 after the owner's ragdoll ride,
- *     by cutting drag rather than by adding drive, so the launch the owner
- *     approved at M2 is unchanged and the wheel simply never stops pulling.
+ *     from a standstill, and quadratic drag balances it at 29.1 m/s on
+ *     pavement (about 105 km/h, **65 mph**) — raised at M16 to 50 and again at
+ *     M30 Phase 4 to 65 on the owner's decision, both times by cutting drag
+ *     rather than by adding drive, so the launch the owner approved at M2 is
+ *     unchanged and the wheel simply never stops pulling.
  *   - Full lean back gives about 10.5 m/s^2 before drag, keeping the stop from
  *     top speed short and forceful. The vision explicitly does not want long
  *     stopping distances.
@@ -751,22 +752,42 @@ export const EUC = {
    * instead of being clamped, which is also what makes a hill descent
    * naturally faster than flat ground when M4 adds the slope term.
    *
-   * **This number is the top speed, and M16 halved it.** With drive authority
-   * held at its approved value, `sqrt((driveAccel − rollingResistance) / drag)`
-   * lands at about 22.3 m/s on pavement — 50 mph, which is what the owner asked
-   * for once the crashes became worth having. Raising `leanToAccel` instead
-   * would have reached the same ceiling while quietly re-tuning every launch,
-   * every hill climb and every low-speed manoeuvre the owner has already
-   * accepted; cutting drag changes one thing, which is how long the wheel keeps
-   * pulling. The two costs are real and were accepted: the run to top speed is
-   * about eight seconds rather than five, and a released throttle at mid speed
-   * coasts roughly twice as far. Both read as a faster, freer machine, which is
-   * the point.
+   * **This number is the top speed. M16 halved it to reach 50 mph and M30
+   * Phase 4 halved it again to reach 65.** With drive authority held at its
+   * approved value, `sqrt((driveAccel − rollingResistance) / drag)` lands on
+   * pavement at exactly the wheel's own advertised speed. Raising
+   * `leanToAccel` instead would have reached the same ceiling while quietly
+   * re-tuning every launch, every hill climb and every low-speed manoeuvre the
+   * owner has already accepted; cutting drag changes one thing, which is how
+   * long the wheel keeps pulling. The costs are real and were accepted twice:
+   * the run to top speed is about eight seconds at 50 and about eleven at 65
+   * rather than five, and a released throttle at mid speed coasts further
+   * again. Both read as a faster, freer machine, which is the point.
+   *
+   * **65 MPH IS THE SHIPPED WHEEL SINCE M30 PHASE 4** (the owner's decision of
+   * 2026-09-03, after riding both: *“we will ship at 65. i pre-approve.”*).
+   * This literal and its five partners below are **not hand-typed numbers**:
+   * they are what `simulation/topSpeedPreset.ts` writes for 65 mph applied to
+   * the pre-M30 (50 mph) table, transcribed as the shortest decimal that
+   * round-trips to the same double — which is why they carry sixteen digits
+   * and must never be tidied. `topSpeedPreset.test.ts` re-derives all six from
+   * the recorded pre-M30 base and asserts this table equals them **to the
+   * bit**, so a hand edit here fails there. The six are `EUC.dragCoefficient`,
+   * `EUC.powerComfortSpeed`, `EUC.powerLimitSpeed`, `CAMERA.speedReference`,
+   * `AUDIO.speedReference` and `CAMERA.crashDistance`; everything else that
+   * knows about the top speed is a *share* of `EucController.derivedTopSpeed`
+   * and followed on its own (M16's lesson, pre-applied — the beeps, the
+   * cutout, the cop's cap and the hazard spacing all moved without a line of
+   * code naming a speed).
+   *
+   * 0.0147 — the old 50 mph wheel — is still one URL away: `?mph=50` is the
+   * A/B, and it refuses records exactly as `?mph=65` used to (§30.2 fact 8).
    *
    * `level/routeValidator.ts` derives hazard fairness from the top speed this
-   * produces, so a change here legitimately re-spaces generated hazards.
+   * produces, so a change here legitimately re-spaces generated hazards — and
+   * this change did (`src/data/renderCost.ts`, re-measured at 65).
    */
-  dragCoefficient: 0.0147,
+  dragCoefficient: 0.008670408739376268,
   /**
    * Rolling resistance moved to `data/surfaces.ts` at M4, exactly as the M2
    * note here predicted: the controller now looks the value up per surface and
@@ -914,6 +935,64 @@ export const EUC = {
    */
   maxLateralG: 0.75,
   /**
+   * **The give at speed** — the lateral ceiling the wheel reaches at
+   * `carveGripFullSpeed`, in g (M30 Phase 2, `docs/PLANS.md` §30.3b;
+   * `simulation/lateralCeiling.ts` is the schedule).
+   *
+   * The owner's ask was the racers': *"i need the rider to do the hang like
+   * u say to corner at higher speeds. i'm trying to satisfy the real racers
+   * that play my game now."* At the ordinary 0.75 g a full-lock corner needs
+   * `v² / (0.75 g)` of radius — 68 m at 50 mph and 115 m at 65 — and no route
+   * the generator draws has 115 m of radius, so the fast wheel had grip it
+   * could not spend. 1.05 g takes 65 mph full lock to 82 m, which the route
+   * has.
+   *
+   * **Nothing below `carveSpeed` (9 m/s) moves**: the schedule's first anchor
+   * is that constant, so the ordinary clamp, M16's technical-turn bonus and
+   * the whole reverse band are textually and numerically what they were.
+   *
+   * On F4 (0.75 is today's ride exactly, which is what makes the panel the
+   * A/B; 1.6 is the slider's top). The **wheel's bank does not follow it**:
+   * the roll saturates at `atan(maxLateralG · grip)` and `riderLean` carries
+   * the rest, so the extra grip buys a tighter line and a rider hanging
+   * inside, never a machine leaned onto its pedals (§30.3b, the fourth scope
+   * answer).
+   */
+  carveGripTopG: 1.05,
+  /**
+   * Shape of the rise from `maxLateralG` to `carveGripTopG`, dimensionless.
+   *
+   * `u ** this`, where `u` is the fraction of the way from `carveSpeed` to
+   * `carveGripFullSpeed`. 1.0 is the straight line the plan specifies: the
+   * give arrives in proportion to the speed, which is the shape a rider can
+   * learn. Above 1 it holds today's grip through the middle band and gives it
+   * all up near the top; below 1 the opposite. On F4, because where the give
+   * arrives is a taste his ride has an opinion about.
+   */
+  carveGripExponent: 1.0,
+  /**
+   * Speed at which the ceiling has fully risen to `carveGripTopG`, m/s.
+   *
+   * **22.25, and absolute** — the same anchor `carveLeanFullSpeed` uses and
+   * for the same measured reason: 22.25 m/s is the **50 mph** wheel's flat
+   * terminal *as the controller reaches it* (that wheel's `straight` digest
+   * pinned 22.2523 after thirty seconds flat out), while §30.2 fact 1's 22.3
+   * is the analytic figure before the wheel's own losses — an anchor there
+   * left a flat-out ride at 0.9971 of the schedule and put the plateau
+   * permanently a hundredth of a metre a second out of reach.
+   *
+   * Absolute is the third scope answer (§30.3): the anchors do not follow the
+   * top speed. That decision was taken while 50 was the shipped wheel and it
+   * **survived the switch to 65 unchanged** (M30 Phase 4), so the give now
+   * plateaus at 0.747 of the shipped terminal and the last quarter of the
+   * speed range corners on the same ceiling as 50 mph did. 40 mph therefore
+   * corners identically on this build and on `?mph=50`, which is what keeps
+   * the A/B honest. **Whether it should instead keep rising to 29 m/s is
+   * q118, and it is open** — an answer is a ride, not an argument. Not on F4
+   * either way: a `?mph=` build must not be able to move it.
+   */
+  carveGripFullSpeed: 22.25,
+  /**
    * Extra lateral authority for a hard technical turn, in g.
    *
    * M16 first expressed this as a "free pivot": the heading and therefore the
@@ -953,16 +1032,159 @@ export const EUC = {
    */
   rollResponseSeconds: 0.11,
   /**
-   * Fraction of wheel roll retained by the rider's upper body.
+   * Fraction of wheel roll retained by the rider's upper body **below
+   * `carveLeanSpeed`** — the low-speed share (M30 Phase 3).
    *
-   * A real hard carve happens mostly below the waist: the wheel and lower
-   * body tilt into the turn while a bent inside knee and shallow squat let the
-   * shoulders stay close to level. The first M2 rig used 1.22 here and leaned
-   * the torso farther than the wheel, producing a 45-degree plank at the
-   * 37-degree wheel limit. The owner rejected that pose. 0.18 keeps a little
-   * readable commitment without turning the upper body into the lean pivot.
+   * A hard carve at walking and jogging pace happens mostly below the waist:
+   * the wheel and lower body tilt into the turn while a bent inside knee and
+   * shallow squat let the shoulders stay close to level. The first M2 rig used
+   * 1.22 here and leaned the torso farther than the wheel, producing a
+   * 45-degree plank at the 37-degree wheel limit *at every speed*. The owner
+   * rejected that pose. 0.18 keeps a little readable commitment without
+   * turning the upper body into the lean pivot.
+   *
+   * From M30 Phase 3 this is the *start* of a schedule rather than the whole
+   * of it (`simulation/riderLean.ts`): above `carveLeanSpeed` the share blends
+   * toward `carveLeanShareTop`, because a rider at 40 mph sitting upright over
+   * a wheel banked to 37° is the pose the owner called out at M30 — "the
+   * character being upright while turning at high speed looks weird…
+   * centrifugal force would throw him out". Below 6 m/s nothing changed, to
+   * the bit.
    */
   riderUpperBodyRollFactor: 0.18,
+  /**
+   * Speed where the rider's lean begins to follow the wheel, m/s (M30 Phase 3).
+   *
+   * Equal to `technicalTurnFadeSpeed` by design: the lean starts exactly where
+   * M16's hard low-speed technique has fully faded, so the two never overlap
+   * and the low-speed band is the approved M16 band to the bit — a test holds
+   * the two equal. **Absolute**, not a share of the top speed (the third scope
+   * answer of `docs/PLANS.md` §30.3), and not on F4.
+   */
+  carveLeanSpeed: 6.0,
+  /**
+   * Speed where the rider's lean share reaches `carveLeanShareTop`, m/s.
+   *
+   * The **50 mph** wheel's flat-pavement terminal **as the controller reached
+   * it** — 22.25 m/s (that wheel's `straight` digest pinned 22.2523 after
+   * thirty seconds flat out; §30.2 fact 1's 22.32 is the analytic figure
+   * before the wheel's own losses, and an anchor set there left the line one
+   * hundredth of a metre a second out of reach on the flat). **Absolute**:
+   * the anchor did not follow the top speed when 65 shipped at M30 Phase 4,
+   * so the lean reaches its full share at 22.25 m/s and holds it to the
+   * cutout, and 40 mph leans exactly as it does on `?mph=50`. **q118 is
+   * whether it should keep rising to 29 m/s instead, and it is open** — the
+   * answer is a ride. Not on F4 either way. A full-lock carve settles at
+   * 27.0 m/s on the shipped 65 wheel and at 20.6 on `?mph=50` (the pedal
+   * scrub and the wheel's drag); the 65 carve is past the anchor and is the
+   * full share — one whole line of cornering force, which past the saturated
+   * bank is already a hang — while the 50 carve is 0.90 of the way up the
+   * schedule, about 3° of hinge.
+   */
+  carveLeanFullSpeed: 22.25,
+  /**
+   * The upper body's share of the cornering lean at and above
+   * `carveLeanFullSpeed`.
+   *
+   * **1.0 is the whole of the cornering lean, and since M30 Phase 2 that is
+   * already a hang rather than one line.** Before Phase 2 the wheel banked to
+   * the same `atan(a / g)` the rider did, so a share of 1.0 was rider and
+   * machine on one line and the pelvis hinge was exactly zero. Phase 2
+   * saturates the wheel at the ordinary ceiling — `atan(maxLateralG · grip)`,
+   * 36.9° on pavement — and leaves this lean at the force, so at the 1.05 g
+   * top the body sits 9.5° inside the machine's line at share 1.0: the pose of
+   * the §30.1 photographs. Above 1.0 it leans further in again (q115, his
+   * ride's call).
+   *
+   * The F4 slider's maximum is **1.00 — the shipped value itself** — and it is
+   * a measurement, not a taste: the clearance contracts sweep the rider's roll
+   * to the slider's maximum and a maximum they cannot clear is lowered, never
+   * the other way round (§30.3d). `render/riderClearanceRidden.test.ts` drives
+   * the production controller through the production rig over every `?mph=`
+   * preset and reads the Drunkard's beer can against his thigh — a 40 mm floor.
+   *
+   * Phase 2 first set that maximum at 1.04 on a sweep whose *phase* was fixed;
+   * its QA found the Drunkard's sway oscillator effectively sampled at one
+   * value, and with the phase swept the same rides read 28.3 mm at share 1.00
+   * on a 65 mph build — under the floor before this slider multiplied anything.
+   * The repair was q114's named lever, the can's carry: it is now carried 8 mm
+   * outboard of the fist's axis (`render/riderLook.ts`,
+   * `DRUNKARD_HAND_CAN.x`), which buys 0.96 mm of thigh per millimetre and
+   * restores the floor at 1.00 with 1.1 mm to spare. What it does not restore
+   * is headroom above it: **each further 0.01 of share costs about 1.3 mm of
+   * clearance**, so 1.01 reads 39.8 mm on the 80 mph wheel and the largest
+   * step that holds is 1.00.
+   *
+   * So q115's *upward* half is closed until the can moves again — about 13 mm
+   * of carry would return the slider to 1.04 — and the slider's remaining
+   * travel is downward, its floor of 0.5 being half a lean for his taste.
+   */
+  carveLeanShareTop: 1.0,
+  /**
+   * **The settle** — how the lean *transitions*, M30 Phase 3b, and it is the
+   * owner's first ride on Phase 3: *"the characters go V like a motorcycle…
+   * from leaning all the way left to all the way right, and vice versa (very
+   * stiff) meaning there is no transition. no animation. it is awkward
+   * looking… make it: new hard left lean > old left lean > standup > old right
+   * lean > new hard right lean."*
+   *
+   * The share above is right for a bank that is **held** and wrong for the
+   * swing between two banks: at the top of the schedule the pelvis hinge is
+   * zero and the whole body whips with the wheel at its own
+   * `rollResponseSeconds`. `simulation/riderLean.ts` gives the schedule a
+   * second clock, `leanSettle`, driven by the wheel's roll **rate**, and
+   * multiplies the speed blend by it — so a flick slides the rider back down
+   * the same schedule to the M16 pose (`riderUpperBodyRollFactor`, the pelvis
+   * articulating) and the full lean returns when the bank does.
+   *
+   * The two rates below are the gate; the two times are the ramp.
+   *
+   * -- The gate ------------------------------------------------------------
+   *
+   * Wheel roll rate at or below which the bank counts as **held**, rad/s.
+   *
+   * 0.5 rad/s. A settled full-lock carve creeps at 2.5 × 10⁻³ rad/s (measured
+   * on the production controller at 22.4 m/s), three orders of magnitude
+   * under this, so stick jitter and a corner tightening under the rider both
+   * count as held. Not on F4: it is the floor of the gate rather than its
+   * shape, and the swing rate is the number a ride has an opinion about.
+   */
+  carveLeanHoldRate: 0.5,
+  /**
+   * Wheel roll rate at and above which the body is fully back at the old
+   * pose, rad/s.
+   *
+   * 3.0 rad/s. A full flick at speed peaks at about 10.5 rad/s and stays over
+   * this for the first sixteen ticks — the whole of the swing, both sides of
+   * upright — while a corner entered deliberately drops under it as the bank
+   * establishes. On F4, because how *early* the lean comes back is exactly the
+   * taste his ride is judging (q123).
+   */
+  carveLeanSwingRate: 3.0,
+  /**
+   * Seconds from the old pose to the full lean once the bank holds.
+   *
+   * 0.35 s, about four times the wheel's own roll response, so the body
+   * arrives *after* the machine — which is the transition the owner asked for
+   * rather than a second plank. Measured: after a flick at 27 m/s the wheel is
+   * held (under `carveLeanHoldRate`) at tick 42 and the body is back on the
+   * line at tick 59.
+   */
+  carveLeanSettleIn: 0.35,
+  /**
+   * Seconds from the full lean back to the old pose when the wheel swings.
+   *
+   * 0.06 s — six times faster than the return, and the asymmetry is the
+   * mechanism rather than a taste. The settle has to reach zero **before the
+   * wheel crosses upright**: a share still shrinking while the new bank grows
+   * makes the body's angle fall on the far side of a flick, which is a wobble
+   * where the owner asked for a transition. Measured over 21 flicks (shipped,
+   * 65 and 90 mph builds, six steering magnitudes): at 0.06 s the settle is
+   * zero two ticks before the crossing on the tightest of them and every ride
+   * is monotonic on both sides; at 0.08 s the margin is zero ticks, which is
+   * why the F4 slider's useful range starts well under it.
+   */
+  carveLeanSettleOut: 0.06,
   /**
    * Maximum action pitch added to the rider's relaxed stance, radians.
    *
@@ -1186,8 +1408,12 @@ export const EUC = {
    *
    * **`dragCoefficient` is a top-speed shaper, not an aerodynamic model**, and
    * that distinction only starts to matter at M5. It is sized so that drive
-   * authority balances it at 22.3 m/s, which makes it about 7.3 m/s² up there —
-   * roughly four times the air resistance a rider and a wheel actually meet.
+   * authority balances it at the wheel's own terminal — 29.1 m/s since M30
+   * Phase 4, 22.3 before it — which is about 7.3 m/s² up there either way,
+   * because the product is pinned at the drive. Against the air resistance a
+   * rider and a wheel actually meet that was roughly four times over at 22.3
+   * and is a smaller multiple at 29.1, since the real force grows with the
+   * square and this one does not move.
    * The rest of it stands in for motor limits and driveline losses, and none of
    * those act on a wheel that is off the ground.
    *
@@ -1647,9 +1873,10 @@ export const EUC = {
    *
    * **This is the owner's speed gate** (§13, deep potholes), and the number the
    * Phase 2 readability ride exists to confirm: it is only fair if a deep hole
-   * can be *seen* far enough out to slow down for. Against a 22.3 m/s top
-   * speed, 6.5 leaves a wide band of ordinary cruising in which a deep hole
-   * ends the run, and a genuine reward for having braked. On F4 so the ride can
+   * can be *seen* far enough out to slow down for. Against a 29.1 m/s top
+   * speed (22.3 before M30 Phase 4), 6.5 leaves a wide band of ordinary
+   * cruising in which a deep hole ends the run, and a genuine reward for
+   * having braked. On F4 so the ride can
    * move it against what the eye can actually do at 20 and 40 metres.
    *
    * **Deliberately left where it was at M16 when the top speed rose.** It is an
@@ -1692,9 +1919,14 @@ export const EUC = {
    * below divides by `powerLimitSpeed` and climbs now happen proportionally
    * faster: an 11° climb at full throttle scored 0.586 before and 0.585 after,
    * and flat-out on the flat scored 0.658 before and 0.657 after.
+   *
+   * **Scaled a second time at M30 Phase 4**, by the 65 mph preset's ratio
+   * 1.3020836382364829, for exactly the same reason and by the same recipe:
+   * 17.0 → 22.135421850020208 and 25.1 → 32.68229931973572. Derived, not
+   * typed — see `EUC.dragCoefficient` above and `topSpeedPreset.test.ts`.
    */
-  powerComfortSpeed: 17.0,
-  powerLimitSpeed: 25.1,
+  powerComfortSpeed: 22.135421850020208,
+  powerLimitSpeed: 32.68229931973572,
   /**
    * Load per unit of sin(gradient) while climbing. Descending contributes 0.
    *
@@ -1761,8 +1993,9 @@ export const EUC = {
    * arrives decisively and lets go without a lurch.
    *
    * Kept small deliberately. Most of what tilt-back costs is the drive
-   * authority it removes — at 22.3 m/s that is 7.7 m/s² of the 7.9 the wheel was
-   * spending against drag — so 0.06 rad adds a further 1.3 m/s² of push-back
+   * authority it removes — at terminal that is 7.7 m/s² of the 7.7 the wheel
+   * was spending against drag and rolling resistance, on either wheel, since
+   * the two balance there by construction — so 0.06 rad adds a further 1.3 m/s² of push-back
    * and reads as the machine leaning on the rider rather than as a brake
    * slamming on. Braking is untouched: a rider who asks for more lean-back
    * than this still gets all of it.
@@ -1810,13 +2043,17 @@ export const EUC = {
   /**
    * Where the beeps start, as a share of top speed.
    *
-   * 0.785 is **40 mph at the shipped tuning**. The owner's first number was
-   * 30 mph; he rode that build on 2026-08-14 and moved it himself — *"30mph is
-   * too soon for the beeping to start. it should beep no earlier than 40mph"*
-   * — so the share is chosen to put the first beep a shade *above* 40 rather
-   * than a shade below it. Stated as a share so it stays 40-mph-ish relative
-   * to a 50 mph wheel rather than becoming an arbitrary absolute the day the
-   * wheel changes.
+   * 0.785 was **40 mph on the 50 mph wheel** and is **52 mph on the shipped
+   * 65** (M30 Phase 4). The owner's first number was 30 mph; he rode that
+   * build on 2026-08-14 and moved it himself — *"30mph is too soon for the
+   * beeping to start. it should beep no earlier than 40mph"* — so the share
+   * was chosen to put the first beep a shade *above* 40 rather than a shade
+   * below it. Stated as a share so it keeps its *place in the speed range*
+   * rather than becoming an arbitrary absolute the day the wheel changes —
+   * and the day came: M30 Phase 4 moved the wheel and this constant did not
+   * have to be found by hand, which is the whole point of writing it this way.
+   * His floor of 40 mph is honoured with room to spare, and the warning still
+   * arrives at the same fraction of the way to the edge.
    */
   overspeedBeepShare: 0.785,
   /**
@@ -2387,8 +2624,8 @@ export const CAMERA = {
   /**
    * Speed at which the speed expression is fully applied, m/s.
    *
-   * The controller's drag balances drive authority at roughly 22.3 m/s, so this
-   * is the wheel's own top speed rather than an invented ceiling: full arm
+   * The controller's drag balances drive authority at 29.1 m/s on pavement, so
+   * this is the wheel's own top speed rather than an invented ceiling: full arm
    * length, full field of view, and the shortest yaw lag all coincide with the
    * fastest the rider can actually go.
    *
@@ -2399,8 +2636,15 @@ export const CAMERA = {
    * 34 mph. The cost is real and was taken deliberately: the same 10 m/s now
    * sits lower up the curve than it used to, so ordinary cruising is framed a
    * little calmer — which is what leaves the top end somewhere to go.
+   *
+   * **Moved again at M30 Phase 4** with the shipped 65 mph wheel, to that
+   * wheel's own flat-pavement terminal 29.0576 m/s (65 × 0.44704 exactly).
+   * The preset writes it rather than scaling it, because "the wheel's own top
+   * speed" is its definition rather than a number to rescale. Same cost taken
+   * a second time: cruising is framed calmer still, and the top end has
+   * somewhere to go.
    */
-  speedReference: 22.3,
+  speedReference: 29.0576,
 
   /**
    * Height of the arm's far end above the contact patch, metres.
@@ -2465,14 +2709,22 @@ export const CAMERA = {
    * Camera bank, as a fraction of the rider's lean, and its cap in radians.
    *
    * `docs/PLANS.md` 5 specifies `riderRoll x 0.15`. Read literally against the
-   * *current* pose field of that name — the upper-body roll, which the M2
-   * reassessment reduced to 0.18 of the wheel's lean — that would be one
-   * degree at a full carve, which is not a feature. The plan predates that
-   * split and means the rider's lean into the corner, which is the wheel and
-   * lower-body angle: `pose.rollAngle`. At the controller's 0.75 g lateral
-   * limit that lean is 0.64 rad, so the bank reaches 0.096 rad (5.5 degrees) —
-   * present, subtle, and short of the cap. Flagged for the owner rather than
-   * settled silently, because it is a documented number being reinterpreted.
+   * pose field of that name — the upper-body roll — it was one degree at a
+   * full carve when the M2 reassessment held that roll at 0.18 of the wheel's
+   * lean, which is not a feature; since M30 Phase 3 the upper body follows a
+   * speed schedule (`simulation/riderLean.ts`) and takes the whole of the
+   * cornering lean from 22.25 m/s up — which the shipped 65 wheel's full-lock
+   * carve, settling at 27.0 m/s, is past; `?mph=50`'s settles at 20.6 m/s and
+   * takes 0.92 of it — so the literal reading would now bank within 8 % of
+   * the chosen one at worst and exactly on it at speed. The
+   * decision is unchanged either way: the plan predates the split and means
+   * the rider's lean into the corner, which is the wheel and lower-body angle,
+   * `pose.rollAngle` — and M30's fourth answer keeps the camera on the wheel
+   * on purpose, so a rider hanging inside a saturated bank (Phase 2) does not
+   * tilt the horizon further. At the controller's 0.75 g lateral limit that
+   * lean is 0.64 rad, so the bank reaches 0.096 rad (5.5 degrees) — present,
+   * subtle, and short of the cap. Flagged for the owner rather than settled
+   * silently, because it is a documented number being reinterpreted.
    *
    * The cap exists because uncapped bank is a motion-sickness trap and because
    * a tilted horizon costs terrain readability, which outranks speed sensation.
@@ -2560,8 +2812,23 @@ export const CAMERA = {
    * Pulling back was the correct lever rather than raising the height: the
    * camera looks down at the pair, so a taller arm pushes a high-flying body
    * further up the frame rather than catching it.
+   *
+   * **And again at M30 Phase 4** with the shipped 65 mph wheel, by the
+   * preset's ratio (`CRASH_DISTANCE_EXPONENT` 1) to 14.973961839719554 — but
+   * for a *different* reason than M16's, and Phase 0 measured which. At 65 the
+   * body does not leave through the top of the frame and never did: it leaves
+   * through the **bottom**, because the camera is anchored on a riderless
+   * wheel that rolls on at ~28 m/s while the ragdoll stops in a few metres,
+   * and the arm has barely begun to ease when that happens. Arm lengths from
+   * 11.5 to 18.0 m all put the body behind the camera at 0.35–0.37 s. What
+   * the arm still decides is the *eventual* wide shot, three seconds in, which
+   * frames the wheel's run-off — and that run-off grows with the speed it was
+   * rolling at, so the arm scales with the wheel. Keeping a 65 mph body in
+   * shot is an anchor or an easing decision, not an arm length, and it is
+   * `docs/PLANS.md` §30.4 item 2's surfaced finding rather than a thing this
+   * milestone settled.
    */
-  crashDistance: 11.5,
+  crashDistance: 14.973961839719554,
   crashArmHeight: 2.35,
   /** Vertical field of view held during a crash, radians. Wider takes both in. */
   crashFov: 1.30,
@@ -2907,18 +3174,85 @@ export const HAZARD = {
    * has actually looked at a hazard from, which makes it the honest window for
    * Phase 3's rule that *the ground must not hide one inside it*.
    *
-   * It is comfortably longer than the machine needs: about sixteen metres of
-   * road is enough to steer one clear lane aside at half the lateral authority,
-   * and about nineteen to brake below `EUC.hazardCrashSpeed` from top speed on
-   * the same reserve. Using the measured distance rather than either physical
-   * one is the strict choice, and it is what makes the two phases compose — the
-   * mark reads at forty metres, and the ground does not hide it inside forty.
+   * **What the machine needs has caught up with it — M30 Phase 4.** About
+   * sixteen metres of road is still enough to steer one clear lane aside at
+   * half the lateral authority, but braking below `EUC.hazardCrashSpeed` from
+   * the shipped 65 mph top speed now takes **33.5 m in 1.86 s** (terminal
+   * 28.98 m/s), which leaves **6.5 m of the forty** in reserve rather than the
+   * twenty-one the 50 mph wheel had (20.1 m in 1.35 s). Those three numbers
+   * are measured, not estimated: `src/simulation/topSpeedPreset.test.ts`
+   * prints them for all three wheels on every run. Using the measured sight
+   * line rather than either physical one is still the strict choice, and it is
+   * what makes the two phases compose — the mark reads at forty metres, and
+   * the ground does not hide it inside forty. Read the reserve before touching
+   * this constant: at 65 the braking distance, not the eye, is what forty
+   * metres is now sized against.
    *
    * This is **not** a claim about perception. It says nothing about fog, the
    * props the dressing stream places, or the camera. Whether a hazard is
    * genuinely readable stays the owner's ride to decide.
    */
   readMetres: 40,
+  /**
+   * How the hazard density follows the wheel's top speed, as an exponent — M30.
+   *
+   * **The density is a taste; the separation beside it is fairness. This
+   * exponent is what keeps the two apart.** `HAZARD_PLACEMENT.chancePerStation`
+   * was derived at M13 from the *live* wheel's own separation — "a hazard about
+   * every two recovery distances" — and that derivation, handed a faster wheel
+   * at M30 Phase 1, emptied the road: a longer recovery distance is a lower
+   * chance per station, and a sixty-seed sweep lost a quarter of its holes at
+   * 65 mph. That is the wrong way round. A faster wheel exists to be more
+   * *thrilling* (the decision of 2026-09-03), so the road must not get emptier
+   * as the wheel gets faster. The chance is therefore anchored on the
+   * **shipped** wheel's derivation — which is what keeps a default build
+   * byte-identical, since the anchor is then the same expression M13 wrote —
+   * and scaled from it by the top-speed ratio raised to this power.
+   *
+   * The separation floor does **not** move with this taste and is not scaled by
+   * it: two hazards inside one recovery is a crash the rider could not have
+   * avoided, and an unavoidable crash is annoying, which this project removes
+   * rather than tunes.
+   *
+   * **The number is chosen against a measured ladder, not against the
+   * arithmetic**, because the arithmetic is an *offer* and the contracts refuse
+   * most of it. At exponent 1 only 27 % of the extra placements landed: the
+   * fairness floor above is wider at 65 in exactly the proportion the offer is
+   * denser, and the zone, sight, gate, surface and lane rules absorb the rest.
+   * So the offer has to be steep before the road reads as busier. What each
+   * exponent actually lands at 65 mph, sixty seeds (`euc-1..60`), per route and
+   * per minute of riding at the 28.98 m/s terminal over the sweep's own mean
+   * required route of 1,080 m, with `route-41` and `x67` by name — no exponent
+   * produced a fallback, and the shipped wheel is 5.07 a route and 6.26 a
+   * minute for comparison:
+   *
+   *   - **0** — 4.62 a route (1–8), 7.43 a minute; `route-41` 6, `x67` 5. The
+   *     offer is the shipped wheel's exactly, and the road still thins out,
+   *     because the fairness floor is a third wider at 65 and refuses what the
+   *     unchanged dice hand it. **Holding the offer still is not holding the
+   *     count still** — that is the whole reason this constant exists.
+   *   - **1** — 5.48 (3–8), 8.83 a minute; `route-41` 6, `x67` 9. Hazards per
+   *     *metre* scale with the top speed, so per *second* they scale with its
+   *     square. Only 27 % of the extra placements land: +8 % of a route, which
+   *     is not a road anybody would call busier.
+   *   - **2** — 6.12 (4–9), 9.85 a minute; `route-41` 6, `x67` 9.
+   *   - **3** — 6.98 (5–9), 11.24 a minute; `route-41` 7, `x67` 10. **The
+   *     shipped choice**: a 65 route carries about two more holes than the same
+   *     road at 50 and meets them four-fifths again as often, and the floor
+   *     still refuses every pair the rider could not recover between.
+   *   - **6** — 8.60 (6–11), 13.84 a minute; `route-41` 10, `x67` 12. Recorded
+   *     as the far end of the ladder rather than as a candidate.
+   *
+   * **The ride settles it.** This is a taste and the numbers above only say
+   * what each setting costs; whether 65 mph reads as dangerous rather than as
+   * a slalom is a question for the owner's gate, and §13 q9's "nothing may be
+   * annoying" is the rule that would send it back down the ladder.
+   *
+   * **Not a live tunable.** The generator reads this frozen table and the
+   * session's own mph and nothing else, so a route stays a function of its seed
+   * and its wheel rather than of whatever the F4 panel last did.
+   */
+  densityTopSpeedExponent: 3,
 } as const;
 
 export const POTHOLE = {
@@ -4515,8 +4849,15 @@ export const AUDIO = {
    * The rotation loop's rate is derived from this and `tyreReferenceSpeed`, so
    * a wheel at top speed now taps 2.48 times per revolution-at-9-m/s rather
    * than 1.67, which is simply what a wheel spinning that much faster does.
+   *
+   * **Moved again at M30 Phase 4** to the shipped 65 mph wheel's terminal
+   * 29.0576 m/s, for the identical reason: left at 22.3 the wind, the tyre and
+   * the whine would all sit at their ceilings from 50 mph upward and the last
+   * quarter of the speed range would say nothing about being the last quarter.
+   * The rotation loop taps faster again, which is what a wheel spinning that
+   * much faster does.
    */
-  speedReference: 22.3,
+  speedReference: 29.0576,
 
   // -- Motor ----------------------------------------------------------------
 
@@ -4694,9 +5035,10 @@ export const AUDIO = {
    * and hard. Real aerodynamic noise grows faster than linearly with speed;
    * more to the point, a linear ramp makes every speed sound like the same
    * amount of committed, and the whole job of the wind layer is to make top
-   * speed feel different from 8 m/s. The ramp runs over the 9–22.3 m/s window
-   * (see `windOnsetSpeed`), so the exponent shapes the upper half of the
-   * speedometer rather than the whole thing.
+   * speed feel different from 8 m/s. The ramp runs over the 9–29.1 m/s window
+   * since M30 Phase 4 (9–22.3 before it; see `windOnsetSpeed`), so the
+   * exponent shapes the upper two thirds of the speedometer rather than the
+   * whole thing — the widening the owner asked for at 50, taken further.
    */
   windExponent: 1.7,
   /**
@@ -5623,11 +5965,11 @@ export const CHALLENGE = {
    * **This is the tunnelling number.** Detection is a point-in-box test on the
    * contact patch once per fixed step, so the volume has to be thicker than the
    * furthest the wheel can travel in one step or a fast rider passes straight
-   * through it. Top speed is 22.3 m/s at a 120 Hz step, which is 0.186 m per
-   * step; 1.8 m is nearly ten times that. The margin is what let M16 raise the
-   * top speed by half without anyone having to remember this paragraph, and it
-   * is still nearly ten times over — but a wheel twice as fast again would need
-   * this number looked at.
+   * through it. Top speed is 29.1 m/s at a 120 Hz step, which is 0.242 m per
+   * step; 1.8 m is over seven times that. The margin is what let M16 raise the
+   * top speed by half and M30 Phase 4 raise it again to 65 without anyone
+   * having to remember this paragraph, and it is still over seven times over —
+   * but a wheel twice as fast again would need this number looked at.
    */
   gateHalfDepth: 1.8,
   /**
@@ -5644,9 +5986,10 @@ export const CHALLENGE = {
    * Ghost recording rate, samples per second.
    *
    * Twenty is chosen against the *shape of a line*, not against the frame rate:
-   * at top speed it is a sample every 1.1 m, and the ghost is interpolated
-   * between them, so a carve reads as a carve. Doubling it would double the
-   * saved record to describe motion the player cannot see at chase distance.
+   * at the shipped top speed (29.0576 m/s) it is a sample every 1.45 m — it was
+   * 1.1 m on the 22.3 m/s wheel — and the ghost is interpolated between them,
+   * so a carve still reads as a carve. Doubling it would double the saved
+   * record to describe motion the player cannot see at chase distance.
    */
   ghostSampleHz: 20,
   /**
@@ -5875,10 +6218,12 @@ export const PADDLE = {
   /**
    * The strike window, seconds. The only phase in which a hit can happen.
    *
-   * **This is the number the 50 mph pass put under pressure.** At the top speed
-   * M16 shipped, a verge target is inside `reach` for about 0.13 s, so the
-   * active window is very nearly the whole opportunity and a swing thrown early
-   * or late simply misses. That is the intended difficulty at the top of the
+   * **This is the number the 50 mph pass put under pressure, and M30 Phase 4
+   * pressed harder.** The metres of road over which a verge target is inside
+   * `reach` do not change with speed; the seconds do. At M16's 50 mph that was
+   * about 0.13 s and at the shipped 65 it is about 0.10 s, so the active window
+   * is now slightly *longer* than the whole opportunity and a swing thrown
+   * early or late simply misses. That is the intended difficulty at the top of the
    * speed range and the wrong difficulty at the bottom, which is why it is the
    * first slider to reach for if phase 5's ride says the mode is fussy rather
    * than sharp.
@@ -6849,12 +7194,19 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     group: 'Ride — power',
     label: 'Drag',
     unit: '1/m',
-    min: 0.005,
+    // 0.004 rather than 0.005 and a step of 0.0001 rather than 0.001 — M30
+    // Phase 0. `?mph=` writes the preset through this slider's range and
+    // `LiveTuning.set` clamps to it, so the range has to hold the whole
+    // 20–90 mph window (90 mph is 0.0045) and the step has to land on 65 mph's
+    // 0.0087, which the old grid could only approach as 0.008 or 0.009.
+    min: 0.004,
     max: 0.15,
-    step: 0.001,
+    step: 0.0001,
     note: 'Quadratic drag. Top speed emerges from this against drive '
       + 'authority rather than being clamped, so lowering it raises top speed '
-      + 'without touching how the wheel launches.',
+      + 'without touching how the wheel launches. 0.00867 is the shipped '
+      + '65 mph on pavement, 0.0147 is the old 50; `?mph=<n>` sets it with '
+      + 'its partners.',
   },
   {
     path: 'EUC.maxReverseSpeed',
@@ -7480,8 +7832,8 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     min: 0.03,
     max: 0.4,
     step: 0.01,
-    note: 'The only phase that can hit. At 50 mph a verge target is in reach for '
-      + 'about 0.13 s, so shortening this much makes top-speed swings very nearly '
+    note: 'The only phase that can hit. At the shipped 65 mph a verge target is in '
+      + 'reach for about 0.10 s (0.13 at 50), so shortening this much makes top-speed swings very nearly '
       + 'impossible — and it speeds the head up, so the teleport guard is checked '
       + 'against it in the headless suite.',
   },
@@ -7611,11 +7963,27 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     label: 'Power comfort speed',
     unit: 'm/s',
     min: 4,
-    max: 18,
+    // 32 rather than 18 — M30 Phase 0: `?mph=90` scales this to 30.6, and a
+    // range the preset cannot reach is a preset the store quietly bends.
+    max: 32,
     step: 0.25,
     note: 'Speed at which the wheel starts spending its headroom. Lower it and '
       + 'the wheel warns earlier; take it under about 8 and tilt-back starts '
-      + 'reaching into ordinary flat riding.',
+      + 'reaching into ordinary flat riding. Defined as a share of the top '
+      + 'speed (M16), so `?mph=` scales it with the drag.',
+  },
+  {
+    path: 'EUC.powerLimitSpeed',
+    group: 'Ride — power',
+    label: 'Power limit speed',
+    unit: 'm/s',
+    min: 6,
+    max: 48,
+    step: 0.25,
+    note: 'Speed that scores the whole load term on the flat, and the divisor '
+      + 'of the climb term (M16). Live since M30 Phase 0 so `?mph=` can scale '
+      + 'it with the drag; keep it above the comfort speed or the ladder '
+      + 'collapses to a step.',
   },
   {
     path: 'EUC.powerSlopeLoad',
@@ -7857,10 +8225,14 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     label: 'Crash framing',
     unit: 'm',
     min: 4,
-    max: 16,
+    // 24 rather than 16 — M30 Phase 0: `?mph=` scales this with the top speed
+    // and the 90 mph end of its window needs the room.
+    max: 24,
     step: 0.2,
     note: 'Arm length the camera eases to during a crash. It has to hold both '
-      + 'the rider and a wheel that is still rolling away from them.',
+      + 'the rider and a wheel that is still rolling away from them. 11.5 was '
+      + 'measured against a 50 mph ragdoll (M16) and 15.0 is that scaled to '
+      + 'the shipped 65; `?mph=` scales it.',
   },
   // Terrain and surfaces are the milestone the panel is for at M4, and the
   // exit question — *can I feel the difference between pavement and grass with
@@ -8057,6 +8429,42 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     note: 'The ceiling on cornering acceleration, and the reason a fast turn '
       + 'goes wide. Also sets the lean angle at the limit: atan(this).',
   },
+  // The give at speed (M30 Phase 2). Two of the schedule's three constants
+  // are here; `carveGripFullSpeed` is absent for the reason the lean
+  // schedule's two speed anchors are — it is absolute on purpose, so that a
+  // `?mph=` build cannot move it and the A/B isolates the top speed
+  // (§30.3, the third scope answer). A diagnostic panel, not an option.
+  {
+    path: 'EUC.carveGripTopG',
+    group: 'Ride — carve',
+    label: 'Grip at speed',
+    unit: 'g',
+    min: 0.75,
+    max: 1.6,
+    step: 0.01,
+    note: 'The lateral ceiling at and above 22.25 m/s, where the ordinary '
+      + 'limit above is what the wheel holds up to 9 m/s. Drag it to 0.75 and '
+      + 'the give is gone — that is the shipped ride, exactly, which makes '
+      + 'this slider the A/B. Raising it tightens a fast corner without '
+      + 'banking the wheel any further: the extra force is spent on the '
+      + "rider's hang, not the machine's lean. The garment floors are measured "
+      + 'at the shipped 1.05 and not at this maximum: the hang is '
+      + 'atan(this) − atan(the ordinary limit), so 1.6 takes it to 21° and the '
+      + "Drunkard's can through his thigh. A ride that wants to keep a value "
+      + 'up here re-measures `render/riderClearanceRidden.test.ts` first.',
+  },
+  {
+    path: 'EUC.carveGripExponent',
+    group: 'Ride — carve',
+    label: 'Grip rise shape',
+    unit: '×',
+    min: 0.5,
+    max: 2,
+    step: 0.05,
+    note: 'How the give arrives between 9 and 22.25 m/s. 1 is a straight '
+      + 'line; above 1 holds the ordinary grip through the middle band and '
+      + 'gives it all up near the top; below 1 hands it over early.',
+  },
   {
     path: 'EUC.rollResponseSeconds',
     group: 'Ride — carve',
@@ -8071,13 +8479,81 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
   {
     path: 'EUC.riderUpperBodyRollFactor',
     group: 'Ride — carve',
-    label: 'Upper-body roll',
+    label: 'Upper-body roll (slow)',
     unit: '×',
     min: 0,
     max: 1,
     step: 0.01,
-    note: 'Fraction of wheel roll retained above the hips. A low value lets '
-      + 'the bent inside knee and shallow squat keep the shoulders near level.',
+    note: 'Fraction of wheel roll retained above the hips below 6 m/s — the '
+      + 'low-speed share. A low value lets the bent inside knee and shallow '
+      + 'squat keep the shoulders near level in a slow corner. Above 6 m/s the '
+      + 'share climbs toward the lean share at speed, below.',
+  },
+  {
+    path: 'EUC.carveLeanShareTop',
+    group: 'Ride — carve',
+    label: 'Lean share at speed',
+    unit: '×',
+    min: 0.5,
+    // **1.00 — the shipped value — after M30 Phase 2's QA.** §30.3d's rule, and
+    // the third time it has been applied: 1.2 → 1.04 the day the hang landed,
+    // 1.04 → 1.00 when the ridden sweep gained the Drunkard's sway *phase* as
+    // an axis. Phase 2 gives the wheel 1.05 g at speed and saturates its bank
+    // at the ordinary 0.75, so the rider hangs inside the machine's line by up
+    // to 9.5° before this share multiplies anything, and the can in the
+    // Drunkard's fist rides that much nearer his thigh. Measured as ridden
+    // across the `?mph=` window with the phase swept
+    // (`render/riderClearanceRidden.test.ts`): the worst approach is **41.1 mm
+    // at share 1.00 and 39.8 mm at 1.01**, against a 40 mm floor, with the can
+    // already carried 8 mm further out than Phase 2 shipped it. Each 0.01 of
+    // this slider costs about 1.3 mm of that clearance; the lever for more is
+    // the can's carry again, never the floor (q114).
+    max: 1,
+    step: 0.01,
+    note: 'Share of the cornering lean the upper body takes at and above '
+      + '22.25 m/s, the shipped terminal (M30). 1.0 is the whole of the '
+      + "cornering lean — which, past the wheel's own bank ceiling, already "
+      + 'hangs the rider inside the machine. Reached linearly from the slow '
+      + 'share at 6 m/s; nothing below 6 m/s moves.',
+  },
+  // The settle (M30 Phase 3b). Three of its four constants are here because
+  // the owner's ride is what judges a transition; `carveLeanHoldRate` is the
+  // gate's floor and stays off the panel for the reason the two speed anchors
+  // do. A diagnostic panel, not an option (AGENTS.md §30.11).
+  {
+    path: 'EUC.carveLeanSettleIn',
+    group: 'Ride — carve',
+    label: 'Lean settle-in (s)',
+    unit: 's',
+    min: 0.05,
+    max: 1.0,
+    step: 0.01,
+    note: 'How long the upper body takes to climb back to the lean share once '
+      + 'the wheel holds its bank. Longer is a lazier, later transition.',
+  },
+  {
+    path: 'EUC.carveLeanSettleOut',
+    group: 'Ride — carve',
+    label: 'Lean settle-out (s)',
+    unit: 's',
+    min: 0.02,
+    max: 0.3,
+    step: 0.01,
+    note: 'How fast the body drops back to the slow-speed pose when the wheel '
+      + 'starts swinging. Must finish before the wheel crosses upright, or the '
+      + "body's angle dips on the far side of a flick.",
+  },
+  {
+    path: 'EUC.carveLeanSwingRate',
+    group: 'Ride — carve',
+    label: 'Lean swing rate',
+    unit: 'rad/s',
+    min: 1,
+    max: 8,
+    step: 0.1,
+    note: 'Wheel roll rate at which the body is fully back at the old pose. '
+      + 'Lower makes more of a corner count as a swing; higher keeps the full '
+      + 'lean through faster flicks.',
   },
   {
     path: 'EUC.wheelPitchFactor',
@@ -8156,6 +8632,19 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     step: 0.05,
     note: 'Spring-arm length at the reference speed. Keep it above the rest '
       + 'value or accelerating pulls the camera in, which reads as braking.',
+  },
+  {
+    path: 'CAMERA.speedReference',
+    group: 'Camera',
+    label: 'Speed reference',
+    unit: 'm/s',
+    min: 5,
+    max: 45,
+    step: 0.1,
+    note: 'The speed at which the arm, the field of view and the yaw lag are '
+      + 'fully spent — the wheel\'s own flat-pavement top speed, 29.1 at the '
+      + 'shipped drag. Live since M30 Phase 0 so `?mph=` moves it with the '
+      + 'wheel; left behind, 65 mph would be framed exactly like 50.',
   },
   {
     path: 'CAMERA.armHeight',
@@ -8330,6 +8819,19 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     note: 'Everything the wheel and the world make — motor, wind, tyre, '
       + 'scrape — against warnings and impacts, which are trimmed separately. '
       + 'Lower it if the beeps have to shout.',
+  },
+  {
+    path: 'AUDIO.speedReference',
+    group: 'Audio',
+    label: 'Speed reference',
+    unit: 'm/s',
+    min: 5,
+    max: 45,
+    step: 0.1,
+    note: 'Where the wind, the tyre and the whine saturate — the wheel\'s own '
+      + 'flat-pavement top speed, 29.1 at the shipped drag. Live since M30 '
+      + 'Phase 0 so `?mph=` moves it with the wheel; left behind, every '
+      + 'sound would be identical from 50 mph to 65.',
   },
   {
     path: 'AUDIO.motorPolePairs',

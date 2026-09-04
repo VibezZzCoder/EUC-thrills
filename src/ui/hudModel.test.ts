@@ -582,8 +582,10 @@ test('a crash is not a warning about anything', () => {
 
 test('the max-speed glyph is absent for the whole of ordinary riding', () => {
   const hud = new HudModel();
-  // Nothing below 40 mph ever sees this, which is what keeps it non-annoying:
-  // a player pottering about is never told anything.
+  // Nothing below `EUC.overspeedBeepShare` (0.785) of the derived top speed
+  // ever sees this — 52 mph on the shipped 65 mph wheel, 40 mph on the 50 mph
+  // wheel it was written for. That share is what keeps it non-annoying: a
+  // player pottering about is never told anything.
   assert.equal(hud.update(0, at({ speed: 10 })).overspeed.visible, false);
   assert.equal(hud.update(0, at({ speed: 10, overspeed: 0 })).overspeed.visible, false);
 });

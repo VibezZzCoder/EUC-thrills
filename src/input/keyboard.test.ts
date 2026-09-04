@@ -80,7 +80,7 @@ interface Rig {
   up(code: string): void;
 }
 
-function rig(options: { onClaimPress?: () => void } = {}): Rig {
+function rig(options: { onClaimPress?: () => void; onDebugAction?: (action: string) => void } = {}): Rig {
   const state = new ActionState();
   const fake = new FakeWindow();
   const keyboard = new KeyboardInput(
@@ -242,6 +242,44 @@ test('a checkbox owns Space and nothing else', () => {
   );
   down('Enter', { target: field });
   assert.equal(claims, 1, 'the seed field still takes its own Enter');
+});
+
+test('a slider owns its arrows, and lets the panel that holds it be closed', () => {
+  /*
+   * **Codex's M30 Phase 3 QA, on the new lean slider — and the gate predates
+   * M30.** The F4 panel's controls are `<input type="range">`; adjusting one
+   * left it focused, and the blanket INPUT clause then swallowed F4 (and F3)
+   * until the player clicked the canvas, so the panel that had just been used
+   * could not be closed from the keyboard. The debug toggles pass a focused
+   * slider; everything that rides — the arrows are also the slider's own — is
+   * still kept out of the game, exactly as for a text field.
+   */
+  const debug: string[] = [];
+  const { state, down } = rig({ onDebugAction: (action) => { debug.push(action); } });
+  const slider = () => Object.assign(
+    new (globalThis as { HTMLElement: new () => object }).HTMLElement(),
+    { tagName: 'INPUT', type: 'range', isContentEditable: false },
+  );
+
+  down('F4', { target: slider() });
+  assert.deepEqual(debug, ['toggleTuningPanel'], 'F4 closes the panel over its own slider');
+  down('F3', { target: slider() });
+  assert.deepEqual(debug, ['toggleTuningPanel', 'toggleOverlay'], 'and F3 is the same kind of key');
+
+  down('ArrowLeft', { target: slider() });
+  assert.equal(state.isHeld('steerLeft'), false, 'the arrows move the slider, not the wheel');
+  down('KeyW', { target: slider() });
+  assert.equal(state.isHeld('accelerate'), false, 'nor does a letter ride');
+  down('Escape', { target: slider() });
+  assert.equal(state.isPending('pause', 0), false, 'Escape is still the panel\'s, as it is a text field\'s');
+
+  // The text field beside it is unchanged: F4 is typing there.
+  const field = Object.assign(
+    new (globalThis as { HTMLElement: new () => object }).HTMLElement(),
+    { tagName: 'INPUT', isContentEditable: false },
+  );
+  down('F4', { target: field });
+  assert.equal(debug.length, 2, 'a text input keeps every key');
 });
 
 test('a dropdown owns every key except Enter', () => {

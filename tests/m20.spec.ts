@@ -63,6 +63,22 @@ async function expectInsideViewport(
 // §4.4 — the out-of-bounds warning
 // ---------------------------------------------------------------------------
 
+/**
+ * How hard the three banner fixtures below steer off the route.
+ *
+ * **0.6 rather than full lock since M30 Phase 4**, and it is the fixture's own
+ * premise rather than a taste. The banner is deliberately taken *down* by a
+ * crash — `ui/hudModel.ts`: a rider on the floor is neither about to leave the
+ * route nor about to cut out — so a ride that reaches the stray limit by
+ * hitting something proves nothing about the banner. On the shipped 65 mph
+ * wheel full lock threw the rider across the surround and into a tree before
+ * the referee's own rule fired (measured: `obstacle` at 8.7 m off route, where
+ * the limit is 30). Six tenths crosses the corridor just as surely, at
+ * 16–17 m/s, and arrives *upright* — which is the state the banner is about.
+ * The three fixtures assert that they did not crash rather than assuming it.
+ */
+const STRAY_STEER = 0.6;
+
 test('leaving the route raises a banner with a way home and a visible countdown', async ({ page }) => {
   const errors = collectErrors(page);
   await bootChase(page);
@@ -91,16 +107,22 @@ test('leaving the route raises a banner with a way home and a visible countdown'
   // is out. Steering rather than teleporting, because the arrow is a bearing
   // from a real pose to a real route and a placed rider would prove nothing
   // about it.
-  await page.evaluate(async () => {
+  await page.evaluate(async (steer) => {
     const game = window.game;
     for (let i = 0; i < 60; i += 1) {
-      game.setActions({ throttle: 1, steer: 1 });
+      game.setActions({ throttle: 1, steer });
       game.advance(30);
       if (game.snapshot().chase.straying) return;
     }
-  });
+  }, STRAY_STEER);
 
-  expect(await page.evaluate(() => window.game.snapshot().chase.straying)).toBe(true);
+  const strayed = await page.evaluate(() => ({
+    straying: window.game.snapshot().chase.straying,
+    crashed: window.game.snapshot().euc.crashed,
+  }));
+  expect(strayed.straying).toBe(true);
+  expect(strayed.crashed, 'the fixture crashed on its way out, and a crash takes the banner down')
+    .toBe(false);
   await expect(banner).toBeVisible();
   await expect(page.locator('[data-hud="stray-label"]')).toHaveText('Back to the route');
 
@@ -164,16 +186,16 @@ test('the route warning stays on-screen with touch controls in both phone orient
   // frozen — `beforeFrame` with it, which is what carries the resize — so the
   // layout under test is still the one the browser lays out.
   await page.evaluate(() => window.qa.freeze());
-  await page.evaluate(() => {
+  await page.evaluate((steer) => {
     window.game.setOptions({ touchControls: 'on' });
     const game = window.game;
     for (let i = 0; i < 60; i += 1) {
-      game.setActions({ throttle: 1, steer: 1 });
+      game.setActions({ throttle: 1, steer });
       game.advance(30);
       if (game.snapshot().chase.straying) break;
     }
     game.setActions({ throttle: 0, steer: 0 });
-  });
+  }, STRAY_STEER);
 
   for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
     await page.setViewportSize(viewport);
@@ -191,17 +213,17 @@ test('the banner turns urgent before the run ends, and the end is no longer a su
   const errors = collectErrors(page);
   await bootChase(page);
 
-  await page.evaluate(async () => {
+  await page.evaluate(async (steer) => {
     const game = window.game;
     for (let i = 0; i < 60; i += 1) {
-      game.setActions({ throttle: 1, steer: 1 });
+      game.setActions({ throttle: 1, steer });
       game.advance(30);
       if (game.snapshot().chase.straying) break;
     }
     // Sit there. This is the owner's exact ride: he wandered off at low speed
     // and the run ended at fourteen seconds with nothing on screen.
     game.setActions({ throttle: 0, steer: 0 });
-  });
+  }, STRAY_STEER);
 
   // Run the clock down to the last third, which is where the panel escalates.
   await page.waitForFunction(

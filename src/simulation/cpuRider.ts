@@ -2,6 +2,7 @@
 import { CHASE, EUC, PADDLE, PHYSICS } from '../data/tuning.ts';
 import type { ActionSnapshot } from '../input/actions.ts';
 import type { BoxCollider, LevelPlan } from '../level/plan.ts';
+import { lateralCeilingG, type LateralCeilingTuning } from './lateralCeiling.ts';
 import type { SwingSide } from './paddle.ts';
 import {
   createSpineLocation,
@@ -186,10 +187,56 @@ export class CpuRider {
   throttleGain: number = CHASE.throttleGain;
   /** Full-throttle forward acceleration used by the shared live ride, m/s². */
   driveAcceleration: number = EUC.leanToAccel * Math.sin(EUC.maxLeanPitch);
+  /**
+   * Braking authority used by the shared live ride, m/s² per unit of
+   * `sin(lean)` — pushed rather than imported since M30 Phase 2's QA, so F4's
+   * `EUC.brakeAuthority` reaches the brain the way the drive authority above
+   * already does.
+   *
+   * **It is read raw, and that is a known optimism rather than an oversight.**
+   * `EUC.brakeAuthority` and `EUC.leanToAccel` are both *per unit of
+   * `sin(lean)`*; the field above spends that factor and the braking law does
+   * not, so the brain believes 22 m/s² where the wheel delivers at most
+   * `22 · sin(0.50)` = 10.5, and `brakeSafety` 1.35 leaves it still about twice
+   * the measured truth — full brake on pavement gives 7.3 m/s² from 13 m/s and
+   * 11.1 from 22.
+   *
+   * M30 Phase 2's QA repair measured the correction and did **not** apply it.
+   * An honest model brakes about 1.7 m earlier into everything with a face,
+   * and on `cpuRider.test.ts`' own `route-41` wall camp that is the difference
+   * between squeaking past the wall's end and wedging square against it — with
+   * the correction in, the cop never rounds that wall in four hundred seconds,
+   * and M18 §4.2 is the fix for a named community report. Correcting the units
+   * changes how the whole chase feels and belongs to a chase pass the owner
+   * rides, not to a QA repair. It is why one seed of the 65 mph sweep is still
+   * down (`docs/PLANS.md` §30.7, the open finding).
+   */
+  brakeDeceleration: number = EUC.brakeAuthority;
   /** Quadratic drag used by the shared live ride, 1/m. */
   dragCoefficient: number = EUC.dragCoefficient;
   /** The controller's cutout threshold as a share of derived top speed. */
   cutoutSpeedShare: number = EUC.cutoutSpeedShare;
+  /**
+   * **The give's schedule, pushed rather than imported** — M30 Phase 2's QA
+   * repair.
+   *
+   * Phase 2 shipped this brain reading the module-level frozen `EUC` for the
+   * lateral ceiling, so F4's *Grip at speed* and *Grip rise shape* reached his
+   * wheel (through `Game.applyTuning`'s `controllerTuning`) and not his belief
+   * about a corner: dragged to the slider's floor — the setting documented as
+   * "today's ride exactly", the A/B the owner is asked to ride — he believed a
+   * 90 m bend held 18 % more speed than it did, and dragged to 1.6 he was 21 %
+   * too slow. The rule was already written three lines above this field's
+   * writer: *push them instead of importing today's frozen defaults in the
+   * brain*.
+   *
+   * The whole record travels rather than Phase 2's three new constants alone,
+   * because `lateralCeilingG` reads five and two of the other four
+   * (`maxLateralG`, `carveSpeed`) are F4 sliders of their own; a partial push
+   * would leave a smaller copy of the same defect. `carveGripFullSpeed` is not
+   * on the panel and arrives as the default, exactly as the controller's does.
+   */
+  lateralCeiling: LateralCeilingTuning = EUC;
   /**
    * How close to the wheel's cutout speed the cop will ride, as a share of it
    * — M20.
@@ -639,7 +686,7 @@ export class CpuRider {
     // divided the other way round: an unskilled cop believed he had *less*
     // room, braked earlier than a good one, and was measurably safer — a
     // difficulty knob that made the game easier at both ends.
-    const braking = Math.max(1, EUC.brakeAuthority);
+    const braking = Math.max(1, this.brakeDeceleration);
     const lateness = this.skillBrakeLateness + (1 - this.skillBrakeLateness) * skill;
     const reaction = Math.max(0.05, 1 / (Math.max(0.05, lateness) * this.brakeSafety));
     /** The same belief as a plain multiplier: 1 at full skill, optimistic below. */
@@ -653,14 +700,26 @@ export class CpuRider {
       Math.sqrt(Math.max(0, limit * limit + 2 * braking * Math.max(0, distance) * reaction))
     );
 
-    // The corner profile. Sampled along the horizon rather than read at the
-    // lookahead, because the corner that decides a cop's speed is the one he is
-    // about to arrive at, not the one he is in.
-    const lateralLimit = Math.max(0.1, view.lateralLimitG) * PHYSICS.gravity
+    // **The grip he has, separated from the speed he happens to be doing**
+    // (M30 Phase 2). `view.lateralLimitG` is the schedule's value at his
+    // *current* speed times the surface's grip, and from M30 the schedule rises
+    // with speed (`simulation/lateralCeiling.ts`) — so dividing it by the
+    // schedule at that same speed recovers the grip alone, and the brain still
+    // never has to learn what a surface is. A flat schedule (`carveGripTopG`
+    // dragged to `maxLateralG` on F4) makes this ratio exactly today's
+    // arithmetic again.
+    const gripFactor = Math.max(0.1, view.lateralLimitG)
+      / Math.max(1e-6, lateralCeilingG(view.speed, this.lateralCeiling));
+    /** Everything but the ceiling itself: gravity, the margin, and his skill. */
+    const cornerFactor = PHYSICS.gravity
+      * gripFactor
       * this.corneringMargin
       // A poor cop also corners wider, which reads as him running out of road
       // rather than as him being underpowered.
       * (0.7 + 0.3 * skill);
+    // The corner profile. Sampled along the horizon rather than read at the
+    // lookahead, because the corner that decides a cop's speed is the one he is
+    // about to arrive at, not the one he is in.
     if (!direct) {
       for (let ahead = 0; ahead <= horizon; ahead += CORNER_SCAN_METRES) {
         const curvature = Math.abs(this.spine.curvature(
@@ -670,7 +729,10 @@ export class CpuRider {
           this.curveB,
         ));
         if (curvature <= 1e-4) continue;
-        cap = Math.min(cap, allow(Math.sqrt(lateralLimit / curvature), ahead));
+        cap = Math.min(cap, allow(
+          speedAtLateralLimit(1 / Math.sqrt(curvature), cornerFactor, this.lateralCeiling),
+          ahead,
+        ));
       }
     }
 
@@ -765,51 +827,109 @@ export class CpuRider {
       // is *left* gives the same line through a wide gap and a much better one
       // through a narrow gap, with no tolerance anywhere.
       const limit = this.aim.halfWidth * SHOULDER_SHARE;
-      this.gaps.length = 0;
-      for (const blocker of this.conflicts) {
-        this.gaps.push(blocker.right - TIGHT_ROOM, blocker.left + TIGHT_ROOM);
-      }
+      /**
+       * The widest-and-nearest opening left when the given bands are taken out
+       * of the corridor. `hardOnly` drops the blockers that only cost a wobble
+       * (see the yield rule below).
+       */
+      const search = (
+        hardOnly: boolean,
+      ): { low: number; high: number; width: number; line: number } => {
+        this.gaps.length = 0;
+        for (const blocker of this.conflicts) {
+          if (hardOnly && blocker.safeSpeed === Infinity) continue;
+          this.gaps.push(blocker.right - TIGHT_ROOM, blocker.left + TIGHT_ROOM);
+        }
 
-      let bestLow = 0;
-      let bestHigh = 0;
-      let bestWidth = -1;
-      let cursorEdge = -limit;
-      // The blocked bands, in order, with the free stretch before each one.
-      const order: number[] = [];
-      for (let i = 0; i < this.gaps.length; i += 2) order.push(i);
-      order.sort((a, b) => this.gaps[a] - this.gaps[b]);
-      const takeGap = (low: number, high: number): void => {
-        const width = high - low;
-        if (width < MIN_GAP_METRES) return;
-        // **Scored by how far he would have to move from where he actually is,
-        // and that is hysteresis rather than an optimisation.** Scoring against
-        // the *wanted* line instead put the two gaps either side of a bollard
-        // in the middle of a nine-metre road within a few centimetres of each
-        // other, so the winner changed as the road curved and the cop swerved
-        // left, then right, then arrived at the bollard dead centre and hit it
-        // at full speed. Measuring from his own line makes the gap he is
-        // already entering win every subsequent step by construction.
-        const target = clamp(offset, low + Math.min(room, width / 2), high - Math.min(room, width / 2));
-        // Nearest, less a credit for width. A plaza's bollards stand in rows
-        // with metre-and-a-half slots between them and five metres of clear
-        // brick beside them, and a purely nearest rule threads the slot — which
-        // is a line with no margin for the pursuit's own error, and the one
-        // remaining way the sweep put him into a bollard.
-        const score = Math.abs(target - selfLateral) - Math.min(width, GAP_WIDTH_CAP) * GAP_WIDTH_BIAS;
-        if (bestWidth >= 0 && score >= bestScore) return;
-        bestScore = score;
-        bestWidth = width;
-        bestLow = low;
-        bestHigh = high;
+        let bestLow = 0;
+        let bestHigh = 0;
+        let bestWidth = -1;
+        let cursorEdge = -limit;
+        // The blocked bands, in order, with the free stretch before each one.
+        const order: number[] = [];
+        for (let i = 0; i < this.gaps.length; i += 2) order.push(i);
+        order.sort((a, b) => this.gaps[a] - this.gaps[b]);
+        let bestScore = Infinity;
+        const takeGap = (low: number, high: number): void => {
+          const width = high - low;
+          if (width < MIN_GAP_METRES) return;
+          // **Scored by how far he would have to move from where he actually
+          // is, and that is hysteresis rather than an optimisation.** Scoring
+          // against the *wanted* line instead put the two gaps either side of a
+          // bollard in the middle of a nine-metre road within a few centimetres
+          // of each other, so the winner changed as the road curved and the cop
+          // swerved left, then right, then arrived at the bollard dead centre
+          // and hit it at full speed. Measuring from his own line makes the gap
+          // he is already entering win every subsequent step by construction.
+          const target = clamp(offset, low + Math.min(room, width / 2), high - Math.min(room, width / 2));
+          // Nearest, less a credit for width. A plaza's bollards stand in rows
+          // with metre-and-a-half slots between them and five metres of clear
+          // brick beside them, and a purely nearest rule threads the slot —
+          // which is a line with no margin for the pursuit's own error, and the
+          // one remaining way the sweep put him into a bollard.
+          const score = Math.abs(target - selfLateral) - Math.min(width, GAP_WIDTH_CAP) * GAP_WIDTH_BIAS;
+          if (bestWidth >= 0 && score >= bestScore) return;
+          bestScore = score;
+          bestWidth = width;
+          bestLow = low;
+          bestHigh = high;
+        };
+        for (const index of order) {
+          const low = this.gaps[index];
+          const high = this.gaps[index + 1];
+          if (low > cursorEdge) takeGap(cursorEdge, low);
+          cursorEdge = Math.max(cursorEdge, high);
+        }
+        if (cursorEdge < limit) takeGap(cursorEdge, limit);
+        const margin = Math.min(room, bestWidth / 2);
+        return {
+          low: bestLow,
+          high: bestHigh,
+          width: bestWidth,
+          line: clamp(offset, bestLow + margin, bestHigh - margin),
+        };
       };
-      let bestScore = Infinity;
-      for (const index of order) {
-        const low = this.gaps[index];
-        const high = this.gaps[index + 1];
-        if (low > cursorEdge) takeGap(cursorEdge, low);
-        cursorEdge = Math.max(cursorEdge, high);
+
+      let chosen = search(false);
+      // **A wobble never closes an opening a wall left him** — M30 Phase 2's
+      // QA repair.
+      //
+      // `safeSpeed` already says which kind of thing this is: a wall is `0`,
+      // and a spill or a shallow hole is `Infinity` because they cost a wobble
+      // a cop rides out like anybody else — *worth a swerve and never worth
+      // braking for*. What that left out is the price of the swerve. Subtracted
+      // like a wall, a two-metre spill lying across the mouth of a gateway
+      // shuts the gateway, and the only openings left are the slivers at the
+      // corridor's edge.
+      //
+      // `sweep-40` at `?mph=65`: a shallow pothole at 597.7 m and the ford's
+      // two rails from 602.7 m with a 2.6 m channel between them. Together
+      // their bands closed the channel, the widest thing left was 0.4 m of
+      // verge outside the rails, and he set off for it — and clipped a rail at
+      // 4.8 m/s. With that one hazard deleted the seed is clean, which is the
+      // measurement that names the cause: it is not the speed and not the
+      // corner, it is a hole being treated as a wall.
+      //
+      // So when the soft bands cost him most of his opening, he takes the
+      // opening and rides the wobble. The comparison is against what the walls
+      // alone leave, and `TIGHT_ROOM` — the wheel plus its rider, the narrowest
+      // line he will take past anything — is the width worth a wobble.
+      // The criterion is the road, not a width: a soft band is worth going
+      // round while going round it is still a line on the road, and is not
+      // worth going round when the only opening it leaves is the verge outside
+      // the walls. That is a physical test rather than a threshold, and it is
+      // silent in the ordinary case — the swerve past a spill on an open road
+      // stays on the road and this never fires. And it is deliberately not
+      // asked when the corridor offers *no* opening at all: that is the
+      // end-around's case (§4.2's wall camp), and answering it here would take
+      // the flank away from a pursuit that needs it.
+      if (chosen.width >= 0 && Math.abs(chosen.line) > this.aim.halfWidth) {
+        const hard = search(true);
+        if (hard.width >= 0 && Math.abs(hard.line) <= this.aim.halfWidth) chosen = hard;
       }
-      if (cursorEdge < limit) takeGap(cursorEdge, limit);
+      const bestLow = chosen.low;
+      const bestHigh = chosen.high;
+      const bestWidth = chosen.width;
 
       if (bestWidth >= 0) {
         // Inside the gap by as much as it can spare, up to the clearance he
@@ -1033,8 +1153,65 @@ export class CpuRider {
         // the park gate, which is what it did.
         cap = Math.min(cap, Math.max(
           SWERVE_SPEED_FLOOR,
-          aimAt * optimism * Math.sqrt(lateralLimit / (2 * sideways)),
+          speedAtLateralLimit(
+            (aimAt * optimism) / Math.sqrt(2 * sideways),
+            cornerFactor,
+            this.lateralCeiling,
+          ),
         ));
+      }
+
+      // **And the gate after this one** — M30 Phase 2's QA repair.
+      //
+      // The line above is chosen for the nearest thing in the way and the
+      // others in its own gate, which is what a rider does and is deliberate
+      // (`GATE_SPAN_METRES`). The *speed* cannot be chosen that way. On the
+      // shipped route the next cluster is far enough back that passing one
+      // gate leaves room to plan the next; M30 Phase 1's 65 mph route is
+      // denser by design (a faster wheel must never thin the road), and
+      // `sweep-30` met a spill seven metres past a bollard at 19 m/s with the
+      // spill invisible until the bollard was behind him — three tenths of a
+      // second to cross nearly four metres, half of them spent airborne over a
+      // boardwalk. He did not overcook a corner; he was never told to slow
+      // down.
+      //
+      // So the same swerve law is asked of every blocker further up the window
+      // that the chosen line runs into: how fast may he be, given the sideways
+      // he will owe and the metres he has left to pay it in. It only ever
+      // lowers the cap, it is silent at distance (the answer grows as `d`), and
+      // it re-plans from scratch each step, so a gate he will actually route
+      // around costs him nothing once the line moves off it.
+      // Not during an end-around: that leg is deliberately a line the corridor
+      // cannot hold, its own offset came from real blocker extents plus
+      // clearance, and the far pieces of the very wall it is going around are
+      // exactly what it must be allowed to drive past.
+      if (!direct && !endAround) {
+        const scanFrom = Math.max(avoidAt, 0) + GATE_SPAN_METRES;
+        for (let index = 0; index < this.blockers.length; index += 1) {
+          const blocker = direction > 0
+            ? this.blockers[index]!
+            : this.blockers[this.blockers.length - 1 - index]!;
+          const ahead = direction > 0
+            ? blocker.from - this.cursor
+            : this.cursor - blocker.to;
+          if (ahead > near) break;
+          if (ahead <= scanFrom) continue;
+          const low = blocker.right - TIGHT_ROOM;
+          const high = blocker.left + TIGHT_ROOM;
+          if (clamped <= low || clamped >= high) continue;
+          // The cheaper of the two ways out of its band. Which side he will
+          // actually take is the next gate's decision, not this one's; the
+          // nearer edge is the bound that holds either way.
+          const escape = Math.min(clamped - low, high - clamped);
+          cap = Math.min(cap, Math.max(
+            SWERVE_SPEED_FLOOR,
+            speedAtLateralLimit(
+              (ahead * optimism) / Math.sqrt(2 * escape),
+              cornerFactor,
+              this.lateralCeiling,
+            ),
+          ));
+        }
       }
       aimX = this.aim.x + Math.cos(this.aim.headingY) * clamped;
       aimZ = this.aim.z - Math.sin(this.aim.headingY) * clamped;
@@ -1328,6 +1505,69 @@ export class CpuRider {
 
 /** How finely the corner profile is sampled along the horizon, metres. */
 const CORNER_SCAN_METRES = 6;
+
+/**
+ * **A lateral-limited speed is a fixed point, not a division** — M30 Phase 2.
+ *
+ * Two questions the brain asks have the shape `v = k · sqrt(a(v))`: a corner
+ * of curvature κ allows `sqrt(a / κ)`, so `k = 1 / sqrt(κ)`; and crossing Δ of
+ * road in the d metres left allows `d · sqrt(a / 2Δ)`. `perG` is everything
+ * about the surface and the rider that multiplies the ceiling — gravity, the
+ * grip, the cornering margin, his skill — so `a(v) = ceiling(v) · perG`.
+ *
+ * Before M30 the available `a` was a constant and this was one division. The
+ * schedule (`simulation/lateralCeiling.ts`) makes it a function of the speed,
+ * and **the speed that matters is the one he will be doing at the corner, not
+ * the one he is doing now**: a cop who read the ceiling at 27 m/s would
+ * believe a bend he is about to brake into holds 1.05 g, and arrive at it far
+ * too fast. That is the overcooking `docs/PLANS.md` §30.3b names.
+ *
+ * **From the schedule's floor rather than from his current value.** The plan's
+ * letter says "from the current value", and the direction is the reason for the
+ * change: for a rising schedule the map is increasing and a contraction, so
+ * iterates started *above* the fixed point stay above it however many times
+ * they are run — and above it is exactly the belief this exists to prevent.
+ * Started from a ceiling no speed can be under, `min(maxLateralG,
+ * carveGripTopG)`, they rise toward it and every iterate is a speed the road
+ * genuinely allows.
+ *
+ * **Four passes, and the count is even on purpose** — M30 Phase 2's QA repair.
+ * Two were recorded at 0.85 % under the true fixed point, measured on the
+ * shipped schedule at one cornering margin; swept over the margin as well it is
+ * 0.85 %, and the sliders the same QA pass made reachable (they moved the
+ * wheel and not the brain until now) take it to 2.53 % at *Grip rise shape* 2
+ * and 18.2 % with both sliders at their ceilings. Four passes bring those to
+ * 0.047 %, 0.45 % and 12.2 %.
+ *
+ * The parity is not a detail. F4's `maxLateralG` reaches 1.6 and
+ * `carveGripTopG` starts at 0.75, so the panel can describe a schedule that
+ * *falls* with speed — and a decreasing map does not contract onto the fixed
+ * point from one side, it alternates about it. An odd number of passes lands
+ * above it there: measured, three passes are above the true allowance on 119 of
+ * the 1,680 corners the test sweeps, and two and four on none of them. So the
+ * one-sided guarantee this function exists for is a statement about an even
+ * number of passes, and `cpuRider.test.ts` sweeps a decreasing schedule to keep
+ * it that way.
+ *
+ * Under is a shade early on the brakes, which is the safe side and the side
+ * `corneringMargin` is already on. A flat schedule — `carveGripTopG` dragged to
+ * `maxLateralG` on F4 — converges on the first pass, so today's arithmetic is
+ * reproduced outright however many follow.
+ *
+ * `t` is the live schedule the brain was handed, never the frozen table: F4
+ * moves both anchors of this curve and a corner allowance that did not move
+ * with them was Phase 2's second QA finding.
+ */
+export function speedAtLateralLimit(
+  k: number,
+  perG: number,
+  t: LateralCeilingTuning,
+): number {
+  const floor = Math.min(t.maxLateralG, t.carveGripTopG);
+  let v = k * Math.sqrt(floor * perG);
+  for (let pass = 0; pass < 3; pass += 1) v = k * Math.sqrt(lateralCeilingG(v, t) * perG);
+  return k * Math.sqrt(lateralCeilingG(v, t) * perG);
+}
 /** The closest the aim point may be pulled in while avoiding, metres. */
 const MIN_AIM_METRES = 4;
 /** How far ahead of the wheel a blocker has to end to still be in the way, metres. */
