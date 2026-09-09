@@ -73,16 +73,29 @@ test('the densest generated route costs what the model predicted, inside both ce
   expect(worst.triangles).toBeLessThanOrEqual(RENDER_BUDGET.maxTriangles);
 
   // And the model is an upper bound on it, which is the direction a budget
-  // contract has to err in: `planRenderCost` answers "what could this world
-  // cost" and ignores culling on purpose, so a browser figure *above* it would
-  // mean the contract is passing routes the frame cannot afford.
-  expect(worst.drawCalls).toBeLessThanOrEqual(predicted.frame.drawCalls);
-  expect(worst.triangles).toBeLessThanOrEqual(predicted.frame.triangles);
+  // contract has to err in: the presentation model answers "what could this
+  // world cost" and ignores culling on purpose, so a browser figure *above* it
+  // would mean the frame is drawing something nobody priced.
+  //
+  // Since the environment pass the world may be built with the enhanced
+  // recipe, whose triangles sit above the admission model by construction
+  // (`render/presentation.ts`). The bound is therefore the *selected*
+  // recipe's prediction, which the selector already held under every ceiling;
+  // the admission model stays the baseline rung's answer, exactly.
+  const presentation = await page.evaluate(() => window.game.renderer.presentation());
+  expect(presentation).not.toBeNull();
+  const selected = presentation!.cost.frame.solo;
+  const baseline = presentation!.verdicts.find((verdict) => verdict.recipe === 'baseline')!.cost.frame.solo;
+  expect(baseline).toEqual(predicted.frame);
+  expect(selected.drawCalls).toBe(predicted.frame.drawCalls);
+  expect(selected.triangles).toBeLessThanOrEqual(RENDER_BUDGET.maxTriangles);
+  expect(worst.drawCalls).toBeLessThanOrEqual(selected.drawCalls);
+  expect(worst.triangles).toBeLessThanOrEqual(selected.triangles);
 
   // Not a vacuous bound: the world really is on screen. Anything much below
   // this would mean the ride never left the spawn and the comparison above
   // compared nothing.
-  expect(worst.triangles).toBeGreaterThan(predicted.frame.triangles * 0.8);
+  expect(worst.triangles).toBeGreaterThan(selected.triangles * 0.8);
 });
 
 test('GPU objects plateau across twelve sequential generations', async ({ page }) => {

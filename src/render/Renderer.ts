@@ -22,6 +22,7 @@ import { DEFAULT_CHARACTER, type CharacterId } from '../data/riders.ts';
 import { createParticleField, type ParticleField } from './particles.ts';
 import { createSky, type SkyTexture } from './sky.ts';
 import { createTerrain, type TerrainView } from './terrain.ts';
+import { selectPresentation, type PresentationSelection } from './presentation.ts';
 import { paneBounds, paneGridFor, type PaneRect } from '../shared/paneGrid.ts';
 
 /**
@@ -170,6 +171,12 @@ export class GameRenderer {
 
   /** The world, built from a `LevelPlan`. Disposed and rebuilt with the level. */
   private terrain: TerrainView | null = null;
+  /**
+   * Which presentation recipe the installed world was built with, and what
+   * the selector priced it at. Chosen once in `setLevel`, after the plan is
+   * immutable, and kept while seats join and leave (`render/presentation.ts`).
+   */
+  private presentationSelection: PresentationSelection | null = null;
   /**
    * What the current level repainted, held for anything that must match the
    * ground rather than the table. See `LevelPlan.palette`.
@@ -667,7 +674,12 @@ export class GameRenderer {
   setLevel(plan: LevelPlan): TerrainView {
     this.terrain?.dispose();
     this.palette = plan.palette;
-    const terrain = createTerrain(plan);
+    // Presentation is a question asked of an immutable plan, never of the
+    // generator: the richer topology is built only where every frame contract
+    // still fits, and the plan is never trimmed to make it fit.
+    const selection = selectPresentation(plan);
+    this.presentationSelection = selection;
+    const terrain = createTerrain(plan, selection.recipe);
     this.terrain = terrain;
     this.scene.add(terrain.group);
 
@@ -854,6 +866,19 @@ export class GameRenderer {
    */
   applyGhost(sample: GhostSample): void {
     this.ghost.apply(sample);
+  }
+
+  /**
+   * The installed world's presentation recipe and its predicted cost, for the
+   * diagnostics panel and the QA bridge. `null` before the first level.
+   *
+   * The recipe named here is the one the scene was built with, and the cost
+   * is the selector's prediction for it — `render/presentation.test.ts`
+   * asserts the prediction equals the built scene for both recipes, so a
+   * reported cost always names the representation it describes.
+   */
+  presentation(): PresentationSelection | null {
+    return this.presentationSelection;
   }
 
   /**

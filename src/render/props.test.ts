@@ -18,6 +18,9 @@ import { createSliceLevel } from '../level/sliceLevel.ts';
 import { createTrackLevel } from '../level/trackLevel.ts';
 import { wordStrokes } from './inkKit.ts';
 import { createProps } from './props.ts';
+import { FACADE_PAGES, type FacadePageId } from './facadeAtlas.ts';
+import { FOLIAGE_TONES } from './foliageKit.ts';
+import { BASELINE_PRESENTATION, ENHANCED_PRESENTATION, selectPresentation } from './presentation.ts';
 
 /**
  * The prop kit, measured rather than estimated.
@@ -35,6 +38,13 @@ import { createProps } from './props.ts';
 
 const plan = createSliceLevel();
 const view = createProps(plan);
+/**
+ * The same slice under the enhanced recipe. The density claims below are
+ * asserted on both, because the enhanced recipe is what the slice actually
+ * ships with (`render/presentation.ts` selects it) and a guard that only ever
+ * measured the fallback would be a guard on nothing.
+ */
+const enhancedView = createProps(plan, ENHANCED_PRESENTATION);
 
 /**
  * Every kind the game's hand-authored worlds place, so a kind cannot rot
@@ -98,8 +108,10 @@ test('the props stay inside the budget they share with the rest of the frame', (
   assert.ok(view.instances > view.props, 'no kind is made of more than one part');
 });
 
-/** The two parts whose colour attribute is deliberately not plain white. */
+/** The two facade parts the slice places; they wear the atlas, not a tone. */
 const FACADE_PARTS = ['level-props-buildingBody', 'level-props-buildingTall'];
+/** The parts whose colour attribute carries the foliage tone vocabulary. */
+const FOLIAGE_PARTS = ['level-props-crown', 'level-props-coniferFoliage', 'level-props-shrub'];
 
 test('every instanced part carries the colour attribute its material needs', () => {
   // **The trap this file exists to keep shut.** `instanceColor` only reaches
@@ -109,33 +121,50 @@ test('every instanced part carries the colour attribute its material needs', () 
   // generic attribute, which is black, and every prop in the level renders as
   // a silhouette. The first pass shipped seven parts like that.
   //
-  // Every part but the two facades is plain white, because a part that tints
+  // Every part but the foliage is plain white, because a part that tints
   // its own geometry as well as its instance is a part that tints twice. The
-  // facades are the deliberate exception: their glazing bands *are* a value in
-  // this attribute, which is what makes windows cost no draw call and no
-  // material (`data/props.ts`, `BUILDING_FACADE`).
-  for (const child of view.group.children) {
-    const mesh = child as THREE.InstancedMesh;
-    const material = mesh.material as THREE.MeshStandardMaterial;
-    assert.ok(material.vertexColors, `${mesh.name} does not enable vertexColors`);
-    const colours = mesh.geometry.getAttribute('color');
-    assert.ok(colours !== undefined, `${mesh.name} has no colour attribute — it will render black`);
-    assert.equal(colours.count, mesh.geometry.getAttribute('position').count);
+  // foliage is the deliberate exception since the environment pass: its
+  // tone vocabulary (`render/foliageKit.ts`) rides this attribute, bounded and
+  // normalised to a mean of one so the instance tint still states the albedo.
+  // The facades went the other way: their glazing is texels on the atlas now
+  // and their attribute is white throughout, in both recipes.
+  for (const candidate of [view, enhancedView]) {
+    for (const child of candidate.group.children) {
+      const mesh = child as THREE.InstancedMesh;
+      const material = mesh.material as THREE.MeshStandardMaterial;
+      assert.ok(material.vertexColors, `${mesh.name} does not enable vertexColors`);
+      const colours = mesh.geometry.getAttribute('color');
+      assert.ok(colours !== undefined, `${mesh.name} has no colour attribute — it will render black`);
+      assert.equal(colours.count, mesh.geometry.getAttribute('position').count);
 
-    const facade = FACADE_PARTS.includes(mesh.name);
-    for (let index = 0; index < colours.count; index += 1) {
-      const value = colours.getX(index);
-      if (!facade) {
-        assert.equal(value, 1, `${mesh.name} colour attribute is not white`);
-        continue;
+      const foliage = FOLIAGE_PARTS.includes(mesh.name);
+      let sum = 0;
+      for (let index = 0; index < colours.count; index += 1) {
+        const value = colours.getX(index);
+        assert.equal(colours.getY(index), value, `${mesh.name} tone is not grey`);
+        assert.equal(colours.getZ(index), value, `${mesh.name} tone is not grey`);
+        sum += value;
+        if (!foliage) {
+          assert.equal(value, 1, `${mesh.name} colour attribute is not white`);
+          continue;
+        }
+        assert.ok(
+          value >= FOLIAGE_TONES.min / 1.05 && value <= FOLIAGE_TONES.max * 1.05,
+          `${mesh.name} carries ${value} in its colour attribute`,
+        );
       }
-      // Still bounded: the glazing multiplies the building's own tone, and the
-      // darkest tone in the kit times the darkest multiplier has to stay above
-      // the palette's crush floor.
-      assert.ok(value > 0.3 && value <= 1, `${mesh.name} carries ${value} in its colour attribute`);
+      assert.ok(
+        Math.abs(sum / colours.count - 1) < 1e-4,
+        `${mesh.name} tones average ${sum / colours.count}, so the instance tint no longer states the albedo`,
+      );
+      assert.ok(mesh.instanceColor !== null, `${mesh.name} carries no instance colours`);
+      assert.equal(material.color.getHex(), 0xffffff, `${mesh.name} tints twice`);
+      assert.equal(
+        material.map !== null,
+        FACADE_PARTS.includes(mesh.name) || mesh.name === 'level-props-buildingLow',
+        `${mesh.name} samples the facade atlas when it should not, or fails to`,
+      );
     }
-    assert.ok(mesh.instanceColor !== null, `${mesh.name} carries no instance colours`);
-    assert.equal(material.color.getHex(), 0xffffff, `${mesh.name} tints twice`);
   }
 });
 
@@ -314,17 +343,36 @@ test('a prop kind the kit does not know still builds something', () => {
 // The facade — from the owner's ride, 2026-08-03
 // ---------------------------------------------------------------------------
 
+/** Which atlas page a facade corner samples, or null if it is off every page. */
+function pageOf(u: number, v: number): FacadePageId | null {
+  for (const [id, rect] of Object.entries(FACADE_PAGES) as [FacadePageId, typeof FACADE_PAGES.plain][]) {
+    if (u >= rect.u0 - 1e-6 && u <= rect.u1 + 1e-6 && v >= rect.v0 - 1e-6 && v <= rect.v1 + 1e-6) return id;
+  }
+  return null;
+}
+
 test('a building wears storeys, and they cost no draw call of their own', () => {
   const facades = view.group.children.filter((child) => FACADE_PARTS.includes(child.name));
   assert.equal(facades.length, 2, 'both facades have to be built — low-rise and tall');
 
   for (const child of facades) {
     const mesh = child as THREE.InstancedMesh;
-    const colours = mesh.geometry.getAttribute('color');
+    const material = mesh.material as THREE.MeshStandardMaterial;
+    assert.ok(material.map !== null, `${mesh.name} does not sample the facade atlas`);
+    const uvs = mesh.geometry.getAttribute('uv');
+    assert.ok(uvs !== undefined, `${mesh.name} has no UVs — the atlas has nowhere to land`);
+    assert.equal(uvs.count, mesh.geometry.getAttribute('position').count);
+
+    // Since the environment pass the glazing is texels: every corner is folded
+    // onto exactly one page (`DESIGN.md` §7i — unfolded geometry samples the
+    // whole sheet), the wall strips are on a wall page, the glazed strips on a
+    // glass page, and the roof and underside on the plain one.
     let glazed = 0;
     let solid = 0;
-    for (let index = 0; index < colours.count; index += 1) {
-      if (colours.getX(index) < 1) glazed += 1; else solid += 1;
+    for (let index = 0; index < uvs.count; index += 1) {
+      const page = pageOf(uvs.getX(index), uvs.getY(index));
+      assert.ok(page !== null, `${mesh.name} corner ${index} samples off every atlas page`);
+      if (page.startsWith('glass')) glazed += 1; else solid += 1;
     }
     assert.ok(glazed > 0, `${mesh.name} has no glazing at all — it is a plain box`);
     assert.ok(solid > 0, `${mesh.name} is all glass`);
@@ -335,7 +383,80 @@ test('a building wears storeys, and they cost no draw call of their own', () => 
   }
 });
 
+test('every quad of a facade lies on one atlas page, and the three classes wear different pages', () => {
+  const pagesByPart = new Map<string, Set<FacadePageId>>();
+  const heights = [5, 18, 34];
+  const probe: LevelPlan = {
+    ...createProvingGround(),
+    props: heights.map((height, index) => ({
+      kind: 'building' as const,
+      position: { x: index * 40, y: 0, z: 0 },
+      rotationY: 0,
+      scale: 1,
+      size: { x: 12, y: height, z: 12 },
+    })),
+  };
+  const facades = createProps(probe);
+  try {
+    for (const child of facades.group.children) {
+      const mesh = child as THREE.InstancedMesh;
+      if (!mesh.name.includes('building') || mesh.name.endsWith('Cap')) continue;
+      const uvs = mesh.geometry.getAttribute('uv');
+      const pages = new Set<FacadePageId>();
+      // Six corners a quad; all six must name the same page.
+      for (let quad = 0; quad < uvs.count / 6; quad += 1) {
+        const first = pageOf(uvs.getX(quad * 6), uvs.getY(quad * 6));
+        for (let corner = 1; corner < 6; corner += 1) {
+          const page = pageOf(uvs.getX(quad * 6 + corner), uvs.getY(quad * 6 + corner));
+          assert.equal(page, first, `${mesh.name} quad ${quad} straddles pages`);
+        }
+        if (first !== null) pages.add(first);
+      }
+      pagesByPart.set(mesh.name, pages);
+    }
+  } finally {
+    facades.dispose();
+  }
+  assert.deepEqual(
+    [...(pagesByPart.get('level-props-buildingLow') ?? [])].sort(),
+    ['glassLow', 'groundLow', 'plain', 'spandrel'],
+  );
+  assert.deepEqual(
+    [...(pagesByPart.get('level-props-buildingBody') ?? [])].sort(),
+    ['glass', 'ground', 'plain', 'spandrel'],
+  );
+  assert.deepEqual(
+    [...(pagesByPart.get('level-props-buildingTall') ?? [])].sort(),
+    ['glassTall', 'groundTall', 'plain', 'spandrel'],
+  );
+});
+
+test('the facade atlas is one texture per view, shared by every facade material, and freed with the view', () => {
+  const probe = createProps(plan);
+  const maps = new Set<THREE.Texture>();
+  for (const child of probe.group.children) {
+    const material = (child as THREE.InstancedMesh).material as THREE.MeshStandardMaterial;
+    if (material.map !== null) maps.add(material.map);
+  }
+  assert.equal(maps.size, 1, 'the facade parts must share one atlas texture');
+  assert.equal(probe.textures, 1);
+  const [atlas] = maps;
+  let disposed = 0;
+  atlas.addEventListener('dispose', () => { disposed += 1; });
+  probe.dispose();
+  assert.equal(disposed, 1, 'dispose() must release the atlas; a material never disposes its map');
+  probe.dispose();
+  assert.equal(disposed, 1, 'a second dispose() must not free the atlas twice');
+
+  const empty = createProps(createProvingGround());
+  assert.equal(empty.textures, 0, 'a world with no facade owns no atlas');
+  empty.dispose();
+});
+
 test('the glazing is blue-shifted and never crushes the darkest building tone', () => {
+  // The tint is now painted into the atlas (`render/facadeAtlas.test.ts`
+  // asserts the texels), but the authored multiplier is still what the atlas
+  // is painted from, so its two contracts stay here.
   const tint = BUILDING_FACADE.glassTint;
   assert.ok(tint.b > tint.g && tint.g > tint.r, 'glass reflects the sky, so it is cooler than the wall');
   assert.ok(tint.r > 0 && tint.b < 1, 'the glazing is a multiplier, not an albedo');
@@ -349,6 +470,66 @@ test('the glazing is blue-shifted and never crushes the darkest building tone', 
   }));
   const glazed = darkest * (0.2126 * tint.r + 0.7152 * tint.g + 0.0722 * tint.b);
   assert.ok(glazed > 0.03, `glazing lands at ${glazed.toFixed(3)} linear — it will crush under ACES`);
+});
+
+// ---------------------------------------------------------------------------
+// The enhanced recipe — the environment pass, 2026-09-08
+// ---------------------------------------------------------------------------
+
+test('the slice selects the enhanced recipe, and that recipe stays inside PROP_BUDGET on the slice', () => {
+  assert.equal(selectPresentation(plan).recipe.id, 'enhanced');
+  assert.equal(enhancedView.recipe, 'enhanced');
+  assert.equal(view.recipe, 'baseline');
+  assert.ok(
+    enhancedView.drawCalls + enhancedView.shadowDrawCalls <= PROP_BUDGET.maxDrawCalls,
+    `${enhancedView.drawCalls + enhancedView.shadowDrawCalls} prop draw calls`,
+  );
+  assert.ok(
+    enhancedView.triangles + enhancedView.shadowTriangles <= PROP_BUDGET.maxTriangles,
+    `${enhancedView.triangles + enhancedView.shadowTriangles} prop triangles with shadows`,
+  );
+  // The average-per-prop guard, in the one scope it was calibrated for. It is
+  // deliberately not a selection rule (`render/presentation.ts`).
+  const average = enhancedView.triangles / enhancedView.props;
+  assert.ok(
+    average <= PROP_BUDGET.maxTrianglesPerProp,
+    `the enhanced slice averages ${average.toFixed(1)} colour triangles per prop`,
+  );
+  assert.ok(enhancedView.triangles > view.triangles, 'the enhanced recipe must actually spend triangles');
+});
+
+test('the enhanced recipe changes triangles only — same buckets, transforms, tints, shadow flags', () => {
+  assert.equal(enhancedView.group.children.length, view.group.children.length);
+  assert.equal(enhancedView.instances, view.instances);
+  assert.equal(enhancedView.drawCalls, view.drawCalls);
+  assert.equal(enhancedView.shadowDrawCalls, view.shadowDrawCalls);
+  for (let index = 0; index < view.group.children.length; index += 1) {
+    const a = view.group.children[index] as THREE.InstancedMesh;
+    const b = enhancedView.group.children[index] as THREE.InstancedMesh;
+    assert.equal(a.name, b.name);
+    assert.equal(a.count, b.count, `${a.name} instance count moved`);
+    assert.equal(a.castShadow, b.castShadow, `${a.name} shadow flag moved`);
+    assert.deepEqual(Array.from(b.instanceMatrix.array), Array.from(a.instanceMatrix.array), `${a.name} transforms moved`);
+    assert.deepEqual(Array.from(b.instanceColor!.array), Array.from(a.instanceColor!.array), `${a.name} tints moved`);
+    const enhanced = ['level-props-crown', 'level-props-coniferFoliage'].includes(a.name);
+    const aTriangles = a.geometry.getAttribute('position').count / 3;
+    const bTriangles = b.geometry.getAttribute('position').count / 3;
+    if (enhanced) assert.ok(bTriangles > aTriangles, `${a.name} was not enriched`);
+    else assert.equal(bTriangles, aTriangles, `${a.name} changed although the recipe does not name it`);
+  }
+});
+
+test('the baseline recipe is what createProps builds when nobody asks', () => {
+  const silent = createProps(plan);
+  const explicit = createProps(plan, BASELINE_PRESENTATION);
+  try {
+    assert.equal(silent.recipe, 'baseline');
+    assert.equal(silent.triangles, explicit.triangles);
+    assert.equal(silent.triangles, view.triangles);
+  } finally {
+    silent.dispose();
+    explicit.dispose();
+  }
 });
 
 test('a tall block gets more storeys than a low one, and both are plausible', () => {

@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test } from '@playwright/test';
 import { boot, collectErrors } from './harness.ts';
+import { FACADE_PAGES } from '../src/render/facadeAtlas.ts';
 import { EUC, LIGHTING, PHYSICS, SIMULATION, TERRAIN, WHEEL } from '../src/data/tuning.ts';
 import { MARKINGS } from '../src/data/markings.ts';
 import {
@@ -870,28 +871,38 @@ test('the buildings wear storeys, and nothing grows out of a wall', async ({ pag
   // From the owner's ride on 2026-08-03: foliage intersecting a building, and
   // blocks with no windows. Both are checked headlessly against the plan; what
   // only a browser can say is that the renderer actually built two facades and
-  // that the glazing survives into the geometry it draws.
-  const facades = await page.evaluate(() => {
-    const out: { name: string; vertices: number; glazed: number }[] = [];
+  // that the glazing survives into the geometry it draws. Since the environment
+  // pass the glazing is texels on the facade atlas rather than a vertex
+  // colour, so a glazed vertex is one folded onto a glass page, and the drawn
+  // material has to carry the atlas for those texels to exist at all.
+  const glassPages = Object.entries(FACADE_PAGES)
+    .filter(([id]) => id.startsWith('glass'))
+    .map(([, rect]) => rect);
+  const facades = await page.evaluate((pages) => {
+    const out: { name: string; vertices: number; glazed: number; mapped: boolean }[] = [];
     window.game.renderer.scene.traverse((object) => {
       if (!object.name.startsWith('level-props-building')) return;
       const mesh = object as unknown as {
-        geometry: { attributes: { color?: { count: number; getX(i: number): number } } };
+        geometry: { attributes: { uv?: { count: number; getX(i: number): number; getY(i: number): number } } };
+        material: { map: unknown };
       };
-      const colour = mesh.geometry.attributes.color;
-      if (colour === undefined) return;
+      const uv = mesh.geometry.attributes.uv;
+      if (uv === undefined) return;
       let glazed = 0;
-      for (let index = 0; index < colour.count; index += 1) {
-        if (colour.getX(index) < 1) glazed += 1;
+      for (let index = 0; index < uv.count; index += 1) {
+        const u = uv.getX(index);
+        const v = uv.getY(index);
+        if (pages.some((rect) => u >= rect.u0 && u <= rect.u1 && v >= rect.v0 && v <= rect.v1)) glazed += 1;
       }
-      out.push({ name: object.name, vertices: colour.count, glazed });
+      out.push({ name: object.name, vertices: uv.count, glazed, mapped: mesh.material.map !== null });
     });
     return out.sort((a, b) => a.name.localeCompare(b.name));
-  });
+  }, glassPages);
 
   const bodies = facades.filter((part) => part.name !== 'level-props-buildingCap');
   expect(bodies.length).toBe(2);
   for (const part of bodies) {
+    expect(part.mapped).toBe(true);
     expect(part.glazed).toBeGreaterThan(0);
     expect(part.glazed).toBeLessThan(part.vertices);
   }

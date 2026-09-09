@@ -13,6 +13,8 @@ import type { SurfaceId } from '../simulation/world.ts';
 import { createHazards, type HazardsView } from './hazards.ts';
 import { createMarkings, type MarkingsView } from './markings.ts';
 import { createProps } from './props.ts';
+import { BASELINE_PRESENTATION, type PresentationRecipe, type PresentationRecipeId } from './presentation.ts';
+import { isCoursed, stoneTone, wallFaceGrid } from './wallCourses.ts';
 import {
   COURSE_MOTTLE,
   EDGE_ENCROACH,
@@ -72,6 +74,12 @@ export interface TerrainView {
   readonly markings: MarkingsView;
   /** M13 Phase 2's potholes, on the same terms as the paint above. */
   readonly hazards: HazardsView;
+  /** Which topology the world was built with (`render/presentation.ts`). */
+  readonly recipe: PresentationRecipeId;
+  /** Colour-pass triangles of the collider blocks, for the presentation model. */
+  readonly blockTriangles: number;
+  /** GPU textures this view owns, through its props. */
+  readonly textures: number;
   /** Re-centre the surround plane on the rider. Called once per frame. */
   setSurroundCentre(x: number, z: number): void;
   dispose(): void;
@@ -162,7 +170,10 @@ function standardMaterial(appearance: MaterialAppearance, vertexColors: boolean)
   });
 }
 
-export function createTerrain(plan: LevelPlan): TerrainView {
+export function createTerrain(
+  plan: LevelPlan,
+  recipe: PresentationRecipe = BASELINE_PRESENTATION,
+): TerrainView {
   const group = new THREE.Group();
   group.name = 'level-terrain';
 
@@ -424,19 +435,31 @@ export function createTerrain(plan: LevelPlan): TerrainView {
     const appearance = paintedAppearance(id, plan.palette);
     const boxPositions: number[] = [];
     const boxNormals: number[] = [];
+    const boxColours: number[] = [];
     const boxIndices: number[] = [];
 
     for (const collider of colliders) {
-      appendBox(collider, boxPositions, boxNormals, boxIndices);
+      appendBox(
+        collider,
+        boxPositions,
+        boxNormals,
+        boxColours,
+        boxIndices,
+        recipe.walls && isCoursed(collider, id),
+      );
     }
 
+    // The colour attribute is present in every recipe — white where a face
+    // is plain, the running bond's flat tones where a wall is coursed — so a
+    // block material compiles the same program whichever recipe a world took.
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(boxPositions, 3));
     geometry.setAttribute('normal', new THREE.Float32BufferAttribute(boxNormals, 3));
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(boxColours, 3));
     geometry.setIndex(boxIndices);
     geometry.computeBoundingSphere();
 
-    const material = standardMaterial(appearance, false);
+    const material = standardMaterial(appearance, true);
     const mesh = new THREE.Mesh(geometry, material);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
@@ -452,7 +475,7 @@ export function createTerrain(plan: LevelPlan): TerrainView {
   // proxy boxes over the prop meshes. Props are built and freed with the level
   // because one outliving the terrain it was placed against is a leak with no
   // symptom until the GPU object count stops plateauing.
-  const props = createProps(plan);
+  const props = createProps(plan, recipe);
   group.add(props.group);
 
   // M7.5 stage 4's paint. Render-only on exactly the same terms as the props
@@ -478,6 +501,9 @@ export function createTerrain(plan: LevelPlan): TerrainView {
     hazards,
     triangles: indices.length / 3 + colliderTriangles + fieldMesh.triangles + 2
       + props.triangles + markings.triangles + hazards.triangles,
+    recipe: recipe.id,
+    blockTriangles: colliderTriangles,
+    textures: props.textures,
 
     setSurroundCentre(x: number, z: number): void {
       backstop.position.x = x;
@@ -597,7 +623,9 @@ function appendBox(
   collider: BoxCollider,
   positions: number[],
   normals: number[],
+  colours: number[],
   indices: number[],
+  coursed: boolean,
 ): void {
   const { centre, halfExtents } = collider;
   const cos = Math.cos(collider.rotationY);
@@ -621,20 +649,66 @@ function appendBox(
   ];
 
   for (const face of faces) {
-    const base = positions.length / 3;
     const [nx, ny, nz] = face.normal;
     const worldNormalX = cos * nx + sin * nz;
     const worldNormalZ = -sin * nx + cos * nz;
 
-    for (const [sx, sy, sz] of face.corners) {
-      const [wx, wy, wz] = toWorld(
-        sx * halfExtents.x,
-        sy * halfExtents.y,
-        sz * halfExtents.z,
+    // Every vertical face lists its corners as [origin, origin+up,
+    // origin+up+along, origin+along], so a sub-quad at fractions (s0..s1) of
+    // the run and (t0..t1) of the height keeps exactly the face's winding.
+    const emit = (s0: number, s1: number, t0: number, t1: number, tone: number): void => {
+      const base = positions.length / 3;
+      const [c0, c1, , c3] = face.corners;
+      const along = [c3[0] - c0[0], c3[1] - c0[1], c3[2] - c0[2]];
+      const up = [c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2]];
+      const at = (s: number, t: number): [number, number, number] => toWorld(
+        (c0[0] + along[0] * s + up[0] * t) * halfExtents.x,
+        (c0[1] + along[1] * s + up[1] * t) * halfExtents.y,
+        (c0[2] + along[2] * s + up[2] * t) * halfExtents.z,
       );
-      positions.push(wx, wy, wz);
-      normals.push(worldNormalX, ny, worldNormalZ);
+      for (const [wx, wy, wz] of [at(s0, t0), at(s0, t1), at(s1, t1), at(s1, t0)]) {
+        positions.push(wx, wy, wz);
+        normals.push(worldNormalX, ny, worldNormalZ);
+        colours.push(tone, tone, tone);
+      }
+      indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    };
+
+    if (!coursed || ny !== 0) {
+      emit(0, 1, 0, 1, 1);
+      continue;
     }
-    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+
+    // A running bond across the face: rows of the grid's height, odd rows
+    // offset by half a stone so the joints do not line up (`render/wallCourses.ts`).
+    const width = nx !== 0 ? halfExtents.z * 2 : halfExtents.x * 2;
+    const grid = wallFaceGrid(width, halfExtents.y * 2);
+    if (grid.rows === 1 && grid.columns === 1) {
+      emit(0, 1, 0, 1, 1);
+      continue;
+    }
+    for (let row = 0; row < grid.rows; row += 1) {
+      const t0 = row / grid.rows;
+      const t1 = (row + 1) / grid.rows;
+      const offset = row % 2 === 1 ? 0.5 / grid.columns : 0;
+      let s0 = 0;
+      let s1 = offset > 0 ? offset : 1 / grid.columns;
+      while (s0 < 1 - 1e-9) {
+        const [cx, , cz] = toWorld(0, 0, 0);
+        const mid = (s0 + s1) / 2;
+        // The stone's own centre, for a tone that belongs to it and not to the wall.
+        const [mx, , mz] = (() => {
+          const [c0, , , c3] = face.corners;
+          return toWorld(
+            (c0[0] + (c3[0] - c0[0]) * mid) * halfExtents.x,
+            0,
+            (c0[2] + (c3[2] - c0[2]) * mid) * halfExtents.z,
+          );
+        })();
+        emit(s0, s1, t0, t1, stoneTone(mx - cx + cx, mz - cz + cz, row));
+        s0 = s1;
+        s1 = Math.min(1, s1 + 1 / grid.columns);
+      }
+    }
   }
 }

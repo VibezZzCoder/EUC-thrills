@@ -13,6 +13,15 @@ import { materialAppearance } from '../data/surfaces.ts';
 import { linearFromHex, wordStrokes } from './inkKit.ts';
 import { positionHash01 } from '../shared/maths.ts';
 import type { LevelPlan, Prop } from '../level/plan.ts';
+import { enhancedConifer, enhancedCrown, shapedShrub, toneFoliage } from './foliageKit.ts';
+import {
+  FACADE_ATLAS_SIZE,
+  FACADE_PAGES,
+  paintFacadeAtlas,
+  type FacadeAtlas,
+  type FacadePageId,
+} from './facadeAtlas.ts';
+import { BASELINE_PRESENTATION, type PresentationRecipe, type PresentationRecipeId } from './presentation.ts';
 
 /**
  * The world's dressing, built from the `LevelPlan` and from nothing else.
@@ -91,6 +100,10 @@ export interface PropsView {
    */
   readonly shadowDrawCalls: number;
   readonly shadowTriangles: number;
+  /** Which topology this view was built with (`render/presentation.ts`). */
+  readonly recipe: PresentationRecipeId;
+  /** GPU textures this view owns: the facade atlas when a facade is present. */
+  readonly textures: number;
   dispose(): void;
 }
 
@@ -139,6 +152,30 @@ interface PartDefinition {
    * the skyline does not because it is hundreds of metres outside the cascade.
    */
   readonly castShadow: boolean;
+  /**
+   * Whether the part samples the facade atlas (`render/facadeAtlas.ts`).
+   *
+   * A facade's window groups, piers, plinth and closed shopfront are texels on
+   * the quads the part already has, so the grouping costs no triangle and no
+   * draw call. The three facade materials share one `DataTexture` per view.
+   */
+  readonly atlas?: boolean;
+}
+
+/**
+ * The enhanced recipe's geometry, for the parts it rebuilds. Same buckets,
+ * same envelopes, same instance transforms; only the triangles differ, and
+ * `render/enhancedCatalog.ts` prices them (`render/presentation.ts`).
+ */
+const ENHANCED_BUILDERS: Readonly<Partial<Record<PartId, () => THREE.BufferGeometry>>> = {
+  crown: enhancedCrown,
+  coniferFoliage: enhancedConifer,
+};
+
+/** The baseline shape with the shared foliage tones written in. */
+function tonedFoliage(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+  toneFoliage(geometry);
+  return geometry;
 }
 
 const WOOD = materialAppearance('wood');
@@ -167,10 +204,10 @@ const PARTS: Readonly<Record<PartId, PartDefinition>> = {
     build: () => {
       const tree = PROP_SIZES.broadleafTree;
       const wide = tree.crownRadius;
-      return merge([
+      return tonedFoliage(merge([
         blob(wide, 1, tree.crownHeight / (2 * wide), 0.92, 0, tree.crownCentre, 0),
         blob(tree.upperRadius, 1, 0.85, 1, tree.upperOffset, tree.upperCentre, -0.3),
-      ]);
+      ]));
     },
     albedo: PROP_COLOURS.broadleafFoliage,
     roughness: 1,
@@ -180,14 +217,14 @@ const PARTS: Readonly<Record<PartId, PartDefinition>> = {
   },
 
   coniferFoliage: {
-    build: () => merge(
+    build: () => tonedFoliage(merge(
       PROP_SIZES.conifer.tiers.map((tier) => cone(
         tier.radius,
         tier.height,
         PROP_SIZES.conifer.tierSides,
         tier.base,
       )),
-    ),
+    )),
     albedo: PROP_COLOURS.coniferFoliage,
     roughness: 1,
     metalness: 0,
@@ -196,10 +233,9 @@ const PARTS: Readonly<Record<PartId, PartDefinition>> = {
   },
 
   shrub: {
-    build: () => {
-      const bush = PROP_SIZES.shrub;
-      return blob(bush.radius, bush.scaleX, bush.scaleY, bush.scaleZ, 0, bush.centre, 0);
-    },
+    // Shaped rather than a squashed ball since the environment pass: the same
+    // twenty faces, lobed and floored (`render/foliageKit.ts`), in every recipe.
+    build: () => shapedShrub(),
     albedo: PROP_COLOURS.shrubFoliage,
     roughness: 1,
     metalness: 0,
@@ -392,12 +428,13 @@ const PARTS: Readonly<Record<PartId, PartDefinition>> = {
     // the `color` attribute, and that attribute already had to exist for
     // `instanceColor` to reach the shader at all. Windows therefore cost no
     // draw call and no material — only the strips' own triangles.
-    build: () => facadeBox(BUILDING_FACADE.lowFloors),
+    build: () => facadeBox(BUILDING_FACADE.lowFloors, { ground: 'ground', glass: 'glass' }),
     albedo: 0xffffff,
     roughness: 0.92,
     metalness: 0,
     tint: 0,
     castShadow: false,
+    atlas: true,
   },
 
   /**
@@ -416,12 +453,13 @@ const PARTS: Readonly<Record<PartId, PartDefinition>> = {
    * fits: `props.test.ts` measures every instance and is meant to say so.
    */
   buildingLow: {
-    build: () => facadeBox(BUILDING_FACADE.lowRiseFloors),
+    build: () => facadeBox(BUILDING_FACADE.lowRiseFloors, { ground: 'groundLow', glass: 'glassLow' }),
     albedo: 0xffffff,
     roughness: 0.92,
     metalness: 0,
     tint: 0,
     castShadow: false,
+    atlas: true,
   },
 
   /**
@@ -436,12 +474,13 @@ const PARTS: Readonly<Record<PartId, PartDefinition>> = {
    * different milestone's cost.
    */
   buildingTall: {
-    build: () => facadeBox(BUILDING_FACADE.highFloors),
+    build: () => facadeBox(BUILDING_FACADE.highFloors, { ground: 'groundTall', glass: 'glassTall' }),
     albedo: 0xffffff,
     roughness: 0.92,
     metalness: 0,
     tint: 0,
     castShadow: false,
+    atlas: true,
   },
 
   buildingCap: {
@@ -792,12 +831,18 @@ function mergeToned(
  * side, which is what makes each strip's front face the one the sun lights —
  * derived rather than found by flipping signs until it looked right.
  */
-function facadeBox(floors: number): THREE.BufferGeometry {
+/** Which atlas pages a facade class wears on its ground floor and its glazing. */
+interface FacadePages {
+  readonly ground: FacadePageId;
+  readonly glass: FacadePageId;
+}
+
+function facadeBox(floors: number, pages: FacadePages): THREE.BufferGeometry {
   const positions: number[] = [];
   const normals: number[] = [];
   const colors: number[] = [];
+  const uvs: number[] = [];
 
-  const glass = BUILDING_FACADE.glassTint;
   const half = 0.5;
   // Clockwise seen from above, so the outward normal falls out of the cross
   // product rather than being asserted.
@@ -805,24 +850,31 @@ function facadeBox(floors: number): THREE.BufferGeometry {
     [-half, -half], [-half, half], [half, half], [half, -half],
   ];
 
+  // Every strip is folded onto one atlas page — the whole page across its
+  // width, the whole page up its height — so the page's plinth, piers and
+  // sills land where the strip's own edges are, whatever the instance's
+  // metric size stretches the box to (`DESIGN.md` §7i). Since the atlas
+  // carries the glazing, the colour attribute is white throughout and the
+  // building's tone is the instance colour alone.
   const quad = (
     ax: number, az: number, bx: number, bz: number,
     y0: number, y1: number,
     nx: number, nz: number,
-    tone: { r: number; g: number; b: number },
+    page: FacadePageId,
   ): void => {
-    const corners: [number, number, number][] = [
-      [ax, y0, az], [bx, y0, bz], [bx, y1, bz],
-      [ax, y0, az], [bx, y1, bz], [ax, y1, az],
+    const rect = FACADE_PAGES[page];
+    const corners: [number, number, number, number, number][] = [
+      [ax, y0, az, rect.u0, rect.v0], [bx, y0, bz, rect.u1, rect.v0], [bx, y1, bz, rect.u1, rect.v1],
+      [ax, y0, az, rect.u0, rect.v0], [bx, y1, bz, rect.u1, rect.v1], [ax, y1, az, rect.u0, rect.v1],
     ];
-    for (const [x, y, z] of corners) {
+    for (const [x, y, z, u, v] of corners) {
       positions.push(x, y, z);
       normals.push(nx, 0, nz);
-      colors.push(tone.r, tone.g, tone.b);
+      colors.push(1, 1, 1);
+      uvs.push(u, v);
     }
   };
 
-  const white = { r: 1, g: 1, b: 1 };
   const bandHeight = 1 / floors;
   const spandrel = 1 - BUILDING_FACADE.glazing;
 
@@ -838,12 +890,12 @@ function facadeBox(floors: number): THREE.BufferGeometry {
       const base = floor * bandHeight;
       const glazed = floor > 0 || !BUILDING_FACADE.solidGroundFloor;
       if (!glazed) {
-        quad(ax, az, bx, bz, base, base + bandHeight, nx, nz, white);
+        quad(ax, az, bx, bz, base, base + bandHeight, nx, nz, pages.ground);
         continue;
       }
       const split = base + bandHeight * spandrel;
-      quad(ax, az, bx, bz, base, split, nx, nz, white);
-      quad(ax, az, bx, bz, split, base + bandHeight, nx, nz, glass);
+      quad(ax, az, bx, bz, base, split, nx, nz, 'spandrel');
+      quad(ax, az, bx, bz, split, base + bandHeight, nx, nz, pages.glass);
     }
   }
 
@@ -854,10 +906,12 @@ function facadeBox(floors: number): THREE.BufferGeometry {
       ? [[-half, -half], [-half, half], [half, half], [half, -half]]
       : [[-half, -half], [half, -half], [half, half], [-half, half]];
     const [p0, p1, p2, p3] = order;
+    const plain = FACADE_PAGES.plain;
     for (const [x, z] of [p0, p1, p2, p0, p2, p3]) {
       positions.push(x, y, z);
       normals.push(0, ny, 0);
       colors.push(1, 1, 1);
+      uvs.push(x + half > 0.5 ? plain.u1 : plain.u0, z + half > 0.5 ? plain.v1 : plain.v0);
     }
   }
 
@@ -865,7 +919,41 @@ function facadeBox(floors: number): THREE.BufferGeometry {
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   return geometry;
+}
+
+/**
+ * The facade atlas as a GPU texture: painted once per process, uploaded once
+ * per view, disposed with the view.
+ *
+ * The pixels are pure arithmetic (`render/facadeAtlas.ts`) and are kept after
+ * the first paint; the `DataTexture` is not, because a texture is a GPU
+ * resource and every one of those has an owner and a disposal path
+ * (invariant 10). A world swap therefore re-uploads 1 MiB and repaints
+ * nothing, and `renderer.info.memory.textures` plateaus across regeneration.
+ */
+let facadePixels: FacadeAtlas | null = null;
+
+function createFacadeTexture(): THREE.DataTexture {
+  if (facadePixels === null) {
+    facadePixels = paintFacadeAtlas({ glassTint: BUILDING_FACADE.glassTint });
+  }
+  const texture = new THREE.DataTexture(
+    facadePixels.data,
+    FACADE_ATLAS_SIZE,
+    FACADE_ATLAS_SIZE,
+    THREE.RGBAFormat,
+  );
+  // Painted as sRGB bytes; three decodes them to linear in the shader.
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.generateMipmaps = true;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 /** A faceted lobe: the canopy, the shrub, and the bollard's finial. */
@@ -913,7 +1001,10 @@ interface Bucket {
   readonly colours: number[];
 }
 
-export function createProps(plan: LevelPlan): PropsView {
+export function createProps(
+  plan: LevelPlan,
+  recipe: PresentationRecipe = BASELINE_PRESENTATION,
+): PropsView {
   const group = new THREE.Group();
   group.name = 'level-props';
 
@@ -1034,12 +1125,15 @@ export function createProps(plan: LevelPlan): PropsView {
   let shadowDrawCalls = 0;
 
   const matrix = new THREE.Matrix4();
+  let atlas: THREE.DataTexture | null = null;
   for (const [part, bucket] of buckets) {
     const definition = PARTS[part];
     const count = bucket.colours.length / 3;
     if (count === 0) continue;
 
-    const geometry = withInstanceColour(definition.build());
+    const build = (recipe.foliage ? ENHANCED_BUILDERS[part] : undefined) ?? definition.build;
+    const geometry = withInstanceColour(build());
+    if (definition.atlas === true && atlas === null) atlas = createFacadeTexture();
     const material = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       roughness: definition.roughness,
@@ -1047,6 +1141,7 @@ export function createProps(plan: LevelPlan): PropsView {
       // Required for `instanceColor` to reach the fragment shader at all. The
       // geometry's white `color` attribute is the other half of it.
       vertexColors: true,
+      map: definition.atlas === true ? atlas : null,
     });
 
     const mesh = new THREE.InstancedMesh(geometry, material, count);
@@ -1091,6 +1186,8 @@ export function createProps(plan: LevelPlan): PropsView {
     triangles,
     shadowDrawCalls,
     shadowTriangles,
+    recipe: recipe.id,
+    textures: atlas === null ? 0 : 1,
 
     dispose(): void {
       // InstancedMesh owns the GPU buffers behind instanceMatrix and
@@ -1099,6 +1196,10 @@ export function createProps(plan: LevelPlan): PropsView {
       for (const mesh of meshes) mesh.dispose();
       for (const geometry of geometries) geometry.dispose();
       for (const material of materials) material.dispose();
+      // A texture is disposed apart from the materials that sample it: a
+      // material's dispose() never releases its map (three's cleanup guide).
+      atlas?.dispose();
+      atlas = null;
       meshes.length = 0;
       geometries.length = 0;
       materials.length = 0;

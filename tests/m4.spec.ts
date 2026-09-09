@@ -100,9 +100,16 @@ test('the renderer builds its ground from the plan, and its own copy is gone', a
   // that collapses is a level the player cannot read.
   expect(scene.heightfieldColours.length).toBe(scene.heightfieldGroups);
 
-  // The blocks are merged per material rather than drawn one at a time.
+  // The blocks are merged per material rather than drawn one at a time. Twelve
+  // triangles a collider is the baseline rung; the enhanced recipe courses the
+  // stone walls, so the drawn count is held to the recipe the world was built
+  // with (`render/presentation.ts`), and the baseline rung to the old rule.
   expect(scene.blockMeshes.length).toBeGreaterThan(2);
-  expect(scene.blockTriangles).toBe(snapshot.level.colliders * 12);
+  const presentation = await page.evaluate(() => window.game.renderer.presentation());
+  expect(presentation).not.toBeNull();
+  expect(scene.blockTriangles).toBe(presentation!.cost.blockColourTriangles);
+  const baseline = presentation!.verdicts.find((verdict) => verdict.recipe === 'baseline')!;
+  expect(baseline.cost.blockColourTriangles).toBe(snapshot.level.colliders * 12);
 });
 
 test('the drawn ground and the ridden ground are the same surface, to the millimetre', async ({ page }) => {

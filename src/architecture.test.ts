@@ -235,6 +235,41 @@ test('the options firewall holds: simulation/ and level/ cannot reach player sta
   assert.ok(scanned >= 2, `Expected to scan at least 2 files, scanned ${scanned}.`);
 });
 
+test('the presentation boundary is one-way: enhanced prices can never reach admission', () => {
+  // The environment pass (2026-09-08) prices richer tree and wall topology in
+  // `render/enhancedCatalog.ts` and chooses it in `render/presentation.ts`,
+  // after a plan is immutable. `data/renderCost.ts:PART_COSTS` is what the
+  // generator admits routes with, so the moment anything under data/, level/
+  // or simulation/ could import the enhanced side, a seed's accepted layout
+  // would depend on its art. The options firewall already seals level/ and
+  // simulation/ from render/; data/ is not sealed, so it is named here.
+  const ENHANCED_FILES = /presentation|enhancedCatalog|wallCourses|foliageKit|facadeAtlas/;
+  const offenders: string[] = [];
+  let scanned = 0;
+  for (const directoryName of ['data', 'level', 'simulation']) {
+    for (const file of collectSourceFiles(join(SOURCE_ROOT, directoryName))) {
+      // A test may measure anything; the boundary is about shipped code.
+      if (/\.test\.[cm]?[jt]s$/.test(file)) continue;
+      scanned += 1;
+      for (const specifier of findImports(readFileSync(file, 'utf8'))) {
+        if (ENHANCED_FILES.test(specifier) || forbiddenLayerFor(specifier, ['render']) !== null) {
+          offenders.push(`${relative(SOURCE_ROOT, file)} imports "${specifier}"`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], 'the enhanced presentation leaked into generation or admission:\n' + offenders.join('\n'));
+  assert.ok(scanned >= 10, `Expected to scan the data, level and simulation trees, scanned ${scanned}.`);
+
+  // The catalogue really lives on the far side of the boundary, and the
+  // detector really would see a reach across it.
+  const renderFiles = collectSourceFiles(join(SOURCE_ROOT, 'render')).map((file) => relative(SOURCE_ROOT, file));
+  assert.ok(renderFiles.includes('render/enhancedCatalog.ts'));
+  assert.ok(renderFiles.includes('render/presentation.ts'));
+  assert.equal(forbiddenLayerFor('../render/enhancedCatalog.ts', ['render']), 'render');
+  assert.ok(ENHANCED_FILES.test('../render/presentation.ts'));
+});
+
 test('the sealed half really is reachable from a test that could catch a breach', () => {
   // A guard on the guard. Both audits above scan whatever they find; if the
   // forbidden list were ever emptied, or the sealed list, they would pass by

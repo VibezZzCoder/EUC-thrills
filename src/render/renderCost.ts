@@ -15,6 +15,7 @@ import { createPose } from '../simulation/EucController.ts';
 import { createRidingRig } from './ridingRig.ts';
 import { createTargets } from './targets.ts';
 import { createTerrain } from './terrain.ts';
+import { BASELINE_PRESENTATION, type PresentationRecipe } from './presentation.ts';
 
 /**
  * What a level actually costs to draw, measured from the built scene.
@@ -210,8 +211,11 @@ export function categoryOf(name: string): CostCategory {
  * candidate routes and a measurement that leaked a world per seed would be the
  * exact failure invariant 10 exists to catch.
  */
-export function measureLevelScene(plan: LevelPlan): LevelSceneCost {
-  const view = createTerrain(plan);
+export function measureLevelScene(
+  plan: LevelPlan,
+  recipe: PresentationRecipe = BASELINE_PRESENTATION,
+): LevelSceneCost {
+  const view = createTerrain(plan, recipe);
   // **The target family is measured here even though `createTerrain` does not
   // build it** — M14. `render/Renderer.ts` builds it beside the terrain rather
   // than inside it, on the checkpoint gates' pattern, but the two are not
@@ -581,7 +585,9 @@ function probeProp(kind: PropKind, x: number, z: number): Prop {
  * its instance count, which is exactly the number `data/renderCost.ts` carries
  * for the sealed half to multiply by.
  */
-export function measurePartTriangles(): Map<string, { triangles: number; castsShadow: boolean }> {
+export function measurePartTriangles(
+  recipe: PresentationRecipe = BASELINE_PRESENTATION,
+): Map<string, { triangles: number; castsShadow: boolean }> {
   const props = PROP_KINDS.map((kind, index) => probeProp(kind, index * 40, 0));
   // One block of every height class, because a building's facade is chosen by
   // its own height: a low block wears `buildingBody` and only a high-rise ever
@@ -599,7 +605,7 @@ export function measurePartTriangles(): Map<string, { triangles: number; castsSh
       size: { x: 14, y: height, z: 14 },
     });
   }
-  const view = createProps(propOnlyPlan(props));
+  const view = createProps(propOnlyPlan(props), recipe);
   try {
     const out = new Map<string, { triangles: number; castsShadow: boolean }>();
     for (const mesh of measureObject(view.group).meshes) {

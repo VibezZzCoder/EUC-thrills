@@ -34,7 +34,9 @@ const { createProvingGround } = await import(join(src, 'level/provingGround.ts')
 const { createTrackLevel, TRACK_LAP_METRES } = await import(join(src, 'level/trackLevel.ts'));
 const { planRenderCost } = await import(join(src, 'level/renderBudget.ts'));
 const { LIBRARY_MAX_DRAW_CALLS, NON_LEVEL_RESERVE, PART_COSTS, QUAD_PASSES, RENDER_BUDGET, RENDER_BUDGET_QUAD, RENDER_BUDGET_SPLIT, SPLIT_PASSES, propPartCounts } = await import(join(src, 'data/renderCost.ts'));
-const { measureLevelScene, measureNonLevelScene, measureQuadNonLevelScene, measureSplitNonLevelScene } = await import(join(src, 'render/renderCost.ts'));
+const { measureLevelScene, measureNonLevelScene, measurePartTriangles, measureQuadNonLevelScene, measureSplitNonLevelScene } = await import(join(src, 'render/renderCost.ts'));
+const { ENHANCED_PART_COSTS } = await import(join(src, 'render/enhancedCatalog.ts'));
+const { BASELINE_PRESENTATION, ENHANCED_PRESENTATION, PRESENTATION_LADDER, selectPresentation } = await import(join(src, 'render/presentation.ts'));
 
 const write = process.argv.includes('--write');
 
@@ -347,6 +349,79 @@ out('`tris ea` counts the shadow pass, so a casting part is charged twice — an
 out('instanced mesh spans the world and the shadow camera never culls one.');
 out();
 
+// ---------------------------------------------------------------------------
+// The enhanced presentation — the environment pass, 2026-09-08
+// ---------------------------------------------------------------------------
+
+/**
+ * The enhanced kit measured part by part, and every authored world priced
+ * and measured under both recipes. The catalogue this writes
+ * (`src/render/enhancedCatalog.ts`) is presentation data: `level/` prices
+ * admission from `data/renderCost.ts` and never sees it.
+ */
+const baselineParts = measurePartTriangles(BASELINE_PRESENTATION);
+const enhancedParts = measurePartTriangles(ENHANCED_PRESENTATION);
+const enhancedRows = [...enhancedParts]
+  .filter(([part, cost]) => cost.triangles !== baselineParts.get(part).triangles || part in ENHANCED_PART_COSTS)
+  .map(([part, cost]) => ({ part, baseline: baselineParts.get(part).triangles, enhanced: cost.triangles, castsShadow: cost.castsShadow }));
+const presentationWorlds = [
+  ['the slice', slice],
+  ['BelVar Circuit', track],
+  ['the proving ground', proving],
+].map(([name, plan]) => {
+  const selection = selectPresentation(plan);
+  const verdicts = Object.fromEntries(selection.verdicts.map((verdict) => [verdict.recipe, verdict]));
+  return {
+    name,
+    selection,
+    verdicts,
+    measured: Object.fromEntries(PRESENTATION_LADDER.map((recipe) => [recipe.id, measureLevelScene(plan, recipe)])),
+  };
+});
+
+out('## The enhanced presentation — measured, the environment pass');
+out();
+out('Richer crown and conifer topology in the same instanced buckets, and a');
+out('running bond on the stone walls, chosen per installed world *after*');
+out('generation by `render/presentation.ts` and only where the prop family and');
+out('all three frame contracts still fit. Admission still prices every route');
+out('from `data/renderCost.ts`; this catalogue lives under `render/` and');
+out('`src/architecture.test.ts` proves nothing in `level/`, `simulation/` or');
+out('`data/` can import it.');
+out();
+out('```');
+out(`${padEnd('part', 18)}${pad('baseline', 10)}${pad('enhanced', 10)}  casts`);
+out('-'.repeat(46));
+for (const row of enhancedRows) {
+  out(`${padEnd(row.part, 18)}${pad(row.baseline, 10)}${pad(row.enhanced, 10)}  ${row.castsShadow ? 'yes' : 'no'}`);
+}
+out('```');
+out();
+for (const world of presentationWorlds) {
+  const base = world.verdicts.baseline.cost;
+  const enhanced = world.verdicts.enhanced.cost;
+  const measuredEnhanced = world.measured.enhanced;
+  const measuredBaseline = world.measured.baseline;
+  out(`${world.name} selects **${world.selection.recipe.id}**${world.verdicts.enhanced.breaches.length > 0 ? ` — ${world.verdicts.enhanced.breaches.join('; ')}` : ''}.`);
+  out();
+  out('```');
+  out(`${padEnd('', 30)}${pad('baseline', 10)}${pad('measured', 10)}${pad('enhanced', 10)}${pad('measured', 10)}`);
+  out(`${padEnd('level draw calls', 30)}${pad(base.drawCalls, 10)}${pad(measuredBaseline.totalDrawCalls, 10)}${pad(enhanced.drawCalls, 10)}${pad(measuredEnhanced.totalDrawCalls, 10)}`);
+  out(`${padEnd('level triangles', 30)}${pad(base.triangles, 10)}${pad(measuredBaseline.totalTriangles, 10)}${pad(enhanced.triangles, 10)}${pad(measuredEnhanced.totalTriangles, 10)}`);
+  out(`${padEnd('  prop family, with shadows', 30)}${pad(base.propTriangles, 10)}${pad(measuredBaseline.byCategory.props.totalTriangles, 10)}${pad(enhanced.propTriangles, 10)}${pad(measuredEnhanced.byCategory.props.totalTriangles, 10)}`);
+  out(`${padEnd('  blocks, colour pass', 30)}${pad(base.blockColourTriangles, 10)}${pad(measuredBaseline.byCategory.blocks.triangles, 10)}${pad(enhanced.blockColourTriangles, 10)}${pad(measuredEnhanced.byCategory.blocks.triangles, 10)}`);
+  out(`${padEnd('solo frame triangles', 30)}${pad(base.frame.solo.triangles, 10)}${pad('', 10)}${pad(enhanced.frame.solo.triangles, 10)}${pad('', 10)}`);
+  out(`${padEnd('split frame triangles', 30)}${pad(base.frame.split.triangles, 10)}${pad('', 10)}${pad(enhanced.frame.split.triangles, 10)}${pad('', 10)}`);
+  out(`${padEnd('quad frame triangles', 30)}${pad(base.frame.quad.triangles, 10)}${pad('', 10)}${pad(enhanced.frame.quad.triangles, 10)}${pad('', 10)}`);
+  out('```');
+  out();
+}
+out('The prop family\'s ceiling is `PROP_BUDGET`, 32 calls / 90,000 triangles with');
+out('shadows, applied to enhanced selection in every world; the 60-per-prop');
+out('average stays a slice test (`render/props.test.ts`). The facade atlas and');
+out('the foliage tones are cost-neutral and reach both recipes.');
+out();
+
 out('## What merges across segment boundaries');
 out();
 out('```');
@@ -568,6 +643,19 @@ if (write) {
   );
   writeFileSync(sourceTarget, sourceAfter);
 
+  // The enhanced catalogue, from the enhanced kit — one line per part, and a
+  // part the kit stopped enriching is an error rather than a stale price.
+  const catalogueTarget = join(src, 'render/enhancedCatalog.ts');
+  let catalogue = readFileSync(catalogueTarget, 'utf8');
+  for (const row of enhancedRows) {
+    const pattern = new RegExp(`^(\\s*)${row.part}: \\{ triangles: \\d+, castsShadow: (?:true|false) \\},$`, 'm');
+    if (!pattern.test(catalogue)) {
+      throw new Error(`${row.part} is enriched by the kit but has no line in src/render/enhancedCatalog.ts`);
+    }
+    catalogue = catalogue.replace(pattern, `$1${row.part}: { triangles: ${row.enhanced}, castsShadow: ${row.castsShadow} },`);
+  }
+  writeFileSync(catalogueTarget, catalogue);
+
   // The report file is internal documentation. In the published repository —
   // this tool ships so a contributor can measure a new segment's row — `docs/`
   // is the built game, there is no report to refresh, and writing one there
@@ -575,8 +663,8 @@ if (write) {
   const reportTarget = join(root, 'docs/RENDER_COST.md');
   if (existsSync(reportTarget)) {
     writeFileSync(reportTarget, `${lines.join('\n')}\n`);
-    console.log(`\nwritten: src/data/renderCost.ts, docs/RENDER_COST.md`);
+    console.log(`\nwritten: src/data/renderCost.ts, src/render/enhancedCatalog.ts, docs/RENDER_COST.md`);
   } else {
-    console.log(`\nwritten: src/data/renderCost.ts (no docs/RENDER_COST.md here; report skipped)`);
+    console.log(`\nwritten: src/data/renderCost.ts, src/render/enhancedCatalog.ts (no docs/RENDER_COST.md here; report skipped)`);
   }
 }
