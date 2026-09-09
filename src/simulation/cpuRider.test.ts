@@ -54,6 +54,8 @@ interface RideResult {
   readonly finished: boolean;
   /** How far the cop ever got from the line, metres. */
   readonly worstOffRoute: number;
+  /** How far from the line he rode on average, metres — his line quality. */
+  readonly meanOffRoute: number;
 }
 
 /**
@@ -63,11 +65,33 @@ interface RideResult {
  * failure hide behind "he was distracted". The chase rules are Phase 3's and
  * are tested against their own suite.
  */
+interface RideOptions {
+  /**
+   * Start at the route's end facing back down it — half of every chase is
+   * ridden this way, because the player turns at the ends (§31). Led by a
+   * phantom at the start that never moves: a quarry gives the brain a
+   * direction, and a phantom "doing" top speed keeps every close-quarters
+   * rule (the orbit detector, the field pursuit) out of a ride that measures
+   * riding.
+   */
+  readonly reverse?: boolean;
+  /** The phantom stands still instead — the Codex M31 QA shape, with every close-quarters rule live. */
+  readonly parkedQuarry?: boolean;
+  /**
+   * The wheel's *Force lean*, radians, with the brain's drive and brake
+   * beliefs derived from it exactly as `Game.applyTuning` derives them.
+   */
+  readonly lean?: number;
+  /** A brake belief pushed instead of the derived one, m/s² — a control. */
+  readonly brakeBelief?: number;
+}
+
 function rideAlone(
   plan: LevelPlan,
   skill: number,
   maxSeconds = 240,
   mph: number | null = null,
+  options: RideOptions = {},
 ): RideResult {
   const spine = RouteSpine.fromPlan(plan);
   assert.ok(spine !== null, 'the route has no spine to follow');
@@ -78,21 +102,44 @@ function rideAlone(
   // pushes the same three onto the brain, so the ride below is what a chase on
   // that build actually is.
   const preset = mph === null ? null : topSpeedPreset(mph);
-  const tuning = preset === null ? undefined : {
-    dragCoefficient: preset.dragCoefficient,
-    powerComfortSpeed: preset.powerComfortSpeed,
-    powerLimitSpeed: preset.powerLimitSpeed,
+  const tuning = {
+    ...(preset === null ? {} : {
+      dragCoefficient: preset.dragCoefficient,
+      powerComfortSpeed: preset.powerComfortSpeed,
+      powerLimitSpeed: preset.powerLimitSpeed,
+    }),
+    ...(options.lean === undefined ? {} : { maxLeanPitch: options.lean }),
   };
   const controller = new EucController(sampler, {
     spawn: plan.spawn,
     hazards: new HazardField(plan.hazards ?? []),
     softBodies: new SoftBodyField(plan.softBodies ?? []),
-    ...(tuning === undefined ? {} : { tuning }),
+    ...(Object.keys(tuning).length === 0 ? {} : { tuning }),
   });
   const brain = new CpuRider(spine, plan, sampler);
   brain.skill = skill;
   if (preset !== null) {
     brain.dragCoefficient = preset.dragCoefficient;
+  }
+  if (options.lean !== undefined) {
+    // `Game.applyTuning`'s two pushes, verbatim in shape.
+    brain.driveAcceleration = EUC.leanToAccel * Math.sin(options.lean);
+    brain.brakeDeceleration = EUC.brakeAuthority * Math.sin(options.lean);
+  }
+  if (options.brakeBelief !== undefined) brain.brakeDeceleration = options.brakeBelief;
+
+  const reverse = options.reverse === true;
+  let quarry: CpuQuarry | null = null;
+  if (reverse) {
+    const endAt = spine.sample(spine.length - 8, { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 });
+    const ground = createGroundSample();
+    sampler.sampleGround(endAt.x, endAt.z, ground);
+    controller.reset({
+      position: { x: endAt.x, y: ground.height, z: endAt.z },
+      headingY: endAt.headingY + Math.PI,
+    });
+    const startAt = spine.sample(0, { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 });
+    quarry = { x: startAt.x, y: startAt.y, z: startAt.z, speed: options.parkedQuarry === true ? 0 : 28 };
   }
 
   const pose: EucPose = createPose();
@@ -110,11 +157,12 @@ function rideAlone(
   };
   brain.place(view);
 
-  const quarry: CpuQuarry | null = null;
   const located = { distance: 0, offRoute: 0, halfWidth: 0 };
   let crashes = 0;
   let wasCrashed = false;
   let worstOffRoute = 0;
+  let offRouteSum = 0;
+  let offRouteSamples = 0;
   let seconds = 0;
 
   const steps = Math.round(maxSeconds * SIMULATION.hz);
@@ -137,8 +185,15 @@ function rideAlone(
     seconds += STEP;
 
     spine.locate(pose.x, pose.z, brain.routeDistance, located);
-    if (!controller.crashed) worstOffRoute = Math.max(worstOffRoute, located.offRoute);
-    if (brain.routeDistance >= spine.length - FINISH_TOLERANCE_METRES) {
+    if (!controller.crashed) {
+      worstOffRoute = Math.max(worstOffRoute, located.offRoute);
+      offRouteSum += located.offRoute;
+      offRouteSamples += 1;
+    }
+    const finished = reverse
+      ? brain.routeDistance <= FINISH_TOLERANCE_METRES
+      : brain.routeDistance >= spine.length - FINISH_TOLERANCE_METRES;
+    if (finished) {
       return {
         crashes,
         progress: brain.routeDistance,
@@ -146,6 +201,7 @@ function rideAlone(
         seconds,
         finished: true,
         worstOffRoute,
+        meanOffRoute: offRouteSum / Math.max(1, offRouteSamples),
       };
     }
   }
@@ -157,6 +213,7 @@ function rideAlone(
     seconds,
     finished: false,
     worstOffRoute,
+    meanOffRoute: offRouteSum / Math.max(1, offRouteSamples),
   };
 }
 
@@ -306,6 +363,123 @@ test('the spine starts at the spawn and passes every checkpoint', () => {
       );
     }
   }
+});
+
+test('a cursor that would jump to a hairpin’s other arm is asked which way he faces', () => {
+  // `RouteSpine.locate` with a facing — Codex's M31 QA. Find a hairpin on a
+  // pinned seed the way the brain meets one: two arms a few metres apart in
+  // plan, tens of metres apart along the line, running against each other.
+  // A point on one arm's centreline pushed most of the way toward the other
+  // is nearer the other in plan; located plainly it jumps, located with the
+  // arm's own facing it stays. Searched for rather than named, so a
+  // regenerated route that moves the hairpin still exercises the rule.
+  const { plan } = generateLevel('sweep-39');
+  const spine = RouteSpine.fromPlan(plan);
+  assert.ok(spine !== null);
+  const a = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
+  const b = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
+  let hairpin: { near: number; far: number; apart: number } | null = null;
+  for (let d = 0; d < spine.length && hairpin === null; d += 1) {
+    spine.sample(d, a);
+    for (let e = d + 25; e < Math.min(spine.length, d + 60); e += 1) {
+      spine.sample(e, b);
+      const apart = Math.hypot(a.x - b.x, a.z - b.z);
+      const against = Math.cos(b.headingY - a.headingY) < -0.5;
+      if (apart > 3 && apart < 7 && against) {
+        hairpin = { near: d, far: e, apart };
+        break;
+      }
+    }
+  }
+  assert.ok(hairpin !== null, 'sweep-39 no longer has a hairpin to test against');
+  spine.sample(hairpin.near, a);
+  spine.sample(hairpin.far, b);
+  // 70 % of the way from this arm to the other, so the other is nearer in
+  // plan. The window is centred between the arms so both are inside it —
+  // the brain's own window is 45 m each way and holds both as well.
+  const x = a.x + (b.x - a.x) * 0.7;
+  const z = a.z + (b.z - a.z) * 0.7;
+  const window = (hairpin.near + hairpin.far) / 2;
+  const plain = spine.locate(x, z, window, { distance: 0, offRoute: 0, halfWidth: 0 });
+  assert.ok(Math.abs(plain.distance - hairpin.far) < 6,
+    `located plainly the point read ${plain.distance.toFixed(0)} m, not the nearer arm at ${hairpin.far} m`);
+  const faced = spine.locate(x, z, window, { distance: 0, offRoute: 0, halfWidth: 0 }, a.headingY);
+  assert.ok(Math.abs(faced.distance - hairpin.near) < 6,
+    `facing along the arm at ${hairpin.near} m the point still read ${faced.distance.toFixed(0)} m`);
+  // The facing only chooses: the offset reported is the plan distance to
+  // the arm chosen, which is at least the point's distance from this arm's
+  // centreline sample and never the nearer arm's.
+  assert.ok(faced.offRoute > plain.offRoute && faced.offRoute <= hairpin.apart * 0.7 + 0.5,
+    `the facing reported an offset of ${faced.offRoute.toFixed(2)} m against ${plain.offRoute.toFixed(2)} plainly`);
+  // And a point genuinely on the other arm, facing the other arm's way, goes there.
+  const crossed = spine.locate(b.x, b.z, window, { distance: 0, offRoute: 0, halfWidth: 0 }, b.headingY);
+  assert.ok(Math.abs(crossed.distance - hairpin.far) < 3, 'a rider who crossed onto the other arm was kept on this one');
+});
+
+test('a rider on a divided road is tracked along their own lane, not the one beside it', () => {
+  // `CpuRider.quarryDistance` — Codex's M31 QA. sweep-39 runs a hundred
+  // metres of route beside a later hundred, 2.5 m over, the same way, a wall
+  // between. A global search cannot tell the lanes apart, so the rider read
+  // as 335 m away on the other one and the cop turned to chase the reading.
+  // The brain tracks the quarry windowed around its last answer instead.
+  const { plan } = generateLevel('sweep-39');
+  const spine = RouteSpine.fromPlan(plan);
+  assert.ok(spine !== null);
+  const sampler = new PlanTerrainSampler(plan);
+  const brain = new CpuRider(spine, plan, sampler);
+  const here = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
+  const there = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
+  // The divided stretch, found: two distances far apart along the line and
+  // close in plan, running the same way.
+  let lanes: { from: number; to: number } | null = null;
+  for (let d = 0; d < spine.length && lanes === null; d += 5) {
+    spine.sample(d, here);
+    for (let e = d + 200; e < spine.length; e += 5) {
+      spine.sample(e, there);
+      if (Math.hypot(here.x - there.x, here.z - there.z) < 4 && Math.cos(there.headingY - here.headingY) > 0.9) {
+        lanes = { from: d, to: e };
+        break;
+      }
+    }
+  }
+  assert.ok(lanes !== null, 'sweep-39 no longer has a divided road to test on');
+  // The rider starts 40 m before the later lane, where a global search is
+  // unambiguous, and rides 100 m along it at 20 m/s, hugging the side
+  // nearer the other lane the way a rider cutting the inside does — so for
+  // most of the stretch the *other* lane's centreline is the nearer one in
+  // plan. A cop stands still and only watches. A hundred metres, because
+  // the lane runs into a hairpin further on and a hairpin is the other
+  // test's business.
+  const start = Math.max(0, lanes.to - 40);
+  spine.sample(start, here);
+  const globalAtStart = spine.locate(here.x, here.z, -1, { distance: 0, offRoute: 0, halfWidth: 0 });
+  assert.ok(Math.abs(globalAtStart.distance - start) < 3, 'the rider’s start is itself ambiguous');
+  spine.sample(Math.max(0, start - 30), there);
+  const view: CpuView = {
+    x: there.x, y: there.y, z: there.z, headingY: there.headingY, speed: 0, grounded: true, crashed: false, curbAhead: 0, lateralLimitG: EUC.maxLateralG,
+  };
+  brain.place(view);
+  const other = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
+  const acrossAt = { distance: 0, offRoute: 0, halfWidth: 0 };
+  let worst = 0;
+  let ambiguous = 0;
+  for (let step = 0; step * STEP * 20 < 100; step += 1) {
+    const truth = start + step * STEP * 20;
+    spine.sample(truth, here);
+    // Sixty per cent of the way toward the other lane's centreline where
+    // there is one within 6 m, else on the line.
+    const across = spine.locate(here.x, here.z, truth - (lanes.to - lanes.from), acrossAt);
+    const toward = across.offRoute < 6 ? 0.6 : 0;
+    spine.sample(across.distance, other);
+    const x = here.x + (other.x - here.x) * toward;
+    const z = here.z + (other.z - here.z) * toward;
+    brain.step(STEP, view, { x, y: here.y, z, speed: 20 });
+    worst = Math.max(worst, Math.abs(brain.quarryDistance - truth));
+    const global = spine.locate(x, z, -1, { distance: 0, offRoute: 0, halfWidth: 0 });
+    if (Math.abs(global.distance - truth) > 100) ambiguous += 1;
+  }
+  assert.ok(ambiguous > 0, 'a global search never mistook the lane, so this stretch no longer tests the window');
+  assert.ok(worst < 10, `the tracked quarry strayed ${worst.toFixed(1)} m from where the rider was`);
 });
 
 test('a plan with no stated route refuses to produce a spine', () => {
@@ -499,31 +673,23 @@ test('a corner allowance never exceeds the speed the schedule really allows', ()
 // The kill gate
 // ---------------------------------------------------------------------------
 
-test('a full-skill cop rides every pinned seed out, and one seed is down', () => {
+test('a full-skill cop rides every pinned seed out, and no seed is down', () => {
   // **This is the gate.** If it fails and no reasonable brain fixes it, M18
   // stops and the owner's hand-built chase course (`docs/PLANS.md` §18.8) is
   // the recorded remedy.
   //
-  // **M30 Phase 4 moved the wheel under it and the gate is no longer zero.**
-  // The shipped wheel is 65 mph now, and Phase 1's rule that a faster wheel
-  // meets a *denser* road applies to the shipped road: these forty-eight seeds
-  // carry more holes than they did at 50. Phase 2's QA rode exactly this sweep
-  // on `?mph=65` and found one seed down — `sweep-15`, a deep pothole the route
-  // places at 971 m that the cop reaches at 11.6 m/s believing he can still
-  // brake to 4.6 — and traced it to a **units error in the brain's braking
-  // belief** (`EUC.brakeAuthority` is per unit of `sin(lean)`; the braking law
-  // spends it as though it were not, so the brain believes about twice the
-  // deceleration it has). That was measured and deliberately **not** corrected,
-  // because an honest model brakes ~1.7 m earlier into everything with a face
-  // and takes M18 §4.2's wall camp — the fix for a named community report —
-  // with it. See `CpuRider.brakeDeceleration` and `docs/PLANS.md` §30.7 item 7.
-  //
-  // So the gate pins what is true rather than what is wanted, exactly as the
-  // 65 sweep did before it became the shipped one: **`sweep-15` and nothing
-  // else**. A new name here is a regression; the list emptying is the finding
-  // being fixed, and this should be tightened to zero the day it is. The A/B
-  // gate below rides `?mph=50` and is still a clean zero, which is what says
-  // this is the faster wheel's road and not a broken brain.
+  // **M30 Phase 4 moved the wheel under it and the gate was one down.** The
+  // shipped wheel is 65 mph and these forty-eight seeds carry more holes than
+  // they did at 50; Phase 2's QA found `sweep-15` down — a deep pothole the
+  // cop reached at 11.6 m/s believing he could still brake to 4.6 — and traced
+  // it to a **units error in the brain's braking belief** (`EUC.brakeAuthority`
+  // is per unit of `sin(lean)`; the law spent it raw and believed twice the
+  // deceleration it had). It was measured and left for a chase pass, because
+  // an honest model brakes earlier into everything with a face and took M18
+  // §4.2's wall camp with it. **The chase pass (§31) applied it and made the
+  // flank robust to it** — the orbit detector, the slides that feel the road's
+  // furniture, the crash that flips a leg — so the gate is a clean zero again
+  // and pins it. A new name here is a regression, whatever the cause.
   const failures: string[] = [];
   const down: string[] = [];
   let worstOffRoute = 0;
@@ -546,10 +712,9 @@ test('a full-skill cop rides every pinned seed out, and one seed is down', () =>
   assert.deepEqual(failures, [], `a full-skill cop cannot ride these routes:\n${failures.join('\n')}`);
   assert.deepEqual(
     down,
-    ['sweep-15:1'],
-    `the shipped sweep's crash list moved: ${down.join(' ') || 'none'} (recorded: sweep-15:1). `
-      + 'A new name is a regression; an empty list means the braking-units finding was fixed, '
-      + 'and this gate should then be tightened to zero.',
+    [],
+    `the shipped sweep put a cop down: ${down.join(' ')} — this gate is a clean zero since the `
+      + 'chase pass (§31) corrected the braking belief; a name here is a regression',
   );
   // He is following a road, so he has to stay on one. This is a far weaker
   // claim than "he rides the racing line" and it is the one that matters: a cop
@@ -560,6 +725,76 @@ test('a full-skill cop rides every pinned seed out, and one seed is down', () =>
   );
 });
 
+test('a full-skill cop rides every pinned seed backwards too, and no seed is down', () => {
+  // **Half of every chase is ridden this way** (§31): routes are about a
+  // kilometre and the player turns at the ends, so a cop who cannot ride a
+  // route back down is a cop who is lost for half the clock. Codex's M31 QA
+  // found the shipped sweep ran forward only and rode fresh seeds back to
+  // extend the known dogleg residual; this is the reverse gate, on the same
+  // forty-eight seeds, led by a phantom at the start so the ride measures
+  // riding and nothing else. The dogleg (`sweep-29`, q128) is a clean ride
+  // since the cursor learned to adjudicate a jump by facing.
+  const failures: string[] = [];
+  const down: string[] = [];
+  let worstOffRoute = 0;
+
+  for (const seed of SWEEP) {
+    const { plan } = generateLevel(seed);
+    const ride = rideAlone(plan, 1, 240, null, { reverse: true });
+    worstOffRoute = Math.max(worstOffRoute, ride.worstOffRoute);
+    if (ride.crashes > 0) down.push(`${seed}:${ride.crashes}`);
+    if (!ride.finished) {
+      failures.push(`${seed}: stopped at ${ride.progress.toFixed(0)} m of ${ride.routeLength.toFixed(0)} m`);
+    }
+  }
+
+  assert.deepEqual(failures, [], `a full-skill cop cannot ride these routes back:\n${failures.join('\n')}`);
+  assert.deepEqual(down, [], `the reverse sweep put a cop down: ${down.join(' ')} — a name here is a regression`);
+  assert.ok(worstOffRoute < 12,
+    `the cop wandered ${worstOffRoute.toFixed(1)} m off the line riding back, which is not following a road`);
+});
+
+test('the brain’s braking belief follows Force lean exactly as its drive belief does', () => {
+  // Codex's M31 QA: the chase pass derived the brain's brake term from the
+  // frozen table's lean while the wheel braked at the live one, so at F4's
+  // *Force lean* 0.25 rad the brain believed 1.94× the deceleration it had.
+  // `Game.applyTuning` now pushes the product of the live authority and the
+  // live lean's sine; ridden at that lean, the derived belief is clean where
+  // the frozen belief still finds `sweep-15`'s deep hole — the same hole the
+  // raw-authority belief found at the default lean (§30 q124).
+  const lean = 0.25;
+  const seeds = ['route-41', 'sweep-15', 'escape', 'police'];
+  const frozen = EUC.brakeAuthority * Math.sin(EUC.maxLeanPitch);
+  const liveDown: string[] = [];
+  const frozenDown: string[] = [];
+  for (const seed of seeds) {
+    const { plan } = generateLevel(seed);
+    const live = rideAlone(plan, 1, 240, null, { lean });
+    const stale = rideAlone(plan, 1, 240, null, { lean, brakeBelief: frozen });
+    assert.ok(live.finished, `${seed} was not ridden out at a lean of ${lean}`);
+    if (live.crashes > 0) liveDown.push(`${seed}:${live.crashes}`);
+    if (stale.crashes > 0) frozenDown.push(`${seed}:${stale.crashes}`);
+  }
+  assert.deepEqual(liveDown, [], `the derived brake belief put a cop down at a lean of ${lean}: ${liveDown.join(' ')}`);
+  assert.ok(frozenDown.length > 0,
+    'the frozen-table belief rode these seeds clean at a lean of 0.25, so this test no longer tells the beliefs apart');
+});
+
+test('a flank is close-quarters work: a wedge far from the rider arms none', () => {
+  // Codex's M31 QA, `qa-chase-4` ridden back toward a rider parked at the
+  // spawn: the route's kicker is a 1.2 m mound with a trench each side, a
+  // wall with no bypass to a rider going the other way. Wedged on it, the
+  // stuck ladder armed a flank — whose direct leg aims straight at the rider
+  // and switches the road's reasoning off — at a rider 900 m away by route,
+  // rode seventeen metres into the field and met a post at 10 m/s. A flank
+  // now needs the rider inside its range; further away the crawl backs him
+  // out and the road pursuit, which reads the furniture, finds the way round.
+  const { plan } = generateLevel('qa-chase-4');
+  const ride = rideAlone(plan, 1, 240, null, { reverse: true, parkedQuarry: true });
+  assert.equal(ride.crashes, 0, `${ride.crashes} crashes riding back to a parked rider past the kicker`);
+  assert.ok(ride.finished, `stopped at ${ride.progress.toFixed(0)} m of ${ride.routeLength.toFixed(0)} m riding back`);
+});
+
 test('the same sweep on the ?mph=50 wheel, which is the wheel M30 shipped away from', () => {
   // **M30 Phase 2's QA repair, finding 4, with the wheels swapped by Phase 4.**
   // It rode `?mph=65` while 50 was frozen, precisely so that the day 65 became
@@ -568,14 +803,10 @@ test('the same sweep on the ?mph=50 wheel, which is the wheel M30 shipped away f
   // the **other** wheel — `?mph=50`, M16's, on the road spaced for it — and it
   // is still a clean zero.
   //
-  // That zero is what makes the pin above readable. The cop's brain believes
-  // about twice the braking the wheel has (a units error measured, recorded and
-  // deliberately not corrected — see the gate above and
-  // `CpuRider.brakeDeceleration`), and at 50 mph that optimism is inside the
-  // margin `corneringMargin` leaves. At 65 it is not, on one seed of
-  // forty-eight. So the two gates together say the brain is *the same brain*
-  // and the faster wheel is what exposes it, rather than something having gone
-  // wrong in the chase.
+  // Both gates are a clean zero since the chase pass (§31) corrected the
+  // braking belief; this one still rides so the A/B wheel a player can switch
+  // to (`?mph=50`) is proven on its own road rather than assumed from the
+  // shipped one.
   const down: string[] = [];
   const unfinished: string[] = [];
   let worstOffRoute = 0;
@@ -612,28 +843,27 @@ test('skill is line quality and braking, and a poor cop pays for both', () => {
   let cleanOffRoute = 0;
   let poorOffRoute = 0;
 
-  // **`sweep-15` is skipped, by name and for the reason the gate above
-  // records** (M30 Phase 4): on the shipped 65 mph wheel the full-skill cop is
-  // put down there by the brain's braking-units optimism, which is a pinned,
-  // deliberately uncorrected finding rather than a fact about *skill*. The
-  // comparison below is "does the knob do anything", and a seed that puts both
-  // riders down for a third reason is noise in it. Delete the skip the day the
-  // gate above is tightened to zero.
-  for (const seed of SWEEP.slice(0, 16).filter((seed) => seed !== 'sweep-15')) {
+  // **Line quality is the mean, not the worst** (the chase pass). The worst
+  // distance off the line is a bypass now — a kicker's lip ridden back is
+  // gone round on the road beside the ramp, which is the line a player takes
+  // — and a good cop takes it as readily as a poor one. What a poor cop does
+  // differently is wander: `skillWanderMetres` at skill 0 is a line that is
+  // off the spine most of the time, and the mean says so.
+  for (const seed of SWEEP.slice(0, 16)) {
     const { plan } = generateLevel(seed);
     const clean = rideAlone(plan, 1);
     const poor = rideAlone(plan, 0);
     cleanCrashes += clean.crashes;
     poorCrashes += poor.crashes;
-    cleanOffRoute = Math.max(cleanOffRoute, clean.worstOffRoute);
-    poorOffRoute = Math.max(poorOffRoute, poor.worstOffRoute);
+    cleanOffRoute += clean.meanOffRoute;
+    poorOffRoute += poor.meanOffRoute;
   }
 
   assert.equal(cleanCrashes, 0, 'the full-skill cop crashed on the sample the poor one is judged against');
   assert.ok(
     poorCrashes > cleanCrashes || poorOffRoute > cleanOffRoute * 1.5,
-    `skill 0 rode as well as skill 1 (${poorCrashes} crashes, ${poorOffRoute.toFixed(1)} m off `
-      + `line, against ${cleanCrashes} and ${cleanOffRoute.toFixed(1)} m). The knob does nothing.`,
+    `skill 0 rode as well as skill 1 (${poorCrashes} crashes, ${(poorOffRoute / 16).toFixed(2)} m off `
+      + `line on average, against ${cleanCrashes} and ${(cleanOffRoute / 16).toFixed(2)} m). The knob does nothing.`,
   );
 });
 

@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { CHASE, SIMULATION } from '../data/tuning.ts';
+import { AUDIO, CHASE, SIMULATION } from '../data/tuning.ts';
 import { ChaseRun, type ChaseInput } from './chase.ts';
 
 /**
@@ -331,4 +331,344 @@ test('callers that say nothing about touching can never produce one', () => {
   run.arm();
   ride(run, 5, { offRoute: 0, copDistance: 0, crashed: false });
   assert.equal(run.state.phase, 'running', 'an attribution-blind caller busted on proximity');
+});
+
+// ---------------------------------------------------------------------------
+// The pressure director — the chase pass (§31), the owner's third reopening of
+// the easy escape: "once Officer Dorkins falls behind, too much of the
+// five-minute chase feels like free riding"
+// ---------------------------------------------------------------------------
+//
+// Three clocks demand a regroup now — the M20.2 hold above, a quiet clock and
+// a stall clock — and a baited crash buys a respite. Each fixture below runs
+// one clock by standing the cop where the other two cannot: the quiet line
+// (the siren's far edge, 60 m) sits under the tracker line (130 m) and the
+// stall's arm's-length gap (20 m) sits under both, so a cop at 80 m runs the
+// quiet clock alone and a parked cop at 30 m runs the stall clock alone. That
+// nesting is a fact about the table, pinned first, because a retune that
+// broke it would not fail a test here — it would make one pass for two
+// reasons.
+
+/** The cop in the quiet band: past the siren's far edge, inside the tracker line. */
+function quiet(extra: Partial<ChaseInput> = {}): ChaseInput {
+  return { offRoute: 0, copDistance: CHASE.trackerQuietGapMetres + 20, crashed: false, ...extra };
+}
+
+/** The cop parked at `copDistance`, reading half the stall speed. */
+function parked(copDistance: number, extra: Partial<ChaseInput> = {}): ChaseInput {
+  return {
+    offRoute: 0,
+    copDistance,
+    crashed: false,
+    copSpeed: CHASE.trackerStallSpeed * 0.5,
+    ...extra,
+  };
+}
+
+/** Blown out past the tracker line — the M20.2 shape. */
+const BLOWN: ChaseInput = { offRoute: 0, copDistance: CHASE.trackerGapMetres + 20, crashed: false };
+
+/**
+ * `TRACKER_RETRY_SECONDS` in `chase.ts` — private there on purpose, it is not a
+ * tunable — restated here and *measured* by the retry test, so a change on
+ * either side is reported by the other.
+ */
+const RETRY = 2;
+
+/** Step `input` until the referee demands, and say how long that took. */
+function secondsUntilDemand(run: ChaseRun, input: ChaseInput, limit: number): number {
+  const steps = Math.round(limit * SIMULATION.hz);
+  for (let step = 0; step < steps; step += 1) {
+    run.step(STEP, input);
+    if (run.takeTrackerDemand()) return (step + 1) * STEP;
+  }
+  return Infinity;
+}
+
+test('the director’s lines nest, so each fixture in this section runs one clock', () => {
+  assert.ok(CHASE.trackerStallGapMetres < CHASE.trackerQuietGapMetres,
+    'a parked cop past arm’s length is inside the quiet line no longer');
+  assert.ok(CHASE.trackerQuietGapMetres + 20 < CHASE.trackerGapMetres,
+    'the quiet fixture crossed the tracker line');
+  // The reset test below needs the stall to fire first when both clocks run.
+  assert.ok(CHASE.trackerStallSeconds < CHASE.trackerQuietSeconds,
+    'the stall clock is no longer the shorter of the two');
+});
+
+test('quiet means what the player hears: the quiet line is the siren’s far edge, not past it', () => {
+  // Codex's M31 QA fed the referee a cop holding 65 m for five minutes and
+  // got no demand and no quiet time: the first cut put the line 10 m past
+  // the siren's edge as "a little hysteresis", and that made a band where a
+  // cop could sit unheard for ever. The line is the siren's edge now, and
+  // the hysteresis is on the reset (the next two tests). Pinned against the
+  // audio table rather than restated, so a retune of either fails here.
+  assert.ok(CHASE.trackerQuietGapMetres <= AUDIO.sirenFarMetres,
+    `the quiet line (${CHASE.trackerQuietGapMetres} m) sits past the siren's far edge (${AUDIO.sirenFarMetres} m)`);
+  // And the return must land him inside the reset, or an accepted regroup
+  // would never give the clock back — the storm the slider note warns of.
+  assert.ok(CHASE.trackerReturnMetres < CHASE.trackerQuietGapMetres - RESET_INSIDE,
+    'the tracker return lands outside the quiet clock’s reset');
+
+  // A cop one metre past the siren's edge is quiet; the same referee fed a
+  // cop one metre inside it never demands on this clock at all.
+  const outside = new ChaseRun();
+  outside.arm();
+  const took = secondsUntilDemand(outside, { offRoute: 0, copDistance: AUDIO.sirenFarMetres + 1, crashed: false, copSpeed: 22 }, 60);
+  assert.ok(Math.abs(took - CHASE.trackerQuietSeconds) < STEP * 1.5,
+    `a cop just past the siren's edge was regrouped after ${took} s, not the quiet seconds`);
+  const inside = new ChaseRun();
+  inside.arm();
+  ride(inside, 60, { offRoute: 0, copDistance: AUDIO.sirenFarMetres - 1, crashed: false, copSpeed: 22 });
+  assert.equal(inside.takeTrackerDemand(), false, 'a cop inside the siren was regrouped for being quiet');
+});
+
+test('a cop hovering across the quiet line is still quiet: dipping inside it holds the clock, it does not reset it', () => {
+  // The hysteresis. A cop crossing the line every second — 62 m, 58 m,
+  // 62 m — is one the player hears at a few per cent of point-blank, which
+  // is nothing; a clock that reset on each dip would never fire on him.
+  const run = new ChaseRun();
+  run.arm();
+  const beyond: ChaseInput = { offRoute: 0, copDistance: CHASE.trackerQuietGapMetres + 2, crashed: false };
+  const dipped: ChaseInput = { offRoute: 0, copDistance: CHASE.trackerQuietGapMetres - 2, crashed: false };
+  let demandedAt = Infinity;
+  let t = 0;
+  for (let cycle = 0; cycle < 40 && demandedAt === Infinity; cycle += 1) {
+    for (const input of [beyond, dipped]) {
+      for (let step = 0; step < SIMULATION.hz / 2; step += 1) {
+        run.step(STEP, input);
+        t += STEP;
+        if (run.takeTrackerDemand() && demandedAt === Infinity) demandedAt = t;
+      }
+      // The dip holds the clock: it neither grows nor shrinks for that half second.
+      if (input === dipped && demandedAt === Infinity) {
+        const before = run.state.quiet;
+        run.step(STEP, dipped);
+        assert.ok(Math.abs(run.state.quiet - before) < 1e-9, 'a dip inside the line moved the quiet clock');
+      }
+    }
+  }
+  // Only the halves spent beyond the line count, so it takes twice the quiet seconds.
+  assert.ok(demandedAt < CHASE.trackerQuietSeconds * 2 + 1,
+    `a cop hovering across the quiet line was never regrouped (waited ${t.toFixed(0)} s)`);
+  assert.ok(demandedAt > CHASE.trackerQuietSeconds + 1,
+    `the dips inside the line were counted as quiet (demanded at ${demandedAt.toFixed(1)} s)`);
+});
+
+/** `QUIET_RESET_METRES` in `chase.ts`, restated and measured by the test below. */
+const RESET_INSIDE = 5;
+
+test('a cop who closes back into earshot gives the whole quiet clock back', () => {
+  const run = new ChaseRun();
+  run.arm();
+  const heard: ChaseInput = { offRoute: 0, copDistance: CHASE.trackerQuietGapMetres - RESET_INSIDE, crashed: false };
+  ride(run, CHASE.trackerQuietSeconds - 0.2, quiet());
+  ride(run, 0.5, heard);
+  assert.equal(run.state.quiet, 0, 'the siren coming back did not reset the clock');
+  ride(run, CHASE.trackerQuietSeconds - 0.2, quiet());
+  assert.equal(run.takeTrackerDemand(), false, 'two part-spells were added together');
+  // And the reset line is where it is claimed: one metre short of it holds.
+  const held = new ChaseRun();
+  held.arm();
+  ride(held, CHASE.trackerQuietSeconds - 0.2, quiet());
+  ride(held, 0.5, { ...heard, copDistance: CHASE.trackerQuietGapMetres - RESET_INSIDE + 1 });
+  assert.ok(held.state.quiet > CHASE.trackerQuietSeconds - 0.3, 'a cop just short of the reset line reset the clock');
+});
+
+test('a demand nobody could act on is asked again after the retry, not after a whole hold', () => {
+  // A candidate the composition root refuses — a clamped route end, a fold —
+  // is dropped on the floor, and the thing the clock measures has not
+  // changed. So a demand winds the clocks back by the retry rather than to
+  // zero: the next ask comes two seconds later, not three. Both numbers are
+  // read off the referee's own cadence here rather than restated. (The quiet
+  // clock runs at this gap too and is wound back each time, so it never
+  // reaches its own line — every demand below is the hold's.)
+  const run = new ChaseRun();
+  run.arm();
+  const limit = CHASE.trackerHoldSeconds * 2;
+  const first = secondsUntilDemand(run, BLOWN, limit);
+  assert.ok(Math.abs(first - CHASE.trackerHoldSeconds) < STEP * 1.5, `the first demand came at ${first} s`);
+  const second = secondsUntilDemand(run, BLOWN, limit);
+  const third = secondsUntilDemand(run, BLOWN, limit);
+  assert.ok(Math.abs(second - RETRY) < STEP * 1.5, `the retry came ${second} s after the first demand`);
+  assert.ok(Math.abs(third - second) < STEP * 1.5, `the retry is not a cadence: ${second} s then ${third} s`);
+  assert.ok(RETRY < CHASE.trackerHoldSeconds, 'a retry no sooner than a whole hold is not a retry');
+});
+
+test('a cop just out of earshot is free riding, and is regrouped after the quiet seconds', () => {
+  const run = new ChaseRun();
+  run.arm();
+  // Inside the tracker line the M20.2 hold never runs, so however long this
+  // takes to demand, the demand is the quiet clock's and nobody else's.
+  ride(run, CHASE.trackerHoldSeconds + 1, quiet());
+  assert.equal(run.takeTrackerDemand(), false, 'the tracker line fired inside itself');
+  ride(run, CHASE.trackerQuietSeconds - CHASE.trackerHoldSeconds - 1.5, quiet());
+  assert.equal(run.takeTrackerDemand(), false, 'demanded before the quiet seconds were served');
+  // `state.quiet` is the running clock — what a bench or a HUD reads.
+  assert.ok(Math.abs(run.state.quiet - (CHASE.trackerQuietSeconds - 0.5)) < STEP,
+    `state.quiet read ${run.state.quiet} after ${CHASE.trackerQuietSeconds - 0.5} s`);
+
+  ride(run, 1, quiet());
+  assert.equal(run.takeTrackerDemand(), true, 'the quiet spell never demanded');
+  assert.equal(run.takeTrackerDemand(), false, 'one quiet spell demanded twice');
+  // The demand winds the clock back by the retry rather than to zero (the
+  // retry test above), so what is left is the retry's head start plus the
+  // half second ridden since.
+  assert.ok(Math.abs(run.state.quiet - (CHASE.trackerQuietSeconds - RETRY + 0.5)) < STEP * 2,
+    `the quiet clock read ${run.state.quiet} after its own demand`);
+});
+
+test('a cop going nowhere well away from the rider is stuck, and is regrouped after the stall seconds', () => {
+  const run = new ChaseRun();
+  run.arm();
+  const away = CHASE.trackerStallGapMetres + 10;
+  ride(run, CHASE.trackerStallSeconds - 0.5, parked(away));
+  assert.equal(run.takeTrackerDemand(), false, 'demanded before the stall seconds were served');
+  ride(run, 1, parked(away));
+  assert.equal(run.takeTrackerDemand(), true, 'a stuck cop was never regrouped');
+  assert.equal(run.takeTrackerDemand(), false, 'one stall demanded twice');
+
+  // Rolling again, however briefly, is the condition lifting: two part-stalls
+  // are never added together, the hold clock's own rule.
+  const rolling = parked(away, { copSpeed: CHASE.trackerStallSpeed * 4 });
+  ride(run, 0.5, rolling);
+  ride(run, CHASE.trackerStallSeconds - 0.2, parked(away));
+  ride(run, 0.5, rolling);
+  ride(run, CHASE.trackerStallSeconds - 0.2, parked(away));
+  assert.equal(run.takeTrackerDemand(), false, 'two part-stalls were added together');
+});
+
+test('a cop holding at arm’s length is not stuck, and a speed-blind caller never stalls him', () => {
+  // Inside `trackerStallGapMetres` a stationary cop is holding, not stuck: a
+  // rider who has stopped has a cop who has stopped, and moving him from
+  // there would be the teleport the fiction exists to hide.
+  const close = new ChaseRun();
+  close.arm();
+  ride(close, CHASE.trackerStallSeconds * 3, parked(CHASE.trackerStallGapMetres - 5));
+  assert.equal(close.takeTrackerDemand(), false, 'a cop holding at arm’s length was regrouped');
+
+  // Every pre-§31 call site — and every fixture above this section — omits
+  // `copSpeed`. Absent facts must read as a cop who is moving.
+  const blind = new ChaseRun();
+  blind.arm();
+  ride(blind, CHASE.trackerStallSeconds * 3,
+    { offRoute: 0, copDistance: CHASE.trackerStallGapMetres + 10, crashed: false });
+  assert.equal(blind.takeTrackerDemand(), false, 'a speed-blind caller manufactured a stall');
+});
+
+test('a downed cop holds every clock at zero, and standing up buys the respite', () => {
+  const run = new ChaseRun();
+  run.arm();
+  // The worst case for all three clocks at once — blown out past the tracker
+  // line (the hold and the quiet clock both run), reading no speed well away
+  // from the rider (the stall clock runs) — and he is on the ground.
+  const down: ChaseInput = { ...BLOWN, copCrashed: true, copSpeed: 0 };
+  const up: ChaseInput = { ...down, copCrashed: false };
+  ride(run, CHASE.trackerQuietSeconds * 3, down);
+  assert.equal(run.takeTrackerDemand(), false, 'a downed cop was regrouped');
+  assert.equal(run.state.quiet, 0, 'the quiet clock ran while he was down');
+  assert.equal(run.state.respite, 0, 'a respite began before he stood up');
+
+  // The step he stands up arms the whole respite (less the step itself).
+  run.step(STEP, up);
+  const armed = run.state.respite;
+  assert.ok(armed > CHASE.trackerRespiteSeconds - STEP * 2 && armed <= CHASE.trackerRespiteSeconds,
+    `standing up armed a respite of ${armed} s`);
+
+  // It counts down, and holds every clock while it does.
+  const most = CHASE.trackerRespiteSeconds - 0.5;
+  ride(run, most, up);
+  assert.ok(Math.abs(run.state.respite - (armed - most)) < STEP,
+    `the respite read ${run.state.respite} s after ${most} s of it`);
+  assert.equal(run.takeTrackerDemand(), false, 'a regroup was demanded inside the respite');
+  assert.equal(run.state.quiet, 0, 'the quiet clock ran inside the respite');
+
+  // Respite over: the clocks run again, and from zero — the seconds he spent
+  // standing beyond the tracker line inside the respite count for nothing.
+  ride(run, 0.5 + STEP * 2, up);
+  assert.equal(run.state.respite, 0, 'the respite outlived its seconds');
+  ride(run, CHASE.trackerHoldSeconds - 0.5, up);
+  assert.equal(run.takeTrackerDemand(), false, 'the respite’s seconds were counted toward the hold');
+  ride(run, 1, up);
+  assert.equal(run.takeTrackerDemand(), true, 'the clocks never restarted after the respite');
+});
+
+test('a crashed rider holds the quiet and stall clocks, as it holds the hold', () => {
+  // M20.2's rule for the hold clock (above); the two new clocks inherit it,
+  // for the same reason — a regroup onto somebody on the ground hands the
+  // bust radius a rider who cannot ride.
+  const run = new ChaseRun();
+  run.arm();
+  // The crash edge is spent in the quiet band, far outside the bust radius,
+  // so the crash itself is not a bust and the run keeps going.
+  ride(run, CHASE.trackerQuietSeconds * 3, quiet({ crashed: true }));
+  assert.equal(run.state.phase, 'running');
+  assert.equal(run.takeTrackerDemand(), false, 'the quiet clock counted a downed rider');
+  assert.equal(run.state.quiet, 0);
+  ride(run, CHASE.trackerStallSeconds * 3, parked(CHASE.trackerStallGapMetres + 10, { crashed: true }));
+  assert.equal(run.takeTrackerDemand(), false, 'the stall clock counted a downed rider');
+});
+
+test('one demand winds all three clocks back by the retry, whichever of them fired', () => {
+  // A parked cop in the quiet band runs the stall clock and the quiet clock
+  // together, and the stall fires first. The quiet clock is wound back with
+  // it — not reset, or a refused regroup would wait a whole quiet spell for
+  // its second ask; not left alone, or it would fire on its own schedule six
+  // seconds later and one problem would regroup him twice.
+  const run = new ChaseRun();
+  run.arm();
+  const parkedAndQuiet = quiet({ copSpeed: CHASE.trackerStallSpeed * 0.5 });
+  ride(run, CHASE.trackerStallSeconds + 0.5, parkedAndQuiet);
+  assert.equal(run.takeTrackerDemand(), true, 'the stall never fired');
+  const woundTo = CHASE.trackerStallSeconds - RETRY + 0.5;
+  assert.ok(Math.abs(run.state.quiet - woundTo) < STEP * 2,
+    `the stall’s demand left the quiet clock at ${run.state.quiet} s, not ${woundTo}`);
+
+  // Rolling again but still quiet: only the quiet clock runs, from where the
+  // stall's demand left it.
+  const rollingAndQuiet = quiet({ copSpeed: CHASE.trackerStallSpeed * 4 });
+  const remaining = CHASE.trackerQuietSeconds - woundTo;
+  ride(run, remaining - 0.5, rollingAndQuiet);
+  assert.equal(run.takeTrackerDemand(), false, 'the quiet clock kept its seconds from before the stall’s demand');
+  ride(run, 1, rollingAndQuiet);
+  assert.equal(run.takeTrackerDemand(), true, 'the quiet clock never restarted after the stall’s demand');
+});
+
+test('arming clears the quiet and stall clocks, and abandoning clears the respite too', () => {
+  const run = new ChaseRun();
+  run.arm();
+  ride(run, CHASE.trackerQuietSeconds - 1, quiet());
+  assert.ok(run.state.quiet > 0, 'the fixture never ran the quiet clock');
+  // Re-arming without abandoning — the results card's "again" — is a fresh run.
+  run.arm();
+  assert.equal(run.state.quiet, 0, 'arm() kept the quiet clock');
+  ride(run, CHASE.trackerQuietSeconds - 1, quiet());
+  assert.equal(run.takeTrackerDemand(), false, 'the old run’s quiet clock leaked into this one');
+
+  // The stall clock, through abandon.
+  ride(run, CHASE.trackerStallSeconds - 1, parked(CHASE.trackerStallGapMetres + 10));
+  run.abandon();
+  assert.equal(run.state.quiet, 0);
+  run.arm();
+  ride(run, CHASE.trackerStallSeconds - 1, parked(CHASE.trackerStallGapMetres + 10));
+  assert.equal(run.takeTrackerDemand(), false, 'the old run’s stall clock leaked into this one');
+
+  // A live respite through abandon: down for a second, up for a step (the
+  // respite arms), then the run is dropped. The next run's clocks must run
+  // from its first step — a respite is earned inside a run, never carried.
+  ride(run, 1, { ...BLOWN, copCrashed: true });
+  run.step(STEP, BLOWN);
+  assert.ok(run.state.respite > 0, 'the fixture never armed a respite');
+  run.abandon();
+  assert.equal(run.state.respite, 0, 'abandon() kept the respite');
+  run.arm();
+  ride(run, CHASE.trackerHoldSeconds + 0.5, BLOWN);
+  assert.equal(run.takeTrackerDemand(), true, 'the old run’s respite held the new run’s clocks');
+
+  // And a cop who was down when the run was dropped is not "standing up" on
+  // the next run's first step: the rising edge belongs to the run it rises in.
+  ride(run, 1, { ...BLOWN, copCrashed: true });
+  run.abandon();
+  run.arm();
+  ride(run, CHASE.trackerHoldSeconds + 0.5, BLOWN);
+  assert.equal(run.takeTrackerDemand(), true, 'the last run’s crash bought this run a respite');
 });

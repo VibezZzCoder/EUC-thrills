@@ -6621,9 +6621,11 @@ export const CHASE = {
    * (clamped by his own cutout ceiling, so this grants position, never a
    * faster wheel). The fiction is a tracker, not a teleport the player can
    * see: the trigger sits beyond any distance the chase camera shows of the
-   * road behind, and the return sits beyond `AUDIO.sirenFarMetres` — he
-   * arrives silent and the siren *fades in* as he closes, which reads as
-   * being found rather than as being spawned on.
+   * road behind, and the return sat beyond `AUDIO.sirenFarMetres` at M20.2 —
+   * he arrived silent and the siren *faded in* as he closed, which reads as
+   * being found rather than as being spawned on. The chase pass (§31) moved
+   * the return inside the siren's onset for the reason the director's note
+   * below gives; the fade-in survives at about 8 % of point-blank.
    *
    * The hold seconds are what make a momentary blowout — a building between
    * them, one long corner — survive on its own: only a gap that *stays* open
@@ -6632,8 +6634,51 @@ export const CHASE = {
    * untouched.
    */
   trackerGapMetres: 130,
-  trackerReturnMetres: 85,
+  trackerReturnMetres: 50,
   trackerHoldSeconds: 3.0,
+  /**
+   * The pressure director — the chase pass (`docs/PLANS.md` §31), and the
+   * owner's third reopening of the easy escape: *"once Officer Dorkins falls
+   * behind, too much of the five-minute chase feels like free riding."*
+   *
+   * Distance alone was an incomplete measure of a cop who is no threat. He
+   * can sit 90 m back for a minute — inside the tracker gap, outside the
+   * siren — and the player hears nothing; he can be wedged on a bollard at
+   * 40 m and never trip a gap rule at all. So the referee also keeps a
+   * **quiet clock**: seconds the gap has sat beyond `trackerQuietGapMetres`,
+   * which is `AUDIO.sirenFarMetres` exactly, so "quiet" means exactly what
+   * the player hears; the clock's hysteresis is on its *reset* (a few metres
+   * inside the line, `simulation/chase.ts`), not on its start — the first
+   * cut set the line 10 m past the siren's edge as "a little hysteresis" and
+   * Codex's M31 QA showed the band that left: a cop holding 61–70 m ran no
+   * clock and no siren for five minutes. A quiet spell of
+   * `trackerQuietSeconds` regroups him, on the same terms as a blown-out gap. And a **stall clock**:
+   * a cop below `trackerStallSpeed` for `trackerStallSeconds` while more than
+   * `trackerStallGapMetres` from the rider is stuck on something, whatever the
+   * gap reads, and is brought back the same way.
+   *
+   * **A baited crash buys a respite.** Leading him into a spill or a deep hole
+   * is the counterplay the mode was built around (§13 q28), and a tracker that
+   * teleported him back three seconds after he stood up would erase every
+   * success with a teleport. For `trackerRespiteSeconds` after he stands up,
+   * every regroup clock is held at zero: the crash itself (about 3.6 s down)
+   * plus the respite is the breathing room a clever line earns.
+   *
+   * The return distance comes down from 85 m to 50 m with the director,
+   * because the old return was measured to convert into nothing: two equal
+   * wheels cannot close a gap on a straight, so a cop dropped 85 m back —
+   * 25 m outside the siren — arrived silent and stayed silent until the next
+   * blow-out cycled him again. At 50 m the siren's distance curve puts him at
+   * about 8 % of point-blank, which is the fade-in the fiction asks for, and
+   * he is close enough that the rider's next corner, hazard or turn at the
+   * route's end is his to use.
+   */
+  trackerQuietGapMetres: 60,
+  trackerQuietSeconds: 12,
+  trackerRespiteSeconds: 8,
+  trackerStallSeconds: 6,
+  trackerStallSpeed: 1.0,
+  trackerStallGapMetres: 20,
   /**
    * How close the cop must be for a crash to be a bust, metres — §13 q25.
    *
@@ -6814,6 +6859,25 @@ export const CHASE = {
    * ignores, and neither end is a ride the owner would be judging.
    */
   pursuitLateralFollow: 0.85,
+  /**
+   * Catching up is not the same as closing in — the chase pass.
+   *
+   * The lateral follow above and the cornering margin below are close-pursuit
+   * habits: copying the rider's line sets up the strike, and a margin under
+   * the grip limit keeps the strike's approach tidy. Far behind they are
+   * only losses — a cop 80 m back weaving to match a line the rider chose for
+   * a corner he has not reached, and braking for a margin the rider is not
+   * keeping — and Codex's probe measured the copying alone at zero seconds
+   * inside siren range on route-41 against 33 with it off. So both fade with
+   * range: inside `pursuitNearMetres` the shipped habits, beyond
+   * `pursuitFarMetres` his own racing line at `hotCorneringMargin`, a blend
+   * between. Still line quality and braking earliness, never speed (§13 q27):
+   * he is on the player's wheel and the margin is a share of a limit the
+   * player rides at 1.0.
+   */
+  pursuitNearMetres: 20,
+  pursuitFarMetres: 50,
+  hotCorneringMargin: 0.85,
   /**
    * How close an off-road quarry has to be before the cop leaves the road for
    * them, metres of straight line.
@@ -9244,9 +9308,10 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     min: 30,
     max: 200,
     step: 5,
-    note: 'How far behind you he turns up again. Keep it past the siren’s far '
-      + 'edge (60 m) so he arrives silent and fades in instead of blaring out '
-      + 'of nowhere.',
+    note: 'How far behind you he turns up again. Just inside the siren’s far '
+      + 'edge (60 m) he arrives at a few per cent and fades in; past it he '
+      + 'arrives silent and, two equal wheels never closing a straight, stays '
+      + 'silent. Keep it under the quiet gap.',
   },
   {
     path: 'CHASE.trackerHoldSeconds',
@@ -9258,6 +9323,85 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     step: 0.5,
     note: 'How long the gap must stay blown out before he regroups. Long '
       + 'enough that a building or one long corner between you never counts.',
+  },
+  {
+    path: 'CHASE.trackerQuietGapMetres',
+    group: 'Ride — chase',
+    label: 'Quiet gap',
+    unit: 'm',
+    min: 40,
+    max: 200,
+    step: 5,
+    note: 'Beyond this the chase counts as quiet — the siren’s far edge (60 m), '
+      + 'so quiet means what you hear; the clock only resets 5 m inside it. '
+      + 'Keep it above the tracker return or every regroup re-demands.',
+  },
+  {
+    path: 'CHASE.trackerQuietSeconds',
+    group: 'Ride — chase',
+    label: 'Quiet seconds',
+    unit: 's',
+    min: 3,
+    max: 60,
+    step: 1,
+    note: 'How long a quiet spell may last before he is brought back. The '
+      + 'longest stretch of free riding the mode allows.',
+  },
+  {
+    path: 'CHASE.trackerRespiteSeconds',
+    group: 'Ride — chase',
+    label: 'Crash respite',
+    unit: 's',
+    min: 0,
+    max: 30,
+    step: 1,
+    note: 'After he stands up from a crash you led him into, no regroup for '
+      + 'this long. The breathing room a clever line earns.',
+  },
+  {
+    path: 'CHASE.trackerStallSeconds',
+    group: 'Ride — chase',
+    label: 'Stall seconds',
+    unit: 's',
+    min: 2,
+    max: 30,
+    step: 1,
+    note: 'A cop going nowhere for this long, well away from you, is stuck on '
+      + 'something and is brought back.',
+  },
+  {
+    path: 'CHASE.pursuitNearMetres',
+    group: 'Ride — chase',
+    label: 'Close pursuit',
+    unit: 'm',
+    min: 5,
+    max: 60,
+    step: 5,
+    note: 'Inside this he copies your line and keeps his cornering margin. '
+      + 'Between here and the far edge those habits fade.',
+  },
+  {
+    path: 'CHASE.pursuitFarMetres',
+    group: 'Ride — chase',
+    label: 'Far pursuit',
+    unit: 'm',
+    min: 20,
+    max: 150,
+    step: 5,
+    note: 'Beyond this he rides his own racing line at the hot margin. Set it '
+      + 'below the close edge and the far habits win everywhere.',
+  },
+  {
+    path: 'CHASE.hotCorneringMargin',
+    group: 'Ride — chase',
+    label: 'Hot margin',
+    unit: '×',
+    min: 0.5,
+    max: 1,
+    step: 0.05,
+    note: 'His cornering margin when far behind. 1 is the grip limit you ride '
+      + 'at; the shipped 0.85 is a cop who corners hard and never crashes on '
+      + 'the pinned sweep.',
   },
   {
     path: 'CHASE.strayLimitMetres',

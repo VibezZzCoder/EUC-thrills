@@ -42,16 +42,21 @@ import type { LoftProfile } from './blockoutKit.ts';
  * **What it rides.** The `?mph=` window's spine (shipped / 58 / 65 / 80 / 90 —
  * `level/levels.ts` builds 20 to 90, and the envelope grows with speed, so the
  * fast end is the binding one), both steering signs, thirteen steering
- * magnitudes, and seven entries per magnitude: a held corner, a snap from a
+ * magnitudes, and eight entries per magnitude: a held corner, a snap from a
  * straight line (the entry that carries a straight line's full weave into an
  * established bank — the term the old table missed), a ramped entry, **a flick
  * — the stick thrown side to side every ten ticks for three seconds** (M30
  * Phase 3b, the entry that rides every settle value between the slow-band
- * share and the full one), braking inside the corner, a corner held with the
- * crouch down, and the hop's own compression at three charge lengths, which is
- * the only way `pose.crouch` passes `EUC.crouchHeldAmount` — **and the phase
- * ladder below**, which is the axis M30 Phase 2's QA found missing. Ridden at
- * `carveLeanShareTop`'s shipped 1.0 and at the F4 slider's maximum read from
+ * share and the full one), **a reversal — full lock saturated, then thrown
+ * into a gentle opposite corner** (Codex's final QA, 2026-09-07: the only ride
+ * that lets the settle climb back *while* the wheel is still crossing upright,
+ * which is where the body's lean lags the bank and the two briefly disagree
+ * about which way the rider is leaning), braking inside the corner, a corner
+ * held with the crouch down, and the hop's own compression at three charge
+ * lengths, which is the only way `pose.crouch` passes `EUC.crouchHeldAmount`
+ * — **and the phase ladder below**, which is the axis M30 Phase 2's QA found
+ * missing. Ridden at `carveLeanShareTop`'s shipped 1.0 and at the F4 slider's
+ * maximum read from
  * `LIVE_TUNABLES`, which is the share the garment contracts are bounded by;
  * since that QA the two are the same number and the list deduplicates itself.
  * Every preset rides the M30 Phase 2 grip schedule, so the hang —
@@ -59,21 +64,29 @@ import type { LoftProfile } from './blockoutKit.ts';
  * without this file naming it: it rides whatever the production controller
  * writes.
  *
- * **Measured minima, 2026-09-04 (M30 Phase 2's QA — the phase axis, and the
- * can's carry)** — 550,360 posed steps, the whole sweep, printed by the test:
+ * **Measured minima, 2026-09-07 (Codex's final QA — the reversal entry)** —
+ * 604,960 posed steps, the whole sweep, printed by the test:
  *
  * ```
  *   preset     can vs thigh   can vs pads      (share 1.00, the slider's max)
- *   shipped       52.7 mm       186.0 mm
- *   58 mph        42.4          185.7
- *   65 mph        42.2          186.4
- *   80 mph        41.9          178.5
- *   90 mph        42.2          181.0
+ *   shipped       41.4 mm       187.4 mm
+ *   58 mph        41.4          185.1
+ *   65 mph        41.4          187.4
+ *   80 mph        41.0          183.5
+ *   90 mph        41.9          176.5
  * ```
  *
- * **41.9 mm on the 80 mph wheel is the pin** — 1.9 mm of margin over the 40 mm
- * floor, and 178.5 mm against the pads' 80 mm. A finer phase ladder finds
- * 41.0 mm there (below), so the honest reserve is one millimetre.
+ * **41.0 mm on the 80 mph wheel is the pin** — 1.0 mm of margin over the 40 mm
+ * floor, and 183.5 mm against the pads' 80 mm.
+ *
+ * **The reversal moved the record and that is the point of adding it.** The
+ * 2026-09-04 table read 52.7 / 42.4 / 42.2 / 41.9 / 42.2 mm over 550,360
+ * steps; the shipped wheel's eleven millimetres of that were a pose the forty
+ * held corners and the symmetric flick between them never reached, and the
+ * finer six-hundred-rung ladder below had already found 51.8 / 41.4 / 41.4 /
+ * 41.0 / 41.5 there. The reversal finds the same numbers at forty rungs, which
+ * is the honest reading: the reserve was one millimetre before this entry and
+ * is one millimetre after it, and the coarse ladder now says so.
  *
  * **What Phase 2 shipped, and what its QA found.** Phase 2 saturates the
  * wheel's bank at the ordinary 0.75 g and lets `riderLean` carry the whole
@@ -98,8 +111,12 @@ import type { LoftProfile } from './blockoutKit.ts';
  *
  * **The finer ladder, for the record.** At 600 rungs — a twenty-step
  * resolution on the oscillator's 12,000-step cycle, fifteen times this file's
- * — the same rides read 51.8 / 41.4 / 41.4 / 41.0 / 41.5 mm. Forty rungs are
- * within 0.9 mm of that everywhere and cost a minute less.
+ * — the *pre-reversal* rides read 51.8 / 41.4 / 41.4 / 41.0 / 41.5 mm against
+ * forty rungs' 52.7 / 42.4 / 42.2 / 41.9 / 42.2: within 0.9 mm everywhere, and
+ * a minute cheaper. Since the reversal entry landed, forty rungs read those
+ * same fine-ladder numbers on four presets of five, which is the entry doing
+ * what the finer phase resolution was doing and doing it for a reason rather
+ * than by luck.
  *
  * The Phase 3b table this replaces, for the record — the same sweep before the
  * hang existed, at the 1.2 the slider then offered: 72.3 / 71.7 / 77.7 / 77.7 /
@@ -297,6 +314,17 @@ function entries(steer: number): Leg[] {
     // wheel that is already banked the other way.
     { steps: 360, steer: (i: number) => (Math.floor(i / 10) % 2 === 0 ? steer : -steer) },
     { steps: 120, steer },
+    // **The reversal** (Codex's final QA, 2026-09-07): full lock held long
+    // enough to saturate the bank, thrown into a *gentle* opposite corner.
+    // The flick above is symmetric, so its settle sits at zero through every
+    // crossing and the body simply holds the M16 pose; this one lets the
+    // settle climb back while the wheel is still near upright, which is the
+    // only ride that puts `riderRoll` on the wheel's opposite side at all
+    // (`simulation/EucController.test.ts` measures the band). The gentle half
+    // takes this leg's own magnitude, capped, so the thirteen magnitudes ride
+    // thirteen different reversals rather than one.
+    { steps: 240, steer: Math.sign(steer) },
+    { steps: 180, steer: -Math.sign(steer) * Math.min(Math.abs(steer), 0.2) },
     // Braking inside the corner: the fore-aft axis at its other end.
     { steps: 180, steer, throttle: -1 },
     // Held with the crouch down (`EUC.crouchHeldAmount`, 0.55).

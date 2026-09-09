@@ -303,10 +303,13 @@ test('live ride tuning reaches both controllers and the cop high-speed policy', 
       };
       copController: {
         derivedTopSpeed: number;
-        tuning: { maxLeanPitch: number; leanToAccel: number; dragCoefficient: number };
+        tuning: {
+          maxLeanPitch: number; leanToAccel: number; brakeAuthority: number; dragCoefficient: number;
+        };
       } | null;
       copBrain: {
         driveAcceleration: number;
+        brakeDeceleration: number;
         dragCoefficient: number;
         cutoutSpeedShare: number;
       } | null;
@@ -317,6 +320,10 @@ test('live ride tuning reaches both controllers and the cop high-speed policy', 
 
     const before = internal.controller.derivedTopSpeed;
     game.tuning.set('EUC.dragCoefficient', 0.15);
+    // And a retuned *Force lean*, so the brake belief is read after a lean
+    // change rather than at the default it was built with (Codex's M31 QA:
+    // the first cut derived the brake term from the frozen table).
+    game.tuning.set('EUC.maxLeanPitch', 0.25);
     const player = internal.controller;
     const cop = internal.copController;
     const brain = internal.copBrain;
@@ -327,9 +334,12 @@ test('live ride tuning reaches both controllers and the cop high-speed policy', 
       playerDrag: player.tuning.dragCoefficient,
       copDrag: cop.tuning.dragCoefficient,
       brainDrive: brain.driveAcceleration,
+      brainBrake: brain.brakeDeceleration,
       brainDrag: brain.dragCoefficient,
       brainCutout: brain.cutoutSpeedShare,
       controllerDrive: cop.tuning.leanToAccel * Math.sin(cop.tuning.maxLeanPitch),
+      controllerBrake: cop.tuning.brakeAuthority * Math.sin(cop.tuning.maxLeanPitch),
+      copLean: cop.tuning.maxLeanPitch,
       liveCutout: game.tuning.get('EUC.cutoutSpeedShare'),
     };
   });
@@ -338,6 +348,9 @@ test('live ride tuning reaches both controllers and the cop high-speed policy', 
   expect(result.copTop).toBeCloseTo(result.playerTop, 12);
   expect(result.copDrag).toBe(result.playerDrag);
   expect(result.brainDrive).toBeCloseTo(result.controllerDrive, 12);
+  // The brake belief is the wheel's brake, derived from the same live lean.
+  expect(result.copLean).toBe(0.25);
+  expect(result.brainBrake).toBeCloseTo(result.controllerBrake, 12);
   expect(result.brainDrag).toBe(result.copDrag);
   expect(result.brainCutout).toBe(result.liveCutout);
   expect(errors).toEqual([]);

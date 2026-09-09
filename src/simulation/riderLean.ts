@@ -65,12 +65,37 @@ import { clamp01, lerp } from '../shared/maths.ts';
  * schedule to the slow-band pose while the wheel swings and climbs back to the
  * full share once the bank holds. Two properties are load-bearing:
  *
- *   - `riderRoll` stays **proportional to `rollAngle`** — the low term is a
- *     multiple of it, and the force lean is `atan(a / g)` against the wheel's
- *     `atan(min(a, limit) / g)`, which is a larger multiple of the same sign
- *     and never a smaller one — so the body crosses zero exactly when the
- *     wheel does and can never lean opposite to it, which is what the
- *     clearance contracts and `ridingRig.ts` rely on;
+ *   - `riderRoll` stays **proportional to `rollAngle` while the wheel is
+ *     unsaturated, and within a measured band of it once the wheel
+ *     saturates.** The low term is a multiple of `rollAngle`; the force lean
+ *     is `atan(a / g)` against the wheel's `atan(min(a, limit) / g)`, which
+ *     below the ordinary ceiling is the *same double* — so every value the
+ *     lerp can return has the wheel's sign and crosses zero exactly when the
+ *     wheel does. **Above the ceiling the two are different numbers chased
+ *     through one response constant, and a claim proved on the shipped
+ *     ceiling had to be re-proved when they parted** (Codex's final QA,
+ *     2026-09-07; `docs/PLANS.md` §30.8b). Both angles `approach` their
+ *     targets exponentially, so the one that starts further out — the body,
+ *     hung 9.5° inside a saturated bank — reaches upright *later*: reverse a
+ *     saturated corner into a gentle opposite one and the force lean is still
+ *     on the old side for a few ticks after the bank has crossed, which puts
+ *     `riderRoll` briefly opposite `rollAngle`.
+ *
+ *     **The bound, measured** over 396 saturated reversals / 95,040
+ *     transition steps on the production controller — presets shipped / 58 /
+ *     65 / 80 / 90, entry lock 0.4–1.0 thrown into 0.02–0.2 of opposite lock,
+ *     both signs: the opposite-sign band reaches **0.0081 rad (0.47°)** of
+ *     `riderRoll`, exists only while the wheel is within **0.0175 rad
+ *     (1.00°)** of upright, never lasts more than three consecutive ticks,
+ *     and is gone within 38 ticks (0.32 s) of the reversal. The same sweep
+ *     of 324 *unsaturated* reversals (77,760 steps) produces it zero times
+ *     and the body never out-leans the wheel by a single ulp. It is a lag,
+ *     not a lurch, and it is deliberately **not** clamped or snapped away —
+ *     both angles are honest filters and a snap is the stiffness Phase 3b
+ *     exists to remove. The band is asserted in
+ *     `EucController.test.ts` and carried as an axis by the clearance
+ *     contracts (`render/riderClearance.test.ts`,
+ *     `render/riderClearanceRidden.test.ts`);
  *   - at `settle === 1` every result is **bit-identical** to the five-argument
  *     schedule, because `blend * 1` is exact. A held carve — every capture
  *     baseline, every settled spec — is untouched.

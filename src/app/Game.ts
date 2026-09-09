@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
 import {
-  INSPECTION_CAMERA, AUDIO, CAMERA, CHALLENGE, CHASE, CONTACT, EUC, INPUT, RIDER, TARGET, WHEEL,
+  INSPECTION_CAMERA, CAMERA, CHALLENGE, CHASE, CONTACT, EUC, INPUT, RIDER, TARGET, WHEEL,
 } from '../data/tuning.ts';
 import { LiveTuning } from '../data/liveTuning.ts';
 import { GameRenderer } from '../render/Renderer.ts';
@@ -96,6 +96,7 @@ import {
 } from '../simulation/knockaboutMatch.ts';
 import { ChaseRun, type ChaseOutcome, type ChasePhase } from '../simulation/chase.ts';
 import { CpuRider, type CpuView } from '../simulation/cpuRider.ts';
+import { planRegroup, regroupFloor, type RegroupJudge } from '../simulation/copRegroup.ts';
 import {
   RouteSpine,
   createSpineLocation,
@@ -625,6 +626,10 @@ export interface GameSnapshot {
     readonly copGap: number;
     /** How far the rider is from the route spine, metres. Infinity with none. */
     readonly offRoute: number;
+    /** The director's free-riding clock, seconds beyond the quiet line (§31). */
+    readonly quiet: number;
+    /** Seconds of regroup respite left after the cop's last crash (§31). */
+    readonly respite: number;
     readonly secondRider: 'none' | 'ghost' | 'cop';
     readonly best: number | null;
     readonly bestEscaped: boolean;
@@ -897,6 +902,15 @@ export class Game {
    */
   private copController: EucController | null = null;
   private copBrain: CpuRider | null = null;
+  /**
+   * The super tracker's landing judge: the brain's own word on a spot
+   * (`CpuRider.landingAllowance`, Codex's M31 QA). Built once so a regroup
+   * allocates nothing; a missing brain allows everything, and `regroupCop`
+   * has already returned by then.
+   */
+  private readonly copLanding: RegroupJudge = (distance, direction) => (
+    this.copBrain === null ? Infinity : this.copBrain.landingAllowance(distance, direction)
+  );
   /**
    * His paddle. **His, and only his** — §13 q28.
    *
@@ -3316,6 +3330,8 @@ export class Game {
           straying: state.straying,
           copGap: this.copGap,
           offRoute,
+          quiet: state.quiet,
+          respite: state.respite,
           secondRider: this.renderer.secondRiderShown,
           best: best?.seconds ?? null,
           bestEscaped: best?.escaped ?? false,
@@ -4524,11 +4540,23 @@ export class Game {
    * mid-ride heading can point across a field or into a block, and the spine
    * is the one line guaranteed to be road.
    *
-   * The return distance sits beyond the siren's far edge, so he arrives
-   * *silent* and the siren fades in as he closes — found, not spawned on. A
-   * cop who is mid-crash drops the demand on the floor; the referee's timer
-   * simply runs again and demands again one hold later, by which time he is
+   * The return distance sits just inside the siren's onset since the chase
+   * pass (§31): at 50 m the distance curve puts him at about 8 % of point-
+   * blank, so he arrives all but silent and the siren fades in as he closes —
+   * found, not spawned on. The M20.2 return beyond the siren's far edge
+   * measured as converting into nothing. A cop who is mid-crash drops the
+   * demand on the floor; the referee's clocks are held while he is down and
+   * for the respite after, and demand again by themselves, by which time he is
    * back on his wheel.
+   *
+   * **And the spot is judged before the body is moved** (Codex's M31 QA).
+   * A reset gives him no approach — the rider's pace on a straight wheel —
+   * and a spot chosen by route distance alone can be in a deep hole or two
+   * metres short of a bollard row: 89 of 1,997 accepted returns crashed
+   * inside two seconds, each buying the rider a respite meant for a baited
+   * crash. The planner shows every rung to the brain's `landingAllowance`,
+   * walks further back when a rung is refused, and the entry speed is the
+   * rider's pace or the spot's allowance, whichever is less.
    */
   private regroupCop(): void {
     // The rider he is regrouping on. Seat 0's in stage 1 (§25.3).
@@ -4539,45 +4567,38 @@ export class Game {
     if (cop === null || brain === null || spine === null) return;
     if (cop.crashed) return;
 
-    // Which way along the route the rider is travelling: their heading against
-    // the spine's at their own projection. `spineAt` was located by the caller
-    // this same step.
-    spine.sample(this.spineAt.distance, this.spineSample);
-    const along = Math.cos(seat.currentPose.headingY - this.spineSample.headingY);
-    const direction = along >= 0 ? 1 : -1;
-
+    // The placement is `simulation/copRegroup.ts`'s arithmetic (the chase
+    // pass), so the headless bench and the suite stand him exactly where
+    // this does. It refuses a route-end-clamped or world-space-folded
+    // candidate — a route-distance request is not proof of a safe placement
+    // (M20.2's QA: the first browser proof blessed a 1.1 m overlap at the
+    // route start) — and the referee simply demands again after another
+    // hold; skipping one regroup is fair, materialising inside the bust
+    // radius is not.
     const back = this.tuning.get('CHASE.trackerReturnMetres');
-    spine.sample(this.spineAt.distance - direction * back, this.spineSample);
-
-    // A route-distance request is not proof of a safe world-space placement.
-    // `RouteSpine.sample` clamps at both ends, so asking for 30 m behind a
-    // rider still at the first metre used to answer the rider's own spawn.
-    // The M20.2 browser proof called the resulting 1.1 m overlap a successful
-    // regroup because it only looked for a large reduction in the old gap.
-    // A tightly folded route can collapse the two positions in world space
-    // without clamping, too. Refuse both cases and let the referee demand
-    // again after another hold; skipping one regroup is fair, materialising
-    // inside the bust radius is not.
-    const routeGap = Math.abs(this.spineAt.distance - this.spineSample.distance);
-    if (routeGap + 1e-6 < back) return;
-    const dx = this.spineSample.x - seat.currentPose.x;
-    const dz = this.spineSample.z - seat.currentPose.z;
-    const candidateGap = Math.sqrt(dx * dx + dz * dz);
-    const minimumGap = Math.max(
-      this.chaseRun.bustRadiusMetres + 1,
-      Math.min(back, AUDIO.sirenFarMetres),
+    const candidate = planRegroup(
+      spine,
+      seat.currentPose,
+      back,
+      regroupFloor(back, this.chaseRun.bustRadiusMetres),
+      { at: this.spineAt, sample: this.spineSample },
+      this.copLanding,
+      brain.quarryDistance,
     );
-    if (candidateGap < minimumGap) return;
+    if (candidate === null) return;
 
-    const heading = direction >= 0
-      ? this.spineSample.headingY
-      : this.spineSample.headingY + Math.PI;
+    // Position is granted, a faster wheel never is, and neither is a pace
+    // the spot cannot carry: the rider's speed (or his own, if he had more),
+    // capped by what the landing allows.
     cop.reset(
       {
-        position: { x: this.spineSample.x, y: this.spineSample.y, z: this.spineSample.z },
-        headingY: heading,
+        position: { x: candidate.x, y: candidate.y, z: candidate.z },
+        headingY: candidate.headingY,
       },
-      Math.max(Math.abs(this.copCurrent.speed), Math.abs(seat.currentPose.speed)),
+      Math.min(
+        candidate.entrySpeed,
+        Math.max(Math.abs(this.copCurrent.speed), Math.abs(seat.currentPose.speed)),
+      ),
     );
 
     // The same body-was-moved bookkeeping `placeCopBehindRider` does: no
@@ -4587,7 +4608,9 @@ export class Game {
     copyPose(this.copCurrent, this.copPrevious);
     copyPose(this.copCurrent, this.copRender);
     this.writeCopView();
-    brain.place(this.copView);
+    // Told where he was put: a folded route's global search can answer the
+    // other arm (`CpuRider.place`'s note).
+    brain.place(this.copView, candidate.distance);
     this.copPaddle.cancel();
     const placedX = this.copCurrent.x - seat.currentPose.x;
     const placedZ = this.copCurrent.z - seat.currentPose.z;
@@ -4778,6 +4801,7 @@ export class Game {
       crashed: seat.controller.crashed,
       riderClosingSpeed,
       copCrashed: this.copController?.crashed ?? true,
+      copSpeed: Math.abs(this.copCurrent.speed),
     });
     if (ended) this.finishChase();
     // The super tracker (M20.2). Asked after the endings so a run that just
@@ -9494,6 +9518,13 @@ export class Game {
     this.chaseRun.strayGraceSeconds = this.tuning.get('CHASE.strayGraceSeconds');
     this.chaseRun.trackerGapMetres = this.tuning.get('CHASE.trackerGapMetres');
     this.chaseRun.trackerHoldSeconds = this.tuning.get('CHASE.trackerHoldSeconds');
+    // The pressure director's clocks — the chase pass (§31). The stall speed
+    // and gap are deliberately not on the panel: a stall is a fact about a
+    // wheel going nowhere, not a taste.
+    this.chaseRun.trackerQuietGapMetres = this.tuning.get('CHASE.trackerQuietGapMetres');
+    this.chaseRun.trackerQuietSeconds = this.tuning.get('CHASE.trackerQuietSeconds');
+    this.chaseRun.trackerRespiteSeconds = this.tuning.get('CHASE.trackerRespiteSeconds');
+    this.chaseRun.trackerStallSeconds = this.tuning.get('CHASE.trackerStallSeconds');
     if (this.copBrain !== null) {
       const brain = this.copBrain;
       brain.skill = this.tuning.get('CHASE.copSkill');
@@ -9502,17 +9533,24 @@ export class Game {
       brain.steerDamping = this.tuning.get('CHASE.steerDamping');
       brain.throttleGain = this.tuning.get('CHASE.throttleGain');
       brain.cutoutMarginShare = this.tuning.get('CHASE.cutoutMarginShare');
+      // Catching up against closing in — the chase pass (§31).
+      brain.pursuitNearMetres = this.tuning.get('CHASE.pursuitNearMetres');
+      brain.pursuitFarMetres = this.tuning.get('CHASE.pursuitFarMetres');
+      brain.hotCorneringMargin = this.tuning.get('CHASE.hotCorneringMargin');
       // These are the controller values the high-speed policy reasons about.
       // Push them instead of importing today's frozen defaults in the brain,
       // so its ceiling and drag feedforward move with both riders on F4.
       brain.driveAcceleration = controllerTuning.leanToAccel
         * Math.sin(controllerTuning.maxLeanPitch);
       brain.dragCoefficient = controllerTuning.dragCoefficient;
-      // The braking authority, so F4's `EUC.brakeAuthority` reaches the brain
-      // as well as the wheel (M30 Phase 2's QA). Raw, exactly as the brain has
-      // always read it — see the field's own note for the unit finding that
-      // came with this push and the reason it was not acted on here.
-      brain.brakeDeceleration = controllerTuning.brakeAuthority;
+      // The braking term, derived exactly as the drive term above is: the
+      // authority is per unit of `sin(lean)` and the wheel's brake lean is
+      // capped by the same *Force lean*, so both sliders reach the brain's
+      // braking belief as they reach the wheel's brake (the chase pass's
+      // q124; Codex's M31 QA found the first cut taking the sine from the
+      // frozen table, so a retuned lean split the two beliefs 1.94×).
+      brain.brakeDeceleration = controllerTuning.brakeAuthority
+        * Math.sin(controllerTuning.maxLeanPitch);
       brain.cutoutSpeedShare = controllerTuning.cutoutSpeedShare;
       // **And the give's whole schedule** (M30 Phase 2's QA repair). It shipped
       // missing, so *Grip at speed* and *Grip rise shape* reached the cop's

@@ -456,8 +456,26 @@ export class RouteSpine {
    * teleporting a follower onto the other road at the crossing, which on a
    * generated route with a fork is a real geometry rather than a hypothetical.
    * The full search is used once, to find where a rider starts.
+   *
+   * `facing` is the direction the point is travelling *along the line*,
+   * radians, or `NaN` for none — Codex's M31 QA. A hairpin's two arms can
+   * lie four metres apart in plan and forty along the line, both inside the
+   * window, and a rider running wide at the apex is nearer the other arm:
+   * the cop's cursor jumped arms there, read himself as facing the wrong way
+   * and turned into the wall between them. With a facing, a segment that
+   * runs against it costs `LOCATE_FACING_METRES` of plan distance on top
+   * of its own, so a rider three metres off their own arm still beats the
+   * other arm two metres away; a rider genuinely crossing onto the other arm
+   * has turned to face it by the time they arrive. `offRoute` stays the plan
+   * distance to the arm chosen — the penalty only chooses.
    */
-  locate(x: number, z: number, near: number, out: SpineLocation): SpineLocation {
+  locate(
+    x: number,
+    z: number,
+    near: number,
+    out: SpineLocation,
+    facing: number = Number.NaN,
+  ): SpineLocation {
     const points = this.points;
     if (points.length < 2) {
       out.distance = 0;
@@ -472,14 +490,29 @@ export class RouteSpine {
 
     let bestDistance = 0;
     let bestOff = Infinity;
+    let bestCost = Infinity;
     let bestHalfWidth = points[0].halfWidth;
+    const faced = Number.isFinite(facing);
+    const faceX = faced ? Math.sin(facing) : 0;
+    const faceZ = faced ? Math.cos(facing) : 0;
 
     for (let index = 0; index < points.length - 1; index += 1) {
       const a = points[index];
       const b = points[index + 1];
       if (b.distance < from || a.distance > to) continue;
       const hit = pointToSegment(x, z, a.x, a.z, b.x, b.z);
-      if (hit.distance >= bestOff) continue;
+      let cost = hit.distance;
+      if (faced) {
+        // Half the penalty per unit of disagreement: nothing along the
+        // facing, the whole of it dead against.
+        const span = Math.hypot(b.x - a.x, b.z - a.z);
+        if (span > 1e-6) {
+          const along = ((b.x - a.x) * faceX + (b.z - a.z) * faceZ) / span;
+          cost += LOCATE_FACING_METRES * (1 - along) * 0.5;
+        }
+      }
+      if (cost >= bestCost) continue;
+      bestCost = cost;
       bestOff = hit.distance;
       bestDistance = a.distance + (b.distance - a.distance) * hit.t;
       bestHalfWidth = a.halfWidth + (b.halfWidth - a.halfWidth) * hit.t;
@@ -522,6 +555,13 @@ export class RouteSpine {
 
 /** How far either side of the last known position `locate` searches, metres. */
 const LOCATE_WINDOW = 45;
+/**
+ * What a segment running dead against a caller's facing costs `locate`, in
+ * metres of plan distance. More than a rider's ordinary line error across a
+ * road (a few metres) and less than the width of anything two arms could be
+ * separated by and still be two roads.
+ */
+const LOCATE_FACING_METRES = 8;
 
 /**
  * Turn an ordered traversal into the sampled line.

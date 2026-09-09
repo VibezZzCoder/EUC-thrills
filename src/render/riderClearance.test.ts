@@ -392,6 +392,50 @@ const HANG_RATIO = RIDER_LEAN_CEILING / GRIP_ROLL;
 const RIDER_ROLL_CEILING = LEAN_SHARE_TOP_MAX * RIDER_LEAN_CEILING;
 
 /**
+ * **The reversal transient — the one pose on this axis that is *not* a share
+ * of the wheel's bank** (Codex's final QA, 2026-09-07, `docs/PLANS.md`
+ * §30.8b).
+ *
+ * Everything above sweeps `riderRoll` with the wheel's own sign, because until
+ * Phase 2 it was arithmetically impossible for it to have any other. Phase 2
+ * gave the wheel a saturated target and the body the whole force, and the two
+ * are `approach`ed from different angles through one response constant — so
+ * out of a saturated corner into a gentle opposite one the body's lean reaches
+ * upright a few ticks *after* the bank does, and `riderRoll` is briefly on the
+ * wheel's opposite side.
+ *
+ * **Measured on the production controller** over 396 saturated reversals /
+ * 95,040 transition steps — presets shipped / 58 / 65 / 80 / 90, entry lock
+ * 0.4–1.0 thrown into 0.02–0.2 of opposite lock, both signs
+ * (`simulation/EucController.test.ts`, which asserts the band):
+ *
+ *   - the opposite-sign `riderRoll` reaches **0.008129 rad** (0.466°);
+ *   - it exists only while the wheel is within **0.017538 rad** (1.005°) of
+ *     upright — it is a *crossing*, not a stance;
+ *   - the pelvis hinge those steps ask the rig for, `rollAngle − riderRoll`,
+ *     reaches **0.017867 rad** (1.024°);
+ *   - the same grid's 324 unsaturated reversals produce it zero times.
+ *
+ * So the axis gains one entry, at the swept banks inside that window, and its
+ * magnitude is the measured **hinge** rather than the measured rider roll:
+ * this file's every measure reads the hinge between its two frames, `CARVES`
+ * holds exactly one bank inside the window (zero), and at zero bank the hinge
+ * *is* the rider's roll — so posing ±`REVERSAL_HINGE` there carries the whole
+ * transient the machine reaches, its own 1.005° of bank included. Both signs,
+ * because zero has none of its own.
+ *
+ * It is a tripwire, not a margin: the largest hinge already swept here is
+ * 0.66 rad at `TECHNICAL_ROLL`, which is thirty-seven times this one. The
+ * reason to sweep it at all is invariant 15's — an axis the machine reaches
+ * and the sweep excludes is a defect waiting for a rider — and the contract
+ * that actually holds the transient is the ridden one
+ * (`render/riderClearanceRidden.test.ts`, whose entry list gained the same
+ * reversal).
+ */
+const REVERSAL_BANK = 0.020;
+const REVERSAL_HINGE = 0.020;
+
+/**
  * **The M30 axis: the rider's roll, swept independently of the wheel's.**
  *
  * Before M30 the upper body took a fixed fraction of `rollAngle`, so a sweep
@@ -494,6 +538,13 @@ function riderRollsFor(
     riderRoll: riderRollFor(rollAngle, hungLean, 0, EUC.carveLeanFullSpeed, EUC, 0.5),
     tag: 'settle 0.50',
   });
+  // **The reversal transient** (`REVERSAL_BANK` / `REVERSAL_HINGE` above): the
+  // one piece of this axis with the wheel's *opposite* sign, swept only at the
+  // banks the machine can be at while it lasts.
+  if (Math.abs(rollAngle) <= REVERSAL_BANK) {
+    swept.push({ riderRoll: REVERSAL_HINGE, tag: 'reversal +' });
+    swept.push({ riderRoll: -REVERSAL_HINGE, tag: 'reversal -' });
+  }
   for (const { riderRoll, tag } of swept) {
     assert.ok(
       Math.abs(riderRoll) <= RIDER_ROLL_CEILING + 1e-9,
@@ -867,9 +918,15 @@ test("the new presentation folds keep Trollina's legs below the bodice", () => {
  * warning, so it is swept now, with the over-grip technical corner, the
  * reverse stance, the held tuck (`FOLDS`, the file's whole fold envelope
  * rather than three of it), the crouch at full carve rather than at 0.8 of
- * one, and the M30 rider-roll axis through `riderRollsFor`. **905 stances**
- * since Phase 3b added the settle's interior sample (761 before that, 262
- * before the axis existed), and the metric clears every one of them.
+ * one, and the M30 rider-roll axis through `riderRollsFor`. **833 stances**
+ * since that axis gained the reversal transient (Codex's final QA,
+ * 2026-09-07), and the metric clears every one of them. The count is a
+ * measurement and it has moved twice: 262 before the axis existed, 905 on the
+ * day Phase 3b added the settle's interior sample — when the F4 share slider
+ * still offered 1.04 and every carve therefore swept two distinct shares —
+ * and **761** from the moment Phase 2's QA lowered that maximum onto the
+ * shipped 1.00 and the duplicate deduplicated itself away, which is a record
+ * that moved without being re-pinned until now.
  */
 function hemStances(): LabelledStance[] {
   const stances: LabelledStance[] = [];
@@ -1954,10 +2011,14 @@ function swayAtSpeed(
  * `render/riderClearanceRidden.test.ts`: the production `EucController`
  * writing a real pose into the production `createRidingRig`, every step,
  * across the `?mph=` window, and since Phase 2's QA across the Drunkard's sway
- * *phase* as well. It measures **41.9 mm** at its worst (M30 Phase 2 — the hang
+ * *phase* as well — and, since Codex's final QA (2026-09-07), a
+ * saturated-to-gentle **reversal** among its entries. It measures **41.0 mm**
+ * at its worst (M30 Phase 2 — the hang
  * spent 16.4 mm of the 57.9 mm Phase 3b read; the phase axis spent another
  * 12 mm; the F4 share slider came down 1.2 → 1.04 → **1.00**, and the can is
- * now carried 8 mm further outboard, which is what put the floor back).
+ * now carried 8 mm further outboard, which is what put the floor back; the
+ * reversal then spent the last 0.9 mm of the reading without moving the
+ * decision).
  * Read that file before either number below is touched.
  *
  * What is asserted *here* is something weaker on purpose. This file sweeps a
@@ -2000,7 +2061,7 @@ function swayAtSpeed(
  * *whole* force lean at 1.05 g with a full crouch, a full presentation fold
  * and a full sway — and buries the can six millimetres in a corner of the
  * space no trajectory reaches. The ridden file measures the same geometry at
- * **41.9 mm** with the slider at its maximum. The two rows below are pinned at
+ * **41.0 mm** with the slider at its maximum. The two rows below are pinned at
  * what this sweep reads, rounded down to the millimetre, and their only job is
  * to go red when the geometry moves.
  *
@@ -2032,7 +2093,7 @@ function swayAtSpeed(
  * red on any regression while the ridden file goes red on any real breach.
  * Two tripwires on one wire, and the numbers below are *records*, not design
  * intent: **do not soften them to close a regression, and do not read them as
- * the can's margin** — 41.9 mm is the margin, and 1.9 mm of it is the reserve.
+ * the can's margin** — 41.0 mm is the margin, and 1.0 mm of it is the reserve.
  *
  * The lever if either file ever fails is the *can's carry* — where the fist
  * holds it relative to the thigh — never the floor and never the slider
@@ -2161,7 +2222,7 @@ test("the can in the Drunkard's fist clears his thigh and the wheel's pads throu
   // **The 40 mm floor is held by `render/riderClearanceRidden.test.ts`**, not
   // here: that file rides the production controller through the production
   // rig — and, since that phase's QA, the sway oscillator's phase — and
-  // measures 41.9 mm at its worst, with the share slider at the 1.00 that
+  // measures 41.0 mm at its worst, with the share slider at the 1.00 that
   // measurement set and the can carried 8 mm outboard. What is asserted here is
   // the
   // constructed cross product against the two measured sway envelopes, at the

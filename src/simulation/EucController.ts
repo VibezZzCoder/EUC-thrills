@@ -1368,6 +1368,13 @@ export interface EucSnapshot {
    * holds the slow-band pose the owner approved at M16 instead of whipping
    * with the machine. It multiplies the speed blend, so it can only ever move
    * the pose *down* the same schedule.
+   *
+   * **Down the schedule is not the same as onto the wheel's own side of
+   * upright once the bank saturates** (Codex's final QA, 2026-09-07): the
+   * schedule's top end is `riderLean`, which past the ordinary ceiling is a
+   * different angle from `rollAngle` and reaches zero later on a reversal.
+   * `simulation/riderLean.ts` carries the measured band and
+   * `EucController.test.ts` asserts it.
    */
   readonly leanSettle: number;
   readonly yawRate: number;
@@ -2542,6 +2549,16 @@ export class EucController {
     // inside the machine's line — the pose of §30.1's photographs, and the hang
     // the owner asked Phase 2 for. `ridingRig.ts` spends the difference on the
     // pelvis hinge, which is what keeps the boots on the pedals.
+    //
+    // **One response constant does not make two angles cross zero together
+    // once their targets have parted** (Codex's final QA, 2026-09-07). An
+    // `approach` is an exponential, so the angle that starts further from
+    // upright reaches it later: coming out of a *saturated* corner into a
+    // gentle opposite one, this lean is still on the old side for a few ticks
+    // after `rollAngle` has crossed. Nothing here clamps it — the measured
+    // band (0.0081 rad of rider roll, only within 0.0175 rad of upright, gone
+    // in 38 ticks) is in `simulation/riderLean.ts` and is asserted in
+    // `EucController.test.ts` and swept by the clearance contracts.
     this.riderLean = approach(
       this.riderLean,
       leanTarget,

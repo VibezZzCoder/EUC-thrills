@@ -1391,6 +1391,236 @@ test('flicking the stick keeps the old lean the whole time — the pose he asked
   );
 });
 
+test('the flick has a saturated sibling, and over a saturated bank it settles the same way', () => {
+  // **Codex's final QA, 2026-09-07** (`docs/PLANS.md` §30.8b). The main
+  // flick test above deliberately rides *under* the grip ceiling — its own
+  // comment says so, and its steer came down 0.35 → 0.28 at Phase 4 to keep it
+  // there — because "one line" and the share arithmetic it asserts hold only
+  // while the wheel's bank and the rider's force lean are the same number. So
+  // the settle had no test at all over the pose Phase 2 actually ships at
+  // speed: a **saturated** corner, where the wheel holds `atan(maxLateralG)`
+  // and the rider hangs 9.5° inside it. This is that sibling, at full lock.
+  //
+  // What survives saturation, asserted below and measured on the shipped
+  // wheel: the settle still falls to zero *before* the wheel crosses upright
+  // (tick 7 against tick 9), the body still poses at the M16 low-speed share
+  // **to the bit** through the swing — at `settle === 0` the blend is zero, so
+  // `riderRollFor` returns the low term outright whatever the force lean is
+  // doing, which is why saturation cannot reach the swing's pose at all — and
+  // the lean still comes back, at tick 59, to the **hang** rather than to one
+  // line. The body never leans opposite the wheel here either: 0 samples of
+  // 240, and the reversal test below says why that is a fact about a
+  // *symmetric* flick rather than about saturation.
+  //
+  // What does not survive is the main flick test's `|riderRoll| ≤ |rollAngle|`:
+  // once the corner is re-established the ratio is 1.2584, which is
+  // `atan(carveGripTopG) / atan(maxLateralG)` — the hang itself, not a breach.
+  const euc = controller();
+  euc.reset(undefined, 24);
+  const held = ride(euc, SECONDS(2), { throttle: 1, steer: 1 });
+  const hangRatio = Math.atan(EUC.carveGripTopG) / Math.atan(EUC.maxLateralG);
+
+  assert.ok(held.lateralLimited, 'the fixture corner never reached the grip ceiling');
+  assert.ok(
+    Math.abs(Math.abs(held.rollAngle) - Math.atan(EUC.maxLateralG)) < 1e-6,
+    `the wheel banked ${held.rollAngle} rather than saturating at the ordinary ceiling`,
+  );
+  assert.ok(held.speed >= EUC.carveLeanFullSpeed, `held above the anchor: ${held.speed}`);
+  assert.equal(held.leanSettle, 1, 'a held bank is a settled one, saturated or not');
+  assert.equal(
+    held.riderRoll,
+    held.riderLean * EUC.carveLeanShareTop,
+    'a settled rider at the top of the schedule is the share of the force lean, to the bit',
+  );
+  assert.ok(
+    Math.abs(held.riderRoll) - Math.abs(held.rollAngle) > 0.16,
+    `the rider did not hang inside the bank: ${held.riderRoll} over ${held.rollAngle}`,
+  );
+
+  const input = actions({ throttle: 1, steer: -1 });
+  const flick: Array<{
+    roll: number; rider: number; lean: number; settle: number; rate: number; speed: number;
+  }> = [];
+  let previousRoll = held.rollAngle;
+  for (let i = 0; i < SECONDS(2); i += 1) {
+    euc.step(STEP, input);
+    const state = euc.snapshot();
+    flick.push({
+      roll: state.rollAngle,
+      rider: state.riderRoll,
+      lean: state.riderLean,
+      settle: state.leanSettle,
+      rate: (state.rollAngle - previousRoll) / STEP,
+      speed: state.speed,
+    });
+    previousRoll = state.rollAngle;
+  }
+
+  let atOldPose = 0;
+  for (const [i, sample] of flick.entries()) {
+    assert.ok(sample.speed >= EUC.carveLeanFullSpeed, `tick ${i}: dropped to ${sample.speed} m/s`);
+    assert.ok(sample.settle >= 0 && sample.settle <= 1, `tick ${i}: settle ${sample.settle}`);
+    if (Math.abs(sample.roll) > 1e-9) {
+      assert.equal(
+        Math.sign(sample.rider),
+        Math.sign(sample.roll),
+        `tick ${i}: the body leaned the other way from the wheel in a symmetric flick`,
+      );
+    }
+    if (sample.settle !== 0) continue;
+    atOldPose += 1;
+    // The swing's pose is the low term outright, saturated bank or not.
+    assert.equal(
+      sample.rider,
+      sample.roll * EUC.riderUpperBodyRollFactor,
+      `tick ${i}: a swung rider over a saturated bank is not the M16 pose to the bit`,
+    );
+  }
+  assert.ok(atOldPose >= 5, `only ${atOldPose} ticks of this flick reached the old pose`);
+
+  const crossing = flick.findIndex((sample) => Math.sign(sample.roll) !== Math.sign(held.rollAngle));
+  const zeroed = flick.findIndex((sample) => sample.settle === 0);
+  const settled = flick.findIndex((sample, i) => i > crossing && sample.settle === 1);
+  assert.ok(crossing > 0, 'the flick never reached the other side');
+  assert.ok(
+    zeroed >= 0 && zeroed < crossing,
+    `the settle reached the old pose at ${zeroed}, not before the crossing at ${crossing}`,
+  );
+  assert.ok(settled > crossing, `the lean never came back (crossing ${crossing}, settled ${settled})`);
+  assert.equal(
+    flick[settled]!.rider,
+    flick[settled]!.lean * EUC.carveLeanShareTop,
+    'and the pose it comes back to is the share of the force lean, to the bit',
+  );
+  assert.ok(
+    Math.abs(flick[settled]!.rider / flick[settled]!.roll - hangRatio) < 1e-12,
+    `the re-established corner is not the hang: ratio ${flick[settled]!.rider / flick[settled]!.roll}`,
+  );
+});
+
+test('a saturated corner reversed into a gentle one lags the wheel through upright, inside a measured band', () => {
+  // **Codex's final QA, 2026-09-07** (`docs/PLANS.md` §30.8b), and the
+  // narrowing of a claim this file used to be able to make outright.
+  //
+  // Until M30 Phase 2 the rider's lean *was* the wheel's bank, so `riderRoll`
+  // was a share of `rollAngle` and the two crossed zero on the same tick.
+  // Phase 2 gave them different targets past the grip ceiling — the wheel
+  // saturates, the body carries the whole force — and Phase 3b's settle then
+  // mixes the two. Both are `approach`ed through the *same*
+  // `rollResponseSeconds`, which preserves nothing once they start from
+  // different angles: an exponential started further out reaches upright
+  // later. So coming out of a **saturated** corner into a **gentle opposite**
+  // one, the force lean is still on the old side for a few ticks after the
+  // bank has crossed, and the composite `riderRoll` — a lerp between the low
+  // term (the wheel's sign) and that lean (the old sign) — briefly takes the
+  // wheel's opposite. It needs the settle to be climbing back, which is why a
+  // symmetric flick never shows it: there the settle sits at zero and the low
+  // term is the whole answer (the sibling test above).
+  //
+  // **It is a lag, not a lurch, and it is deliberately not clamped.** Both
+  // angles are honest filters; a snap here is the stiffness Phase 3b exists to
+  // remove. What is asserted instead is the bound, measured over this whole
+  // grid: 396 saturated reversals / 95,040 transition steps reach 0.008129 rad
+  // (0.466°) of opposite-sign `riderRoll`, only ever while the wheel is within
+  // 0.017538 rad (1.005°) of upright, for at most three consecutive ticks, and
+  // never later than 38 ticks (0.32 s) after the stick moved. The 324
+  // **unsaturated** reversals in the same grid (77,760 steps) produce it zero
+  // times and never out-lean the wheel by a single ulp, which is the other
+  // half of the narrowed claim: below the ceiling the guarantee is exact.
+  const PRESETS: ReadonlyArray<number | null> = [null, 58, 65, 80, 90];
+  const ENTRIES = [0.05, 0.1, 0.15, 0.2, 0.25, 0.28, 0.4, 0.5, 0.6, 0.75, 0.9, 1] as const;
+  const GENTLE = [0.02, 0.05, 0.08, 0.1, 0.15, 0.2] as const;
+  // The measured bounds with a small margin. If one of these goes red the
+  // question is what moved the two filters apart, not what to widen.
+  const OPPOSITE_RIDER_ROLL = 0.010;
+  const OPPOSITE_BANK = 0.020;
+  const BACK_IN_TICKS = 60;
+
+  const saturated = { cases: 0, steps: 0, opposite: 0, run: 0, last: -1, rider: 0, bank: 0 };
+  const gentle = { cases: 0, steps: 0, opposite: 0, run: 0, last: -1, rider: 0, bank: 0 };
+  let worst = '';
+
+  for (const mph of PRESETS) {
+    const tuning: Partial<EucTuning> = {};
+    if (mph !== null) {
+      const preset = topSpeedPreset(mph);
+      tuning.dragCoefficient = preset.dragCoefficient;
+      tuning.powerComfortSpeed = preset.powerComfortSpeed;
+      tuning.powerLimitSpeed = preset.powerLimitSpeed;
+    }
+    for (const sign of [1, -1]) for (const entry of ENTRIES) for (const away of GENTLE) {
+      const euc = controller({ tuning });
+      // Mutable on purpose — the sweep rewrites two fields tens of thousands of
+      // times and `ActionSnapshot`'s own fields are readonly, so this is the
+      // shape `riderClearanceRidden.test.ts` uses for the same reason.
+      const input = { ...NEUTRAL_ACTIONS, throttle: 1, steer: 0 };
+      // Governed off the real over-speed warning, so every sample is a riding
+      // sample rather than a cutout one — the same discipline the ridden
+      // clearance sweep uses.
+      const govern = (): void => { input.throttle = euc.overspeed > 0.8 ? 0 : 1; };
+      for (let i = 0; i < SECONDS(7.5); i += 1) { govern(); euc.step(STEP, input); }
+      input.steer = sign * entry;
+      let saturates = false;
+      for (let i = 0; i < SECONDS(2); i += 1) {
+        govern();
+        euc.step(STEP, input);
+        const state = euc.snapshot();
+        if (Math.abs(state.riderLean) > Math.abs(state.rollAngle) + 1e-12) saturates = true;
+      }
+      const book = saturates ? saturated : gentle;
+      book.cases += 1;
+      input.steer = -sign * away;
+      let run = 0;
+      for (let i = 0; i < SECONDS(2); i += 1) {
+        govern();
+        euc.step(STEP, input);
+        const state = euc.snapshot();
+        book.steps += 1;
+        if (state.rollAngle * state.riderRoll >= 0) { run = 0; continue; }
+        book.opposite += 1;
+        run += 1;
+        book.run = Math.max(book.run, run);
+        book.last = Math.max(book.last, i);
+        book.bank = Math.max(book.bank, Math.abs(state.rollAngle));
+        if (Math.abs(state.riderRoll) <= book.rider) continue;
+        book.rider = Math.abs(state.riderRoll);
+        worst = `${mph === null ? 'shipped' : `${mph} mph`}, entry ${sign * entry} into `
+          + `${-sign * away}, tick ${i}: roll ${state.rollAngle}, riderRoll ${state.riderRoll}, `
+          + `riderLean ${state.riderLean}, settle ${state.leanSettle}, speed ${state.speed}`;
+      }
+    }
+  }
+
+  assert.ok(saturated.cases > 300, `only ${saturated.cases} of the reversals saturated`);
+  assert.ok(gentle.cases > 300, `only ${gentle.cases} of the reversals stayed under the ceiling`);
+
+  // **Below the ceiling the guarantee is exact**, and that is the half of the
+  // old claim that survives untouched.
+  assert.equal(
+    gentle.opposite,
+    0,
+    `an unsaturated reversal put the body ${gentle.rider} rad opposite the wheel`,
+  );
+
+  // And above it, the band.
+  assert.ok(saturated.opposite > 0, 'the reversal transient did not reproduce at all');
+  assert.ok(
+    saturated.rider <= OPPOSITE_RIDER_ROLL,
+    `the body leaned ${saturated.rider.toFixed(6)} rad opposite the wheel, past the measured `
+      + `${OPPOSITE_RIDER_ROLL} — ${worst}`,
+  );
+  assert.ok(
+    saturated.bank <= OPPOSITE_BANK,
+    `the body was opposite a wheel banked ${saturated.bank.toFixed(6)} rad, past the measured `
+      + `${OPPOSITE_BANK}: this is no longer a crossing transient`,
+  );
+  assert.ok(
+    saturated.last >= 0 && saturated.last < BACK_IN_TICKS,
+    `the transient was still alive ${saturated.last} ticks after the stick moved`,
+  );
+  assert.ok(saturated.run <= 6, `${saturated.run} consecutive opposite-sign ticks, not a crossing`);
+});
+
 test('a reverse corner stays in the low band, because the speed that reaches it is signed', () => {
   // The whole of reverse's special case, which is that there isn't one:
   // `leanBlend` is given the *signed* speed and a rider backing up is below
@@ -7031,20 +7261,12 @@ test("a driven lap costs him nothing — and the follower's own spread says how 
   // bounds below are untouched — this widens the sample, it does not soften the
   // claim, and softening it would have been the wrong repair.
   //
-  // **`sweep-15` is skipped since M30 Phase 4, by name and for a recorded
-  // reason.** The follower *is* `CpuRider`, and on the shipped 65 mph wheel it
-  // rides that one seed's deep pothole at 11.6 m/s believing it can still brake
-  // to 4.6 — a measured units error in the brain (`EUC.brakeAuthority` is per
-  // unit of `sin(lean)` and the braking law spends it as if it were not), which
-  // `simulation/cpuRider.test.ts` pins as exactly `['sweep-15:1']` and
-  // deliberately does not correct, because correcting it takes M18 §4.2's wall
-  // camp with it. A seed the follower puts down regardless of the style is not
-  // a measurement of the style's cost; it is that defect, and it belongs where
-  // it is recorded. `sweep-24` takes its place so the sample stays at
-  // twenty-four. When the cop's gate is tightened to zero, delete this skip.
-  const KNOWN_BRAIN_CRASH = 'sweep-15';
-  const seeds = Array.from({ length: 25 }, (_, index) => `sweep-${index}`)
-    .filter((seed) => seed !== KNOWN_BRAIN_CRASH);
+  // **`sweep-15` was skipped from M30 Phase 4 to the chase pass (§31)**: the
+  // follower *is* `CpuRider`, and on the shipped 65 mph wheel it rode that
+  // seed's deep pothole believing twice the braking it had. The chase pass
+  // corrected the belief and tightened the cop's own gate to zero, so the
+  // sample is the first twenty-four seeds again with nothing skipped.
+  const seeds = Array.from({ length: 24 }, (_, index) => `sweep-${index}`);
   assert.equal(seeds.length, 24);
   const differences: number[] = [];
 

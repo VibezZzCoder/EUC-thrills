@@ -153,8 +153,11 @@ test('the lean share at speed is on F4 within the range the clearance contracts 
   // axis. The can is now carried 8 mm outboard to hold the floor at all
   // (q114's lever, at last), and what that buys is the shipped share and not a
   // step past it: measured as ridden across the `?mph=` window with the phase
-  // swept, 41.9 mm at 1.00 against a 40 mm floor and 39.8 mm at 1.01
-  // (`render/riderClearanceRidden.test.ts`). §30.3d's rule — a maximum the
+  // swept, **41.0 mm at 1.00** against a 40 mm floor and **39.7 mm at 1.01**
+  // (`render/riderClearanceRidden.test.ts`; 41.9 / 39.8 before Codex's final
+  // QA gave that sweep the saturated-to-gentle reversal, 2026-09-07, which
+  // found on the coarse phase ladder what only the fine one had seen and left
+  // the decision exactly where it was). §30.3d's rule — a maximum the
   // contracts cannot clear is lowered, never the other way round — applied for
   // the third time in this milestone.
   assert.equal(slider.max, 1, 'the ceiling is what the ridden clearance contract clears');
