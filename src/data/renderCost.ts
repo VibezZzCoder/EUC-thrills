@@ -14,8 +14,11 @@ import { MATERIALS, SURFACES } from './surfaces.ts';
  * measurement lives in `render/renderCost.ts`, the *numbers* live here, and
  * `render/renderCost.test.ts` fails if the two ever disagree.
  *
- * **Nothing below is hand-maintained.** Every figure was measured from the real
- * built scene, and the test regenerates the measurement and compares. That is
+ * Measured costs regenerate from the built scene; budget ceilings are owner
+ * decisions. The 2026-09-09 Cool Rider pass raised triangle ceilings by each
+ * frame's measured reserve growth per view, retaining its level allowance.
+ * Draw ceilings stay 160 / 460 / 1,400; older milestone arithmetic below is
+ * historical. The test regenerates the measurement and compares. That is
  * the mitigation `docs/PLANS.md` §12 names for the top render risk: a cost
  * model that drifts from reality is a budget that passes while the frame dies.
  *
@@ -465,8 +468,8 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  *     triangle reserve; draw calls did not move.
  */
 export const NON_LEVEL_RESERVE = deepFreeze({
-  drawCalls: 88,
-  triangles: 53_274,
+  drawCalls: 90,
+  triangles: 126_618,
 });
 
 /**
@@ -494,8 +497,8 @@ export const NON_LEVEL_RESERVE = deepFreeze({
  * out, and a comment inside the braces makes the tool throw.
  */
 export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
-  drawCalls: 148,
-  triangles: 88_274,
+  drawCalls: 150,
+  triangles: 168_750,
 });
 
 /**
@@ -524,8 +527,8 @@ export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
  * the whole object out, and a comment inside the braces makes the tool throw.
  */
 export const QUAD_NON_LEVEL_RESERVE = deepFreeze({
-  drawCalls: 268,
-  triangles: 137_244,
+  drawCalls: 270,
+  triangles: 229_582,
 });
 
 /**
@@ -577,7 +580,8 @@ export const RENDER_BUDGET = deepFreeze({
    * far below its limit. The new ceiling puts that route at 76.6% and restores
    * the margin the 80% rule exists to protect.
    */
-  maxTriangles: 460_000,
+  // Owner-authorized Cool Rider detail pass: 73,344 more reserved triangles; retain route headroom.
+  maxTriangles: 533_344,
 });
 
 /**
@@ -665,7 +669,8 @@ export const RENDER_BUDGET_SPLIT = deepFreeze({
    * project — a draw call is per-frame CPU work and this is where the scarcity
    * has always been — so the round number is the honest one here.
    */
-  maxTriangles: 1_000_000,
+  // Two rendered views of the revised hero reserve.
+  maxTriangles: 1_160_952,
 });
 
 /**
@@ -731,7 +736,8 @@ export const RENDER_BUDGET_QUAD = deepFreeze({
    * been the binding axis on this project; the discipline is that the margin
    * is *stated* rather than eyeballed.
    */
-  maxTriangles: 2_200_000,
+  // Four rendered views of the revised hero reserve.
+  maxTriangles: 2_569_352,
 });
 
 /**

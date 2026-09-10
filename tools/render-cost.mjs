@@ -507,8 +507,8 @@ out(`**The structural bound doubles with the passes.** A level drawing on every`
 out(`surface, material and prop part at once costs ${LIBRARY_MAX_DRAW_CALLS} calls, so no split frame`);
 out(`the library can build exceeds ${splitLibraryBound} calls — which is what`);
 out('`render/renderCost.test.ts` asserts against the ceiling, exactly as it does');
-out('for Contract 1. **Contract 1 is untouched by any of this**: single-player');
-out('frames are one pass and are measured, reserved and bounded above.');
+out('for Contract 1. Single-player frames are one pass and are measured,');
+out('reserved and bounded separately above.');
 out();
 
 // ---------------------------------------------------------------------------
@@ -554,8 +554,11 @@ out();
 out('**Measured at M27 Phase 0, pinned at Phase 1.** The owner answered q98 on');
 out('2026-08-31 — **(a): four seats everywhere, no per-world seat cap** — so the');
 out('ceiling below is written against the *heavier* of the two frames measured');
-out('here, and BelVar is a datapoint rather than a second contract. Contracts 1');
-out('and 2 are untouched; all three are pinned and none has exemptions (§27.5).');
+out('here, and BelVar is a datapoint rather than a second contract. All three');
+out('contracts are enforced, with no per-world exemptions (§27.5). The owner');
+out('reopened the triangle ceilings for the 2026-09-09 Cool Rider pass; each');
+out('rose by its measured reserve growth per rendered view. Draw ceilings');
+out('and the previous level geometry allowance were retained.');
 out('Whether a given desktop *eats* the frame is a fact no agent may derive or');
 out('report: `tools/perf-window.js --views 4`, foreground, and the verdict is the');
 out('owner\'s alone.');
@@ -604,11 +607,10 @@ out(`RENDER_BUDGET_QUAD       ${pad(RENDER_BUDGET_QUAD.maxDrawCalls, 6)} calls  
 out(`headroom                 ${pad(RENDER_BUDGET_QUAD.maxDrawCalls - generatedQuadFrame.drawCalls, 6)} calls   ${pad(RENDER_BUDGET_QUAD.maxTriangles - generatedQuadFrame.triangles, 9)} triangles`);
 out('```');
 out();
-out('The headroom is derived rather than generous: every new character costs four');
-out('times in a grid frame, and Contract 2 left the equivalent of 1.44 characters');
-out('on the draw-call axis and 2.4 on the triangle axis. These are those margins,');
-out(`scaled. For scale, Contract 2 — the two-seat ceiling, never touched — is`);
-out(`${RENDER_BUDGET_SPLIT.maxDrawCalls} calls / ${RENDER_BUDGET_SPLIT.maxTriangles.toLocaleString('en-GB')} triangles, and Contract 1 — the phone, never bent — is`);
+out('A change to a character is charged once per rendered view. The historical');
+out('M27 estimates above are retained for comparison; the measured rows and');
+out('current ceilings describe the completed roster. Contract 2 is');
+out(`${RENDER_BUDGET_SPLIT.maxDrawCalls} calls / ${RENDER_BUDGET_SPLIT.maxTriangles.toLocaleString('en-GB')} triangles, and Contract 1 is`);
 out(`${RENDER_BUDGET.maxDrawCalls} calls / ${RENDER_BUDGET.maxTriangles.toLocaleString('en-GB')} triangles.`);
 out();
 

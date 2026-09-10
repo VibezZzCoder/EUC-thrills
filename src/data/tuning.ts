@@ -3728,6 +3728,18 @@ export const BLOCKOUT_COLOURS = {
    * reading as black gear.
    */
   riderSuit: 0x474b53,
+  /** Cool Rider's detailed garment palette; the legacy colours remain shared by older looks. */
+  coolFabric: 0x606570,
+  coolHelmet: 0x424b59,
+  coolVisor: 0x8daab5,
+  coolLash: 0x302a23,
+  coolGear: 0x4c5059,
+  coolSkin: 0xb98a6b,
+  coolSkinShadow: 0x87614f,
+  coolSole: 0xa6a69b,
+  coolStitch: 0x727982,
+  coolInk: 0x20252c,
+  coolPrint: 0xbac2cc,
   /**
    * The identity cue. Reflective is a *material property* of the character,
    * not decoration: it is what keeps the rider readable against dark asphalt

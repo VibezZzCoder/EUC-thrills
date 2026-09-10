@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test } from '@playwright/test';
 import { CHARACTER_IDS } from '../src/data/riders.ts';
+import { RENDER_BUDGET } from '../src/data/renderCost.ts';
 import { boot, bootToTitle, collectErrors } from './harness.ts';
 
 /**
@@ -80,7 +81,8 @@ test('choosing a rider changes the rider in the scene, and only the rider', asyn
     crashVoice: 'cool-rider',
   });
   const coolRiderMeshes = await rigMeshNames(page);
-  expect(coolRiderMeshes).toContain('rider-shoulder-panels');
+  expect(coolRiderMeshes).toContain('rider-cool-face');
+  expect(coolRiderMeshes).toContain('rider-cool-visor');
   expect(coolRiderMeshes).toContain('rider-sleeve-left');
 
   await page.locator('.euc-menu--title [data-menu="riders"]').click();
@@ -95,6 +97,8 @@ test('choosing a rider changes the rider in the scene, and only the rider', asyn
   const trollinaMeshes = await rigMeshNames(page);
   expect(trollinaMeshes).toContain('rider-hair');
   expect(trollinaMeshes).not.toContain('rider-sleeve-left');
+  expect(trollinaMeshes).not.toContain('rider-cool-face');
+  expect(trollinaMeshes).not.toContain('rider-cool-visor');
 
   // **The world did not move.** A rider is appearance; a level id is where a
   // run happened. If a character ever reached level identity, every existing
@@ -220,8 +224,8 @@ test('the whole frame still fits the budget with the heavier rider on it', async
     await page.evaluate((id) => window.game.setOptions({ character: id }), character);
     await page.evaluate(() => window.game.advance(10));
     const render = await page.evaluate(() => window.game.snapshot().render);
-    expect(render.drawCalls, `${character} draw calls`).toBeLessThanOrEqual(150);
-    expect(render.triangles, `${character} triangles`).toBeLessThanOrEqual(400_000);
+    expect(render.drawCalls, `${character} draw calls`).toBeLessThanOrEqual(RENDER_BUDGET.maxDrawCalls);
+    expect(render.triangles, `${character} triangles`).toBeLessThanOrEqual(RENDER_BUDGET.maxTriangles);
   }
 
   expect(errors).toEqual([]);

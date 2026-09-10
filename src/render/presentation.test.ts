@@ -242,7 +242,7 @@ test('the solo contract is a boundary the enhanced recipe is judged against, fro
 
   const over = judgePresentation(coniferPlan(n + 1), ENHANCED_PRESENTATION);
   assert.ok(over.cost.frame.solo.triangles > RENDER_BUDGET.maxTriangles);
-  assert.match(over.breaches.join('\n'), /solo triangles against a ceiling of 460000/);
+  assert.match(over.breaches.join('\n'), new RegExp(`solo triangles against a ceiling of ${RENDER_BUDGET.maxTriangles}`));
 
   // The two split contracts read the same level cost through their own
   // reserves and pass counts, exactly as `level/renderBudget.ts` does.
@@ -269,9 +269,9 @@ test('a fixture beyond every ceiling names every ceiling, and still falls back t
   const verdict = judgePresentation(huge, ENHANCED_PRESENTATION);
   for (const ceiling of [
     /prop triangles \(shadows included\) against a ceiling of 90000/,
-    /solo triangles against a ceiling of 460000/,
-    /split triangles against a ceiling of 1000000/,
-    /quad triangles against a ceiling of 2200000/,
+    new RegExp(`solo triangles against a ceiling of ${RENDER_BUDGET.maxTriangles}`),
+    new RegExp(`split triangles against a ceiling of ${RENDER_BUDGET_SPLIT.maxTriangles}`),
+    new RegExp(`quad triangles against a ceiling of ${RENDER_BUDGET_QUAD.maxTriangles}`),
   ]) {
     assert.match(verdict.breaches.join('\n'), ceiling);
   }

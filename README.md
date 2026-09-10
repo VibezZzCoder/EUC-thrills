@@ -193,8 +193,10 @@ The Drunkard, shares that same speed, grip and braking but rides his own way
 on purpose: a slow weave and the odd stumble that really do move him about
 the road. See The Drunkard below for what that is and is not.
 
-**Cool Rider** wears black moto gear with reflective blue panels and a
-full-face helmet; his clothes and riding style are based on what the project
+**Cool Rider** wears tailored black moto gear with reflective blue panels,
+padded trousers, fingerless gloves and a full-face helmet with a lightly
+tinted visor. His original stylized face has natural upper and lower lashes.
+His clothes and riding style are based on what the project
 owner wears, credited at
 [@edwin_rodmen](https://www.instagram.com/edwin_rodmen/). He does not reproduce
 the owner's face, and the character name is not the owner's public name.

@@ -682,7 +682,8 @@ test('her draw-call overrun is the waived, bounded kind', () => {
     maribel.calls <= cool.calls + 6,
     `she costs ${maribel.calls} draw calls against his ${cool.calls} — past even the waived bound`,
   );
-  assert.ok(maribel.triangles > cool.triangles, 'her suit, guards and hair are real triangles');
+  // Cool Rider is now a detailed hero too; her geometry must survive independently of his.
+  assert.ok(maribel.triangles >= 20_000, 'her suit, guards and hair lost their geometry');
 });
 
 test('her figure inverts the male frame, and her machine outgrew the commuter shell', () => {

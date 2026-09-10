@@ -852,6 +852,8 @@ test('generation alone does not consume the complete boot budget', () => {
  * of a 400 k one — slightly *more* headroom than it had before the pass.
  */
 const ADVERSARIAL_2026_08_09 = [
+  // Cool Rider upgrade (2026-09-09): +2 calls and +73,344 reserved triangles.
+  // These are character costs; route geometry, hazards and targets are unchanged.
   // Re-recorded 2026-08-19 twice in one day, both uniform across the sweep:
   // −92 triangles when the bug hunt removed the wheel's invented tail-spine
   // patch, then −1 call and −7,568 triangles as q58–q61 landed and settled through capture calibration — the aero
@@ -900,12 +902,12 @@ const ADVERSARIAL_2026_08_09 = [
   // is the check that this is a generated-route change and not a character one.
   // Contract 1 is untouched: the worst seed still spends 85.6% of the draw-call
   // ceiling and 71.3% of the triangle ceiling.
-  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 137, triangles: 328_052, hazards: 7, targets: 18 },
-  { seed: 'route-278', axis: 'second densest', drawCalls: 137, triangles: 326_022, hazards: 10, targets: 17 },
-  { seed: 'sweep-89', axis: 'third densest', drawCalls: 137, triangles: 322_520, hazards: 9, targets: 23 },
-  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 137, triangles: 318_888, hazards: 10, targets: 18 },
-  { seed: 'euc-180', axis: 'longest required route', drawCalls: 136, triangles: 303_786, hazards: 8, targets: 19 },
-  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 136, triangles: 272_252, hazards: 8, targets: 18 },
+  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 139, triangles: 401_396, hazards: 7, targets: 18 },
+  { seed: 'route-278', axis: 'second densest', drawCalls: 139, triangles: 399_366, hazards: 10, targets: 17 },
+  { seed: 'sweep-89', axis: 'third densest', drawCalls: 139, triangles: 395_864, hazards: 9, targets: 23 },
+  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 139, triangles: 392_232, hazards: 10, targets: 18 },
+  { seed: 'euc-180', axis: 'longest required route', drawCalls: 138, triangles: 377_130, hazards: 8, targets: 19 },
+  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 138, triangles: 345_596, hazards: 8, targets: 18 },
 ] as const;
 
 
@@ -1123,7 +1125,7 @@ test('the render budget is a live contract, not a formality it never reaches', (
 
   const verdict = withinRenderBudget(denser);
   assert.equal(verdict.ok, false, 'three times the dressing on the densest route fits the ceiling');
-  assert.match(verdict.breaches[0], /triangles against a ceiling of 460000/);
+  assert.match(verdict.breaches[0], new RegExp(`triangles against a ceiling of ${RENDER_BUDGET.maxTriangles}`));
 });
 
 // ---------------------------------------------------------------------------

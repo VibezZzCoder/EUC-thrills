@@ -1,5 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
+import { COOL_RIDER_LOOK } from './coolRiderLook.ts';
+export { COOL_RIDER_LOOK } from './coolRiderLook.ts';
 import { BLOCKOUT_COLOURS, RIDER_BLOCKOUT } from '../data/tuning.ts';
 import type { CharacterId } from '../data/riders.ts';
 import {
@@ -102,6 +104,8 @@ export interface RiderMaterialSpec {
   readonly metalness: number;
   readonly emissive?: number;
   readonly emissiveIntensity?: number;
+  /** A translucent surface. Opaque materials omit this. */
+  readonly opacity?: number;
 }
 
 /**
@@ -225,6 +229,9 @@ export interface RiderPatch {
 /** A group of panels drawn as one mesh on one joint. */
 export interface RiderPanelGroup {
   readonly patches: readonly RiderPatch[];
+  /** A continuous shaped insert, merged with the ordinary patches on the same joint. */
+  readonly build?: (side: number) => THREE.BufferGeometry;
+  readonly art?: string;
   readonly role: RiderMaterialRole;
   /** See rule 3 in the file comment. */
   readonly casts: boolean;
@@ -247,6 +254,8 @@ export interface RiderExtra {
   /** Which joint it hangs from. `neck` is where the head is. */
   readonly joint: 'neck' | 'pelvis';
   readonly role: RiderMaterialRole;
+  /** A distinct surface, such as clear helmet glazing, owned by this rig. */
+  readonly material?: RiderMaterialSpec;
   readonly casts: boolean;
   /** Its page of the look's atlas, as on `RiderPatch.art`. */
   readonly art?: string;
@@ -421,6 +430,10 @@ export interface RiderLook {
    */
   readonly build?: {
     readonly hand?: readonly ((side: number) => THREE.BufferGeometry)[];
+    /** Optional complete shell, for helmets with a real opening instead of a closed loft. */
+    readonly head?: () => THREE.BufferGeometry;
+    /** Detail merged into the existing boot, in ankle-local coordinates. */
+    readonly boot?: readonly ((side: number) => THREE.BufferGeometry)[];
   };
 
   /** The look's printed sheet, if it has one. See `RiderAtlas`. */
@@ -731,14 +744,6 @@ const SEAT = loftProfile([
  * below the knee and a padded sleeve breaks at the bicep, and a rider whose
  * limbs are smooth tubes is wearing a wetsuit.
  */
-const THIGH = limbProfile(RIDER_BLOCKOUT.thighLength, [0.079, 0.072, 0.061], [0.30, 0.62], {
-  flatten: 0.94,
-  square: 2.4,
-});
-const SHIN = limbProfile(RIDER_BLOCKOUT.shinLength, [0.064, 0.058, 0.046], [0.42], {
-  flatten: 0.92,
-  square: 2.4,
-});
 const UPPER_ARM = limbProfile(RIDER_BLOCKOUT.upperArmLength, [0.058, 0.050, 0.043], [0.55], {
   flatten: 0.95,
   square: 2.3,
@@ -812,268 +817,6 @@ const GLOVE = loftProfile([
   { y: -0.098, halfWidth: 0.023, halfDepth: 0.020, square: 2.6 },
   { y: -0.105, halfWidth: 0, halfDepth: 0 },
 ]);
-
-const SUIT: RiderMaterialSpec = Object.freeze({
-  colour: BLOCKOUT_COLOURS.riderSuit,
-  roughness: 0.82,
-  metalness: 0.0,
-});
-
-export const COOL_RIDER_LOOK: RiderLook = Object.freeze({
-  id: 'cool-rider' as CharacterId,
-  materials: Object.freeze({
-    body: SUIT,
-    // The same object, deliberately: the jacket and the sleeves are one
-    // garment, and `render/rider.ts` builds one material per distinct spec.
-    limbs: SUIT,
-    // Reflective, not merely blue — a material property of the character.
-    accent: Object.freeze({
-      colour: BLOCKOUT_COLOURS.riderPanel,
-      roughness: 0.26,
-      metalness: 0.18,
-      emissive: 0x0e2c58,
-      emissiveIntensity: 0.55,
-    }),
-    head: Object.freeze({
-      colour: BLOCKOUT_COLOURS.riderHelmet,
-      roughness: 0.35,
-      metalness: 0.05,
-    }),
-    face: Object.freeze({
-      colour: BLOCKOUT_COLOURS.riderVisor,
-      roughness: 0.12,
-      metalness: 0.35,
-    }),
-    gear: Object.freeze({
-      colour: BLOCKOUT_COLOURS.riderBoot,
-      roughness: 0.7,
-      metalness: 0.0,
-    }),
-  }),
-  profiles: Object.freeze({
-    torso: JACKET,
-    seat: SEAT,
-    thigh: THIGH,
-    shin: SHIN,
-    upperArm: UPPER_ARM,
-    forearm: FOREARM,
-    neck: NECK,
-    head: HELMET,
-    boot: BOOT,
-    bootSole: BOOT_SOLE,
-    hand: GLOVE,
-  }),
-  shades: Object.freeze({ seat: 0.86, legs: 0.86, collar: 1.14, sole: 0.72, neck: 0.78 }),
-  parts: Object.freeze({
-    hands: 'gear' as RiderMaterialRole,
-    kneePad: 'accent' as RiderMaterialRole,
-    // One garment head to toe: the trousers are the jacket's material one
-    // shade down, exactly as they were before these two slots existed.
-    legs: 'limbs' as RiderMaterialRole,
-    seat: 'body' as RiderMaterialRole,
-  }),
-  panels: Object.freeze({
-    // Opened at the front, so the one rim the slab cannot avoid lands where a
-    // jacket has a seam anyway rather than down the middle of the back.
-    collar: Object.freeze({
-      anchor: 'front' as PatchAnchor,
-      u0: 0,
-      u1: Math.PI * 2,
-      from: 0.502,
-      to: 0.545,
-      uSegments: 20,
-      vSegments: 2,
-      lift: 0.011,
-      shade: 1.14,
-    }),
-    // A pair rather than a bar across the top: the blue runs over each shoulder
-    // and continues down the outer sleeve, and a single band all the way round
-    // reads as a sash. The only blue on the rider that casts — it sits on the
-    // widest part of the silhouette.
-    shoulders: Object.freeze({
-      role: 'accent' as RiderMaterialRole,
-      casts: true,
-      patches: Object.freeze([Object.freeze({
-        anchor: 'outboard' as PatchAnchor,
-        u0: -0.72,
-        u1: 0.72,
-        from: 0.395,
-        to: 0.512,
-        uSegments: 7,
-        vSegments: 4,
-        lift: 0.011,
-        taper: 0.34,
-      })]),
-    }),
-    // Chest chevrons and the back panel, in one buffer: they share the pelvis
-    // and are both too flat to cast. The chevrons are sheared bands climbing
-    // toward the centreline; the back panel is the largest single piece of blue
-    // on the character, because the chase camera is behind the rider
-    // essentially all the time.
-    torso: Object.freeze({
-      role: 'accent' as RiderMaterialRole,
-      casts: false,
-      patches: Object.freeze([
-        Object.freeze({
-          anchor: 'front' as PatchAnchor,
-          u0: 0.10,
-          u1: 0.92,
-          mirrored: true,
-          from: 0.300,
-          to: 0.352,
-          uSegments: 6,
-          vSegments: 2,
-          lift: 0.010,
-          skewFrom: 0.330,
-          skewTo: 0.395,
-          taper: 0.25,
-        }),
-        // Sized between the shoulder blades rather than across the whole back:
-        // hem-to-collar at ±50° made the panel the garment rather than an
-        // accent, which is neither the reference nor the LOCKED description.
-        Object.freeze({
-          anchor: 'back' as PatchAnchor,
-          u0: -0.60,
-          u1: 0.60,
-          from: 0.205,
-          to: 0.492,
-          uSegments: 7,
-          vSegments: 5,
-          lift: 0.010,
-          taper: 0.16,
-        }),
-      ]),
-    }),
-    // The blue runs down the *outer* sleeve, not around the whole arm: a solid
-    // blue upper and a black lower put a hard colour break at the elbow and
-    // read as a machine joint rather than as a sleeve.
-    sleeve: Object.freeze({
-      role: 'accent' as RiderMaterialRole,
-      casts: false,
-      patches: Object.freeze([Object.freeze({
-        anchor: 'outboard' as PatchAnchor,
-        u0: -0.92,
-        u1: 0.92,
-        from: -0.245,
-        to: 0.002,
-        uSegments: 6,
-        vSegments: 5,
-        lift: 0.009,
-        taper: 0.22,
-      })]),
-    }),
-    // Elbow armour, on the side the elbow actually points: the chains bend
-    // backward, so this is the face a rider lands on.
-    elbowPad: Object.freeze({
-      role: 'accent' as RiderMaterialRole,
-      casts: false,
-      patches: Object.freeze([Object.freeze({
-        anchor: 'back' as PatchAnchor,
-        u0: -0.62,
-        u1: 0.62,
-        from: -0.058,
-        to: -0.004,
-        uSegments: 5,
-        vSegments: 3,
-        lift: 0.011,
-        taper: 0.3,
-      })]),
-    }),
-    // Kept small: the knee sits at almost exactly the height of the wheel's
-    // shell, so a large bright pad there reads as part of the wheel.
-    kneePad: Object.freeze({
-      role: 'accent' as RiderMaterialRole,
-      casts: false,
-      patches: Object.freeze([Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: -0.66,
-        u1: 0.66,
-        from: -0.078,
-        to: -0.016,
-        uSegments: 5,
-        vSegments: 3,
-        lift: 0.012,
-        taper: 0.3,
-      })]),
-    }),
-    head: Object.freeze([
-      // A chin bar wraps to the cheek and stops. At ±54° its outer rim came
-      // back round to the jaw, where the shell is narrowest, and stood proud of
-      // the silhouette as a square tab.
-      Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: -0.70,
-        u1: 0.70,
-        from: 0.098,
-        to: 0.150,
-        uSegments: 6,
-        vSegments: 3,
-        lift: 0.015,
-        taper: 0.42,
-      }),
-      // The brow, kept off the temples: a rim that crosses the shell's own
-      // silhouette reads as a chip out of the helmet.
-      Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: -0.86,
-        u1: 0.86,
-        from: 0.236,
-        to: 0.256,
-        uSegments: 7,
-        vSegments: 1,
-        lift: 0.011,
-        taper: 0.3,
-      }),
-      // The spoiler, low and aft where the shell is widest and a lift is
-      // tangent to it. Authored across the crown it was a slab on a dome.
-      Object.freeze({
-        anchor: 'back' as PatchAnchor,
-        u0: -0.78,
-        u1: 0.78,
-        from: 0.150,
-        to: 0.206,
-        uSegments: 8,
-        vSegments: 3,
-        lift: 0.012,
-        taper: 0.62,
-        shade: 1.05,
-      }),
-      // A rim at the base of the shell, one step lighter, so the helmet ends
-      // somewhere instead of dissolving into the collar.
-      Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: 0,
-        u1: Math.PI * 2,
-        from: 0.090,
-        to: 0.113,
-        uSegments: 18,
-        vSegments: 1,
-        lift: 0.004,
-        shade: 1.08,
-      }),
-    ]),
-    // The visor sits *in* the aperture — sunk below the shell and lifted only a
-    // little, so it reads as glass in a recess rather than as a bar stuck on.
-    face: Object.freeze({
-      role: 'face' as RiderMaterialRole,
-      casts: false,
-      patches: Object.freeze([Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: -0.80,
-        u1: 0.80,
-        from: 0.172,
-        to: 0.234,
-        uSegments: 9,
-        vSegments: 3,
-        lift: 0.007,
-        sink: -0.014,
-        taper: 0.22,
-      })]),
-    }),
-  }),
-  extras: Object.freeze([]),
-  armCarriage: Object.freeze({ splay: 0, rise: 0 }),
-});
 
 // -- Trollina ----------------------------------------------------------------
 //

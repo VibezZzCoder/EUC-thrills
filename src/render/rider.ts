@@ -517,8 +517,8 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   );
 
   const built = new Map<RiderMaterialSpec, THREE.MeshStandardMaterial>();
-  const materialFor = (role: RiderMaterialRole): THREE.MeshStandardMaterial => {
-    const spec = look.materials[role];
+  const materialFor = (role: RiderMaterialRole, override?: RiderMaterialSpec): THREE.MeshStandardMaterial => {
+    const spec = override ?? look.materials[role];
     const existing = built.get(spec);
     if (existing !== undefined) return existing;
     const material = trackMaterial(new THREE.MeshStandardMaterial({
@@ -527,8 +527,11 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       metalness: spec.metalness,
       emissive: spec.emissive ?? 0x000000,
       emissiveIntensity: spec.emissiveIntensity ?? 1,
+      opacity: spec.opacity ?? 1,
+      transparent: spec.opacity !== undefined && spec.opacity < 1,
+      depthWrite: spec.opacity === undefined || spec.opacity >= 1,
       vertexColors: true,
-      map: sheet !== null && mapsRole(role) ? sheet : null,
+      map: sheet !== null && override === undefined && mapsRole(role) ? sheet : null,
     }));
     built.set(spec, material);
     return material;
@@ -704,6 +707,11 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
         add(patch, 1);
       }
     }
+    if (group.build) {
+      for (const pairSide of side === null ? [-1, 1] : [side]) {
+        parts.push(paged(group.build(pairSide), group.role, group.art));
+      }
+    }
     const mesh = new THREE.Mesh(track(mergeGeometries(parts)), materialFor(group.role));
     mesh.name = name;
     if (group.casts) shadowed(mesh);
@@ -776,7 +784,9 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       .translate(0, soleTop + 0.047, 0);
     const sole = loftGeometry(profiles.bootSole, { radialSegments: density.boot + 4, shade: shades.sole })
       .translate(0, soleTop, 0.018);
-    const bootGeometry = track(mergeGeometries([upper, sole]));
+    const bootGeometry = track(mergeGeometries([
+      upper, sole, ...(look.build?.boot ?? []).map((build) => build(side)),
+    ]));
     look.paint?.boot?.(bootGeometry, side);
     const boot = shadowed(new THREE.Mesh(bootGeometry, gearMaterial));
     boot.name = `rider-boot-${sideName}`;
@@ -1077,7 +1087,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // folded onto one page wears the shell's print across its brow (M28: the
   // first printed lid).
   const headParts = [paged(
-    loftGeometry(profiles.head, { radialSegments: density.head, splitSeam: mapsRole('head') }),
+    look.build?.head?.() ?? loftGeometry(profiles.head, { radialSegments: density.head, splitSeam: mapsRole('head') }),
     'head',
     atlas?.lofts?.head,
   )];
@@ -1106,8 +1116,8 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   let sway: THREE.Group | null = null;
   for (const extra of look.extras) {
     const mesh = new THREE.Mesh(
-      track(paged(extra.build(), extra.role, extra.art)),
-      materialFor(extra.role),
+      track(extra.material ? extra.build() : paged(extra.build(), extra.role, extra.art)),
+      materialFor(extra.role, extra.material),
     );
     mesh.name = extra.name;
     if (extra.casts) shadowed(mesh);

@@ -146,15 +146,10 @@ test('every rider fits the ghost budget, not just the one the default builds', (
     // triangles went; what it gained is the one casting mesh Maribel's hump
     // needs, plus a call of slack.
     assert.ok(ghost.drawCalls <= 26, `${look.id}: ${ghost.drawCalls} draw calls for a recording`);
-    // **20 k since A1d**, and unlike the draw-call cap beside it this one was
-    // never the binding constraint: the whole frame ceiling is 400 k and the
-    // densest measured route sits under two thirds of it, so a recording at
-    // eighteen thousand is four per cent of the budget. The number moved
-    // because Maribel's hair is a merged buffer built by her own look — it
-    // does not read the density table `ghostDensity` halves — and because the
-    // owner opened the budget for exactly this: *"increase budget. Make it
-    // better."* Draw calls remain the axis that is actually scarce.
-    assert.ok(ghost.triangles < 20_000, `${look.id}: ${ghost.triangles} triangles`);
+    // The detailed Cool Rider shell, face and hands retain their authored
+    // silhouette in replay. The owner opened the triangle allowance for this
+    // upgrade; the measured draw-call guard remains unchanged.
+    assert.ok(ghost.triangles < 40_000, `${look.id}: ${ghost.triangles} triangles`);
 
     // Every name still carries the prefix, whichever rider is underneath: the
     // M10 defect this guards — `getObjectByName` returning the ghost's frozen
@@ -193,14 +188,9 @@ test('the ghost fits the frame budget a second rig has to fit', () => {
   // `ghost.drawCalls` is exactly the count of parts carrying silhouette — so a
   // rig that grows a mesh fails here whatever it did to its triangles.
   assert.ok(ghost.drawCalls <= 24, `${ghost.drawCalls} draw calls for a recording`);
-  // Triangles are the resource with room: the ceiling is 400,000 and the slice
-  // sits near 220,000, so a second rig at six thousand is one and a half per
-  // cent of it. Both M11 look passes — the rider's, then the machine's — bought
-  // form with triangles *because* of that, and the assertion above is what
-  // stopped either of them buying it with meshes instead. This bound is
-  // therefore an order-of-magnitude guard rather than a budget: it catches a
-  // rig that grew a subdivision surface, not one that grew a collar.
-  assert.ok(ghost.triangles < 12_000, `${ghost.triangles} triangles`);
+  // Authored helmet and hand builders keep their detail in the ghost.
+  // Bound that geometry independently from the unchanged draw-call ceiling.
+  assert.ok(ghost.triangles < 40_000, `${ghost.triangles} triangles`);
   ghost.dispose();
 });
 

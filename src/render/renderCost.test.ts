@@ -301,7 +301,8 @@ test('a route at the generator’s own triangle line still fits a split frame', 
   // 1's triangle ceiling as the point past which scaling work is needed. A
   // couch session can be started on a generated world, so the frame that has
   // to fit is the one at that line — not the slice, which is far below it.
-  const line = RENDER_BUDGET.maxTriangles * 0.8;
+  // The 80% assertion counts a whole solo frame, including its reserve.
+  const line = RENDER_BUDGET.maxTriangles * 0.8 - NON_LEVEL_RESERVE.triangles;
   const worst = (line + SPLIT_NON_LEVEL_RESERVE.triangles) * SPLIT_PASSES;
   assert.ok(
     worst <= RENDER_BUDGET_SPLIT.maxTriangles,
@@ -448,7 +449,8 @@ test('a route at the generator’s own triangle line still fits a grid frame', (
   // worlds at two seats, so the frame that has to fit is the heaviest one a
   // four-seat session can open — a route at the generator's 80% line, four
   // times over — and not BelVar, which is 41% cheaper on this axis.
-  const line = RENDER_BUDGET.maxTriangles * 0.8;
+  // The 80% assertion counts a whole solo frame, including its reserve.
+  const line = RENDER_BUDGET.maxTriangles * 0.8 - NON_LEVEL_RESERVE.triangles;
   const worst = (line + QUAD_NON_LEVEL_RESERVE.triangles) * QUAD_PASSES;
   assert.ok(
     worst <= RENDER_BUDGET_QUAD.maxTriangles,
@@ -457,16 +459,13 @@ test('a route at the generator’s own triangle line still fits a grid frame', (
   );
 });
 
-test('Contract 3 is a third ceiling, and neither of the first two moved for it', () => {
-  // §27.5: three ceilings, all pinned, none with exemptions. The phone's is
-  // the one that is never bent, and the two numbers below are the two halves
-  // of the promise M25 made and M27 inherited — asserted rather than
-  // remembered, because a contract relaxed to buy a milestone is exactly the
-  // kind of change that reads as reasonable in a diff.
+test('the three frame ceilings retain their distinct pass counts', () => {
+  // Owner-authorized hero detail raises triangle allowances; the draw-call
+  // ceilings and the available level geometry remain unchanged.
   assert.equal(RENDER_BUDGET.maxDrawCalls, 160);
-  assert.equal(RENDER_BUDGET.maxTriangles, 460_000);
+  assert.equal(RENDER_BUDGET.maxTriangles, 533_344);
   assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls, 460);
-  assert.equal(RENDER_BUDGET_SPLIT.maxTriangles, 1_000_000);
+  assert.equal(RENDER_BUDGET_SPLIT.maxTriangles, 1_160_952);
   assert.ok(RENDER_BUDGET_QUAD.maxDrawCalls > RENDER_BUDGET_SPLIT.maxDrawCalls);
   assert.ok(RENDER_BUDGET_QUAD.maxTriangles > RENDER_BUDGET_SPLIT.maxTriangles);
   // And it is not four halves: the level is drawn four times but the world —
@@ -475,12 +474,9 @@ test('Contract 3 is a third ceiling, and neither of the first two moved for it',
   assert.ok(RENDER_BUDGET_QUAD.maxDrawCalls < RENDER_BUDGET_SPLIT.maxDrawCalls * 4);
 });
 
-test('the pinned ceiling has room for the next character, four times over', () => {
-  // Contract 2's own margin argument, restated at four passes because this is
-  // the number that decides whether the next rider is a design question or a
-  // budget one. A character costs 60 calls and 23,138 triangles a pass (the
-  // split reserve minus the single-player one), which is 240 and 92,552 in a
-  // grid frame — and the headroom below is what the ceiling actually leaves.
+test('the grid retains draw-call headroom after adding the rider face and visor', () => {
+  // The face and clear visor spend two colour calls per view: eight of the former 52
+  // spare calls. Shadows remain included in the measured reserve.
   const bound = (LIBRARY_MAX_DRAW_CALLS + QUAD_NON_LEVEL_RESERVE.drawCalls) * QUAD_PASSES;
   const callsPerCharacter = (SPLIT_NON_LEVEL_RESERVE.drawCalls - NON_LEVEL_RESERVE.drawCalls);
   const headroom = RENDER_BUDGET_QUAD.maxDrawCalls - bound;
@@ -492,22 +488,19 @@ test('the pinned ceiling has room for the next character, four times over', () =
   // promise either — but a statement of what the margin is in the unit that
   // matters, so a future edit that halves it has to say so.
   assert.ok(
-    headroom >= 52,
+    headroom >= 44,
     `${headroom} calls of headroom against ${callsPerCharacter * QUAD_PASSES} for a `
       + 'character in a grid frame; Contract 2 left the equivalent of 1.44 characters '
       + 'and this leaves less',
   );
 });
 
-test('Contract 2 is a second ceiling, never a relaxation of the first', () => {
-  // The owner's direction on 2026-08-21: the split mode gets its own much
-  // higher budget and the phone contract is never touched. Both halves of that
-  // are assertable — the split ceiling is strictly higher, and the
-  // single-player one is still the number it has been since M23.
+test('the split frame is judged against its own larger ceiling', () => {
+  // Distinct frame budgets still apply after the owner-authorized upgrade.
   assert.ok(RENDER_BUDGET_SPLIT.maxDrawCalls > RENDER_BUDGET.maxDrawCalls);
   assert.ok(RENDER_BUDGET_SPLIT.maxTriangles > RENDER_BUDGET.maxTriangles);
   assert.equal(RENDER_BUDGET.maxDrawCalls, 160, 'Contract 1 moved');
-  assert.equal(RENDER_BUDGET.maxTriangles, 460_000, 'Contract 1 moved');
+  assert.equal(RENDER_BUDGET.maxTriangles, 533_344, 'Contract 1 moved');
   // And a single-player verdict is still judged against Contract 1: a plan
   // that fits the split ceiling but not the phone one must still be refused.
   const verdict = withinRenderBudget(slice);
@@ -663,7 +656,7 @@ test('the budget verdict can fail, and says why', () => {
   const verdict = withinRenderBudget(bloated);
   assert.equal(verdict.ok, false);
   assert.equal(verdict.breaches.length, 1);
-  assert.match(verdict.breaches[0], /triangles against a ceiling of 460000/);
+  assert.match(verdict.breaches[0], new RegExp(`triangles against a ceiling of ${RENDER_BUDGET.maxTriangles}`));
 });
 
 test('the model tracks a change to the plan rather than reporting a constant', () => {
