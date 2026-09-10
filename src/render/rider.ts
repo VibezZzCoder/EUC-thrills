@@ -715,6 +715,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     const mesh = new THREE.Mesh(track(mergeGeometries(parts)), materialFor(group.role));
     mesh.name = name;
     if (group.casts) shadowed(mesh);
+    if (group.ghostSilhouette) mesh.userData.ghostSilhouette = true;
     return mesh;
   };
 

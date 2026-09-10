@@ -4442,6 +4442,104 @@ export const BLOCKOUT_COLOURS = {
   machineDrunkardTrim: 0xf2deac,
 
   /**
+   * FloWithZo — M34 (`docs/PLANS.md` §34.4 for the rider, §34.5 for the
+   * wheel). A real EUC racer, in the game by permission, read off his own two
+   * photographs first and the target render second. **Phase 0 lands all
+   * eleven keys at once** so that Phases 1 and 2 tune *values* on lines they
+   * each own rather than adding blocks to this file at the same time; the
+   * names are fixed, the numbers may move.
+   *
+   * **The ground is the ceiling, and it is silver.** Fact 9 (`§34.3`) is the
+   * whole reason there is no sheet on him: every accent he wears — the vest's
+   * mid-grey, the charcoal gear, the cyan and the gold at the hem — is
+   * *darker* than the suit in every channel, and a vertex colour is a
+   * multiplier, so all of it is reached by painting **down** from
+   * `floWithZoSilver`. Only the guard white is above the suit, and the guards
+   * are patches in the `accent` role with their own material. That leaves the
+   * rider with no atlas, no print and no page anywhere on him — the first
+   * real-person rider on the roster where that is true.
+   *
+   * **`floWithZoPanel` is the paint target of the vest, the shoulder cap and
+   * the outer thigh**, warm-neutral so it does not compete with the cyan for
+   * the eye, and **0.58 of the ground in linear since the r2 gauntlet** — it
+   * was authored at 0.37 on a reading of PHOTO 1 that turned out to be the
+   * panel's own shadowed side. Two blind critics in that round measured the
+   * same tier from opposite ends: the chest plate rendered at **0.43 × the
+   * light suit beside it** where PHOTO 1 gives 0.56–0.67, and the shoulder cap
+   * at **0.47–0.55 ×** where PHOTO 1's shoulder panelling gives 0.78 and
+   * PHOTO 2's lit shoulder 1.00, so a critic asked for the caps to be deleted
+   * as charcoal the photographs do not carry. The verifier's ruling was
+   * *repaint, do not delete* (`flo-views/_scratch/gauntlet-r2-record.md` §D
+   * 2b / 2c), and one value serves all four surfaces the key paints, since the
+   * vest, the cap, the outer thigh and the collar are one tint by
+   * construction. `0xacaba5` holds the key's own hue (51°) and saturation
+   * (0.046) and lands the rendered pair at ≈ 0.63 and ≈ 0.81 — and it stays
+   * one step **above** `floWithZoBronze`'s 0.54, so the value ladder from suit
+   * to panel to lid still falls in one direction.
+   *
+   * **`floWithZoGuard` is the knee and thigh armour** — moulded plastic reads
+   * a stop above knit under the same sun (`tuning.ts:4344`, Wheel in
+   * Motion's), which is what keeps the biggest volume on his legs from
+   * reading as more trouser.
+   *
+   * **`floWithZoGear` is the value floor, not black.** Gloves, collar, elbow
+   * patches, the guards' joints and the sole: a real black in sun is a
+   * mid-dark grey in albedo (`DESIGN.md` §7k), so the red byte is 60 and no
+   * lower, and the hue is held clear of the seven near-blacks already taken.
+   *
+   * **`floWithZoBronze` is the lid** — a near-neutral pewter since the r1
+   * gauntlet, and the key keeps its name because `docs/PLANS.md` §34 is
+   * frozen until Phase 4 (the name is the plan's, the value is the
+   * photographs'). It was authored warm (`0xb2a28e`, hue 33°) and two blind
+   * critics scored the same defect independently: measured head-against-suit
+   * inside one frame, the game read R−B **+26** on the shell against **+3**
+   * on the suit where both photographs run 1 to 10 points **cooler** than
+   * the body, so the head's colour temperature was inverted against the
+   * rider wearing it. `0xa8a5a1` normalises warmth to R−B / L 0.042 against
+   * the suit's 0.041 (the photographs' pairs are 1.01 × and 1.17 ×) and
+   * **holds the value**: Ylin 0.378 against the bronze's 0.373, still
+   * ≈ 0.53 × the suit's and inside the 0.47–0.60 window a lid may take
+   * before it reads as a void from behind (`flo-views/_scratch/gauntlet-r1-record.md`
+   * §C 1a / 6a). Its roughness stays where a capture of the crown put it.
+   *
+   * **`floWithZoLens` is the visor's brightest value** (the page over it can
+   * only darken): a dark cool smoke sitting between `wheelInMotionLens` and
+   * Red Rider's.
+   *
+   * **The hem band is two hues, and handedness is a test.** `floWithZoCyan`
+   * at hue 188° threads the gap between the roster's teals (177°) and its
+   * azures (202°, 214°); `floWithZoGold` at hue 38° is PHOTO 2's `#ecba70`.
+   * They meet at the spine — cyan on his **right**, gold on his **left**
+   * (`docs/PLANS.md` §34.4; `floWithZo.test.ts` asserts the multiplier on the
+   * built torso rather than trusting the author's mirror).
+   *
+   * **His wheel** (§34.5), in the direction the multiplier honours:
+   * `machineFloWithZo` is a neutral graphite shell with headroom — 1.5 × the
+   * luminance of Wheel in Motion's `0x24262b` and under Adonisb2's
+   * `0x303338`, so the bezel behind the status light and the nose recess can
+   * still be painted down from it. `machineFloWithZoTrim` is the pale trim
+   * base *and* the pads' own colour (the first pale pedals on the roster),
+   * and every accent on the machine is tinted down from it.
+   * `machineFloWithZoOrange` is the one warm accent — hue ≈ 22°, between
+   * PHOTO 1's badge at 17° and PHOTO 2's rim at 28°, ≥ 5° from the
+   * Drunkard's amber on the `drunkard.test.ts:1210` precedent and
+   * deliberately not `wheelInMotionOrange`'s hex. The photographs put that
+   * orange on the *tyre*, which has no paint hook and no per-channel tint, so
+   * it lives low on the flanks and on a nose badge instead (§34.5).
+   */
+  floWithZoSilver: 0xdcdad3,
+  floWithZoPanel: 0xacaba5,
+  floWithZoGuard: 0xe6e7e2,
+  floWithZoGear: 0x3c3e44,
+  floWithZoBronze: 0xa8a5a1,
+  floWithZoLens: 0x3b4148,
+  floWithZoCyan: 0x1eb4cc,
+  floWithZoGold: 0xdcae5c,
+  machineFloWithZo: 0x2c2f35,
+  machineFloWithZoTrim: 0xd9d8d3,
+  machineFloWithZoOrange: 0xe8661c,
+
+  /**
    * The ghost, and the checkpoint gates (M10).
    *
    * **Authored here rather than in the render modules that draw them, because

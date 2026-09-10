@@ -185,13 +185,13 @@ any of them.
 
 ## Riders
 
-There are seven, the line under the title screen's buttons says who you are,
-and that line opens the chooser. Six of them differ only in **looks and
+There are eight, the line under the title screen's buttons says who you are,
+and that line opens the chooser. Seven of them differ only in **looks and
 sound** — each has their own crash sound, none is faster, and the custom wheels
-ride identically to the standard one, down to the last number. The seventh,
-The Drunkard, shares that same speed, grip and braking but rides his own way
-on purpose: a slow weave and the odd stumble that really do move him about
-the road. See The Drunkard below for what that is and is not.
+ride identically to the standard one, down to the last number. The Drunkard
+shares that same speed, grip and braking but rides his own way on purpose: a
+slow weave and the odd stumble that really do move him about the road. See
+The Drunkard below for what that is and is not.
 
 **Cool Rider** wears tailored black moto gear with reflective blue panels,
 padded trousers, fingerless gloves and a full-face helmet with a lightly
@@ -243,6 +243,21 @@ own customized machine. His crash is the author's own wipeout with the
 author's voice removed, until he sends one of his own. His channel is credited
 as [Wheel In Motion](https://www.youtube.com/@RealWheelInMotion) at his and
 the project owner's direction.
+
+**FloWithZo** is a real racer, and he asked in public too — the ask came from
+his own account, written in the third person, so the author repeated that a
+real person only goes in when that person asks for themselves, and he said in
+the same thread that it was him, then sent two photographs of himself racing
+for the character to be built from. He rides in a light silver race suit with
+a two-tone band across the hip, a pewter full-face lid over a big dark visor,
+black gloves and low pale trainers, under large white knee and shin armour —
+plates from above the knee to the ankle, because that is what he races in. His
+wheel is his own: a dark performance body between two pale side shells, on
+broad pale pedals, with a low orange band on each flank and a small orange
+badge on the nose, modelled on the machine in his photographs. His crash is the author's own wipeout with the
+author's voice removed, until he sends one of his own. He is credited as
+[@flowithzo_euc](https://www.instagram.com/flowithzo_euc) at his and the
+project owner's direction.
 
 **The Drunkard** is not a real person, and that is the point of him. People
 kept asking for a rider with a beer; the real riders above are here with their
@@ -418,6 +433,10 @@ list.
 
 ### Recently landed
 
+- **An eighth rider, a racer in silver** — FloWithZo, a real racer who asked in
+  public, with his own wheel: white armour from above the knee to the ankle, a
+  pewter lid over a dark visor, and a dark wheel with pale shells and a low
+  orange band.
 - **A seventh rider, who rides like he looks** — The Drunkard, a fictional
   parody rider in a two-can beer hat on a beer-themed wheel of his own, with a
   crash voice composed for him. Hands off the stick he weaves and staggers for
@@ -493,12 +512,12 @@ to be.
 
 ## Licence
 
-Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the fourteen
-shipped sounds derive from public-domain (CC0) recordings; three crashes derive
-from the author's own recording — the third and sixth riders' are that same
-wipeout with the author's voice removed, rendered twice from different
-voice-free stretches so that they are two files. Five shipped sounds sit
-outside the CC BY 4.0 claim: two of the seven crashes are composed one-shots
+Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the fifteen
+shipped sounds derive from public-domain (CC0) recordings; four crashes derive
+from the author's own recording — the third, sixth and eighth riders' are that
+same wipeout with the author's voice removed, rendered three times so that no
+two of them are the same file. Five shipped sounds sit
+outside the CC BY 4.0 claim: two of the eight crashes are composed one-shots
 whose voices are machine-generated — the second rider's and the seventh's, the
 two characters who exist nowhere to be recorded — and so is the seventh
 rider's short stumble sound; and the fourth and fifth riders' crashes are
@@ -506,15 +525,15 @@ rider's short stumble sound; and the fourth and fifth riders' crashes are
 and with no copyright over them claimed by this project. Cool Rider is an
 original fictional character whose clothes and style draw on what the project
 owner wears, and The Drunkard is an original fictional character based on
-nobody; Red Rider, Adonisb2, Maribel Vargas and Wheel in Motion are real
-people represented with permission, and no licence in this project covers
+nobody; Red Rider, Adonisb2, Maribel Vargas, Wheel in Motion and FloWithZo are
+real people represented with permission, and no licence in this project covers
 their names, likenesses, personas, or the two riders' own logos. Full terms,
 attribution, and per-file provenance are in [`LICENSE`](LICENSE) and
 [`NOTICE.md`](NOTICE.md).
 
-The wheels in this game are original fictional designs — three are modelled,
-with their riders' permission, on their own customized machines, without
-reproducing any manufacturer's identity or any third-party sticker artwork,
-and the seventh rider's is modelled on nothing at all. This project is
+The wheels in this game are original fictional designs — four are modelled,
+with their riders' permission, on their own customized or raced machines,
+without reproducing any manufacturer's identity or any third-party sticker
+artwork, and the seventh rider's is modelled on nothing at all. This project is
 not affiliated with, endorsed by, or associated with any electric unicycle
 manufacturer or retailer.

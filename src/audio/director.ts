@@ -297,7 +297,8 @@ export function createAudioFrame(): AudioFrame {
  * a `TransientCue` names the voice it wants and a cue is this file's.
  */
 export type CrashVoiceId =
-  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard';
+  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard'
+  | 'flo-with-zo';
 
 export type CueKind =
   | 'hop' | 'landing' | 'curb' | 'crash' | 'recover' | 'beep' | 'swing' | 'hit'

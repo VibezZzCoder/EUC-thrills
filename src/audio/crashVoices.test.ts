@@ -40,6 +40,19 @@ import { crashFor, type CrashVoiceId, type SampleBank } from './sink.ts';
  * provenance shape — the same length, the same loudness, and *not a slice of
  * any shipped recording*. Beside it ships his stumble, the `stumble` cue's
  * 0.40 s recording, with its own length and level rules.
+ *
+ * M34 §34.10 added the eighth, and it is the render that had to give up the
+ * promise M28's kept. **The donor pool is exhausted at two.** The take is
+ * 3.400 s and the rebuilt window is 0.800 s, so the tool's clear-donor rule
+ * leaves exactly one legal donor range (1.660-2.600 s), and Red Rider's donor
+ * at 2.56 s and Wheel in Motion's at 1.74 s between them cover it — `--avoid`
+ * has zero survivors for a third render. So FloWithZo's donor is *named*
+ * (`--donor 2.200`) and his file shares material with both siblings. That
+ * costs nothing this spec ever asked for: the bar here has always been that
+ * the crashes are different files pairwise, which the twenty-eight-pair test
+ * measures, and his sibling test below says the rest of it — he differs from
+ * Red Rider's, from Wheel in Motion's *and* from the owner's inside the window
+ * and is identical to all three outside it.
  */
 
 const AUDIO = join(import.meta.dirname, '..', '..', 'assets', 'live', 'audio');
@@ -70,6 +83,7 @@ const adonisb2 = readWav('crash_adonisb2.wav');
 const maribel = readWav('crash_maribel.wav');
 const wheelInMotion = readWav('crash_wheel_in_motion.wav');
 const drunkard = readWav('crash_drunkard.wav');
+const floWithZo = readWav('crash_flo_with_zo.wav');
 const stumble = readWav('stumble_drunkard.wav');
 
 test('every rider\'s crash is exactly as long as Cool Rider\'s', () => {
@@ -98,20 +112,30 @@ test('every rider\'s crash is exactly as long as Cool Rider\'s', () => {
   // than typed (Maribel's rule, `tools/make-crash-drunkard.mjs`) — asserted
   // anyway, for the reason above.
   assert.equal(drunkard.length, coolRider.length);
+  // And his is the owner's file re-rendered a third time, so its length is the
+  // owner's by construction as well — asserted anyway, same reason (M34).
+  assert.equal(floWithZo.length, coolRider.length);
 });
 
-test('the seven crashes are seven different recordings', () => {
+test('the eight crashes are eight different recordings', () => {
   // Cheap, and it closes the gap every other test in this file leaves open: a
   // build where one crash was copied over another passes the length rule, the
   // loudness rule, and `crashFor`'s four-buffer check, and ships a rider
   // wearing somebody else's fall. Bytes are the only place that shows.
+  //
+  // **And it is the bar M34's third render was measured against**, rather than
+  // the stronger promise `--avoid` made: with the clear-donor pool exhausted at
+  // two, FloWithZo's file necessarily shares material with both siblings, and
+  // what this project actually requires of it is exactly what this loop asks —
+  // that no two shipped crashes are the same file.
   const files: readonly (readonly [string, Int16Array])[] = [
     ['cool-rider', coolRider], ['trollina', trollina],
     ['red-rider', redRider], ['adonisb2', adonisb2], ['maribel', maribel],
     ['wheel-in-motion', wheelInMotion], ['drunkard', drunkard],
+    ['flo-with-zo', floWithZo],
   ];
-  // Twenty-one pairs at seven; the loop is what grows, not a list of names.
-  assert.equal((files.length * (files.length - 1)) / 2, 21);
+  // Twenty-eight pairs at eight; the loop is what grows, not a list of names.
+  assert.equal((files.length * (files.length - 1)) / 2, 28);
   for (let i = 0; i < files.length; i += 1) {
     for (let j = i + 1; j < files.length; j += 1) {
       const [nameA, a] = files[i];
@@ -203,6 +227,59 @@ test('Wheel in Motion\'s crash is Red Rider\'s, changed only where the voice was
   assert.ok(windowPeak <= ownerPeak, 'the rebuilt window peaks above the loudest sample of the owner\'s recording');
 });
 
+test('FloWithZo\'s crash is the third render: Red Rider\'s and Wheel in Motion\'s outside one window, and its own inside it', () => {
+  // **The sibling test again, against three files instead of one** (M34
+  // §34.10). His render is the same treatment from a third donor, so it owes
+  // the same two things to each of the two files already shipped *and* to the
+  // owner's: outside the voice window it is the owner's recording sample for
+  // sample, which makes it identical to both siblings there; inside it, it is
+  // a third stretch of the same take, which makes it different from all three.
+  //
+  // Asserting it against all three is the point, not thoroughness for its own
+  // sake. His donor at 2.200 s overlaps both earlier donors by necessity —
+  // `--avoid` had no survivors — so the one failure this catches is a render
+  // that overlapped *so far* it came back byte-identical to one of them, which
+  // is exactly what a naive `--avoid 2.56 --avoid 1.74` would have produced.
+  //
+  // Measured on the shipped file (2026-09-09): 35,259 samples differ from Red
+  // Rider's, 35,263 from Wheel in Motion's and 35,253 from the owner's, every
+  // one of them inside 0.760-1.560 s.
+  const against = (other: Int16Array, name: string): { first: number; last: number } => {
+    let first = -1;
+    let last = -1;
+    let changed = 0;
+    for (let i = 0; i < other.length; i += 1) {
+      if (other[i] !== floWithZo[i]) {
+        if (first === -1) first = i;
+        last = i;
+        changed += 1;
+      }
+    }
+    assert.ok(changed > 30_000, `only ${changed} samples differ from ${name}'s — this is that file again`);
+    assert.ok(
+      first / RATE >= 0.75,
+      `he differs from ${name}'s from ${(first / RATE).toFixed(3)} s, before the voice`,
+    );
+    assert.ok(
+      last / RATE <= 1.57,
+      `he differs from ${name}'s to ${(last / RATE).toFixed(3)} s, after the voice`,
+    );
+    return { first, last };
+  };
+
+  against(redRider, 'Red Rider');
+  against(wheelInMotion, 'Wheel in Motion');
+  const { first, last } = against(coolRider, 'the owner');
+
+  // And the owner's loudest sample is at 0.347 s, outside the window and
+  // copied across verbatim — so the rebuilt window may not out-peak it.
+  let windowPeak = 0;
+  for (let i = first; i <= last; i += 1) windowPeak = Math.max(windowPeak, Math.abs(floWithZo[i]));
+  let ownerPeak = 0;
+  for (let i = 0; i < coolRider.length; i += 1) ownerPeak = Math.max(ownerPeak, Math.abs(coolRider[i]));
+  assert.ok(windowPeak <= ownerPeak, 'the rebuilt window peaks above the loudest sample of the owner\'s recording');
+});
+
 const peakBetween = (samples: Int16Array, from = 0, to = samples.length): number => {
   let worst = 0;
   for (let i = from; i < to; i += 1) worst = Math.max(worst, Math.abs(samples[i]));
@@ -246,6 +323,22 @@ test('no crash recording is louder than the one it replaces', () => {
   // sharing no samples with the owner's, and peak-capped by its tool where
   // Cool Rider's peaks. Measured: −7.0 dBFS against his −1.8.
   assert.ok(peakBetween(drunkard) <= peakBetween(coolRider), 'the Drunkard\'s crash peaks above the owner\'s');
+  // FloWithZo's is window-scoped for Red Rider's exact reason, and it is worth
+  // repeating rather than folding into a loop: his file copies the owner's peak
+  // at 0.347 s across verbatim, so a whole-file comparison would be the same
+  // sample on both sides and could never fail whatever the tool did to the
+  // 0.8 s it actually rewrote. Measured: 25,143 in the window against the
+  // owner's 26,730 overall.
+  let floFirst = floWithZo.length;
+  let floLast = 0;
+  for (let i = 0; i < coolRider.length; i += 1) {
+    if (coolRider[i] !== floWithZo[i]) { floFirst = Math.min(floFirst, i); floLast = Math.max(floLast, i); }
+  }
+  assert.ok(floFirst < floLast, 'nothing changed in his render, so there is no window to measure');
+  assert.ok(
+    peakBetween(floWithZo, floFirst, floLast + 1) <= peakBetween(coolRider),
+    'his rewritten window peaks above the loudest sample of the owner\'s recording',
+  );
 });
 
 test('Adonisb2\'s crash hits inside the first second', () => {
@@ -279,7 +372,7 @@ test('Adonisb2\'s crash hits inside the first second', () => {
   );
 });
 
-test('neither Red Rider\'s crash nor Wheel in Motion\'s carries the owner\'s voice band', () => {
+test('none of the three voice-scrubbed renders carries the owner\'s voice band', () => {
   // **The assertion that carries §19.8's actual requirement.**
   //
   // The location test above proves *where* bytes changed; it would pass just as
@@ -312,10 +405,16 @@ test('neither Red Rider\'s crash nor Wheel in Motion\'s carries the owner\'s voi
   };
 
   const source = midBand(coolRider);
-  // The same measurement over both renders — M28's sibling file is the same
-  // treatment from a different donor, and it has to clear the same bar on its
-  // own rather than inherit Red Rider's result.
-  for (const [name, file] of [['Red Rider', redRider], ['Wheel in Motion', wheelInMotion]] as const) {
+  // The same measurement over every render — M28's sibling file and M34's
+  // third are the same treatment from other donors, and each has to clear this
+  // bar on its own rather than inherit Red Rider's result. **That is doubly
+  // true of the third**, whose donor overlaps both of the others: sharing
+  // material with a file that passed is not evidence of anything, and this is
+  // the measurement that says whether the words are gone. Measured on the
+  // shipped files: 0.109, 0.202, 0.166.
+  for (const [name, file] of [
+    ['Red Rider', redRider], ['Wheel in Motion', wheelInMotion], ['FloWithZo', floWithZo],
+  ] as const) {
     let first = file.length;
     let last = 0;
     for (let i = 0; i < coolRider.length; i += 1) {
@@ -480,13 +579,14 @@ test('her voice does not own the band the ride bed leaves empty', () => {
   );
 });
 
-test('the seven voices reach seven different buffers', () => {
-  // §19.8's headless evidence, grown by one in §22.8 and again in §29.12.
-  // `crashFor` carried a fallback while Red Rider's file was being built, and
-  // the failure it could hide — a voice quietly resolving to somebody else's
-  // — is invisible to `lastCrashVoice`, which reports the *choice* rather
-  // than the buffer. The Drunkard rode on `'red-rider'` by a declared interim
-  // in the data for three phases, and this is where its end is visible.
+test('the eight voices reach eight different buffers', () => {
+  // §19.8's headless evidence, grown by one in §22.8, again in §29.12 and
+  // again in §34.10. `crashFor` carried a fallback while Red Rider's file was
+  // being built, and the failure it could hide — a voice quietly resolving to
+  // somebody else's — is invisible to `lastCrashVoice`, which reports the
+  // *choice* rather than the buffer. The Drunkard rode on `'red-rider'` by a
+  // declared interim in the data for three phases, FloWithZo for three more,
+  // and this is where the end of each is visible.
   const bank = {
     tyreOffroad: 'tyre-offroad',
     tyreSolid: 'tyre-solid',
@@ -497,6 +597,7 @@ test('the seven voices reach seven different buffers', () => {
     crashAdonisb2: 'adonisb2-buffer',
     crashMaribel: 'maribel-buffer',
     crashWheelInMotion: 'wheel-in-motion-buffer',
+    crashFloWithZo: 'flo-with-zo-buffer',
     crashDrunkard: 'drunkard-buffer',
     stumbleDrunkard: 'stumble-buffer',
     sirenFar: 'siren-far',
@@ -505,6 +606,7 @@ test('the seven voices reach seven different buffers', () => {
 
   const voices: CrashVoiceId[] = [
     'cool-rider', 'trollina', 'red-rider', 'adonisb2', 'maribel', 'wheel-in-motion', 'drunkard',
+    'flo-with-zo',
   ];
   const reached = voices.map((voice) => crashFor(voice, bank));
   assert.deepEqual(
@@ -512,9 +614,10 @@ test('the seven voices reach seven different buffers', () => {
     [
       'cool-rider-buffer', 'trollina-buffer', 'red-rider-buffer',
       'adonisb2-buffer', 'maribel-buffer', 'wheel-in-motion-buffer', 'drunkard-buffer',
+      'flo-with-zo-buffer',
     ],
   );
-  assert.equal(new Set(reached).size, 7);
+  assert.equal(new Set(reached).size, 8);
 });
 
 // ---------------------------------------------------------------------------
@@ -556,6 +659,11 @@ test('the Drunkard\'s crash is a composition, not a slice of any shipped recordi
   const others: readonly (readonly [string, Int16Array])[] = [
     ['Cool Rider', coolRider], ['Trollina', trollina], ['Red Rider', redRider],
     ['Adonisb2', adonisb2], ['Maribel', maribel], ['Wheel in Motion', wheelInMotion],
+    // The eighth crash shipped after this test was written, so it is measured
+    // here rather than assumed to inherit its siblings' result (M34). It is a
+    // render of the owner's recording, so it carries the same near-zero
+    // correlation with a composed file the other renders do: −0.017.
+    ['FloWithZo', floWithZo],
   ];
   for (const [name, file] of others) {
     const r = correlation(drunkard, file);

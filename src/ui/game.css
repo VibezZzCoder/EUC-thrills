@@ -1975,8 +1975,15 @@
  * cards 209 pixels past the fold at 1280×720 — so from seven on a 1280 window
  * takes the sideways cards below, the anatomy every tablet already had. The
  * full-height row comes back at 92.8rem (1485 pixels) of viewport.
+ *
+ * **And from eight at M34 Phase 0.** Eight 12rem cards plus seven 0.9rem gaps
+ * need 102.3rem, and the sideways threshold below moved with it: the
+ * full-height row now returns at 105.7rem (1691 pixels) rather than at 1485,
+ * and the band between the two is where the sideways card reaches a fifth
+ * column. The same arithmetic, a fourth number — which is the point of
+ * writing the arithmetic down rather than the answer.
  */
-.euc-menu--riders { grid-template-columns: min(89.4rem, 100%); }
+.euc-menu--riders { grid-template-columns: min(102.3rem, 100%); }
 
 .euc-menu--riders .euc-menu__panel { width: 100%; }
 
@@ -2959,10 +2966,18 @@
  * at 92.8rem of viewport, and a 1280-pixel window (80rem) is sideways from
  * here on: at 1280×720 that is four columns of tablet cards in two rows, with
  * Done well clear of the fold, where two rows of *full-height* cards ended
- * 209 pixels past it. The threshold is derived, as it always was, and an
- * eighth rider will move it again.
+ * 209 pixels past it. The threshold is derived, as it always was.
+ *
+ * **And the eighth moved it again — M34 Phase 0.** Eight cards need 102.3rem
+ * of column and the same 3.4rem around it, so the row stops fitting at
+ * 105.7rem and the sideways card now owns everything under 1691 pixels. The
+ * new territory is the band from 1486 to 1690, where the sideways grid's
+ * 18rem `auto-fit` floor finally reaches a **fifth** column: measured at its
+ * narrowest, 1486×585 is two rows of blurbed cards with Done 98 pixels clear,
+ * and `tests/m22.spec.ts` holds both sides of that limit (1486×585 blurbed,
+ * 1486×560 compact). A ninth rider will move it again.
  */
-@media (max-width: 92.79rem), (max-height: 42rem) {
+@media (max-width: 105.69rem), (max-height: 42rem) {
   .euc-riders__grid {
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
     gap: 0.6rem;
@@ -3085,11 +3100,36 @@
  * fit the blurbs gets the compact card instead, which is the cheaper error.
  * Below each pair the blurb goes and the card turns compact, which four rows
  * of fit inside 27rem. `tests/m22.spec.ts` holds both sides of every pair.
+ *
+ * **The eighth rider needed nothing here, and that is a measurement rather
+ * than a hope — M34 Phase 0.** The plan predicted an 18.6-pixel overrun on a
+ * one-column portrait phone (the only anatomy that gains a row at eight,
+ * because `ceil(7/n) = ceil(8/n)` for two, three and four columns) and sent a
+ * throwaway probe to check it before anything shipped. On a real 375×667 with
+ * eight cards: the card is **54.5 px** (10.5 past the 44-pixel floor), the gap
+ * 9.6, the grid runs 75.0 → 578.6, and Done ends at **625.5 — 41.5 pixels
+ * clear of the fold**, with nothing to scroll to. The prediction was arithmetic
+ * off the M29 note above, and the note had gone stale in a way that only a
+ * browser could say: the chooser's tagline is `display: none` on a portrait
+ * phone since the tier below took it (`max-height: 50rem` under 62.49rem of
+ * width), which handed this tier back about sixty pixels that the M29
+ * measurement was still paying for.
+ *
+ * So neither candidate shipped. **B, the trimmed compact card** (padding
+ * 0.4rem → 0.25rem, gap 0.45rem) measured 49.8-pixel cards and 69 pixels
+ * clear — it works, and it buys 27 pixels nothing needs by moving every card
+ * five pixels closer to the tap floor. **A, two columns of sideways cards on
+ * portrait phones**, measured four rows and 125.7 pixels clear and pays the
+ * price M29 already refused: two of its four rows stand 85.5 pixels tall
+ * instead of 67.5 because the names in them wrap. Landscape was never in
+ * question (667×375: 23.7 pixels clear at eight, four rows of two), and the
+ * new five-column band is roomy (1486×560 compact: 158 clear). The rule this
+ * tier is held to is unchanged; a ninth rider re-runs the probe.
  */
 @media (max-width: 44rem), (max-height: 30rem),
   ((max-width: 58.6rem) and (max-height: 52rem)),
   ((max-width: 77rem) and (max-height: 47rem)),
-  ((max-width: 92.79rem) and (max-height: 36.5rem)) {
+  ((max-width: 105.69rem) and (max-height: 36.5rem)) {
   .euc-rider-card__blurb { display: none; }
 
   .euc-rider-card {

@@ -2,6 +2,8 @@
 import * as THREE from 'three';
 import { COOL_RIDER_LOOK } from './coolRiderLook.ts';
 export { COOL_RIDER_LOOK } from './coolRiderLook.ts';
+import { FLO_WITH_ZO_LOOK } from './floWithZoLook.ts';
+export { FLO_WITH_ZO_LOOK } from './floWithZoLook.ts';
 import { BLOCKOUT_COLOURS, RIDER_BLOCKOUT } from '../data/tuning.ts';
 import type { CharacterId } from '../data/riders.ts';
 import {
@@ -235,6 +237,8 @@ export interface RiderPanelGroup {
   readonly role: RiderMaterialRole;
   /** See rule 3 in the file comment. */
   readonly casts: boolean;
+  /** Preserve a bulky panel in replay even when its live shadow is unnecessary. */
+  readonly ghostSilhouette?: boolean;
 }
 
 // -- Extras ------------------------------------------------------------------
@@ -8706,6 +8710,7 @@ export const RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   MARIBEL_LOOK,
   WHEEL_IN_MOTION_LOOK,
   DRUNKARD_LOOK,
+  FLO_WITH_ZO_LOOK,
   COP_LOOK,
 ]);
 
@@ -8726,6 +8731,7 @@ export const PLAYABLE_RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   MARIBEL_LOOK,
   WHEEL_IN_MOTION_LOOK,
   DRUNKARD_LOOK,
+  FLO_WITH_ZO_LOOK,
 ]);
 
 /** Resolve a look, falling back to Cool Rider the way `characterSpec` does. */

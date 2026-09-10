@@ -127,6 +127,7 @@ function fakeBank(context: AudioContext): SampleBank {
     crashAdonisb2: buffer(),
     crashMaribel: buffer(),
     crashWheelInMotion: buffer(),
+    crashFloWithZo: buffer(),
     crashDrunkard: buffer(),
     stumbleDrunkard: buffer(),
     sirenFar: buffer(),
@@ -219,6 +220,31 @@ test('a crash in the Drunkard\'s voice reaches his buffer and reports his name',
   assert.equal(launched[0].buffer, bank.crashDrunkard, 'his crash reached somebody else\'s buffer');
   assert.notEqual(launched[0].buffer, bank.crashRedRider, 'the interim is still in the resolver');
   assert.equal(sink.counts.lastCrashVoice, 'drunkard');
+  assert.equal(sink.counts.crashSamplePlays, 1);
+  assert.equal(sink.counts.stumbleSamplePlays, 0);
+  sink.dispose();
+});
+
+test('a crash in FloWithZo\'s voice reaches his buffer and reports his name', () => {
+  // `crashFor`'s eighth arm, seen from the sink (M34 §34.10). His seat carried
+  // `'red-rider'` for three phases by a declared interim in the data, and the
+  // failure that outlives such an interim is silent everywhere else: the
+  // resolver still handing back Red Rider's buffer while `lastCrashVoice`
+  // reports his name. So the choice and the buffer are read together, and the
+  // interim's own buffer is named as the thing it must not be.
+  const { context, sources } = fakeContext();
+  const sink = new WebAudioSink(context);
+  const bank = fakeBank(context);
+  sink.setSampleBank(bank);
+  const permanent = sources.length;
+
+  sink.play({ ...stumbleCue(), kind: 'crash', voice: 'flo-with-zo', gain: 0.8 });
+
+  const launched = sources.slice(permanent);
+  assert.equal(launched.length, 1);
+  assert.equal(launched[0].buffer, bank.crashFloWithZo, 'his crash reached somebody else\'s buffer');
+  assert.notEqual(launched[0].buffer, bank.crashRedRider, 'the interim is still in the resolver');
+  assert.equal(sink.counts.lastCrashVoice, 'flo-with-zo');
   assert.equal(sink.counts.crashSamplePlays, 1);
   assert.equal(sink.counts.stumbleSamplePlays, 0);
   sink.dispose();

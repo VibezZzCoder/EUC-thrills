@@ -6,6 +6,7 @@ import { createPose, type EucPose } from '../simulation/EucController.ts';
 import type { GhostSample } from '../simulation/ghost.ts';
 import { riderRollFor, settleStep } from '../simulation/riderLean.ts';
 import { createRidingRig, type RidingRig } from './ridingRig.ts';
+import { mergeGeometries } from './blockoutKit.ts';
 import { STANDARD_MACHINE_LOOK, type MachineLook } from './machineLook.ts';
 import { COOL_RIDER_LOOK, type RiderLook } from './riderLook.ts';
 
@@ -67,9 +68,10 @@ import { COOL_RIDER_LOOK, type RiderLook } from './riderLook.ts';
  * shell's accent strips, the head and tail lamps, the status light, the knee
  * pads, the chest chevrons, the back panel, the visor) exists to be a different
  * colour from the mesh it sits on, and the ghost has no second colour. Nothing
- * with a silhouette is dropped. Reading `castShadow` rather than a hard-coded
- * list also means the rule stays correct the next time somebody adds a
- * reflective panel to Cool Rider.
+ * with a silhouette should be dropped. `castShadow` is the default; bulky
+ * panels can explicitly carry `ghostSilhouette` without buying a live shadow
+ * pass. FloWithZo's brace needs that exception: its 38 mm relief is shape,
+ * even in one colour. Flat reflective panels still disappear.
  */
 
 export interface GhostRider {
@@ -169,6 +171,28 @@ export function createGhostRider(
   const rig: RidingRig = createRidingRig(ghostDensity(look), machine);
   group.add(rig.group);
 
+  // A bulky non-casting panel still changes the outline. In the ghost every
+  // surface has one material, so merge it into its limb on the same bone:
+  // the brace survives without four extra calls or any live shadow changes.
+  // Keep the originals owned by the rig; this factory owns the merged buffers.
+  const silhouetteGeometry: THREE.BufferGeometry[] = [];
+  rig.group.traverse((object) => {
+    if (!(object instanceof THREE.Mesh) || !object.userData.ghostSilhouette) return;
+    const host = object.parent?.children.find((sibling) => (
+      sibling instanceof THREE.Mesh && sibling !== object && sibling.castShadow
+    )) as THREE.Mesh | undefined;
+    if (!host) throw new Error(`ghost silhouette panel has no bone mesh: ${object.name}`);
+    object.updateMatrix();
+    host.updateMatrix();
+    const toHost = host.matrix.clone().invert().multiply(object.matrix);
+    const merged = mergeGeometries([
+      host.geometry.clone(), object.geometry.clone().applyMatrix4(toHost),
+    ]);
+    host.geometry = merged;
+    silhouetteGeometry.push(merged);
+    object.userData.ghostMergedInto = host.uuid;
+  });
+
   // **Every name in the ghost's copy of the rig is prefixed, and this is a
   // correctness fix rather than tidiness.**
   //
@@ -216,8 +240,7 @@ export function createGhostRider(
     if ((object as { isMesh?: boolean }).isMesh !== true) return;
     const mesh = object as THREE.Mesh;
 
-    // Read `castShadow` *before* clearing it — it is the rule that decides
-    // which parts the ghost draws at all. See the file comment.
+    // Explicit silhouette panels already ride their casting bone mesh above.
     const carriesSilhouette = mesh.castShadow;
     mesh.castShadow = false;
     mesh.receiveShadow = false;
@@ -441,6 +464,7 @@ export function createGhostRider(
       // `mesh.material` above did not detach them from its own tracking
       // arrays, so this is exhaustive rather than best-effort.
       rig.dispose();
+      for (const geometry of silhouetteGeometry) geometry.dispose();
       material.dispose();
       group.clear();
       group.removeFromParent();

@@ -8,6 +8,7 @@ import crashRedRiderUrl from '../../assets/live/audio/crash_red_rider.wav?url';
 import crashAdonisb2Url from '../../assets/live/audio/crash_adonisb2.wav?url';
 import crashMaribelUrl from '../../assets/live/audio/crash_maribel.wav?url';
 import crashWheelInMotionUrl from '../../assets/live/audio/crash_wheel_in_motion.wav?url';
+import crashFloWithZoUrl from '../../assets/live/audio/crash_flo_with_zo.wav?url';
 import crashDrunkardUrl from '../../assets/live/audio/crash_drunkard.wav?url';
 import stumbleDrunkardUrl from '../../assets/live/audio/stumble_drunkard.wav?url';
 import sirenFarUrl from '../../assets/live/audio/siren_far_loop.wav?url';
@@ -125,6 +126,36 @@ export interface SampleUrls {
    */
   readonly crashWheelInMotion: string;
   /**
+   * FloWithZo's (M34) — the same crash a third time, and the render that had
+   * to name its own donor.
+   *
+   * The third render of the owner's own wipeout with the owner's voice removed
+   * by `tools/make-crash-red-rider.mjs`, on Red Rider's and Wheel in Motion's
+   * exact terms. What is new is how the donor was chosen. **`--avoid` had no
+   * survivors.** The take is 3.400 s and the rebuilt window is 0.800 s, so the
+   * clear-donor rule leaves exactly one legal range, 1.660–2.600 s; Red
+   * Rider's donor at 2.56 s and Wheel in Motion's at 1.74 s between them block
+   * every start inside it, and the tool reads only the first `--avoid` anyway,
+   * so asking it to dodge both would have silently handed back Red Rider's
+   * file byte for byte. So this render names its donor — `--donor 2.200` — and
+   * accepts what that means: it shares material with both siblings. That was
+   * always the difference between the promise and the bar.
+   *
+   * The bar is what `crashVoices.test.ts` measures, and this file clears it:
+   * it differs from Red Rider's, from Wheel in Motion's *and* from the owner's
+   * sample for sample inside the window (35,259 / 35,263 / 35,253 samples
+   * changed, all inside 0.760–1.560 s), and is identical to all three outside
+   * it. Same length as `crash` to the sample, for the reason every entry here
+   * repeats.
+   *
+   * Standing is Red Rider's exactly: inside the CC BY 4.0 claim, nothing
+   * generated, modelled or third-party in it, and **no recording of
+   * FloWithZo's voice anywhere in it** — nor anywhere else in this game
+   * (`NOTICE.md`). If a recording of his own ever arrives, this file is
+   * superseded on the Adonisb2/Maribel path and nothing here changes.
+   */
+  readonly crashFloWithZo: string;
+  /**
    * The Drunkard's (M29) — Trollina's path, walked a second time.
    *
    * He is a wholly fictional parody rider, so nobody could record his fall:
@@ -193,6 +224,7 @@ export const SAMPLE_URLS: SampleUrls = {
   crashAdonisb2: crashAdonisb2Url,
   crashMaribel: crashMaribelUrl,
   crashWheelInMotion: crashWheelInMotionUrl,
+  crashFloWithZo: crashFloWithZoUrl,
   crashDrunkard: crashDrunkardUrl,
   stumbleDrunkard: stumbleDrunkardUrl,
   sirenFar: sirenFarUrl,

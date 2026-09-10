@@ -53,7 +53,8 @@ test('setSamplesDisabled is reported, and refuses the fetch it may have raced', 
   engine.setSampleUrls({
     tyreOffroad: '', tyreSolid: '', windHowl: '', crash: '', crashTrollina: '',
     crashRedRider: '', crashAdonisb2: '', crashMaribel: '', crashWheelInMotion: '',
-    crashDrunkard: '', stumbleDrunkard: '', sirenFar: '', sirenClose: '', overspeedBeep: '',
+    crashFloWithZo: '', crashDrunkard: '', stumbleDrunkard: '', sirenFar: '', sirenClose: '',
+    overspeedBeep: '',
   });
   assert.equal(engine.snapshot().samplesLoaded, false);
   engine.dispose();

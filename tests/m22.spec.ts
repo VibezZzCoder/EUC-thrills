@@ -140,6 +140,15 @@ test('chooser, title and pause fit every supported phone and tablet size with no
     // over. A limit set too high would fail here with the blurbs cut off;
     // a limit set too low fails above with Done below the fold.
     { width: 705, height: 833 }, { width: 940, height: 753 }, { width: 1236, height: 585 },
+    // **And the five-column band the eighth rider opened — M34 Phase 0.** The
+    // sideways threshold moved from 92.79rem to 105.69rem to make room for
+    // eight full-height cards, so between those two widths the sideways card
+    // now reaches a fifth column, at its narrowest at 1486 px. 585 is one
+    // pixel above the compact tier's 36.5rem limit — the blurbs are still
+    // there and must fit — and 560 is under it, where the card goes compact
+    // and must fit too. Both sides of a derived breakpoint, as the three
+    // above are.
+    { width: 1486, height: 585 }, { width: 1486, height: 560 },
   ];
 
   // A layout change is an input-reset moment by contract (master §8.2): the

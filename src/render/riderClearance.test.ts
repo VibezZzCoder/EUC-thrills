@@ -20,6 +20,11 @@ import {
   WIM_HIP_DOME_APEX,
   type RiderLook,
 } from './riderLook.ts';
+// **Straight from his own module, not through `riderLook.ts`** — M34 Phase 1.
+// His look is a sibling module on `coolRiderLook.ts`'s pattern, and the
+// constants a contract reads (the dome's apex, the boundary the outer-thigh
+// panel starts at) are its own.
+import { FLO_HIP_DOME_APEX, FLO_THIGH_PANEL_TOP, FLO_WITH_ZO_LOOK } from './floWithZoLook.ts';
 import { loftGeometry, type LoftProfile } from './blockoutKit.ts';
 
 /**
@@ -1357,6 +1362,111 @@ test("Wheel in Motion's trousers agree with his seat across the hip join", () =>
   }
 });
 
+test("FloWithZo's guard white never reaches the trouser zone", () => {
+  // The same contract as the pair above, on the third light-trousered rider —
+  // and the first whose guards are **their own material** rather than an ink
+  // on the limb's. That changes only how the population is found, not what is
+  // asserted: his shells and shin plates carry `FLO_GUARD_SHADE` (1.12), a
+  // deliberate lift above the suit measured off PHOTO 2's 1.27, and nothing
+  // else on either leg carries a vertex colour above 1 — the limbs are painted
+  // down and the brace's dark parts sit at 0.10. So "the guard white" is the
+  // population above 1.05, exactly, and it contains no trouser.
+  const rider = createPlaceholderRider(FLO_WITH_ZO_LOOK);
+  const profile = FLO_WITH_ZO_LOOK.profiles.torso;
+
+  try {
+    let sampled = 0;
+    let stood = 0;
+    for (const { label, ...overrides } of hemStances()) {
+      const fit = hemFit(rider, profile, overrides, (colours, i) => colours.getX(i) >= 1.05);
+      sampled += fit.sampled;
+      assert.ok(
+        fit.ring >= HEM_RING_CLEARANCE,
+        `${hemReport(label, fit)} — ${(HEM_RING_CLEARANCE * 1000).toFixed(0)} mm required `
+          + 'of the hem ring',
+      );
+      if (fit.shellAt === null) continue;
+      stood += 1;
+      assert.ok(
+        fit.shell >= HEM_SHELL_CLEARANCE,
+        `${hemReport(label, fit)} — ${(HEM_SHELL_CLEARANCE * 1000).toFixed(0)} mm required `
+          + 'outside the jacket shell',
+      );
+    }
+    assert.ok(sampled > 1000, `only ${sampled} pale vertices sampled — the guards are missing`);
+    // The shell half only asserts itself where guard white actually stands at
+    // or above the hem, so the stances have to be shown to put it there —
+    // 315 of the 761 do, and an assertion that skipped itself would otherwise
+    // pass in silence.
+    assert.ok(stood > 200, `only ${stood} stances raised guard white to hem height`);
+  } finally {
+    rider.dispose();
+  }
+});
+
+test("FloWithZo's trousers agree with his seat across the hip join", () => {
+  // Cool Rider's property, recovered by arithmetic on a painted silver leg:
+  // the thigh's ground *is* the jacket's, and the seat inside the torso mesh
+  // is repainted to the same unpainted silver by the body painter, which reads
+  // `shades.seat` as an address. Where the leg can graze the hem, both sides
+  // of the join must be one value.
+  const look = FLO_WITH_ZO_LOOK;
+  assert.equal(look.materials[look.parts.legs], look.materials.body, 'his legs must be the suit material');
+  assert.equal(look.parts.seat, 'body', 'his seat is inside the torso mesh');
+
+  const rider = createPlaceholderRider(look);
+  try {
+    const thigh = rider.root.getObjectByName('rider-hip-left')!.children.find(
+      (child) => (child as THREE.Mesh).isMesh === true && child.name === '',
+    ) as THREE.Mesh;
+    const torso = rider.pelvis.children.find(
+      (child) => (child as THREE.Mesh).isMesh === true && (child as THREE.Mesh).castShadow,
+    ) as THREE.Mesh;
+    const suit = new THREE.Color(BLOCKOUT_COLOURS.floWithZoSilver);
+    const painted = (colours: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, i: number, shade: number): THREE.Color => (
+      new THREE.Color(suit.r * colours.getX(i) * shade, suit.g * colours.getY(i) * shade, suit.b * colours.getZ(i) * shade)
+    );
+    const close = (a: THREE.Color, b: THREE.Color): boolean => (
+      Math.abs(a.r - b.r) < 2e-3 && Math.abs(a.g - b.g) < 2e-3 && Math.abs(a.b - b.b) < 2e-3
+    );
+
+    // **The grazing zone is the dome and the 60 mm under it**, and the reason
+    // it is not "the upper half" as it is for Adonisb2 and Wheel in Motion is
+    // that his thigh carries a third colour theirs do not: the mid-grey outer
+    // panel PHOTO 1 puts down the outside of the leg from −0.060 to −0.250.
+    // Selecting by the boundary the look declares keeps the assertion aimed at
+    // what it protects — the join — instead of failing on a panel it never
+    // anticipated (Adonisb2's contract made the same move when the cup's dark
+    // arrived on his limb).
+    const positions = thigh.geometry.getAttribute('position');
+    const colours = thigh.geometry.getAttribute('color');
+    let checked = 0;
+    for (let i = 0; i < positions.count; i += 1) {
+      if (positions.getY(i) < FLO_THIGH_PANEL_TOP - 1e-6) continue;
+      checked += 1;
+      const value = painted(colours, i, look.shades.legs);
+      assert.ok(close(value, suit), `trouser vertex ${i} paints to (${value.r.toFixed(4)}, ${value.g.toFixed(4)}, ${value.b.toFixed(4)}), not the suit's silver`);
+    }
+    assert.ok(checked > 50, `only ${checked} trouser vertices found`);
+
+    // And the seat — the torso mesh's vertices below the hem — is that same
+    // silver, which is what the body painter exists to do: `shades.seat` is an
+    // address it reads and repaints, never a value that ships.
+    const seatPositions = torso.geometry.getAttribute('position');
+    const seatColours = torso.geometry.getAttribute('color');
+    let seat = 0;
+    for (let i = 0; i < seatPositions.count; i += 1) {
+      if (seatPositions.getY(i) > look.profiles.torso[0]!.y - 0.030) continue;
+      seat += 1;
+      const value = painted(seatColours, i, 1);
+      assert.ok(close(value, suit), `seat vertex ${i} paints to (${value.r.toFixed(4)}, ${value.g.toFixed(4)}, ${value.b.toFixed(4)}), not the suit's silver`);
+    }
+    assert.ok(seat > 20, `only ${seat} seat vertices found below the hem`);
+  } finally {
+    rider.dispose();
+  }
+});
+
 test('below the hem there is nothing a crossing could show', () => {
   // The other half of the tier-B contract, asserted structurally: everything a
   // folded leg can pass through under the hem — the seat and both legs — is
@@ -2538,6 +2648,11 @@ const HIP_DOME_RIDERS: ReadonlyArray<{
 }> = [
   { name: 'the Drunkard', look: DRUNKARD_LOOK, apexY: DRUNKARD_HIP_DOME_APEX, sways: [-1, 0, 1], pelvisRoll: drunkardPelvisRoll },
   { name: 'Wheel in Motion', look: WHEEL_IN_MOTION_LOOK, apexY: WIM_HIP_DOME_APEX, sways: [0], pelvisRoll: pelvisCounterRoll },
+  // The third, and the first added **before** a ride found the cut rather than
+  // after: his trousers are a light silver, which shows the thigh's flat cap
+  // under the hem at least as loudly as the Drunkard's amber did. No sway —
+  // his is a sober seat — so the plain counter-roll, as Wheel in Motion's.
+  { name: 'FloWithZo', look: FLO_WITH_ZO_LOOK, apexY: FLO_HIP_DOME_APEX, sways: [0], pelvisRoll: pelvisCounterRoll },
 ];
 
 for (const { name, look, apexY, sways, pelvisRoll } of HIP_DOME_RIDERS) test(`${name}'s thighs end in a hip dome that stays inside his seat through every held corner`, () => {

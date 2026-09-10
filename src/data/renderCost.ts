@@ -346,6 +346,57 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  *
  * What has moved, most recent first:
  *
+ *   - **FloWithZo after the r2 blind gauntlet (2026-09-10): the quad reserve
+ *     229,782 → 230,094 triangles, the split reserve, the single reserve and
+ *     every draw call on all three unmoved.** The r2 round's fifteen
+ *     actionable findings, applied in one pass; +312 triangles is all of it,
+ *     and the torso is not in the number — the jersey's ring pairs moved with
+ *     the vest's top and the band's top and it still carries 27 rings. What
+ *     grew is the brace and the lid: the kneecap patch extended 28 mm to cover
+ *     the thigh's hemispherical close, the outboard knee plate widened from
+ *     ±0.24 to ±0.34 rad, the two shin straps went 18 mm → 40 mm at two rows
+ *     each, and the helmet's two pivot pods gained a concentric inner disc so
+ *     they read as hinges rather than as pale marks. He is 22 meshes / 37 calls
+ *     / **20,076** triangles alone, 33 / 55 / **25,592** measured on his own
+ *     machine unarmed, and 34 / 57 / **26,344** armed — the paddle's 1 mesh,
+ *     2 calls and 752 triangles, as ever. Still fourth on the triangle axis
+ *     over Wheel in Motion's 25,832.
+ *   - **FloWithZo after the r1 blind gauntlet (2026-09-10): the quad reserve
+ *     229,806 → 229,782 triangles, the split reserve, the single reserve and
+ *     every draw call on all three unmoved.** Sixteen confirmed findings were
+ *     repaired in one pass and all but four of them are colour, shade or a
+ *     paint predicate, which cost nothing. The four that touch geometry very
+ *     nearly cancel: the jersey lost a duplicated ring where the collar's new
+ *     base landed on a height the even sampling already carried (−60), the
+ *     visor moved 52 mm down the shell at exactly its old size (0), and the
+ *     two shin straps grew from 8 mm to 18 mm while the helmet's pivot pods
+ *     went from 19 mm to 55 mm (+36). He is 22 meshes / 37 calls / 19,764
+ *     triangles alone and 34 / 57 / **26,032** armed on his own machine, so he
+ *     holds fourth place on the triangle axis over Wheel in Motion's 25,832
+ *     and the four-subset sweep's worst seating is the same seating with 24
+ *     triangles less in it.
+ *   - **FloWithZo — M34, the eighth rider and his wheel (2026-09-09): the
+ *     quad reserve 229,582 → 229,806 triangles, the split reserve, the
+ *     single reserve and every draw call on all three unmoved.** His look is
+ *     22 meshes / 37 calls / 19,788 triangles on its own (Cool Rider:
+ *     26 / 42 / 92,520) and his machine is 11 meshes / 18 calls / 5,516
+ *     triangles — **level with the standard wheel and with every machine
+ *     before it on meshes and calls both**, 1,404 triangles above it: his
+ *     knee and thigh guards are two buffers, one per bone, rather than a
+ *     group each; his machine's warm band, nose badge and nose devices are
+ *     seven patches inside the one trim mesh every machine already pays for,
+ *     and its handle bay, nose recess, status-light bezel, flank panel line
+ *     and skirt are vertex paint on the shell. That is why an eighth
+ *     character moved no call reserve at all.
+ *
+ *     The 224 triangles are the whole of his arrival. Armed on his own
+ *     machine his rig is 34 meshes / 57 calls / 26,056 triangles, which takes
+ *     **fourth place on the triangle axis from Wheel in Motion's 25,832**
+ *     (Cool Rider 97,384, Maribel 42,132 and the Drunkard 35,000 are the
+ *     three above him), so the four-subset sweep's worst seating gains
+ *     exactly that difference and nothing else. He is not in the worst pair,
+ *     so the split reserve does not carry him, and not the worst look alone,
+ *     so the single reserve does not either.
  *   - **Wheel in Motion's hip dome (2026-09-03, after the Drunkard's
  *     release): the quad reserve 136,620 → 137,244 triangles, the split
  *     reserve and every draw call unmoved.** The owner checked the rest of
@@ -528,7 +579,7 @@ export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
  */
 export const QUAD_NON_LEVEL_RESERVE = deepFreeze({
   drawCalls: 270,
-  triangles: 229_582,
+  triangles: 230_094,
 });
 
 /**

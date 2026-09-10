@@ -64,7 +64,7 @@ export type CharacterId = PlayableCharacterId | 'cop';
  */
 export type PlayableCharacterId =
   'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel-vargas' | 'wheel-in-motion'
-  | 'drunkard';
+  | 'drunkard' | 'flo-with-zo';
 
 /**
  * Which recorded crash one-shot a rider comes with.
@@ -75,7 +75,8 @@ export type PlayableCharacterId =
  * Two riders could legitimately share a voice; a rider without one could not.
  */
 export type CrashVoiceId =
-  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard';
+  'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard'
+  | 'flo-with-zo';
 
 /**
  * **`'maribel'` arrived with her recording, in the same edit, exactly as
@@ -95,6 +96,16 @@ export type CrashVoiceId =
  * `'red-rider'` at Phase 0, spent at Phase 3 for a file of his own — a second
  * render of the same voice-scrubbed wipeout, because the owner asked for
  * "the same crash as Red Rider but a new file" (`docs/PLANS.md` §28.10).
+ *
+ * **`'flo-with-zo'` is the fourth walk down that path** (M34): seated on
+ * `'red-rider'` at Phase 0 and spent at Phase 3 for a third render of the same
+ * treatment (`docs/PLANS.md` §34.10). Its one new fact is that the pool of
+ * clear donors is exhausted at two — the tool's `--avoid` has no survivors for
+ * a third render — so his donor was named rather than found, and the bar the
+ * suite actually holds every crash to is pairwise distinctness, not donor
+ * independence. The shape is unchanged: the interim lived here in the data,
+ * never as a fallback in `audio/sink.ts`, so spending it was one line here and
+ * one arm in `crashFor`.
  */
 
 export interface CharacterSpec {
@@ -325,6 +336,62 @@ export const CHARACTERS: readonly PlayableCharacterSpec[] = Object.freeze([
     swatch: '#e8951f',
     crashVoice: 'drunkard' as CrashVoiceId,
   }),
+  /**
+   * FloWithZo — M34, the eighth rider and the **fifth real person** on this
+   * roster: an EUC racer who rides under this name on Instagram, added at his
+   * own request and with his direct permission, credited in `NOTICE.md` by
+   * the handle he publishes under (`@flowithzo_euc`,
+   * `https://www.instagram.com/flowithzo_euc`) the way Wheel in Motion is
+   * credited by his channel and Red Rider by his handle.
+   *
+   * **The persona is what ships; the person is not.** The permission and the
+   * photographs live under `references/FloWithZo/`, which every release tool
+   * excludes from every build, and his real name is a forbidden token in
+   * `tools/private-tokens.mjs` — so a caption, a comment or a capture
+   * filename that spelled it would fail the export rather than publish it.
+   * Nothing here, in the render module, in the tests or in the records says
+   * it (`docs/PLANS.md` §34.1).
+   *
+   * **He is appended after the Drunkard on purpose**: `CHARACTER_IDS[7]` is
+   * his, which leaves `tests/m28.spec.ts:36`'s `CHARACTER_IDS[5]` pin and
+   * `tests/m29.spec.ts`'s seventh-by-position pin standing where they were.
+   *
+   * **`crashVoice: 'red-rider'` was the declared interim, and Phase 3 spent
+   * it** — the M23 A0 shape, used a fourth time and closed the same way it
+   * was opened: parked in the *data* on the one crash in the game with no
+   * voice in it at all, never on a fallback in `audio/sink.ts`, until
+   * `crash_flo_with_zo.wav` was wired (`docs/PLANS.md` §34.10). What ships is
+   * a third sibling of the owner's voice-scrubbed wipeout, whose donor had to
+   * be *named* (`--donor 2.200`) because the pool of clear donors is
+   * exhausted at two (§34.3 fact 7) — so it shares material with both
+   * siblings and is still a different file from each of them, and from the
+   * owner's, sample for sample inside the rebuilt window. It carries no
+   * recording of his voice, here or anywhere in this game. If a recording of
+   * his own ever arrives it takes the Adonisb2 path.
+   *
+   * **The look is Adonisb2's, by an explicit spread** (`FLO_WITH_ZO_LOOK` in
+   * `render/riderLook.ts`) until Phase 1 lands `render/floWithZoLook.ts`,
+   * because `riderLook.test.ts` refuses a seat without a look and a silent
+   * fallback would ship the wrong rider without saying so (§22.5's rule).
+   * Adonisb2 and not Cool Rider, measured: the render reserves are sums over
+   * seated subsets, so a clone of the roster's dearest rig moves the quad
+   * reserve and turns `renderCost.test.ts` red. He rides the standard wheel
+   * by a declaration on `machineForCharacter` until Phase 2.
+   *
+   * **The swatch is cyan at 184°**, not silver: cyan is his accent, it sits
+   * in the widest gap the dot row has left (adonisb2 at 94°, cool-rider at
+   * 214°), and it carries the near-black "Riding now" pill, which a silver
+   * could not. A swatch is lit by nothing; the albedos the sun falls on are
+   * `BLOCKOUT_COLOURS.floWithZo*`.
+   */
+  Object.freeze({
+    id: 'flo-with-zo' as PlayableCharacterId,
+    name: 'FloWithZo',
+    blurb: 'Light silver race suit with a cyan band at the hip, a pewter full-face lid over a dark visor, '
+      + 'and big white knee armour. A real racer, in the game by permission.',
+    swatch: '#23c9d6',
+    crashVoice: 'flo-with-zo' as CrashVoiceId,
+  }),
 ]);
 
 /**
@@ -416,6 +483,7 @@ const RIDE_STYLES: Readonly<Record<CharacterId, RideStyle>> = Object.freeze({
   'maribel-vargas': SOBER_STYLE,
   'wheel-in-motion': SOBER_STYLE,
   drunkard: DRUNK_STYLE,
+  'flo-with-zo': SOBER_STYLE,
   cop: SOBER_STYLE,
 });
 

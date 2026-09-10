@@ -989,6 +989,79 @@ const RIDER_CARDS: Readonly<Record<PlayableCharacterId, { blurb: string; portrai
               stroke="#3e6b1c" stroke-width="1.2" stroke-linecap="round" fill="none"/>
       </svg>`,
   },
+  /**
+   * FloWithZo — M34 Phase 0, the eighth card, and the `Record` doing its job a
+   * fifth time: the compiler refused the widened `PlayableCharacterId` until
+   * this entry existed (`docs/PLANS.md` §34.7).
+   *
+   * Three shapes, decided at 58 px, and no more — the compact tier now hands
+   * a card about 49 px of height, so a card that needs a fourth read is a card
+   * nobody reads. **The lid** is the identity: a rounded pewter dome with one
+   * pale crown highlight and *no peak*, because what makes his helmet his on
+   * the roster is that it is a smooth road shell where Wheel in Motion's is
+   * striped and Cool Rider's is slabbed. **The visor** is the largest dark
+   * mass on the card, ear to ear with one cool sheen across it, no band and no
+   * bridge (a dark slab across a *face* is the cop's blindfold rule, §29.3
+   * fact 9; a full-face lid has no face to hide). **The suit** is the silver
+   * ground with the mid-grey panel under the chin and down the chest, and the
+   * hem band at the card's bottom edge: **cyan on the card's left, gold on its
+   * right**, which is cyan on *his right hip* and gold on his left — the rear
+   * photograph's handedness, the same way round as the paint the look carries,
+   * so the card and the rider never disagree (`docs/PLANS.md` §34.4;
+   * `floWithZo.test.ts` holds the rider's side of it).
+   *
+   * **Four of those reads moved with the r1 gauntlet's confirmed findings**
+   * (`flo-views/_scratch/gauntlet-r1-record.md`), because a card that shows a
+   * rider the game no longer builds is a card that lies at 58 px: the dome is
+   * a near-neutral pewter rather than a warm tan (1a/6a, the round's only
+   * blocker); the visor sits lower, leaving the brow half the shell (1c); the
+   * band under the chin is the panel grey and not the gear black, since the
+   * near-black yoke was the second thing the chase camera got wrong (2a/6b);
+   * and the hem band is a **sash at the hips with the front left plain**,
+   * which is where the paint puts it now (4c).
+   *
+   * No `<image>` and no lettering: nothing on him is a mark this project may
+   * not redraw, so `DESIGN.md` §9d's exception stays used exactly twice
+   * (Maribel's logo and Wheel in Motion's). No manufacturer, no sponsor, no
+   * number. The colours here are the card's own, at the albedo values
+   * `BLOCKOUT_COLOURS.floWithZo*` carries.
+   *
+   * **Four more reads moved with the r2 gauntlet's confirmed findings**
+   * (`flo-views/_scratch/gauntlet-r2-record.md`): the mid-grey tier is two
+   * stops lighter, because the rendered vest measured 0.43 × the suit beside it
+   * where PHOTO 1 gives 0.56–0.67 and a critic asked for the shoulder caps to
+   * be deleted as charcoal (2b/2c); the visor's lower edge lifts so a
+   * shell-coloured chin band reads under it, which is the helmet piece's
+   * standing LOSE (1a); and the hem band is deeper on his right and stops short
+   * of his left hip, which is the sash PHOTO 2 actually shows (6b/4d).
+   *
+   * **The blurb moved with them.** `tests/m22.spec.ts:113` measures it against
+   * `CHARACTERS[].blurb` in `src/data/riders.ts`, so the two copies are one
+   * string in two files; the word "bronze" outlived the colour by two rounds
+   * and both now say **pewter**, which is what `0xa8a5a1` is.
+   */
+  'flo-with-zo': {
+    blurb: 'Light silver race suit with a cyan band at the hip, a pewter full-face lid over a dark visor, '
+      + 'and big white knee armour. A real racer, in the game by permission.',
+    portrait: `
+      <svg viewBox="0 0 96 96" class="euc-rider-card__art" aria-hidden="true" focusable="false">
+        <path d="M20 48c0-15.5 12.5-27 28-27s28 11.5 28 27c0 16-12.5 28-28 28S20 64 20 48z"
+              fill="#a8a5a1"/>
+        <path d="M27 38c4-9 11-14 21-14s17 5 21 14c-6-5-13-8-21-8s-15 3-21 8z"
+              fill="#d9d7d3" opacity="0.5"/>
+        <path d="M23 48.5c7-5.5 43-5.5 50 0c-2 10.2-5.2 15.6-8 18.7H31C28.2 64.1 25 58.7 23 48.5z"
+              fill="#3b4148"/>
+        <path d="M27.6 51.1c5.4-2 11.6-3.1 18.4-3.2c-6.2 1.4-11.4 4-15.6 7.8c-1.2-1.4-2.1-3-2.8-4.6z"
+              fill="#6b7a86" opacity="0.5"/>
+        <path d="M15 96c1-10.4 14-17.4 33-17.4S80 85.6 81 96z" fill="#dcdad3"/>
+        <path d="M36 79.6c3.6-1 7.6-1.6 12-1.6s8.4.6 12 1.6c-1.6 3.4-6 5.6-12 5.6s-10.4-2.2-12-5.6z"
+              fill="#acaba5"/>
+        <path d="M48 86.6c7 0 13 2.4 16.8 6.2l.6 3.2H30.6l.6-3.2c3.8-3.8 9.8-6.2 16.8-6.2z"
+              fill="#acaba5"/>
+        <rect x="18" y="89.6" width="20" height="6.4" fill="#1eb4cc"/>
+        <rect x="60" y="91.6" width="17" height="4.4" fill="#dcae5c"/>
+      </svg>`,
+  },
 };
 
 /**

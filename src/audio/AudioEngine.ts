@@ -390,8 +390,8 @@ export class AudioEngine {
       try {
         const [
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
-          crashMaribel, crashWheelInMotion, crashDrunkard, stumbleDrunkard, sirenFar, sirenClose,
-          overspeedBeep,
+          crashMaribel, crashWheelInMotion, crashFloWithZo, crashDrunkard, stumbleDrunkard,
+          sirenFar, sirenClose, overspeedBeep,
         ] = await Promise.all([
           fetch(urls.tyreOffroad).then((response) => response.arrayBuffer()),
           fetch(urls.tyreSolid).then((response) => response.arrayBuffer()),
@@ -402,6 +402,7 @@ export class AudioEngine {
           fetch(urls.crashAdonisb2).then((response) => response.arrayBuffer()),
           fetch(urls.crashMaribel).then((response) => response.arrayBuffer()),
           fetch(urls.crashWheelInMotion).then((response) => response.arrayBuffer()),
+          fetch(urls.crashFloWithZo).then((response) => response.arrayBuffer()),
           fetch(urls.crashDrunkard).then((response) => response.arrayBuffer()),
           fetch(urls.stumbleDrunkard).then((response) => response.arrayBuffer()),
           fetch(urls.sirenFar).then((response) => response.arrayBuffer()),
@@ -411,8 +412,8 @@ export class AudioEngine {
         if (this.disposed) return;
         this.sampleData = {
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
-          crashMaribel, crashWheelInMotion, crashDrunkard, stumbleDrunkard, sirenFar, sirenClose,
-          overspeedBeep,
+          crashMaribel, crashWheelInMotion, crashFloWithZo, crashDrunkard, stumbleDrunkard,
+          sirenFar, sirenClose, overspeedBeep,
         };
         this.installSamples();
       } catch {
@@ -437,8 +438,8 @@ export class AudioEngine {
         // on a second call failing.
         const [
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
-          crashMaribel, crashWheelInMotion, crashDrunkard, stumbleDrunkard, sirenFar, sirenClose,
-          overspeedBeep,
+          crashMaribel, crashWheelInMotion, crashFloWithZo, crashDrunkard, stumbleDrunkard,
+          sirenFar, sirenClose, overspeedBeep,
         ] = await Promise.all([
           context.decodeAudioData(data.tyreOffroad),
           context.decodeAudioData(data.tyreSolid),
@@ -449,6 +450,7 @@ export class AudioEngine {
           context.decodeAudioData(data.crashAdonisb2),
           context.decodeAudioData(data.crashMaribel),
           context.decodeAudioData(data.crashWheelInMotion),
+          context.decodeAudioData(data.crashFloWithZo),
           context.decodeAudioData(data.crashDrunkard),
           context.decodeAudioData(data.stumbleDrunkard),
           context.decodeAudioData(data.sirenFar),
@@ -458,8 +460,8 @@ export class AudioEngine {
         if (this.disposed) return;
         const bank: SampleBank = {
           tyreOffroad, tyreSolid, windHowl, crash, crashTrollina, crashRedRider, crashAdonisb2,
-          crashMaribel, crashWheelInMotion, crashDrunkard, stumbleDrunkard, sirenFar, sirenClose,
-          overspeedBeep,
+          crashMaribel, crashWheelInMotion, crashFloWithZo, crashDrunkard, stumbleDrunkard,
+          sirenFar, sirenClose, overspeedBeep,
         };
         this.sink?.setSampleBank(bank);
       } catch {

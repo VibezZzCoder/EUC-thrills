@@ -44,7 +44,8 @@ import type { CharacterId } from './riders.ts';
 
 /** Every machine the renderer can build. */
 export type MachineId =
-  'standard' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard';
+  'standard' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard'
+  | 'flo-with-zo';
 
 export interface MachineSpec {
   readonly id: MachineId;
@@ -159,6 +160,27 @@ export const MACHINES: readonly MachineSpec[] = Object.freeze([
     blurb: 'The standard body in dark brown under amber pads, a hop cone on '
       + 'each, cream trim. Beer-themed, and still a wheel.',
   }),
+  /**
+   * FloWithZo's machine — M34 Phase 2, and the fifth taken from a real
+   * rider's own wheel with his permission.
+   *
+   * His brief ranks the wheel fifth in what carries the identity and asks for
+   * "a dark performance EUC" rather than for a named product; his two racing
+   * photographs say what that is on his: a dark body carrying two large pale
+   * side shells, broad pale pedals, a fat round tyre, a small round orange
+   * badge on the nose and an orange arc low at the rim. What ships is the
+   * game's own fictional performance form wearing that relationship — a
+   * graphite body, pale shells and pedals, a low warm band and the badge —
+   * and no manufacturer's shell, panel design, wordmark or plate, no flag
+   * sticker from the real wheel's flank, no lettering of any kind, and not
+   * the tyre's own rim ring (`docs/PLANS.md` §34.5, `NOTICE.md`).
+   */
+  Object.freeze({
+    id: 'flo-with-zo' as MachineId,
+    name: "FloWithZo's wheel",
+    blurb: 'A graphite performance body between two pale side shells, on pale '
+      + 'pedals, with a low orange band and a badge on the nose.',
+  }),
 ]);
 
 export const MACHINE_IDS: readonly MachineId[] =
@@ -229,6 +251,14 @@ export function machineForCharacter(character: CharacterId): MachineId {
   // Phases 0 to 2 was the interim, stated rather than fallen through
   // (`docs/PLANS.md` §29.8, §29.11).
   if (character === 'drunkard') return 'drunkard';
+  // M34 Phase 2. His id, his spec above and his `MachineLook` row arrived in
+  // one edit, as Maribel's, Wheel in Motion's and the Drunkard's did and for
+  // the same reason: each of the three without the others is a silent
+  // fallback — a mapped id with no look resolves to `standard` and ships the
+  // wrong wheel without saying so. He rode the standard wheel through Phases
+  // 0 and 1 by a declaration that stood on this line, a decision stated
+  // rather than a fallback nobody chose (`docs/PLANS.md` §34.9).
+  if (character === 'flo-with-zo') return 'flo-with-zo';
   return DEFAULT_MACHINE;
 }
 

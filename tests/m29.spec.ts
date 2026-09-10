@@ -154,8 +154,10 @@ test('the seventh rider is on the dot row and in the chooser, and choosing him i
   const errors = collectErrors(page);
   await bootToTitle(page);
 
-  expect(CHARACTER_IDS.length).toBe(7);
-  expect(CHARACTER_IDS[CHARACTER_IDS.length - 1]).toBe('drunkard');
+  // Re-pinned the M28 way at M34: he is the seventh **by position**, and the
+  // roster grew an eighth behind him rather than replacing him at the end.
+  expect(CHARACTER_IDS.length).toBeGreaterThanOrEqual(7);
+  expect(CHARACTER_IDS[6]).toBe('drunkard');
   await expect(page.locator('[data-rider-dot]')).toHaveCount(CHARACTERS.length);
   await expect(page.locator('[data-rider-dot="drunkard"]')).toHaveCount(1);
 

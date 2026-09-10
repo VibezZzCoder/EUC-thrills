@@ -2663,6 +2663,592 @@ export const DRUNKARD_MACHINE_LOOK: MachineLook = {
   },
 };
 
+// -- FloWithZo's wheel — M34 Phase 2 ------------------------------------------
+
+/**
+ * The trim's one paint, reached **down** from the pale base — the direction
+ * rule at the top of this file, on a wheel whose only warm colour is an
+ * orange on a graphite body. The base is also the pads' and the pedals'
+ * value, which is what makes the pale side shells of the photographs the
+ * machine's largest colour field rather than a stripe.
+ */
+const FLO_TRIM_BASE = BLOCKOUT_COLOURS.machineFloWithZoTrim;
+const FLO_TRIM_ORANGE = tintOver(FLO_TRIM_BASE, BLOCKOUT_COLOURS.machineFloWithZoOrange);
+
+/** The deck's near-black: a step under the shell, so the block on top has an edge. */
+const FLO_DECK = tintOver(BLOCKOUT_COLOURS.machineFloWithZo, 0x1a1c21);
+/**
+ * The nose recess and the status light's bezel: the shell taken down to a
+ * near-black. §19.7 — the low band on this wheel is an orange 22° from the
+ * light's amber rung, so the field directly behind the ladder is the darkest
+ * paint on the machine.
+ */
+const FLO_CAVITY: Tint = [0.28, 0.28, 0.30];
+/**
+ * The skirt's foot — the 50 mm above the tyre — a stop *above* the shell, for
+ * the reason Wheel in Motion's is: painted down, the darkest band on the
+ * machine sits on the boundary with a tyre a hair off the shell's own value,
+ * and at chase range the two are one black mass. His graphite already clears
+ * the tyre by 1.6× in luma; this is what puts an edge on the bottom of the
+ * body, and the warm band rides over it.
+ */
+const FLO_CORE: Tint = [1.55, 1.55, 1.58];
+/**
+ * The shoulder chamfer, and only it — the one band brighter than the base,
+ * which is what keeps the box's edge legible under a dark deck at chase
+ * distance (Adonisb2's lesson, on a shell just as dark).
+ */
+const FLO_EDGE: Tint = [1.28, 1.28, 1.30];
+/** Where the deck starts, shared by the profile and the painter that must not repaint it. */
+const FLO_DECK_BOTTOM = 0.596;
+
+/**
+ * The performance body, from the two photographs: a rounder, slightly longer
+ * box than Wheel in Motion's.
+ *
+ * Started at `WIM_SHELL_RINGS` — the same eleven sections over the same
+ * 0.250 → 0.604 rise, because that is the tall performance body this roster
+ * already proved at 11 meshes and 18 calls — and re-proportioned to what his
+ * own wheel is. Three changes, each measured off the references rather than
+ * styled:
+ *
+ * - **`square` 4.2 → 4.8 through the body instead of 5.2.** His side shells
+ *   are smooth panels that turn continuously into the nose and tail; Wheel in
+ *   Motion's are near-flat slabs with hard corners. A square-5.2 section
+ *   holds its flank dead flat and then breaks; 4.8 keeps the flank broad
+ *   enough to carry the pads and rounds the corner over about 25 mm. **Round
+ *   2:** the wheel critic measured the flank as soft against a photograph
+ *   that shows a slab with stepped panel breaks, and the verifier confirmed
+ *   it in part — 4.6 → 4.8 is the top of the band §34.5 authorises and the
+ *   whole of what is legal here; "flatten the front face" is outside it and
+ *   is on the record as an escalation, not built.
+ * - **The nose is 10 mm longer**: `halfDepth` 0.272 against 0.262 at the
+ *   waist, the top of the range §34.5 allows, which is what puts the badge
+ *   and the lamp on a nose that reads as ahead of the rider's shins rather
+ *   than under them.
+ * - **The chine step is dropped.** Wheel in Motion's 8 mm ledge at 0.500 is
+ *   the one hard horizontal on his flank and it is what his blades and
+ *   louvres are cut against; nothing on this wheel is cut against anything,
+ *   so the flank runs unbroken from the pad's foot to the shoulder and the
+ *   lamp needs no six-row straddle of a step (it keeps the rows anyway — the
+ *   nose is the most curved thing on the body).
+ *
+ * Contract dimensions untouched: this is the cosmetic loft only, and the rear
+ * face at 0.556 stays 0.26 m aft of centre so the status light seats on it.
+ *
+ * **Round 2 added two things and moved nothing else.** A twelfth ring at
+ * 0.456, six millimetres under the waist section, so the flank has a *row* to
+ * paint a panel line onto: a paint predicate can only reach vertices that
+ * exist, and this loft carries no subdivisions, so the 6 mm band the
+ * photograph's stepped flank asks for is two rows or it is a soft gradient
+ * across 50 mm of nothing. And the **top two rings widened and squared** —
+ * 0.596 to `halfWidth` 0.098 and 0.606 to 0.086, `square` 4.2 and 3.8 — from
+ * the silhouette critic's measurement, confirmed: the game's crown kept 58 %
+ * of the body's maximum width where the rear photograph's keeps 78 % and runs
+ * horizontal across its middle. The deck's own rings widen with them, or the
+ * block that sits on the crown would be narrower than it.
+ */
+const FLO_SHELL_RINGS: readonly MachineShellRing[] = Object.freeze([
+  { y: 0.250, halfWidth: 0.054, halfDepth: 0.134, square: 3.0 },
+  { y: 0.310, halfWidth: 0.098, halfDepth: 0.222, square: 3.6 },
+  { y: 0.362, halfWidth: 0.112, halfDepth: 0.260, square: 4.2 },
+  { y: 0.412, halfWidth: 0.117, halfDepth: 0.270, square: 4.8 },
+  // The panel line's own pair: this row and the waist above it take the 6 mm
+  // hard line `paintShell` cuts across the flank (round 2, F5.5).
+  { y: 0.456, halfWidth: 0.118, halfDepth: 0.271, square: 4.8 },
+  { y: 0.462, halfWidth: 0.118, halfDepth: 0.272, square: 4.8 },
+  { y: 0.500, halfWidth: 0.118, halfDepth: 0.272, square: 4.8 },
+  { y: 0.530, halfWidth: 0.117, halfDepth: 0.268, square: 4.8 },
+  { y: 0.560, halfWidth: 0.114, halfDepth: 0.260, square: 4.5 },
+  { y: 0.582, halfWidth: 0.104, halfDepth: 0.236, square: 4.2 },
+  { y: 0.596, halfWidth: 0.098, halfDepth: 0.196, square: 4.2 },
+  { y: 0.606, halfWidth: 0.086, halfDepth: 0.150, square: 3.8 },
+]);
+
+/**
+ * The pad's top, pad-local metres — 502 mm off the ground, Wheel in Motion's
+ * own address, because it is the shins' contact plane and not a style
+ * decision (`riderClearance.test.ts`, `riderEuc.test.ts`).
+ */
+export const FLO_PAD_TOP = 0.062;
+
+/**
+ * The pale side shell, as a leg pad: one block a flank, 162 mm tall and
+ * 392 mm long, in metres about `WHEEL.padCentreHeight`.
+ *
+ * Both photographs read the same way from every angle — a large pale panel
+ * covering the upper half of the body with a dark centre column between the
+ * two of them — and on this machine that panel is the pad, because the pad is
+ * the one surface at exactly shin height that a look may recolour outright.
+ * Its outer face is the shared pad's, ring for ring: `halfWidth` peaks at
+ * exactly `WHEEL.padThickness × 0.8` and never exceeds it, so the plane the
+ * rider's shins rest against has not moved. Deliberately *not* printed — no
+ * page, no atlas: everything on him and on his wheel is reachable by paint
+ * (§34.3 fact 9), and this is the first machine on the roster whose pads and
+ * pedals are both pale.
+ *
+ * **Round 2 grew it 40 mm longer and nothing else.** The wheel and silhouette
+ * critics both measured the pale field as a mid-flank patch ringed by black
+ * where the rear photograph's runs shoulder-to-pedal, and the verifier
+ * confirmed the coverage while refuting "too low": at hanger height the
+ * photograph is one 64 px light run and `chase` was one 45 px dark one. Two
+ * of the three directions are shut — the *top* is `FLO_PAD_TOP`, the shins'
+ * contact plane, and *downward* is shut by `WHEEL.padHeight / 2`, which the
+ * lowest ring already sits on — so the growth is lengthwise: every ring
+ * 20 mm deeper, 392 mm of the body's 544, and the outer face untouched ring
+ * for ring.
+ */
+const FLO_PAD_RINGS: readonly MachinePadRing[] = Object.freeze([
+  { y: -0.100, halfWidth: 0.017, halfDepth: 0.166, square: 3.2 },
+  { y: -0.086, halfWidth: 0.027, halfDepth: 0.190, square: 4.2 },
+  { y: -0.010, halfWidth: 0.028, halfDepth: 0.196, square: 4.6 },
+  { y: 0.040, halfWidth: 0.027, halfDepth: 0.192, square: 4.2 },
+  { y: FLO_PAD_TOP, halfWidth: 0.018, halfDepth: 0.170, square: 3.2 },
+]);
+
+/**
+ * The low warm band, per flank, in radians about the flank's centre.
+ *
+ * The photographs put his orange on the *tyre* — a rim arc concentric with
+ * the wheel, under the side shell — and the tyre is one near-black material
+ * with no paint hook and no per-channel tint, unsprung while every patch
+ * rides the sprung body (§34.5, M28's refusal at `machineLook.ts:1976-1984`).
+ * So the arc lives on the lowest 50 mm of the shell instead, where it reads
+ * as the same line at the same height from the same angles.
+ *
+ * **Two patches a flank, not one**, because the suspension slider and the
+ * pedal hanger come through the body at the flank's centre: a single band
+ * across them would be a band with a strut standing in the middle of it. The
+ * rear end stops 0.33 rad short of rear centre, so the 100 mm status light
+ * keeps the dark margin §19.7 asks for and the warm band never sits under the
+ * amber rung.
+ */
+const FLO_BAND = { from: 0.250, to: 0.300 } as const;
+const FLO_BAND_REAR = -1.24;
+const FLO_BAND_NOSE = 1.24;
+const FLO_BAND_GAP = 0.10;
+
+/**
+ * The two rear lamps — round 2, F5.3(b), and the first look on the roster to
+ * author `MachineLook.taillight` rather than take the shared bar.
+ *
+ * The shared bar is 132 mm wide and 23 mm tall — 5.7 : 1 landscape, 6 % of
+ * the machine's height, one lozenge across the tail. PHOTO 2 carries **two**
+ * strips instead, one at each rear corner flanking the tyre slot, each about
+ * 1 : 3.6 portrait and 13.5 % of that machine's height. The axis has the
+ * target render behind it too; the count of two has the photograph, which is
+ * the authority that wins (§34.6).
+ *
+ * Measured rather than guessed: `u` compresses hard across a square-4.8 rear
+ * face, so ±0.135 rad about a centre 0.42 rad off the rear centreline is
+ * 25 mm of arc, not the 68 mm the same angle would buy on the flank. The
+ * strips run 0.44 → 0.53 — 91 mm on the built mesh, 14.6 % of the machine.
+ * The material stays the shared red (`euc.ts`: a tail lamp's red is road
+ * grammar, not livery), so §34.5's "no red anywhere" — which means no red
+ * *paint* — is untouched.
+ *
+ * **Where they leave the power ladder, measured on the built rig** (the QA
+ * repair pass, 2026-09-10; the first statement of this was wrong — it claimed
+ * 76 mm of clearance "which is the clearance §19.7 asks for", and §19.7 asks
+ * for a dark *field* behind the light, not a distance). Unlike the shared
+ * bar, which sits under the lamp, these flank it: the lamp's world box is
+ * y 0.5422–0.5724 by x ±0.050, so the strips' tops stop **11.0 mm** below its
+ * lower edge (the shared bar leaves 21.8 mm on the standard wheel) and their
+ * inner edges stand **15.3 mm** outboard of its ends. Both margins are
+ * asserted in `floWithZoMachine.test.ts` so they cannot narrow unnoticed.
+ *
+ * **And the reason §34.2 rejected a red tail was re-examined before this
+ * shipped rather than after.** That ruling — red on a machine collides with
+ * `statusCritical` (`data/tuning.ts:3638`) — is about the field *behind* the
+ * ladder, which `paintShell` takes to a 0.280 multiplier here; it never meant
+ * the roster's own tail lamp, which is `0xff2233` at 1.1 emissive on all eight
+ * machines. Captured with the ladder forced to critical through `applyStatus`
+ * from both views the tail is ever seen from (`flo-views/wheel-r2/status/`):
+ * the lamp reads (255,145,109) at the 6 Hz pulse's peak against these strips'
+ * constant (255,58,64) — 1.6 × their luminance and desaturated where they
+ * never are — and (255,76,60) at the trough, which is their own red. So the
+ * warning is carried by the pulse and the peak, exactly as it is on the
+ * standard wheel, where the same lamp sits over the same red at the same
+ * 2.6 : 1.1 ratio. Recorded in `flo-views/_scratch/wheel-r2-record.md` and
+ * `docs/PLANS.md` §34.9, and on the owner's Phase 5 recipe (§34.12).
+ */
+const FLO_TAIL_CENTRE = 0.42;
+const FLO_TAIL_HALF = 0.135;
+const FLO_TAIL_SHAPE = {
+  from: 0.440, to: 0.530, lift: 0.006, sink: -0.012, uSegments: 4, vSegments: 4, uByArc: true,
+} as const;
+
+/**
+ * One flank's warm band, authored for the rider's left (centre `u = 0`) and
+ * mirrored for the right by `θ → π − θ` with the ends swapped — a machine is
+ * symmetric, and an arc on one flank only would read as a defect.
+ */
+function floBand(mirror: boolean): readonly MachinePatch[] {
+  const span = (u0: number, u1: number): { u0: number; u1: number } => (
+    mirror ? { u0: Math.PI - u1, u1: Math.PI - u0 } : { u0, u1 }
+  );
+  // Six columns over 1.14 rad on the skirt, which flares 46 mm outboard over
+  // the band's own 50 mm of rise: the rows follow that flare rather than
+  // chording across it (invariant 14). `uByArc`, because a column spaced
+  // evenly in radians on a superellipse is nothing of the kind — over this
+  // span the first of six covers 60 mm of the 134 and the last 6 mm, and a
+  // band whose relief bunches at one end reads as a moulding defect
+  // (`PatchOptions.uByArc`, the plate that taught it one look up).
+  const shape = {
+    ...FLO_BAND, lift: 0.010, sink: -0.008, uSegments: 6, vSegments: 3, uByArc: true, tint: FLO_TRIM_ORANGE,
+  };
+  return [
+    { ...span(FLO_BAND_REAR, -FLO_BAND_GAP), ...shape },
+    { ...span(FLO_BAND_GAP, FLO_BAND_NOSE), ...shape },
+  ];
+}
+
+/**
+ * FloWithZo's machine — the eighth `MachineLook` row, and the fifth taken
+ * from a real rider's own wheel with his permission.
+ *
+ * His brief ranks the wheel fifth in what carries the identity and asks for
+ * "a dark performance EUC" rather than for a particular product; the
+ * photographs say what that means on his: a dark body carrying two big pale
+ * side shells, broad pale pedals, a fat round tyre, a small round orange
+ * badge on the nose and an orange arc low at the rim. What ships is the
+ * game's own fictional performance form wearing that relationship, in the
+ * §19.3 order of what carries at chase distance:
+ *
+ * - **A graphite body** — the colour field, free
+ *   (`BLOCKOUT_COLOURS.machineFloWithZo`), 1.5 × Wheel in Motion's luminance
+ *   so the bezel behind the status light and the nose recess can still be
+ *   painted down from it, and clear of the tyre by enough to keep the foot of
+ *   the body an edge rather than a merge.
+ * - **Pale side shells and pale pedals** — the pads' own material in
+ *   `machineFloWithZoTrim`, one big block a flank at shin height, and the
+ *   standard pedal left unpainted: the first machine on the roster whose
+ *   pedals are pale, which is what the two photographs agree on most loudly
+ *   and what tells his wheel from the four dark-pedalled ones from behind.
+ * - **A flat dark deck** on top — a block, not a saddle and not a handle: he
+ *   stands, and the handle branch is authored against the standard shell
+ *   height (§34.3 fact 10). The saddle slot, tinted a step under the shell.
+ * - **The warm accent, low and small** — a thin orange band on each flank's
+ *   bottom rings where the photographs' rim arc reads, and one small round
+ *   badge under the lamp on the nose, set in a pale plate. Both tinted down
+ *   from the pale trim base, both in the one trim draw call, and the
+ *   concentric boss above the lamp is the same base untinted.
+ * - **The standard white lamp**; **two portrait tail strips** at the rear
+ *   corners in the shared red rather than the shared landscape bar (PHOTO 2
+ *   carries two, one per corner); the tyre plain black, a touch glossier.
+ *
+ * What the references show and this look deliberately does not build: the
+ * manufacturer's shell, panel design, wordmark and plate; the sticker on the
+ * real wheel's flank and the photographer's watermark; **the top handle arc**
+ * (the branch's posts and bar are arithmetic against `WHEEL.shellHeight` and
+ * come out ten and six millimetres over a profile topping out at 0.606 —
+ * §34.3 fact 10); **the orange ring on the tyre** (the direction rule: the
+ * tyre is one near-black material a multiplier cannot reach orange from, and
+ * a ring on any other material would ride the sprung body while the tyre does
+ * not); **the target render's wide red bar** across the tail (the photograph
+ * carries two narrow strips at the corners instead, which is what round 2
+ * built, in the roster's shared tail-lamp material and no other red); and any
+ * wordmark, lettering or sticker anywhere on it.
+ */
+export const FLO_WITH_ZO_MACHINE_LOOK: MachineLook = {
+  machine: 'flo-with-zo',
+
+  shell: {
+    colour: BLOCKOUT_COLOURS.machineFloWithZo,
+    // Satin: moulded plastic over a frame, Wheel in Motion's own response
+    // under the same sun.
+    roughness: 0.50,
+    profile: FLO_SHELL_RINGS,
+  },
+
+  top: {
+    // The flat deck in the carry handle's place — the saddle slot, merged
+    // into the shell mesh and so free of draw calls, 18 mm proud of the
+    // crown and 4 mm wider than it, so it reads as a block sat on the body
+    // rather than a rounding of it. Its crown at 0.624 is well inside the
+    // crouched-hip ceiling the seated wheels are pinned under.
+    //
+    // **Round 2 widened all three rings by 16 mm a side** with the crown they
+    // sit on (F6.4): the block has to stay wider than the shell's top ring or
+    // it stops being a block, and a wider deck is also the flat top the rear
+    // photograph shows. Depths are untouched — `paintShell`'s first branch
+    // catches this loft by `|z| < 0.160`, and the 0.616 ring already reaches
+    // past it and is caught by height instead.
+    kind: 'saddle',
+    profile: [
+      { y: FLO_DECK_BOTTOM, halfWidth: 0.078, halfDepth: 0.152, square: 4.4 },
+      { y: 0.616, halfWidth: 0.090, halfDepth: 0.168, square: 5.2 },
+      { y: 0.624, halfWidth: 0.070, halfDepth: 0.140, square: 4.2 },
+    ],
+    tint: FLO_DECK,
+  },
+
+  pads: {
+    // The pale side shell itself, unprinted: the material *is* the colour,
+    // which is the one case the direction rule allows a look to skip a page
+    // for — nothing on this pad is darker than its own base except the two
+    // planes `paintPad` takes down.
+    colour: BLOCKOUT_COLOURS.machineFloWithZoTrim,
+    // Moulded plastic, not foam: Wheel in Motion's response, on a panel of
+    // the same kind.
+    roughness: 0.62,
+    blocks: [FLO_PAD_RINGS],
+    // Sixteen sections rather than the shared pad's twelve: this block is
+    // 352 mm long and rounder than the shared one, and at twelve the flank's
+    // corners facet visibly at the front three-quarter the reference
+    // photograph is taken from.
+    segments: 16,
+    // Three planes, one stop apart — and painted *down*, which is the
+    // opposite of Wheel in Motion's and for the opposite reason. His pad is a
+    // dark printed page that needs its top lifted; this one is a pale
+    // material already near the top of the palette, so the sky-facing cap
+    // takes the light of the sun on top of an albedo that is nearly white
+    // and blows out. The cap goes down to 0.78, the underside to 0.62, and
+    // the outer face — the one the shins press and the camera sees — keeps
+    // the base exactly.
+    paintPad: (geometry): void => {
+      const position = geometry.getAttribute('position');
+      const colour = geometry.getAttribute('color');
+      for (let i = 0; i < position.count; i += 1) {
+        const y = position.getY(i);
+        const lift = y > 0.052 ? 0.78 : y < -0.086 ? 0.62 : 1;
+        if (lift === 1) continue;
+        colour.setXYZ(i, colour.getX(i) * lift, colour.getY(i) * lift, colour.getZ(i) * lift);
+      }
+    },
+  },
+
+  tyre: {
+    // Road rubber, plain. The photograph's tyre carries a narrow orange rim
+    // line, which cannot be reached by paint from a near-black material and
+    // could not ride the tyre in any case (see the look's own comment above),
+    // so the tyre is the standard black, a touch glossier.
+    roughness: 0.90,
+  },
+
+  trim: {
+    colour: FLO_TRIM_BASE,
+    // No glow anywhere on the trim: the lamp and the status light are the two
+    // lights this machine has, and orange plastic that glowed would be a
+    // third thing competing with the amber rung.
+    emissive: 0x000000,
+    emissiveIntensity: 0,
+    // Matte moulded plastic: Wheel in Motion's 0.58, which stopped his
+    // far-side orange blowing out to beige at the sun's mirror angle in the
+    // leaned pose.
+    roughness: 0.58,
+    metalness: 0.06,
+    patches: [
+      ...floBand(false),
+      ...floBand(true),
+      // The pale plate the badge sits on — round 2, F5.7. Magnified, PHOTO 1
+      // does not carry a bare orange lozenge on black: it carries a small
+      // *pale square* with a round orange dot inside it. This is that square,
+      // 6 mm larger than the badge all round and 4 mm less proud of the nose,
+      // so the orange reads as a device set into hardware rather than as a
+      // colour painted on the bodywork. Untinted deliberately: the trim base
+      // is the machine's own pale, the value its pads and pedals already
+      // carry, and the direction rule at the top of this file forbids
+      // reaching *up* from it.
+      {
+        u0: Math.PI / 2 - 0.0185,
+        u1: Math.PI / 2 + 0.0185,
+        from: 0.463,
+        to: 0.499,
+        lift: 0.008,
+        sink: -0.008,
+        uSegments: 6,
+        vSegments: 3,
+        uByArc: true,
+      },
+      // The concentric boss above the lamp — round 2, F5.7. PHOTO 1 puts a
+      // large dark ring with a lighter round panel inside it high on the
+      // nose, above the light; the dark ring is `paintShell`'s nose recess,
+      // which round 2 carries up to 0.572 for it, and this is the pale panel.
+      // `bulge` and `taper` at 1 together make the roundel: a constant-height
+      // span 41 mm wide and 32 mm tall would be a letterbox, and this is a
+      // circle. No letterform on it, per the brand critic's standing ask.
+      {
+        u0: Math.PI / 2 - 0.020,
+        u1: Math.PI / 2 + 0.020,
+        from: 0.534,
+        to: 0.566,
+        lift: 0.010,
+        sink: -0.008,
+        // Ten columns and five rows, and `taper` at 0.55 rather than the 1.0
+        // the round-2 finding named. The kit's arithmetic is
+        // `halfSpan × (1 − taper × |s − 0.5| × 2) × (1 + bulge × middle)`, so
+        // taper 1 closes the span to a point at both ends: it is a rhombus by
+        // construction at any segment count, and the capture of the first
+        // pass of this patch is a kite. 0.55 leaves the ends at 45 % of the
+        // middle, which over ten columns is the round boss the photograph
+        // shows. Segment count is not what rounds it; the taper is.
+        uSegments: 10,
+        vSegments: 5,
+        uByArc: true,
+        bulge: 1,
+        taper: 0.55,
+      },
+      // The nose badge: the photograph's small round orange device under the
+      // lamp — 40 mm across on a 500 mm wheel and 30 mm tall, a shield from
+      // `bulge` and `taper` together, because a constant-height span at this
+      // size is a letterbox and this is a roundel. Lifted 12 mm: on the
+      // reference it stands off the nose plate, and at chase distance a badge
+      // that is only colour is a smudge. **0.032 rad, not 0.30**: the nose is
+      // where `u` compresses hardest on a square-4.6 section — the first
+      // 0.016 rad off the centreline buys 19 mm of nose — so the span that
+      // measures 40 mm here would be a sixth of the wheel on the flank
+      // (measured with `loftPoint`, the way Wheel in Motion's plate was).
+      {
+        u0: Math.PI / 2 - 0.016,
+        u1: Math.PI / 2 + 0.016,
+        from: 0.466,
+        to: 0.496,
+        lift: 0.012,
+        sink: -0.010,
+        uSegments: 6,
+        vSegments: 3,
+        uByArc: true,
+        bulge: 0.5,
+        taper: 0.5,
+        tint: FLO_TRIM_ORANGE,
+      },
+    ],
+  },
+
+  headlight: {
+    // The standard white bar, re-authored over his rings: the same 0.88 rad
+    // of nose and the same 28 mm of height, moved to sit between the 0.500
+    // and 0.530 sections and kept at six rows because his nose is the most
+    // curved thing on the body and a two-row chord across it would break the
+    // bodywork back through the lamp's own face.
+    patches: [{
+      u0: Math.PI / 2 - 0.44,
+      u1: Math.PI / 2 + 0.44,
+      from: 0.502,
+      to: 0.530,
+      lift: 0.004,
+      sink: -0.012,
+      uSegments: 6,
+      vSegments: 6,
+      taper: 0.40,
+    }],
+    emissive: BLOCKOUT_COLOURS.headlight,
+    emissiveIntensity: 1.4,
+  },
+
+  taillight: {
+    // Two portrait strips at the rear corners, not the shared landscape bar —
+    // the constants above carry the measurement and the reason.
+    patches: [
+      {
+        u0: -Math.PI / 2 - FLO_TAIL_CENTRE - FLO_TAIL_HALF,
+        u1: -Math.PI / 2 - FLO_TAIL_CENTRE + FLO_TAIL_HALF,
+        ...FLO_TAIL_SHAPE,
+      },
+      {
+        u0: -Math.PI / 2 + FLO_TAIL_CENTRE - FLO_TAIL_HALF,
+        u1: -Math.PI / 2 + FLO_TAIL_CENTRE + FLO_TAIL_HALF,
+        ...FLO_TAIL_SHAPE,
+      },
+    ],
+  },
+
+  paintShell: (geometry): void => {
+    const position = geometry.getAttribute('position');
+    const colour = geometry.getAttribute('color');
+    for (let i = 0; i < position.count; i += 1) {
+      const x = position.getX(i);
+      const y = position.getY(i);
+      const z = position.getZ(i);
+
+      // The deck, tinted at build and repainted identically here so the bands
+      // below cannot half-recolour it, and the crown it sits on with it —
+      // one dark block on top, which is what both photographs show between
+      // the two pale shells. Above 0.607 only the deck exists; the box
+      // beneath it is narrower than the 0.596 section and wider than the
+      // deck's own foot, so it takes the deck and the crown and nothing else.
+      // (`|x| < 0.082` because round 2 widened the deck's foot ring to 0.078
+      // — the shell's own 0.596 section reaches |z| 0.168 before it is that
+      // narrow, so the two still cannot be confused.)
+      if (y > 0.607 || (y > 0.594 && Math.abs(x) < 0.082 && Math.abs(z) < 0.160)) {
+        // **The trolley-handle bay** — round 2, F5.2. Both photographs put a
+        // recessed bay with a pale bar stowed in it where this machine's deck
+        // is: PHOTO 2 measures it at 62 % of the body's width and 21 % of its
+        // height, PHOTO 1 shows the tube arching out of it. The *arch* is
+        // refused (§34.3 fact 10: the `top: 'handle'` branch is arithmetic
+        // against `WHEEL.shellHeight` and yields 10 mm posts and a 6 mm bar
+        // over a profile topping out at 0.606), so the bay is paint: the
+        // deck's top face goes to the machine's darkest value, and the stowed
+        // bar — the fore-and-aft column of vertices through the middle of the
+        // cap fan — is lifted back out of it. No triangles, and it reads from
+        // behind and from above, which is where the photographs show it.
+        if (y > 0.618) {
+          const bar = Math.abs(x) < 0.006;
+          const paint = bar ? FLO_EDGE : FLO_CAVITY;
+          colour.setXYZ(i, paint[0], paint[1], paint[2]);
+          continue;
+        }
+        colour.setXYZ(i, FLO_DECK[0], FLO_DECK[1], FLO_DECK[2]);
+        continue;
+      }
+      // The nose recess the lamp and the badge sit in — carried up to 0.572
+      // in round 2 (F5.7) so the pale roundel above the lamp sits inside a
+      // dark ring, which is the concentric boss PHOTO 1 shows and not a disc
+      // floating on bodywork.
+      if (z > 0.16 && Math.abs(x) < 0.075 && y > 0.494 && y < 0.572) {
+        colour.setXYZ(i, FLO_CAVITY[0], FLO_CAVITY[1], FLO_CAVITY[2]);
+        continue;
+      }
+      // The rear spine: taillight surround and the status light's bezel —
+      // §19.7, and the warm band is the amber rung's neighbour in hue on
+      // this wheel, so the field behind the light is the darkest paint on it.
+      if (z < -0.15 && Math.abs(x) < 0.075 && y > 0.400) {
+        colour.setXYZ(i, FLO_CAVITY[0], FLO_CAVITY[1], FLO_CAVITY[2]);
+        continue;
+      }
+      // The skirt's foot: the machined structure the photographs show under
+      // the bodywork, and the edge that keeps the body off the tyre. The
+      // warm band rides over it as a patch.
+      if (y < 0.300) {
+        colour.setXYZ(i, FLO_CORE[0], FLO_CORE[1], FLO_CORE[2]);
+        continue;
+      }
+      // **The flank's panel line** — round 2, F5.5. PHOTO 1's flank is a slab
+      // with stepped breaks across it and this one had no horizontal anywhere
+      // between the skirt and the shoulder. Six millimetres of the darkest
+      // paint, on the two rings authored for it and on the outboard face
+      // only, so it is a line across the side shell rather than a belt round
+      // the machine.
+      if (y > 0.4545 && y < 0.4625 && Math.abs(x) > 0.090) {
+        colour.setXYZ(i, FLO_CAVITY[0], FLO_CAVITY[1], FLO_CAVITY[2]);
+        continue;
+      }
+      // **The flank, lifted** — round 2, F5.6, and the plan promise that had
+      // measurably failed. §34.5 asks this body to stay "clear of the tyre by
+      // enough to keep the foot of the body an edge rather than a merge", and
+      // the albedo table said it was (shell / tyre = 1.6 ×) while every frame
+      // said it was not: `wheel/wheel.png` read a sunlit tyre at 26–32
+      // against a shell at 2–4, because the tyre's own mesh carries vertex
+      // multipliers of 3.0 and 4.6 over its base and the shell's flank
+      // carried 1.0. This is the flank taking a multiplier of its own —
+      // multiplied, not set, so the buried suspension sliders that share
+      // these rows keep their own relation to it. The rear spine, the deck
+      // and the bezel are already spoken for above and keep the dark §19.7
+      // wants. The *value of the shell itself* is the owner's call and is on
+      // the record, unmoved (F5.1).
+      if (y > 0.330 && y < 0.565 && Math.abs(x) > 0.088) {
+        colour.setXYZ(i, colour.getX(i) * 1.45, colour.getY(i) * 1.45, colour.getZ(i) * 1.45);
+        continue;
+      }
+      // The shoulder chamfer, and only it.
+      if (y > 0.574) {
+        colour.setXYZ(i, FLO_EDGE[0], FLO_EDGE[1], FLO_EDGE[2]);
+      }
+    }
+  },
+};
+
 const MACHINE_LOOKS: readonly MachineLook[] = Object.freeze([
   STANDARD_MACHINE_LOOK,
   TROLLINA_MACHINE_LOOK,
@@ -2671,6 +3257,7 @@ const MACHINE_LOOKS: readonly MachineLook[] = Object.freeze([
   MARIBEL_MACHINE_LOOK,
   WHEEL_IN_MOTION_MACHINE_LOOK,
   DRUNKARD_MACHINE_LOOK,
+  FLO_WITH_ZO_MACHINE_LOOK,
 ]);
 
 /**
