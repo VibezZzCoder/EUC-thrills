@@ -1062,6 +1062,85 @@ const RIDER_CARDS: Readonly<Record<PlayableCharacterId, { blurb: string; portrai
         <rect x="60" y="91.6" width="17" height="4.4" fill="#dcae5c"/>
       </svg>`,
   },
+  /**
+   * Seal on a Wheel — M35 Phase 0, the ninth card, and the `Record` doing its
+   * job a sixth time: the compiler refused the widened `PlayableCharacterId`
+   * until this entry existed (`docs/PLANS.md` §35.8).
+   *
+   * **This is the first card that has to carry a wheel**, because he is the
+   * first rider whose machine is half his identity from across a street: the
+   * cyan-and-pink wheel is third in the brief's own fidelity order, above the
+   * garment, the pack and the pads. So the 96-unit box is divided three ways —
+   * the lid to 52, the body to 78, the wheel below it — rather than being the
+   * bust every other card is.
+   *
+   * Three reads, decided at the size the compact tier actually hands the art
+   * (2.4rem — about 38 px, so a unit here is four tenths of a pixel and
+   * anything under four units is not a shape, it is a smudge):
+   *
+   *   - **The lid**, and it is the only tri-colour helmet on the roster: a red
+   *     shell with a pale crown pair, a black brow band over a dark eye port,
+   *     white angular flashes at the temples and a black chin bar under it.
+   *     Area order **red > black > white**, which is what the photographs give
+   *     and what keeps it from reading as a white helmet with red on it. The
+   *     two fore-aft pinstripes the references show are 4.4 units here rather
+   *     than the 1.8 they measure, because at 38 px the honest width is
+   *     invisible and a pale crown patch is the read that survives.
+   *   - **The body**, black to the shoulders with the **light-grey sweatshirt
+   *     knotted at the waist** across it — the knot left of centre and a short
+   *     tail falling past it, which is the one silhouette nobody else on this
+   *     roster wears and the thing a viewer will name before the card does.
+   *   - **The wheel**, a cyan slab with the pink bar across the flank — and it
+   *     is the one read here that is knowingly *not* to scale, so a critic
+   *     scoring the card against §35.2's proportions is not surprised. The
+   *     references give a near-square body (**1.08 : 1**) standing 33–37 % of
+   *     head-to-ground; this one is 30 × 17 units, **1.76 : 1**, and 19 % of
+   *     the 89.5 units between the lid's crown and the ground. The lid spent
+   *     that budget first: a figure at 5.7 helmet-heights would leave it 15.7
+   *     of those units — 6 px at the compact tier, which cannot carry a
+   *     five-colour blocking — so it takes 45, and the wheel gets the band
+   *     left under the shoulders, drawn wide so the pink bar has a run rather
+   *     than tall so the profile is right. **The balance is the references'**:
+   *     cyan dominant, pink **0.25** of it by area, inside their 0.23–0.44
+   *     rather than the target render's pink-heavier translation.
+   *
+   * No `<image>` and no lettering: nothing on him is a mark this project may
+   * not redraw — no manufacturer, no sponsor, and not the small white chest
+   * wordmark the photographs show, which `AGENTS.md`'s rule and M34's
+   * `FLOWWITHZO` ruling both refuse on a real person's garment. So
+   * `DESIGN.md` §9d's exception stays used exactly twice (Maribel's logo and
+   * Wheel in Motion's). The colours here are the card's own, at the albedo
+   * values `BLOCKOUT_COLOURS.seal*` and `machineSeal*` carry; the visor is
+   * down, which is the deliberate departure from three photographs that all
+   * have it up (§35.2).
+   */
+  'seal-on-a-wheel': {
+    blurb: 'Black kit, a light-grey sweatshirt tied at the waist, a red-white-black full-face lid, a backpack '
+      + 'and a cyan wheel trimmed hot pink. A real rider, in by permission.',
+    portrait: `
+      <svg viewBox="0 0 96 96" class="euc-rider-card__art" aria-hidden="true" focusable="false">
+        <path d="M39 46h18v7c10 1 16 5 19 13l5 13q1 6-4 7t-7-5l-4-11-2 19H53l-5-10-5 10H32l-2-19-4 11q-2 6-7 5t-4-7l5-13c3-8 9-12 19-13z" fill="#464850"/>
+        <path d="M26 28c0-12.2 9.9-21.5 22-21.5s22 9.3 22 21.5c0 12.6-9.9 23.5-22 23.5S26 40.6 26 28z"
+              fill="#da3048"/>
+        <rect x="41.4" y="7.4" width="4.4" height="17" rx="2.2" fill="#d0d8e3"/>
+        <rect x="50.2" y="7.4" width="4.4" height="17" rx="2.2" fill="#d0d8e3"/>
+        <path d="M27.2 25.4c12.6-3.4 28.6-3.4 41.6 0l-.6 4.8c-13.2-3.2-27.2-3.2-40.4 0z" fill="#44444d"/>
+        <path d="M29.6 30.2c7.4-3.6 29.4-3.6 36.8 0c-1.4 7-3.8 11-6 13H35.6c-2.2-2-4.6-6-6-13z"
+              fill="#292f39"/>
+        <path d="M27.2 32.4l8.8 2.4-2.8 8c-2.8-2.6-4.8-6-6-10.4z" fill="#d0d8e3"/>
+        <path d="M68.8 32.4l-8.8 2.4 2.8 8c2.8-2.6 4.8-6 6-10.4z" fill="#d0d8e3"/>
+        <path d="M32 45.2c4.6 2.4 10 3.6 16 3.6s11.4-1.2 16-3.6c-2.6 4.4-8.6 7-16 7s-13.4-2.6-16-7z"
+              fill="#44444d"/>
+
+        <path d="M21.6 70.8c7.6-3 16.8-4.6 26.4-4.6s18.8 1.6 26.4 4.6l.9 5c-8.1-3.2-17.4-5-27.3-5
+                 s-19.2 1.8-27.3 5z" fill="#dadce5"/>
+        <path d="M40.6 67.4c3.1 0 5.2 2 5.2 4.6s-2.1 4.6-5.2 4.6s-5.2-2-5.2-4.6s2.1-4.6 5.2-4.6z"
+              fill="#dadce5"/>
+        <path d="M33.8 73.4l6.2 1.2-2.6 9.4-5.4-1.6z" fill="#dadce5"/>
+        <rect x="33" y="79" width="30" height="17" rx="3.2" fill="#14aad8"/>
+        <rect x="35.4" y="85.8" width="25.2" height="5" rx="1.8" fill="#e23086"/>
+      </svg>`,
+  },
 };
 
 /**

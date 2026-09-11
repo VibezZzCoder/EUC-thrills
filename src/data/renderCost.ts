@@ -579,7 +579,7 @@ export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
  */
 export const QUAD_NON_LEVEL_RESERVE = deepFreeze({
   drawCalls: 270,
-  triangles: 230_094,
+  triangles: 234_110,
 });
 
 /**

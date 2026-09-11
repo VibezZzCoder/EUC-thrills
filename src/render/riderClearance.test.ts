@@ -25,6 +25,23 @@ import {
 // constants a contract reads (the dome's apex, the boundary the outer-thigh
 // panel starts at) are its own.
 import { FLO_HIP_DOME_APEX, FLO_THIGH_PANEL_TOP, FLO_WITH_ZO_LOOK } from './floWithZoLook.ts';
+// The same, for M35 Phase 1: his look is a sibling module too, and the
+// constants these contracts read — the dome's apex, the tied garment's three
+// lofts and the height its lower edge disappears into the seat at — are its
+// own rather than `riderLook.ts`'s.
+import {
+  SEAL_GARMENT_BAND,
+  SEAL_GARMENT_HEM,
+  SEAL_GARMENT_KNOT,
+  SEAL_GARMENT_TAIL,
+  SEAL_GARMENT_VISIBLE_BOTTOM,
+  SEAL_HELMET,
+  SEAL_HIP_DOME_APEX,
+  SEAL_JERSEY,
+  SEAL_ON_A_WHEEL_LOOK,
+  SEAL_PACK_TOP,
+  SEAL_SEAT,
+} from './sealOnAWheelLook.ts';
 import { loftGeometry, type LoftProfile } from './blockoutKit.ts';
 
 /**
@@ -2598,6 +2615,256 @@ test("the Drunkard's pack clears his skull and his hat through every fold, the l
   }
 });
 
+test("Seal on a Wheel's pack clears his skull through every fold, the launch and the look", () => {
+  // The Drunkard's contract aimed at the ninth rider, and it is the reason
+  // §35.4 caps his pack's lid where it does rather than at the 18.8 % of the
+  // figure the photographs measure and stopping there. The pack rides the
+  // pelvis and the head rides the neck, and the neck counter-pitches against
+  // the torso's whole hinge — up to 0.97 rad in a launch held in a crouch —
+  // so the skull's back, 190 mm from the joint, sweeps an arc that owns
+  // everything within ~470 mm of the pelvis behind it. He wears no hat, so
+  // the swept body is the lid alone; every neck axis is swept, the pitch
+  // through the folds and the launch and the yaw through the look.
+  const rider = createPlaceholderRider(SEAL_ON_A_WHEEL_LOOK);
+  const skull = loftGeometry(SEAL_HELMET, { radialSegments: 22 });
+  try {
+    const pack = rider.root.getObjectByName('rider-seal-pack') as THREE.Mesh;
+    assert.ok(pack, 'the pack is missing');
+    const positions = pack.geometry.getAttribute('position');
+    // Only the top of the box can meet the head; the rest is buried in the
+    // top's own back anyway.
+    const cloud: THREE.Vector3[] = [];
+    for (let i = 0; i < positions.count; i += 1) {
+      if (positions.getY(i) < 0.34) continue;
+      cloud.push(new THREE.Vector3().fromBufferAttribute(positions, i));
+    }
+    assert.ok(cloud.length > 40, `only ${cloud.length} pack vertices above 340 mm`);
+    const crown = Math.max(...cloud.map((p) => p.y));
+    assert.ok(Math.abs(crown - SEAL_PACK_TOP) < 1e-4, 'the pack does not close at the height the plan caps it to');
+    const point = new THREE.Vector3();
+    let worst = Infinity;
+    let where = '';
+    let asserted = 0;
+    const sways = [0];
+    for (const base of [...drunkardHeldStances(sways), ...drunkardFoldStances(sways)]) {
+      for (const lookYaw of [-EUC.riderLookIntoTurn, 0, EUC.riderLookIntoTurn]) {
+        const stance = Object.assign(createStanceInput(), base, { lookYaw });
+        rider.pelvis.rotation.z = pelvisCounterRoll(stance);
+        rider.applyStanceReaction(stance);
+        rider.root.updateMatrixWorld(true);
+        let gap = Infinity;
+        const skullPositions = skull.getAttribute('position');
+        for (let i = 0; i < skullPositions.count; i += 1) {
+          rider.neck.localToWorld(point.fromBufferAttribute(skullPositions, i));
+          rider.pelvis.worldToLocal(point);
+          // Nothing 80 mm over the crown can touch it.
+          if (point.y > crown + 0.08) continue;
+          for (const q of cloud) gap = Math.min(gap, point.distanceTo(q));
+        }
+        asserted += 1;
+        if (gap < worst) {
+          worst = gap;
+          where = `${base.label}, look ${lookYaw.toFixed(2)}, neck ${rider.neck.rotation.x.toFixed(3)}`;
+        }
+      }
+    }
+    assert.ok(asserted > 1500, `only ${asserted} stances asserted`);
+    assert.ok(worst >= 0.020, `the pack comes within ${(worst * 1000).toFixed(1)} mm of his lid — ${where} (20 mm required)`);
+    // And the lid never climbs back into that arc: the crown stays under the
+    // shoulder ring by a stated margin, which is the number the Drunkard's
+    // pint broke.
+    const shoulder = SEAL_JERSEY.find((ring) => ring.y >= 0.50)!.y;
+    assert.ok(
+      crown <= shoulder - 0.030,
+      `the pack's crown at ${(crown * 1000).toFixed(0)} mm is within 30 mm of the shoulder ring at ${(shoulder * 1000).toFixed(0)}`,
+    );
+  } finally {
+    skull.dispose();
+    rider.dispose();
+  }
+});
+
+/**
+ * The tied sweatshirt against the legs — M35 Phase 1, and **Trollina's
+ * contract in the shape the garment actually has**.
+ *
+ * Her rule is the roster's: a rigid garment cannot contain an IK leg, so the
+ * held riding envelope is proven clear geometrically and the unprovable deep
+ * folds are made invisible structurally (`DESIGN.md` §7g). What is new here is
+ * that his garment is not a skirt. A skater skirt is a cone the legs come
+ * *out* of, and hers needs a 700 mm flare to prove 62 mm of hem; a sweatshirt
+ * tied at the waist is a band the legs never enter, plus a mass hanging behind
+ * the hips where there is no leg at all. So the contract has three parts
+ * rather than one, and every one of them is measured:
+ *
+ *   - **The band contains both legs** everywhere its surface stands outside
+ *     the body, through the same held envelope her skirt is swept in.
+ *   - **Below that its rings are buried** inside the top's own section, so the
+ *     loft's closing disc is not a hem a leg has to pass through. That one is
+ *     a property of the rings and needs no pose.
+ *   - **The tail and the knot never touch a leg.** They are the two volumes
+ *     that leave the body — the tail behind his left hip, the knot in front of
+ *     it — and they are clear by construction rather than by margin: the
+ *     thighs swing forward out of the hip through every fold the rig holds, so
+ *     a mass whose front face sits behind the seat's own back cannot be
+ *     reached, at any hem height.
+ *
+ * The structural half is satisfied by the rider rather than by the test:
+ * everything below the garment is one black at one shade — trouser, shell,
+ * shoe — so a crossing in the folds this cannot assert has nothing to show.
+ */
+function sealHeldStances(): LabelledStance[] {
+  // **Trollina's held tier, not the Drunkard's.** `drunkardHeldStances` ends
+  // with the presentation folds — an attack stance inside a full crouch — and
+  // those are exactly the compounds §7g sends to the structural tier: a thigh
+  // the IK has folded toward horizontal sweeps through any garment a rider
+  // could wear, and the answer there is that everything below this hem is one
+  // black at one shade. What is asserted geometrically is what the player
+  // *holds*: any carve × any lean × any technical turn, the over-grip corner,
+  // rest, and a settled crash.
+  const stances: LabelledStance[] = [];
+  for (const rollAngle of CARVES) {
+    for (const riderPitch of LEANS) {
+      for (const technicalTurn of TECHNICAL_TURNS) {
+        for (const { riderRoll, tag } of riderRollsFor(rollAngle, technicalTurn)) {
+          stances.push({
+            label: `carve ${rollAngle.toFixed(2)}, lean ${riderPitch.toFixed(2)}, technical ${technicalTurn.toFixed(2)}, ${tag}`,
+            rollAngle,
+            riderPitch,
+            torsoPitch: torsoPitchFor(riderPitch),
+            technicalTurn,
+            riderRoll,
+          });
+        }
+      }
+    }
+  }
+  for (const sign of [-1, 1]) {
+    for (const technicalTurn of [0.44, 0.81, 1]) {
+      for (const { riderRoll, tag } of riderRollsFor(sign * TECHNICAL_ROLL, sign * technicalTurn)) {
+        stances.push({
+          label: `technical corner ${(sign * TECHNICAL_ROLL).toFixed(2)}, technical ${(sign * technicalTurn).toFixed(2)}, ${tag}`,
+          rollAngle: sign * TECHNICAL_ROLL,
+          riderPitch: 0,
+          torsoPitch: torsoPitchFor(0),
+          technicalTurn: sign * technicalTurn,
+          riderRoll,
+        });
+      }
+    }
+  }
+  stances.push({ label: 'rest', restFactor: 1, torsoPitch: torsoPitchFor(0) });
+  stances.push({ label: 'crash, settled', crash: 1, torsoPitch: torsoPitchFor(0) });
+  return stances;
+}
+
+test('the tied sweatshirt contains his legs where it is visible and is buried where it is not', () => {
+  const rider = createPlaceholderRider(SEAL_ON_A_WHEEL_LOOK);
+  try {
+    const legMeshes: THREE.Mesh[] = [];
+    for (const side of ['left', 'right']) {
+      for (const joint of [`rider-hip-${side}`, `rider-knee-${side}`]) {
+        const mesh = rider.root.getObjectByName(joint)!.children.find(
+          (child) => (child as THREE.Mesh).isMesh === true && child.name === '',
+        ) as THREE.Mesh | undefined;
+        assert.ok(mesh, `no limb mesh under ${joint}`);
+        legMeshes.push(mesh);
+      }
+    }
+    const bandTop = SEAL_GARMENT_BAND[SEAL_GARMENT_BAND.length - 1]!.y;
+    const point = new THREE.Vector3();
+    let inside = Infinity;
+    let insideWhere = '';
+    let clear = -Infinity;
+    let clearWhere = '';
+    let banded = 0;
+    let asserted = 0;
+    for (const base of sealHeldStances()) {
+      const stance = Object.assign(createStanceInput(), base);
+      rider.pelvis.rotation.z = pelvisCounterRoll(stance);
+      rider.applyStanceReaction(stance);
+      rider.root.updateMatrixWorld(true);
+      asserted += 1;
+      for (const mesh of legMeshes) {
+        const positions = mesh.geometry.getAttribute('position');
+        for (let i = 0; i < positions.count; i += 1) {
+          point.fromBufferAttribute(positions, i);
+          mesh.localToWorld(point);
+          rider.pelvis.worldToLocal(point);
+          if (point.y >= SEAL_GARMENT_VISIBLE_BOTTOM && point.y <= bandTop) {
+            banded += 1;
+            const depth = depthInside(SEAL_GARMENT_BAND, point);
+            if (depth < inside) { inside = depth; insideWhere = base.label; }
+          }
+          // The knot is **two** tubes since r3's §E 4, and both of them carry a
+          // free end 52 mm below the band's visible bottom — the one place on
+          // this garment that hangs in front of a hip rather than behind it,
+          // so each is walked here in its own right.
+          const volumes: readonly (readonly [string, LoftProfile])[] = [
+            ['the tail', SEAL_GARMENT_TAIL],
+            ['the knot, over', SEAL_GARMENT_KNOT[0]!],
+            ['the knot, under', SEAL_GARMENT_KNOT[1]!],
+          ];
+          for (const [name, profile] of volumes) {
+            if (point.y < profile[0]!.y || point.y > profile[profile.length - 1]!.y) continue;
+            const depth = depthInside(profile, point);
+            if (depth > clear) { clear = depth; clearWhere = `${name}, ${base.label}`; }
+          }
+        }
+      }
+    }
+    assert.ok(asserted >= 160, `only ${asserted} stances asserted`);
+    assert.ok(banded > 200, `only ${banded} leg vertices lay in the band's visible span`);
+    assert.ok(
+      inside >= 0.004,
+      `a leg comes within ${(inside * 1000).toFixed(1)} mm of the band's surface — ${insideWhere} (4 mm inside required)`,
+    );
+    assert.ok(
+      clear <= -0.008,
+      `a leg reaches ${(-clear * 1000).toFixed(1)} mm of ${clearWhere} (8 mm clear required)`,
+    );
+  } finally {
+    rider.dispose();
+  }
+
+  // The burial, which is a property of the rings rather than of a pose: every
+  // band ring below the visible bottom lies inside the top's own section all
+  // the way round, so the loft's bottom cap is inside the body and there is no
+  // hem edge anywhere on this garment for a leg to pass through.
+  let deepest = Infinity;
+  let where = '';
+  const sample = new THREE.Vector3();
+  for (const ring of SEAL_GARMENT_BAND) {
+    if (ring.y >= SEAL_GARMENT_VISIBLE_BOTTOM - 1e-9) continue;
+    // Above the seat's own top ring, the body at these heights is the top.
+    assert.ok(ring.y > SEAL_SEAT[SEAL_SEAT.length - 1]!.y, 'a buried ring sits below the seat — the body there is not the top');
+    const body = ringAtHeight(SEAL_JERSEY, ring.y);
+    for (let k = 0; k < 96; k += 1) {
+      const u = (k / 96) * Math.PI * 2;
+      const c = Math.cos(u);
+      const s = Math.sin(u);
+      const radius = (Math.abs(c / ring.halfWidth) ** ring.square
+        + Math.abs(s / ring.halfDepth) ** ring.square) ** (-1 / ring.square);
+      sample.set(ring.x + radius * c, ring.y, ring.z + radius * s);
+      const depth = depthInRing(body, sample);
+      if (depth < deepest) { deepest = depth; where = `ring y ${ring.y.toFixed(3)}, u ${u.toFixed(2)}`; }
+    }
+  }
+  assert.ok(
+    deepest >= 0.002,
+    `a buried band ring stands ${(-deepest * 1000).toFixed(1)} mm outside the top — ${where} (2 mm inside required)`,
+  );
+  // And the hem the plan names is the tail's, not the band's: 190 mm below the
+  // hip, behind his left hip, which is where §35.2 puts the hanging mass.
+  // The closing disc is **2 mm** under the hem and not 8: r3's §E 2 measured
+  // the old cut at 2.6 % of a 310 mm drop, which is 2–3 px at chase distance
+  // and reads as a rounded blade rather than as r1's *"hem that ends"*. The
+  // two rings move and nothing else does, so the drape's length and the
+  // clearances this file holds are unchanged.
+  assert.equal(SEAL_GARMENT_TAIL[0]!.y, SEAL_GARMENT_HEM - 0.002, "the tail does not close at the hem's own height");
+  assert.ok(SEAL_GARMENT_TAIL[0]!.x > 0, 'the hanging mass is on his right — PHOTO 1 puts it on his left');
+});
+
 /**
  * The riders whose trousers show the hip cut, and what closes it on each:
  * the dome's apex height, and the pelvis roll the rig writes for that look
@@ -2653,6 +2920,14 @@ const HIP_DOME_RIDERS: ReadonlyArray<{
   // under the hem at least as loudly as the Drunkard's amber did. No sway —
   // his is a sober seat — so the plain counter-roll, as Wheel in Motion's.
   { name: 'FloWithZo', look: FLO_WITH_ZO_LOOK, apexY: FLO_HIP_DOME_APEX, sways: [0], pelvisRoll: pelvisCounterRoll },
+  // The fourth, and the second added **before** a ride found the cut (q150).
+  // His trousers are black, which is the one thing that hides it — but the
+  // light grey sweatshirt tied at his waist sits exactly at the hem where the
+  // cap shows, so the neighbourhood of the join is lit by the brightest
+  // surface on his body and the cut would be where the eye already is. No
+  // sway — his is a sober seat — so the plain counter-roll, as Wheel in
+  // Motion's and FloWithZo's.
+  { name: 'Seal on a Wheel', look: SEAL_ON_A_WHEEL_LOOK, apexY: SEAL_HIP_DOME_APEX, sways: [0], pelvisRoll: pelvisCounterRoll },
 ];
 
 for (const { name, look, apexY, sways, pelvisRoll } of HIP_DOME_RIDERS) test(`${name}'s thighs end in a hip dome that stays inside his seat through every held corner`, () => {

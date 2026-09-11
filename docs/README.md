@@ -185,8 +185,8 @@ any of them.
 
 ## Riders
 
-There are eight, the line under the title screen's buttons says who you are,
-and that line opens the chooser. Seven of them differ only in **looks and
+There are nine, the line under the title screen's buttons says who you are,
+and that line opens the chooser. Eight of them differ only in **looks and
 sound** — each has their own crash sound, none is faster, and the custom wheels
 ride identically to the standard one, down to the last number. The Drunkard
 shares that same speed, grip and braking but rides his own way on purpose: a
@@ -258,6 +258,23 @@ badge on the nose, modelled on the machine in his photographs. His crash is the 
 author's voice removed, until he sends one of his own. He is credited as
 [@flowithzo_euc](https://www.instagram.com/flowithzo_euc) at his and the
 project owner's direction.
+
+**Seal on a Wheel** is a real rider too, and he asked for himself: the ask
+came on Instagram, in his own words, from his own account, under a post of the
+author's about a different project, and the author said he would look into it
+and then did. He rides in all black with a light grey
+sweatshirt knotted at his waist and hanging down his left hip, a red, white
+and black full-face lid, a black day-pack, big hard knee shells, black gloves
+with a red knuckle, and low black shoes with a pale yellow sole band; his arms
+are bare between a short sleeve and a short glove cuff, which is what makes
+him read at distance. His wheel is his own: a tall cyan body trimmed in hot
+pink — a broad plate high on the nose, bars along each flank, wedges at the
+corners — modelled on the machine in his reference stills. His crash is the
+author's own wipeout with the author's voice removed, with **a seal barking
+where that voice used to be**: a public-domain recording, mixed in as the
+joke his name is, and not a sound of his. He is credited as
+[@seal_on_a_wheel](https://www.instagram.com/seal_on_a_wheel) at the project
+owner's direction.
 
 **The Drunkard** is not a real person, and that is the point of him. People
 kept asking for a rider with a beer; the real riders above are here with their
@@ -433,6 +450,11 @@ list.
 
 ### Recently landed
 
+- **A ninth rider, in black with a cyan wheel** — Seal on a Wheel, a real rider
+  who asked for himself on Instagram: a light grey sweatshirt tied at his
+  waist, a red-white-black full-face lid, a day-pack and hard knee shells, on
+  a tall cyan wheel trimmed hot pink. His crash is the author's wipeout with a
+  public-domain seal bark where the author's voice was.
 - **An eighth rider, a racer in silver** — FloWithZo, a real racer who asked in
   public, with his own wheel: white armour from above the knee to the ankle, a
   pewter lid over a dark visor, and a dark wheel with pale shells and a low
@@ -512,26 +534,32 @@ to be.
 
 ## Licence
 
-Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the fifteen
-shipped sounds derive from public-domain (CC0) recordings; four crashes derive
-from the author's own recording — the third, sixth and eighth riders' are that
-same wipeout with the author's voice removed, rendered three times so that no
-two of them are the same file. Five shipped sounds sit
-outside the CC BY 4.0 claim: two of the eight crashes are composed one-shots
+Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the sixteen
+shipped sounds derive from public-domain (CC0) recordings and a fifth carries
+one public-domain layer inside it; five crashes derive from the author's own
+recording — the third, sixth, eighth and ninth riders' are that same wipeout
+with the author's voice removed, rendered four times so that no two of them
+are the same file. Five shipped sounds sit
+outside the CC BY 4.0 claim, and part of a sixth does: two of the nine crashes
+are composed one-shots
 whose voices are machine-generated — the second rider's and the seventh's, the
 two characters who exist nowhere to be recorded — and so is the seventh
-rider's short stumble sound; and the fourth and fifth riders' crashes are
+rider's short stumble sound; the fourth and fifth riders' crashes are
 **their own contributed recordings**, used in this game with their permission
-and with no copyright over them claimed by this project. Cool Rider is an
+and with no copyright over them claimed by this project; and the ninth rider's
+crash is this project's own render of the author's recording with **one
+public-domain seal bark mixed into it**, which is claimed by nobody, this
+project included. Cool Rider is an
 original fictional character whose clothes and style draw on what the project
 owner wears, and The Drunkard is an original fictional character based on
-nobody; Red Rider, Adonisb2, Maribel Vargas, Wheel in Motion and FloWithZo are
+nobody; Red Rider, Adonisb2, Maribel Vargas, Wheel in Motion, FloWithZo and
+Seal on a Wheel are
 real people represented with permission, and no licence in this project covers
 their names, likenesses, personas, or the two riders' own logos. Full terms,
 attribution, and per-file provenance are in [`LICENSE`](LICENSE) and
 [`NOTICE.md`](NOTICE.md).
 
-The wheels in this game are original fictional designs — four are modelled,
+The wheels in this game are original fictional designs — five are modelled,
 with their riders' permission, on their own customized or raced machines,
 without reproducing any manufacturer's identity or any third-party sticker
 artwork, and the seventh rider's is modelled on nothing at all. This project is

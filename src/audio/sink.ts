@@ -181,6 +181,23 @@ export interface SampleBank {
    */
   readonly crashFloWithZo: AudioBuffer;
   /**
+   * Seal on a Wheel's (M35) — the fourth render of the same treatment, from a
+   * fourth donor (`--donor 2.400`), **and the first crash in this game with two
+   * provenances in it**: the owner's own wipeout with the owner's voice removed,
+   * plus a CC0 seal bark mixed in where the owner's *"oh"* was, on the owner's
+   * own instruction (`docs/PLANS.md` §35.6, q147; `NOTICE.md` says what that
+   * means for the file's standing).
+   *
+   * **Required, on `crashFloWithZo`'s exact terms and for its exact reason.**
+   * His seat carried `'red-rider'` as a declared interim through Phases 0–2,
+   * in `data/riders.ts` and never as a fallback here, so the one way that
+   * interim could survive its own removal is a bank that quietly lacks this
+   * buffer while `lastCrashVoice` reports `seal-on-a-wheel`. Required means the
+   * compiler is what notices, not a player — and here it would be a player
+   * hearing no bark, which is the whole point of the file.
+   */
+  readonly crashSealOnAWheel: AudioBuffer;
+  /**
    * The Drunkard's (M29) — composed on Trollina's mechanism from a generated
    * take, by `tools/make-crash-drunkard.mjs` (`docs/PLANS.md` §29.12).
    *
@@ -243,10 +260,11 @@ export type { CrashVoiceId } from './director.ts';
  * arrived before his wiring did. M23 added the fifth and *did* need one, in
  * the other place: Maribel shared Red Rider's file by an explicit decision in
  * `data/riders.ts` rather than by a fallback here, which is why swapping her
- * onto her own recording was one line there and one arm here. M28, M29 and M34
- * each walked that same path — a seat parked on `'red-rider'` in the data,
- * spent later for a file of its own — which is why the eighth arm below cost
- * one line in `data/riders.ts` and one `case` here (`docs/PLANS.md` §34.10).
+ * onto her own recording was one line there and one arm here. M28, M29, M34 and
+ * M35 each walked that same path — a seat parked on `'red-rider'` in the data,
+ * spent later for a file of its own — which is why the eighth and ninth arms
+ * below cost one line in `data/riders.ts` and one `case` here apiece
+ * (`docs/PLANS.md` §34.10, §35.6).
  */
 export function crashFor(voice: CrashVoiceId, bank: SampleBank): AudioBuffer {
   switch (voice) {
@@ -264,6 +282,8 @@ export function crashFor(voice: CrashVoiceId, bank: SampleBank): AudioBuffer {
       return bank.crashDrunkard;
     case 'flo-with-zo':
       return bank.crashFloWithZo;
+    case 'seal-on-a-wheel':
+      return bank.crashSealOnAWheel;
     case 'cool-rider':
       return bank.crash;
   }

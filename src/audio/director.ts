@@ -298,7 +298,7 @@ export function createAudioFrame(): AudioFrame {
  */
 export type CrashVoiceId =
   'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard'
-  | 'flo-with-zo';
+  | 'flo-with-zo' | 'seal-on-a-wheel';
 
 export type CueKind =
   | 'hop' | 'landing' | 'curb' | 'crash' | 'recover' | 'beep' | 'swing' | 'hit'

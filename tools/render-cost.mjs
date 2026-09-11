@@ -531,7 +531,9 @@ const PLAN_ESTIMATE = {
   generatedFrame: { drawCalls: 1_350, triangles: 1_960_000 },
 };
 
-const quadTriangleLine = RENDER_BUDGET.maxTriangles * 0.8;
+// The generator's 80% line includes a solo reserve. Subtract it before
+// adding the four-rider reserve, just as renderCost.test.ts does.
+const quadTriangleLine = RENDER_BUDGET.maxTriangles * 0.8 - reserve.totalTriangles;
 const belvarQuadPass = {
   drawCalls: trackPredicted.drawCalls + quadReserve.totalDrawCalls,
   triangles: trackPredicted.triangles + quadReserve.totalTriangles,
@@ -586,7 +588,7 @@ out('```');
 out();
 out('**The world four-seat free ride can open — the generated worst, four passes.**');
 out('The level line is Contract 2\'s own: the library set-union bound on calls');
-out(`(${LIBRARY_MAX_DRAW_CALLS}), and the generator's 80% triangle line (${quadTriangleLine.toLocaleString('en-GB')}) that`);
+out(`(${LIBRARY_MAX_DRAW_CALLS}), and the level share of the generator's 80% solo-frame line (${quadTriangleLine.toLocaleString('en-GB')}) that`);
 out('`level/generatedLevel.test.ts` holds routes under:');
 out();
 out('```');

@@ -9,6 +9,7 @@ import { createPlaceholderRider } from './rider.ts';
 import { createRidingRig } from './ridingRig.ts';
 import { createGhostRider } from './ghostRider.ts';
 import { STANDARD_MACHINE_LOOK } from './machineLook.ts';
+import { SEAL_ON_A_WHEEL_LOOK } from './sealOnAWheelLook.ts';
 import { measureObject } from './renderCost.ts';
 import { COOL_RIDER_LOOK, PLAYABLE_RIDER_LOOKS } from './riderLook.ts';
 import {
@@ -582,5 +583,47 @@ test('the head casts and the visor does not', () => {
     assert.ok(ghost.drawCalls <= 26, `${ghost.drawCalls} draw calls for a recording of him`);
   } finally {
     ghost.dispose();
+  }
+});
+
+
+test('Flo wears the full Seal glove shape on both hands, including the mirrored thumbs', () => {
+  const flo = createPlaceholderRider(HIS);
+  const seal = createPlaceholderRider(SEAL_ON_A_WHEEL_LOOK);
+  try {
+    for (const side of ['left', 'right']) {
+      const hand = flo.root.getObjectByName(`rider-hand-${side}`) as THREE.Mesh;
+      const reference = seal.root.getObjectByName(`rider-hand-${side}`) as THREE.Mesh;
+      assert.deepEqual(hand.geometry.getAttribute('position').array,
+        reference.geometry.getAttribute('position').array, `${side}: palm or thumb differs from the requested glove`);
+      hand.geometry.computeBoundingBox();
+      assert.ok(hand.geometry.boundingBox!.min.y < -0.14, 'hand reverted to the short wrist stub');
+      assert.equal(hand.castShadow, true, 'the hand must survive replay filtering');
+    }
+  } finally {
+    flo.dispose();
+    seal.dispose();
+  }
+});
+
+test('silver cloth has deterministic cool fold valleys and a satin material response', () => {
+  assert.ok(HIS.materials.body.roughness < HIS.materials.accent.roughness,
+    'the silver fabric is still more matte than the guard plastic');
+  assert.equal(HIS.materials.body.metalness, 0, 'cloth is not a solid metal shell');
+  for (const part of ['torso', 'upperArm', 'forearm', 'thigh'] as const) {
+    const a = loftGeometry(HIS.profiles[part], { radialSegments: 30 });
+    const b = a.clone();
+    try {
+      HIS.paint![part]!(a, 1);
+      HIS.paint![part]!(b, 1);
+      assert.deepEqual(a.getAttribute('color').array, b.getAttribute('color').array);
+      assert.deepEqual(a.getAttribute('position').array, b.getAttribute('position').array);
+      const c = a.getAttribute('color');
+      let coolValleys = 0;
+      for (let i = 0; i < c.count; i += 1) {
+        if (c.getZ(i) > c.getX(i) + 0.015 && c.getX(i) > 0.5) coolValleys += 1;
+      }
+      assert.ok(coolValleys > 5, `${part}: uniform silver has lost its cloth shading`);
+    } finally { a.dispose(); b.dispose(); }
   }
 });

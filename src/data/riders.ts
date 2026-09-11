@@ -64,7 +64,7 @@ export type CharacterId = PlayableCharacterId | 'cop';
  */
 export type PlayableCharacterId =
   'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel-vargas' | 'wheel-in-motion'
-  | 'drunkard' | 'flo-with-zo';
+  | 'drunkard' | 'flo-with-zo' | 'seal-on-a-wheel';
 
 /**
  * Which recorded crash one-shot a rider comes with.
@@ -76,7 +76,7 @@ export type PlayableCharacterId =
  */
 export type CrashVoiceId =
   'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard'
-  | 'flo-with-zo';
+  | 'flo-with-zo' | 'seal-on-a-wheel';
 
 /**
  * **`'maribel'` arrived with her recording, in the same edit, exactly as
@@ -106,6 +106,13 @@ export type CrashVoiceId =
  * independence. The shape is unchanged: the interim lived here in the data,
  * never as a fallback in `audio/sink.ts`, so spending it was one line here and
  * one arm in `crashFor`.
+ *
+ * **`'seal-on-a-wheel'` is the fifth**, and M35 Phase 3 spent it on
+ * 2026-09-11, so **no id in `CHARACTERS` is parked on another rider's voice
+ * any more**. Its new fact is that what replaced it is not purely the owner's
+ * material: a CC0 seal bark is mixed into the rebuilt window on the owner's
+ * instruction, so the file that ended the interim is the first on this roster
+ * with two provenances (`docs/PLANS.md` §35.6, `NOTICE.md`).
  */
 
 export interface CharacterSpec {
@@ -392,6 +399,79 @@ export const CHARACTERS: readonly PlayableCharacterSpec[] = Object.freeze([
     swatch: '#23c9d6',
     crashVoice: 'flo-with-zo' as CrashVoiceId,
   }),
+  /**
+   * Seal on a Wheel — M35, the ninth rider and the **sixth real person** on
+   * this roster: an EUC rider who publishes under this name on Instagram,
+   * credited in `NOTICE.md` by the handle he asked from
+   * (`@seal_on_a_wheel`, `https://www.instagram.com/seal_on_a_wheel`) the way
+   * FloWithZo is credited by his and Wheel in Motion by his channel.
+   *
+   * **The permission on file is a public ask in his own words, and it is
+   * written down as exactly that.** It arrived under the owner's Instagram
+   * post for a *different* project — *"Put me in the game bro"* — the owner
+   * replied that he would look into it, and on 2026-09-10 he did, by
+   * assembling the reference folder and instructing this milestone. That is
+   * the grant: an ask from his own account and a decision to build, not an
+   * in-thread agreement of the kind M28 and M34 have. Nothing here, in
+   * `NOTICE.md` or in the records inflates it (`docs/PLANS.md` §35.1, q154).
+   *
+   * **The persona is what ships; the person is not.** The request, the brief
+   * and the photographs live under `references/seal_on_a_wheel/`, which every
+   * release tool excludes from every build. **No real name is on file** — the
+   * brief supplies none, the ask carries only the handle, and the request
+   * screenshot is not opened again — so unlike M28 and M34 he adds no token
+   * to `tools/private-tokens.mjs`. There is nothing to protect because there
+   * is nothing recorded (§35.1, q156). If the owner ever supplies one it goes
+   * *above* the M34 comment block, which is where that file's derived test
+   * can still count its own two.
+   *
+   * **He is appended after FloWithZo on purpose**: `CHARACTER_IDS[8]` is his,
+   * which leaves `tests/m28.spec.ts:36`'s `CHARACTER_IDS[5]`,
+   * `tests/m29.spec.ts`'s seventh-by-position and `tests/m34.spec.ts:40`'s
+   * eighth-by-position pins standing where they were.
+   *
+   * **`crashVoice: 'red-rider'` was the declared interim, the M23 A0 shape
+   * used a fifth time, and Phase 3 spent it on 2026-09-11** — parked in the
+   * *data* on the one crash in the game with no voice in it at all, never as
+   * a fallback in `audio/sink.ts`, so spending it was one line here and one
+   * arm in `crashFor` (`docs/PLANS.md` §35.6). What ships is a fourth sibling
+   * of the owner's voice-scrubbed wipeout with a CC0 seal bark mixed in where
+   * the owner's *"oh shit"* used to be, which is the owner's own instruction
+   * and the first mixed-provenance file `NOTICE.md` has had to describe. No
+   * recording of *his* voice is in this game, here or anywhere; if one ever
+   * arrives it takes the Adonisb2 path.
+   *
+   * **The look was Adonisb2's by an explicit spread at Phase 0, and Phase 1
+   * replaced it with `render/sealOnAWheelLook.ts`** (imported at the head of
+   * `render/riderLook.ts`, where `SEAL_ON_A_WHEEL_LOOK` now is), because
+   * `riderLook.test.ts` refuses a seat without a look and a silent fallback
+   * would ship the wrong rider without saying so (§22.5's rule). The interim
+   * was Adonisb2's and not Cool Rider's for a measured reason worth keeping:
+   * the render reserves are sums over seated subsets, and a clone of the
+   * roster's dearest rig (62 calls) takes the quad worst to 272 and the
+   * headroom bar at `renderCost.test.ts` from 44 to 36 — red, and not
+   * regenerable. **His own look lands at 40 calls**, so that bar still reads
+   * 44. He rode the standard wheel by a declaration in `machines.test.ts`
+   * until Phase 2 gave him his own (`machineForCharacter`).
+   *
+   * **The swatch is a rose-pink at 335°**, not the wheel's cyan: cyan at 184°
+   * is already FloWithZo's, and pink is the colour Seal has that FloWithZo
+   * does not. It is 11.9° clear of Trollina's `#ff3fb4` (323°) in sRGB and
+   * 10.7° in three's linear space, and a stop deeper than hers (Ylin 0.235
+   * against 0.281) so the two dots are told apart by value as well as hue. It
+   * carries the near-black "Riding now" pill text (`#0d1014`) at a contrast
+   * ratio of 5.18, inside the band the other eight sit in (4.39–12.46). A
+   * swatch is lit by nothing; the albedos the sun falls on are
+   * `BLOCKOUT_COLOURS.seal*` and `machineSeal*`.
+   */
+  Object.freeze({
+    id: 'seal-on-a-wheel' as PlayableCharacterId,
+    name: 'Seal on a Wheel',
+    blurb: 'Black kit, a light-grey sweatshirt tied at the waist, a red-white-black full-face lid, a backpack '
+      + 'and a cyan wheel trimmed hot pink. A real rider, in by permission.',
+    swatch: '#e94689',
+    crashVoice: 'seal-on-a-wheel' as CrashVoiceId,
+  }),
 ]);
 
 /**
@@ -484,6 +564,7 @@ const RIDE_STYLES: Readonly<Record<CharacterId, RideStyle>> = Object.freeze({
   'wheel-in-motion': SOBER_STYLE,
   drunkard: DRUNK_STYLE,
   'flo-with-zo': SOBER_STYLE,
+  'seal-on-a-wheel': SOBER_STYLE,
   cop: SOBER_STYLE,
 });
 

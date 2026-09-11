@@ -53,6 +53,18 @@ import { crashFor, type CrashVoiceId, type SampleBank } from './sink.ts';
  * measures, and his sibling test below says the rest of it — he differs from
  * Red Rider's, from Wheel in Motion's *and* from the owner's inside the window
  * and is identical to all three outside it.
+ *
+ * M35 §35.6 added the ninth, and it is the first file in this game that is not
+ * one provenance. Outside the window it is the owner's recording sample for
+ * sample; inside it, it is a fourth render of the same treatment (donor 2.400,
+ * chosen for the headroom a layer needed) **plus one CC0 layer** — 270 ms of a
+ * seal barking, from Freesound #450751, mixed in where the owner's *"oh"* was
+ * because that is what the owner asked for (q147). So this file has two things
+ * to prove that no crash before it did: that the bark is **in** it, and that it
+ * is **not too loud in the band the ride bed leaves empty** — the band whose
+ * ceiling the last test in this file exists because of. Both are at the bottom,
+ * with the chunk-grammar assertion the download's 36 KB of `iXML`/`_PMX`
+ * metadata made necessary.
  */
 
 const AUDIO = join(import.meta.dirname, '..', '..', 'assets', 'live', 'audio');
@@ -84,6 +96,7 @@ const maribel = readWav('crash_maribel.wav');
 const wheelInMotion = readWav('crash_wheel_in_motion.wav');
 const drunkard = readWav('crash_drunkard.wav');
 const floWithZo = readWav('crash_flo_with_zo.wav');
+const sealOnAWheel = readWav('crash_seal_on_a_wheel.wav');
 const stumble = readWav('stumble_drunkard.wav');
 
 test('every rider\'s crash is exactly as long as Cool Rider\'s', () => {
@@ -115,9 +128,15 @@ test('every rider\'s crash is exactly as long as Cool Rider\'s', () => {
   // And his is the owner's file re-rendered a third time, so its length is the
   // owner's by construction as well — asserted anyway, same reason (M34).
   assert.equal(floWithZo.length, coolRider.length);
+  // And his is the fourth render with a 0.27 s bark added inside the window,
+  // which changes samples and not their number — asserted anyway, and here the
+  // rule has something real to catch: a mix tool that appended rather than
+  // added would lengthen the file and nothing else in this spec would notice
+  // (M35).
+  assert.equal(sealOnAWheel.length, coolRider.length);
 });
 
-test('the eight crashes are eight different recordings', () => {
+test('the nine crashes are nine different recordings', () => {
   // Cheap, and it closes the gap every other test in this file leaves open: a
   // build where one crash was copied over another passes the length rule, the
   // loudness rule, and `crashFor`'s four-buffer check, and ships a rider
@@ -132,10 +151,10 @@ test('the eight crashes are eight different recordings', () => {
     ['cool-rider', coolRider], ['trollina', trollina],
     ['red-rider', redRider], ['adonisb2', adonisb2], ['maribel', maribel],
     ['wheel-in-motion', wheelInMotion], ['drunkard', drunkard],
-    ['flo-with-zo', floWithZo],
+    ['flo-with-zo', floWithZo], ['seal-on-a-wheel', sealOnAWheel],
   ];
-  // Twenty-eight pairs at eight; the loop is what grows, not a list of names.
-  assert.equal((files.length * (files.length - 1)) / 2, 28);
+  // Thirty-six pairs at nine; the loop is what grows, not a list of names.
+  assert.equal((files.length * (files.length - 1)) / 2, 36);
   for (let i = 0; i < files.length; i += 1) {
     for (let j = i + 1; j < files.length; j += 1) {
       const [nameA, a] = files[i];
@@ -280,6 +299,58 @@ test('FloWithZo\'s crash is the third render: Red Rider\'s and Wheel in Motion\'
   assert.ok(windowPeak <= ownerPeak, 'the rebuilt window peaks above the loudest sample of the owner\'s recording');
 });
 
+test('Seal on a Wheel\'s crash is the fourth render: the owner\'s outside one window, his own inside it', () => {
+  // **The sibling test against four files** (M35 §35.6) — Red Rider's, Wheel in
+  // Motion's, FloWithZo's and the owner's. Same two obligations as the third
+  // render's, and one new thing inside the window: his is the first that is not
+  // only a different *donor*, it carries a layer that is not the owner's
+  // material at all. That layer is what the last two tests in this file are
+  // about; this one is still the structural claim — identical to all four
+  // outside 0.760-1.560 s, different from all four inside it.
+  //
+  // Measured on the shipped file (2026-09-10): 35,262 samples differ from Red
+  // Rider's, 35,272 from Wheel in Motion's, 35,268 from FloWithZo's and 35,265
+  // from the owner's, every one of them inside 0.760-1.560 s. The donor at
+  // 2.400 s was chosen for exactly the property asserted at the end of this
+  // test: its rebuilt window peaks at 19,748 against the owner's 26,730, which
+  // is the 2.6 dB of headroom a bark needed.
+  const against = (other: Int16Array, name: string): { first: number; last: number } => {
+    let first = -1;
+    let last = -1;
+    let changed = 0;
+    for (let i = 0; i < other.length; i += 1) {
+      if (other[i] !== sealOnAWheel[i]) {
+        if (first === -1) first = i;
+        last = i;
+        changed += 1;
+      }
+    }
+    assert.ok(changed > 30_000, `only ${changed} samples differ from ${name}'s — this is that file again`);
+    assert.ok(
+      first / RATE >= 0.75,
+      `he differs from ${name}'s from ${(first / RATE).toFixed(3)} s, before the voice`,
+    );
+    assert.ok(
+      last / RATE <= 1.57,
+      `he differs from ${name}'s to ${(last / RATE).toFixed(3)} s, after the voice`,
+    );
+    return { first, last };
+  };
+
+  against(redRider, 'Red Rider');
+  against(wheelInMotion, 'Wheel in Motion');
+  against(floWithZo, 'FloWithZo');
+  const { first, last } = against(coolRider, 'the owner');
+
+  // And the owner's loudest sample is at 0.347 s, outside the window and copied
+  // across verbatim — so the rebuilt window, bark and all, may not out-peak it.
+  let windowPeak = 0;
+  for (let i = first; i <= last; i += 1) windowPeak = Math.max(windowPeak, Math.abs(sealOnAWheel[i]));
+  let ownerPeak = 0;
+  for (let i = 0; i < coolRider.length; i += 1) ownerPeak = Math.max(ownerPeak, Math.abs(coolRider[i]));
+  assert.ok(windowPeak <= ownerPeak, 'the rebuilt window peaks above the loudest sample of the owner\'s recording');
+});
+
 const peakBetween = (samples: Int16Array, from = 0, to = samples.length): number => {
   let worst = 0;
   for (let i = from; i < to; i += 1) worst = Math.max(worst, Math.abs(samples[i]));
@@ -339,6 +410,22 @@ test('no crash recording is louder than the one it replaces', () => {
     peakBetween(floWithZo, floFirst, floLast + 1) <= peakBetween(coolRider),
     'his rewritten window peaks above the loudest sample of the owner\'s recording',
   );
+  // And Seal on a Wheel's is window-scoped for the same reason again, with one
+  // difference worth having the clause for: his window has something *added* to
+  // it that the other three do not, so this is the one place a bark loud enough
+  // to out-peak the owner's own recording would show. Measured: 19,889 in the
+  // window against the owner's 26,730 overall — the bark at −8 dBFS lifts the
+  // base's 19,747 by 142 counts and is still 2.6 dB under the owner's peak.
+  let sealFirst = sealOnAWheel.length;
+  let sealLast = 0;
+  for (let i = 0; i < coolRider.length; i += 1) {
+    if (coolRider[i] !== sealOnAWheel[i]) { sealFirst = Math.min(sealFirst, i); sealLast = Math.max(sealLast, i); }
+  }
+  assert.ok(sealFirst < sealLast, 'nothing changed in his render, so there is no window to measure');
+  assert.ok(
+    peakBetween(sealOnAWheel, sealFirst, sealLast + 1) <= peakBetween(coolRider),
+    'his rewritten window peaks above the loudest sample of the owner\'s recording',
+  );
 });
 
 test('Adonisb2\'s crash hits inside the first second', () => {
@@ -372,7 +459,7 @@ test('Adonisb2\'s crash hits inside the first second', () => {
   );
 });
 
-test('none of the three voice-scrubbed renders carries the owner\'s voice band', () => {
+test('none of the four voice-scrubbed renders carries the owner\'s voice band', () => {
   // **The assertion that carries §19.8's actual requirement.**
   //
   // The location test above proves *where* bytes changed; it would pass just as
@@ -405,15 +492,25 @@ test('none of the three voice-scrubbed renders carries the owner\'s voice band',
   };
 
   const source = midBand(coolRider);
-  // The same measurement over every render — M28's sibling file and M34's
-  // third are the same treatment from other donors, and each has to clear this
-  // bar on its own rather than inherit Red Rider's result. **That is doubly
-  // true of the third**, whose donor overlaps both of the others: sharing
+  // The same measurement over every render — M28's sibling file, M34's third
+  // and M35's fourth are the same treatment from other donors, and each has to
+  // clear this bar on its own rather than inherit Red Rider's result. **That is
+  // doubly true from the third on**, whose donors overlap the others': sharing
   // material with a file that passed is not evidence of anything, and this is
   // the measurement that says whether the words are gone. Measured on the
-  // shipped files: 0.109, 0.202, 0.166.
+  // shipped files: 0.109, 0.202, 0.166, 0.160.
+  //
+  // The fourth's number is the interesting one. Its window carries a seal bark
+  // that the other three do not, and the bark's energy sits inside this very
+  // band — so a reader might expect it to push the correlation up. It does the
+  // opposite: uncorrelated material added to both sides of a ratio lands in the
+  // denominator alone, so the bark moves this *down* (0.103 with no bark at
+  // all, 0.160 at the shipped level). Which is worth knowing precisely because
+  // it means this test cannot be the one that notices a bark going missing —
+  // the two at the bottom of this file are.
   for (const [name, file] of [
     ['Red Rider', redRider], ['Wheel in Motion', wheelInMotion], ['FloWithZo', floWithZo],
+    ['Seal on a Wheel', sealOnAWheel],
   ] as const) {
     let first = file.length;
     let last = 0;
@@ -504,6 +601,51 @@ test('her crash carries her voice, and then her wheel beeping on the floor', () 
   );
 });
 
+/**
+ * The loudest 200 ms between 800 Hz and 1.3 kHz.
+ *
+ * Two one-poles each way: a broad, sloppy band. Sloppy is fine and cheap,
+ * because every file goes through the identical filter and only the ratio
+ * between them is read. A crash is a transient, so its loudness in a band is
+ * its loudest 200 ms and not its average anywhere.
+ *
+ * **At module scope rather than inside the test it was written for**, since
+ * M35: Seal on a Wheel's crash has a seal bark in it whose dominant
+ * third-octave is 800 Hz — the middle of this band — so the file has to be held
+ * to the same ceiling Maribel's is, measured by the same arithmetic. Two copies
+ * of a filter are two filters. `from`/`to` bound which windows are *read*; the
+ * filter always runs from the first sample, so its state is settled wherever
+ * the reading starts.
+ */
+const voiceBandPeak = (samples: Int16Array, from = 0, to = samples.length): number => {
+  const dt = 1 / RATE;
+  const highA = (1 / (2 * Math.PI * 800)) / ((1 / (2 * Math.PI * 800)) + dt);
+  const lowA = dt / ((1 / (2 * Math.PI * 1300)) + dt);
+  const out = new Float64Array(samples.length);
+  let h1 = 0;
+  let h2 = 0;
+  let l1 = 0;
+  let l2 = 0;
+  let prev = 0;
+  for (let i = 1; i < samples.length; i += 1) {
+    h1 = highA * (h1 + samples[i] / 32768 - samples[i - 1] / 32768);
+    h2 = highA * (h2 + h1 - prev);
+    prev = h1;
+    l1 += lowA * (h2 - l1);
+    l2 += lowA * (l1 - l2);
+    out[i] = l2;
+  }
+  const window = Math.round(0.200 * RATE);
+  const hop = Math.round(0.050 * RATE);
+  let worst = -Infinity;
+  for (let at = from; at + window <= Math.min(to, out.length); at += hop) {
+    let sum = 0;
+    for (let k = 0; k < window; k += 1) sum += out[at + k] ** 2;
+    worst = Math.max(worst, 20 * Math.log10(Math.sqrt(sum / window) + 1e-18));
+  }
+  return worst;
+};
+
 test('her voice does not own the band the ride bed leaves empty', () => {
   // **The owner played the shipped cut and said it was "a bit too loud... like
   // a studio recording kinda, instead of as something that just happened"** —
@@ -526,40 +668,6 @@ test('her voice does not own the band the ride bed leaves empty', () => {
   // accepted set fails is a wrong rule. What is specific to hers is *where*,
   // and the fix was to set her voice 5 dB under the rest of her own take so
   // the impact leads the file the way it does in every other rider's.
-  const voiceBandPeak = (samples: Int16Array): number => {
-    // Two one-poles each way: a broad, sloppy 800-1300 Hz band. Sloppy is
-    // fine and cheap, because every file goes through the identical filter and
-    // only the ratio between them is read.
-    const dt = 1 / RATE;
-    const highA = (1 / (2 * Math.PI * 800)) / ((1 / (2 * Math.PI * 800)) + dt);
-    const lowA = dt / ((1 / (2 * Math.PI * 1300)) + dt);
-    const out = new Float64Array(samples.length);
-    let h1 = 0;
-    let h2 = 0;
-    let l1 = 0;
-    let l2 = 0;
-    let prev = 0;
-    for (let i = 1; i < samples.length; i += 1) {
-      h1 = highA * (h1 + samples[i] / 32768 - samples[i - 1] / 32768);
-      h2 = highA * (h2 + h1 - prev);
-      prev = h1;
-      l1 += lowA * (h2 - l1);
-      l2 += lowA * (l1 - l2);
-      out[i] = l2;
-    }
-    // A crash is a transient: its loudness is its loudest 200 ms, not its
-    // average anywhere.
-    const window = Math.round(0.200 * RATE);
-    const hop = Math.round(0.050 * RATE);
-    let worst = -Infinity;
-    for (let at = 0; at + window <= out.length; at += hop) {
-      let sum = 0;
-      for (let k = 0; k < window; k += 1) sum += out[at + k] ** 2;
-      worst = Math.max(worst, 20 * Math.log10(Math.sqrt(sum / window) + 1e-18));
-    }
-    return worst;
-  };
-
   const ceiling = Math.max(
     voiceBandPeak(coolRider),
     voiceBandPeak(trollina),
@@ -579,14 +687,138 @@ test('her voice does not own the band the ride bed leaves empty', () => {
   );
 });
 
-test('the eight voices reach eight different buffers', () => {
+// ---------------------------------------------------------------------------
+// Seal on a Wheel — M35 §35.6: the bark is in it, it is not too loud, and the
+// file carries nothing the download brought with it
+// ---------------------------------------------------------------------------
+
+test('his crash has the seal in it, it is not too loud in that band, and the file is audio only', () => {
+  // **Three things no crash before his could fail**, because no crash before
+  // his had a third party's recording in it.
+  //
+  // *The chunk grammar.* The seal download is 468,852 bytes of which 36,852 are
+  // `LIST`/`bext`/`iXML`/`_PMX` metadata — Adobe Premiere residue from an
+  // unrelated video, naming two real people in plain text. `tokenHits()` over
+  // those bytes returns nothing, because the names are not on the private-token
+  // list, so **the export guard would not refuse them**: this is the same shape
+  // as the hole Codex found in the PNG pipeline on 2026-09-01, which produced
+  // `render/pngStrict.ts` ("a substring scan cannot see compressed text and a
+  // chunk walk that stops at IEND cannot see a trailer"). The pipeline already
+  // does the right thing — every tool writes a bare 44-byte header, so
+  // re-rendering strips the metadata by construction — and this is the
+  // assertion that says a `cp` of a download never quietly replaces a render.
+  // Folded in here as one assertion rather than made a module: a WAV whose
+  // chunks are `fmt ` and `data` and nothing else is a one-line grammar.
+  const chunksOf = (name: string): readonly string[] => {
+    const buffer = readFileSync(join(AUDIO, name));
+    const chunks: string[] = [];
+    let offset = 12;
+    while (offset + 8 <= buffer.length) {
+      chunks.push(buffer.toString('ascii', offset, offset + 4));
+      offset += 8 + buffer.readUInt32LE(offset + 4) + (buffer.readUInt32LE(offset + 4) % 2);
+    }
+    return chunks;
+  };
+  assert.deepEqual(
+    chunksOf('crash_seal_on_a_wheel.wav'),
+    ['fmt ', 'data'],
+    'his crash carries a chunk that is not audio — a download reached the shipped file',
+  );
+
+  // *The bark is there.* A level flag is one character from silence, and a
+  // missing bark is the one failure every other test in this file passes
+  // happily: the length rule, the pairwise rule, the window rule and the
+  // voice-band rule are all satisfied by the base render, which is this file
+  // with no seal in it whatsoever.
+  //
+  // **What it is measured against is the other three renders**, not the 200 ms
+  // before it. That was tried first and cannot tell the two states apart: the
+  // crash's own mid band rises through the bark's span anyway, so a barkless
+  // file reads +5.7 dB over the 200 ms before it and the shipped one +7.8.
+  // Red Rider's, Wheel in Motion's and FloWithZo's files *are* this crash
+  // rebuilt in this window with no bark in it, and the owner's is the same
+  // 0.8 s with his voice still in it — so the loudest of the four is the honest
+  // floor. Measured over 500-1200 Hz across 0.930-1.000 s, the bark's burst:
+  // Wheel in Motion −35.54, FloWithZo −39.00, Red Rider −40.34, the owner
+  // −40.68, and his file **−22.55, 13.0 dB clear of the loudest of them** (it read
+  // −28.15 at the first cut's −14 dBFS; the owner asked for 6 dB more). The
+  // base with no bark reads −37.30, which is 1.8 dB *under* the floor and fails.
+  const bandDb = (samples: Int16Array, from: number, to: number, low: number, high: number): number => {
+    const dt = 1 / RATE;
+    const highA = (1 / (2 * Math.PI * low)) / ((1 / (2 * Math.PI * low)) + dt);
+    const lowA = dt / ((1 / (2 * Math.PI * high)) + dt);
+    let hi = 0;
+    let lo = 0;
+    let sum = 0;
+    // From the start, so the filter state is settled by the time the window opens.
+    for (let i = 1; i < to; i += 1) {
+      hi = highA * (hi + samples[i] / 32768 - samples[i - 1] / 32768);
+      lo += lowA * (hi - lo);
+      if (i >= from) sum += lo * lo;
+    }
+    return 20 * Math.log10(Math.sqrt(sum / Math.max(1, to - from)) + 1e-18);
+  };
+  const burstFrom = Math.round(0.930 * RATE);
+  const burstTo = Math.round(1.000 * RATE);
+  const burst = (file: Int16Array): number => bandDb(file, burstFrom, burstTo, 500, 1200);
+  const barkless = Math.max(burst(redRider), burst(wheelInMotion), burst(floWithZo), burst(coolRider));
+  const his = burst(sealOnAWheel);
+  assert.ok(
+    his - barkless >= 2,
+    `his crash reads ${his.toFixed(2)} dB between 500 Hz and 1.2 kHz where the bark should be, `
+    + `against the ${barkless.toFixed(2)} dB of the loudest render with no bark in it — there is `
+    + 'no seal in this file, which is the whole reason it is a separate file at all',
+  );
+
+  // *And it is not too loud in the band the ride bed leaves empty.* The test
+  // above this one exists because the owner's ear rejected a crash that every
+  // level rule passed, and the band it rejected it in — 800 Hz to 1.3 kHz — is
+  // exactly where a seal bark's energy sits. So his file is held to the same
+  // ceiling hers is, by the same function.
+  //
+  // Two readings, and the difference between them is worth stating. The
+  // whole-file one comes out *equal* to the ceiling to the hundredth (−27.95),
+  // because the loudest 200 ms of this band in the owner's recording is at
+  // 0.25 s, outside the rebuilt window, and all four renders copy it verbatim —
+  // so that comparison is not slack, it is a threshold that only a bark loud
+  // enough to out-read the impact could cross. The legible margin is the second
+  // reading, over the bark's own 270 ms: **−30.33 dB, 2.4 dB under the ceiling**
+  // at the shipped −8 dBFS (the first cut at −14 read −33.93, about a decibel under
+  // the loudest thing the owner's own voice did in that band; the bark now sits
+  // a little above that voice, which is the point of the raise).
+  const ceiling = Math.max(
+    voiceBandPeak(coolRider),
+    voiceBandPeak(trollina),
+    voiceBandPeak(redRider),
+    voiceBandPeak(adonisb2),
+  );
+  const whole = voiceBandPeak(sealOnAWheel);
+  assert.ok(
+    whole <= ceiling,
+    `his crash reaches ${whole.toFixed(2)} dB between 800 Hz and 1.3 kHz, over the `
+    + `${ceiling.toFixed(2)} dB that is the loudest any accepted crash reaches there`,
+  );
+  const barkStretch = voiceBandPeak(sealOnAWheel, Math.round(0.900 * RATE), Math.round(1.170 * RATE));
+  assert.ok(
+    barkStretch <= ceiling,
+    `the bark itself reaches ${barkStretch.toFixed(2)} dB in that band, over the `
+    + `${ceiling.toFixed(2)} dB ceiling — in a mix whose bed is rumble, tyre tick and wind it `
+    + 'will read as a sound effect stuck on top of his crash rather than as part of it',
+  );
+});
+
+test('the nine voices reach nine different buffers', () => {
   // §19.8's headless evidence, grown by one in §22.8, again in §29.12 and
   // again in §34.10. `crashFor` carried a fallback while Red Rider's file was
   // being built, and the failure it could hide — a voice quietly resolving to
   // somebody else's — is invisible to `lastCrashVoice`, which reports the
   // *choice* rather than the buffer. The Drunkard rode on `'red-rider'` by a
   // declared interim in the data for three phases, FloWithZo for three more,
-  // and this is where the end of each is visible.
+  // Seal on a Wheel for three more again, and this is where the end of each is
+  // visible. **His is the one where the wrong buffer is hardest to hear**: Red
+  // Rider's file is this same crash from another donor, so the interim
+  // surviving would play something that sounds nearly right and has no seal in
+  // it at all.
   const bank = {
     tyreOffroad: 'tyre-offroad',
     tyreSolid: 'tyre-solid',
@@ -598,6 +830,7 @@ test('the eight voices reach eight different buffers', () => {
     crashMaribel: 'maribel-buffer',
     crashWheelInMotion: 'wheel-in-motion-buffer',
     crashFloWithZo: 'flo-with-zo-buffer',
+    crashSealOnAWheel: 'seal-on-a-wheel-buffer',
     crashDrunkard: 'drunkard-buffer',
     stumbleDrunkard: 'stumble-buffer',
     sirenFar: 'siren-far',
@@ -606,7 +839,7 @@ test('the eight voices reach eight different buffers', () => {
 
   const voices: CrashVoiceId[] = [
     'cool-rider', 'trollina', 'red-rider', 'adonisb2', 'maribel', 'wheel-in-motion', 'drunkard',
-    'flo-with-zo',
+    'flo-with-zo', 'seal-on-a-wheel',
   ];
   const reached = voices.map((voice) => crashFor(voice, bank));
   assert.deepEqual(
@@ -614,10 +847,10 @@ test('the eight voices reach eight different buffers', () => {
     [
       'cool-rider-buffer', 'trollina-buffer', 'red-rider-buffer',
       'adonisb2-buffer', 'maribel-buffer', 'wheel-in-motion-buffer', 'drunkard-buffer',
-      'flo-with-zo-buffer',
+      'flo-with-zo-buffer', 'seal-on-a-wheel-buffer',
     ],
   );
-  assert.equal(new Set(reached).size, 8);
+  assert.equal(new Set(reached).size, 9);
 });
 
 // ---------------------------------------------------------------------------
@@ -664,6 +897,10 @@ test('the Drunkard\'s crash is a composition, not a slice of any shipped recordi
     // render of the owner's recording, so it carries the same near-zero
     // correlation with a composed file the other renders do: −0.017.
     ['FloWithZo', floWithZo],
+    // And the ninth, which is a render of the owner's recording *plus* a CC0
+    // seal bark — a third source in the comparison and still nothing to do with
+    // a composed cartoon wipeout: −0.013 (M35).
+    ['Seal on a Wheel', sealOnAWheel],
   ];
   for (const [name, file] of others) {
     const r = correlation(drunkard, file);

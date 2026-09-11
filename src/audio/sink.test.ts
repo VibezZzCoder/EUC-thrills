@@ -128,6 +128,7 @@ function fakeBank(context: AudioContext): SampleBank {
     crashMaribel: buffer(),
     crashWheelInMotion: buffer(),
     crashFloWithZo: buffer(),
+    crashSealOnAWheel: buffer(),
     crashDrunkard: buffer(),
     stumbleDrunkard: buffer(),
     sirenFar: buffer(),
@@ -245,6 +246,32 @@ test('a crash in FloWithZo\'s voice reaches his buffer and reports his name', ()
   assert.equal(launched[0].buffer, bank.crashFloWithZo, 'his crash reached somebody else\'s buffer');
   assert.notEqual(launched[0].buffer, bank.crashRedRider, 'the interim is still in the resolver');
   assert.equal(sink.counts.lastCrashVoice, 'flo-with-zo');
+  assert.equal(sink.counts.crashSamplePlays, 1);
+  assert.equal(sink.counts.stumbleSamplePlays, 0);
+  sink.dispose();
+});
+
+test('a crash in Seal on a Wheel\'s voice reaches his buffer and reports his name', () => {
+  // `crashFor`'s ninth arm, seen from the sink (M35 §35.6). The fifth walk down
+  // the same path: his seat carried `'red-rider'` for three phases by a
+  // declared interim in the data, and the failure that outlives such an interim
+  // is silent everywhere else — the resolver still handing back Red Rider's
+  // buffer while `lastCrashVoice` reports his name. Here it would be
+  // particularly quiet: Red Rider's file *is* this same crash, so the wrong
+  // buffer plays something that sounds almost right and has no seal in it.
+  const { context, sources } = fakeContext();
+  const sink = new WebAudioSink(context);
+  const bank = fakeBank(context);
+  sink.setSampleBank(bank);
+  const permanent = sources.length;
+
+  sink.play({ ...stumbleCue(), kind: 'crash', voice: 'seal-on-a-wheel', gain: 0.8 });
+
+  const launched = sources.slice(permanent);
+  assert.equal(launched.length, 1);
+  assert.equal(launched[0].buffer, bank.crashSealOnAWheel, 'his crash reached somebody else\'s buffer');
+  assert.notEqual(launched[0].buffer, bank.crashRedRider, 'the interim is still in the resolver');
+  assert.equal(sink.counts.lastCrashVoice, 'seal-on-a-wheel');
   assert.equal(sink.counts.crashSamplePlays, 1);
   assert.equal(sink.counts.stumbleSamplePlays, 0);
   sink.dispose();

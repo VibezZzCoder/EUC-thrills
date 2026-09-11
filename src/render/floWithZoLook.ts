@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { BLOCKOUT_COLOURS as C, RIDER_BLOCKOUT as B } from '../data/tuning.ts';
 import {
   limbProfile,
+  loftGeometry,
   loftProfile,
   tintOver,
   type LoftProfile,
@@ -66,9 +67,10 @@ import type {
 // from `riderLook.ts` would be a load-order cycle: everything below is typed by
 // `riderLook.ts` and imports nothing from it. The shared tables this look
 // starts from (`JACKET`, `NECK`, `BOOT`, `BOOT_SOLE`, `ringOf`,
-// `limbAtHeights`, and Wheel in Motion's jersey, seat, hip dome, limbs, helmet
-// and glove) are **copied** under `FLO_*` names, each with the line it came
-// from, so a later edit to his rings cannot move anybody else's.
+// `limbAtHeights`, and Wheel in Motion's jersey, seat, hip dome, limbs
+// and helmet) are copied under `FLO_*` names. The owner-requested glove
+// revision copies Seal's full palm and merged thumb; neither character imports
+// the other, so later edits remain local.
 //
 // Parity: at or under Cool Rider's meshes and calls (`redRider.test.ts`), with
 // no casting panel group at all — no pack, no straps, no shoulder or torso
@@ -474,13 +476,13 @@ export const FLO_UPPER_ARM = floWithRingsAt(loftProfile([
     flatten: 0.95,
     square: 2.3,
   }).slice().reverse(),
-]), [FLO_SHOULDER_CAP_BOTTOM + 0.002, FLO_SHOULDER_CAP_BOTTOM - 0.002]);
+]), [FLO_SHOULDER_CAP_BOTTOM + 0.002, FLO_SHOULDER_CAP_BOTTOM - 0.002, -0.105, -0.135, -0.165, -0.195, -0.225]);
 
 /** `WIM_FOREARM`, copied from `riderLook.ts:6098`. */
-export const FLO_FOREARM = limbProfile(B.forearmLength, [0.047, 0.041, 0.033], [], {
+export const FLO_FOREARM = floWithRingsAt(limbProfile(B.forearmLength, [0.047, 0.041, 0.033], [], {
   flatten: 0.94,
   square: 2.3,
-});
+}), [-0.035, -0.060, -0.085, -0.115, -0.145, -0.180, -0.215]);
 
 /**
  * The lid: `WIM_HELMET`'s twelve rings (`riderLook.ts:6131`) — the roster's
@@ -511,32 +513,42 @@ export const FLO_HELMET = loftProfile([
   { y: 0.348, halfWidth: 0, halfDepth: 0 },
 ]);
 
-/** `WIM_GLOVE`, copied from `riderLook.ts:6298` — a cuff, a wrist waist, knuckles. */
+/** A short cuff, a full palm and a rounded mitten end; thumb merged below. */
 export const FLO_GLOVE = loftProfile([
   { y: 0, halfWidth: 0.040, halfDepth: 0.035, square: 2.6 },
-  { y: -0.016, halfWidth: 0.044, halfDepth: 0.038, square: 2.8 },
-  { y: -0.022, halfWidth: 0.046, halfDepth: 0.040, square: 2.8 },
-  { y: -0.028, halfWidth: 0.043, halfDepth: 0.037, square: 2.8 },
-  { y: -0.036, halfWidth: 0.031, halfDepth: 0.024, square: 2.8 },
-  { y: -0.046, halfWidth: 0.036, halfDepth: 0.026, square: 2.85 },
-  { y: -0.058, halfWidth: 0.041, halfDepth: 0.022, square: 2.85 },
-  { y: -0.072, halfWidth: 0.040, halfDepth: 0.022, square: 2.9 },
-  { y: -0.088, halfWidth: 0.033, halfDepth: 0.024, square: 2.8 },
-  { y: -0.098, halfWidth: 0.023, halfDepth: 0.020, square: 2.6 },
-  { y: -0.105, halfWidth: 0, halfDepth: 0 },
+  { y: -0.016, halfWidth: 0.042, halfDepth: 0.036, square: 2.8 },
+  { y: -0.028, halfWidth: 0.034, halfDepth: 0.027, square: 2.8 },
+  { y: -0.036, halfWidth: 0.032, halfDepth: 0.025, square: 2.8 },
+  { y: -0.046, halfWidth: 0.040, halfDepth: 0.028, square: 2.9 },
+  { y: -0.058, halfWidth: 0.045, halfDepth: 0.029, square: 3.0 },
+  { y: -0.072, halfWidth: 0.046, halfDepth: 0.030, square: 3.0 },
+  { y: -0.098, halfWidth: 0.044, halfDepth: 0.030, square: 3.0, z: 0.004 },
+  { y: -0.120, halfWidth: 0.039, halfDepth: 0.027, square: 2.8, z: 0.009 },
+  { y: -0.135, halfWidth: 0.027, halfDepth: 0.020, square: 2.5, z: 0.012 },
+  { y: -0.143, halfWidth: 0, halfDepth: 0, z: 0.013 },
 ]);
+
+/** Mirrored inboard thumb, buried at the palm and rounded at its free end. */
+const floThumb = (side: number): THREE.BufferGeometry => loftGeometry(loftProfile([
+  { y: -0.038, x: -side * 0.023, z: 0.006, halfWidth: 0.014, halfDepth: 0.017, square: 2.5 },
+  { y: -0.056, x: -side * 0.036, z: 0.012, halfWidth: 0.019, halfDepth: 0.021, square: 2.5 },
+  { y: -0.078, x: -side * 0.047, z: 0.022, halfWidth: 0.017, halfDepth: 0.020, square: 2.4 },
+  { y: -0.097, x: -side * 0.049, z: 0.027, halfWidth: 0.011, halfDepth: 0.014, square: 2.2 },
+  { y: -0.105, x: -side * 0.047, z: 0.029, halfWidth: 0, halfDepth: 0 },
+]), { radialSegments: 12 });
 
 // -- Materials ----------------------------------------------------------------
 
 /**
- * The suit: the ground every paint on him hangs from, matte like the textile it
- * is (PHOTO 1's folds are soft and the sheen is satin, not leather). Body and
+ * The suit: silver satin with a broad moving sun highlight. The owner
+ * rejected the original matte finish; fold shading below supplies the cool
+ * valleys visible between the photographs' bright fabric ridges. Body and
  * limbs point at this **one spec object**, so the jacket, the sleeves, the
  * trousers and the seat are one material and one hue no shade can separate.
  */
 const FLO_SUIT: RiderMaterialSpec = Object.freeze({
   colour: C.floWithZoSilver,
-  roughness: 0.80,
+  roughness: 0.38,
   metalness: 0,
 });
 
@@ -753,6 +765,65 @@ function floBandTopAt(x: number): number {
   return FLO_BAND_TOP - FLO_BAND_TAPER * (1 - reach);
 }
 
+/**
+ * Broad, tapered cloth creases rather than random speckle. The cool valleys
+ * give silver a value range; the material supplies view-dependent highlights.
+ * Heights are local metres. Keep seam boundaries and rigid armour untouched.
+ */
+function floFabric(geometry: THREE.BufferGeometry, part: 'torso' | 'arm' | 'thigh'): void {
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  const ridge = (distance: number, width: number): number => Math.exp(-((distance / width) ** 2));
+  for (let i = 0; i < position.count; i += 1) {
+    const x = position.getX(i), y = position.getY(i), z = position.getZ(i);
+    // Cloth only. Guard liners, bindings and cyan/gold retain their values,
+    // and the hip join remains exactly the seat's silver.
+    const silver = Math.abs(colour.getX(i) - 1) < 1e-5
+      && Math.abs(colour.getY(i) - 1) < 1e-5
+      && Math.abs(colour.getZ(i) - 1) < 1e-5;
+    const panel = FLO_PANEL_TINT.every((value, axis) =>
+      Math.abs(colour.getComponent(i, axis) - value) < 1e-5);
+    if (!silver && !panel) continue;
+    let valley = 0;
+    if (part === 'torso') {
+      if (y < 0.065 || y > 0.49) continue;
+      const across = Math.abs(x) / FLO_TORSO_HALF_WIDTH;
+      valley = 0.32 * ridge(y - (0.13 + 0.30 * x), 0.022)
+        + 0.25 * ridge(y - (0.23 - 0.23 * x), 0.026)
+        + 0.20 * ridge(y - (0.37 + 0.18 * x), 0.020);
+      // Soft underarm/flank shading, no invented back harness or stripe.
+      valley += 0.16 * across ** 3;
+    } else if (part === 'arm') {
+      if (y > -0.025 || y < -0.225) continue;
+      valley = 0.33 * ridge(y + 0.070 + x * 0.6 + z * 0.3, 0.017)
+        + 0.27 * ridge(y + 0.135 - x * 0.7, 0.019)
+        + 0.20 * ridge(y + 0.195 + z * 0.7, 0.016);
+    } else {
+      if (y > -0.080 || y < -0.260) continue;
+      valley = 0.30 * ridge(y + 0.130 + x * 0.45, 0.019)
+        + 0.23 * ridge(y + 0.215 - z * 0.5, 0.021);
+    }
+    valley = Math.min(0.48, valley) * (panel ? 0.55 : 1);
+    // Slightly blue-grey shadows against the warm pearl ground; no baked
+    // white specular, which would remain fixed as the rider turns.
+    colour.setXYZ(i, colour.getX(i) * (1 - valley),
+      colour.getY(i) * (1 - valley * 0.94), colour.getZ(i) * (1 - valley * 0.82));
+    // A shallow inward fold gives the sun a real change of surface normal.
+    // At most 3.8 mm, entirely inside the existing clothing envelope.
+    const radius = Math.hypot(x, z);
+    if (radius > 0.01) {
+      const inset = 0.008 * valley;
+      position.setX(i, x * (1 - inset / radius));
+      position.setZ(i, z * (1 - inset / radius));
+    }
+  }
+  geometry.computeVertexNormals();
+}
+
+function paintFloForearm(geometry: THREE.BufferGeometry): void {
+  floFabric(geometry, 'arm');
+}
+
 function paintFloTorso(geometry: THREE.BufferGeometry): void {
   const position = geometry.getAttribute('position');
   const colour = geometry.getAttribute('color');
@@ -817,6 +888,7 @@ function paintFloTorso(geometry: THREE.BufferGeometry): void {
     }
     colour.setXYZ(i, tint[0], tint[1], tint[2]);
   }
+  floFabric(geometry, 'torso');
 }
 
 /** The mid-grey shoulder cap: the dome and the top of the sleeve, outboard face. */
@@ -831,6 +903,7 @@ function paintFloUpperArm(geometry: THREE.BufferGeometry, side: number): void {
     if (side * position.getX(i) < -1e-6) continue;
     colour.setXYZ(i, FLO_PANEL_TINT[0], FLO_PANEL_TINT[1], FLO_PANEL_TINT[2]);
   }
+  floFabric(geometry, 'arm');
 }
 
 /**
@@ -863,6 +936,7 @@ function paintFloThigh(geometry: THREE.BufferGeometry, side: number): void {
     }
     colour.setXYZ(i, tint[0], tint[1], tint[2]);
   }
+  floFabric(geometry, 'thigh');
 }
 
 /**
@@ -1346,7 +1420,7 @@ export const FLO_WITH_ZO_LOOK: RiderLook = Object.freeze({
   // Wheel in Motion's densities: a chest that curves two ways carries the
   // vest's seam, and the lid's silhouette is what the chase camera looks at.
   // Triangles are the free axis.
-  density: Object.freeze({ limb: 18, torso: 30, head: 32 }),
+  density: Object.freeze({ limb: 18, torso: 30, head: 32, hand: 18 }),
   materials: Object.freeze({
     body: FLO_SUIT,
     limbs: FLO_SUIT,
@@ -1400,9 +1474,11 @@ export const FLO_WITH_ZO_LOOK: RiderLook = Object.freeze({
   // rim's own shade, so the whole head is two meshes and one of them does not
   // cast.
   extras: Object.freeze([]),
+  build: Object.freeze({ hand: Object.freeze([floThumb]) }),
   paint: Object.freeze({
     torso: paintFloTorso,
     upperArm: paintFloUpperArm,
+    forearm: paintFloForearm,
     thigh: paintFloThigh,
     shin: paintFloShin,
     boot: paintFloBoot,

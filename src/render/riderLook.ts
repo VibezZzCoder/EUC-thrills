@@ -4,6 +4,8 @@ import { COOL_RIDER_LOOK } from './coolRiderLook.ts';
 export { COOL_RIDER_LOOK } from './coolRiderLook.ts';
 import { FLO_WITH_ZO_LOOK } from './floWithZoLook.ts';
 export { FLO_WITH_ZO_LOOK } from './floWithZoLook.ts';
+import { SEAL_ON_A_WHEEL_LOOK } from './sealOnAWheelLook.ts';
+export { SEAL_ON_A_WHEEL_LOOK } from './sealOnAWheelLook.ts';
 import { BLOCKOUT_COLOURS, RIDER_BLOCKOUT } from '../data/tuning.ts';
 import type { CharacterId } from '../data/riders.ts';
 import {
@@ -8688,6 +8690,13 @@ export const DRUNKARD_LOOK: RiderLook = Object.freeze({
   }),
 });
 
+// Seal on a Wheel's look is `render/sealOnAWheelLook.ts` — M35 Phase 1, which
+// replaced Phase 0's `ADONISB2_LOOK` spread with the real one. It is imported
+// and re-exported at the head of this file, on `FLO_WITH_ZO_LOOK`'s footing: a
+// sibling module, because a value import the other way would be a load-order
+// cycle, and re-exported here so that the tables below and every test that
+// names him read one list.
+
 /** The pieces the tests measure against: the profiles the built rig is derived from. */
 export {
   DRUNKARD_HAT,
@@ -8711,6 +8720,7 @@ export const RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   WHEEL_IN_MOTION_LOOK,
   DRUNKARD_LOOK,
   FLO_WITH_ZO_LOOK,
+  SEAL_ON_A_WHEEL_LOOK,
   COP_LOOK,
 ]);
 
@@ -8732,6 +8742,7 @@ export const PLAYABLE_RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   WHEEL_IN_MOTION_LOOK,
   DRUNKARD_LOOK,
   FLO_WITH_ZO_LOOK,
+  SEAL_ON_A_WHEEL_LOOK,
 ]);
 
 /** Resolve a look, falling back to Cool Rider the way `characterSpec` does. */

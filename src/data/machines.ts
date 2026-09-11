@@ -45,7 +45,7 @@ import type { CharacterId } from './riders.ts';
 /** Every machine the renderer can build. */
 export type MachineId =
   'standard' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard'
-  | 'flo-with-zo';
+  | 'flo-with-zo' | 'seal-on-a-wheel';
 
 export interface MachineSpec {
   readonly id: MachineId;
@@ -181,6 +181,30 @@ export const MACHINES: readonly MachineSpec[] = Object.freeze([
     blurb: 'A graphite performance body between two pale side shells, on pale '
       + 'pedals, with a low orange band and a badge on the nose.',
   }),
+  /**
+   * Seal on a Wheel's machine — M35 Phase 2, and the sixth taken from a real
+   * rider's own wheel.
+   *
+   * His brief ranks the wheel third in what carries the identity and asks for
+   * the colour relationship rather than for a product; his three stills say
+   * what that is on his: a bright cyan frame in stacked slabs with dark
+   * rectangular voids cut through the flanks, hot pink low on each side, at
+   * the four lower corners and on a broad plate high on the nose, dark pedal
+   * plates and a fat black tyre. What ships is the game's own fictional
+   * performance form wearing that relationship — a cyan body, cyan side
+   * shells and the pink as bars, wedges and a nose plate — and no
+   * manufacturer's shell, panel design, wordmark or plate, none of the small
+   * white stickers the real wheel's flanks carry, no lettering of any kind,
+   * and not the frame's actual voids, which are painted windows on a solid
+   * shell because a void is a greeble at chase distance
+   * (`docs/PLANS.md` §35.5, `NOTICE.md`).
+   */
+  Object.freeze({
+    id: 'seal-on-a-wheel' as MachineId,
+    name: "Seal on a Wheel's wheel",
+    blurb: 'A bright cyan body in stacked slabs with dark windows cut through '
+      + 'the flanks, hot pink bars and corner wedges, black pedals.',
+  }),
 ]);
 
 export const MACHINE_IDS: readonly MachineId[] =
@@ -259,6 +283,12 @@ export function machineForCharacter(character: CharacterId): MachineId {
   // 0 and 1 by a declaration that stood on this line, a decision stated
   // rather than a fallback nobody chose (`docs/PLANS.md` §34.9).
   if (character === 'flo-with-zo') return 'flo-with-zo';
+  // M35 Phase 2. His id, his spec above and his `MachineLook` row arrived in
+  // one edit, as the four before him did and for the same reason. He rode the
+  // standard wheel through Phases 0 and 1 by a declaration that stood on this
+  // line — a decision stated rather than a fallback nobody chose
+  // (`docs/PLANS.md` §35.10).
+  if (character === 'seal-on-a-wheel') return 'seal-on-a-wheel';
   return DEFAULT_MACHINE;
 }
 

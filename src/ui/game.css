@@ -1982,8 +1982,16 @@
  * and the band between the two is where the sideways card reaches a fifth
  * column. The same arithmetic, a fourth number — which is the point of
  * writing the arithmetic down rather than the answer.
+ *
+ * **And from nine at M35 Phase 0.** Nine 12rem cards plus eight 0.9rem gaps
+ * need 115.2rem, the full-height row returns at 118.59rem (1898 pixels), and
+ * the band 1692–1897 is the new sideways territory — where the grid holds five
+ * columns from 1692 and **six** from 1826, measured. A fifth number, and the
+ * first rider whose arithmetic did not stop at these three: nine cards also
+ * moved two of the compact tier's derived height limits and needed a real
+ * change to the phone anatomy, both written down further below.
  */
-.euc-menu--riders { grid-template-columns: min(102.3rem, 100%); }
+.euc-menu--riders { grid-template-columns: min(115.2rem, 100%); }
 
 .euc-menu--riders .euc-menu__panel { width: 100%; }
 
@@ -2974,10 +2982,29 @@
  * new territory is the band from 1486 to 1690, where the sideways grid's
  * 18rem `auto-fit` floor finally reaches a **fifth** column: measured at its
  * narrowest, 1486×585 is two rows of blurbed cards with Done 98 pixels clear,
- * and `tests/m22.spec.ts` holds both sides of that limit (1486×585 blurbed,
- * 1486×560 compact). A ninth rider will move it again.
+ * and `tests/m22.spec.ts` holds both sides of that limit (at nine cards the
+ * blurbed side of that pair is 1486×689 rather than 1486×585, because M35
+ * re-derived the limit it straddles — see below; 1486×560 compact is
+ * unchanged). A ninth rider will move it again.
+ *
+ * **And the ninth moved it again — M35 Phase 0.** Nine cards need 115.2rem of
+ * column and the same 3.4rem around it, so the row stops fitting at 118.59rem
+ * and the sideways card owns everything under 1898 pixels. The new territory
+ * is 1692–1897, and unlike M34's band it is not one column count but two:
+ * measured, five blurbed columns from 1692 (two rows, tallest card 177.1,
+ * Done 125.3 clear at 1692×689) and **six** from 1826, where six 18rem tracks
+ * and five 0.6rem gaps finally fit inside the 1771.6 pixels a 1826-wide window
+ * leaves (two rows, tallest card 194, Done 91.6 clear at 1826×689).
+ *
+ * **Those are measured at 689 and not at 585, and the height matters**: the
+ * compact tier's widest clause was re-derived from 36.5rem to 43rem in this
+ * same pass, so 585 is now 103 pixels *under* the limit and shows the compact
+ * card everywhere in this band. The blurbed anatomy of the band lives at 689,
+ * one pixel above 43rem, and that is where `tests/m22.spec.ts` holds the
+ * blurbed side of both pairs: 1692×689 / 1692×560 and 1826×689 / 1826×560.
+ * A tenth rider will move it again.
  */
-@media (max-width: 105.69rem), (max-height: 42rem) {
+@media (max-width: 118.59rem), (max-height: 42rem) {
   .euc-riders__grid {
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
     gap: 0.6rem;
@@ -3125,11 +3152,76 @@
  * question (667×375: 23.7 pixels clear at eight, four rows of two), and the
  * new five-column band is roomy (1486×560 compact: 158 clear). The rule this
  * tier is held to is unchanged; a ninth rider re-runs the probe.
+ *
+ * **The ninth rider re-ran it, and this time the fold was crossed twice —
+ * M35 Phase 0.** With only the three derived numbers above moved and no other
+ * change, nine cards measured: 375×667 one column, 54.5-pixel cards, Done
+ * ending 6.8 pixels clear with **5 pixels still to scroll to**; 375×812 22.4
+ * clear and 2 to scroll; 667×375 and 812×375 two columns of five rows, Done
+ * **28.7 pixels below the fold** and 41 to scroll; 844×390 14 below and 26 to
+ * scroll. Landscape was the worse of the two, exactly as the plan's arithmetic
+ * said, and the note above's ~60-pixel windfall from the hidden tagline was
+ * already spent.
+ *
+ * Four candidates and three combinations were measured on the live page at
+ * fourteen viewports, and **B alone and C alone each fix one orientation and
+ * not the other**:
+ *
+ *   - **B — the trimmed compact card** (padding 0.4rem → 0.25rem, gap
+ *     0.6rem → 0.45rem): cards 49.8 pixels, portrait fixed with room
+ *     (375×667: 40.5 clear, nothing scrolling; 375×812: 54.3; 360×800: 104.6;
+ *     412×915: 113.3; 390×844: 70.3) and **landscape still broken** —
+ *     667×375 leaves 4.8 pixels with 7 to scroll, and 844×390 leaves 15.8,
+ *     which is under the 16-pixel bar by a fifth of a pixel.
+ *   - **C — the lower `auto-fit` floor** (18rem → 12.36rem) across the whole
+ *     compact tier: landscape fixed by column count rather than by height
+ *     (667×375 becomes three columns of three rows, 37.8 clear) and
+ *     **portrait untouched**, because 12.36rem is still wider than half a
+ *     375-pixel phone. It also takes 1692×560 from five columns to eight —
+ *     eight cards and an orphan — which is why what shipped is scoped.
+ *   - **A — two columns of sideways cards on portrait phones**: 78.2 pixels
+ *     clear at 375×667 and the price M29 and M34 both refused, three of the
+ *     nine names wrapping onto a second line; landscape untouched, so it fixes
+ *     nothing that B does not fix more cheaply.
+ *
+ * **What shipped is B plus C scoped to `max-height: 30rem`** — the trim
+ * everywhere compact, the three-column floor only on a phone lying down.
+ * Measured with both in place, every phone size clears by 40.5 (375×667),
+ * 54.3 (375×812), 104.6 (360×800), 113.3 (412×915), 70.3 (390×844), 56.4
+ * (667×375), 72.7 (844×390) and 65.4 (812×375) pixels with nothing to scroll
+ * to anywhere, and the smallest card on any of them is 49.8 — 5.8 past the
+ * 44-pixel tap floor.
+ *
+ * **And two of this tier's own derived limits moved with the ninth card**,
+ * which is the part the plan did not predict: the *blurbed* grid gains a row
+ * at its two narrowest column counts, so the heights at which the compact card
+ * has to take over went up. Re-measured by binary search on the live page with
+ * the blurbed anatomy forced: two columns at 705 pixels are now **five** rows
+ * of up-to-177-pixel cards and need **977 pixels** where four rows needed 826,
+ * so the limit goes 52rem → **62rem**; four columns at 1236 are now **three**
+ * rows of up-to-194-pixel cards and need **685** where two needed 578, so the
+ * limit goes 36.5rem → **43rem**. Three columns at 940 are three rows at eight
+ * cards and three at nine, need 625, and their 47rem stands untouched. Without
+ * those two moves 705×833 hid 145 pixels below the fold and 1236×585 hid 101 —
+ * both of them viewports `tests/m22.spec.ts` already walked, which is what the
+ * pairs are there for. `m22`'s blurbed-side viewports moved with the limits,
+ * to 705×993 and 1236×689 — and so did **every other pair that straddles the
+ * 43rem one**, which is the easy half to miss: 1486, 1692 and 1826 all carried
+ * a 585 written against the old 36.5rem, and 585 under a 43rem limit is the
+ * compact card, so all three pairs would have tested the compact side twice
+ * and asserted the blurbed anatomy at five and six columns nowhere. Their
+ * blurbed side is 689 as well. 1236×689 is the tightest window in the whole
+ * set — three rows of up-to-194-pixel cards leave Done **15.98 pixels** clear
+ * at DPR 1, which is what deriving a limit from a measurement to the pixel
+ * looks like: two hundredths under a round number, on a desktop window rather
+ * than one of the phones the 16-pixel bar was adopted for.
+ *
+ * The rule this tier is held to is unchanged; a tenth rider re-runs the probe.
  */
 @media (max-width: 44rem), (max-height: 30rem),
-  ((max-width: 58.6rem) and (max-height: 52rem)),
+  ((max-width: 58.6rem) and (max-height: 62rem)),
   ((max-width: 77rem) and (max-height: 47rem)),
-  ((max-width: 105.69rem) and (max-height: 36.5rem)) {
+  ((max-width: 118.59rem) and (max-height: 43rem)) {
   .euc-rider-card__blurb { display: none; }
 
   .euc-rider-card {
@@ -3137,12 +3229,67 @@
       "art name"
       "art state";
     align-items: center;
-    padding: 0.4rem 0.8rem;
+    /*
+     * 0.4rem until M35 Phase 0, where the ninth card crossed the fold in
+     * portrait for the first time and this is the trim that bought it back
+     * (candidate B in the note above, measured rather than predicted): the
+     * card comes down from 54.5 to 49.8 pixels, still 5.8 past the 44-pixel
+     * tap floor.
+     */
+    padding: 0.25rem 0.8rem;
   }
+
+  .euc-riders__grid { gap: 0.45rem; }
 
   .euc-rider-card__art { width: 2.4rem; }
 
   .euc-rider-card__state { justify-self: start; }
+}
+
+/*
+ * Three columns on a phone lying down — M35 Phase 0, and the second half of
+ * fitting nine.
+ *
+ * The trimmed card above is enough in portrait and is **not** enough in
+ * landscape, which the probe measured rather than guessed: at 667×375 nine
+ * compact cards in two columns are five rows, and five rows of even the
+ * trimmed card leave Done 4.8 pixels clear with 7 pixels still to scroll to.
+ * Rows are the problem, so the fix is columns. The `auto-fit` floor the
+ * sideways tier sets — `min(100%, 18rem)` — is sized for a card carrying a
+ * blurb, and a compact card carries a name and a pill; dropping it to
+ * 12.36rem lets a 667-pixel phone hold three of them
+ * (667 − 3.4rem of chrome = 612.6 of track; three 197.8-pixel tracks and two
+ * gaps fit inside it) and nine cards become **three** rows instead of five.
+ * Measured at 667×375: Done ends 56.4 pixels clear, nothing scrolls, every
+ * card is 49.8 pixels tall.
+ *
+ * **Scoped to `max-height: 30rem` and nothing else**, which is the compact
+ * tier's own phone-on-its-side clause above rather than a new idea: every
+ * window it does not catch — 1486×560, 1692×560, 1280×485, 740×481 — keeps
+ * the 18rem floor and the column count it had. Dropping the floor across the
+ * whole compact tier was measured too and rejected: it takes 1692×560 from
+ * five columns to **eight**, a row of eight cards and one orphan, which fits
+ * and looks like an accident.
+ *
+ * **The scope does not abolish that shape, it puts it under 480 pixels of
+ * height**, and the note said otherwise until M35 Phase 0's verification pass
+ * measured it: 1692×470 *is* caught, and it does render eight columns with an
+ * orphan row (it fits, nothing scrolls). What the scope buys is that no
+ * supported device can reach it — a phone on its side is 844 pixels wide at
+ * most, and at those widths the catch is three columns of three (844×390:
+ * 72.7 clear; 667×375: 56.4) — so the orphan row is now reachable only by a
+ * deliberately squashed desktop window, where it is cosmetic.
+ *
+ * The price is paid in landscape and is small: at 667 the three tracks are
+ * narrow enough that three of the nine names wrap to a second line, so those
+ * cards stand 67.8 pixels rather than 49.8. That is the trade M29 refused in
+ * *portrait*, where one column never wraps and the alternative cost nothing;
+ * here the alternative is not fitting.
+ */
+@media (max-height: 30rem) {
+  .euc-riders__grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 12.36rem), 1fr));
+  }
 }
 
 /*

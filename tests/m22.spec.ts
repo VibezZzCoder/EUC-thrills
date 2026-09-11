@@ -139,16 +139,45 @@ test('chooser, title and pause fit every supported phone and tablet size with no
     // tallest — one pixel above the height at which the compact card takes
     // over. A limit set too high would fail here with the blurbs cut off;
     // a limit set too low fails above with Done below the fold.
-    { width: 705, height: 833 }, { width: 940, height: 753 }, { width: 1236, height: 585 },
-    // **And the five-column band the eighth rider opened — M34 Phase 0.** The
-    // sideways threshold moved from 92.79rem to 105.69rem to make room for
-    // eight full-height cards, so between those two widths the sideways card
-    // now reaches a fifth column, at its narrowest at 1486 px. 585 is one
-    // pixel above the compact tier's 36.5rem limit — the blurbs are still
-    // there and must fit — and 560 is under it, where the card goes compact
-    // and must fit too. Both sides of a derived breakpoint, as the three
-    // above are.
-    { width: 1486, height: 585 }, { width: 1486, height: 560 },
+    //
+    // **Two of the three moved at M35 Phase 0**, because a ninth card adds a
+    // row to the blurbed grid at its two narrowest column counts: two columns
+    // at 705 go from four rows to five and now need 977 pixels (the limit
+    // rounds to 62rem, so the blurbed side is 993), and four columns at 1236
+    // go from two rows to three and now need 685 (43rem, so 689). Three
+    // columns at 940 stay three rows and their 47rem limit is untouched.
+    { width: 705, height: 993 }, { width: 940, height: 753 }, { width: 1236, height: 689 },
+    // **And the band the eighth rider opened — M34 Phase 0.** The sideways
+    // threshold moved from 92.79rem to 105.69rem to make room for eight
+    // full-height cards, so between those two widths the sideways card owns
+    // 1486 px, the narrowest width this pair was written for.
+    //
+    // **Its blurbed side moved from 585 to 689 at M35 Phase 0**, and that move
+    // is the whole point of a pair: the limit it straddles was re-derived from
+    // 36.5rem to 43rem in the same pass, which left 585 a hundred and three
+    // pixels *under* the limit and both heights of this pair on the compact
+    // side, testing one side twice. 689 is one pixel above 43rem — the
+    // blurbs are still there and must fit (three rows of four, tallest card
+    // 143.4, Done 82.4 clear) — and 560 is under it, where the card goes
+    // compact and must fit too. Both sides of a derived breakpoint, as the
+    // three above are.
+    { width: 1486, height: 689 }, { width: 1486, height: 560 },
+    // **And the band the ninth rider opened — M35 Phase 0.** The sideways
+    // threshold moved again, from 105.69rem to 118.59rem, so the sideways card
+    // now owns everything under 1898 px and the new territory runs 1692–1897.
+    // 1692 is its narrowest width, where the grid holds five columns in two
+    // rows; 689 is one pixel above the compact tier's re-derived 43rem limit
+    // (tallest card 177.1, Done 125.3 clear) and 560 is under it. Both sides
+    // of the limit, as every pair above is.
+    { width: 1692, height: 689 }, { width: 1692, height: 560 },
+    // **And the sixth column, which this band does reach** — measured at
+    // 1826 px, where the 18rem `auto-fit` floor finally lets six blurbed
+    // tracks through (six 288-pixel tracks and five 9.6-pixel gaps need 1776
+    // of the 1771.6 a 1826-pixel window leaves after 3.4rem of panel chrome,
+    // and the floor collapses the rest). Nine cards are then six and three,
+    // with the tallest card at 194 pixels the worst case anywhere in the
+    // band; 689 keeps the blurbs (Done 91.6 clear) and 560 goes compact.
+    { width: 1826, height: 689 }, { width: 1826, height: 560 },
   ];
 
   // A layout change is an input-reset moment by contract (master §8.2): the

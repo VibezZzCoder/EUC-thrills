@@ -9,6 +9,7 @@ import crashAdonisb2Url from '../../assets/live/audio/crash_adonisb2.wav?url';
 import crashMaribelUrl from '../../assets/live/audio/crash_maribel.wav?url';
 import crashWheelInMotionUrl from '../../assets/live/audio/crash_wheel_in_motion.wav?url';
 import crashFloWithZoUrl from '../../assets/live/audio/crash_flo_with_zo.wav?url';
+import crashSealOnAWheelUrl from '../../assets/live/audio/crash_seal_on_a_wheel.wav?url';
 import crashDrunkardUrl from '../../assets/live/audio/crash_drunkard.wav?url';
 import stumbleDrunkardUrl from '../../assets/live/audio/stumble_drunkard.wav?url';
 import sirenFarUrl from '../../assets/live/audio/siren_far_loop.wav?url';
@@ -156,6 +157,45 @@ export interface SampleUrls {
    */
   readonly crashFloWithZo: string;
   /**
+   * Seal on a Wheel's (M35) — the same crash a fourth time, and the first file
+   * in this game that is not the owner's material alone.
+   *
+   * The fourth voice-scrubbed render, on Red Rider's, Wheel in Motion's and
+   * FloWithZo's exact terms: `tools/make-crash-red-rider.mjs --rider
+   * seal-on-a-wheel --donor 2.400`, the donor named for the reason M34's was
+   * (`--avoid` has had no survivors since the pool was exhausted at two) and
+   * chosen for **headroom** — its rebuilt window peaks at 19,747 against the
+   * owner's 26,730, which is the 2.6 dB of room the layer on top needed.
+   *
+   * **What is on top is a seal barking**, and it is the owner's own
+   * instruction (`docs/PLANS.md` §35.6, q147): the rider publishes as
+   * `seal_on_a_wheel`, and the bark goes exactly where the owner's *"oh"* was —
+   * 0.900–1.170 s, the crash's own quietest mid-band stretch, 140 ms clear of
+   * the window's fade-in. It is 270 ms of the left channel of Freesound
+   * #450751, "Sound of a Seal" by florianreichelt, **CC0 / public domain**:
+   * resampled 48 000 → 44 100, high-passed at 180 Hz, faded 8 ms in and 60 ms
+   * out, peak-normalised to −8 dBFS (raised from −14 on the owner's
+   * listen, 2026-09-11) and added by
+   * `tools/make-crash-seal-on-a-wheel.mjs`, which refuses to write the file
+   * unless the bark is both **present** (13.0 dB over the loudest render with no
+   * bark in it) and **not too loud in the band the ride bed leaves empty** (the
+   * bark's own stretch reads −30.33 dB against the project's −27.95 ceiling —
+   * the band the owner's ear rejected Maribel's first cut in).
+   *
+   * **So its standing is not FloWithZo's, and `NOTICE.md` says so rather than
+   * letting a reader assume it.** The project's own contribution stays inside
+   * the CC BY 4.0 claim; the seal layer is public domain and claimed by nobody,
+   * credited in the third-party CC0 table as the first entry there that is a
+   * layer inside a crash rather than a loop. Nothing generated or modelled is
+   * in it, and there is **no recording of Seal on a Wheel's voice anywhere in
+   * this game**. Same length as `crash` to the sample; differs from Red
+   * Rider's, Wheel in Motion's, FloWithZo's and the owner's by 35,263 / 35,273
+   * / 35,269 / 35,267 samples, every one inside 0.760–1.560 s. If a recording
+   * of his own ever arrives, this file is superseded on the Adonisb2/Maribel
+   * path and nothing here changes.
+   */
+  readonly crashSealOnAWheel: string;
+  /**
    * The Drunkard's (M29) — Trollina's path, walked a second time.
    *
    * He is a wholly fictional parody rider, so nobody could record his fall:
@@ -225,6 +265,7 @@ export const SAMPLE_URLS: SampleUrls = {
   crashMaribel: crashMaribelUrl,
   crashWheelInMotion: crashWheelInMotionUrl,
   crashFloWithZo: crashFloWithZoUrl,
+  crashSealOnAWheel: crashSealOnAWheelUrl,
   crashDrunkard: crashDrunkardUrl,
   stumbleDrunkard: stumbleDrunkardUrl,
   sirenFar: sirenFarUrl,

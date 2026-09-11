@@ -4540,6 +4540,256 @@ export const BLOCKOUT_COLOURS = {
   machineFloWithZoOrange: 0xe8661c,
 
   /**
+   * Seal on a Wheel — M35 (`docs/PLANS.md` §35.4 for the rider, §35.5 for the
+   * wheel). A real EUC rider, in the game on a public ask of his own, read off
+   * three frames of his own riding video first and the target render second.
+   * **Phase 0 lands all eighteen keys at once** so that Phases 1 and 2 tune
+   * *values* on lines they each own rather than adding blocks to this file at
+   * the same time; the names are fixed, the numbers may move.
+   *
+   * **Every hue below is quoted twice, and the two are not interchangeable.**
+   * The sRGB hue is what a picker and the reference photographs speak; the
+   * linear hue is what `new THREE.Color(hex).getHSL()` returns and what the
+   * per-rider separation tests actually measure (`floWithZo.test.ts:100`).
+   * They diverge by up to 13° on this rider's colours, and in the reds they
+   * *compress* — see the lid below, which is the one place a rule and a space
+   * disagree.
+   *
+   * **He is the mirror image of FloWithZo, and that decides the whole family.**
+   * Everything he wears is black, so the ground is the *floor* rather than the
+   * ceiling: his two bright things — the tied sweatshirt and the lid's white —
+   * are far lighter than the kit and cannot be reached by a vertex-colour
+   * multiplier from it at all, which is why `sealGarment` and
+   * `sealHelmetWhite` are their own roles rather than paint (§35.2, and
+   * `floWithZoGuard`'s precedent at the other end of the same argument).
+   *
+   * **`sealGear` is the ground and the value floor**: the short-sleeved black
+   * top, authored as the mid-dark grey a real black garment is in sun, red
+   * byte **70** and no lower (`DESIGN.md` §7k, the rule `floWithZoGear` states
+   * as "60 and no lower"). sRGB hue 228°, linear 229°.
+   *
+   * **The rest of the blacks are separated by value, in the order the
+   * references rank them**, because there is no hue room left — the shipped
+   * table already holds eight near-black gear greys inside 218–228° and five
+   * near-black machine bodies, and in the target render every black surface on
+   * him sits between Ylin 0.004 and 0.047. The ladder authored here, in linear
+   * luminance: `sealPack` **0.047** (the darkest thing he wears — a black
+   * day-pack reads as a hole beside knit), `sealBoot` 0.051, `sealGlove`
+   * 0.056, `sealHelmetBlack` 0.059, `sealTrouser` 0.061, `sealGear` **0.065**
+   * (the ground), `sealPad` **0.089**. The pads are the only surface lifted a
+   * whole stop: moulded plastic reads a stop above knit under the same sun
+   * (`tuning.ts:4344`, Wheel in Motion's), and his knee shells are the biggest
+   * volume on his legs. `sealTrouser` sits at the top's value a touch warmer
+   * and greyer — sRGB 245° against the top's 228°, the direction the
+   * photographs give (trousers 250–252°, top 222–240°) rather than their
+   * shade-lit absolute.
+   *
+   * **`sealGarment` is the sweatshirt knotted at his waist, and it carries the
+   * whole value range on the body.** A cool light grey at Ylin **0.718** — the
+   * brightest thing on him by ten to thirty times and still below
+   * `floWithZoGuard` (0.795) and well below `wheelInMotionPrint` (0.962), so
+   * the roster's brightest garment does not change hands. Authored grey and
+   * not white: the target render's sunlit `#dcdce8` is the saturated extreme
+   * and the photographs' shade-lit `#a3a8c3` the other, and a white here would
+   * blow out under ACES the way a saturated primary does.
+   *
+   * **Phase 1 moved it up its own band, from Ylin 0.681 to 0.718, because it
+   * is also the lid's printing ground** — hue held exactly (sRGB 229.1°,
+   * linear 229.4°), value taken to the top of §35.2's authorized 0.62–0.72.
+   * The helmet is a code-painted page and `inkOver` divides and clamps at one,
+   * so the page's ground has to stand at or above every ink on it in every
+   * channel; none of the lid's own three colours does, and adding a
+   * fifteenth key for a surface no player can see would be a colour nobody
+   * could point at. The garment's grey clears the red's red byte exactly and
+   * the white and black comfortably, so `materials.head` wears it and every
+   * texel of the lid inks over it. `sealOnAWheel.test.ts` holds that relation
+   * rather than this paragraph: the ground dominates every ink in every
+   * channel, or the page would clamp and the red would quietly render as the
+   * ground.
+   *
+   * **The lid is three colours and one of them is the tightest hue in the
+   * build.** `sealHelmetRed` is authored at sRGB **351.5°** — q148's default,
+   * 5.1° clear of `maribelCoral` (346.4°) and 5.9° clear of `redRiderHelmet`
+   * (357.4°), the two *rider* reds, and 3.9° from `taillight` (355.4°) on
+   * `redRiderHelmet`'s own precedent that a rider colour may sit a degree from
+   * a machine lamp. **In linear space that clearance is not there and cannot
+   * be**: the whole red arc this roster owns compresses into 353.8–359.1°
+   * (`maribelCoral` 353.8, `taillight` and `machineRed` 359.0,
+   * `redRiderHelmet` 359.1, `statusCritical` 0.0), a span of 6.2° in which no
+   * red clears any other by five. His lands at linear 356.9 — 3.1° from
+   * `maribelCoral` and 2.3° from `redRiderHelmet` — so the honest statement of
+   * the separation is sRGB hue plus value and saturation, and Phase 1's test
+   * says so rather than asserting a bar that no red on this roster could pass.
+   * **Phase 1 held both hues and the saturation and lowered the value one
+   * notch — Ylin 0.195 → 0.175, sRGB 351.5°, HSV S 0.78 unchanged — because
+   * the lid is printed and its ground has to stand above it** (see
+   * `sealGarment`). A uniform scale of the gamma-encoded channels is a uniform
+   * scale of the linear ones, so neither hue moved and the 5.1°/5.9° sRGB
+   * clearances are the numbers above; 0.175 is inside §35.2's authored
+   * 0.17–0.22 band, and the lid is still the brightest thing above his waist
+   * by 2.7 × the top.
+   * `sealHelmetWhite` is a cool off-white at Ylin **0.681**, a hair under the
+   * garment; `sealHelmetBlack` is the brow band, the eye-port surround and the
+   * lower chin bar, on the same floor as the kit. Area order on the page is
+   * **red > black > white**, which is what the photographs give.
+   *
+   * **The white rose 17 % in M35's r3 fix pass, and it is the round's one
+   * colour miss.** Two blind critics reached it from opposite ends of the rider
+   * — the helmet's and the chase camera's — and the albedo settles it without
+   * either one's pixel box: the shipped pair rendered the sash at **1.235 ×**
+   * the lid's white, where all three stills rank them the other way (PHOTO 2
+   * waist cloth ÷ chin flash **0.66**, PHOTO 1 rear pale band **0.60**, PHOTO 3
+   * at the knot 0.94). That inversion is what made the garment the loudest
+   * thing on him at gameplay distance. **The lid is the only lever**: the
+   * garment's floor is spoken for by `sealNeon` at 0.685 and a shipped
+   * assertion that the rand stays under it, so `sealGarment` can fall 3 % and
+   * no further without reversing r2's blocker fix. `0xd0d8e3` lands the ratio
+   * at **1.054**, moves the sRGB hue 217.5° → **214.7°** and the saturation
+   * 0.076 → 0.084 — the blue-cast half of the finding was refuted on PHOTO 1's
+   * own lid whites (hue 218–219 at S 0.14–0.15, at least as blue as this key),
+   * so the hue stays inside five degrees and only the value is the fix. The
+   * print ground still dominates it on every channel, with blue the tightest at
+   * **98.0 %** of the ground. **The residual is recorded rather than rounded
+   * away**: §35.2's two authoring bands — the lid at 0.55–0.62, the garment at
+   * 0.62–0.72 — cannot both hold with the photographs' own ratio, and closing
+   * the rest needs a fifteenth colour key (a near-white print ground of the
+   * lid's own) that §35.2 and §35.4 declined on purpose
+   * (`seal-views/_scratch/gauntlet-r3-record.md` §C-3 and §E 1).
+   *
+   * **`sealVisor` is the visor's brightest value** (the print over it can only
+   * darken): a dark cool smoke at Ylin 0.028, between `floWithZoLens` (0.052)
+   * and `redRiderVisor` (0.012). It is the one deliberate departure from the
+   * photographs, where the visor is up and his face is visible in all three
+   * frames — the roster is helmeted and a real person's face is the wrong call
+   * (§35.2, the brief and the render agree).
+   *
+   * **`sealGloveRed` is real, not invented**: the photographs give a red
+   * palm-and-knuckle section at sRGB 337–341° and the target render `#90131f`
+   * at 354°. It is authored as the lid's own red taken down to Ylin 0.072 —
+   * one family, two values — so a patch the size of a knuckle does not
+   * introduce a tenth red to the table.
+   *
+   * **`sealNeon` is the shoe accent, and it is yellow rather than lime.** The
+   * photographs give sRGB 49–62° and the render 65°; 58.5° is the one slot
+   * that clears both `copHiVis` (52.4°, by 6.1) and `maribelHiVis` (66.4°, by
+   * 7.9), and in linear the same pair is 10.7° and 15.3° away. It is authored
+   * for the rand *above* the pedal line, because the pedal covers the bottom
+   * quarter of the sole at every capture angle (`paintFloBoot`'s device).
+   *
+   * **Its saturation fell by a quarter in M35's r3 fix pass and its hue did
+   * not** (§E 2, the gauntlet's second-largest measured miss). Hue-filtered
+   * inside one frame, PHOTO 1's sunlit sole reads p95 **S 0.31 at v 0.94**
+   * where `0xd8d43b` rendered p95 **S 0.66 at v 0.73** — double the saturation
+   * at two thirds the value, a lime rather than a pale yellow — and the
+   * within-frame ordering flipped with it: the photograph's sole peaks *above*
+   * its own garment and the road line, the shipped rand peaked *below* its own
+   * sash. This milestone's own measurement sheet says the same thing against
+   * the key (`research/reference-measure.md` records the photographs at S 0.34
+   * and the target render at 0.60–0.77): the authored value took the target's
+   * saturation. `0xe0dd65` is **S 0.549, V 0.878, Ylin 0.685** at sRGB 58.6°,
+   * and both narrowings off the critic's literal S 0.30–0.35 at V 0.95 are the
+   * plan's own — §35.7's caveat runs a shade-lit still 0.15–0.30 under the
+   * paint, and §35.2 makes the tied sweatshirt the brightest thing on the body,
+   * which caps this under `sealGarment`'s 0.717. The hue moves by a tenth of a
+   * degree, so both five-degree clearances above survive in sRGB and in linear.
+   *
+   * **`sealSkin` is the roster's first fair skin**: sRGB 17.0°, S 0.25,
+   * Ylin 0.611 — paler and cooler than the four tans already here
+   * (`coolSkin` 23.8°, `trollinaSkin` 23.4°, `copSkin` 25.6°, `drunkardSkin`
+   * 27.9°), which is what the photographs give. It matters more on him than on
+   * anyone: his sleeve hem is high on the upper arm and his glove cuff is
+   * short, so bare forearm and upper arm are the only large warm area anywhere
+   * on an all-black rider, and they are a real read cue at chase distance.
+   *
+   * **The value rose 9.5 % in M35's r2 fix pass and the hue did not.** A skin
+   * key cannot be judged against the roster, because every other rider stands
+   * in different kit, so r1's piece 4 judged it the only way a photograph
+   * allows — as a ratio inside one frame. PHOTO 1's sunlit frame gives forearm
+   * ÷ garment **0.77–0.93** and upper arm ÷ garment **1.28–1.55**; `0xd4b5a9`
+   * stood at 0.696 against his own sweatshirt and rendered 0.48, a full step
+   * dark beside the brightest thing he wears. `0xe8c6b9` is the same three
+   * bytes scaled by 1.093, which lands the ratio at 0.851 and leaves HSV hue
+   * and saturation where they were to a rounding step — the warmth half of the
+   * finding is a shade-lit read and was not confirmed
+   * (`seal-views/_scratch/gauntlet-r1-record.md` §E 8).
+   *
+   * **And the chroma came up in the r3 pass, with the hue held again.** This is
+   * the one axis of the key three rounds agree on against the shipped value:
+   * §35.2's authoring row asks **S 0.30–0.35** and the stills, measured
+   * in-frame, give **0.22–0.26** (PHOTO 2 0.26 at 10°, PHOTO 1 0.22 at 3°,
+   * PHOTO 3 0.23 at 12°), so `0xe8c6b9`'s 0.203 sat under even the unadjusted
+   * floor. What it cost is visible rather than theoretical: a red-dominant
+   * albedo under a blue ambient loses its green channel fastest, so his shaded
+   * forearms rendered **S 0.05–0.07 at hue 320–324** — a grey-mauve, on the one
+   * large warm area an all-black rider has. `0xefc4b3` is **S 0.251** at sRGB
+   * **17.0°** and linear 14.7°, so the hue moves by less than half a degree in
+   * both spaces, the four tans still clear it by five (`coolSkin` by 6.8°), and
+   * **Ylin 0.6105 → 0.6109 holds r1's confirmed skin ÷ garment 0.851 to three
+   * decimals**. The warm half is refused for the third time on the same
+   * reading: the stills run 10–20° bluer than the paint, and a skin hue reading
+   * bluer reads *lower* on the circle (r3 §C-5, §E 4a).
+   *
+   * **His wheel** (§35.5). **`machineSealCyan` is the shell, and this is the
+   * one axis where the render is the authority over the photographs.** The
+   * stills give sRGB 200–202°, which is `machineWheelInMotionBlue`'s hue
+   * exactly and unusable under the 5° rule; the render's 194° lands in the only
+   * open slot. Authored at sRGB **194.1°** (linear 205.1): 5.8° from
+   * `floWithZoCyan` (188.3°) and 5.9° from `machineWheelInMotionBlue` (200.0°)
+   * in sRGB, 10.1° and 7.7° in linear, so it clears both machine cyans in both
+   * spaces. **The one neighbour it does not clear is `maribelVisor`**
+   * (sRGB 195.1°, linear 201.1°) at 1.0° and 4.0° — there is no hue between
+   * `floWithZoCyan` and `wheelInMotionBlue` that clears it, and it is a
+   * *rider's visor* rather than a machine accent, three stops brighter
+   * (Ylin 0.499 against 0.339) and never seen beside a wheel. Stated here so a
+   * critic scoring the arc is not surprised by it. The value is authored a stop
+   * deeper than the render's lit `#32ccfd` for `redRiderSuit`'s reason: a
+   * saturated primary at the top of the gamut bleaches under ACES in sun.
+   * `machineSealPad` is the same hue a stop above the body (Ylin 0.429 against
+   * 0.339) — q149's Option A, cyan pads, because the shin-height mass is cyan
+   * in all three references and the brief's "what to avoid" names the wrong
+   * balance.
+   *
+   * **`machineSealPink` is the trim, and it is the only pink on the roster
+   * that is not Trollina's.** sRGB **331.0°** against her three magentas at
+   * 321.6–323.4° — 7.6° to 9.4° clear in sRGB and 9.0° to 10.2° in linear
+   * (342.9° against 332.7–334.3°) — which is the margin §35.2 asks for.
+   * Cyan stays dominant by area (the references run 0.23–0.44 pink to cyan);
+   * the pink is the high-front pad plate, the flank bars, the bumper wedges
+   * and the rear shoulders.
+   *
+   * **`machineSealTrim` is not a colour you will see** — it is the pale base
+   * every pink patch is tinted *down* from, and its contract is arithmetic:
+   * `tintOver` divides, so the base has to be **greater than or equal to the
+   * pink in every channel** or a patch would need a material of its own.
+   * `0xe4e6ea` is (228, 230, 234) against the pink's (226, 48, 134), which
+   * holds with two counts of headroom on the tightest channel. It is a cool
+   * near-white rather than FloWithZo's warm one so that nothing on this wheel
+   * reads as his.
+   *
+   * **No red goes anywhere near the wheel**, and nothing is lost by that: the
+   * references put none there, and a machine red collides with
+   * `statusCritical` (`tuning.ts:3637-3644`).
+   */
+  sealGear: 0x464850,
+  sealTrouser: 0x464550,
+  sealPad: 0x50545f,
+  sealPack: 0x3a3d48,
+  sealGlove: 0x41424e,
+  sealGloveRed: 0x941a2a,
+  sealGarment: 0xdadce5,
+  sealHelmetRed: 0xda3048,
+  sealHelmetWhite: 0xd0d8e3,
+  sealHelmetBlack: 0x44444d,
+  sealVisor: 0x292f39,
+  sealBoot: 0x3d4049,
+  sealNeon: 0xe0dd65,
+  sealSkin: 0xefc4b3,
+  machineSealCyan: 0x14aad8,
+  machineSealPad: 0x37bde6,
+  machineSealPink: 0xe23086,
+  machineSealTrim: 0xe4e6ea,
+
+  /**
    * The ghost, and the checkpoint gates (M10).
    *
    * **Authored here rather than in the render modules that draw them, because

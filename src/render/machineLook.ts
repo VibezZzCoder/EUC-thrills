@@ -3249,6 +3249,667 @@ export const FLO_WITH_ZO_MACHINE_LOOK: MachineLook = {
   },
 };
 
+// -- Seal on a Wheel's wheel — M35 Phase 2 ------------------------------------
+
+/**
+ * The trim's one paint, reached **down** from a cool near-white — the
+ * direction rule at the top of this file, on the first machine whose trim
+ * carries a hot pink.
+ *
+ * `machineSealTrim` is not a colour anybody sees: it is the base the pink is
+ * divided out of, and its contract is arithmetic. `tintOver` divides, so the
+ * base has to be greater than or equal to the pink in every channel or the
+ * patch would need a material of its own and the trim slot would cost two
+ * draw calls instead of one.
+ */
+const SEAL_TRIM_BASE = BLOCKOUT_COLOURS.machineSealTrim;
+const SEAL_TRIM_PINK = tintOver(SEAL_TRIM_BASE, BLOCKOUT_COLOURS.machineSealPink);
+
+/**
+ * The four paints, and the one place this machine differs from every other
+ * row in the file.
+ *
+ * His identity colour is the shell **base** — the Red Rider architecture,
+ * the second time it is used and the first on a saturated cyan — so every
+ * dark on the machine is reached by painting *down* from it. A cyan's linear
+ * channels are (0.007, 0.402, 0.687): the red is all but absent, so a
+ * multiplier that crushes green and blue leaves red proportionally enormous
+ * and the result is a *neutral* near-black rather than a teal one. That is
+ * Red Rider's device (`:475-477`) inverted, hue for hue, and it is why the
+ * §19.7 bezel on this machine is asserted on green and blue rather than on
+ * the red channel every other machine's test reads (`docs/PLANS.md` §35.3
+ * fact 11: on this base a near-black's red multiplier is 0.74 by accident,
+ * which is a green test over a bright field).
+ *
+ * `SEAL_DECK` is the odd one out and is deliberately **not** near-black: the
+ * cyan frame arches over the top of the body in all three stills and the
+ * dark up there is the core seen between its arms, not bodywork. So the deck
+ * keeps his hue two stops down and `paintShell` cuts the core into its top
+ * face.
+ */
+const SEAL_DECK = tintOver(BLOCKOUT_COLOURS.machineSealCyan, 0x0d5c78);
+/** The §19.7 bezel and the nose recess: the widest dark band, and mandatory. */
+const SEAL_CAVITY: Tint = tintOver(BLOCKOUT_COLOURS.machineSealCyan, 0x101318);
+/** The flank cut-outs — the open frame of the photographs, as paint rather than voids. */
+const SEAL_WINDOW: Tint = tintOver(BLOCKOUT_COLOURS.machineSealCyan, 0x15181e);
+/**
+ * The skirt's foot, a touch *down* rather than up — the opposite of what
+ * Wheel in Motion's and FloWithZo's needed, and for the opposite reason. A
+ * dark body a hair off the tyre has to be lifted there or the two are one
+ * black mass at chase range; this body is 19 × the tyre's luminance, so the
+ * foot is the machined structure under the bodywork and darkening it is what
+ * stops the cyan running into the road.
+ */
+const SEAL_FOOT: Tint = [0.74, 0.72, 0.72];
+/** The shoulder chamfer, and only it — the box's top edge, one stop up. */
+const SEAL_EDGE: Tint = [1.18, 1.10, 1.08];
+
+/**
+ * The body, from the three stills: a near-square box, shorter nose-to-tail
+ * than FloWithZo's and squarer on the flank than either performance wheel
+ * before it.
+ *
+ * Three things separate it from the two rows it is descended from, each
+ * measured off the references rather than styled (§35.2's element table):
+ *
+ * - **`halfDepth` peaks at 0.248, against FloWithZo's 0.272.** It is the top of
+ *   the 0.240–0.250 band §35.5 authorises. Round 1 read PHOTO 1 as a rear
+ *   three-quarter and this comment repeated it; a QA re-measurement of the
+ *   still overturned that on three independent readings — the visible shoe
+ *   shows its whole lateral profile at 80 px where a dead-rear view gives
+ *   ~27 px of shoe end-on, the head crop is an unambiguous left-side view, and
+ *   the machine's masked box carries **more** fore-aft extent than the set's
+ *   own front three-quarter does. **PHOTO 1 is a left-side view taken slightly
+ *   rear of abeam**, so its 153 × 141 px box is the body's *length × height*
+ *   and 1.08 : 1 is a **floor** on the aspect: a few degrees off abeam shortens
+ *   the apparent length, never lengthens it. PHOTO 2 is near-frontal and
+ *   PHOTO 3 a front three-quarter, so **no dead-rear frame exists** and the
+ *   tail's rear face stays INFERENCE. `halfDepth` stays at 0.248 on this
+ *   correction — the floor does not push it — and a reshape is the owner's call.
+ * - **`square` 7.0 through the body**, carried up two stops in round 2. His is
+ *   a stack of flat slabs with hard corners: PHOTO 3 shows the flank as a
+ *   plate with rectangular voids cut through it, which needs a flank that
+ *   stays dead flat long enough to carry them. The first pass authored 5.0 and
+ *   all three blind critics still read a rounded barrel — measured, 5.0
+ *   reaches only **75.8 %** of the section's bounding box on the diagonal
+ *   where a slab reaches 100 %, and 7.0 reaches **84.1 %**. That is the
+ *   ceiling: `loftGeometry` builds one smooth surface in `u` by construction
+ *   (`blockoutKit.ts:255-262`), so a hard vertical chamfer down a corner is
+ *   not expressible by any `MachineLook` field, only approached by a fuller
+ *   section.
+ * - **Three ring pairs six millimetres apart**, at 0.502/0.508, 0.568/0.574
+ *   and 0.296/0.302, with 0.550/0.556 a fourth left mid-window.
+ *   `paintShell` can only reach vertices that exist and this loft carries no
+ *   subdivisions, so a hard horizontal is two rows or it is a soft gradient
+ *   across fifty millimetres of nothing (FloWithZo's 0.456/0.462 pair is the
+ *   precedent). The two upper pairs bracket the flank window; the lower one
+ *   puts an edge on the skirt's foot.
+ *
+ * Contract dimensions untouched: this is the cosmetic loft only. **0.556 is a
+ * ring rather than a height the profile happens to cross**, because that is
+ * where `euc.ts:821` seats the status light through `vAtHeight`, and a
+ * profile that does not span it clamps to the top ring and puts the power
+ * ladder on the crown (§35.3 fact 12).
+ */
+const SEAL_SHELL_RINGS: readonly MachineShellRing[] = Object.freeze([
+  { y: 0.250, halfWidth: 0.052, halfDepth: 0.126, square: 3.0 },
+  // The skirt foot's own pair: this row and the one 6 mm above it take the
+  // hard line between the machined foot and the bodywork.
+  { y: 0.296, halfWidth: 0.092, halfDepth: 0.192, square: 3.8 },
+  { y: 0.302, halfWidth: 0.095, halfDepth: 0.198, square: 4.0 },
+  { y: 0.336, halfWidth: 0.110, halfDepth: 0.226, square: 6.6 },
+  { y: 0.396, halfWidth: 0.117, halfDepth: 0.243, square: 7.0 },
+  { y: 0.452, halfWidth: 0.118, halfDepth: 0.248, square: 7.0 },
+  // The flank window's lower pair.
+  { y: 0.502, halfWidth: 0.118, halfDepth: 0.246, square: 7.0 },
+  { y: 0.508, halfWidth: 0.118, halfDepth: 0.245, square: 7.0 },
+  // Mid-window, and the status light's own seat at 0.556 — a pair rather than
+  // a single ring because it was the window's upper edge before round 2 took
+  // the band up past it, and because `vAtHeight` reads 0.556 (§35.3 fact 12).
+  { y: 0.550, halfWidth: 0.115, halfDepth: 0.238, square: 6.8 },
+  { y: 0.556, halfWidth: 0.113, halfDepth: 0.234, square: 6.6 },
+  // …and the window's upper pair, round 2's: the band's new ceiling, 18 mm
+  // higher, under the shoulder chamfer with nothing between them but the
+  // frame. `square` interpolated on the taper the two rings either side
+  // already run.
+  { y: 0.568, halfWidth: 0.107, halfDepth: 0.218, square: 6.5 },
+  { y: 0.574, halfWidth: 0.106, halfDepth: 0.216, square: 6.45 },
+  { y: 0.578, halfWidth: 0.105, halfDepth: 0.212, square: 6.4 },
+  { y: 0.592, halfWidth: 0.096, halfDepth: 0.178, square: 4.2 },
+  { y: 0.602, halfWidth: 0.082, halfDepth: 0.140, square: 3.8 },
+]);
+
+/**
+ * The pad's top, pad-local metres — 502 mm off the ground, Wheel in Motion's
+ * and FloWithZo's own address, because it is the shins' contact plane and not
+ * a style decision (`riderClearance.test.ts`, `riderEuc.test.ts`).
+ */
+export const SEAL_PAD_TOP = 0.062;
+
+/**
+ * The cyan side shell, as a leg pad: one block a flank, in metres about
+ * `WHEEL.padCentreHeight`.
+ *
+ * q149's Option A. The brief's Must-Preserve list says "hot pink pads", but
+ * all three stills and the target render agree that the mass at shin height
+ * is **cyan** and that the pink is bars, wedges and edging around it — and
+ * the brief's own "what to avoid" names the wrong balance as the failure. So
+ * the pad is the cyan a stop above the body (`machineSealPad`, moulded
+ * plastic under the sun reading brighter than the frame it is bolted to) and
+ * the pink goes on the trim, where it is cheap and where it reads from
+ * behind. The alternative — `pads.colour = machineSealPink`, shrunk toward
+ * the shared pad's 300 mm — is on the record in §35.16.
+ *
+ * Its outer face is the shared pad's, ring for ring: `halfWidth` peaks at
+ * exactly `WHEEL.padThickness × 0.8` and never exceeds it, so the plane the
+ * rider's shins rest against has not moved. It runs **only 10 mm past the
+ * shared pad's nose**, well under FloWithZo's 50 mm, because the flank fore
+ * and aft of it is where the body's painted window has to read: a pad as long
+ * as his would cover the very thing the references are about.
+ */
+const SEAL_PAD_RINGS: readonly MachinePadRing[] = Object.freeze([
+  { y: -0.100, halfWidth: 0.017, halfDepth: 0.132, square: 3.2 },
+  { y: -0.082, halfWidth: 0.026, halfDepth: 0.152, square: 4.2 },
+  { y: -0.010, halfWidth: 0.028, halfDepth: 0.160, square: 4.8 },
+  { y: 0.042, halfWidth: 0.027, halfDepth: 0.154, square: 4.4 },
+  { y: SEAL_PAD_TOP, halfWidth: 0.018, halfDepth: 0.134, square: 3.2 },
+]);
+
+/**
+ * The pink, in radians about the flank's centre and metres of height.
+ *
+ * The bars sit **low**, under the side shell rather than on it: the pad's
+ * outer face stands 28 mm outboard of the body and a band at shin height
+ * would be a band behind a panel. Below the pad is where the photographs put
+ * the pedal-hanger bar anyway, and it is the one run of flank a chase camera
+ * sees uninterrupted.
+ *
+ * **Two patches a flank, not one**, for FloWithZo's reason: the suspension
+ * slider and the pedal hanger come through the body at the flank's centre,
+ * and a single band across them is a band with a strut standing in the middle
+ * of it. Both ends stop 0.33 rad short of rear centre, so the 100 mm status
+ * light keeps the dark margin §19.7 asks for — which matters more on this
+ * machine than on any before it, because pink is the critical rung's own
+ * neighbourhood in hue.
+ */
+const SEAL_BAR = { from: 0.300, to: 0.344 } as const;
+const SEAL_BAR_REAR = -1.24;
+const SEAL_BAR_NOSE = 1.24;
+const SEAL_BAR_GAP = 0.10;
+
+/**
+ * One flank's pink bar, authored for the rider's left (centre `u = 0`) and
+ * mirrored for the right by `θ → π − θ` with the ends swapped.
+ */
+function sealSpan(u0: number, u1: number, mirror: boolean): { u0: number; u1: number } {
+  return mirror ? { u0: Math.PI - u1, u1: Math.PI - u0 } : { u0, u1 };
+}
+
+function sealBar(mirror: boolean): readonly MachinePatch[] {
+  // `uByArc`, because a column spaced evenly in radians on a square-5.0
+  // section is nothing of the kind: over this span the first of six columns
+  // covers 64 mm of flank and the last 7 mm, and a bar whose relief bunches
+  // at one end reads as a moulding defect (the lesson Wheel in Motion's
+  // printed plate taught two looks up).
+  const shape = {
+    ...SEAL_BAR, lift: 0.018, sink: -0.008, uSegments: 6, vSegments: 3, uByArc: true, tint: SEAL_TRIM_PINK,
+  };
+  return [
+    { ...sealSpan(SEAL_BAR_REAR, -SEAL_BAR_GAP, mirror), ...shape },
+    { ...sealSpan(SEAL_BAR_GAP, SEAL_BAR_NOSE, mirror), ...shape },
+  ];
+}
+
+/**
+ * A bumper wedge at one lower corner — Wheel in Motion's orange fins, in
+ * pink and at the four corners the stills put them on.
+ *
+ * All of them at the **nose and tail**, so they push fore and aft and never
+ * outboard: the shins' contact plane is the pad's and is untouched. `taper`
+ * closes the span toward both ends, which is what makes a wedge rather than a
+ * belt.
+ */
+function sealWedge(centre: number, mirror: boolean): MachinePatch {
+  return {
+    ...sealSpan(centre - 0.74, centre - 0.32, mirror),
+    from: 0.268,
+    to: 0.352,
+    lift: 0.034,
+    sink: -0.010,
+    uSegments: 4,
+    vSegments: 4,
+    uByArc: true,
+    taper: 0.45,
+    tint: SEAL_TRIM_PINK,
+  };
+}
+
+/**
+ * Seal on a Wheel's machine — the ninth `MachineLook` row, and the sixth
+ * taken from a real rider's own wheel.
+ *
+ * His brief ranks the wheel third in what carries the identity and asks for
+ * the cyan-and-pink relationship rather than for a product; the three stills
+ * say what that is on his: a bright cyan frame in stacked slabs with dark
+ * rectangular voids cut through the flanks, hot pink on a bar low on each
+ * side, on wedges at the four lower corners and on a broad plate high on the
+ * nose, dark pedal plates, and a fat black tyre. What ships is the game's own
+ * fictional performance form wearing that relationship, in the §19.3 order of
+ * what carries at chase distance:
+ *
+ * - **A cyan body** — the colour field, free, and the identity colour
+ *   carried in `shell.colour` because the direction rule leaves no other
+ *   way: a saturated cyan cannot be painted onto a dark base, and everything
+ *   dark on this machine is reached by painting down from it.
+ * - **Cyan side shells** — the pads, a stop above the body, one block a
+ *   flank at shin height (q149's Option A).
+ * - **The pink, small and placed** — four bars low, two quarter bars across
+ *   the middle of the flank, four bumper wedges, two rear shoulder pieces and
+ *   the high-front plate, all tinted down from the pale
+ *   trim base, all in the one trim draw call, all `uByArc`, none of them
+ *   within 0.30 rad of the power ladder's column. Pink : cyan by area runs
+ *   0.27–0.55 across the six captures against the 0.23–0.44 the stills
+ *   measure — cyan dominant in every frame, which is the brief's "cyan must
+ *   stay dominant" as a number, with the top three-quarter the one to watch
+ *   at 1.8 : 1.
+ * - **A flat dark deck** on top — a block, not a saddle and not a handle: he
+ *   stands, and the handle branch is authored against the standard shell
+ *   height (§35.3 fact 12).
+ * - **The standard white lamp and the standard tail bar, at the standard
+ *   lamps' size** — both spans re-derived over his own section rather than
+ *   copied as angles, because his flanks are square 7.0 and an arc copied onto
+ *   a flat tail is a slab (round 1's fixes 1 and 2). The tail lamp is under
+ *   the status light where eight of the nine machines carry it, in the shared
+ *   red; the tyre plain black, a touch glossier.
+ *
+ * What the references show and this look deliberately does not build: the
+ * manufacturer's shell, panel design and plate; **the small white
+ * stickers on the real wheel's flanks** (§35.2's "not reproduced" list, the
+ * same class of thing M34 dropped); **the open frame's actual voids** — the
+ * target render translates them as a solid body and it is right to, because a
+ * void at chase distance is a greeble, so they are painted windows on a solid
+ * shell instead; the top handle (the branch's posts and bar come out ten and
+ * six millimetres over a profile topping out at 0.602); any ring on the tyre;
+ * **any red anywhere** (§35.3 fact 11 — a machine red collides with
+ * `statusCritical`, and the references put none on the wheel); and any
+ * wordmark, lettering or sticker of any kind.
+ */
+export const SEAL_ON_A_WHEEL_MACHINE_LOOK: MachineLook = {
+  machine: 'seal-on-a-wheel',
+
+  shell: {
+    colour: BLOCKOUT_COLOURS.machineSealCyan,
+    // Matte plate, and a roughness authored off its own capture rather than
+    // inherited, unlike the two performance wheels before it — both of those
+    // carry 0.50. Round 2 called the flank chrome-like off a column in
+    // `side.png` — 1.92 : 1 in luminance at a saturation spread of 0.478 over
+    // 90 px — and round 3 proved that column is `euc-pad-left` at
+    // `pads.roughness` 0.62, not this material: it is byte-identical at 0.50
+    // and 0.68, and a controlled A/B at `pads.roughness` 0.95 moves it
+    // (`seal-views/wheel-r3/ab/pad-roughness-095/`). What 0.68 is authored off
+    // is its own four-view capture — the specular sweep flattens side
+    // 3.22 → 3.07, back 5.71 → 5.07, top 5.99 → 5.70, front 7.06 → 6.07, and
+    // 17,047 px change in `side.png` alone. Round 2's acceptance number
+    // (≤ 1.35 at ≤ 0.25) is out of reach of any legal `pads.roughness`, let
+    // alone of this one: closing it is a lighting change, and this machine does
+    // not own the light. **Do not chase 0.78.** 0.68 sits above his own pads'
+    // 0.62 and below his tyre's 0.90, which is the order the materials are in:
+    // moulded plate over moulded pad over rubber.
+    roughness: 0.68,
+    profile: SEAL_SHELL_RINGS,
+  },
+
+  top: {
+    // The flat deck in the carry handle's place — the saddle slot, merged
+    // into the shell mesh and so free of draw calls, 18 mm proud of the crown
+    // and 14 mm wider than it, so it reads as a block sat on the body rather
+    // than a rounding of it. Its crown at 0.620 is well inside the
+    // crouched-hip ceiling the seated wheels are pinned under.
+    kind: 'saddle',
+    profile: [
+      { y: 0.596, halfWidth: 0.086, halfDepth: 0.144, square: 4.4 },
+      { y: 0.610, halfWidth: 0.096, halfDepth: 0.158, square: 5.0 },
+      { y: 0.620, halfWidth: 0.074, halfDepth: 0.130, square: 4.2 },
+    ],
+    tint: SEAL_DECK,
+  },
+
+  pads: {
+    // The cyan side shell itself, unprinted: the material *is* the colour,
+    // which is the one case the direction rule allows a look to skip a page
+    // for.
+    colour: BLOCKOUT_COLOURS.machineSealPad,
+    // Moulded plastic, not foam.
+    roughness: 0.62,
+    blocks: [SEAL_PAD_RINGS],
+    // Sixteen sections rather than the shared pad's twelve: this block is
+    // 320 mm long on a square-4.8 section, and at twelve its corners facet
+    // visibly at the front three-quarter PHOTO 3 is taken from.
+    segments: 16,
+    // Two planes, painted *down*. A saturated cyan near the top of the gamut
+    // takes the sun on its sky-facing cap over an albedo that is already
+    // bright and bleaches to white under ACES — the same reason
+    // `machineSealCyan` is authored a stop deeper than the render's lit value
+    // (`data/tuning.ts`, `redRiderSuit`'s precedent). The outer face — the
+    // one the shins press and the camera sees — keeps the base exactly.
+    paintPad: (geometry): void => {
+      const position = geometry.getAttribute('position');
+      const colour = geometry.getAttribute('color');
+      for (let i = 0; i < position.count; i += 1) {
+        const y = position.getY(i);
+        const lift = y > 0.052 ? 0.84 : y < -0.082 ? 0.66 : 1;
+        if (lift === 1) continue;
+        colour.setXYZ(i, colour.getX(i) * lift, colour.getY(i) * lift, colour.getZ(i) * lift);
+      }
+    },
+  },
+
+  tyre: {
+    // Road rubber, plain. The dark measured in all three stills is within a
+    // hair of `BLOCKOUT_COLOURS.tyre` already, there is no `paintTyre` hook
+    // and §34.14 forbids adding one.
+    roughness: 0.90,
+  },
+
+  trim: {
+    colour: SEAL_TRIM_BASE,
+    // No glow anywhere on the trim: the lamp and the status light are the two
+    // lights this machine has, and hot pink that glowed 22 mm from the
+    // critical rung would be a third.
+    emissive: 0x000000,
+    emissiveIntensity: 0,
+    roughness: 0.58,
+    metalness: 0.06,
+    patches: [
+      ...sealBar(false),
+      ...sealBar(true),
+      // The four bumper wedges, at the lower nose and lower tail corners.
+      sealWedge(Math.PI / 2, false),
+      sealWedge(Math.PI / 2, true),
+      sealWedge(-Math.PI / 2, false),
+      sealWedge(-Math.PI / 2, true),
+      // **The quarter bars** — round 2's, and the one placement finding the
+      // blind critics agreed on: the loudest pink form started 70–74 % of the
+      // way down the body where PHOTO 3 puts its crossbar at 41 %, because the
+      // bars above sit *under* the side shell. This pair carries the same
+      // relationship at the height the references actually read it, ≈ 43 %
+      // down, which is also what puts pink on the machine at chase distance —
+      // at 40 px of wheel the largest pink form was sixteen pixels wide.
+      //
+      // It rides the **quarters** rather than the flank's middle, and that is
+      // q149's doing: a bar across the mid-flank lands in y 0.340–0.502,
+      // |z| ≤ 0.160 — the cyan side shell's own volume — and would be 26 mm of
+      // relief standing behind a panel. From 0.36 rad off rear centre out to
+      // 1.10 the section keeps |z| > 0.17 the whole way, so the bar clears the
+      // pad's fore-aft edge everywhere along it; 0.36 rad is the file's own
+      // floor for the ladder's column, and 0.478 is 66 mm under the status
+      // light's lower face.
+      ...[false, true].map((mirror): MachinePatch => ({
+        ...sealSpan(-Math.PI / 2 + 0.36, -Math.PI / 2 + 1.10, mirror),
+        from: 0.430,
+        to: 0.478,
+        lift: 0.026,
+        sink: -0.010,
+        uSegments: 5,
+        vSegments: 3,
+        uByArc: true,
+        taper: 0.35,
+        tint: SEAL_TRIM_PINK,
+      })),
+      // A piece at each rear shoulder, so the pink reads from the chase
+      // camera and his wheel is not cyan-and-black from the one angle the
+      // player looks at it from. Wheel in Motion's high brackets, moved
+      // outboard of the ladder's column: the inner end stands 21 mm clear of
+      // the status light's own ends, and 0.36 rad clear of rear centre.
+      //
+      // **`lift` is 0.020 and not a bumper's 0.030 because of where this band
+      // sits.** From `from` to `to` it is almost all shoulder chamfer, where
+      // the section falls from `halfDepth` 0.234 to 0.178 — about one in one —
+      // and a lift along a normal tilted that far throws the piece out and up
+      // rather than standing it on a flank. At 0.030 its highest vertex stood
+      // 2.5 mm above the machine's crown and its widest 12 mm outboard of the
+      // widest ring anywhere on the body, which reads from the front
+      // three-quarter as a splayed fan showing its own rim against the sky.
+      // 0.020 is the same order as the flank bars' 0.018 on a surface falling
+      // away twice as fast; `sink` goes to −0.014 so the shortened rim still
+      // meets the shell well inside it. Nothing else moves, so the area, the
+      // triangles and the mirror are untouched — and the reseat pulls the pink
+      // *away* from the power ladder, which §19.7 is glad of
+      // (`sealOnAWheelMachine.test.ts` holds all of it).
+      ...[false, true].map((mirror): MachinePatch => ({
+        ...sealSpan(-Math.PI / 2 + 0.36, -Math.PI / 2 + 1.02, mirror),
+        from: 0.562,
+        to: 0.594,
+        lift: 0.020,
+        sink: -0.014,
+        uSegments: 4,
+        vSegments: 3,
+        uByArc: true,
+        taper: 0.50,
+        tint: SEAL_TRIM_PINK,
+      })),
+      // **The high-front plate** — the piece the target render under-serves
+      // and PHOTO 1 puts front and centre: a broad pink plate high on the
+      // nose, above the lamp, the largest single pink area on the machine.
+      // Its own mirror, on the centreline. `uByArc` and 0.36 rad rather than
+      // a flank span: the nose is where `u` compresses hardest on a square
+      // section, so this is 150 mm of arc where the same angle on the flank
+      // would be a third of the wheel.
+      {
+        u0: Math.PI / 2 - 0.36,
+        u1: Math.PI / 2 + 0.36,
+        from: 0.534,
+        to: 0.572,
+        lift: 0.014,
+        sink: -0.010,
+        uSegments: 8,
+        vSegments: 3,
+        uByArc: true,
+        taper: 0.30,
+        tint: SEAL_TRIM_PINK,
+      },
+    ],
+  },
+
+  headlight: {
+    // The standard white lamp, re-authored over his rings: the same 28 mm of
+    // height, sat between the 0.452 and 0.502 sections and kept at six rows
+    // because his nose is the most curved thing on the body.
+    //
+    // **±0.100 rad and not the standard's ±0.44, because an arc is not a
+    // width.** A patch spans an *angle*, and what that angle buys depends
+    // entirely on the section it is built over: at this lamp's rings his body
+    // is `halfWidth 0.118, square 7.0`, so `x = 0.118 · (sin Δ)^{2/7}` — a
+    // curve that is nearly flat across the centreline. Copying the standard
+    // shell's 0.44 gave a lens ±0.094 wide against its ±0.061: **54 % wider
+    // and 40 % more area**, the brightest thing on the machine at 78 % of the
+    // nose's cyan, and round 1's square-7.0 reshape grew it a further 12 %
+    // without anything saying so. The lamp's *colour* is not this look's to
+    // touch — `headlightMaterial` is one material across the nine machines —
+    // so its size is the only handle there is, and 0.100 is where the
+    // arithmetic puts the standard lamp's ±0.061 on his section.
+    patches: [{
+      u0: Math.PI / 2 - 0.100,
+      u1: Math.PI / 2 + 0.100,
+      from: 0.482,
+      to: 0.510,
+      lift: 0.004,
+      sink: -0.012,
+      uSegments: 6,
+      vSegments: 6,
+      taper: 0.40,
+    }],
+    emissive: BLOCKOUT_COLOURS.headlight,
+    emissiveIntensity: 1.4,
+  },
+
+  taillight: {
+    // The shared bar's own shape, re-spanned for his tail — the same field for
+    // field (`euc.ts`'s default), only the arc changed, so the lamp costs what
+    // every other machine's costs and carries the same shared red.
+    //
+    // **A look normally says nothing here and takes the default; his has to
+    // speak.** That default was narrowed on the standard section for a stated
+    // reason — at chase distance the machine's whole rear read as a red
+    // rectangle and the status light, the one the rider actually has to read,
+    // was competing with it. His tail is `square 7.0` and nearly flat across
+    // the centreline, so the default ±0.26 rad came out **±0.081**: 1.6 × the
+    // power ladder's width, where the standard bar is 0.86 × it. The
+    // hierarchy §19.7 exists to protect was inverted by the body, in silence.
+    // ±0.030 rad puts the lamp back at the standard bar's ±0.043 — the same
+    // `x = 0.118 · (sin Δ)^{2/7}` the head lamp is re-derived through.
+    patches: [{
+      u0: -Math.PI / 2 - 0.030,
+      u1: -Math.PI / 2 + 0.030,
+      from: 0.500,
+      to: 0.521,
+      lift: 0.004,
+      sink: -0.012,
+      uSegments: 6,
+      vSegments: 2,
+      taper: 0.45,
+    }],
+  },
+
+  paintShell: (geometry): void => {
+    const position = geometry.getAttribute('position');
+    const colour = geometry.getAttribute('color');
+    for (let i = 0; i < position.count; i += 1) {
+      const x = position.getX(i);
+      const y = position.getY(i);
+      const z = position.getZ(i);
+
+      // The deck, tinted at build and repainted identically here so the bands
+      // below cannot half-recolour it, and the shell's crown with it: above
+      // 0.594 the only rows that exist are the deck's three and the body's
+      // top ring, so this takes both and nothing else. The deck's *top face*
+      // then goes to the machine's darkest paint — the dark core the stills
+      // show between the cyan frame's arms, which is a recess and not
+      // bodywork. No triangles, and it reads from above and from behind.
+      //
+      // **`Math.abs(x) < 0.040` is what makes it a channel rather than a lid**,
+      // and round 1 is where that was measured: on a height bound alone the
+      // core took the *whole* top cap, `SEAL_CAVITY` came to 9.2 % of the
+      // machine's top view against `SEAL_DECK`'s 8.4 %, and the crown read
+      // from above as a black lid with a cyan rim — the opposite of the
+      // sentence above it and of the references, which show cyan arms arching
+      // over a narrow dark trough running nose to tail.
+      //
+      // **0.040 is a column count, not a width** — the bezel's lesson below,
+      // and it bites harder up here because the deck loft is **20** columns
+      // and not the shell's 28. The cap ring is `y 0.620, halfWidth 0.074,
+      // square 4.2`, which stands its columns at x 0.0740, 0.0723, 0.0669,
+      // 0.0575, 0.0423 and 0: the bound has 2 mm of room between the fore-and-
+      // aft poles and the next column inboard, and takes those two plus the
+      // cap fan's centre vertex. Reshape the deck and it must be re-derived;
+      // `sealOnAWheelMachine.test.ts` pins the three positions so that is a
+      // failing test rather than a silently black crown.
+      if (y > 0.594) {
+        const core = y > 0.612 && Math.abs(x) < 0.040;
+        const paint = core ? SEAL_CAVITY : SEAL_DECK;
+        colour.setXYZ(i, paint[0], paint[1], paint[2]);
+        continue;
+      }
+      // The nose recess the lamp sits in, under the high-front plate. Its x
+      // bound is the bezel's and moves with it, for the same arithmetic and on
+      // pain of the same silent collapse — see the note below.
+      if (z > 0.155 && Math.abs(x) < 0.082 && y > 0.470 && y < 0.535) {
+        colour.setXYZ(i, SEAL_CAVITY[0], SEAL_CAVITY[1], SEAL_CAVITY[2]);
+        continue;
+      }
+      // **The rear spine: the taillight surround and the status light's
+      // bezel.** §19.7, and the widest dark band on the machine — the base
+      // here is the identity colour itself, which is the Red Rider case
+      // exactly: a saturated field behind the ladder would bury the power
+      // ladder's only readable warning. The multipliers that reach it crush
+      // green and blue, which are the channels a cyan carries, and
+      // `sealOnAWheelMachine.test.ts` asserts on those rather than on the red
+      // every other machine's bezel test reads.
+      //
+      // **0.082 is a column count, not a width.** On a 28-column loft this
+      // bound selects the rear three columns — i = 20, 21, 22 — and it has to
+      // keep selecting three: two lose the field at the light's own ends,
+      // which is the one thing §19.7 exists to prevent, and the dark cannot
+      // reach four without running past `FX.statusLightWidth` onto the flank.
+      // Square 7.0 puts i = 20 / 22 at x 0.0768 and i = 19 / 23 at 0.0930, so
+      // the bound sits between them; round 2's two stops of `square` moved the
+      // pair outboard past the 0.075 this was authored at, which would have
+      // collapsed the bezel to the single centre column with every test still
+      // green. `sealOnAWheelMachine.test.ts` now pins the count.
+      if (z < -0.15 && Math.abs(x) < 0.082 && y > 0.400) {
+        colour.setXYZ(i, SEAL_CAVITY[0], SEAL_CAVITY[1], SEAL_CAVITY[2]);
+        continue;
+      }
+      // The skirt's foot: the machined structure under the bodywork, and the
+      // edge that keeps a bright cyan from running into the road. Set rather
+      // than multiplied, on the pair authored for it, so the line is hard.
+      if (y < 0.299) {
+        colour.setXYZ(i, SEAL_FOOT[0], SEAL_FOOT[1], SEAL_FOOT[2]);
+        continue;
+      }
+      // **The flank window** — the open frame of PHOTO 3, translated. The
+      // real machine is a cyan skeleton with rectangular voids and the black
+      // core behind it; a void is a greeble at chase distance and the target
+      // render is right to close it, so this is the void as paint: a **66 mm**
+      // band across the outboard face only, above the side shell where it can
+      // still be seen, hard-edged by the ring pairs at 0.502/0.508 and
+      // 0.568/0.574 and bounded fore and aft so it is a window in the flank
+      // rather than a belt round the machine.
+      //
+      // Round 1 measured it at 11.6 % of the machine's coloured height against
+      // ≈ 27 % in PHOTO 3 and every critic called it the missing feature, so
+      // round 2 takes it up to the ceiling the parts either side leave: 17.8 %
+      // of the 370 mm body. It cannot grow **down** — `SEAL_PAD_RINGS` top out
+      // at 0.502, one millimetre under the floor, and everything below that on
+      // the flank is behind the cyan side shell (q149's Option A) — and it
+      // stops at 0.571 because `SEAL_EDGE`'s shoulder chamfer owns what is
+      // above. The last nine points to PHOTO 3's 27 % are q149's, not this
+      // function's.
+      //
+      // **The fore-aft bound stays 0.165 and that is arithmetic, not inertia.**
+      // It cuts a body that narrows with height, so the columns it admits grow
+      // as the band climbs: after round 2's reshape i = 1 / 27 sit at z 0.1595
+      // on the widest ring and i = 2 / 26 at 0.1686 on the new 0.568 one. Any
+      // bound between those two selects three columns a flank at every ring —
+      // a rectangle. Above 0.1686 the top row takes a fourth column each end
+      // and the window is a trapezoid, which is what the round-1 record's
+      // proposed 0.176 would have built.
+      if (y > 0.505 && y < 0.571 && Math.abs(x) > 0.095 && Math.abs(z) < 0.165) {
+        colour.setXYZ(i, SEAL_WINDOW[0], SEAL_WINDOW[1], SEAL_WINDOW[2]);
+        continue;
+      }
+      // The shoulder chamfer, and only it — the one band brighter than the
+      // base, which is what keeps the box's top edge legible under a dark
+      // deck at chase distance (Adonisb2's lesson, on a shell as bright as
+      // this one).
+      //
+      // 0.576 rather than the 0.574 ring it stands above, because positions
+      // are float32 and float32(0.574) rounds *up*: `y > 0.574` would take the
+      // window's own upper frame ring and light the top edge of the dark band.
+      // The bound sits in the 4 mm between that ring and 0.578.
+      if (y > 0.576) {
+        colour.setXYZ(i, SEAL_EDGE[0], SEAL_EDGE[1], SEAL_EDGE[2]);
+      }
+    }
+  },
+
+  paintPedal: (geometry): void => {
+    const colour = geometry.getAttribute('color');
+    // Dark plates under his boots — the photographs are explicit that the
+    // pedal tread is dark and that the pink is the hanger and the bumper, so
+    // the one surface the chase camera sees most of this machine is black.
+    // Scaled, not overwritten, so the grip inset, the lip and the hinge keep
+    // every value relation `render/euc.ts` authored; a **fourth** distinct
+    // value, cooler than the three taken (Adonisb2 ×0.11, Wheel in Motion
+    // ×0.16, the Drunkard ×0.20), which is what a cyan machine's pedals
+    // should be and what four black-pedalled machines need in order not to be
+    // one machine.
+    for (let i = 0; i < colour.count; i += 1) {
+      colour.setXYZ(i, colour.getX(i) * 0.14, colour.getY(i) * 0.145, colour.getZ(i) * 0.15);
+    }
+  },
+};
+
 const MACHINE_LOOKS: readonly MachineLook[] = Object.freeze([
   STANDARD_MACHINE_LOOK,
   TROLLINA_MACHINE_LOOK,
@@ -3258,6 +3919,7 @@ const MACHINE_LOOKS: readonly MachineLook[] = Object.freeze([
   WHEEL_IN_MOTION_MACHINE_LOOK,
   DRUNKARD_MACHINE_LOOK,
   FLO_WITH_ZO_MACHINE_LOOK,
+  SEAL_ON_A_WHEEL_MACHINE_LOOK,
 ]);
 
 /**
