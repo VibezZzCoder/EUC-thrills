@@ -346,6 +346,18 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  *
  * What has moved, most recent first:
  *
+ *   - **The gloves pass (2026-09-11): the quad reserve 234,110 → 234,542
+ *     triangles, the split reserve, the single reserve and every draw call on
+ *     all three unmoved.** The owner rode the roster and found five hands
+ *     still "amputated looking", so Trollina, Red Rider, Adonisb2, Wheel in
+ *     Motion and The Drunkard got the full palm and the merged inboard thumb
+ *     Seal on a Wheel and FloWithZo already wore. Every part of it merges into
+ *     the hand mesh that was already there, which is why no call moved: the
+ *     rigs grew by 296 (Trollina), 416 (Red Rider), 416 (Adonisb2), 296
+ *     (Wheel in Motion) and 216 (The Drunkard) triangles, and the cop keeps
+ *     the old `GLOVE`. Only the quad reserve moved because its worst
+ *     four-subset is the only frame these five are all reachable in; the solo
+ *     and split reserves are still Cool Rider's and Maribel's.
  *   - **FloWithZo after the r2 blind gauntlet (2026-09-10): the quad reserve
  *     229,782 → 230,094 triangles, the split reserve, the single reserve and
  *     every draw call on all three unmoved.** The r2 round's fifteen
@@ -579,7 +591,7 @@ export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
  */
 export const QUAD_NON_LEVEL_RESERVE = deepFreeze({
   drawCalls: 270,
-  triangles: 234_110,
+  triangles: 234_542,
 });
 
 /**

@@ -310,3 +310,74 @@ test("the Drunkard's motion table is complete, finite, and never negative", () =
   // rather than an amplitude, and a value past 1 would invert the upper body.
   assert.ok(motion.overLean <= 1, `overLean is ${motion.overLean}`);
 });
+
+/**
+ * Every playable hand is a hand, and the thumb is inboard on both of them —
+ * the owner's 2026-09-11 ride ("five characters still have amputated looking
+ * hands", and "the same gloves improvements that seal and flo got").
+ *
+ * Three claims, and each is invisible in a screenshot from the flattering
+ * angle. **Reach**: a palm that closes 105 mm under the wrist is under a third
+ * of a 260 mm forearm where a hand is about three quarters of one, which is
+ * the measurement `MARIBEL_HAND` records as reading "like a stump with a
+ * bracelet". **Handedness**: the thumb is mirrored through `side`, and a build
+ * that mirrored it the wrong way is fully plausible on screen — the same class
+ * of defect as Maribel's aqua on the wrong leg, which no renderer check can
+ * see. **One mesh**: every extra loft merges into the hand that was already
+ * there, so a thumb costs triangles and never a draw call.
+ *
+ * The cop is the control: he still wears the short `GLOVE`, so a change that
+ * reached every look through the shared profile would fail here rather than
+ * quietly growing the chase rig.
+ */
+test('every playable rider has a full palm and an inboard thumb on both hands', () => {
+  for (const look of RIDER_LOOKS) {
+    if (look.id === 'cop') continue;
+    const rider = createPlaceholderRider(look);
+    try {
+      for (const [name, sign] of [['left', 1], ['right', -1]] as const) {
+        const hand = rider.root.getObjectByName(`rider-hand-${name}`) as THREE.Mesh;
+        assert.ok(hand?.isMesh, `${look.id} has no ${name} hand`);
+        const position = hand.geometry.getAttribute('position');
+        let tip = 0;
+        let inboard = 0;
+        for (let i = 0; i < position.count; i += 1) {
+          tip = Math.min(tip, position.getY(i));
+          // The thumb's own band, above the fingertips: the widest the palm
+          // itself ever gets is 46 mm, so anything past that is the thumb.
+          if (position.getY(i) < -0.030 && position.getY(i) > -0.110) {
+            inboard = Math.max(inboard, -sign * position.getX(i));
+          }
+        }
+        assert.ok(tip <= -0.120, `${look.id}'s ${name} hand closes at ${(tip * 1000).toFixed(0)} mm — a stub`);
+        // The one exception on the roster, and it is anatomy rather than an
+        // omission: the Drunkard's left hand is closed around a can, and its
+        // thumb is `drunkardHandGrip`'s third tube wrapping the can's flank.
+        // A second thumb standing free off a closed fist would be a spare.
+        if (look.id === 'drunkard' && name === 'left') continue;
+        assert.ok(inboard >= 0.050, `${look.id}'s ${name} hand has no thumb inboard of the palm (${(inboard * 1000).toFixed(0)} mm)`);
+      }
+    } finally {
+      rider.dispose();
+    }
+  }
+});
+
+/**
+ * The cop keeps the short blockout glove, and it is a decision rather than an
+ * oversight: nothing on the acceptance views is measured against a chase cop
+ * seen from behind at distance, and leaving him on `GLOVE` is what keeps that
+ * profile alive for this test to name.
+ */
+test('the cop still wears the short blockout glove', () => {
+  const rider = createPlaceholderRider(riderLook('cop'));
+  try {
+    const hand = rider.root.getObjectByName('rider-hand-left') as THREE.Mesh;
+    hand.geometry.computeBoundingBox();
+    const bounds = hand.geometry.boundingBox!;
+    assert.ok(bounds.min.y > -0.130, `his glove reaches ${(bounds.min.y * 1000).toFixed(0)} mm — he grew a hand`);
+    assert.ok(bounds.min.x > -0.050, 'his glove grew a thumb');
+  } finally {
+    rider.dispose();
+  }
+});

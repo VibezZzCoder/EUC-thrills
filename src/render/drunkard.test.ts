@@ -10,6 +10,7 @@ import { measureObject } from './renderCost.ts';
 import {
   COOL_RIDER_LOOK,
   DRUNKARD_CAN_VERTICES,
+  DRUNKARD_FREE_HAND_VERTICES,
   DRUNKARD_GLOVE_VERTICES,
   DRUNKARD_HAND_CAN,
   DRUNKARD_HAND_CAN_BANDS,
@@ -938,7 +939,13 @@ test('the can is in his left fist only, printed at the label\'s colours, gripped
     const right = rider.root.getObjectByName('rider-hand-right') as THREE.Mesh;
     const leftCount = left.geometry.getAttribute('position').count;
     const rightCount = right.geometry.getAttribute('position').count;
-    assert.equal(rightCount, DRUNKARD_GLOVE_VERTICES, 'the right hand carries something — the right is the paddle\'s (q105)');
+    // The right hand is the paddle's (q105) and carries no can and no grip —
+    // only its own fingers and thumb, which every rider grew on 2026-09-11.
+    assert.equal(
+      rightCount,
+      DRUNKARD_GLOVE_VERTICES + DRUNKARD_FREE_HAND_VERTICES,
+      'the right hand carries something — the right is the paddle\'s (q105)',
+    );
     assert.ok(leftCount > DRUNKARD_GLOVE_VERTICES + DRUNKARD_CAN_VERTICES + 60, 'the left hand carries no can, or no grip');
     const position = left.geometry.getAttribute('position');
     const colour = left.geometry.getAttribute('color');

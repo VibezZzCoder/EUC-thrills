@@ -814,7 +814,17 @@ const BOOT_SOLE = loftProfile([
   { y: 0, halfWidth: 0.062, halfDepth: RIDER_BLOCKOUT.bootLength * 0.45, square: 4.6 },
 ]);
 
-/** The glove: a cuff, a palm, and a closed end. Never a box with square corners. */
+/**
+ * The blockout glove: a cuff, a palm, and a closed end.
+ *
+ * **The cop's alone since 2026-09-11.** It is the shape the owner called
+ * "amputated looking" on Maribel's first hand and again, four riders later, on
+ * the rest of the roster: 105 mm long, widest at the *cuff*, and closing in a
+ * pinched tip with no thumb, which reads as a stump with a bracelet at any
+ * polygon count. Every playable look wears `FULL_GLOVE` or its own hand now;
+ * he keeps this because a chase cop is seen from behind at distance and
+ * nothing on the roster's acceptance views is measured against him.
+ */
 const GLOVE = loftProfile([
   { y: 0, halfWidth: 0.040, halfDepth: 0.035, square: 2.6 },
   { y: -0.022, halfWidth: 0.046, halfDepth: 0.040, square: 2.8 },
@@ -823,6 +833,57 @@ const GLOVE = loftProfile([
   { y: -0.098, halfWidth: 0.023, halfDepth: 0.020, square: 2.6 },
   { y: -0.105, halfWidth: 0, halfDepth: 0 },
 ]);
+
+/**
+ * The full glove: a short cuff, a wrist waist, a palm widest at the knuckles,
+ * and a rounded mitten end that reaches 143 mm and leans forward as it falls.
+ *
+ * Red Rider and Adonisb2 wear it. It is Seal on a Wheel's and FloWithZo's
+ * glove, which is the shape the owner accepted on 2026-09-11 when he asked for
+ * "the same gloves improvements that seal and flo got" on the older riders —
+ * **copied rather than imported**, because those two looks are sibling modules
+ * that import nothing from this file and a value import back would be a
+ * load-order cycle. Later edits stay local on each side; the shape is held
+ * equal by `redRider.test.ts`.
+ *
+ * The fix is the same one `MARIBEL_HAND` records below: the old `GLOVE` was
+ * widest at the cuff, round in section and 38 mm shorter, so the hand met the
+ * sleeve as a step and ended in a point.
+ */
+const FULL_GLOVE = loftProfile([
+  { y: 0, halfWidth: 0.040, halfDepth: 0.035, square: 2.6 },
+  { y: -0.016, halfWidth: 0.042, halfDepth: 0.036, square: 2.8 },
+  // The wrist: narrower than both the cuff above it and the palm below, so the
+  // cuff reads as a step in the outline rather than as a hump on a tube.
+  { y: -0.028, halfWidth: 0.034, halfDepth: 0.027, square: 2.8 },
+  { y: -0.036, halfWidth: 0.032, halfDepth: 0.025, square: 2.8 },
+  { y: -0.046, halfWidth: 0.040, halfDepth: 0.028, square: 2.9 },
+  { y: -0.058, halfWidth: 0.045, halfDepth: 0.029, square: 3.0 },
+  { y: -0.072, halfWidth: 0.046, halfDepth: 0.030, square: 3.0 },
+  { y: -0.098, halfWidth: 0.044, halfDepth: 0.030, square: 3.0, z: 0.004 },
+  { y: -0.120, halfWidth: 0.039, halfDepth: 0.027, square: 2.8, z: 0.009 },
+  { y: -0.135, halfWidth: 0.027, halfDepth: 0.020, square: 2.5, z: 0.012 },
+  { y: -0.143, halfWidth: 0, halfDepth: 0, z: 0.013 },
+]);
+
+/**
+ * The mirrored inboard thumb that goes with it, buried at the palm and rounded
+ * at its free end.
+ *
+ * `side` is +1 for the rider's left, and the `x` knots are negated through it
+ * so the thumb is **inboard on both hands** — the handedness rule, and the one
+ * defect in a mirrored build that no renderer check can see. It merges into
+ * the hand's own mesh (`RiderLook.build.hand`), so it costs triangles and never
+ * a draw call, and the merge happens before `paint.hand` runs, so a look's
+ * repaint covers it.
+ */
+const fullGloveThumb = (side: number): THREE.BufferGeometry => loftGeometry(loftProfile([
+  { y: -0.038, x: -side * 0.023, z: 0.006, halfWidth: 0.014, halfDepth: 0.017, square: 2.5 },
+  { y: -0.056, x: -side * 0.036, z: 0.012, halfWidth: 0.019, halfDepth: 0.021, square: 2.5 },
+  { y: -0.078, x: -side * 0.047, z: 0.022, halfWidth: 0.017, halfDepth: 0.020, square: 2.4 },
+  { y: -0.097, x: -side * 0.049, z: 0.027, halfWidth: 0.011, halfDepth: 0.014, square: 2.2 },
+  { y: -0.105, x: -side * 0.047, z: 0.029, halfWidth: 0, halfDepth: 0 },
+]), { radialSegments: 12 });
 
 // -- Trollina ----------------------------------------------------------------
 //
@@ -1004,15 +1065,34 @@ const TROLLINA_SLEEVE = loftProfile([
  * front capture showed two blobs floating at the ends of two tubes. This one
  * starts *narrower* than the wrist and widens into the palm, which is the shape
  * a wrist actually is.
+ *
+ * **Lengthened 101 → 137 mm on 2026-09-11**, with the finger mass curling
+ * forward as it falls and `trollinaThumb` merged into the same mesh: the owner
+ * rode the roster and found five hands still "amputated looking" and asked for
+ * the palm and thumb Seal on a Wheel and FloWithZo got. Hers stays slimmer and
+ * 6 mm shorter than their glove because it is a bare hand inside a fingerless
+ * glove, not a padded one, and the no-cuff rule above is untouched — the first
+ * ring is still narrower than the wrist it slides onto.
  */
 const TROLLINA_HAND = loftProfile([
   { y: 0, halfWidth: 0.028, halfDepth: 0.026, square: 2.4 },
   { y: -0.020, halfWidth: 0.034, halfDepth: 0.030, square: 2.7 },
   { y: -0.048, halfWidth: 0.036, halfDepth: 0.031, square: 2.8 },
-  { y: -0.078, halfWidth: 0.033, halfDepth: 0.028, square: 2.8 },
-  { y: -0.094, halfWidth: 0.020, halfDepth: 0.017, square: 2.6 },
-  { y: -0.101, halfWidth: 0, halfDepth: 0 },
+  { y: -0.070, halfWidth: 0.035, halfDepth: 0.029, square: 2.9 },
+  { y: -0.098, halfWidth: 0.034, halfDepth: 0.028, square: 2.9, z: 0.004 },
+  { y: -0.118, halfWidth: 0.030, halfDepth: 0.024, square: 2.8, z: 0.008 },
+  { y: -0.130, halfWidth: 0.020, halfDepth: 0.016, square: 2.5, z: 0.011 },
+  { y: -0.137, halfWidth: 0, halfDepth: 0, z: 0.012 },
 ]);
+
+/** Her thumb: `fullGloveThumb` at her hand's scale, and inboard on both sides. */
+const trollinaThumb = (side: number): THREE.BufferGeometry => loftGeometry(loftProfile([
+  { y: -0.034, x: -side * 0.019, z: 0.005, halfWidth: 0.011, halfDepth: 0.014, square: 2.5 },
+  { y: -0.050, x: -side * 0.029, z: 0.010, halfWidth: 0.015, halfDepth: 0.017, square: 2.5 },
+  { y: -0.070, x: -side * 0.038, z: 0.019, halfWidth: 0.014, halfDepth: 0.016, square: 2.4 },
+  { y: -0.088, x: -side * 0.040, z: 0.024, halfWidth: 0.009, halfDepth: 0.011, square: 2.2 },
+  { y: -0.095, x: -side * 0.038, z: 0.026, halfWidth: 0, halfDepth: 0 },
+]), { radialSegments: 12 });
 
 /** A bare neck: the same joint, thinner, and with no collar to disappear into. */
 const TROLLINA_NECK = loftProfile([
@@ -1430,6 +1510,8 @@ export const TROLLINA_LOOK: RiderLook = Object.freeze({
     // buried underneath it.
     head: Object.freeze([]),
   }),
+  // The thumb, merged into each hand's own mesh: triangles, never a draw call.
+  build: Object.freeze({ hand: Object.freeze([trollinaThumb]) }),
   extras: Object.freeze([
     Object.freeze({
       name: 'rider-hair',
@@ -2366,7 +2448,13 @@ function paintRedRiderHand(geometry: THREE.BufferGeometry): void {
     // finger roots, so the red splits into a knuckle bar and a finger band
     // instead of one mitten-shaped field. Two bands are what "articulated
     // glove" costs in this system: one skipped strip of paint.
-    if (y > -0.030 || y < -0.098) continue;
+    //
+    // The lower edge follows `FULL_GLOVE`'s fingers down (2026-09-11): it was
+    // −0.098, the old glove's taper, and on a hand that now closes at −0.143
+    // that left the whole finger mass black and the red stranded at the
+    // knuckles. −0.126 keeps the last two rings black, which is the tip of a
+    // glove, and the thumb merged below picks the bands up on its own rings.
+    if (y > -0.030 || y < -0.126) continue;
     if (y < -0.050 && y > -0.062) continue;
     const z = position.getZ(i);
     const radius = Math.hypot(position.getX(i), z);
@@ -2409,7 +2497,7 @@ export const RED_RIDER_LOOK: RiderLook = Object.freeze({
     head: HELMET,
     boot: BOOT,
     bootSole: BOOT_SOLE,
-    hand: GLOVE,
+    hand: FULL_GLOVE,
   }),
   // Trousers a hair under the top so the hem still reads on a rider who is one
   // colour from collar to ankle. The neck is the *gear* material at a modest
@@ -2950,6 +3038,9 @@ export const RED_RIDER_LOOK: RiderLook = Object.freeze({
     }),
   }),
   extras: Object.freeze([]),
+  // The thumb, merged into each hand's own mesh before `paint.hand` runs, so
+  // the knuckle and finger bands below reach it too.
+  build: Object.freeze({ hand: Object.freeze([fullGloveThumb]) }),
   paint: Object.freeze({
     thigh: paintRedRiderThigh,
     shin: paintRedRiderShin,
@@ -3471,7 +3562,7 @@ export const ADONISB2_LOOK: RiderLook = Object.freeze({
     head: HELMET,
     boot: BOOT,
     bootSole: BOOT_SOLE,
-    hand: GLOVE,
+    hand: FULL_GLOVE,
   }),
   // `seat` at 0.92 is load-bearing: `ADONISB2_TROUSER_TINT` paints the legs to
   // exactly suit × 0.92, so the trousers agree across the hip join. `legs` at
@@ -4046,6 +4137,8 @@ export const ADONISB2_LOOK: RiderLook = Object.freeze({
       build: adonisb2HelmetStripes,
     }),
   ]),
+  // The thumb, merged into each hand's own mesh: triangles, never a draw call.
+  build: Object.freeze({ hand: Object.freeze([fullGloveThumb]) }),
   paint: Object.freeze({
     thigh: paintAdonisb2Thigh,
     shin: paintAdonisb2Shin,
@@ -6301,6 +6394,16 @@ function paintWimBoot(geometry: THREE.BufferGeometry): void {
  * band no ring of the shared glove crossed (dead paint) and a cuff on one
  * ring between two unpainted ones (a hump, not an edge); the rows here are
  * what its bands land on. Four rings a hand, 80 triangles, no mesh.
+ *
+ * **The fingers were filled out and lengthened 105 → 143 mm on 2026-09-11**,
+ * and `fullGloveThumb` merged in below: the owner rode the roster and found
+ * five hands still "amputated looking" and asked for the palm and thumb Seal
+ * on a Wheel and FloWithZo got. Everything from the cuff to the knuckles is
+ * unmoved — those rings are the addresses `paintWimHand` paints against, and
+ * the flattening toward 2:1 is his glove's read — so what changed is only the
+ * mass below the knuckles, which used to pinch to a point 33 mm under them.
+ * The Drunkard no longer shares this profile (`DRUNKARD_GLOVE`): his left fist
+ * is closed around a can whose cream band is tuned to his fingertips.
  */
 const WIM_GLOVE = loftProfile([
   { y: 0, halfWidth: 0.040, halfDepth: 0.035, square: 2.6 },
@@ -6315,9 +6418,13 @@ const WIM_GLOVE = loftProfile([
   // The widest ring at the knuckles, flattened toward 2:1.
   { y: -0.058, halfWidth: 0.041, halfDepth: 0.022, square: 2.85 },
   { y: -0.072, halfWidth: 0.040, halfDepth: 0.022, square: 2.9 },
-  { y: -0.088, halfWidth: 0.033, halfDepth: 0.024, square: 2.8 },
-  { y: -0.098, halfWidth: 0.023, halfDepth: 0.020, square: 2.6 },
-  { y: -0.105, halfWidth: 0, halfDepth: 0 },
+  // The finger mass, curling forward as it falls and closing in a rounded
+  // mitten end rather than a point.
+  { y: -0.088, halfWidth: 0.039, halfDepth: 0.024, square: 2.9, z: 0.003 },
+  { y: -0.110, halfWidth: 0.036, halfDepth: 0.025, square: 2.9, z: 0.008 },
+  { y: -0.128, halfWidth: 0.030, halfDepth: 0.022, square: 2.7, z: 0.011 },
+  { y: -0.138, halfWidth: 0.019, halfDepth: 0.015, square: 2.4, z: 0.013 },
+  { y: -0.143, halfWidth: 0, halfDepth: 0, z: 0.014 },
 ]);
 
 function paintWimHand(geometry: THREE.BufferGeometry): void {
@@ -6834,6 +6941,9 @@ export const WHEEL_IN_MOTION_LOOK: RiderLook = Object.freeze({
   // Nothing bolted on: the lid's yellow was an extra for one pass and is
   // print now, which is one draw call fewer than Cool Rider's rig.
   extras: Object.freeze([]),
+  // The thumb, merged into each hand's own mesh before `paintWimHand` runs, so
+  // the cuff and knuckle bands reach its rings too.
+  build: Object.freeze({ hand: Object.freeze([fullGloveThumb]) }),
   paint: Object.freeze({
     torso: paintWimTorso,
     thigh: paintWimThigh,
@@ -8140,13 +8250,45 @@ export const DRUNKARD_HAND_CAN = Object.freeze({
 const DRUNKARD_DENSITY = Object.freeze({ limb: 18, torso: 30, head: 28, hand: 12 });
 
 /**
- * How many vertices the glove loft has in the merged hand: the can's
- * vertices follow it, so the hand painter knows which is which by index
- * rather than by an address shade. Derived from the same profile and
- * density the rig builds with, so it cannot drift from them.
+ * His fist, and **the one hand on the roster that stays a fist** (2026-09-11).
+ *
+ * This is Wheel in Motion's glove as it stood before that day's pass — the
+ * cuff step, the wrist waist, the flattened knuckles and the close at
+ * −105 mm — copied here rather than shared, because Wheel in Motion's fingers
+ * opened out to −143 mm and his may not follow. Three owner-accepted numbers
+ * hang off this tip: the can's cream band is 80 mm from its top so the
+ * boundary lands 30 mm *below the fingertips*, the grip's two finger bars end
+ * at the tip so the 85 mm of can under the fist is untouched, and the left
+ * hand's whole envelope is what `riderClearanceRidden.test.ts` holds 40 mm off
+ * his thigh. A longer mitten on the hand that is closed around a can would
+ * move all three and gain nothing that the can does not already hide.
+ *
+ * The free hand is the one the owner was looking at, and it opens instead —
+ * `drunkardFreeFingers` and `drunkardThumb` below, merged into that side only.
+ */
+const DRUNKARD_GLOVE = loftProfile([
+  { y: 0, halfWidth: 0.040, halfDepth: 0.035, square: 2.6 },
+  { y: -0.016, halfWidth: 0.044, halfDepth: 0.038, square: 2.8 },
+  { y: -0.022, halfWidth: 0.046, halfDepth: 0.040, square: 2.8 },
+  { y: -0.028, halfWidth: 0.043, halfDepth: 0.037, square: 2.8 },
+  { y: -0.036, halfWidth: 0.031, halfDepth: 0.024, square: 2.8 },
+  { y: -0.046, halfWidth: 0.036, halfDepth: 0.026, square: 2.85 },
+  { y: -0.058, halfWidth: 0.041, halfDepth: 0.022, square: 2.85 },
+  { y: -0.072, halfWidth: 0.040, halfDepth: 0.022, square: 2.9 },
+  { y: -0.088, halfWidth: 0.033, halfDepth: 0.024, square: 2.8 },
+  { y: -0.098, halfWidth: 0.023, halfDepth: 0.020, square: 2.6 },
+  { y: -0.105, halfWidth: 0, halfDepth: 0 },
+]);
+
+/**
+ * How many vertices the glove loft has in the merged hand: the free hand's
+ * fingers and thumb, and the can's vertices, follow it, so the hand painter
+ * knows which is which by index rather than by an address shade. Derived from
+ * the same profile and density the rig builds with, so it cannot drift from
+ * them.
  */
 const DRUNKARD_GLOVE_VERTICES = (() => {
-  const glove = loftGeometry(WIM_GLOVE, { radialSegments: DRUNKARD_DENSITY.hand });
+  const glove = loftGeometry(DRUNKARD_GLOVE, { radialSegments: DRUNKARD_DENSITY.hand });
   const count = glove.getAttribute('position').count;
   glove.dispose();
   return count;
@@ -8161,6 +8303,49 @@ function emptyPart(): THREE.BufferGeometry {
   geometry.setAttribute('uv', new THREE.Float32BufferAttribute([], 2));
   return geometry;
 }
+
+/**
+ * The free hand's fingers — **the hand the owner was looking at** (2026-09-11:
+ * five riders "still have amputated looking hands").
+ *
+ * His right hand carries neither the can nor the grip, so `DRUNKARD_GLOVE`'s
+ * fist left it a stub that pinched to a point 33 mm below the knuckles. This
+ * loft opens that side out: it starts buried inside the palm at −76 mm, keeps
+ * the fist's 2:1 flattening, curls forward as it falls and closes in a rounded
+ * end at −141 mm, which is Wheel in Motion's reach within two millimetres.
+ * `side` is +1 for the rider's left — the can's hand — and that side gets
+ * nothing, exactly as the can and the grip do in reverse.
+ */
+function drunkardFreeFingers(side: number): THREE.BufferGeometry {
+  if (side > 0) return emptyPart();
+  return loftGeometry(loftProfile([
+    { y: -0.076, halfWidth: 0.038, halfDepth: 0.023, square: 2.9, z: 0.002 },
+    { y: -0.098, halfWidth: 0.037, halfDepth: 0.024, square: 2.9, z: 0.006 },
+    { y: -0.118, halfWidth: 0.033, halfDepth: 0.023, square: 2.8, z: 0.011 },
+    { y: -0.133, halfWidth: 0.023, halfDepth: 0.017, square: 2.5, z: 0.014 },
+    { y: -0.141, halfWidth: 0, halfDepth: 0, z: 0.015 },
+  ]), { radialSegments: DRUNKARD_DENSITY.hand });
+}
+
+/**
+ * The free hand's thumb: the roster's own `fullGloveThumb`, inboard as it is
+ * everywhere else, and on the free side alone.
+ *
+ * The can hand already has a thumb and it is `drunkardHandGrip`'s third tube,
+ * wrapping the can's flank the way a thumb on a held can does. A second one
+ * standing free off a closed fist would be a spare.
+ */
+function drunkardThumb(side: number): THREE.BufferGeometry {
+  return side > 0 ? emptyPart() : fullGloveThumb(side);
+}
+
+/** How many vertices the free hand's two extra lofts add, derived as the glove's is. */
+const DRUNKARD_FREE_HAND_VERTICES = (() => {
+  const parts = [drunkardFreeFingers(-1), drunkardThumb(-1)];
+  const count = parts.reduce((total, part) => total + part.getAttribute('position').count, 0);
+  for (const part of parts) part.dispose();
+  return count;
+})();
 
 /**
  * The can's label bands, metres from its bottom and its top: a cream rim, a
@@ -8420,21 +8605,29 @@ function paintDrunkardBoot(geometry: THREE.BufferGeometry): void {
  * so the loft's own seam column survives and Maribel's `build.hand`
  * contract is untouched.
  */
-function paintDrunkardHand(geometry: THREE.BufferGeometry): void {
+function paintDrunkardHand(geometry: THREE.BufferGeometry, side: number): void {
   const position = geometry.getAttribute('position');
   const colour = geometry.getAttribute('color');
   const uv = geometry.getAttribute('uv');
   const blank = DRUNKARD_REGIONS.blank;
   const page = DRUNKARD_REGIONS.handCan;
+  // The merge order is the glove, then the free hand's fingers and thumb, then
+  // the can, then the grip — and two of those four are empty on either side, so
+  // the boundaries are per-hand. Painting the fingers and the thumb inside the
+  // glove's own branch is deliberate: the cuff and knuckle bands are addressed
+  // by height, and the thumb's rings cross the knuckle band where a thumb's own
+  // knuckle is.
+  const palm = DRUNKARD_GLOVE_VERTICES + (side < 0 ? DRUNKARD_FREE_HAND_VERTICES : 0);
+  const can = palm + (side > 0 ? DRUNKARD_CAN_VERTICES : 0);
   for (let i = 0; i < position.count; i += 1) {
     const y = position.getY(i);
     let tint: Tint;
-    if (i < DRUNKARD_GLOVE_VERTICES) {
+    if (i < palm) {
       const z = position.getZ(i);
       const cuff = y > -0.024 && y < -0.012;
       const knuckles = y < -0.040 && y > -0.062 && z > 0.012;
       tint = cuff ? DRUNKARD_HOP_TINT : knuckles ? DRUNKARD_GEAR_LINE_TINT : DRUNKARD_GEAR_TINT;
-    } else if (i < DRUNKARD_GLOVE_VERTICES + DRUNKARD_CAN_VERTICES) {
+    } else if (i < can) {
       tint = DRUNKARD_CREAM_TINT;
       const u01 = (uv.getX(i) - blank.u0) / (blank.u1 - blank.u0);
       const v01 = (uv.getY(i) - blank.v0) / (blank.v1 - blank.v0);
@@ -8521,7 +8714,7 @@ export const DRUNKARD_LOOK: RiderLook = Object.freeze({
     head: DRUNKARD_HAT,
     boot: BOOT,
     bootSole: BOOT_SOLE,
-    hand: WIM_GLOVE,
+    hand: DRUNKARD_GLOVE,
   }),
   // `seat` is an address, repainted to the trouser amber; `legs` at 1 because
   // every colour on them is paint; the sole a step under the gear boot.
@@ -8661,7 +8854,9 @@ export const DRUNKARD_LOOK: RiderLook = Object.freeze({
     }),
   ]),
   build: Object.freeze({
-    hand: Object.freeze([drunkardHandCan, drunkardHandGrip]),
+    // Order is load-bearing: `paintDrunkardHand` addresses the four blocks by
+    // index, and two of them are empty on either hand.
+    hand: Object.freeze([drunkardFreeFingers, drunkardThumb, drunkardHandCan, drunkardHandGrip]),
   }),
   paint: Object.freeze({
     torso: paintDrunkardTorso,
@@ -8708,6 +8903,7 @@ export {
   DRUNKARD_JERSEY,
   DRUNKARD_STRAP,
   DRUNKARD_GLOVE_VERTICES,
+  DRUNKARD_FREE_HAND_VERTICES,
   DRUNKARD_CAN_VERTICES,
 };
 
