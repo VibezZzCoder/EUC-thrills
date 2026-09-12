@@ -1,5 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
+import { sculptMaribelHair } from './maribelHair.ts';
 import { COOL_RIDER_LOOK } from './coolRiderLook.ts';
 export { COOL_RIDER_LOOK } from './coolRiderLook.ts';
 import { FLO_WITH_ZO_LOOK } from './floWithZoLook.ts';
@@ -5351,7 +5352,7 @@ function maribelHairCap(): THREE.BufferGeometry {
 function maribelHair(): THREE.BufferGeometry {
   const curtain = maribelHairCurtain();
   paintMaribelHair(curtain);
-  return curtain;
+  return sculptMaribelHair(curtain);
 }
 
 /**

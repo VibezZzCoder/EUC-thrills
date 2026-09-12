@@ -18,13 +18,31 @@ import { INPUT } from '../data/tuning.ts';
  * smoothing a smoothed thing and the two time constants would fight.
  */
 
-/** Continuous intent, held for as long as the player holds it. */
+/**
+ * Continuous intent, held for as long as the player holds it.
+ *
+ * `hopHeld` is the odd one and is deliberately here rather than in a channel of
+ * its own — M36 Phase 3, docs/PLANS.md §36.5's "one physical control, two
+ * meanings that remain separately observable". The Hop control keeps its
+ * pressed/buffered `hop` exactly; the *level* of the same control is a second,
+ * independent reading of it. Being a `HeldAction` is what buys the two
+ * properties the plan needs and nothing else in this file has to be taught:
+ * the per-device `Set<InputDevice>` makes it the OR of the devices rather than
+ * a Boolean two of them fight over, and every reset in the input contract
+ * (`clearDevice`, `clearDevices`, `clearAll`) already drops it with no new call
+ * site to forget.
+ *
+ * It is **not** a `BINDINGS` row. The settings screen offers one Hop row, and
+ * each device layer derives the level from whatever that row resolved to — a
+ * player who rebinds Hop to J moves both meanings with it.
+ */
 export type HeldAction =
   | 'accelerate'
   | 'brake'
   | 'steerLeft'
   | 'steerRight'
-  | 'crouch';
+  | 'crouch'
+  | 'hopHeld';
 
 /** One-shot intent. Edge-latched, buffered, consumed exactly once. */
 export type PressedAction = 'hop' | 'swing' | 'reset' | 'cameraCycle' | 'pause' | 'muteAudio';
@@ -104,6 +122,24 @@ export interface ActionSnapshot {
   readonly crouch: boolean;
   readonly hop: boolean;
   /**
+   * The Hop control's *level*, for M36's one-foot air pose (§36.5).
+   *
+   * A presentation intent, and the one field here the controller must never
+   * read: §36.5 makes physical equality a contract, so with identical throttle,
+   * steer, crouch and Hop presses, changing only this must leave position,
+   * velocity, heading, impulse, landing and lap time identical. It rides on the
+   * snapshot rather than in a parallel path for `muteAudio`'s reason — a second
+   * input channel would need its own buffering, its own blur handling and its
+   * own per-seat routing, and would drift from this one.
+   *
+   * Never a press. Holding it mints no `hop`, and consuming a `hop` does not
+   * release it. How long a hold has to last before the pose engages is the pose
+   * observer's question, not this layer's: `ActionState` has no fixed step, so
+   * a dwell measured here would depend on the sample rate and would make a
+   * scripted hold behave unlike a device's.
+   */
+  readonly hopHeld: boolean;
+  /**
    * Swing the paddle, M14's `F`.
    *
    * **An intent, not a mode.** Nothing here knows whether the player is riding
@@ -135,6 +171,7 @@ export const NEUTRAL_ACTIONS: ActionSnapshot = Object.freeze({
   steer: 0,
   crouch: false,
   hop: false,
+  hopHeld: false,
   swing: false,
   reset: false,
   cameraCycle: false,
@@ -148,6 +185,7 @@ export type ScriptedActions = Partial<{
   steer: number;
   crouch: boolean;
   hop: boolean;
+  hopHeld: boolean;
   swing: boolean;
   reset: boolean;
   cameraCycle: boolean;
@@ -193,6 +231,8 @@ export class ActionState {
   private scriptedThrottle: number | null = null;
   private scriptedSteer: number | null = null;
   private scriptedCrouch = false;
+  /** See `ActionSnapshot.hopHeld`. Scripted exactly as `crouch` is. */
+  private scriptedHopHeld = false;
 
   constructor(bufferSeconds: number = INPUT.actionBufferSeconds) {
     this.bufferSeconds = bufferSeconds;
@@ -292,6 +332,7 @@ export class ActionState {
     if (actions.throttle !== undefined) this.scriptedThrottle = clampAxis(actions.throttle);
     if (actions.steer !== undefined) this.scriptedSteer = clampAxis(actions.steer);
     if (actions.crouch !== undefined) this.scriptedCrouch = actions.crouch;
+    if (actions.hopHeld !== undefined) this.scriptedHopHeld = actions.hopHeld;
 
     for (const action of PRESSED_ACTIONS) {
       const value = actions[action];
@@ -334,6 +375,7 @@ export class ActionState {
     this.scriptedThrottle = null;
     this.scriptedSteer = null;
     this.scriptedCrouch = false;
+    this.scriptedHopHeld = false;
   }
 
   /**
@@ -367,6 +409,9 @@ export class ActionState {
       // retains its own intent and the action is their logical OR.
       crouch: this.isHeld('crouch') || this.scriptedCrouch,
       hop: this.isPending('hop', nowSeconds),
+      // The same control read as a level. Independent of the latch above: a
+      // consumed press leaves the hold standing, and the hold mints no press.
+      hopHeld: this.isHeld('hopHeld') || this.scriptedHopHeld,
       swing: this.isPending('swing', nowSeconds),
       reset: this.isPending('reset', nowSeconds),
       cameraCycle: this.isPending('cameraCycle', nowSeconds),

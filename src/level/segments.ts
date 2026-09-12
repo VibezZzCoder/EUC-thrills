@@ -34,12 +34,35 @@ import type { BoxCollider, SegmentSocket } from './plan.ts';
  * Nothing here may import three.js (invariant 1).
  */
 
-/** One lateral band of a different surface across the corridor. */
+/**
+ * One band of a different surface inside the corridor.
+ *
+ * Lateral by default and for the whole length of the segment, which is what a
+ * verge, a gravel margin or a gutter is. `fromS`/`toS` make it a **patch**
+ * instead: a few metres of something else at one place along the beat, which is
+ * what a boardwalk, a sign pad or a landing apron is. Both axes are half-open
+ * (`from <= x < to`), so two patches that share an edge do not overlap.
+ */
 export interface SurfaceBand {
   /** Lateral offsets from the centreline, metres. Positive is the rider's LEFT. */
   from: number;
   to: number;
   surface: SurfaceId;
+  /**
+   * Distance along the centreline where the patch starts, metres. Optional.
+   *
+   * A band with **neither** `fromS` nor `toS` runs the whole segment and is
+   * exactly what shipped before this field existed, so no world that does not
+   * declare one can move by a byte. A band with either of them is a patch, and
+   * a caller that cannot supply an `s` — the route generator and the validator
+   * both ask about a corridor's cross-section as a whole rather than about one
+   * station on it — sees it as absent. That is the conservative answer for
+   * them, because a patch is a small firm apron laid *on* the corridor's own
+   * surface and the corridor's own surface is the one the beat is rideable on.
+   */
+  fromS?: number;
+  /** Where the patch ends, metres. Optional; see `fromS`. */
+  toS?: number;
 }
 
 /**
@@ -160,6 +183,17 @@ export interface PlacedMarking {
   readonly dash: number;
   readonly gap: number;
   readonly paint: MarkingPaint;
+  /**
+   * The shortest surviving run the clipper will ship, metres.
+   *
+   * Carried here rather than read from `MARKINGS` at the clip, because it is
+   * the **role's** answer and the role does not survive into the plan: a lane
+   * line's offcut is litter at anything under two metres, and the bar of an `A`
+   * is 0.87 m of deliberate paint. `data/markings.ts` holds both numbers and
+   * `markingsOf` picks between them; every non-glyph role gets exactly the
+   * value the clipper used before this field existed.
+   */
+  readonly minRun: number;
 }
 
 /**
@@ -704,14 +738,27 @@ export function querySegment(placed: PlacedSegment, x: number, z: number): Segme
   };
 }
 
-/** Which surface a lateral offset lands on, honouring the bands. */
-export function surfaceAtLateral(spec: SegmentSpec, t: number): SurfaceId {
+/**
+ * Which surface a point in the corridor lands on, honouring the bands.
+ *
+ * `s` is optional because most callers genuinely do not have one: the
+ * validator asks what is under a lateral offset for the whole beat, and the
+ * generator asks whether a hazard's width is all on one surface. Omitting it
+ * skips every **ranged** band (`SurfaceBand.fromS`), which is the answer those
+ * two want and the reason no existing world's surfaces move.
+ */
+export function surfaceAtLateral(spec: SegmentSpec, t: number, s?: number): SurfaceId {
   const bands = spec.bands;
   if (bands !== undefined) {
     for (const band of bands) {
       const low = Math.min(band.from, band.to);
       const high = Math.max(band.from, band.to);
-      if (t >= low && t < high) return band.surface;
+      if (t < low || t >= high) continue;
+      if (band.fromS !== undefined || band.toS !== undefined) {
+        if (s === undefined) continue;
+        if (s < (band.fromS ?? -Infinity) || s >= (band.toS ?? Infinity)) continue;
+      }
+      return band.surface;
     }
   }
   return spec.surface;
@@ -805,6 +852,7 @@ export function markingsOf(
       dash: marking.broken === true ? MARKINGS.dashLength : 0,
       gap: marking.broken === true ? MARKINGS.dashGap : 0,
       paint: marking.paint ?? 'road',
+      minRun: marking.role === 'glyph' ? MARKINGS.minGlyphRunLength : MARKINGS.minRunLength,
     });
   }
 

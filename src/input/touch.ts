@@ -190,6 +190,12 @@ export class TouchInput {
         break;
       case 'hop':
         this.state.press('hop', this.options.now());
+        // The same button read as a level, for M36's one-foot air (§36.5).
+        // The press above is unchanged and still fires on the way down; this
+        // is a second reading of the same finger, released by `buttonUp` —
+        // which is where pointerup, pointercancel, lost capture and an element
+        // removed from under a finger all arrive.
+        this.state.setHeld('hopHeld', true, 'touch');
         break;
       case 'swing':
         this.state.press('swing', this.options.now());
@@ -206,6 +212,7 @@ export class TouchInput {
     if (this.buttonPointers.get(control) !== pointerId) return;
     this.buttonPointers.delete(control);
     if (control === 'crouch') this.state.setHeld('crouch', false, 'touch');
+    else if (control === 'hop') this.state.setHeld('hopHeld', false, 'touch');
   }
 
   /** Release whatever this pointer owns, wherever it ended up. */

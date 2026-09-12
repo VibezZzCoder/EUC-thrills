@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { SafeStorage, STORAGE_PREFIX, type StorageLike } from '../platform/storage.ts';
 import { CHALLENGE } from '../data/tuning.ts';
 import { GhostRecorder, decodeGhost, encodeGhost, type EncodedGhost } from '../simulation/ghost.ts';
-import { MAX_SEED_LENGTH } from '../level/levels.ts';
+import { MAX_SEED_LENGTH, createLevel } from '../level/levels.ts';
 import {
   DEFAULT_RECORDS,
   RECORDS_KEY,
@@ -815,4 +815,72 @@ test('two seeds are two sets of records, and neither can race the other', () => 
     },
   });
   assert.equal(smuggled.routes[second]?.ghost, null);
+});
+
+test('a park lap files under the park’s own content id, on the one key', () => {
+  /*
+   * **M36 Phase 5's records clause, and it needed no new schema either.** The
+   * park is offered beside BelVar from this milestone on, so a second lap
+   * venue's Last, Best, saved best and lap-phase ghost all had to land
+   * somewhere of their own — and they already do, because `Game` files a best
+   * under `levelPlan.id` and `coerceGhost` refuses a ghost whose own level
+   * does not match its key. The test above proves that for two seeds; this one
+   * proves it for two *places*, which is the case the venue chooser creates.
+   *
+   * **The ids are built rather than typed.** `createLevel` is what the chooser
+   * hands a venue to, so a content-id bump (`switchback-r1` → `-r2` at Phase 2)
+   * moves this test's expectation with the venue instead of failing it — and a
+   * venue that silently started sharing BelVar's id would fail the first
+   * assertion rather than quietly merging two venues' records.
+   */
+  const park = createLevel('switchback', '').id;
+  const belvar = createLevel('track', '').id;
+  assert.notEqual(park, belvar, 'two venues filing under one id would merge their records');
+
+  const store = new MemoryStore();
+  const records = new RecordsStore(new SafeStorage(store));
+  const ghostFor = (levelId: string): EncodedGhost => {
+    const recorder = new GhostRecorder();
+    for (let step = 0; step < 20; step += 1) {
+      recorder.record(step * 0.05, {
+        x: step, y: 0, z: 0, groundY: 0, headingY: 0, rollAngle: 0, speed: 6, crouch: 0,
+      });
+    }
+    const track = recorder.finish(levelId, 0.95);
+    assert.ok(track !== null);
+    return encodeGhost(track);
+  };
+
+  assert.equal(records.submit(record({
+    levelId: belvar, totalSeconds: 80, splits: [0, 80], ghost: ghostFor(belvar),
+  })), true);
+  // A *slower* lap at the park is still the park's first record: a venue's best
+  // is never judged against another venue's.
+  assert.equal(records.submit(record({
+    levelId: park, totalSeconds: 140, splits: [0, 140], ghost: ghostFor(park),
+  })), true);
+
+  assert.equal(records.best(park)?.totalSeconds, 140);
+  assert.equal(records.best(belvar)?.totalSeconds, 80);
+  assert.equal(records.best(park)?.ghost?.level, park);
+  assert.equal(records.best(belvar)?.ghost?.level, belvar);
+
+  // **One key, not two.** A venue is world identity and gets a row in the map
+  // the game has always had; a persistence key of its own would be a second
+  // thing to migrate, to clear and to run out of quota on.
+  const keys = [...store.values.keys()];
+  assert.deepEqual(keys, [`${STORAGE_PREFIX}${RECORDS_KEY}`]);
+  const saved = storedRecords(store) as { routes: Record<string, unknown> };
+  assert.deepEqual(Object.keys(saved.routes).sort(), [belvar, park].sort());
+
+  // And BelVar's ghost cannot be filed under the park: a translucent rider
+  // gliding through a hillside that is not the one they rode is a bug report.
+  const smuggled = coerceRecords({
+    routes: {
+      [park]: {
+        levelId: park, totalSeconds: 140, splits: [0, 140], setAt: '', ghost: ghostFor(belvar),
+      },
+    },
+  });
+  assert.equal(smuggled.routes[park]?.ghost, null);
 });

@@ -119,3 +119,24 @@ test('keys are shown to the player by name, not by code', () => {
   // than by a guess.
   assert.equal(keyLabel('IntlBackslash'), 'IntlBackslash');
 });
+
+test('the held Hop is not a row, so one key keeps driving both meanings', () => {
+  /*
+   * M36 Phase 3, §36.5. `hopHeld` is a `HeldAction` — and therefore a
+   * `BindableAction` by type — but it is deliberately absent from `BINDINGS`:
+   * the settings screen offers one Hop row, and each device layer derives the
+   * level from whatever that row resolved to. A row of its own would let a
+   * player bind the two meanings of one physical control to two keys, which is
+   * the opposite of what the plan asks for.
+   */
+  assert.equal(BINDINGS.some((spec) => spec.action === 'hopHeld'), false);
+
+  const tables = resolveBindings({ hopHeld: ['KeyK'] });
+  assert.equal(tables.held.KeyK, undefined, 'a hand-edited record cannot mint the row either');
+  assert.equal(tables.pressed.Space, 'hop', 'and Hop is untouched by the attempt');
+
+  // The rebind that matters: moving Hop moves the key both meanings read.
+  const moved = resolveBindings({ hop: ['KeyJ'] });
+  assert.equal(moved.pressed.KeyJ, 'hop');
+  assert.equal(moved.pressed.Space, undefined);
+});

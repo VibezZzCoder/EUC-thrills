@@ -1776,6 +1776,21 @@ export class EucController {
    */
   private justTookOff = false;
   private justTouchedDown = false;
+  /**
+   * True on exactly the step a *hop* launched. Written only by `launchHop`.
+   *
+   * `justTookOff` above cannot separate the two ways a flight begins, because
+   * `leaveGround` is deliberately one entry point for both — see `hopped`.
+   */
+  private justHopped = false;
+  /**
+   * The most recent spin's sweep reached zero. **Latched, not an edge**: it
+   * survives the landing that scores the spin and is cleared at the next
+   * takeoff. The reasoning is on `spinCompleted`.
+   */
+  private spinSwept = false;
+  /** Flights begun since this controller was built. Never reset — `flightIndex`. */
+  private flights = 0;
 
   // -- The ride style (M29) ---------------------------------------------------
   //
@@ -2115,6 +2130,12 @@ export class EucController {
     this.pedalStrike = 0;
     this.justTookOff = false;
     this.justTouchedDown = false;
+    // The trick facts belong to the flight that earned them, and a reset is a
+    // teleport: the ride that flew is over. `flights` is deliberately *not*
+    // cleared — it is an identity rather than a tally, and a number reused
+    // after a reset is the one way an observer's key can collide.
+    this.justHopped = false;
+    this.spinSwept = false;
 
     // A reset is a fresh run: the crash count and the wobble the rider had
     // built up both belong to a ride that no longer happened. Crash *recovery*
@@ -2170,6 +2191,7 @@ export class EucController {
 
     this.justTookOff = false;
     this.justTouchedDown = false;
+    this.justHopped = false;
     this.collisionImpact = 0;
 
     // -- 0a. A crash owns the whole step (M6) -------------------------------
@@ -2486,6 +2508,12 @@ export class EucController {
       const sweep = Math.min(this.spinRemaining, t.spinYawRate * dt);
       this.headingY += sweep * this.spinDirection;
       this.spinRemaining -= sweep;
+      // **Completion is recorded here and nowhere else** (M36). The last step
+      // of a sweep takes `sweep === spinRemaining`, so the subtraction above
+      // lands on exactly zero and this is the one place in the file that knows
+      // the π was delivered rather than merely asked for. It costs a boolean
+      // write inside a branch that was already taken; no number moves.
+      if (this.spinRemaining <= 0) this.spinSwept = true;
     }
 
     // -- 6. Roll ------------------------------------------------------------
@@ -3986,6 +4014,10 @@ export class EucController {
     this.hopWasHeld = false;
     this.spinRemaining = 0;
     this.spinArmed = false;
+    // The recovery is a teleport, and it happens whole seconds after the crash
+    // step the observer read the latch on. `flights` survives, as it does a
+    // reset: it is an identity, not a tally.
+    this.spinSwept = false;
     this.crouch = 0;
     this.tuck = 0;
     this.attackHold = 0;
@@ -4656,6 +4688,9 @@ export class EucController {
     this.compressTimer = 0;
     this.crouchHold = 0;
     this.hops += 1;
+    // The edge that says this flight is a hop and not a kerb (M36). Beside the
+    // counter on purpose: whatever increments `hops` is what raised it.
+    this.justHopped = true;
     // The preload the compression put into the spring comes back out.
     // "Suspension rebounds, tire leaves ground" (motion reference §12.2).
     this.suspensionVelocity += launch * t.hopSuspensionRebound;
@@ -4694,6 +4729,12 @@ export class EucController {
     this.airTime = 0;
     this.airApex = 0;
     this.justTookOff = true;
+    // A new flight supersedes the last one's trick record, and this is the
+    // first moment at which it can (M36). Clearing the spin latch at the
+    // *landing* instead would make it false on the only step an observer can
+    // read it — see `spinCompleted`.
+    this.spinSwept = false;
+    this.flights += 1;
   }
 
   /**
@@ -4984,6 +5025,29 @@ export class EucController {
   }
 
   /**
+   * True on exactly the step a **hop** launched — M36.
+   *
+   * `tookOff` above is true for both ways a flight can start, because
+   * `leaveGround` has one entry point on purpose and the physics is right to
+   * treat a hop and a ledge alike. An observer counting tricks is not: riding
+   * off a kerb, a drop or the lip of a ramp is not a jump the rider made, and
+   * paying for it would pay for riding in a straight line. This edge is
+   * written only by `launchHop`, which is reached only from the grounded press
+   * path, so a ledge launch raises `tookOff` and leaves this false.
+   *
+   * **Read `lastHopCharge` on this same step to get the charge that launch
+   * carried.** It is the crouch charge captured at the press, it is the number
+   * `launchHop` actually spent on the impulse, and the launch does not clear it
+   * — only a reset, a crash or a respawn does. Which is the second reason this
+   * edge exists: after a ledge launch `lastHopCharge` is stale (the charge of
+   * whatever hop came before it, or 0), and it is `hopped` that says whether
+   * reading it means anything.
+   */
+  get hopped(): boolean {
+    return this.justHopped;
+  }
+
+  /**
    * Whether a buffered hop may be claimed on the next controller step.
    *
    * The action buffer lives above simulation, but legality lives here. A Space
@@ -5011,6 +5075,45 @@ export class EucController {
    */
   get canAcceptSpin(): boolean {
     return this.airborne && !this.crashing && !this.spinArmed && this.verticalVelocity > 0;
+  }
+
+  /**
+   * The 180's sweep was delivered in full — M36. **A latch, not an edge.**
+   *
+   * Set on the step `spinRemaining` reaches zero, and true from there until the
+   * next takeoff. Three consequences, each of which is the reason for the
+   * shape:
+   *
+   *   - **Arming is not completing.** `spins` and `spinning` move at the
+   *     airborne press (`stepHop`), so a quarter-turn that ran out of air
+   *     already counts as a spin and reads false here. This is the only fact
+   *     in the file that says the π was actually swept.
+   *   - **It survives the landing that scores it.** The sweep is spent in
+   *     section 5 and the touchdown is decided in section 8b, so a spin can
+   *     finish and land on one step — and `land()` clears `spinArmed` and
+   *     `spinRemaining` on that same step, which is why a completed 180 and no
+   *     spin at all are indistinguishable there. A flag cleared at the landing
+   *     would therefore be false on the only step an observer watching
+   *     `touchedDown` can read it. It is cleared at the next `leaveGround`
+   *     instead: the first moment the answer could belong to a different
+   *     flight.
+   *   - **A crash does not clear it.** `beginCrash` leaves it alone
+   *     deliberately. A rider who completes the rotation and then wads the
+   *     landing has still turned the machine around; whether that earns
+   *     anything is a judgement for the observer, made from
+   *     `lastLandingQuality` and `crashed` beside this, and not a judgement
+   *     this file is entitled to make by hiding the fact.
+   *
+   * **"This flight" is exactly the window `[takeoff, next takeoff)`.** On the
+   * ground between flights it still reports the flight that just ended, which
+   * is precisely what makes it readable on the touchdown edge and for as long
+   * afterwards as the rider stays down. `reset` (quick reset, checkpoint
+   * restore, a new run) and the crash respawn clear it, because both put the
+   * rider somewhere else and end the ride that earned it. `flightIndex` below
+   * is what tells one flight's answer from the next one's.
+   */
+  get spinCompleted(): boolean {
+    return this.spinSwept;
   }
 
   /** True while the rider is off the wheel. `app/Game.ts` frames the camera. */
@@ -5096,6 +5199,119 @@ export class EucController {
    */
   get lateralLimit(): number {
     return this.lateralLimitG;
+  }
+
+  // -- Where the ground is, for a pose that has to be back before it (M36) --
+  //
+  // `docs/PLANS.md` §36.5 lets an air pose start only when there is a readable
+  // window to strike the shape *and return from it*, and the window is a
+  // question about the ground: how far below the wheel it is, how fast the
+  // wheel is moving towards it, and therefore how long is left. All three
+  // answers were already computed by the step that just ran — the ground under
+  // the contact patch is sampled once per step inside `advance` and read back
+  // into `groundY` — so none of these costs a query, an allocation, or a
+  // second opinion about where the ground is. A pose that cast its own ray
+  // would be the same ray traced twice and the two could disagree (master
+  // §5.4), which is the same rule `curbHeightAhead` above is here for.
+
+  /**
+   * Height of the contact patch above the ground under the wheel, metres.
+   *
+   * `snapshot().airHeight` without the snapshot. Exactly 0 on the ground — the
+   * grounded branch assigns `y = groundY`, the same double, so this is a
+   * zero you may compare against — and 0 through a crash, which pins the wheel
+   * to the ground every step. A non-zero reading is a flight in progress and
+   * nothing else.
+   *
+   * The ground it measures against is the one under the **current** XZ, one
+   * sample per step, so it tracks a takeoff ramp falling away underneath a
+   * rider rather than the height they left at.
+   */
+  get groundClearance(): number {
+    return this.y - this.groundY;
+  }
+
+  /**
+   * The wheel's vertical rate, m/s, positive up.
+   *
+   * The snapshot's `verticalVelocity`, readable without the allocation, for
+   * the reason the block above gives. Named apart from the private field it
+   * reads because a getter cannot share its field's name — the `stumbleCount`
+   * precedent.
+   *
+   * Zero whenever the wheel is on the ground: the landing writes it to zero,
+   * and so do `reset` and the respawn. The one exception is a crash entered in
+   * mid-air, which keeps the rate the flight had at the moment the rider left
+   * the wheel — that is why `secondsToTouchdown` refuses to answer while
+   * `crashed` is true rather than projecting from it.
+   */
+  get verticalRate(): number {
+    return this.verticalVelocity;
+  }
+
+  /**
+   * Seconds of air left, projected — the "is there room for this" fact.
+   *
+   * The ballistic answer built from the two getters above and gravity: with
+   * the wheel `h` metres up and climbing at `v`, this is
+   * `(v + sqrt(v² + 2gh)) / g`, the positive root of `h + vt − gt²/2 = 0`. At
+   * the apex that is the fall alone; on the way up it includes the rest of the
+   * climb, which is what makes it answerable at the moment a pose would start.
+   *
+   * **The ground it falls to moves with the flight.** The grade under the
+   * wheel is read from the sampled normal along the frozen air travel, and the
+   * wheel's own horizontal speed turns it into the ground's vertical rate —
+   * subtracted from the wheel's, because a descent that falls away beneath a
+   * flight buys air and a rising face spends it. Exactly zero on the flat, so
+   * every flat reading is the plain ballistic form it always was. It is still
+   * an estimate and still promises nothing: the grade is the one under the
+   * wheel now, and a face that steepens further along changes the answer. So
+   * read it every step rather than latching it at takeoff, and keep the margin
+   * on the caller's side — a pose that needs `x` seconds should ask for more
+   * than `x`. Nothing here decides that, because the margin belongs to
+   * whatever is being posed and not to the wheel.
+   *
+   * Zero while grounded and zero while crashed, so "no flight" and "no time"
+   * are one answer and a caller needs one test instead of two. A tuning with
+   * no gravity returns `Infinity` rather than dividing by zero, which is the
+   * honest reading of a world nothing falls in.
+   */
+  get secondsToTouchdown(): number {
+    if (this.crashing || !this.airborne) return 0;
+    const gravity = this.tuning.gravity;
+    if (!(gravity > 0)) return Infinity;
+    const height = Math.max(0, this.y - this.groundY);
+    // The ground under the wheel is moving too: along the frozen air travel
+    // the sampled normal gives the surface's gradient, and the wheel's
+    // horizontal speed turns it into the ground's own vertical rate. A
+    // descent falls away beneath the flight (the plain form read 0.39 s of
+    // a 0.60 s flight on a 7 % grade at 15 m/s), a rising face comes up to
+    // meet it. Zero on the flat.
+    const normal = this.ground.normal;
+    const gradient = normal.y > 1e-4
+      ? -(normal.x * this.airDirX + normal.z * this.airDirZ) / normal.y
+      : 0;
+    const rate = this.verticalVelocity - Math.abs(this.speed) * gradient;
+    return (rate + Math.sqrt(rate * rate + 2 * gravity * height)) / gravity;
+  }
+
+  /**
+   * Flights begun since this controller was built — M36.
+   *
+   * **Identity, not a tally.** It counts every takeoff, hop and ledge alike,
+   * and it is never cleared: not by `reset`, not by the crash respawn. Two
+   * flights in the life of one controller therefore never share a number, and
+   * an observer holding a pending flight's key cannot have it collide with a
+   * flight from after a quick reset — which is exactly what a counter zeroed
+   * on `reset` would do. `hops` and `landings` on the snapshot are the tallies,
+   * and both do go back to zero, which is why neither can serve as a key.
+   *
+   * 0 until the first takeoff. Read on the `tookOff` edge it is the number of
+   * the flight that just began; read at any other time it is the number of the
+   * most recent one.
+   */
+  get flightIndex(): number {
+    return this.flights;
   }
 
   // -- What the composition root may push in (M14) --------------------------

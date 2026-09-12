@@ -5,7 +5,9 @@ import { CHALLENGE, TRACK_DAY } from '../data/tuning.ts';
 import { createSliceLevel } from '../level/sliceLevel.ts';
 import { TRACK, createTrackLevel } from '../level/trackLevel.ts';
 import type { LapCourse, LevelPlan } from '../level/plan.ts';
+import type { LandingQuality } from './EucController.ts';
 import { LapEnvelope, TrackDayRun, type TrackDayEvent, type TrackDayStepInput } from './trackDay.ts';
+import type { TrickStepInput } from './trickEvents.ts';
 
 /**
  * A track day, tested on the circuit it is for.
@@ -835,4 +837,270 @@ test('the ring is closed, so the seam at the line is a span like any other', () 
     Math.abs(course.length - 930) < 5,
     `the lap measures ${course.length.toFixed(1)} m against the 930 m the layout states`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Trick events — M36 §36.6
+//
+// The session's terms, not the observer's: `trickEvents.test.ts` holds every
+// credit rule, and what is asserted here is the five things a *track day*
+// says about them — the out lap earns nothing, a voided lap earns, a quick
+// reset keeps the afternoon and loses the flight, a new session inherits
+// none of it, and a pause counts nothing because a paused game is not
+// stepped at all.
+// ---------------------------------------------------------------------------
+
+/** One flight's facts, step by step, in the shape the controller reports them. */
+function trickFlight(options: {
+  id?: number;
+  hopped?: boolean;
+  charge?: number;
+  air?: number;
+  spin?: boolean;
+  foot?: boolean;
+  landing?: LandingQuality;
+} = {}): TrickStepInput[] {
+  const air = Math.max(2, options.air ?? 8);
+  const base = {
+    flightIndex: options.id ?? 1,
+    tookOff: false,
+    hopped: false,
+    hopCharge: 0,
+    spinCompleted: false,
+    oneFootQualified: false,
+    touchedDown: false,
+    landingQuality: 'none' as LandingQuality,
+    crashed: false,
+    reset: false,
+  };
+  const steps: TrickStepInput[] = [{
+    ...base,
+    tookOff: true,
+    hopped: options.hopped ?? false,
+    hopCharge: options.hopped === true ? options.charge ?? 1 : 0,
+  }];
+  // The two latching facts latch, exactly as the controller's and the pose's
+  // do — see `trickEvents.test.ts` for why that shape is the honest one.
+  const flying = { ...base, spinCompleted: options.spin === true, oneFootQualified: options.foot === true };
+  for (let step = 1; step < air - 1; step += 1) steps.push({ ...flying });
+  steps.push({ ...flying, touchedDown: true, landingQuality: options.landing ?? 'clean' });
+  return steps;
+}
+
+/** Ride a flight while the rider keeps travelling, feeding both channels. */
+function rideFlight(
+  session: TrackDayRun,
+  rails: Rails,
+  flight: readonly TrickStepInput[],
+  options: { speed?: number; offset?: number } = {},
+): void {
+  const speed = options.speed ?? 20;
+  for (const tricks of flight) {
+    rails.advance(speed * STEP);
+    session.step(STEP, {
+      ...inputAt(rails.pose(options.offset ?? 0), speed),
+      // The composition root derives both from the same touchdown, so the
+      // fixture does too: a landing the session counts and a landing the
+      // observer sees must be one event.
+      landed: tricks.touchedDown,
+      landingClean: tricks.touchedDown && tricks.landingQuality === 'clean',
+      tricks,
+    });
+  }
+}
+
+test('the out lap earns no trick events, and the lap does', () => {
+  const session = run();
+  session.arm();
+  const rails = new Rails(0);
+  // A perfectly good charged 180 with a foot out, ridden to the line before
+  // the clock has started. A pit exit is not the afternoon.
+  rideFlight(session, rails, trickFlight({ hopped: true, spin: true, foot: true }));
+  assert.equal(session.state.phase, 'outLap');
+  assert.deepEqual(session.state.tricks, {
+    cleanLandings: 0,
+    chargedHops: 0,
+    spinsLanded: 0,
+    oneFootAirs: 0,
+  });
+
+  ride(session, rails, TRACK.lineAt);
+  assert.equal(session.state.phase, 'running', 'the line did not open a lap');
+  rideFlight(session, rails, trickFlight({ id: 2, hopped: true, spin: true, foot: true }));
+  assert.deepEqual(session.state.tricks, {
+    cleanLandings: 1,
+    chargedHops: 1,
+    spinsLanded: 1,
+    oneFootAirs: 1,
+  });
+});
+
+test('a voided lap still counts its trick events', () => {
+  const session = run();
+  const rails = outLap(session);
+  // Out through the barrier and back, which is the off-course void — and the
+  // rider went on riding, which is what §36.6 means by "the afternoon's
+  // events": they landed the 180 whether or not the lap stood.
+  ride(session, rails, 40, { offset: 40 });
+  assert.equal(session.state.voided, 'off-course');
+  rideFlight(session, rails, trickFlight({ hopped: true, spin: true, foot: true }));
+  assert.deepEqual(session.state.tricks, {
+    cleanLandings: 1,
+    chargedHops: 1,
+    spinsLanded: 1,
+    oneFootAirs: 1,
+  });
+
+  // And through the line, so the void is spent and the counts are still there.
+  ride(session, rails, course.length);
+  assert.equal(session.state.lapsCounted, 0, 'the voided lap counted');
+  assert.equal(session.state.tricks.spinsLanded, 1);
+});
+
+test('a quick reset keeps the afternoon and loses the flight in the air', () => {
+  const session = run();
+  const rails = outLap(session);
+  rideFlight(session, rails, trickFlight({ hopped: true, spin: true, foot: true }));
+  const earned = session.state.tricks;
+  assert.deepEqual(earned, { cleanLandings: 1, chargedHops: 1, spinsLanded: 1, oneFootAirs: 1 });
+
+  // Airborne with a completed 180 and a foot out, and then `R`.
+  const interrupted = trickFlight({ id: 2, air: 40, spin: true, foot: true });
+  for (const tricks of interrupted.slice(0, 20)) {
+    rails.advance(20 * STEP);
+    session.step(STEP, { ...inputAt(rails.pose(), 20), tricks });
+  }
+  session.restart();
+  assert.deepEqual(session.state.tricks, earned, 'the reset spent the afternoon');
+
+  // The landing that never happened cannot be claimed after the fact: the
+  // rider is back on the run-up, and a touchdown with no flight behind it is
+  // worth nothing. Put them on the line as the run-up reset very nearly does,
+  // so the assertion is made from `running` rather than from an out lap that
+  // would have refused it anyway.
+  const online = new Rails(TRACK.lineAt);
+  for (let step = 0; step < 20; step += 1) session.step(STEP, inputAt(online.pose(), 0));
+  assert.equal(session.state.phase, 'running');
+  session.step(STEP, {
+    ...inputAt(online.pose(), 0),
+    landed: true,
+    landingClean: true,
+    tricks: {
+      ...interrupted[interrupted.length - 1],
+      touchedDown: true,
+      landingQuality: 'clean',
+    },
+  });
+  assert.deepEqual(session.state.tricks, { ...earned, cleanLandings: 2 });
+});
+
+test('a new session inherits no trick events, and a finished one freezes them', () => {
+  const session = run();
+  const rails = outLap(session);
+  rideFlight(session, rails, trickFlight({ hopped: true, spin: true, foot: true }));
+  ride(session, rails, course.length);
+
+  const result = session.end()!;
+  assert.deepEqual(result.tricks, {
+    cleanLandings: 1,
+    chargedHops: 1,
+    spinsLanded: 1,
+    oneFootAirs: 1,
+  });
+  // Frozen with the rest of the card, and `cleanLandings` is the session's own
+  // count rather than a second one — §36.6's one-place rule.
+  assert.equal(result.tricks.cleanLandings, result.cleanLandings);
+
+  // A session that has ended counts nothing more, however the rider rides.
+  rideFlight(session, rails, trickFlight({ id: 9, hopped: true, spin: true, foot: true }));
+  assert.deepEqual(session.end()!.tricks, result.tricks);
+
+  session.arm();
+  assert.deepEqual(session.state.tricks, {
+    cleanLandings: 0,
+    chargedHops: 0,
+    spinsLanded: 0,
+    oneFootAirs: 0,
+  });
+  // And the flight that was in the air when the last session ended cannot land
+  // into this one.
+  const fresh = new Rails(0);
+  ride(session, fresh, TRACK.lineAt + 4);
+  rails.advance(20 * STEP);
+  session.step(STEP, {
+    ...inputAt(fresh.pose(), 20),
+    landed: true,
+    landingClean: false,
+    tricks: {
+      ...trickFlight({ id: 9, spin: true, foot: true })[0],
+      tookOff: false,
+      touchedDown: true,
+      landingQuality: 'clean',
+      spinCompleted: true,
+      oneFootQualified: true,
+    },
+  });
+  assert.equal(session.state.tricks.spinsLanded, 0);
+  assert.equal(session.state.tricks.oneFootAirs, 0);
+});
+
+test('a pause needs no rule: a session that is not stepped counts nothing', () => {
+  const session = run();
+  const rails = outLap(session);
+  const flight = trickFlight({ hopped: true, spin: true, foot: true });
+  // The pause is `Game` declining to run the loop at all, so the honest
+  // fixture is the steps simply not happening. What must be true is that the
+  // half-flown flight is still there when the loop comes back — a pause is
+  // not a reset, and it must not cost the rider the hop they were in.
+  for (const tricks of flight.slice(0, 4)) {
+    rails.advance(20 * STEP);
+    session.step(STEP, { ...inputAt(rails.pose(), 20), tricks });
+  }
+  const paused = session.state.tricks;
+  assert.deepEqual(paused, { cleanLandings: 0, chargedHops: 1, spinsLanded: 0, oneFootAirs: 0 });
+
+  for (const tricks of flight.slice(4)) {
+    rails.advance(20 * STEP);
+    session.step(STEP, {
+      ...inputAt(rails.pose(), 20),
+      landed: tricks.touchedDown,
+      landingClean: tricks.touchedDown,
+      tricks,
+    });
+  }
+  assert.deepEqual(session.state.tricks, {
+    cleanLandings: 1,
+    chargedHops: 1,
+    spinsLanded: 1,
+    oneFootAirs: 1,
+  });
+});
+
+test('a session with no trick facts behaves exactly as it did before M36', () => {
+  // Every test above this section builds a `TrackDayStepInput` with no
+  // `tricks` member, which is the whole of this claim — stated once rather
+  // than left implicit, because the optional member is what keeps
+  // `challenge.ts`'s side of the family unwidened.
+  const session = run();
+  const rails = outLap(session);
+  // Ridden with landings and no trick facts at all, which is also the case
+  // that pins the *other* half of the summary: clean landings are the
+  // session's own count and reach the card even when nothing else did.
+  for (let step = 0; step < 600; step += 1) {
+    rails.advance(20 * STEP);
+    session.step(STEP, {
+      ...inputAt(rails.pose(), 20),
+      landed: step % 200 === 0,
+      landingClean: true,
+    });
+  }
+  ride(session, rails, course.length);
+  const result = session.end()!;
+  assert.equal(result.cleanLandings, 3, 'the fixture landed nothing');
+  assert.deepEqual(result.tricks, {
+    cleanLandings: result.cleanLandings,
+    chargedHops: 0,
+    spinsLanded: 0,
+    oneFootAirs: 0,
+  });
 });

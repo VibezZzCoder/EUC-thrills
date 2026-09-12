@@ -323,3 +323,35 @@ test('listeners see both ends of a transition and can unsubscribe', () => {
   state.goTo('freeRide');
   assert.equal(moves.length, 2);
 });
+
+test('the venue chooser needed no transition, and both its panels still lead where they did', () => {
+  /*
+   * **M36 Phase 5's answer to "is a transition genuinely missing".** It is
+   * not, and the reason is a design decision rather than an accident: picking
+   * a place swaps the world *behind* the open panel and navigates nowhere, so
+   * the two panels the chooser is drawn on lead exactly where they led before
+   * it existed. Recorded as a test because the alternative — a venue press
+   * that navigates — would need a row added to `APP_STATE_SPECS` first, and a
+   * transition missing from that table fails **silently**: the button clicks,
+   * the panel stays, and nothing says why. Whoever makes that change should
+   * fail here rather than discover it in a ride.
+   */
+  const routes = atTitle();
+  routes.goTo('routes');
+  // The fresh-route panel's five, unchanged: a venue press adds none of them.
+  assert.deepEqual(
+    [...APP_STATE_SPECS.routes.successors],
+    ['title', 'freeRide', 'challenge', 'knockabout', 'chase'],
+  );
+  assert.equal(routes.goTo('trackDay'), false, 'Track Day is still reached from the title');
+  assert.equal(routes.current, 'routes', 'and a refusal leaves the panel where it was');
+
+  const couch = atTitle();
+  couch.goTo('couchJoin');
+  // The join panel's five, unchanged — `trackDay` is where a couch race rides.
+  assert.deepEqual(
+    [...APP_STATE_SPECS.couchJoin.successors],
+    ['title', 'freeRide', 'trackDay', 'knockabout', 'routes'],
+  );
+  assert.equal(couch.goTo('trackDay'), true, 'a room that picked a lap venue can still race on it');
+});

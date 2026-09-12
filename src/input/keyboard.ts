@@ -146,6 +146,14 @@ export class KeyboardInput {
    * alias pairs (W/ArrowUp, A/ArrowLeft, both Shifts) have to be reconciled
    * here, in the only file that knows keys have names: an action releases
    * when its *last* key does, not its first.
+   *
+   * M36 Phase 3 keys `hopHeld` in here too, and deliberately in *this* map
+   * rather than a second one beside it: the three places that hand a seat back
+   * (`reset`, `setSink`, `setSpectating`) already clear this one, and a
+   * parallel set would be a fourth thing to remember at each of them. The key
+   * bound to `hop` is a one-shot in the binding tables and a level here, which
+   * is exactly §36.5's "one physical control, two meanings" — and an override
+   * that puts two codes on Hop reconciles them by the same last-key-up rule.
    */
   private readonly heldCodes = new Map<HeldAction, Set<string>>();
 
@@ -262,13 +270,7 @@ export class KeyboardInput {
         if (this.tables.suppress.has(event.code)) event.preventDefault();
         return;
       }
-      let codes = this.heldCodes.get(held);
-      if (!codes) {
-        codes = new Set();
-        this.heldCodes.set(held, codes);
-      }
-      codes.add(event.code);
-      this.state.setHeld(held, true);
+      this.holdDown(held, event.code);
       if (this.tables.suppress.has(event.code)) event.preventDefault();
       return;
     }
@@ -281,6 +283,14 @@ export class KeyboardInput {
         if (this.tables.suppress.has(event.code)) event.preventDefault();
         return;
       }
+      // The second meaning of the Hop key (M36 Phase 3, §36.5). Written on
+      // every keydown including the auto-repeats, and that is not a slip: the
+      // level is idempotent, and a repeat is the operating system's own proof
+      // that the key is still physically down — the belt to the keyup's braces
+      // on a press that arrived before some earlier reset. The press below
+      // keeps its `!event.repeat` guard verbatim, which is what keeps holding
+      // from minting a second hop.
+      if (pressed === 'hop') this.holdDown('hopHeld', event.code);
       // Edge-triggered: the latch is set once per physical press. Key repeat
       // would otherwise refresh the buffer forever and turn one hop into a
       // hop that fires again the moment it becomes legal.
@@ -294,10 +304,33 @@ export class KeyboardInput {
     // a key pressed while unmodified and released after Cmd went down must
     // still clear, or it stays held forever.
     const held = this.tables.held[event.code];
-    if (!held) return;
-    const codes = this.heldCodes.get(held);
+    if (held) {
+      this.holdUp(held, event.code);
+      return;
+    }
+    // The Hop key is a one-shot in the tables, so the branch above never sees
+    // it; its *level* still has to be let go of, and the tables are asked
+    // again rather than a remembered code, so a key that was Hop when it went
+    // down is Hop when it comes up (a rebind resets this layer first).
+    if (this.tables.pressed[event.code] === 'hop') this.holdUp('hopHeld', event.code);
+  };
+
+  /** Record a key as holding an action, and assert the action. */
+  private holdDown(action: HeldAction, code: string): void {
+    let codes = this.heldCodes.get(action);
+    if (!codes) {
+      codes = new Set();
+      this.heldCodes.set(action, codes);
+    }
+    codes.add(code);
+    this.state.setHeld(action, true);
+  }
+
+  /** Release a key, and the action with it once its last key is up. */
+  private holdUp(action: HeldAction, code: string): void {
+    const codes = this.heldCodes.get(action);
     if (codes) {
-      codes.delete(event.code);
+      codes.delete(code);
       // Another key bound to the same action is still physically down:
       // releasing ArrowUp must not cut the throttle while W is held.
       if (codes.size > 0) return;
@@ -305,8 +338,8 @@ export class KeyboardInput {
     // A release with no recorded press still releases — the press may have
     // been swallowed by a modifier or predate a reset, and a stale "held"
     // is the worse failure.
-    this.state.setHeld(held, false);
-  };
+    this.state.setHeld(action, false);
+  }
 
   /**
    * The input reset contract (master starter 8.2), keyboard edition: clears

@@ -1,6 +1,14 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { expect, test, type Page } from '@playwright/test';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { SIGNS as SIGNS_TUNING } from '../src/data/markings.ts';
 import { CHARACTER_IDS } from '../src/data/riders.ts';
+import { ONE_FOOT, SIMULATION } from '../src/data/tuning.ts';
+import {
+  SWITCHBACK_ENTRY_DISTANCE,
+  SWITCHBACK_LAP_SEGMENT_IDS,
+  SWITCHBACK_SIGNAGE,
+} from '../src/level/switchbackLevel.ts';
 import { TRACK_LAP_SEGMENT_IDS } from '../src/level/trackLevel.ts';
 import { boot, bootToTitle, collectErrors } from './harness.ts';
 
@@ -633,12 +641,23 @@ test.describe('M12 Phase 4 — a fresh route on a phone', () => {
     await bootToTitle(page);
     await page.locator('.euc-menu--title [data-menu="routes"]').tap();
 
+    // `[data-menu="venue"]` is three buttons rather than one — M36 Phase 5's
+    // venue chooser stands on this panel, and it is the newest thing on it a
+    // thumb has to hit — so the scan resolves every match rather than assuming
+    // one, and the width is asked for as well: a segmented row is the control
+    // on this panel that can be short in the other axis.
     const targets = ['#euc-seed', '[data-menu="surprise"]', '[data-menu="ride-route"]',
-      '[data-menu="trial-route"]', '[data-menu="routes-back"]'];
+      '[data-menu="trial-route"]', '[data-menu="venue"]', '[data-menu="routes-back"]'];
     for (const selector of targets) {
-      const box = await page.locator(`.euc-menu--routes ${selector}`).boundingBox();
-      expect(box, `${selector} has no box`).not.toBeNull();
-      expect(box!.height, `${selector} is ${box!.height}px tall`).toBeGreaterThanOrEqual(44);
+      const found = await page.locator(`.euc-menu--routes ${selector}`).all();
+      expect(found.length, `${selector} matched nothing`).toBeGreaterThan(0);
+      for (const [index, target] of found.entries()) {
+        const where = found.length === 1 ? selector : `${selector} #${index}`;
+        const box = await target.boundingBox();
+        expect(box, `${where} has no box`).not.toBeNull();
+        expect(box!.height, `${where} is ${box!.height}px tall`).toBeGreaterThanOrEqual(44);
+        expect(box!.width, `${where} is ${box!.width}px wide`).toBeGreaterThanOrEqual(44);
+      }
     }
 
     // A field whose text is under 16px makes a phone zoom in on focus and never
@@ -885,6 +904,7 @@ test.describe('M23 Phase B2 — a track day on a phone', () => {
     await bootToTitle(page, 'level=track');
     await page.evaluate(() => window.game.clearRecords());
     await page.locator('.euc-menu--title [data-menu="track-day"]').tap();
+    await page.locator('.euc-menu--tracks [data-venue="track"]').tap();
     await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
 
     // One lap, by gate, so the card has something to report. The ride itself is
@@ -1014,6 +1034,1127 @@ test.describe('M25 Phases 2-5 — the phone never meets a second rider or a spli
     expect(await page.evaluate(() => window.game.snapshot().couch.available)).toBe(false);
     await expect(page.locator('.euc-menu--title [data-menu="couch"]')).toBeHidden();
 
+    expect(errors).toEqual([]);
+  });
+});
+
+/**
+ * M36 — Switchback Park and the one-foot air, on a phone.
+ *
+ * **The real-touch half of Phase 3, and Phase 2's phone legibility.** This is
+ * the only project in the suite with `hasTouch`, so it is the only place where
+ * `page.touchscreen`, `tap()` and `Input.dispatchTouchEvent` produce genuine
+ * touch pointers, the only place `(pointer: coarse)` matches, and the only
+ * place the Pixel 7's own device pixel ratio is in the picture. Everything
+ * below is therefore a claim about the phone the owner would hand to someone,
+ * not about a desktop Chromium wearing a phone's CSS box.
+ *
+ * The desktop half of §36.5 — the qualification timing, the reset doors, the
+ * 180, the rig, physical equality between a seat that holds and a seat that
+ * does not — is `tests/m36_3.spec.ts`, and none of it is repeated here. What
+ * only a touchscreen can answer is what this block asks:
+ *
+ *   - the HOP button's **two readings of one finger** (`src/input/touch.ts`
+ *     `buttonDown`/`buttonUp`): a press on the way down, which is the hop, and
+ *     a level held until the finger leaves, which is the pose. A tap must buy
+ *     the first and never the second;
+ *   - the three ways a phone takes a finger away without a `pointerup` —
+ *     `pointercancel`, a lost pointer capture, and a control removed from under
+ *     the finger — each of which must drop the level and bring the foot home;
+ *   - a rotation mid-gesture, which is the case with the interesting failure
+ *     on a handset and the reason `TouchControls.reset` exists;
+ *   - that the park is a single-rider, single-view, single-HUD venue on a
+ *     phone, with no touch path to a couch seat (M25's contract, asserted again
+ *     at the new venue rather than assumed to carry);
+ *   - and §36.4's readability gate, measured on a real Pixel 7 in both
+ *     orientations rather than on an emulated CSS box.
+ */
+
+/** The diagnostic entrance to the park. There is no chooser until Phase 5. */
+const PARK = 'level=switchback';
+
+/** Phase 2's plan id — the signed park; beat 5 moved, so `-r1` retired. */
+const PARK_PLAN_ID = 'switchback-r4';
+
+/**
+ * Fixed steps of held Hop, in the air, that qualify the pose.
+ *
+ * Derived rather than typed: a change to `ONE_FOOT.holdQualifySeconds` or to
+ * the simulation rate must fail this arithmetic rather than silently move what
+ * the phone is being asked to prove. Eighteen steps at the shipped values.
+ */
+const QUALIFY_STEPS = Math.round(ONE_FOOT.holdQualifySeconds * SIMULATION.hz);
+
+/** Fixed steps the released foot takes to reach full extension. Twelve. */
+const ENTER_STEPS = Math.round(ONE_FOOT.enterSeconds * SIMULATION.hz);
+
+/** How long a rider is given to read a sign and decide — `data/markings.ts`. */
+const SIGNS_READ_SECONDS = SIGNS_TUNING.readSeconds;
+
+/** The three signs §36.8 names for the legibility pass, in riding order. */
+const LEGIBILITY = ['stairs', 'kicker', 'spinShelf'] as const;
+
+/**
+ * The follower's cap on every approach ride, m/s — `tests/m36_2.spec.ts`.
+ *
+ * Kept at that file's value so the two measurements are comparable: eight is
+ * the fastest `followRoute`'s two-gain driver keeps every one of these three
+ * approaches on the trail, and the camera's arm eases with speed, so each shot
+ * is taken at a *tighter* frame than a real 22 m/s kicker approach would give.
+ */
+const APPROACH_CAP = 8;
+
+/**
+ * Where the legibility PNGs are filed.
+ *
+ * **From the environment rather than a literal**, because a path under a user's
+ * home directory is a private token and `npm run export:source` refuses a tree
+ * that contains one. `M36_SHOTS=<dir> npx playwright test --project=mobile`
+ * puts them where a reviewer wants them; with nothing set they land in
+ * Playwright's own output folder, which is already ignored.
+ */
+const SHOTS = process.env.M36_SHOTS ?? 'test-results/m36-touch';
+
+/** The signage the venue module publishes, flattened for the browser. */
+const PARK_SIGNS = SWITCHBACK_SIGNAGE.signs.map((sign) => ({
+  feature: sign.feature,
+  segment: sign.segment,
+  fromS: sign.fromS,
+  toS: sign.toS,
+  lapDistance: sign.lapDistance,
+  words: [...sign.words],
+}));
+
+/** Entry distances as a plain object, because a `Map` does not cross the wire. */
+const PARK_ENTRY: Record<string, number> = Object.fromEntries(SWITCHBACK_ENTRY_DISTANCE);
+
+/** The ring plus the apron again — a lap is opened and closed by the same line. */
+const RING_AND_TAIL: readonly string[] = [...SWITCHBACK_LAP_SEGMENT_IDS, 'apron'];
+
+interface ParkRoutePoint {
+  x: number;
+  z: number;
+  /** Metres round the lap at this point, from the apron's entry socket. */
+  lap: number;
+}
+
+/**
+ * A finger on one control, driven through CDP.
+ *
+ * `Input.dispatchTouchEvent` makes Chromium do its own hit testing, pointer-id
+ * assignment and pointer capture, which is the half a constructed
+ * `PointerEvent` cannot prove — and this block's whole subject is what happens
+ * to a finger the browser takes away. `cancel()` is a real `touchcancel`, which
+ * is what a phone sends when the system takes the gesture (a notification
+ * shade, an edge swipe, a call arriving); `dropCapture()` asks the element to
+ * release the capture it took on `pointerdown`, which is the browser's own
+ * `lostpointercapture`, not a synthesized one.
+ */
+async function touchFinger(page: Page, selector: string, id: number): Promise<{
+  point: { id: number; x: number; y: number };
+  down(): Promise<void>;
+  up(): Promise<void>;
+  cancel(): Promise<void>;
+  releaseCapture(): Promise<{
+    pointerId: number;
+    wasCaptured: boolean;
+    stillCaptured: boolean;
+    lostCaptureEvents: number;
+  }>;
+  loseCapture(): Promise<void>;
+}> {
+  const cdp = await page.context().newCDPSession(page);
+  const box = await page.locator(selector).boundingBox();
+  if (box === null) throw new Error(`${selector} has no box`);
+  const point = { id, x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  // Two frames, the file's own settle: one for the event to be delivered and
+  // one for anything it scheduled.
+  const settle = (): Promise<void> => page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+  // The pointer id Chromium minted for this touch is not the CDP touch id, and
+  // `releasePointerCapture` needs the former. Recorded from the event itself.
+  await page.evaluate(() => {
+    const store = window as unknown as { eucTouchPointer?: number };
+    store.eucTouchPointer = undefined;
+    window.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'touch') store.eucTouchPointer = event.pointerId;
+    }, { capture: true });
+  });
+  return {
+    point,
+    async down() {
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+      await settle();
+    },
+    async up() {
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [point] });
+      await settle();
+    },
+    async cancel() {
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
+      await settle();
+    },
+    /**
+     * Ask the element to give the capture back, then move the finger a pixel.
+     *
+     * Reports what the browser then thinks. Blink only flushes a pending
+     * capture change while dispatching a pointer event, so the move is what
+     * would make a `lostpointercapture` arrive if one were going to.
+     */
+    async releaseCapture() {
+      const counted = await page.evaluate((target) => {
+        const store = window as unknown as { eucTouchPointer?: number; eucLostCapture?: number };
+        const element = document.querySelector(target);
+        if (element === null) throw new Error(`${target} is gone`);
+        if (store.eucTouchPointer === undefined) throw new Error('no touch pointer was recorded');
+        store.eucLostCapture = 0;
+        window.addEventListener('lostpointercapture', () => {
+          store.eucLostCapture = (store.eucLostCapture ?? 0) + 1;
+        }, { capture: true });
+        const captured = element.hasPointerCapture(store.eucTouchPointer);
+        element.releasePointerCapture(store.eucTouchPointer);
+        return { pointerId: store.eucTouchPointer, captured };
+      }, selector);
+      await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [{ ...point, x: point.x + 1 }],
+      });
+      await settle();
+      return page.evaluate((target) => {
+        const store = window as unknown as { eucTouchPointer?: number; eucLostCapture?: number };
+        const element = document.querySelector(target)!;
+        return {
+          pointerId: store.eucTouchPointer!,
+          stillCaptured: element.hasPointerCapture(store.eucTouchPointer!),
+          lostCaptureEvents: store.eucLostCapture ?? 0,
+          wasCaptured: true,
+        };
+      }, selector).then((seen) => ({ ...seen, wasCaptured: counted.captured }));
+    },
+
+    /**
+     * Deliver the `lostpointercapture` the browser will not produce here.
+     *
+     * The only synthesized event in this block, and `releaseCapture` above is
+     * the measurement that says why: a touch pointer keeps *implicit* capture
+     * on the control it landed on, so an explicit release changes nothing and
+     * Blink fires nothing. The event is still reachable in production — a
+     * capturing element removed from the document loses its capture, and a
+     * mouse or pen pointer loses it on release — which is why `TouchControls`
+     * listens for it, and this is what proves that listener does the same thing
+     * as a finger lifting rather than merely existing.
+     */
+    async loseCapture() {
+      await page.evaluate((target) => {
+        const store = window as unknown as { eucTouchPointer?: number };
+        const element = document.querySelector(target);
+        if (element === null) throw new Error(`${target} is gone`);
+        if (store.eucTouchPointer === undefined) throw new Error('no touch pointer was recorded');
+        element.dispatchEvent(new PointerEvent('lostpointercapture', {
+          pointerId: store.eucTouchPointer,
+          pointerType: 'touch',
+          bubbles: true,
+        }));
+      }, selector);
+      await settle();
+    },
+  };
+}
+
+/**
+ * One flight, sampled a fixed step at a time.
+ *
+ * Passed to `page.evaluate` by reference, so it closes over nothing: every
+ * number it needs arrives in the argument and every number it found comes back
+ * in one round trip. The airborne index is what the §36.5 timings are written
+ * against — the dwell counts only in the air — so it is counted here rather
+ * than inferred from a step number afterwards.
+ */
+function flightTrace(steps: number): {
+  takeoffStep: number;
+  posingAirborneStep: number;
+  fullAirborneStep: number;
+  airborneSteps: number;
+  landedStep: number;
+  maxOneFoot: number;
+  oneFootAtTouchdown: number;
+  states: string[];
+  hops: number;
+  spins: number;
+  consumedHop: number;
+  heldSteps: number;
+  steps: number;
+} {
+  const game = window.game;
+  const before = game.snapshot();
+  const states: string[] = [];
+  let takeoff = -1;
+  let posingAt = -1;
+  let fullAt = -1;
+  // **Steps in the flight under way, not airborne steps since the trace
+  // began.** A rider who has just landed from an earlier hop can leave the
+  // ground again for a step or two on the way to a standstill, and counting
+  // those would report the dwell as three steps longer than it is — a spec
+  // failing on the settling of the *previous* hop.
+  let run = 0;
+  let airborne = 0;
+  let landed = -1;
+  let maxOneFoot = 0;
+  let held = 0;
+  let oneFootAtTouchdown = -1;
+  for (let step = 1; step <= steps; step += 1) {
+    game.advance(1);
+    const snap = game.snapshot();
+    const flying = !snap.euc.grounded;
+    if (flying) {
+      run += 1;
+      airborne += 1;
+      if (takeoff < 0) takeoff = step;
+    } else {
+      run = 0;
+      if (takeoff >= 0 && landed < 0) {
+        landed = step;
+        oneFootAtTouchdown = snap.tricks.pose.oneFoot;
+      }
+    }
+    if (snap.actions.hopHeld) held += 1;
+    const pose = snap.tricks.pose;
+    maxOneFoot = Math.max(maxOneFoot, pose.oneFoot);
+    if (pose.state === 'posing' && posingAt < 0) posingAt = run;
+    if (pose.oneFoot >= 0.999 && fullAt < 0) fullAt = run;
+    if (states[states.length - 1] !== pose.state) states.push(pose.state);
+  }
+  const after = game.snapshot();
+  return {
+    takeoffStep: takeoff,
+    posingAirborneStep: posingAt,
+    fullAirborneStep: fullAt,
+    airborneSteps: airborne,
+    landedStep: landed,
+    maxOneFoot,
+    oneFootAtTouchdown,
+    states,
+    hops: after.euc.hops - before.euc.hops,
+    spins: after.euc.spins - before.euc.spins,
+    consumedHop: after.consumed.hop - before.consumed.hop,
+    heldSteps: held,
+    steps,
+  };
+}
+
+/**
+ * Step until the foot is out at least this far, and report where that was.
+ *
+ * The mid-gesture cases below all need a pose that is visibly under way rather
+ * than a state name that has just changed, so the stop condition is the blend
+ * itself. Returns `found: false` rather than throwing, so the caller's
+ * assertion says what went wrong.
+ */
+function advanceUntilPosed(input: { blend: number; maxSteps: number }): {
+  found: boolean;
+  steps: number;
+  oneFoot: number;
+  state: string;
+  holdSeconds: number;
+  grounded: boolean;
+  hopHeld: boolean;
+} {
+  const game = window.game;
+  for (let step = 1; step <= input.maxSteps; step += 1) {
+    game.advance(1);
+    const snap = game.snapshot();
+    if (snap.tricks.pose.oneFoot >= input.blend) {
+      return {
+        found: true,
+        steps: step,
+        oneFoot: snap.tricks.pose.oneFoot,
+        state: snap.tricks.pose.state,
+        holdSeconds: snap.tricks.pose.holdSeconds,
+        grounded: snap.euc.grounded,
+        hopHeld: snap.actions.hopHeld,
+      };
+    }
+  }
+  const snap = game.snapshot();
+  return {
+    found: false,
+    steps: input.maxSteps,
+    oneFoot: snap.tricks.pose.oneFoot,
+    state: snap.tricks.pose.state,
+    holdSeconds: snap.tricks.pose.holdSeconds,
+    grounded: snap.euc.grounded,
+    hopHeld: snap.actions.hopHeld,
+  };
+}
+
+/**
+ * Step while the foot comes home, and report whether it ever went back out.
+ *
+ * "It returned" is not enough on its own: a level that is dropped and then
+ * re-read would show the same zero at the end with a bob in the middle, which
+ * is exactly what a stale pointer would look like on a phone.
+ */
+function returnTrace(steps: number): {
+  peak: number;
+  /**
+   * The pose's state on the very next fixed step after the release.
+   *
+   * Read here rather than at the end of the trace, because by the end the foot
+   * is home and the wheel has landed, and a finished return is `idle` again —
+   * the same word a pose that never happened would report.
+   */
+  stateAfterOneStep: string;
+  homeAtStep: number;
+  roseAgain: boolean;
+  endOneFoot: number;
+  endState: string;
+  endHopHeld: boolean;
+} {
+  const game = window.game;
+  let previous = game.snapshot().tricks.pose.oneFoot;
+  const peak = previous;
+  let home = -1;
+  let roseAgain = false;
+  let first = game.snapshot().tricks.pose.state;
+  for (let step = 1; step <= steps; step += 1) {
+    game.advance(1);
+    const pose = game.snapshot().tricks.pose;
+    if (step === 1) first = pose.state;
+    if (pose.oneFoot > previous + 1e-9) roseAgain = true;
+    if (pose.oneFoot === 0 && home < 0) home = step;
+    previous = pose.oneFoot;
+  }
+  const snap = game.snapshot();
+  return {
+    peak,
+    stateAfterOneStep: first,
+    homeAtStep: home,
+    roseAgain,
+    endOneFoot: snap.tricks.pose.oneFoot,
+    endState: snap.tricks.pose.state,
+    endHopHeld: snap.actions.hopHeld,
+  };
+}
+
+/**
+ * Both ridden lines of the park, with a lap distance on every point.
+ *
+ * **Ported verbatim from `tests/m36_2.spec.ts` rather than imported.** Importing
+ * a spec file registers its tests in the importing file's project, which would
+ * run nine chromium-only Phase 2 tests inside the `mobile` project; and the
+ * whole value of this pass is that the *same* measurement is taken on a real
+ * touch device, so a re-written approximation would answer a different
+ * question. If the two ever disagree, they are meant to be compared line by
+ * line.
+ */
+function buildParkRoutes(input: {
+  segments: readonly string[];
+  entry: Record<string, number>;
+  profile: Record<string, readonly (readonly [number, number])[]>;
+  spacing: number;
+}): { centre: ParkRoutePoint[]; technical: ParkRoutePoint[] } {
+  const centre: ParkRoutePoint[] = [];
+  const technical: ParkRoutePoint[] = [];
+  let carried = 0;
+  for (const id of input.segments) {
+    const points = window.qa.routePoints([id], input.spacing);
+    const knots = input.profile[id] ?? [[0, 0], [1, 0]];
+    const base = input.entry[id];
+    let along = 0;
+    for (let index = 0; index < points.length; index += 1) {
+      if (index > 0) {
+        along += Math.hypot(
+          points[index].x - points[index - 1].x,
+          points[index].z - points[index - 1].z,
+        );
+      }
+      const fraction = points.length < 2 ? 0 : index / (points.length - 1);
+      let lateral = knots[knots.length - 1][1];
+      for (let knot = 1; knot < knots.length; knot += 1) {
+        if (fraction > knots[knot][0]) continue;
+        const [a, av] = knots[knot - 1];
+        const [b, bv] = knots[knot];
+        lateral = b === a ? bv : av + ((fraction - a) / (b - a)) * (bv - av);
+        break;
+      }
+      const before = points[Math.max(0, index - 1)];
+      const after = points[Math.min(points.length - 1, index + 1)];
+      const dx = after.x - before.x;
+      const dz = after.z - before.z;
+      const span = Math.hypot(dx, dz) || 1;
+      const lap = (base === undefined ? carried : base) + along;
+      centre.push({ x: points[index].x, z: points[index].z, lap });
+      technical.push({
+        x: points[index].x + (dz / span) * lateral,
+        z: points[index].z - (dx / span) * lateral,
+        lap,
+      });
+    }
+    carried = centre[centre.length - 1].lap;
+  }
+  return { centre, technical };
+}
+
+/**
+ * Ride a slice of the lap, watching one sign on the screen, and stop on it.
+ *
+ * Ported verbatim from `tests/m36_2.spec.ts` for the reason above. The pursuit
+ * loop is written out rather than borrowed from `qa.followRoute` because the
+ * question is a screen-space one — *is the mark in the frame, for long enough
+ * to read* — and `qa.projectPoint` has to be called while the ride is running.
+ */
+function rideAndWatch(input: {
+  route: readonly { x: number; z: number }[];
+  target: { segment: string; s: number; t: number };
+  maxSpeed: number;
+  lookAhead: number;
+  maxSteps: number;
+}): {
+  x: number;
+  z: number;
+  speed: number;
+  armDistance: number;
+  fov: number;
+  offCourseSteps: number;
+  crashes: number;
+  readableSeconds: number;
+  longestSpell: number;
+  rideSeconds: number;
+  target: { x: number; y: number; z: number };
+  bestNdc: { x: number; y: number };
+} {
+  const game = window.game;
+  game.loop.setRunning(false);
+
+  const segment = game.levelPlan.segments.find((each) => each.id === input.target.segment)!;
+  const turn = segment.exit.headingY - segment.entry.headingY;
+  const chord = Math.hypot(
+    segment.exit.position.x - segment.entry.position.x,
+    segment.exit.position.z - segment.entry.position.z,
+  );
+  const length = Math.abs(turn) < 1e-9 ? chord : (chord * (turn / 2)) / Math.sin(turn / 2);
+  const curvature = length > 0 ? turn / length : 0;
+  const h0 = segment.entry.headingY;
+  const h = h0 + curvature * input.target.s;
+  const spine = Math.abs(curvature) < 1e-9
+    ? {
+      x: segment.entry.position.x + Math.sin(h0) * input.target.s,
+      z: segment.entry.position.z + Math.cos(h0) * input.target.s,
+    }
+    : {
+      x: segment.entry.position.x + (Math.cos(h0) - Math.cos(h)) / curvature,
+      z: segment.entry.position.z + (Math.sin(h) - Math.sin(h0)) / curvature,
+    };
+  const mark = {
+    x: spine.x + Math.cos(h) * input.target.t,
+    z: spine.z - Math.sin(h) * input.target.t,
+  };
+  const target = {
+    x: mark.x,
+    y: game.sampleGround(mark.x, mark.z).height + 0.02,
+    z: mark.z,
+  };
+
+  game.clearActions();
+  const start = input.route[0];
+  const next = input.route[1];
+  game.placeRider(
+    { x: start.x, y: 0, z: start.z },
+    Math.atan2(next.x - start.x, next.z - start.z),
+  );
+
+  let index = 0;
+  let steps = 0;
+  let offCourseSteps = 0;
+  let inFrame = 0;
+  let spell = 0;
+  let longest = 0;
+  let best = { x: 2, y: 2 };
+  const crashesBefore = game.snapshot().euc.crashes;
+
+  while (steps < input.maxSteps) {
+    const euc = game.snapshot().euc;
+    const { x, z } = euc.position;
+    while (
+      index < input.route.length - 1
+      && Math.hypot(input.route[index].x - x, input.route[index].z - z) < input.lookAhead
+    ) index += 1;
+    if (index >= input.route.length - 1
+      && Math.hypot(
+        input.route[input.route.length - 1].x - x,
+        input.route[input.route.length - 1].z - z,
+      ) < input.lookAhead) break;
+
+    const aim = input.route[index];
+    let error = Math.atan2(aim.x - x, aim.z - z) - euc.headingY;
+    while (error > Math.PI) error -= Math.PI * 2;
+    while (error < -Math.PI) error += Math.PI * 2;
+    const steer = Math.max(-1, Math.min(1, -error * 1.8));
+    const eased = Math.max(0.25, 1 - Math.abs(error));
+    game.setActions({ throttle: euc.speed > input.maxSpeed ? 0 : eased, steer });
+    game.advance(2);
+    steps += 2;
+
+    const after = game.snapshot().euc;
+    if (after.offCourse) offCourseSteps += 1;
+    const screen = window.qa.projectPoint(target.x, target.y, target.z);
+    const visible = screen.inFront && Math.abs(screen.x) <= 1 && Math.abs(screen.y) <= 1;
+    if (visible) {
+      inFrame += 1;
+      spell += 1;
+      longest = Math.max(longest, spell);
+      if (Math.hypot(screen.x, screen.y) < Math.hypot(best.x, best.y)) {
+        best = { x: screen.x, y: screen.y };
+      }
+    } else {
+      spell = 0;
+    }
+  }
+
+  const snapshot = game.snapshot();
+  game.clearActions();
+  return {
+    x: snapshot.euc.position.x,
+    z: snapshot.euc.position.z,
+    speed: snapshot.euc.speed,
+    armDistance: snapshot.camera.armDistance,
+    fov: snapshot.camera.fov,
+    offCourseSteps,
+    crashes: snapshot.euc.crashes - crashesBefore,
+    readableSeconds: (inFrame * 2) / 120,
+    longestSpell: (longest * 2) / 120,
+    rideSeconds: steps / 120,
+    target,
+    bestNdc: best,
+  };
+}
+
+/** Save a PNG where a reviewer can find it, and attach it to the run. */
+async function shootPark(page: Page, info: TestInfo, name: string): Promise<string> {
+  mkdirSync(SHOTS, { recursive: true });
+  const body = await page.screenshot();
+  const path = `${SHOTS}/${name}.png`;
+  writeFileSync(path, body);
+  await info.attach(name, { body, contentType: 'image/png' });
+  return path;
+}
+
+/**
+ * Stand the rider on the approach to one sign, measure the window, photograph it.
+ *
+ * Two rides, as `tests/m36_2.spec.ts` does them: a reading ride from sixty
+ * metres out all the way to the last mark, which is the window the lead rule
+ * actually buys, and a photograph ride that stops four metres short of the
+ * first paint so the whole sign is still in front of the wheel.
+ *
+ * The one thing added here, because it is only true on a phone: where the
+ * chevrons land relative to the controls. A phone draws its own thumbs over the
+ * road, and a mark that is technically in frame underneath the HOP button is
+ * not a mark anybody reads.
+ */
+async function shootParkApproach(
+  page: Page,
+  info: TestInfo,
+  routes: { centre: ParkRoutePoint[] },
+  feature: string,
+  label: string,
+): Promise<{
+  file: string;
+  standoff: number;
+  speed: number;
+  arm: number;
+  readableSeconds: number;
+  longestSpell: number;
+  rideSeconds: number;
+  underAControl: string | null;
+}> {
+  const sign = PARK_SIGNS.find((each) => each.feature === feature)!;
+  const padStart = sign.lapDistance - (sign.toS - sign.fromS);
+  const slice = (from: number, to: number): { x: number; z: number }[] => routes.centre
+    .filter((point) => point.lap >= from && point.lap <= to)
+    .map((point) => ({ x: point.x, z: point.z }));
+  const target = { segment: sign.segment, s: sign.toS - 2, t: 4 };
+
+  const read = await page.evaluate(rideAndWatch, {
+    route: slice(padStart - 60, sign.lapDistance),
+    target,
+    maxSpeed: APPROACH_CAP,
+    lookAhead: 8,
+    maxSteps: 12_000,
+  });
+  expect(read.crashes, `${label}: the reading ride to ${feature} crashed`).toBe(0);
+
+  const stopped = await page.evaluate(rideAndWatch, {
+    route: slice(padStart - 60, padStart - 4),
+    target,
+    maxSpeed: APPROACH_CAP,
+    lookAhead: 8,
+    maxSteps: 12_000,
+  });
+  expect(stopped.crashes, `${label}: the approach to ${feature} crashed`).toBe(0);
+  expect(stopped.offCourseSteps, `${label}: the approach to ${feature} left the trail`).toBe(0);
+
+  // Where the chevrons are on the glass at the moment of the photograph, in CSS
+  // pixels, against the drawn controls and chips. The loop is frozen by the
+  // ride, so this is the frame the screenshot below captures.
+  const onGlass = await page.evaluate((point) => {
+    const ndc = window.qa.projectPoint(point.x, point.y, point.z);
+    return {
+      ...ndc,
+      x: ((ndc.x + 1) / 2) * window.innerWidth,
+      y: ((1 - ndc.y) / 2) * window.innerHeight,
+    };
+  }, stopped.target);
+  let underAControl: string | null = null;
+  for (const selector of ['[data-touch="crouch"]', '[data-touch="hop"]',
+    '[data-touch-tap="pause"]', '[data-touch-tap="reset"]', '[data-touch-tap="cameraCycle"]']) {
+    const box = await page.locator(selector).boundingBox();
+    if (box === null) continue;
+    if (onGlass.x >= box.x && onGlass.x <= box.x + box.width
+      && onGlass.y >= box.y && onGlass.y <= box.y + box.height) {
+      underAControl = selector;
+    }
+  }
+
+  const nearest = routes.centre.reduce((best, point) => (
+    Math.hypot(point.x - stopped.x, point.z - stopped.z)
+      < Math.hypot(best.x - stopped.x, best.z - stopped.z) ? point : best
+  ));
+  const standoff = padStart - nearest.lap;
+  const file = await shootPark(page, info, `${label}-${feature}`);
+  return {
+    file,
+    standoff,
+    speed: stopped.speed,
+    arm: stopped.armDistance,
+    readableSeconds: read.readableSeconds,
+    longestSpell: read.longestSpell,
+    rideSeconds: read.rideSeconds,
+    underAControl,
+  };
+}
+
+/** One legibility pass on the phone: boot the park, ride each approach, shoot. */
+async function parkLegibilityPass(
+  page: Page,
+  info: TestInfo,
+  label: string,
+): Promise<{ feature: string; shot: Awaited<ReturnType<typeof shootParkApproach>> }[]> {
+  await boot(page, PARK);
+  expect(await page.evaluate(() => window.game.levelPlan.id)).toBe(PARK_PLAN_ID);
+  // The controls are up, because they are part of what a phone player sees
+  // through: this is the frame with the thumbs on it, not a clean render.
+  await expect(page.locator('.euc-touch')).toBeVisible();
+
+  const routes = await page.evaluate(buildParkRoutes, {
+    segments: RING_AND_TAIL,
+    entry: PARK_ENTRY,
+    profile: {},
+    spacing: 2,
+  });
+
+  // Every approach is measured before anything is asserted: a failing sign
+  // would otherwise take the other two's numbers down with it, and the numbers
+  // are what the owner reads at G3.
+  const measured: {
+    feature: string;
+    shot: Awaited<ReturnType<typeof shootParkApproach>>;
+  }[] = [];
+  for (const feature of LEGIBILITY) {
+    measured.push({ feature, shot: await shootParkApproach(page, info, routes, feature, label) });
+  }
+  const viewport = page.viewportSize()!;
+  const rows = measured.map(({ feature, shot }) => (
+    `${feature}: ${shot.standoff.toFixed(1)} m short of the first paint at `
+    + `${shot.speed.toFixed(2)} m/s, arm ${shot.arm.toFixed(2)} m; the chevrons were in `
+    + `frame for ${shot.readableSeconds.toFixed(2)} s of a ${shot.rideSeconds.toFixed(2)} s `
+    + `approach, longest unbroken spell ${shot.longestSpell.toFixed(2)} s; `
+    + `${shot.underAControl === null ? 'clear of every control' : `under ${shot.underAControl}`}`
+    + ` → ${shot.file}`
+  ));
+  await info.attach(`touch-legibility-${label}`, {
+    body: `${viewport.width}x${viewport.height} on the mobile project\n${rows.join('\n')}\n`,
+    contentType: 'text/plain',
+  });
+  // eslint-disable-next-line no-console
+  console.log(`[touch] ${label} ${viewport.width}x${viewport.height}\n  ${rows.join('\n  ')}`);
+
+  for (const { feature, shot } of measured) {
+    expect(shot.standoff, `${label}: the ${feature} shot overran its sign`).toBeGreaterThan(0);
+  }
+  return measured;
+}
+
+/** `SIGNS.readSeconds` is what the lead rule buys, so it is what the frame owes. */
+function expectParkReadable(
+  label: string,
+  measured: { feature: string; shot: { longestSpell: number; readableSeconds: number } }[],
+): void {
+  for (const { feature, shot } of measured) {
+    expect(
+      shot.longestSpell,
+      `${label}: the ${feature} chevrons were in frame for only `
+        + `${shot.longestSpell.toFixed(2)} s of the approach unbroken `
+        + `(${shot.readableSeconds.toFixed(2)} s in total) — the lead rule buys `
+        + `${SIGNS_READ_SECONDS} s of reading`,
+    ).toBeGreaterThanOrEqual(SIGNS_READ_SECONDS);
+  }
+}
+
+test.describe('M36 §36.5 — the one-foot air under a real thumb', () => {
+  test('a tap of HOP is a hop and nothing else', async ({ page }) => {
+    const errors = collectErrors(page);
+    await boot(page, PARK);
+    await page.evaluate(() => {
+      window.qa.freeze();
+      window.qa.advance(30);
+    });
+
+    // A genuine touch tap: down and up, both from the touchscreen, with no
+    // fixed step in between because the loop is frozen. The press is buffered
+    // and the level is gone before the wheel ever leaves the ground.
+    await page.locator('[data-touch="hop"]').tap();
+    expect(await page.evaluate(() => window.game.snapshot().actions.hopHeld)).toBe(false);
+
+    const flight = await page.evaluate(flightTrace, 240);
+    expect(flight.hops, 'a tap is exactly one hop').toBe(1);
+    expect(flight.consumedHop, 'a tap is claimed once').toBe(1);
+    expect(flight.spins, 'a tap is not a spin').toBe(0);
+    expect(flight.takeoffStep, 'the tap never left the ground').toBeGreaterThan(0);
+    expect(flight.airborneSteps, 'the hop was not a flight').toBeGreaterThan(20);
+    // **Exactly zero, not nearly zero.** The pose is a blend and a tap must not
+    // start it at all — a foot that comes a millimetre off the pedal on every
+    // hop is a foot that is out whenever the rider is in the air.
+    expect(flight.maxOneFoot, 'a tap showed some of the pose').toBe(0);
+    expect(flight.states, 'a tap moved the pose state machine').toEqual(['idle']);
+    expect(errors).toEqual([]);
+  });
+
+  test('HOP held through takeoff poses the foot after the dwell', async ({ page }) => {
+    const errors = collectErrors(page);
+    await boot(page, PARK);
+    await page.evaluate(() => {
+      window.qa.freeze();
+      window.qa.advance(30);
+    });
+
+    const finger = await touchFinger(page, '[data-touch="hop"]', 81);
+    await finger.down();
+    expect(await page.evaluate(() => window.game.snapshot().actions.hopHeld)).toBe(true);
+    await expect(page.locator('[data-touch="hop"]')).toHaveAttribute('data-pressed', 'true');
+
+    // Held for the whole flight, touchdown included: this is the phone's
+    // version of `tests/m36_3.spec.ts`'s held-through-touchdown case, and the
+    // finger never leaves the glass inside it.
+    const flight = await page.evaluate(flightTrace, 240);
+
+    expect(flight.heldSteps, 'the finger let go somewhere in the flight').toBe(flight.steps);
+    expect(flight.hops, 'one press from one finger').toBe(1);
+    expect(flight.consumedHop, 'the held level minted a second hop').toBe(1);
+    expect(flight.spins, 'a held level armed a spin').toBe(0);
+    // The dwell counts in the air, so the pose begins on the eighteenth
+    // *airborne* step, not the eighteenth step of the press.
+    expect(
+      flight.posingAirborneStep,
+      `the pose began on airborne step ${flight.posingAirborneStep}`,
+    ).toBe(QUALIFY_STEPS);
+    expect(flight.fullAirborneStep, 'the foot reached full extension late')
+      .toBe(QUALIFY_STEPS + ENTER_STEPS - 1);
+    expect(flight.maxOneFoot, 'the foot never came all the way out')
+      .toBeGreaterThanOrEqual(0.999);
+    // The trailing `idle` is the touchdown: the ground suppresses the pose, and
+    // the finger that is still down earns nothing further until the next
+    // flight. `spent` before it is the one-qualification-per-flight latch.
+    expect(flight.states, 'the pose took a different route through its states')
+      .toEqual(['idle', 'qualifying', 'posing', 'returning', 'spent', 'idle']);
+    // Both boots are down before the wheel is, with the finger still on HOP.
+    expect(flight.landedStep, 'the flight never ended').toBeGreaterThan(0);
+    expect(flight.oneFootAtTouchdown, 'the rider landed on one foot').toBe(0);
+
+    await finger.up();
+    await page.evaluate(() => window.qa.advance(2));
+    expect(await page.evaluate(() => window.game.snapshot().actions.hopHeld)).toBe(false);
+    expect(errors).toEqual([]);
+  });
+
+  test('a cancelled touch drops the hold mid-pose and the foot comes home', async ({ page }) => {
+    const errors = collectErrors(page);
+    await boot(page, PARK);
+    await page.evaluate(() => {
+      window.qa.freeze();
+      window.qa.advance(30);
+    });
+
+    const finger = await touchFinger(page, '[data-touch="hop"]', 82);
+    await finger.down();
+    const posed = await page.evaluate(advanceUntilPosed, { blend: 0.6, maxSteps: 200 });
+    expect(posed.found, 'the pose never reached 0.6 of the way out').toBe(true);
+    expect(posed.state).toBe('posing');
+    expect(posed.grounded, 'the pose was measured on the ground').toBe(false);
+
+    // **A real `touchcancel`** — what a phone sends when the system takes the
+    // gesture away. No `pointerup` is coming, ever.
+    await finger.cancel();
+    expect(await page.evaluate(() => window.game.snapshot().actions.hopHeld)).toBe(false);
+    await expect(page.locator('[data-touch="hop"]')).not.toHaveAttribute('data-pressed', 'true');
+
+    const home = await page.evaluate(returnTrace, 60);
+    expect(home.stateAfterOneStep, 'the pose did not start coming back').toBe('returning');
+    expect(home.roseAgain, 'the foot went back out after the cancel').toBe(false);
+    expect(home.homeAtStep, 'the foot never got home').toBeGreaterThan(0);
+    expect(home.homeAtStep, 'the foot took longer than the return to come home')
+      .toBeLessThanOrEqual(Math.round(ONE_FOOT.returnSeconds * SIMULATION.hz) + 2);
+    expect(home.endOneFoot).toBe(0);
+    expect(home.endHopHeld).toBe(false);
+    expect(errors).toEqual([]);
+  });
+
+  test('a lost pointer capture is the same release as a finger lifting', async ({ page }) => {
+    const errors = collectErrors(page);
+    await boot(page, PARK);
+    await page.evaluate(() => {
+      window.qa.freeze();
+      window.qa.advance(30);
+    });
+
+    const finger = await touchFinger(page, '[data-touch="hop"]', 83);
+    await finger.down();
+    const posed = await page.evaluate(advanceUntilPosed, { blend: 0.6, maxSteps: 200 });
+    expect(posed.found, 'the pose never reached 0.6 of the way out').toBe(true);
+
+    // **The measurement that shapes the rest of this test.** The button takes
+    // an explicit capture on the way down, and handing it back changes nothing
+    // for a touch pointer: Blink gives touch its own implicit capture on the
+    // element it landed on, so the release is a no-op, no `lostpointercapture`
+    // is fired even once a further pointer event arrives to flush it, and the
+    // rider's foot is still out — correctly, because nothing has let go.
+    const released = await finger.releaseCapture();
+    expect(released.wasCaptured, 'HOP never captured the pointer').toBe(true);
+    // The capture is gone on the spot — `hasPointerCapture` reports the pending
+    // state the spec asks it to — and **no `lostpointercapture` ever reaches
+    // the page**, not even once a further pointer event arrives to flush the
+    // change, because a touch pointer keeps its implicit capture on the control
+    // it landed on. So nothing in the game heard anything, and the foot is
+    // still out, which is correct: no finger has left the glass.
+    expect(released.stillCaptured, 'the explicit capture outlived its release').toBe(false);
+    expect(released.lostCaptureEvents, 'Blink fired a lostpointercapture after all').toBe(0);
+    expect(await page.evaluate(() => window.game.snapshot().actions.hopHeld)).toBe(true);
+
+    // So the event is delivered the only way it can be here, and the claim is
+    // about the handler: a capture lost is a finger gone, whatever lost it.
+    await finger.loseCapture();
+    expect(await page.evaluate(() => window.game.snapshot().actions.hopHeld)).toBe(false);
+    await expect(page.locator('[data-touch="hop"]')).not.toHaveAttribute('data-pressed', 'true');
+
+    const home = await page.evaluate(returnTrace, 60);
+    expect(home.stateAfterOneStep).toBe('returning');
+    expect(home.roseAgain, 'the foot went back out after the capture was lost').toBe(false);
+    expect(home.endOneFoot).toBe(0);
+
+    // And the finger really is still down: the `touchend` that eventually
+    // arrives owns nothing and must change nothing.
+    await finger.up();
+    await page.evaluate(() => window.qa.advance(4));
+    expect(await page.evaluate(() => window.game.snapshot().actions.hopHeld)).toBe(false);
+    expect(errors).toEqual([]);
+  });
+
+  test('rotating the phone mid-gesture drops the finger and the dwell', async ({ page }) => {
+    const errors = collectErrors(page);
+    await boot(page, PARK);
+    await page.evaluate(() => {
+      window.qa.freeze();
+      window.qa.advance(30);
+    });
+
+    const finger = await touchFinger(page, '[data-touch="hop"]', 84);
+    await finger.down();
+    // Caught mid-dwell on purpose: `holdSeconds` is the one number only the
+    // reset can clear, and a rotation that merely let the pose finish would
+    // look identical from the blend alone.
+    const dwelling = await page.evaluate(() => {
+      const game = window.game;
+      for (let step = 1; step <= 200; step += 1) {
+        game.advance(1);
+        const snap = game.snapshot();
+        if (snap.tricks.pose.state === 'qualifying' && snap.tricks.pose.holdSeconds > 0.05) {
+          return {
+            found: true,
+            holdSeconds: snap.tricks.pose.holdSeconds,
+            grounded: snap.euc.grounded,
+            hopHeld: snap.actions.hopHeld,
+          };
+        }
+      }
+      return { found: false, holdSeconds: 0, grounded: true, hopHeld: false };
+    });
+    expect(dwelling.found, 'the dwell never started').toBe(true);
+    expect(dwelling.grounded).toBe(false);
+    expect(dwelling.hopHeld).toBe(true);
+
+    const before = await page.evaluate(() => window.game.snapshot().layoutChanges);
+    await page.setViewportSize({ width: 915, height: 412 });
+    await page.waitForFunction((was) => window.game.snapshot().layoutChanges > was, before);
+    await page.evaluate(() => window.qa.advance(2));
+
+    // Every control has just moved out from under the thumb holding it and the
+    // `pointerup` is never coming: the level goes, the dwell goes with it.
+    const after = await page.evaluate(() => ({
+      hopHeld: window.game.snapshot().actions.hopHeld,
+      pose: window.game.snapshot().tricks.pose,
+    }));
+    expect(after.hopHeld, 'a rotation left a finger stuck on HOP').toBe(false);
+    expect(after.pose.holdSeconds, 'the dwell survived the rotation').toBe(0);
+    expect(after.pose.oneFoot, 'a pose showed after the rotation').toBe(0);
+    expect(after.pose.state, 'the pose was left mid-dwell').toBe('idle');
+    await expect(page.locator('[data-touch="hop"]')).not.toHaveAttribute('data-pressed', 'true');
+
+    // The dead finger cannot re-earn anything, and a fresh one can: this is the
+    // half a merely-cleared action state passes and a stale pointer id fails.
+    await finger.up();
+    await page.evaluate(() => window.qa.advance(60));
+    expect(await page.evaluate(() => window.game.snapshot().actions.hopHeld)).toBe(false);
+    const fresh = await touchFinger(page, '[data-touch="hop"]', 85);
+    await fresh.down();
+    expect(await page.evaluate(() => window.game.snapshot().actions.hopHeld)).toBe(true);
+    const flight = await page.evaluate(flightTrace, 240);
+    expect(flight.posingAirborneStep, 'the phone could not pose again after a rotation')
+      .toBe(QUALIFY_STEPS);
+    await fresh.up();
+    expect(errors).toEqual([]);
+  });
+
+  test('a control taken from under a finger releases the hold', async ({ page }) => {
+    const errors = collectErrors(page);
+    await boot(page, PARK);
+    await page.evaluate(() => {
+      window.qa.freeze();
+      window.qa.advance(30);
+    });
+
+    const finger = await touchFinger(page, '[data-touch="hop"]', 86);
+    await finger.down();
+    const posed = await page.evaluate(advanceUntilPosed, { blend: 0.6, maxSteps: 200 });
+    expect(posed.found, 'the pose never reached 0.6 of the way out').toBe(true);
+
+    // A second thumb on the pause chip while the first is still on HOP. The
+    // menu takes the controls away (`TouchControls.setActive(false)`), so the
+    // element under the finger stops existing and no `pointerup` will ever be
+    // delivered for it — `releaseControl`'s own case, reached the way a player
+    // reaches it.
+    await page.locator('[data-touch-tap="pause"]').tap();
+    await page.evaluate(() => window.qa.thaw());
+    await expect(page.locator('.euc-touch')).toBeHidden();
+    expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('paused');
+    expect(await page.evaluate(() => window.game.snapshot().actions.hopHeld)).toBe(false);
+    expect(await page.evaluate(() => window.game.snapshot().tricks.pose.holdSeconds)).toBe(0);
+
+    // Back to the ride, with that first finger still physically on the glass.
+    await page.locator('.euc-menu--pause [data-menu="resume"]').tap();
+    await expect(page.locator('.euc-touch')).toBeVisible();
+    await page.evaluate(() => {
+      window.qa.freeze();
+      window.qa.advance(120);
+    });
+    expect(await page.evaluate(() => window.game.snapshot().actions.hopHeld)).toBe(false);
+    expect(await page.evaluate(() => window.game.snapshot().tricks.pose.oneFoot)).toBe(0);
+    await expect(page.locator('[data-touch="hop"]')).not.toHaveAttribute('data-pressed', 'true');
+
+    // And the id that was stranded is usable again, because browsers reuse ids.
+    await finger.up();
+    await finger.down();
+    expect(await page.evaluate(() => window.game.snapshot().actions.hopHeld)).toBe(true);
+    await finger.up();
+    expect(errors).toEqual([]);
+  });
+});
+
+test.describe('M36 §36.4 — Switchback Park on a phone', () => {
+  test('a phone ride of the park has one rider, one view and one HUD', async ({ page }) => {
+    // M25's phone contract, asserted at the new venue rather than assumed to
+    // carry: the park is the first world since that milestone with a race
+    // referee and a four-seat grid in its plan, and a grid is exactly the shape
+    // that would quietly seat a second rider somewhere.
+    const errors = collectErrors(page);
+    await boot(page, `${PARK}&seats=2&couch=1&players=2&secondrider=1&split=1`);
+
+    expect(await page.evaluate(() => window.game.levelPlan.id)).toBe(PARK_PLAN_ID);
+    expect(await page.evaluate(() => window.game.seatCount)).toBe(1);
+    expect(await page.evaluate(() => window.game.renderer.viewCount)).toBe(1);
+    expect(await page.locator('.euc-hud').count()).toBe(1);
+    expect(await page.locator('.euc-hud-seat[data-split="true"]').count()).toBe(0);
+    expect(await page.evaluate(() => window.game.snapshot().input.devices)).toEqual([null]);
+    expect(await page.evaluate(() => window.game.snapshot().input.pads)).toBe(0);
+
+    await page.evaluate(() => window.qa.advance(120));
+    expect(await page.evaluate(() => window.game.seatCount)).toBe(1);
+    expect(await page.evaluate(() => {
+      try {
+        window.game.snapshotFor(1);
+        return 'answered';
+      } catch (error) {
+        return (error as Error).message;
+      }
+    })).toBe('no such seat: 1 (seats: 1)');
+
+    await page.evaluate(() => window.game.setAppState('title'));
+    await expect(page.locator('.euc-menu--title')).toBeVisible();
+    expect(await page.evaluate(() => window.game.snapshot().couch.available)).toBe(false);
+    await expect(page.locator('.euc-menu--title [data-menu="couch"]')).toBeHidden();
+
+    // Visible controls, not every node in the markup — a player is offered what
+    // they can see and reach.
+    const offers = await page.locator('.euc-menu--title [data-menu]:visible').evaluateAll(
+      (nodes) => nodes.map((node) => `${node.getAttribute('data-menu')} ${node.textContent ?? ''}`),
+    );
+    expect(offers.length, 'the title screen offered nothing at all').toBeGreaterThan(3);
+    for (const entry of offers) {
+      expect(entry.toLowerCase(), `the phone's title screen offers "${entry}"`)
+        .not.toMatch(/2 player|two player|couch|split/);
+    }
+    expect(errors).toEqual([]);
+  });
+
+  test('every sign is readable on a real phone held upright', async ({ page }, info) => {
+    // **The `mobile` project's own answer to §36.4**, and the reason it is here
+    // rather than in `tests/m36_2.spec.ts`: that file runs in the chromium
+    // project, so its phone claims are a Pixel 7's CSS box at device-pixel-ratio
+    // 1 with no touch. This is the device — Playwright's own Pixel 7 descriptor
+    // at its 2.625× ratio, with the touch overlay drawn over the road.
+    //
+    // **412×839, not the 412×915 the other file measures, and the difference is
+    // the browser's own chrome.** 915 is the Pixel 7's *screen*; 839 is what a
+    // page gets after the address bar. The camera's vertical field of view is
+    // fixed, so the shorter box is a *wider* horizontal half-angle
+    // (`atan(tan(fov/2) × 412/839)` against `× 412/915`) — the real phone is
+    // very slightly more forgiving here than the emulated CSS box, which is
+    // why the conservative number stays the one in `tests/m36_2.spec.ts` and
+    // this one is the device's own.
+    test.slow();
+    const errors = collectErrors(page);
+    expect(page.viewportSize()).toEqual({ width: 412, height: 839 });
+    expectParkReadable(
+      'pixel7-portrait-412x839',
+      await parkLegibilityPass(page, info, 'pixel7-portrait-412x839'),
+    );
+    expect(errors).toEqual([]);
+  });
+
+  test('every sign is readable on a real phone held sideways', async ({ page }, info) => {
+    // Set before the boot, so the game meets the shape at start-up rather than
+    // through a resize — which is how a player who rotates before riding gets
+    // there, and the orientation this venue's long sight lines suit. 915×412 is
+    // the Pixel 7's screen laid on its side: the widest frame this device has,
+    // and the same box `tests/m36_2.spec.ts` measures, so the two files'
+    // landscape numbers are directly comparable.
+    test.slow();
+    const errors = collectErrors(page);
+    await page.setViewportSize({ width: 915, height: 412 });
+    expectParkReadable(
+      'pixel7-landscape-915x412',
+      await parkLegibilityPass(page, info, 'pixel7-landscape-915x412'),
+    );
     expect(errors).toEqual([]);
   });
 });

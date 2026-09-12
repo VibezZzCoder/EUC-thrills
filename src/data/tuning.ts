@@ -554,6 +554,80 @@ export const RIDER_BLOCKOUT = {
    */
   pedalStrikeFootLift: 0.022,
   /**
+   * The one-foot air gesture — M36, `docs/PLANS.md` §36.5.
+   *
+   * **The airborne exception to two-foot contact, and nothing else.** The
+   * motion reference has both boots on their pedals at all times; this is the
+   * one pose that leaves, it happens only in flight, and the three offsets
+   * below are the whole of it. They are an *ankle target* — the existing
+   * two-bone leg solve does the articulation, so there is no new joint, no new
+   * geometry and no second opinion about where a knee may bend.
+   *
+   * Offsets from the free foot's own pedal target, after the pedal's yaw and
+   * roll have been applied to it: the gesture rides the machine's pedal the
+   * way every other foot offset does, so a wobbling wheel does not leave the
+   * gesture behind. `render/rider.ts` blends toward them by the channel's
+   * 0..1 amount, so entry, hold and the return before touchdown are one
+   * scalar and every interior value is a real pose.
+   *
+   * **The foot trails; it does not kick out sideways, and that was measured
+   * rather than chosen.** The first build took the ankle out and up — 0.20 m
+   * outboard, 0.14 m above the pedal — and it did not fit anybody's clothes.
+   * Swept through `render/riderClearance.test.ts`, it put a leg 60 mm out
+   * through Trollina's flare and 208 mm out through Seal's tied band, dropped
+   * all four hip domes below their seat hems (7.6 mm against a 20 mm floor)
+   * and took both jacket-hem contracts 6 mm under theirs. The cause is
+   * anatomy: raising the ankle toward a fixed hip shortens the chain, the
+   * knee has to bulge somewhere, and a knee only bulges *forward* — measured,
+   * the thigh's top swept 190 mm out in front of the rider, which is what
+   * walks through everything worn at the waist. §36.5's instruction where that
+   * happens is to **reduce or redirect the gesture, never the floor**, so the
+   * pose was redirected: the foot swings *back* and up and a little out, which
+   * folds the shin behind the rider and leaves the thigh where it was. At
+   * these numbers the two contracts that had failed worst read exactly their
+   * gesture-free values, and every other floor holds untouched.
+   *
+   * It is also the direction the game can see. The chase camera sits behind
+   * the rider, so a boot that swings back and up crosses the silhouette the
+   * player is looking at, where the same distance sideways is mostly hidden
+   * behind the machine.
+   *
+   * Sized against reach rather than taste: the free ankle ends about 0.63 m
+   * from its hip, inside the 0.78 m the thigh and shin total, so the knee
+   * keeps a real bend at the full gesture instead of solving a locked leg
+   * that would stand the boot somewhere the constants do not say.
+   *
+   * **The hips do not move.** A weighted one-foot stance on the ground shifts
+   * the mass over the supporting pedal; a rider in the air has no weight to
+   * shift, and a hip shift here would move every garment on the pelvis through
+   * every clearance contract in `render/riderClearance.test.ts` for a pose that
+   * lasts a fraction of a second. The supporting foot stays exactly on its
+   * pedal.
+   */
+  /** How far the free ankle rises above its pedal target, metres. */
+  oneFootRise: 0.16,
+  /** How far outboard of its pedal target the free ankle travels, metres. */
+  oneFootOutboard: 0.08,
+  /** How far *behind* its pedal target the free ankle trails, metres. */
+  oneFootTrail: 0.28,
+  /**
+   * Which foot leaves: **-1, the rider's RIGHT** (+1 would be their left).
+   *
+   * One side for every look, chosen by the clearance sweep and never by a
+   * character branch (§36.5). The sweep measures both signs on all ten rigs
+   * (`render/riderClearance.test.ts`, "the one-foot air gesture is measured on
+   * both sides"), and every garment on the roster reads the same on either
+   * side to the last place — the rig is mirror-symmetric and the sweep carries
+   * both signs of the carve. One thing is not mirrored: **the Drunkard carries
+   * his can in his LEFT fist**, a hand's width outboard of a left thigh the
+   * ridden contract holds at 41.0 mm with 1.0 mm of reserve. Measured over the
+   * airborne family, releasing the left foot takes the can to **40.1 mm** of
+   * that thigh and releasing the right leaves it at **50.8 mm** — so the right
+   * foot is the side, by 10.7 mm, and the assertion that says so is in the
+   * sweep rather than in a comment.
+   */
+  oneFootReleaseSide: -1,
+  /**
    * How far the head drops toward the landing in the air, radians.
    *
    * "Head tracks landing" / "head looks toward landing" / "head focused on
@@ -6148,6 +6222,101 @@ export const RENDER = {
    * difference most displays cannot show at gameplay distance.
    */
   maxPixelRatio: 2,
+} as const;
+
+/**
+ * The one-foot air pose's clock — M36 (`docs/PLANS.md` §36.5).
+ *
+ * The pose is *presentation*: `app/oneFootPose.ts` steps it once per fixed
+ * step from the Hop control's held level and the controller's air facts, and
+ * the shared rig draws it. Nothing physical reads these numbers — §36.5 makes
+ * that a contract, and `app/oneFootPose.test.ts` proves it by digest — so this
+ * block tunes when a held Hop *shows* and never what a hop *does*. Seconds
+ * throughout; every one is spent against the fixed step, so a keyboard, a pad,
+ * a phone and a scripted QA hold all measure the same dwell.
+ *
+ * The numbers are sized against the **shortest flight the machine makes**: an
+ * uncharged standing hop leaves at `EUC.hopLaunchSpeed` and lands ~0.60 s
+ * later (72 fixed steps, measured). Held from the press, the pose qualifies
+ * 0.15 s after takeoff, is fully out by 0.25 s, holds until 0.15 s of air
+ * remain (0.45 s), and is back on the pedal by 0.55 s with 0.05 s to spare —
+ * so the plainest hop in the game carries a readable one-foot air rather than
+ * only the charged ones. A charged hop (+40 % height, ~0.72 s) and Switchback
+ * Park's kickers only widen that.
+ */
+export const ONE_FOOT = {
+  /**
+   * How long Hop must stay held **in the air** before any blend begins.
+   *
+   * This is what keeps a 180 tap from flashing a foot (§36.5: "a brief tap
+   * does not produce a visible one-foot flash"). It is the same 0.15 s the
+   * one-shot buffer holds a press for (`INPUT.actionBufferSeconds`), stated
+   * separately because it means something different: a hold shorter than the
+   * buffer *is* a press, a hold longer than it is a hold. Counted only while
+   * the pose is eligible (airborne, not crashing, not counting down), so a
+   * Space held from the ground reads the same dwell as one re-pressed in the
+   * air, and the dwell restarts on every release. Not a delay on hopping or
+   * spinning — neither reads it.
+   */
+  holdQualifySeconds: 0.15,
+  /** The free foot's travel from its pedal to the full gesture, seconds. */
+  enterSeconds: 0.10,
+  /** The free foot's return to its pedal, seconds — the ordinary recovery. */
+  returnSeconds: 0.10,
+  /**
+   * The least time the pose must be able to hold at full before it is worth
+   * starting. With the two travels and the margin this is the *readable
+   * window* a late request is refused against (§36.5: "if a late request
+   * leaves no readable pose-and-return window, do not start it").
+   */
+  readableSeconds: 0.08,
+  /**
+   * Air kept in hand at the return, seconds.
+   *
+   * The controller's `secondsToTouchdown` is the closed ballistic form with
+   * **no** margin — the ground it falls to is the ground under the wheel now
+   * — and the fixed step lands within one step of it (measured worst 0.005 s).
+   * Six steps here cover that quantisation and a landing that arrives a
+   * little early on a rising face; a landing that keeps dropping away only
+   * gives the pose more air, which it reads every step and spends.
+   */
+  touchdownMarginSeconds: 0.05,
+  /**
+   * The return when the pose is *suppressed* rather than released — the wheel
+   * touched down with the foot still out (a prediction the ground broke), a
+   * crash, a compression, a countdown. Faster than `returnSeconds` so the
+   * grounded frame gets its pedal contact back inside the landing's own
+   * absorb, and never an instant snap.
+   */
+  abortSeconds: 0.05,
+} as const;
+
+/**
+ * Trick events — M36 §36.6. One number, and it decides one word: *full*.
+ *
+ * `simulation/trickEvents.ts` counts a charged hop only for a hop launched
+ * with a full crouch charge, and §36.6 is explicit that a partial charge may
+ * be diagnostic but must never round up into the tally. That leaves exactly
+ * one judgement to make, and it is here rather than as a literal beside the
+ * comparison because a threshold nobody can find is a threshold nobody can
+ * move.
+ */
+export const TRICKS = {
+  /**
+   * The least captured crouch charge a hop must have spent to be a *charged*
+   * hop, 0..1.
+   *
+   * **Not 1, and the missing hundredths are quantisation rather than
+   * generosity.** `EucController.lastHopCharge` is `crouchHold /
+   * EUC.hopChargeSeconds` with the hold clamped to the window, so a rider who
+   * holds past the window reads exactly 1 — but the hold grows one fixed step
+   * at a time, and a rider who presses on the same step the window closes
+   * lands a step short of it. At the shipped 0.40 s window and the 1/120 s
+   * step, one step is 0.021 of the charge; 0.95 forgives two of them and
+   * nothing else. The half charge §36.6 calls diagnostic is 0.5, which is not
+   * close to this, and a flick reads 0.
+   */
+  chargedHopMinCharge: 0.95,
 } as const;
 
 /**

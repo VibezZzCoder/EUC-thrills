@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { PARK_SIGN_WORDS } from '../data/markings.ts';
 import {
   LETTER_ASPECT,
   inkDisc,
@@ -78,6 +79,13 @@ test('a word is drawn from paths, and refuses a letter it does not have', () => 
   // the venue's own name ended that when it needed four more letters. What
   // replaced it is the scan two tests below; `maribel.test.ts` still holds the
   // narrower claim about her sheet, whose five letters have not moved.
+  //
+  // **M36 finished the job the venue's name started.** This line used to refuse
+  // DAINESE, and twenty-one glyphs spell it: the park's own `DOWN` brought the
+  // D, the N and the O with it. That is the proxy dying rather than the rule
+  // dying — the scan below is what stops DAINESE being printed, and it does not
+  // care how many letters the face has. What is asserted here is the mechanism
+  // itself, on a letter the project still has no reason to own.
   const sheet = inkSheet(96, 24, [1, 1, 1]);
   inkWord(sheet, 'VARGAS', [2, 4], 16, 3, [0, 0, 0], { flip: true });
   let inked = 0;
@@ -86,7 +94,7 @@ test('a word is drawn from paths, and refuses a letter it does not have', () => 
   }
   assert.ok(inked > 40, 'the word left no ink on the sheet');
   assert.ok(inkWordLength('VARGAS', 16) > inkWordLength('VA', 16), 'a longer word is longer');
-  assert.throws(() => inkWord(sheet, 'DAINESE', [0, 0], 8, 2, [0, 0, 0]), /no path/);
+  assert.throws(() => inkWord(sheet, 'QUIZ', [0, 0], 8, 2, [0, 0, 0]), /no path/);
 });
 
 
@@ -136,6 +144,63 @@ test('the venue letters exist and are drawn like the ones beside them', () => {
   }
 });
 
+test('the park glyphs exist, and each one was drawn from a letter already here', () => {
+  // D, N, O, P, W, 0, 1 and 8 arrived at M36 Phase 2 so the trail could print
+  // 180 and DOWN on the ground. The claim worth asserting is the one the C/G
+  // test above makes: a face whose shapes are drawn twice is two faces, and no
+  // screenshot of a word seen at forty metres would say so.
+  for (const glyph of 'DNOPW0181') {
+    assert.doesNotThrow(() => wordStrokes(glyph, 10), `no path for '${glyph}'`);
+  }
+
+  // O is C's bowl, closed — which makes it G's bowl too, so the project has one
+  // bowl appearing in four letters.
+  const o = wordStrokes('O', 10)[0]!;
+  const c = wordStrokes('C', 10)[0]!;
+  for (let point = 0; point < c.length - 1; point += 1) {
+    assert.deepEqual(o[point], c[point], `O leaves C's bowl at point ${point}`);
+  }
+  assert.deepEqual(o[o.length - 1], o[0], 'an O has to close');
+
+  // P is R without its leg, stroke for stroke.
+  const p = wordStrokes('P', 10);
+  const r = wordStrokes('R', 10);
+  assert.equal(p.length, 2, 'P is a stem and a bowl');
+  assert.equal(r.length, 3, 'R is a stem, a bowl and a leg');
+  assert.deepEqual(p[0], r[0], 'P and R stopped sharing a stem');
+  assert.deepEqual(p[1], r[1], 'P and R stopped sharing a bowl');
+
+  // W is M with every `y` mirrored about the letter box.
+  const w = wordStrokes('W', 10)[0]!;
+  const m = wordStrokes('M', 10)[0]!;
+  assert.equal(w.length, m.length, 'W and M have different numbers of points');
+  for (let point = 0; point < w.length; point += 1) {
+    assert.ok(Math.abs(w[point]![0] - m[point]![0]) < 1e-9, `W point ${point} moved sideways`);
+    assert.ok(
+      Math.abs(w[point]![1] - (10 - m[point]![1])) < 1e-9,
+      `W point ${point} is not M's mirror`,
+    );
+  }
+
+  // And the pair that could actually be misread. A zero the width of an O reads
+  // as an O, so `180` would read as `I8O` on a trail that also prints DOWN.
+  const width = (strokes: readonly (readonly [number, number])[][]): number => {
+    const xs = strokes.flat().map((point) => point[0]);
+    return Math.max(...xs) - Math.min(...xs);
+  };
+  const zeroWidth = width(wordStrokes('0', 10));
+  const oWidth = width(wordStrokes('O', 10));
+  assert.ok(
+    zeroWidth < oWidth * 0.75,
+    `a zero ${zeroWidth.toFixed(2)} wide beside an O ${oWidth.toFixed(2)} wide is an O`,
+  );
+  // A one is not an I: it carries a flag and a foot, so it is three strokes to
+  // the I's one and is wider than a bare stem.
+  assert.equal(wordStrokes('I', 10).length, 1);
+  assert.equal(wordStrokes('1', 10).length, 2);
+  assert.ok(width(wordStrokes('1', 10)) > width(wordStrokes('I', 10)) + 1, 'a one reads as an I');
+});
+
 /**
  * Every word this project hands to the press, found in the source rather than
  * trusted.
@@ -163,15 +228,30 @@ test('nothing in this project prints a word it does not own', () => {
   // thing itself. Two words ship, and both are the project's own: her surname
   // by her grant, and the venue's name.
   //
+  // **M36 extended the list from two words to ten, deliberately.** The park
+  // paints instructions on the ground, and the eight words it may paint are
+  // `PARK_SIGN_WORDS` in `data/markings.ts` — written down once, in the data
+  // table, so this allowance is *derived* from the same constant the signage
+  // prints from rather than restated here. Anything off that list still fails,
+  // which is the case asserted at the bottom of this test.
+  //
   // `inkKit.ts` is skipped because the pass-through inside `inkWord` is the
-  // mechanism, and the specs because refusing DAINESE means printing it here.
+  // mechanism; `shared/letterPaths.ts` is skipped because it *is* the
+  // mechanism — `wordStrokes(word: string,` matches the regex below — and the
+  // specs because refusing DAINESE means printing it here. Three skips is two
+  // more than anyone should add without saying why, and a fourth file defining
+  // a printer would be a decision rather than a line in a list.
   const root = join(import.meta.dirname, '..');
-  const allowed = new Set(["'VARGAS'", 'GANTRY_WORDMARK']);
+  const allowed = new Set([
+    "'VARGAS'",
+    'GANTRY_WORDMARK',
+    ...PARK_SIGN_WORDS.map((word) => `'${word}'`),
+  ]);
   const offenders: string[] = [];
   let scanned = 0;
   for (const entry of readdirSync(root, { recursive: true, encoding: 'utf8' })) {
     if (!entry.endsWith('.ts') || entry.endsWith('.test.ts')) continue;
-    if (entry.endsWith('inkKit.ts')) continue;
+    if (entry.endsWith('inkKit.ts') || entry.endsWith('letterPaths.ts')) continue;
     scanned += 1;
     for (const word of printedWords(readFileSync(join(root, entry), 'utf8'))) {
       if (!allowed.has(word)) offenders.push(`${entry} prints ${word}`);
@@ -188,4 +268,19 @@ test('nothing in this project prints a word it does not own', () => {
   assert.deepEqual(printedWords('wordStrokes(BRAND, size.letterHeight)'), ['BRAND']);
   // And it must not mistake the ruler for the press.
   assert.deepEqual(printedWords("inkWordLength('VARGAS', cap)"), []);
+
+  // The widened list is still a *list*. A park word passes and a word that
+  // merely looks like one does not, which is the half of the M36 extension
+  // worth asserting: the allowance came from `PARK_SIGN_WORDS`, so it grew by
+  // exactly eight entries and not by a pattern.
+  for (const word of PARK_SIGN_WORDS) {
+    assert.ok(allowed.has(`'${word}'`), `${word} is approved but the scan would refuse it`);
+  }
+  for (const refused of ['STOP', 'SLOW', 'JUMP', '360', 'DANGER']) {
+    assert.ok(
+      !allowed.has(`'${refused}'`),
+      `${refused} is not on the approved list and the scan would let it through`,
+    );
+  }
+  assert.equal(allowed.size, PARK_SIGN_WORDS.length + 2, 'a word entered the allowance sideways');
 });

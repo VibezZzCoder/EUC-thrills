@@ -325,3 +325,29 @@ test('the slice census is what the digest is a digest of', () => {
     rows: 360,
   });
 });
+
+test('no world that ships today authors a look, so M36 moved no digest', () => {
+  // `LevelPlan.look` is M36 Phase 4's presentation descriptor, and §36.7 keeps
+  // today's daylight the default for every existing world. Absence is how that
+  // is expressed, so absence is what has to be asserted: a producer that
+  // emitted `look: undefined` — or, worse, a resolved daylight look — would
+  // leave every shipped venue *looking* identical while moving both pinned
+  // digests above, and the M12 gate would fire for a change nobody made.
+  for (const [name, plan] of [
+    ['the slice', createSliceLevel()],
+    ['the proving ground', createProvingGround()],
+  ] as const) {
+    assert.equal('look' in plan, false, `${name} authors a look it does not want`);
+  }
+
+  // And the key is a real difference when a venue does author one, so the
+  // park's warm late afternoon cannot arrive silently.
+  const lit = createSliceLevel();
+  lit.look = { exposure: 1.06 };
+  assert.notEqual(planDigest(lit), planDigest(createSliceLevel()));
+
+  // The absent-versus-present-undefined rule, on this key specifically.
+  const undefinedLook = createSliceLevel();
+  (undefinedLook as { look?: undefined }).look = undefined;
+  assert.notEqual(planDigest(undefinedLook), planDigest(createSliceLevel()));
+});

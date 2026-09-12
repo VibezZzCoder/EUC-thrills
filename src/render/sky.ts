@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
 import { LIGHTING } from '../data/tuning.ts';
+import { DAYLIGHT_LOOK, type ResolvedVenueLook } from '../data/venueLook.ts';
 import { paintSky } from './skyImage.ts';
 
 /**
@@ -28,21 +29,39 @@ export interface SkyTexture {
   dispose(): void;
 }
 
-export function createSky(): SkyTexture {
+/**
+ * Paint the sky a venue asked for — M36 Phase 4.
+ *
+ * **Five of its parameters now come from the look and the rest still come from
+ * `LIGHTING`, and the split is not arbitrary.** A venue may move where the sun
+ * is and what the three colours of the dome are, because those are the same
+ * numbers that aim and colour the light casting the shadows underneath it
+ * (`data/venueLook.ts`). The texture's size, the horizon-to-zenith ramp and
+ * the whole cloud field stay global: they are the sky's *construction* rather
+ * than its time of day, and a per-venue cloud sheet is a texture budget by
+ * another name (§36.7 keeps the 8 MB transfer contract).
+ *
+ * With no argument the pixels are what M7.5 shipped, byte for byte — the
+ * default look is literally the `LIGHTING` values this function used to read
+ * inline, and `sky.test.ts` paints both ways and compares the buffers.
+ */
+export function createSky(look: ResolvedVenueLook = DAYLIGHT_LOOK): SkyTexture {
   const width = LIGHTING.skyTextureWidth;
   const height = LIGHTING.skyTextureHeight;
 
   const pixels = paintSky({
     width,
     height,
-    zenithColour: LIGHTING.skyZenithColour,
-    horizonColour: LIGHTING.horizonColour,
+    zenithColour: look.skyZenithColour,
+    // The haze's colour and the sky's bottom stop are one field on the look,
+    // so the band `DESIGN.md` §6 forbids cannot come back through a venue.
+    horizonColour: look.horizonColour,
     gradientExponent: LIGHTING.skyGradientExponent,
     // Derived from the two constants that aim the directional light, so the
     // painted sun and the shadows in the frame can never disagree.
-    sunAzimuth: LIGHTING.sunAzimuth,
-    sunElevation: LIGHTING.sunElevation,
-    sunColour: LIGHTING.skySunColour,
+    sunAzimuth: look.sunAzimuth,
+    sunElevation: look.sunElevation,
+    sunColour: look.skySunColour,
     sunCoreSpread: LIGHTING.skySunCoreSpread,
     sunGlowSpread: LIGHTING.skySunGlowSpread,
     sunGlowStrength: LIGHTING.skySunGlowStrength,

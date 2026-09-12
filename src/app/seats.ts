@@ -11,6 +11,7 @@ import type {
   ChaseCameraView,
 } from '../render/chaseCamera.ts';
 import type { RiderSource } from '../input/riderSource.ts';
+import type { OneFootPoseState } from './oneFootPose.ts';
 import type { Hud } from '../ui/hud.ts';
 import type { HudModel, HudView } from '../ui/hudModel.ts';
 import type { Onboarding } from '../ui/onboarding.ts';
@@ -120,6 +121,30 @@ export interface RiderSeat {
   readonly previousPose: EucPose;
   readonly currentPose: EucPose;
   readonly renderPose: EucPose;
+
+  /**
+   * This seat's one-foot air pose — M36 (`docs/PLANS.md` §36.5).
+   *
+   * **Beside the poses and deliberately not inside them.** The pose triple
+   * above is what the controller writes; this is what the *held* Hop level
+   * makes of the controller's air facts, stepped by `app/oneFootPose.ts` in
+   * `Game.stepSeat` straight after the physics and never read by it — that is
+   * §36.5's physical-equality contract, kept structurally: no `EucPose` field
+   * carries the channel, so no controller, ghost or cop can. Per seat because
+   * a held key is one rider's, and two riders' feet leave their pedals on
+   * their own holds.
+   *
+   * The two numbers below are its interpolation history, the same pair every
+   * other render-only channel keeps: the step writes `current`, the render
+   * frame draws `lerp(previous, current, alpha)` through
+   * `RidingRig.setTrickPose` **before** `apply`, so the gesture is never a
+   * frame behind the pose it rides. Collapsed wherever the poses are
+   * (`syncSeatPose`), zeroed wherever the rider is put somewhere
+   * (`resetRiderTo`, `placeRider`, a re-dress), cancelled at every input door.
+   */
+  readonly oneFoot: OneFootPoseState;
+  previousOneFoot: number;
+  currentOneFoot: number;
 
   /** This seat's swing state — M14. The paddle is wielder-agnostic; a seat is a wielder. */
   readonly paddle: Paddle;

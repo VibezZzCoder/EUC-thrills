@@ -13,6 +13,7 @@ import {
 } from '../data/props.ts';
 import type { PropKind } from '../data/props.ts';
 import type { MaterialId } from '../data/surfaces.ts';
+import type { VenueLook } from '../data/venueLook.ts';
 import type {
   BoxCollider,
   Checkpoint,
@@ -104,6 +105,15 @@ export interface BuildOptions {
    * encroachment, a collider's height — would not be a palette.
    */
   readonly palette?: Readonly<Partial<Record<MaterialId, number>>>;
+  /**
+   * The light this venue is seen in. See `LevelPlan.look` — M36 Phase 4.
+   *
+   * Passed through untouched, exactly as `palette` is and for the same reason:
+   * the builder reasons about heights, corridors and colliders, and a
+   * descriptor that changed any of those would not be a look. Absent on every
+   * world that ships today, so every pinned digest is unmoved.
+   */
+  readonly look?: VenueLook;
   /**
    * What is lying in the road, authored against segments — M13 Phase 1.
    *
@@ -239,6 +249,63 @@ export interface BuildOptions {
    * were placed by somebody looking at them and their plans are pinned.
    */
   readonly buildingStandBack?: number;
+  /**
+   * The natural ground the corridors blend into, sample by sample, in place of
+   * the flat `surround.height` — M36.
+   *
+   * **Every world before M36 sits in a level field, and a hillside cannot.** A
+   * corridor's shoulder eases its own height down to one number, so a trail
+   * running fifteen metres above the surround arrives on an embankment: a
+   * conical ramp of the builder's own making, with flat grass to the horizon
+   * beyond it. `docs/PLANS.md` §36 authors a lap down a forested hillside,
+   * where the ground between the switchbacks *is* the hill and the trail is cut
+   * into it. That ground can only come from the author, and it arrives as a
+   * function rather than as data because invariant 2 keeps `LevelPlan` plain
+   * serializable data: the hill is resolved here, into the heightfield that has
+   * always carried the world's shape, and the emitted plan is the same shape it
+   * has been since M4.
+   *
+   * It replaces the blend *target* and nothing else. Inside a corridor the
+   * height is still the corridor's own; across a shoulder the same smoothstep
+   * still runs, now easing to this ground instead of to the surround; off every
+   * corridor the sample is this ground.
+   *
+   * Three things it deliberately does not do. It names no **surface** — an
+   * off-corridor cell is still `surround.surface`, because a surface belongs to
+   * an area the author paints with bands, spills and dressing, not to something
+   * a height function could be asked to guess. It does not change the
+   * **per-cell blend** — the shoulder's easing is what the slice was tuned
+   * against and a hill is no reason to retune it. And it is **absent on every
+   * world that ships today**, which is what leaves the pinned plan digests
+   * alone.
+   *
+   * The field border is a contract rather than a suggestion. `plan.ts` promises
+   * the outermost ring already equals the surround, and `fieldHeightAt` answers
+   * `surround.height` for everything past it, so a ground still climbing at the
+   * edge is a cliff with the surround plane cutting through it. The builder
+   * measures the finished ring and refuses; `fieldMargin` below is how a hill is
+   * given room to come down.
+   */
+  readonly groundAt?: (x: number, z: number) => number;
+  /**
+   * Extra metres of heightfield around the corridors' union, on every side —
+   * M36. Zero by default, and **every world that ships today passes none.**
+   *
+   * The field is otherwise bounded by what the corridors and their shoulders
+   * reach, plus two cells of pure surround. That is exactly right for a level
+   * field, where there is nothing out there to describe. It is not enough for a
+   * `groundAt` hill, which needs somewhere to *fall* to the surround before the
+   * border contract above measures it: with no margin the last shoulder cell
+   * and the border ring are two metres apart, and a hillside that meets the
+   * surround in two metres is the wall this was meant to avoid.
+   *
+   * It costs heightfield cells, and a cell is two triangles — charged on all
+   * four sides, so twenty metres around a 40 × 60 m field is roughly 2.4× the
+   * samples. Ask for what the ground needs and no more. It is added *before* the
+   * existing `spacing * 2` pad rather than instead of it, so the outermost ring
+   * is still guaranteed to be pure surround.
+   */
+  readonly fieldMargin?: number;
 }
 
 /**
@@ -381,8 +448,10 @@ function bestSegmentAt(
   placed: readonly PlacedSegment[],
   x: number,
   z: number,
-): { segment: PlacedSegment; outside: number; t: number; height: number } | null {
-  let best: { segment: PlacedSegment; outside: number; t: number; height: number } | null = null;
+): { segment: PlacedSegment; outside: number; s: number; t: number; height: number } | null {
+  let best:
+    | { segment: PlacedSegment; outside: number; s: number; t: number; height: number }
+    | null = null;
 
   for (const segment of placed) {
     const query = querySegment(segment, x, z);
@@ -393,7 +462,12 @@ function bestSegmentAt(
       || query.outside < best.outside
       || (query.outside === best.outside && Math.abs(query.t) < Math.abs(best.t))
     ) {
-      best = { segment, outside: query.outside, t: query.t, height: query.height };
+      // `s` is carried rather than discarded so a cell knows *where along* its
+      // corridor it is, which is what a ranged `SurfaceBand` — a boardwalk
+      // patch, a sign pad, a landing apron — needs to exist at all.
+      best = {
+        segment, outside: query.outside, s: query.s, t: query.t, height: query.height,
+      };
     }
   }
 
@@ -439,7 +513,16 @@ export function buildLevelPlan(
     if (segment.minZ < minZ) minZ = segment.minZ;
     if (segment.maxZ > maxZ) maxZ = segment.maxZ;
   }
-  const pad = spacing * 2;
+  // M36's authored ground wants room outside the corridors to reach the
+  // surround in; the two cells below are the builder's own guarantee and are
+  // added on top of it rather than spent on it.
+  const fieldMargin = options.fieldMargin ?? 0;
+  if (!Number.isFinite(fieldMargin) || fieldMargin < 0) {
+    throw new Error(
+      `fieldMargin is ${options.fieldMargin} m, which is not a distance the field can be grown by`,
+    );
+  }
+  const pad = fieldMargin + spacing * 2;
   const originX = Math.floor((minX - pad) / spacing) * spacing;
   const originZ = Math.floor((minZ - pad) / spacing) * spacing;
   const columns = Math.ceil((maxX + pad - originX) / spacing) + 1;
@@ -452,19 +535,52 @@ export function buildLevelPlan(
     for (let column = 0; column < columns; column += 1) {
       const x = originX + column * spacing;
       const best = bestSegmentAt(placed, x, z);
+      // What this sample blends *to*: the level surround, or M36's authored
+      // ground beneath it. One line, and it is the whole of the hillside.
+      const floor = options.groundAt === undefined
+        ? options.surround.height
+        : options.groundAt(x, z);
+      if (options.groundAt !== undefined && !Number.isFinite(floor)) {
+        throw new Error(`groundAt returned a non-finite height at (${x}, ${z}): ${floor}`);
+      }
 
       if (best === null) {
-        heights[row * columns + column] = options.surround.height;
+        heights[row * columns + column] = floor;
         continue;
       }
 
       const shoulder = best.segment.spec.shoulder ?? DEFAULT_SHOULDER;
       // Inside the corridor the segment's own height; beyond it, eased down to
-      // the surround across the shoulder, which turns every embankment into
+      // that ground across the shoulder, which turns every embankment into
       // something a rider can climb rather than a wall they bounce off.
       const weight = shoulder > 0 ? 1 - ease01(clamp01(best.outside / shoulder)) : 0;
-      heights[row * columns + column] = options.surround.height
-        + (best.height - options.surround.height) * weight;
+      heights[row * columns + column] = floor + (best.height - floor) * weight;
+    }
+  }
+
+  // The border ring has to *be* the surround, and an authored ground is the one
+  // thing that can break it. The pad above guarantees it for corridors — two
+  // cells beyond every shoulder — but nothing can guarantee it for a function
+  // the builder did not write, and `plan.ts` states the promise the renderer
+  // and `fieldHeightAt` are both built on: off the field is `surround.height`,
+  // so a ground still climbing at the edge is a cliff with the surround plane
+  // cutting through it. Measured on the finished ring rather than trusted, and
+  // refused rather than clamped — flattening the author's ground would move the
+  // trail sitting in it (M36). Row-major, so the first offender named is the
+  // first one sampled.
+  if (options.groundAt !== undefined) {
+    for (let row = 0; row < rows; row += 1) {
+      const edgeRow = row === 0 || row === rows - 1;
+      for (let column = 0; column < columns; column += 1) {
+        if (!edgeRow && column !== 0 && column !== columns - 1) continue;
+        const height = heights[row * columns + column];
+        if (Math.abs(height - options.surround.height) <= 1e-6) continue;
+        throw new Error(
+          'groundAt must meet the surround at the field border: sample '
+          + `(${originX + column * spacing}, ${originZ + row * spacing}) `
+          + `is ${height} m against a surround of ${options.surround.height} m`,
+        );
+      }
     }
   }
 
@@ -483,7 +599,7 @@ export function buildLevelPlan(
       const x = originX + (column + 0.5) * spacing;
       const best = bestSegmentAt(placed, x, z);
       surfaces[row * cellColumns + column] = best !== null && best.outside === 0
-        ? surfaceAtLateral(best.segment.spec, best.t)
+        ? surfaceAtLateral(best.segment.spec, best.t, best.s)
         : options.surround.surface;
     }
   }
@@ -764,6 +880,10 @@ export function buildLevelPlan(
     // pinned digests exactly where they were.
     ...(lap === null ? {} : { lap }),
     ...(options.palette === undefined ? {} : { palette: { ...options.palette } }),
+    // The same absent-optional spread, for the same contract: a world with no
+    // authored look emits no key, so it resolves to today's daylight and its
+    // digest is the digest it had before this field existed (`LevelPlan.look`).
+    ...(options.look === undefined ? {} : { look: { ...options.look } }),
   };
 }
 
@@ -1468,7 +1588,10 @@ function clipMarking(
   let current: Vec3[] = [];
 
   const flush = (): void => {
-    if (current.length >= 2 && polylineLength(current) >= MARKINGS.minRunLength) {
+    // `minRun` rather than `MARKINGS.minRunLength`: the role that authored this
+    // line chose the number, because the bar of a printed letter is shorter
+    // than any lane line and is not an offcut. See `PlacedMarking.minRun`.
+    if (current.length >= 2 && polylineLength(current) >= marking.minRun) {
       runs.push({
         points: current,
         width: marking.width,

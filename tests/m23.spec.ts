@@ -509,6 +509,7 @@ test('Track Day brings its own circuit, and opens on an out lap', async ({ page 
   expect(await page.evaluate(() => window.game.levelPlan.id)).toBe('m7-slice');
 
   await page.locator('.euc-menu--title [data-menu="track-day"]').click();
+  await page.locator('.euc-menu--tracks [data-venue="track"]').click();
   await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
 
   expect(await page.evaluate(() => window.game.levelPlan.id)).toBe('belvar-r1');

@@ -1270,6 +1270,9 @@
   text-align: left;
 }
 
+/* Track selection stays easy to hit in the short-window tier as well. */
+.euc-menu--tracks .euc-button { min-height: 44px; }
+
 .euc-menu__title {
   margin: 0;
   font-size: clamp(1.8rem, 6vw, 3.2rem);
@@ -1703,6 +1706,124 @@
 .euc-results__delta[data-ahead="true"] {
   color: var(--delta-ahead);
   opacity: 1;
+}
+
+/* ---------------------------------------------------------------------------
+ * The Tricks summary — M36 §36.6
+ *
+ * Between the table and the notes, and **its own region rather than a row**:
+ * three browser specs pin the number of rows in `[data-menu="results-rows"]`,
+ * and a count of 180s is not a sector time however much it would like to sit
+ * next to one. It borrows nothing from `.euc-results__table` — no shared
+ * class, no shared width rule — so `table-layout: fixed`'s first-row trap (the
+ * one this stylesheet has now recorded twice) cannot reach it.
+ *
+ * **Two nested auto-fits, and that is the whole responsive story.** The outer
+ * one lays out riders and the inner one lays out counts — no media query, no
+ * seat count in the markup, and no number this file has to keep in step with
+ * `COUCH_SEATS`. Measured on a static probe of the real markup: a lap card at
+ * 375 gets one group of two-by-two, at 1000 one group of four across; a
+ * four-rider race card at 375 gets one group per row, each two-by-two, and at
+ * 1000 three groups across with the fourth wrapping. No case overflows its
+ * panel sideways, and the panel already scrolls (`.euc-menu` is `overflow-y:
+ * auto` with a `safe` centre) so the tall ones are reachable rather than
+ * clipped.
+ *
+ * The counts are `tabular-nums` for the table's reason, and the labels are the
+ * notes' dim ink: nothing here is a score, and §36.6 says so twice.
+ * ------------------------------------------------------------------------ */
+.euc-results__tricks {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.euc-results__tricks[hidden] { display: none; }
+
+.euc-results__tricks-caption {
+  margin: 0;
+  color: var(--ink-dim);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: left;
+}
+
+.euc-results__tricks-groups {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+}
+
+.euc-results__trick-group {
+  display: grid;
+  gap: 0.3rem;
+  /* Without this a long rider name sets the column's minimum and the grid
+     stops honouring `1fr` — the standard auto-fit overflow, and the reason
+     the name below is allowed to ellipsis rather than to push. */
+  min-width: 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 0.5rem;
+}
+
+.euc-results__trick-rider {
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.euc-results__trick-list {
+  display: grid;
+  gap: 0.2rem 0.9rem;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  margin: 0;
+}
+
+/* **A row, not a stack**, and the probe above is what decided it. Stacked — a
+   small label over a big number, the summary's own anatomy one panel up — the
+   four labels wrap to different numbers of lines at the widths that matter and
+   the counts land on three different baselines, which reads as four things
+   measured differently. Label left, count right, baselines shared: the notes'
+   own shape, which is what this block is a quieter cousin of. */
+.euc-results__trick {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+/* **Sentence case, unlike every other caption on this card**, and it is a fit
+   decision rather than a stylistic one: uppercase with the caption tracking
+   makes "Clean landings" about a fifth wider, which is exactly enough to wrap
+   it onto two lines in a 375-wide portrait column and in a four-rider group.
+   It also reads the way the notes below it do, which is the right register —
+   this block is a quiet summary and §36.6 twice says it is not a score. */
+.euc-results__trick dt {
+  color: var(--ink-dim);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.35;
+  /* Wrapping rather than an ellipsis: a truncated "Clean land…" is a label
+     that has stopped saying what it counts, and the row below it has room.
+     It takes the slack and the count never does, so a two-digit tally cannot
+     push the label onto a second line. */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.euc-results__trick dd {
+  flex: 0 0 auto;
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
 }
 
 .euc-results__notes {
@@ -2326,6 +2447,27 @@
   .euc-menu--couch .euc-menu__tagline { display: none; }
 
   /*
+   * And the join panel's copy of the venue chooser, on the same measurement —
+   * M36 Phase 6.
+   *
+   * Phase 5 gave the panel a third value-carrying control and the pinned fit
+   * broke with it: **14 px below the fold at 1000 x 520 with a fine pointer**
+   * (`tests/m25.spec.ts`) and **36 px with a coarse one** (`tests/m26.spec.ts`),
+   * against the 1 px both contracts allow. The row itself measures 58.6 px
+   * fine / 62.6 px coarse plus its margins, and dropping it takes both numbers
+   * to 0.
+   *
+   * **The routes panel still offers the venue on a short viewport** — this
+   * rule is `.euc-menu--couch` alone, so the place is still chosen where
+   * places are chosen. What a room on a window shorter than 40 rem gives up is
+   * changing venue *after* it has joined: the venue stays whatever the routes
+   * panel last chose, and the way to change it is `Back` and the routes panel.
+   * That is the same trade the notes above make — a panel a player has to
+   * scroll past `Start` is worse than a panel that offers one thing fewer.
+   */
+  .euc-menu--couch .euc-couch__venue { display: none; }
+
+  /*
    * And the results card's copy of the chooser, on the same measurement and
    * for the same reason — the owner's 2026-08-28 ride.
    *
@@ -2354,6 +2496,22 @@
     justify-items: stretch;
     gap: 0.55rem;
     margin: 0;
+  }
+
+  /* And the strip that row sits in loses its own walls here — a fourth saving
+     on the same terms, 2026-09-12. The segmented container is 11.6 px of
+     border and padding, and this card had 5 px to give: it reached the fold at
+     1000 x 560 with 3 px of its own padding hanging below and at 1600 x 500
+     with 7, against the 8 and 12 those windows allow. The strip is what makes
+     a row of options read as one control on a panel a player is *setting up*;
+     by the time this card is on screen they have already chosen this mode
+     twice, and `Back to title` below the fold is a button somebody has to go
+     looking for. The join panel and the routes panel keep it at every height
+     they are offered. */
+  .euc-menu--results .euc-couch__modes {
+    padding: 0;
+    border-width: 0;
+    background: none;
   }
 
   /* The last 21 px, and the one place on this card where size is decoration
@@ -2629,6 +2787,20 @@
   margin: 0.35rem 0 0.1rem;
 }
 
+/* An author's `display` beats the user agent's `[hidden] { display: none }`
+   whatever the specificity, so a class that sets `display` has to withdraw it
+   again itself. `Menus.writeVenueOffer` hides the venue chooser on the
+   fresh-route panel for Chase and Knockabout — neither can be ridden at a
+   hand-built place — and the chooser's root carries this class, so without
+   this rule a player whose chase was just refused is offered three venues,
+   none of which can host one (M36 Phase 6, p5-browser defect 1: the row
+   measured 98.09 px tall with `hidden` set). The sibling wrappers hidden the
+   same way (`.euc-pause__couch`, `.euc-results__couch`) set only a margin,
+   which is why this is the one control it bit. */
+.euc-couch__mode[hidden] {
+  display: none;
+}
+
 .euc-couch__mode-label {
   color: var(--ink-dim);
   font-size: 0.72rem;
@@ -2637,12 +2809,51 @@
   text-transform: uppercase;
 }
 
+/* **A row of choices is a field, and a field is named in ink** — the owner's
+   2026-09-12 couch ride: a long-time gamer's report that a casual player will
+   never realise these rows can be changed, and will play the city in free ride
+   for ever. The eyebrow above is the right weight for a caption on a card the
+   player has already learned; it is the wrong weight for the two questions the
+   *setup* panels are actually asking, where the label is the only thing that
+   says a choice is being offered at all.
+
+   **Scoped to the two panels that ask rather than applied to the class**, and
+   that is a fit decision as much as a taste one: the pause and results copies
+   sit on cards whose reachability is pinned at seven window sizes each, and the
+   short-window tier draws the results label *beside* its strip, where a larger
+   label is bought with a button somebody has to scroll to find. The panels
+   below have room, and they are the ones a guest meets first. */
+.euc-menu--couch .euc-couch__mode-label,
+.euc-menu--routes .euc-couch__mode-label {
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+/* **One strip, three options inside it** — the other half of the 2026-09-12
+   note above. Three flat dark buttons in a row are three buttons; the same
+   three inside a bordered, inset container are one control with a choice
+   already made, which is what a player has to read in the second they spend
+   looking at this panel. The border is a shade brighter than the panel's own
+   edge so the strip reads as a thing on the panel rather than as a seam in it,
+   and the ground is darker than the panel so an unselected option can be drawn
+   with no fill at all and still sit *in* something.
+
+   It costs about 11 px of height per row, which is why the gap came in to
+   0.3rem at the same time: the join panel's fit is pinned at 1000 x 520 with
+   four seat cards on it. */
 .euc-couch__modes {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 0.4rem;
+  gap: 0.3rem;
   width: 100%;
+  padding: 0.3rem;
+  border: 1px solid #3b4759;
+  border-radius: 0.7rem;
+  background: rgba(7, 9, 12, 0.45);
 }
 
 /* Sized off the primary action rather than off the note beneath it: this is a
@@ -2657,9 +2868,11 @@
   flex: 1 1 8rem;
   min-height: 2.5rem;
   padding: 0.5rem 0.9rem;
-  border: 1px solid var(--panel-edge);
+  /* Transparent rather than absent: the border is the selected state's ring and
+     removing it here would move every button by a pixel when one is pressed. */
+  border: 1px solid transparent;
   border-radius: 0.5rem;
-  background: #202b38;
+  background: transparent;
   color: var(--ink);
   font: inherit;
   font-size: 0.95rem;
@@ -2671,19 +2884,31 @@
 /* A radio dot, because that is the thing this control actually is: one of two,
    and the other one is right there. It is also the channel that is not colour
    — the ring fills — which matters twice over here, since the pause menu draws
-   this control directly above a solid accent `Resume`. */
+   this control directly above a solid accent `Resume`.
+
+   **The empty ring is drawn in light grey rather than in the panel's edge
+   colour** (2026-09-12). At `--panel-edge` on a dark strip it was a dot you
+   had to go looking for, and an unpressed radio nobody can see is a control
+   that looks like a label — the whole of the report this row answers. */
 .euc-couch__mode-button::before {
   content: '';
-  width: 0.8rem;
-  height: 0.8rem;
+  width: 0.95rem;
+  height: 0.95rem;
   flex: none;
-  border: 2px solid var(--panel-edge);
+  border: 2px solid #b9c4d3;
   border-radius: 50%;
   background: transparent;
   transition: border-color 140ms ease, background 140ms ease;
 }
 
-.euc-couch__mode-button:hover { border-color: var(--accent); background: #2a3746; }
+/* `:not(:disabled)`, because a hover that lights up the loaded venue or a mode
+   this world cannot carry is a hover that promises a press the button refuses. */
+.euc-couch__mode-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.euc-couch__mode-button:hover:not(:disabled)::before { border-color: #ffffff; }
 
 /* The chosen one, and it says so three ways — the filled dot, the accent tint,
    and `aria-pressed` itself, which is the selector. **A tint rather than a

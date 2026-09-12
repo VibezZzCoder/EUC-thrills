@@ -2,12 +2,15 @@
 /**
  * A tiny software rasterizer — the print shop's press.
  *
- * **This file imports nothing**, exactly as `render/skyImage.ts` imports
- * nothing, and for the same reason: the sheet it prints is the one part of a
- * character worth asserting numerically, and routing it through a 2D canvas
+ * **This file imports nothing but the alphabet**, nearly as `render/skyImage.ts`
+ * imports nothing, and for the same reason: the sheet it prints is the one part
+ * of a character worth asserting numerically, and routing it through a 2D canvas
  * would have put a DOM between `node --test` and every dot on a rider's chest.
  * `render/maribelAtlas.ts` wraps what this returns in a `THREE.DataTexture`;
- * nothing here knows a GPU exists.
+ * nothing here knows a GPU exists. The one import is `shared/letterPaths.ts`,
+ * which itself imports nothing — it is this file's own stroke table, moved down
+ * a layer at M36 so `level/` could print the same letters on the ground, and
+ * re-exported below so no caller had to move with it.
  *
  * **There is no text API, and that is a decision rather than an omission.**
  * `CanvasRenderingContext2D.fillText` resolves a family name against whatever
@@ -29,6 +32,14 @@
  * a pixel one unit inside gets all of it. That gives clean edges at any size
  * without supersampling, which matters because this sheet is painted at boot.
  */
+
+import {
+  LETTER_ASPECT,
+  wordLength,
+  wordStrokes,
+  type LetterPoint,
+  type WordMetrics,
+} from '../shared/letterPaths.ts';
 
 /** Linear-light RGB, 0..1 per channel. Not sRGB — see the file comment. */
 export type Rgb = readonly [number, number, number];
@@ -311,154 +322,22 @@ export function inkRect(sheet: InkSheet, box: InkBox, colour: Rgb, alpha = 1, so
 // -- Lettering ---------------------------------------------------------------
 
 /**
- * The alphabet this project owns, as stroke paths in a unit letter box.
+ * The alphabet moved down a layer at M36 Phase 2, and is re-exported here.
  *
- * `x` runs 0 (left) to 1 (right), `y` runs 0 (cap height) to 1 (baseline). One
- * entry per letter, each a list of strokes; a curve is a polyline with enough
- * points that its corners disappear at the size it is drawn.
+ * `level/parkSignage.ts` prints the same letters onto the *ground*, as road
+ * paint, and `level/` may not import `render/` (AGENTS.md invariant 5). The
+ * table had to move or be copied, and `inkKit.ts` has argued since M23 that a
+ * project with two alphabets has two answers to what its lettering looks like
+ * — so it moved, to `shared/letterPaths.ts`, which still imports nothing.
  *
- * Only the letters the project actually prints are here. An alphabet with
- * unused glyphs in it is an invitation to print something nobody checked
- * against `NOTICE.md` — the sheet may carry **VARGAS** and her own devil, and
- * no manufacturer's wordmark ever (`docs/PLANS.md` §23.9d). **B, E and L
- * arrived at M23 Phase B1 for BELVAR**, and **C, I, U and T when the owner's
- * ride found the gantry announcing half the venue's name**; they were added
- * here rather than beside the gantry because a project with two alphabets has
- * two answers to what its lettering looks like.
- *
- * **Those four cost this file its old argument, and the replacement is
- * asserted rather than asserted-away.** Nine glyphs spelled no brand in the
- * reference photographs, and thirteen spell ARAI — a helmet maker named in
- * `NOTICE.md`. Keeping the alphabet too poor to spell a brand was never
- * durable, because a venue is entitled to its own name; so the guard moved to
- * the only place that still holds it. `inkKit.test.ts` scans every call site
- * in `src/` and refuses a word that is not one of this project's own, which
- * catches the thing the size rule was really aimed at: somebody printing
- * something nobody checked. Being unable to *spell* it was a proxy. Being
- * unable to *print* it is the rule.
- *
- * The paths are consumed twice and in two media: `inkWord` strokes them into a
- * texture sheet, and `render/props.ts` extrudes the same polylines into the
- * plates on the gantry banner. `wordStrokes` is the shared placement, so the
- * two cannot drift in tracking or in aspect.
+ * Re-exported rather than re-pointed at the callers: `render/props.ts`, the
+ * character sheets and their specs all import the alphabet from here, and a
+ * rename across them would be churn with no claim attached. What stays in this
+ * file is the *press* — `inkWord` is the only thing here that knows a word
+ * from a shape.
  */
-const LETTERS: Readonly<Record<string, readonly (readonly InkPoint[])[]>> = {
-  V: [[[0.02, 0], [0.5, 1], [0.98, 0]]],
-  B: [
-    [[0.06, 0], [0.06, 1]],
-    [[0.06, 0], [0.62, 0], [0.88, 0.13], [0.88, 0.32], [0.62, 0.46], [0.06, 0.46]],
-    [[0.06, 0.46], [0.68, 0.46], [0.94, 0.62], [0.94, 0.84], [0.68, 1], [0.06, 1]],
-  ],
-  E: [
-    [[0.08, 0.02], [0.08, 0.98]],
-    [[0.08, 0.02], [0.92, 0.02]],
-    [[0.08, 0.5], [0.78, 0.5]],
-    [[0.08, 0.98], [0.92, 0.98]],
-  ],
-  L: [[[0.10, 0], [0.10, 0.98], [0.90, 0.98]]],
-  A: [[[0.02, 1], [0.5, 0], [0.98, 1]], [[0.2, 0.62], [0.8, 0.62]]],
-  R: [
-    [[0.06, 0], [0.06, 1]],
-    [[0.06, 0], [0.66, 0], [0.9, 0.14], [0.9, 0.34], [0.66, 0.48], [0.06, 0.48]],
-    [[0.5, 0.48], [0.96, 1]],
-  ],
-  G: [[
-    [0.98, 0.2], [0.82, 0.04], [0.5, 0], [0.18, 0.08], [0.04, 0.36], [0.04, 0.64],
-    [0.18, 0.92], [0.5, 1], [0.82, 0.96], [0.96, 0.8], [0.96, 0.56], [0.56, 0.56],
-  ]],
-  S: [[
-    [0.94, 0.16], [0.74, 0.02], [0.4, 0.02], [0.14, 0.14], [0.12, 0.36], [0.36, 0.46],
-    [0.7, 0.54], [0.9, 0.66], [0.86, 0.88], [0.6, 0.98], [0.26, 0.98], [0.06, 0.84],
-  ]],
-  M: [[[0.02, 1], [0.02, 0], [0.5, 0.62], [0.98, 0], [0.98, 1]]],
-  // C shares G's bowl point for point as far as G's spur, because a face whose
-  // C and G are drawn twice is a face with two bowls in it. Its two terminals
-  // sit at the same x so the aperture is symmetrical.
-  C: [[
-    [0.98, 0.2], [0.82, 0.04], [0.5, 0], [0.18, 0.08], [0.04, 0.36], [0.04, 0.64],
-    [0.18, 0.92], [0.5, 1], [0.82, 0.96], [0.98, 0.8],
-  ]],
-  // A bare stem, on E's vertical extent. Every advance in this face is the same
-  // width, so an I carries wide side bearings; at gantry tracking that reads as
-  // the letter-spacing it already has rather than as a gap.
-  I: [[[0.5, 0.02], [0.5, 0.98]]],
-  U: [[
-    [0.06, 0], [0.06, 0.6], [0.16, 0.86], [0.4, 0.98], [0.6, 0.98], [0.84, 0.86],
-    [0.94, 0.6], [0.94, 0],
-  ]],
-  // The arm reaches wider than E's, because it has no stem at its left end to
-  // stop the eye and an E-width arm on a T looks clipped.
-  T: [[[0.04, 0.02], [0.96, 0.02]], [[0.5, 0.02], [0.5, 0.98]]],
-};
-
-/** How wide a letter box is, relative to its height, before tracking. */
-export const LETTER_ASPECT = 0.62;
-
-/**
- * Print a word along a straight run, as strokes.
- *
- * `origin` is the top-left of the first letter box, `height` its cap height,
- * and `angle` rotates the whole run about that origin — which is how a leg
- * script climbs a thigh. Refuses a letter it does not have rather than
- * skipping it: a wordmark quietly missing its R is exactly the kind of thing a
- * capture would not catch and a rider would.
- */
-export interface WordMetrics {
-  /**
-   * Mirror the letter box vertically.
-   *
-   * Needed because the sheets this prints on run their `y` **up** the body —
-   * a texture row maps to a surface's `v`, and `v` grows from a loft's
-   * lowest ring. Every glyph above is authored the way letters are drawn,
-   * with the cap height at `y = 0`, so a word printed onto one of those
-   * sheets without this reads upside down and nothing but a capture says so.
-   */
-  readonly flip?: boolean;
-  readonly tracking?: number;
-}
-
-/**
- * A word laid out as polylines, in a local frame: `x` right from zero, `y`
- * down from the cap height.
- *
- * **The one placement rule, so two media cannot disagree about the type.**
- * `inkWord` strokes these onto a texture sheet and `render/props.ts` extrudes
- * them into the plates on BelVar's gantry banner; a second copy of the advance
- * arithmetic would be a second answer to how wide the wordmark is.
- *
- * Refuses a letter it does not have rather than skipping it: a wordmark
- * quietly missing its R is exactly the kind of thing a capture would not catch
- * and a rider would. A space is the sole exception and draws nothing.
- */
-export function wordStrokes(
-  word: string,
-  height: number,
-  options: WordMetrics = {},
-): InkPoint[][] {
-  const tracking = options.tracking ?? 0.16;
-  const flip = options.flip === true;
-  const boxWidth = height * LETTER_ASPECT;
-  const advance = boxWidth * (1 + tracking);
-  const out: InkPoint[][] = [];
-  for (let i = 0; i < word.length; i += 1) {
-    // A word space is the one character that may legitimately draw nothing, and
-    // it is handled here rather than as an empty entry in `LETTERS` because an
-    // empty stroke list is indistinguishable from a glyph whose strokes were
-    // deleted — and the refusal on the next line is this file's whole safety
-    // story. It takes a full advance: a signage word space wants to be wide.
-    if (word[i] === ' ') continue;
-    const glyph = LETTERS[word[i]!];
-    if (glyph === undefined) throw new Error(`inkWord has no path for '${word[i]}'`);
-    const left = i * advance;
-    for (const stroke of glyph) {
-      out.push(stroke.map(([lx, ly]): InkPoint => [
-        left + lx * boxWidth,
-        (flip ? 1 - ly : ly) * height,
-      ]));
-    }
-  }
-  return out;
-}
+export { LETTER_ASPECT, wordStrokes };
+export type { LetterPoint, WordMetrics };
 
 export function inkWord(
   sheet: InkSheet,
@@ -483,10 +362,15 @@ export function inkWord(
   }
 }
 
-/** How long a word printed at this height will be, in pixels. */
+/**
+ * How long a word printed at this height will be, in pixels.
+ *
+ * The arithmetic is `shared/letterPaths.ts`'s, so the ruler and the press can
+ * no longer disagree about the width of a word — which is the same reason
+ * `wordStrokes` was ever the one placement rule.
+ */
 export function inkWordLength(word: string, height: number, tracking = 0.16): number {
-  const boxWidth = height * LETTER_ASPECT;
-  return boxWidth * (word.length - 1) * (1 + tracking) + boxWidth;
+  return wordLength(word, height, tracking);
 }
 
 /**

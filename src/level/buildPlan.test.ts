@@ -13,7 +13,7 @@ import {
   type HazardSpec,
 } from './buildPlan.ts';
 import type { Checkpoint, LevelPlan } from './plan.ts';
-import type { SegmentSpec } from './segments.ts';
+import { surfaceAtLateral, type SegmentSpec } from './segments.ts';
 
 /**
  * The plan builder's paint clipper — M7.5 stage 4.
@@ -116,6 +116,50 @@ test('a grass verge inside a corridor takes no paint, but the asphalt beside it 
   );
 });
 
+test('a ranged band surfaces its own stretch of the corridor and nothing else', () => {
+  // M36 Phase 2's one shared mechanism. A band with an `s` range is a **patch**
+  // — a boardwalk, a sign pad, a landing apron — and the only way to author one
+  // was previously to cut the corridor into three segments, which perturbs a
+  // solved loop for the sake of six metres of planking.
+  //
+  // Twelve metres of grass laid across an otherwise paintable road, so the
+  // proof is the paint: the cells inside the range stop taking it and the cells
+  // either side keep it. That makes this test fail in *both* directions a
+  // broken implementation can break in — if `s` never reaches the band the road
+  // stays one unbroken line, and if the range is ignored the whole road turns
+  // to grass and no paint survives at all.
+  const spans = paintedSpans(road({
+    bands: [{ from: -6, to: 6, surface: 'grass', fromS: 14, toS: 26 }],
+  }));
+  assert.equal(spans.length, 2, `the patch did not split the line: ${JSON.stringify(spans)}`);
+  assert.ok(spans[0].to < 14, `paint ran ${spans[0].to.toFixed(2)} m, into the patch`);
+  assert.ok(spans[1].from >= 26, `paint started at ${spans[1].from.toFixed(2)} m, inside the patch`);
+  // And the patch is the only thing that moved: the road either side is as long
+  // as the unpatched control's, less the patch.
+  assert.ok(spans[0].from < 1 && spans[1].to > 38, 'the ends of the road lost their paint');
+
+  // The half-open range, read directly. A caller with no `s` — the route
+  // generator and the validator are both such callers — sees a ranged band as
+  // absent, which is what keeps every shipped world's surfaces byte-identical.
+  const spec: SegmentSpec = {
+    id: 'patched',
+    length: 40,
+    halfWidth: 6,
+    surface: 'pavement',
+    bands: [{ from: -6, to: 6, surface: 'grass', fromS: 14, toS: 26 }],
+  };
+  assert.equal(surfaceAtLateral(spec, 0), 'pavement', 'a ranged band leaked into a station-less query');
+  assert.equal(surfaceAtLateral(spec, 0, 13.999), 'pavement');
+  assert.equal(surfaceAtLateral(spec, 0, 14), 'grass', 'the range must include its start');
+  assert.equal(surfaceAtLateral(spec, 0, 25.999), 'grass');
+  assert.equal(surfaceAtLateral(spec, 0, 26), 'pavement', 'the range must exclude its end');
+  // An open-ended patch is legal and runs to the socket.
+  assert.equal(
+    surfaceAtLateral({ ...spec, bands: [{ from: -6, to: 6, surface: 'grass', toS: 8 }] }, 0, 0),
+    'grass',
+  );
+});
+
 test('paint stops at a kerb rather than climbing over it', () => {
   // A kerb across the road at s 20. Nothing about the marking mentions it.
   const spans = paintedSpans(road({
@@ -161,6 +205,31 @@ test('an offcut left by clipping is thrown away rather than shipped', () => {
     ],
   }));
   assert.equal(spans.length, 2, `an offcut shipped: ${JSON.stringify(spans)}`);
+});
+
+test('a letter stroke is allowed to be shorter than a lane line may be', () => {
+  // M36 Phase 2. The two-metre minimum exists to throw away offcuts left by
+  // clipping — "a 40 cm dab of white in the middle of a road is litter" — and
+  // applying it to printed text deletes the bar of an `A` and the arm of a `T`,
+  // which are 0.87 m and 1.34 m at the size the park prints words. Both at
+  // once, on the same path, so the difference is the role and nothing else.
+  const path = [{ s: 10, t: 0 }, { s: 11, t: 0 }];
+  assert.equal(
+    road({ markings: [{ path, role: 'centre' }] }).markings,
+    undefined,
+    'a one-metre lane line shipped',
+  );
+  const glyph = road({ markings: [{ path, role: 'glyph' }] });
+  assert.equal((glyph.markings ?? []).length, 1, 'a one-metre letter stroke was thrown away');
+  assert.equal(glyph.markings![0]!.width, MARKINGS.glyphWidth);
+
+  // And the glyph minimum is still a minimum: a stroke under half a metre is a
+  // dab whatever authored it.
+  assert.equal(
+    road({ markings: [{ path: [{ s: 10, t: 0 }, { s: 10.3, t: 0 }], role: 'glyph' }] }).markings,
+    undefined,
+    'a 30 cm dab shipped as a letter',
+  );
 });
 
 test('a plan with no authored paint carries no markings array at all', () => {
@@ -1024,4 +1093,183 @@ test('a probe cadence the query string could produce is refused rather than clam
     );
     assert.ok(!('hazards' in plan), `a cadence of ${metres} produced hazards`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// `groundAt` and `fieldMargin` — the ground a corridor sits in, M36
+// ---------------------------------------------------------------------------
+
+/**
+ * Here for the reason the clipper's fixtures and the hazards' are: no world in
+ * the game authors ground yet. §36's hillside is what these options exist for,
+ * and until its lap is built these are the whole of the evidence that a
+ * corridor keeps its own surface, its shoulder still eases, and the field still
+ * meets the surround at its border.
+ */
+
+/** A trail four metres wide with a six-metre shoulder, five metres up. */
+const HILL_TRAIL: SegmentSpec = {
+  id: 'trail',
+  length: 40,
+  halfWidth: 4,
+  surface: 'pavement',
+  shoulder: 6,
+};
+
+const HILL_OPTIONS = {
+  ...OPTIONS,
+  id: 'hill-fixture',
+  // The trail runs five metres above a surround at zero, which is the shape
+  // that puts a corridor on an embankment in every world built before M36.
+  spawn: { position: { x: 0, y: 5, z: 0 }, headingY: 0 },
+};
+
+/**
+ * A cone three metres high over the middle of the trail, exactly zero past a
+ * radius of 24 m.
+ *
+ * `Math.max(0, …)` rather than a taper that merely approaches zero: with
+ * `fieldMargin: 20` the nearest border sample is 32 m out on X and 52 m out on
+ * Z, so every sample on the ring is the literal `0` the border contract wants
+ * and the test below can say so without a tolerance.
+ */
+const bump = (x: number, z: number): number => 3 * Math.max(0, 1 - Math.hypot(x, z - 20) / 24);
+
+function hillHeights(options: {
+  fieldMargin?: number;
+  groundAt?: (x: number, z: number) => number;
+} = {}): LevelPlan {
+  return buildLevelPlan([HILL_TRAIL], { ...HILL_OPTIONS, ...options });
+}
+
+/** A sample by world metres, which on this fixture are whole cells. */
+function sampleAt(plan: LevelPlan, x: number, z: number): number {
+  const field = plan.heightfield;
+  const column = Math.round((x - field.originX) / field.spacing);
+  const row = Math.round((z - field.originZ) / field.spacing);
+  return field.heights[row * field.columns + column];
+}
+
+test('an authored ground carries the corridor without moving it', () => {
+  const flat = hillHeights({ fieldMargin: 20 });
+  const hill = hillHeights({ fieldMargin: 20, groundAt: bump });
+  const field = hill.heightfield;
+
+  // (a) The corridor is the corridor. Every sample inside it has to come out of
+  // the same arithmetic it came out of before there was a ground to blend to —
+  // this is the assertion that would catch a `groundAt` leaking past the
+  // shoulder into the road surface.
+  let inside = 0;
+  for (let row = 0; row < field.rows; row += 1) {
+    const z = field.originZ + row * field.spacing;
+    for (let column = 0; column < field.columns; column += 1) {
+      const x = field.originX + column * field.spacing;
+      if (Math.abs(x) > HILL_TRAIL.halfWidth || z < 0 || z > HILL_TRAIL.length) continue;
+      inside += 1;
+      const index = row * field.columns + column;
+      assert.equal(
+        field.heights[index],
+        flat.heightfield.heights[index],
+        `the ground moved the corridor at (${x}, ${z})`,
+      );
+      assert.equal(field.heights[index], 5, `the corridor is not its own height at (${x}, ${z})`);
+    }
+  }
+  assert.ok(inside > 300, `the fixture only sampled ${inside} corridor points`);
+
+  // (b) Off every corridor the sample *is* the authored ground, to the bit.
+  assert.equal(sampleAt(hill, 15, 20), bump(15, 20));
+  assert.equal(sampleAt(hill, 15, 20), 1.125);
+
+  // (c) Across the shoulder the blend still runs, now between the two heights
+  // that actually meet there rather than between the road and a flat surround.
+  const shoulder = sampleAt(hill, 7, 20);
+  assert.ok(
+    shoulder > bump(7, 20) && shoulder < 5,
+    `the shoulder sample ${shoulder} is not between the ground ${bump(7, 20)} and the trail`,
+  );
+
+  // (d) And the border ring is the surround, which is what `plan.ts` promises
+  // the sampler and the renderer both.
+  for (let row = 0; row < field.rows; row += 1) {
+    const edgeRow = row === 0 || row === field.rows - 1;
+    for (let column = 0; column < field.columns; column += 1) {
+      if (!edgeRow && column !== 0 && column !== field.columns - 1) continue;
+      assert.equal(
+        field.heights[row * field.columns + column],
+        0,
+        `the border is not the surround at column ${column}, row ${row}`,
+      );
+    }
+  }
+});
+
+test('fieldMargin buys exactly the metres it was asked for', () => {
+  const tight = hillHeights();
+  const roomy = hillHeights({ fieldMargin: 20 });
+
+  // (e) Twenty metres on every side, at one metre a sample. Stated as counts
+  // because the margin is charged as cells and a cell is two triangles.
+  assert.equal(roomy.heightfield.columns - tight.heightfield.columns, 40);
+  assert.equal(roomy.heightfield.rows - tight.heightfield.rows, 40);
+  assert.equal(tight.heightfield.originX - roomy.heightfield.originX, 20);
+  assert.equal(tight.heightfield.originZ - roomy.heightfield.originZ, 20);
+  assert.equal(roomy.heightfield.spacing, tight.heightfield.spacing);
+});
+
+test('a ground still climbing at the border is refused rather than flattened', () => {
+  assert.throws(
+    () => hillHeights({ fieldMargin: 20, groundAt: () => 1 }),
+    (error: Error) => {
+      assert.match(
+        error.message,
+        /^groundAt must meet the surround at the field border: sample \(-32, -32\) is 1 m against a surround of 0 m$/,
+      );
+      return true;
+    },
+  );
+
+  // The margin is what gives a real hill room to come down, so the same ground
+  // that passes with twenty metres has to fail without them: at no margin the
+  // border ring is two metres past the shoulder and the cone is still 2.1 m up.
+  assert.throws(
+    () => hillHeights({ groundAt: bump }),
+    /groundAt must meet the surround at the field border/,
+  );
+});
+
+test('an invalid interior ground sample is refused even when the border is valid', () => {
+  for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    // The border remains zero. Cover the road, shoulder and open ground:
+    // even a full corridor weight cannot cancel NaN out of the blend.
+    for (const x of [0, 7, 15]) {
+      assert.throws(
+        () => hillHeights({
+          fieldMargin: 20,
+          groundAt: (atX, z) => atX === x && z === 20 ? value : 0,
+        }),
+        (error: Error) => {
+          assert.equal(error.message, `groundAt returned a non-finite height at (${x}, 20): ${value}`);
+          return true;
+        },
+      );
+    }
+  }
+});
+
+test('a field margin that is not a distance is refused', () => {
+  for (const margin of [-1, Number.NaN, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY]) {
+    assert.throws(
+      () => hillHeights({ fieldMargin: margin }),
+      /which is not a distance the field can be grown by/,
+      `a margin of ${margin} was accepted`,
+    );
+  }
+});
+
+test('neither option present is the world that shipped yesterday', () => {
+  // The pinned digests in `planDigest.test.ts` say the slice and the proving
+  // ground did not move; this says the same thing one level down, where the
+  // default is written.
+  assert.deepEqual(hillHeights(), hillHeights({ fieldMargin: 0 }));
 });

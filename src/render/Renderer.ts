@@ -21,8 +21,20 @@ import { PLAYABLE_RIDER_LOOKS, riderLook } from './riderLook.ts';
 import { DEFAULT_CHARACTER, type CharacterId } from '../data/riders.ts';
 import { createParticleField, type ParticleField } from './particles.ts';
 import { createSky, type SkyTexture } from './sky.ts';
+import {
+  DAYLIGHT_LOOK,
+  resolveVenueLook,
+  sameSkyPaint,
+  type ResolvedVenueLook,
+  type VenueLook,
+} from '../data/venueLook.ts';
 import { createTerrain, type TerrainView } from './terrain.ts';
-import { selectPresentation, type PresentationSelection } from './presentation.ts';
+import {
+  presentationRecipe,
+  selectPresentation,
+  type PresentationRecipeId,
+  type PresentationSelection,
+} from './presentation.ts';
 import { paneBounds, paneGridFor, type PaneRect } from '../shared/paneGrid.ts';
 
 /**
@@ -99,6 +111,225 @@ const EUC_PEDAL_STRIKE_REFERENCE_DEPTH = EUC.pedalStrikeReferenceDepth;
  * that throws nothing emits nothing rather than a colourless puff.
  */
 const PARTICLE_COLOURS: Partial<Record<ParticleId, number>> = FX.particleColours;
+
+/**
+ * The one place a venue's light is composed — M36 Phase 4.
+ *
+ * ## Why this is a unit and not four assignments in `setLevel`
+ *
+ * Sun direction, sun colour, hemisphere, sky, haze and exposure are ONE system
+ * with ONE owner (invariant 6), and §36.7 restates it for the park: *"change
+ * sun direction/colour, hemisphere, sky and exposure as one sequentially owned
+ * system."* Gathered here, a venue swap is a single call that cannot leave half
+ * a look behind, the fog colour and the sky's bottom stop are written from the
+ * same field so a horizon band cannot come back, and — the reason that matters
+ * most in practice — **the whole composition can be asserted at `node --test`**
+ * with a plain `THREE.Scene` and two lights, because nothing in it needs a GL
+ * context. `render/levelLifecycle.test.ts` drives park → slice → park through
+ * this and checks every value and the texture count; a version of this welded
+ * into `GameRenderer` could only ever be checked in a browser.
+ *
+ * It creates no light and no scene object. One directional light, one
+ * hemisphere, one shadow map, no post-processing (invariant 7) — the rig is
+ * handed the two lights the renderer already built and writes their fields.
+ *
+ * ## Which value wins: the venue or the F4 panel
+ *
+ * Both write exposure and the two intensities, from different directions, and
+ * the rule is written down here because it is the only place that can enforce
+ * it. `app/Game.ts:applyTuning` pushes **all three values on every change**,
+ * including at boot, so an untouched panel arrives as exactly
+ * `LIGHTING.exposure`, `LIGHTING.sunIntensity` and
+ * `LIGHTING.hemisphereIntensity`. Treating "still equal to its shipped
+ * default" as *unset* is therefore what lets a venue's authored value survive
+ * a push nobody asked for, while any value a human has actually dragged is
+ * different from its default and overrides the venue for as long as it is
+ * dragged — which is what a tuning panel is for.
+ *
+ * Two consequences, stated rather than discovered:
+ *
+ *   1. Dragging a slider back to its exact default hands the value back to the
+ *      venue rather than pinning the daylight number. On a world with no look
+ *      those are the same number, so only the park can tell; there it is the
+ *      behaviour wanted, because "untouched" is what the slider now reads.
+ *   2. A live override **survives a venue swap**: `apply` re-states the tuned
+ *      values after the venue's, so switching BelVar → park → BelVar with
+ *      exposure dragged to 1.3 leaves it at 1.3 throughout.
+ */
+export interface VenueLighting {
+  /** The look the scene is wearing, with every gap filled from `LIGHTING`. */
+  readonly look: ResolvedVenueLook;
+  /**
+   * The sun's position relative to whatever it is lighting — the vector
+   * `setShadowFocus` carries the single cascade around with, so the light's
+   * *direction* is fixed and only the region it can cast into moves.
+   */
+  readonly sunOffset: THREE.Vector3;
+  /** The painted sky on `scene.background`. Replaced, never accumulated. */
+  readonly sky: SkyTexture;
+  /** Wear a venue's look, or daylight when it has authored none. */
+  apply(authored: VenueLook | undefined): void;
+  /** What the F4 panel pushes. See the precedence rule above. */
+  tune(values: {
+    exposure?: number;
+    sunIntensity?: number;
+    hemisphereIntensity?: number;
+  }): void;
+  dispose(): void;
+}
+
+export function createVenueLighting(parts: {
+  readonly scene: THREE.Scene;
+  readonly sun: THREE.DirectionalLight;
+  readonly hemisphere: THREE.HemisphereLight;
+  setExposure(exposure: number): void;
+}): VenueLighting {
+  const { scene, sun, hemisphere, setExposure } = parts;
+
+  const sunOffset = new THREE.Vector3();
+  let look: ResolvedVenueLook = DAYLIGHT_LOOK;
+
+  // Painted once here so the first `apply` has something to compare against and
+  // the no-descriptor path repaints nothing at all.
+  let sky = createSky(look);
+  scene.background = sky.texture;
+
+  const fog = new THREE.Fog(look.horizonColour, look.fogNear, look.fogFar);
+  scene.fog = fog;
+
+  /**
+   * Values a human has moved away from their shipped defaults. Empty on a
+   * game nobody has opened the panel in, which is every shipped session.
+   */
+  const tuned: {
+    exposure?: number;
+    sunIntensity?: number;
+    hemisphereIntensity?: number;
+  } = {};
+
+  const applyTuned = (): void => {
+    setExposure(tuned.exposure ?? look.exposure);
+    sun.intensity = tuned.sunIntensity ?? look.sunIntensity;
+    hemisphere.intensity = tuned.hemisphereIntensity ?? look.hemisphereIntensity;
+  };
+
+  const rig: VenueLighting = {
+    get look(): ResolvedVenueLook {
+      return look;
+    },
+    sunOffset,
+    get sky(): SkyTexture {
+      return sky;
+    },
+
+    apply(authored: VenueLook | undefined): void {
+      const next = resolveVenueLook(authored);
+
+      // **The sky is the one part of a look that costs a GPU resource**, so it
+      // is the one part that is skipped when nothing about it moved — which is
+      // every venue swap in the game today, because only the park authors a
+      // look at all. When it has moved, the outgoing texture is disposed
+      // *before* the replacement is built: nothing renders between these two
+      // statements, so the count never has two 1024x512 skies in it and
+      // `resources().textures` plateaus across repeated rebuilds (invariant 10,
+      // `tests/m36.spec.ts`).
+      if (!sameSkyPaint(next, look)) {
+        sky.dispose();
+        sky = createSky(next);
+        scene.background = sky.texture;
+      }
+      look = next;
+
+      // The haze and the sky's bottom stop are the same field, written here in
+      // the same breath as the background above. `DESIGN.md` §6.
+      fog.color.setHex(look.horizonColour);
+      fog.near = look.fogNear;
+      fog.far = look.fogFar;
+
+      hemisphere.color.setHex(look.skyColour);
+      hemisphere.groundColor.setHex(look.groundBounceColour);
+      sun.color.setHex(look.sunColour);
+
+      // The same derivation the painted sun uses, from the same two numbers, so
+      // a venue cannot light its shadows from one bearing and draw its sun at
+      // another. `sunDistance` stays global: it is cosmetic for a directional
+      // light and it sizes the shadow camera's far plane, which is budget.
+      const horizontal = Math.cos(look.sunElevation) * LIGHTING.sunDistance;
+      sunOffset.set(
+        Math.sin(look.sunAzimuth) * horizontal,
+        Math.sin(look.sunElevation) * LIGHTING.sunDistance,
+        Math.cos(look.sunAzimuth) * horizontal,
+      );
+      // Re-hung on the cascade's current target rather than on the origin, so a
+      // venue swap in the middle of a run does not teleport the key light off
+      // the rider it was following. At construction the target is the origin
+      // and this is exactly `position.copy(sunOffset)`.
+      sun.position.copy(sun.target.position).add(sunOffset);
+
+      // Last, so a slider a human is holding outlives the venue under it.
+      applyTuned();
+    },
+
+    tune(values): void {
+      // "Equal to the shipped default" is the definition of untouched — see the
+      // precedence rule on the interface. A value that matches is forgotten
+      // rather than recorded, which is what hands it back to the venue.
+      if (values.exposure !== undefined) {
+        if (values.exposure === LIGHTING.exposure) delete tuned.exposure;
+        else tuned.exposure = values.exposure;
+      }
+      if (values.sunIntensity !== undefined) {
+        if (values.sunIntensity === LIGHTING.sunIntensity) delete tuned.sunIntensity;
+        else tuned.sunIntensity = values.sunIntensity;
+      }
+      if (values.hemisphereIntensity !== undefined) {
+        if (values.hemisphereIntensity === LIGHTING.hemisphereIntensity) {
+          delete tuned.hemisphereIntensity;
+        } else tuned.hemisphereIntensity = values.hemisphereIntensity;
+      }
+      applyTuned();
+    },
+
+    dispose(): void {
+      scene.background = null;
+      sky.dispose();
+    },
+  };
+
+  // Daylight, stated rather than assumed: the lights and the exposure are
+  // written from the resolved look on the way in, so the rig's fields and the
+  // scene agree from the first frame.
+  rig.apply(undefined);
+  return rig;
+}
+
+/**
+ * The selection a diagnostic recipe override installs.
+ *
+ * The ladder's own verdicts are kept whole — both rungs, priced from the same
+ * immutable plan — and only *which* of them the scene was built from changes,
+ * so `presentation()` can never report the selector's cost beside the other
+ * rung's geometry. The named rung is always on the ladder, so the lookup
+ * cannot miss; `?? selected.cost` is there for the type, not for a case.
+ *
+ * **Exported for the reason `createVenueLighting` is**: it is the whole of
+ * `setLevel`'s second parameter, and it is the half of it a headless test can
+ * reach — `new GameRenderer(canvas)` wants a WebGL context and this project
+ * has no headless one, so the composer is tested in
+ * `render/presentation.test.ts` and the installed rungs are measured live in
+ * `tests/m36_4.spec.ts`. Nothing in the game calls it but `setLevel`.
+ */
+export function forcedPresentation(
+  selected: PresentationSelection,
+  recipe: PresentationRecipeId,
+): PresentationSelection {
+  const verdict = selected.verdicts.find((candidate) => candidate.recipe === recipe);
+  return {
+    recipe: presentationRecipe(recipe),
+    cost: verdict?.cost ?? selected.cost,
+    verdicts: selected.verdicts,
+  };
+}
 
 export class GameRenderer {
   readonly renderer: THREE.WebGLRenderer;
@@ -264,12 +495,15 @@ export class GameRenderer {
   private readonly sparks: ParticleField;
   private readonly dust: ParticleField;
 
-  /** M7.5's painted sky. Background only — no geometry, no draw call. */
-  private readonly sky: SkyTexture;
-
-  /** Sun position relative to whatever it is lighting. Constant, so the light
-   *  direction never changes as the cascade follows the rider. */
-  private readonly sunOffset = new THREE.Vector3();
+  /**
+   * M7.5's painted sky, M4's haze, the key and the fill and the exposure, as
+   * one unit — M36 Phase 4.
+   *
+   * The sky is background only: no geometry, no draw call. The rig replaces it
+   * when a venue's look paints a different one and leaves it alone when it does
+   * not, which is every swap between the worlds that ship today.
+   */
+  private readonly lighting: VenueLighting;
 
   private lastWidth = 0;
   private lastHeight = 0;
@@ -366,10 +600,11 @@ export class GameRenderer {
     // fog still takes `horizonColour`: that value is now the sky's *bottom
     // stop* rather than the whole background, so the far edge of the surround
     // still dissolves into exactly the value the sky has where it meets it.
-    // Moving one without the other puts the horizon band back.
-    this.sky = createSky();
-    this.scene.background = this.sky.texture;
-    this.scene.fog = new THREE.Fog(LIGHTING.horizonColour, LIGHTING.fogNear, LIGHTING.fogFar);
+    // Moving one without the other puts the horizon band back — which is why,
+    // from M36, one field on a venue's look carries both and
+    // `createVenueLighting` below builds the sky and the fog together, once the
+    // two lights it also writes exist. Until then they were four assignments
+    // here, and a venue would have needed four more in `setLevel`.
 
     this.camera = new THREE.PerspectiveCamera(
       THREE.MathUtils.radToDeg(CAMERA.fovAtRest),
@@ -382,21 +617,20 @@ export class GameRenderer {
     // Hemisphere fill. Downward-facing surfaces sample groundBounceColour —
     // the underside of the wheel and, from M2, the rider. Too dark and those
     // become voids; too bright and nothing reads as sitting on the ground.
+    //
+    // Colour and intensity are handed to both lights by `createVenueLighting`
+    // at the end of this block, from the resolved daylight look — the same
+    // `LIGHTING` numbers, stated in one place instead of two. What stays here
+    // is the part a venue may not touch: that there is exactly one of each,
+    // and what the single shadow cascade costs.
     this.hemisphere = new THREE.HemisphereLight(
-      LIGHTING.skyColour,
-      LIGHTING.groundBounceColour,
-      LIGHTING.hemisphereIntensity,
+      DAYLIGHT_LOOK.skyColour,
+      DAYLIGHT_LOOK.groundBounceColour,
+      DAYLIGHT_LOOK.hemisphereIntensity,
     );
     this.scene.add(this.hemisphere);
 
-    this.sun = new THREE.DirectionalLight(LIGHTING.sunColour, LIGHTING.sunIntensity);
-    const horizontal = Math.cos(LIGHTING.sunElevation) * LIGHTING.sunDistance;
-    this.sunOffset.set(
-      Math.sin(LIGHTING.sunAzimuth) * horizontal,
-      Math.sin(LIGHTING.sunElevation) * LIGHTING.sunDistance,
-      Math.cos(LIGHTING.sunAzimuth) * horizontal,
-    );
-    this.sun.position.copy(this.sunOffset);
+    this.sun = new THREE.DirectionalLight(DAYLIGHT_LOOK.sunColour, DAYLIGHT_LOOK.sunIntensity);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.setScalar(LIGHTING.shadowMapSize);
     this.sun.shadow.bias = LIGHTING.shadowBias;
@@ -415,6 +649,17 @@ export class GameRenderer {
 
     this.scene.add(this.sun);
     this.scene.add(this.sun.target);
+
+    // The sky, the haze, both light colours, both intensities and the exposure,
+    // composed together (invariant 6). Daylight until a plan authors a look.
+    this.lighting = createVenueLighting({
+      scene: this.scene,
+      sun: this.sun,
+      hemisphere: this.hemisphere,
+      setExposure: (exposure: number): void => {
+        this.renderer.toneMappingExposure = exposure;
+      },
+    });
 
     // Dust dissolves into the air, so it fades toward the same horizon colour
     // the fog uses — a particle that ends by becoming the air it is in never
@@ -670,14 +915,37 @@ export class GameRenderer {
    * The renderer takes a plan and returns nothing. It answers no gameplay
    * question about what it built (invariant 3) — `simulation/planSampler.ts`
    * reads the same plan for that, and neither consumer can see the other.
+   *
+   * **`recipe` is a diagnostic override and nothing else.** The selector is
+   * the default and is what every player gets; naming a rung builds *that*
+   * topology instead, so a browser can install the baseline over a world the
+   * ladder would have enhanced and compare live GPU counters between the two
+   * (M36 Phase 4, `p34-browser`'s open issue 1 — "both recipes render the
+   * park" was previously only half-provable from outside). Three properties
+   * keep it honest: the plan is never re-priced, so admission is untouched;
+   * the reported `presentation()` still carries **both** rungs' verdicts, so
+   * the cost named is the cost of the topology actually built; and nothing in
+   * the game passes it — `app/Game.ts` reads it from a diagnostic URL
+   * parameter, never from an option (the options firewall: a recipe is not
+   * something a player configures).
    */
-  setLevel(plan: LevelPlan): TerrainView {
+  setLevel(plan: LevelPlan, recipe?: PresentationRecipeId): TerrainView {
     this.terrain?.dispose();
     this.palette = plan.palette;
+    // **The single rebuild path is the single place a venue's light is hung**,
+    // which is what makes park → BelVar → park restore each look without a
+    // second mechanism to keep in step: every venue swap in the game reaches
+    // here (`app/Game.ts:installLevel`), and a plan that authors no look
+    // resolves to the daylight every world but the park is judged at. The rig
+    // owns the ordering of sky, haze, key, fill and exposure (invariant 6).
+    this.lighting.apply(plan.look);
     // Presentation is a question asked of an immutable plan, never of the
     // generator: the richer topology is built only where every frame contract
     // still fits, and the plan is never trimmed to make it fit.
-    const selection = selectPresentation(plan);
+    const selected = selectPresentation(plan);
+    const selection = recipe === undefined || recipe === selected.recipe.id
+      ? selected
+      : forcedPresentation(selected, recipe);
     this.presentationSelection = selection;
     const terrain = createTerrain(plan, selection.recipe);
     this.terrain = terrain;
@@ -984,11 +1252,18 @@ export class GameRenderer {
     sunIntensity?: number;
     hemisphereIntensity?: number;
   }): void {
-    if (values.exposure !== undefined) this.renderer.toneMappingExposure = values.exposure;
-    if (values.sunIntensity !== undefined) this.sun.intensity = values.sunIntensity;
-    if (values.hemisphereIntensity !== undefined) {
-      this.hemisphere.intensity = values.hemisphereIntensity;
-    }
+    this.lighting.tune(values);
+  }
+
+  /**
+   * The look the scene is currently wearing, for the QA bridge — M36 Phase 4.
+   *
+   * Every field resolved, so a browser spec can assert what a venue swap
+   * actually composed rather than reading four three.js objects and hoping it
+   * has found all of them.
+   */
+  venueLook(): ResolvedVenueLook {
+    return this.lighting.look;
   }
 
   /**
@@ -1003,8 +1278,9 @@ export class GameRenderer {
    * unchanged; only the region it can cast into moves.
    */
   setShadowFocus(x: number, y: number, z: number): void {
+    const offset = this.lighting.sunOffset;
     this.sun.target.position.set(x, y, z);
-    this.sun.position.set(x + this.sunOffset.x, y + this.sunOffset.y, z + this.sunOffset.z);
+    this.sun.position.set(x + offset.x, y + offset.y, z + offset.z);
   }
 
   /**
@@ -1536,8 +1812,7 @@ export class GameRenderer {
     this.targets = null;
     this.ghost.dispose();
     this.cop.dispose();
-    this.scene.background = null;
-    this.sky.dispose();
+    this.lighting.dispose();
     this.sparks.dispose();
     this.dust.dispose();
     for (const disposable of this.disposables) disposable.dispose();

@@ -22,6 +22,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -32,6 +33,7 @@ const { buildLevelPlan } = await import(join(src, 'level/buildPlan.ts'));
 const { SLICE_BEATS, SLICE_GRAPH, SLICE_POCKETS, createSliceLevel } = await import(join(src, 'level/sliceLevel.ts'));
 const { createProvingGround } = await import(join(src, 'level/provingGround.ts'));
 const { createTrackLevel, TRACK_LAP_METRES } = await import(join(src, 'level/trackLevel.ts'));
+const { createSwitchbackLevel, SWITCHBACK_DESCENT_METRES, SWITCHBACK_LAP_METRES } = await import(join(src, 'level/switchbackLevel.ts'));
 const { planRenderCost } = await import(join(src, 'level/renderBudget.ts'));
 const { LIBRARY_MAX_DRAW_CALLS, NON_LEVEL_RESERVE, PART_COSTS, QUAD_PASSES, RENDER_BUDGET, RENDER_BUDGET_QUAD, RENDER_BUDGET_SPLIT, SPLIT_PASSES, propPartCounts } = await import(join(src, 'data/renderCost.ts'));
 const { measureLevelScene, measureNonLevelScene, measurePartTriangles, measureQuadNonLevelScene, measureSplitNonLevelScene } = await import(join(src, 'render/renderCost.ts'));
@@ -188,6 +190,16 @@ const trackMeasured = measureLevelScene(track);
 const trackPredicted = planRenderCost(track);
 const trackReserve = measureNonLevelScene(track.checkpoints);
 
+// **Switchback Park** — M36, the dressed park. Measured on the same terms as
+// BelVar and reported beside it, because it is the first world whose ground is
+// an authored *function* rather than a flat surround: the heightfield is still
+// most of the cost, and the point of the row is to show what a hillside spends
+// and what the Phase 4 dressing added on top of it.
+const park = createSwitchbackLevel();
+const parkMeasured = measureLevelScene(park);
+const parkPredicted = planRenderCost(park);
+const parkReserve = measureNonLevelScene(park.checkpoints);
+
 const isolatedSum = rows.reduce((total, row) => total + row.triangles, 0);
 const isolatedCells = rows.reduce((total, row) => total + row.cells, 0);
 const isolatedDrawCalls = rows.reduce((total, row) => (
@@ -209,7 +221,7 @@ const pad = (value, width) => String(value).padStart(width);
 const padEnd = (value, width) => String(value).padEnd(width);
 
 const lines = [];
-const out = (line = '') => { lines.push(line); console.log(line); };
+const out = (line = '') => { lines.push(line); };
 
 out('# Render cost — measured, M12 Phase 0');
 out();
@@ -279,6 +291,54 @@ out('says. That is the whole shape of §23.14\'s *spend triangles, not draw');
 out('calls*: density of kinds that already exist costs nothing on the axis this');
 out('project is scarce on, and the ceiling a new **kind** has to clear is the');
 out("library's rather than this frame's (`render/renderCost.test.ts`).");
+out();
+
+out('## Switchback Park — M36, the dressed park');
+out();
+out('```');
+out(`                       predicted    measured`);
+out(`level draw calls    ${pad(parkPredicted.drawCalls, 12)}${pad(parkMeasured.totalDrawCalls, 12)}`);
+out(`  colour pass       ${pad(parkPredicted.colourDrawCalls, 12)}${pad(parkMeasured.drawCalls, 12)}`);
+out(`  shadow pass       ${pad(parkPredicted.shadowDrawCalls, 12)}${pad(parkMeasured.shadowDrawCalls, 12)}`);
+out(`level triangles     ${pad(parkPredicted.triangles, 12)}${pad(parkMeasured.totalTriangles, 12)}`);
+out(`heightfield cells   ${pad(parkPredicted.cellsDrawn, 12)}${pad(parkMeasured.cellsDrawn, 12)}`);
+out('```');
+out();
+out('```');
+out(`level                    ${pad(parkPredicted.drawCalls, 6)} calls   ${pad(parkPredicted.triangles, 8)} triangles`);
+out(`everything else          ${pad(parkReserve.totalDrawCalls, 6)} calls   ${pad(parkReserve.totalTriangles, 8)} triangles`);
+out(`                         ------          --------`);
+out(`frame                    ${pad(parkPredicted.drawCalls + parkReserve.totalDrawCalls, 6)} calls   ${pad(parkPredicted.triangles + parkReserve.totalTriangles, 8)} triangles`);
+out(`ceiling (§9)             ${pad(RENDER_BUDGET.maxDrawCalls, 6)} calls   ${pad(RENDER_BUDGET.maxTriangles, 8)} triangles`);
+out(`headroom                 ${pad(RENDER_BUDGET.maxDrawCalls - parkPredicted.drawCalls - parkReserve.totalDrawCalls, 6)} calls   ${pad(RENDER_BUDGET.maxTriangles - parkPredicted.triangles - parkReserve.totalTriangles, 8)} triangles`);
+out('```');
+out();
+out(`A ${SWITCHBACK_LAP_METRES.toFixed(0)} m closed lap of ${park.segments.length} corridors down and back up a`);
+out(`${SWITCHBACK_DESCENT_METRES.toFixed(1)} m hillside, at ${park.heightfield.spacing} m heightfield spacing: nine technical`);
+out('features as merged blocks, dressed: nine signs and the paint that leads into');
+out(`them, a conifer forest, hillside cribbing and riprap, trail rail and three`);
+out('benches — ' + park.props.length.toLocaleString('en-GB') + ' props in all — over a warm retint of three materials');
+out('the library already carried, under the park\'s own fixed late afternoon');
+out('(`LevelPlan.look`, the only world that authors one).');
+out();
+// Counted from the priced plan rather than written out: these are the buckets
+// the "zero new call buckets" claim is about, and the colour pass above is
+// their sum plus the paint, the field and the backstop. A hand-written census
+// here went stale between two phases and had the arithmetic reading 17 against
+// a measured 21 (M36 Phase 6).
+out('**The hillside is still the bill.** Every draw call here is one the library');
+out(`already carried — ${parkPredicted.surfaces.length} ground surfaces, ${parkPredicted.blockMaterials.length} block materials and`);
+out(`${parkPredicted.partInstances.size} prop parts, plus the paint, the backstop and the field — so the venue`);
+out('costs the *call* axis nothing new, exactly as §36.7 requires ("target zero');
+out('new call buckets").');
+out(`What it spends is triangles, and most of them are ${parkPredicted.cellsDrawn.toLocaleString('en-GB')} heightfield cells`);
+out('at two triangles each. That is what `BuildOptions.groundAt` costs: a flat');
+out('surround draws nothing off the corridors, and a hill draws all of it. The');
+out('spacing is the lever — a one-metre grid measures 67,552 cells and a');
+out('two-metre grid 16,864 — and 1.5 m is where the slopes still read and the');
+out('corridor edges do not staircase. §36.7\'s working allocation is 55 calls and');
+out(`300,000 triangles per pass; the dressed park has taken its share and stands`);
+out(`at ${parkPredicted.drawCalls} calls and ${parkPredicted.triangles.toLocaleString('en-GB')} triangles.`);
 out();
 
 out('## The frame, against the §9 ceilings');
@@ -368,6 +428,7 @@ const presentationWorlds = [
   ['the slice', slice],
   ['BelVar Circuit', track],
   ['the proving ground', proving],
+  ['Switchback Park', park],
 ].map(([name, plan]) => {
   const selection = selectPresentation(plan);
   const verdicts = Object.fromEntries(selection.verdicts.map((verdict) => [verdict.recipe, verdict]));
@@ -471,6 +532,7 @@ const splitWorst = [
   ['the slice', predicted],
   ['the proving ground', provingPredicted],
   ['BelVar Circuit', trackPredicted],
+  ['Switchback Park', parkPredicted],
 ].reduce((worst, row) => (row[1].drawCalls > worst[1].drawCalls ? row : worst));
 const splitPass = {
   drawCalls: splitWorst[1].drawCalls + splitReserve.totalDrawCalls,
@@ -542,6 +604,14 @@ const belvarQuadFrame = {
   drawCalls: belvarQuadPass.drawCalls * QUAD_PASSES,
   triangles: belvarQuadPass.triangles * QUAD_PASSES,
 };
+const parkQuadPass = {
+  drawCalls: parkPredicted.drawCalls + quadReserve.totalDrawCalls,
+  triangles: parkPredicted.triangles + quadReserve.totalTriangles,
+};
+const parkQuadFrame = {
+  drawCalls: parkQuadPass.drawCalls * QUAD_PASSES,
+  triangles: parkQuadPass.triangles * QUAD_PASSES,
+};
 const generatedQuadPass = {
   drawCalls: LIBRARY_MAX_DRAW_CALLS + quadReserve.totalDrawCalls,
   triangles: quadTriangleLine + quadReserve.totalTriangles,
@@ -586,6 +656,18 @@ out(`x ${QUAD_PASSES} passes               ${pad(belvarQuadFrame.drawCalls, 6)} 
 out(`§27.2's estimate         ${pad(`~${PLAN_ESTIMATE.belvarFrame.drawCalls}`, 6)} calls   ${pad(`~${PLAN_ESTIMATE.belvarFrame.triangles.toLocaleString('en-GB')}`, 9)} triangles`);
 out('```');
 out();
+out('**The second lap venue — the dressed Switchback Park, four passes:**');
+out();
+out('```');
+out(`level (Switchback Park)  ${pad(parkPredicted.drawCalls, 6)} calls   ${pad(parkPredicted.triangles, 9)} triangles`);
+out(`everything else          ${pad(quadReserve.totalDrawCalls, 6)} calls   ${pad(quadReserve.totalTriangles, 9)} triangles`);
+out(`                         ------           ---------`);
+out(`one pass                 ${pad(parkQuadPass.drawCalls, 6)} calls   ${pad(parkQuadPass.triangles, 9)} triangles`);
+out(`x ${QUAD_PASSES} passes               ${pad(parkQuadFrame.drawCalls, 6)} calls   ${pad(parkQuadFrame.triangles, 9)} triangles`);
+out(`ceiling (§27)            ${pad(RENDER_BUDGET_QUAD.maxDrawCalls, 6)} calls   ${pad(RENDER_BUDGET_QUAD.maxTriangles, 9)} triangles`);
+out('```');
+out();
+
 out('**The world four-seat free ride can open — the generated worst, four passes.**');
 out('The level line is Contract 2\'s own: the library set-union bound on calls');
 out(`(${LIBRARY_MAX_DRAW_CALLS}), and the level share of the generator's 80% solo-frame line (${quadTriangleLine.toLocaleString('en-GB')}) that`);
@@ -616,6 +698,8 @@ out(`${RENDER_BUDGET_SPLIT.maxDrawCalls} calls / ${RENDER_BUDGET_SPLIT.maxTriang
 out(`${RENDER_BUDGET.maxDrawCalls} calls / ${RENDER_BUDGET.maxTriangles.toLocaleString('en-GB')} triangles.`);
 out();
 
+let report = `${lines.join('\n')}\n`;
+let written = '';
 if (write) {
   const sourceTarget = join(src, 'data/renderCost.ts');
   const sourceBefore = readFileSync(sourceTarget, 'utf8');
@@ -650,7 +734,8 @@ if (write) {
   // The enhanced catalogue, from the enhanced kit — one line per part, and a
   // part the kit stopped enriching is an error rather than a stale price.
   const catalogueTarget = join(src, 'render/enhancedCatalog.ts');
-  let catalogue = readFileSync(catalogueTarget, 'utf8');
+  const catalogueBefore = readFileSync(catalogueTarget, 'utf8');
+  let catalogue = catalogueBefore;
   for (const row of enhancedRows) {
     const pattern = new RegExp(`^(\\s*)${row.part}: \\{ triangles: \\d+, castsShadow: (?:true|false) \\},$`, 'm');
     if (!pattern.test(catalogue)) {
@@ -660,15 +745,29 @@ if (write) {
   }
   writeFileSync(catalogueTarget, catalogue);
 
+  // The selector imported the previous reserves/catalogue at process start.
+  // If those changed, a fresh read-only process must price the report against
+  // the files just written. It has no --write flag, so this cannot recurse or
+  // write a second artifact. Buffer output until that consistent report exists.
+  if (sourceAfter !== sourceBefore || catalogue !== catalogueBefore) {
+    report = execFileSync(process.execPath, [fileURLToPath(import.meta.url)], {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 4 * 1024 * 1024,
+    });
+  }
+
   // The report file is internal documentation. In the published repository —
   // this tool ships so a contributor can measure a new segment's row — `docs/`
   // is the built game, there is no report to refresh, and writing one there
   // would pollute the Pages package. The reserve above is the functional part.
   const reportTarget = join(root, 'docs/RENDER_COST.md');
   if (existsSync(reportTarget)) {
-    writeFileSync(reportTarget, `${lines.join('\n')}\n`);
-    console.log(`\nwritten: src/data/renderCost.ts, src/render/enhancedCatalog.ts, docs/RENDER_COST.md`);
+    writeFileSync(reportTarget, report);
+    written = 'src/data/renderCost.ts, src/render/enhancedCatalog.ts, docs/RENDER_COST.md';
   } else {
-    console.log(`\nwritten: src/data/renderCost.ts, src/render/enhancedCatalog.ts (no docs/RENDER_COST.md here; report skipped)`);
+    written = 'src/data/renderCost.ts, src/render/enhancedCatalog.ts (no docs/RENDER_COST.md here; report skipped)';
   }
 }
+process.stdout.write(report);
+if (written) console.log(`\nwritten: ${written}`);

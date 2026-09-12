@@ -2,7 +2,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
-  NON_LEVEL_RESERVE,
   PART_COSTS,
   QUAD_NON_LEVEL_RESERVE,
   QUAD_PASSES,
@@ -25,6 +24,7 @@ import {
   withinSplitRenderBudget,
 } from '../level/renderBudget.ts';
 import { createSliceLevel } from '../level/sliceLevel.ts';
+import { createSwitchbackLevel } from '../level/switchbackLevel.ts';
 import { createTrackLevel } from '../level/trackLevel.ts';
 import { ENHANCED_PART_COSTS, ENHANCED_PART_IDS } from './enhancedCatalog.ts';
 import {
@@ -35,6 +35,7 @@ import {
   presentationCost,
   selectPresentation,
 } from './presentation.ts';
+import { forcedPresentation } from './Renderer.ts';
 import { measureLevelScene, measurePartTriangles } from './renderCost.ts';
 import { createTerrain } from './terrain.ts';
 
@@ -51,12 +52,14 @@ import { createTerrain } from './terrain.ts';
 const slice = createSliceLevel();
 const track = createTrackLevel();
 const proving = createProvingGround();
+const switchback = createSwitchbackLevel();
 const generated = generateLevel('route-41', undefined, undefined, 65).plan;
 
 const WORLDS: readonly [string, LevelPlan][] = [
   ['the slice', slice],
   ['BelVar', track],
   ['the proving ground', proving],
+  ['Switchback Park', switchback],
   ['route-41 at 65 mph', generated],
 ];
 
@@ -117,8 +120,23 @@ test('the enhanced recipe changes triangles and nothing else about a scene', () 
     for (const category of ['surround', 'heightfield', 'markings', 'hazards', 'targets'] as const) {
       assert.deepEqual(enhanced.byCategory[category], baseline.byCategory[category], `${name} ${category} moved`);
     }
-    if ((plan.props ?? []).length > 0) {
+    // **Props alone are not the condition; an enhanced *part* is.** The
+    // enhanced kit re-prices crowns, conifers, shrubs and facades and nothing
+    // else, so a world whose only props are M36's signposts — two boxes, both
+    // at their baseline price — is a world the recipe has nothing to spend on.
+    // Before Switchback's signage every propped world in this list had foliage
+    // in it, which is why the test could ask the shorter question.
+    //
+    // The model is asked first and the scene has to agree with it: that the
+    // recipe *predicts* a gain and the built scene does not is the failure this
+    // is really looking for, and a world with nothing to enhance still has to
+    // come back identical rather than merely "not more".
+    const priced = presentationCost(plan, ENHANCED_PRESENTATION).triangles
+      - presentationCost(plan, BASELINE_PRESENTATION).triangles;
+    if (priced > 0) {
       assert.ok(enhanced.triangles > baseline.triangles, `${name} gained no triangles`);
+    } else {
+      assert.equal(enhanced.triangles, baseline.triangles, `${name} gained triangles it cannot have`);
     }
   }
 });
@@ -252,16 +270,31 @@ test('the solo contract is a boundary the enhanced recipe is judged against, fro
   assert.equal(at.cost.frame.quad.drawCalls, (at.cost.drawCalls + QUAD_NON_LEVEL_RESERVE.drawCalls) * QUAD_PASSES);
 });
 
-test('the solo contract is the tightest of the three per level, so it is the one that decides', () => {
-  // Contract 1 leaves 406,726 level triangles; Contract 2 leaves 411,726 per
-  // pass and Contract 3 412,756. A level that fits solo fits both split
-  // frames, which is why no fixture can make the selector refuse on a split
-  // ceiling alone — recorded here so nobody spends a night looking for one.
-  const solo = RENDER_BUDGET.maxTriangles - NON_LEVEL_RESERVE.triangles;
-  const split = RENDER_BUDGET_SPLIT.maxTriangles / SPLIT_PASSES - SPLIT_NON_LEVEL_RESERVE.triangles;
-  const quad = RENDER_BUDGET_QUAD.maxTriangles / QUAD_PASSES - QUAD_NON_LEVEL_RESERVE.triangles;
-  assert.ok(solo < split, `solo room ${solo} is not under split room ${split}`);
-  assert.ok(solo < quad, `solo room ${solo} is not under quad room ${quad}`);
+test('each multiplayer triangle ceiling is enforced independently of the solo ceiling', () => {
+  // Model changes can reorder the available level headroom. Maribel's hair
+  // grew the split/quad reserves while the more expensive solo look stayed
+  // unchanged, making split tighter than solo. Exercise each boundary rather
+  // than assuming one frame shape permanently protects the other two.
+  const each = 2 * ENHANCED_PART_COSTS.coniferFoliage!.triangles;
+  const empty = presentationCost(coniferPlan(0), ENHANCED_PRESENTATION);
+  for (const [shape, budget, passes] of [
+    ['split', RENDER_BUDGET_SPLIT, SPLIT_PASSES],
+    ['quad', RENDER_BUDGET_QUAD, QUAD_PASSES],
+  ] as const) {
+    const room = (budget.maxTriangles - empty.frame[shape].triangles) / passes;
+    const count = Math.floor(room / each);
+    const at = judgePresentation(coniferPlan(count), ENHANCED_PRESENTATION);
+    const over = judgePresentation(coniferPlan(count + 1), ENHANCED_PRESENTATION);
+    assert.ok(at.cost.frame[shape].triangles <= budget.maxTriangles);
+    assert.ok(budget.maxTriangles - at.cost.frame[shape].triangles < each * passes);
+    assert.ok(!at.breaches.some((breach) => breach.includes(`${shape} triangles`)));
+    assert.ok(over.cost.frame[shape].triangles > budget.maxTriangles);
+    assert.ok(over.breaches.some((breach) => breach.includes(`${shape} triangles`)));
+    if (shape === 'split') {
+      assert.ok(over.cost.frame.solo.triangles < RENDER_BUDGET.maxTriangles,
+        'this fixture must expose a split breach that solo cannot catch');
+    }
+  }
 });
 
 test('a fixture beyond every ceiling names every ceiling, and still falls back to the baseline', () => {
@@ -296,8 +329,103 @@ test('a fixture with every prop kind is priced under both recipes and the enhanc
   assert.equal(cost.propTriangles - baseline.propTriangles, expected);
 });
 
+test('`setLevel`\u2019s recipe override builds the named rung and reports that rung\u2019s cost', () => {
+  // **M36 Phase 4's diagnostic second parameter, headless** (p4-wire open
+  // issue 1). `GameRenderer.setLevel(plan, recipe)` composes its selection in
+  // one expression — the selector when no rung is named, `forcedPresentation`
+  // when one is — and that composer is the half a headless test can reach:
+  // `new GameRenderer(canvas)` wants a WebGL context and this project has
+  // none, so the *installed* rungs are measured live against the GPU counters
+  // in `tests/m36_4.spec.ts` and the arithmetic is pinned here.
+  //
+  // Switchback Park is the fixture because it is the world the parameter was
+  // built for: the ladder enhances it, so forcing `baseline` is a real
+  // override rather than a restatement of what the selector already chose.
+  // Re-measured after ride round 1 fenced the bends inside and rebuilt the
+  // kicker as a step-down (2026-09-12): baseline 160,776 level triangles
+  // (the turn arrows' pads included), enhanced 176,624, and **33 draw calls either way** —
+  // §36.7's "zero new call buckets", which is what makes the two rungs a
+  // topology choice and not a budget one.
+  const selected = selectPresentation(switchback);
+  assert.equal(selected.recipe.id, 'enhanced', 'the park is no longer the enhanced fixture this needs');
+
+  const baseline = forcedPresentation(selected, 'baseline');
+  assert.equal(baseline.recipe.id, 'baseline');
+  assert.equal(baseline.cost.triangles, 160_776);
+  assert.equal(baseline.cost.recipe, 'baseline', 'the reported cost named the other rung');
+
+  const enhanced = forcedPresentation(selected, 'enhanced');
+  assert.equal(enhanced.recipe.id, 'enhanced');
+  assert.equal(enhanced.cost.triangles, 176_624);
+  assert.equal(enhanced.cost.recipe, 'enhanced');
+
+  assert.equal(baseline.cost.drawCalls, enhanced.cost.drawCalls, 'a recipe added a draw call');
+  assert.equal(baseline.cost.drawCalls, 33);
+
+  // **The cost reported is the cost of the topology actually built.** The
+  // override swaps which verdict is reported and nothing else, so each rung's
+  // cost is the one the ladder priced for it — a forced selection can never
+  // put the selector's cost beside the other rung's geometry.
+  for (const forced of [baseline, enhanced]) {
+    assert.deepEqual(forced.verdicts, selected.verdicts, 'the override lost a rung\u2019s verdict');
+    const own = forced.verdicts.find((verdict) => verdict.recipe === forced.recipe.id);
+    assert.deepEqual(forced.cost, own?.cost, `the ${forced.recipe.id} rung reported someone else\u2019s cost`);
+  }
+
+  // **The plan is never re-priced, so admission is untouched** — the third
+  // property the override rests on, measured rather than argued.
+  const before = canonicalPlanString(switchback);
+  forcedPresentation(selectPresentation(switchback), 'baseline');
+  assert.equal(canonicalPlanString(switchback), before);
+  assert.deepEqual(selectPresentation(switchback), selected, 'forcing a rung moved the selector');
+
+  // And naming the rung the selector already chose is the selector's own
+  // selection, which is why `setLevel` short-circuits that case.
+  assert.deepEqual(forcedPresentation(selected, selected.recipe.id), selected);
+});
+
+test('the baseline rung the override installs is a scene that exists, to the triangle', () => {
+  // The pair above is arithmetic; this is the geometry, built. Both rungs of
+  // the park are constructed headlessly and measured, so a forced `baseline`
+  // cannot name a cost that no scene has.
+  const selected = selectPresentation(switchback);
+  for (const recipe of [BASELINE_PRESENTATION, ENHANCED_PRESENTATION]) {
+    const forced = forcedPresentation(selected, recipe.id);
+    const measured = measureLevelScene(switchback, recipe);
+    assert.equal(measured.totalTriangles, forced.cost.triangles, `${recipe.id}: built ${measured.totalTriangles}`);
+    assert.equal(measured.totalDrawCalls, forced.cost.drawCalls, `${recipe.id}: drew ${measured.totalDrawCalls} calls`);
+  }
+});
+
 test('selecting never changes what the plan is', () => {
   const before = canonicalPlanString(generated);
   selectPresentation(generated);
   assert.equal(canonicalPlanString(generated), before);
+});
+
+test('a venue look is free: it changes no recipe, no call and no triangle', () => {
+  // M36 Phase 4's presentation descriptor moves the sun, the sky, the haze and
+  // the exposure — one directional light, one hemisphere, one shadow map, no
+  // post-processing, and therefore nothing the topology selector or the
+  // admission model can see (§36.7: the warm lighting recipe is a *separate*
+  // presentation concern). If a look ever reached the cost model, a venue's art
+  // would start deciding its geometry, which is the coupling M32 removed.
+  // Asserted on the slice rather than on the park: the claim is about the
+  // descriptor, not about one venue, and the slice is the world whose every
+  // number this project has been re-measuring since M12.
+  const lit: LevelPlan = { ...slice, look: { exposure: 1.06, sunElevation: 0.58 } };
+  assert.deepEqual(selectPresentation(lit), selectPresentation(slice));
+  assert.deepEqual(
+    presentationCost(lit, ENHANCED_PRESENTATION),
+    presentationCost(slice, ENHANCED_PRESENTATION),
+  );
+  assert.deepEqual(
+    presentationCost(lit, BASELINE_PRESENTATION),
+    presentationCost(slice, BASELINE_PRESENTATION),
+  );
+  // And the built scene is the same scene, measured rather than argued.
+  assert.deepEqual(
+    measureLevelScene(lit, ENHANCED_PRESENTATION),
+    measureLevelScene(slice, ENHANCED_PRESENTATION),
+  );
 });

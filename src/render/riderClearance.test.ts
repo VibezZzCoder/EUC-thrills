@@ -15,6 +15,7 @@ import {
   DRUNKARD_HIP_DOME_APEX,
   DRUNKARD_LOOK,
   MARIBEL_LOOK,
+  RIDER_LOOKS,
   TROLLINA_LOOK,
   WHEEL_IN_MOTION_LOOK,
   WIM_HIP_DOME_APEX,
@@ -636,6 +637,279 @@ const PRESENTATION_FOLDS = [
   { attack: 1, carveStance: 1 },
 ] as const;
 
+/**
+ * **The one-foot air pose — M36 §36.5, and the first channel in this file that
+ * moves a leg away from its pedal.**
+ *
+ * ## What the channel writes, enumerated (invariant 15's first instruction)
+ *
+ * `StanceInput.oneFoot` / `oneFootSide` reach exactly one thing:
+ * `render/rider.ts` blends the **released** leg's ankle target away from its
+ * pedal by three constants and solves the same two-bone chain, so the channel
+ * writes the hip, knee and ankle **quaternions of one leg** and nothing else.
+ * It writes no position, no pelvis rotation, no neck, no root, no machine
+ * transform — the supporting leg's three joints are not touched either.
+ *
+ * That enumeration is what makes the sweep below finite rather than a second
+ * copy of every contract in this file: a contract with one of those three
+ * joints between the two bodies it compares gains the axis, and every such
+ * contract does gain it, through the generators they already share.
+ *
+ * ## The axis
+ *
+ * `oneFoot` is a continuum and not three points, so it is swept at two
+ * interior values and the full gesture; **zero is swept by every other stance
+ * in this file**, which is the same axis's other end. Both signs of
+ * `oneFootSide` exist in the rig on purpose — the released side is one
+ * constant for every look and the sweep is what picks it (§36.5, "selected by
+ * the clearance sweep, not by a character-name branch"), so the *selection*
+ * measures both and the contracts below assert the side the game ships.
+ *
+ * ## The airborne family it is composed with
+ *
+ * A pose that only happens in flight, so the stances carry `airBlend: 1` and
+ * the things a rider is doing while airborne: the bank they left the ground
+ * in (and the whole M30 rider-roll axis over it, the reversal band included),
+ * the fore-aft lean as the rig receives it — `riderPitch` with `torsoPitch`
+ * composed exactly as `ridingRig.ts` composes it, which is how the air pitch
+ * arrives at the pelvis — the hop's own compression and the held air tuck
+ * (`EUC.crouchHeldAmount`, the value the controller actually holds, plus the
+ * 1 the launch reaches for), the presentation folds while falling, the fakie
+ * (reverse) landing, the over-grip technical corner, and the pedal's own yaw
+ * and roll phases, because the released target is built off the *pedal-rotated*
+ * target and a foot that leaves a tilted pedal leaves from somewhere else.
+ *
+ * `sways` composes the Drunkard's weave with the gesture where the caller has
+ * one (§36.5: "the Drunkard's motion still composes"); every other look passes
+ * the single zero its `MOTION_STILL` table makes of it.
+ */
+const ONE_FOOT_AMOUNTS = [0.35, 0.7, 1] as const;
+/** +1 is the rider's LEFT foot leaving, -1 their right. */
+const ONE_FOOT_SIDES = [1, -1] as const;
+/**
+ * The compressions a flight carries: none, the held air tuck, and the deepest
+ * the hop's own preload is **measured** to reach.
+ *
+ * Not 1. `pose.crouch` is an `approach` toward the hop's target that the
+ * 0.07 s response never finishes, and the M30 Phase 3 QA measured it over
+ * corners with the hop pressed at six charge lengths: **0.930** anywhere, and
+ * **0.738** above 0.95 of `GRIP_ROLL` — the two numbers `CAN_BANDS` states and
+ * the reason a full crouch inside a full carve is a corner of the space the
+ * machine has no trajectory through. A new axis composed against a compression
+ * the controller cannot produce would report defects that are not there, which
+ * is invariant 15's closing sentence.
+ */
+const AIR_CROUCH_PEAK = 0.930;
+const AIR_CROUCH_PEAK_AT_LIMIT = 0.738;
+function airCrouches(rollAngle: number): readonly number[] {
+  return [
+    0,
+    EUC.crouchHeldAmount,
+    Math.abs(rollAngle) > 0.95 * GRIP_ROLL ? AIR_CROUCH_PEAK_AT_LIMIT : AIR_CROUCH_PEAK,
+  ];
+}
+
+interface OneFootAirOptions {
+  /** Which foot leaves. The shipped side alone unless a sweep is choosing. */
+  sides?: readonly number[];
+  /**
+   * How far it leaves. `ONE_FOOT_AMOUNTS` unless a caller is comparing the
+   * gesture against its own absence, which wants `[0]` and the same bases in
+   * the same order — the loop below is side, then amount, then base, so two
+   * lists built from one set of options line up index for index.
+   */
+  amounts?: readonly number[];
+  /** The look's own weave, where it has one. */
+  sways?: readonly number[];
+  /**
+   * **Whether this tier certifies compressions and folds at all.**
+   *
+   * The new axis enters each contract at that contract's own depth, and this
+   * is the switch. Trollina's skirt and Seal's tied band assert *held* stances
+   * geometrically — any carve, any lean, any technical turn — and send the
+   * compound folds to the structural tier, where the answer is that everything
+   * below the hem is one material at one shade (this file's §7g). The jacket
+   * hems, the Drunkard's can and hat, both packs and the four hip domes assert
+   * the folds and the crouch, so those get them here too.
+   *
+   * Calibrated rather than asserted: at `oneFoot = 0` this family passes every
+   * contract in this file that receives it, which is what makes the gesture
+   * the only new variable in the failures it could cause.
+   */
+  folded?: boolean;
+}
+
+function oneFootAirStances(options: OneFootAirOptions = {}): LabelledStance[] {
+  const sides = options.sides ?? [RIDER_BLOCKOUT.oneFootReleaseSide];
+  const amounts = options.amounts ?? ONE_FOOT_AMOUNTS;
+  const sways = options.sways ?? [0];
+  const folded = options.folded ?? true;
+  const bases: LabelledStance[] = [];
+  const air = (label: string, stance: StanceCase): void => {
+    bases.push({ ...stance, label, airBlend: 1 });
+  };
+  // The flight itself: every bank it can be launched in, the leans, both
+  // compressions, and the whole rider-roll axis over each bank. Rising and
+  // falling, because the head reads one of those two and the neck is a joint
+  // some of these contracts measure against.
+  for (const rollAngle of CARVES) {
+    for (const riderPitch of [BRAKING_LEAN, 0, 0.35]) {
+      for (const crouch of folded ? airCrouches(rollAngle) : [0]) {
+        for (const falling of [false, true]) {
+          for (const { riderRoll, tag } of riderRollsFor(rollAngle)) {
+            air(
+              `air carve ${rollAngle.toFixed(2)}, lean ${riderPitch.toFixed(2)}, `
+                + `crouch ${crouch.toFixed(2)}${falling ? ', falling' : ''}, ${tag}`,
+              {
+                rollAngle,
+                riderPitch,
+                torsoPitch: torsoPitchFor(riderPitch),
+                crouch,
+                falling,
+                riderRoll,
+              },
+            );
+          }
+        }
+      }
+    }
+  }
+  // The fold envelope, at the banks and leans each fold is reachable at — the
+  // presentation folds over every carve at their own leans (the list
+  // `drunkardHeldStances` and `hemStances` already assert), and the whole
+  // seven-way fold list including the tuck with the wheel upright.
+  for (const rollAngle of folded ? CARVES : []) {
+    for (const fold of PRESENTATION_FOLDS) {
+      for (const riderPitch of PRESENTATION_LEANS) {
+        for (const { riderRoll, tag } of riderRollsFor(rollAngle)) {
+          air(
+            `air fold, carve ${rollAngle.toFixed(2)}, lean ${riderPitch.toFixed(2)}, `
+              + `attack ${fold.attack}, carveStance ${fold.carveStance}, ${tag}`,
+            {
+              rollAngle,
+              riderPitch,
+              torsoPitch: torsoPitchFor(riderPitch),
+              crouch: EUC.crouchHeldAmount,
+              falling: true,
+              riderRoll,
+              ...fold,
+            },
+          );
+        }
+      }
+    }
+  }
+  for (const fold of folded ? FOLDS : []) {
+    for (const crouch of airCrouches(0)) {
+      air(
+        `air fold upright, tuck ${fold.tuck}, attack ${fold.attack}, `
+          + `carveStance ${fold.carveStance}, crouch ${crouch.toFixed(2)}`,
+        {
+          rollAngle: 0,
+          riderPitch: 0,
+          torsoPitch: torsoPitchFor(0),
+          crouch,
+          falling: true,
+          ...fold,
+        },
+      );
+    }
+  }
+  // The fakie flight and the abrupt direction change: the reverse stance
+  // squats and splays the legs, and it takes the schedule's low band by
+  // construction (`riderRollsFor`'s own gate). It belongs with the folds
+  // rather than with the held stances — riding backwards is itself a blend,
+  // and this file has sent *reverse composed with a real carve* to the
+  // structural tier since M23 (Trollina's own `composed` list says so).
+  for (const rollAngle of folded ? CARVES : []) {
+    for (const technicalTurn of [-1, 0, 1]) {
+      for (const { riderRoll, tag } of riderRollsFor(rollAngle, technicalTurn, 1)) {
+        air(
+          `fakie air, carve ${rollAngle.toFixed(2)}, technical ${technicalTurn.toFixed(2)}, ${tag}`,
+          {
+            rollAngle,
+            riderPitch: 0,
+            torsoPitch: torsoPitchFor(0),
+            technicalTurn,
+            reverse: 1,
+            crouch: EUC.crouchHeldAmount,
+            riderRoll,
+          },
+        );
+      }
+    }
+  }
+  // Hopped out of the over-grip technical corner, both signs.
+  for (const sign of [-1, 1]) {
+    for (const { riderRoll, tag } of riderRollsFor(sign * TECHNICAL_ROLL, sign)) {
+      air(`air out of the technical corner ${sign > 0 ? '+' : '-'}, ${tag}`, {
+        rollAngle: sign * TECHNICAL_ROLL,
+        riderPitch: 0,
+        torsoPitch: torsoPitchFor(0),
+        technicalTurn: sign,
+        crouch: folded ? EUC.crouchHeldAmount : 0,
+        riderRoll,
+      });
+    }
+  }
+  // **The pedal's own phases.** The released ankle target is the pedal target
+  // *after* the machine's yaw and roll have been applied to it, so a foot that
+  // leaves a yawed, banked pedal starts somewhere else — and a wobble in the
+  // air is the machine's own, which does not stop because nobody is on one
+  // pedal.
+  for (const wobbleYaw of [-0.12, 0.12]) {
+    for (const pedalRoll of [-0.25, 0.25]) {
+      for (const wobbleFight of [0, 1]) {
+        air(
+          `air, pedal yaw ${wobbleYaw.toFixed(2)}, pedal roll ${pedalRoll.toFixed(2)}, `
+            + `fight ${wobbleFight}`,
+          {
+            torsoPitch: torsoPitchFor(0),
+            wobbleYaw,
+            pedalRoll,
+            wobbleFight,
+            wobbleSway: Math.sign(wobbleYaw),
+            crouch: folded ? EUC.crouchHeldAmount : 0,
+          },
+        );
+      }
+    }
+  }
+  // The weave, where the look has one: the sway rolls the pelvis and swings
+  // the arms while the foot is off its pedal.
+  for (const styleSway of sways) {
+    if (styleSway === 0) continue;
+    for (const rollAngle of [-GRIP_ROLL, 0, GRIP_ROLL]) {
+      for (const { riderRoll, tag } of riderRollsFor(rollAngle)) {
+        air(`air carve ${rollAngle.toFixed(2)}, sway ${styleSway.toFixed(2)}, ${tag}`, {
+          rollAngle,
+          riderPitch: 0,
+          torsoPitch: torsoPitchFor(0),
+          crouch: folded ? EUC.crouchHeldAmount : 0,
+          styleSway,
+          riderRoll,
+        });
+      }
+    }
+  }
+
+  const stances: LabelledStance[] = [];
+  for (const oneFootSide of sides) {
+    for (const oneFoot of amounts) {
+      for (const base of bases) {
+        stances.push({
+          ...base,
+          label: `${base.label}, one-foot ${oneFoot.toFixed(2)} `
+            + `${oneFootSide > 0 ? 'left' : 'right'}`,
+          oneFoot,
+          oneFootSide,
+        });
+      }
+    }
+  }
+  return stances;
+}
+
 test('the skirt clears the legs through every held riding stance', () => {
   const rider = createPlaceholderRider(TROLLINA_LOOK);
   let asserted = 0;
@@ -731,6 +1005,14 @@ test('the skirt clears the legs through every held riding stance', () => {
   // the blend frames where they overlap belong to the transient tier below.
   held.push({ label: 'rest', restFactor: 1, torsoPitch: torsoPitchFor(0) });
   held.push({ label: 'crash, settled', crash: 1, torsoPitch: torsoPitchFor(0) });
+  // **The one-foot air pose is a held stance** (M36 §36.5): the player holds
+  // the button and the foot stays off its pedal for the flight, so it belongs
+  // in the tier that is asserted geometrically rather than in the transients.
+  // At the released side the game ships — the selection is
+  // `the one-foot air gesture is measured on both sides` below — and at this
+  // tier's own depth: her held tier carries no compression and no fold, and
+  // the compounds it excludes are excluded here for the same reason.
+  held.push(...oneFootAirStances({ folded: false }));
 
   try {
     for (const stance of held) {
@@ -1033,6 +1315,11 @@ function hemStances(): LabelledStance[] {
   }
   stances.push({ label: 'rest', restFactor: 1, torsoPitch: torsoPitchFor(0) });
   stances.push({ label: 'crash, settled', crash: 1, torsoPitch: torsoPitchFor(0) });
+  // The one-foot air pose (M36 §36.5), at the shipped released side: a lifted
+  // leg is a leg swung toward the jacket hem the guard colour must not reach,
+  // so this is the axis with the most obvious claim on both contracts built
+  // from this list — and on the two hip-join contracts that share it.
+  stances.push(...oneFootAirStances());
   return stances;
 }
 
@@ -1645,6 +1932,20 @@ test('the hair never sinks deeper into her than it rests', () => {
           }
         }
       }
+    }
+    // The one-foot air pose (M36 §36.5). Her hair hangs off the neck and the
+    // gesture writes one leg's three joints, so this pair of bodies has none
+    // of it between them — swept anyway, at the shipped released side, because
+    // the drape is the one mass on the roster that has surprised an owner's
+    // ride before and the stances cost milliseconds.
+    for (const stance of oneFootAirStances()) {
+      const fit = hairDepth(rider, stance);
+      asserted += 1;
+      assert.ok(
+        fit.deepest <= allowed,
+        `${stance.label}: the hair reaches ${(fit.deepest * 1000).toFixed(1)} mm into her torso `
+          + `against ${(resting.deepest * 1000).toFixed(1)} mm at rest`,
+      );
     }
     assert.ok(asserted >= 600, `only ${asserted} stances asserted`);
   } finally {
@@ -2327,6 +2628,11 @@ function drunkardHeldStances(
       stances.push({ label: `wobble ${wobbleFight}, phase ${wobbleSway}`, wobbleFight, wobbleSway, torsoPitch: torsoPitchFor(0) });
     }
   }
+  // The one-foot air pose (M36 §36.5), at the shipped released side and with
+  // his weave composed onto it. The can hangs off a fist beside a thigh, and
+  // the gesture's whole job is to move a thigh — which is why the *side* it
+  // moves was chosen on this contract's numbers (`oneFootReleaseSide`).
+  stances.push(...oneFootAirStances({ sways }));
   return stances;
 }
 
@@ -2538,6 +2844,12 @@ function drunkardFoldStances(
       }
     }
   }
+  // The one-foot air pose (M36 §36.5). Both packs are measured against a skull
+  // the neck swings, and the gesture writes nothing on that path — but this
+  // file does not certify a transform as cancelling, it sweeps it (the same
+  // reasoning `drunkardHeldStances` states for the sway), and the stances cost
+  // seconds.
+  stances.push(...oneFootAirStances({ sways }));
   return stances;
 }
 
@@ -2755,6 +3067,12 @@ function sealHeldStances(): LabelledStance[] {
   }
   stances.push({ label: 'rest', restFactor: 1, torsoPitch: torsoPitchFor(0) });
   stances.push({ label: 'crash, settled', crash: 1, torsoPitch: torsoPitchFor(0) });
+  // The one-foot air pose (M36 §36.5), at the shipped released side. The band
+  // is the one garment on the roster a *leg* has to stay inside of, so the
+  // channel that moves a leg belongs in its held tier for the same reason the
+  // carve does — and at this tier's depth, which, like Trollina's, is held
+  // stances without the compound folds.
+  stances.push(...oneFootAirStances({ folded: false }));
   return stances;
 }
 
@@ -2993,6 +3311,341 @@ for (const { name, look, apexY, sways, pelvisRoll } of HIP_DOME_RIDERS) test(`${
     }
     assert.ok(asserted >= 160 * sways.length, `only ${asserted} stances asserted`);
     assert.ok(lowest >= 0.020, `the hip dome's apex comes down to ${(lowest * 1000).toFixed(1)} mm above the hem — ${where} (20 mm required)`);
+  } finally {
+    rider.dispose();
+  }
+});
+
+/**
+ * **The one-foot air pose, measured on both sides — and the measurement that
+ * chose the side** (M36 §36.5: "Begin with one consistent released side for
+ * all looks, selected by the clearance sweep, not by a character-name
+ * branch").
+ *
+ * Every contract above asserts the gesture at the side the game ships. This
+ * one sweeps **both signs on all ten rigs** — the nine playable looks and the
+ * cop's, which never receives the channel (he has no seat and no input) but
+ * shares the skeleton it moves — and asserts that the constant in
+ * `data/tuning.ts` names the side the numbers prefer.
+ *
+ * ## What the two sides can even differ by
+ *
+ * The rig is not symmetric. The stopped stance grounds the LEFT boot, the
+ * right arm carries the paddle, and — the contract that decides this — **the
+ * Drunkard's can hangs in his LEFT fist**, a hand's width outboard of a left
+ * thigh that `render/riderClearanceRidden.test.ts` holds at 41.0 mm with
+ * 1.0 mm of reserve. Releasing the left foot is the only one of the two
+ * choices that moves that thigh.
+ *
+ * ## The gesture this file measures, and why it trails rather than lifts
+ *
+ * The first build of the pose took the free ankle **out and up** — 0.20 m
+ * outboard, 0.14 m above the pedal — and it did not fit. Measured here, it
+ * put a leg 60 mm out through Trollina's flare, 208 mm out through Seal's
+ * tied band, and brought all four hip domes below their seat hems (7.6 mm
+ * against a 20 mm floor) while taking both jacket-hem contracts 6 mm under
+ * theirs. The cause is anatomy rather than tuning: raising the ankle toward a
+ * fixed hip shortens the chain, the knee has to bulge somewhere, and a knee
+ * only bulges forward — measured, the thigh's top swept 190 mm forward, which
+ * is a thigh out in front of the rider walking through everything worn at the
+ * waist.
+ *
+ * §36.5's instruction where that happens is explicit: *reduce or redirect the
+ * gesture; never the floor.* So the pose was redirected to the one the
+ * geometry allows — the free foot **trails**, back and up and a little out,
+ * which folds the shin behind the rider and leaves the thigh where it was.
+ * Re-measured at the same stances, the two contracts that had failed worst
+ * read **exactly their gesture-free values** (Trollina 26.0 mm, Seal 10.0 mm
+ * on this file's airborne family), every other floor holds untouched, and the
+ * chase camera — which sits behind the rider — is the view the swing is most
+ * visible from.
+ */
+test('the one-foot air gesture is measured on both sides, on every look and the cop', () => {
+  /** `measure`'s metric, with the look's own garment and pelvis roll. */
+  const legZoneFit = (
+    rider: ReturnType<typeof createPlaceholderRider>,
+    legs: readonly { mesh: THREE.Mesh; side: number }[],
+    profile: LoftProfile,
+    overrides: StanceCase,
+    roll: (stance: Posed) => number,
+  ): { radial: number; points: number } => {
+    // Only the leg the gesture releases — or, with the channel off, the leg it
+    // *would* release, so the two readings are about one leg.
+    const released = Math.sign(overrides.oneFootSide ?? RIDER_BLOCKOUT.oneFootReleaseSide);
+    const stance = Object.assign(createStanceInput(), overrides);
+    rider.pelvis.rotation.z = roll(stance);
+    rider.applyStanceReaction(stance);
+    rider.root.updateMatrixWorld(true);
+    const hem = profile[0]!.y;
+    const point = new THREE.Vector3();
+    let radial = Infinity;
+    let points = 0;
+    for (const { mesh, side } of legs) {
+      if (side !== released) continue;
+      const positions = mesh.geometry.getAttribute('position');
+      for (let i = 0; i < positions.count; i += 1) {
+        point.fromBufferAttribute(positions, i);
+        mesh.localToWorld(point);
+        rider.pelvis.worldToLocal(point);
+        if (point.y < hem + 0.003 || point.y > 0.10) continue;
+        points += 1;
+        radial = Math.min(radial, depthInside(profile, point));
+      }
+    }
+    return { radial, points };
+  };
+
+  const legsOf = (
+    rider: ReturnType<typeof createPlaceholderRider>,
+  ): { mesh: THREE.Mesh; side: number }[] => {
+    const meshes: { mesh: THREE.Mesh; side: number }[] = [];
+    for (const name of ['left', 'right']) {
+      for (const joint of [`rider-hip-${name}`, `rider-knee-${name}`]) {
+        const mesh = rider.root.getObjectByName(joint)!.children.find(
+          (child) => (child as THREE.Mesh).isMesh === true && child.name === '',
+        ) as THREE.Mesh | undefined;
+        assert.ok(mesh, `no limb mesh under ${joint}`);
+        meshes.push({ mesh, side: name === 'left' ? 1 : -1 });
+      }
+    }
+    return meshes;
+  };
+
+  // -- Every rig, both sides ------------------------------------------------
+  //
+  // **What the gesture costs, per look and per side.** The metric is
+  // Trollina's — every vertex of the *released* leg that stands in the
+  // garment's own zone, measured against the loft's section at its height, in
+  // the pelvis frame with the hinge written first — and what is reported is
+  // the **difference** the channel makes: the same stance posed with the foot
+  // on its pedal and with the foot trailing, subtracted. Positive is the
+  // gesture moving the leg *away* from the garment; negative is how many
+  // millimetres nearer it brings it.
+  //
+  // A difference rather than an absolute, because the absolute is not
+  // comparable across ten looks: a leg below a jacket hem is hundreds of
+  // millimetres "outside" that loft's section and a leg inside Trollina's
+  // flare is millimetres inside hers. What every look *does* share is that the
+  // gesture must not spend the clearance the look already has, and that is a
+  // difference. The absolutes are held where they belong — by the contracts
+  // above, each with its own floor, now sweeping this axis.
+  //
+  // Both sides, at the full gesture and one interior sample: the interior
+  // continuum is swept by every contract above at the shipped side, and what
+  // is being chosen here is a side.
+  const SELECTION_AMOUNTS = [0.7, 1] as const;
+  const worstPerSide = new Map<string, { left: number; right: number }>();
+  for (const look of RIDER_LOOKS) {
+    const rider = createPlaceholderRider(look);
+    const roll = look === DRUNKARD_LOOK ? drunkardPelvisRoll : pelvisCounterRoll;
+    const sways = look === DRUNKARD_LOOK ? [-1, 0, 1] : [0];
+    try {
+      const legs = legsOf(rider);
+      const result = { left: Infinity, right: Infinity };
+      let points = 0;
+      for (const side of ONE_FOOT_SIDES) {
+        // The same bases with the channel off, and **on the same side**, so
+        // the two readings are about one leg. `oneFootAirStances` loops side,
+        // then amount, then base, so `swung[i]` is `still[i % still.length]`
+        // with the gesture added.
+        const still = oneFootAirStances({ sides: [side], amounts: [0], sways });
+        const stillFit = still.map((stance) => {
+          const fit = legZoneFit(rider, legs, look.profiles.torso, stance, roll);
+          points += fit.points;
+          return fit;
+        });
+        const swung = oneFootAirStances({ sides: [side], amounts: SELECTION_AMOUNTS, sways });
+        assert.equal(swung.length, still.length * SELECTION_AMOUNTS.length, 'the two lists do not line up');
+        for (let i = 0; i < swung.length; i += 1) {
+          const base = stillFit[i % still.length]!;
+          if (base.points === 0) continue;
+          const fit = legZoneFit(rider, legs, look.profiles.torso, swung[i]!, roll);
+          if (fit.points === 0) continue;
+          const cost = fit.radial - base.radial;
+          if (side > 0) result.left = Math.min(result.left, cost);
+          else result.right = Math.min(result.right, cost);
+        }
+      }
+      assert.ok(points > 1000, `${look.id}: only ${points} leg points in the garment zone`);
+      worstPerSide.set(look.id, result);
+      console.log(
+        `  ${look.id}: left foot ${(result.left * 1000).toFixed(1)} mm, `
+          + `right foot ${(result.right * 1000).toFixed(1)} mm`,
+      );
+    } finally {
+      rider.dispose();
+    }
+  }
+
+  // -- The contract that actually chooses: the Drunkard's can ---------------
+  const drunkard = createPlaceholderRider(DRUNKARD_LOOK);
+  const can = { left: Infinity, right: Infinity };
+  try {
+    const hand = drunkard.root.getObjectByName('rider-hand-left') as THREE.Mesh;
+    const thigh = drunkard.root.getObjectByName('rider-hip-left')!.children.find(
+      (child) => (child as THREE.Mesh).isMesh === true && child.name === '',
+    ) as THREE.Mesh;
+    assert.ok(hand && thigh, 'the left hand and thigh are missing');
+    const positions = hand.geometry.getAttribute('position');
+    const point = new THREE.Vector3();
+    for (const side of ONE_FOOT_SIDES) {
+      for (const overrides of oneFootAirStances({ sides: [side], sways: [-1, 0, 1] })) {
+        const stance = Object.assign(createStanceInput(), overrides);
+        drunkard.pelvis.rotation.z = drunkardPelvisRoll(stance);
+        drunkard.applyStanceReaction(stance);
+        drunkard.root.updateMatrixWorld(true);
+        for (let i = DRUNKARD_GLOVE_VERTICES; i < positions.count; i += 1) {
+          hand.localToWorld(point.fromBufferAttribute(positions, i));
+          thigh.worldToLocal(point);
+          if (point.y > 0.02 || point.y < -RIDER_BLOCKOUT.thighLength - 0.05) continue;
+          const clearance = -depthInside(DRUNKARD_LOOK.profiles.thigh, point);
+          if (side > 0) can.left = Math.min(can.left, clearance);
+          else can.right = Math.min(can.right, clearance);
+        }
+      }
+    }
+  } finally {
+    drunkard.dispose();
+  }
+  console.log(
+    `  the Drunkard's can: left foot ${(can.left * 1000).toFixed(1)} mm, `
+      + `right foot ${(can.right * 1000).toFixed(1)} mm`,
+  );
+
+  // **The selection.** Releasing the left foot moves the thigh the can hangs
+  // beside; releasing the right one does not. The constant must name the side
+  // the measurement prefers — and if a look change ever reverses that, this is
+  // where it is found, not on a ride.
+  const shipped = RIDER_BLOCKOUT.oneFootReleaseSide;
+  assert.ok(
+    (shipped > 0 ? can.left : can.right) >= (shipped > 0 ? can.right : can.left),
+    `the released side is ${shipped > 0 ? 'the left' : 'the right'} foot, but the can `
+      + `measures ${(can.left * 1000).toFixed(1)} mm with the left released and `
+      + `${(can.right * 1000).toFixed(1)} mm with the right — `
+      + 'the sweep chooses the side, so change the constant, not this assertion',
+  );
+  // And the shipped side keeps the can's own constructed floor, which is this
+  // file's tripwire under a 40 mm floor the ridden file holds at 41.0 mm.
+  assert.ok(
+    (shipped > 0 ? can.left : can.right) >= 0.011,
+    `the gesture takes the can to ${((shipped > 0 ? can.left : can.right) * 1000).toFixed(1)} mm `
+      + 'of his thigh (11 mm is what the shipped wheel reads without it)',
+  );
+
+  // **What the gesture costs each look, pinned at what this sweep reads**,
+  // rounded away from the reading to the nearest 5 mm — records in the shape
+  // `CAN_BANDS` uses, not margins. The absolute clearances are held by the
+  // contracts above, each with its own floor and each now sweeping this axis;
+  // these ten numbers exist so that a look change, a profile change or a
+  // change to the gesture shows up as a number that moved. **The lever is the
+  // gesture in `data/tuning.ts`, never this table.**
+  //
+  // The two sides read the same to the last place on every one of them, and
+  // that is not luck: the family sweeps both signs of the carve, so releasing
+  // the left foot in a left-hand corner is the mirror of releasing the right
+  // in a right-hand one. **Which is why the side is chosen by the can** — the
+  // one thing on the roster that is not mirrored.
+  const GESTURE_COST: ReadonlyMap<string, number> = new Map([
+    ['cool-rider', -0.080],
+    ['trollina', -0.120],
+    ['red-rider', -0.075],
+    ['adonisb2', -0.120],
+    ['maribel-vargas', -0.140],
+    ['wheel-in-motion', -0.110],
+    ['drunkard', -0.025],
+    ['flo-with-zo', -0.100],
+    ['seal-on-a-wheel', -0.110],
+    ['cop', -0.080],
+  ]);
+  for (const [id, result] of worstPerSide) {
+    const floor = GESTURE_COST.get(id);
+    assert.ok(floor !== undefined, `${id} has no pinned one-foot cost — a new look must be measured`);
+    for (const [name, worst] of [['left', result.left], ['right', result.right]] as const) {
+      assert.ok(
+        worst >= floor,
+        `${id}: with the ${name} foot released the gesture brings the leg `
+          + `${(-worst * 1000).toFixed(1)} mm nearer its garment `
+          + `(${(-floor * 1000).toFixed(0)} mm is what it read when the gesture was chosen)`,
+      );
+    }
+  }
+  assert.equal(worstPerSide.size, RIDER_LOOKS.length, 'a look went unmeasured');
+});
+
+/**
+ * **The sweep above measures the gesture** — shown twice over, because a
+ * clearance sweep that cannot fail is a comment.
+ *
+ * 1. *It is live.* The same stance measured with the channel at 0 and at 1
+ *    reads two different numbers. A channel that stopped reaching the leg —
+ *    the change-detection cache in `render/rider.ts` losing its `lastFreed`
+ *    entry is the obvious way, and it would freeze the foot on the first
+ *    airborne frame — collapses the two, and this goes red.
+ * 2. *It bites.* Pushed past the gesture, the same measurement fails. The
+ *    released leg is driven further than any value of the channel can take it
+ *    — `RIDER_BLOCKOUT` is deep-frozen at import, so this rolls the released
+ *    hip outward on the posed rig instead, which is the same joint the gesture
+ *    writes — and Trollina's own 3 mm containment then fails, from a stance
+ *    that passes with the shipped gesture.
+ */
+test('the one-foot sweep fails if the released leg is pushed past the gesture', () => {
+  const rider = createPlaceholderRider(TROLLINA_LOOK);
+  try {
+    const held: StanceCase = {
+      rollAngle: GRIP_ROLL,
+      riderPitch: 0.35,
+      torsoPitch: torsoPitchFor(0.35),
+      airBlend: 1,
+      oneFootSide: RIDER_BLOCKOUT.oneFootReleaseSide,
+    };
+    const still = measure(rider, { ...held, oneFoot: 0 }, 0.10);
+    const swung = measure(rider, { ...held, oneFoot: 1 }, 0.10);
+    assert.ok(still.points > 0 && swung.points > 0, 'the skirt zone saw no leg');
+    assert.ok(
+      Math.abs(still.radial - swung.radial) > 0.005,
+      `the channel moves the measured leg by only ${((still.radial - swung.radial) * 1000).toFixed(2)} mm `
+        + '— the gesture is not reaching the solve',
+    );
+
+    // Now further than the channel can go. The gesture is an ankle target and
+    // the leg is solved to it, so an absurd target is an absurdly rolled hip:
+    // this rotates the released hip outboard by half a radian *after* the
+    // stance solve and re-measures with the same metric.
+    measure(rider, { ...held, oneFoot: 1 }, 0.10);
+    const releasedHip = rider.root.getObjectByName(
+      RIDER_BLOCKOUT.oneFootReleaseSide > 0 ? 'rider-hip-left' : 'rider-hip-right',
+    )!;
+    releasedHip.rotateZ(RIDER_BLOCKOUT.oneFootReleaseSide * 0.5);
+    rider.root.updateMatrixWorld(true);
+
+    const pelvis = rider.pelvis;
+    const profile = TROLLINA_LOOK.profiles.torso;
+    const hem = profile[0]!.y;
+    const point = new THREE.Vector3();
+    let radial = Infinity;
+    for (const name of ['rider-hip-left', 'rider-hip-right', 'rider-knee-left', 'rider-knee-right']) {
+      const mesh = rider.root.getObjectByName(name)!.children.find(
+        (child) => (child as THREE.Mesh).isMesh === true && child.name === '',
+      ) as THREE.Mesh;
+      const positions = mesh.geometry.getAttribute('position');
+      for (let i = 0; i < positions.count; i += 1) {
+        point.fromBufferAttribute(positions, i);
+        mesh.localToWorld(point);
+        pelvis.worldToLocal(point);
+        if (point.y < hem + 0.003 || point.y > 0.10) continue;
+        radial = Math.min(radial, depthInside(profile, point));
+      }
+    }
+    assert.ok(
+      radial < 0.003,
+      `an absurdly swung leg still measures ${(radial * 1000).toFixed(1)} mm inside the skirt `
+        + '— the metric is not seeing the released leg at all',
+    );
+    assert.ok(
+      swung.radial >= 0.003,
+      `the shipped gesture itself measures ${(swung.radial * 1000).toFixed(1)} mm `
+        + '(3 mm required) — the proof stance must be one the gesture passes',
+    );
   } finally {
     rider.dispose();
   }

@@ -3,6 +3,7 @@ import { RACE } from '../data/tuning.ts';
 import type { Checkpoint, LapCourse } from '../level/plan.ts';
 import { insideCheckpoint } from './challenge.ts';
 import { LapEnvelope } from './trackDay.ts';
+import { NO_TRICKS, TrickObserver, type TrickStepInput, type TrickTally } from './trickEvents.ts';
 
 /**
  * The race referee — M27 Phase 2 (`docs/PLANS.md` §27.3–§27.4).
@@ -97,6 +98,16 @@ export interface RaceRider {
   readonly progressMetres: number;
   readonly onCourse: boolean;
   readonly voided: RaceVoid | null;
+  /**
+   * This rider's own trick events — M36 §36.6.
+   *
+   * **Per rider and never pooled**, because simultaneous seats are counted
+   * independently: the whole point of a book is that one rider's afternoon is
+   * not another's. Nothing here reaches `position`, `finishSeconds`,
+   * `gapSeconds` or `compareBooks` — §36.6 in as many words, and the reason
+   * the counts ride alongside the standing rather than inside it.
+   */
+  readonly tricks: TrickTally;
 }
 
 export interface RaceState {
@@ -119,6 +130,15 @@ export interface RaceRiderInput {
   readonly z: number;
   /** True on any step this seat teleported — §27.3's `R`, and the void. */
   readonly reset: boolean;
+  /**
+   * This seat's trick facts for this step, or absent — M36 §36.6.
+   *
+   * Optional for `TrackDayStepInput`'s reason: a caller with no interest in
+   * §36.6 must not have to fabricate one, and every race test written before
+   * the milestone builds this literal by hand. Absent means nothing is
+   * observed this step, which is not the same as a struct full of falses.
+   */
+  readonly tricks?: TrickStepInput;
 }
 
 /** The card. Nothing here is stored anywhere (q92); it is read once. */
@@ -130,6 +150,16 @@ export interface RaceFinish {
   readonly gapSeconds: number | null;
   readonly bestLapSeconds: number | null;
   readonly lapsCompleted: number;
+  /**
+   * This rider's trick events, frozen with the card — M36 §36.6.
+   *
+   * It rides on the finish row because the row is already this rider's, which
+   * is what "Race associates the row with its rider" asks for. It is not a
+   * tie-break and it is not a score: `compareBooks` cannot see it, `decide`
+   * does not read it, and the card prints it in its own region rather than in
+   * the finishing order.
+   */
+  readonly tricks: TrickTally;
 }
 
 export interface RaceResult {
@@ -162,6 +192,19 @@ interface RiderBook {
   position: number;
   /** True while the step being resolved saw this rider cross the start line. */
   crossedLine: boolean;
+  /**
+   * This rider's clean touchdowns — M36 §36.6, and the race's **own** count.
+   *
+   * `TrackDayRun` already counted its landings before the milestone and
+   * §36.6's one-place rule sends the observer to reuse that count rather than
+   * counting the same touchdown twice. A race had no landing channel at all,
+   * so the count it reuses is this one: counted here, from the same touchdown
+   * edge, under the same gates as everything else in this method — not during
+   * the countdown, and never for a rider who has already finished.
+   */
+  cleanLandings: number;
+  /** This rider's trick events. One observer per book; see `RaceRider.tricks`. */
+  readonly tricks: TrickObserver;
 }
 
 export class RaceRun {
@@ -320,7 +363,7 @@ export class RaceRun {
     for (let seat = 0; seat < this.riders.length; seat += 1) {
       const input = inputs[seat];
       if (input === undefined) continue;
-      this.recordRider(seat, input, events);
+      this.recordRider(stepSeconds, seat, input, events);
     }
     const hadLeader = this.leaderFinishedAt !== null;
     this.decide();
@@ -377,10 +420,18 @@ export class RaceRun {
    * the fastest way round — the anti-cheat that was free for a clock has to be
    * spent for a distance.
    */
-  private recordRider(seat: number, input: RaceRiderInput, events: RaceEvent[]): void {
+  private recordRider(
+    stepSeconds: number,
+    seat: number,
+    input: RaceRiderInput,
+    events: RaceEvent[],
+  ): void {
     const book = this.riders[seat];
     // A finished rider keeps riding under a banner (q97) and is timed by
     // nothing: their clock stopped at the line and their position is locked.
+    // **And earns no more race events** — §36.6 says so in as many words, and
+    // this one return is the whole of that rule: the observer below is never
+    // reached again, so a lap of victory donuts adds nothing to the card.
     if (book.finished) return;
 
     // **`R` costs the lap, and that is the whole of its punishment** (§27.3,
@@ -391,6 +442,29 @@ export class RaceRun {
       book.voided = 'reset';
       // The latch is about a volume this rider is no longer in.
       book.insideStart = false;
+      // **And it costs the flight** — M36 §36.6. Stated through *this* channel
+      // as well as through the facts' own reset flag, because the two do not
+      // always arrive on the same step: the composition root latches a seat-0
+      // reset and hands it to the referee on the step *after* the teleport, so
+      // a rule that only read the facts would miss exactly the seat whose
+      // reset stops the whole tick. Discarded before the facts are observed,
+      // so nothing on this step can be credited to the flight that ended.
+      book.tricks.discardFlight();
+    }
+
+    // **The trick events, per rider** — M36 §36.6. Unreachable during the
+    // countdown (`step` returns before this loop) and unreachable for a
+    // finished seat (the return above), which is the whole of "countdown and
+    // finished seats do not earn new race events". Nothing below reads these
+    // counters, and nothing here reads the lap.
+    if (input.tricks !== undefined) {
+      // The race's own clean-landing count — see `RiderBook.cleanLandings`.
+      // The observer deliberately does not count these, so this is the one
+      // place a race touchdown is counted.
+      if (input.tricks.touchedDown && input.tricks.landingQuality === 'clean') {
+        book.cleanLandings += 1;
+      }
+      book.tricks.step(stepSeconds, input.tricks);
     }
 
     book.onCourse = this.envelope === null || this.envelope.contains(input.x, input.z);
@@ -550,6 +624,7 @@ export class RaceRun {
         gapSeconds: this.gapFor(book),
         bestLapSeconds: book.bestLap,
         lapsCompleted: book.lapsCompleted,
+        tricks: Object.freeze(trickTallyFor(book)),
       }))),
     });
   }
@@ -584,6 +659,7 @@ export class RaceRun {
       progressMetres: book.progress,
       onCourse: book.onCourse,
       voided: book.voided,
+      tricks: trickTallyFor(book),
     })));
   }
 
@@ -597,6 +673,27 @@ export class RaceRun {
     this.winnerSeat = null;
     this.ended = null;
   }
+}
+
+/**
+ * One rider's counts, with their own clean landings in them — M36 §36.6.
+ *
+ * `TrackDayRun.trickTally`'s twin, and separate rather than shared because
+ * the two read different owners' counts: the observer reports zero clean
+ * landings on purpose (§36.6's one-place rule) and each owner fills the field
+ * from whatever it already counts. A free function beside `freshBook` because
+ * it is about a book and not about the room.
+ */
+function trickTallyFor(book: RiderBook): TrickTally {
+  const tally = book.tricks.tally;
+  // Shared and frozen while there is nothing to report — `NO_RIDERS`'s own
+  // argument, and it matters here because `standings` runs once a fixed step
+  // for every seat in the room.
+  if (book.cleanLandings === 0
+    && tally.chargedHops === 0
+    && tally.spinsLanded === 0
+    && tally.oneFootAirs === 0) return NO_TRICKS;
+  return { ...tally, cleanLandings: book.cleanLandings };
 }
 
 /** A rider who has not started. */
@@ -616,6 +713,8 @@ function freshBook(): RiderBook {
     progress: 0,
     position: 1,
     crossedLine: false,
+    cleanLandings: 0,
+    tricks: new TrickObserver(),
   };
 }
 

@@ -42,6 +42,7 @@ import {
 import type { Checkpoint, LevelPlan } from '../level/plan.ts';
 import { topSpeedPreset } from '../simulation/topSpeedPreset.ts';
 import type { TerrainView } from '../render/terrain.ts';
+import type { PresentationRecipeId } from '../render/presentation.ts';
 import { SURFACE_IDS } from '../data/surfaces.ts';
 import {
   ActionState,
@@ -62,6 +63,14 @@ import {
 } from '../input/inputRouter.ts';
 import type { RiderSource } from '../input/riderSource.ts';
 import type { CameraMode, RiderSeat } from './seats.ts';
+import {
+  cancelOneFoot,
+  createOneFootPose,
+  oneFootQualifiedThisFlight,
+  resetOneFoot,
+  stepOneFootFromController,
+  type OneFootStateName,
+} from './oneFootPose.ts';
 import { TouchControls } from '../ui/touchControls.ts';
 import { resolveBindings } from '../input/bindings.ts';
 import {
@@ -72,7 +81,7 @@ import {
   type EucPose,
   type EucSnapshot,
 } from '../simulation/EucController.ts';
-import { clamp, wrapAngle } from '../shared/maths.ts';
+import { clamp, lerp, wrapAngle } from '../shared/maths.ts';
 import { HazardField } from '../simulation/hazards.ts';
 import { SoftBodyField } from '../simulation/softBodies.ts';
 import {
@@ -140,6 +149,12 @@ import {
   type RaceState,
 } from '../simulation/raceRun.ts';
 import {
+  clearTrickFacts,
+  createTrickFacts,
+  type TrickFacts,
+  type TrickTally,
+} from '../simulation/trickEvents.ts';
+import {
   GhostPlayer,
   GhostRecorder,
   createGhostSample,
@@ -165,6 +180,7 @@ import {
   type ResultsRow,
   type ResultsTable,
   type ResultsView,
+  type TricksCounts,
   type RoutePurpose,
   type CouchBlockReason,
   type RouteStatus,
@@ -180,6 +196,7 @@ import {
   isCouchRide,
   type CouchRide,
 } from './couch.ts';
+import { isTrackVenueId, isVenueId } from './venues.ts';
 import { paneGridFor } from '../shared/paneGrid.ts';
 
 /**
@@ -335,6 +352,43 @@ export interface GameSnapshot {
   readonly consumed: Readonly<Record<string, number>>;
   /** The whole of the EUC controller's state. M2's authoritative readout. */
   readonly euc: EucSnapshot;
+  /**
+   * The seat's trick presentation — M36. `pose` is the one-foot air pose
+   * (§36.5) as this seat's fixed step last left it: the render blend, the
+   * released side, the state machine's own name for where it is, whether
+   * this flight has had its pose, and the dwell counting toward one. Read
+   * off the seat, never off the controller, because the controller has none
+   * of it — that is the physical-equality contract, observable here.
+   */
+  readonly tricks: {
+    readonly pose: {
+      readonly oneFoot: number;
+      readonly side: number;
+      readonly state: OneFootStateName;
+      readonly qualifiedThisFlight: boolean;
+      readonly holdSeconds: number;
+    };
+    /**
+     * The ten facts this seat's last fixed step handed the observer — §36.6.
+     *
+     * The assembled struct rather than nine getters read again, so a spec is
+     * looking at exactly what the referee was told. This is where "arming is
+     * not completing" is visible from the bridge: a spin that armed and ran
+     * out of air reads `spinCompleted: false` here while `euc.spins` has
+     * already counted the press.
+     */
+    readonly facts: TrickFacts;
+    /**
+     * What this seat's session has counted so far, or null when no session is
+     * counting for this seat — a free ride, a timed run, Knockabout, a chase.
+     *
+     * §36.6's "counted everywhere" is about *eligibility*, not about every
+     * mode growing a tally: a 180 on any rideable feature is a 180, and the
+     * sessions that keep a count are the lap session and the race. A null
+     * here is that sentence, readable.
+     */
+    readonly session: TrickTally | null;
+  };
   readonly camera: {
     readonly mode: CameraMode;
     readonly orbitAngle: number;
@@ -1029,6 +1083,36 @@ export class Game {
    * at 120 Hz under a comment claiming there were none (QA repair, 2026-08-31).
    */
   private readonly raceBodies: { -readonly [K in keyof RaceRiderInput]: RaceRiderInput[K] }[] = [];
+  /**
+   * Each seat's trick facts for the step being taken — M36 §36.6.
+   *
+   * The race input pool's shape and for its reason: this is written 120 times
+   * a second for every seat that is riding, so it is filled in place. It is
+   * the **one** place the §36.6 facts are assembled, and both referees are
+   * handed the very same struct — `stepTrackDay` hands seat 0's to the lap
+   * session and `raceInputs` hangs each seat's off the race input — so a race
+   * and a track day cannot end up observing two different readings of one
+   * step.
+   *
+   * Written at exactly two points in `stepSeat`: cleared on the reset path
+   * (which integrates nothing and returns), and filled straight after the
+   * controller and the pose have stepped. Nothing else writes it, so a slot
+   * can never hold a stale edge from a step that did not run.
+   */
+  private readonly trickPool: TrickFacts[] =
+    Array.from({ length: COUCH_SEATS }, () => createTrickFacts());
+  /**
+   * Whether a seat was *put* somewhere since its last step — M36 §36.6.
+   *
+   * The quick reset is handed to the referees through their own channels
+   * (`TrackDayRun.restart`, `RaceRiderInput.reset`), but the bridge teleport,
+   * the world swap and the re-dress are not resets and must not become them.
+   * They are still teleports, and §36.6 is explicit that a teleport can never
+   * look like a launch, a landing or a completion — so the fact is latched
+   * here and spent into the next step's facts, where the observer discards the
+   * flight it interrupted and credits nothing for it.
+   */
+  private readonly seatTeleported: boolean[] = new Array<boolean>(COUCH_SEATS).fill(false);
   private readonly strikeWielders: number[] = new Array<number>(COUCH_SEATS).fill(-1);
   private strikeCount = 0;
   private readonly spineAt: SpineLocation = createSpineLocation();
@@ -1092,6 +1176,32 @@ export class Game {
    * are covered by tests instead (`level/levels.ts`, `BUILDERS`).
    */
   private readonly topSpeedMph: number | undefined;
+
+  /**
+   * `?presentation=baseline|enhanced` — M36 Phase 5's one diagnostic.
+   *
+   * **A diagnostic on `?mph=`'s exact terms, and emphatically not an option.**
+   * A presentation recipe is chosen by `render/presentation.ts` *after* a plan
+   * exists, from whether the richer topology still fits every frame contract;
+   * that selector is what every player gets and this parameter cannot change
+   * it. What it does is make the other rung buildable from outside, so a
+   * browser can install the baseline over a world the ladder enhanced and
+   * compare live counters between the two — which was previously only half
+   * provable (M36 Phase 4, `p34-browser`'s open issue 1).
+   *
+   * Three lines keep it on the diagnostic side of the options firewall
+   * (invariant 5): it is read from the address and never from `GameOptions`,
+   * it is never written back anywhere, and the plan is never re-priced for it,
+   * so what a *record* is filed against is untouched. It is deliberately not
+   * part of `probing`: unlike a hazard cadence it changes nothing the
+   * simulation can see, so a ride under it is still a ride.
+   *
+   * Read as a field initialiser rather than in `applyDebugQuery`, because the
+   * world is built in the constructor and a recipe applied one call later
+   * would mean tearing down and rebuilding the terrain the boot frame drew.
+   */
+  private readonly presentationOverride: PresentationRecipeId | undefined
+    = presentationOverrideFrom(typeof window === 'undefined' ? '' : window.location.search);
 
   private terrain: PlanTerrainSampler;
   private terrainView: TerrainView;
@@ -1723,7 +1833,7 @@ export class Game {
     // be added to the other or the first world of a session behaves unlike
     // every world after it, which is the least findable class of bug this file
     // can produce.
-    this.terrainView = this.renderer.setLevel(this.levelPlan);
+    this.terrainView = this.renderer.setLevel(this.levelPlan, this.presentationOverride);
     this.hazards = new HazardField(this.levelPlan.hazards ?? []);
     this.softBodies = new SoftBodyField(this.levelPlan.softBodies ?? []);
     // A local rather than a field, because it is about to become seat 0's and
@@ -1897,7 +2007,7 @@ export class Game {
         onStartKnockabout: () => this.enterKnockabout(),
         onStartChase: () => this.enterChase(),
         // -- M23 ---------------------------------------------------------
-        onStartTrackDay: () => this.enterTrackDay(),
+        onStartTrackDay: (venue) => this.chooseTrackDay(venue),
         onEndSession: () => this.endTrackDaySession(),
         // **Retry means the mode the run that just finished was in** — M14.
         // One button, two modes, and the results screen must not have to know
@@ -1940,7 +2050,7 @@ export class Game {
         onRideRoute: (typed) => this.requestFreshRoute(typed, false),
         onTimeTrialRoute: (typed) => this.requestFreshRoute(typed, true),
         onSurpriseSeed: () => this.surpriseSeed(),
-        onRideTheCity: () => this.rideTheCity(),
+        onPickVenue: (venue) => this.pickVenue(venue),
         onCopyLink: () => this.copyWorldLink(),
 
         // -- M20 -------------------------------------------------------------
@@ -2045,6 +2155,8 @@ export class Game {
       // still holding the throttle the browser stopped reporting.
       onInputReset: () => {
         this.router.clearAll();
+        // And the pose the held level was driving — M36 §36.5.
+        this.cancelOneFootPoses();
         this.loop.resetTime();
       },
       onClaimPress: () => this.claimSeatFor(KEYBOARD_DEVICE),
@@ -2191,6 +2303,12 @@ export class Game {
       previousPose: createPose(),
       currentPose: createPose(),
       renderPose: createPose(),
+      // The one-foot air pose and its interpolation pair — M36 §36.5. Born
+      // idle on the shipped released side; stepped in `stepSeat`, drawn in
+      // `renderSeat`, cleared with the poses.
+      oneFoot: createOneFootPose(),
+      previousOneFoot: 0,
+      currentOneFoot: 0,
       paddle: new Paddle(),
       paddleHead: new THREE.Vector3(),
       lastRiderStrikeSwing: -1,
@@ -2815,6 +2933,18 @@ export class Game {
     // sits down there next.
     this.renderer.forgetEmitter(index);
     this.audio.resetRider(index);
+    // **And their trick facts** — M36 §36.6, on the emitter's own argument:
+    // the slot is per index rather than per rider, and a seat dismissed
+    // mid-flight would otherwise hand its last airborne step to whoever sits
+    // down here next. The *tally* needs nothing — a race's counts live in its
+    // rider book and go when the race is armed again, and a lap session is
+    // seat 0's, which never leaves.
+    const facts = this.trickPool[index];
+    if (facts !== undefined) {
+      clearTrickFacts(facts);
+      facts.flightIndex = 0;
+    }
+    this.seatTeleported[index] = false;
     // **And their contact history** — QA repair, 2026-08-31. `stepContact`
     // clears every pair on a discontinuity, but only on a step it is handed —
     // and once this seat is gone, its pairs are outside the seat loop and
@@ -3089,6 +3219,8 @@ export class Game {
     // per-seat rules that need a specific place would be untestable.
     const seat = this.requireSeat(index);
     seat.controller.reset({ position, headingY });
+    // A teleport ends the flight, so it ends the pose — M36 §36.5.
+    this.clearOneFootPose(seat);
     this.syncSeatPose(seat);
     this.syncCamera(seat);
     // The world's own half, for the seat the world is following — `resetRider`'s
@@ -3134,6 +3266,24 @@ export class Game {
     };
   }
 
+  /**
+   * The tally the session counting for this seat has reached — M36 §36.6.
+   *
+   * **Asked of whichever referee owns the seat, never kept here.** A tally
+   * held by the composition root would be a second copy of counts the
+   * referees already keep under lifecycle rules this file does not have — when
+   * a quick reset keeps them, when a new session clears them — and two copies
+   * of a count is how the two start to disagree. A race owns one per rider; a
+   * lap session owns seat 0's; everything else owns none, which is the null.
+   */
+  private sessionTricksFor(index: number): TrickTally | null {
+    const race = this.race.state;
+    if (race.phase !== 'idle') return race.riders[index]?.tricks ?? null;
+    const trackDay = this.trackDay.state;
+    if (index === 0 && trackDay.phase !== 'idle') return trackDay.tricks;
+    return null;
+  }
+
   /** The whole picture, from seat 0's chair. See `snapshotFor`. */
   snapshot(): GameSnapshot {
     return this.snapshotFor(0);
@@ -3173,6 +3323,20 @@ export class Game {
       actions: seat.source.sample(this.simTimeSeconds),
       consumed: { ...seat.consumed },
       euc: seat.controller.snapshot(),
+      tricks: {
+        pose: {
+          oneFoot: seat.oneFoot.oneFoot,
+          side: seat.oneFoot.side,
+          state: seat.oneFoot.state,
+          qualifiedThisFlight: oneFootQualifiedThisFlight(
+            seat.oneFoot,
+            seat.controller.flightIndex,
+          ),
+          holdSeconds: seat.oneFoot.holdSeconds,
+        },
+        facts: { ...(this.trickPool[index] ?? createTrickFacts()) },
+        session: this.sessionTricksFor(index),
+      },
       // **This seat's camera, not the frame's** — M25 Phase 3. Every field
       // below was `this.currentCamera` while one camera existed, which would
       // have made `snapshotFor(1).camera` quietly report the *player's* view:
@@ -3621,6 +3785,18 @@ export class Game {
   // Track Day (M23 Phase B2)
   // ---------------------------------------------------------------------------
 
+  /** Start only the track explicitly chosen in the title subpanel. */
+  private chooseTrackDay(venue: string): void {
+    if (this.appState.current !== 'title' || this.menus.current !== 'tracks'
+      || this.pendingRoute !== null || !isTrackVenueId(venue)) return;
+    if (venue !== this.levelId) {
+      const plan = createLevel(venue, DEFAULT_SEED, this.hazardProbe, this.targetProbe, this.topSpeedMph);
+      if (plan.lap === undefined) return;
+      this.installLevel(venue, '', plan);
+    }
+    this.enterTrackDay();
+  }
+
   /**
    * The player chose Track Day, from the title screen or from Retry.
    *
@@ -3628,13 +3804,34 @@ export class Game {
    * makes it always available rather than conditionally offered. Every other
    * mode asks something of whatever is loaded — a route to time, targets to
    * hit, a through line for the cop — and refuses, or opens the fresh-route
-   * panel, when the answer is no. A circuit is not a property a world might
-   * happen to have; BelVar *is* the mode's venue, so pressing the button takes
-   * the player there. The button's own note says so ("Lap BelVar Circuit"), so
-   * this is a journey the player asked for rather than the silent world swap
+   * panel, when the answer is no. A lap is not a property a world might happen
+   * to have on the way to somewhere else, so pressing the button takes a player
+   * who has none to a venue that is one. The title now asks for a track first;
+   * retries and couch entrances retain this fallback rather than a silent world swap
    * M12's `no-route` rule forbids.
    *
-   * The probes are replayed into the swap exactly as `rideTheCity` replays
+   * **BelVar is the default, not the destination** — M36 §36.2 item 6. The
+   * swap below used to fire whenever `levelId !== 'track'`, which is a test of
+   * *which world is loaded* and therefore the one shape invariant 2 forbids
+   * (`AGENTS.md`, "The circuit (M23)": a venue is a `LevelPlan` producer and
+   * nothing anywhere branches on which of them is on screen). It also had the
+   * defect that rule predicts the moment a second lap venue exists: a rider
+   * already at Switchback Park would press Track Day and be taken to BelVar.
+   * The question is the *plan's own*, and `LevelPlan.lap` is where it is
+   * written — absent on the slice, on the proving ground and on every generated
+   * route, present on any venue that closes a ring. Asking it rather than
+   * asking a level name means a sixth producer that emits a lap is retained by
+   * this entrance on the day it is registered, with nothing here to edit.
+   *
+   * Deliberately `lap` rather than `this.trackDay.available || this.race.available`:
+   * both referees derive their availability from exactly this field plus the
+   * gates, so asking them would be asking the same fact through two objects
+   * that are about to be rebuilt by `installLevel` anyway — and the pair would
+   * then have to be kept in step with whichever one the seat count picks below.
+   * The referee *is* still asked, after the swap, which is what refuses a world
+   * whose lap exists but whose gates do not compose.
+   *
+   * The probes are replayed into the swap exactly as `pickVenue` replays
    * them: a diagnostic session must not be able to ask for the circuit and
    * silently get a different circuit from the one everybody else rides.
    */
@@ -3652,7 +3849,9 @@ export class Game {
     // see, and nothing saying why. M23's stranded-card lesson, one door along.
     if (this.appState.current !== 'trackDay' && !this.appState.canGoTo('trackDay')) return;
 
-    if (this.levelId !== 'track') {
+    // The world this session is already in cannot be lapped, so the mode
+    // brings the one that can. A world that *can* is kept, whichever it is.
+    if (this.levelPlan.lap === undefined) {
       this.installLevel(
         'track',
         '',
@@ -3764,11 +3963,17 @@ export class Game {
     if (result.winner === null) notes.push('You crossed the line on the same step');
     notes.push('Couch races are not saved');
 
+    // One name per finish row, composed once and read twice: the row wants it
+    // and so does the Tricks group beside it — M36 §36.6 asks the race to
+    // associate the counts with their rider, and two spellings of one rider's
+    // name on one card is the plainest way to fail that.
+    const nameFor = (seat: number): string => {
+      const rider = this.seats[seat];
+      return rider === undefined ? `Player ${seat + 1}` : characterSpec(rider.character).name;
+    };
+
     const rows = result.order.map((finish) => {
-      const rider = this.seats[finish.seat];
-      const name = rider === undefined
-        ? `Player ${finish.seat + 1}`
-        : characterSpec(rider.character).name;
+      const name = nameFor(finish.seat);
       return {
         label: `${finish.position}. ${name}`,
         time: finish.finished ? formatRunTime(finish.seconds ?? 0) : 'Did not finish',
@@ -3806,6 +4011,13 @@ export class Game {
       ahead: false,
       table: RACE_TABLE,
       rows,
+      // **One group per rider, in the rows' own order, named** — M36 §36.6.
+      // The name is the association and the position is deliberately not
+      // repeated here: the order is the finishing order because the rows are,
+      // and a number in front of a trick count would read as a ranking of
+      // trick counts, which is the one thing §36.6 forbids this region from
+      // implying.
+      tricks: result.order.map((finish) => tricksCounts(nameFor(finish.seat), finish.tricks)),
       notes,
     };
   }
@@ -3877,6 +4089,10 @@ export class Game {
       landed: seat.controller.touchedDown,
       landingClean: seat.controller.lastLandingQuality === 'clean',
       crashed: seat.controller.crashed,
+      // Seat 0's trick facts, assembled once in `stepSeat` — M36 §36.6. The
+      // same struct the race would be handed, so the two referees cannot be
+      // observing two readings of one step.
+      tricks: this.trickPool[0],
     });
 
     const state = this.trackDay.state;
@@ -3953,6 +4169,9 @@ export class Game {
       // Consumed: the latch above holds a reset until the referee has been
       // handed it, which is this line and nowhere else.
       this.seatResetThisStep[index] = false;
+      // This seat's trick facts, assembled once in `stepSeat` — M36 §36.6.
+      // The slot, not a copy: the pool is the same lifetime as this one.
+      input.tricks = this.trickPool[index];
     }
     // The list must be exactly `seats` long — a longer one would hand the
     // referee stale slots for seats that left, where the old short `slice`
@@ -3975,6 +4194,10 @@ export class Game {
       // M25 Phase 4 enumerated are blur/visibility, a layout-changing resize
       // and a menu boundary; GO is the fourth, and it is the same clear.
       this.router.clearPending();
+      // Held levels stand through GO by design (a held Hop is airborne-only
+      // and the grid is on the ground), but any dwell a scripted hold began
+      // is dropped with the presses — M36 §36.5's fifth door.
+      this.cancelOneFootPoses();
       this.audio.raceGo();
       return;
     }
@@ -5000,6 +5223,11 @@ export class Game {
       // the lap in front of it.
       table: { caption: 'Best lap sectors', label: 'Sector', value: 'Time', delta: 'vs record' },
       rows,
+      // **The afternoon's trick events, not the best lap's** — M36 §36.6. The
+      // table above is one lap, because a record is; this is the session,
+      // because "the afternoon's events" is what §36.6 says it counts, void
+      // laps included. One group and no name: a lap session is seat 0's.
+      tricks: [tricksCounts('', session.tricks)],
       notes,
     };
   }
@@ -6028,19 +6256,60 @@ export class Game {
     return 'challenge';
   }
 
-  /** Put the shipped slice back and return to the title, which is its home. */
-  private rideTheCity(): void {
+  /**
+   * Ride at one of the hand-built places — M36 Phase 5, and `rideTheCity`'s
+   * replacement.
+   *
+   * That method put the slice back and returned to the title, because "the
+   * city" was the only venue a player could ask for by name. Three changes,
+   * each of which is the same fact said about places rather than about one
+   * place:
+   *
+   * **The venue crosses as a plain string and is refused here.** `isVenueId`
+   * is `isCouchRide`'s twin and this is the door it guards: a `data-venue`
+   * edited in the markup, or a stale bridge call, must not reach `createLevel`
+   * as a key that is not a builder. `proving` and `generated` are refused by
+   * the same line — the first is an instrument and the second is a seed, and
+   * neither is a place the chooser offers.
+   *
+   * **It does not navigate.** A world swap behind an open panel is what the
+   * rider chooser has always done, and it is the right shape for the same
+   * reason: the player is choosing, so the thing they are choosing should be
+   * on screen while they choose it. `Back` is what leaves, and from the join
+   * panel there is nowhere to be sent *to* — `routes` is not reachable from
+   * `couchJoin` by any control, and a `goTo('title')` there would drop every
+   * seat the room had claimed.
+   *
+   * **The route purpose is not reset**, unlike the method this replaces. A
+   * Chase or Knockabout detour through this panel carries its mode in
+   * `routePurpose` (M18), and the venue row is hidden for exactly those two
+   * purposes — so the only presses that can arrive here are ride-purpose ones
+   * and clearing the field could only ever lose a choice.
+   *
+   * Same-venue presses are refused rather than rebuilt: the chooser already
+   * disables the loaded one, and a door that agreed to rebuild the ground a
+   * rider is standing on for no change is a door a bridge call can use to
+   * reset a session. The probes and `?mph=` are replayed exactly as
+   * `enterTrackDay` replays them — a diagnostic session asking for a venue
+   * must get the venue it has been riding, not a different build of it.
+   */
+  private pickVenue(venue: string): void {
     if (this.pendingRoute !== null) return;
-    if (this.levelId !== 'slice') {
-      this.installLevel(
-      'slice',
+    if (!isVenueId(venue)) return;
+    if (venue === this.levelId) return;
+    this.installLevel(
+      venue,
       '',
-      createLevel('slice', DEFAULT_SEED, this.hazardProbe, this.targetProbe, this.topSpeedMph),
+      createLevel(venue, DEFAULT_SEED, this.hazardProbe, this.targetProbe, this.topSpeedMph),
     );
-    }
-    this.setRouteStatus({ kind: 'idle' });
-    this.setRoutePurpose('ride');
-    this.goTo('title');
+    // **The panel says the press landed.** `idle` here was the one successful
+    // press on this panel that left the line blank, and the next control a
+    // player reached for was `Ride this route` — which refused them about a
+    // seed they had never been asked for, one press after a question about
+    // places. The venue crosses as an id and `ui/menus.ts` finds the words;
+    // this file knows which place it installed and nothing about how it is
+    // spoken of.
+    this.setRouteStatus({ kind: 'venue-ready', venue });
   }
 
   /**
@@ -6217,7 +6486,7 @@ export class Game {
     this.levelId = levelId;
     this.seed = seed;
     this.levelPlan = plan;
-    this.terrainView = this.renderer.setLevel(plan);
+    this.terrainView = this.renderer.setLevel(plan, this.presentationOverride);
     this.terrain = new PlanTerrainSampler(plan);
     // Rebuilt with the world, like the sampler and the referee above them, and
     // for the same reason: a hazard field outliving its plan would put the last
@@ -6376,6 +6645,11 @@ export class Game {
     this.renderer.scene.remove(seat.rig.group);
     seat.rig.dispose();
     seat.rig = createRidingRig(riderLook(id), machineLook(machineForCharacter(id)));
+    // A new rig is born with both boots on its pedals; the seat's one-foot
+    // state is zeroed to match rather than pushed into it — M36 §36.5. A
+    // re-dress happens from a menu, and a foot half-out from before it would
+    // otherwise be lerped back on the first frame of the new geometry.
+    this.clearOneFootPose(seat);
     // Written beside the rig, never anywhere else, so the id and the geometry
     // cannot drift — the rule `installedCharacter` has followed since M14.5.
     seat.character = id;
@@ -6402,7 +6676,17 @@ export class Game {
 
   /** Tell the menus which world is loaded. */
   private publishWorld(): void {
-    this.menus.setWorld({ world: this.levelId, seed: this.seed });
+    this.menus.setWorld({
+      world: this.levelId,
+      seed: this.seed,
+      // **The plan's own fact, not a list of which venues lap** — M36 Phase 5.
+      // Two sentences on the menus name a venue, and both are naming where the
+      // Track Day button would take you, which is `enterTrackDay`'s question
+      // and is answered by this field there as well. A screen that kept its own
+      // list of lapping venues would be the branch invariant 2 forbids and a
+      // second thing to edit the day a sixth producer closes a ring.
+      lap: this.levelPlan.lap !== undefined,
+    });
   }
 
   /**
@@ -6672,6 +6956,10 @@ export class Game {
     // rider; the router is what turns "the player's input" into "every seat's"
     // without this line having to know how many there are.
     this.router.clearDevices();
+    // The devices' held Hop went with them, so the pose it was driving is
+    // cancelled here too — M36 §36.5. A scripted hold survives this door by
+    // the rule above, and re-qualifies off a fresh dwell if it is still held.
+    this.cancelOneFootPoses();
     // **The touchscreen needs more than its action state cleared**, and this is
     // the case that motivated the whole rule: a rotation moves every control
     // out from under the hand using it, the `pointerup` that would have
@@ -7017,7 +7305,22 @@ export class Game {
     // target, moving slightly". Held input deliberately survives the reset and
     // takes effect from the next step: a rider holding W through a reset
     // expects to pull away again, not to have to re-press.
-    if (didReset) return true;
+    if (didReset) {
+      // **A step that integrates nothing observes nothing** — M36 §36.6. The
+      // slot would otherwise still be holding the previous step's edges, and a
+      // touchdown handed to an observer on the step after a respawn is exactly
+      // the fabrication the section forbids. What is written instead is the
+      // one thing that did happen: this rider was put somewhere, so whatever
+      // flight they were in the middle of is discarded earning nothing.
+      const reset = this.trickPool[index];
+      if (reset !== undefined) {
+        clearTrickFacts(reset);
+        reset.flightIndex = seat.controller.flightIndex;
+        reset.reset = true;
+      }
+      this.seatTeleported[index] = false;
+      return true;
+    }
 
     // Present a hop edge only on the step that legally claimed it. The sampled
     // action can remain true while its latch waits in the buffer; handing that
@@ -7032,6 +7335,65 @@ export class Game {
     copyPose(seat.currentPose, seat.previousPose);
     seat.controller.step(stepSeconds, actions);
     seat.controller.writePose(seat.currentPose);
+
+    // -- M36's one-foot air pose, stepped beside the physics and never inside it
+    //
+    // Straight after the step, from the *presented* snapshot's held level —
+    // the one built above, so the countdown's neutral substitution and the
+    // pause's `riding = false` reach it for free — and from the controller's
+    // own air facts. `actions.hopHeld` is on the snapshot the controller was
+    // just handed and the controller does not read it; `app/oneFootPose.test.ts`
+    // digests two rides that differ in nothing else and finds them identical,
+    // which is §36.5's physical-equality contract as a number. The history
+    // pair is the same shape as the poses': the frame lerps between them.
+    seat.previousOneFoot = seat.currentOneFoot;
+    stepOneFootFromController(
+      seat.oneFoot,
+      seat.controller,
+      seat.currentPose.recoverBlend,
+      stepSeconds,
+      actions.hopHeld,
+      this.raceFrozen,
+    );
+    seat.currentOneFoot = seat.oneFoot.oneFoot;
+
+    // -- M36's trick facts, assembled once and read by whichever referee owns
+    //    this session (§36.6)
+    //
+    // **Here, and after the pose**, because one of the ten facts is the
+    // pose's: `oneFootQualified` is §36.5's measured visible qualification and
+    // it has to be this step's, not last step's. Eight of the rest are the
+    // controller's own single-step getters, read rather than snapshotted for
+    // the reason stated on them — `snapshot()` allocates and this runs 120
+    // times a second per seat — and the tenth is this loop's own teleport.
+    //
+    // Nothing is *decided* here. The composition root's whole job in §36.6 is
+    // to state what happened; which of it counts is the session's question and
+    // is answered in `simulation/` — which is why a free ride produces the
+    // same facts as a track day and earns nothing for them.
+    const facts = this.trickPool[index];
+    if (facts !== undefined) {
+      facts.flightIndex = seat.controller.flightIndex;
+      facts.tookOff = seat.controller.tookOff;
+      facts.hopped = seat.controller.hopped;
+      // **Gated on the edge, never on `tookOff`.** `lastHopCharge` survives its
+      // launch, so on a ledge drop it is a stale number from a hop taken a
+      // hundred metres back — the one trap wave 1 measured and wrote down.
+      facts.hopCharge = seat.controller.hopped ? seat.controller.lastHopCharge : 0;
+      facts.spinCompleted = seat.controller.spinCompleted;
+      facts.oneFootQualified = oneFootQualifiedThisFlight(
+        seat.oneFoot,
+        seat.controller.flightIndex,
+      );
+      facts.touchedDown = seat.controller.touchedDown;
+      facts.landingQuality = seat.controller.lastLandingQuality;
+      facts.crashed = seat.controller.crashed;
+      // The bridge teleport, the world swap and the re-dress, spent here — see
+      // `seatTeleported`. The quick reset has its own door above and does not
+      // reach this line at all.
+      facts.reset = this.seatTeleported[index] ?? false;
+      this.seatTeleported[index] = false;
+    }
 
     // -- M5's two contact events --------------------------------------------
     //
@@ -7591,6 +7953,16 @@ export class Game {
     } else {
       seat.rig.applySwing(null, 0, 0);
     }
+    // The one-foot air pose (M36 §36.5), recorded on the rig **before** the
+    // stance is solved and for the swing's reason: `apply` is what folds it
+    // into the leg, and a call after it would pose the foot a frame late.
+    // Interpolated like every other render-only channel, from the pair the
+    // fixed step keeps, so the gesture moves at the display's cadence rather
+    // than stepping at the simulation's.
+    seat.rig.setTrickPose(
+      lerp(seat.previousOneFoot, seat.currentOneFoot, alpha),
+      seat.oneFoot.side,
+    );
     seat.rig.apply(pose);
 
     // The machine's own status light (M6). Driven from the simulation clock
@@ -8152,6 +8524,10 @@ export class Game {
    */
   private resetRiderTo(spawn: LevelPlan['spawn'], seat: RiderSeat = this.seats[0]): void {
     seat.controller.reset(spawn);
+    // Feet first, then the pose sync that writes the rig — M36 §36.5. A rider
+    // put back at a spawn is not mid-gesture, and `controller.reset` has just
+    // ended whatever flight the latch remembered.
+    this.clearOneFootPose(seat);
     this.syncSeatPose(seat);
     seat.lastThrottle = 0;
     seat.lastSteer = 0;
@@ -8371,6 +8747,9 @@ export class Game {
       // first resumed step — the blur bug arriving through a third door, on a
       // rider whose device had not even been the one that opened the menu.
       this.router.clearAll();
+      // The one-foot pose is driven by a held level this just cleared, so it
+      // is cancelled at the same door — M36 §36.5.
+      this.cancelOneFootPoses();
       this.loop.resetTime();
     }
 
@@ -8573,6 +8952,7 @@ export class Game {
     }
 
     if (action !== 'back') return;
+    if (this.menus.closeTracks()) return;
     if (this.appState.current === 'settings') this.appState.exitSettings();
     // Back leaves the fresh-route panel, exactly as Escape and the Back button
     // do — the pad's third door out, matching the pause menu's.
@@ -9127,6 +9507,10 @@ export class Game {
     // `noteDeviceLost` has already run `onClaimsChange`, which is what wrote
     // the status line; nothing more is owed for a pad nobody was holding.
     if (seat === null) return;
+    // The lost pad's held Hop is gone; the pose it may have been driving
+    // begins its return now rather than on the first step after the claim
+    // window closes — M36 §36.5.
+    if (seat < this.seats.length) cancelOneFoot(this.seats[seat].oneFoot);
     this.beginClaiming();
     if (this.appState.acceptsRideInput) this.goTo('paused');
   }
@@ -9166,6 +9550,12 @@ export class Game {
     // lose to an event the player did not cause and cannot avoid.
     if (this.appState.current === 'paused') this.appState.resumeRide();
     this.keyboard.reset();
+    // The keyboard's held Hop went with the reset, so the pose it was driving
+    // is cancelled with it — M36 §36.5's sixth door. A lost context is the
+    // same situation as a blur, arriving through a different event: the level
+    // is gone from underneath the pose, and a dwell that kept counting off a
+    // key the browser stopped reporting would qualify a gesture nobody held.
+    this.cancelOneFootPoses();
     this.contextNotice.show();
     this.updateRunning();
   }
@@ -9226,6 +9616,8 @@ export class Game {
     // latched while the notice was up — otherwise the restore would instantly
     // re-freeze the game.
     this.keyboard.reset();
+    // And the pose with it, on the same terms as the loss above — M36 §36.5.
+    this.cancelOneFootPoses();
     this.updateRunning();
   }
 
@@ -9268,7 +9660,62 @@ export class Game {
     seat.controller.writePose(seat.currentPose);
     copyPose(seat.currentPose, seat.previousPose);
     copyPose(seat.currentPose, seat.renderPose);
+    // The one-foot pair collapses with the poses and for the same reason —
+    // and the rig is told the collapsed value *before* it is posed, the order
+    // `renderSeat` keeps (M36 §36.5).
+    seat.previousOneFoot = seat.currentOneFoot;
+    seat.rig.setTrickPose(seat.currentOneFoot, seat.oneFoot.side);
     seat.rig.apply(seat.renderPose);
+  }
+
+  /**
+   * Both boots back on their pedals, now — M36 §36.5.
+   *
+   * The hard reset, for the moments a rider is *put* somewhere: a quick
+   * reset, a teleport, a world swap, a re-dress. The state, its interpolation
+   * pair and the rig's recorded value are all zeroed together so the next
+   * frame cannot lerp a foot back from a flight that no longer happened —
+   * the same discipline `syncSeatPose` applies to the poses.
+   */
+  private clearOneFootPose(seat: RiderSeat): void {
+    resetOneFoot(seat.oneFoot);
+    seat.previousOneFoot = 0;
+    seat.currentOneFoot = 0;
+    seat.rig.setTrickPose(0, seat.oneFoot.side);
+    // **The two hard resets share one door** — M36 §36.6 riding on §36.5's.
+    // Every site that zeroes the pose is a site that *put* the rider
+    // somewhere: a quick reset, a teleport, a world swap, a re-dress, a seat's
+    // birth. The trick observer's answer to all five is the same as the
+    // pose's, so it is latched from the same line rather than from five.
+    this.markSeatTeleported(seat);
+  }
+
+  /**
+   * Remember that this seat was put somewhere — M36 §36.6.
+   *
+   * Latched rather than acted on, for `seatResetThisStep`'s reason: the
+   * teleport happens outside the fixed step (a bridge call, a menu, a world
+   * swap), and the referee that has to hear about it is stepped inside one.
+   * `stepSeat` spends the flag into the next step's facts and clears it, so a
+   * teleport survives exactly as long as it takes to be told, and no longer.
+   */
+  private markSeatTeleported(seat: RiderSeat): void {
+    const index = this.seats.indexOf(seat);
+    if (index >= 0 && index < this.seatTeleported.length) this.seatTeleported[index] = true;
+  }
+
+  /**
+   * Every seat's pose told its level is gone — M36 §36.5.
+   *
+   * The soft cancel, at the input doors the M25 Phase 4 rule enumerates:
+   * blur/visibility, a menu boundary, a layout-changing resize, a lost pad,
+   * and race GO. The held level is being cleared underneath the pose by the
+   * router; this drops the dwell with it so nothing qualifies off a key the
+   * browser stopped reporting, and a foot that is out begins its ordinary
+   * return rather than snapping — §36.5 says a cancel *begins recovery*.
+   */
+  private cancelOneFootPoses(): void {
+    for (const seat of this.seats) cancelOneFoot(seat.oneFoot);
   }
 
   /**
@@ -9849,6 +10296,24 @@ export class Game {
  * step downstream of it. Anything real is clamped into range instead of being
  * rejected, because a player who types 5 into a 0..1 field means "on".
  */
+/**
+ * Read `?presentation=baseline|enhanced` — M36 Phase 5's diagnostic override.
+ *
+ * `undefined` for absent, blank, misspelt and every other value, which is the
+ * whole grammar: the selector's own answer is the default and a typo in a
+ * diagnostic must start the game rather than replace it with an error page
+ * (`level/levels.ts:createLevel`'s rule, one parameter along).
+ *
+ * The rung ids are written out rather than imported as values because the
+ * import is type-only: nothing in `app/` should be able to reach into the
+ * presentation ladder and *build* a recipe, and the renderer refuses an id it
+ * does not know anyway.
+ */
+function presentationOverrideFrom(search: string): PresentationRecipeId | undefined {
+  const raw = new URLSearchParams(search).get('presentation');
+  return raw === 'baseline' || raw === 'enhanced' ? raw : undefined;
+}
+
 function readNumberParam(
   params: URLSearchParams,
   name: string,
@@ -10013,6 +10478,26 @@ class RiderTarget implements HittableSet {
  */
 function lapCount(laps: number): string {
   return laps === 1 ? '1 lap' : `${laps} laps`;
+}
+
+/**
+ * One rider's trick tally, formatted for the card — M36 §36.6.
+ *
+ * A free function beside `raceStandingDetail` and for its reason: it composes
+ * nothing but numbers, and the *words* are `ui/menus.ts`'s. Both cards call it
+ * so the two cannot print one count four ways, and neither adds anything up:
+ * §36.6 asks for counts with short labels and no grand total called a score,
+ * and the shortest way to keep that promise is a shape with nowhere to put
+ * one.
+ */
+function tricksCounts(rider: string, tally: TrickTally): TricksCounts {
+  return {
+    rider,
+    cleanLandings: `${tally.cleanLandings}`,
+    chargedHops: `${tally.chargedHops}`,
+    spinsLanded: `${tally.spinsLanded}`,
+    oneFootAirs: `${tally.oneFootAirs}`,
+  };
 }
 
 function menuScreenFor(state: AppStateId): MenuScreen {

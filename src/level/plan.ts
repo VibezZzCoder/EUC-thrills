@@ -2,6 +2,7 @@
 import type { MarkingPaint } from '../data/markings.ts';
 import type { PropKind } from '../data/props.ts';
 import type { MaterialId } from '../data/surfaces.ts';
+import type { VenueLook } from '../data/venueLook.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 
 /**
@@ -114,7 +115,10 @@ export interface Heightfield {
  * back, and nothing anywhere has to special-case being off the map.
  *
  * The plan builder guarantees the heightfield's border ring already equals
- * these values, so the join is seamless rather than a step.
+ * these values, so the join is seamless rather than a step. From M36 a
+ * producer may hand `buildLevelPlan` a `groundAt` function for the ground the
+ * corridors sit in; the guarantee then becomes a measurement — the builder
+ * refuses a ground that has not returned to this height by the border.
  */
 export interface Surround {
   height: number;
@@ -496,6 +500,27 @@ export interface LevelPlan {
    * `render/terrain.test.ts` holds them to it.
    */
   palette?: Readonly<Partial<Record<MaterialId, number>>>;
+  /**
+   * The light this venue is seen in. Absent on every world that ships today —
+   * M36 Phase 4.
+   *
+   * **Render-only, exactly as `palette` above is, and for the same reason the
+   * separation exists at all.** A look moves the sun's direction and colour,
+   * the hemisphere, the sky, the haze and the exposure; it moves no height, no
+   * collider and no surface, so `simulation/planSampler.ts` cannot see it and
+   * the plan the rider is tested against is the plan they are shown. Switchback
+   * Park rides in a fixed warm late afternoon (§36.7, owner decision q160) and
+   * BelVar, the slice, the proving ground and every generated route keep the
+   * bright clear daytime they shipped with.
+   *
+   * **Absent, never a present `undefined`**, on `targets`' contract three keys
+   * up: `level/planDigest.ts` spells a present key and omits an absent one, so
+   * a world that authors no look leaves both pinned digests exactly where they
+   * were. `data/venueLook.ts` fills every field a present one leaves out from
+   * `LIGHTING`, which makes "no look" and "today's daylight" the same frame by
+   * construction rather than by two tables agreeing.
+   */
+  look?: VenueLook;
   /**
    * Colliders the dressing contributes. Absent on a plan that carries none.
    *

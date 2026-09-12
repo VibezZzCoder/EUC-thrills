@@ -852,3 +852,156 @@ test('a re-routed pad hands the seat it left back its axes', () => {
   assert.equal(seats[0].sample(2).steer, 0);
   approx(seats[1].sample(2).steer, 1, 'and the carve moved with the pad');
 });
+
+// ---------------------------------------------------------------------------
+// M36 Phase 3 — A's second meaning (docs/PLANS.md §36.5)
+// ---------------------------------------------------------------------------
+
+test('A held is a level for as long as it is down, and still exactly one hop', () => {
+  const { state, input, present, connect } = rig();
+  connect();
+
+  present({ down: [STANDARD_BUTTON.a] });
+  input.poll(1);
+  assert.equal(state.consume('hop', 1), true);
+  assert.equal(state.sample(1).hopHeld, true, 'the level begins on the edge that hopped');
+
+  // A polled device has no repeat flag: every frame below re-reads the same
+  // physical hold, and none of them may mint a second press.
+  for (let i = 1; i <= 20; i += 1) {
+    input.poll(1 + i * 0.01);
+    assert.equal(state.sample(1 + i * 0.01).hopHeld, true, `frame ${i} still holds the pose`);
+  }
+  assert.equal(state.consume('hop', 1.2), false, 'one press, one hop');
+
+  present();
+  input.poll(1.3);
+  assert.equal(state.sample(1.3).hopHeld, false, 'letting go releases the pose');
+  assert.equal(state.isPending('hop', 1.3), false, 'and mints nothing on the way up');
+});
+
+test('the frame a pad appears on is a level for nothing, the pose included', () => {
+  /*
+   * Browsers do not expose a pad until it is used, so the reading that reveals
+   * one already contains the press that woke it. That press is not honoured,
+   * and neither is the hold it would otherwise start: a pad nudged on the desk
+   * would put a deliberate one-foot pose on the rider nobody asked for.
+   */
+  const { state, input, present } = rig();
+
+  present({ down: [STANDARD_BUTTON.a] });
+  input.poll(0);
+  assert.equal(state.sample(0).hopHeld, false, 'the priming frame poses nothing');
+  assert.equal(state.isPending('hop', 0), false);
+
+  input.poll(1);
+  assert.equal(state.sample(1).hopHeld, false, 'nor does simply staying down become a hold');
+
+  // Release and press again: the way back in is the one the hop already asks
+  // for, so there is no second rule for a player to learn.
+  present();
+  input.poll(2);
+  present({ down: [STANDARD_BUTTON.a] });
+  input.poll(3);
+  assert.equal(state.sample(3).hopHeld, true);
+  assert.equal(state.consume('hop', 3), true);
+});
+
+test('a menu that A dismissed does not hand the pose back with the ride', () => {
+  const { state, input, present, connect } = rig();
+  connect();
+
+  present({ down: [STANDARD_BUTTON.a] });
+  input.poll(1);
+  assert.equal(state.sample(1).hopHeld, true);
+
+  // A is confirm everywhere else on this pad. The button that opened the pause
+  // card is very often still down when riding resumes, and the press edge has
+  // always refused that frame; the level refuses it on the same grounds.
+  input.setMenuMode(true);
+  assert.equal(state.sample(1).hopHeld, false, 'a menu is not riding');
+  input.poll(2);
+  input.setMenuMode(false);
+  input.poll(3);
+  assert.equal(state.sample(3).hopHeld, false, 'and the hold does not survive the card');
+
+  present();
+  input.poll(4);
+  present({ down: [STANDARD_BUTTON.a] });
+  input.poll(5);
+  assert.equal(state.sample(5).hopHeld, true, 'a fresh press is a fresh hold');
+});
+
+test('re-priming for a claim window also drops the pose', () => {
+  const { state, input, present, connect } = rig();
+  connect();
+
+  present({ down: [STANDARD_BUTTON.a] });
+  input.poll(1);
+  assert.equal(state.sample(1).hopHeld, true);
+
+  // The join panel opening. A held A is the press that opened it, not a pose.
+  input.primeAll();
+  input.poll(2);
+  assert.equal(state.sample(2).hopHeld, false);
+  input.poll(3);
+  assert.equal(state.sample(3).hopHeld, false, 'and staying down is still not a hold');
+});
+
+test('an unplugged pad lets go of the pose, and the keyboard keeps its own', () => {
+  const { state, input, fake, source, present, connect } = rig();
+  state.setHeld('hopHeld', true, 'keyboard');
+  connect();
+
+  present({ down: [STANDARD_BUTTON.a] });
+  input.poll(1);
+  assert.equal(state.sample(1).hopHeld, true);
+
+  source.pads = [];
+  fake.dispatch('gamepaddisconnected', { gamepad: { index: 0 } });
+  assert.equal(
+    state.sample(2).hopHeld,
+    true,
+    'the key nobody touched still holds it',
+  );
+
+  state.setHeld('hopHeld', false, 'keyboard');
+  assert.equal(state.sample(2).hopHeld, false, 'and the pad let go when it vanished');
+});
+
+test('switching the pad off lets go of the pose', () => {
+  const { state, input, present, connect } = rig();
+  connect();
+  present({ down: [STANDARD_BUTTON.a] });
+  input.poll(1);
+  assert.equal(state.sample(1).hopHeld, true);
+
+  input.setEnabled(false);
+  assert.equal(state.sample(2).hopHeld, false);
+});
+
+test('a re-routed pad hands the seat it left its pose back', () => {
+  const { seats, input, claim, present } = couch();
+  claim(0, 0);
+  claim(1, 1);
+
+  // Both pads adopted first: A pressed on a priming frame is the press that
+  // woke the pad, and starts no hold (proved above).
+  present({ index: 0 }, { index: 1 });
+  input.poll(0);
+  present({ index: 0, down: [STANDARD_BUTTON.a] }, { index: 1 });
+  input.poll(1);
+  assert.equal(seats[0].sample(1).hopHeld, true, 'pad 0 is posing seat 0');
+
+  // The panel's Swap. Without the hand-back, seat 0 would hold a one-foot pose
+  // for ever on a reading nothing is refreshing any more.
+  claim(0, 1);
+  claim(1, 0);
+  input.poll(2);
+  assert.equal(seats[0].sample(2).hopHeld, false);
+  assert.equal(
+    seats[1].sample(2).hopHeld,
+    false,
+    'and the seat it arrived at waits for a press of its own',
+  );
+});

@@ -38,16 +38,18 @@ const SUIT = new THREE.Color(BLOCKOUT_COLOURS.maribelSuit);
 const AQUA = new THREE.Color(BLOCKOUT_COLOURS.maribelAqua);
 const CORAL = new THREE.Color(BLOCKOUT_COLOURS.maribelCoral);
 
-test('the shared lettering refactor preserves Maribel\'s approved sheet byte for byte', () => {
-  // B1 moved the word-stroke machinery from her private atlas module into the
-  // shared ink kit. This digest was taken from the isolated pre-B1 source and
-  // compared against the refactor output: same 1024² RGBA bytes, not merely a
-  // similar capture. Pinning it turns that one-time comparison into a guard on
-  // every future edit of the shared path alphabet.
-  assert.equal(
-    createHash('sha256').update(maribelAtlasPixels()).digest('hex'),
-    '82081ff04233ecab22a20ee8b4dad24c0bc744dc451e4e44d6081f589269dbbb',
-  );
+test('the hair overhaul preserves every non-hair atlas pixel', () => {
+  // Digest of all RGBA pixels outside the hair rectangle from the pre-hair
+  // baseline. It includes the inclusive painter boundary on the machine page.
+  const pixels = maribelAtlasPixels();
+  const hash = createHash('sha256');
+  for (let y = 0; y < ATLAS_SIZE; y++) {
+    const start = y * ATLAS_SIZE * 4;
+    hash.update(pixels.subarray(start, start + (y < 512 ? 768 : 1024) * 4));
+  }
+  assert.equal(hash.digest('hex'), '25a68ab2b902ea8b1d8dd19325c61b714292d884c993d80b4d52d48b4a3b6b97');
+  assert.equal(createHash('sha256').update(pixels).digest('hex'),
+    '9c0db03200559988e0f20bf8d795aa7eb60b61e819afe863a5de09aef57116b8');
 });
 
 /**
@@ -322,6 +324,7 @@ test('her loose hair is one casting mesh with two values, beside a fixed liner',
     });
     assert.equal(tails.length, 1, `her hair is ${tails.length} meshes, not one`);
     const tail = tails[0]!;
+    assert.ok(tail.geometry.getIndex()!.count / 3 <= 6_000, 'her loose hair exceeds the approved candidate allowance');
     assert.equal(tail.castShadow, true, 'her hair carries her outline and must cast');
     assert.equal(tail.parent?.name, 'rider-hair-sway', 'the loose mass must keep its sway pivot');
     const liner = rider.root.getObjectByName('rider-hair-cap') as THREE.Mesh | undefined;
@@ -504,36 +507,27 @@ test('her hair reads as one head — the liner never shows beside the mass', () 
         + `${(rim.halfWidth * 2000).toFixed(0)} mm helmet rim — that is a ponytail, not a head of hair`,
     );
 
-    // The mass's outline, taken from the rows it is actually built from. The
-    // broken hem gives its lower vertices a height each, so a row is a height
-    // that a whole ring of vertices shares; a bucket holding one lock tip is
-    // not a row and would report the mass as narrow where it is widest.
-    const perRow = new Map<number, { widest: number; n: number }>();
-    for (let i = 0; i < mass.count; i += 1) {
-      const key = Math.round(mass.getY(i) * 1e3) / 1e3;
-      const row = perRow.get(key) ?? { widest: 0, n: 0 };
-      row.widest = Math.max(row.widest, Math.abs(mass.getX(i)));
-      row.n += 1;
-      perRow.set(key, row);
-    }
-    const rows = [...perRow.entries()]
-      .filter(([, row]) => row.n >= 8)
-      .map(([y, row]) => ({ y, widest: row.widest }))
-      .sort((a, b) => a.y - b.y);
-    assert.ok(rows.length >= 6, `only ${rows.length} rows recovered from her hair`);
-    const massHalfWidthAt = (y: number): number => {
-      if (y <= rows[0]!.y) return rows[0]!.widest;
-      const last = rows[rows.length - 1]!;
-      if (y >= last.y) return last.widest;
-      for (let i = 1; i < rows.length; i += 1) {
-        const above = rows[i]!;
-        if (y <= above.y) {
-          const below = rows[i - 1]!;
-          const t = (y - below.y) / (above.y - below.y);
-          return below.widest + (above.widest - below.widest) * t;
+    // Intersect the actual triangles with a horizontal plane. Sculpted rows
+    // vary in height across the mass; grouping equal-height vertices would
+    // measure a partial ridge instead of the complete outline.
+    const indices = hair.geometry.getIndex()!;
+    const massHalfWidthAt = (height: number): number => {
+      let widest = 0;
+      for (let t = 0; t < indices.count; t += 3) {
+        for (let edge = 0; edge < 3; edge++) {
+          const a = indices.getX(t + edge);
+          const b = indices.getX(t + (edge + 1) % 3);
+          const ay = mass.getY(a), by = mass.getY(b);
+          if (height < Math.min(ay, by) || height > Math.max(ay, by)) continue;
+          if (Math.abs(by - ay) < 1e-8) {
+            widest = Math.max(widest, Math.abs(mass.getX(a)), Math.abs(mass.getX(b)));
+          } else {
+            const f = (height - ay) / (by - ay);
+            widest = Math.max(widest, Math.abs(mass.getX(a) + (mass.getX(b) - mass.getX(a)) * f));
+          }
         }
       }
-      return last.widest;
+      return widest;
     };
 
     let worst = -Infinity;

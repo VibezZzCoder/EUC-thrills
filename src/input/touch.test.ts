@@ -317,3 +317,71 @@ test('documented fallbacks agree with the shipped tuning table', () => {
   assert.equal(TOUCH_DEFAULTS.stickDeadZonePx, INPUT.touchStickDeadZonePx);
   assert.equal(TOUCH_DEFAULTS.stickCurve, INPUT.touchStickCurve);
 });
+
+// -- M36 Phase 3: HOP is also a level (docs/PLANS.md §36.5) -----------------
+
+test('HOP is Space in both meanings: a press on the way down, a level while down', () => {
+  const r = rig();
+  assert.equal(r.input.buttonDown('hop', 1), true);
+  assert.equal(sample(r).hop, true);
+  assert.equal(sample(r).hopHeld, true);
+
+  // Consuming the press is the controller hopping. The finger is still on the
+  // glass, so the pose intent is still being asked for.
+  assert.equal(r.state.consume('hop', r.now.value), true);
+  assert.equal(sample(r).hopHeld, true, 'a hop does not lift the thumb');
+
+  r.input.buttonUp('hop', 1);
+  assert.equal(sample(r).hopHeld, false);
+  assert.equal(sample(r).hop, false, 'and release still creates no second hop');
+});
+
+test('a pointer releases the HOP level by identity, wherever it ended', () => {
+  /*
+   * `releasePointer` is the single door every DOM release comes through —
+   * `pointerup`, `pointercancel`, a lost pointer capture and the window blur
+   * handler in `ui/touchControls.ts` all end up here — so proving it releases
+   * the level proves all four without a DOM.
+   */
+  const r = rig();
+  r.input.buttonDown('hop', 1);
+  assert.equal(r.input.releasePointer(1), 'hop');
+  assert.equal(sample(r).hopHeld, false);
+});
+
+test('a stray second finger cannot release the HOP level it does not own', () => {
+  const r = rig();
+  assert.equal(r.input.buttonDown('hop', 1), true);
+  assert.equal(r.input.buttonDown('hop', 2), false);
+  r.input.buttonUp('hop', 2);
+  assert.equal(sample(r).hopHeld, true, 'the finger that owns it is still down');
+  r.input.buttonUp('hop', 1);
+  assert.equal(sample(r).hopHeld, false);
+});
+
+test('taking the controls away, and an orientation change, release the HOP level', () => {
+  const disabled = rig();
+  disabled.input.buttonDown('hop', 1);
+  disabled.input.setEnabled(false);
+  assert.equal(sample(disabled).hopHeld, false);
+
+  const rotated = rig();
+  rotated.input.buttonDown('hop', 1);
+  rotated.input.reset();
+  assert.equal(sample(rotated).hopHeld, false);
+
+  // And a touch reset is still only this device's: a keyboard holding the same
+  // intent is not released by a phone rotating.
+  const shared = rig();
+  shared.state.setHeld('hopHeld', true, 'keyboard');
+  shared.input.buttonDown('hop', 1);
+  shared.input.reset();
+  assert.equal(sample(shared).hopHeld, true);
+});
+
+test('a disabled layer holds no pose either', () => {
+  const r = rig();
+  r.input.setEnabled(false);
+  assert.equal(r.input.buttonDown('hop', 1), false);
+  assert.equal(sample(r).hopHeld, false);
+});

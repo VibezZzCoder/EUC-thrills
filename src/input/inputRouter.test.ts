@@ -243,6 +243,7 @@ test('the reset contracts reach every seat, not only the player', () => {
   const load = (): void => {
     for (const state of [seatZero, seatOne]) {
       state.setHeld('accelerate', true, 'keyboard');
+      state.setHeld('hopHeld', true, 'keyboard');
       state.setAxes('gamepad', 1, 1);
       state.press('hop', 0);
       state.setScripted({ crouch: true }, 0);
@@ -256,6 +257,9 @@ test('the reset contracts reach every seat, not only the player', () => {
   for (const state of [seatZero, seatOne]) {
     assert.equal(state.sample(0).throttle, 0);
     assert.equal(state.isPending('hop', 0), false);
+    // M36 Phase 3: the held Hop is a device grip like any other, and a window
+    // that moved under both players' hands has let go of it.
+    assert.equal(state.sample(0).hopHeld, false);
     assert.equal(state.sample(0).crouch, true, 'the QA bridge is not a device');
   }
 
@@ -269,6 +273,7 @@ test('the reset contracts reach every seat, not only the player', () => {
   for (const state of [seatZero, seatOne]) {
     assert.deepEqual(state.sample(0).crouch, false);
     assert.equal(state.sample(0).throttle, 0);
+    assert.equal(state.sample(0).hopHeld, false);
   }
 });
 
@@ -382,4 +387,62 @@ test('an unclaimed keyboard rides alone and spectates on a couch', () => {
   assert.equal(input.keyboardRides, false, 'still two seats, still nobody claimed');
   input.removeSeat();
   assert.equal(input.keyboardRides, true, 'one seat again, and the keys work');
+});
+
+// ---------------------------------------------------------------------------
+// M36 Phase 3 — the held Hop across seats (docs/PLANS.md §36.5)
+// ---------------------------------------------------------------------------
+
+test('a held Hop belongs to the seat and the devices holding it, and to nobody else', () => {
+  const { router: input, seatZero } = router();
+  const seatOne = input.stateFor(input.addSeat());
+
+  // Two devices on one seat: the seat's answer is their OR, and one letting go
+  // leaves the other's grip alone (the rule `InputDevice` exists for).
+  seatZero.setHeld('hopHeld', true, 'keyboard');
+  seatZero.setHeld('hopHeld', true, 'touch');
+  assert.equal(seatZero.sample(0).hopHeld, true);
+  assert.equal(seatOne.sample(0).hopHeld, false, 'the other rider is not posing');
+
+  seatZero.setHeld('hopHeld', false, 'keyboard');
+  assert.equal(seatZero.sample(0).hopHeld, true, 'the thumb on the glass is still down');
+  seatZero.setHeld('hopHeld', false, 'touch');
+  assert.equal(seatZero.sample(0).hopHeld, false);
+});
+
+test('unclaiming, swapping and leaving the table all drop a held Hop', () => {
+  const { router: input, seatZero } = router();
+  const seatOne = input.stateFor(input.addSeat());
+  const hold = (): void => {
+    seatZero.setHeld('hopHeld', true, 'gamepad');
+    seatOne.setHeld('hopHeld', true, 'gamepad');
+  };
+
+  input.openClaims();
+  input.claimPress(padDeviceId(0));
+  input.claimPress(padDeviceId(1));
+
+  // The panel's Swap: the two riders have exchanged bodies, and a pose held by
+  // the pad that was seat 0's must not carry into seat 1's first step.
+  hold();
+  assert.equal(input.swap(), true);
+  assert.equal(seatZero.sample(0).hopHeld, false);
+  assert.equal(seatOne.sample(0).hopHeld, false);
+
+  // The panel's Unclaim, and then the seat leaving the table altogether.
+  hold();
+  assert.equal(input.unclaim(1), true);
+  assert.equal(seatOne.sample(0).hopHeld, false);
+
+  hold();
+  input.clearClaims();
+  assert.equal(seatZero.sample(0).hopHeld, false, 'and the end of a session clears the rest');
+
+  // A seat that leaves the table takes its `ActionState` with it: the object is
+  // dropped from the router rather than cleared, so nothing samples whatever it
+  // was holding. Asserted as the router refusing the index, because that is the
+  // fact — a cleared-state assertion here would be testing a detached object.
+  hold();
+  input.removeSeat();
+  assert.throws(() => input.stateFor(1), /no such seat: 1/);
 });

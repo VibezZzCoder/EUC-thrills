@@ -3,8 +3,10 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { createTrackLevel } from '../level/trackLevel.ts';
 import type { LapCourse, LevelPlan } from '../level/plan.ts';
-import { RaceRun, type RaceEvent, type RaceRiderInput } from './raceRun.ts';
+import type { LandingQuality } from './EucController.ts';
+import { RaceRun, type RaceEvent, type RaceResult, type RaceRiderInput } from './raceRun.ts';
 import { LapEnvelope } from './trackDay.ts';
+import type { TrickStepInput } from './trickEvents.ts';
 
 /**
  * The couch race's referee, tested on the circuit it is for — M27 Phase 2.
@@ -98,6 +100,8 @@ interface Driver {
   offset: number | ((metres: number) => number);
   /** Set for exactly one step to say this seat teleported. */
   reset: boolean;
+  /** Set for exactly one step to say what this seat's wheel did — M36 §36.6. */
+  tricks?: TrickStepInput;
 }
 
 function driver(startMetres = 0, speed = 20): Driver {
@@ -107,7 +111,7 @@ function driver(startMetres = 0, speed = 20): Driver {
 function inputFor(one: Driver): RaceRiderInput {
   const offset = typeof one.offset === 'function' ? one.offset(one.rails.metres) : one.offset;
   const point = one.rails.pose(offset);
-  return { x: point.x, y: 0, z: point.z, reset: one.reset };
+  return { x: point.x, y: 0, z: point.z, reset: one.reset, tricks: one.tricks };
 }
 
 /**
@@ -123,7 +127,12 @@ function tick(session: RaceRun, drivers: readonly Driver[], steps: number): Race
   for (let step = 0; step < steps; step += 1) {
     for (const one of drivers) one.rails.advance(one.speed * STEP);
     events.push(...session.step(STEP, drivers.map(inputFor)));
-    for (const one of drivers) one.reset = false;
+    for (const one of drivers) {
+      one.reset = false;
+      // Spent, exactly as the reset is: the facts describe one step and a slot
+      // that kept them would hand the referee the same edge twice.
+      one.tricks = undefined;
+    }
   }
   return events;
 }
@@ -907,4 +916,262 @@ test('a race steps nothing before it is armed and nothing after it has ended', (
   const settled = session.state.elapsed;
   tick(session, [driver(), driver(-6)], 60);
   assert.equal(session.state.elapsed, settled, 'the clock ran on after the race ended');
+});
+
+// ---------------------------------------------------------------------------
+// Trick events, per rider — M36 §36.6
+//
+// `trickEvents.test.ts` holds every credit rule. What is asserted here is what
+// a *race* says about them: the countdown earns nothing, a finished seat earns
+// nothing, simultaneous seats are counted independently, `R` costs that seat's
+// flight and only that seat's — and none of it reaches the finishing order.
+// ---------------------------------------------------------------------------
+
+/** One flight's facts, step by step, in the shape the controller reports them. */
+function trickFlight(options: {
+  id?: number;
+  hopped?: boolean;
+  charge?: number;
+  air?: number;
+  spin?: boolean;
+  foot?: boolean;
+  landing?: LandingQuality;
+} = {}): TrickStepInput[] {
+  const air = Math.max(2, options.air ?? 8);
+  const base = {
+    flightIndex: options.id ?? 1,
+    tookOff: false,
+    hopped: false,
+    hopCharge: 0,
+    spinCompleted: false,
+    oneFootQualified: false,
+    touchedDown: false,
+    landingQuality: 'none' as LandingQuality,
+    crashed: false,
+    reset: false,
+  };
+  const steps: TrickStepInput[] = [{
+    ...base,
+    tookOff: true,
+    hopped: options.hopped ?? false,
+    hopCharge: options.hopped === true ? options.charge ?? 1 : 0,
+  }];
+  const flying = {
+    ...base,
+    spinCompleted: options.spin === true,
+    oneFootQualified: options.foot === true,
+  };
+  for (let step = 1; step < air - 1; step += 1) steps.push({ ...flying });
+  steps.push({ ...flying, touchedDown: true, landingQuality: options.landing ?? 'clean' });
+  return steps;
+}
+
+/** Fly one seat's flight while the whole room keeps stepping. */
+function flyDuring(
+  session: RaceRun,
+  drivers: readonly Driver[],
+  one: Driver,
+  flight: readonly TrickStepInput[],
+): void {
+  for (const tricks of flight) {
+    one.tricks = tricks;
+    tick(session, drivers, 1);
+  }
+}
+
+const NOTHING = { cleanLandings: 0, chargedHops: 0, spinsLanded: 0, oneFootAirs: 0 };
+
+test('the countdown earns no race events', () => {
+  const session = race();
+  session.countdownSeconds = 3;
+  session.arm(2);
+  const drivers = [driver(), driver(-3)];
+
+  // A whole charged 180 with a foot out, flown on the grid while the lights
+  // are on. `step` returns before the seat loop, so there is nothing to gate:
+  // the rule is the shape of the method.
+  flyDuring(session, drivers, drivers[0], trickFlight({ hopped: true, spin: true, foot: true }));
+  assert.equal(session.state.phase, 'countdown');
+  assert.deepEqual(session.state.riders[0].tricks, NOTHING);
+
+  // And after GO the same flight counts.
+  tick(session, drivers, Math.round(3 / STEP));
+  assert.equal(session.state.phase, 'running');
+  flyDuring(session, drivers, drivers[0], trickFlight({
+    id: 2,
+    hopped: true,
+    spin: true,
+    foot: true,
+  }));
+  assert.deepEqual(session.state.riders[0].tricks, {
+    cleanLandings: 1,
+    chargedHops: 1,
+    spinsLanded: 1,
+    oneFootAirs: 1,
+  });
+});
+
+test('simultaneous seats are counted independently, and a finished seat earns nothing', () => {
+  const session = race();
+  session.countdownSeconds = 0;
+  session.laps = 1;
+  session.arm(2);
+  const leader = driver();
+  const trailer = driver(-40, 14);
+  const drivers = [leader, trailer];
+  tick(session, drivers, 1);
+
+  // Both riders in the air on the same steps, doing different things.
+  for (const tricks of trickFlight({ hopped: true, spin: true, landing: 'clean' })) {
+    leader.tricks = tricks;
+    trailer.tricks = { ...tricks, hopped: false, hopCharge: 0, spinCompleted: false, oneFootQualified: true };
+    tick(session, drivers, 1);
+  }
+  assert.deepEqual(session.state.riders[0].tricks, {
+    cleanLandings: 1,
+    chargedHops: 1,
+    spinsLanded: 1,
+    oneFootAirs: 0,
+  });
+  assert.deepEqual(session.state.riders[1].tricks, {
+    cleanLandings: 1,
+    chargedHops: 0,
+    spinsLanded: 0,
+    oneFootAirs: 1,
+  });
+
+  // Ride the leader home, then let them keep riding under the banner (q97).
+  rideUntil(session, drivers, () => session.state.riders[0].finished);
+  const banked = session.state.riders[0].tricks;
+  flyDuring(session, drivers, leader, trickFlight({
+    id: 5,
+    hopped: true,
+    spin: true,
+    foot: true,
+  }));
+  assert.deepEqual(session.state.riders[0].tricks, banked, 'a finished seat earned a race event');
+});
+
+test('a reset costs that seat its flight, and only that seat', () => {
+  const session = race();
+  session.countdownSeconds = 0;
+  session.laps = 3;
+  session.arm(2);
+  const quitter = driver();
+  const rival = driver(-2);
+  const drivers = [quitter, rival];
+  tick(session, drivers, Math.round(20 / STEP));
+
+  // Both airborne with a 180 completed and a foot out; one of them presses R.
+  const flight = trickFlight({ id: 2, air: 40, spin: true, foot: true });
+  for (const tricks of flight.slice(0, 20)) {
+    quitter.tricks = tricks;
+    rival.tricks = tricks;
+    tick(session, drivers, 1);
+  }
+  quitter.reset = true;
+  tick(session, drivers, 1);
+
+  // The landing they both then make: the rival's counts and the quitter's does
+  // not, because the quitter's flight was thrown away at the teleport.
+  const landing = flight[flight.length - 1];
+  quitter.tricks = landing;
+  rival.tricks = landing;
+  tick(session, drivers, 1);
+
+  assert.deepEqual(session.state.riders[0].tricks, {
+    cleanLandings: 1,
+    chargedHops: 0,
+    spinsLanded: 0,
+    oneFootAirs: 0,
+  });
+  assert.deepEqual(session.state.riders[1].tricks, {
+    cleanLandings: 1,
+    chargedHops: 0,
+    spinsLanded: 1,
+    oneFootAirs: 1,
+  });
+});
+
+test('the trick channel changes no position, gap, finish time or draw', () => {
+  // The claim §36.6 makes in as many words: a race never mixes trick counts
+  // into position, finish time or tie-breaking. Two identical races, one of
+  // them ridden with every §36.6 fact true on every step of it.
+  const withoutTricks = race();
+  const withTricks = race();
+  const plain: RaceResult[] = [];
+  for (const [session, feed] of [[withoutTricks, false], [withTricks, true]] as const) {
+    session.countdownSeconds = 0;
+    session.laps = 2;
+    session.arm(3);
+    const drivers = [driver(), driver(-5), driver(-11, 18)];
+    const flight = trickFlight({ hopped: true, spin: true, foot: true, air: 30 });
+    let step = 0;
+    const limit = Math.round(600 / STEP);
+    while (session.state.phase !== 'ended' && step < limit) {
+      if (feed) for (const one of drivers) one.tricks = flight[step % flight.length];
+      tick(session, drivers, 1);
+      step += 1;
+    }
+    plain.push(session.result()!);
+  }
+  const [bare, tricked] = plain;
+  assert.equal(tricked.winner, bare.winner);
+  assert.equal(tricked.seconds, bare.seconds);
+  assert.deepEqual(
+    tricked.order.map((finish) => ({
+      seat: finish.seat,
+      position: finish.position,
+      finished: finish.finished,
+      seconds: finish.seconds,
+      gapSeconds: finish.gapSeconds,
+      bestLapSeconds: finish.bestLapSeconds,
+      lapsCompleted: finish.lapsCompleted,
+    })),
+    bare.order.map((finish) => ({
+      seat: finish.seat,
+      position: finish.position,
+      finished: finish.finished,
+      seconds: finish.seconds,
+      gapSeconds: finish.gapSeconds,
+      bestLapSeconds: finish.bestLapSeconds,
+      lapsCompleted: finish.lapsCompleted,
+    })),
+  );
+  // Not vacuous: the fed race really did count things, and the bare one none.
+  assert.ok(tricked.order.every((finish) => finish.tricks.chargedHops > 0));
+  assert.ok(bare.order.every((finish) => finish.tricks.chargedHops === 0));
+  // And the card carries them per rider, on the row that is already theirs.
+  assert.deepEqual(
+    tricked.order.map((finish) => finish.seat).sort(),
+    [0, 1, 2],
+  );
+});
+
+test('a race with no trick facts behaves exactly as it did before M36', () => {
+  // Every test above this section builds a `RaceRiderInput` with no `tricks`
+  // member — stated once rather than left implicit.
+  const session = race();
+  session.countdownSeconds = 0;
+  session.laps = 1;
+  session.arm(2);
+  rideOut(session, [driver(), driver(-5)]);
+  const result = session.result()!;
+  for (const finish of result.order) assert.deepEqual(finish.tricks, NOTHING);
+
+  // And a rider who only ever lands: clean landings are the race's own count
+  // and reach the card even when no trick was credited at all.
+  const plain = race();
+  plain.countdownSeconds = 0;
+  plain.laps = 3;
+  plain.arm(2);
+  const drivers = [driver(), driver(-5)];
+  tick(plain, drivers, 1);
+  flyDuring(plain, drivers, drivers[0], trickFlight({ landing: 'clean' }));
+  assert.deepEqual(plain.state.riders[0].tricks, {
+    cleanLandings: 1,
+    chargedHops: 0,
+    spinsLanded: 0,
+    oneFootAirs: 0,
+  });
 });

@@ -452,14 +452,21 @@ export const TRACK_PROGRAM: readonly {
 
 const DEGREE = Math.PI / 180;
 
-/** Curvature of an element, 1/m. Zero on a straight. */
-function curvatureOf(element: LoopElement): number {
+/**
+ * Curvature of an element, 1/m. Zero on a straight.
+ *
+ * Exported from M36 so a second closed venue can reuse this loop machinery
+ * rather than restating it: `switchbackLevel.ts` authors its own ring of
+ * `LoopElement`s and solves it with `solveLoop` below, which needs both of
+ * these to turn that table into lengths and curvatures.
+ */
+export function curvatureOf(element: LoopElement): number {
   if (element.radius === undefined || element.turn === undefined) return 0;
   return Math.sign(element.turn) / element.radius;
 }
 
-/** Centreline length of an element, metres. */
-function lengthOf(element: LoopElement, solved: ReadonlyMap<string, number>): number {
+/** Centreline length of an element, metres. See `curvatureOf` for the export. */
+export function lengthOf(element: LoopElement, solved: ReadonlyMap<string, number>): number {
   if (element.straight !== undefined) return solved.get(element.id) ?? element.straight;
   return Math.abs(element.turn ?? 0) * DEGREE * (element.radius ?? 0);
 }

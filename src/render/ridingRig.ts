@@ -72,6 +72,15 @@ import { createPaddle } from './paddle.ts';
  * approved M2/M3 local rotation untouched, which is why the pose tests written
  * against `riding-lean-pivot` still measure exactly what they measured.
  *
+ * **One channel here is not on the pose, and that is deliberate** (M36,
+ * §36.5). `setTrickPose` carries the one-foot air gesture — the airborne
+ * exception to the motion reference's two-foot contact, and the only pose in
+ * this game where a boot leaves its pedal while the rider is still riding. It
+ * is a sibling method rather than an `EucPose` field so that the controller
+ * cannot read it (physical equality is a contract there) and so that the two
+ * rigs driven by a pose alone — the cop's and every ghost's — keep both feet
+ * planted with no fallback code of their own.
+ *
  * **After the owner's M4 ride the ground pivot carries only a *fraction* of
  * the surface's tilt** — zero fore-aft, a quarter across — because an EUC is
  * not a skateboard: the firmware holds the pedals level with gravity, so on a
@@ -117,6 +126,36 @@ export interface RidingRig {
    * leaves the arms to their ordinary carriage.
    */
   applySwing(headWorld: THREE.Vector3 | null, angle: number, blend: number): void;
+  /**
+   * The one-foot air pose — M36, `docs/PLANS.md` §36.5.
+   *
+   * `amount` is 0..1, how far the free foot has left its pedal; `side` is +1
+   * for the rider's LEFT foot, -1 for their right, 0 for neither. Plain
+   * scalars: no trick name, no character, no device and no `GameOptions`
+   * record reaches this rig.
+   *
+   * **A sibling method rather than an `EucPose` field, and that is the design
+   * rather than a style choice.** §36.5 makes physical equality a contract —
+   * with the same throttle, steer, crouch and Hop presses, holding the pose
+   * must leave position, velocity, bank, impulse, landing tier and lap time
+   * identical — and the cheapest structural guarantee of that is a channel the
+   * controller cannot read because it never enters the pose. It also settles
+   * the other two rigs by construction: `copRider.ts` and `ghostRider.ts`
+   * forward `apply(pose)` and never this, so the cop and every ghost keep
+   * neutral feet with no fallback code and no recorded field.
+   *
+   * **Call it before `apply(pose)` in the same frame**, exactly as
+   * `applySwing` is called before it: `apply` folds the two numbers into the
+   * stance it hands `rider.applyStanceReaction`, so a call afterwards would
+   * pose the foot a frame late. `app/Game.ts`'s `renderSeat` is where that
+   * order is kept, and it is load-bearing there.
+   *
+   * Held rather than consumed: a rig told nothing keeps the last value it was
+   * given, like every other channel here, so a seat that stops calling it
+   * leaves the foot where it was. Callers pass the interpolated amount every
+   * render frame.
+   */
+  setTrickPose(amount: number, side: number): void;
   dispose(): void;
 }
 
@@ -177,6 +216,12 @@ export function createRidingRig(
   const swingHeadWorld = new THREE.Vector3();
   let swingHead: THREE.Vector3 | null = null;
   let swingBlend = 0;
+  /**
+   * The one-foot air pose — M36, §36.5. Two numbers, recorded by
+   * `setTrickPose` and spent inside `apply`, held between calls.
+   */
+  let trickOneFoot = 0;
+  let trickSide = 0;
 
   // Ragdoll scratch (M15), preallocated for the same reason the solver's is:
   // a crash runs this every frame, and fresh matrices would be steady garbage.
@@ -433,6 +478,14 @@ export function createRidingRig(
       stance.wobbleFight = Math.max(pose.wobbleFight, pose.styleStumble);
       stance.styleSway = pose.styleSway;
       stance.crash = pose.crashBlend;
+      // The one-foot air pose (M36, §36.5) — recorded by `setTrickPose` and
+      // spent here, in the same place and for the same reason the swing is:
+      // the stance solve is what poses the leg, and this is the last moment
+      // before it runs. Nothing on the pose carries it, so a rig nobody calls
+      // `setTrickPose` on — the cop's, every ghost's — keeps both boots on
+      // their pedals through this line without a branch.
+      stance.oneFoot = trickOneFoot;
+      stance.oneFootSide = trickSide;
       rider.applyStanceReaction(stance);
       // Last, because the paddle aims itself from the grip's world matrix and
       // the line above is what just moved the grip. The ground height is the
@@ -461,6 +514,18 @@ export function createRidingRig(
 
     applyStatus(alert: number, seconds: number, boot = 0): void {
       euc.setStatus(alert, seconds, boot);
+    },
+
+    setTrickPose(amount: number, side: number): void {
+      // **Recorded here and consumed inside `apply`**, the order `applySwing`
+      // documents: the leg is posed from `stance`, and setting the stance
+      // after `apply` would leave the foot a frame behind the gesture.
+      //
+      // Clamped rather than trusted, and the side reduced to its sign, so a
+      // caller cannot put the ankle target somewhere the leg cannot reach:
+      // this is the only line between whatever drives the pose and the IK.
+      trickOneFoot = clamp01(amount);
+      trickSide = trickOneFoot > 0 ? Math.sign(side) : 0;
     },
 
     dispose(): void {

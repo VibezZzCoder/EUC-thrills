@@ -5937,6 +5937,7 @@ const SOBER_SCENARIOS = Object.freeze({
 function runSoberScenario(
   name: keyof typeof SOBER_SCENARIOS,
   dress?: (euc: EucController) => void,
+  watch?: (euc: EucController) => void,
 ): DigestRun {
   const { euc, script } = SOBER_SCENARIOS[name]();
   dress?.(euc);
@@ -5945,7 +5946,14 @@ function runSoberScenario(
   let steps = 0;
   for (const [held, count] of script) {
     const input = actions(held);
-    for (let i = 0; i < count; i += 1) digestStep(euc, pose, digest, input);
+    for (let i = 0; i < count; i += 1) {
+      digestStep(euc, pose, digest, input);
+      // M36's addition, and the whole of its physical-equality claim: an
+      // observer reads the controller's facts in the composition root's own
+      // place — straight after the step, before the next one — and the digest
+      // below still has to be the number recorded before any of them existed.
+      watch?.(euc);
+    }
     steps += count;
   }
   const final = euc.snapshot();
@@ -7380,4 +7388,690 @@ test('a driven BelVar lap is the same lap drunk or sober, to half a percent — 
   }
   const difference = (drunk.seconds - sober.seconds) / sober.seconds;
   assert.ok(Math.abs(difference) < 0.005, `the drunk lap is ${(difference * 100).toFixed(4)}% off the sober lap`);
+});
+
+
+// ---------------------------------------------------------------------------
+// M36 — the allocation-free trick and ground facts (`docs/PLANS.md` §36.5, §36.6)
+// ---------------------------------------------------------------------------
+//
+// Seven getters, no new state that the ride can feel, and nothing that samples
+// the ground a second time. §36.6 wants one source for each trick event rather
+// than an observer re-deriving them from the snapshot, and §36.5 wants the air
+// pose to refuse to start when there is no window to return in. Both are
+// questions this file can already answer; what it could not do was answer them
+// without allocating a snapshot, and — for a hop and for a completed 180 —
+// answer them at all.
+//
+// Every test below reads the getters where `app/Game.ts` reads them: after
+// `step()` returns and before the next one, which is the only place a
+// one-step edge exists.
+
+/** Step with one held input, handing the controller to `visit` after each step. */
+function stepWatching(
+  euc: EucController,
+  steps: number,
+  held: Partial<ActionSnapshot>,
+  visit: (euc: EucController, step: number) => void,
+): void {
+  const input = actions(held);
+  for (let i = 0; i < steps; i += 1) {
+    euc.step(STEP, input);
+    visit(euc, i);
+  }
+}
+
+/**
+ * Every M36 fact plus the snapshot facts they are judged against, for one step.
+ *
+ * Inferred rather than declared so the log below needs no new type imports —
+ * what is being pinned is the *values*, and the shape follows the getters.
+ */
+function m36Sample(euc: EucController, step: number) {
+  const snapshot = euc.snapshot();
+  return {
+    step,
+    grounded: snapshot.grounded,
+    tookOff: euc.tookOff,
+    hopped: euc.hopped,
+    touchedDown: euc.touchedDown,
+    charge: euc.lastHopCharge,
+    spins: snapshot.spins,
+    spinning: snapshot.spinning,
+    spinCompleted: euc.spinCompleted,
+    landingQuality: snapshot.landingQuality,
+    crashed: euc.crashed,
+    clearance: euc.groundClearance,
+    vertical: euc.verticalRate,
+    secondsLeft: euc.secondsToTouchdown,
+    flightIndex: euc.flightIndex,
+    snapshotVertical: snapshot.verticalVelocity,
+    snapshotAirHeight: snapshot.airHeight,
+  };
+}
+
+/**
+ * A hop, an air tap on the way up, and the flight out — logged step by step.
+ *
+ * The same ride `spinJump` above performs, kept apart from it because these
+ * tests are about *when* a fact becomes readable and therefore need every step
+ * rather than the snapshot at the end.
+ */
+function logSpinJump(euc: EucController, limitSteps = 4000): ReturnType<typeof m36Sample>[] {
+  const log: ReturnType<typeof m36Sample>[] = [];
+  let step = 0;
+  const tick = (hop: boolean): void => {
+    euc.step(STEP, actions(hop ? { hop: true } : {}));
+    log.push(m36Sample(euc, step));
+    step += 1;
+  };
+  tick(true);
+  let guard = 0;
+  while (euc.snapshot().grounded) {
+    tick(false);
+    assert.ok((guard += 1) < 200, 'the hop never left the ground');
+  }
+  tick(true);
+  guard = 0;
+  while (!euc.snapshot().grounded) {
+    tick(false);
+    assert.ok((guard += 1) < limitSteps, 'the spin jump never landed');
+  }
+  return log;
+}
+
+test('reading every M36 fact on every step leaves the six sober rides byte-identical', () => {
+  // The physical-equality claim, and the reason these are getters over state
+  // the step already wrote rather than a channel of their own. All seven are
+  // read after every step of all six pinned rides; the digests must still be
+  // the numbers recorded before any ride style existed. A fact that wrote to
+  // the state it reads, advanced a clock of its own, or cached anything moves
+  // at least one of them — measured by breaking each in turn, 2026-09-11.
+  //
+  // **What it cannot prove is that nothing samples the ground twice**: the
+  // sampler is a pure function of the position, so a second query at the same
+  // XZ writes the same bytes and the ride is unmoved. That claim is a claim
+  // about the code — all seven read fields the step already wrote — and the
+  // reason it matters is cost and a single source, not arithmetic.
+  const seen = { hops: 0, takeoffs: 0, landings: 0, spins: 0, airSteps: 0 };
+  let sink = 0;
+  const watch = (euc: EucController): void => {
+    // The level facts are read *before* the edges on purpose: a fact that
+    // cleared an edge on its way past would then be caught by the counts
+    // below rather than by nothing at all. Neither order is the composition
+    // root's — it has no order, because none of these may have one.
+    sink += euc.verticalRate + euc.secondsToTouchdown + euc.flightIndex + euc.groundClearance;
+    if (euc.groundClearance > 0) seen.airSteps += 1;
+    if (euc.hopped) seen.hops += 1;
+    if (euc.tookOff) seen.takeoffs += 1;
+    if (euc.touchedDown) seen.landings += 1;
+    if (euc.spinCompleted) seen.spins += 1;
+  };
+
+  const moved: string[] = [];
+  for (const name of Object.keys(SOBER_SCENARIOS) as (keyof typeof SOBER_SCENARIOS)[]) {
+    const run = runSoberScenario(name, undefined, watch);
+    try {
+      assert.deepEqual(run, SOBER_DIGESTS[name]);
+    } catch {
+      moved.push(`"${name}": ${JSON.stringify(run)} against the pin ${JSON.stringify(SOBER_DIGESTS[name])}`);
+    }
+  }
+  assert.deepEqual(
+    moved,
+    [],
+    `a sober ride moved while the M36 facts were being read:\n  ${moved.join('\n  ')}\n`
+      + 'The facts are reads of state the step already wrote; if one of them has started '
+      + 'changing the ride it is no longer a fact about it.',
+  );
+  assert.ok(Number.isFinite(sink), 'a fact read every step returned something that is not a number');
+
+  // And the watch has to have seen something, or the six green digests above
+  // say nothing about it. Measured 2026-09-11 over all six rides.
+  assert.deepEqual(
+    seen,
+    { hops: 1, takeoffs: 1, landings: 1, spins: 0, airSteps: 72 },
+    'the six sober rides contain exactly one hop, which leaves the ground for 72 steps, lands '
+      + 'once, and spins nothing — if that has changed, the watch is watching a different ride',
+  );
+});
+
+test('a hop raises `hopped`; riding off a ledge raises `tookOff` and nothing else', () => {
+  // §36.6's single source for "the rider jumped". `tookOff` cannot serve,
+  // because `leaveGround` is deliberately one entry point for a hop and a
+  // ledge both — so the assertions that matter are the ones taken on the same
+  // step: a ledge launch that is a takeoff and not a hop.
+  const flat = controller();
+  let hops = 0;
+  let takeoffs = 0;
+  stepWatching(flat, SECONDS(2), {}, (euc) => {
+    if (euc.hopped) hops += 1;
+    if (euc.tookOff) takeoffs += 1;
+  });
+  assert.equal(hops, 0, 'a rider who pressed nothing hopped');
+  assert.equal(takeoffs, 0, 'a rider who pressed nothing left the ground');
+
+  // Two presses, well apart: two hops, two takeoffs, two flights. Each press
+  // is a single step with the flag up, which is what the action buffer
+  // actually delivers.
+  const pressed = controller();
+  hops = 0;
+  takeoffs = 0;
+  let flights = 0;
+  for (let i = 0; i < SECONDS(4); i += 1) {
+    pressed.step(STEP, actions(i === 0 || i === SECONDS(2) ? { hop: true } : {}));
+    if (pressed.hopped) hops += 1;
+    if (pressed.tookOff) takeoffs += 1;
+    flights = pressed.flightIndex;
+  }
+  assert.equal(hops, 2, `two presses raised \`hopped\` ${hops} times`);
+  assert.equal(takeoffs, 2, 'two presses left the ground twice');
+  assert.equal(pressed.snapshot().hops, 2, 'and the counter agrees with the edge');
+  assert.equal(flights, 2, 'two flights were begun');
+
+  // The ledge. The fixture from "riding off a ledge launches": a 0.4 m block
+  // to ride off the end of, with the rider starting on top of it.
+  const ledge = buildLevelPlan(
+    [{
+      id: 'run',
+      length: 120,
+      halfWidth: 12,
+      surface: 'pavement',
+      shoulder: 2,
+      blocks: [{
+        s: 20, t: 0, halfAlong: 20, halfLateral: 6, height: 0.4,
+        surface: 'pavement', appearance: 'concrete',
+      }],
+    }],
+    {
+      id: 'ledge',
+      spawn: { position: { x: 0, y: 0, z: 0 }, headingY: 0 },
+      surround: { height: 0, surface: 'pavement' },
+      spacing: 1,
+    },
+  );
+  const off = new EucController(new PlanTerrainSampler(ledge), {
+    spawn: { position: { x: 0, y: 0, z: 20 }, headingY: 0 },
+  });
+  assert.equal(off.snapshot().position.y, 0.4, 'sanity: starts on top of the block');
+
+  // A *charged* hop first, on top of the block, so the stale-charge trap the
+  // `hopped` doc warns about is armed rather than hypothetical.
+  ride(off, SECONDS(0.5), { crouch: true });
+  let chargeAtHop = -1;
+  for (let i = 0; i < SECONDS(1.5); i += 1) {
+    off.step(STEP, actions(i === 0 ? { hop: true, crouch: true } : {}));
+    if (off.hopped) chargeAtHop = off.lastHopCharge;
+  }
+  assert.equal(chargeAtHop, 1, 'half a second of held crouch is a full charge');
+  assert.equal(off.snapshot().grounded, true, 'the charged hop never came down');
+
+  // Now ride off the edge of the block.
+  let launch: ReturnType<typeof m36Sample> | null = null;
+  let hoppedOnTheWay = 0;
+  for (let i = 0; i < SECONDS(10) && launch === null; i += 1) {
+    off.step(STEP, actions({ throttle: 1 }));
+    if (off.hopped) hoppedOnTheWay += 1;
+    if (off.tookOff) launch = m36Sample(off, i);
+  }
+  if (launch === null) assert.fail('the rider never left the block');
+  assert.equal(launch.tookOff, true, 'sanity: the ledge is a takeoff');
+  assert.equal(launch.hopped, false, 'riding off a ledge was counted as a hop');
+  assert.equal(hoppedOnTheWay, 0, 'riding along the block hopped');
+  assert.equal(launch.flightIndex, 2, 'the ledge is the second flight of this ride');
+  // And the trap itself: the charge from the earlier hop is still sitting
+  // there, which is exactly why an observer must gate on `hopped` before it
+  // reads `lastHopCharge` at all.
+  assert.equal(launch.charge, 1, 'the stale charge the `hopped` doc warns about has changed');
+  // Measured 2026-09-11: the wheel leaves at the block's own height with no
+  // vertical rate, so the projection is the free fall — sqrt(2h/g).
+  assert.ok(Math.abs(launch.clearance - 0.4) < 1e-9, `the ledge launched from ${launch.clearance} m`);
+  assert.equal(launch.vertical, 0, 'a level ledge gave the wheel a vertical rate');
+  assert.ok(
+    Math.abs(launch.secondsLeft - Math.sqrt((2 * 0.4) / PHYSICS.gravity)) < 1e-12,
+    `a 0.4 m drop at zero rate projected ${launch.secondsLeft} s rather than the free fall`,
+  );
+});
+
+test('`lastHopCharge` on the `hopped` step is the charge that launch spent', () => {
+  // The fact §36.6's charged-hop event is judged from. The hop's own impulse
+  // reads `hopCharge` in `launchHop`, and this is that same number: a stamp,
+  // not a flick.
+  const flick = controller();
+  let charge = -1;
+  for (let i = 0; i < SECONDS(1); i += 1) {
+    flick.step(STEP, actions(i === 0 ? { hop: true } : {}));
+    if (flick.hopped) charge = flick.lastHopCharge;
+  }
+  assert.equal(charge, 0, 'an uncharged press carried a charge');
+
+  const held = controller();
+  // Past the cap rather than exactly on it: `crouchHold` accumulates a step at
+  // a time and `Math.min` clamps it, so a ride of exactly the window can stop
+  // a rounding error short of the full charge while a longer one cannot.
+  ride(held, SECONDS(EUC.hopChargeSeconds + 0.1), { crouch: true });
+  charge = -1;
+  for (let i = 0; i < SECONDS(1); i += 1) {
+    held.step(STEP, actions(i === 0 ? { hop: true, crouch: true } : {}));
+    if (held.hopped) charge = held.lastHopCharge;
+  }
+  assert.equal(charge, 1, `${EUC.hopChargeSeconds} s of held crouch is a full charge, not ${charge}`);
+
+  const half = controller();
+  ride(half, SECONDS(EUC.hopChargeSeconds / 2), { crouch: true });
+  charge = -1;
+  for (let i = 0; i < SECONDS(1); i += 1) {
+    half.step(STEP, actions(i === 0 ? { hop: true, crouch: true } : {}));
+    if (half.hopped) charge = half.lastHopCharge;
+  }
+  assert.ok(
+    Math.abs(charge - 0.5) < 0.02,
+    `half the charge window read ${charge}; a partial charge must be readable as one`,
+  );
+});
+
+test('arming a spin is not completing one: a sweep that runs out of air never latches', () => {
+  // The distinction §36.6 turns on. `spins` and `spinning` both move at the
+  // press — they are what the M24 tests pin — so neither can say the π was
+  // delivered. At a twentieth of the shipped sweep rate the rotation cannot
+  // finish in the air available, and the fact must say so at every step.
+  const euc = controller({ tuning: { spinYawRate: 0.5 } });
+  const log = logSpinJump(euc);
+  const armed = log.find((entry) => entry.spins === 1);
+  if (armed === undefined) assert.fail('the air tap never armed a spin');
+  assert.equal(armed.spinCompleted, false, 'arming the spin latched its completion');
+  assert.equal(
+    log.some((entry) => entry.spinCompleted),
+    false,
+    'a sweep that never reached zero was reported as a completed 180',
+  );
+  assert.equal(euc.spinCompleted, false, 'and it is still false after the landing');
+  // Measured 2026-09-11: 0.3 rad of the π delivered, so the landing is charged
+  // the rest and scores a crash. The point of recording it is that the fact
+  // above is false for a flight the *snapshot* counts as a spin.
+  assert.equal(log[log.length - 1].spins, 1, 'the flight still counts as a spin');
+});
+
+test('a sweep that finishes on the landing step is still readable on that step', () => {
+  // The whole reason the fact is a latch cleared at the next takeoff rather
+  // than an edge or a flag cleared at the landing. The sweep is spent in
+  // section 5 and the touchdown is decided in section 8b, so both can happen
+  // on one step — and `land()` clears `spinArmed` and `spinRemaining` there,
+  // which is why nothing else in the file can answer this afterwards.
+  //
+  // The shipped sweep finishes in mid-air, which is the easy case:
+  const shipped = logSpinJump(controller());
+  const shippedLanding = shipped.findIndex((entry) => entry.touchedDown);
+  const shippedCompletion = shipped.findIndex((entry) => entry.spinCompleted);
+  assert.ok(shippedCompletion >= 0, 'the shipped 180 never completed');
+  assert.ok(
+    shippedCompletion < shippedLanding,
+    `the shipped sweep finished at step ${shippedCompletion} and landed at ${shippedLanding}`,
+  );
+  assert.equal(shipped[shippedLanding].spinCompleted, true, 'the landing cleared the completion');
+  assert.equal(shipped[shippedLanding].spinning, false, 'sanity: `land()` clears `spinArmed`');
+  assert.equal(shipped[shippedLanding].landingQuality, 'clean', 'sanity: a completed 180 lands clean');
+
+  // And the hard case, built rather than hoped for. The flight is ballistic
+  // and the sweep only turns the heading, so changing the sweep rate moves the
+  // completion without moving the landing: a rate that delivers π in exactly
+  // the air available finishes on the touchdown step itself. Measured
+  // 2026-09-11: arm at step 12, land at step 83, so 72 sweeping steps and
+  // 5.2726 rad/s. The half-step is what makes the last step's remainder
+  // smaller than one step's sweep, so the completion cannot slip a step late.
+  const armStep = shipped.findIndex((entry) => entry.spins === 1);
+  assert.equal(armStep, 12, 'the fixture armed at a different step than it was measured at');
+  assert.equal(shippedLanding, 83, 'the fixture landed at a different step than it was measured at');
+  const sweepingSteps = shippedLanding - armStep + 1;
+  assert.equal(sweepingSteps, 72, 'the air available for the sweep moved');
+  const rate = Math.PI / ((sweepingSteps - 0.5) * STEP);
+  assert.ok(
+    Math.abs(rate - 5.2726) < 0.001,
+    `the tuned sweep rate is ${rate} rad/s rather than the measured 5.2726`,
+  );
+
+  const onTheStep = logSpinJump(controller({ tuning: { spinYawRate: rate } }));
+  const landing = onTheStep.findIndex((entry) => entry.touchedDown);
+  const completion = onTheStep.findIndex((entry) => entry.spinCompleted);
+  assert.equal(landing, shippedLanding, 'the sweep rate moved the landing, so this proves nothing');
+  assert.equal(completion, landing, `the sweep finished at step ${completion}, not at the landing ${landing}`);
+  assert.equal(onTheStep[landing - 1].spinCompleted, false, 'the latch was already up a step early');
+  assert.equal(onTheStep[landing].spinCompleted, true, 'the completion was lost on the step it happened');
+  assert.equal(onTheStep[landing].touchedDown, true, 'sanity: this is the touchdown edge');
+  assert.equal(onTheStep[landing].spinning, false, '`land()` cleared `spinArmed` on that same step');
+  assert.equal(onTheStep[landing].spins, 1, 'and the flight is still one spin');
+});
+
+test('the spin latch belongs to its flight: cleared at the next takeoff, and by a reset', () => {
+  // "This flight" is the window [takeoff, next takeoff). On the ground between
+  // flights the answer is still the one the last flight earned, which is what
+  // makes it readable on the touchdown edge and for as long after as the rider
+  // stays down — and what a reset ends.
+  const euc = controller();
+  logSpinJump(euc);
+  assert.equal(euc.spinCompleted, true, 'the 180 was not recorded');
+  ride(euc, SECONDS(2), {});
+  assert.equal(euc.spinCompleted, true, 'the completion expired while the rider stood on the ground');
+
+  // The next takeoff supersedes it, on the step it happens.
+  let atTakeoff: boolean | null = null;
+  for (let i = 0; i < SECONDS(2) && atTakeoff === null; i += 1) {
+    euc.step(STEP, actions(i === 0 ? { hop: true } : {}));
+    if (euc.tookOff) atTakeoff = euc.spinCompleted;
+  }
+  assert.equal(atTakeoff, false, 'a new flight inherited the last one’s 180');
+  ride(euc, SECONDS(2), {});
+  assert.equal(euc.spinCompleted, false, 'and a plain hop must not earn a spin');
+
+  // A reset is the teleport case: quick reset, checkpoint restore, a new run.
+  const spun = controller();
+  logSpinJump(spun);
+  assert.equal(spun.spinCompleted, true);
+  spun.reset();
+  assert.equal(spun.spinCompleted, false, 'a reset kept the last ride’s 180');
+  assert.equal(spun.hopped, false, 'a reset kept a hop edge');
+  assert.equal(spun.tookOff, false, 'a reset kept a takeoff edge');
+});
+
+test('a crash landing leaves the 180 readable, and the recovery ends it', () => {
+  // §36.6 gives the credit decision to the observer, so the fact must survive
+  // the crash rather than be hidden by it: the rider did turn the machine
+  // around, and whether a wipeout pays for it is a judgement made from
+  // `lastLandingQuality` and `crashed` beside it. Measured 2026-09-11: a 14 m
+  // drop lands 'crash' and takes the rider off the wheel.
+  const drop = 14;
+  const euc = controller({ tuning: { hopLaunchSpeed: Math.sqrt(2 * PHYSICS.gravity * drop) } });
+  const log = logSpinJump(euc);
+  const landing = log[log.findIndex((entry) => entry.touchedDown)];
+  assert.equal(landing.landingQuality, 'crash', `a ${drop} m drop scored ${landing.landingQuality}`);
+  assert.equal(landing.crashed, true, 'the rider stayed on the wheel');
+  assert.equal(landing.spinCompleted, true, 'the crash hid a completed 180 from the observer');
+  assert.equal(landing.spins, 1);
+  // And nothing is projected while the rider is off the wheel: the crash pins
+  // the wheel to the ground, so "no flight" and "no time" are one answer.
+  assert.equal(euc.groundClearance, 0, 'a crashed wheel is off the ground');
+  assert.equal(euc.secondsToTouchdown, 0, 'a crashed wheel was given air to use');
+
+  // The automatic recovery is a teleport, seconds later, and it ends the ride
+  // that earned the spin.
+  let guard = 0;
+  while (euc.crashed) {
+    euc.step(STEP, actions());
+    assert.ok((guard += 1) < SECONDS(30), 'the rider never got back up');
+  }
+  assert.equal(euc.spinCompleted, false, 'the respawn kept the crashed ride’s 180');
+  assert.equal(euc.flightIndex, 1, 'the respawn reused a flight number');
+});
+
+test('the ground facts describe the flight, and the projection lands when the wheel does', () => {
+  // §36.5's pose window. All three come from the ground sample the step
+  // already took, so the numbers here are the step's own opinion of where the
+  // ground is rather than a second one.
+  const euc = controller();
+  assert.equal(euc.groundClearance, 0, 'a parked wheel is not in the air');
+  assert.equal(euc.verticalRate, 0, 'a parked wheel is moving vertically');
+  assert.equal(euc.secondsToTouchdown, 0, 'a parked wheel has air to use');
+  ride(euc, SECONDS(2), { throttle: 1 });
+  assert.equal(euc.groundClearance, 0, 'riding along the flat left the ground');
+  assert.equal(euc.secondsToTouchdown, 0, 'riding along the flat bought air');
+
+  // One hop, logged. Measured 2026-09-11: takeoff at step 11, landing at 83,
+  // 72 steps of air, apex 0.4463 m above the ground.
+  const hop = controller();
+  const log: ReturnType<typeof m36Sample>[] = [];
+  for (let i = 0; i < SECONDS(3); i += 1) {
+    hop.step(STEP, actions(i === 0 ? { hop: true } : {}));
+    log.push(m36Sample(hop, i));
+  }
+  const takeoff = log.findIndex((entry) => entry.tookOff);
+  const landing = log.findIndex((entry) => entry.touchedDown);
+  assert.equal(takeoff, 11, 'the hop left the ground at a different step than it was measured at');
+  assert.equal(landing, 83, 'the hop landed at a different step than it was measured at');
+
+  const air = log.filter((entry) => !entry.grounded);
+  assert.equal(air.length, 72, `the flight was ${air.length} steps`);
+  assert.equal(
+    air.every((entry) => entry.clearance > 0),
+    true,
+    'an airborne step reported the wheel on the ground',
+  );
+  assert.equal(
+    log.filter((entry) => entry.grounded).every((entry) => entry.clearance === 0),
+    true,
+    'a grounded step reported clearance; the grounded branch assigns `y = groundY`, so it is exactly 0',
+  );
+  const apex = Math.max(...air.map((entry) => entry.clearance));
+  assert.ok(Math.abs(apex - 0.4463) < 0.001, `the hop reached ${apex.toFixed(4)} m, not the measured 0.4463`);
+  assert.equal(log[landing].clearance, 0, 'the landing step still reported air');
+  assert.equal(log[landing].secondsLeft, 0, 'the landing step still had air to use');
+
+  // The projection, against the air the wheel actually had left. It is exact
+  // ballistics over a ground height the step re-reads, and the simulation
+  // integrates in fixed steps and lands on a step boundary, so the two can
+  // never agree perfectly. Measured 2026-09-11: the worst disagreement over
+  // the whole flight is 0.0050 s, which is less than one 0.00833 s step.
+  let worst = 0;
+  let worstAt = air[0];
+  for (const entry of air) {
+    const actual = (landing - entry.step) * STEP;
+    const error = entry.secondsLeft - actual;
+    if (Math.abs(error) > Math.abs(worst)) {
+      worst = error;
+      worstAt = entry;
+    }
+  }
+  assert.ok(
+    Math.abs(worst) < STEP,
+    `the projection was out by ${worst.toFixed(6)} s at ${worstAt.clearance.toFixed(4)} m and `
+      + `${worstAt.vertical.toFixed(4)} m/s, which is more than one ${STEP.toFixed(6)} s step`,
+  );
+  assert.ok(
+    Math.abs(worst) > 1e-9,
+    'the projection agreed exactly, which a fixed-step integrator cannot do — the test is measuring itself',
+  );
+  // And both are the snapshot's own facts, without the snapshot — the claim
+  // that makes them safe to read at 120 Hz for every seat.
+  for (const entry of log) {
+    assert.equal(entry.vertical, entry.snapshotVertical, `step ${entry.step} disagreed about the rate`);
+    assert.equal(entry.clearance, entry.snapshotAirHeight, `step ${entry.step} disagreed about the height`);
+  }
+  assert.ok(air[0].vertical > 0, 'the wheel left the ground going down');
+  assert.ok(air[air.length - 1].vertical < 0, 'the wheel landed going up');
+});
+
+/**
+ * One hop taken at a chosen speed on a linear grade, logged step by step.
+ *
+ * The same ride the flat projection test performs, on `rampPlan`'s authored
+ * gradient instead of the slab: throttle until the wheel is at the speed, hop,
+ * and log every step to the touchdown. `plainSecondsLeft` is the projection
+ * the getter used to return — the closed ballistic form over the ground under
+ * the wheel *now*, with no term for the ground's own motion — recomputed here
+ * from the snapshot so the two can be compared on the same flight.
+ */
+function hopOnGrade(riseOverRun: number, speed: number): {
+  takeoff: number;
+  landing: number;
+  airSeconds: number;
+  air: { step: number; clearance: number; secondsLeft: number; plainSecondsLeft: number }[];
+} {
+  const plan = rampPlan(riseOverRun);
+  const euc = controller({ plan });
+  rideToSpeed(euc, speed);
+  const rows: { step: number; grounded: boolean; clearance: number; secondsLeft: number; plainSecondsLeft: number }[] = [];
+  let takeoff = -1;
+  let landing = -1;
+  for (let i = 0; i < SECONDS(3) && landing < 0; i += 1) {
+    euc.step(STEP, actions(i === 0 ? { hop: true } : {}));
+    const snapshot = euc.snapshot();
+    const h = Math.max(0, snapshot.airHeight);
+    const v = snapshot.verticalVelocity;
+    rows.push({
+      step: i,
+      grounded: snapshot.grounded,
+      clearance: euc.groundClearance,
+      secondsLeft: euc.secondsToTouchdown,
+      plainSecondsLeft: snapshot.grounded
+        ? 0
+        : (v + Math.sqrt(v * v + 2 * PHYSICS.gravity * h)) / PHYSICS.gravity,
+    });
+    if (euc.tookOff) takeoff = i;
+    if (euc.touchedDown && takeoff >= 0) landing = i;
+  }
+  assert.ok(takeoff >= 0, `the hop on a ${(riseOverRun * 100).toFixed(0)} % grade never left the ground`);
+  assert.ok(landing > takeoff, `the hop on a ${(riseOverRun * 100).toFixed(0)} % grade never landed`);
+  return {
+    takeoff,
+    landing,
+    airSeconds: (landing - takeoff) * STEP,
+    air: rows.filter((row) => !row.grounded).map(({ grounded: _grounded, ...rest }) => rest),
+  };
+}
+
+test('the projection reads the grade the flight is over: a descent falls away beneath it', () => {
+  // p3-review, 2026-09-11. The ballistic form alone falls to the ground under
+  // the wheel *now*, and on a descent that ground keeps dropping away for the
+  // whole flight — so the projection under-read the air by the ground's own
+  // fall rate and `app/oneFootPose.ts` refused its readable window (0.33 s) on
+  // a hop that carries the same 0.60 s the flat one does. Measured on the park
+  // at the time: 210 m of the 949 m lap (22.1 %) descends steeper than 3 %.
+  //
+  // Measured 2026-09-11 on a −7 % ramp at 15 m/s: 0.60 s of real air, the
+  // repaired projection reads 0.6037 s at the takeoff step, and the plain form
+  // beside it reads 0.3889 s — never more than 0.39 s on any step of the
+  // flight, which is below the pose's window and is the refusal itself.
+  const flight = hopOnGrade(-0.07, 15);
+  assert.ok(
+    Math.abs(flight.airSeconds - 0.6) < 1e-9,
+    `the descent fixture flew ${flight.airSeconds.toFixed(4)} s rather than the measured 0.60 s`,
+  );
+
+  const first = flight.air[0];
+  assert.ok(
+    Math.abs(first.secondsLeft - flight.airSeconds) < STEP,
+    `on the takeoff step the projection read ${first.secondsLeft.toFixed(4)} s of a ${flight.airSeconds.toFixed(2)} s `
+      + `flight, which is more than one ${STEP.toFixed(6)} s step out`,
+  );
+
+  // The whole flight, not just its first step: the projection tracks the air
+  // left within a step everywhere, which is what makes it readable every step.
+  let worst = 0;
+  for (const entry of flight.air) {
+    const actual = (flight.landing - entry.step) * STEP;
+    if (Math.abs(entry.secondsLeft - actual) > Math.abs(worst)) worst = entry.secondsLeft - actual;
+  }
+  assert.ok(
+    Math.abs(worst) < STEP,
+    `the projection was out by ${worst.toFixed(6)} s somewhere on the descent flight`,
+  );
+
+  // And the positive control: the form without the ground's own rate is the
+  // one that could not see this flight. Without it this test passes on a
+  // getter that never changed.
+  const plainPeak = Math.max(...flight.air.map((entry) => entry.plainSecondsLeft));
+  assert.ok(
+    plainPeak < 0.4,
+    `the plain ballistic form read ${plainPeak.toFixed(4)} s on this descent, so the fixture is not on a grade`,
+  );
+});
+
+test('the projection reads the grade the flight is over: a rising face comes up to meet it', () => {
+  // The other sign, and the reason the term is the ground's rate rather than a
+  // descent allowance: a climb spends air rather than buying it, and the plain
+  // form over-reads it — `p3-review` §5's rising face, where the pose could be
+  // started on air the flight does not have. Measured 2026-09-11 on a +8 %
+  // ramp at 15 m/s: 0.60 s of real air, repaired projection 0.6024 s at the
+  // takeoff step, plain form 0.8485 s.
+  const flight = hopOnGrade(0.08, 15);
+  assert.ok(
+    Math.abs(flight.airSeconds - 0.6) < 1e-9,
+    `the climb fixture flew ${flight.airSeconds.toFixed(4)} s rather than the measured 0.60 s`,
+  );
+
+  const first = flight.air[0];
+  assert.ok(
+    Math.abs(first.secondsLeft - flight.airSeconds) < STEP,
+    `on the takeoff step the projection read ${first.secondsLeft.toFixed(4)} s of a ${flight.airSeconds.toFixed(2)} s `
+      + `flight, which is more than one ${STEP.toFixed(6)} s step out`,
+  );
+
+  let worst = 0;
+  for (const entry of flight.air) {
+    const actual = (flight.landing - entry.step) * STEP;
+    if (Math.abs(entry.secondsLeft - actual) > Math.abs(worst)) worst = entry.secondsLeft - actual;
+  }
+  assert.ok(
+    Math.abs(worst) < STEP,
+    `the projection was out by ${worst.toFixed(6)} s somewhere on the climb flight`,
+  );
+
+  const plainPeak = Math.max(...flight.air.map((entry) => entry.plainSecondsLeft));
+  assert.ok(
+    plainPeak > 0.8,
+    `the plain ballistic form read ${plainPeak.toFixed(4)} s on this climb, so the fixture is not on a grade`,
+  );
+});
+
+test('the grade term is exactly zero on the flat, so every flat reading is the plain form', () => {
+  // The invariant that protects every pinned flat measurement in this file —
+  // the 0.005 s worst disagreement above among them — and every shipped
+  // digest: on level ground the sampled normal is (0, 1, 0), the gradient
+  // along the air travel is 0, and the getter is bit-for-bit the closed
+  // ballistic form it was before p3-review's repair.
+  const flight = hopOnGrade(0, 15);
+  for (const entry of flight.air) {
+    assert.equal(
+      entry.secondsLeft,
+      entry.plainSecondsLeft,
+      `on the flat, step ${entry.step} projected ${entry.secondsLeft} against the plain form's ${entry.plainSecondsLeft}`,
+    );
+  }
+  assert.ok(flight.air.length > 60, `the flat fixture flew only ${flight.air.length} steps`);
+});
+
+test('`flightIndex` is an identity, not a tally: every takeoff, and never reset', () => {
+  // An observer keying a pending flight needs a number that cannot come round
+  // again. `hops` and `landings` both go back to zero on a reset, which is
+  // exactly what makes them tallies and not keys.
+  const euc = controller();
+  assert.equal(euc.flightIndex, 0, 'a controller that has never flown has flown');
+
+  let atTakeoff = -1;
+  for (let i = 0; i < SECONDS(2); i += 1) {
+    euc.step(STEP, actions(i === 0 ? { hop: true } : {}));
+    if (euc.tookOff) atTakeoff = euc.flightIndex;
+  }
+  assert.equal(atTakeoff, 1, 'the first flight is not flight 1 on the step it begins');
+  assert.equal(euc.flightIndex, 1, 'and it stays 1 after the landing');
+
+  for (let i = 0; i < SECONDS(2); i += 1) euc.step(STEP, actions(i === 0 ? { hop: true } : {}));
+  assert.equal(euc.flightIndex, 2, 'the second flight did not get its own number');
+  assert.equal(euc.snapshot().hops, 2, 'sanity: two hops');
+
+  euc.reset();
+  assert.equal(euc.flightIndex, 2, 'a reset reused the numbers of flights that already happened');
+  assert.equal(euc.snapshot().hops, 0, 'sanity: the reset did clear the tallies');
+  for (let i = 0; i < SECONDS(2); i += 1) euc.step(STEP, actions(i === 0 ? { hop: true } : {}));
+  assert.equal(euc.flightIndex, 3, 'the flight after a reset collided with an earlier one');
+});
+
+test('a reset taken in mid-flight clears the M36 facts it can', () => {
+  // The teleport case, from the air: `R` in the middle of a hop, a checkpoint
+  // restore, a world swap. The rider lands on the ground upright, so every
+  // ground fact must say so on the very next read.
+  const euc = controller();
+  euc.step(STEP, actions({ hop: true }));
+  ride(euc, SECONDS(0.25), {});
+  assert.ok(euc.groundClearance > 0, 'the fixture never left the ground');
+  assert.ok(euc.secondsToTouchdown > 0, 'the fixture had no air left to interrupt');
+  const flights = euc.flightIndex;
+
+  euc.reset();
+  assert.equal(euc.groundClearance, 0, 'a reset left the wheel in the air');
+  assert.equal(euc.verticalRate, 0, 'a reset left the wheel falling');
+  assert.equal(euc.secondsToTouchdown, 0, 'a reset left air to use');
+  assert.equal(euc.hopped, false, 'a reset kept a hop edge');
+  assert.equal(euc.tookOff, false, 'a reset kept a takeoff edge');
+  assert.equal(euc.spinCompleted, false, 'a reset kept a 180');
+  assert.equal(euc.flightIndex, flights, 'a reset moved the flight identity');
 });

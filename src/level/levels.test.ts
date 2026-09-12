@@ -87,9 +87,9 @@ test('the switch reaches the generator through both of the doors Game builds wor
 
 test('the hand-authored worlds are the same worlds under the switch', () => {
   // Only a generator spaces a road for a wheel — `BUILDERS` says why. The slice,
-  // the proving ground and BelVar were laid out by hand and accepted as they
-  // are, so `?mph=` has to reach them as nothing at all.
-  for (const id of ['slice', 'proving', 'track'] as const) {
+  // the proving ground, BelVar and Switchback Park were laid out by hand and
+  // accepted as they are, so `?mph=` has to reach them as nothing at all.
+  for (const id of ['slice', 'proving', 'track', 'switchback'] as const) {
     for (const mph of [20, 50, 65, 90]) {
       assert.equal(
         planDigest(createLevel(id, DEFAULT_SEED, undefined, undefined, mph)),

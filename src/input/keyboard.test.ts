@@ -2,6 +2,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { ActionState } from './actions.ts';
+import { resolveBindings } from './bindings.ts';
 import { KeyboardInput } from './keyboard.ts';
 
 /**
@@ -389,4 +390,92 @@ test('a spectating keyboard steers nobody and still stops the game', () => {
   keyboard.setSpectating(false);
   down('KeyW');
   assert.equal(state.isHeld('accelerate'), true, 'the player gets their keyboard back');
+});
+
+// ---------------------------------------------------------------------------
+// M36 Phase 3 — the Hop key's second meaning (docs/PLANS.md §36.5)
+// ---------------------------------------------------------------------------
+
+test('holding the Hop key is a level, and its auto-repeats are still one hop', () => {
+  const { state, down, up } = rig();
+
+  down('Space');
+  assert.equal(state.sample(0).hopHeld, true, 'the level begins on the same edge as the press');
+  assert.equal(state.consume('hop', 0), true);
+
+  // The operating system now delivers keydowns for as long as the key is down.
+  // Each one re-asserts the level (idempotent) and none of them may latch a
+  // second press — that filter is the whole of `!event.repeat`.
+  for (let i = 0; i < 30; i += 1) down('Space', { repeat: true });
+  assert.equal(state.consume('hop', 0), false, 'a held key is one hop, however long');
+  assert.equal(state.sample(0).hopHeld, true, 'and the hold outlives the consumed press');
+
+  up('Space');
+  assert.equal(state.sample(0).hopHeld, false);
+  assert.equal(state.isPending('hop', 0), false, 'letting go mints nothing either');
+});
+
+test('two keys bound to Hop reconcile, exactly as an alias pair does', () => {
+  const { state, keyboard, down, up } = rig();
+  keyboard.setBindings(resolveBindings({ hop: ['Space', 'KeyJ'] }));
+
+  down('Space');
+  down('KeyJ');
+  up('Space');
+  assert.equal(state.sample(0).hopHeld, true, 'J is still physically down');
+  up('KeyJ');
+  assert.equal(state.sample(0).hopHeld, false, 'the last key up releases the hold');
+});
+
+test('a Hop release with no recorded press still releases', () => {
+  const { state, up } = rig();
+
+  // The press was swallowed by a modifier, or predates a reset. A stale hold
+  // is the worse failure here for the same reason it is for the throttle: the
+  // pose would stay asserted with nothing on the keyboard holding it.
+  state.setHeld('hopHeld', true);
+  up('Space');
+  assert.equal(state.sample(0).hopHeld, false);
+});
+
+test('blur, a seat change and spectating each let go of the Hop key', () => {
+  const blurred = rig();
+  blurred.down('Space');
+  blurred.fake.dispatch('blur', {});
+  assert.equal(blurred.state.sample(0).hopHeld, false, 'a key held through a tab switch');
+
+  const moved = rig();
+  const other = new ActionState();
+  moved.down('Space');
+  moved.keyboard.setSink(other);
+  assert.equal(moved.state.sample(0).hopHeld, false, 'a hold does not outlive the rider');
+  assert.equal(other.sample(0).hopHeld, false, 'nor is it inherited');
+  // The bookkeeping went with it: one fresh press and release on the new seat
+  // cycles cleanly rather than being held open by the remembered Space.
+  moved.down('Space');
+  assert.equal(other.sample(0).hopHeld, true);
+  moved.up('Space');
+  assert.equal(other.sample(0).hopHeld, false);
+
+  const seated = rig();
+  seated.down('Space');
+  seated.keyboard.setSpectating(true);
+  assert.equal(seated.state.sample(0).hopHeld, false, 'the second player sitting down');
+  seated.down('Space');
+  assert.equal(seated.state.sample(0).hopHeld, false, 'a spectator poses nobody');
+});
+
+test('rebinding Hop moves the press and the hold together', () => {
+  const { state, keyboard, down, up } = rig();
+  keyboard.setBindings(resolveBindings({ hop: ['KeyJ'] }));
+
+  down('Space');
+  assert.equal(state.isPending('hop', 0), false, 'the old key is genuinely free');
+  assert.equal(state.sample(0).hopHeld, false, 'both meanings left it, not just one');
+
+  down('KeyJ');
+  assert.equal(state.isPending('hop', 0), true);
+  assert.equal(state.sample(0).hopHeld, true, 'one row in the settings screen, two meanings');
+  up('KeyJ');
+  assert.equal(state.sample(0).hopHeld, false);
 });

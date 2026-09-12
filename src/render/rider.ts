@@ -226,6 +226,33 @@ export interface StanceInput {
    * is a double zero for everybody it was not written for.
    */
   styleSway: number;
+  /**
+   * How far the free foot has left its pedal, 0..1 — M36, §36.5.
+   *
+   * **The one airborne exception to two-foot contact**, and it arrives as a
+   * plain blend rather than as a trick name, a character or an event: this
+   * module moves one ankle target and the existing two-bone solve articulates
+   * the leg, exactly as it does for the rest stance's grounded foot. Every
+   * interior value is a real pose, so entry, hold, release and the return
+   * before touchdown are one number moving.
+   *
+   * Suppressed here by rest, crash and the ragdoll on the same terms as the
+   * tuck and the attack stance: a rider standing with a foot down, one coming
+   * off the wheel, and one the particles own are all doing something else with
+   * their legs. It is **not** on `EucPose`, which is what keeps it out of the
+   * controller (physical equality, §36.5) and leaves the cop and the ghost at
+   * neutral feet with no fallback to write.
+   */
+  oneFoot: number;
+  /**
+   * Which foot that is: +1 the rider's LEFT (+X), -1 their right, 0 neither.
+   *
+   * A signed scalar, never a character id or a venue name. The released side
+   * is one constant for every look (`RIDER_BLOCKOUT.oneFootReleaseSide`,
+   * chosen by the clearance sweep), but this channel carries both signs so the
+   * sweep can measure the choice rather than assume it.
+   */
+  oneFootSide: number;
 }
 
 export function createStanceInput(): StanceInput {
@@ -262,6 +289,8 @@ export function createStanceInput(): StanceInput {
     swingAngle: 0,
     swingBlend: 0,
     styleSway: 0,
+    oneFoot: 0,
+    oneFootSide: 0,
   };
 }
 
@@ -333,6 +362,16 @@ interface ArticulatedLeg {
   /** Last machine yaw/roll used to place this pedal target. */
   lastPedalYaw: number;
   lastPedalRoll: number;
+  /**
+   * How far THIS foot had left its pedal last frame, 0..1 (M36).
+   *
+   * The leg's own share of `StanceInput.oneFoot`, so one cached number covers
+   * both the amount and the side: a side that flips moves this on both legs.
+   * Without it the change-detection early-out below freezes the gesture — the
+   * stance's other fields are identical from one airborne frame to the next,
+   * which is exactly when the foot is supposed to be moving.
+   */
+  lastFreed: number;
 }
 
 interface ArticulatedArm {
@@ -805,7 +844,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     legs.push({
       side, hip, knee, ankle, target: ankleTarget,
       lastDrop: 0, lastShift: 0, lastOpen: 0, lastLift: 0, lastFootAdjust: 0,
-      lastPedalYaw: 0, lastPedalRoll: 0,
+      lastPedalYaw: 0, lastPedalRoll: 0, lastFreed: 0,
     });
   }
 
@@ -1230,6 +1269,19 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       // whole feature contributes exactly nothing to any approved pose.
       const rag = clamp01(stance.ragdollBlend);
       const ragActive = rag > 1e-6;
+      // -- The one-foot air gesture (M36, §36.5) -----------------------------
+      // Gated by exactly the three factors every sibling channel above uses,
+      // and for the same three reasons: a rider standing with a foot down is
+      // not holding an air pose, a rider coming off the wheel has stopped
+      // choosing anything, and a rider the particles own has no stance at all.
+      // So the crash and recovery suppression §36.5 asks for is arithmetic
+      // here rather than a case in whatever drives the channel — a state
+      // machine that forgot to cancel still cannot leave a foot in the air
+      // through a crash.
+      const freeFoot = clamp01(stance.oneFoot) * (1 - rest) * (1 - crashing) * (1 - rag);
+      // Which foot leaves. Zero — neither — whenever the gesture is idle, so
+      // the sign cannot survive the amount going away.
+      const freeSide = freeFoot > 0 ? Math.sign(stance.oneFootSide) : 0;
       // **Both wobble remaps are the controller's now, and this file performs
       // neither** (M13). The bracing stance is still gated on the energy that
       // names the `wobbling` state — below it the ground is merely lively and a
@@ -1415,6 +1467,9 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
         const lift = strikeSide !== 0 && Math.sign(leg.side) === strikeSide ? strikeLift : 0;
         const footAdjust = -leg.side * footPhase * footCorrection
           * RIDER_BLOCKOUT.wobbleFootAdjust;
+        // This leg's own share of the one-foot gesture (M36): the whole of it
+        // on the released side, none of it on the foot that keeps its pedal.
+        const freed = freeSide !== 0 && Math.sign(leg.side) === freeSide ? freeFoot : 0;
         if (
           !restActive
           // The ragdoll targets move every step, so the change-detection
@@ -1427,6 +1482,10 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
           && Math.abs(footAdjust - leg.lastFootAdjust) < 1e-6
           && Math.abs(stance.wobbleYaw - leg.lastPedalYaw) < 1e-6
           && Math.abs(stance.pedalRoll - leg.lastPedalRoll) < 1e-6
+          // The gesture moves while nothing else about the stance does — a
+          // held air pose is otherwise a frame identical to the last one — so
+          // without this the foot would leave the pedal once and freeze.
+          && Math.abs(freed - leg.lastFreed) < 1e-6
         ) continue;
 
         leg.lastDrop = drop;
@@ -1436,6 +1495,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
         leg.lastFootAdjust = footAdjust;
         leg.lastPedalYaw = stance.wobbleYaw;
         leg.lastPedalRoll = stance.pedalRoll;
+        leg.lastFreed = freed;
         leg.hip.position.x = leg.side * hipHalfWidth + RIDER_BLOCKOUT.restHipShift * rest;
         leg.hip.position.y = lerp(RIDER.hipHeight - drop, RIDER_BLOCKOUT.restHipHeight, settled);
         leg.hip.position.z = hipShift * (1 - settled);
@@ -1465,6 +1525,31 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
           ),
           lerp(pedalReactionTarget.z + footAdjust, -RIDER_BLOCKOUT.restFootBack, settling),
         );
+        // -- The free foot leaves its pedal (M36, §36.5) --------------------
+        // **After the settling lerp**, so rest and a crash still own the foot
+        // outright: those two ground it, and a gesture that blended on top of
+        // a grounded target would lift a boot out of the pavement. (It cannot
+        // happen anyway — `freeFoot` is already a product of `1 - rest` and
+        // `1 - crash` — and the order is the guarantee rather than the comment
+        // about it.)
+        //
+        // Offsets from the *pedal-rotated* target, so the released foot leaves
+        // from where the pedal actually is under a wobbling, banked machine,
+        // and drops `lift` and `footAdjust` on the way out: a foot in the air
+        // is not being levered by a scraping pedal and is not repositioning
+        // itself on one. `solveChain` below does the rest — same two bones,
+        // same forward knee, no new joint.
+        if (freed > 0) {
+          restAnkleTarget.set(
+            lerp(
+              restAnkleTarget.x,
+              pedalReactionTarget.x + leg.side * RIDER_BLOCKOUT.oneFootOutboard,
+              freed,
+            ),
+            lerp(restAnkleTarget.y, pedalReactionTarget.y + RIDER_BLOCKOUT.oneFootRise, freed),
+            lerp(restAnkleTarget.z, pedalReactionTarget.z - RIDER_BLOCKOUT.oneFootTrail, freed),
+          );
+        }
         if (ragActive) {
           // The hip returns to its neutral seat on the particle-framed root,
           // and the ankle chases the foot particle instead of a pedal.

@@ -470,6 +470,9 @@ export class CpuRider {
     steer: 0,
     crouch: false,
     hop: false,
+    // Presentation intent only (`ActionSnapshot.hopHeld`, M36 §36.5). The cop
+    // never poses, and this stays false for the life of the brain.
+    hopHeld: false,
     swing: false,
     reset: false,
     cameraCycle: false,

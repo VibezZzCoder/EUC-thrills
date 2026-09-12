@@ -2,6 +2,7 @@
 import { CHALLENGE, TRACK_DAY } from '../data/tuning.ts';
 import type { Checkpoint, LapCourse } from '../level/plan.ts';
 import { insideCheckpoint, type RouteReference } from './challenge.ts';
+import { NO_TRICKS, TrickObserver, type TrickStepInput, type TrickTally } from './trickEvents.ts';
 
 /**
  * The rules of a track day — M23 Phase B2, and the whole of them.
@@ -200,15 +201,29 @@ export interface TrackDayState {
    * shuffled over the line.
    */
   readonly lapsRidden: number;
+  /**
+   * The afternoon's trick events so far — M36 §36.6.
+   *
+   * `cleanLandings` is this session's own count and the rest are the
+   * observer's, which is §36.6's one-place rule kept where it can be seen: a
+   * touchdown is counted here and nowhere else.
+   */
+  readonly tricks: TrickTally;
 }
 
 /**
  * One fixed step's worth of the world.
  *
- * `challenge.ts`'s `ChallengeStepInput` field for field, and identical in
- * meaning — including that the position is the **contact patch** rather than
- * the centre of mass, and that `landed` arrives as an edge while `crashed`
- * arrives as a level and is edge-detected here.
+ * `challenge.ts`'s `ChallengeStepInput` **plus one optional member** — the two
+ * were field for field until M36 §36.6, and the position still means the same
+ * thing in both (the **contact patch** rather than the centre of mass), as do
+ * `landed` arriving as an edge and `crashed` arriving as a level that is
+ * edge-detected here. What a lap session has that a timed run does not is a
+ * session to hang trick events on: a track day already counts its landings and
+ * its crashes and publishes them on the card, so counting the rest of §36.6's
+ * table is the same session's arithmetic rather than a second one. A timed run
+ * keeps the narrower input, because widening it would be a field nothing on
+ * that side of the milestone fills.
  */
 export interface TrackDayStepInput {
   readonly x: number;
@@ -222,6 +237,16 @@ export interface TrackDayStepInput {
   readonly landingClean: boolean;
   /** True for every step the rider is down, not just the first. */
   readonly crashed: boolean;
+  /**
+   * The rider's trick facts for this step, or absent.
+   *
+   * Optional because a caller that does not care about §36.6 — every test
+   * written before it, and `challenge.ts`'s side of the family — must not have
+   * to fabricate one. Absent means "nothing to observe this step", which is
+   * the honest reading and not the same as a struct full of falses: a step
+   * that was never observed cannot close a flight either.
+   */
+  readonly tricks?: TrickStepInput;
 }
 
 /**
@@ -251,6 +276,15 @@ export interface TrackDaySessionResult {
   readonly landings: number;
   readonly cleanLandings: number;
   readonly crashes: number;
+  /**
+   * The afternoon's trick events, frozen with the rest of it — M36 §36.6.
+   *
+   * **The afternoon's events, not a competitive record.** Nothing here is
+   * saved, compared against a stored best, or added up into a total: §36.6
+   * says the score remains later, and a card that quietly produced one now
+   * would be the thing it says not to build.
+   */
+  readonly tricks: TrickTally;
   readonly beatRecord: boolean;
   readonly previousBest: number | null;
 }
@@ -501,6 +535,19 @@ export class TrackDayRun {
   private crashes = 0;
   /** Previous step's `crashed`, so a spill is counted once and not per step. */
   private wasCrashed = false;
+  /**
+   * The afternoon's trick events — M36 §36.6.
+   *
+   * **One observer, and it lives here rather than in `app/Game.ts` for the
+   * same reason the landing count does**: the session lifecycle is already
+   * written in this file — the out lap earns nothing, a voided lap does, a
+   * quick reset keeps the totals, a new session clears them, a pause freezes
+   * them by not stepping at all — and a second copy of those five rules kept
+   * somewhere else would be five chances for the two to disagree. It is fed
+   * only from the `running` branch below, which is what makes the first of
+   * them true without a word of extra logic.
+   */
+  private readonly tricks_ = new TrickObserver();
 
   private ended: TrackDaySessionResult | null = null;
 
@@ -562,7 +609,28 @@ export class TrackDayRun {
       recordSeconds: this.reference === null ? null : this.reference.totalSeconds,
       lapsCounted: this.lapsCounted,
       lapsRidden: this.lapsRidden,
+      tricks: this.trickTally(),
     };
+  }
+
+  /**
+   * The observer's counts with this session's own clean landings in them.
+   *
+   * §36.6's one-place rule, expressed: `TrickObserver` reports zero clean
+   * landings on purpose, because this file already counts every touchdown for
+   * the card and counting them twice is how two numbers about one thing start
+   * to disagree.
+   */
+  private trickTally(): TrickTally {
+    const tally = this.tricks_.tally;
+    // Shared and frozen while there is nothing to report, on `NO_EVENTS`'s own
+    // argument: `state` is read once a drawn frame *and* once a fixed step, and
+    // a session that has not landed anything yet is the common case.
+    if (this.cleanLandings === 0
+      && tally.chargedHops === 0
+      && tally.spinsLanded === 0
+      && tally.oneFootAirs === 0) return NO_TRICKS;
+    return { ...tally, cleanLandings: this.cleanLandings };
   }
 
   /**
@@ -624,6 +692,13 @@ export class TrackDayRun {
   restart(): void {
     if (this.phase_ === 'idle' || this.phase_ === 'ended') return;
     this.clearLap();
+    // **And the flight in the air with it** — M36 §36.6. A rider hits `R`
+    // mid-hop and reappears on the run-up: the hop they were in the middle of
+    // did not land, so it earns nothing, and the totals from earlier in the
+    // afternoon survive on exactly the argument the best lap does. A reset
+    // raises no takeoff edge either, so nothing can look like a launch on the
+    // way back either.
+    this.tricks_.discardFlight();
     this.lapNumber = 0;
     this.phase_ = 'outLap';
   }
@@ -651,6 +726,12 @@ export class TrackDayRun {
 
     this.phase_ = 'ended';
     this.elapsed = 0;
+    // The lap in progress is discarded, and so is the flight in progress —
+    // §36.6's rule and this method's own, which are the same rule: a thing you
+    // did not finish is not a thing you did. It cannot move a total (only a
+    // touchdown banks one), so this is the diagnostic staying honest rather
+    // than the card changing.
+    this.tricks_.discardFlight();
     this.ended = Object.freeze({
       levelId: this.levelId,
       bestLapSeconds: best,
@@ -667,6 +748,7 @@ export class TrackDayRun {
       landings: this.landings,
       cleanLandings: this.cleanLandings,
       crashes: this.crashes,
+      tricks: Object.freeze(this.trickTally()),
       // **Written in the identical algebraic form to `app/records.ts`'s
       // `isNewRecord`, not merely the same comparison.** `challenge.ts` records
       // at length why: the two were once written independently, disagreed at an
@@ -738,6 +820,18 @@ export class TrackDayRun {
     // spill as two hundred crashes.
     if (input.crashed && !this.wasCrashed) this.crashes += 1;
     this.wasCrashed = input.crashed;
+
+    // **The trick events, on this session's own terms** — M36 §36.6.
+    //
+    // Here, beside the landings and the crashes, because they are the same
+    // kind of fact and they answer to the same three rules: nothing is counted
+    // outside `running` (this line is unreachable from the out lap, which
+    // returns above), a **voided** lap still counts (the counters sit outside
+    // `voided_`, deliberately — a rider who cut the corner still landed the
+    // 180 they landed), and a pause counts nothing because a paused game does
+    // not step at all. The observer decides *what* happened; this file decides
+    // *when* it is worth counting.
+    if (input.tricks !== undefined) this.tricks_.step(stepSeconds, input.tricks);
 
     // The envelope, once per step. `voided_` is sticky for the rest of the lap:
     // a rider who came back onto the circuit rode the part they missed on the
@@ -951,6 +1045,10 @@ export class TrackDayRun {
     this.cleanLandings = 0;
     this.crashes = 0;
     this.wasCrashed = false;
+    // A new session inherits no trick events, on the same terms as the landing
+    // count beside it — M36 §36.6's "new session clears the appropriate
+    // totals". `arm` and `abandon` are the two doors, and both come here.
+    this.tricks_.clear();
     this.ended = null;
   }
 }

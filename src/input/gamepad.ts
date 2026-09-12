@@ -477,6 +477,20 @@ interface PadBookkeeping {
    * letting it take a seat means the join panel fills itself.
    */
   stickSettled: boolean;
+  /**
+   * Whether the A button currently down is a hold *this layer started* —
+   * M36 Phase 3, §36.5's held Hop.
+   *
+   * A level, unlike every other entry here, and it still needs an edge to
+   * begin: A is also confirm and claim, so the button that dismissed a pause
+   * card or seated a player is very often still down on the frame riding
+   * resumes, and a bare `isDown(a)` would report a deliberate held pose the
+   * player never asked for. The rule is therefore the one the presses already
+   * follow — a hold counts from a rising edge this layer honoured — which
+   * makes "release and press again" the way back in, exactly as it is for the
+   * hop itself.
+   */
+  hopHeldOwned: boolean;
   /** Where this pad last wrote, so its contribution can be cleared when it stops. */
   sink: ActionState | null;
 }
@@ -599,6 +613,7 @@ export class GamepadInput {
     for (const book of this.pads.values()) {
       book.priming = true;
       book.stickSettled = false;
+      book.hopHeldOwned = false;
       book.previousButtons.fill(0);
       book.menuDirectionHeld.fill(0);
     }
@@ -662,7 +677,16 @@ export class GamepadInput {
     // frozen in the action state for as long as the menu stays open, since
     // nothing will overwrite it until riding resumes. Every pad's own sink,
     // because in a couch session there is more than one.
-    if (inMenu) for (const book of this.pads.values()) book.sink?.clearDevice('gamepad');
+    if (inMenu) {
+      for (const book of this.pads.values()) {
+        book.sink?.clearDevice('gamepad');
+        // And the held-Hop ownership with it (M36 Phase 3): A opens and closes
+        // these cards, so a hold that survived the menu in this book would put
+        // the pose back on the first riding frame. The player releases and
+        // presses again, which is what the hop edge already asks of them.
+        book.hopHeldOwned = false;
+      }
+    }
   }
 
   /**
@@ -766,6 +790,7 @@ export class GamepadInput {
         menuRepeatAt: new Float64Array(MENU_DIRECTIONS.length),
         priming: true,
         stickSettled: false,
+        hopHeldOwned: false,
         sink: null,
       };
       this.pads.set(index, book);
@@ -775,6 +800,9 @@ export class GamepadInput {
     const sink = this.routing.sinkForPad(index, order);
     if (sink === book.sink) return;
     book.sink?.clearDevice('gamepad');
+    // A pad that has just changed seats is not holding anything for the new
+    // one: the swap is the same kind of boundary as the menu above.
+    book.hopHeldOwned = false;
     book.sink = sink;
   }
 
@@ -912,6 +940,20 @@ export class GamepadInput {
     state.setHeld('steerLeft', dpadLeft, 'gamepad');
     state.setHeld('steerRight', dpadRight, 'gamepad');
     state.setHeld('crouch', isDown(buttons, STANDARD_BUTTON.leftShoulder), 'gamepad');
+
+    // A's *level*, for M36's one-foot air pose (§36.5) — the second meaning of
+    // the same button the press below reads, and written every frame beside
+    // crouch for the same reason: an analog device has to say it let go.
+    //
+    // Ownership rather than the raw button, for `PadBookkeeping.hopHeldOwned`'s
+    // reason, and computed *before* the priming return so the false case is
+    // still written on a priming frame — a pad that reappears holding A hands
+    // the level back rather than freezing it.
+    if (!isDown(buttons, STANDARD_BUTTON.a)) book.hopHeldOwned = false;
+    else if (!book.priming && this.rose(book, buttons, STANDARD_BUTTON.a)) {
+      book.hopHeldOwned = true;
+    }
+    state.setHeld('hopHeld', book.hopHeldOwned, 'gamepad');
 
     if (book.priming) return;
     if (this.rose(book, buttons, STANDARD_BUTTON.a)) state.press('hop', nowSeconds);

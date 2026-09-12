@@ -678,27 +678,26 @@ function paintHair(sheet: InkSheet): void {
   inkField(sheet, box, (x, y) => {
     const s = (x - box.x0) / width;
     const t = (y - box.y0) / height;
-    // Lanes around the strand, wandering as they run: a straight lane down a
-    // falling mass reads as a printed stripe, and hair does not have those.
-    // Wandering harder than A1c's, so no lane holds a line for more than about
-    // a seventh of the length.
-    const wander = Math.sin(t * 7.0) * 0.10 + Math.sin(t * 2.3 + 1.7) * 0.06;
-    // **Seven lanes now, not three.** The count was tuned when every piece
-    // carrying length was a thin tube whose `u` wrapped a small circumference;
-    // A1d's mass is carried by plates six times wider, and three lanes across
-    // one of those is three broad stripes. More lanes at lower amplitude is
-    // how a wide surface reads as many strands instead of a few painted bars.
-    const lane = Math.sin((s + wander) * Math.PI * 2 * 7);
-    const depth = Math.min(1, Math.max(0, (0.86 - t) / 0.5));
-    const dark = Math.max(0, lane) ** 2.6 * (0.10 + 0.20 * depth);
-    // The break: hair separates *across* its length as well as along it, and
-    // nothing in this page said so before. High frequency and shallow, so it
-    // reads as texture rather than as rungs.
-    const brk = 0.5 + 0.5 * Math.sin(t * 23.0 + s * 6.0);
-    // The roots go down independently of the vertex bleach, which is what
-    // stops a lit mass from glowing all the way to the scalp.
-    const root = Math.min(1, Math.max(0, (t - 0.72) / 0.28)) * 0.16;
-    return [shadow, dark + brk ** 3 * 0.07 + root];
+    // inkField includes its last row. Preserve the original boundary pixels
+    // shared with the machine-mark page; this overhaul owns the hair page only.
+    if (y >= box.y1) {
+      const wander = Math.sin(t * 7.0) * .10 + Math.sin(t * 2.3 + 1.7) * .06;
+      const lane = Math.sin((s + wander) * Math.PI * 2 * 7);
+      const depth = Math.min(1, Math.max(0, (.86 - t) / .5));
+      const dark = Math.max(0, lane) ** 2.6 * (.10 + .20 * depth);
+      const brk = .5 + .5 * Math.sin(t * 23 + s * 6);
+      const root = Math.min(1, Math.max(0, (t - .72) / .28)) * .16;
+      return [shadow, dark + brk ** 3 * .07 + root];
+    }
+    // Geometry owns the broad locks and blonde ribbons. The existing page
+    // adds fine fibres along them; no coarse bands compete with the sculpture.
+    const wander = Math.sin(t * 6.1) * .024 + Math.sin(t * 13.3 + 1.7) * .007;
+    const lane = .5 + .5 * Math.sin((s + wander) * Math.PI * 2 * 31);
+    const fibre = .5 + .5 * Math.sin((s + wander * .7) * Math.PI * 2 * 89 + t * 2);
+    const broken = .5 + .5 * Math.sin(t * 31 + s * 9);
+    const root = Math.min(1, Math.max(0, (t - .79) / .21)) * .10;
+    const dark = lane ** 4 * (.30 + .06 * broken) + fibre ** 7 * .18 + root;
+    return [shadow, dark];
   });
 }
 

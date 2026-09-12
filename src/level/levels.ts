@@ -3,6 +3,7 @@ import { generateLevel } from './generateRoute.ts';
 import type { LevelPlan } from './plan.ts';
 import { createProvingGround } from './provingGround.ts';
 import { createSliceLevel } from './sliceLevel.ts';
+import { createSwitchbackLevel } from './switchbackLevel.ts';
 import { createTrackLevel } from './trackLevel.ts';
 
 /**
@@ -68,10 +69,20 @@ import { createTrackLevel } from './trackLevel.ts';
  * that gives it a reason exists. Phase B2's Track Day is what makes it
  * player-facing, and the query parameter survives as the shape of a link.
  *
- * Nothing here branches on which of the four is loaded, which is invariant 2
- * still holding at four producers.
+ * **M36 adds a fifth, and it is the second *place*.** `?level=switchback`
+ * builds Switchback Park (`switchbackLevel.ts`), the hand-authored hillside
+ * jump lap of `docs/PLANS.md` §36. It was a diagnostic entrance until M36
+ * Phase 5, on exactly the terms `?level=track` was one at M23 Phase B0 and
+ * `?level=generated` at M12 Phase 2: the owner's gate G1 asked him to ride the
+ * graybox line before the chooser offered it. Since Phase 5 the venue chooser
+ * (`app/venues.ts`, in the fresh-route and couch join panels) offers it beside
+ * BelVar and the city, and `?level=switchback` survives as the shape of a
+ * shareable link.
+ *
+ * Nothing here branches on which of the five is loaded, which is invariant 2
+ * still holding at five producers.
  */
-export type LevelId = 'slice' | 'proving' | 'generated' | 'track';
+export type LevelId = 'slice' | 'proving' | 'generated' | 'track' | 'switchback';
 
 export const DEFAULT_LEVEL: LevelId = 'slice';
 
@@ -85,7 +96,7 @@ export const DEFAULT_LEVEL: LevelId = 'slice';
 export const DEFAULT_SEED = 'euc';
 
 /**
- * The four builders, each also taking M13 Phase 2's diagnostic hazard cadence.
+ * The five builders, each also taking M13 Phase 2's diagnostic hazard cadence.
  *
  * The second parameter is a *diagnostic*, not level identity: it is absent
  * unless `?hazardprobe=` supplied it, it is never part of a seed, and it never
@@ -94,7 +105,7 @@ export const DEFAULT_SEED = 'euc';
  * on and the opposite side from the seed, which *is* identity (`AGENTS.md`).
  *
  * **The fourth parameter is M30 Phase 1's `?mph=`, and only the generator uses
- * it.** The three hand-authored worlds ignore it on purpose: spacing a road for
+ * it.** The four hand-authored worlds ignore it on purpose: spacing a road for
  * a wheel is something a *generator* does, and the slice, the proving ground
  * and BelVar were laid out by hand and accepted by the owner as they are. What
  * they get instead is a **test** — `topSpeedRoutes.test.ts` judges the slice
@@ -120,6 +131,10 @@ const BUILDERS: Readonly<Record<
     generateLevel(seed, hazardProbeMetres, targetProbeMetres, topSpeedMph).plan,
   track: (_seed, hazardProbeMetres, targetProbeMetres) =>
     createTrackLevel(hazardProbeMetres, targetProbeMetres),
+  // Offered by the venue chooser since M36 Phase 5 (`app/venues.ts`);
+  // `?level=switchback` survives as the shape of a shareable link.
+  switchback: (_seed, hazardProbeMetres, targetProbeMetres) =>
+    createSwitchbackLevel(hazardProbeMetres, targetProbeMetres),
 };
 
 /** Every level id, for tests and diagnostics. */

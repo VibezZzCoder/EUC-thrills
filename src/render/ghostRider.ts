@@ -146,6 +146,7 @@ function ghostDensity(look: RiderLook): RiderLook {
  * | `wheelSpin` | derived — integrated from `speed` against `sample.t` |
  * | `airHeight`, `airBlend` | derived — from `y - groundY` |
  * | `tuck` | derived — a grounded crouch, with a named imperfection |
+ * | `oneFoot` | neutral — never set |
  * | everything else | neutral |
  *
  * Nothing here guesses at a quantity the recording could have carried and did

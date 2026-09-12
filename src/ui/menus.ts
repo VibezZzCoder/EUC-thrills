@@ -39,6 +39,7 @@ import {
   COUCH_SEATS,
   type CouchRide,
 } from '../app/couch.ts';
+import { TRACK_VENUE_IDS, VENUE_IDS, type VenueId } from '../app/venues.ts';
 import { rowNeighbour, rowStep, type ControlRect } from './menuRows.ts';
 
 /**
@@ -90,7 +91,7 @@ import { rowNeighbour, rowStep, type ControlRect } from './menuRows.ts';
  */
 
 export type MenuScreen =
-  | 'none' | 'title' | 'pause' | 'settings' | 'results' | 'routes' | 'riders' | 'couch';
+  | 'none' | 'title' | 'tracks' | 'pause' | 'settings' | 'results' | 'routes' | 'riders' | 'couch';
 
 /**
  * The touch-mode select's words.
@@ -142,7 +143,7 @@ export interface MenuCallbacks {
    * the mode brings its own circuit, so the button is always live and pressing
    * it is also how a player reaches BelVar at all.
    */
-  onStartTrackDay(): void;
+  onStartTrackDay(venue: string): void;
   /**
    * The player pitted, from the pause card — M23.
    *
@@ -168,8 +169,27 @@ export interface MenuCallbacks {
   onTimeTrialRoute(seed: string): void;
   /** Put a seed that is known to build into the field. */
   onSurpriseSeed(): void;
-  /** Go back to the hand-authored city, which is the default world. */
-  onRideTheCity(): void;
+  /**
+   * Ride at this hand-built place — M36 Phase 5, and `onRideTheCity`'s
+   * replacement.
+   *
+   * **One control for three places, where there was one control for one.** The
+   * old button said "go back to the hand-built city" and was the only venue
+   * control the game had; a second circuit made that a list with one entry
+   * missing, and a third would have made it two. The chooser names every place
+   * and lights the one that is loaded, so "which of these am I on" and "take me
+   * to that one" are the same control rather than two.
+   *
+   * **A plain string, validated downstream** — `onSetCouchRide`'s contract
+   * exactly, and for its reason: a stale `data-venue` left in markup must be
+   * refused by the door (`app/venues.ts`'s `isVenueId`) rather than reaching
+   * `createLevel` as a builder nobody wrote.
+   *
+   * **It does not navigate.** The world swaps behind the open panel, which is
+   * what the rider chooser has always done with characters and is the same
+   * statement about identity: a player choosing a place should see the place.
+   */
+  onPickVenue(venue: string): void;
   /** Copy a link to the loaded world. */
   onCopyLink(): void;
 
@@ -268,6 +288,7 @@ const WORLD_LINES: Readonly<Record<WorldView['world'], string>> = Object.freeze(
   slice: 'The hand-built city — the route everything else is measured against.',
   track: 'BelVar Circuit — a kart-scale technical lap, built to be raced.',
   proving: 'The proving ground — a flat instrument, not a place.',
+  switchback: 'Switchback Park — a forested hillside jump lap.',
   generated: '',
 });
 
@@ -284,9 +305,55 @@ export interface WorldView {
    * to the city was hidden on the one world where it was the thing a player
    * most needed.
    */
-  readonly world: 'slice' | 'proving' | 'generated' | 'track';
+  readonly world: 'slice' | 'proving' | 'generated' | 'track' | 'switchback';
   /** The loaded route's seed. Empty on every world but a generated one. */
   readonly seed: string;
+  /**
+   * Does the loaded plan close a ring? — M36 Phase 5.
+   *
+   * **The plan's own fact, carried rather than inferred.** Two sentences on
+   * this screen name a venue — the Track Day button's note and the couch
+   * chooser's race clause — and both are naming *where that button would take
+   * you*, which is "the loaded world if it laps, BelVar otherwise". That is
+   * precisely what `enterTrackDay` decides from `LevelPlan.lap`, so the screen
+   * asks the same field rather than keeping a list of which venues lap: a list
+   * is a branch on venue identity (invariant 2) and would be a second thing to
+   * edit the day a sixth producer emits a lap.
+   */
+  readonly lap: boolean;
+}
+
+/**
+ * What each place is called, on a control rather than in a sentence.
+ *
+ * **Its own map rather than a slice of `WORLD_LINES`**, on `ui/idlePane.ts`'s
+ * stated rule: "the first clause of that sentence" is a rule that breaks the
+ * day somebody rewrites the sentence. The lines describe a world to somebody
+ * deciding; these are the words on the button and in the two notes that name a
+ * venue, and they have to be short enough to sit in a segmented row.
+ *
+ * Only the venues are here. A generated route has a seed rather than a name
+ * and the proving ground is an instrument — neither is on the chooser, and
+ * `app/venues.ts` says why.
+ */
+const VENUE_LABELS: Readonly<Record<VenueId, string>> = Object.freeze({
+  slice: 'The city',
+  track: 'BelVar Circuit',
+  switchback: 'Switchback Park',
+});
+
+/**
+ * The venue a lap ride would be ridden at, from what is loaded.
+ *
+ * `enterTrackDay`'s rule said in words: a world that closes a ring is kept,
+ * and a world that does not brings BelVar with it. The couch chooser's race
+ * clause follows that entrance rule; the solo title now offers tracks directly.
+ */
+function lapVenueName(view: WorldView): string {
+  if (!view.lap) return VENUE_LABELS.track;
+  return view.world === 'slice' || view.world === 'track' || view.world === 'switchback'
+    ? VENUE_LABELS[view.world]
+    : VENUE_LABELS.track;
 }
 
 /**
@@ -325,7 +392,24 @@ export type RouteStatus =
    * measured on. Same shape again: name the fix, do not apologise, never
    * silently swap the world.
    */
-  | { readonly kind: 'needs-route' };
+  | { readonly kind: 'needs-route' }
+  /**
+   * The venue chooser swapped the world behind this panel — M36 Phase 5.
+   *
+   * **The one press on this panel that succeeds without making a route**, and
+   * before this line it was also the one press that said nothing: the player
+   * chose a place, the panel went idle, and `Ride this route` then refused
+   * them about a seed they had never been asked for — a refusal about seeds
+   * arriving one press after a question about places. So the panel says what
+   * happened and where the ride is, which is `Back`.
+   *
+   * **The venue crosses as an id, never as a sentence.** `app/Game.ts` knows
+   * which place it installed and nothing else about how it is spoken of; the
+   * name comes from `VENUE_LABELS` here, on this file's own rule that a caller
+   * which could compose the message is a caller which could compose it
+   * wrongly.
+   */
+  | { readonly kind: 'venue-ready'; readonly venue: VenueId };
 
 /** Why the player arrived at Fresh route. The chooser must not erase it. */
 export type RoutePurpose = 'ride' | 'knockabout' | 'chase';
@@ -391,6 +475,34 @@ export interface ResultsRow {
 }
 
 /**
+ * One rider's trick counts, ready to write — M36 §36.6.
+ *
+ * **Counts as strings, and no words** — the split every other type on this
+ * screen keeps, pointed at the one place it would have been easiest to break.
+ * The numbers are formatted upstream so a count on this card and a count on a
+ * debug panel cannot disagree; the *words* for what each number is live below,
+ * in `TRICK_LABELS`, because they are this screen's vocabulary and nothing in
+ * `app/` or `simulation/` should be choosing them.
+ *
+ * `rider` is the exception and it is a name rather than a word: a race's card
+ * shows one of these per rider and has to say whose is whose, and the name
+ * comes from the roster exactly as the finishing rows' names do. It is empty
+ * on a card with one rider, where naming them would be furniture.
+ *
+ * There is deliberately **no total**. §36.6: counts with short labels, no
+ * grand total called a score.
+ */
+export interface TricksCounts {
+  /** Whose these are, or `''` on a card with a single rider. */
+  readonly rider: string;
+  /** The session's own count, not the observer's — §36.6's one-place rule. */
+  readonly cleanLandings: string;
+  readonly chargedHops: string;
+  readonly spinsLanded: string;
+  readonly oneFootAirs: string;
+}
+
+/**
  * A finished run, ready to write.
  *
  * Every field is already a string. The results screen does no arithmetic and
@@ -421,6 +533,28 @@ export interface ResultsView {
   /** What the table below the summary is, in this mode's own words. */
   readonly table: ResultsTable;
   readonly rows: readonly ResultsRow[];
+  /**
+   * The Tricks summary — M36 §36.6. Omitted on a card with no session tally.
+   *
+   * **Its own region, and never a row in the table.** Three browser specs pin
+   * the number of rows on this card (M10's five, M23's three, M27's two)
+   * because the rows *are* the mode's own figures — sectors, riders — and a
+   * count of 180s appended to them would be a fourth kind of thing wearing a
+   * sector's clothes. The region sits between the table and the notes, which
+   * is where a summary of the ride belongs: below the times that were earned
+   * and above the quiet sentences that score nothing.
+   *
+   * **Present with zeros, absent with no session.** A lap session and a race
+   * both always produce a tally, so their cards always carry this — reading
+   * `0` against four labels is how a player learns what is counted, and a
+   * block that vanished when nobody landed anything would be a feature only
+   * visible to players who had already found it. The four cards with no
+   * session behind them (a timed run, Knockabout, a chase, and any lap card
+   * built without a session) omit the field, and the region is hidden — an
+   * empty container with a heading would be a promise this screen is not
+   * keeping.
+   */
+  readonly tricks?: readonly TricksCounts[];
   readonly notes: readonly string[];
 }
 
@@ -537,7 +671,7 @@ const TITLE_TEMPLATE = `
     </button>
     <button type="button" class="euc-button" data-menu="track-day">
       <span class="euc-button__label">Track Day</span>
-      <span class="euc-button__note">Lap BelVar Circuit. Your best lap rides with you</span>
+      <span class="euc-button__note">Choose a track. Your best lap rides with you</span>
     </button>
     <button type="button" class="euc-button" data-menu="knockabout">
       <span class="euc-button__label">Knockabout</span>
@@ -562,6 +696,27 @@ const TITLE_TEMPLATE = `
       target="_blank" rel="noopener">VibezZzCoder</a></p>
 </div>
 `;
+
+/** Track selection is a title subpanel: opening or cancelling it never loads a world. */
+function tracksTemplate(): string {
+  const notes: Record<typeof TRACK_VENUE_IDS[number], string> = {
+    track: 'Paved circuit · flowing corners and fast laps',
+    switchback: 'Hillside jump park · drops, jumps and tight turns',
+  };
+  return `
+<div class="euc-menu__panel" role="dialog" aria-modal="true" aria-labelledby="euc-tracks-heading">
+  <h2 class="euc-menu__title" id="euc-tracks-heading">Track Day</h2>
+  <p class="euc-menu__tagline">Choose your track. Your best lap rides with you.</p>
+  <div class="euc-menu__actions">
+    ${TRACK_VENUE_IDS.map((venue) => `
+    <button type="button" class="euc-button" data-menu="lap-venue" data-venue="${venue}">
+      <span class="euc-button__label">${VENUE_LABELS[venue]}</span>
+      <span class="euc-button__note">${notes[venue]}</span>
+    </button>`).join('')}
+    <button type="button" class="euc-button euc-button--quiet" data-menu="tracks-back">Back</button>
+  </div>
+</div>`;
+}
 
 /**
  * What each rider is, in words and in a picture.
@@ -1344,8 +1499,15 @@ function writeModeChooser(root: HTMLElement, ride: CouchRide): void {
  */
 export type CouchBlockReason = 'no-targets' | 'too-many-seats' | null;
 
-/** The note under the mode chooser, whichever answer it is giving. */
-function couchBlockNote(reason: CouchBlockReason): string {
+/**
+ * The note under the mode chooser, whichever answer it is giving.
+ *
+ * `venue` is the place a race would be ridden at — M36 Phase 5. The room is
+ * about to be told "three laps" and the one thing that sentence was missing is
+ * three laps of *where*, which stopped being a constant the day a second lap
+ * venue existed.
+ */
+function couchBlockNote(reason: CouchBlockReason, venue: string): string {
   if (reason === 'no-targets') {
     return 'Knockabout needs a route with things to hit, and this one has none. '
       + 'New route will build you one to fight on.';
@@ -1353,13 +1515,28 @@ function couchBlockNote(reason: CouchBlockReason): string {
   if (reason === 'too-many-seats') {
     return 'Knockabout is a two-player fight. Race and free ride take everybody.';
   }
-  return MODE_CHOOSER_NOTE;
+  return modeChooserNote(venue);
 }
 
-const MODE_CHOOSER_NOTE = 'Free ride is riding, with nothing to win. Race is three laps of '
-  + 'BelVar Circuit from a standing grid. Knockabout gives two players a paddle: '
-  + 'first to five knockdowns takes the match.';
+function modeChooserNote(venue: string): string {
+  return 'Free ride is riding, with nothing to win. Race is three laps of '
+    + `${venue} from a standing grid. Knockabout gives two players a paddle: `
+    + 'first to five knockdowns takes the match.';
+}
 
+/**
+ * The mode chooser.
+ *
+ * **The label is the caller's, because the same control answers a different
+ * question on each card it stands on.** The pause card reports a session in
+ * progress (`Playing`) and the results card offers the next one (`Play next`),
+ * while the join panel — where nothing has started and a guest is meeting the
+ * control for the first time — asks it outright: *What to play*. That is the
+ * owner's 2026-09-12 note after his first couch ride (`DESIGN.md` §9n):
+ * a row of options a casual player does not read as a question is a row they
+ * never touch, so the panel that introduces the control names the field in
+ * plain words and draws it as one (`game.css`, `.euc-couch__modes`).
+ */
 function modeChooserTemplate(action: string, idBase: string, label = 'Playing'): string {
   const buttons = COUCH_RIDES.map((ride) => `
         <button type="button" class="euc-couch__mode-button" data-menu="${action}"
@@ -1370,9 +1547,78 @@ function modeChooserTemplate(action: string, idBase: string, label = 'Playing'):
     <div class="euc-couch__modes" role="group" aria-labelledby="${idBase}-label"
          aria-describedby="${idBase}-note">${buttons}
     </div>
-    <p class="euc-field__note" id="${idBase}-note">${MODE_CHOOSER_NOTE}</p>
+    <p class="euc-field__note" id="${idBase}-note">${modeChooserNote(VENUE_LABELS.track)}</p>
   </div>
 `;
+}
+
+/**
+ * The venue chooser — M36 Phase 5, and the control that replaced *Go back to
+ * the hand-built city*.
+ *
+ * **A place is not a mode and not a preference, so it is drawn where places
+ * are already chosen**: the fresh-route panel, whose own state doc says it
+ * "changes which place the player is about to ride", and the join panel, which
+ * is a one-way door away from that panel and would otherwise have to send a
+ * room of four back to the title to change where they race. No new title
+ * button: the title's eight-stop grid is walked by a pad and named stop by
+ * stop in two browser specs, and a ninth would be a stop between a player and
+ * Start ride on the one screen everybody meets.
+ *
+ * **It wears the mode chooser's own markup and classes**, which is a statement
+ * rather than a saving: the two controls are the same shape of question — one
+ * of a short list, the others right there, the current one lit — and a player
+ * who has learned one has learned the other. It also inherits that control's
+ * finger-sized floor and its pad behaviour for free, which is the class of
+ * thing a hand-rolled second segmented control gets wrong.
+ *
+ * `aria-pressed` rather than `role="radio"` for `modeChooserTemplate`'s
+ * reason, written out there: a radiogroup takes every unselected option out of
+ * the tab order, and the pad cursor walks exactly that order.
+ *
+ * The loaded venue is `disabled` as well as pressed. Rebuilding the world you
+ * are standing on is a no-op the door refuses anyway (`Game.pickVenue`), and
+ * `disabled` is what keeps the pad's walk from stopping on it.
+ */
+function venueChooserTemplate(idBase: string, note = '', label = 'Riding at'): string {
+  const buttons = VENUE_IDS.map((venue) => `
+        <button type="button" class="euc-couch__mode-button" data-menu="venue"
+                data-venue="${venue}" aria-pressed="false">${VENUE_LABELS[venue]}</button>`).join('');
+  // **The note is optional and the join panel declines it.** That panel is the
+  // one screen in the game measured against a 1000 x 520 window with four seat
+  // cards on it (`tests/m26.spec.ts`), the short-window tier already hides
+  // every note it has, and the sentence this one would carry is the sentence
+  // the mode chooser two blocks down is about to say anyway.
+  const described = note === '' ? '' : ` aria-describedby="${idBase}-note"`;
+  const paragraph = note === '' ? '' : `
+    <p class="euc-field__note" id="${idBase}-note">${note}</p>`;
+  return `
+  <div class="euc-couch__mode euc-couch__venue" data-menu="venue-chooser">
+    <span class="euc-couch__mode-label" id="${idBase}-label">${label}</span>
+    <div class="euc-couch__modes" role="group"
+         aria-labelledby="${idBase}-label"${described}>${buttons}
+    </div>${paragraph}
+  </div>
+`;
+}
+
+/**
+ * Light the loaded venue wherever the chooser stands, and take it out of the
+ * walk.
+ *
+ * `writeModeChooser`'s twin, and a *report* on the same terms: `app/Game.ts`
+ * holds which world is installed, and a chooser that latched its own last
+ * press would disagree with the world the moment the door refused one.
+ */
+function writeVenueChooser(root: HTMLElement, world: WorldView['world']): void {
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-venue]')) {
+    const here = button.dataset.venue === world;
+    const pressed = here ? 'true' : 'false';
+    if (button.getAttribute('aria-pressed') !== pressed) {
+      button.setAttribute('aria-pressed', pressed);
+    }
+    if (button.disabled !== here) button.disabled = here;
+  }
 }
 
 /**
@@ -1415,13 +1661,21 @@ function couchTemplate(): string {
   // cards while the couch was two seats; the day the constant moved, a
   // hand-written pair would have been a panel that could not show the seats the
   // game had.
+  //
+  // **Seat 0's first arrow carries `data-focus-first`** — M36 Phase 5, on the
+  // rule `focusFirst` was given for the pause card's mode switch. The venue row
+  // above these cards is now the panel's first focusable node, and it is a
+  // control that changes what the *whole room* is riding: a cursor parked there
+  // is one confirm press away from swapping the world out from under four
+  // people who have just sat down. The panel starts where it always started.
   const seats = Array.from({ length: COUCH_SEATS }, (_unused, seat) => `
       <div class="euc-couch__seat" data-couch-seat="${seat}" data-claimed="false">
         <h3 class="euc-couch__player">Player ${seat + 1}</h3>
         <p class="euc-couch__status" data-couch-status="${seat}" role="status"></p>
         <div class="euc-couch__rider">
           <button type="button" class="euc-couch__step" data-menu="couch-prev"
-                  data-couch-step="${seat}" aria-label="Previous rider for player ${seat + 1}">&#8249;</button>
+                  data-couch-step="${seat}"${seat === 0 ? ' data-focus-first' : ''}
+                  aria-label="Previous rider for player ${seat + 1}">&#8249;</button>
           <span class="euc-couch__pick">
             <span class="euc-couch__dot" aria-hidden="true"></span>
             <span class="euc-couch__name" data-couch-rider="${seat}"></span>
@@ -1438,16 +1692,18 @@ function couchTemplate(): string {
   <h2 class="euc-menu__title euc-couch__heading" id="euc-couch-heading">Players</h2>
   <p class="euc-menu__tagline">
     One screen, one world, and two to four riders. Each player takes their own
-    controller — a gamepad, or this keyboard — and presses to sit down. Nothing
-    is being timed; go wherever you like.
+    controller — a gamepad, or this keyboard — and presses to sit down. Then
+    pick where to ride and what to play.
   </p>
+
+  ${venueChooserTemplate('euc-couch-venue', '', 'Where to ride')}
 
   <fieldset class="euc-couch__seats">
     <legend class="euc-couch__legend">Seats</legend>
     ${seats}
   </fieldset>
 
-  ${modeChooserTemplate('couch-mode', 'euc-couch-mode')}
+  ${modeChooserTemplate('couch-mode', 'euc-couch-mode', 'What to play')}
 
   <div class="euc-menu__actions">
     <button type="button" class="euc-button euc-button--primary" data-menu="couch-start" disabled>
@@ -1570,12 +1826,15 @@ function routesTemplate(seedMaxLength: number): string {
 
   <div class="euc-routes__loaded">
     <p class="euc-world" data-menu="world"></p>
+    ${venueChooserTemplate(
+      'euc-routes-venue',
+      'These places are built by hand rather than generated, and they stay where '
+      + 'they are. Track Day and Race need one that closes a lap.',
+      'Where to ride',
+    )}
     <div class="euc-menu__actions">
       <button type="button" class="euc-button" data-menu="copy-link" hidden>
         Copy a link to the route above
-      </button>
-      <button type="button" class="euc-button euc-button--quiet" data-menu="ride-city" hidden>
-        Go back to the hand-built city
       </button>
     </div>
   </div>
@@ -1642,6 +1901,25 @@ const NEW_ROUTE_BUTTON = `
  * Retry is the primary action and is first in the Tab order, because the reason
  * anyone reads a results screen is to decide whether to go again.
  */
+/**
+ * What each trick count is, in words — M36 §36.6.
+ *
+ * Here rather than in `app/Game.ts` because they are words, and because both
+ * cards that carry them would otherwise have written their own copy: a race
+ * card calling them "180s" and a lap card calling them "Spins landed" is the
+ * defect `ResultsTable`'s own header records, one screen later.
+ *
+ * Short on purpose. They sit in a grid that has to survive four riders in
+ * portrait, and "180s landed" is the longest thing here that still says what
+ * it counts.
+ */
+const TRICK_LABELS = Object.freeze({
+  cleanLandings: 'Clean landings',
+  chargedHops: 'Charged hops',
+  spinsLanded: '180s landed',
+  oneFootAirs: 'One-foot airs',
+});
+
 const RESULTS_TEMPLATE = `
 <div class="euc-menu__panel euc-results" role="dialog" aria-modal="true"
      aria-labelledby="euc-results-heading" data-menu="results-panel" data-record="false">
@@ -1672,6 +1950,12 @@ const RESULTS_TEMPLATE = `
     </thead>
     <tbody data-menu="results-rows"></tbody>
   </table>
+
+  <section class="euc-results__tricks" data-menu="results-tricks" hidden
+           aria-labelledby="euc-results-tricks-caption">
+    <h3 class="euc-results__tricks-caption" id="euc-results-tricks-caption">Tricks</h3>
+    <div class="euc-results__tricks-groups" data-menu="results-tricks-groups"></div>
+  </section>
 
   <ul class="euc-results__notes" data-menu="results-notes" hidden></ul>
 
@@ -1715,6 +1999,7 @@ export class Menus {
   private readonly parent: HTMLElement;
 
   private readonly title: HTMLDivElement;
+  private readonly tracks: HTMLDivElement;
   private readonly pause: HTMLDivElement;
   private readonly settings: HTMLDivElement;
   private readonly results: HTMLDivElement;
@@ -1739,12 +2024,50 @@ export class Menus {
    */
   private claimKeys = false;
 
+  // -- M36 Phase 5 -------------------------------------------------------------
+  /**
+   * The venue a lap ride would be ridden at, as `setWorld` last composed it.
+   *
+   * Held because the sentences that name it are written by four different
+   * methods on three panels, and the world can change while any of them is on
+   * screen. One cached string is what lets a venue press rewrite them all
+   * without every caller having to know a venue exists.
+   */
+  private lapVenue = VENUE_LABELS.track;
+
+  /**
+   * Whether the loaded world closes a ring, as `setWorld` was last told.
+   *
+   * The plan's own fact rather than a list of which venues lap — the same
+   * `WorldView.lap` the couch race note is composed from, held for the same
+   * reason `lapVenue` is: the sentence that needs it is written on a press
+   * rather than on the world change that supplies it. It is what keeps the
+   * venue-ready line from offering the city a lap it would have to take at
+   * BelVar.
+   */
+  private lapsHere = false;
+
+  /**
+   * Why the fresh-route panel was opened, as `setRoutePurpose` last set it.
+   *
+   * Kept for the venue row's own visibility, which is a function of the
+   * purpose and of nothing else — and which has to be re-decided on a purpose
+   * change as well as on a world change.
+   */
+  private purpose: RoutePurpose = 'ride';
+
+  /** The last block reason each copy of the mode chooser was given. */
+  private joinBlockReason: CouchBlockReason = null;
+  private pauseBlockReason: CouchBlockReason = null;
+  private resultsBlockReason: CouchBlockReason = null;
+
   constructor(initial: GameOptions, config: MenuOptions) {
     this.callbacks = config.callbacks;
     this.parent = config.parent ?? document.body;
     this.options = initial;
 
     this.title = this.mount('euc-menu--title', TITLE_TEMPLATE);
+    this.tracks = this.mount('euc-menu--tracks', tracksTemplate());
     this.pause = this.mount('euc-menu--pause', PAUSE_TEMPLATE);
     this.settings = this.mount('euc-menu--settings', this.settingsTemplate());
     this.results = this.mount('euc-menu--results', RESULTS_TEMPLATE);
@@ -1811,6 +2134,7 @@ export class Menus {
 
     this.stopListening();
     this.title.hidden = screen !== 'title';
+    this.tracks.hidden = screen !== 'tracks';
     this.pause.hidden = screen !== 'pause';
     this.settings.hidden = screen !== 'settings';
     this.results.hidden = screen !== 'results';
@@ -1837,6 +2161,16 @@ export class Menus {
     }
 
     this.focusFirst(this.panelFor(screen));
+  }
+
+  /** All three Back inputs return focus to the button that opened the chooser. */
+  closeTracks(): boolean {
+    if (this.screen !== 'tracks') return false;
+    this.show('title');
+    const button = this.title.querySelector<HTMLElement>('[data-menu="track-day"]');
+    button?.focus();
+    this.setPadCursor(this.padDriving ? button : null);
+    return true;
   }
 
   /** Push a new options record into the controls. Called on every change. */
@@ -2016,6 +2350,54 @@ export class Menus {
       }
     }
 
+    // **The Tricks summary, in its own region** — M36 §36.6, and see
+    // `ResultsView.tricks` for why it is not a row. Cleared and rebuilt the
+    // same way the rows above are; one group per rider, and a group that is
+    // not named is a card with one rider on it.
+    const tricks = this.results.querySelector<HTMLElement>('[data-menu="results-tricks"]');
+    const trickGroups = this.results
+      .querySelector<HTMLElement>('[data-menu="results-tricks-groups"]');
+    if (tricks !== null && trickGroups !== null) {
+      const counts = view.tricks ?? [];
+      trickGroups.textContent = '';
+      for (const rider of counts) {
+        const group = document.createElement('div');
+        group.className = 'euc-results__trick-group';
+        if (rider.rider !== '') {
+          const name = document.createElement('span');
+          name.className = 'euc-results__trick-rider';
+          name.textContent = rider.rider;
+          group.appendChild(name);
+        }
+        const list = document.createElement('dl');
+        list.className = 'euc-results__trick-list';
+        // The words are this screen's and the order is this screen's: the
+        // landing everybody makes first, then the three things a rider chose
+        // to do. `app/` hands over four numbers and no vocabulary.
+        for (const [label, value] of [
+          [TRICK_LABELS.cleanLandings, rider.cleanLandings],
+          [TRICK_LABELS.chargedHops, rider.chargedHops],
+          [TRICK_LABELS.spinsLanded, rider.spinsLanded],
+          [TRICK_LABELS.oneFootAirs, rider.oneFootAirs],
+        ] as const) {
+          const pair = document.createElement('div');
+          pair.className = 'euc-results__trick';
+          const term = document.createElement('dt');
+          term.textContent = label;
+          const count = document.createElement('dd');
+          count.textContent = value;
+          pair.appendChild(term);
+          pair.appendChild(count);
+          list.appendChild(pair);
+        }
+        group.appendChild(list);
+        trickGroups.appendChild(group);
+      }
+      // A heading over nothing is worse than no heading, and the four cards
+      // with no session behind them send no counts at all.
+      tricks.hidden = counts.length === 0;
+    }
+
     const notes = this.results.querySelector<HTMLElement>('[data-menu="results-notes"]');
     if (notes) {
       notes.textContent = '';
@@ -2147,9 +2529,11 @@ export class Menus {
       const off = id !== undefined && view.blocked.includes(id as CouchRide);
       if (button.disabled !== off) button.disabled = off;
     }
-    const modeNote = this.couch.querySelector<HTMLElement>('.euc-field__note');
-    const modeText = couchBlockNote(view.blockReason);
-    if (modeNote && modeNote.textContent?.trim() !== modeText) modeNote.textContent = modeText;
+    // Held as well as written, because the sentence names a venue now (M36
+    // Phase 5) and the venue can change without the room's blocked list
+    // changing — a press on this panel's own venue row does exactly that.
+    this.joinBlockReason = view.blockReason;
+    this.writeCouchNote(this.couch.querySelector<HTMLElement>('.euc-field__note'), view.blockReason);
 
     const start = this.couch.querySelector<HTMLButtonElement>('[data-menu="couch-start"]');
     // **Disabled rather than hidden.** A player who can see the control they
@@ -2209,6 +2593,11 @@ export class Menus {
     blocked: readonly CouchRide[],
     reason: CouchBlockReason = null,
   ): void {
+    // Recorded before the early exit, for `setCouchView`'s reason: a venue
+    // press has to be able to rewrite this note without a switch being offered.
+    if (hook === 'pause-couch') this.pauseBlockReason = reason;
+    else this.resultsBlockReason = reason;
+
     const block = panel.querySelector<HTMLElement>(`[data-menu="${hook}"]`);
     if (block === null) return;
     const hidden = ride === null;
@@ -2229,9 +2618,7 @@ export class Menus {
       const off = id !== undefined && blocked.includes(id as CouchRide);
       if (button.disabled !== off) button.disabled = off;
     }
-    const note = block.querySelector<HTMLElement>('.euc-field__note');
-    const text = couchBlockNote(reason);
-    if (note && note.textContent?.trim() !== text) note.textContent = text;
+    this.writeCouchNote(block.querySelector<HTMLElement>('.euc-field__note'), reason);
   }
 
   /**
@@ -2313,8 +2700,13 @@ export class Menus {
    * returns to the ordinary Fresh-route entrance.
    */
   setRoutePurpose(purpose: RoutePurpose): void {
+    this.purpose = purpose;
     const stage = this.routes.querySelector<HTMLElement>('[data-menu="route-stage"]');
     if (stage) stage.dataset.purpose = purpose;
+
+    // A mode that cannot run on any hand-built place must not be offered one —
+    // `writeVenueOffer` is where that is argued.
+    this.writeVenueOffer();
 
     const ride = this.routes.querySelector<HTMLButtonElement>('[data-menu="ride-route"]');
     if (ride) {
@@ -2358,20 +2750,77 @@ export class Menus {
       if (node) node.dataset.generated = generated ? 'true' : 'false';
     }
 
-    // Both of these are answers to "what else can I do from here", and both are
-    // wrong when the world already is what they offer.
-    //
-    // **The city button asks whether this *is* the city, not whether the world
-    // was generated**, which used to be the same question and stopped being one
-    // at M23. On the circuit the old test hid the one control that leads back
-    // to the hand-built world, which is exactly where a player who arrived by
-    // pressing Track Day would look for it.
-    const city = this.routes.querySelector<HTMLElement>('[data-menu="ride-city"]');
-    if (city) city.hidden = view.world === 'slice';
+    // **Both copies of the venue chooser, from one writer** — M36 Phase 5, and
+    // `writeModeChooser`'s rule for the same reason: the join panel and the
+    // fresh-route panel are two views of one fact, and a second writer is how
+    // two views start disagreeing. This replaced *Go back to the hand-built
+    // city*, which asked whether this *is* the city and could only ever offer
+    // one answer; the row names every place and lights the one you are on.
+    writeVenueChooser(this.routes, view.world);
+    writeVenueChooser(this.couch, view.world);
+
     // The copy button stays generated-only: a link is only worth copying when
     // it carries a seed somebody else could not otherwise guess.
     const copy = this.routes.querySelector<HTMLElement>('[data-menu="copy-link"]');
     if (copy) copy.hidden = !generated;
+
+    // Couch race notes still name the loaded lap venue. The title now opens
+    // a chooser, whose initial focus follows the loaded track when offered.
+    this.lapVenue = lapVenueName(view);
+    this.lapsHere = view.lap;
+    for (const button of this.tracks.querySelectorAll<HTMLElement>('[data-venue]')) {
+      button.toggleAttribute('data-focus-first', button.dataset.venue === view.world);
+    }
+    // And the mode chooser's race clause, wherever it stands. Rewritten here
+    // rather than waiting for the next `setCouchView` because the venue can
+    // change *while the join panel is open* — that is the whole point of the
+    // control one block up.
+    this.writeCouchNotes();
+  }
+
+  /**
+   * Which venues the fresh-route panel is offering, if any.
+   *
+   * **This is the "explicitly decline Chase and Knockabout at the park" clause
+   * of §36 Phase 5, said where the refusal actually lands.** Both modes answer
+   * a world they cannot run on by opening this panel and naming what they need
+   * — a through line, or things to hit — and *no hand-built place has either*.
+   * So a row of venues on that panel would be three buttons that each take the
+   * player somewhere the mode will refuse again, which is the stranded card
+   * M23 taught this file about. What the panel offers instead is Surprise me
+   * and the seed field, which are the legal answers, and they are already the
+   * emphasis the stage is carrying.
+   *
+   * Hidden rather than disabled, unlike a blocked mode: a disabled row would
+   * be saying "these places exist and you may not have them", when the truth is
+   * that the question on screen is not about places at all.
+   */
+  private writeVenueOffer(): void {
+    const group = this.routes.querySelector<HTMLElement>('[data-menu="venue-chooser"]');
+    const hidden = this.purpose !== 'ride';
+    if (group && group.hidden !== hidden) group.hidden = hidden;
+  }
+
+  /** One writer for every copy of the mode chooser's note, so none goes stale. */
+  private writeCouchNotes(): void {
+    this.writeCouchNote(
+      this.couch.querySelector<HTMLElement>('.euc-field__note'),
+      this.joinBlockReason,
+    );
+    this.writeCouchNote(
+      this.pause.querySelector<HTMLElement>('[data-menu="pause-couch"] .euc-field__note'),
+      this.pauseBlockReason,
+    );
+    this.writeCouchNote(
+      this.results.querySelector<HTMLElement>('[data-menu="results-couch"] .euc-field__note'),
+      this.resultsBlockReason,
+    );
+  }
+
+  private writeCouchNote(note: HTMLElement | null, reason: CouchBlockReason): void {
+    if (note === null) return;
+    const text = couchBlockNote(reason, this.lapVenue);
+    if (note.textContent?.trim() !== text) note.textContent = text;
   }
 
   /**
@@ -2388,7 +2837,7 @@ export class Menus {
     const node = this.routes.querySelector<HTMLElement>('[data-menu="route-status"]');
     if (!node) return;
 
-    const [tone, message] = routeStatusLine(status);
+    const [tone, message] = routeStatusLine(status, this.lapsHere);
     if (node.textContent !== message) node.textContent = message;
     node.dataset.tone = tone;
 
@@ -2466,6 +2915,7 @@ export class Menus {
     this.seedField?.removeEventListener('keydown', this.onSeedKeyDown);
     window.removeEventListener('keydown', this.onKeyDown, true);
     this.title.remove();
+    this.tracks.remove();
     this.pause.remove();
     this.settings.remove();
     this.results.remove();
@@ -2487,6 +2937,7 @@ export class Menus {
 
   private panelFor(screen: MenuScreen): HTMLElement | null {
     if (screen === 'title') return this.title;
+    if (screen === 'tracks') return this.tracks;
     if (screen === 'pause') return this.pause;
     if (screen === 'settings') return this.settings;
     if (screen === 'results') return this.results;
@@ -2619,7 +3070,12 @@ export class Menus {
     else if (action === 'knockabout') this.callbacks.onStartKnockabout();
     else if (action === 'chase') this.callbacks.onStartChase();
     // -- M23 -----------------------------------------------------------------
-    else if (action === 'track-day') this.callbacks.onStartTrackDay();
+    else if (action === 'track-day') this.show('tracks');
+    else if (action === 'tracks-back') this.closeTracks();
+    else if (action === 'lap-venue') {
+      const venue = target.closest<HTMLElement>('[data-venue]')?.dataset.venue;
+      if (venue !== undefined) this.callbacks.onStartTrackDay(venue);
+    }
     else if (action === 'end-session') this.callbacks.onEndSession();
     else if (action === 'resume') this.callbacks.onResume();
     else if (action === 'settings') this.callbacks.onOpenSettings();
@@ -2634,8 +3090,16 @@ export class Menus {
     else if (action === 'ride-route') this.callbacks.onRideRoute(this.seed);
     else if (action === 'trial-route') this.callbacks.onTimeTrialRoute(this.seed);
     else if (action === 'surprise') this.callbacks.onSurpriseSeed();
-    else if (action === 'ride-city') this.callbacks.onRideTheCity();
     else if (action === 'copy-link') this.callbacks.onCopyLink();
+    // -- M36 Phase 5 ---------------------------------------------------------
+    // The venue rides on a nested hook exactly as the mode chooser's does, so
+    // one `data-menu` serves a row of places and the id travels in its own
+    // attribute. `closest` rather than the target, because the label is a span
+    // inside the button on some of them.
+    else if (action === 'venue') {
+      const venue = target.closest<HTMLElement>('[data-venue]')?.dataset.venue;
+      if (venue !== undefined) this.callbacks.onPickVenue(venue);
+    }
     // -- M20 -----------------------------------------------------------------
     else if (action === 'new-route') this.callbacks.onNewRoute();
     // -- M14.5 ---------------------------------------------------------------
@@ -2785,7 +3249,8 @@ export class Menus {
       // that is the only control on a panel is not worth a fifth. The seed is
       // one keystroke from being retyped; the way out of a screen should not
       // depend on where the caret is.
-      if (this.screen === 'settings') this.callbacks.onCloseSettings();
+      if (this.screen === 'tracks') this.closeTracks();
+      else if (this.screen === 'settings') this.callbacks.onCloseSettings();
       else if (this.screen === 'pause') this.callbacks.onResume();
       else if (this.screen === 'routes') this.callbacks.onCloseRoutes();
       // Same rule as the fresh-route panel: one meaning for Escape across every
@@ -3349,7 +3814,20 @@ function renderSeatLine(into: HTMLElement, line: readonly SeatLineSegment[]): vo
   }));
 }
 
-function routeStatusLine(status: RouteStatus): [string, string] {
+/**
+ * The tone and the words for one status, and the only place either is decided.
+ *
+ * Exported for `menus.test.ts`, which pins the sentences headlessly — the rest
+ * of this class needs a document and these strings do not. Nothing outside
+ * this file calls it: `setRouteStatus` is still the one writer, and the second
+ * argument is a fact the panel was told rather than one a caller composes.
+ *
+ * `laps` is `WorldView.lap` as `setWorld` last delivered it — whether the
+ * loaded world closes a ring. Only the venue line reads it, and reads it for
+ * the Track Day note's own reason: a line that offered every place a lap would
+ * be offering the city one it would have to take at BelVar.
+ */
+export function routeStatusLine(status: RouteStatus, laps: boolean): [string, string] {
   if (status.kind === 'building') return ['busy', `Building ${status.seed}…`];
   if (status.kind === 'ready') return ['ready', `${status.seed} is built and ready to ride.`];
   // Device-neutral on purpose: a pad player who cannot type reaches this line
@@ -3378,6 +3856,21 @@ function routeStatusLine(status: RouteStatus): [string, string] {
     return [
       'refused',
       'The chase needs a generated route to run on. Generate a fresh one below.',
+    ];
+  }
+  if (status.kind === 'venue-ready') {
+    // **It names the next control rather than this panel's own.** The place is
+    // loaded the instant it is pressed, so nothing here is pending and nothing
+    // here is refused — what is true is that the ride is one press of `Back`
+    // away, and that `Ride this route` is still about a route nobody has asked
+    // for. Saying so is the whole repair: the line used to go idle on a press
+    // that had succeeded, and the seed refusal was what the player heard next.
+    const place = VENUE_LABELS[status.venue];
+    return [
+      'ready',
+      laps
+        ? `${place} is ready. Back to the title to ride it or lap it.`
+        : `${place} is ready. Back to the title to ride it.`,
     ];
   }
   if (status.kind === 'copied') return ['ready', 'Link copied. Anyone who opens it rides this route.'];

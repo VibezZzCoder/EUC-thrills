@@ -594,10 +594,20 @@ test('choosing routes through the menu plateaus GPU objects', async ({ page }) =
   }
 
   // And the way back is clean too: the city returns to what booting into it costs.
+  //
+  // **Transcribed at M36 Phase 5, when the control changed and the claim did
+  // not.** `Go back to the hand-built city` was one button for one place; it is
+  // now the venue chooser's own `slice` entry, which is the same press with the
+  // other two places beside it. The one behavioural difference is deliberate
+  // and is asserted rather than dropped: a venue press swaps the world *behind*
+  // the open panel instead of returning to the title, so the player can see
+  // where they have just chosen to be — `Back` is still what leaves.
   await page.evaluate(() => window.game.setAppState('title'));
   await page.locator('.euc-menu--title [data-menu="routes"]').click();
-  await page.locator('.euc-menu--routes [data-menu="ride-city"]').click();
+  await page.locator('.euc-menu--routes [data-menu="venue"][data-venue="slice"]').click();
   expect(await world(page)).toMatchObject({ levelId: 'slice', generated: false });
+  expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('routes');
+  await page.locator('.euc-menu--routes [data-menu="routes-back"]').click();
   expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('title');
 
   expect(errors).toEqual([]);
