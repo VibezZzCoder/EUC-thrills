@@ -988,12 +988,10 @@ test('pause, mode switch, results and retry all come back to the park', async ({
   // Pause lands on Resume, and the switch names the venue the room is on.
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => window.game.snapshot().app.state === 'paused');
-  // Knockabout is refused here because the park carries nothing to hit — the
-  // mode declines the venue on the control rather than after the press, and
-  // the note says which of the two reasons it is.
-  await expect(page.locator('[data-menu="pause-couch"] [data-couch-mode="knockabout"]')).toBeDisabled();
+  // Knockabout offers to generate a course because the park has no stands.
+  await expect(page.locator('[data-menu="pause-couch"] [data-couch-mode="knockabout"]')).toBeEnabled();
   await expect(page.locator('[data-menu="pause-couch"] .euc-field__note'))
-    .toContainText('needs a route with things to hit');
+    .toContainText('fresh course with targets');
   expect(await page.evaluate(() => window.game.snapshot().targets.total)).toBe(0);
 
   // Free ride and back to Race: the park survives both switches.

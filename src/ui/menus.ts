@@ -1508,7 +1508,7 @@ function writeModeChooser(root: HTMLElement, ride: CouchRide): void {
  * arrives in both places at once when it is built.
  */
 /**
- * Why a ride is off the menu, as a fact rather than as a sentence.
+ * Why a couch needs another world, as a fact rather than as a sentence.
  *
  * **One reason again since M37 (§37.1).** M27 Phase 1 added a second —
  * `'too-many-seats'`, *"a couch with three people on it is not fixed by
@@ -1516,8 +1516,8 @@ function writeModeChooser(root: HTMLElement, ride: CouchRide): void {
  * two-seat fight until q94 was opened. It is opened, three and four are legal,
  * and the member is gone so the compiler names every site that assumed it.
  *
- * What is left is the one a player can fix: a world with nothing to hit is
- * fixed by building a route. `Game` knows when that is true; only this file
+ * A world with nothing to hit is fixed by building a route. Pause/results
+ * switches request that route automatically; the join panel opens its chooser. `Game` knows when that is true; only this file
  * knows how to say it, and the union stays a union because the next refusal
  * will want it.
  *
@@ -1539,15 +1539,13 @@ export type CouchBlockReason = 'no-targets' | 'no-room' | null;
  */
 function couchBlockNote(reason: CouchBlockReason, venue: string): string {
   if (reason === 'no-targets') {
-    return 'Knockabout needs a route with things to hit, and this one has none. '
-      + 'New route will build you one to fight on.';
+    return 'Choose Knockabout to build a fresh course with targets for everybody.';
   }
   if (reason === 'no-room') {
     // Names the fix and does not explain the validator: what the player can do
     // about it is take another route, which is the same answer the sentence
     // above gives and the same one the routes panel repeats.
-    return 'This route has nowhere to start everybody far enough apart. '
-      + 'New route will build you one with room to fight in.';
+    return 'Choose Knockabout to build a fresh course with room for everybody.';
   }
   // The `'too-many-seats'` branch stood here until M37 (§37.1) and said
   // *"Knockabout is a two-player fight. Race and free ride take everybody."*
@@ -2714,9 +2712,19 @@ export class Menus {
     for (const panel of [this.pause, this.results]) {
       const button = panel.querySelector<HTMLButtonElement>('[data-menu="new-route"]');
       if (button) button.disabled = stage === 'building';
+      for (const choice of panel.querySelectorAll<HTMLButtonElement>('[data-menu="switch-mode"]')) {
+        choice.disabled = stage === 'building';
+      }
+      const modeNote = panel.querySelector<HTMLElement>('[data-menu$="-couch"] .euc-field__note');
+      if (modeNote && stage !== 'idle') {
+        modeNote.textContent = stage === 'building'
+          ? 'Building a fresh course…'
+          : 'No suitable course found. Choose the mode again to retry, or keep riding.';
+      }
       const target = panel.querySelector<HTMLElement>('[data-note="new-route"]');
       if (target && target.textContent !== note) target.textContent = note;
     }
+    if (stage === 'idle') this.writeCouchNotes();
   }
 
   // -- Fresh routes (M12 Phase 4) ---------------------------------------------

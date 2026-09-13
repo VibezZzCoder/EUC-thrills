@@ -3223,52 +3223,9 @@ export class Game {
     this.applyViewCount();
   }
 
-  /**
-   * Which rides this room cannot have — one expression, two screens and a door.
-   *
-   * **One clause since M37 (§37.1), and it is about the world rather than
-   * about the room.** A world with nothing to knock down cannot become a
-   * Knockabout (M26: `enterKnockabout` answers a bare world by opening the
-   * routes panel, which is not a successor of `paused`, so the press would
-   * move every rider and change nothing).
-   *
-   * The second clause was q94's: a couch wider than two seats could not become
-   * a fight either, because four-player Knockabout was unopened design and a
-   * mode that quietly seated four people in a two-seat fight would have been
-   * settling it by implementation. The owner reopened it on 2026-09-13 and
-   * §37.1 answers all six questions, so the width refusal is gone from every
-   * door. **The world-capability requirement is not** — that is a different
-   * fact about a different thing, and it still refuses here.
-   *
-   * The join panel reads the same reason through `joinBlockReason`, which
-   * answers a bare world differently for the reason written there.
-   */
-  private blockedCouchRides(): readonly CouchRide[] {
-    return this.couchBlockReason() === null ? NO_RIDES_BLOCKED : KNOCKABOUT_ONLY;
-  }
-
-  /**
-   * *Why* the room cannot have it — the half the screen turns into words.
-   *
-   * One reason left, and it is the one the player can fix: build a route with
-   * something on it. The seat clause that used to be asked first
-   * (`if (this.roomSize() > 2) return 'too-many-seats';`) was q94's and is
-   * retired by M37; `roomSize` itself stays, because the *views* still follow
-   * the people rather than the chairs.
-   */
+  /** Whether switching to Knockabout needs a fresh course for this room. */
   private couchBlockReason(): CouchBlockReason {
     if (this.targets.count === 0) return 'no-targets';
-    // **And the world that cannot stand three or four riders apart** — the
-    // repair pass, §37.4. `enterKnockabout` refuses such a world rather than
-    // arming a bout on N independent slots, and `routes` is not a successor of
-    // `paused`, so this is the same shape as the clause above for the same
-    // reason: the press has to be refused before anything is written, and the
-    // control has to say so rather than doing nothing. `matchPackFits` is
-    // memoised: this runs **once per state transition** — `blockedCouchRides`
-    // and this pair have `enterState` as their only caller, and nothing in the
-    // render loop reads either — and a cold thirty-two-candidate search is
-    // around ten milliseconds, so the memo buys that back once per world and
-    // width rather than once a frame.
     if (!this.matchPackFits()) return 'no-room';
     return null;
   }
@@ -3280,9 +3237,8 @@ export class Game {
    * **A world with nothing to hit is not a refusal here, and never was.** The
    * entrance already answers it: `enterKnockabout` sends a bare world to the
    * routes panel, which is a legal successor of the join panel and is the
-   * player being offered a route to fight on. The pause menu's switch refuses
-   * instead because `routes` is *not* a successor of `paused` — a difference
-   * between two screens, not between two opinions about the mode.
+   * player being offered a route to fight on. Pause/results switches build a
+   * compatible course directly, through the deferred New route path.
    *
    * The seat clause was the one this pair existed for — *"a room of three may
    * not be offered a two-seat fight"* (q94) — and M37 opened it, so the panel
@@ -4752,8 +4708,8 @@ export class Game {
     // **A refusal that cannot be shown is still a refusal, and it writes
     // nothing** — the repair pass, §37.8 item 2. `openRoutes` now reports
     // whether the panel actually opened, and both refusals below fall silent
-    // when it did not: the pause card cannot reach `routes` and is greyed by
-    // `couchBlockReason` instead, and the results card cannot reach it either.
+    // when it did not. Pause/results mode switches generate a compatible
+    // course first, then arrive here through the normal entrance.
     //
     // **The results card is left silent on purpose.** Its *Ride it again* is
     // the only edge that arrives here, and it can only be refused on a world
@@ -4937,18 +4893,17 @@ export class Game {
   /**
    * The producer call itself, in one place — M37 §37.4.
    *
-   * Both callers ask the same question of the same world with the same weapon
-   * and differ only in the seed, and a second copy of this argument list is a
-   * second opinion about what a bout's spacing is.
+   * Entrances, menu availability and prospective course validation all use
+   * this producer with the same live weapon and the requested world.
    */
-  private groupPackFor(seed: string): GroupSpawnResult | null {
+  private groupPackFor(seed: string, plan: LevelPlan = this.levelPlan): GroupSpawnResult | null {
     if (!GROUP_SPAWN_COUNTS.includes(this.seatCount)) return null;
     return groupSpawns(
-      this.levelPlan.spawn,
+      plan.spawn,
       this.seatCount,
-      this.terrain,
+      plan === this.levelPlan ? this.terrain : new PlanTerrainSampler(plan),
       seed,
-      groupObstaclesFrom(this.levelPlan),
+      groupObstaclesFrom(plan),
       // Off the real weapon, never a copied 2.15 m: one expression computes
       // the bound and both the producer and its tests read it.
       this.groupSeparationMetres(),
@@ -4992,7 +4947,7 @@ export class Game {
    * **Memoised, and the pause card asks it once per state transition** — not
    * once a frame, which is what this said before the repair pass: the search
    * is thirty-two validated candidates, around ten milliseconds cold, and
-   * `couchBlockReason` is reached only from `enterState`. The answer cannot
+   * `couchBlockReason` also checks it when a mode is requested. The answer cannot
    * change without the world, the room's width or the weapon changing:
    * `groupSpawns` reads its seed *only* through `groupSeatDeal`, which renames
    * the points of an already-accepted layout, so acceptance is a property of
@@ -6260,7 +6215,7 @@ export class Game {
    * a pause resumes, and a finished match rides another one.
    */
   switchCouchRide(ride: string): void {
-    if (!isCouchRide(ride)) return;
+    if (!isCouchRide(ride) || this.pendingRoute !== null) return;
     // **Any couch, not a full one** — M27 Phase 1. The test read
     // `!== COUCH_SEATS` while a couch was always exactly two seats, so it was
     // simultaneously "this is a couch" and "this couch is full"; the day the
@@ -6274,31 +6229,18 @@ export class Game {
     // world-capability refusal below is a different question and stays.
     const from = this.couchRideOnScreen();
     if (from === null) return;
-    // **A world with nothing to hit cannot become a Knockabout from here**, and
-    // this refusal has to be *before* anything is written. `enterKnockabout`
-    // answers a bare world by opening the routes panel, `routes` is not a
-    // successor of `paused`, and `goTo` refuses it — so without this line the
-    // press would leave `couchRide` changed and both riders teleported to the
-    // spawn with the pause menu still up, which is a mode switch that did
-    // everything except switch the mode.
-    //
-    // A results card cannot reach it — a finished match is proof the world
-    // carried discs — so this refusal is the pause menu's in practice, and the
-    // note the screen shows beside it is written for that card.
-    if (ride === 'knockabout' && this.targets.count === 0) return;
-    // **And the same refusal for a world that cannot hold the pack** — the
-    // repair pass, §37.4. `enterKnockabout` answers a refused group start the
-    // way it answers a bare world (the routes panel), so from here it would
-    // leave `couchRide` changed and nothing switched. The greyed control on
-    // this card reads the same `couchBlockReason`, which is M26's rule that
-    // the door and the control refuse on identical terms.
-    if (ride === 'knockabout' && !this.matchPackFits()) return;
     if (ride === from) {
       // Already what it is: leave the way the screen's own primary action
       // leaves, so the button under the finger still does the obvious thing.
       if (this.appState.current === 'paused') this.appState.resumeRide();
       else if (from === 'race') this.enterTrackDay();
       else this.enterKnockabout();
+      return;
+    }
+    // A mode press requests a playable session. Keep the room on this card
+    // while a compatible course is generated; commit the mode only on success.
+    if (ride === 'knockabout' && this.couchBlockReason() !== null) {
+      this.newRouteHere('knockabout');
       return;
     }
     this.couchRide = ride;
@@ -7082,13 +7024,12 @@ export class Game {
    * the mode is entered afterwards through its ordinary entrance. The edges
    * used (`paused → chase`, `results → chase`, and so on) all already existed.
    */
-  private newRouteHere(): void {
+  private newRouteHere(destination: RouteDestination | null = this.rideDestination()): void {
     // A second press while the first is building. `beginRouteWork` would
     // overwrite the pending work and the button is disabled anyway; refusing
     // here is what makes that true of the QA bridge and the gamepad too.
     if (this.pendingRoute !== null) return;
 
-    const destination = this.rideDestination();
     if (destination === null) return;
     this.menus.setNewRouteStage('building');
     this.beginRouteWork(
@@ -7256,6 +7197,7 @@ export class Game {
     if (work === null) return;
 
     if (work.kind === 'surprise') {
+      let needsRoom = false;
       // Four tries covers a one-in-360 failure rate to about one chance in
       // sixteen billion, and the loop is bounded rather than "until it works"
       // because an unbounded retry is how a rejection budget becomes a hang.
@@ -7282,6 +7224,16 @@ export class Game {
         if (work.destination === 'chase' && RouteSpine.fromPlan(outcome.plan) === null) {
           continue;
         }
+        // Validate the whole group against the candidate BEFORE replacing the
+        // current world. Otherwise a valid route could still strand a room on
+        // its pause/results card after enterKnockabout refuses its pack.
+        if (work.destination === 'knockabout') {
+          const pack = this.groupPackFor(`${outcome.seed}|fit`, outcome.plan);
+          if (pack !== null && !pack.ok) {
+            needsRoom = true;
+            continue;
+          }
+        }
         this.installLevel('generated', outcome.seed, outcome.plan);
         this.menus.setSeed(outcome.seed);
         this.menus.setNewRouteStage('idle');
@@ -7297,7 +7249,8 @@ export class Game {
       // the pause and results cards have no status line of their own.
       this.menus.setNewRouteStage('failed');
       this.setRouteStatus(
-        work.destination === 'knockabout' ? { kind: 'needs-targets' }
+        work.destination === 'knockabout'
+          ? needsRoom ? { kind: 'needs-room', count: this.seatCount } : { kind: 'needs-targets' }
           : work.destination === 'chase' ? { kind: 'needs-route' }
             : { kind: 'blank' },
       );
@@ -7317,6 +7270,7 @@ export class Game {
 
   /** Start the mode the player chose before (or on) the route panel. */
   private rideLoadedWorld(destination: RouteDestination): void {
+    if (this.seatCount >= 2 && isCouchRide(destination)) this.couchRide = destination;
     if (destination === 'challenge') this.startChallenge();
     else if (destination === 'knockabout') this.enterKnockabout();
     else if (destination === 'chase') this.enterChase();
@@ -9783,6 +9737,15 @@ export class Game {
    */
   private enterState(state: AppStateId, from: AppStateId = state): void {
     const spec = this.appState.spec;
+    // Leaving the requesting card cancels deferred work. Resume, settings or
+    // quit must not be followed by a course swap from a stale mode press.
+    if (state !== from && this.pendingRoute !== null) {
+      this.pendingRoute = null;
+      this.pendingRouteFrames = 0;
+      this.menus.setNewRouteStage('idle');
+      this.setRouteStatus(this.levelId === 'generated'
+        ? { kind: 'ready', seed: this.seed } : { kind: 'idle' });
+    }
 
     // -- The couch session's two boundaries — M25 Phase 5 ---------------------
     //
@@ -9908,12 +9871,9 @@ export class Game {
     // offer on identical terms, or a button is drawn that its own handler will
     // not serve.
     const switchable = this.seatCount >= 2 ? this.couchRideOnScreen() : null;
-    // **The same question `switchCouchRide` refuses on, asked once and handed
-    // to the screen.** A world with no discs sends `enterKnockabout` to the
-    // routes panel, and `routes` is not a successor of `paused` — so a switch
-    // to Knockabout from here would silently do nothing while having already
-    // moved both riders to the spawn. The control says so instead.
-    const blocked = this.blockedCouchRides();
+    // A missing prerequisite changes the mode press into a fresh-course
+    // request. Keep it reachable by keyboard, pointer and every claimed pad.
+    const blocked = NO_RIDES_BLOCKED;
     const blockReason = this.couchBlockReason();
     this.menus.setPauseCouchRide(state === 'paused' ? switchable : null, blocked, blockReason);
     // **And the same control at the end of a match** — the owner's 2026-08-28

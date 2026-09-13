@@ -105,7 +105,10 @@ least 1000 pixels wide to keep the panes readable, so a phone never sees the
 button.
 
 The join panel offers three things to do, and the pause menu and the results
-card both let you swap between them without going back to the title:
+card both let you swap between them without going back to the title. Choosing
+Knockabout on a place without targets or enough starting room automatically
+builds a fresh course and takes everybody there, keeping each controller
+assigned to the same rider:
 
 - **Free ride** — the world, shared. No clock, no objective, nothing to fail,
   and no paddles.
@@ -138,8 +141,9 @@ card both let you swap between them without going back to the title:
   short **3 – 2 – 1** count holds you there until GO; the draw is fresh
   every bout, so nobody keeps a corner. Two of you still start the moment
   the world loads, on the same line as before. Like everything else on the
-  couch, a match is not saved. It needs a course with targets on it, so choosing it in the city
-  opens the route generator first.
+  couch, a match is not saved. It needs a course with targets: the join panel
+  opens the route generator when needed; the pause and results menus build
+  a suitable course automatically.
 
 **Time trial** — race from the start line through five more checkpoints. The
 HUD points at the next one and shows the distance; each crossing gives you a

@@ -1703,6 +1703,46 @@ const COUCH_PANEL = '.euc-menu--couch';
 const COUCH_MODE = `${COUCH_PANEL} [data-menu="couch-mode"]`;
 const COUCH_START = `${COUCH_PANEL} [data-menu="couch-start"]`;
 
+// Owner's city report: exercise the device that paused, then use that same
+// device to navigate and confirm. A generated route hid the old target gate.
+for (const presser of [0, 1, 2, 3]) {
+  test(`city pause switch works from device in seat ${presser + 1}`, async ({ page }) => {
+    const errors = collectErrors(page);
+    await sitDown(page, 4, '');
+    await page.locator(COUCH_START).click();
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'freeRide');
+    if (presser === 3) await page.keyboard.press('Escape');
+    else await claimWithPad(page, presser, 9);
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'paused');
+    const choice = page.locator('[data-menu="pause-couch"] [data-couch-mode="knockabout"]');
+    await expect(choice).toBeEnabled({ timeout: 2000 });
+    if (presser === 0) await page.screenshot({ path: test.info().outputPath('city-pause.png') });
+    if (presser === 3) {
+      await page.keyboard.press('Shift+Tab');
+    } else {
+      await claimWithPad(page, presser, 12);
+      await claimWithPad(page, presser, 15);
+    }
+    await expect(choice).toBeFocused();
+    if (presser === 3) await page.keyboard.press('Enter');
+    else await claimWithPad(page, presser);
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'knockabout');
+    const fight = await page.evaluate(() => {
+      const game = window.game;
+      game.loop.setRunning(false);
+      game.advance(480);
+      const s = game.snapshot();
+      return { state: s.app.state, phase: s.match.phase, devices: s.input.devices,
+        world: s.world.levelId, targets: s.targets.total, scores: s.match.scores.length, seats: game.seatCount };
+    });
+    expect(fight).toMatchObject({ state: 'knockabout', phase: 'running',
+      devices: ['pad:0', 'pad:1', 'pad:2', 'keyboard'], world: 'generated', scores: 4, seats: 4 });
+    expect(fight.targets).toBeGreaterThan(0);
+    if (presser === 0) await page.screenshot({ path: test.info().outputPath('generated-knockabout.png') });
+    expect(errors).toEqual([]);
+  });
+}
+
 /** Is the panel's Knockabout button greyed out? */
 function knockaboutOff(page: Page): Promise<boolean> {
   return page.evaluate(() => document.querySelector<HTMLButtonElement>(
@@ -2071,55 +2111,37 @@ for (const seats of [3, 4] as const) {
   });
 }
 
-test('a bare world still refuses the pause menu, and refuses it without moving anybody', async ({
-  page,
-}) => {
-  /*
-   * **§37.8 item 2, at three seats.** M37 removed the seat-count refusal and
-   * *only* that: `routes` is not a successor of `paused`, so a Knockabout
-   * pressed there on a world with nothing to hit would leave `couchRide`
-   * changed and every rider teleported to the spawn with the pause menu still
-   * up. The refusal is before any mutation, and the proof is a snapshot of the
-   * whole room either side of the press.
-   *
-   * Both halves, because a disabled button and a refusing handler are two
-   * different claims and M26's rule is that they must agree.
-   */
-  const errors = collectErrors(page);
-  await sitDown(page, 3, BARE_WORLD);
-  await page.locator(`${COUCH_MODE}[data-couch-mode="freeRide"]`).click();
-  await page.locator(COUCH_START).click();
-  await page.waitForFunction(() => window.game.snapshot().app.state === 'freeRide');
-  await page.evaluate(() => { window.game.loop.setRunning(false); window.game.advance(30); });
-
-  await pauseFromSeat(page, 1);
-  await expect(page.locator('[data-menu="pause-couch"] [data-couch-mode="knockabout"]'))
-    .toBeDisabled();
-  await expect(page.locator('[data-menu="pause-couch"] .euc-field__note'))
-    .toContainText('needs a route with things to hit');
-
-  const around = await page.evaluate(() => {
-    const game = window.game;
-    const read = () => ({
-      state: game.snapshot().app.state,
-      ride: game.snapshot().couch.ride,
-      match: game.snapshot().match.phase,
-      poses: Array.from({ length: game.seatCount }, (_unused, seat) => {
-        const euc = game.snapshotFor(seat).euc;
-        return { x: euc.position.x, y: euc.position.y, z: euc.position.z, heading: euc.headingY };
-      }),
+for (const seats of [2, 3, 4]) {
+  for (const venue of ['', 'level=track', 'level=switchback']) {
+    test(`${seats} seats switch from ${venue || 'city'} to a fresh Knockabout course`, async ({ page }) => {
+      const errors = collectErrors(page);
+      await sitDown(page, seats, venue);
+      await page.locator(COUCH_START).click();
+      await page.waitForFunction(() => window.game.snapshot().app.state === 'freeRide');
+      const devices = await page.evaluate(() => window.game.snapshot().input.devices);
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => window.game.snapshot().app.state === 'paused');
+      await page.locator('[data-menu="pause-couch"] [data-couch-mode="knockabout"]').click();
+      await page.waitForFunction(() => window.game.snapshot().app.state === 'knockabout');
+      const started = await page.evaluate(() => {
+        const game = window.game;
+        game.loop.setRunning(false);
+        game.advance(480);
+        const s = game.snapshot();
+        return { world: s.world.levelId, targets: s.targets.total, devices: s.input.devices,
+          seats: game.seatCount, views: game.renderer.viewCount, phase: s.match.phase,
+          ride: s.couch.ride, race: s.race.phase, scores: s.match.scores.length };
+      });
+      expect(started).toMatchObject({ world: 'generated', devices, seats, views: seats,
+        phase: 'running', ride: 'knockabout', race: 'idle', scores: seats });
+      expect(started.targets).toBeGreaterThan(0);
+      await pauseFromSeat(page, seats - 1);
+      await page.locator('[data-menu="pause-couch"] [data-couch-mode="freeRide"]').click();
+      expect(await page.evaluate(() => window.game.snapshot().match.phase)).toBe('idle');
+      expect(errors).toEqual([]);
     });
-    const before = read();
-    // The handler itself, not only the greyed control: the door has to refuse
-    // a press that reached it.
-    game.switchCouchRide('knockabout');
-    return { before, after: read() };
-  });
-  expect(around.after).toEqual(around.before);
-  expect(around.after.state).toBe('paused');
-  expect(around.after.ride).toBe('freeRide');
-  expect(errors).toEqual([]);
-});
+  }
+}
 
 test('a world that cannot hold the pack refuses the bout instead of standing it on the duel line', async ({
   page,
@@ -2204,7 +2226,7 @@ test('a world that cannot hold the pack refuses the bout instead of standing it 
   expect(armed.clearance).toBeGreaterThanOrEqual(GROUP_SEPARATION_METRES);
   expect(await closestPair(page)).toBeGreaterThanOrEqual(GROUP_SEPARATION_METRES - 1e-6);
 
-  // -- The pause card: greyed, and the handler refuses the press too --------
+  // -- The pause card requests a course without immediately moving anybody --
   //
   // Out to a free ride first, because that is the screen the switch is offered
   // from; then the world stops fitting under the room.
@@ -2224,9 +2246,9 @@ test('a world that cannot hold the pack refuses the bout instead of standing it 
 
   await pauseFromSeat(page, 1);
   await expect(page.locator('[data-menu="pause-couch"] [data-couch-mode="knockabout"]'))
-    .toBeDisabled();
+    .toBeEnabled();
   await expect(page.locator('[data-menu="pause-couch"] .euc-field__note'))
-    .toContainText('nowhere to start everybody far enough apart');
+    .toContainText('fresh course with room');
 
   const around = await page.evaluate(() => {
     const game = window.game;
@@ -2240,8 +2262,7 @@ test('a world that cannot hold the pack refuses the bout instead of standing it 
       }),
     });
     const before = read();
-    // The handler, not only the greyed control — M26's rule that the two must
-    // refuse on identical terms.
+    // A request may become pending, but the old room stays until success.
     game.switchCouchRide('knockabout');
     return { before, after: read() };
   });
@@ -2307,28 +2328,10 @@ test('the reach slider re-asks the no-room question instead of being answered fr
   await resume();
   await setReach(2.2);
   await pauseFromSeat(page, 1);
-  await expect(page.locator(PAUSE_KNOCKABOUT), 'the card answered from the memo the slider moved')
-    .toBeDisabled();
+  await expect(page.locator(PAUSE_KNOCKABOUT), 'a new course is available from this card')
+    .toBeEnabled();
   await expect(page.locator('[data-menu="pause-couch"] .euc-field__note'))
-    .toContainText('nowhere to start everybody far enough apart');
-
-  // The handler on the same terms as the control — and the mutation-free
-  // refusal §37.8 item 2 asks for, which is what a stale `true` destroys.
-  const around = await page.evaluate(() => {
-    const game = window.game;
-    const read = () => ({
-      state: game.snapshot().app.state,
-      ride: game.snapshot().couch.ride,
-      match: game.snapshot().match.phase,
-      status: game.snapshot().route.status,
-    });
-    const before = read();
-    game.switchCouchRide('knockabout');
-    return { before, after: read() };
-  });
-  expect(around.after, 'the press changed the room on a stale yes').toEqual(around.before);
-  expect(around.after.state).toBe('paused');
-  expect(around.after.ride).toBe('freeRide');
+    .toContainText('fresh course with room');
 
   // -- Back down the slider: the answer returns, so this is a re-ask --------
   await resume();
@@ -2627,14 +2630,11 @@ test('a race takes the room from a counting bout and leaves nothing armed behind
   await page.waitForFunction(() => window.game.snapshot().race.phase === 'running');
   await pauseFromSeat(page, 1);
 
-  // The fight is off the menu here, and for the reason that survived M37: a
-  // couch race is run at a lap venue, the lap venue carries nothing to knock
-  // down, and the world-capability refusal is the one this milestone did not
-  // touch. The room's width has nothing to do with it.
+  // The lap venue has no stands, so the switch offers a generated course.
   await expect(page.locator('[data-menu="pause-couch"] [data-couch-mode="knockabout"]'))
-    .toBeDisabled();
+    .toBeEnabled();
   await expect(page.locator('[data-menu="pause-couch"] .euc-field__note'))
-    .toContainText('needs a route with things to hit');
+    .toContainText('fresh course with targets');
 
   // Out to a free ride instead, and the race stands down the way the bout did.
   await page.locator('[data-menu="pause-couch"] [data-couch-mode="freeRide"]').click();
@@ -5077,6 +5077,106 @@ for (const seats of [3, 4] as const) {
     await check('a coarse pointer');
     await cdp.send('Emulation.setEmulatedMedia', { features: [] });
     await cdp.detach();
+    expect(errors).toEqual([]);
+  });
+}
+
+// Automatic mode-course requests must remain transactional and cancellable.
+for (const exit of ['resume', 'settings', 'quit'] as const) {
+  test(`leaving via ${exit} cancels a pending mode course`, async ({ page }) => {
+    const errors = collectErrors(page);
+    await sitDown(page, 4, '');
+    await page.locator(COUCH_START).click();
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'paused');
+    const during = await page.evaluate((action) => {
+      const game = window.game;
+      const before = game.snapshot().world;
+      // Both actions in one browser turn, before the deferred build can run.
+      document.querySelector<HTMLButtonElement>('[data-menu="pause-couch"] [data-couch-mode="knockabout"]')!.click();
+      const requested = game.snapshot().route.pending;
+      game.switchCouchRide('race'); // another device cannot replace the pending choice
+      const stillPaused = game.snapshot().app.state;
+      document.querySelector<HTMLButtonElement>(`.euc-menu--pause [data-menu="${action}"]`)!.click();
+      return { before, requested, stillPaused, pending: game.snapshot().route.pending, status: game.snapshot().route.status };
+    }, exit);
+    expect(during.requested).toBe(true);
+    expect(during.stillPaused).toBe('paused');
+    expect(during.pending).toBe(false);
+    expect(during.status).toBe('idle');
+    await page.evaluate(async () => {
+      for (let i = 0; i < 4; i += 1) await new Promise(requestAnimationFrame);
+    });
+    expect(await page.evaluate(() => window.game.snapshot().world)).toEqual(during.before);
+    expect(await page.evaluate(() => window.game.snapshot().app.state))
+      .toBe(exit === 'resume' ? 'freeRide' : exit === 'quit' ? 'title' : 'settings');
+    expect(errors).toEqual([]);
+  });
+}
+
+test('a mode course that cannot fit the room leaves it intact and can be retried', async ({ page }) => {
+  const errors = collectErrors(page);
+  await sitDown(page, 4, '');
+  await page.locator(COUCH_START).click();
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'paused');
+  const read = () => page.evaluate(() => {
+    const game = window.game; const s = game.snapshot();
+    return { world: s.world, state: s.app.state, ride: s.couch.ride, devices: s.input.devices,
+      poses: Array.from({ length: game.seatCount }, (_, seat) => game.snapshotFor(seat).euc.position) };
+  });
+  const before = await read();
+  await page.evaluate(() => window.game.setGroupSpawnSeparationScale(10000));
+  const choice = page.locator('[data-menu="pause-couch"] [data-couch-mode="knockabout"]');
+  await choice.click();
+  await page.waitForFunction(() => !window.game.snapshot().route.pending);
+  expect(await read()).toEqual(before);
+  await expect(page.locator('[data-menu="pause-couch"] .euc-field__note'))
+    .toContainText('No suitable course found');
+  await expect(choice).toBeEnabled();
+  expect(await page.evaluate(() => window.game.snapshot().route.pending)).toBe(false);
+  await page.evaluate(() => window.game.setGroupSpawnSeparationScale(1));
+  await choice.click();
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'knockabout');
+  expect(await page.evaluate(() => window.game.snapshot().input.devices)).toEqual(before.devices);
+  expect(errors).toEqual([]);
+});
+
+for (const venue of ['track', 'switchback']) {
+  test(`four-player ${venue} race results can start Knockabout and return to race`, async ({ page }) => {
+    const errors = collectErrors(page);
+    await sitDown(page, 4, `level=${venue}`);
+    await page.evaluate(() => {
+      window.game.tuning.set('RACE.laps', 1);
+      window.game.tuning.set('RACE.finishGraceSeconds', 1);
+    });
+    await page.locator(`${COUCH_MODE}[data-couch-mode="race"]`).click();
+    await page.locator(COUCH_START).click();
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
+    const devices = await page.evaluate(() => {
+      const game = window.game;
+      game.loop.setRunning(false); game.advance(420);
+      const gates = [...game.levelPlan.checkpoints].sort((a, b) => a.routeIndex - b.routeIndex);
+      for (const gate of [...gates, ...gates.slice(1), gates[0]]) {
+        game.placeRider({ ...gate.centre }, gate.headingY, 0);
+        game.advance(32);
+      }
+      game.advance(600);
+      return game.snapshot().input.devices;
+    });
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'results');
+    await page.locator('[data-menu="results-couch"] [data-couch-mode="knockabout"]').click();
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'knockabout');
+    const fight = await page.evaluate(() => ({ world: window.game.snapshot().world.levelId,
+      race: window.game.snapshot().race.phase, devices: window.game.snapshot().input.devices,
+      match: window.game.snapshot().match.phase }));
+    expect(fight).toEqual({ world: 'generated', race: 'idle', devices, match: 'countdown' });
+    await pauseFromSeat(page, 2);
+    await page.locator('[data-menu="pause-couch"] [data-couch-mode="race"]').click();
+    expect(await page.evaluate(() => ({ state: window.game.snapshot().app.state,
+      race: window.game.snapshot().race.phase, match: window.game.snapshot().match.phase,
+      seats: window.game.seatCount, lap: window.game.levelPlan.lap !== undefined })))
+      .toEqual({ state: 'trackDay', race: 'countdown', match: 'idle', seats: 4, lap: true });
     expect(errors).toEqual([]);
   });
 }

@@ -3539,54 +3539,17 @@ test('a paused couch swaps mode without going back to the title', async ({ page 
   expect(errors).toEqual([]);
 });
 
-test('a world with nothing to hit says so rather than swallowing the press', async ({ page }) => {
-  /*
-   * **The refusal has to come before anything is written.** `enterKnockabout`
-   * answers a world with no discs by opening the routes panel; `routes` is not
-   * a successor of `paused`, so `goTo` refuses it — and a switch that had
-   * already set the mode and reset both riders would leave the pause menu up
-   * with two riders teleported and nothing else changed.
-   *
-   * The hand-built slice is the world that has no discs, which is also the one
-   * two people are most likely to be riding when they decide to fight.
-   */
+test('a target-free two-seat pause offers a fresh Knockabout course', async ({ page }) => {
   const errors = collectErrors(page);
   await bootPair(page);
-
-  const refused = await page.evaluate(() => {
-    const game = window.game;
-    game.loop.setRunning(false);
-    game.setAppState('paused');
-    const button = document.querySelector<HTMLButtonElement>(
-      '.euc-menu--pause [data-menu="switch-mode"][data-couch-mode="knockabout"]',
-    );
-    const before = game.snapshotFor(1).euc.position;
-    button?.click();
-    const clicked = game.snapshotFor(1).euc.position;
-    // **And the handler on its own, past the control** — because the control is
-    // `disabled` and a click on a disabled button never reaches it. Deleting the
-    // refusal inside `switchCouchRide` left this spec green when it read only
-    // the button, which is the screen masking the guard that actually matters:
-    // the door has to refuse a call the DOM did not make.
-    game.switchCouchRide('knockabout');
-    const called = game.snapshotFor(1).euc.position;
-    return {
-      disabled: button?.disabled ?? null,
-      note: document.querySelector('[data-menu="pause-couch"] .euc-field__note')?.textContent ?? '',
-      state: game.snapshot().app.state,
-      ride: game.snapshot().couch.ride,
-      moved: Math.hypot(clicked.x - before.x, clicked.z - before.z),
-      movedByCall: Math.hypot(called.x - before.x, called.z - before.z),
-    };
-  });
-
-  expect(refused.disabled, 'a mode this world cannot carry was offered').toBe(true);
-  expect(refused.note, 'and it did not say why').toContain('things to hit');
-  expect(refused.state, 'the press left the pause menu').toBe('paused');
-  expect(refused.ride, 'the mode was written for a switch that never happened').toBe('freeRide');
-  expect(refused.moved, 'the riders were reset by a switch that was refused').toBeLessThan(0.01);
-  expect(refused.movedByCall, 'the door let a call through that the button was hiding')
-    .toBeLessThan(0.01);
+  await page.evaluate(() => { window.game.setAppState('paused'); });
+  const choice = page.locator('[data-menu="pause-couch"] [data-couch-mode="knockabout"]');
+  await expect(choice).toBeEnabled();
+  await choice.click();
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'knockabout');
+  expect(await page.evaluate(() => ({ world: window.game.snapshot().world.levelId,
+    seats: window.game.seatCount, match: window.game.snapshot().match.phase })))
+    .toEqual({ world: 'generated', seats: 2, match: 'running' });
   expect(errors).toEqual([]);
 });
 
