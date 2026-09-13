@@ -341,9 +341,10 @@ test('`setLevel`\u2019s recipe override builds the named rung and reports that r
   // Switchback Park is the fixture because it is the world the parameter was
   // built for: the ladder enhances it, so forcing `baseline` is a real
   // override rather than a restatement of what the selector already chose.
-  // Re-measured after ride round 1 fenced the bends inside and rebuilt the
-  // kicker as a step-down (2026-09-12): baseline 160,776 level triangles
-  // (the turn arrows' pads included), enhanced 176,624, and **33 draw calls either way** —
+  // Re-measured after the 2026-09-12 r3 envelope repair fenced the bends
+  // inside and rebuilt the kicker as a step-down (plan id `switchback-r3`):
+  // baseline 161,856 level triangles (the turn arrows' pads included),
+  // enhanced 177,704, and **33 draw calls either way** —
   // §36.7's "zero new call buckets", which is what makes the two rungs a
   // topology choice and not a budget one.
   const selected = selectPresentation(switchback);
@@ -351,12 +352,12 @@ test('`setLevel`\u2019s recipe override builds the named rung and reports that r
 
   const baseline = forcedPresentation(selected, 'baseline');
   assert.equal(baseline.recipe.id, 'baseline');
-  assert.equal(baseline.cost.triangles, 160_776);
+  assert.equal(baseline.cost.triangles, 161_856);
   assert.equal(baseline.cost.recipe, 'baseline', 'the reported cost named the other rung');
 
   const enhanced = forcedPresentation(selected, 'enhanced');
   assert.equal(enhanced.recipe.id, 'enhanced');
-  assert.equal(enhanced.cost.triangles, 176_624);
+  assert.equal(enhanced.cost.triangles, 177_704);
   assert.equal(enhanced.cost.recipe, 'enhanced');
 
   assert.equal(baseline.cost.drawCalls, enhanced.cost.drawCalls, 'a recipe added a draw call');

@@ -533,3 +533,65 @@ test('a world with nowhere to stand hands back the spawn rather than refusing', 
   const slot = spawnSlot(plan.spawn, 1, new PlanTerrainSampler(plan));
   assert.equal(slot, plan.spawn, 'the last resort should be the plan’s own spawn, verbatim');
 });
+
+test('the independent producer can hand two seats the same slot — M37 §37.4', () => {
+  /*
+   * **Why a bout of three or four is refused rather than fallen back on.**
+   * §37.4 rules the obvious shortcut out in plain words — *"do not … run the
+   * existing independent-slot fallback N times: two accepted individual slots
+   * can be the same slot"* — and M37's Phase 3 repair pass needed that to be a
+   * measurement rather than a quotation, because the code it repaired had done
+   * exactly that when `groupSpawns` refused a world.
+   *
+   * Both failure modes are here, on the same duel spacing that branch used:
+   *
+   *   1. **The mirrored candidate.** Seat 1 prefers the rider's right and seat
+   *      2 the rider's left (`candidatesFor`), and each falls back to the
+   *      other's side before it staggers — so one wall on the left puts both
+   *      of them on the same point, 0 m apart and each inside the other's
+   *      2.15 m reach.
+   *   2. **The last resort.** A world with nowhere else to stand hands every
+   *      seat the plan's own spawn, which is the documented behaviour of this
+   *      file (`SLOT_MIN_SEPARATION_METRES` says so) and is fine for the two
+   *      riders it was written for, because the shipped worlds never need it.
+   *
+   * Nothing here is a defect in `spawnSlot`: it answers one seat's question
+   * correctly, and a pack is a question it was never asked. It is the evidence
+   * for `simulation/groupSpawn.ts` having no fallback of its own, and for
+   * `Game.enterKnockabout` refusing the bout when it refuses.
+   */
+  const walled = fixture(flatField(12), [wallAt(DUEL_LATERAL_METRES, 1.2)]);
+  const terrain = new PlanTerrainSampler(walled);
+  const one = spawnSlot(walled.spawn, 1, terrain, DUEL_LATERAL_METRES);
+  const two = spawnSlot(walled.spawn, 2, terrain, DUEL_LATERAL_METRES);
+  const gap = Math.hypot(one.position.x - two.position.x, one.position.z - two.position.z);
+  assert.ok(
+    gap < 1e-9,
+    `expected the two seats to collide on one slot, got ${gap.toFixed(3)} m apart`,
+  );
+  assert.ok(gap < PADDLE_REACH_METRES, 'the colliding seats were somehow out of reach');
+
+  // The last resort, for a third and a fourth rider as well as a second.
+  const bare = fixture(flatField(1));
+  const bareTerrain = new PlanTerrainSampler(bare);
+  for (const seat of [1, 2, 3]) {
+    assert.equal(
+      spawnSlot(bare.spawn, seat, bareTerrain, DUEL_LATERAL_METRES),
+      bare.spawn,
+      `seat ${seat} did not fall back to the plan’s own spawn`,
+    );
+  }
+
+  // **The negative control**: take the wall away and the same two calls are a
+  // legal duel line, so the collision above is the world's doing and not a
+  // broken producer.
+  const open = fixture(flatField(12));
+  const openTerrain = new PlanTerrainSampler(open);
+  const left = spawnSlot(open.spawn, 1, openTerrain, DUEL_LATERAL_METRES);
+  const right = spawnSlot(open.spawn, 2, openTerrain, DUEL_LATERAL_METRES);
+  assert.ok(
+    Math.hypot(left.position.x - right.position.x, left.position.z - right.position.z)
+      > PADDLE_REACH_METRES,
+    'the open world did not seat the two of them out of each other’s reach',
+  );
+});

@@ -124,17 +124,22 @@ card both let you swap between them without going back to the title:
   share the place, and the card counts what each of you landed the way Track
   Day's does. No records, no ghost. Choosing it on a place that does not close
   a lap — the city, or a generated route — takes the room to BelVar.
-- **Knockabout** — a bout, for exactly two of you. You each carry a paddle,
-  and **the first to five knockdowns takes the match**. A committed swing
-  that lands puts the other rider on the floor; a rider who has just gone
-  down is briefly untouchable, so nobody is held there. The route's yellow
-  targets are still out there and still worth hitting — the corner of your
-  half counts both your knockdowns and your targets struck — but **no number
-  of targets wins a bout**, and a target either of you knocks down is gone
-  for both of you. If you both reach five on the same instant, the match is
-  **drawn**. It needs a course with targets on it, so choosing it in the city
-  opens the route generator first. A third player takes it off the menu; its
-  four-player rules are not designed yet.
+- **Knockabout** — a bout, for two, three or four of you. You each carry a
+  paddle, and **the first to five knockdowns takes the match**. A committed
+  swing that lands puts the rider you hit on the floor; a rider who has just
+  gone down is briefly untouchable, so nobody is held there. The route's
+  yellow targets are still out there and still worth hitting — the corner of
+  every pane lists every rider's knockdowns and targets struck — but **no
+  number of targets wins a bout**, and a target any of you knocks down is
+  gone for all of you. Riders on the same tally share a place, and a match
+  that ends level is **drawn**, named for the riders tied at the top. Three
+  and four start together: the room is placed in a ring on clear ground,
+  everybody out of everybody's paddle reach and facing the middle, and a
+  short **3 – 2 – 1** count holds you there until GO; the draw is fresh
+  every bout, so nobody keeps a corner. Two of you still start the moment
+  the world loads, on the same line as before. Like everything else on the
+  couch, a match is not saved. It needs a course with targets on it, so choosing it in the city
+  opens the route generator first.
 
 **Time trial** — race from the start line through five more checkpoints. The
 HUD points at the next one and shows the distance; each crossing gives you a
@@ -490,16 +495,19 @@ list.
 
 ### Accepted direction
 
-- **More couch multiplayer.** Free ride, the bump, a two-rider Knockabout
-  bout, and now a four-seat race have all landed (see **2–4 Players** above).
-  What is left is real design rather than a switch: **Knockabout for three or
-  four** (free-for-all or teams, and where four paddles start fairly), and
-  **couch chase** behind it. The shape is unchanged — local multiplayer on
+- **More couch multiplayer.** Free ride, the bump, a four-seat race and a
+  Knockabout bout for two, three or four have all landed (see **2–4 Players**
+  above). What is left is **couch chase**. The shape is unchanged — local multiplayer on
   desktop, single-player on mobile — and playing across two devices is not
   cancelled but sits behind all of this.
 
 ### Recently landed
 
+- **Knockabout for three and four** (2026-09-13). The paddle bout takes the
+  whole room: two, three or four claims on the join panel, a fair ring and a
+  3 – 2 – 1 count for three and four, first to five knockdowns, and every
+  rider's knockdowns and targets in every pane. Two players start at once,
+  exactly as they did.
 - **A jump lap, in a place of its own** — **Switchback Park**: about 950 metres
   of forested hillside, lapped on Track Day or raced three laps by a couch room
   of up to four, with nine optional features on it — a ledge drop, a gap, a

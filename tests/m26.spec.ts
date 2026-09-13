@@ -1889,7 +1889,7 @@ test('the tick’s aim is taken before anybody moves', async ({ page }) => {
     const game = window.game;
     const internal = game as unknown as {
       readonly aimPoses: readonly { x: number; y: number; z: number }[];
-      readonly seatQuarry: unknown;
+      readonly seatQuarries: unknown;
     };
     game.clearActions();
     game.setActionsFor(0, { throttle: 1 });
@@ -1906,13 +1906,18 @@ test('the tick’s aim is taken before anybody moves', async ({ page }) => {
       return { x: p.x, y: p.y, z: p.z };
     });
     // **And that the aim is what the sweep was actually pointed at.** The
-    // shared quarry is refilled per seat and the seats step in order, so after
-    // a tick it holds what seat 1's swing was judged against — seat 0. Read
-    // through two layers of compile-time `private`, as a diagnostic and never
-    // written, on m18's precedent.
-    const quarry = (internal.seatQuarry as unknown as {
-      readonly volume: { readonly x: number; readonly z: number };
-    }).volume;
+    // quarry set is refilled per swinging seat and the seats step in order, so
+    // after a tick seat 0's own volume holds what seat 1's swing was judged
+    // against — seat 0's pre-step pose. Read through three layers of
+    // compile-time `private`, as a diagnostic and never written, on m18's
+    // precedent.
+    //
+    // **One volume per seat since M37** (§37.3): the single shared quarry this
+    // reads through could only ever carry one opponent, which is what made the
+    // fight two-shaped. The claim is unchanged and the subscript is the victim.
+    const quarry = (internal.seatQuarries as unknown as {
+      readonly quarries: readonly { readonly volume: { readonly x: number; readonly z: number } }[];
+    }).quarries[0].volume;
     return {
       before,
       after,
@@ -2388,8 +2393,9 @@ test('a couch match keeps nothing, and single player still keeps everything', as
 test('single player answers to the referee it always had', async ({ page }) => {
   // The other half of "Game picks the referee by seat count": one rider never
   // arms a match, the run still ends when the last disc falls, and the record
-  // is still filed. Delete the `seatCount === 2` gate at the entrance and the
-  // first assertion goes.
+  // is still filed. Delete the `seatCount >= 2` gate at the entrance (it read
+  // `=== 2` until M37 opened q94 — `docs/PLANS.md` §37.1) and the first
+  // assertion goes.
   const errors = collectErrors(page);
   await bootToTitle(page, `level=generated&seed=${DUEL_SEED}`);
   await page.evaluate(() => {

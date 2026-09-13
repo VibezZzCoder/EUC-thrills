@@ -151,7 +151,8 @@ export interface RiderSeat {
   /** Where this seat's paddle head is this render frame, in world space — M14. */
   readonly paddleHead: Vector3;
   /**
-   * Which of this seat's swings has already landed on a rider — M26 Phase 3.
+   * Which of this seat's swings has already landed on **each** rider — M26
+   * Phase 3, one entry per victim since M37 (§37.3).
    *
    * **One swing lands on one rider once**, which is a disc's rule (§13 q21)
    * said for something that is not removed from the world by being hit. It
@@ -160,9 +161,22 @@ export interface RiderSeat {
    * a new `Paddle` counting from zero, and a latch kept anywhere else would
    * still be holding a number that new paddle is about to reach.
    *
-   * `-1` is "no swing yet", which `Paddle.swingCount` never returns.
+   * **Indexed by victim seat, and that is the whole of M37's change here.** A
+   * single number meant one swing lands on one *person* once ever: the first
+   * rider the sweep reached consumed the swing and everybody else it passed
+   * through — on that step or on a later active one — was silently skipped.
+   * §37.3 asks for de-duplication by attacker × swing × victim precisely so
+   * that q171's "one swing that downs two riders earns two" can happen at all.
+   * One array per seat, `COUCH_SEATS` long, so the victim's own index is the
+   * subscript.
+   *
+   * `-1` is "no swing yet", which `Paddle.swingCount` never returns. Nothing
+   * clears it and nothing has to: `swingCount` is monotonic and never reset
+   * (`simulation/paddle.ts`), so a stale entry can only ever hold a number this
+   * paddle has already passed — including after the seat it names is vacated
+   * and filled by somebody new.
    */
-  lastRiderStrikeSwing: number;
+  readonly lastRiderStrikeSwings: number[];
 
   /**
    * How many times each one-shot has been claimed by this seat. The

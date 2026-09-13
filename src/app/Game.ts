@@ -1,7 +1,8 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
 import {
-  INSPECTION_CAMERA, CAMERA, CHALLENGE, CHASE, CONTACT, EUC, INPUT, RIDER, TARGET, WHEEL,
+  INSPECTION_CAMERA, CAMERA, CHALLENGE, CHASE, CONTACT, EUC, INPUT, KNOCKABOUT, RIDER, TARGET,
+  WHEEL,
 } from '../data/tuning.ts';
 import { LiveTuning } from '../data/liveTuning.ts';
 import { GameRenderer } from '../render/Renderer.ts';
@@ -46,9 +47,11 @@ import type { PresentationRecipeId } from '../render/presentation.ts';
 import { SURFACE_IDS } from '../data/surfaces.ts';
 import {
   ActionState,
+  GLOBAL_PRESSED_ACTIONS,
   NEUTRAL_ACTIONS,
   PRESSED_ACTIONS,
   type ActionSnapshot,
+  type PressedAction,
   type ScriptedActions,
 } from '../input/actions.ts';
 import { KeyboardInput } from '../input/keyboard.ts';
@@ -100,9 +103,18 @@ import {
 import { TargetField, sweptBodyHitsTarget } from '../simulation/targets.ts';
 import {
   KnockaboutMatch,
+  type MatchEvent,
   type MatchResult,
   type MatchState,
 } from '../simulation/knockaboutMatch.ts';
+import {
+  GROUP_SPAWN_COUNTS,
+  groupObstaclesFrom,
+  groupSeparation,
+  groupSpawns,
+  type GroupSpawnResult,
+} from '../simulation/groupSpawn.ts';
+import { StrikeBatch, type StrikeParticipant } from '../simulation/strikeBatch.ts';
 import { ChaseRun, type ChaseOutcome, type ChasePhase } from '../simulation/chase.ts';
 import { CpuRider, type CpuView } from '../simulation/cpuRider.ts';
 import { planRegroup, regroupFloor, type RegroupJudge } from '../simulation/copRegroup.ts';
@@ -211,6 +223,40 @@ const NO_RIDES_BLOCKED: readonly CouchRide[] = Object.freeze([]);
 const KNOCKABOUT_ONLY: readonly CouchRide[] = Object.freeze(['knockabout']);
 
 /**
+ * One bout's accepted group start — M37 §37.4, q170.
+ *
+ * What `simulation/groupSpawn.ts` decided, kept for as long as the bout lasts
+ * so that a quick reset can put one rider back without re-drawing the pack.
+ * The three numbers beside the poses are the QA snapshot's: a spec that can
+ * see the seed, the candidate it accepted and the closest two riders ended up
+ * can reproduce the pack and check the weapon against it, which is the only
+ * way "nobody blames the spawn" is a measurement rather than a screenshot.
+ */
+interface MatchPlacement {
+  /** The pack, index-for-index with the seats. */
+  readonly spawns: readonly LevelPlan['spawn'][];
+  /** The match-placement seed this pack was drawn with. */
+  readonly seed: string;
+  /** Which candidate of the bounded search was accepted. */
+  readonly candidate: number;
+  /** The closest unordered pair in the accepted pack, metres. */
+  readonly minPairClearance: number;
+}
+
+/**
+ * The one-shots a room may still reach while a start is frozen — M37 §37.4.
+ *
+ * §37.4 asks for input polling, any-seat pause/mute and disconnect handling to
+ * stay live through the count, and pause and mute are exactly
+ * `GLOBAL_PRESSED_ACTIONS` — the two intents that belong to the machine rather
+ * than to a rider (`input/actions.ts`). Derived from the two existing exports
+ * rather than written out again, so a third global one-shot cannot arrive in
+ * one list and be missed in the other, and in `PRESSED_ACTIONS`' own order.
+ */
+const FROZEN_PRESSED_ACTIONS: readonly PressedAction[] =
+  Object.freeze(PRESSED_ACTIONS.filter((action) => GLOBAL_PRESSED_ACTIONS.has(action)));
+
+/**
  * The results table's original words, which are still the right ones for the
  * two modes that are actually splits measured against a record.
  *
@@ -257,6 +303,28 @@ const RACE_TABLE: ResultsTable = Object.freeze({
   // belongs to a rider rather than to the race, and it is what a room actually
   // argues about after the order is settled.
   extra: 'Best lap',
+});
+
+/**
+ * The wide bout's four columns — M37 §37.5.
+ *
+ * **Place · Rider · Knockdowns · Targets, out of a four-column table that has
+ * three headings and a fourth.** The row's own `<th scope="row">` is
+ * `1. Trollina`, so Place and Rider are one column and one heading — the
+ * finishing-order card's own arrangement, and the reason a screen reader
+ * announces "1. Trollina, knockdowns, 5" rather than three unlabelled figures.
+ *
+ * `delta` is empty because nothing on this card is measured against anything: a
+ * couch session keeps no records (q77), and M26 Phase 6's finding is that a
+ * heading over a column of blanks is the defect rather than a smaller version
+ * of it. The stylesheet takes the column's width away on the same attribute.
+ */
+const MATCH_TABLE: ResultsTable = Object.freeze({
+  caption: 'Match summary',
+  label: 'Place',
+  value: 'Knockdowns',
+  delta: '',
+  extra: 'Targets',
 });
 
 const SPLITS_TABLE: ResultsTable = Object.freeze({
@@ -658,8 +726,39 @@ export interface GameSnapshot {
    * the lap's are. `phase` is also the answer to "which referee is this run
    * answering to" — `idle` is a single-player run — so a spec can assert that
    * one rider never arms a match without knowing how `Game` decides it.
+   *
+   * **Plus the bout's group start** — M37 §37.4, which asks for the placement
+   * seed, the candidate the bounded search accepted and the closest pair to be
+   * recorded. None of those are the referee's — it is handed facts and knows
+   * nothing about ground — so they sit beside its state rather than inside it.
    */
-  readonly match: MatchState;
+  readonly match: MatchState & {
+    /** The match-placement seed this bout's pack was drawn with. Empty for none. */
+    readonly placementSeed: string;
+    /** Which candidate of the bounded search was accepted, or −1 for none. */
+    readonly placementCandidate: number;
+    /** The closest unordered pair in the accepted pack, metres; 0 for none. */
+    readonly placementClearance: number;
+    /**
+     * Whether three or four riders are in a bout without the pack they should
+     * be standing on — **a tripwire, not a fallback**.
+     *
+     * Since M37's repair pass a world whose group search refuses never arms a
+     * bout at all (`enterKnockabout`), so the only way this can read true is
+     * the room changing width under a running match, which only the QA bridge
+     * can do. Every door spec asserts it false.
+     */
+    readonly placementFallback: boolean;
+    /**
+     * Fixed steps a match countdown has held the room for, this session.
+     *
+     * The positive half of "nothing moved": a spec comparing positions across
+     * a count proves an absence, and an absence cannot tell a working freeze
+     * from a count that never ran. This counts the steps `stepSeat` returned
+     * on above `EucController.step`.
+     */
+    readonly countdownHeldSteps: number;
+  };
   /**
    * The chase, as a browser spec can see it — M18.
    *
@@ -920,6 +1019,61 @@ export class Game {
    * on its referee.
    */
   readonly match = new KnockaboutMatch();
+  /**
+   * Where this bout's three or four riders are standing — M37 §37.4, q170.
+   *
+   * **The whole pack or nothing.** `spawnSlot` answers one seat at a time and
+   * two accepted individual slots can be the same slot, so a group start is
+   * produced, validated and accepted as a unit by `simulation/groupSpawn.ts`
+   * and then held here for the life of the bout. `spawnForSeat` reads it, so
+   * one rider's quick reset puts *that* rider back on *their* slot without
+   * re-drawing anybody else's — which is §37.4's rule, and the reason this is
+   * a stored pack rather than a producer re-run per reset.
+   *
+   * Null means "no group start applies": one or two riders, or a run that is
+   * not a match. A world whose search refuses never gets this far — the bout
+   * is refused at the entrance instead (`drawGroupPack`). Cleared wherever the
+   * referee stands down, through `abandonMatch`.
+   */
+  private matchPlacement: MatchPlacement | null = null;
+  /**
+   * How many bouts this session has armed — the match-placement seed's
+   * ordinal (§37.4: "each new bout gets a fresh seed").
+   *
+   * **A counter rather than `Math.random`**, so the QA bridge reproduces a
+   * pack: the same world, the same participant count and the same bout number
+   * draw the same ring, every boot. *Ride it again*, *Retry*, a *New route*
+   * and a mode round trip all pass through `enterKnockabout`, so all of them
+   * are a new bout with a new draw — which is the fresh seed q170 asked for,
+   * not a promise that two successive packs cannot resemble one another.
+   */
+  private boutOrdinal = 0;
+  /**
+   * Fixed steps the match countdown has held the room for, this session.
+   *
+   * Reported on `snapshot().match` and nowhere else. It exists because
+   * "nothing moved" is the *absence* of an effect and a spec asserting only
+   * absence cannot tell a working freeze from a countdown that never ran: this
+   * is the positive half, and it counts the steps on which `stepSeat` returned
+   * above `controller.step`.
+   */
+  private countdownHeldSteps = 0;
+  /** Whether the group start's refusal has already been logged this session. */
+  private packRefusalWarned = false;
+  /**
+   * The last answer to "can this world hold a bout for this room", and which
+   * world and width it was about — `matchPackFits`' memo.
+   *
+   * The pause card's greyed-out control asks the question on every drawn
+   * frame, and the question costs a thirty-two candidate validated search.
+   */
+  private packFits: { readonly key: string; readonly fits: boolean } | null = null;
+  /**
+   * Multiplier on the pair separation a group start must clear. **One in the
+   * game, always** — the QA bridge's `setGroupSpawnSeparationScale` is the
+   * only thing that moves it, so a spec can make the real producer refuse.
+   */
+  private groupSpawnSeparationScale = 1;
   /** What the last finished couch match scored, for the results screen. */
   private lastMatch: MatchResult | null = null;
   /** What the last finished run scored, for the results screen. */
@@ -986,20 +1140,22 @@ export class Game {
   private readonly riderTarget = new RiderTarget();
 
   /**
-   * The other seat, as the one thing a rider's paddle can hit besides a disc,
-   * and the set that carries both — M26 Phase 3.
+   * Everybody a rider's paddle can hit besides a disc, and the set that
+   * carries both — M26 Phase 3, addressed per seat by M37 (§37.3).
    *
-   * One of each rather than one per seat: `SeatHittables` says why they are
-   * safe to share — and the paddles they serve are a Knockabout's, which arms
-   * at exactly two seats whatever the couch holds (q94).
+   * One shared instance of each rather than one per seat: `SeatHittables` and
+   * `SeatQuarries` both say why that is safe. What changed at M37 is *inside*
+   * the quarry set — it was a single `RiderTarget` while the fight was two
+   * riders by rule (q94), and q94 is reopened, so it is now one addressed
+   * volume per seat and a sweep can find three people in one arc.
    */
-  private readonly seatQuarry = new RiderTarget();
+  private readonly seatQuarries = new SeatQuarries();
   private readonly seatHittables = new SeatHittables();
 
   /**
    * Which of the cop's swings has already landed — M26 Phase 3.
    *
-   * `RiderSeat.lastRiderStrikeSwing`'s counterpart, and it lives on `Game`
+   * `RiderSeat.lastRiderStrikeSwings`' counterpart, and it lives on `Game`
    * rather than on a seat for the same reason `copPaddle` does: the cop is not
    * a seat, and his paddle is built once and outlives every world.
    */
@@ -1052,19 +1208,65 @@ export class Game {
    * resolved until both have moved.
    *
    * So a rider hit is recorded here and spent by `spendRiderStrikes`, once,
-   * after the seat loop and beside contact. Fixed capacity because a strike is
-   * one per seat per step (`RiderSeat.lastRiderStrikeSwing` is the latch that
-   * makes that true) and this runs every tick of every couch match.
+   * after the seat loop and beside contact.
    *
-   * **Sized from `COUCH_SEATS` since M27 Phase 1.** It was two entries while
-   * the couch was two seats, and the capacity guard that fills it drops a
-   * strike it has no room for — silently, which at four seats would have been
-   * seat 2's swing going missing in exactly the frame two other people were
-   * already fighting. Knockabout still arms at two seats and nothing else
-   * equips a paddle, so today the extra room is never used; a pool bounded by
-   * the seat count rather than by the mode is what keeps that true when it
-   * stops being true.
+   * **What M37 changed: both ends, and the room for all of them** (§37.3). The
+   * buffer this replaces held four `number`s — the *attacker's* index, with the
+   * victim re-derived at spend time from a method that could only answer "the
+   * other one". At four seats one step can legitimately carry all **twelve**
+   * directed pairs, and the old capacity guard dropped the overflow with no
+   * throw, no counter and no log. `StrikeBatch` is sized `seats × (seats − 1)`,
+   * carries attacker × victim × swing identity with the immutable paddle facts
+   * beside them, counts anything it could not take, and resolves the whole step
+   * at once under q173's shared-credit rule. Pre-allocated and filled in place,
+   * because this runs every tick of every couch match and `raceBodies` is this
+   * file's own record of what a per-step allocation at 120 Hz costs.
    */
+  private readonly strikes = new StrikeBatch(COUCH_SEATS);
+
+  /**
+   * Whether a pool overflow has already been reported this session — M37.
+   *
+   * §37.3 asks for "no silent overflow", and the honest reading of that is one
+   * loud line rather than one per tick: a room that has started dropping
+   * strikes would otherwise fill the console 120 times a second and drown the
+   * evidence of what caused it. Every browser spec collects console errors, so
+   * this is also the mechanism that would fail the suite.
+   */
+  private strikeOverflowReported = false;
+
+  /**
+   * Which seats teleported on the step being resolved, **for the strike batch
+   * alone** — M37 §37.3.
+   *
+   * A second latch beside `seatResetThisStep` rather than a second *reader* of
+   * it, which the section names explicitly: that flag is consumed and cleared
+   * by `raceInputs`, so a strike resolver reading it would either race the race
+   * referee for the fact or quietly clear it out from under them. Written in
+   * the seat loop beside the other two and drained by `spendRiderStrikes` on
+   * every step, hit or no hit.
+   *
+   * Per seat and not an aggregate, because that is the behaviour change: at two
+   * seats "somebody teleported" and "this pair teleported" are the same
+   * sentence, and at four they are not — an unrelated respawn must not void a
+   * fight happening across the road.
+   */
+  private readonly strikeResetThisStep: boolean[] = new Array<boolean>(COUCH_SEATS).fill(false);
+
+  /**
+   * The per-seat facts `StrikeBatch.resolve` is handed, filled in place.
+   *
+   * `racePool`'s shape and for its reason: this is built on a step where a
+   * paddle actually landed on somebody, which is rare, but the slots are made
+   * once all the same. Index-for-index with the seats, `present` false for
+   * chairs nobody is in — the resolver reads the array's length as the room's
+   * width and refuses anybody who is not in the bout.
+   */
+  private readonly strikeParticipants: { -readonly [K in keyof StrikeParticipant]:
+    StrikeParticipant[K] }[] = Array.from({ length: COUCH_SEATS }, () => ({
+      present: false, down: false, immune: false, reset: false, headingY: 0,
+    }));
+
   /**
    * Which seats teleported on the step being resolved — M27 Phase 3.
    *
@@ -1113,8 +1315,6 @@ export class Game {
    * flight it interrupted and credits nothing for it.
    */
   private readonly seatTeleported: boolean[] = new Array<boolean>(COUCH_SEATS).fill(false);
-  private readonly strikeWielders: number[] = new Array<number>(COUCH_SEATS).fill(-1);
-  private strikeCount = 0;
   private readonly spineAt: SpineLocation = createSpineLocation();
   /** Scratch for the HUD's "which way is the route" arrow (M20). Allocation-free. */
   private readonly spineSample: SpineSample = createSpineSample();
@@ -1486,6 +1686,8 @@ export class Game {
    */
   private readonly guestCharacters: PlayableCharacterId[] =
     guestRoster(DEFAULT_CHARACTER, COUCH_SEATS);
+  /** `matchRosterNames`' one buffer — see that method for why it is reused. */
+  private readonly matchRoster: string[] = [];
   /**
    * `prefers-reduced-motion`, watched rather than read once — M14.
    *
@@ -1918,12 +2120,14 @@ export class Game {
         // The join panel is the other reader of the same fact. One producer,
         // two writers, and neither is polled — a card that lit up a frame late
         // is a player who pressed their button twice.
-        // **A third *player* is what takes the fight off the menu** (q94), now
-        // that the width question counts people: `spawnRider`'s copy of this
-        // guard fires when a chair arrives, which on the panel is one player
-        // too early. Before the redraw, so the chooser is painted with the
-        // ride the room actually has.
-        if (this.rideBlockedForSeats(this.couchRide)) this.couchRide = DEFAULT_COUCH_RIDE;
+        //
+        // **A third player used to take the fight off the menu here** (q94):
+        // this line read `if (this.rideBlockedForSeats(this.couchRide))
+        // this.couchRide = DEFAULT_COUCH_RIDE;`, so a claim arriving on a room
+        // that had chosen Knockabout silently demoted it to a free ride. M37
+        // opened q94 (§37.1), so a claim changes who is in the room and
+        // nothing about what the room is playing — the selection stays lit and
+        // the third player joins the fight.
         this.updateCouchPanel();
         // And the third reader: on the panel the split *is* the claims, so a
         // player pressing their button is what opens their pane.
@@ -2311,7 +2515,10 @@ export class Game {
       currentOneFoot: 0,
       paddle: new Paddle(),
       paddleHead: new THREE.Vector3(),
-      lastRiderStrikeSwing: -1,
+      // One entry per victim seat — see `app/seats.ts`. Made here, with the
+      // seat, and never cleared afterwards: a monotonic swing count cannot
+      // collide with a number it has already passed.
+      lastRiderStrikeSwings: new Array<number>(COUCH_SEATS).fill(-1),
       // Every `PressedAction` needs a zero — see the note in `app/seats.ts`.
       // A missing key makes `consumed[action] += 1` evaluate `undefined + 1`,
       // which compiles, yields `NaN`, and survives the harness's `?? 0`.
@@ -2453,9 +2660,11 @@ export class Game {
    * where it is the players who have actually claimed.
    *
    * Read by everything that means *the room* rather than *the furniture*: how
-   * many passes the frame draws, and whether the room is too wide for a
-   * two-seat fight (`joinBlockReason`). Both were asking the seat count, and
-   * both were wrong on the one screen where the two differ.
+   * many passes the frame draws, and — until M37 opened q94 — whether the room
+   * was too wide for a two-seat fight (`joinBlockReason`). Both were asking
+   * the seat count, and both were wrong on the one screen where the two
+   * differ. The refusal is gone and the view count is not, so this is still
+   * the answer the split follows.
    *
    * A claim can only point at a seat that already exists
    * (`InputRouter.nextSeatToFill` walks the seats there are and answers `null`
@@ -2538,6 +2747,55 @@ export class Game {
     // Phase 4 (q95). Gated on the referee's own phase, exactly as the per-pane
     // lane is: the box belongs to the room, and what the room is arguing about
     // is whichever of the two is true.
+    // **The bout first, and explicitly rather than by falling through** — M37
+    // §37.5. A session is one referee or the other and never both (every mode
+    // entrance abandons the rest), so the order is documentation: it says which
+    // card wins if that ever stops being true, and it keeps the world card as
+    // the answer to "nothing is running" rather than as the answer to "the race
+    // is idle".
+    //
+    // Gated on the *referee's* phase, which is this method's own rule one
+    // branch down and M23's lap-lane lesson: a room pauses to read a
+    // scoreboard, and a card keyed on the app state would blank the moment they
+    // did. It goes idle when the bout is abandoned, so leaving a fight restores
+    // the world card with no second owner to remember.
+    const match = this.match.state;
+    // **The card stops being a voice while a bout is on** — §37.5's no-storm
+    // rule, which the pane list obeys by having no live region at all and this
+    // box obeys by switching its own off. It is the same box, so it is one
+    // write rather than a second card; the room's polite strip says the three
+    // things worth saying and this card is read by eye.
+    pane.setAnnouncing(match.phase === 'idle');
+    if (match.phase !== 'idle') {
+      const names = this.matchRosterNames(match.seats);
+      pane.setMatchStandings({
+        phase: match.phase,
+        target: match.target,
+        // **Empty while the bout runs, and empty for a draw.** `winner` is null
+        // for two different things and `phase` separates them
+        // (`MatchState.winner`); the card only asks once it has ended.
+        winner: match.phase === 'ended' && match.winner !== null
+          ? names[match.winner] ?? `Player ${match.winner + 1}`
+          : '',
+        // **The referee's own shared place (q169), never the array order**, and
+        // the seat is the tie-break rather than the sort's own stability: a
+        // 5/5/2 room shows two firsts, and which of the two is drawn above the
+        // other must be a stated rule instead of an implementation detail —
+        // the race branch below states the same one.
+        riders: names
+          .map((_name, seat) => seat)
+          .sort((a, b) => (match.places[a] ?? a + 1) - (match.places[b] ?? b + 1) || a - b)
+          .map((seat) => ({
+            place: match.places[seat] ?? seat + 1,
+            name: names[seat] ?? `Player ${seat + 1}`,
+            knockdowns: match.scores[seat]?.knockdowns ?? 0,
+            discs: match.scores[seat]?.discs ?? 0,
+          })),
+      });
+      pane.setVisible(this.appState.spec.showsHud);
+      return;
+    }
+
     const race = this.race.state;
     if (race.phase === 'idle') {
       pane.setCouchStatus({
@@ -2893,14 +3151,12 @@ export class Game {
     // players rather than the chairs.
     this.applyViewCount();
     this.mountSeatHud(this.seats[index]);
-    // **A chair that arrives can take the mode away with it** — M27 Phase 1
-    // (q94). Knockabout is a two-seat fight until its four-player rules are
-    // opened, so a third seat moves the session back to the ride everybody can
-    // have, visibly, on the panel's own chooser. **Here rather than in
-    // `growCouch`**, because that is the panel's path and this is every path:
-    // a seat can also arrive through the bridge, and a rule that only held on
-    // one of the two would be a rule about a screen rather than about a room.
-    if (this.rideBlockedForSeats(this.couchRide)) this.couchRide = DEFAULT_COUCH_RIDE;
+    // **A chair that arrives used to take the mode away with it** — M27 Phase
+    // 1 (q94), the bridge's copy of the claim-change demotion. It read
+    // `if (this.rideBlockedForSeats(this.couchRide)) this.couchRide =
+    // DEFAULT_COUCH_RIDE;` and both copies are gone with M37 (§37.1): a room
+    // of three or four is a legal Knockabout, so a seat arriving changes the
+    // width of the fight and never what the room chose to play.
     return index;
   }
 
@@ -2970,19 +3226,22 @@ export class Game {
   /**
    * Which rides this room cannot have — one expression, two screens and a door.
    *
-   * **Two clauses that refuse for different reasons, and both are about the
-   * ride rather than about the control.** A world with nothing to knock down
-   * cannot become a Knockabout (M26: `enterKnockabout` answers a bare world by
-   * opening the routes panel, which is not a successor of `paused`, so the
-   * press would move both riders and change nothing). And a couch wider than
-   * two seats cannot become one either (q94, M27 Phase 1): four-player
-   * Knockabout — free-for-all or teams, first to what, N-way spawn fairness
-   * against a 2.15 m reach, multi-way draws — is real design nobody has
-   * opened, and a mode that quietly seated four people in a two-seat fight
-   * would be settling it by implementation.
+   * **One clause since M37 (§37.1), and it is about the world rather than
+   * about the room.** A world with nothing to knock down cannot become a
+   * Knockabout (M26: `enterKnockabout` answers a bare world by opening the
+   * routes panel, which is not a successor of `paused`, so the press would
+   * move every rider and change nothing).
    *
-   * The join panel reads it too, so a room of three is never *offered* the
-   * fight it would then be refused.
+   * The second clause was q94's: a couch wider than two seats could not become
+   * a fight either, because four-player Knockabout was unopened design and a
+   * mode that quietly seated four people in a two-seat fight would have been
+   * settling it by implementation. The owner reopened it on 2026-09-13 and
+   * §37.1 answers all six questions, so the width refusal is gone from every
+   * door. **The world-capability requirement is not** — that is a different
+   * fact about a different thing, and it still refuses here.
+   *
+   * The join panel reads the same reason through `joinBlockReason`, which
+   * answers a bare world differently for the reason written there.
    */
   private blockedCouchRides(): readonly CouchRide[] {
     return this.couchBlockReason() === null ? NO_RIDES_BLOCKED : KNOCKABOUT_ONLY;
@@ -2991,26 +3250,32 @@ export class Game {
   /**
    * *Why* the room cannot have it — the half the screen turns into words.
    *
-   * The seat count is asked first because it is the one the player cannot fix:
-   * a world with no discs is answered by building a route, and telling a room
-   * of three to go and build one would send them off to try something that
-   * changes nothing.
+   * One reason left, and it is the one the player can fix: build a route with
+   * something on it. The seat clause that used to be asked first
+   * (`if (this.roomSize() > 2) return 'too-many-seats';`) was q94's and is
+   * retired by M37; `roomSize` itself stays, because the *views* still follow
+   * the people rather than the chairs.
    */
   private couchBlockReason(): CouchBlockReason {
-    // **People, not chairs** (`roomSize`), for `joinBlockReason`'s reason and
-    // one more: `switchCouchRide` refuses through the *other* gate, so a seat
-    // count here would mean the door and the control it draws asking two
-    // different questions and agreeing only because this card is never on
-    // screen while the two differ. This file says three times that they must
-    // refuse and offer on identical terms; now they do.
-    if (this.roomSize() > 2) return 'too-many-seats';
     if (this.targets.count === 0) return 'no-targets';
+    // **And the world that cannot stand three or four riders apart** — the
+    // repair pass, §37.4. `enterKnockabout` refuses such a world rather than
+    // arming a bout on N independent slots, and `routes` is not a successor of
+    // `paused`, so this is the same shape as the clause above for the same
+    // reason: the press has to be refused before anything is written, and the
+    // control has to say so rather than doing nothing. `matchPackFits` is
+    // memoised: this runs **once per state transition** — `blockedCouchRides`
+    // and this pair have `enterState` as their only caller, and nothing in the
+    // render loop reads either — and a cold thirty-two-candidate search is
+    // around ten milliseconds, so the memo buys that back once per world and
+    // width rather than once a frame.
+    if (!this.matchPackFits()) return 'no-room';
     return null;
   }
 
   /**
-   * The same question **at the join panel**, where only one of the two clauses
-   * applies — M27 Phase 1.
+   * The same question **at the join panel**, where neither clause applies —
+   * M27 Phase 1, emptied by M37.
    *
    * **A world with nothing to hit is not a refusal here, and never was.** The
    * entrance already answers it: `enterKnockabout` sends a bare world to the
@@ -3019,26 +3284,27 @@ export class Game {
    * instead because `routes` is *not* a successor of `paused` — a difference
    * between two screens, not between two opinions about the mode.
    *
-   * The seat clause does apply, and it is the one this method exists for:
-   * a room of three may not be offered a two-seat fight (q94).
+   * The seat clause was the one this pair existed for — *"a room of three may
+   * not be offered a two-seat fight"* (q94) — and M37 opened it, so the panel
+   * now blocks nothing at all. **The pair is kept rather than deleted**: it is
+   * the panel's one "why" channel, `CouchView.blocked`/`.blockReason` are the
+   * shape a future refusal would arrive in, and the distinction between the
+   * two doors is the thing §37.2 insists must not be flattened.
    */
   private joinBlockedCouchRides(): readonly CouchRide[] {
     return this.joinBlockReason() === null ? NO_RIDES_BLOCKED : KNOCKABOUT_ONLY;
   }
 
   private joinBlockReason(): CouchBlockReason {
-    // **People, not chairs** (`roomSize`) — the owner's 2026-08-31 ride. The
-    // panel puts the next chair out as soon as the last one is claimed, so two
-    // players with a spare pad plugged in were a room of *three seats*, and a
-    // two-player couch was refused the two-player fight. The seat count is the
-    // right question everywhere a ride is running, because `trimUnclaimedSeats`
-    // has taken the empty chairs away by then; here it is the wrong one.
-    return this.roomSize() > 2 ? 'too-many-seats' : null;
-  }
-
-  /** Is this ride one the room's *width* rules out? The door's half of q94. */
-  private rideBlockedForSeats(ride: CouchRide): boolean {
-    return this.joinBlockedCouchRides().includes(ride);
+    // The history, because the repair it records still constrains the code
+    // above: it read `this.roomSize() > 2 ? 'too-many-seats' : null` — **people,
+    // not chairs** (the owner's 2026-08-31 ride). The panel puts the next chair
+    // out as soon as the last one is claimed, so two players with a spare pad
+    // plugged in were a room of *three seats*, and a two-player couch was
+    // refused the two-player fight. That is why `roomSize` counts claims on
+    // this one screen, which is still true and still load-bearing for the view
+    // count even though nothing is refused here any more.
+    return null;
   }
 
   /**
@@ -3093,6 +3359,31 @@ export class Game {
   }
 
   /**
+   * Who is fighting, by name, for the wide bout's HUD rows — M37 §37.5.
+   *
+   * **One array for the session, rewritten rather than rebuilt.** This is read
+   * once per pane per drawn frame — four times a frame in the room it exists
+   * for — and a `slice().map()` there would be four arrays and four closures a
+   * frame for a list that changes when somebody changes character. The view
+   * built from it copies every string it uses, so nothing downstream holds this
+   * array past the call.
+   *
+   * A seat outside the room answers `Player N` rather than throwing, on
+   * `buildRaceResults`' own terms: the callers are a HUD frame and a card, and
+   * neither should fail because a seat count moved underneath it.
+   */
+  private matchRosterNames(seats: number): readonly string[] {
+    this.matchRoster.length = seats;
+    for (let seat = 0; seat < seats; seat += 1) {
+      const rider = this.seats[seat];
+      this.matchRoster[seat] = rider === undefined
+        ? `Player ${seat + 1}`
+        : characterSpec(rider.character).name;
+    }
+    return this.matchRoster;
+  }
+
+  /**
    * The character a guest seat is set to wear, and the one writer for it.
    *
    * The `seat - 1` offset lives here and in `setGuestCharacter`, so nothing
@@ -3119,9 +3410,58 @@ export class Game {
    * (`simulation/spawnSlots.ts`) — the validated contract §25.9 asked for, so
    * that a producer nobody had in mind cannot put the second rider inside a
    * wall.
+   *
+   * **A bout of three or four answers from its pack instead** — M37 §37.4.
+   * The group start is drawn once for the whole bout (`drawGroupPack`) and
+   * every seat's slot is read out of it here, so the three call sites that
+   * stand a rider up — the first spawn, a world swap's rebuild and the quick
+   * reset — all agree about where that rider belongs. Running the independent
+   * producer N times is what §37.4 forbids: two accepted individual slots can
+   * be the same slot, and a validator that never looks at the pair cannot see
+   * it.
+   *
+   * The guards live in `packForRoom` so that the QA snapshot and this method
+   * cannot disagree about whether a pack is the one the room is standing on
+   * (the repair pass's first nit: the snapshot used to report a stale pack's
+   * seed and clearance while every rider came from `spawnSlot`).
+   *
+   * **The fall-through is not a bout's fallback any more.** Since the repair
+   * pass, a world whose group search refuses is refused *at the entrance*
+   * (`enterKnockabout`, `matchPackFits`), so no three- or four-seat bout is
+   * ever armed without a pack: running the independent producer N times is
+   * exactly what §37.4 forbids — `spawnSlots.test.ts`'s
+   * `the independent producer can hand two seats the same slot` measures both
+   * ways it goes wrong — and the entrance is what stops it happening rather
+   * than a sentence here. What is left below serves one, two and every ride
+   * that is not a match; the only way a wider room can still reach it is the
+   * QA bridge changing the room's width under a running bout, which no player
+   * control can do (`growCouch` needs `couchJoin`, and `despawnRider` is
+   * `closeCouch`'s and `trimUnclaimedSeats`').
    */
   private spawnForSeat(index: number): LevelPlan['spawn'] {
+    const placement = this.packForRoom();
+    if (placement !== null && index >= 0 && index < placement.spawns.length) {
+      return placement.spawns[index];
+    }
     return spawnSlot(this.levelPlan.spawn, index, this.terrain, this.slotSpacing);
+  }
+
+  /**
+   * The group pack this room is actually standing on, or null — M37 §37.4.
+   *
+   * Three guards, and each rules out a stale pack rather than a wrong one:
+   * an idle referee is not a bout, and a pack of a different width belongs to
+   * a room somebody has left or joined. One accessor rather than two copies,
+   * because the two readers are `spawnForSeat` and the QA snapshot and a
+   * surface that reported a pack the step was not using would be a report of
+   * something that is not happening.
+   */
+  private packForRoom(): MatchPlacement | null {
+    const placement = this.matchPlacement;
+    if (placement === null) return null;
+    if (this.match.phase === 'idle') return null;
+    if (placement.spawns.length !== this.seats.length) return null;
+    return placement;
   }
 
   /**
@@ -3141,9 +3481,19 @@ export class Game {
    * `knockabout` for the single-player run too. The armed match is the only
    * fact that is exactly "these two are about to hit each other", and it is
    * armed before `enterKnockabout` stands anybody anywhere.
+   *
+   * **Two seats** — M37 §37.4. Three and four are placed as a pack and never
+   * reach this getter for their opening placement; a world that cannot hold
+   * such a pack is refused the bout outright since the repair pass, rather
+   * than being stood on this line N times over (which is what §37.4 forbids,
+   * and what `spawnSlots.test.ts` measures going wrong).
+   *
+   * `match.phase`, not `match.state.phase`: the card — scores, places,
+   * leaders — would be built and thrown away to compare one string (Phase 1's
+   * carried note). Same value, same object, no allocation.
    */
   private get slotSpacing(): number {
-    return this.match.state.phase === 'idle' ? SLOT_LATERAL_METRES : DUEL_LATERAL_METRES;
+    return this.match.phase === 'idle' ? SLOT_LATERAL_METRES : DUEL_LATERAL_METRES;
   }
 
   /**
@@ -3471,8 +3821,31 @@ export class Game {
       },
       // The couch match's referee, whole — M26 Phase 4. Its own state type
       // spread, exactly as the timed run's and the lap's are, so a spec asserts
-      // the *rules* rather than the pixels.
-      match: this.match.state,
+      // the *rules* rather than the pixels — and M37's group start beside it,
+      // which is `Game`'s rather than the referee's.
+      match: (() => {
+        // **`packForRoom`, not `matchPlacement`** — the repair pass's first
+        // nit. `spawnForSeat` refuses a pack of the wrong width, so reading the
+        // raw field here reported a seed, a candidate and a clearance belonging
+        // to a pack no rider was standing on.
+        const placement = this.packForRoom();
+        return {
+          ...this.match.state,
+          placementSeed: placement?.seed ?? '',
+          placementCandidate: placement?.candidate ?? -1,
+          placementClearance: placement?.minPairClearance ?? 0,
+          // **A tripwire rather than a state the game can reach.** Since the
+          // repair pass a world whose group search refuses never arms a bout
+          // at all (`enterKnockabout` sends the room to the routes panel), so
+          // three or four riders in a bout with no usable pack means the room
+          // changed width under a running match — which only the QA bridge can
+          // do. One and two never ask for a pack.
+          placementFallback: placement === null
+            && this.match.phase !== 'idle'
+            && GROUP_SPAWN_COUNTS.includes(this.seatCount),
+          countdownHeldSteps: this.countdownHeldSteps,
+        };
+      })(),
       chase: (() => {
         const state = this.chaseRun.state;
         const best = this.probing ? null : this.chaseRecords.best(this.levelPlan.id);
@@ -3698,7 +4071,7 @@ export class Game {
 
     this.clearLastResults();
     this.chaseRun.abandon();
-    this.match.abandon();
+    this.abandonMatch();
     this.trackDay.abandon();
     // **And the race**, which the other three entrances learned to stand down
     // a milestone after they were written (the 2026-09-01 audit). No shipped
@@ -3867,7 +4240,7 @@ export class Game {
 
     this.clearLastResults();
     this.chaseRun.abandon();
-    this.match.abandon();
+    this.abandonMatch();
     this.challenge.abandon();
 
     if (racing) {
@@ -4357,11 +4730,55 @@ export class Game {
    * §13 q21 makes a target-free generated route legal rather than a world to
    * throw away, so this path is a real one and not only a slice-and-proving
    * -ground case.
+   *
+   * **A second refusal with the same shape since M37's repair pass** (§37.4).
+   * A bout of three or four is stood on a pack `simulation/groupSpawn.ts`
+   * proposes and validates *as a whole*, and that file deliberately has no
+   * fallback — "the caller is the only thing that can decide what *this world
+   * cannot hold a bout* should look like". This is the caller deciding, and
+   * §37.4 leaves it no choice of answer: *"do not … run the existing
+   * independent-slot fallback N times: two accepted individual slots can be
+   * the same slot"*, and *"never accept the current overlapping-base fallback
+   * for a bout"*. So a refused world does not arm a bout on the duel line — it
+   * arms nothing, moves nobody, and names the fix on the routes panel exactly
+   * as a world with nothing to hit does.
+   *
+   * Phase 2 measured 174/174 packs accepted across every shipped producer and
+   * a 24-seed sweep, so no world this game ships takes this door; it is
+   * reached in the specs by driving the real producer to a real refusal
+   * (`setGroupSpawnSeparationScale`).
    */
   private enterKnockabout(): void {
+    // **A refusal that cannot be shown is still a refusal, and it writes
+    // nothing** — the repair pass, §37.8 item 2. `openRoutes` now reports
+    // whether the panel actually opened, and both refusals below fall silent
+    // when it did not: the pause card cannot reach `routes` and is greyed by
+    // `couchBlockReason` instead, and the results card cannot reach it either.
+    //
+    // **The results card is left silent on purpose.** Its *Ride it again* is
+    // the only edge that arrives here, and it can only be refused on a world
+    // that has just finished hosting this exact room — pack acceptance is a
+    // property of the world and the seat count (Phase 2: 174/174), and the one
+    // results edge that swaps the world, New route, lands in `freeRide`. So
+    // the branch is unreachable on shipped content and a greyed *Ride it
+    // again* would be a control explaining a state no player can be in; what
+    // matters is that the press leaves no stale line behind for the next
+    // panel. The spec *"a refused bout writes nothing on the one card that
+    // cannot open the routes panel"* drives it with the QA bridge.
     if (this.targets.count === 0) {
-      this.openRoutes('knockabout');
-      this.setRouteStatus({ kind: 'needs-targets' });
+      if (this.openRoutes('knockabout')) this.setRouteStatus({ kind: 'needs-targets' });
+      return;
+    }
+
+    // **Drawn before anything is written**, which is what makes the refusal
+    // cost nothing: the two statements below reset every target and the run's
+    // clock, and a door that refused after them would leave the world half
+    // rebuilt behind a panel the player did not ask for.
+    const drawn = this.drawGroupPack();
+    if (drawn !== null && !drawn.ok) {
+      if (this.openRoutes('knockabout')) {
+        this.setRouteStatus({ kind: 'needs-room', count: this.seatCount });
+      }
       return;
     }
 
@@ -4379,13 +4796,42 @@ export class Game {
     this.race.abandon();
     this.resultsIn = 0;
     // **Which referee this run answers to, decided once, here** — M26 Phase 4
-    // (§26.5). Seat count and nothing else: two riders are a match, one rider
-    // is the route-clearing run this mode has always been, and the second
-    // referee is simply never armed for it. `=== 2` rather than `>= 2` on
-    // `contactLive`'s exact argument — a third seat is a different question
-    // (§26.7).
-    this.match.abandon();
-    if (this.seatCount === 2) this.match.arm(this.seatCount);
+    // (§26.5), widened to the whole couch by M37 (§37.3). Seat count and
+    // nothing else: two, three or four riders are a match, one rider is the
+    // route-clearing run this mode has always been, and the second referee is
+    // simply never armed for it. `>= 2` since q94 was reopened — a third seat
+    // is six directed pairs rather than a different question (§37.1).
+    //
+    // **Only three and four count down** (q170). Two is the regression
+    // contract: the two-player match starts the instant it is armed, and
+    // `slotSpacing` plus the m26 specs read the phase on the arming tick. The
+    // duration is handed over rather than read by the referee, so one call site
+    // decides which rooms count.
+    //
+    // **The count is real from Stage B on**: `matchFrozen` holds every seat's
+    // controller above `EucController.step` while it runs, `handleMatchEvent`
+    // plays the room's cue and `buildHudModel` announces it in seat 0's pane.
+    this.abandonMatch();
+    if (this.seatCount >= 2) {
+      this.match.arm(this.seatCount, this.seatCount >= 3 ? KNOCKABOUT.countdownSeconds : 0);
+    }
+    // **Then the pack, before anybody is stood anywhere** — M37 §37.4, q170.
+    // The draw itself happened at the top, because a refused world must not
+    // reach a single one of the statements above; what happens here is the
+    // *commit*, after `arm` because the group start is a property of the bout
+    // `arm` begins, and before `resetSeats` two statements down, which is the
+    // call that actually puts every rider on their slot through
+    // `spawnForSeat`. Three and four only (`drawGroupPack` answers null
+    // otherwise): two keeps the duel spacing that is its regression contract,
+    // and one rider is not a bout.
+    this.matchPlacement = drawn !== null && drawn.ok
+      ? {
+        spawns: drawn.spawns,
+        seed: drawn.seed,
+        candidate: drawn.candidate,
+        minPairClearance: drawn.minPairClearance,
+      }
+      : null;
     // Deliberately **not** `resetChallengeRider`: there is no start gate to run
     // up to. Knockabout begins where the world begins, which is also what makes
     // "ride it again" mean the same thing every time.
@@ -4407,6 +4853,183 @@ export class Game {
   }
 
   /**
+   * Stand the referee down and forget where its riders were standing.
+   *
+   * **One call instead of two, everywhere the match ends** — M37 §37.4. The
+   * pack is bout state exactly as the tallies are, and §37.3 asks for every
+   * piece of it to clear "through the normal lifecycle"; pairing the two here
+   * is what makes that true at the five existing `match.abandon` seams (the
+   * three mode entrances, the world swap and `enterState`'s stand-down block)
+   * without a sixth owner having to remember.
+   *
+   * `spawnForSeat` also refuses a pack while the referee is idle, so this is
+   * belt and braces on the read side — but the QA snapshot reports the seed,
+   * and a stale seed on a screen where no bout is running would be a report
+   * of something that is not happening.
+   */
+  private abandonMatch(): void {
+    this.match.abandon();
+    this.matchPlacement = null;
+  }
+
+  /**
+   * Draw this bout's group start — M37 §37.4, q170.
+   *
+   * **Three and four only, once per bout, atomically.** The producer is handed
+   * plain data and the live sampler and hands back the *whole* proposed pack
+   * or a refusal; nothing here places anybody, because `resetSeats` two lines
+   * after the call site is what stands every rider on the slot `spawnForSeat`
+   * reads out of the accepted pack.
+   *
+   * **The seed is the world plus the bout's ordinal**, which is what makes it
+   * both fresh and reproducible: a new bout draws a new ring, and the same
+   * world replayed from a fresh boot draws the same one, so a spec can check
+   * the pack against a real paddle instead of against a screenshot. It is
+   * deliberately not the route generator's stream (§37.4) and deliberately not
+   * `Math.random`.
+   *
+   * **The refusal places nobody** — the repair pass, §37.4. This used to leave
+   * `matchPlacement` null and let `spawnForSeat` fall through to the
+   * independent slot producer once per seat, which is the thing §37.4 names
+   * twice: *"do not … run the existing independent-slot fallback N times: two
+   * accepted individual slots can be the same slot"*, and *"never accept the
+   * current overlapping-base fallback for a bout"*. Both failures are real
+   * rather than theoretical — `spawnSlots.test.ts` drives the shipped
+   * `spawnSlot` to hand seats 1 and 2 the *same* point at
+   * `DUEL_LATERAL_METRES`, and to hand both of them the plan's own spawn. So
+   * the refusal now goes back to `enterKnockabout`, which arms nothing and
+   * sends the room to the routes panel.
+   *
+   * Phase 2 measured 174/174 packs accepted across every shipped producer and
+   * a 24-seed sweep at both counts and three seeds, so no world this game
+   * ships reaches the refusal; the specs reach it by making the real producer
+   * really refuse (`setGroupSpawnSeparationScale`).
+   */
+  private drawGroupPack(): GroupSpawnResult | null {
+    if (!GROUP_SPAWN_COUNTS.includes(this.seatCount)) return null;
+
+    this.boutOrdinal += 1;
+    // The world, the route's own seed and which bout of this session it is.
+    // `levelPlan.id` alone would repeat across two generated routes built from
+    // different seeds; `seed` alone is empty on the slice and the proving
+    // ground.
+    const pack = this.groupPackFor(
+      `${this.levelPlan.id}|${this.seed}|${this.seatCount}|${this.boutOrdinal}`,
+    );
+    if (pack === null) return null;
+    this.packFits = { key: this.packFitKey(), fits: pack.ok };
+    if (!pack.ok) {
+      // Once per session, with the measurements that refused it — a warning
+      // per bout on a world that cannot host one would be a console nobody
+      // reads. The routes panel carries the same fact for the player.
+      if (!this.packRefusalWarned) {
+        this.packRefusalWarned = true;
+        console.warn(
+          `M37: no group start fits ${this.levelPlan.id} at ${this.seatCount} seats `
+          + `after ${pack.tried} candidates; the bout is refused. `
+          + `Refusals: ${pack.refused.map((entry) => `#${entry.candidate} ${entry.reason}`).join('; ')}`,
+        );
+      }
+    }
+    return pack;
+  }
+
+  /**
+   * The producer call itself, in one place — M37 §37.4.
+   *
+   * Both callers ask the same question of the same world with the same weapon
+   * and differ only in the seed, and a second copy of this argument list is a
+   * second opinion about what a bout's spacing is.
+   */
+  private groupPackFor(seed: string): GroupSpawnResult | null {
+    if (!GROUP_SPAWN_COUNTS.includes(this.seatCount)) return null;
+    return groupSpawns(
+      this.levelPlan.spawn,
+      this.seatCount,
+      this.terrain,
+      seed,
+      groupObstaclesFrom(this.levelPlan),
+      // Off the real weapon, never a copied 2.15 m: one expression computes
+      // the bound and both the producer and its tests read it.
+      this.groupSeparationMetres(),
+    );
+  }
+
+  /**
+   * How far apart this room's bout must stand any two riders, metres.
+   *
+   * **One expression, because two readers ask about it** — the producer call
+   * above and the memo key below. `groupSpawnSeparationScale` is 1 in the game
+   * and is never anything else outside a spec (see
+   * `setGroupSpawnSeparationScale`); the paddle is the live one, which is the
+   * whole reason the key has to name this number rather than the scale.
+   */
+  private groupSeparationMetres(): number {
+    // Match aimAt's live hit sphere; F4 can enlarge it independently of the
+    // paddle. The same separation also invalidates the pack-fit memo.
+    return groupSeparation(this.seats[0].paddle, this.tuning.get('CHASE.riderHitRadius'))
+      * this.groupSpawnSeparationScale;
+  }
+
+  /** The world, the room width and the weapon a `packFits` answer belongs to. */
+  private packFitKey(): string {
+    // **The weapon is in the key** — the repair pass. The question this memo
+    // caches is asked with the *live* paddle, and `PADDLE.reach` is a
+    // registered F4 row (0.8–2.2 m) that `applyTuning` pushes straight onto
+    // that paddle without coming anywhere near here. A key that named only the
+    // QA scale let the greyed control and `switchCouchRide`'s guard hold two
+    // different opinions about the same room the moment the slider moved —
+    // and a stale `true` is exactly the press that changes `couchRide`, gets
+    // refused by `enterKnockabout`, and switches nothing. The separation term
+    // subsumes the scale, because the product is what the producer is handed.
+    return `${this.levelPlan.id}|${this.seed}|${this.seatCount}|${this.groupSeparationMetres()}`;
+  }
+
+  /**
+   * Can this world hold a bout for the room that is on the couch? — the door
+   * half of the refusal, M37 §37.4.
+   *
+   * **Memoised, and the pause card asks it once per state transition** — not
+   * once a frame, which is what this said before the repair pass: the search
+   * is thirty-two validated candidates, around ten milliseconds cold, and
+   * `couchBlockReason` is reached only from `enterState`. The answer cannot
+   * change without the world, the room's width or the weapon changing:
+   * `groupSpawns` reads its seed *only* through `groupSeatDeal`, which renames
+   * the points of an already-accepted layout, so acceptance is a property of
+   * the world, the count and the separation and not of the bout. The key
+   * carries all three (`packFitKey`), so a new route, a new chair **or a moved
+   * reach slider** re-asks it.
+   *
+   * One and two are always true here: they are not group starts, and the duel
+   * spacing they keep is the regression contract m26 pins.
+   */
+  private matchPackFits(): boolean {
+    if (!GROUP_SPAWN_COUNTS.includes(this.seatCount)) return true;
+    const key = this.packFitKey();
+    if (this.packFits !== null && this.packFits.key === key) return this.packFits.fits;
+    const pack = this.groupPackFor(`${key}|fit`);
+    const fits = pack !== null && pack.ok;
+    this.packFits = { key, fits };
+    return fits;
+  }
+
+  /**
+   * Make the group search refuse — **the QA bridge and nothing else**.
+   *
+   * `spawnSecondRider`'s discipline exactly: no URL parameter, no menu, no
+   * option. It exists because the refusal door is unreachable on every world
+   * this game ships (Phase 2: 174/174 accepted), and a door with no test is a
+   * door nobody can trust; scaling the required separation drives the **real**
+   * producer through its real bounded search to a real refusal, rather than
+   * stubbing the answer.
+   */
+  setGroupSpawnSeparationScale(scale: number): void {
+    if (!Number.isFinite(scale) || scale <= 0) return;
+    this.groupSpawnSeparationScale = scale;
+    this.packFits = null;
+  }
+
+  /**
    * One fixed step of the Knockabout run — M14.
    *
    * The clock and the ending, and nothing else: the swings themselves are
@@ -4417,6 +5040,14 @@ export class Game {
    * and no finish line to cross — §13 q14 makes elapsed a number that is shown
    * and counts zero — so the only two ways out are clearing the route and
    * choosing to stop, which is the pause menu's quit.
+   *
+   * **The guard on the first line is also how a count is paused** — M37
+   * §37.4, and it is `stepRace`'s answer to the same question (`stepTrackDay`
+   * returns on its own app state for the same reason). A pause moves the app
+   * state, so the referee is simply not stepped: its phase, its remaining
+   * seconds and the number it last showed are all untouched, and resuming
+   * carries on from exactly where it stopped. No new code, and nothing that
+   * can disagree with the screen.
    */
   private stepKnockabout(stepSeconds: number): void {
     if (this.appState.current !== 'knockabout') return;
@@ -4430,6 +5061,31 @@ export class Game {
       return;
     }
 
+    // **A decided bout reaches its card even if the delay was taken from it**
+    // — M37 Phase 5's repair, and `stepChallenge`'s own comment is the record
+    // of the same shape happening once before.
+    //
+    // `R` inside the delay is the most ordinary thing a beaten player does, and
+    // `stepSeat`'s reset branch zeroes `resultsIn` for every seat — correctly,
+    // because in a timed run `R` *restarts the run* and the card belongs to the
+    // run being thrown away. A match has no restart to arm: the delay simply
+    // vanished, the referee stayed `ended`, and the block below cannot rescue
+    // it (`KnockaboutMatch.step` answers an ended match with a quiet step, so
+    // `outcome.ended` is false and `finishMatch` never runs again). The room
+    // was left in `knockabout` with paddles equipped, nothing scoring and no
+    // card, and only the pause menu could get out of it.
+    //
+    // Read off the referee's own phase rather than off who pressed what, so it
+    // holds for any future path that spends the delay early, and placed here
+    // rather than in the reset branch so a timed run's `R`, the chase's and the
+    // race's all keep the behaviour they have. `lastMatch` was frozen by
+    // `finishMatch` on the ending step, so the card this shows is the one the
+    // delay was going to show.
+    if (this.match.phase === 'ended') {
+      this.goTo('results');
+      return;
+    }
+
     // **The match, when there is one** — M26 Phase 4. Asked of the referee's
     // own phase rather than of the seat count a second time: one place decides
     // which referee a run has (`enterKnockabout`), and everywhere else reads
@@ -4439,14 +5095,99 @@ export class Game {
     // tally that can never decide it (q76), so the route running out of
     // scenery leaves two riders with nothing to do but fight, which is the
     // mode's own name for what it is about.
-    if (this.match.state.phase !== 'idle') {
-      if (this.match.step(stepSeconds)) this.finishMatch();
+    if (this.match.phase !== 'idle') {
+      // `phase`, not `state.phase`: this runs every fixed step and the rest of
+      // the card — the scores, the places, the leaders — would be built and
+      // thrown away to compare one string.
+      //
+      // **The step's other facts, dispatched exactly as the race's are** —
+      // M37 §37.4. `MatchEvent` carries `RaceEvent`'s fields and `MatchStep`
+      // carries the ending beside them, so this is `stepRace`'s three lines
+      // with one referee swapped: events first, the ending after, and the
+      // ending is `MatchStep.ended` rather than a phase compared twice.
+      const outcome = this.match.step(stepSeconds);
+      for (const event of outcome.events) this.handleMatchEvent(event);
+      if (outcome.ended) this.finishMatch();
       return;
     }
 
     this.knockaboutSeconds += stepSeconds;
     if (this.targets.struckCount < this.targets.count) return;
     this.finishKnockabout();
+  }
+
+  /**
+   * A countdown tick or the release — M37 §37.4 (q170).
+   *
+   * **`handleRaceEvent`'s `count` and `go` branches, for the bout**, and
+   * deliberately the same cues: §37.4 asks for the race's 3-2-1-GO convention
+   * rather than a second one, so this reuses `audio.raceCount` / `audio.raceGo`
+   * and the HUD's existing count element. One room cue per event, not one per
+   * pane — the event carries `seat: -1` and this runs once per step.
+   *
+   * **GO is the release, and everything a held count could have arranged is
+   * dropped here**:
+   *
+   *   - `router.clearPending()` — the fourth menu-boundary door. Every seat's
+   *     intent was replaced with neutral through the freeze, but a one-shot
+   *     latched during it is still sitting in its buffer, and a hop or a swing
+   *     that fires on the first live step is a jump-start nobody pressed for.
+   *     A button *held* through the count therefore buys nothing at GO; the
+   *     existing held-input convention applies from the release onward, which
+   *     is the same answer the race gives.
+   *   - every seat's `paddle.cancel()` — the reseed. A paddle cannot have
+   *     swung during the count (`stepPaddle` never ran), so this is the belt
+   *     to the braces: `cancel` clears the phase, the elapsed, the head speed,
+   *     the travel and the arc's seed, so no bout can begin holding a sweep
+   *     that belongs to the last one.
+   *   - the contact history, cleared for the same reason and already empty for
+   *     it (`stepContact` clears on every frozen step).
+   *   - `cancelOneFootPoses()` — any dwell a held input began, M36 §36.5's
+   *     fifth door.
+   *
+   * `ended` is not read here: `MatchStep.ended` is the fact `finishMatch`
+   * hangs off, one line above the call to this method.
+   */
+  private handleMatchEvent(event: MatchEvent): void {
+    if (event.kind === 'go') {
+      this.router.clearPending();
+      for (const seat of this.seats) seat.paddle.cancel();
+      this.clearContactHistory();
+      this.cancelOneFootPoses();
+      this.audio.raceGo();
+      return;
+    }
+    if (event.kind === 'count') this.audio.raceCount();
+  }
+
+  /**
+   * The referee's decision alone, on a step that is about to be cut short —
+   * M37 §37.3's repair of the `worldReset` seam.
+   *
+   * Called from exactly one place: above `Game.step`'s early return for seat
+   * 0's respawn, after `spendRiderStrikes` has handed this step's knockdowns
+   * over. `stepKnockabout` cannot be hoisted there wholesale, because it also
+   * ages `knockaboutSeconds` and the results delay and a reset step integrates
+   * nothing; what must not wait a tick is the *decision*, because the tallies
+   * it reads are already final for this step and one more tick of collecting
+   * can change who wins.
+   *
+   * `step(0)` and not `step(stepSeconds)`: `KnockaboutMatch` adds the seconds
+   * only while the match is running and not ending, so a zero leaves its clock
+   * exactly where the skipped step would have left it, and a step that earned
+   * no credit is `QUIET_STEP`. The two-seat tick is therefore byte-identical —
+   * at two riders every pair involves seat 0, whose own exchanges the batch
+   * has already voided, so nothing can be recorded on a tick seat 0 reset on.
+   *
+   * **`running` and not merely "armed"**: a counted room refuses every
+   * knockdown, so there is nothing to decide during it, and stepping the count
+   * here would consume a `count` event on a step that integrates nothing.
+   */
+  private decideMatchAfterStrikes(): void {
+    if (this.appState.current !== 'knockabout') return;
+    if (this.resultsIn > 0) return;
+    if (this.match.phase !== 'running') return;
+    if (this.match.step(0).ended) this.finishMatch();
   }
 
   /**
@@ -4530,6 +5271,14 @@ export class Game {
    * name is in reads as a bug unless the screen explains itself.
    */
   private buildMatchResults(result: MatchResult): ResultsView {
+    // **Three and four are a different card, not a wider one** — M37 §37.5.
+    // Branching here rather than generalising the builder is deliberate: the
+    // two-seat card is a shipped screen with its own specs and its own words
+    // (`Player 1` / `Player 2`, the en-dash rows, "You both got there on the
+    // same swing"), and §37.5 says to keep its behaviour. A single builder
+    // covering both would be one expression per field deciding which game it
+    // was describing.
+    if (result.seats >= 3) return this.buildGroupMatchResults(result);
     const scores = result.scores;
     const winner = result.winner;
     const notes: string[] = [];
@@ -4577,6 +5326,84 @@ export class Game {
           ahead: false,
         },
       ],
+      notes,
+    };
+  }
+
+  /**
+   * A finished bout of three or four, as words — M37 §37.5 (q168, q169).
+   *
+   * **The table is the scoreboard and the heading is the outcome.** At two
+   * seats the card's two big figures could *be* the scoreboard; at four they
+   * cannot, so the rows carry Place, Rider, Knockdowns and Targets — §37.5's
+   * four columns, on the surface M27 Phase 4 already grew a fourth column for
+   * — and the summary above them says what the bout was rather than repeating
+   * what the table says.
+   *
+   * **A draw names the riders who drew, and only them.** `tiedLeaders` is the
+   * seats sharing the top tally and is empty whenever there is a winner (q168),
+   * so a 5/5/2 says two names and never three; "You both got there on the same
+   * swing" is the two-seat card's sentence and is wrong here in both halves —
+   * there may be three of them, and they are not all "you".
+   *
+   * **Elapsed is a note, not a headline.** §37.5 asks for it as a small "Time
+   * taken" fact; the notes are this card's small facts, and a third big figure
+   * would put the clock in the same type as the thing that decided the bout.
+   */
+  private buildGroupMatchResults(result: MatchResult): ResultsView {
+    const names = this.matchRosterNames(result.seats);
+    const nameFor = (seat: number): string => names[seat] ?? `Player ${seat + 1}`;
+
+    // Seat order in, place order out — the ranking is the referee's (q169) and
+    // the seat is the tie-break, which is `updateIdlePane`'s rule on the other
+    // surface that ranks these same riders.
+    const rows = result.scores
+      .map((_score, seat) => seat)
+      .sort((a, b) => (result.places[a] ?? a + 1) - (result.places[b] ?? b + 1) || a - b)
+      .map((seat) => ({
+        label: `${result.places[seat] ?? seat + 1}. ${nameFor(seat)}`,
+        time: `${result.scores[seat]?.knockdowns ?? 0}`,
+        // Nothing on this card is compared against anything (q77), so the third
+        // column stays empty and `data-compare` stays false — the widths follow
+        // from that, in the stylesheet.
+        delta: '',
+        extra: `${result.scores[seat]?.discs ?? 0}`,
+        ahead: result.winner === seat,
+      }));
+
+    const best = result.scores.reduce((most, score) => Math.max(most, score.knockdowns), 0);
+    const notes: string[] = [];
+    if (this.levelId === 'generated') notes.push(`Route seed ${this.seed}`);
+    notes.push(`Time taken ${formatRunTime(result.seconds)}`);
+    if (result.winner === null) {
+      // Explicitly, by name, in the order the referee lists them. An Oxford-less
+      // "and" for the last pair because the note is a sentence somebody reads
+      // out loud across a sofa.
+      const tied = result.tiedLeaders.map(nameFor);
+      const who = tied.length <= 1
+        ? tied.join('')
+        : `${tied.slice(0, -1).join(', ')} and ${tied[tied.length - 1]}`;
+      notes.push(`${who} finished level on ${best} knockdowns`);
+    }
+    // The two-seat card says "Two-player matches are not saved"; this one has
+    // three or four people on it, and §37.5 asks for the room's own word.
+    notes.push('Couch matches are not saved');
+
+    return {
+      heading: result.winner === null ? 'Match drawn' : `${nameFor(result.winner)} wins`,
+      isRecord: false,
+      // **Not the outcome, which the heading and the table already carry.** The
+      // race card's pair is the same shape — the two rules the run was held
+      // under (`Laps`, and the winner's clock) rather than a second printing of
+      // the finishing order.
+      totalCaption: 'Riders',
+      bestCaption: 'Knockdowns to win',
+      total: `${result.seats}`,
+      best: `${result.target}`,
+      deltaToBest: '',
+      ahead: false,
+      table: MATCH_TABLE,
+      rows,
       notes,
     };
   }
@@ -4645,7 +5472,7 @@ export class Game {
    */
   private installChaseWorld(plan: LevelPlan): void {
     this.chaseRun.abandon();
-    this.match.abandon();
+    this.abandonMatch();
     this.copPaddle.cancel();
     this.spine = RouteSpine.fromPlan(plan);
     if (this.spine === null) {
@@ -4704,6 +5531,15 @@ export class Game {
     this.trackDay.abandon();
     // And the race, for `startChallenge`'s reason.
     this.race.abandon();
+    // **And the match, which this entrance alone used to keep** — the repair
+    // pass's fourth nit. Every other mode entrance stands the referee down, and
+    // `enterState`'s stand-down block does not name `chase`; a bout left
+    // counting here would hold `matchFrozen` true for ever while
+    // `stepKnockabout` returned on the app state, so no seat would ever be
+    // released. Only the QA bridge can reach it (the title screen and the
+    // routes panel both abandon first), and a chase carrying a live match was
+    // wrong before the count existed as well.
+    this.abandonMatch();
     this.resultsIn = 0;
     // Deliberately **not** `resetChallengeRider`: there is no start gate to run
     // up to, and the chase begins where the world begins — which is also what
@@ -5326,6 +6162,35 @@ export class Game {
     return this.race.state.phase === 'countdown';
   }
 
+  /**
+   * Is the bout still held? — M37 §37.4 (q170), `raceFrozen`'s sibling.
+   *
+   * **A separate getter rather than a widened `raceFrozen`**, because the two
+   * freezes are not the same freeze. A race countdown neutralises *intent* and
+   * keeps integrating: the grid is flat, and a rider handed neutral input on
+   * it stays put. A Knockabout ring is stood wherever the world's spawn is,
+   * and Phase 2 measured what neutral input does on a slope — a pavement
+   * descent steeper than about 2 % rolls away on its own, 2.8 m in three
+   * seconds at 10 % (`scratchpad` §4). So this one stops the step instead of
+   * emptying it, and the race keeps the semantics it shipped with.
+   *
+   * `match.phase`, not `match.state.phase`: read once per seat per step.
+   */
+  get matchFrozen(): boolean {
+    return this.match.phase === 'countdown';
+  }
+
+  /**
+   * Either count, for the things that behave the same under both.
+   *
+   * One expression on `raceFrozen`'s own argument: the moment "has this room
+   * been released yet" is spelled out twice, the step and the HUD can hold
+   * different opinions about it.
+   */
+  get startFrozen(): boolean {
+    return this.raceFrozen || this.matchFrozen;
+  }
+
   get contactLive(): boolean {
     return this.seatCount >= 2 && this.contactEnabled;
   }
@@ -5352,9 +6217,11 @@ export class Game {
    */
   setCouchRide(ride: string): void {
     if (!isCouchRide(ride)) return;
-    // The panel greys the button, and this refuses the press — the door and the
-    // control on identical terms, which is `switchCouchRide`'s own rule.
-    if (this.rideBlockedForSeats(ride)) return;
+    // **No width refusal since M37** (§37.1). This line read
+    // `if (this.rideBlockedForSeats(ride)) return;` — the door agreeing with
+    // the greyed button, on `switchCouchRide`'s rule that the two must refuse
+    // on identical terms. They still do: the join panel blocks nothing now, so
+    // the control is live and so is the press.
     this.couchRide = ride;
     this.updateCouchPanel();
     this.updateIdlePane();
@@ -5379,10 +6246,11 @@ export class Game {
    * the title to stop keeping score is the same journey the pause menu's own
    * switch was built to delete.
    *
-   * **Refused for anything that is not a two-seat session**, so a single player
-   * who somehow reached this string gets nothing rather than a seat count the
-   * referee was not armed for. Both screens only draw the control for a couch,
-   * and this is the door agreeing with the screen rather than trusting it.
+   * **Refused for anything that is not a couch session** — two, three or four
+   * since M37 (§37.1) — so a single player who somehow reached this string
+   * gets nothing rather than a seat count the referee was not armed for. Both
+   * screens only draw the control for a couch, and this is the door agreeing
+   * with the screen rather than trusting it.
    *
    * **Refused when it would change nothing**, which is not merely tidy: the
    * chooser is a report, both buttons are live, and pressing the one already
@@ -5399,10 +6267,11 @@ export class Game {
     // constant moved to four it became a switch that only worked for rooms of
     // exactly four people. What it always meant is `seatCount >= 2`.
     if (this.seatCount < 2) return;
-    // And the mode has to be one this room can ride: Knockabout is a two-seat
-    // fight until its four-player rules are opened (q94), so a room of three
-    // is refused here as well as offered nothing to press.
-    if (this.rideBlockedForSeats(ride)) return;
+    // **And the width refusal that used to sit here is gone** — M37 §37.1.
+    // It read `if (this.rideBlockedForSeats(ride)) return;`, because
+    // Knockabout was a two-seat fight until its four-player rules were opened
+    // (q94). They are opened: two, three and four are all legal here. The
+    // world-capability refusal below is a different question and stays.
     const from = this.couchRideOnScreen();
     if (from === null) return;
     // **A world with nothing to hit cannot become a Knockabout from here**, and
@@ -5417,6 +6286,13 @@ export class Game {
     // carried discs — so this refusal is the pause menu's in practice, and the
     // note the screen shows beside it is written for that card.
     if (ride === 'knockabout' && this.targets.count === 0) return;
+    // **And the same refusal for a world that cannot hold the pack** — the
+    // repair pass, §37.4. `enterKnockabout` answers a refused group start the
+    // way it answers a bare world (the routes panel), so from here it would
+    // leave `couchRide` changed and nothing switched. The greyed control on
+    // this card reads the same `couchBlockReason`, which is M26's rule that
+    // the door and the control refuse on identical terms.
+    if (ride === 'knockabout' && !this.matchPackFits()) return;
     if (ride === from) {
       // Already what it is: leave the way the screen's own primary action
       // leaves, so the button under the finger still does the obvious thing.
@@ -5530,7 +6406,8 @@ export class Game {
   }
 
   /**
-   * Whose rider this seat's paddle may reach, or null — M26 Phase 3.
+   * Has this seat's paddle got anybody to reach at all? — M26 Phase 3,
+   * widened to the whole couch by M37 (§37.3).
    *
    * **One clause, because the other one is the caller's.** `paddleEquipped` is
    * what keeps couch free ride free of paddles (q82) and the chase free of a
@@ -5539,84 +6416,72 @@ export class Game {
    * deleting it changed no behaviour and failed no spec, which is a guard that
    * has stopped being one (M25 Phase 5's lesson, in the milder direction).
    *
-   * `spendRiderStrikes` is the second caller since M26 Phase 5's QA repair, and
-   * it inherits that argument rather than repeating it: nothing reaches the
-   * pending buffer except through `stepPaddle`, which has already answered
-   * `paddleEquipped` for the seat whose index is in it.
+   * `spendRiderStrikes` used to be the second caller (M26 Phase 5's QA
+   * repair). It is not any more, and that is deliberate: a pending hit now
+   * carries the victim it was recorded against (§37.3's "address both ends"),
+   * so nothing downstream re-derives one — which is what made the old shape
+   * unable to say anything but "the other seat".
    *
-   * What is left is `contactLive`'s own clause for `contactLive`'s own reason:
-   * a third seat is three pairs and a different question, and answering it
-   * quietly would be worse than not answering it (§26.7).
+   * What is left is `contactLive`'s own clause, now with `contactLive`'s own
+   * answer: **`>= 2`**, because q94 is reopened and three seats are six
+   * directed pairs rather than a different question (§37.1). One rider has
+   * nobody to swing at and is the clause that says so, rather than leaving
+   * `seats[1]` to be undefined somewhere downstream.
    *
    * The cop is deliberately not reachable from here. He is not a seat, he only
    * exists in a mode where nobody else carries a paddle, and a couch chase is
    * postponed (q73).
    */
-  private strikeableOpponent(index: number): RiderSeat | null {
-    if (this.seatCount !== 2) return null;
-    return this.seats[index === 0 ? 1 : 0];
+  private strikeableOpponents(index: number): boolean {
+    return this.seatCount >= 2 && index < this.seatCount;
   }
 
   /**
-   * Point the shared hittable set at this seat's opponent — M26 Phase 3.
+   * Point the shared hittable set at everybody this seat may hit — M26 Phase 3,
+   * one volume per opponent since M37 (§37.3).
    *
-   * The quarry is placed from `aimPoses`, never from the opponent's live pose:
-   * that field's comment prices the half-step of advantage the live pose would
-   * hand to whoever sits second.
+   * Each quarry is placed from `aimPoses`, never from a live pose: that field's
+   * comment prices the half-step of advantage the live pose would hand to
+   * whoever sits later in the loop. At three and four that argument is not
+   * merely preserved but load-bearing — one consistent set of opponent poses is
+   * what §37.3's "record against one consistent set of facts" *means*.
    *
    * **Not live while they are down.** `RiderTarget`'s own argument, and it
-   * applies twice as hard between two people on a couch: swinging at somebody
-   * lying on the ground is unpleasant to watch, and the hard knock would refuse
-   * it anyway inside the recovery window (q79). Emptying the set is the honest
-   * version of that — no sound, no hit, nothing to explain.
+   * applies twice as hard between people on a couch: swinging at somebody lying
+   * on the ground is unpleasant to watch, and the hard knock would refuse it
+   * anyway inside the recovery window (q79). Emptying that seat's volume is the
+   * honest version of that — no sound, no hit, nothing to explain. A chair
+   * nobody is sitting in is emptied for the same reason and by the same call.
+   *
+   * The swinger's own volume is not emptied; `SeatQuarries` skips it, so the
+   * set stays correct for whoever aims next.
    */
   private aimAt(index: number): HittableSet {
-    const opponent = this.seats[index === 0 ? 1 : 0];
-    const aim = this.aimPoses[index === 0 ? 1 : 0];
-    this.seatQuarry.place(
-      aim.x,
-      aim.y,
-      aim.z,
-      // **One radius, and it is misfiled rather than mischosen.** `CHASE` asked
-      // "how big is a rider" first and wrote the answer down; `CONTACT.radius-
-      // Metres` is already derived from it (§26.3), and a second constant here
-      // would be the same question answered twice. The group name is a residual
-      // of the chase getting there first.
-      this.tuning.get('CHASE.riderHitRadius'),
-      !opponent.controller.crashed,
-    );
-    this.seatHittables.field = this.targets;
-    this.seatHittables.rider = this.seatQuarry;
-    return this.seatHittables;
-  }
-
-  /**
-   * One rider's paddle lands on another — M26 Phase 3 (q74).
-   *
-   * **The whole of the hard knock's meaning, in one place, for both wielders.**
-   * Whether the swing was committed is the paddle's own answer and the same
-   * arithmetic the cop's is judged by; what a committed swing *does* is this,
-   * and what an uncommitted one does is what a strike has always done — the
-   * M18 body knock, one soft-body wobble and a speed cost.
-   *
-   * Returns whether the rider went down, which is the fact a match referee
-   * needs and this method does not keep. A knock refused inside the recovery
-   * window falls back to the soft one rather than doing nothing, so a strike
-   * that lands always reads as a strike.
-   */
-  private strikeRider(wielder: RiderSeat, struck: RiderSeat): boolean {
-    this.audio.hit();
-    if (
-      wielder.paddle.committed
-      && struck.controller.hardKnock(wielder.paddle.headTravelX, wielder.paddle.headTravelZ)
-    ) {
-      return true;
+    for (let seat = 0; seat < COUCH_SEATS; seat += 1) {
+      const opponent = this.seats[seat];
+      if (opponent === undefined || seat >= this.seatCount) {
+        this.seatQuarries.hide(seat);
+        continue;
+      }
+      const aim = this.aimPoses[seat];
+      this.seatQuarries.place(
+        seat,
+        aim.x,
+        aim.y,
+        aim.z,
+        // **One radius, and it is misfiled rather than mischosen.** `CHASE` asked
+        // "how big is a rider" first and wrote the answer down; `CONTACT.radius-
+        // Metres` is already derived from it (§26.3), and a second constant here
+        // would be the same question answered twice. The group name is a residual
+        // of the chase getting there first.
+        this.tuning.get('CHASE.riderHitRadius'),
+        !opponent.controller.crashed,
+      );
     }
-    // The same cost the cop's strike has spent since M18, and misfiled in the
-    // same way `riderHitRadius` is: it is what a paddle takes off a rider, and
-    // the chase was simply the first mode to need the number.
-    struck.controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
-    return false;
+    this.seatQuarries.aimFor(index);
+    this.seatHittables.field = this.targets;
+    this.seatHittables.rider = this.seatQuarries;
+    return this.seatHittables;
   }
 
   /** Can a swing start on this step? Legality, exactly as `canAcceptHop` is. */
@@ -5660,12 +6525,12 @@ export class Game {
     // rather than two queries because `Paddle.step` advances a state machine
     // that is only allowed to advance once per fixed step — asking it a second
     // question would be asking it to swing twice.
-    const opponent = this.strikeableOpponent(index);
+    const opponents = this.strikeableOpponents(index);
     const hits = seat.paddle.step(
       stepSeconds,
       { x: pose.x, y: pose.y, z: pose.z, headingY: pose.headingY },
       swingRequested,
-      opponent === null ? this.targets : this.aimAt(index),
+      opponents ? this.aimAt(index) : this.targets,
     );
 
     // The whoosh goes with the press that was actually granted, not with the
@@ -5682,25 +6547,41 @@ export class Game {
 
     for (const hit of hits) {
       // **A person is not a disc**, and the id is what tells them apart — M26
-      // Phase 3. `RIDER_VOLUME_ID` says why the two namespaces cannot collide.
-      if (hit.id === RIDER_VOLUME_ID) {
-        // **One swing, one strike.** The sweep reports a rider on every active
-        // step its head stays within reach, and a disc's own answer to that —
-        // leaving the set once struck — is not available for somebody who is
-        // still standing there. See `RiderSeat.lastRiderStrikeSwing`.
-        if (opponent === null || seat.lastRiderStrikeSwing === seat.paddle.swingCount) continue;
-        seat.lastRiderStrikeSwing = seat.paddle.swingCount;
-        // **Found here, spent after both seats have moved** — M26 Phase 5's QA
-        // repair. `strikeWielders` prices what applying it on this line cost:
-        // a crash spent mid-loop cancels the other seat's in-flight swing, and
-        // a strike spent before its target's own step can land on a pose they
-        // have already teleported away from. The latch above still belongs
-        // here, because "has this swing already been counted" is a fact about
-        // this paddle and nothing later can recover it.
-        if (this.strikeCount < this.strikeWielders.length) {
-          this.strikeWielders[this.strikeCount] = index;
-          this.strikeCount += 1;
-        }
+      // Phase 3. Since M37 the id also says *which* person: `SEAT_VOLUME_IDS`
+      // is why the three namespaces (discs, seats, the cop's quarry) cannot
+      // collide, and `riderVolumeSeat` is −1 for everything that is not a seat.
+      const victim = riderVolumeSeat(hit.id);
+      if (victim >= 0) {
+        // **One swing, one strike — per victim** (§37.3). The sweep reports a
+        // rider on every active step its head stays within reach, and a disc's
+        // own answer to that — leaving the set once struck — is not available
+        // for somebody who is still standing there. Each victim has their own
+        // entry, so one swing may reach a second rider on this step or on a
+        // later active one (q171) and can still never hit the same rider twice.
+        // See `RiderSeat.lastRiderStrikeSwings`.
+        if (seat.lastRiderStrikeSwings[victim] === seat.paddle.swingCount) continue;
+        seat.lastRiderStrikeSwings[victim] = seat.paddle.swingCount;
+        // **Found here, spent after every seat has moved** — M26 Phase 5's QA
+        // repair. `strikes` prices what applying it on this line cost: a crash
+        // spent mid-loop cancels another seat's in-flight swing, and a strike
+        // spent before its victim's own step can land on a pose they have
+        // already teleported away from. The latch above still belongs here,
+        // because "has this swing already been counted" is a fact about this
+        // paddle and nothing later can recover it.
+        //
+        // The paddle's own facts travel with the hit rather than being read
+        // again at spend time: `committed` and the head travel describe the
+        // arc that landed *this* step, and by the time the batch is resolved
+        // the same paddle has not moved but a second swing's worth of reasoning
+        // about it would be a second reading of one event (§37.3).
+        this.strikes.record(
+          index,
+          victim,
+          seat.paddle.swingCount,
+          seat.paddle.committed,
+          seat.paddle.headTravelX,
+          seat.paddle.headTravelZ,
+        );
         continue;
       }
       // `strike` is the authority on whether this scored: it returns false for
@@ -6073,9 +6954,17 @@ export class Game {
    * from the slice with nothing to say: an empty field and no message, rather
    * than a stale one from a previous visit.
    */
-  private openRoutes(purpose: RoutePurpose = 'ride'): void {
+  private openRoutes(purpose: RoutePurpose = 'ride'): boolean {
+    // **Nothing is written for a panel that cannot open** — the repair pass.
+    // `routes` is not a successor of every state that reaches this (§37.8 item
+    // 2's mutation-free refusal), and the purpose and the status line below
+    // are both real state: a refused open used to leave them set for whenever
+    // the panel next appeared for some other reason. Asked before the first
+    // write, and reported to the caller so an entrance can stay silent rather
+    // than announce a fix on a screen nobody will see.
+    if (this.appState.current !== 'routes' && !this.appState.canGoTo('routes')) return false;
     this.setRoutePurpose(purpose);
-    if (this.appState.current !== 'routes' && !this.goTo('routes')) return;
+    if (this.appState.current !== 'routes' && !this.goTo('routes')) return false;
 
     if (this.levelId === 'generated') {
       this.menus.setSeed(this.seed);
@@ -6087,6 +6976,7 @@ export class Game {
       this.menus.setSeed('');
       this.setRouteStatus({ kind: 'idle' });
     }
+    return true;
   }
 
   /** Leave the route chooser without allowing deferred work to follow us. */
@@ -6469,7 +7359,7 @@ export class Game {
     this.lastRace = null;
     // The match's world is the discs and the two riders in it, and both are
     // being replaced.
-    this.match.abandon();
+    this.abandonMatch();
     this.pendingLapFlash = null;
     this.lastTrackDay = null;
     this.lastTrackDayWasRecord = false;
@@ -7033,6 +7923,11 @@ export class Game {
       // cleared by the reader (`raceInputs`), so a reset survives exactly as
       // long as it takes the referee to be told, and no longer.
       if (wasReset) this.seatResetThisStep[index] = true;
+      // **And the strike batch's own copy** — M37 §37.3. Deliberately not a
+      // second reader of the flag above: `raceInputs` consumes and clears that
+      // one, so a resolver sharing it would race the race referee for the fact.
+      // Drained by `spendRiderStrikes` on every step, hit or no hit.
+      if (wasReset) this.strikeResetThisStep[index] = true;
       if (wasReset) seatReset = true;
       if (wasReset && index === 0) worldReset = true;
     }
@@ -7077,10 +7972,34 @@ export class Game {
     // step in the same place. A ram that crashes a rider first would turn the
     // swing already on its way into a shove, which is the ordering reading
     // backwards.
-    this.spendRiderStrikes(seatReset);
+    // The strikes take their teleport facts per seat off their own latch
+    // (§37.3); contact keeps the aggregate, because a pair that met is still
+    // one meeting and `stepContact` clears every pair on a discontinuity.
+    this.spendRiderStrikes();
     this.stepContact(stepSeconds, seatReset);
 
-    if (worldReset) return;
+    // **And the decision the credit above it just earned** — M37 §37.3's
+    // "seat 0's `worldReset` return cannot defer an unrelated winning exchange
+    // to next tick", repaired after the Stage A verifiers demonstrated it.
+    //
+    // Hoisting `spendRiderStrikes` was only half of it: the credit reached the
+    // referee above the return and the referee itself was stepped fifty lines
+    // below it, so a knockdown recorded on a tick the host respawned on sat on
+    // the board for one extra step and collected whatever landed in that step
+    // — a bystander's `R` turning seat 1's outright win into a draw with
+    // seat 3 (`tests/m37.spec.ts`, "seat 0 pressing R cannot defer the winning
+    // step"). Stage A is what made it reachable: the old aggregate void
+    // dropped the whole batch when any seat reset, so no credit could exist on
+    // a tick whose referee never ran.
+    //
+    // The decision only, never the clocks: `stepKnockabout(stepSeconds)`
+    // itself must stay below, because a reset step integrates nothing and
+    // ageing `knockaboutSeconds` or the results delay on it would be this
+    // method's own rule read backwards.
+    if (worldReset) {
+      this.decideMatchAfterStrikes();
+      return;
+    }
 
     // **One particle system, one advance, whatever the seat count.** The
     // emitters inside the seat step run per rider and hand this shared pool
@@ -7221,7 +8140,9 @@ export class Game {
     // count, and the ride stays bit-identical (invariant 5's spirit). It is
     // the same substitution a paused game already makes, pointed at a
     // different question.
-    const held = riding && !this.raceFrozen;
+    // **Either count** since M37 (§37.4): `startFrozen` is the race's freeze
+    // or the bout's, and what they share is that no rider has been released.
+    const held = riding && !this.startFrozen;
     const sampledActions = held
       ? seat.source.sample(this.simTimeSeconds)
       : NEUTRAL_ACTIONS;
@@ -7234,8 +8155,29 @@ export class Game {
     // The one-shots are frozen with the axes, or a hop pressed on "2" would be
     // buffered through the count and spent on the first racing step. What
     // happens to a press *made* during the freeze is the fourth door's answer
-    // (`handleRaceEvent`), not this loop's.
-    for (const action of held ? PRESSED_ACTIONS : NO_ACTIONS) {
+    // (`handleRaceEvent`, and `handleMatchEvent` beside it), not this loop's.
+    //
+    // **Except pause and mute while a *bout* is held** — M37 §37.4, which
+    // requires input polling, any-seat pause/mute and disconnect handling to
+    // stay live through the match countdown.
+    //
+    // **`matchFrozen`, not `startFrozen`** — the repair pass. Stage B asked
+    // this of either count, which also made a *race* countdown pausable by any
+    // seat: a shipped mode's behaviour changed inside a match milestone, on a
+    // §37.4 sentence written about the bout, with no spec pinning what it
+    // replaced and no owner gate. The race's freeze is byte-identical again
+    // (`a seat cannot pause the race's own countdown` pins it), and whether
+    // the wider rule is wanted is a question for the owner rather than a side
+    // effect of this one.
+    //
+    // Not while *paused* or in a menu, which is the third state this ternary
+    // has always had: `riding` is false there, the menu owns the pad, and a
+    // pause claimed by a seat on the pause screen would eat the press the card
+    // is waiting for.
+    const oneShots = held
+      ? PRESSED_ACTIONS
+      : (riding && this.matchFrozen ? FROZEN_PRESSED_ACTIONS : NO_ACTIONS);
+    for (const action of oneShots) {
       // The latch is a buffer, not merely an edge detector. Legality belongs
       // to the controller, so an early Space press stays pending while the
       // wheel is airborne and is claimed on the first grounded step that can
@@ -7322,6 +8264,46 @@ export class Game {
       return true;
     }
 
+    // **The bout's count stops the step rather than emptying it** — M37 §37.4
+    // (q170), and this is the whole freeze: everything below integrates the
+    // rider, and none of it runs.
+    //
+    // **Neutral input is not a freeze.** The longitudinal model applies
+    // `−g·sin(slope)` whatever the snapshot says, and the only thing holding a
+    // parked wheel is the surface's rolling resistance — so on pavement
+    // (0.35 m/s²) anything past about a 2 % descent rolls away on its own, and
+    // Phase 2 measured 0.63 m of drift in three seconds at 5 % and 2.80 m at
+    // 10 % (`groupSpawn.test.ts` asserts that creep so it cannot quietly stop
+    // being true). A race grid is flat and a Knockabout ring is wherever the
+    // world's spawn is, which is why the race's substitution is left exactly
+    // as it shipped and this is a different mechanism rather than a wider one.
+    //
+    // What is skipped, and what §37.4 asks for: the controller (no movement,
+    // no creep), the one-foot pose (no trick intent), the trick facts, the
+    // landing and kerb one-shots, `stepPaddle` (no swing, no paddle motion,
+    // no target credit) and this seat's HUD dwell. What is *not* skipped is
+    // above this line: the pad is still polled, pause and mute are still
+    // claimed, and a controller that disconnects still pauses the room through
+    // the router's own rules.
+    //
+    // Contact is the step's, not the seat's, and is held in `Game.step`.
+    //
+    // `false`, because nothing teleported: a frozen step is not a reset step,
+    // and the caller's `wasReset` must not latch one.
+    if (this.matchFrozen) {
+      this.countdownHeldSteps += 1;
+      // **And the teleport latch is spent here**, the way the race's freeze
+      // spends it by stepping through the block below — the repair pass's
+      // second nit. Placing the pack sets `seatTeleported`, and a latch carried
+      // over the whole hold would be delivered as `facts.reset` on the first
+      // *live* step after GO, which is a §36.6 fact about a frame that did not
+      // teleport anybody. Nothing is in flight at a bout's start, so this
+      // changes no trick outcome; what it changes is that the two freezes now
+      // agree.
+      this.seatTeleported[index] = false;
+      return false;
+    }
+
     // Present a hop edge only on the step that legally claimed it. The sampled
     // action can remain true while its latch waits in the buffer; handing that
     // level to the controller would make an illegal airborne press look held.
@@ -7353,7 +8335,11 @@ export class Game {
       seat.currentPose.recoverBlend,
       stepSeconds,
       actions.hopHeld,
-      this.raceFrozen,
+      // Either count, for the same reason `held` reads both — though a bout's
+      // count never reaches this line at all, because `matchFrozen` returned
+      // above it. Written as the shared fact rather than the race's so the two
+      // cannot drift apart the day a third freeze exists.
+      this.startFrozen,
     );
     seat.currentOneFoot = seat.oneFoot.oneFoot;
 
@@ -7604,63 +8590,151 @@ export class Game {
    * right reading: the pair met, and it is one meeting.
    */
   /**
-   * Spend the rider strikes this tick found — M26 Phase 5's QA repair.
+   * This step's facts about every chair, for the resolver — M37 §37.3.
+   *
+   * Filled in place into `strikeParticipants` and handed straight on, so the
+   * resolver reads one consistent set of eligibility facts for the whole batch
+   * rather than asking each controller again per hit.
+   *
+   * `immune` comes off the controller's snapshot because that is the only
+   * public reader of the recovery window (`EucController.invulnerableTimer` is
+   * private, and `hardKnock` refuses on exactly `crashing || invulnerable > 0`).
+   * The snapshot allocates, which is why this is built only on a step where a
+   * paddle actually landed on somebody — rare, unlike the recording above it.
+   * Re-deriving the window from `crashTime` and a recovery constant instead
+   * would be a second definition of the rule the controller already owns, and
+   * the two would drift.
+   */
+  private strikeFacts(): readonly StrikeParticipant[] {
+    for (let seat = 0; seat < this.strikeParticipants.length; seat += 1) {
+      const facts = this.strikeParticipants[seat];
+      const rider = this.seats[seat];
+      // **Present is "in this bout", not "a chair exists"**: the participant
+      // list is fixed when the room starts riding (§37.3), and `seatCount` is
+      // what says who is in it.
+      facts.present = rider !== undefined && seat < this.seatCount;
+      if (!facts.present || rider === undefined) {
+        facts.down = false;
+        facts.immune = false;
+        facts.reset = false;
+        facts.headingY = 0;
+        continue;
+      }
+      facts.down = rider.controller.crashed;
+      facts.immune = rider.controller.snapshot().invulnerable > 0;
+      facts.reset = this.strikeResetThisStep[seat];
+      // Read only by the resolver's degenerate fallback — two paddles from
+      // exactly opposite sides cancel, and the victim is still owed a fall.
+      facts.headingY = rider.currentPose.headingY;
+    }
+    return this.strikeParticipants;
+  }
+
+  /**
+   * Spend the rider strikes this tick found — M26 Phase 5's QA repair,
+   * resolved as one addressed batch since M37 (§37.3, q173).
    *
    * Once, after every seat has stepped, beside `stepContact` and for its
    * reason: a paddle landing on a person is a fact about *two* riders, and
-   * `strikeWielders` prices what resolving it inside the seat loop cost.
+   * `strikes` prices what resolving it inside the seat loop cost.
    *
-   * **A teleport voids every strike this tick found**, on `stepContact`'s rule
-   * and by the same one line. The sweep was judged against `aimPoses`, and a
-   * rider who respawned is no longer at the pose their opponent swung at — the
-   * QA pass landed one across thirty metres of map, wobble and hit cue and all.
-   * Voiding *every* strike rather than only the ones aimed at the seat that
-   * moved is not a blunt approximation in stage 1: with two seats every strike
-   * is aimed at the other one, and a seat that resets has its own swing
-   * cancelled by `resetRiderTo`, so the two sets are the same set.
+   * **Teleport hygiene is per participant now** (§37.3). It used to be one
+   * line — any seat resetting voided every strike the tick had found — and that
+   * was justified by the room being two people wide: every strike was aimed at
+   * the other one, and a seat that resets has its own swing cancelled by
+   * `resetRiderTo`, so the two sets were the same set. At three and four they
+   * are not, and voiding the lot would let one rider's respawn cancel a fight
+   * happening thirty metres away. The batch refuses the hits either of whose
+   * ends moved and keeps the rest, which is the same rule at its real N.
    *
-   * **Applying them in seat order cannot change what happens to either rider**,
-   * and that is a property of stage 1 rather than an accident: two seats means
-   * the two strikes have different targets, and `strikeRider` reads only the
-   * wielder's own paddle and the struck rider's own controller. §26.7 keeps it
-   * true — a third seat is three pairs and a different question, which
-   * `strikeableOpponent` refuses outright rather than answering quietly.
+   * **Which end is refused *here* is the victim's.** `stepSeat` returns on
+   * `didReset` above the line that steps the paddle, so a seat that respawns
+   * records nothing on that step and its swing is already cancelled — the
+   * resolver's `attacker-reset` refusal is a defensive guard for a caller that
+   * does record one, not a path this composition root can reach. The victim
+   * side is the one that fires, because the attacker swept a pose the victim
+   * had already left.
+   *
+   * **Nothing here decides anything.** Who is credited, who is merely shoved,
+   * which way the victim falls and whether the fall happens at all are
+   * `StrikeBatch.resolve`'s answers, taken from the facts above; this method
+   * applies them in the order §37.3 fixes — one hard knock per victim, then the
+   * credits it earned, then the shoves. That split is what keeps the seat-order
+   * bias out: `hardKnock` refuses a rider who is already crashing, so two
+   * committed paddles arriving on one victim used to pay whoever this loop
+   * visited first and nothing at all to the other (q173's worked case).
    *
    * **Seat order used to decide the scoreboard in one case, and no longer
-   * decides anything** — §26.10 q86, answered 2026-08-28. This loop is exactly
-   * where that mattered: every knockdown it hands over reaches the referee
-   * before `stepKnockabout` steps it, and `KnockaboutMatch.knockdown` used to
-   * *end the match itself*, so two riders reaching the target on the same
-   * fixed step gave it to whichever this loop visited first. The referee now
-   * records here and decides there, and a lead nobody holds alone is a draw.
-   * Nothing about the order of this loop is load-bearing.
+   * decides anything** — §26.10 q86, answered 2026-08-28. Every knockdown
+   * handed over here reaches the referee before `stepKnockabout` steps it, and
+   * the referee records here and decides there, so a lead nobody holds alone is
+   * a draw at two riders and at four.
    *
    * **The one residual, and it is bounded by the controller rather than by a
-   * guard here.** The sweep asked `aimAt` whether the target was standing, and
-   * a seat-step now passes before the answer is spent — so a rider who crashes
-   * on a hazard inside that window is struck after going down. `softKnock`
-   * returns on `crashed` and `hardKnock` returns on `crashing`, both in
-   * `EucController` and both since before this milestone, so nothing physical
-   * lands and nothing scores: the whole of it is one hit cue. A guard here
-   * would read well, could not be made to fail, and would delete the ability to
-   * test the two that actually hold the line (M25 Phase 5's lesson).
+   * guard here.** The sweep asked `aimAt` whether the victim was standing, and
+   * a seat-step passes before the answer is spent — so a rider who crashes on a
+   * hazard inside that window was struck after going down. The batch refuses
+   * that hit outright (`victim-down`), which is the same outcome the controller
+   * already produced — `softKnock` returns on `crashed`, `hardKnock` on
+   * `crashing` — minus the hit cue that used to play for a strike nothing came
+   * of.
    */
-  private spendRiderStrikes(seatReset: boolean): void {
-    const count = this.strikeCount;
-    // Drained whatever happens, above every early return: a strike left in the
-    // buffer is one that lands on the next tick's world, which is the bug this
-    // method exists to stop rather than a smaller version of it.
-    this.strikeCount = 0;
-    if (count === 0 || seatReset) return;
-    for (let i = 0; i < count; i += 1) {
-      const index = this.strikeWielders[i];
-      const wielder = this.seats[index];
-      const struck = this.strikeableOpponent(index);
-      if (struck === null) continue;
+  private spendRiderStrikes(): void {
+    // Resolve before draining, and drain whatever happens, above every early
+    // return: a hit left in the batch is one that lands on the next tick's
+    // world, which is the bug this method exists to stop rather than a smaller
+    // version of it. The reset latch is this step's too and goes with it.
+    const resolution = this.strikes.recorded === 0 && this.strikes.overflowed === 0
+      ? null
+      : this.strikes.resolve(this.strikeFacts());
+    this.strikes.clear();
+    this.strikeResetThisStep.fill(false);
+    if (resolution === null) return;
+
+    // **Twelve directed pairs is the whole of a four-seat step**, so this
+    // cannot happen — and §37.3 asks for it not to happen *silently* if it
+    // ever does. Once per session: a room dropping strikes every tick would
+    // bury the evidence of what caused it.
+    if (resolution.overflowed > 0 && !this.strikeOverflowReported) {
+      this.strikeOverflowReported = true;
+      console.error(
+        `EUC: ${resolution.overflowed} rider strike(s) did not fit the batch `
+        + `(capacity ${this.strikes.capacity}) — see Game.strikes (M37 §37.3).`,
+      );
+    }
+
+    for (const outcome of resolution.victims) {
+      const victim = this.seats[outcome.victim];
+      if (victim === undefined) continue;
+      // **One physical crash per victim, however many paddles arrived** (q173),
+      // in a direction the resolver derived from the attackers' own head travel
+      // — the normalised sum, which is the one answer no seat order can bias.
+      // `hardKnock` reads the sign of the lateral projection, so a unit vector
+      // is the honest length: a fall that leaned harder because three people
+      // swung would be a physical quantity nobody chose.
+      const direction = outcome.crashDirection;
+      const down = direction !== null && victim.controller.hardKnock(direction.x, direction.z);
       // **The referee is handed the fact and detects nothing** (§26.5). Only a
-      // strike that actually put them down is a knockdown; a shove is not, and
-      // `strikeRider` is the one place that knows which happened.
-      if (this.strikeRider(wielder, struck)) this.match.knockdown(index);
+      // strike that actually put somebody down is a knockdown, and when one
+      // did, *every* attacker whose committed paddle was in that batch earns it
+      // (q173). A shove is not a knockdown and never was.
+      if (down) for (const attacker of outcome.credited) this.match.knockdown(attacker);
+      for (let i = 0; i < outcome.shoves.length; i += 1) {
+        // The same cost the cop's strike has spent since M18, and misfiled in
+        // the same way `riderHitRadius` is: it is what a paddle takes off a
+        // rider, and the chase was simply the first mode to need the number.
+        // A no-op on somebody who is already crashing, which is the right
+        // reading of a shove that arrives beside a fall.
+        victim.controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
+      }
+      // **One cue per strike that landed**, as before: a hit is heard whoever
+      // threw it (q66), and the count here is the count of paddles that reached
+      // this rider. Hits the batch refused — a victim already down, either end
+      // teleporting — are the cases where nothing physical happens, and they
+      // now make no sound either.
+      for (let i = 0; i < outcome.credited.length + outcome.shoves.length; i += 1) {
+        this.audio.hit();
+      }
     }
   }
 
@@ -7682,11 +8756,14 @@ export class Game {
     // survive at all; now an ordinary parting keeps it, and this line is the
     // only thing between one session's collision and the next one's first
     // bump.
-    if (!this.contactLive || seatReset) {
-      // Every pair, not merely the ones that met this step: the whole point is
-      // that a cooldown must not survive a discontinuity, and a pair the loop
-      // never reached is a pair whose timer nothing ran down.
-      for (const pair of this.contactPairs.values()) pair.clear();
+    // **And a bout that has not been released** — M37 §37.4. Nobody has moved,
+    // so there is nothing to resolve; and a count is exactly the discontinuity
+    // this early return exists for, because the pack was teleported into place
+    // on the step the bout was armed. Clearing on every frozen step is also
+    // what makes the contact half of GO's clear a statement rather than a
+    // hope: by the time the room is released the map is already empty.
+    if (!this.contactLive || seatReset || this.matchFrozen) {
+      this.clearContactHistory();
       return;
     }
 
@@ -7782,6 +8859,22 @@ export class Game {
       this.contactPairs.set(key, pair);
     }
     return pair;
+  }
+
+  /**
+   * Forget every pair's cooldown and merged state — the discontinuity door.
+   *
+   * **Every pair, not merely the ones that met this step**: the whole point is
+   * that a cooldown must not survive a discontinuity, and a pair the loop
+   * never reached is a pair whose timer nothing ran down.
+   *
+   * Two callers, both saying the same thing in different words: `stepContact`
+   * whenever it is about to skip the test, and `handleMatchEvent`'s GO, where
+   * §37.4 asks for the history to be cleared beside the queued one-shots and
+   * the paddles so that nothing a held count arranged survives the release.
+   */
+  private clearContactHistory(): void {
+    for (const pair of this.contactPairs.values()) pair.clear();
   }
 
   /**
@@ -8006,6 +9099,11 @@ export class Game {
 
     const run = this.challenge.state;
     const lap = this.trackDay.state;
+    // **Once into a local** — Phase 1's carried performance note (M37). The
+    // card was built three times per pane per frame to read three fields off
+    // it, and `places` is O(N²) in the room; `MatchState` is a fresh frozen
+    // object on every getter read, so the three reads were three of them.
+    const matchState = this.match.state;
     seat.hudView = seat.hudModel.update(this.simTimeSeconds, {
       speed: pose.speed,
       powerStage: seat.controller.powerWarning,
@@ -8045,9 +9143,16 @@ export class Game {
       //
       // Absent, not zeroed: a race that has already started draws nothing, and
       // zero is the moment the room is released.
+      //
+      // **And the bout's count, through the same field** — M37 §37.4. One
+      // announcing HUD for the room is already how this works
+      // (`announcesCountdown: index === 0`, and `ui/hud.ts` strips the live
+      // region from every other pane), so a second countdown element would be
+      // a second voice for a room that already has one. The two counts cannot
+      // overlap: a race and a match are different app states.
       countdown: this.race.state.phase === 'countdown'
         ? this.race.state.countdown
-        : undefined,
+        : (matchState.phase === 'countdown' ? matchState.countdown : undefined),
       // **The standings, in this seat's own pane** — M27 Phase 4 (§27.4), and
       // gated on the referee's own phase for M23's lap-lane reason: a player
       // pauses *to read a number*, and a lane keyed on the app state would
@@ -8073,12 +9178,23 @@ export class Game {
       // is `AGENTS.md`'s rule and here it is also the shorter expression: a
       // running match only exists inside the mode, and an idle one is the
       // single-player run the lane above is already drawing.
-      match: this.match.state.phase === 'idle'
+      //
+      // **And the rows a wide room reads instead** — M37 §37.5. The names are
+      // handed over only at three and four, and their *presence* is what turns
+      // the lane from M26's `You – them` fold into a list: a room of two is
+      // handed no names and draws exactly what it drew before this milestone.
+      // The roster name is resolved here because `Game` is the only thing that
+      // knows who is in a chair; the words around it belong to `ui/hudModel.ts`
+      // (M12 Phase 4's rule).
+      match: matchState.phase === 'idle'
         ? undefined
         : {
           seat: index,
-          target: this.match.state.target,
-          scores: this.match.state.scores,
+          target: matchState.target,
+          scores: matchState.scores,
+          riders: matchState.seats >= 3 ? this.matchRosterNames(matchState.seats) : undefined,
+          phase: matchState.phase,
+          winner: matchState.winner,
         },
       // The chase lane, sharing that corner — M18. Absent outside the mode on
       // the same terms, and it carries the two cues the player cannot see for
@@ -8850,7 +9966,7 @@ export class Game {
       // Here rather than in `switchCouchRide` because the rule is this block's
       // rule and always was: a run ends when the player leaves it for something
       // that is not results or a pause. The referee is part of the run.
-      this.match.abandon();
+      this.abandonMatch();
     }
 
     if ((state === 'title' || state === 'freeRide') && this.challenge.state.phase !== 'idle') {
@@ -10402,6 +11518,45 @@ function writeContactBody(
 const RIDER_VOLUME_ID = 'rider';
 
 /**
+ * One id per seat, so a hit can name *which* rider it found — M37 §37.3.
+ *
+ * **`PaddleHit` carries `{ id, t }` and nothing else** (`simulation/paddle.ts`),
+ * so with a single `rider` id a sweep that reached three people reported three
+ * hits nobody could tell apart. Addressing both ends of a strike — which §37.3
+ * requires before any of the rest of the pipeline can be written — therefore
+ * starts here: the id *is* the victim's name.
+ *
+ * A namespace under the same word rather than a second concept, and the three
+ * neighbourhoods cannot meet:
+ *
+ *   - every placed target's id begins `target-` (`level/generateRoute.ts`,
+ *     `level/buildPlan.ts`), which is what `RIDER_VOLUME_ID` above already
+ *     rested on;
+ *   - the cop's quarry keeps the bare `rider`, so the chase's single-quarry
+ *     path is byte-for-byte what it was (§37.2) and can never be read as a
+ *     seat — `riderVolumeSeat` returns −1 for it;
+ *   - a seat's id is `rider-<index>` and the indices are the couch's own, so
+ *     two seats cannot share one.
+ *
+ * Built once at module scope because the couch's width is fixed
+ * (`COUCH_SEATS`), and looked up through a `Map` rather than by parsing the
+ * string: this runs inside the paddle's hit loop, and a `split('-')` there
+ * would allocate at 120 Hz to recover a number we already had.
+ */
+const SEAT_VOLUME_IDS: readonly string[] = Object.freeze(
+  Array.from({ length: COUCH_SEATS }, (_unused, seat) => `${RIDER_VOLUME_ID}-${seat}`),
+);
+
+const SEAT_VOLUME_SEATS: ReadonlyMap<string, number> = new Map(
+  SEAT_VOLUME_IDS.map((id, seat) => [id, seat] as const),
+);
+
+/** Which seat this hit found, or −1 for anything that is not a seat's rider. */
+function riderVolumeSeat(id: string): number {
+  return SEAT_VOLUME_SEATS.get(id) ?? -1;
+}
+
+/**
  * What one seat's paddle may reach: the shared disc field, and the rider on
  * the other half of the screen — M26 Phase 3.
  *
@@ -10437,10 +11592,17 @@ class SeatHittables implements HittableSet {
 }
 
 class RiderTarget implements HittableSet {
-  private readonly volume: HittableVolume & { x: number; y: number; z: number; radius: number } = {
-    id: RIDER_VOLUME_ID, x: 0, y: 0, z: 0, radius: CHASE.riderHitRadius,
-  };
+  private readonly volume: HittableVolume & { x: number; y: number; z: number; radius: number };
   private live = false;
+
+  /**
+   * The cop's quarry keeps the bare `rider` by default, which is what makes
+   * `copPaddle`'s hit loop unchanged; a seat's quarry is built with its own
+   * `rider-<seat>` id (`SEAT_VOLUME_IDS`).
+   */
+  constructor(id: string = RIDER_VOLUME_ID) {
+    this.volume = { id, x: 0, y: 0, z: 0, radius: CHASE.riderHitRadius };
+  }
 
   /** Put it where the rider is. `live` false empties the set for this step. */
   place(x: number, y: number, z: number, radius: number, live: boolean): void {
@@ -10469,6 +11631,64 @@ class RiderTarget implements HittableSet {
     if (volume.y + volume.radius < minY || volume.y - volume.radius > maxY) return;
     if (volume.z + volume.radius < minZ || volume.z - volume.radius > maxZ) return;
     visit(volume);
+  }
+}
+
+/**
+ * Everybody else on the couch, as the things one seat's paddle may hit —
+ * M37 §37.3.
+ *
+ * **`RiderTarget` moved rather than rebuilt, N of them, one per seat.** The
+ * single shared quarry it replaces could only ever hold one opponent, which is
+ * why the fight was two-shaped however many chairs were out; a set of volumes
+ * with `SEAT_VOLUME_IDS`' per-seat ids is the same object N times and the hits
+ * come back addressed.
+ *
+ * **One instance for the whole couch, refilled per attacker**, on
+ * `SeatHittables`' own argument: `Paddle.step` calls `eachNear` synchronously
+ * and keeps no reference, and the seats are stepped one at a time. The
+ * attacker's own volume is skipped rather than emptied, so nobody can hit
+ * themselves and no seat's placement has to be undone afterwards.
+ *
+ * The visiting order is ascending seat index and is written down for
+ * `SeatHittables`' reason: `Paddle.sweep` sorts what it is handed, and a set
+ * that visited its members in a different sequence on two runs would make
+ * `advance(n)` disagree with itself.
+ */
+class SeatQuarries implements HittableSet {
+  private readonly quarries: readonly RiderTarget[] =
+    SEAT_VOLUME_IDS.map((id) => new RiderTarget(id));
+
+  /** Whose sweep this is; their own volume is not offered to it. */
+  private swinger = -1;
+
+  /** Put one seat's rider where they were when the tick began. */
+  place(seat: number, x: number, y: number, z: number, radius: number, live: boolean): void {
+    this.quarries[seat]?.place(x, y, z, radius, live);
+  }
+
+  /** Nobody is standing in this chair this step. */
+  hide(seat: number): void {
+    this.quarries[seat]?.place(0, 0, 0, CHASE.riderHitRadius, false);
+  }
+
+  aimFor(seat: number): void {
+    this.swinger = seat;
+  }
+
+  eachNear(
+    minX: number,
+    minY: number,
+    minZ: number,
+    maxX: number,
+    maxY: number,
+    maxZ: number,
+    visit: (volume: HittableVolume) => void,
+  ): void {
+    for (let seat = 0; seat < this.quarries.length; seat += 1) {
+      if (seat === this.swinger) continue;
+      this.quarries[seat].eachNear(minX, minY, minZ, maxX, maxY, maxZ, visit);
+    }
   }
 }
 

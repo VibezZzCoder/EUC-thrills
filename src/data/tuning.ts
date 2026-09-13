@@ -6988,14 +6988,26 @@ export const TARGET = {
 } as const;
 
 /**
- * A couch Knockabout match — M26 Phase 4 (`docs/PLANS.md` §26.5).
+ * A couch Knockabout match — M26 Phase 4 (`docs/PLANS.md` §26.5), widened to
+ * three and four riders by M37 (§37.4).
  *
- * **One number, and it is the one the ride gate tunes.** q76 settles the rest:
+ * **Two numbers, and one of them is on F4.** `matchKnockdowns` has its
+ * `LIVE_TUNABLES` row; `countdownSeconds` does not, and the reason changed
+ * with M37 Phase 3 Stage B rather than going away. It is no longer "no call
+ * site reads it" — `enterKnockabout` hands it to `KnockaboutMatch.arm` — it is
+ * that `arm` takes the count as an **argument** rather than holding it in a
+ * field the way `RaceRun` does, so a slider moved mid-session would change
+ * nothing until the next bout was armed: a knob that lies in a quieter way.
+ * Giving it a row means giving the referee a field or re-arming on change, and
+ * G2 may retire the count altogether, so the count is changed here for now.
+ * q76 settles the rest:
  * knockdowns decide the match, there is no clock to run out (§13 q14's
  * "elapsed is worth nothing" survives), discs are a side tally that can never
  * win it, and nothing is stored (q77). None of those are quantities, so none of
  * them are here — a group that grew a `discsAreWorth` would be a group that had
- * quietly reopened a settled design decision as a slider.
+ * quietly reopened a settled design decision as a slider. M37 adds no scoring
+ * quantity either: q168 kept first-to-five, and the second number below is a
+ * presentation duration, not a rule.
  */
 export const KNOCKABOUT = {
   /**
@@ -7006,6 +7018,124 @@ export const KNOCKABOUT = {
    * owner's Phase 5 ride answers, which is why it is on F4.
    */
   matchKnockdowns: 5,
+
+  /**
+   * How long a three- or four-rider bout is held before GO, seconds — q170.
+   *
+   * **N=3/4 only; N=2 passes 0.** The two-player match starts the instant it is
+   * armed and that is its regression contract (§37.1), so the duration is handed
+   * to `KnockaboutMatch.arm` by the composition root rather than read by the
+   * referee: one call site decides which rooms count down, and the referee is
+   * handed the fact like every other one it holds.
+   *
+   * Three seconds because the race's standing start is three (`RACE.countdown-
+   * Seconds`) and a room that has just learned one count should not have to
+   * learn a second — §37.4 asks for the race's 3-2-1-GO convention, not a new
+   * one. Zero is a legal setting here too and means the N=2 start at every N,
+   * which is how the count is switched off — edited in this file and not on
+   * F4, for the reason the group header gives. G2 can remove the count
+   * entirely if it annoys the owner.
+   */
+  countdownSeconds: 3,
+} as const;
+
+/**
+ * Where three or four riders are stood at the start of a bout — M37 Phase 2
+ * (`docs/PLANS.md` §37.4).
+ *
+ * **Distances, and only distances.** The *shape* of an N-way start — a regular
+ * ring, everybody facing the shared meeting area, seats dealt to positions by a
+ * match-placement seed — is a decision §37.4 already made, and a
+ * `GROUP_SPAWN.shape` would be that decision quietly reopened as a slider.
+ * What is genuinely a quantity is how much daylight the weapon needs, how far
+ * the bounded search is allowed to look, and how far ahead of each rider the
+ * road has to still be road.
+ *
+ * **The ring's radius is not here on purpose.** It is
+ * `separation / (2·sin(π/N))`, rounded up to `ringRadiusStepMetres`, and the
+ * separation is read off the real `Paddle` — so a retune of the arm, the head,
+ * the pivot or the rider radius moves the ring rather than leaving a copied
+ * 2.15 m behind. `simulation/groupSpawn.ts` derives it and
+ * `simulation/groupSpawn.test.ts` swings a real paddle at it.
+ */
+export const GROUP_SPAWN = {
+  /**
+   * Daylight added to the paddle's own reach when two riders are stood apart, m.
+   *
+   * The pair bound is `Paddle.reachAgainst(CHASE.riderHitRadius)` — 2.15 m at
+   * the shipped tuning, and a *ceiling*: a real swing measured over every
+   * bearing lands at 2.14 m abeam and misses at 2.16 m (M37 Phase 0). A quarter
+   * of a metre on top of a bound that is already the maximum over bearings is
+   * the same kind of daylight `DUEL_LATERAL_METRES` buys at two seats, and it
+   * costs nothing on the road: 2.40 m of separation is a ring 2.77 m (N=3) or
+   * 3.39 m (N=4) across, against a narrowest measured corridor of 5.5 m of
+   * half-width at any shipped spawn.
+   *
+   * It is also the gap demanded from every handed-in solid, soft body and
+   * hazard, on top of the rider's own footprint — one margin, one meaning.
+   */
+  pairMarginMetres: 0.25,
+  /**
+   * The step the derived ring radius is rounded **up** to, metres.
+   *
+   * So the pack's nearest chord is a hair outside the bound rather than exactly
+   * on it, and so two builds that disagree in the last bits of `sin(π/N)` still
+   * stand riders in the same place. Five centimetres is small against the
+   * 0.25 m margin it sits inside, which is what keeps the rounding a rounding.
+   */
+  ringRadiusStepMetres: 0.05,
+  /**
+   * How far one forward translation of the search moves the pack, metres.
+   *
+   * Two metres, because the thing a translation is escaping is the verge band
+   * immediately behind a plan's spawn — the ring's rearmost point lands on it
+   * on 28 of the 29 worlds measured at Phase 0 — and one ring radius is enough
+   * to clear it. Smaller steps would multiply the candidate list without
+   * reaching anywhere the larger ones do not.
+   */
+  forwardStepMetres: 2.0,
+  /**
+   * How far forward of the plan's spawn the search may look, metres.
+   *
+   * The bound in "bounded search". Six metres is three translations, it is
+   * inside the shortest forward run measured at any shipped spawn, and it keeps
+   * the pack close enough that the world's own start still reads as the start.
+   * A world that needs more than this has something wrong with its entrance,
+   * and §37.4 asks for that to be reported rather than searched around.
+   */
+  forwardSearchMetres: 6.0,
+  /**
+   * The greatest height difference allowed across a whole pack, metres.
+   *
+   * **Not a step test** — the local-plane residual below `curbThreshold` is
+   * what refuses a kerb, a wall top or a ditch, and it is deliberately blind to
+   * an honest gradient (the flat window it replaces admitted nothing larger
+   * than r = 1.26 m on a 3.18 % route, which is under the N=3 ring). This is
+   * the other half: a perfectly planar 30 % bank is not a step and is still not
+   * somewhere to stand four riders. Half a metre across a 3.4 m pack is a 15 %
+   * grade — five times the steepest grade measured at any shipped spawn, and
+   * far short of the wheel's own stall.
+   */
+  maxPackRiseMetres: 0.5,
+  /**
+   * How far ahead of each rider's facing the road is checked, metres.
+   *
+   * §37.4's "clear initial departure": a stationary ground sample cannot see
+   * that a rider is facing a wall. Four metres is slightly further than the
+   * production controller actually travels in the two-second gentle-throttle
+   * ride `groupSpawn.test.ts` runs from every accepted position, so the test's
+   * ride stays inside the ground the validator checked.
+   */
+  departureMetres: 4.0,
+  /**
+   * How finely that departure is sampled, metres.
+   *
+   * Consecutive samples are compared to each other rather than to the pack's
+   * plane, because a departure leaves the patch the plane was fitted to and a
+   * road is allowed to curve away. A quarter of a metre is well under the
+   * heightfield's own cell, so a kerb cannot hide between two probes.
+   */
+  departureSampleMetres: 0.25,
 } as const;
 
 /**

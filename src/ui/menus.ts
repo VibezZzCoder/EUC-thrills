@@ -213,7 +213,7 @@ export interface MenuCallbacks {
   onPickRider(id: PlayableCharacterId): void;
 
   // -- M25 Phase 5 ------------------------------------------------------------
-  /** Open the two-player join panel from the title. */
+  /** Open the couch join panel from the title — two, three or four chairs. */
   onOpenCouch(): void;
   /** Leave the join panel for the title. The guest seats go with it. */
   onCloseCouch(): void;
@@ -383,6 +383,22 @@ export type RouteStatus =
    * never silently swap the world for one that would have worked.
    */
   | { readonly kind: 'needs-targets' }
+  /**
+   * A room of three or four chose Knockabout on a route whose start cannot
+   * stand them outside each other's reach — M37 §37.4, the repair pass.
+   *
+   * `needs-targets`' third sibling, on the same terms. A bout's start is
+   * proposed and validated as a whole (`simulation/groupSpawn.ts`); §37.4
+   * forbids falling back to N independently chosen slots, because two of them
+   * can be the same slot. So the entrance refuses instead, and refuses the way
+   * this panel's other refusals do: name the fix, do not apologise, never
+   * silently swap the world.
+   *
+   * `count` is how many were trying to fight, because a route that cannot hold
+   * four may well hold three and a message that did not say so would send the
+   * player to build a route they did not need.
+   */
+  | { readonly kind: 'needs-room'; readonly count: number }
   /**
    * The player chose the chase on a world that cannot host one — M18, §13 q26.
    *
@@ -1437,10 +1453,13 @@ export interface CouchView {
    *
    * The join panel had no blocked list while every couch was two seats and
    * every world it could open on had discs. Both stopped being true at once:
-   * Knockabout is a two-player fight until q94 is opened, so a room of three
-   * must not be *offered* the mode its own door would then refuse. The pause
-   * menu's switch has answered this since M26; this is the same fact at the
-   * entrance.
+   * Knockabout was a two-player fight until q94 was opened, so a room of three
+   * must not be *offered* the mode its own door would then refuse.
+   *
+   * **q94 is opened (M37, §37.1), so the join panel's list is empty again** —
+   * two, three and four are all legal Knockabout rooms. The field stays
+   * because the pause and results copies of the chooser still use it for the
+   * `no-targets` refusal, which is about the world rather than about the room.
    */
   readonly blocked: readonly CouchRide[];
   /** Why, so the note under the buttons can say which of the two it is. */
@@ -1491,13 +1510,24 @@ function writeModeChooser(root: HTMLElement, ride: CouchRide): void {
 /**
  * Why a ride is off the menu, as a fact rather than as a sentence.
  *
- * **Two reasons since M27 Phase 1, and they are not interchangeable.** A world
- * with nothing to hit is fixed by building a route; a couch with three people
- * on it is not fixed by anything the player can do this session, and telling
- * them to make a new route would send them off to try. `Game` knows which is
- * true; only this file knows how to say it.
+ * **One reason again since M37 (§37.1).** M27 Phase 1 added a second —
+ * `'too-many-seats'`, *"a couch with three people on it is not fixed by
+ * anything the player can do this session"* — because Knockabout was a
+ * two-seat fight until q94 was opened. It is opened, three and four are legal,
+ * and the member is gone so the compiler names every site that assumed it.
+ *
+ * What is left is the one a player can fix: a world with nothing to hit is
+ * fixed by building a route. `Game` knows when that is true; only this file
+ * knows how to say it, and the union stays a union because the next refusal
+ * will want it.
+ *
+ * **The next refusal arrived in M37's own repair pass**: `'no-room'` is a
+ * world whose start cannot stand three or four riders outside each other's
+ * reach (§37.4). It is the same kind of fact as `'no-targets'` — about the
+ * world rather than about the people — and it has the same fix, which is why
+ * it says so in the same words.
  */
-export type CouchBlockReason = 'no-targets' | 'too-many-seats' | null;
+export type CouchBlockReason = 'no-targets' | 'no-room' | null;
 
 /**
  * The note under the mode chooser, whichever answer it is giving.
@@ -1512,15 +1542,32 @@ function couchBlockNote(reason: CouchBlockReason, venue: string): string {
     return 'Knockabout needs a route with things to hit, and this one has none. '
       + 'New route will build you one to fight on.';
   }
-  if (reason === 'too-many-seats') {
-    return 'Knockabout is a two-player fight. Race and free ride take everybody.';
+  if (reason === 'no-room') {
+    // Names the fix and does not explain the validator: what the player can do
+    // about it is take another route, which is the same answer the sentence
+    // above gives and the same one the routes panel repeats.
+    return 'This route has nowhere to start everybody far enough apart. '
+      + 'New route will build you one with room to fight in.';
   }
+  // The `'too-many-seats'` branch stood here until M37 (§37.1) and said
+  // *"Knockabout is a two-player fight. Race and free ride take everybody."*
+  // Nothing composes that reason any more, so nothing says it.
   return modeChooserNote(venue);
 }
 
+/**
+ * What the three rides are, in one paragraph under the chooser.
+ *
+ * **"Everybody" rather than "two players" since M37** (§37.1, q167/q168):
+ * Knockabout is a free-for-all at two, three and four, and the sentence that
+ * named two was the player-facing half of the q94 lock-out. First to five is
+ * unchanged — q168 kept it — and the paragraph is no longer than it was,
+ * because it sits under a segmented control on a panel with a measured fit
+ * (`tests/m25.spec.ts`'s twelve-viewport loop).
+ */
 function modeChooserNote(venue: string): string {
   return 'Free ride is riding, with nothing to win. Race is three laps of '
-    + `${venue} from a standing grid. Knockabout gives two players a paddle: `
+    + `${venue} from a standing grid. Knockabout gives everybody a paddle: `
     + 'first to five knockdowns takes the match.';
 }
 
@@ -1622,14 +1669,14 @@ function writeVenueChooser(root: HTMLElement, world: WorldView['world']): void {
 }
 
 /**
- * The two-player join panel — M25 Phase 5 (`docs/PLANS.md` §25.5).
+ * The couch join panel — M25 Phase 5 (`docs/PLANS.md` §25.5), two to four seats.
  *
  * **A menu, not a mode.** Nothing on this screen is a ride: it exists to get
- * two people holding two devices and wearing two different riders, and then to
- * hand that arrangement to free ride. The state machine says the same thing —
- * `couchJoin` is a sibling of `riderSelect`, not a sixth entry in
- * `RIDE_STATES` — because "two players" is *who* is riding rather than what
- * the ride is for.
+ * two, three or four people holding their own devices and wearing their own
+ * riders, and then to hand that arrangement to free ride. The state machine
+ * says the same thing — `couchJoin` is a sibling of `riderSelect`, not a sixth
+ * entry in `RIDE_STATES` — because "couch players" is *who* is riding rather
+ * than what the ride is for.
  *
  * **Nobody is asked to configure anything.** The one instruction is "press the
  * button you are going to play with", which is also the only instruction that
@@ -3850,6 +3897,13 @@ export function routeStatusLine(status: RouteStatus, laps: boolean): [string, st
     return [
       'refused',
       'Knockabout needs a route with things to hit. Generate a fresh one below.',
+    ];
+  }
+  if (status.kind === 'needs-room') {
+    return [
+      'refused',
+      `This route hasn’t room to start ${status.count} riders a paddle apart. `
+      + 'Generate a fresh one below.',
     ];
   }
   if (status.kind === 'needs-route') {

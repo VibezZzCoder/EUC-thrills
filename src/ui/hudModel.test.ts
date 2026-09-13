@@ -988,6 +988,12 @@ test('the match lane counts every seat, so a wider couch reads for whoever looks
   // `scores[1]`, so the day a four-player couch is measured (§26.7 says it has
   // not been) this lane is already the right shape instead of quietly naming
   // two of four.
+  //
+  // **M37 answered that day differently, and this test still holds.** The game
+  // no longer sends a three-seat match without names (§37.5 forbids the
+  // unlabelled fold in a wide room), so what is pinned here is the fold's own
+  // arithmetic for a caller that hands over no `riders` — which is every
+  // two-seat bout, and is what keeps M26's lane byte-identical.
   const scores = [
     { knockdowns: 1, discs: 7 },
     { knockdowns: 4, discs: 0 },
@@ -996,4 +1002,256 @@ test('the match lane counts every seat, so a wider couch reads for whoever looks
   const view = new HudModel().update(0, { ...RIDING, match: { seat: 2, target: 5, scores } });
   assert.equal(view.knockabout, '2 – 1 – 4');
   assert.equal(view.modeSub, '3 – 7 – 0', 'the row below counts two of four as well');
+});
+
+// ---------------------------------------------------------------------------
+// The wide bout's rows — M37 §37.5 (three and four riders)
+// ---------------------------------------------------------------------------
+
+/** Three riders mid-bout, with names, as `Game` hands them over at N >= 3. */
+function threeWay(overrides: Partial<NonNullable<HudInput['match']>> = {}): HudInput {
+  return {
+    ...RIDING,
+    knockabout: { struck: 9, total: 17 },
+    match: {
+      seat: 1,
+      target: 5,
+      scores: [
+        { knockdowns: 4, discs: 2 },
+        { knockdowns: 1, discs: 7 },
+        { knockdowns: 4, discs: 0 },
+      ],
+      riders: ['Cool Rider', 'Trollina', 'Seal on a Wheel'],
+      phase: 'running',
+      winner: null,
+      ...overrides,
+    },
+  };
+}
+
+test('a three-seat bout draws one row per rider, in seat order, named', () => {
+  // §37.5: *"a compact list … with one row per actual rider. Each row
+  // identifies Player N/character, knockdowns and a clearly labelled
+  // subordinate target count. Keep rows in stable seat order."*
+  //
+  // Seat order, deliberately, and it is asserted against a set of tallies that
+  // is **not** in seat order (4/1/4): a list that sorted itself would put seat
+  // 1 last here, and four rows changing places in the corner of somebody's eye
+  // is exactly what the rule is against. The ranking belongs to the two
+  // surfaces read standing still — the room's card and the results table.
+  const view = new HudModel().update(0, threeWay());
+  assert.equal(view.matchRows.length, 3);
+  assert.deepEqual(view.matchRows.map((row) => row.name), [
+    'P1 Cool Rider',
+    // Seat 1 is this pane's own rider, so its chair is the "You" marker
+    // `ui/hud.ts` draws in front of the name and the row does not print `P2` as
+    // well — the measurement is in `matchRowViews`.
+    'Trollina',
+    'P3 Seal on a Wheel',
+  ]);
+  assert.deepEqual(view.matchRows.map((row) => row.knockdowns), ['4', '1', '4']);
+  assert.deepEqual(view.matchRows.map((row) => row.targets), ['2', '7', '0']);
+});
+
+test('the pane marks its own rider, and marks exactly one', () => {
+  // The flag the stylesheet keys its emphasis off. The *word* is `ui/hud.ts`'s,
+  // because §37.5 asks for the mark to be text as well as colour and a data
+  // attribute is not text — but which row wears it is decided here, once, so
+  // two panes cannot disagree about who is looking.
+  for (const seat of [0, 1, 2]) {
+    const view = new HudModel().update(0, threeWay({ seat }));
+    assert.deepEqual(
+      view.matchRows.map((row) => row.you),
+      [seat === 0, seat === 1, seat === 2],
+      `seat ${seat} did not find itself`,
+    );
+  }
+});
+
+test('the pane\'s own row spends its chair on the marker, and only that row', () => {
+  // **The repair the first build needed.** The "You" chip is 24 px of a 134 px
+  // name track at the couch's minimum window, so a row printing the chip *and*
+  // `P1` was the one row in the list whose rider's name could not fit — it
+  // painted `P1 Whee…` while the three rows around it painted whole names, on
+  // the row §37.5 most needs to be identifiable. `You` and `P1` answer the same
+  // question on this pane, so it is answered once.
+  for (const seat of [0, 1, 2]) {
+    const rows = new HudModel().update(0, threeWay({ seat })).matchRows;
+    const riders = ['Cool Rider', 'Trollina', 'Seal on a Wheel'];
+    assert.deepEqual(
+      rows.map((row) => row.name),
+      riders.map((rider, index) => (index === seat ? rider : `P${index + 1} ${rider}`)),
+      `seat ${seat} spelled the room wrong`,
+    );
+    // And every other pane still shows this seat as a numbered chair, so the
+    // room agrees about who P1 is.
+    for (const other of [0, 1, 2].filter((index) => index !== seat)) {
+      const elsewhere = new HudModel().update(0, threeWay({ seat: other })).matchRows;
+      assert.equal(elsewhere[seat].name, `P${seat + 1} ${riders[seat]}`);
+    }
+  }
+});
+
+test('a seat with no roster name is still a row, and says which chair it is', () => {
+  // Total rather than skipping: a room of three with a name missing is still a
+  // room of three, and a list that dropped the row would renumber everybody
+  // below it.
+  const view = new HudModel().update(0, threeWay({ seat: 0, riders: ['Cool Rider', '', 'Trollina'] }));
+  assert.deepEqual(view.matchRows.map((row) => row.name), [
+    'Cool Rider',
+    // A nameless chair keeps its number even on the pane's own row: `P2` is all
+    // there is to say about it, and "You" alone would be a row with no rider.
+    'P2',
+    'P3 Trollina',
+  ]);
+});
+
+test('the wide list replaces the duel lane rather than joining it', () => {
+  // §37.5: *"Do not pack unlabeled counts into the old 'You – them' string"* —
+  // and the other half of that, which is that the corner must not print both
+  // shapes. The headline figure and the second row are both empty here, and
+  // `ui/hud.ts` hides each of them when it is.
+  const view = new HudModel().update(0, threeWay());
+  assert.equal(view.modeLabel, 'Knockdowns \u00b7 first to 5');
+  assert.equal(view.knockabout, '', 'the fold printed over the list');
+  assert.equal(view.modeSubLabel, '');
+  assert.equal(view.modeSub, '');
+  // The field's total, once, and not as a per-rider quota.
+  assert.equal(view.matchField, '17 targets on the route');
+});
+
+test('two seats keep M26’s lane exactly, and draw no rows at all', () => {
+  // The regression contract §37.5 names: *"Preserve the N=2 lane."* The switch
+  // is the presence of `riders`, so a duel — which is handed none — cannot
+  // reach any of the code above.
+  const scores = [{ knockdowns: 3, discs: 2 }, { knockdowns: 1, discs: 9 }];
+  const view = new HudModel().update(0, {
+    ...RIDING,
+    knockabout: { struck: 11, total: 17 },
+    match: { seat: 0, target: 5, scores },
+  });
+  assert.deepEqual(view.matchRows, []);
+  assert.equal(view.matchField, '');
+  assert.equal(view.matchAnnounce, '');
+  assert.equal(view.modeLabel, 'You \u2013 them (to 5)');
+  assert.equal(view.knockabout, '3 \u2013 1');
+  assert.equal(view.modeSubLabel, 'Targets');
+  assert.equal(view.modeSub, '2 \u2013 9 of 17');
+});
+
+test('every ride that is not a wide bout draws no rows and announces nothing', () => {
+  const free = new HudModel().update(0, RIDING);
+  assert.deepEqual(free.matchRows, []);
+  assert.equal(free.matchField, '');
+  assert.equal(free.matchAnnounce, '');
+
+  const solo = new HudModel().update(0, { ...RIDING, knockabout: { struck: 2, total: 17 } });
+  assert.deepEqual(solo.matchRows, [], 'a single-player run grew a list');
+  assert.equal(solo.matchField, '', 'a single-player run captioned a list it does not draw');
+});
+
+test('a rider on the floor keeps the list, because the fight did not stop', () => {
+  // The crashed branch is a second view builder and every field it forgets is a
+  // field that blinks out at the exact moment a player wants to read it —
+  // which in a bout is the moment they were knocked down. M26's own lesson, one
+  // shape along.
+  const view = new HudModel().update(0, { ...threeWay(), crashed: true });
+  assert.equal(view.matchRows.length, 3);
+  assert.equal(view.matchRows[1].you, true);
+  assert.equal(view.matchField, '17 targets on the route');
+});
+
+test('a world whose disc count is unknown draws the rows and no caption', () => {
+  // The rows count what each rider struck, which is known; the field's total is
+  // a fact about the world, and a caption is better absent than guessed.
+  const input = threeWay();
+  const view = new HudModel().update(0, { ...input, knockabout: undefined });
+  assert.equal(view.matchRows.length, 3);
+  assert.deepEqual(view.matchRows.map((row) => row.targets), ['2', '7', '0']);
+  assert.equal(view.matchField, '');
+});
+
+test('the room is told who leads, once, and told nothing by a knockdown that settles nothing', () => {
+  // §37.5's no-storm rule, as arithmetic: the announcement is a pure function
+  // of the tallies that changes only when the *lead* does, so `ui/hud.ts`'s
+  // diff turns it into an event stream with no second clock to go stale
+  // against. Four panes share one region and one sentence.
+  const model = new HudModel();
+  const quiet = model.update(0, threeWay({
+    scores: [{ knockdowns: 0, discs: 0 }, { knockdowns: 0, discs: 0 }, { knockdowns: 0, discs: 0 }],
+  }));
+  assert.equal(quiet.matchAnnounce, '', 'nil-nil announced a leader');
+
+  const led = model.update(1, threeWay({
+    scores: [{ knockdowns: 2, discs: 0 }, { knockdowns: 1, discs: 0 }, { knockdowns: 0, discs: 0 }],
+  }));
+  assert.equal(led.matchAnnounce, 'Cool Rider leads on 2');
+
+  // A knockdown by somebody who is still behind moves nobody to the front, so
+  // the sentence does not change and nothing is announced.
+  const behind = model.update(2, threeWay({
+    scores: [{ knockdowns: 2, discs: 0 }, { knockdowns: 1, discs: 0 }, { knockdowns: 1, discs: 0 }],
+  }));
+  assert.equal(behind.matchAnnounce, led.matchAnnounce);
+});
+
+test('a shared lead is announced as a shared lead, and match point is said out loud', () => {
+  const tied = new HudModel().update(0, threeWay({
+    scores: [{ knockdowns: 3, discs: 0 }, { knockdowns: 1, discs: 0 }, { knockdowns: 3, discs: 0 }],
+  }));
+  assert.equal(tied.matchAnnounce, 'Cool Rider and Seal on a Wheel lead on 3');
+
+  // One knockdown from winning, on a target of five.
+  const point = new HudModel().update(0, threeWay({
+    scores: [{ knockdowns: 1, discs: 0 }, { knockdowns: 4, discs: 0 }, { knockdowns: 0, discs: 0 }],
+  }));
+  assert.equal(point.matchAnnounce, 'Trollina leads on 4 \u2014 match point');
+});
+
+test('a counted room announces nothing, and an ended one announces the outcome', () => {
+  const counting = new HudModel().update(0, threeWay({ phase: 'countdown' }));
+  assert.equal(counting.matchAnnounce, '', 'the count has its own announcer');
+
+  const won = new HudModel().update(0, threeWay({
+    phase: 'ended',
+    winner: 2,
+    scores: [{ knockdowns: 4, discs: 0 }, { knockdowns: 1, discs: 0 }, { knockdowns: 5, discs: 0 }],
+  }));
+  assert.equal(won.matchAnnounce, 'Seal on a Wheel wins');
+
+  // q86/q168: a draw is an ending with nobody in it, and the sentence says so
+  // rather than naming a winner the referee refused to name.
+  const drawn = new HudModel().update(0, threeWay({
+    phase: 'ended',
+    winner: null,
+    scores: [{ knockdowns: 5, discs: 0 }, { knockdowns: 5, discs: 0 }, { knockdowns: 2, discs: 0 }],
+  }));
+  assert.equal(drawn.matchAnnounce, 'Match drawn');
+});
+
+test('four riders fill four rows and the caller decides who is in them', () => {
+  // The list is as long as the room, never as long as `COUCH_SEATS`: a chair
+  // nobody is in has no row, which is the same rule the render passes follow.
+  const view = new HudModel().update(0, {
+    ...RIDING,
+    knockabout: { struck: 3, total: 24 },
+    match: {
+      seat: 3,
+      target: 5,
+      scores: [
+        { knockdowns: 0, discs: 1 },
+        { knockdowns: 2, discs: 0 },
+        { knockdowns: 1, discs: 2 },
+        { knockdowns: 5, discs: 0 },
+      ],
+      riders: ['Cool Rider', 'Trollina', 'Red Rider', 'Adonisb2'],
+      phase: 'running',
+      winner: null,
+    },
+  });
+  assert.equal(view.matchRows.length, 4);
+  assert.equal(view.matchRows[3].you, true);
+  assert.equal(view.matchRows[3].name, 'Adonisb2');
+  assert.equal(view.matchRows[0].name, 'P1 Cool Rider');
+  assert.equal(view.matchField, '24 targets on the route');
 });

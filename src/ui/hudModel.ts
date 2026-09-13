@@ -270,6 +270,37 @@ export interface HudInput {
      * see until it is settled is not a score anybody is playing for.
      */
     readonly scores: readonly { readonly knockdowns: number; readonly discs: number }[];
+    /**
+     * Who is fighting, in seat order — M37 §37.5. **Absent at two seats.**
+     *
+     * Presence is the switch between the two shapes this lane can take, and it
+     * is a presence rather than a count because the rule is about what the
+     * caller *knows*: a room that can name its riders gets the list, and a room
+     * that cannot gets `matchTally`'s fold exactly as it has had it since M26.
+     * §37.5 forbids the fold at three and four — `3 – 1 – 0 – 2` in the corner
+     * of a quarter-pane is four unlabelled numbers — so the day the composition
+     * root hands names over, the lane changes shape rather than growing terms.
+     *
+     * One entry per *participant*, so `riders.length` is the room and a seat
+     * with no name in it is drawn as `Player N` rather than skipped.
+     */
+    readonly riders?: readonly string[];
+    /**
+     * Where the bout is, for the one announcement the room gets — M37 §37.5.
+     *
+     * Read only by `matchAnnounce`, and only when `riders` is present: a
+     * two-seat lane announces nothing it did not announce at M26, and the
+     * per-pane tally is deliberately not a live region at all (§37.5's "no
+     * announcement storm"). Absent means "do not announce", which is what a
+     * caller that does not know the phase should get.
+     */
+    readonly phase?: 'countdown' | 'running' | 'ended';
+    /**
+     * Who won, once `phase` is `ended`. Null is a draw (q86), and while the
+     * bout runs it is *nobody yet* — which is why nothing here reads it without
+     * reading `phase` first.
+     */
+    readonly winner?: number | null;
   };
   /**
    * How the chase is going — M18. Absent in every other ride.
@@ -349,6 +380,38 @@ function countdownLabel(input: HudInput): string {
   return seconds > 0 ? `${Math.ceil(seconds)}` : 'GO';
 }
 
+/**
+ * One rider's line in a three- or four-seat bout's corner — M37 §37.5.
+ *
+ * Every field is already a string for the reason every other view field here
+ * is one: the DOM does no arithmetic, so the number in the corner and the
+ * number on the results card cannot disagree.
+ *
+ * **`you` is a boolean and `name` still carries the word.** §37.5 asks for the
+ * current seat to be marked *"in text as well as colour"* — the flag is what
+ * the stylesheet keys the emphasis off, and `ui/hud.ts` writes a literal
+ * "You" beside the name so the cue survives a monochrome screen, a
+ * forced-colours mode and a photograph of a television.
+ */
+export interface MatchRowView {
+  /**
+   * `P3 Trollina`, or `P3` for a seat with no roster name — and, on the row the
+   * pane's own rider is in, the rider's name alone, because the "You" marker
+   * beside it *is* that row's chair. The measurement behind both spellings is
+   * in `matchRowViews` below.
+   */
+  readonly name: string;
+  /** Whether this row is the pane's own rider. */
+  readonly you: boolean;
+  /** The tally that wins the bout. First in the row, and the largest type. */
+  readonly knockdowns: string;
+  /** The side tally that cannot (q76). Labelled where it is drawn. */
+  readonly targets: string;
+}
+
+/** No rows. Frozen and shared: every ride but a wide bout allocates nothing. */
+const NO_MATCH_ROWS: readonly MatchRowView[] = Object.freeze([]);
+
 export interface HudView {
   /** Already rounded and ready to write. No units — the unit has its own element. */
   readonly speed: string;
@@ -416,6 +479,48 @@ export interface HudView {
    */
   readonly modeSubLabel: string;
   readonly modeSub: string;
+  /**
+   * One row per rider in a three- or four-seat bout — M37 §37.5.
+   *
+   * **Empty at two seats and outside a match**, which is what keeps the M26
+   * lane byte-identical: the fold above (`modeLabel`/`knockabout`/`modeSub`)
+   * is still the whole of what a duel draws, and this list is still the whole
+   * of what a wider room draws. The two shapes never appear together —
+   * `modeLane` and `modeSubLane` answer empty whenever this is filled — so the
+   * corner never prints a tally twice in two spellings.
+   *
+   * Seat order, not score order. §37.5: *"Keep rows in stable seat order"* —
+   * a list that re-sorted itself as the fight swung would be four rows
+   * changing places in the corner of somebody's eye at 65 mph, and the ranking
+   * belongs to the room's own card (the idle quadrant) and to the results
+   * table, both of which are read standing still.
+   */
+  readonly matchRows: readonly MatchRowView[];
+  /**
+   * How many targets the route carries, said **once** — M37 §37.5.
+   *
+   * Empty when there is no list to caption. The rows count each rider's own
+   * discs; the field's total is a fact about the world, and repeating it on
+   * every row would read as a per-rider quota, which §37.5 names as the
+   * misreading to avoid.
+   */
+  readonly matchField: string;
+  /**
+   * The room's one polite announcement, or empty — M37 §37.5.
+   *
+   * **One sentence for the room, not one per pane.** `ui/hud.ts` writes this
+   * into an element every pane carries but only one of them announces — seat 0,
+   * the same pane that already owns the countdown — and it is composed so that
+   * it changes only when the *lead* changes, when the leader reaches match point,
+   * or when the bout ends. A knockdown that moves nobody to the front writes
+   * nothing at all, which is how four panes and twelve directed pairs stay
+   * inside §37.5's "duplicated live tallies must not produce an announcement
+   * storm".
+   *
+   * Empty at two seats, on `matchRows`' terms: M26's lane announced nothing
+   * and must go on announcing nothing.
+   */
+  readonly matchAnnounce: string;
   /** The out-of-bounds banner — M20, §4.4. */
   readonly stray: StrayHudView;
   /** The max-speed warning glyph — M20. */
@@ -627,6 +732,125 @@ function matchTally(
 }
 
 /**
+ * One row per rider, in seat order — M37 §37.5.
+ *
+ * **The replacement for the fold at three and four, not an extension of it.**
+ * `matchTally` above reads `3 – 1 – 0 – 2`, which §37.5 rules out for a wide
+ * room in as many words: four unlabelled numbers in the corner of a 500×350
+ * pane say nothing about who anybody is. So a room that hands its names over
+ * gets rows with names on them, and a room that does not gets the duel's own
+ * lane unchanged.
+ *
+ * Empty — and therefore drawing nothing — whenever `riders` is absent, which
+ * is every two-seat match and every ride that is not a match at all.
+ */
+function matchRowViews(match: HudInput['match']): readonly MatchRowView[] {
+  const riders = match?.riders;
+  if (match === undefined || riders === undefined || riders.length === 0) return NO_MATCH_ROWS;
+  return riders.map((rider, seat) => {
+    const score = match.scores[seat];
+    const you = seat === match.seat;
+    // **The chair and the rider in it**, because a room reads the first to find
+    // its own pane and the second to find its friend.
+    //
+    // **`P1`, not `Player 1`, and the abbreviation is a measurement.** A
+    // 500x350 quadrant gives this list 37% of its width before it would reach
+    // the pane's own playfield centre — 185 px at the couch's minimum window —
+    // and the two figures take 44 of that. Spelled out, every roster name but
+    // the shortest was cut to `Player 1 · Cool R…`; abbreviated, the whole of
+    // every roster name fits, measured at the longest four the chooser reaches
+    // (`tests/m37.spec.ts` asserts no row is truncated). The screens that are
+    // read standing still — the room's card and the results table — carry the
+    // full names and no abbreviation at all.
+    //
+    // **The pane's own row spends its chair on the marker instead.** The "You"
+    // chip is 26 px of a 132 px name track, so a row carrying both it and `P1`
+    // was the one row in the list that could not paint its rider's name: the
+    // first build cut `P1 Wheel in Motion` to `P1 Whee…` in every pane, on the
+    // row §37.5 most needs to be identifiable. `You` and `P1` answer the same
+    // question on this pane — which of these four is me — so the row says it
+    // once, and the other three panes still show this seat as `P1`.
+    const name = rider === '' ? `P${seat + 1}` : you ? rider : `P${seat + 1} ${rider}`;
+    return {
+      name,
+      you,
+      knockdowns: `${score?.knockdowns ?? 0}`,
+      targets: `${score?.discs ?? 0}`,
+    };
+  });
+}
+
+/**
+ * The field's own total, said once under the rows — M37 §37.5.
+ *
+ * *"Show the field's total targets once, not as a misleading per-rider quota"*
+ * — so it is a line of its own rather than an `of 17` glued to four different
+ * riders' counts, which would read as four riders each chasing seventeen.
+ *
+ * Empty when the room is not drawing rows, and empty when the world has not
+ * said how many it carries (the same refusal `modeSubLane` makes one lane up:
+ * a fight is readable without knowing how much scenery is left).
+ */
+function matchFieldLine(input: HudInput): string {
+  if (input.match?.riders === undefined) return '';
+  const total = input.knockabout?.total;
+  if (total === undefined) return '';
+  return `${total} targets on the route`;
+}
+
+/**
+ * The one sentence the room is told, or nothing — M37 §37.5.
+ *
+ * **Event-shaped, although it is computed from state every frame.** `ui/hud.ts`
+ * diffs every write, so a string that is a pure function of the tallies and
+ * only *changes* on a discrete event behaves exactly like an event stream and
+ * needs no second clock to go stale against. The three things worth saying are
+ * the three §37.5 names: who is in front, that somebody is one knockdown away,
+ * and how it ended.
+ *
+ * What it deliberately does **not** say is every knockdown. At four seats a
+ * single step can credit several attackers (q171, q173), and a region that
+ * spoke each of them would be the announcement storm §37.5 forbids — so a
+ * knockdown that moves nobody to the front changes this string not at all.
+ *
+ * Nil-nil is silence rather than "everybody leads": at 0/0/0 nobody is behind,
+ * which is honest arithmetic (`MatchState.leaders`) and a useless thing to say
+ * out loud.
+ */
+function matchAnnounce(match: HudInput['match']): string {
+  const riders = match?.riders;
+  if (match === undefined || riders === undefined || match.phase === undefined) return '';
+  const nameOf = (seat: number): string => {
+    const rider = riders[seat];
+    return rider === undefined || rider === '' ? `Player ${seat + 1}` : rider;
+  };
+  if (match.phase === 'ended') {
+    const winner = match.winner;
+    return winner === null || winner === undefined ? 'Match drawn' : `${nameOf(winner)} wins`;
+  }
+  if (match.phase === 'countdown') return '';
+  let best = 0;
+  for (const score of match.scores) best = Math.max(best, score.knockdowns);
+  if (best <= 0) return '';
+  const leaders: number[] = [];
+  for (let seat = 0; seat < riders.length; seat += 1) {
+    if ((match.scores[seat]?.knockdowns ?? 0) === best) leaders.push(seat);
+  }
+  // **"and", not a comma, for the last pair** — the sentence is read aloud by a
+  // screen reader and nothing else, so it is written to be heard.
+  const names = leaders.map(nameOf);
+  const who = names.length === 1
+    ? names[0]
+    : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  const verb = names.length === 1 ? 'leads' : 'lead';
+  // Match point is the one state worth interrupting the arithmetic for, and it
+  // is stated rather than implied: a room that has to subtract to notice
+  // somebody is one swing from winning has not been told.
+  const point = best === match.target - 1 ? ' — match point' : '';
+  return `${who} ${verb} on ${best}${point}`;
+}
+
+/**
  * The chase clock, composed once — M18.
  *
  * **Counting down, and to the second rather than to the hundredth.** The timed
@@ -689,7 +913,15 @@ function modeLaneLabel(input: Pick<HudInput, 'knockabout' | 'chase' | 'match' | 
   // discs are its side tally rather than the thing on the line — M26 Phase 5.
   // The label says whose number is first so the half never has to be counted
   // from the other end of the screen (q80).
-  if (input.match !== undefined) return `You – them (to ${input.match.target})`;
+  if (input.match !== undefined) {
+    // **Three and four are a different sentence, not a longer one** — M37
+    // §37.5. "You – them" names two ends of a fight and there are no two ends
+    // at four; the label over a list of riders says what the column of numbers
+    // beside their names is, and what it takes to win.
+    return input.match.riders === undefined
+      ? `You – them (to ${input.match.target})`
+      : `Knockdowns · first to ${input.match.target}`;
+  }
   if (input.knockabout !== undefined) return 'Targets';
   return '';
 }
@@ -704,7 +936,15 @@ function modeLaneLabel(input: Pick<HudInput, 'knockabout' | 'chase' | 'match' | 
  */
 function modeLane(input: HudInput): string {
   if (input.race !== undefined) return positionLabel(input.race.position);
-  if (input.match !== undefined) return matchTally(input.match, (score) => score.knockdowns);
+  if (input.match !== undefined) {
+    // **The headline figure steps aside for the list** — M37 §37.5. A wide
+    // room's numbers are on the rows, one per rider and each with a name in
+    // front of it, so a fold printed above them would be the same tallies said
+    // twice in two spellings. Empty, not zeroed: `ui/hud.ts` hides the figure
+    // rather than drawing a blank line where it used to be.
+    if (input.match.riders !== undefined) return '';
+    return matchTally(input.match, (score) => score.knockdowns);
+  }
   return knockaboutLane(input.knockabout);
 }
 
@@ -764,6 +1004,11 @@ function modeSubLane(input: HudInput): { readonly label: string; readonly value:
     return { label: 'Gap', value: `+${Math.max(0, gap).toFixed(2)}` };
   }
   if (input.match === undefined) return NO_SUB_LANE;
+  // **And the second row steps aside with the first** — M37 §37.5. The wide
+  // room's discs are a column of the list (`matchRowViews`), and the field's
+  // total is said once underneath it rather than as an `of 17` behind four
+  // riders' counts, which would read as four riders each chasing seventeen.
+  if (input.match.riders !== undefined) return NO_SUB_LANE;
   const struck = matchTally(input.match, (score) => score.discs);
   const total = input.knockabout?.total;
   return {
@@ -1007,6 +1252,13 @@ export class HudModel {
         modeLabel: modeLaneLabel(input),
         modeSubLabel: down.label,
         modeSub: down.value,
+        // The wide room's rows survive a crash for the reason both lanes above
+        // do: being knocked down is exactly the moment a player looks at the
+        // scoreboard, and a list that blinked out then would be hiding the
+        // answer to the question the fall just asked (M37 §37.5).
+        matchRows: matchRowViews(input.match),
+        matchField: matchFieldLine(input),
+        matchAnnounce: matchAnnounce(input.match),
         // Both M20 cues go with the rest of them, and for the paragraph above:
         // a rider on the floor is neither about to leave the route nor about to
         // cut out, and the controller has already zeroed both anyway.
@@ -1072,6 +1324,9 @@ export class HudModel {
       modeLabel: modeLaneLabel(input),
       modeSubLabel: sub.label,
       modeSub: sub.value,
+      matchRows: matchRowViews(input.match),
+      matchField: matchFieldLine(input),
+      matchAnnounce: matchAnnounce(input.match),
       stray: this.strayView(nowSeconds, input.chase),
       overspeed: overspeedView(input.overspeed),
     };

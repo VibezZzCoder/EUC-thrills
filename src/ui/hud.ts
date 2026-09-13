@@ -20,10 +20,25 @@ import type { HudView } from './hudModel.ts';
  *     classic way a UI layer starts costing milliseconds it does not look like
  *     it should cost.
  *
- * The one live region is the warning line. It is `polite` rather than
- * `assertive` on purpose: a screen-reader user riding a hill should hear
- * "ease off" at the next natural break, not have it interrupt whatever they
- * were being told mid-word.
+ * The warning line is `polite` rather than `assertive` on purpose: a
+ * screen-reader user riding a hill should hear "ease off" at the next natural
+ * break, not have it interrupt whatever they were being told mid-word.
+ *
+ * **Which elements here speak, and why it is a short list** — M37 §37.5, which
+ * asks for *"a single announcer for the shared countdown/results"* and warns
+ * that *"duplicated live tallies must not produce an announcement storm"*.
+ * Four panes multiply every live region by four, so:
+ *
+ *   - the **countdown** is `assertive` and exists on every pane but carries the
+ *     attribute on exactly one (`HudOptions.announcesCountdown`) — one clock,
+ *     one voice, since M27 Phase 3;
+ *   - the **match status** (M37) is `polite`, is off screen, and carries its
+ *     attributes on the same single pane for the same reason. It is written
+ *     only when the lead changes, at match point and at the end, because
+ *     `hudModel.matchAnnounce` changes only then;
+ *   - the **per-rider tally list** (M37) is **not a live region at all**. It
+ *     changes on every knockdown in a room of up to four, and a region that
+ *     spoke it would read four rows aloud four times over.
  */
 
 const TEMPLATE = `
@@ -51,7 +66,13 @@ const TEMPLATE = `
     <span class="euc-hud__score-aside-label" data-hud="score-aside-label"></span>
     <span class="euc-hud__score-aside-value" data-hud="score-aside-value"></span>
   </span>
+  <span class="euc-hud__tally-head" data-hud="tally-head" aria-hidden="true" hidden>targets</span>
+  <ol class="euc-hud__tally" data-hud="tally" hidden></ol>
+  <span class="euc-hud__tally-field" data-hud="tally-field" hidden></span>
 </div>
+
+<div class="euc-hud__match-status" data-hud="match-status" role="status"
+     aria-live="polite"></div>
 
 <div class="euc-hud__challenge" data-hud="challenge" hidden>
   <div class="euc-hud__lap" data-hud="lap-label"></div>
@@ -145,6 +166,13 @@ export class Hud {
   private lastSplitLabel = '';
   private lastSplitDelta = '';
   private lastSplitAhead = '';
+  /** The tally list, diffed on one composed key — M37 §37.5. */
+  private lastTally = '';
+  private lastTallyField = '';
+  private lastScoreHidden = true;
+  /** The template ships the figure visible, so the diff starts from that. */
+  private lastValueHidden = false;
+  private lastAnnounce = '';
 
   constructor(options: HudOptions = {}) {
     this.options = options;
@@ -166,6 +194,14 @@ export class Hud {
     if (options.announcesCountdown === false) {
       this.nodes.count.removeAttribute('aria-live');
       this.nodes.count.removeAttribute('role');
+      // **The same rule, and the same single pane, for M37's match status.**
+      // One room, one polite voice: a bout's lead changing is a fact about the
+      // room rather than about a quarter of the screen, so three more copies of
+      // it would say the same sentence four times over. The element stays on
+      // every pane — it is a millimetre of nothing, and a HUD whose DOM depends
+      // on which seat it is would be a second shape to keep in step.
+      this.nodes['match-status'].removeAttribute('aria-live');
+      this.nodes['match-status'].removeAttribute('role');
     }
 
     (options.parent ?? document.body).appendChild(root);
@@ -276,9 +312,9 @@ export class Hud {
     }
     if (lane !== this.lastKnockabout) {
       this.nodes['score-value'].textContent = lane;
-      this.nodes.score.hidden = lane === '';
       this.lastKnockabout = lane;
     }
+    this.writeTally(view, lane);
     // The second row under it — the owner's 2026-08-28 ride, and a couch match
     // is the only ride that has one. Two writes rather than one composed
     // string, because the label is set-and-forget for a whole match while the
@@ -342,6 +378,132 @@ export class Hud {
     this.writeStray(view.stray);
     this.writeOverspeed(view.overspeed);
     this.writeChallenge(view.challenge);
+  }
+
+  /**
+   * The per-rider tally, the field's total, and the room's one announcement —
+   * M37 §37.5.
+   *
+   * **One composed key for the whole list**, `IdlePane.setCard`'s rule rather
+   * than the per-cell diffs above it: a list is rebuilt with `createElement`,
+   * a match changes it a handful of times in several minutes, and a per-cell
+   * diff over four rows would be twelve string compares a frame to save an
+   * allocation that happens twice a minute. The key carries every field that
+   * is written, so a row that changes only its "You" marker still redraws.
+   *
+   * `textContent` per node rather than one `innerHTML`, for `IdlePane`'s
+   * reason one surface along: a rider's name is data.
+   *
+   * `lane` is the duel's own figure, handed over rather than recomposed: the
+   * corner's visibility depends on both shapes, and two expressions deciding
+   * which mode this corner is in are two expressions that can disagree.
+   */
+  private writeTally(view: HudView, lane: string): void {
+    const rows = view.matchRows;
+    const key = rows.map((row) => `${row.name}|${row.you}|${row.knockdowns}|${row.targets}`)
+      .join('\n');
+    if (key !== this.lastTally) {
+      this.lastTally = key;
+      this.nodes.tally.hidden = rows.length === 0;
+      // The column caption lives and dies with the column it names.
+      this.nodes['tally-head'].hidden = rows.length === 0;
+      this.nodes.tally.replaceChildren(...rows.map((row) => {
+        const line = document.createElement('li');
+        line.className = 'euc-hud__tally-row';
+        // The emphasis the stylesheet keys off. The *word* is written below,
+        // because §37.5 asks for the current seat to be marked in text as well
+        // as colour and a data attribute is not text.
+        line.dataset.you = row.you ? 'true' : 'false';
+
+        // **One cell for who this is**, so the marker and the name share a
+        // track and every row's figures line up whether or not the marker is
+        // there. The marker goes *first* inside it for two reasons: an ellipsis
+        // cuts from the tail, so a "You" at the tail would be the first thing
+        // lost — and it stands exactly where the other rows print their chair,
+        // which is the chair this row spends on it (`ui/hudModel.ts`).
+        const who = document.createElement('span');
+        who.className = 'euc-hud__tally-who';
+        if (row.you) {
+          const you = document.createElement('span');
+          you.className = 'euc-hud__tally-you';
+          you.textContent = 'You';
+          who.appendChild(you);
+        }
+        const name = document.createElement('span');
+        name.className = 'euc-hud__tally-name';
+        name.textContent = row.name;
+        who.appendChild(name);
+        line.appendChild(who);
+
+        const knockdowns = document.createElement('span');
+        knockdowns.className = 'euc-hud__tally-kos';
+        knockdowns.textContent = row.knockdowns;
+        line.appendChild(knockdowns);
+
+        // The subordinate count, and its word for a screen reader only.
+        //
+        // **§9j's "the label sits beside the number" is a rule about *one*
+        // row.** Printed on four, the word `targets` cost 36 px of a 134 px
+        // name track — a quarter of the list's width spent saying one thing
+        // four times — and that width is the difference between a roster name
+        // painted whole and a roster name cut to `P1 Whee…`. So the word is
+        // drawn once, in the caption over this column (`tally-head`), and the
+        // per-row copy stays in the DOM at 1 px: a row read aloud is still
+        // "P2 Seal on a Wheel, 4, 7 targets", because a screen reader does not
+        // get to see which column a figure is under.
+        const targets = document.createElement('span');
+        targets.className = 'euc-hud__tally-targets';
+        const count = document.createElement('span');
+        count.className = 'euc-hud__tally-count';
+        count.textContent = row.targets;
+        const unit = document.createElement('span');
+        unit.className = 'euc-hud__tally-unit';
+        unit.textContent = 'targets';
+        targets.appendChild(count);
+        targets.appendChild(unit);
+        line.appendChild(targets);
+
+        return line;
+      }));
+    }
+
+    if (view.matchField !== this.lastTallyField) {
+      this.nodes['tally-field'].textContent = view.matchField;
+      this.nodes['tally-field'].hidden = view.matchField === '';
+      this.lastTallyField = view.matchField;
+    }
+
+    // **The figure hides with its own text, and the box no longer does.** Until
+    // M37 the corner was exactly this one number, so "no number" and "no
+    // corner" were the same boolean and one write served both. A three- or
+    // four-seat bout draws a list instead of a headline (§37.5), so the box is
+    // shown whenever *either* shape has something in it and the figure carries
+    // its own `hidden`.
+    //
+    // **Both booleans are diffed here rather than inside the lane's own diff**,
+    // which is where the first attempt put the figure's: a wide bout's lane is
+    // empty from the first frame to the last, so a write guarded on the lane
+    // *changing* never ran at all and the template's own `0 / 0` sat over the
+    // list. Nothing about the duel moves either way — its lane is non-empty for
+    // the whole of a match.
+    if ((lane === '') !== this.lastValueHidden) {
+      this.lastValueHidden = lane === '';
+      this.nodes['score-value'].hidden = this.lastValueHidden;
+    }
+    const hidden = lane === '' && rows.length === 0;
+    if (hidden !== this.lastScoreHidden) {
+      this.nodes.score.hidden = hidden;
+      this.lastScoreHidden = hidden;
+    }
+
+    // **Diffed like everything else, which is what makes it event-shaped.**
+    // `matchAnnounce` is a pure function of the tallies that changes only when
+    // the lead moves, at match point and at the end, so an unchanged sentence
+    // is never re-announced and a knockdown that settles nothing is silent.
+    if (view.matchAnnounce !== this.lastAnnounce) {
+      this.nodes['match-status'].textContent = view.matchAnnounce;
+      this.lastAnnounce = view.matchAnnounce;
+    }
   }
 
   /**

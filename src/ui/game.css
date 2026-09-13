@@ -665,6 +665,339 @@
   opacity: 0.72;
 }
 
+/* ---------------------------------------------------------------------------
+ * The wide bout's tally — M37 §37.5 (three and four riders)
+ *
+ * **A list in the corner the duel's two numbers live in, not a new corner.**
+ * §37.5 asks for the rows *"under the existing 'Knockdowns · first to 5' edge
+ * score area"*, so this sits inside `.euc-hud__score` and inherits its
+ * placement, its right alignment and its text shadow. The duel's own figure
+ * (`.euc-hud__score-value`) and second row (`.euc-hud__score-aside`) are hidden
+ * by the model at three and four, and this list is hidden at two: the corner is
+ * never both shapes at once.
+ *
+ * **Every size here is `--hud-vw`'d and clamped**, which is the rule the whole
+ * HUD is written to and the reason there is no media query in this block: at
+ * 1000x700 a quadrant is 500 px wide while the *window* is 1000, so a
+ * `max-width` query would measure the wrong box (M25 Phase 3's finding,
+ * restated at `DESIGN.md` §9). `--hud-vw` is already 0.5vw for a half and for a
+ * quadrant, because a quadrant is exactly as wide as a half.
+ *
+ * **The floor of every clamp is a legibility decision, not a fit one** — and
+ * the second figure's floor is the one place this list is *knowingly* under
+ * the rule it cites. §9j settles this exact tally — the second figure in a
+ * couch match's own corner — at **0.95rem**, because 0.8rem was the size the
+ * owner called *"kinda hard to read"* for a number in the corner of a moving
+ * frame and *"a tally two people are competing over is not a footnote"*. This
+ * list ships that figure at **0.8rem**, which is §9j's rejected size, and the
+ * comment that used to stand here read the sentence backwards — it called
+ * 0.8rem the floor §9j records rather than the size §9j turns down.
+ *
+ * **What 0.95rem costs, measured** (Phase 5, four seats at 1000x700, the four
+ * longest names the chooser reaches, two-digit counts, the right-hand panes
+ * whose lane padding is the binding one): the lane between the list's right
+ * edge and the pane's middle fifth is 181.6 px and the widest row currently
+ * paints 178.0 px of it. Raising the count to 0.95rem takes its column from
+ * 16 px to 20.5 px, and §37.5's *"knockdowns have visual priority"* takes the
+ * figure beside it from 0.95rem to 1.05rem with its column — 182 px in a
+ * 181.6 px lane. Spending every gap in the row (0.25rem to 0.2rem, the
+ * marker's 0.15rem to 0.1rem) and under-sizing the count's own column buys it
+ * back to 178.1, at which point the two digits of `14` overflow the track they
+ * sit in by 2.5 px of a 3.2 px gap.
+ *
+ * So the three ways to honour §9j here are: let the list reach the pane's
+ * middle fifth (`DESIGN.md` §9's reserved lane), ellipse the longest roster
+ * names, or give up the knockdowns' size priority (§37.5). **All three are the
+ * owner's to choose, not a stylesheet's** — it is his sentence being weighed
+ * against his other two — so the figure stays where it shipped and the
+ * question is on the record as a q174 candidate with these numbers. The
+ * knockdown figure never goes below 0.95rem and the names never below 0.78rem.
+ *
+ * Four rows at these sizes are 73.7 px of a 350 px-tall quadrant, and a name
+ * longer than its track ellipses rather than shrinking the type with it
+ * (§37.5: *"Keep score text legible rather than shrinking it into a
+ * footnote"*).
+ *
+ * **The captions are captions and sit below that floor on purpose** — the
+ * label above the list, the `targets` head and the field line under it, which
+ * are words rather than the numbers §9j is about, and which are sized with
+ * `.euc-hud__score-label` (0.7rem) for company.
+ * ------------------------------------------------------------------------ */
+
+.euc-hud__tally {
+  /* The two figure sizes, named once: the rules below set type with them and
+     the row's own column widths are multiples of them, so a legibility floor
+     and the space reserved for the digits it produces cannot drift apart. */
+  --tally-ko-size: clamp(0.95rem, calc(2.1 * var(--hud-vw)), 1.15rem);
+  --tally-target-size: clamp(0.8rem, calc(1.5 * var(--hud-vw)), 0.9rem);
+  display: grid;
+  gap: 0.12rem;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  list-style: none;
+  /* The rows are right-aligned with the label above them, and the whole list is
+     bounded so a long roster name cannot widen the corner across the pane.
+
+     **The bound is in `--hud-vw`, not in per cent**, and that is the whole
+     lesson of this rule: a percentage resolves against the *containing block* —
+     here the score cell, which is as wide as its own longest caption — so
+     `40%` came out as 40% of ~190 px and cut every name to `Pl…`. `--hud-vw` is
+     1% of the pane in a split and 1% of the window solo, so `37 *` is 37% of
+     the pane at any window size and needs no query to measure it.
+
+     **37%, so the list stays clear of the pane's playfield centre at the
+     window this mode can be entered at.** The reserved-lane rule is an overlap
+     in *both* axes (`tests/m9.spec.ts`), and four rows under a lit warnings
+     lane do drop past the middle fifth vertically — so the horizontal half of
+     the conjunction is the one held apart: at 1000x700, the couch entrance's
+     own `COUCH_MIN_WIDTH_PX` minimum, 37% of a 500 px quadrant right-aligned
+     inside the lane padding starts at x = 301 and the middle fifth ends at 300.
+     **That clearance is not scale-free below the minimum**, because the lane
+     padding it is right-aligned inside is a fixed 1.15rem while the list is
+     proportional: at 900 px the two meet, and a bout is not torn down when the
+     window is dragged under the minimum (`couch.available` goes false and the
+     ride carries on). It is stated as what it is — a bound that holds at and
+     above the width this mode can be started at — rather than padded into a
+     claim about every window.
+
+     That leaves 185 px, of which the two figures take 45; the rest is the name,
+     which is why the row abbreviates the chair to `P1` and why the pane's own
+     row spends that chair on the "You" marker (`ui/hudModel.ts` states both
+     measurements). */
+  max-width: min(34ch, calc(37 * var(--hud-vw)));
+  justify-self: end;
+}
+
+.euc-hud__tally[hidden] { display: none; }
+
+/* The caption over the last column — the word `targets`, drawn once.
+ *
+ * **A column head rather than a per-row label**, which is where §9j's "the
+ * label sits beside the number" stops scaling: one row can afford the word
+ * beside the figure, four rows cannot (36 px x 4 out of a 185 px list, and the
+ * name is what pays). Right-aligned like the list, so its right edge is the
+ * right edge of the column it names; the figures under it are the only thing
+ * in that corner with no other word attached. The per-row copy is still in the
+ * DOM for a screen reader (`.euc-hud__tally-unit`), and `aria-hidden` is on
+ * this one so the word is not read twice over.
+ *
+ * Sized with the label above it rather than with the figures below: it is a
+ * caption, and §9j's 0.8rem floor is about numbers read at speed. */
+.euc-hud__tally-head {
+  justify-self: end;
+  margin-top: 0.1rem;
+  font-size: clamp(0.62rem, calc(1.3 * var(--hud-vw)), 0.72rem);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.euc-hud__tally-head[hidden] { display: none; }
+
+.euc-hud__score-value[hidden] { display: none; }
+
+.euc-hud__tally-row {
+  display: grid;
+  /* Name, then the two figures in fixed columns so four rows read as a table
+     rather than as four ragged lines. **Both figure columns are fixed**, and
+     the second one stopped being `auto` in the repair pass: an `auto` track is
+     as wide as that row's own digits, so a one-digit count gave its row 11 px
+     more name than a two-digit count gave its neighbour — four rows of ragged
+     name track, and a spread that hid whether the marked row was short for a
+     reason.
+
+     **Each width is a multiple of the figure that goes in it**, not a `ch` and
+     not a `rem`: `ch` is the width of a `0` in *this row's* font, and the
+     marked row is 800 weight, so `ch` tracks were 5 px wider on the one row
+     that could least afford it — the second version of this bug, found by the
+     same spec. 1.5 x the knockdown size holds two of its digits at 800 weight
+     (25.2 px against the 25.0 px `10` paints at 0.95rem), and **1.35 x the
+     target size holds two of its** — 1.25 was arithmetic rather than a
+     measurement and left `14` overflowing its track by 0.8 px into the gap
+     beside it, which Phase 5 measured at 19.92 px of ink per two digits, or
+     1.31 x the figure's own size. Two digits is as far as either tally goes in
+     a bout played to five. */
+  grid-template-columns:
+    minmax(0, 1fr) calc(1.5 * var(--tally-ko-size)) calc(1.35 * var(--tally-target-size));
+  align-items: baseline;
+  /* 0.25rem, not 0.4: the figures are right-aligned inside fixed tracks, so the
+     separation is already drawn, and the 4.8 px buys name — which is part of
+     what pays for §9j's floor on the count in the third column. */
+  gap: 0 0.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Who the row is: the "You" marker and the name, in one track.
+ *
+ * **One cell rather than a fourth column**, because the marker is on exactly
+ * one row of the list and a track sized `auto` would be one width on that row
+ * and zero on the others — four rows whose figures did not line up. Sharing the
+ * name's track costs the marker's width from the name and nothing from the
+ * layout.
+ */
+.euc-hud__tally-who {
+  grid-column: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  /* Tight, because every pixel between the marker and the name is a pixel off
+     the one row in the list that pays for its marker out of its own name —
+     0.15 rather than 0.25 since the marker grew to a size that reads as one. */
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.euc-hud__tally-row[data-you="true"] {
+  /* Colour is never the only cue (`DESIGN.md` §6c): the word "You" beside the
+     name is what carries this in monochrome, in forced colours and in a
+     photograph. The weight and the tint are the glance. */
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.euc-hud__tally-row[data-you="false"] { opacity: 0.82; }
+
+.euc-hud__tally-name {
+  font-size: clamp(0.78rem, calc(1.7 * var(--hud-vw)), 0.95rem);
+  font-weight: inherit;
+  letter-spacing: 0.01em;
+  text-align: right;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/*
+ * The "You" marker — a mark, which means it has to out-measure the word beside
+ * it rather than merely be spelled in capitals.
+ *
+ * **The first build was uppercase and still read as the word "you".** At
+ * 0.58rem its capitals painted 6.71 px of ink against the *lowercase* 6.76 px
+ * of the name beside them, and Y, O and U differ between cases only in size —
+ * so "YOU Wheel in Motion" came out as "you Wheel in Motion", a sentence
+ * rather than §37.5's *"mark 'You' on the current seat ... in text as well as
+ * colour"*. It was also the only figure in this list with no floor asserted.
+ *
+ * **0.72rem is where the marker's capitals clear the name's x-height**: 8.33 px
+ * of ink against the name's 6.76 px, just under its 8.79 px cap height, so it
+ * reads as a mark over the name rather than as a word in it. The tracking went
+ * to buy it — 0.1em of letter-spacing on three capitals is 1 px of a row that
+ * had none to spare, and tracking is a caption's manner rather than a marker's.
+ */
+.euc-hud__tally-you {
+  flex: 0 0 auto;
+  font-size: clamp(0.72rem, calc(1.35 * var(--hud-vw)), 0.85rem);
+  font-weight: 800;
+  text-transform: uppercase;
+  opacity: 0.92;
+}
+
+.euc-hud__tally-kos {
+  grid-column: 2;
+  text-align: right;
+  /* **The thing on the line, and the largest figure in the list** — §37.5's
+     "knockdowns have visual priority". Still below the duel's 1.6rem headline,
+     because four of these stack where one of that used to sit. */
+  font-size: var(--tally-ko-size);
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.euc-hud__tally-targets {
+  grid-column: 3;
+  /* Block, not flex: the only in-flow child is the figure, because the word
+     beside it is now a caption over the column and a 1 px copy for a screen
+     reader. */
+  text-align: right;
+  /* Subordinate to the knockdowns beside it, and named by the caption over the
+     column rather than by a word on every row. **0.8rem is §9j's rejected size
+     and not §9j's floor** — §9j puts this exact second tally at 0.95rem — and
+     the block comment above this list carries the measurement that says what
+     0.95rem would cost the reserved lane, plus the three ways of paying for it
+     that are the owner's to choose (q174 candidate). It is not a claim that
+     0.8rem is right; it is the size this list shipped at, stated plainly. */
+  font-size: var(--tally-target-size);
+  font-weight: 700;
+  opacity: 0.78;
+}
+
+/* The word `targets` on every row, for a screen reader and for nothing else.
+   **1 px rather than `display: none`**, which would take it out of the
+   accessibility tree with the pixels: a row announced as "P2 Seal on a Wheel,
+   4, 7" leaves the last figure unexplained to the one reader who cannot see
+   the caption over the column. Same recipe as `.euc-hud__match-status`. */
+.euc-hud__tally-unit {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.euc-hud__tally-field {
+  /* The route's own total, said once under the rows rather than as an `of 17`
+     behind four riders' counts — §37.5's "not as a misleading per-rider
+     quota". */
+  justify-self: end;
+  margin-top: 0.12rem;
+  /* Bounded on the list's own terms, and for its own reason: it is the widest
+     line in the corner and it must not reach the playfield either. */
+  max-width: min(34ch, calc(37 * var(--hud-vw)));
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: clamp(0.66rem, calc(1.4 * var(--hud-vw)), 0.78rem);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.62;
+}
+
+.euc-hud__tally-field[hidden] { display: none; }
+
+/*
+ * The room's one polite announcement — M37 §37.5.
+ *
+ * **Off screen, and deliberately so.** The sentence exists for a screen reader:
+ * everything it says is already on the tally list and on the room's own card,
+ * so drawing it again would be furniture in the one place on the screen that
+ * has none to spare. One pane carries the live attributes (`ui/hud.ts`), so
+ * there is one of these in a four-pane frame however many are in the document.
+ *
+ * Clipped rather than `display: none`, because a hidden element is not
+ * announced at all; 1px rather than 0 for the same reason.
+ */
+.euc-hud__match-status {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (forced-colors: active) {
+  /* Forced colours throw the tint away, so the two cues that survive are the
+     word "You" and the weight — both of which are already there. What this
+     restores is the separation between a row and the pane behind it. */
+  .euc-hud__tally-row[data-you="false"] { opacity: 1; }
+  .euc-hud__tally-targets,
+  .euc-hud__tally-head,
+  .euc-hud__tally-field { opacity: 1; }
+  .euc-hud__tally-row[data-you="true"] {
+    outline: 1px solid CanvasText;
+    outline-offset: 1px;
+  }
+}
+
 .euc-hud__timer {
   font-size: clamp(1.2rem, calc(3 * var(--hud-vw)), 1.9rem);
   font-weight: 700;
@@ -3125,6 +3458,47 @@
   .euc-menu__actions { gap: 0.5rem; }
 
   .euc-button { padding-block: 0.6rem; }
+
+  /*
+   * And the one card in the game with four uncompared rows gives up a little
+   * more — M37 Phase 5, the four-seat bout's own card.
+   *
+   * **A fourth rider is a fit problem before it is a markup problem**
+   * (`DESIGN.md` §9f, §9k). The match card fitted 1000x700 at two seats
+   * (700 px of content in a 700 px window) and at three (707, with every
+   * control still above the fold); the fourth row took it to 738 and put
+   * `Back to title` at 723.6 — 23.6 px past the bottom edge, sliced in half on
+   * the window `COUCH_MIN_WIDTH_PX` names as this mode's own minimum. The
+   * container scrolls, so the control was reachable by wheel or Tab; a room of
+   * four on a couch should not have to go looking for the way out.
+   *
+   * **Scoped to the card that has the problem, by the fact that gives it to
+   * them**: a table with nothing to compare (`data-compare="false"`, which is
+   * M26 Phase 6's own attribute) *and* a fourth row. Every other uncompared
+   * card in the game has at most three rows — the two-player match's three, the
+   * chase's two, a solo Knockabout's two — and the compared cards (splits, a
+   * race's finishing order, a track day's sectors) are not selected at all. The
+   * two- and three-seat cards measure byte-identically with this rule in place.
+   *
+   * **Here rather than unconditionally**, because this is the tier for windows
+   * that are short: at 1000x700 the three savings below take the card to 700 px
+   * of content with its last control at 684.8, and a taller window never needed
+   * them.
+   */
+  .euc-results:has(.euc-results__table[data-compare="false"] tbody tr:nth-child(4)) {
+    gap: 0.7rem;
+  }
+
+  .euc-results:has(.euc-results__table[data-compare="false"] tbody tr:nth-child(4))
+    .euc-results__summary {
+    padding: 0.7rem 1.1rem;
+  }
+
+  .euc-results:has(.euc-results__table[data-compare="false"] tbody tr:nth-child(4))
+    :is(.euc-results__row-label, .euc-results__row-time, .euc-results__row-delta,
+        .euc-results__row-extra) {
+    padding: 0.28rem 0.5rem;
+  }
 }
 
 /*

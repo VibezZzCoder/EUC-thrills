@@ -626,17 +626,16 @@ for (const seats of [2, 3, 4]) {
     // the press must not disturb the room around it.
     await pickVenue(page, COUCH, 'switchback', PARK_PLAN);
     // **The sentence under the mode row**, which is Phase 5's second composed
-    // string. `joinBlockReason` asks only about the room's width here — a
-    // world with nothing to hit is answered by the routes panel rather than
-    // refused — so a room of two reads where the race would be run, and a room
-    // of three or four reads the refusal that outranks it.
-    await expect(page.locator(`${COUCH} .euc-field__note`).first()).toContainText(
-      seats > 2 ? 'Knockabout is a two-player fight' : 'three laps of Switchback Park',
-    );
-    if (seats > 2) {
-      await expect(page.locator(`${COUCH} [data-menu="couch-mode"][data-couch-mode="knockabout"]`))
-        .toBeDisabled();
-    }
+    // string. It used to depend on the room's width: `joinBlockReason` refused
+    // a room of three or four the two-seat fight (q94), so wider rooms read
+    // that refusal instead of the venue. **M37 opened q94** (`docs/PLANS.md`
+    // §37.1), so the panel has no width refusal left and every room reads
+    // where the race would be run — which is what this line was composed for.
+    await expect(page.locator(`${COUCH} .euc-field__note`).first())
+      .toContainText('three laps of Switchback Park');
+    // And the control the refusal used to grey out is live at every width.
+    await expect(page.locator(`${COUCH} [data-menu="couch-mode"][data-couch-mode="knockabout"]`))
+      .toBeEnabled();
     // The seats and their claims survived the world swap under the panel.
     expect(await page.evaluate(() => window.game.snapshot().input.devices)
       .then((devices) => devices.filter((device) => device !== null).length)).toBe(seats);

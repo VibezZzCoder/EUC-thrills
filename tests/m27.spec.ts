@@ -620,12 +620,24 @@ test('four riders can all crash on one update without a voice going missing', as
   expect(errors).toEqual([]);
 });
 
-test('Knockabout is a two-player fight, and a third seat takes it off the menu', async ({ page }) => {
-  // q94. Four-player Knockabout — free-for-all or teams, first to what, N-way
-  // spawn fairness against a 2.15 m reach, multi-way draws — is real design
-  // nobody has opened, so a wider couch may not quietly be handed a two-seat
-  // fight. Refused at the door *and* greyed on the control, on M26's rule that
-  // the two must answer on identical terms.
+test('the room may keep the fight however wide it gets — q94, reopened by M37', async ({ page }) => {
+  /*
+   * **This test used to assert the opposite** (*"Knockabout is a two-player
+   * fight, and a third seat takes it off the menu"*). q94 kept four-player
+   * Knockabout out of M27 because its rules — free-for-all or teams, first to
+   * what, N-way spawn fairness against a 2.15 m reach, multi-way draws — were
+   * real unopened design, and a mode that quietly seated four people in a
+   * two-seat fight would have settled them by implementation. The owner
+   * reopened it on 2026-09-13 and `docs/PLANS.md` §37.1 answers all six, so
+   * the three assertions here invert: a third seat leaves the selection alone,
+   * a re-press is honoured, and narrowing the couch changes nothing either.
+   *
+   * **The shape is kept on purpose.** What it was really testing is that
+   * `couchRide` is a property of the room and not a latch that has to be
+   * undone, and that claim is worth more now than it was: there are two more
+   * widths for it to be wrong at. `setCouchRide` is the bridge for the panel's
+   * own control, and `tests/m37.spec.ts` walks it through the real buttons.
+   */
   const errors = collectErrors(page);
   await bootSeats(page, 2);
 
@@ -636,22 +648,33 @@ test('Knockabout is a two-player fight, and a third seat takes it off the menu',
     game.spawnRider();
     game.advance(2);
     const afterThird = game.snapshot().couch.ride;
+    game.spawnRider();
+    game.advance(2);
+    const afterFourth = game.snapshot().couch.ride;
+    // The press the door used to refuse, at the widest the couch goes.
     game.setCouchRide('knockabout');
-    const refused = game.snapshot().couch.ride;
+    const pressedAtFour = game.snapshot().couch.ride;
+    game.despawnRider();
     game.despawnRider();
     game.advance(2);
-    game.setCouchRide('knockabout');
-    return { atTwo, afterThird, refused, backAtTwo: game.snapshot().couch.ride };
+    return {
+      atTwo,
+      afterThird,
+      afterFourth,
+      pressedAtFour,
+      backAtTwo: game.snapshot().couch.ride,
+      seats: game.seatCount,
+    };
   });
 
   expect(verdict.atTwo).toBe('knockabout');
-  // A third seat takes the mode with it rather than leaving a session armed
-  // for a fight it cannot referee.
-  expect(verdict.afterThird).toBe('freeRide');
-  expect(verdict.refused).toBe('freeRide');
-  // And it comes back when the couch narrows: the rule is about the room, not
-  // a latch that has to be undone.
+  // A seat arriving changes how wide the fight is, and nothing else.
+  expect(verdict.afterThird, 'a third seat still took the fight away').toBe('knockabout');
+  expect(verdict.afterFourth, 'a fourth seat still took the fight away').toBe('knockabout');
+  expect(verdict.pressedAtFour, 'the door still refused a room of four').toBe('knockabout');
+  // And narrowing it back is not an undo either: the room never lost it.
   expect(verdict.backAtTwo).toBe('knockabout');
+  expect(verdict.seats).toBe(2);
   expect(errors).toEqual([]);
 });
 
@@ -1988,9 +2011,13 @@ const knockaboutOff = (page: import('@playwright/test').Page): Promise<boolean> 
 
 test('two players may have the two-player fight, spare chair or not', async ({ page }) => {
   /*
-   * **The owner's 2026-08-31 ride, fourth find.** q94 keeps Knockabout a
-   * two-seat fight until its four-player rules are opened, and the join panel
-   * asked that question of the *seat* count — but the panel puts the next chair
+   * **The owner's 2026-08-31 ride, fourth find.** q94 kept Knockabout a
+   * two-seat fight until its four-player rules were opened (M37 has opened
+   * them — `docs/PLANS.md` §37.1 — which retires the refusal but not this
+   * spec: what it holds is that **people, not chairs** are what the panel
+   * counts, and that is still what `roomSize` does and what the split
+   * follows). The join panel asked that question of the *seat* count — but the
+   * panel puts the next chair
    * out as soon as the last one is claimed, so two players with a third pad
    * plugged in were a room of three chairs and the fight was struck off the
    * menu they were entitled to. The width question counts people now
@@ -2030,13 +2057,18 @@ test('two players may have the two-player fight, spare chair or not', async ({ p
   expect(errors).toEqual([]);
 });
 
-test('a third player still takes the fight off the menu — q94', async ({ page }) => {
+test('a third player joins the fight rather than ending it — q94, reopened by M37', async ({ page }) => {
   /*
-   * The other half of the same repair, and the one that could have been broken
-   * by it: q94 is not relaxed, it is re-keyed. A *chair* arriving used to strike
-   * Knockabout off, which was one player too early; a **player** arriving does
-   * it now, and the chooser is painted with the ride the room actually has
-   * rather than leaving a selected mode nobody may have.
+   * **The other half of the same repair, inverted by M37** (§37.1). This read
+   * *"a third player still takes the fight off the menu"*: q94 was not
+   * relaxed at M27, it was *re-keyed* from chairs to players, because a chair
+   * arriving struck Knockabout off one player too early (the owner's
+   * 2026-08-31 ride).
+   *
+   * The re-keying is what survives and what this still tests — the panel
+   * counts **people**, and the chooser is a report of what the room actually
+   * has. What changed is the answer: a third player sitting down is a third
+   * combatant, so the control stays live and the selection stays lit.
    */
   const errors = collectErrors(page);
   await fakePads(page, 2);
@@ -2049,14 +2081,20 @@ test('a third player still takes the fight off the menu — q94', async ({ page 
   await page.locator('.euc-menu--couch [data-menu="couch-mode"][data-couch-mode="knockabout"]').click();
   expect(await page.evaluate(() => window.game.snapshot().couch.ride)).toBe('knockabout');
 
-  // The third player sits down, and the fight goes with them.
+  // The third player sits down, and joins.
   await claimWithPad(page, 1);
   await waitForPlayers(page, 3);
-  expect(await knockaboutOff(page), 'a room of three was still offered the two-seat fight').toBe(true);
+  expect(await knockaboutOff(page), 'a room of three was refused the fight it may have').toBe(false);
   expect(
     await page.evaluate(() => window.game.snapshot().couch.ride),
-    'the room was left holding a ride it may not have',
-  ).toBe('freeRide');
+    'the room was quietly demoted to a ride it did not choose',
+  ).toBe('knockabout');
+  // The chooser reports the room's choice rather than the last press.
+  expect(
+    await page.evaluate(() => document.querySelector(
+      '.euc-menu--couch [data-couch-mode="knockabout"]',
+    )?.getAttribute('aria-pressed')),
+  ).toBe('true');
   expect(errors).toEqual([]);
 });
 

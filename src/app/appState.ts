@@ -282,8 +282,10 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
    * "`freeRide` and not the other four" while stage 1 was two riders in one
    * world with nothing being refereed (§25.6); Knockabout arrived at M26 Phase
    * 5 and the race at M27 Phase 3, so the panel starts whichever of the three
-   * the room chose (`CouchRide`). A couch chase is still real unopened design,
-   * as are Knockabout's four-player rules (q94).
+   * the room chose (`CouchRide`). A couch chase is still real unopened design;
+   * Knockabout's three- and four-player rules were too until the owner
+   * reopened q94 and M37 answered them (`docs/PLANS.md` §37.1), which changed
+   * who the panel may start a fight for and no transition in this table.
    */
   couchJoin: Object.freeze({
     id: 'couchJoin' as AppStateId,

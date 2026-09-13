@@ -54,12 +54,20 @@ export const COUCH_MIN_WIDTH_PX = 1000;
  * the standings card in the empty quadrant (§27.3 q95). What this number
  * bounds is how many the panel will *offer*.
  *
- * **Knockabout is deliberately not four** (q94). Its four-player rules —
- * free-for-all or teams, first to what, N-way spawn fairness against a 2.15 m
- * reach, multi-way draws — are real unopened design, so `Game` keeps arming
- * the match referee at exactly two seats. That gate lives beside the referee,
- * not here: this constant answers how wide a couch can be, not what every ride
- * on it does with the width.
+ * **Knockabout was deliberately not four, and now it is** (q94 → M37). Its
+ * four-player rules were real unopened design — free-for-all or teams, first
+ * to what, N-way spawn fairness against a 2.15 m reach, multi-way draws — so
+ * `Game` armed the match referee at exactly two seats and every door refused a
+ * wider room. The owner reopened it on 2026-09-13 (*"that mode could be fun
+ * chaos!"*) and `docs/PLANS.md` §37.1 answers all six: free-for-all at both
+ * three and four, still first to five, every rider's tally in every pane, a
+ * seeded ring start with a short frozen countdown, each paddle-caused
+ * knockdown counted, and nothing saved. The history stays written down because
+ * the answers are what superseded it, not because the question was silly.
+ *
+ * The seat gate still lives beside the referee rather than here: this constant
+ * answers how wide a couch can be, not what every ride on it does with the
+ * width.
  */
 export const COUCH_SEATS = 4;
 

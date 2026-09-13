@@ -836,6 +836,11 @@ test.describe('M23 Phase B2 — a track day on a phone', () => {
    * spelled `data-menu` and won the `closest()` race; this one is a bare span
    * and should not, so the assertion is that the worst landing spot works on
    * the first tap.
+   *
+   * Since M36 the entrance is two taps rather than one: the title button opens
+   * the venue chooser, and a venue card starts the session. Both are two-line
+   * buttons, so the thesis is unchanged and simply runs twice — the note is the
+   * worst landing spot on the title button, and again on the BelVar card.
    */
   test('the worst landing spot on Track Day starts a session first time', async ({ page }) => {
     const errors = collectErrors(page);
@@ -848,6 +853,22 @@ test.describe('M23 Phase B2 — a track day on a phone', () => {
 
     // The note, not the label: which one a thumb lands on is luck.
     await button.locator('.euc-button__note').tap();
+
+    // Tap one opens M36's venue chooser, not a world.
+    const picker = page.locator('.euc-menu--tracks');
+    await expect(picker).toBeVisible();
+    expect(await page.evaluate(() => window.game.snapshot().app.menu)).toBe('tracks');
+    expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('title');
+
+    // Tap two is the same geometry again: BelVar's card is a label over a note,
+    // and the note is the half of it a thumb is most likely to land on.
+    const card = picker.locator('[data-menu="lap-venue"][data-venue="track"]');
+    const cardBox = await card.boundingBox();
+    expect(cardBox, 'the BelVar card has no box').not.toBeNull();
+    expect(cardBox!.height, `the BelVar card is ${cardBox!.height}px tall`)
+      .toBeGreaterThanOrEqual(44);
+    await card.locator('.euc-button__note').tap();
+
     await page.waitForFunction(
       () => window.game.snapshot().app.state === 'trackDay',
       undefined,
