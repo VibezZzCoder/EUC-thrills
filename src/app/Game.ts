@@ -5110,9 +5110,9 @@ export class Game {
    * (§38.4 step 1). The re-read goes into this method's own struct: writing it
    * back into the pool would change what the lap and race observers see.
    *
-   * The app-state gate is the pause contract (§38.3). `settings` simulates —
-   * it is the pause one screen deeper — so a gate on the referee's phase alone
-   * would age the clock behind the volume slider.
+   * The app-state gate is the referee's suspension contract (§38.3).
+   * `Game.step` also freezes the running attempt's physics inside Settings;
+   * the producer and consumer must preserve the same airborne flight.
    */
   private stepTrickRun(stepSeconds: number): void {
     if (this.trickRun.phase !== 'running') return;
@@ -8610,6 +8610,11 @@ export class Game {
   };
 
   private readonly step = (stepSeconds: number): void => {
+    // A suspended Trick Run freezes the rider as well as its referee. Settings
+    // normally animates the background world; letting that integrate a paused
+    // flight loses its touchdown and grants free travel/recovery off the clock.
+    // Keep the rule at the session boundary, outside physics and trick detection.
+    if (this.trickRun.phase === 'running' && this.appState.current !== 'trickRun') return;
     this.tick += 1;
     this.simTimeSeconds += stepSeconds;
     // The audio model is advanced once per render frame, by however much
@@ -8688,7 +8693,9 @@ export class Game {
     // rather than a separate session flag, which is what `docs/PLANS.md` §4.7
     // said would happen when M9's faders landed: the key stays, and the state
     // it flips is the saved one.
-    if (this.pauseAsked) this.goTo('paused');
+    // Trick Run must consume this tick's physics/contact facts before pausing.
+    // Otherwise a pause on takeoff or touchdown drops that one-shot forever.
+    if (this.pauseAsked && this.appState.current !== 'trickRun') this.goTo('paused');
     if (this.muteAsked) this.options.set({ muted: !this.options.current.muted });
 
     // **The pair, once, after both seats have stepped** — M26 Phase 1 (§26.3).
@@ -8739,6 +8746,8 @@ export class Game {
     // landing banks, so the referee is fed after `stepContact` and never
     // before it.
     this.stepTrickRun(stepSeconds);
+    // The deadline wins a same-tick pause: a completed run already shows results.
+    if (this.pauseAsked && this.appState.current === 'trickRun') this.goTo('paused');
 
     // **And the decision the credit above it just earned** — M37 §37.3's
     // "seat 0's `worldReset` return cannot defer an unrelated winning exchange

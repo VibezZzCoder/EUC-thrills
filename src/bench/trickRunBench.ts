@@ -28,6 +28,7 @@ import {
 } from '../simulation/trickEvents.ts';
 import { trickZoneAt } from '../level/trickZones.ts';
 import { flatFixture } from './featureFixtures.ts';
+import { recordTrickShuttle } from './trickShuttle.ts';
 import {
   BUFFER_STEPS,
   COAST_STEPS,
@@ -120,9 +121,9 @@ export const TRICK_BENCH_CAVEATS: readonly string[] = [
     + ' verdict, read rather than re-judged.',
   'A recording is a bounded per-step fact stream made, scored and discarded inside one'
     + ' process. Nothing is saved, nothing ships, and this is not a replay format (§38.4).',
-  '**The bench rider does not steer through a corner.** Every ride below is one straight'
-    + ' window of the park, exactly as `docs/JUMP_BENCH.md`\'s T11 rides are; a routed lap is'
-    + ' therefore a *spliced proxy* and says so where it is printed.',
+  '**The routed lap is a spliced proxy.** Its feature trials use straight windows'
+    + ' rather than steering around the whole lap. The separate q191 shuttle DOES steer'
+    + ' from the normal run start and includes every travel, braking and idle step.',
   'The bench presses the Hop control; it does not model a thumb. A cadence here is the'
     + ' controller\'s own legality clock, which is the fastest a perfect player could go and'
     + ' the right bound for a farming question.',
@@ -1765,6 +1766,11 @@ export function scoringLines(tally?: Tally): readonly ScoringLine[] {
     { id: 'bypass', label: 'the safe / bypass line (spliced proxy)', recording: bypass },
   ];
 
+  const shuttle = recordTrickShuttle(longest);
+  cost.trials += 1;
+  cost.steps += shuttle.recording.steps.length;
+  lines.push({ id: shuttle.recording.id, label: shuttle.recording.label, recording: shuttle.recording });
+
   for (const loop of HOP_LOOPS) {
     const ride = cost.add(recordHopLoop(
       `farm-${loop.id}`,
@@ -2058,6 +2064,12 @@ export function tableLineRates(): BenchTable {
       '**The stationary rows are not a proxy.** They are one continuous recording of a rider'
         + ' who never moves. Feature-camp rows start inside the installed ledge zone;'
         + ' they omit travel from the run start and are an upper bound on time available there.',
+      '**The continuous two-zone shuttle starts at the normal solo run start.** It rides'
+        + ' to the timber corridor and alternates stopped spin-plus-one-foot hops between'
+        + ' the skinny and step-up launch zones, roughly three metres apart. No resets,'
+        + ' teleports, synthetic scoring facts or omitted travel; `tests/m38-review.spec.ts`'
+        + ' replays its inputs through the browser and checks the saved personal best.'
+        + ' This is a known balance weakness (q191), not a balance acceptance.',
       'A feature appears in a routed lap only if some measured attempt at it reached the'
         + ' window\'s merge. The staircase has no such attempt at any of its published'
         + ' speeds — a hop off the top tread above 15 mph clears all nine metres and leaves'

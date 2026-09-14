@@ -73,8 +73,8 @@ test('blind QA: the per-feature clocks pay a stationary camper once per feature'
     };
 
     // Four features on two corridors. `skinny` and `stepUp` are 1.8 m apart on
-    // one straight, so moving between them is a couple of seconds of rolling
-    // rather than a lap; the teleport only skips the rolling.
+    // one straight. This placement test proves the payouts, not the travel
+    // time. tests/m38-review.spec.ts covers the continuous ride from the start.
     const visits = ['ledge', 'skinny', 'stepUp', 'stairs'].map((id) => camp(id, 900));
     // And the first feature again, immediately: the clock that must still bite.
     visits.push(camp('ledge', 900));

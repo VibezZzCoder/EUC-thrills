@@ -976,7 +976,7 @@ test('QA repeat: ONE feature is capped near two full flights a run, at any caden
   }
 });
 
-test('QA repeat: clustered features multiply that cap — the open measurement', () => {
+test('QA repeat: clustered features multiply that cap — synthetic scoring ceiling', () => {
   // **A pin, not a balance acceptance.** Switchback's `skinny` and `stepUp`
   // zones are 1.8 m apart on one straight and `stairs` is on the same corridor,
   // so a camper who shuttles between them holds one clock per feature and banks
@@ -1003,7 +1003,9 @@ test('QA repeat: clustered features multiply that cap — the open measurement',
   assert.equal(cap(['skinny'], 4), value * 2);
   assert.equal(cap(['skinny', 'stepUp'], 4), value * 4);
   assert.equal(cap(['skinny', 'stepUp', 'stairs'], 4), value * 6);
-  // And at a cadence a rider can actually shuttle between those zones at.
+  // Synthetic 10.5-second cadence: this test does not simulate travel or air
+  // time. The independently ridden attack is recordTrickShuttle, replayed
+  // through Game in tests/m38-review.spec.ts; do not report these as its totals.
   assert.deepEqual(
     [['skinny'], ['skinny', 'stepUp'], ['skinny', 'stepUp', 'stairs']]
       .map((zoneList) => cap(zoneList, Math.round(10.5 * SIMULATION.hz))),
