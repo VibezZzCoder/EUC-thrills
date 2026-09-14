@@ -224,7 +224,8 @@ test('chooser, title and pause fit every supported phone and tablet size with no
     // list is spelled out rather than queried, so a button that stops being
     // rendered fails here instead of quietly dropping out of the contract.
     for (const control of [
-      'start', 'challenge', 'track-day', 'knockabout', 'chase', 'routes', 'settings', 'riders',
+      'start', 'challenge', 'track-day', 'trick-run', 'knockabout', 'chase', 'routes',
+      'settings', 'riders',
     ]) {
       await fits(page.locator(`.euc-menu--title [data-menu="${control}"]`), viewport.height,
         `title ${control} at ${viewport.width}x${viewport.height}`);

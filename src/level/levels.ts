@@ -299,8 +299,9 @@ export function chaseProbeFromQuery(search: string): boolean {
  * the live-tuning store** (`simulation/topSpeedPreset.ts`) rather than onto
  * any controller, so `installLevel`'s `applyTuning()` replay carries it across
  * every world swap on its own. It joins `Game.probing`: a personal best is
- * keyed by level id and has no tuning fingerprint, so a 65 mph best on the
- * 50 mph leaderboard would be a cheat by accident (§30.2 fact 8).
+ * keyed by level id and has no tuning fingerprint, so a best set under a
+ * diagnostic speed on the shipped wheel's leaderboard would be a cheat by
+ * accident (§30.2 fact 8; M38 §38.7 retired the old 50 mph reference).
  *
  * **`?hazardprobe=`'s exact grammar**: the whole value or nothing, because
  * `parseFloat('65mph') === 65` would make a malformed URL silently mean a

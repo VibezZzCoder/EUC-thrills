@@ -35,38 +35,56 @@ const GL_ARGS = process.env.EUC_SOFTWARE_GL === '1'
   ? ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']
   : ['--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader'];
 
+const PERFORMANCE_ONLY = process.env.EUC_PERFORMANCE === '1';
+
+/** Unattended runs stay bounded; an invalid override must not disable the limit. */
+function positiveInteger(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer; received ${JSON.stringify(raw)}`);
+  }
+  return value;
+}
+
 export default defineConfig({
   testDir: './tests',
+  // Playwright clears its output directory at startup. Keep that cleanup away
+  // from the coordinator's live logs and input ledger in test-results/validation.
+  outputDir: './test-results/browser',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: 0,
+  maxFailures: positiveInteger('EUC_MAX_FAILURES', 3),
+  globalTimeout: positiveInteger('EUC_GLOBAL_TIMEOUT_MS', 45 * 60_000),
+  // Wall-clock budgets run only in the explicit, exclusive performance lane.
+  // A worker count limits this runner; the coordinator must also keep other
+  // browser runs, builds, exports and expensive headless sweeps off the machine.
+  ...(PERFORMANCE_ONLY ? { grep: /@performance\b/ } : { grepInvert: /@performance\b/ }),
   /**
-   * **Playwright's default of half the cores is already the fast setting, and
-   * that was measured rather than assumed** (M17).
+   * Playwright's half-core default is the existing functional-suite setting.
+   * M17's measured increase from four workers to six made the run slower and
+   * introduced contention failures. Each worker composites a real WebGL scene
+   * even while a spec waits on `game.advance(n)` or a boot.
    *
-   * Raising it to 75% looks obviously right — nearly every spec spends its time
-   * inside `game.advance(n)` or waiting on a boot, so a worker reads as idle.
-   * It is not idle. Each worker drives a Chromium compositing a real WebGL
-   * scene, and on an 8-core machine the suite already saturates at four. Six
-   * workers made the same suite *slower* — 4.5 minutes against 4.0 — and added
-   * two contention failures a run: a pause-latency budget overrun and an audio
-   * bed that produced no output at all.
+   * The suite has grown since then: M36/M37 full runs reached 20–24 minutes,
+   * and overlapping agent work multiplied individual fixture costs. Duration
+   * alone no longer identifies a boot failure. Read early failures, use focused
+   * scopes, and give one coordinator ownership of expensive work across agents.
    *
-   * If this suite ever feels like it takes tens of minutes, suspect a boot
-   * failure rather than the worker count. Every spec waits 90 s for
-   * `window.game`, so one game that refuses to start turns four minutes into
-   * forty — which is exactly how M17's unregistered-tunable defect presented.
-   *
-   * `EUC_WORKERS` overrides for a machine with different silicon; 1 is the
-   * setting for debugging a spec that only fails alone.
+   * `EUC_WORKERS` changes functional-run concurrency. The performance lane
+   * always uses one worker, regardless of that environment override.
    */
   // A count is a number and a share is a "NN%" string; an env var is always a
   // string, and handing Playwright "1" is a config error rather than one worker.
-  workers: process.env.EUC_WORKERS === undefined
-    ? undefined
-    : process.env.EUC_WORKERS.endsWith('%')
-      ? process.env.EUC_WORKERS
-      : Number(process.env.EUC_WORKERS),
+  workers: PERFORMANCE_ONLY
+    ? 1
+    : process.env.EUC_WORKERS === undefined
+      ? undefined
+      : process.env.EUC_WORKERS.endsWith('%')
+        ? process.env.EUC_WORKERS
+        : Number(process.env.EUC_WORKERS),
   reporter: [['list']],
   // Generous on purpose: under a software rasteriser the shader compile at
   // boot costs seconds where a real GPU costs a fraction of one. That is a

@@ -29,10 +29,17 @@ import {
  * rides the wheel the numbers describe**: the beeps and the cutout are
  * shares of `derivedTopSpeed` and follow the drag on their own, so 65 puts
  * them at 52 and 64.2 mph without a line of code naming either. **And the
- * timings fact 7 estimated are measured here**, at 50 and at 65, headless
+ * timings fact 7 estimated are measured here**, on the shipped wheel, headless
  * on a kilometre of pavement — the run-up and the flat-out run to the cutout,
- * joined by Phase 1's deep-hole braking distance (§30.5 item 3), which adds
- * 58 to the pair.
+ * joined by Phase 1's deep-hole braking distance (§30.5 item 3).
+ *
+ * **M38 Part B (`docs/PLANS.md` §38.7) retired the 50 mph reference wheel.**
+ * The shipped wheel is 65 and is measured once; the old comparative A/B runs
+ * are gone. `?mph=<n>` stays exactly as it was — a generic 20–90 mph
+ * diagnostic that files no records — and the generic algebra, invalid-input
+ * and supported-range tests below still cover it. The pre-M30 input snapshot
+ * is kept as a **historical** derivation, not as a wheel anyone rides: it is
+ * the only thing that proves the six shipped literals bit-for-bit.
  */
 
 const STEP = 1 / SIMULATION.hz;
@@ -107,9 +114,13 @@ function timeFlatOut(euc: EucController, terminal: number): {
 }
 
 /**
- * The pre-M30 table's inputs to the recipe — the 50 mph wheel M16 shipped and
- * M30 Phases 0 to 3 were built on, recorded here because the shipped table no
- * longer holds them.
+ * **A historical snapshot, not a wheel to ride.** The pre-M30 table's inputs
+ * to the recipe — the wheel M16 shipped and M30 Phases 0 to 3 were built on,
+ * recorded here because the shipped table no longer holds them. M38 Part B
+ * retired that wheel as a reference; this derivation stays because it is the
+ * only thing that proves the six shipped literals are derived rather than
+ * hand-typed (the test immediately below), and removing it would leave that
+ * claim uncheckable.
  *
  * `driveAccel` and `rollingResistance` are read from the live table on
  * purpose: they did **not** move at Phase 4 (M16's decision, restated in
@@ -125,12 +136,12 @@ const PRE_M30_BASE = Object.freeze({
   crashDistance: 11.5,
 });
 
-test('the shipped table IS the 65 mph preset applied to the pre-M30 table, to the bit', () => {
+test('the shipped table IS the 65 mph preset applied to the historical pre-M30 table, to the bit', () => {
   // **M30 Phase 4, `docs/PLANS.md` §30.9 item 2 — the owner's decision of
   // 2026-09-03: "we will ship at 65. i pre-approve."**
   //
   // The six literals in `data/tuning.ts` are not hand-typed numbers. They are
-  // what this recipe writes for 65 mph applied to the 50 mph table above,
+  // what this recipe writes for 65 mph applied to the historical table above,
   // transcribed as the shortest decimal that round-trips to the same double.
   // This is the test that makes that claim checkable: derive them again and
   // compare with `assert.equal`, which is `===`. A tidied literal, a rounded
@@ -154,9 +165,9 @@ test('the shipped table IS the 65 mph preset applied to the pre-M30 table, to th
   assert.equal(CAMERA.crashDistance, writes['CAMERA.crashDistance']);
 
   // And the figures `docs/PLANS.md` §30.2 fact 1 quotes, which is what the
-  // owner was shown before he chose. The ratio is measured against the 50 mph
-  // wheel, so it belongs to this derivation and not to the shipped one (where
-  // the preset is now the identity — the test below).
+  // owner was shown before he chose. The ratio is measured against the
+  // historical base, so it belongs to this derivation and not to the shipped
+  // one (where the preset is now the identity — the test below).
   assert.ok(Math.abs(preset.dragCoefficient - 0.00867) < 0.00001, `drag ${preset.dragCoefficient}`);
   assert.ok(Math.abs(preset.pavementTerminal - 29.06) < 0.01, `terminal ${preset.pavementTerminal}`);
   assert.ok(Math.abs(preset.dragOnlyTop - 29.74) < 0.01, `drag-only top ${preset.dragOnlyTop}`);
@@ -194,9 +205,9 @@ test('the shipped wheel reads 65 mph out of the table, and ?mph=65 is the identi
   // The other direction of the same claim: `shippedTopSpeedBase()` /
   // `shippedTopSpeedMph()` read the *table*, so once the table is the 65 mph
   // preset they must say 65 — exactly, because the drag literal is the exact
-  // double the recipe produced rather than a rounded one. (The old 50 mph
-  // table read 49.92 for exactly the reason this one does not: 0.0147 was a
-  // number a human chose off the F4 grid.)
+  // double the recipe produced rather than a rounded one. (The historical
+  // pre-M30 table read 49.92 for exactly the reason this one does not: its
+  // 0.0147 was a number a human chose off the F4 grid.)
   const mph = shippedTopSpeedMph();
   assert.ok(Math.abs(mph - 65) < 1e-9, `the shipped wheel is ${mph.toFixed(4)} mph on pavement`);
   const preset = topSpeedPreset(mph);
@@ -214,21 +225,32 @@ test('the shipped wheel reads 65 mph out of the table, and ?mph=65 is the identi
   assert.equal(writes['CAMERA.speedReference'], CAMERA.speedReference);
 });
 
-test('?mph=50 is the A/B back to the wheel M16 shipped', () => {
-  // q117, kept: the switch stays as a diagnostic on `?wobble=`'s terms, and
-  // with 65 shipped its working use is `?mph=50` — the old wheel, one URL
-  // away, still refusing records (`Game.probing`, §30.2 fact 8).
+test('any speed the URL accepts round-trips through the recipe, and asks for exactly what it says', () => {
+  // q117/q181, kept: the switch stays a **generic** diagnostic on `?wobble=`'s
+  // terms — any value in the 20–90 mph window, filing no records
+  // (`Game.probing`, §30.2 fact 8). **M38 Part B retired the 50 mph reference
+  // wheel**, so this test no longer promises an A/B against it; what it
+  // promises instead is the property that made that A/B work for any number
+  // the owner types.
   //
-  // It is the M16 wheel to a third of a percent rather than to the bit, and
-  // the difference is worth stating: 0.0147 was a number chosen off the F4
-  // grid whose true terminal was 49.92 mph, while `?mph=50` asks for 50 and
-  // gets it. Riding the exact pre-M30 table is `?mph=49.92`.
-  const fifty = topSpeedPreset(50);
-  assert.ok(Math.abs(fifty.pavementTerminal - 22.352) < 0.001, `terminal ${fifty.pavementTerminal}`);
+  // Two claims. `?mph=n` asks for a wheel whose flat-pavement terminal *is*
+  // n mph, to the bit of the conversion — not a number off the F4 grid that
+  // happens to land nearby. And `shippedTopSpeedMph` is the exact inverse of
+  // the recipe, so reading a base's terminal back into the recipe reproduces
+  // that base: the property the historical derivation above leans on.
+  const example = topSpeedPreset(58.5);
+  assert.equal(example.pavementTerminal, 58.5 * METRES_PER_SECOND_PER_MPH);
+  assert.equal(example.speedReference, example.pavementTerminal);
   assert.ok(
-    Math.abs(fifty.dragCoefficient / PRE_M30_BASE.dragCoefficient - 1) < 0.004,
-    `?mph=50 writes drag ${fifty.dragCoefficient}, against M16's ${PRE_M30_BASE.dragCoefficient}`,
+    Math.abs(shippedTopSpeedMph({ ...shippedTopSpeedBase(), dragCoefficient: example.dragCoefficient }) - 58.5) < 1e-9,
+    `?mph=58.5 writes a drag whose terminal reads back as `
+      + `${shippedTopSpeedMph({ ...shippedTopSpeedBase(), dragCoefficient: example.dragCoefficient })} mph`,
   );
+
+  // The inverse, exercised against the historical base — asking the shipped
+  // recipe for that base's own terminal reproduces that base to the bit,
+  // because the shipped table *is* the 65 preset of it. This is the algebra
+  // the first test in this file leans on, isolated from any wheel.
   const exact = topSpeedPreset(shippedTopSpeedMph(PRE_M30_BASE));
   assert.ok(Math.abs(exact.dragCoefficient - PRE_M30_BASE.dragCoefficient) < 1e-12);
   assert.ok(Math.abs(exact.powerComfortSpeed - PRE_M30_BASE.powerComfortSpeed) < 1e-9);
@@ -277,7 +299,11 @@ test('the F4 drag slider resolves the whole ?mph= window, and reset does not nee
   const spec = LIVE_TUNABLES.find((entry) => entry.path === 'EUC.dragCoefficient');
   assert.ok(spec, 'EUC.dragCoefficient has no slider');
   const snap = (value: number): number => spec.min + Math.round((value - spec.min) / spec.step) * spec.step;
-  assert.ok(spec.step <= 0.0001, `a step of ${spec.step} cannot resolve 65 mph's 0.0087 from 50 mph's 0.0147`);
+  assert.ok(
+    spec.step <= 0.0001,
+    `a step of ${spec.step} is too coarse to resolve the drags the 20–90 mph window asks for `
+      + `(the shipped 65 mph wheel alone wants 0.0087)`,
+  );
 
   // One step of the slider is worth well under a mile an hour anywhere in the
   // 20–90 mph window — the resolution claim, in the units the owner rides in.
@@ -313,38 +339,37 @@ test('a wheel under the 65 preset beeps at 52 mph and lets go at 64.2', () => {
   assert.ok(Math.abs(ride.cutoutMph - 64.2) < 0.5, `the cutout fired at ${ride.cutoutMph.toFixed(1)} mph`);
 });
 
-test('the run-up and the cutout, timed at 50 and at 65 (fact 7\'s estimates, measured)', () => {
+test('the run-up and the cutout on the shipped wheel (fact 7\'s estimates, measured)', (t) => {
   // Fact 7 estimated "about 8 s → about 10.5 s" to top speed and "about 10 s
   // → about 13 s" to the cutout. Recorded here as measurements so the cost
   // report has numbers; the bounds are loose on purpose — a legitimate
-  // launch tune moves them and should not fail here — and the message
-  // carries the figure.
+  // launch tune moves them and should not fail here — and the diagnostic
+  // carries the figures either way.
   //
-  // **The two wheels swapped places at M30 Phase 4**: 65 is the frozen table
-  // now and 50 is the preset, so `controllerUnder(null)` is the fast one and
-  // the slow one is `?mph=50`'s. The claim is unchanged — the faster wheel
-  // takes longer to get there at the same drive — and it is stated in terms
-  // of which wheel is faster rather than which is shipped.
-  const fiftyPreset = topSpeedPreset(50);
-  const fifty = timeFlatOut(
-    controllerUnder(fiftyPreset, { cutoutEnabled: 1 }),
-    fiftyPreset.pavementTerminal,
-  );
+  // **M38 Part B: measured once, on the shipped wheel.** This used to run the
+  // same ride under `?mph=50` as well and assert the slower wheel got there
+  // sooner. The shipped wheel is 65, that comparison certified nothing about
+  // it, and the arithmetic behind it ("faster wheel, same drive, longer
+  // run-up") is already the recipe's — `topSpeedPreset` scales drag alone and
+  // never touches `leanToAccel`. What is worth keeping is the shipped wheel's
+  // own numbers and the fact that reaching its edge is not a chore.
   const preset = topSpeedPreset(shippedTopSpeedMph());
-  const sixtyFive = timeFlatOut(controllerUnder(null, { cutoutEnabled: 1 }), preset.pavementTerminal);
+  const ride = timeFlatOut(controllerUnder(null, { cutoutEnabled: 1 }), preset.pavementTerminal);
 
-  const report = `50 mph: 0.95 of terminal in ${fifty.toShare.toFixed(2)} s (${fifty.toShareMetres.toFixed(0)} m), `
-    + `cutout at ${fifty.toCutout.toFixed(2)} s (${fifty.toCutoutMetres.toFixed(0)} m, ${fifty.cutoutMph.toFixed(1)} mph); `
-    + `65 mph: 0.95 of terminal in ${sixtyFive.toShare.toFixed(2)} s (${sixtyFive.toShareMetres.toFixed(0)} m), `
-    + `cutout at ${sixtyFive.toCutout.toFixed(2)} s (${sixtyFive.toCutoutMetres.toFixed(0)} m, ${sixtyFive.cutoutMph.toFixed(1)} mph)`;
+  const report = `shipped 65 mph wheel: 0.95 of terminal in ${ride.toShare.toFixed(2)} s `
+    + `(${ride.toShareMetres.toFixed(0)} m), cutout at ${ride.toCutout.toFixed(2)} s `
+    + `(${ride.toCutoutMetres.toFixed(0)} m, ${ride.cutoutMph.toFixed(1)} mph), `
+    + `first beep at ${ride.firstBeepMph.toFixed(1)} mph`;
+  t.diagnostic(report);
 
-  assert.ok(Number.isFinite(fifty.toShare) && Number.isFinite(fifty.toCutout), report);
-  assert.ok(Number.isFinite(sixtyFive.toShare) && Number.isFinite(sixtyFive.toCutout), report);
-  // The faster wheel takes longer to get there, at the same drive.
-  assert.ok(sixtyFive.toShare > fifty.toShare + 1, report);
-  assert.ok(sixtyFive.toCutout > fifty.toCutout + 1, report);
-  // And neither is a chore: under twenty seconds to the edge on either wheel.
-  assert.ok(fifty.toCutout < 20 && sixtyFive.toCutout < 20, report);
+  assert.ok(Number.isFinite(ride.toShare) && Number.isFinite(ride.toCutout), report);
+  // Fact 7's estimates, as loose bands rather than pins.
+  assert.ok(ride.toShare > 5 && ride.toShare < 16, report);
+  // Not a chore: under twenty seconds of straight to reach the edge.
+  assert.ok(ride.toCutout < 20, report);
+  // The run-up is spent before the cutout, not after it — the flat-out ride
+  // ends by letting go, which is what makes `toCutout` a cutout time at all.
+  assert.ok(ride.toCutout > ride.toShare, report);
 });
 
 /**
@@ -416,9 +441,9 @@ function brakeToHazardSpeed(euc: EucController, drag: number): {
   return { terminal, metres, seconds, fullBrakeSeconds, kinematic, floor };
 }
 
-test('the deep-hole braking distance at 50, 58 and 65, measured through the controller', (t) => {
+test('the deep-hole braking distance on the shipped wheel, measured through the controller', (t) => {
   // `docs/PLANS.md` §30.5 item 3: fact 7's deep-hole bargain measured rather
-  // than computed. Each wheel rides flat out to terminal with the cutout off,
+  // than computed. The wheel rides flat out to terminal with the cutout off,
   // then holds full brake lean to `EUC.hazardCrashSpeed`, and the distance is
   // read against `HAZARD.readMetres` — the 40 m at which a hole is shown,
   // measured by eye, which does not scale with the wheel.
@@ -432,49 +457,42 @@ test('the deep-hole braking distance at 50, 58 and 65, measured through the cont
   // 7.3 m/s² pushing the same way as the brake's 10.5. `floor` is the
   // comparison that survives both effects.
   //
-  // **M30 Phase 4 swapped which of the three is the frozen table.** 65 is the
-  // shipped wheel and rides on `controllerUnder(null)`; 50 and 58 are presets.
-  // The finding the cost report was written for is now a fact about the
-  // shipped game rather than about a diagnostic: 40 m still covers the stop,
-  // with metres of reserve rather than tens of them.
-  const wheels = [
-    ...[50, 58].map((mph) => {
-      const preset = topSpeedPreset(mph);
-      return { mph, euc: controllerUnder(preset, { cutoutEnabled: 0 }), drag: preset.dragCoefficient };
-    }),
-    { mph: shippedTopSpeedMph(), euc: controllerUnder(null, { cutoutEnabled: 0 }), drag: EUC.dragCoefficient },
-  ];
-  const runs = wheels.map((wheel) => ({ mph: wheel.mph, ...brakeToHazardSpeed(wheel.euc, wheel.drag) }));
-  const fifty = runs[0];
-  const fiftyEight = runs[1];
-  const sixtyFive = runs[2];
-  assert.ok(Math.abs(sixtyFive.mph - 65) < 1e-9, `the shipped wheel is ${sixtyFive.mph} mph, not 65`);
+  // **M38 Part B: measured once, on the shipped wheel.** This used to run 50
+  // and 58 alongside 65 and assert the three stopping distances came out in
+  // speed order. That ordering is arithmetic (a higher terminal into the same
+  // brake authority), not a fact about the shipped ride, and the 50 mph wheel
+  // is no longer a reference anything is certified against. The finding the
+  // cost report was written for is a fact about the shipped game: 40 m still
+  // covers the stop, with metres of reserve rather than tens of them.
+  const mph = shippedTopSpeedMph();
+  assert.ok(Math.abs(mph - 65) < 1e-9, `the shipped wheel is ${mph} mph, not 65`);
+  const run = brakeToHazardSpeed(controllerUnder(null, { cutoutEnabled: 0 }), EUC.dragCoefficient);
 
   const report = `deep-hole braking to ${EUC.hazardCrashSpeed} m/s at full lean, against `
     + `HAZARD.readMetres ${HAZARD.readMetres} m:\n`
-    + runs.map((run) => `  ${run.mph.toFixed(0)} mph wheel: terminal ${run.terminal.toFixed(2)} m/s `
-      + `(${(run.terminal * MPH).toFixed(1)} mph) — ${run.metres.toFixed(1)} m in ${run.seconds.toFixed(2)} s, `
-      + `margin ${(HAZARD.readMetres - run.metres).toFixed(1)} m; `
-      + `fact 7's kinematic ${run.kinematic.toFixed(1)} m, instant-brake floor ${run.floor.toFixed(1)} m, `
-      + `full lean at ${run.fullBrakeSeconds.toFixed(2)} s`).join('\n');
+    + `  shipped ${mph.toFixed(0)} mph wheel: terminal ${run.terminal.toFixed(2)} m/s `
+    + `(${(run.terminal * MPH).toFixed(1)} mph) — ${run.metres.toFixed(1)} m in ${run.seconds.toFixed(2)} s, `
+    + `margin ${(HAZARD.readMetres - run.metres).toFixed(1)} m; `
+    + `fact 7's kinematic ${run.kinematic.toFixed(1)} m, instant-brake floor ${run.floor.toFixed(1)} m, `
+    + `full lean at ${run.fullBrakeSeconds.toFixed(2)} s`;
   t.diagnostic(report);
 
-  for (const run of runs) {
-    assert.ok(Number.isFinite(run.terminal), `${run.mph.toFixed(0)} mph never settled at terminal\n${report}`);
-    assert.ok(Number.isFinite(run.metres) && Number.isFinite(run.seconds), report);
-    // The controller cannot brake harder than its own authority plus its own
-    // resistance, and it loses the lean swing on top of that. A stop under
-    // this floor is a broken brake, not a retune.
-    assert.ok(run.metres > run.floor, report);
-  }
-  // Faster wheel, longer stop — the whole of fact 7's bargain.
-  assert.ok(sixtyFive.metres > fiftyEight.metres && fiftyEight.metres > fifty.metres, report);
-  // Loose bands: a launch or brake retune moves these and should not fail here.
-  assert.ok(fifty.metres > 15 && fifty.metres < 35, report);
-  assert.ok(sixtyFive.metres > 30 && sixtyFive.metres < 70, report);
+  assert.ok(Number.isFinite(run.terminal), `the shipped wheel never settled at terminal\n${report}`);
+  assert.ok(Number.isFinite(run.metres) && Number.isFinite(run.seconds), report);
+  // The controller cannot brake harder than its own authority plus its own
+  // resistance, and it loses the lean swing on top of that. A stop under
+  // this floor is a broken brake, not a retune.
+  assert.ok(run.metres > run.floor, report);
+  // The lean swing is a real cost and is not instant: full brake lean arrives
+  // well after the input does, which is why the stop beats neither floor by
+  // accident.
+  assert.ok(run.fullBrakeSeconds > 0.2 && run.fullBrakeSeconds < 2, report);
+  // Loose band: a launch or brake retune moves this and should not fail here.
+  assert.ok(run.metres > 30 && run.metres < 70, report);
   // And the finding the cost report is for: 40 m still covers the stop at 65,
   // but only just — the reserve is metres, not tens of them.
-  assert.ok(HAZARD.readMetres - sixtyFive.metres > 0, report);
+  assert.ok(HAZARD.readMetres - run.metres > 0, report);
+  assert.ok(HAZARD.readMetres - run.metres < 15, report);
 });
 
 test('a speed that is not a speed is refused rather than written', () => {

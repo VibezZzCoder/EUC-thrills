@@ -25,6 +25,7 @@ import {
 import {
   GAP_STEP_DOWN,
   ON_TIME_STEPS,
+  PLAYABLE_WHEELS,
   apexStepsBeforeLip,
   lapChecks,
   runTrial,
@@ -177,11 +178,6 @@ test('a trial is deterministic: two identical runs are deepEqual', () => {
   assert.deepEqual(
     runTrial(fixture, 'shipped65', script),
     runTrial(fixture, 'shipped65', script),
-  );
-  // And on the other preset, which writes tuning through `topSpeedPreset`.
-  assert.deepEqual(
-    runTrial(fixture, 'diagnostic50', script),
-    runTrial(fixture, 'diagnostic50', script),
   );
 });
 
@@ -484,7 +480,13 @@ test('src/bench/ reaches no further than level/ and simulation/', () => {
  * that invalidated it would otherwise show up as a worse ride and nothing else.
  */
 
-const PLAYABLE: readonly BenchWheel[] = ['shipped65', 'diagnostic50'];
+/**
+ * The wheels a playable window is accepted on — the shipped one, and §38.7
+ * retired the 50 mph reference beside it. The loops below still read the
+ * shared list rather than naming a wheel, so a future addition is measured
+ * everywhere at once.
+ */
+const PLAYABLE: readonly BenchWheel[] = PLAYABLE_WHEELS;
 
 function installedRun(
   id: string,
@@ -509,10 +511,10 @@ function installedRun(
   });
 }
 
-test('the kicker lands every hop clean, both presets, 20 to 50 mph — on the table or on the hill', () => {
+test('the kicker lands every hop clean, 20 to 50 mph — on the table or on the hill', () => {
   // **The Phase 2 finding, kept through the big-jump rebuild.** Phase 1's
   // kicker put the lip at the head of a 12.5% landing face and a hopped kicker
-  // landed heavy at every sampled speed on both presets (bench T9: 1.03 to
+  // landed heavy at every sampled speed (bench T9: 1.03 to
   // 1.69); the level table ends a flight at the height it began, so a hop under
   // 44 mph still costs the hop's own launch speed and the 0.15 m face and
   // nothing else. Past 44 mph the charged flight clears the brow and comes down
@@ -591,8 +593,8 @@ test('the gap catches a short landing and rides away instead of bonking', () => 
 });
 
 test('a 180 off the installed spin shelf lands clean and fakie, both ways', () => {
-  // Phase 1's 0.41 m roll-off put every hopped 180 in the heavy tier on both
-  // presets. The shelf now ends at the socket into the level pad with a 0.15 m
+  // Phase 1's 0.41 m roll-off put every hopped 180 in the heavy tier.
+  // The shelf now ends at the socket into the level pad with a 0.15 m
   // face — the kicker's arithmetic on a smaller feature.
   const shelf = installedFeature('spinShelf');
   for (const wheel of PLAYABLE) {
@@ -637,24 +639,21 @@ test('T13 prints the 180 as the clean landing it is, not as a bonk fifty seconds
   // at (114.7, 84.1) and printed up to 4,241 `blocked steps` and an `obstacle`
   // verdict. T13's own note calls `blocked` "the bonk signature", so the table
   // said the signed 180 bonked. It lands clean at 0.7727 and always did.
-  const rows = tableInstalledMisses().rows.filter((row) => row[3].startsWith('180 tapped'));
-  assert.equal(rows.length, 6, `T13 printed ${rows.length} spin rows rather than six`);
+  const rows = tableInstalledMisses().rows.filter((row) => row[2].startsWith('180 tapped'));
+  assert.equal(rows.length, 3, `T13 printed ${rows.length} spin rows rather than three`);
   for (const row of rows) {
-    const where = `${row[0]} ${row[1]} ${row[2]} mph ${row[3]}`;
-    assert.equal(row[6], 'clean', `${where}: landed ${row[6]}`);
-    assert.equal(row[9], '0', `${where}: ${row[9]} blocked steps beside a ${row[6]} landing`);
-    assert.equal(row[11], '—', `${where}: verdict "${row[11]}"`);
-    assert.match(row[8], /^fakie at /, `${where}: exited "${row[8]}"`);
+    const where = `${row[0]} ${row[1]} mph ${row[2]}`;
+    assert.equal(row[5], 'clean', `${where}: landed ${row[5]}`);
+    assert.equal(row[8], '0', `${where}: ${row[8]} blocked steps beside a ${row[5]} landing`);
+    assert.equal(row[10], '—', `${where}: verdict "${row[10]}"`);
+    assert.match(row[7], /^fakie at /, `${where}: exited "${row[7]}"`);
   }
 
-  // And the landings themselves did not move with the scope: the six scores
+  // And the landings themselves did not move with the scope: the three scores
   // and the two heading signs are the ones the table has always printed.
   assert.deepEqual(
-    rows.map((row) => [row[2], row[7], row[10]]),
+    rows.map((row) => [row[1], row[6], row[9]]),
     [
-      ['12', '0.7727', 'heading 180.3°'],
-      ['12', '0.7727', 'heading -180.3°'],
-      ['25', '0.8889', 'heading 180.1°'],
       ['12', '0.7727', 'heading 180.3°'],
       ['12', '0.7727', 'heading -180.3°'],
       ['25', '0.8889', 'heading 180.1°'],
@@ -662,7 +661,7 @@ test('T13 prints the 180 as the clean landing it is, not as a bonk fifty seconds
   );
 });
 
-test('the installed step-up is refused uncharged and mounted charged, both presets', () => {
+test('the installed step-up is refused uncharged and mounted charged', () => {
   // §36.4's own requirement, on the built hillside rather than on a fixture.
   for (const wheel of PLAYABLE) {
     for (const mph of [8, 12, 16, 20]) {
@@ -726,19 +725,14 @@ test('a bonked skinny is a readable consequence with a ride-away, not a reset', 
 test('no bypass half leaves the ground at any installed feature', () => {
   // Principle 2, measured feature by feature rather than once round the lap.
   //
-  // **At the top of each feature's own sweep, capped at what the wheel can
-  // legally hold.** The kicker's sweep tops out at the sign's 50 mph, and the
-  // `?mph=50` diagnostic wheel cuts out at 96.5% of its own top — 49.4 mph
-  // (`EUC.cutoutSpeedShare`) — so a bypass trial *placed* at 50 on that wheel
-  // and held there down a 30% landing hill is a rider past their own cutout
-  // before the geometry has done anything; it crashes `cutout` on the face and
-  // says nothing about the ground. 48 is the last whole mile an hour under it,
-  // and the same wheel rides the bypass clean at 35, 40, 45 and 48 (measured).
-  // The shipped wheel is held at the full 50.
+  // **At the top of each feature's own sweep**, which for the kicker is the
+  // sign's own 50 mph. The shipped 65 wheel holds that with its cutout to
+  // spare; the retired 50 mph reference wheel needed a 48 mph cap here because
+  // 50 was already past its own 49.4 mph cutout (`EUC.cutoutSpeedShare`), and
+  // §38.7 retired the wheel and the cap with it.
   for (const feature of INSTALLED_FEATURES) {
     for (const wheel of PLAYABLE) {
-      const top = feature.speeds[feature.speeds.length - 1];
-      const mph = wheel === 'diagnostic50' ? Math.min(top, 48) : top;
+      const mph = feature.speeds[feature.speeds.length - 1];
       const result = runTrial(
         { ...installedFixture(feature) },
         wheel,
@@ -833,17 +827,32 @@ test('an installed trial is deterministic', () => {
   assert.deepEqual(first, second);
 });
 
-test('every installed feature publishes a window on both presets', () => {
+test('every installed feature publishes a window on every playable wheel', () => {
   // The report's own shape, asserted so a feature cannot quietly stop being
-  // measured: nine features, two presets, four inputs, every speed in its sweep.
+  // measured: nine features, four inputs, every speed in its sweep, on each
+  // wheel a window is accepted on. The wheel factor is read from `PLAYABLE`
+  // rather than written down, so retiring or adding one moves this with it.
   const table = tableParkWindows();
   const expected = INSTALLED_FEATURES.reduce(
-    (total, feature) => total + feature.speeds.length * 2 * 4,
+    (total, feature) => total + feature.speeds.length * PLAYABLE.length * 4,
     0,
   );
   assert.equal(table.rows.length, expected);
   assert.equal(new Set(table.rows.map((row) => row[0])).size, 9);
   assert.ok(table.rows.every((row) => row.length === table.columns.length));
+  // Every feature owes a row for every one of its speeds and all four inputs.
+  const inputs = ['no hop', 'hop', 'hop + half', 'hop + full'];
+  const printed = new Set(table.rows.map((row) => `${row[0]}|${row[1]}|${row[2]}`));
+  for (const feature of INSTALLED_FEATURES) {
+    for (const mph of feature.speeds) {
+      for (const input of inputs) {
+        assert.ok(
+          printed.has(`${feature.id}|${mph}|${input}`),
+          `T11 never measured ${feature.id} at ${mph} mph, ${input}`,
+        );
+      }
+    }
+  }
 });
 
 test('the big-jump report measures full charge, not just a held crouch request', () => {
@@ -855,11 +864,11 @@ test('the big-jump report measures full charge, not just a held crouch request',
   assert.ok(chargeColumn >= 0);
   for (const row of table.rows) {
     assert.equal(row.length, table.columns.length);
-    if (row[1].includes('fully charged') || (row[0] === '65' && row[1].includes('full crouch'))) {
+    if (row[0].includes('fully charged') || row[0].includes('full crouch')) {
       assert.equal(row[chargeColumn], '1.000');
     }
-    if (row[1].includes('no hop')) assert.equal(row[chargeColumn], '0.000');
-    if (row[1].startsWith("the sign's 50 mph, full crouch")) {
+    if (row[0].includes('no hop')) assert.equal(row[chargeColumn], '0.000');
+    if (row[0].startsWith("the sign's 50 mph, full crouch")) {
       assert.equal(row[table.columns.indexOf('landed on')], 'landing face');
       assert.equal(row[table.columns.indexOf('tier')], 'clean');
     }

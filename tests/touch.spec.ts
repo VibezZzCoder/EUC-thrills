@@ -2179,3 +2179,106 @@ test.describe('M36 §36.4 — Switchback Park on a phone', () => {
     expect(errors).toEqual([]);
   });
 });
+
+// ===========================================================================
+// M38 §38.6 — the Trick Run lane, under the thumbs (independent QA, Phase 5)
+// ===========================================================================
+
+/**
+ * **The lane and the controls, on real glass.**
+ *
+ * `tests/m38-hud.spec.ts` measures the lane against the stylesheet through a
+ * probe: it mounts the real `Hud` at phone sizes and checks the rows fit and
+ * stay out of the protected middle fifth. What a probe cannot answer is the
+ * question a thumb asks — whether the lane the *running mode* draws lands on
+ * top of the on-screen stick or the HOP button, which exist only in this
+ * project, because only here does `(pointer: coarse)` match. That is what this
+ * block adds, and it is deliberately the whole of what it adds.
+ */
+test.describe('M38 §38.6 — the Trick Run lane and the thumbs', () => {
+  interface Rect { x: number; y: number; width: number; height: number }
+
+  function overlaps(a: Rect, b: Rect): boolean {
+    return a.x < b.x + b.width && b.x < a.x + a.width
+      && a.y < b.y + b.height && b.y < a.y + a.height;
+  }
+
+  async function armTrickRun(page: Page): Promise<void> {
+    await bootToTitle(page, 'level=switchback');
+    await page.locator('.euc-menu--title [data-menu="trick-run"]').tap();
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'trickRun');
+    // Land one charged hop, so the award line and the pending row are drawn
+    // rather than measured only in their empty state.
+    await page.evaluate(() => {
+      const game = window.game;
+      game.loop.setRunning(false);
+      game.setActionsFor(0, { throttle: 0, crouch: true });
+      game.advance(60);
+      game.setActionsFor(0, { throttle: 0, crouch: true, hop: true });
+      game.advance(4);
+      game.setActionsFor(0, { throttle: 0, crouch: false, hop: false });
+      game.advance(150);
+      game.loop.setRunning(true);
+    });
+  }
+
+  for (const size of [
+    { name: 'portrait 360x800', width: 360, height: 800 },
+    { name: 'portrait 375x667', width: 375, height: 667 },
+    { name: 'landscape 667x375', width: 667, height: 375 },
+  ] as const) {
+    test(`the lane fits and clears the controls in ${size.name}`, async ({ page }) => {
+      const errors = collectErrors(page);
+      await page.setViewportSize({ width: size.width, height: size.height });
+      await armTrickRun(page);
+
+      await expect(page.locator('.euc-touch')).toBeVisible();
+      const lane = page.locator('.euc-hud__trick');
+      await expect(lane, 'the running mode drew no trick lane').toBeVisible();
+
+      const laneBox = await lane.boundingBox();
+      expect(laneBox, 'the lane has no box').not.toBeNull();
+      const box = laneBox as Rect;
+
+      // **Inside the viewport, and not clipped by it.**
+      expect(box.x, `${size.name}: the lane starts off the left edge`)
+        .toBeGreaterThanOrEqual(0);
+      expect(box.y, `${size.name}: the lane starts above the top edge`)
+        .toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, `${size.name}: the lane runs off the right edge`)
+        .toBeLessThanOrEqual(size.width + 0.5);
+      expect(box.y + box.height, `${size.name}: the lane runs off the bottom edge`)
+        .toBeLessThanOrEqual(size.height + 0.5);
+
+      // **And clear of every control a thumb has to reach.**
+      for (const selector of [
+        '.euc-touch__stick',
+        '.euc-touch__zone--stick',
+        '[data-touch="hop"]',
+      ]) {
+        const control = page.locator(selector);
+        if (!await control.isVisible()) continue;
+        const controlBox = await control.boundingBox();
+        if (controlBox === null) continue;
+        expect(
+          overlaps(box, controlBox as Rect),
+          `${size.name}: the trick lane overlaps ${selector}`,
+        ).toBe(false);
+      }
+
+      // **No row is clipped by its own container**, which is how a score of
+      // 1,000 becomes "1,0" on the one screen nobody measured.
+      const clipped = await page.evaluate(() => {
+        const rows: string[] = [];
+        for (const row of document.querySelectorAll<HTMLElement>('.euc-hud__trick *')) {
+          if (row.hidden || row.clientWidth === 0) continue;
+          if (row.scrollWidth > row.clientWidth + 1) rows.push(row.className);
+        }
+        return rows;
+      });
+      expect(clipped, `${size.name}: a trick row is clipped`).toEqual([]);
+
+      expect(errors).toEqual([]);
+    });
+  }
+});

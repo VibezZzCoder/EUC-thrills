@@ -162,7 +162,7 @@ test.describe('M9 — HUD, menus, options', () => {
       // "drive the load straight from the controller's own tuning"; the second
       // constant was simply left at a default that used to be low enough.
       // Twenty is below anything the shipped wheel does on the flat, which is
-      // the relationship 25.1 had to the 50 mph wheel.
+      // the relationship 25.1 had to the pre-M30 wheel.
       game.tuning.set('EUC.powerLimitSpeed', 20);
       game.setActions({ throttle: 1 });
       game.advance(900);
@@ -522,12 +522,19 @@ test.describe('M9 — HUD, menus, options', () => {
     // that geometry became a grid.
     //
     // The history is the point of this test. M10 inserted Time trial, M12
-    // Phase 4 Fresh route, M14 Knockabout, M18 Police chase, M23 Track Day —
-    // each time this test failed by naming the wrong stop, which is the
-    // failure it is for. Phase 5's 2 Players is the eighth entrance, and eight
+    // Phase 4 Fresh route, M14 Knockabout, M18 Police chase, M23 Track Day,
+    // M38 Trick Run — each time this test failed by naming the wrong stop,
+    // which is the failure it is for. Phase 5's 2 Players is the eighth entrance, and eight
     // stacked buttons do not fit an ordinary laptop (measured — see the
     // 56 rem tier in `ui/game.css`), so the title lays out in two columns on
     // any window shorter than 896 px. This project's is 700.
+    //
+    // **The ninth entrance moved every stop below it** (M38): the grid fills
+    // row by row, so Trick Run landing beside Track Day pushed Knockabout,
+    // Police chase, Fresh route and Settings each one place on. The left
+    // column is now Start, 2-4 Players, Track Day, Knockabout, Fresh route and
+    // the right is Time trial, Trick Run, Police chase, Settings — with
+    // Settings no longer alone on a last row of its own.
     //
     // **So Down walks a column and Right crosses to the other one**, which is
     // M24's `ui/menuRows.ts` arithmetic doing exactly what it was written for:
@@ -540,9 +547,13 @@ test.describe('M9 — HUD, menus, options', () => {
     await pulse(13);
     await expect(menuButton(page, 'title', 'track-day')).toBeFocused();
     await pulse(13);
-    await expect(menuButton(page, 'title', 'chase')).toBeFocused();
+    await expect(menuButton(page, 'title', 'knockabout')).toBeFocused();
+    await pulse(13);
+    await expect(menuButton(page, 'title', 'routes')).toBeFocused();
 
     // Back up to the top of the left column, then across and down the right.
+    await pulse(12);
+    await expect(menuButton(page, 'title', 'knockabout')).toBeFocused();
     await pulse(12);
     await expect(menuButton(page, 'title', 'track-day')).toBeFocused();
     await pulse(12);
@@ -550,12 +561,11 @@ test.describe('M9 — HUD, menus, options', () => {
     await pulse(15);
     await expect(menuButton(page, 'title', 'challenge')).toBeFocused();
     await pulse(13);
-    await expect(menuButton(page, 'title', 'knockabout')).toBeFocused();
+    await expect(menuButton(page, 'title', 'trick-run')).toBeFocused();
     await pulse(13);
-    await expect(menuButton(page, 'title', 'routes')).toBeFocused();
+    await expect(menuButton(page, 'title', 'chase')).toBeFocused();
 
-    // The last row holds Settings alone, so a Down from either column lands on
-    // it — which is the nearest-neighbour half of the same arithmetic.
+    // Settings is the bottom of the right column, one row below Police chase.
     await pulse(13);
     await expect(menuButton(page, 'title', 'settings')).toBeFocused();
     await pulse(0);

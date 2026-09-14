@@ -96,8 +96,9 @@ test('the panel offers exactly the rides the game can start into', () => {
   // The order is the order the panel offers them and is asserted as such: free
   // ride first because it is the default and the quietest, the race second
   // because it is what most rooms sitting down together came for, Knockabout
-  // last because choosing a fight is a thing you do on purpose.
-  assert.deepEqual([...COUCH_RIDES], ['freeRide', 'race', 'knockabout']);
+  // next because choosing a fight is a thing you do on purpose, and M38's
+  // Trick Run last for that same reason — it is a score, chosen deliberately.
+  assert.deepEqual([...COUCH_RIDES], ['freeRide', 'race', 'knockabout', 'trickRun']);
   assert.ok(COUCH_RIDES.includes(DEFAULT_COUCH_RIDE), 'the default must be offerable');
   assert.equal(DEFAULT_COUCH_RIDE, 'freeRide', 'the quietest ride is the one you get by default');
 });
@@ -115,7 +116,11 @@ test('a ride the panel does not offer is refused rather than trusted', () => {
   // left in the markup would otherwise reach `Game` as a mode nobody built.
   for (const ride of COUCH_RIDES) assert.equal(isCouchRide(ride), true);
   assert.equal(isCouchRide('chase'), false);
+  // `trackDay` is the *state* a couch race rides on and never a couch ride
+  // itself. `trickRun` is both, which is the one asymmetry M38 adds: the state
+  // and the couch ride are spelled the same because the mode has one name.
   assert.equal(isCouchRide('trackDay'), false);
+  assert.equal(isCouchRide('trickRun'), true);
   assert.equal(isCouchRide(''), false);
   assert.equal(isCouchRide('FREERIDE'), false);
 });

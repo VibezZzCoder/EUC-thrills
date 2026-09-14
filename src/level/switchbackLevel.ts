@@ -1,6 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import type { ParkSignWord } from '../data/markings.ts';
-import { CHALLENGE, TRACK_DAY } from '../data/tuning.ts';
+import { CHALLENGE, EUC, PHYSICS, TRACK_DAY } from '../data/tuning.ts';
 import type { MaterialId } from '../data/surfaces.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 import { resolveVenueLook, type VenueLook } from '../data/venueLook.ts';
@@ -16,7 +16,7 @@ import {
   type SunBearing,
 } from './parkDressing.ts';
 import { innerFences, type FencedBend, type InnerFence } from './parkFencing.ts';
-import { parkSignage, type ParkSignage, type SignedFeature } from './parkSignage.ts';
+import { MPS_PER_MPH, parkSignage, type ParkSignage, type SignedFeature } from './parkSignage.ts';
 import { turnArrowPadsBySegment, turnArrowsBySegment, type TurnArrow } from './parkTurnArrows.ts';
 import {
   deck,
@@ -31,6 +31,8 @@ import {
 import type { LevelPlan } from './plan.ts';
 import {
   centrelineAt,
+  headingAt,
+  leftOf,
   placeChain,
   type PlacedProp,
   type PlacedSegment,
@@ -40,6 +42,7 @@ import {
   type SurfaceBand,
 } from './segments.ts';
 import { curvatureOf, lengthOf, solveLoop, type LoopElement } from './trackLevel.ts';
+import type { TrickZone } from './trickZones.ts';
 
 /**
  * Switchback Park — the venue, and the fifth producer of a `LevelPlan`.
@@ -150,7 +153,7 @@ import { curvatureOf, lengthOf, solveLoop, type LoopElement } from './trackLevel
  * moved, and each is named where it lives:
  *
  *   1. **The kicker got a table.** A lip at the head of a 12.5% face landed a
- *      hopped rider heavy at every speed on both presets; a level table lands
+ *      hopped rider heavy at every measured speed; a level table lands
  *      every one of them clean. `kicker-lip` and `kicker-table`. (The owner's
  *      first rides then asked for a big jump, and beat 5 was rebuilt around a
  *      landing hill — see the loop's own comment; the table survives at twelve
@@ -577,7 +580,7 @@ export const SWITCHBACK_LOOP: readonly SwitchbackElement[] = [
   // a landing's score is the hop's own launch speed plus whatever the take-off
   // stood above the ground it came down on — the same arithmetic the kicker's
   // table is built on. At Phase 1's 3% the twelve-metre shelf rolled off 0.41 m
-  // and every hopped 180 landed heavy on both presets. At 1.25% it rolls off
+  // and every hopped 180 landed heavy. At 1.25% it rolls off
   // 0.15 m onto the level pad and they land clean. The 0.35 m this gives up is
   // taken back by `shelf-out` below, so the descent is unchanged.
   { id: 'shelf-in', straight: 20, halfWidth: 7, surface: 'dirt', climb: -0.25, linearClimb: true },
@@ -770,11 +773,29 @@ function element(id: string): SwitchbackSegment {
  * the numbers the geometry *has* rather than recomputing what it ought to,
  * which is the difference between a pinned fact and a restated assumption.
  */
-export type SwitchbackFeature =
+export type SwitchbackFeature = {
+  /**
+   * True where the rider has to get ON TOP of this feature rather than ride
+   * off it — the bench's `press: 'apex'`, mirrored here as one bit.
+   *
+   * **Authored, and pinned to the bench rather than trusted.** Nothing in the
+   * *geometry* distinguishes a deck a rider rolls onto and off from one they
+   * have to hop onto: both are a level top over a falling corridor, and which
+   * it is depends on the face the wheel meets against `stepUpLimit()` and on
+   * how the measurement pass chose to ride it. `bench/installedPark.ts` made
+   * that choice per feature and `switchbackLevel.test.ts` asserts this flag
+   * equals its `press === 'apex'` for all nine, so the two cannot drift.
+   *
+   * It is here because a mount's LAUNCH is not on the feature at all — see
+   * `MOUNT_TAKEOFF_SECONDS`.
+   */
+  readonly mount?: true;
+} & (
   | { readonly kind: 'deck'; readonly segment: string; readonly report: DeckReport }
   | { readonly kind: 'steppedDecks'; readonly segment: string; readonly report: SteppedDecksReport }
   | { readonly kind: 'stairs'; readonly segment: string; readonly report: StairsReport }
-  | { readonly kind: 'lip'; readonly segment: string; readonly report: LipReport };
+  | { readonly kind: 'lip'; readonly segment: string; readonly report: LipReport }
+);
 
 /** Wood, for a deck or a plank — the only place the material pair is written. */
 const WOOD = { surface: 'wood' as SurfaceId, appearance: 'wood' as MaterialId };
@@ -876,6 +897,10 @@ export const SWITCHBACK_FEATURES: Readonly<Record<string, SwitchbackFeature>> = 
    */
   skinny: {
     kind: 'deck',
+    // Mounted: the plank stands 0.30 m proud at its start, well over the
+    // wheel's own 0.216 m step-up, so a rider gets onto it by hopping off the
+    // trail in front of it (`bench/installedPark.ts`, `press: 'apex'`).
+    mount: true,
     segment: 'timber',
     report: deck(element('timber'), {
       from: 4,
@@ -898,6 +923,9 @@ export const SWITCHBACK_FEATURES: Readonly<Record<string, SwitchbackFeature>> = 
    */
   stepUp: {
     kind: 'deck',
+    // Mounted, and it is the whole of the feature: half a metre of face, which
+    // an uncharged hop is refused at and a charged one clears by 0.13 m.
+    mount: true,
     segment: 'timber',
     report: deck(element('timber'), {
       from: 20,
@@ -978,7 +1006,7 @@ export const SWITCHBACK_FEATURES: Readonly<Record<string, SwitchbackFeature>> = 
    * table landing's score is `(launch speed + the face's fall) / 5` plus dirt's
    * own 0.195 — and the fully charged hop already spends 0.71 of the 1.0 that
    * separates clean from heavy. The bench swept the face at 0.10, 0.12, 0.15,
-   * 0.18, 0.20 and 0.25 m on both presets at 20–50 mph, uncharged, half and
+   * 0.18, 0.20 and 0.25 m at 20–50 mph, uncharged, half and
    * fully charged: 0.18 m is the last face that is clean everywhere (0.9893 at
    * its worst) and 0.20 m is the first that is not (1.0056, heavy). 0.15 m is
    * that ceiling with 0.027 of margin — enough that a rider who also arrives
@@ -1210,7 +1238,7 @@ const SWITCHBACK_SIGN_PLAN: Readonly<Record<string, SwitchbackSignPlan>> = Objec
     // kicker's table and the shelf pad that costs nothing: every touchdown
     // there is clean by a margin and stays clean. On the ledge it moved a
     // published boundary the other way — the 18 mph fully charged hop went
-    // heavy (1.1141) to clean, on both presets and on the +1.2 m lateral miss,
+    // heavy (1.1141) to clean, and on the +1.2 m lateral miss too,
     // because the far bar's strip landed exactly where that flight comes down.
     // §36.4: new scenery must not move any of these boundaries. The ledge is a
     // 0.33 m roll-off onto trail the rider can see the whole way, so what it
@@ -1837,6 +1865,137 @@ export const SWITCHBACK_SPAWN: { position: Vec3; headingY: number } = {
 const PLACED: readonly PlacedSegment[] = placeChain(SWITCHBACK_GRAPH, SWITCHBACK_SPAWN);
 
 // ---------------------------------------------------------------------------
+// The trick zones — M38, docs/PLANS.md §38.10 q189
+// ---------------------------------------------------------------------------
+
+/**
+ * How far past a feature's last edge a launch still belongs to it, metres.
+ *
+ * **A hop is taken from where the wheel is, and the wheel is behind the edge
+ * it leaves.** A rider who presses exactly at the lip is still grounded on the
+ * deck; a rider who presses a step later is in the air over the ground just
+ * past it, and that flight is the feature's flight by every reading a human
+ * would give it. A metre and a half is about a tenth of a second at the speed
+ * the fastest feature here is ridden at, and it is short enough that none of
+ * the nine reaches the catch or landing ground it aims at — the gap's landing
+ * deck stands eleven metres past its take-off edge, and the kicker's table is
+ * twelve.
+ *
+ * It is deliberately NOT a landing allowance. The zone answers *where the
+ * flight launched* and nothing else; where it comes down is the referee's
+ * business, and the clean landing q189 leaves alone counts anywhere.
+ */
+export const TRICK_ZONE_TAKEOFF_MARGIN = 1.5;
+
+/**
+ * How long before the face a mounting hop leaves the ground, seconds.
+ *
+ * **A mount launches from the approach, not from the feature**, and the first
+ * cut of these zones did not know it: `docs/TRICK_BENCH.md` S1 measured the
+ * skinny and the step-up launching outside their own zones on every published
+ * mount speed, banking their landing and nothing else — 15 points in the
+ * routed lap where the rule intends 145 and 239. The zone has to reach back
+ * over the ground the wheel actually left.
+ *
+ * **The interval is a time, which is why it is stated as one.** The bench
+ * places a mount's press `apexStepsBeforeLip` before the face so the hop's
+ * apex arrives there, and the wheel leaves the ground one compression later —
+ * so the last grounded step is the hop's own *rise* time before the face,
+ * `launch / g`, at full charge, which is the charge the measurement pass rides
+ * a mount at. `jumpBench.ts` computes the same quantity from the same two
+ * constants; this file may not import the bench (that module builds the park),
+ * so it is re-derived from `data/tuning.ts` and pinned against
+ * `apexStepsBeforeLip` in `switchbackLevel.test.ts`.
+ *
+ * 0.3618 s, which is 2.43 m at the skinny's fastest published mount speed and
+ * 3.23 m at the step-up's.
+ */
+export const MOUNT_TAKEOFF_SECONDS =
+  (EUC.hopLaunchSpeed * Math.sqrt(1 + EUC.hopChargeHeightBonus)) / PHYSICS.gravity;
+
+/**
+ * How far in front of a mounted feature its own take-off ground reaches, m.
+ *
+ * Speed × time, and both halves are read rather than typed: the speed is the
+ * feature's own `approachMph` — the last entry of the bench's published sweep,
+ * already pinned against it — and the time is `MOUNT_TAKEOFF_SECONDS`. The
+ * *fastest* published speed rather than the median, for the reason the sign
+ * lead takes the same one: the run-up has to hold for the rider going
+ * quickest, and a shorter one is short exactly when it matters.
+ *
+ * Zero for the seven features a rider leaves, whose launch is the feature.
+ */
+export function mountRunUp(id: string): number {
+  if (SWITCHBACK_FEATURES[id]?.mount !== true) return 0;
+  const plan = SWITCHBACK_SIGN_PLAN[id];
+  if (plan === undefined) throw new Error(`the feature "${id}" has no signage`);
+  return plan.approachMph * MPS_PER_MPH * MOUNT_TAKEOFF_SECONDS;
+}
+
+/**
+ * One zone per feature: the feature's own half of its corridor, from where it
+ * starts to a margin past the edge it launches from.
+ *
+ * **Derived from the corridor, not typed.** The `(s, t)` window is read off the
+ * builder's own blocks — `s` from the first block's leading edge to the last
+ * one's trailing edge, `t` from the centreline out to the corridor edge — and
+ * carried into world XZ through `centrelineAt` and `leftOf`, which is the same
+ * transform `collidersOf` uses to place the blocks themselves. Move a feature
+ * along its corridor and its zone moves with it, with no number to keep in
+ * step.
+ *
+ * **The lateral half is principle 1's, restated.** Every feature on this venue
+ * stands on the rider's LEFT and the whole right half of every corridor is the
+ * bypass (`PARK.featureClear`), so a zone runs `t ∈ [0, halfWidth]` and the
+ * bypass line is outside every one of them by construction. That is what makes
+ * the bypass rider's flat hop score nothing without anybody testing for it.
+ *
+ * **Every host corridor is a straight, and that is checked rather than
+ * assumed.** A rectangle in `(s, t)` maps to a parallelogram on a straight and
+ * to a crescent on an arc, and a crescent is not convex — so a feature that
+ * ever moves onto a bend would throw here rather than emit a polygon whose
+ * containment test quietly answers the wrong question.
+ */
+export const SWITCHBACK_TRICK_ZONES: readonly TrickZone[] = Object.entries(SWITCHBACK_FEATURES)
+  .map(([id, feature]) => {
+    const placed = PLACED.find((segment) => segment.spec.id === feature.segment);
+    if (placed === undefined) throw new Error(`the feature "${id}" stands on no placed corridor`);
+    if ((placed.spec.curvature ?? 0) !== 0) {
+      throw new Error(`the feature "${id}" stands on a curved corridor; its zone would be concave`);
+    }
+
+    let fromS = Infinity;
+    let toS = -Infinity;
+    for (const block of feature.report.blocks) {
+      fromS = Math.min(fromS, block.s - block.halfAlong);
+      toS = Math.max(toS, block.s + block.halfAlong);
+    }
+    if (!Number.isFinite(fromS)) throw new Error(`the feature "${id}" has no blocks`);
+    toS += TRICK_ZONE_TAKEOFF_MARGIN;
+    // A mounted feature's zone reaches back over its own run-up, and takes the
+    // same margin at that end for the same reason it takes one at this end: a
+    // press a little early is still this feature's flight.
+    fromS -= mountRunUp(id) === 0 ? 0 : mountRunUp(id) + TRICK_ZONE_TAKEOFF_MARGIN;
+    if (fromS < 0) {
+      throw new Error(`the zone for "${id}" reaches ${(-fromS).toFixed(2)} m off its corridor`);
+    }
+
+    const halfWidth = element(feature.segment).halfWidth;
+    const at = (s: number, t: number) => {
+      const centre = centrelineAt(placed.entry, placed.spec, s);
+      const left = leftOf(headingAt(placed.entry, placed.spec, s));
+      return { x: centre.x + left.x * t, z: centre.z + left.z * t };
+    };
+
+    return {
+      id,
+      // Wound consistently, and the order is the corridor's: up the centreline,
+      // out to the left edge, back down it.
+      corners: [at(fromS, 0), at(toS, 0), at(toS, halfWidth), at(fromS, halfWidth)],
+    };
+  });
+
+// ---------------------------------------------------------------------------
 // The hillside
 // ---------------------------------------------------------------------------
 
@@ -2165,7 +2324,15 @@ export function createSwitchbackLevel(
   hazardProbeMetres?: number,
   targetProbeMetres?: number,
 ): LevelPlan {
-  return buildLevelPlan(SWITCHBACK_GRAPH, {
+  // **The zones ride on the finished plan rather than through the builder**,
+  // which is the same shape `look` would have taken if it were not shared:
+  // `buildLevelPlan` knows nothing about features, the zones are already
+  // derived from the graph it is handed, and threading a venue-only key
+  // through the one function four other worlds call would put an option in
+  // front of every producer that has no use for it. Nothing it emits is
+  // touched, so the world, its colliders and its render bill are the plan the
+  // builder returned (`switchbackLevel.test.ts`).
+  const plan = buildLevelPlan(SWITCHBACK_GRAPH, {
     id: 'switchback-r4',
     spawn: SWITCHBACK_SPAWN,
     surround: { ...SWITCHBACK_SURROUND },
@@ -2194,4 +2361,5 @@ export function createSwitchbackLevel(
     ...(hazardProbeMetres === undefined ? {} : { hazardProbeMetres }),
     ...(targetProbeMetres === undefined ? {} : { targetProbeMetres }),
   });
+  return { ...plan, trickZones: SWITCHBACK_TRICK_ZONES };
 }

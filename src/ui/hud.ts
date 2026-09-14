@@ -38,7 +38,11 @@ import type { HudView } from './hudModel.ts';
  *     `hudModel.matchAnnounce` changes only then;
  *   - the **per-rider tally list** (M37) is **not a live region at all**. It
  *     changes on every knockdown in a room of up to four, and a region that
- *     spoke it would read four rows aloud four times over.
+ *     spoke it would read four rows aloud four times over;
+ *   - the **Trick Run rows** (M38) are not a live region either, on exactly
+ *     that argument: a score, a clock and an award line all change while a
+ *     rider is in the air, and §38.6 asks in as many words that new score text
+ *     must not create a region reading four changing HUDs aloud.
  */
 
 const TEMPLATE = `
@@ -66,6 +70,14 @@ const TEMPLATE = `
     <span class="euc-hud__score-aside-label" data-hud="score-aside-label"></span>
     <span class="euc-hud__score-aside-value" data-hud="score-aside-value"></span>
   </span>
+  <div class="euc-hud__trick" data-hud="trick" hidden>
+    <div class="euc-hud__trick-best" data-hud="trick-best"></div>
+    <div class="euc-hud__trick-pending" data-hud="trick-pending" hidden></div>
+    <div class="euc-hud__trick-award" data-hud="trick-award" hidden>
+      <span class="euc-hud__trick-award-label" data-hud="trick-award-label"></span>
+      <span class="euc-hud__trick-award-points" data-hud="trick-award-points"></span>
+    </div>
+  </div>
   <span class="euc-hud__tally-head" data-hud="tally-head" aria-hidden="true" hidden>targets</span>
   <ol class="euc-hud__tally" data-hud="tally" hidden></ol>
   <span class="euc-hud__tally-field" data-hud="tally-field" hidden></span>
@@ -166,6 +178,12 @@ export class Hud {
   private lastSplitLabel = '';
   private lastSplitDelta = '';
   private lastSplitAhead = '';
+  /** The Trick Run's rows — M38 Phase 2. Four strings and a box. */
+  private lastTrickVisible = false;
+  private lastTrickBest = '';
+  private lastTrickPending = '';
+  private lastTrickAwardLabel = '';
+  private lastTrickAwardPoints = '';
   /** The tally list, diffed on one composed key — M37 §37.5. */
   private lastTally = '';
   private lastTallyField = '';
@@ -315,6 +333,7 @@ export class Hud {
       this.lastKnockabout = lane;
     }
     this.writeTally(view, lane);
+    this.writeTrickRun(view.trickRun);
     // The second row under it — the owner's 2026-08-28 ride, and a couch match
     // is the only ride that has one. Two writes rather than one composed
     // string, because the label is set-and-forget for a whole match while the
@@ -503,6 +522,62 @@ export class Hud {
     if (view.matchAnnounce !== this.lastAnnounce) {
       this.nodes['match-status'].textContent = view.matchAnnounce;
       this.lastAnnounce = view.matchAnnounce;
+    }
+  }
+
+  /**
+   * The Trick Run's rows in the mode lane — M38 Phase 2, `docs/PLANS.md` §38.6.
+   *
+   * **Five writes behind one visibility check**, the stray banner's own shape
+   * one lane along: every ride but this one pays a single boolean compare, and
+   * the block is `hidden` rather than emptied so its rows cost the lane no grid
+   * line in a Knockabout or a chase. The stylesheet carries the explicit
+   * `[hidden] { display: none }` for each of them, because this file's own
+   * classes set a `display` and the user-agent rule loses to any that does
+   * (`DESIGN.md` §9, and §9n's "hidden is a request until some author rule
+   * agrees to it").
+   *
+   * **Nothing here is a live region, and that is the decision rather than an
+   * omission.** §38.6 asks that new score text must not create a region that
+   * reads four changing HUDs aloud, and this lane changes on every landing in
+   * a room of up to four. It inherits the mode lane's silence — the Knockabout
+   * figure, the chase clock and M37's per-rider tally are all mute for the same
+   * reason — so the only voices in a Trick Run frame are the ones a couch
+   * already had: the countdown, on one pane, and the match status, which a
+   * trick run never writes.
+   */
+  private writeTrickRun(trick: HudView['trickRun']): void {
+    if (trick.visible !== this.lastTrickVisible) {
+      this.nodes.trick.hidden = !trick.visible;
+      this.lastTrickVisible = trick.visible;
+    }
+    if (!trick.visible) return;
+
+    if (trick.best !== this.lastTrickBest) {
+      this.nodes['trick-best'].textContent = trick.best;
+      this.lastTrickBest = trick.best;
+    }
+
+    if (trick.pending !== this.lastTrickPending) {
+      // The row goes with its own text. A pending line with nothing in it is a
+      // reserved row saying a flight is in the air when none is.
+      this.nodes['trick-pending'].textContent = trick.pending;
+      this.nodes['trick-pending'].hidden = trick.pending === '';
+      this.lastTrickPending = trick.pending;
+    }
+
+    if (trick.awardLabel !== this.lastTrickAwardLabel) {
+      this.nodes['trick-award-label'].textContent = trick.awardLabel;
+      // Hidden by the label, so the points beside it go with it — the lap
+      // lane's own idiom, and for its reason: a bare `+448` with no words in
+      // front of it reads as a bug rather than as an award.
+      this.nodes['trick-award'].hidden = trick.awardLabel === '';
+      this.lastTrickAwardLabel = trick.awardLabel;
+    }
+
+    if (trick.awardPoints !== this.lastTrickAwardPoints) {
+      this.nodes['trick-award-points'].textContent = trick.awardPoints;
+      this.lastTrickAwardPoints = trick.awardPoints;
     }
   }
 

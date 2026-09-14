@@ -14,9 +14,15 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "test": "node --test",
-    "test:browser": "playwright test",
-    "test:browser:one": "playwright test --project=chromium --workers=1",
+    "test": "node tools/run-tests.mjs headless",
+    "test:full": "node tools/run-tests.mjs headless --full",
+    "test:groups": "node tools/run-tests.mjs groups",
+    "test:browser": "node tools/run-tests.mjs browser",
+    "test:browser:full": "node tools/run-tests.mjs browser --full",
+    "test:browser:smoke": "node tools/run-tests.mjs browser --smoke",
+    "test:browser:one": "node tools/run-tests.mjs browser --serial",
+    "test:browser:serial": "node tools/run-tests.mjs browser --serial",
+    "test:performance": "node tools/run-tests.mjs performance",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },

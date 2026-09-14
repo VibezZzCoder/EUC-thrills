@@ -149,6 +149,64 @@ export interface TrackDayHudInput {
 }
 
 /**
+ * How this seat's Trick Run is going — M38 Phase 2, `docs/PLANS.md` §38.6.
+ *
+ * **Absent in every other ride**, on `knockabout`'s and `match`'s own terms:
+ * absent draws no lane, and a run in its first second draws a clock and a `0`
+ * because those are the numbers a rider who has just started wants to see.
+ *
+ * **Keyed on the referee's phase rather than on a clock this file keeps**, so
+ * a paused attempt keeps its numbers on screen: nothing here ages, and the one
+ * value that does — `cueSecondsLeft` — is counted down by the referee in the
+ * same fixed steps the run is measured in, which is what makes the award cue
+ * freeze with the pause instead of expiring behind the menu (§38.6's
+ * `TRICK_RUN.cueSeconds`, frozen with the run).
+ *
+ * **`score` is banked and `pendingPoints` is not, and the two never merge.**
+ * A flight in the air has earned nothing yet — a wobble on touchdown halves it
+ * and a crash forfeits it — so a lane that added them would be telling the
+ * player they have a score they might not keep. They are separate fields here
+ * and separate rows on the screen, and the pending one says the word.
+ */
+export interface TrickRunHudInput {
+  readonly phase: 'running' | 'ended';
+  readonly remainingSeconds: number;
+  /** Banked only. Never the sum of banked and pending. */
+  readonly score: number;
+  /**
+   * The comparable personal best, or null when there is none to compare with.
+   *
+   * Solo only: a couch seat and a probing/diagnostic run hand over null,
+   * because a best is a fact about one rider's own venue record and four panes
+   * each naming a different one is four scoreboards. Null is also a solo
+   * rider's *first* attempt, which the lane says as "No best yet" — the two
+   * cases are one field by agreement, and `game.css` is what keeps the row off
+   * a split pane (see `.euc-hud__trick-best`).
+   */
+  readonly best: number | null;
+  /** Unbanked, explicitly pending. Never added to `score`. */
+  readonly pendingPoints: number;
+  /** The flight that just landed, or null before anything has. */
+  readonly lastAward: {
+    readonly kinds: readonly ('charged-hop' | 'spin-landed' | 'one-foot-air')[];
+    readonly landing: 'clean' | 'heavy' | 'wobble';
+    readonly points: number;
+    /**
+     * The flight landed tricks and launched from no park feature — M38 q189.
+     *
+     * A flag rather than the feature's id, because the corner never names a
+     * feature: the rule is *where you launched*, and the only reading the line
+     * has to change is the one where the tricks were not paid for. False for a
+     * flight that launched from a feature and false for a plain landing, which
+     * had no trick points to lose.
+     */
+    readonly offFeature: boolean;
+  } | null;
+  /** Seconds of dwell left on that award line. `> 0` while it should show. */
+  readonly cueSecondsLeft: number;
+}
+
+/**
  * The run lane, ready to write. Every field is a string or a flag.
  *
  * **One view, two producers** — M23. The time trial and Track Day are
@@ -361,6 +419,22 @@ export interface HudInput {
    * so `update` prefers this one and never merges them.
    */
   readonly trackDay?: TrackDayHudInput;
+  /**
+   * Absent in every ride but a Trick Run — M38 Phase 2, §38.6.
+   *
+   * **It takes the top-right corner outright**, which is the one precedence
+   * rule this mode adds and the reason it is stated rather than left to
+   * absence. A trick run is ridden at a lap-capable park (§36), so the ride it
+   * is most likely to be handed alongside is a `trackDay`; two producers in the
+   * `challenge` grid cell is what CSS resolves by stacking them silently on top
+   * of each other, which is exactly the trap `ChallengeHudView`'s own comment
+   * records. So `runLane` returns nothing at all while this is present, and
+   * `modeLaneLabel`, `modeLane` and `modeSubLane` each answer this first —
+   * ahead of the race, the chase, a match and Knockabout. The referees never
+   * coexist, so no seat should ever exercise the order; a lane that is only
+   * correct while nobody makes a mistake is not a lane, it is a convention.
+   */
+  readonly trickRun?: TrickRunHudInput;
 }
 
 /**
@@ -521,6 +595,8 @@ export interface HudView {
    * and must go on announcing nothing.
    */
   readonly matchAnnounce: string;
+  /** The Trick Run's extra rows in the mode lane — M38 Phase 2, §38.6. */
+  readonly trickRun: TrickRunHudView;
   /** The out-of-bounds banner — M20, §4.4. */
   readonly stray: StrayHudView;
   /** The max-speed warning glyph — M20. */
@@ -564,10 +640,10 @@ export interface StrayHudView {
  * **Non-obstructive by construction**, which is what the owner asked for: it is
  * a glyph and two words in the same top-centre column as the banner above,
  * never in the middle of the frame, and it does not exist at all below
- * `EUC.overspeedBeepShare` (0.785) of the derived top speed — 52 mph on the
- * shipped 65 mph wheel, and 40 mph on the 50 mph wheel this was written for.
- * It is a share, not an absolute, so it keeps its place in the range whatever
- * wheel ships — a player who never goes near the top of it never sees it once.
+ * `EUC.overspeedBeepShare` (0.785) of the derived top speed — **52 mph on the
+ * shipped 65 mph wheel**. It is a share, not an absolute, so it keeps its place
+ * in the range whatever wheel ships, including under a `?mph=` diagnostic: a
+ * player who never goes near the top of it never sees it once.
  *
  * `pulseSeconds` is the beep period from `shared/overspeed.ts`, handed to CSS
  * as an animation duration. That is the one place this file lets a value become
@@ -582,6 +658,48 @@ export interface OverspeedHudView {
   readonly pulseSeconds: number;
 }
 
+/**
+ * The Trick Run's own rows inside the mode lane — M38 Phase 2, §38.6.
+ *
+ * **Three of the mode's five facts are the lane's existing fold**: the label
+ * over the corner (`modeLabel`), the banked score in the figure the Knockabout
+ * tally and the chase clock already share (`knockabout`), and the clock in the
+ * second row a couch match's discs opened (`modeSubLabel`/`modeSub`). Only what
+ * has no home comes through here — the best, the pending total and the award
+ * line — which is what keeps this mode from being a fourth shape the corner
+ * has to switch between.
+ *
+ * Every field is a string, on this file's standing rule: the screen does no
+ * arithmetic and no formatting, so the score in the corner and the score on
+ * the results card cannot disagree about a thousands separator.
+ */
+export interface TrickRunHudView {
+  readonly visible: boolean;
+  /**
+   * `Best 1,240`, or `No best yet`. Never empty while the lane is drawn.
+   *
+   * **One string rather than a label and a value**, unlike the lap lane's
+   * `Best` row: the two states are different sentences rather than the same
+   * sentence with a different number in it, and a label whose value is
+   * sometimes a whole phrase is a row that has to be laid out twice.
+   */
+  readonly best: string;
+  /**
+   * `Pending +25`, or empty when nothing is in the air.
+   *
+   * **The word is in the string and not only in a stylesheet**, because the
+   * whole job of this row is to say that the number beside it is not yet the
+   * player's. A cue that carried the meaning in its dimness would lose it on
+   * the results screenshot, in forced colours, and to anybody riding a bright
+   * park in the afternoon.
+   */
+  readonly pending: string;
+  /** `180 + One-foot`, or the landing's own words. Empty while no cue is up. */
+  readonly awardLabel: string;
+  /** `+448`. Empty exactly when `awardLabel` is. */
+  readonly awardPoints: string;
+}
+
 const NO_STRAY: StrayHudView = Object.freeze({
   visible: false,
   label: '',
@@ -589,6 +707,15 @@ const NO_STRAY: StrayHudView = Object.freeze({
   seconds: '',
   fraction: 1,
   urgent: false,
+});
+
+/** The lane's extra rows, switched off. Frozen: every other ride allocates none. */
+const NO_TRICK_RUN: TrickRunHudView = Object.freeze({
+  visible: false,
+  best: '',
+  pending: '',
+  awardLabel: '',
+  awardPoints: '',
 });
 
 const NO_OVERSPEED: OverspeedHudView = Object.freeze({
@@ -861,9 +988,160 @@ function matchAnnounce(match: HudInput['match']): string {
  */
 function chaseLane(run: { remaining: number } | undefined): string {
   if (run === undefined) return '';
-  const whole = Math.max(0, Math.ceil(run.remaining));
+  return formatDeadline(run.remaining);
+}
+
+/**
+ * A deadline as `M:SS`, ceiled — the chase's spelling, shared with M38's run.
+ *
+ * **Ceiled rather than rounded**, which is what every countdown in the world
+ * does and the opposite of `formatRunTime` a few rules up: a rounded deadline
+ * shows `0:00` for half a second while the clock is still alive, and a player
+ * looking at a zero has already stopped trying. Ceiling makes the number
+ * reaching zero and the run ending the same instant.
+ *
+ * **Whole seconds rather than hundredths**, for the chase's own reason: a
+ * measurement wants hundredths because two personal bests differ by them, and
+ * a deadline that churned two more digits at 120 Hz in the corner of the eye
+ * would be the standing annoyance rule arriving through a clock. Anything
+ * non-finite or negative reads as `0:00`, because a `NaN:aN` deadline in the
+ * corner of the frame is the kind of thing that ends a playtest.
+ */
+function formatDeadline(seconds: number): string {
+  const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  const whole = Math.ceil(safe);
   const minutes = Math.floor(whole / 60);
   return `${minutes}:${String(whole - minutes * 60).padStart(2, '0')}`;
+}
+
+/**
+ * A score, grouped in threes — M38 Phase 2.
+ *
+ * **Grouped by hand rather than by `toLocaleString`**, which would spell the
+ * same run's score four ways on four machines and put a space, a dot or an
+ * Eastern Arabic digit where the results card (whose own numbers come from
+ * this layer) puts a comma. The screen's words are the screen's (`AGENTS.md`),
+ * and a number the player is asked to compare against their own best has to be
+ * spelled the same way every time it is drawn.
+ *
+ * Negative and non-finite read as `0`: no rule in `TRICK_RUN` can produce
+ * either, which is precisely why the lane must not print one if something
+ * upstream ever does.
+ */
+function formatPoints(points: number): string {
+  const safe = Number.isFinite(points) && points > 0 ? Math.round(points) : 0;
+  const digits = String(safe);
+  let grouped = '';
+  for (let index = 0; index < digits.length; index += 1) {
+    const fromEnd = digits.length - index;
+    grouped += digits[index];
+    if (fromEnd > 1 && fromEnd % 3 === 1) grouped += ',';
+  }
+  return grouped;
+}
+
+/**
+ * What each counted trick is called in one line of a corner — §38.6.
+ *
+ * **Short, because they are combined.** §38.6 asks for "180 + One-foot" rather
+ * than a sentence, so each word is chosen to survive being joined to another
+ * one: the spin is named by the angle a rider already says out loud, and the
+ * one-foot air drops the noun the whole lane is about. The long forms belong
+ * to the results card, which is read standing still and has room to explain
+ * the bonus these labels deliberately do not mention.
+ */
+const TRICK_KIND_LABELS: Readonly<Record<'charged-hop' | 'spin-landed' | 'one-foot-air', string>> =
+  Object.freeze({
+    'charged-hop': 'Charged hop',
+    'spin-landed': '180',
+    'one-foot-air': 'One-foot',
+  });
+
+/**
+ * The order the labels are joined in, and it is fixed rather than the caller's.
+ *
+ * A flight that scored a hop, a spin and a one-foot air reads the same way
+ * every time it happens. Ordered by when the trick occurs in the flight — the
+ * hop launches it, the spin is carried through it, the foot comes off in it —
+ * so the line reads as the flight the player just rode rather than as whatever
+ * order an observer happened to append its facts in.
+ */
+const TRICK_KIND_ORDER = ['charged-hop', 'spin-landed', 'one-foot-air'] as const;
+
+/**
+ * What a landing alone is called, when the flight had no trick in it.
+ *
+ * **A landing is the mode's floor, not a failure**, so all three are named the
+ * same way and none of them is an instruction. §38.6 puts the *why* — the
+ * multiplier, the forfeit, the bonus — on the results card; the corner says
+ * what happened and what it was worth, which is the same rule that keeps the
+ * max-speed pill saying `MAX SPEED` rather than "slow down" (`DESIGN.md` §9e).
+ */
+const LANDING_LABELS: Readonly<Record<'clean' | 'heavy' | 'wobble', string>> = Object.freeze({
+  clean: 'Clean landing',
+  heavy: 'Heavy landing',
+  wobble: 'Wobble landing',
+});
+
+/**
+ * The award line's words — M38 Phase 2, §38.6.
+ *
+ * **The tricks win the line, and the landing speaks only when there are none.**
+ * A flight that scored a 180 and a one-foot air already has two things to say
+ * in a corner read at speed, and the landing's quality is visible in the points
+ * beside them and explained on the card. A flight that scored nothing but a
+ * touchdown has one thing to say, and saying it is how a player learns that
+ * landing clean is itself worth something.
+ *
+ * Deduplicated as well as ordered: one flight cannot score the same kind twice
+ * (`TRICK_RUN.oneFootAirPoints` is "once per flight"), so a repeat is an
+ * upstream fault and printing `One-foot + One-foot` would dress it as a score.
+ *
+ * **`off feature` is a qualifier on the tricks, not a fourth trick** — M38
+ * q189, the owner's rule that trick points bank only on flights launched from
+ * one of the park's nine features. The line still names what was ridden,
+ * because the player *did* ride it and a corner that silently dropped the
+ * words would read as a missed trick rather than as a rule; what follows it
+ * says why the number beside it is only the landing's. Separated by a middle
+ * dot rather than another ` + `, which is the join that means "and this too
+ * scored". The feature is never named: the rule is *from a feature*, and a
+ * player chasing eight ids in a corner is the progression §38.2 forbids.
+ */
+function trickAwardLabel(award: NonNullable<TrickRunHudInput['lastAward']>): string {
+  const named = TRICK_KIND_ORDER.filter((kind) => award.kinds.includes(kind))
+    .map((kind) => TRICK_KIND_LABELS[kind]);
+  if (named.length === 0) return LANDING_LABELS[award.landing] ?? '';
+  const tricks = named.join(' + ');
+  return award.offFeature ? `${tricks} · off feature` : tricks;
+}
+
+/**
+ * The lane's Trick Run rows at one reading — M38 Phase 2, §38.6.
+ *
+ * **No dwell of its own, and that is the difference between this cue and every
+ * other one in this file.** The split, the warning and the stray banner all
+ * hold themselves up against `nowSeconds`, because the events behind them
+ * arrive on a single simulation step and vanish. This one is handed
+ * `cueSecondsLeft` by the referee that owns the run's fixed-step clock, so the
+ * cue freezes when the game pauses instead of ageing behind the pause menu —
+ * which is §38.6's "keyed on the referee phase, so pause keeps the numbers
+ * visible", and the reason `HudModel` gains no fourth timestamp.
+ */
+function trickRunView(run: TrickRunHudInput | undefined): TrickRunHudView {
+  if (run === undefined) return NO_TRICK_RUN;
+  // **Nothing is pending once the run is over**, whatever the referee's last
+  // reading said: a flight still in the air at the bell has nowhere to land.
+  const pending = run.phase === 'running' && run.pendingPoints > 0
+    ? `Pending +${formatPoints(run.pendingPoints)}`
+    : '';
+  const award = run.lastAward !== null && run.cueSecondsLeft > 0 ? run.lastAward : null;
+  return {
+    visible: true,
+    best: run.best === null ? 'No best yet' : `Best ${formatPoints(run.best)}`,
+    pending,
+    awardLabel: award === null ? '' : trickAwardLabel(award),
+    awardPoints: award === null ? '' : `+${formatPoints(award.points)}`,
+  };
 }
 
 function clamp01(value: number): number {
@@ -900,7 +1178,22 @@ function overspeedView(overspeed: number): OverspeedHudView {
 }
 
 /** The label above the one corner shared by Knockabout and the police chase. */
-function modeLaneLabel(input: Pick<HudInput, 'knockabout' | 'chase' | 'match' | 'race'>): string {
+function modeLaneLabel(
+  input: Pick<HudInput, 'knockabout' | 'chase' | 'match' | 'race' | 'trickRun'>,
+): string {
+  // **The trick run before all of them** — M38 Phase 2, §38.6, and the reason
+  // is on `HudInput.trickRun`: the referees never coexist, so the order is
+  // never exercised, and a corner that is only correct while nobody makes a
+  // mistake is a convention rather than a lane.
+  //
+  // **The label changes at the bell, because the number under it does.** While
+  // the clock runs it names the mode a player may have pressed out of
+  // curiosity; once the run has ended the same figure has stopped being a live
+  // tally and become the thing the results card is about, and saying so is
+  // what stops a frozen number reading as a HUD that has hung.
+  if (input.trickRun !== undefined) {
+    return input.trickRun.phase === 'ended' ? 'Final score' : 'Trick run';
+  }
   // **The race first, because it is the only one of these that can be over
   // while the rider is still riding** (q97): a finished rider keeps their
   // position on screen under a banner, and a lane that went on counting laps
@@ -935,6 +1228,11 @@ function modeLaneLabel(input: Pick<HudInput, 'knockabout' | 'chase' | 'match' | 
  * is assembled from.
  */
 function modeLane(input: HudInput): string {
+  // **The banked score, and only the banked score** — §38.6. The headline
+  // figure of a scoring mode is the number the player gets to keep; adding the
+  // flight still in the air to it would be a total that can go *down* when a
+  // wobble halves it, which is a scoreboard nobody can trust twice.
+  if (input.trickRun !== undefined) return formatPoints(input.trickRun.score);
   if (input.race !== undefined) return positionLabel(input.race.position);
   if (input.match !== undefined) {
     // **The headline figure steps aside for the list** — M37 §37.5. A wide
@@ -986,6 +1284,21 @@ const NO_SUB_LANE = Object.freeze({ label: '', value: '' });
  * left. Both go in one row: `1 – 10 of 17`.
  */
 function modeSubLane(input: HudInput): { readonly label: string; readonly value: string } {
+  // **The clock rides in the second row, under the score** — M38 Phase 2.
+  // §38.6 wants remaining time, banked score and the best in one lane, and the
+  // order is the mode's own argument: the score is the thing on the line, so it
+  // keeps the corner's largest figure (§9j's rule, one mode along), and the
+  // clock is the deadline the score is being chased against. `Time` names it
+  // because a bare `1:23` under a score reads as a lap.
+  //
+  // **The row goes with the run rather than sitting at `0:00`.** Once the bell
+  // has gone there is no time left to report, and a deadline frozen at zero
+  // over a final score is a second number claiming to still be live.
+  if (input.trickRun !== undefined) {
+    return input.trickRun.phase === 'ended'
+      ? NO_SUB_LANE
+      : { label: 'Time', value: formatDeadline(input.trickRun.remainingSeconds) };
+  }
   if (input.race !== undefined) {
     // **The live gap, and only once there is one to be behind.** Before the
     // leader finishes there is no number here that means anything — a gap
@@ -1259,6 +1572,13 @@ export class HudModel {
         matchRows: matchRowViews(input.match),
         matchField: matchFieldLine(input),
         matchAnnounce: matchAnnounce(input.match),
+        // **And the trick run's rows survive a crash too**, on the tally's own
+        // argument one mode along: falling off is exactly the moment a player
+        // looks at what they had banked, and a lane that blinked out then would
+        // hide the answer to the question the crash just asked. The referee is
+        // what decides a crashed flight forfeits its pending points; this file
+        // draws what it is handed and invents no forfeit of its own.
+        trickRun: trickRunView(input.trickRun),
         // Both M20 cues go with the rest of them, and for the paragraph above:
         // a rider on the floor is neither about to leave the route nor about to
         // cut out, and the controller has already zeroed both anyway.
@@ -1327,6 +1647,7 @@ export class HudModel {
       matchRows: matchRowViews(input.match),
       matchField: matchFieldLine(input),
       matchAnnounce: matchAnnounce(input.match),
+      trickRun: trickRunView(input.trickRun),
       stray: this.strayView(nowSeconds, input.chase),
       overspeed: overspeedView(input.overspeed),
     };
@@ -1541,6 +1862,15 @@ export class HudModel {
    * last lap's delta sitting on a clock that has nothing to do with it.
    */
   private runLane(nowSeconds: number, input: HudInput): ChallengeHudView {
+    // **A trick run empties this lane rather than sharing it** — M38 Phase 2.
+    // The mode is ridden at a lap-capable park, so a `trackDay` arriving beside
+    // it is the plausible mistake, and both lanes draw into the same grid cell:
+    // CSS resolves that by stacking them silently on top of each other. The
+    // `challengeView(undefined)` call rather than a bare `NO_CHALLENGE` is the
+    // same latch-clearing trick the `else` below is written for — a session
+    // that ended mid-flash must not leave its delta on a corner the trick run
+    // has taken over.
+    if (input.trickRun !== undefined) return this.challengeView(nowSeconds, undefined);
     if (input.trackDay !== undefined && input.trackDay.phase !== 'idle') {
       return this.trackDayView(nowSeconds, input.trackDay);
     }

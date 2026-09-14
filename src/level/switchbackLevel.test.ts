@@ -5,7 +5,7 @@ import { PARK_SIGN_WORDS, SIGNS } from '../data/markings.ts';
 import { PROP_BUDGET, PROP_FOOTPRINTS, PROP_SIZES } from '../data/props.ts';
 import { PART_COSTS } from '../data/renderCost.ts';
 import { MATERIALS } from '../data/surfaces.ts';
-import { CAMERA, CHALLENGE, LIGHTING, TERRAIN, TRACK_DAY, WHEEL } from '../data/tuning.ts';
+import { CAMERA, CHALLENGE, EUC, LIGHTING, PHYSICS, TERRAIN, TRACK_DAY, WHEEL } from '../data/tuning.ts';
 import { DAYLIGHT_LOOK, resolveVenueLook } from '../data/venueLook.ts';
 import { NEUTRAL_ACTIONS, type ActionSnapshot } from '../input/actions.ts';
 import { ChallengeRun } from '../simulation/challenge.ts';
@@ -16,8 +16,13 @@ import { RouteSpine } from '../simulation/routeSpine.ts';
 import { raceGridSlot } from '../simulation/spawnSlots.ts';
 import { TrackDayRun } from '../simulation/trackDay.ts';
 import { createGroundSample } from '../simulation/world.ts';
-import { wheelTuning } from '../bench/jumpBench.ts';
-import { installedFeature } from '../bench/installedPark.ts';
+import { apexStepsBeforeLip, wheelTuning } from '../bench/jumpBench.ts';
+import {
+  INSTALLED_FEATURES,
+  entryDistance,
+  installedFeature,
+  poseAt,
+} from '../bench/installedPark.ts';
 import { LapEnvelope } from '../simulation/trackDay.ts';
 import { PROP_CORRIDOR_CLEARANCE } from './buildPlan.ts';
 import {
@@ -59,6 +64,7 @@ import {
   innerFenceOffset,
   innerFences,
 } from './parkFencing.ts';
+import { generateLevel } from './generateRoute.ts';
 import { createProvingGround } from './provingGround.ts';
 import { createSliceLevel } from './sliceLevel.ts';
 import { createTrackLevel } from './trackLevel.ts';
@@ -101,7 +107,12 @@ import {
   createSwitchbackLevel,
   separationFloor,
   switchbackGroundAt,
+  MOUNT_TAKEOFF_SECONDS,
+  SWITCHBACK_TRICK_ZONES,
+  TRICK_ZONE_TAKEOFF_MARGIN,
+  mountRunUp,
 } from './switchbackLevel.ts';
+import { trickZoneAt, validTrickZones, type TrickZone } from './trickZones.ts';
 
 /**
  * Switchback Park, checked headlessly — M36 Phase 1.
@@ -908,53 +919,54 @@ test('the charged step-up face lies between the flat uncharged and charged hop a
   assert.ok(step.report.exitDrop <= 0.7);
 });
 
-test('the installed skinny and step-up can be mounted and ridden off on both wheels', () => {
+test('the installed skinny and step-up can be mounted and ridden off', () => {
   // The builder's face/apex arithmetic does not prove a hop meets the face
   // in time on the finished hillside. Drive the actual sampler and controller.
   const segment = bySegment.get('timber')!;
   const heading = segment.entry.headingY;
   const left = leftOf(heading);
-  for (const wheel of ['shipped65', 'diagnostic50'] as const) {
-    for (const id of ['skinny', 'stepUp'] as const) {
-      const block = SWITCHBACK_FEATURES[id].report.blocks[0];
-      const from = block.s - block.halfAlong;
-      const end = block.s + block.halfAlong;
-      const start = centrelineAt(segment.entry, segment.spec, Math.max(0, from - 6));
-      for (const mph of [8, 12.5, 20]) {
-        for (const charged of id === 'skinny' ? [false] : [false, true]) {
-          const rider = new EucController(sampler, { tuning: wheelTuning(wheel) });
-          rider.reset({
-            position: { x: start.x + left.x * block.t, y: start.y, z: start.z + left.z * block.t },
-            headingY: heading,
-          }, mph * 0.44704);
-          let pressed = false;
-          let mounted = false;
-          let finished = false;
-          for (let tick = 0; tick < 1200; tick += 1) {
-            const before = rider.snapshot();
-            const s = (before.position.x - segment.entry.position.x) * Math.sin(heading)
-              + (before.position.z - segment.entry.position.z) * Math.cos(heading);
-            if (s > end + 1) { finished = true; break; }
-            const hop = !pressed && s >= from - Math.max(0, before.speed) * 0.4;
-            if (hop) pressed = true;
-            rider.step(STEP, {
-              ...NEUTRAL_ACTIONS,
-              throttle: before.speed < mph * 0.44704 ? 0.3 : 0,
-              crouch: charged,
-              hop,
-            });
-            const after = rider.snapshot();
-            if (s > from + 0.1 && s < end - 0.1 && after.grounded && after.surface === 'wood') {
-              mounted = true;
-            }
-            if (after.crashed) break;
+  // §38.7 retires the 50 mph reference wheel: the shipped 65 is the wheel
+  // the game ships and the only one a mounted window is accepted on.
+  const wheel = 'shipped65' as const;
+  for (const id of ['skinny', 'stepUp'] as const) {
+    const block = SWITCHBACK_FEATURES[id].report.blocks[0];
+    const from = block.s - block.halfAlong;
+    const end = block.s + block.halfAlong;
+    const start = centrelineAt(segment.entry, segment.spec, Math.max(0, from - 6));
+    for (const mph of [8, 12.5, 20]) {
+      for (const charged of id === 'skinny' ? [false] : [false, true]) {
+        const rider = new EucController(sampler, { tuning: wheelTuning(wheel) });
+        rider.reset({
+          position: { x: start.x + left.x * block.t, y: start.y, z: start.z + left.z * block.t },
+          headingY: heading,
+        }, mph * 0.44704);
+        let pressed = false;
+        let mounted = false;
+        let finished = false;
+        for (let tick = 0; tick < 1200; tick += 1) {
+          const before = rider.snapshot();
+          const s = (before.position.x - segment.entry.position.x) * Math.sin(heading)
+            + (before.position.z - segment.entry.position.z) * Math.cos(heading);
+          if (s > end + 1) { finished = true; break; }
+          const hop = !pressed && s >= from - Math.max(0, before.speed) * 0.4;
+          if (hop) pressed = true;
+          rider.step(STEP, {
+            ...NEUTRAL_ACTIONS,
+            throttle: before.speed < mph * 0.44704 ? 0.3 : 0,
+            crouch: charged,
+            hop,
+          });
+          const after = rider.snapshot();
+          if (s > from + 0.1 && s < end - 0.1 && after.grounded && after.surface === 'wood') {
+            mounted = true;
           }
-          const label = `${id}, ${wheel}, ${mph} mph initial, charged=${charged}`;
-          if (id === 'stepUp' && !charged) {
-            assert.equal(mounted, false, `${label}: mounted without charge`);
-          } else {
-            assert.ok(mounted && finished && !rider.snapshot().crashed, `${label}: did not ride the feature`);
-          }
+          if (after.crashed) break;
+        }
+        const label = `${id}, ${wheel}, ${mph} mph initial, charged=${charged}`;
+        if (id === 'stepUp' && !charged) {
+          assert.equal(mounted, false, `${label}: mounted without charge`);
+        } else {
+          assert.ok(mounted && finished && !rider.snapshot().crashed, `${label}: did not ride the feature`);
         }
       }
     }
@@ -1116,7 +1128,7 @@ test('the spin shelf rolls off onto a level pad', () => {
   if (shelf.kind !== 'deck') return;
   // **A low-drop launch onto level ground, which §36.4 asked for and Phase 1
   // did not build.** At 0.41 m onto a 3% corridor every hopped 180 landed heavy
-  // on both presets at 8, 12 and 15 mph — the hop's own apex plus the drop is
+  // at 8, 12 and 15 mph — the hop's own apex plus the drop is
   // more fall than the clean tier has room for. The shelf is flush at its start
   // and ends exactly at the socket into `shelf-pad`, so the whole face is the
   // corridor's own 1.25% fall under twelve metres of level deck: 0.15 m, the
@@ -2909,4 +2921,291 @@ test('the inner fencing is six bends, two refusals and one library part', () => 
   assert.ok(cribbing.every((block) => Math.abs(
     Math.abs(block.t) - offset,
   ) < block.halfLateral), `the entrance's fence would stand at ${offset.toFixed(2)} m, clear of its own run`);
+});
+
+// ---------------------------------------------------------------------------
+// 11 — the trick zones (M38, docs/PLANS.md §38.10 q189)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a scoring flight may launch from, measured on the built park.
+ *
+ * q189's rule is one sentence — trick points bank only on flights launched from
+ * one of the nine features — and every way it can be wrong is geometric: a zone
+ * that misses its own lip, a zone that swallows the bypass half a rider was
+ * told costs nothing, two zones that overlap, or a zone that has crept out onto
+ * the trail between features. All four are measured here rather than reasoned
+ * about, against the *bench's* own feature frames (`INSTALLED_FEATURES`), which
+ * is the second opinion: the zones are derived from the builders' blocks and
+ * the bench's lips were derived independently for the measurement pass.
+ */
+
+/** Does one convex polygon touch another? The separating-axis test, exactly. */
+function zonesOverlap(left: TrickZone, right: TrickZone): boolean {
+  for (const polygon of [left, right]) {
+    const corners = polygon.corners;
+    for (let index = 0; index < corners.length; index += 1) {
+      const a = corners[index];
+      const b = corners[(index + 1) % corners.length];
+      // The outward normal of this edge, unnormalised — a separating axis
+      // candidate. Convex shapes are disjoint iff some edge normal separates.
+      const axis = { x: b.z - a.z, z: -(b.x - a.x) };
+      const span = (zone: TrickZone) => {
+        let low = Infinity;
+        let high = -Infinity;
+        for (const corner of zone.corners) {
+          const value = corner.x * axis.x + corner.z * axis.z;
+          low = Math.min(low, value);
+          high = Math.max(high, value);
+        }
+        return { low, high };
+      };
+      const one = span(left);
+      const two = span(right);
+      // A shared edge is not an overlap, so the comparison is strict.
+      if (one.high <= two.low || two.high <= one.low) return false;
+    }
+  }
+  return true;
+}
+
+test('the park emits one well-formed trick zone per feature, and nothing else does', () => {
+  assert.equal(validTrickZones(SWITCHBACK_TRICK_ZONES), true);
+  assert.equal(SWITCHBACK_TRICK_ZONES.length, 9);
+  assert.deepEqual(
+    SWITCHBACK_TRICK_ZONES.map((zone) => zone.id).slice().sort(),
+    Object.keys(SWITCHBACK_FEATURES).slice().sort(),
+    'a zone id is a feature id',
+  );
+  assert.deepEqual(plan.trickZones, SWITCHBACK_TRICK_ZONES, 'the plan carries them');
+
+  // **Absent, never empty**, on every world that is not this one.
+  for (const other of [
+    createSliceLevel(),
+    createTrackLevel(),
+    createProvingGround(),
+    generateLevel('trick-zones').plan,
+    generateLevel('trick-zones-2').plan,
+  ]) {
+    assert.equal('trickZones' in other, false, `${other.id} emits trick zones`);
+    assert.equal(trickZoneAt(other.trickZones, 0, 0), null);
+  }
+});
+
+test('the mount flag is the bench\'s own press, and its run-up is the bench\'s own lead', () => {
+  // **The flag is a mirror, so it is held against what it mirrors.** Nothing in
+  // the geometry says which decks are hopped onto; `bench/installedPark.ts`
+  // decided that per feature and this is the only place the two meet.
+  for (const [id, feature] of Object.entries(SWITCHBACK_FEATURES)) {
+    assert.equal(
+      feature.mount === true,
+      installedFeature(id).press === 'apex',
+      `"${id}" disagrees with the bench about whether it is mounted`,
+    );
+    assert.equal(mountRunUp(id) > 0, feature.mount === true, `"${id}" run-up`);
+  }
+  assert.deepEqual(
+    Object.entries(SWITCHBACK_FEATURES).filter(([, f]) => f.mount === true).map(([id]) => id),
+    ['skinny', 'stepUp'],
+  );
+
+  // **The interval, pinned to the bench's own press lead.** `apexStepsBeforeLip`
+  // places the press so the APEX lands on the face; the wheel leaves the ground
+  // one compression after the press, which is what this is. The two are the
+  // same arithmetic in two modules that may not import each other, so the
+  // identity is asserted rather than commented — to within the half step the
+  // bench's own rounding costs.
+  const pressToApex = MOUNT_TAKEOFF_SECONDS + EUC.hopCompressSeconds;
+  assert.ok(
+    Math.abs(pressToApex - apexStepsBeforeLip('full') * STEP) <= STEP / 2,
+    `press-to-apex is ${pressToApex.toFixed(4)} s against the bench's `
+    + `${(apexStepsBeforeLip('full') * STEP).toFixed(4)} s`,
+  );
+  assert.ok(
+    Math.abs(MOUNT_TAKEOFF_SECONDS
+      - (EUC.hopLaunchSpeed * Math.sqrt(1 + EUC.hopChargeHeightBonus)) / PHYSICS.gravity) < 1e-12,
+  );
+
+  // And the two run-ups it buys, at the fastest published mount speed of each.
+  assert.ok(Math.abs(mountRunUp('skinny') - 2.4264) < 5e-4, mountRunUp('skinny').toFixed(4));
+  assert.ok(Math.abs(mountRunUp('stepUp') - 3.2351) < 5e-4, mountRunUp('stepUp').toFixed(4));
+});
+
+test('every feature\'s own lip and deck lie inside its zone, and the bypass beside it does not', () => {
+  for (const feature of INSTALLED_FEATURES) {
+    const zone = SWITCHBACK_TRICK_ZONES.find((candidate) => candidate.id === feature.id);
+    assert.ok(zone !== undefined, `no zone for "${feature.id}"`);
+
+    // The bench states its lip as a LAP distance; the corridor it stands on is
+    // the first of its window's straights. Both facts are read, never copied.
+    const host = SWITCHBACK_FEATURES[feature.id].segment;
+    const lipLocal = feature.lipS - entryDistance(host);
+
+    // The lip itself, the technical line's own lateral.
+    const lip = poseAt(host, lipLocal, feature.technicalT).position;
+    assert.equal(
+      trickZoneAt(SWITCHBACK_TRICK_ZONES, lip.x, lip.z),
+      feature.id,
+      `the lip of "${feature.id}" is outside its own zone`,
+    );
+
+    // And a hop taken a step past it — the margin's whole reason for being.
+    const past = poseAt(host, lipLocal + TRICK_ZONE_TAKEOFF_MARGIN, feature.technicalT).position;
+    assert.equal(
+      trickZoneAt(SWITCHBACK_TRICK_ZONES, past.x, past.z),
+      feature.id,
+      `a launch ${TRICK_ZONE_TAKEOFF_MARGIN} m past the lip of "${feature.id}" scores nothing`,
+    );
+
+    // **A mounted feature launches from its approach, and the zone reaches it.**
+    // `docs/TRICK_BENCH.md` S1 is the finding this answers: the skinny and the
+    // step-up are hopped onto from the trail in front of them, so the last
+    // grounded step is a whole run-up short of the face.
+    const runUp = mountRunUp(feature.id);
+    assert.equal(runUp > 0, feature.press === 'apex', `"${feature.id}" run-up vs press`);
+    if (runUp > 0) {
+      // The take-off itself, and the earliest press the margin forgives.
+      for (const back of [0, runUp, runUp + TRICK_ZONE_TAKEOFF_MARGIN]) {
+        const point = poseAt(host, lipLocal - back, feature.technicalT).position;
+        assert.equal(
+          trickZoneAt(SWITCHBACK_TRICK_ZONES, point.x, point.z),
+          feature.id,
+          `the mount take-off ${back.toFixed(2)} m short of "${feature.id}" is off-zone`,
+        );
+      }
+      // And the bypass half over that same run-up ground is still nothing.
+      const bypassRunUp = poseAt(host, lipLocal - runUp, feature.bypassT).position;
+      assert.equal(trickZoneAt(SWITCHBACK_TRICK_ZONES, bypassRunUp.x, bypassRunUp.z), null);
+    }
+
+    // Every declared top the bench can land on is ground the feature owns.
+    for (const top of feature.tops) {
+      for (const share of [0, 0.5, 1]) {
+        const s = (top.from + (top.to - top.from) * share) - entryDistance(host);
+        const deck = poseAt(host, s, feature.technicalT).position;
+        const found = trickZoneAt(SWITCHBACK_TRICK_ZONES, deck.x, deck.z);
+        // The ledge declares the gap's decks among its tops, which is the
+        // bench saying where a hopped ledge comes down; those belong to the
+        // gap's zone, and the honest assertion is that a deck is in SOME
+        // feature's zone and never on open ground.
+        assert.ok(
+          found !== null,
+          `a top of "${feature.id}" at s ${s.toFixed(1)} is in no zone at all`,
+        );
+      }
+    }
+
+    // **The bypass half is outside every zone, at the same s.** Principle 1's
+    // promise, and q189's whole separation: a rider rolling the right half
+    // banks nothing however many flat hops they take.
+    for (const s of [lipLocal, lipLocal - 2, lipLocal + 1]) {
+      const bypass = poseAt(host, s, feature.bypassT).position;
+      assert.equal(
+        trickZoneAt(SWITCHBACK_TRICK_ZONES, bypass.x, bypass.z),
+        null,
+        `the bypass beside "${feature.id}" at s ${s.toFixed(1)} is inside a zone`,
+      );
+      // And so is the centreline's right shoulder, one metre off the middle.
+      const middle = poseAt(host, s, -1).position;
+      assert.equal(trickZoneAt(SWITCHBACK_TRICK_ZONES, middle.x, middle.z), null);
+    }
+  }
+});
+
+test('a zone stops where it stops — the trail in front of each one is not trick ground', () => {
+  // The teeth on the run-up: a zone that quietly ran to its corridor's entry
+  // socket would pass every containment assertion above and hand a rider a
+  // scoring hop twenty metres before the feature.
+  for (const [id, feature] of Object.entries(SWITCHBACK_FEATURES)) {
+    const blockFrom = Math.min(...feature.report.blocks.map((b) => b.s - b.halfAlong));
+    const start = blockFrom - (mountRunUp(id) === 0 ? 0 : mountRunUp(id) + TRICK_ZONE_TAKEOFF_MARGIN);
+    assert.ok(start >= 0, `"${id}" starts ${start.toFixed(2)} m off its corridor`);
+    if (start < 0.5) continue;
+    for (const t of [0, 2, 4]) {
+      const point = poseAt(feature.segment, start - 0.5, t).position;
+      assert.equal(
+        trickZoneAt(SWITCHBACK_TRICK_ZONES, point.x, point.z),
+        null,
+        `half a metre in front of "${id}" at t ${t} is trick ground`,
+      );
+    }
+  }
+});
+
+test('no two trick zones overlap, so the first match is the only match', () => {
+  for (let i = 0; i < SWITCHBACK_TRICK_ZONES.length; i += 1) {
+    for (let j = i + 1; j < SWITCHBACK_TRICK_ZONES.length; j += 1) {
+      const left = SWITCHBACK_TRICK_ZONES[i];
+      const right = SWITCHBACK_TRICK_ZONES[j];
+      assert.equal(
+        zonesOverlap(left, right),
+        false,
+        `"${left.id}" and "${right.id}" share ground`,
+      );
+    }
+  }
+
+  // The control the separating-axis test owes itself: a shape built to overlap
+  // one of them is reported as overlapping.
+  const first = SWITCHBACK_TRICK_ZONES[0];
+  const shrunk: TrickZone = {
+    id: 'control',
+    corners: first.corners.map((corner) => ({
+      x: (corner.x + first.corners[0].x) / 2,
+      z: (corner.z + first.corners[0].z) / 2,
+    })),
+  };
+  assert.equal(zonesOverlap(first, shrunk), true);
+});
+
+test('the start straight and the trail between features are not trick ground', () => {
+  // The apron: the start/finish line, the grid and the whole out-lap. A rider
+  // hopping on the spot here — the exact farming line q189 answers — is
+  // standing outside every zone on the venue.
+  for (const s of [PARK.spawnAt, PARK.lineAt, 20, 40, 79]) {
+    for (const t of [-6, -3, 0, 3, 6]) {
+      const point = poseAt('apron', s, t).position;
+      assert.equal(
+        trickZoneAt(SWITCHBACK_TRICK_ZONES, point.x, point.z),
+        null,
+        `the apron at s ${s}, t ${t} is trick ground`,
+      );
+    }
+  }
+
+  // The fire road between the crest and the summit, and the open trail between
+  // the ledge and the gap on `terrace-drop` — eight metres of clear corridor
+  // that belongs to neither.
+  for (const [segment, s] of [
+    ['fire-road-1', 10], ['fire-road-1', 60], ['fire-road-2', 25],
+    ['summit-return', 20], ['bottom', 30], ['shelf-pad', 12],
+    ['terrace-drop', 16], ['rock-rhythm', 2],
+    // The timber line's two clear stretches: the 1.77 m between the skinny's
+    // zone and the head of the step-up's run-up, and the trail past the
+    // step-up's roll-off. Both are narrow on purpose — the run-up took most of
+    // what used to be open corridor here, and that is the fact worth pinning.
+    ['timber', 14.4], ['timber', 35],
+  ] as const) {
+    for (const t of [-3, 0, 3]) {
+      const point = poseAt(segment, s, t).position;
+      assert.equal(
+        trickZoneAt(SWITCHBACK_TRICK_ZONES, point.x, point.z),
+        null,
+        `${segment} at s ${s}, t ${t} is trick ground`,
+      );
+    }
+  }
+});
+
+test('the trick zones cost the world nothing', () => {
+  // Plan data only: no collider, no surface, no prop, no triangle. The venue's
+  // bill is the bill it had, which is asserted by pricing the plan with the key
+  // removed and finding the same numbers — the assertion the absent digest pins
+  // would have made.
+  const { trickZones, ...without } = plan;
+  assert.ok(trickZones !== undefined);
+  assert.deepEqual(planRenderCost(plan), planRenderCost(without as LevelPlan));
+  const { trickZones: second, ...rebuilt } = createSwitchbackLevel();
+  assert.deepEqual(without, rebuilt, 'something else moved with them');
+  assert.deepEqual(second, trickZones);
 });

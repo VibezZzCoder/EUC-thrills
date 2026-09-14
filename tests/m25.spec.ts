@@ -2146,11 +2146,17 @@ test('the title and the join panel fit every desktop window that is offered them
     // It is the growth that cost something: with the coarse-pointer floors on,
     // the panel went 29 px below the fold at 1000 x 520, and the fix is the
     // note-hiding tier M25's own title layout already used at this height.
-    // **Both ends of the row are measured**, because it became a segmented pair
-    // on 2026-08-27 and a two-button row can only overflow at one end.
+    // **Every button in the row is measured**, because it became a segmented
+    // control on 2026-08-27 and the end of it has moved with every ride added
+    // since.
     await inside('.euc-menu--couch [data-couch-mode="freeRide"]', viewport);
     await inside('.euc-menu--couch [data-couch-mode="race"]', viewport);
     await inside('.euc-menu--couch [data-couch-mode="knockabout"]', viewport);
+    // **And the fourth offer — M38.** The row is measured end to end rather
+    // than at the two ends it happened to have when this was written: the
+    // button at the far end is the one a row that has stopped fitting puts
+    // outside the panel, and it has been a different button three times now.
+    await inside('.euc-menu--couch [data-couch-mode="trickRun"]', viewport);
     // The contact toggle was measured here too until the same ride retired it.
     // Nothing replaces that line: a control that does not exist has no fit.
     await inside('.euc-menu--couch [data-menu="couch-start"]', viewport);

@@ -852,7 +852,7 @@ test('riding a full circle comes back to where it started', async ({ page }) => 
     // geometric claim about a circle. The throttle that settles at the 10 m/s
     // this test has always measured is the one that balances drag there:
     // `16·sin(0.5·t) − 0.35 = drag · 100`, which was 0.45 before M16, 0.23 on
-    // the 50 mph wheel and **0.152** on the shipped 65. The circle is the one
+    // the pre-M30 wheel and **0.152** on the shipped 65. The circle is the one
     // it was written against at all three.
     // Stay below the hard technical-turn threshold: this is a closed-circle
     // geometry fixture, not a pedal-scrape endurance test.

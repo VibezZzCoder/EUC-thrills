@@ -326,7 +326,7 @@ test('two riders who ride into each other are pushed apart, and neither goes dow
   // the separation can only hold them apart while that is under
   // `CONTACT.separationSpeed` — which puts the ceiling at
   // `separationSpeed / (2 sin 0.12)` = **5.0 m/s**. The same 0.6 of throttle
-  // that carried 4.9 m/s on the 50 mph wheel carries 5.6 on the shipped 65,
+  // that carried 4.9 m/s on the pre-M30 wheel carries 5.6 on the shipped 65,
   // straight past it, and the pair was sampled 3 cm *inside* the radius. That
   // is the residual the paragraph below has always named — a pair closing
   // faster than the push penetrates, and the answer is the owner's F4 slider,
@@ -443,7 +443,7 @@ test('a head-on contact at the speed the ride can really reach puts nobody down'
   expect(met.charges).toBeGreaterThan(0);
   // The assertion above is only worth anything if they met *fast*. There is no
   // top-speed constant to derive this from — the ceiling is emergent, drag
-  // against lean-to-accel, and lands near 22.3 m/s (50 mph) on pavement — so
+  // against lean-to-accel, and lands near 29 m/s (65 mph) on pavement — so
   // this is stated as a number a *single* rider cannot reach. Anything past
   // 30 m/s of closure is two riders doing it to each other.
   expect(met.closingAtContact).toBeGreaterThan(30);
@@ -1341,7 +1341,12 @@ test('a pad walks the join panel, and presses the mode it wants', async ({ page 
 
   await pulsePad(page, PAD_DPAD_DOWN);
   await expect(
-    page.locator(`${MODE_BUTTON}[data-couch-mode="knockabout"]`),
+    // **The far end is Trick Run since M38**, and that is the assertion rather
+    // than an incidental relabelling: the mode row gained a fourth button, so
+    // the button nearest the right-hand end of the rider row changed with it.
+    // Naming it is what proves Down still keeps the column instead of jumping
+    // to the head of the row.
+    page.locator(`${MODE_BUTTON}[data-couch-mode="trickRun"]`),
     'down from the far end of the rider row reaches the mode row, keeping the column',
   ).toBeFocused();
   // Back to the near end, and down again — the column is kept on both sides.
@@ -1355,10 +1360,12 @@ test('a pad walks the join panel, and presses the mode it wants', async ({ page 
     page.locator(`${MODE_BUTTON}[data-couch-mode="freeRide"]`),
     'down from the rider arrows reaches the mode row',
   ).toBeFocused();
-  // **The row is three stops wide now, and that is the change.** A `<select>`
+  // **The row is four stops wide now, and that is the change.** A `<select>`
   // was one stop the d-pad *adjusted*; a segmented row is a stop per mode the
-  // d-pad *walks*, so Right is a move rather than a value change — and M27
-  // Phase 3 put the race between the two that were already there.
+  // d-pad *walks*, so Right is a move rather than a value change — M27 Phase 3
+  // put the race between the two that were already there, and M38 put Trick
+  // Run after them. Every stop is named, which is what makes a fifth ride fail
+  // here rather than quietly becoming unreachable.
   await pulsePad(page, PAD_DPAD_RIGHT);
   await expect(
     page.locator(`${MODE_BUTTON}[data-couch-mode="race"]`),
@@ -1367,7 +1374,12 @@ test('a pad walks the join panel, and presses the mode it wants', async ({ page 
   await pulsePad(page, PAD_DPAD_RIGHT);
   await expect(
     page.locator(`${MODE_BUTTON}[data-couch-mode="knockabout"]`),
-    'and Right again reaches Knockabout at the end of the row',
+    'and Right again reaches Knockabout',
+  ).toBeFocused();
+  await pulsePad(page, PAD_DPAD_RIGHT);
+  await expect(
+    page.locator(`${MODE_BUTTON}[data-couch-mode="trickRun"]`),
+    'and Right once more reaches Trick Run at the end of the row',
   ).toBeFocused();
   await pulsePad(page, PAD_DPAD_DOWN);
   await expect(
@@ -4043,6 +4055,10 @@ test('the results card still reaches its own buttons with the chooser on it', as
   const CONTROLS = [
     '[data-menu="results-couch"] [data-couch-mode="freeRide"]',
     '[data-menu="results-couch"] [data-couch-mode="knockabout"]',
+    // **The fourth offer, checked like the other two** — M38. It is the one at
+    // the end of the row, so it is the one a wrap puts on a second line and
+    // therefore the one this contract most needs to name.
+    '[data-menu="results-couch"] [data-couch-mode="trickRun"]',
     '[data-menu="retry"]',
     '[data-menu="new-route"]',
     '[data-menu="results-title"]',

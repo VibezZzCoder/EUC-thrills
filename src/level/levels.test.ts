@@ -63,22 +63,31 @@ test('the switch reaches the generator through both of the doors Game builds wor
   // would leave a session riding a world spaced for a wheel it is not on, which
   // is precisely the unfairness the switch exists to avoid.
   //
-  // **The switch's working value is `?mph=50` since M30 Phase 4**, because 65
-  // is the frozen table now — so the door test asks for the *slower* wheel.
-  // Asking for 65 would compare the shipped road with itself and pass on an
-  // identity rather than on the parameter arriving.
-  const slow = generateLevel('route-41', undefined, undefined, 50).plan;
+  // **The door test has to ask for a speed that is not the default**, because
+  // 65 is the frozen table: asking for 65 would compare the shipped road with
+  // itself and pass on an identity rather than on the parameter arriving.
+  //
+  // **M38 Part B (`docs/PLANS.md` §38.7)**: that value used to be 50, the
+  // retired reference wheel. It is now an ordinary example inside the switch's
+  // 20–90 mph window, and every expected value below is derived by asking the
+  // generator for the same speed rather than transcribed from a record — so
+  // the example carries no status and could be any legal number.
+  const mph = 58;
+  const switched = generateLevel('route-41', undefined, undefined, mph).plan;
   const shipped = generateLevel('route-41').plan;
+  // The fixture has to be able to tell the two apart, or both doors below
+  // pass on a world that ignored the parameter.
+  assert.notDeepStrictEqual(switched.hazards, shipped.hazards);
 
-  const byLevel = createLevel('generated', 'route-41', undefined, undefined, 50);
-  assert.deepStrictEqual(byLevel.hazards, slow.hazards);
+  const byLevel = createLevel('generated', 'route-41', undefined, undefined, mph);
+  assert.deepStrictEqual(byLevel.hazards, switched.hazards);
   assert.notDeepStrictEqual(byLevel.hazards, shipped.hazards);
-  assert.deepStrictEqual(byLevel.targets, slow.targets);
+  assert.deepStrictEqual(byLevel.targets, switched.targets);
 
-  const outcome = requestRoute('route-41', undefined, undefined, 50);
+  const outcome = requestRoute('route-41', undefined, undefined, mph);
   assert.ok(outcome.ok);
   if (!outcome.ok) return;
-  assert.deepStrictEqual(outcome.plan.hazards, slow.hazards);
+  assert.deepStrictEqual(outcome.plan.hazards, switched.hazards);
   assert.notDeepStrictEqual(outcome.plan.hazards, shipped.hazards);
   // The seed is still the seed: the switch is not level identity, so the world
   // is filed under exactly the id it would have been without it.
@@ -90,7 +99,9 @@ test('the hand-authored worlds are the same worlds under the switch', () => {
   // the proving ground, BelVar and Switchback Park were laid out by hand and
   // accepted as they are, so `?mph=` has to reach them as nothing at all.
   for (const id of ['slice', 'proving', 'track', 'switchback'] as const) {
-    for (const mph of [20, 50, 65, 90]) {
+    // Ordinary samples of the window the parser accepts, the shipped speed
+    // among them; none of them is a reference wheel (M38 Part B).
+    for (const mph of [20, 58, 65, 90]) {
       assert.equal(
         planDigest(createLevel(id, DEFAULT_SEED, undefined, undefined, mph)),
         planDigest(createLevel(id)),

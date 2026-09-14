@@ -1717,11 +1717,38 @@ for (const presser of [0, 1, 2, 3]) {
     const choice = page.locator('[data-menu="pause-couch"] [data-couch-mode="knockabout"]');
     await expect(choice).toBeEnabled({ timeout: 2000 });
     if (presser === 0) await page.screenshot({ path: test.info().outputPath('city-pause.png') });
+    // **Both walks re-derived at M38, with every stop named.** The chooser
+    // gained a fourth offer, so the row it walks is four wide and the control
+    // at each end of it moved. Naming the stops rather than counting presses
+    // is what makes the *next* ride fail here with the button it reached.
+    //
+    // The pad enters the row from `Resume` below it, and `ui/menuRows.ts` picks
+    // the nearest button by geometry: with four equal tracks under a full-width
+    // Resume that is Knockabout, where three tracks used to put Race there and
+    // need a Right after it. The Right is still walked — one stop further, to
+    // the end of the row — and then walked back, so the row is still proved to
+    // be a row rather than four buttons that happen to be adjacent.
     if (presser === 3) {
+      // Shift+Tab from `Resume` enters the chooser at its *last* control, which
+      // is Trick Run since M38 and was Knockabout before it: one more press.
+      await page.keyboard.press('Shift+Tab');
+      await expect(
+        page.locator('[data-menu="pause-couch"] [data-couch-mode="trickRun"]'),
+        'Shift+Tab from Resume enters the chooser at its last offer',
+      ).toBeFocused();
       await page.keyboard.press('Shift+Tab');
     } else {
       await claimWithPad(page, presser, 12);
+      await expect(
+        choice,
+        'Up from Resume enters the mode row on the button nearest it',
+      ).toBeFocused();
       await claimWithPad(page, presser, 15);
+      await expect(
+        page.locator('[data-menu="pause-couch"] [data-couch-mode="trickRun"]'),
+        'and Right reaches the end of the row',
+      ).toBeFocused();
+      await claimWithPad(page, presser, 14);
     }
     await expect(choice).toBeFocused();
     if (presser === 3) await page.keyboard.press('Enter');
@@ -1916,7 +1943,8 @@ for (const seats of [3, 4] as const) {
       ).toBe(false);
       // The chooser is a report, and the report still names the room's choice.
       expect(await chooserPressed(page)).toEqual([
-        'freeRide:false', 'race:false', 'knockabout:true',
+        // The fourth offer is M38's Trick Run, last in the panel's own order.
+        'freeRide:false', 'race:false', 'knockabout:true', 'trickRun:false',
       ]);
     }
 

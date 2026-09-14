@@ -68,6 +68,31 @@ export function isTrackVenueId(value: string): value is typeof TRACK_VENUE_IDS[n
 }
 
 /**
+ * Where a Trick Run may be ridden — M38 §38.6's offer roster.
+ *
+ * **One list, read by every door**, so the title button, the routes panel's
+ * contextual action, the couch chooser and the QA bridge cannot disagree about
+ * which places are on offer. Switchback only (q176), and that is an
+ * *application* decision rather than a rule inside the referee: `TrickRun`
+ * receives facts and a rules table and has never heard of a venue name
+ * (invariant 22 — nothing branches on which world is loaded). The day the
+ * owner opens a second park (q183), this array grows by one entry and no door
+ * changes.
+ *
+ * `TRICK_RUN_DESTINATION` is where a door that has to *bring* a world sends
+ * the room, which is the first entry rather than a second spelling of it.
+ */
+export const TRICK_RUN_VENUE_IDS = Object.freeze(['switchback'] as const);
+
+export const TRICK_RUN_DESTINATION: VenueId = TRICK_RUN_VENUE_IDS[0];
+
+/** Does this place host a Trick Run? The pure predicate every door asks. */
+export function offersTrickRun(value: string | null | undefined): value is VenueId {
+  return value !== null && value !== undefined
+    && (TRICK_RUN_VENUE_IDS as readonly string[]).includes(value);
+}
+
+/**
  * Is this string one of the venues?
  *
  * **A `Set` rather than `in`**, for `isLevelId`'s reason one layer up: the

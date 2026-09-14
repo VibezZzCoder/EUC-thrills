@@ -6069,13 +6069,13 @@ function runSoberScenario(
  * Three of those numbers are worth reading rather than skimming.
  * **`straight`'s 28.9937 m/s** is the 65 wheel's flat-out terminal *as the
  * controller reaches it* after thirty seconds, against the analytic 29.0576 —
- * the same relationship 22.2523 had to 22.35 on the 50 wheel, and the reason
+ * the same relationship 22.2523 had to 22.35 on the pre-M30 wheel, and the reason
  * `EUC.carveGripFullSpeed` and `EUC.carveLeanFullSpeed` are anchored at 22.25
  * and **not** moved by this milestone (they plateau at the old wheel's
  * terminal; q118 is whether they should follow, and it is open).
  * **`slalom`'s 26.1271** is lower than the straight's because twelve full-lock
  * flips scrub speed, and it is *above* the 22.25 anchor throughout, so the
- * whole slalom now rides on the plateau where the 50 mph one rode up the ramp.
+ * whole slalom now rides on the plateau where the pre-M30 one rode up the ramp.
  * And **`reverse` moved**, which it did not for the pose changes: its reverse
  * corner is still below `maxReverseSpeed` and untouched, but the two forward
  * phases either side of it are on the faster wheel.
@@ -6251,8 +6251,8 @@ function lateralBand(
 /**
  * How far off the line the hands-off weave may take the rider, metres.
  *
- * **§29.4's own number is 0.35 and it was measured on the 50 mph wheel**, whose
- * flat-out terminal is 22.3 m/s. The shipped 65 mph wheel cruises at 29.0
+ * **§29.4's own number is 0.35 and it was measured, historically, on the
+ * pre-M30 wheel**, whose flat-out terminal was 22.3 m/s. The shipped 65 mph wheel cruises at 29.0
  * (M30 Phase 4), and the weave's excursion is very nearly — but not exactly —
  * speed-independent up there: `weaveSpeedFull / speed` shrinks the *heading*
  * offset in proportion to the speed, so `v · θ` is held while the weave's own

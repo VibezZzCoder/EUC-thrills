@@ -43,8 +43,8 @@ bypass that never asks you to leave the ground, and the trail is marked before
 each one: chevrons counting you in, an arrow pointing at the easy line, a word
 where a word helps (**DOWN** at the stairs, **180 TAP** at the spin shelf), and
 a painted landing box at the kicker and at the shelf. **Track Day** offers it
-directly; **Fresh route** loads it to ride freely, and a couch room can race
-three laps of it.
+directly; **Trick Run** scores ninety seconds on it; **Fresh route** loads it to
+ride freely, and a couch room can race three laps of it.
 
 Some of what the wheel does is specific to a real EUC, and worth knowing before
 it surprises you:
@@ -112,6 +112,10 @@ assigned to the same rider:
 
 - **Free ride** — the world, shared. No clock, no objective, nothing to fail,
   and no paddles.
+- **Trick Run** — ninety seconds at **Switchback Park** for everybody at once,
+  one clock and a score per pane; the rules are the solo mode's below, nothing
+  is saved, and nobody is declared the winner — the numbers are the room's to
+  argue about.
 - **Race** — three laps of **BelVar Circuit** or **Switchback Park**, up to
   four of you; which one is the **Riding at** row's answer, on the join panel or
   on the Fresh route screen before anybody sits down. Everybody sits frozen on
@@ -152,6 +156,25 @@ time — top speed and landing quality are shown for interest and count for
 nothing. Beat your best and the next attempt adds a translucent replay rider,
 so you can see *where* the time changed. In the city, the safe route and the
 faster alley cross the same checkpoints, so both lines stay comparable.
+
+**Trick Run** — ninety seconds at Switchback Park, and points for what you
+land. The button takes you straight to the park and starts the clock on the
+first step; the lap does not matter and nothing ends the run but the clock.
+Every flight you land is worth its tricks: a clean landing is 10, a charged
+hop 25, a landed 180 is 200 and a one-foot air 100; two different tricks in one
+flight add 50; a clean landing multiplies the flight's tricks by 1.25, a heavy
+one leaves them alone and a wobble halves them; a crash costs you the flight
+you were in and nothing you had banked. **Tricks only score on a flight that
+left the ground from one of the nine features**; a 180 or a one-foot air off a
+flat hop is as rideable as ever and worth its landing, and the pane says *off
+feature* so you know why. **Each feature pays in full once a minute**: hit the
+same one again sooner and the whole flight pays half, then a quarter, and the
+game forgets one of those repeats for every minute you leave it alone — so
+the score is in riding the lap, not in camping one kicker. Your pane shows the clock, your banked score, a
+charged hop still in the air as *pending*, and the last thing you landed.
+The card at the end shows where every point came from, and a completed solo
+run is compared with your best at the park; **Try again** starts another. A
+run ended early from the pause menu is shown but never saved.
 
 **Track Day** — lap a hand-built course. The button asks which: **BelVar
 Circuit** is kart-scale, with barriers, kerbs, gravel runoff, a start gantry
@@ -216,7 +239,8 @@ the ground.
 That screen is also where the hand-built places are chosen. A **Riding at** row
 offers **The city**, **BelVar Circuit** and **Switchback Park**; pressing one
 loads it there and then and says so, and **Back** takes you to the title, where
-**Start ride** rides it. (**Track Day** asks for its track itself, so it needs
+**Start ride** rides it. With Switchback Park selected the screen also offers
+**Trick Run** directly. (**Track Day** asks for its track itself, so it needs
 no visit here.) Those places have addresses
 of their own — `?level=switchback` opens Switchback Park — so such a link
 shares as cleanly as a seed does.
@@ -225,8 +249,8 @@ You do not have to come back to that screen for another course. Pause during
 any ride, or finish a run, and **New route** builds a fresh one and puts you
 straight back into whatever you were playing.
 
-Records are kept per course and per mode: time trial, best lap, Knockabout, and
-chase survival never overwrite each other, and switching riders changes nothing about
+Records are kept per course and per mode: time trial, best lap, Knockabout,
+Trick Run score and chase survival never overwrite each other, and switching riders changes nothing about
 any of them. Each venue is its own course, so a best lap at BelVar Circuit and a
 best lap at Switchback Park keep their own times and their own ghosts.
 
@@ -479,12 +503,27 @@ reason to edit anything in it.
 
 ```
 npm install
-npm run dev            # play your working copy locally
+npm run dev                         # play your working copy locally
 npm run typecheck
-npm test               # the headless suite — over two thousand tests, no browser
-npm run test:browser   # the Playwright suite (once: npx playwright install chromium)
+npm run test:groups                 # available headless groups
+npm test -- src/input/bindings.test.ts
+npm run test:browser -- tests/touch.spec.ts  # once: npx playwright install chromium
 npm run build
 ```
+
+Choose tests for the changed behavior and the contracts it affects. `npm test`
+requires file names or `--group=<name>`; `test:browser` requires file names or
+`-g <title pattern>`. `test:browser:one` and `test:browser:serial` also require a
+target and run Chromium with one worker; they do not mean one test case.
+`test:browser:smoke` runs a small fixed set of UI checks.
+
+When a broad regression check is justified, use `npm run test:full` for every
+headless test available in this checkout, or `npm run test:browser:full` for the
+functional browser suite. Wall-clock budgets run separately with
+`npm run test:performance`, on an otherwise idle machine. The public snapshot
+omits private release tooling and its tests, so the `release` headless group is
+unavailable here. Avoid running expensive suites concurrently or repeating a
+suite when the relevant inputs have not changed.
 
 Two notes for contributors. The repository is a per-release snapshot of a
 private working tree, so its history moves one release at a time — see
@@ -507,6 +546,12 @@ list.
 
 ### Recently landed
 
+- **Trick Run** (2026-09-13). Ninety seconds at Switchback Park with the four
+  counted events given values, a landing-quality multiplier, a bonus for two
+  tricks in one flight, tricks that score only from the park's features and
+  pay less when the same feature is revisited inside a minute, a per-venue
+  personal best, and a couch version for two to four with a score per pane
+  and no winner.
 - **Knockabout for three and four** (2026-09-13). The paddle bout takes the
   whole room: two, three or four claims on the join panel, a fair ring and a
   3 – 2 – 1 count for three and four, first to five knockdowns, and every
@@ -576,9 +621,9 @@ list.
 ### Ideas under consideration
 
 - **More challenges and progression.** Flow, hill-climb, technical-trail,
-  downhill, delivery, scoring, and crash-count ideas all belong here; none has a
-  settled ruleset yet. Switchback Park counts what you land, but nothing decides
-  what a trick is worth — that ruleset does not exist.
+  downhill, delivery and crash-count ideas all belong here; none has a settled
+  ruleset yet. Scoring now exists for one run at one park (**Trick Run**);
+  progression, upgrades and unlockables are deliberately not part of it.
 - **A course that is alive.** Moving traffic or animals on a route of their own,
   which could also be the natural home for a different time of day.
 - **More racing.** Preset skill-level and developer ghosts, AI riders sharing a

@@ -159,8 +159,8 @@ export interface Rideability {
    *
    * On the interface because the segment speed model integrates the ride's own
    * curve and read `EUC.dragCoefficient` straight off the frozen table until
-   * M30 Phase 1 — which made a route generated for a 65 mph wheel accelerate
-   * like a 50 mph one on the way to a jump it then had to clear.
+   * M30 Phase 1 — which made a route generated for one wheel accelerate like
+   * another on the way to a jump it then had to clear.
    */
   readonly dragCoefficient: number;
   /** How far a fully charged hop carries at a given speed, metres. */
@@ -447,8 +447,8 @@ export function speedProfile(
       const gradient = gradientAt(spec, s);
       // **The wheel it was handed, drag included** — M30 Phase 1. This line
       // read `EUC.dragCoefficient` off the frozen table until the generator
-      // learned about `?mph=`, which would have made a route spaced for a
-      // 65 mph wheel accelerate like a 50 mph one on the run-up to its jumps.
+      // learned about `?mph=`, which would have made a route spaced for one
+      // wheel accelerate like another on the run-up to its jumps.
       const accel = rideability.driveAccel
         - rideability.dragCoefficient * speed * speed
         - surface.rollingResistance * TERRAIN.rollingResistanceScale
@@ -1297,15 +1297,23 @@ export function hazardRulesFor(rideability: Rideability): HazardRules {
     /**
      * How likely the generator is to try a hazard at each eligible station.
      *
-     * **Anchored on the 50 mph wheel, scaled up with this one** — M30, and the
-     * one member of this table that is a taste rather than a derivation. A
-     * station is `profileStep` metres of road, so the anchor
+     * **Anchored on a frozen legacy calibration, scaled up with this wheel** —
+     * M30, and the one member of this table that is a taste rather than a
+     * derivation. A station is `profileStep` metres of road, so the anchor
      * `DENSITY_ANCHOR_RULES.profileStep / DENSITY_ANCHOR_RULES.separationMetres`
-     * is M13's own expression evaluated on the wheel M13 authored against: a
-     * rider on the 50 mph wheel meets a hazard about every two recovery
+     * is M13's own expression evaluated on the drag M13 authored against: at
+     * that calibration a rider meets a hazard about every two recovery
      * distances. The whole point is that the density must **not** follow the
      * fairness floor, because a faster wheel's longer recovery would otherwise
      * empty the road.
+     *
+     * **This is calibration, not a wheel anybody rides.** M38 Part B
+     * (`docs/PLANS.md` §38.7) retired the 50 mph *reference wheel* and
+     * deliberately left this arithmetic exactly as it is, because it still
+     * controls the **shipped** hazard offer: re-anchoring it on today's drag
+     * is the defect described below, and the owner rejected that outcome when
+     * he saw the road it produced. Retiring the calculation itself would be a
+     * separate measured redesign.
      *
      * **The anchor was `HAZARD_RULES` — the *shipped* wheel — until M30
      * Phase 4, and that spelling was one shipped-table edit away from the very
@@ -1327,8 +1335,9 @@ export function hazardRulesFor(rideability: Rideability): HazardRules {
      * `HAZARD.densityTopSpeedExponent`, whose comment carries the decision, the
      * measured ladder it was chosen off, and the reason it is steep: the offer
      * has to outrun the contracts that refuse most of it. At the shipped 3 the
-     * 65 mph wheel is offered 2.21× the anchor density and lands 1.42× the
-     * holes; `?mph=50` lands back on the anchor road.
+     * shipped 65 mph wheel is offered 2.21× the anchor density and lands 1.42×
+     * the holes, and a wheel at the anchor's own top speed lands back on the
+     * anchor road.
      *
      * **This is an offer, not a count.** The separation floor above and the
      * zone, sight, surface and lane rules in `placeHazards` refuse a good part
@@ -1347,18 +1356,22 @@ export function hazardRulesFor(rideability: Rideability): HazardRules {
 export const HAZARD_RULES: HazardRules = hazardRulesFor(RIDEABILITY);
 
 /**
- * The drag the hazard **density** is anchored on — M16's 50 mph table, frozen.
+ * The drag the hazard **density** is anchored on — M16's table, frozen.
  *
- * Not `EUC.dragCoefficient`, on purpose and since M30 Phase 4: that constant is
+ * **Legacy density calibration, not a wheel builders ride.** Not
+ * `EUC.dragCoefficient`, on purpose and since M30 Phase 4: that constant is
  * the *shipped* wheel and has now moved twice, while the density anchor is a
  * statement about the road M13 authored and the exponent's ladder was measured
  * against. See `HazardRules.chancePerStation` for what went wrong the one time
- * the two were spelled as the same thing.
+ * the two were spelled as the same thing, and `docs/PLANS.md` §38.7 for why
+ * M38 Part B left this number alone while retiring the 50 mph reference wheel.
  */
 export const DENSITY_ANCHOR_DRAG_COEFFICIENT = 0.0147;
 
 /**
- * The 50 mph wheel the density taste is measured against.
+ * The calibration wheel the density taste is measured against — M16's drag,
+ * held. Nobody rides it; it exists so the shipped offer stays where it was
+ * measured.
  *
  * Every other input is read off the live table, so a change to the drive, the
  * hop or the lateral ceiling moves this wheel with the rest of the game; only
@@ -2358,12 +2371,12 @@ function checkTargets(layout: RouteLayout, rules: TargetRules): RouteFailure[] {
  * riding.
  *
  * **The second argument is M30 Phase 1 and it is the whole of it.** A route
- * ridden under `?mph=65` is spaced for 65 (hazards ~82 m apart rather than
- * ~63, targets ~26 m rather than ~20) and its speed model runs the 65 mph
- * drag, so the run-up to a jump is the run-up the rider will actually have.
- * Without it the test ride would be the 50 mph routes with a faster wheel on
- * them, which is unfair by the game's own fairness rule and makes the density
- * cost of 65 something that can be computed and not ridden.
+ * ridden under `?mph=<n>` is spaced for that wheel — the separations are times,
+ * so they scale with it — and its speed model runs that wheel's drag, so the
+ * run-up to a jump is the run-up the rider will actually have. Without it a
+ * diagnostic ride would be the shipped routes with a different wheel on them,
+ * which is unfair by the game's own fairness rule and makes the density cost
+ * of a speed change something that can be computed and not ridden.
  *
  * Omitted — which is every default build, every pinned record and every
  * fixture — it is the frozen table's own instance and nothing moves.

@@ -10,7 +10,7 @@ This repository is a **published snapshot** of a private working tree, updated
 once per release. That has two practical consequences:
 
 1. **Open a pull request as usual.** Your diff is reviewed, applied to the
-   working tree, and run through the full test suite and a real ride. If it
+   working tree, and checked against the affected contracts and a real ride. If it
    holds up, it ships inside the next release.
 2. **Your PR will be closed with a note like "landed in v-next", not
    merged.** That is bookkeeping, not rejection — the commit arrives with the
@@ -22,10 +22,23 @@ describe the shape — it may already be planned, rejected, or in progress.
 
 ## The bar a change has to clear
 
-- `npm run typecheck` and `npm test` pass. New behaviour comes with tests in
-  the same style as its neighbours: plain `node --test`, no build step.
-- `npm run test:browser` passes if you touched anything a browser can see
-  (first run: `npx playwright install chromium`).
+- Run `npm run typecheck` for TypeScript changes and select headless tests with
+  `npm test -- <file>...` or `npm test -- --group=<name>` (`npm run test:groups`
+  lists groups). Add tests where they provide useful regression protection,
+  in the same style as their neighbours: plain `node --test`, no build step.
+- For browser-visible changes, run the affected browser cases with
+  `npm run test:browser -- <spec>...` and, when useful, `-g <title pattern>`
+  (first run: `npx playwright install chromium`). Check the changed interaction
+  and relevant desktop or touch layout. `test:browser:one` and
+  `test:browser:serial` require a target and force one Chromium worker.
+- Include the commands, scope, results, and any unverified behavior in the PR.
+  Full suites are explicit (`test:full` and `test:browser:full`) and need a
+  reason, such as a change spanning systems or uncertain dependencies; they
+  are not required at every edit or review round. One person coordinates
+  expensive runs, and prior results remain useful while their inputs are
+  unchanged. Run wall-clock checks separately with `test:performance` on an
+  otherwise idle machine. Private release tests are absent from this snapshot,
+  and selecting the `release` group reports that it is unavailable.
 - **Arcade over simulation.** The cut-out, the beeps, and speed wobble are
   all in the game — but only in the forms playtests proved fun: the beeps
   live at the very top of the speed range and wobble fires only on visible

@@ -680,7 +680,7 @@ test('a full-skill cop rides every pinned seed out, and no seed is down', () => 
   //
   // **M30 Phase 4 moved the wheel under it and the gate was one down.** The
   // shipped wheel is 65 mph and these forty-eight seeds carry more holes than
-  // they did at 50; Phase 2's QA found `sweep-15` down — a deep pothole the
+  // they did on the slower pre-M30 wheel; Phase 2's QA found `sweep-15` down — a deep pothole the
   // cop reached at 11.6 m/s believing he could still brake to 4.6 — and traced
   // it to a **units error in the brain's braking belief** (`EUC.brakeAuthority`
   // is per unit of `sin(lean)`; the law spent it raw and believed twice the
@@ -716,6 +716,13 @@ test('a full-skill cop rides every pinned seed out, and no seed is down', () => 
     `the shipped sweep put a cop down: ${down.join(' ')} — this gate is a clean zero since the `
       + 'chase pass (§31) corrected the braking belief; a name here is a regression',
   );
+  // **M38 Part B (`docs/PLANS.md` §38.7)**: this gate used to have a twin that
+  // rode the same forty-eight seeds under `?mph=50`, on roads generated for
+  // that wheel, as a control for the pinned seed above. The 50 mph wheel is no
+  // longer a reference anything is certified against, and the shipped forward
+  // and backward gates are what the cop has to pass. `?mph=<n>` itself is
+  // unchanged and still reaches the generator — `level/topSpeedRoutes.test.ts`
+  // and `tests/m30.spec.ts` hold that contract.
   // He is following a road, so he has to stay on one. This is a far weaker
   // claim than "he rides the racing line" and it is the one that matters: a cop
   // who reaches the end by ploughing across the surround is not chasing anybody.
@@ -793,45 +800,6 @@ test('a flank is close-quarters work: a wedge far from the rider arms none', () 
   const ride = rideAlone(plan, 1, 240, null, { reverse: true, parkedQuarry: true });
   assert.equal(ride.crashes, 0, `${ride.crashes} crashes riding back to a parked rider past the kicker`);
   assert.ok(ride.finished, `stopped at ${ride.progress.toFixed(0)} m of ${ride.routeLength.toFixed(0)} m riding back`);
-});
-
-test('the same sweep on the ?mph=50 wheel, which is the wheel M30 shipped away from', () => {
-  // **M30 Phase 2's QA repair, finding 4, with the wheels swapped by Phase 4.**
-  // It rode `?mph=65` while 50 was frozen, precisely so that the day 65 became
-  // the default the gate above would not silently change meaning. It did change
-  // meaning, and it now carries the pinned `sweep-15`; what this one rides is
-  // the **other** wheel — `?mph=50`, M16's, on the road spaced for it — and it
-  // is still a clean zero.
-  //
-  // Both gates are a clean zero since the chase pass (§31) corrected the
-  // braking belief; this one still rides so the A/B wheel a player can switch
-  // to (`?mph=50`) is proven on its own road rather than assumed from the
-  // shipped one.
-  const down: string[] = [];
-  const unfinished: string[] = [];
-  let worstOffRoute = 0;
-
-  for (const seed of SWEEP) {
-    const { plan } = generateLevel(seed, undefined, undefined, 50);
-    const ride = rideAlone(plan, 1, 240, 50);
-    worstOffRoute = Math.max(worstOffRoute, ride.worstOffRoute);
-    if (ride.crashes > 0) down.push(`${seed}:${ride.crashes}`);
-    if (!ride.finished) {
-      unfinished.push(`${seed} stopped at ${ride.progress.toFixed(0)} m of ${ride.routeLength.toFixed(0)}`);
-    }
-  }
-
-  assert.deepEqual(unfinished, [], `a 50 mph cop cannot ride these routes out:\n${unfinished.join('\n')}`);
-  assert.deepEqual(
-    down,
-    [],
-    `the 50 mph sweep put a cop down: ${down.join(' ')} — this gate is a clean zero and is the `
-      + 'control the shipped gate\'s one pinned seed is read against',
-  );
-  assert.ok(
-    worstOffRoute < 12,
-    `the 50 mph cop wandered ${worstOffRoute.toFixed(1)} m off the line, which is not following a road`,
-  );
 });
 
 test('skill is line quality and braking, and a poor cop pays for both', () => {
@@ -1334,7 +1302,7 @@ test('the wedged-start siege breaks: one spin escape reaches around the wall', (
 test('a top-speed head-on rider is met by the cop paddle, not waved past', () => {
   // FEEDBACK-TRIAGE §4.2's second field defect, reproduced through the actual
   // brain → paddle handoff. At two top-speed wheels the range closes at about
-  // **59 m/s** on the shipped 65 mph wheel (46 on the 50). Waiting until the
+  // **59 m/s** on the shipped 65 mph wheel. Waiting until the
   // ordinary 3.4 m swing radius means the whole gap disappears during the
   // 0.10 s wind-up, so the paddle begins its strike only after the quarry is
   // behind it. A swept paddle cannot repair a swing that was asked for too

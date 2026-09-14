@@ -30,11 +30,7 @@ import {
   stairsFixture,
   stepUpFixture,
 } from './featureFixtures.ts';
-import {
-  METRES_PER_SECOND_PER_MPH,
-  topSpeedPreset,
-  topSpeedWrites,
-} from '../simulation/topSpeedPreset.ts';
+import { METRES_PER_SECOND_PER_MPH } from '../simulation/topSpeedPreset.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 
 /**
@@ -80,52 +76,43 @@ export const COAST_STEPS = 60;
 export const SPEED_AFTER_STEPS = 10;
 
 /**
- * The three wheels the bench measures, and only one of them is a playable
+ * The two wheels the bench measures, and only one of them is a playable
  * window.
  *
  * `shipped65` is the shipped table exactly as the game boots it — the default
- * tuning, `cutoutEnabled: 1`, no live-tuning writes at all. `diagnostic50` is
- * `?mph=50`, which §36.8 Phase 0 names as the second required preset: the
- * `EUC.*` writes `topSpeedPreset(50)` produces, cutout still on.
+ * tuning, `cutoutEnabled: 1`, no live-tuning writes at all. It is the ONLY
+ * wheel a window is accepted on: §38.7 retires the 50 mph reference, because
+ * 65 is what the game ships and no player-facing 50 limit exists. The generic
+ * `?mph=<n>` diagnostic is untouched and a 50 mph approach ON the shipped
+ * wheel is still an ordinary feature trial — it is the 50 mph *preset* that
+ * stopped being an acceptance wheel.
  *
  * **`nominal65-cutout-off` is a diagnostic and is never a window.** §36.2a:
  * "A 65-mph ballistic row, if needed in Phase 0, is explicitly an isolated
  * diagnostic with cutout disabled; it cannot certify a playable line." It is
  * printed in its own table under its own heading and no feature table uses it.
  */
-export const BENCH_WHEELS = ['shipped65', 'diagnostic50', 'nominal65-cutout-off'] as const;
+export const BENCH_WHEELS = ['shipped65', 'nominal65-cutout-off'] as const;
 
 export type BenchWheel = (typeof BENCH_WHEELS)[number];
 
 /** The wheels a playable window may be measured on. */
-export const PLAYABLE_WHEELS: readonly BenchWheel[] = ['shipped65', 'diagnostic50'];
+export const PLAYABLE_WHEELS: readonly BenchWheel[] = ['shipped65'];
 
 /**
  * The constructor `tuning` overrides for a wheel.
  *
- * The 50 preset goes through `topSpeedWrites` rather than through three
- * hand-copied fields, so the bench writes whatever `TOP_SPEED_PATHS` says the
- * game writes. Only the `EUC.*` paths are tuning: the camera and audio
- * references are presentation and the controller has never read them.
+ * The shipped wheel writes nothing at all; the cutout-off diagnostic changes
+ * one flag and nothing else. No preset conversion remains here — §38.7.
  */
 export function wheelTuning(wheel: BenchWheel): Partial<EucTuning> {
-  if (wheel === 'shipped65') return {};
   if (wheel === 'nominal65-cutout-off') return { cutoutEnabled: 0 };
-
-  const writes = topSpeedWrites(topSpeedPreset(50));
-  const tuning: Partial<EucTuning> = {};
-  for (const [path, value] of Object.entries(writes)) {
-    if (!path.startsWith('EUC.')) continue;
-    const key = path.slice('EUC.'.length) as keyof EucTuning;
-    (tuning as Record<string, number>)[key] = value;
-  }
-  return tuning;
+  return {};
 }
 
 /** How a wheel is spelled in a report. */
 export function wheelLabel(wheel: BenchWheel): string {
   if (wheel === 'shipped65') return 'shipped 65';
-  if (wheel === 'diagnostic50') return 'diagnostic 50 (?mph=50)';
   return 'nominal 65, cutout OFF (diagnostic)';
 }
 
@@ -927,7 +914,7 @@ export function tableFlatHop(): BenchTable {
       for (const trigger of T1_TRIGGERS) {
         if (trigger >= ceiling) {
           rows.push([
-            wheelLabel(wheel), surface, `${trigger}`, '—',
+            surface, `${trigger}`, '—',
             `not reached (this fixture tops out at ${mphText(ceiling)} mph)`,
             '', '', '', '', '',
           ]);
@@ -942,7 +929,7 @@ export function tableFlatHop(): BenchTable {
             maxSteps: 2600,
           });
           rows.push([
-            wheelLabel(wheel), surface, `${trigger}`, charge,
+            surface, `${trigger}`, charge,
             mphText(result.takeoffMph),
             metres(result.flightMetres),
             seconds(result.flightSeconds),
@@ -966,10 +953,12 @@ export function tableFlatHop(): BenchTable {
     notes: [
       'Charge: `none` never crouches; `full` holds crouch through the run-up and the'
         + ' flight; `half` holds it for `EUC.hopChargeSeconds / 2` and releases at the press.',
-      'Every row is the shipped cutout, enabled. A trigger at or above the fixture\'s own'
-        + ' terminal is reported as not reached rather than approximated.',
+      'Every row is the shipped 65 wheel with the shipped cutout, enabled — §38.7 retires'
+        + ' the 50 mph reference, so there is no comparison-wheel column. A trigger at or'
+        + ' above the fixture\'s own terminal is reported as not reached rather than'
+        + ' approximated.',
     ],
-    columns: ['wheel', 'surface', 'trigger mph', 'charge', 'takeoff mph', 'distance m',
+    columns: ['surface', 'trigger mph', 'charge', 'takeoff mph', 'distance m',
       'time s', 'apex m', 'tier', 'score'],
     rows,
     trials: tally.trials,
@@ -1092,52 +1081,10 @@ export function tableDropOnly(): BenchTable {
       'The approach is bang-bang to the stated speed, so the lip speed is controlled'
         + ' rather than observed — §36.4: "A feature\'s window is speed at the lip".',
       '`landed at` is the touchdown\'s distance past the lip.',
-      'Shipped 65 only; the diagnostic 50 cross-check is T2c.',
+      'Shipped 65, which is the only wheel a window is accepted on (§38.7).',
     ],
     columns: ['landing', 'grade', 'drop m', 'lip mph target', 'lip mph', 'launch',
       'air s', 'air m', 'landed at m', 'tier', 'score', 'impact m/s', 'speed lost mph'],
-    rows,
-    trials: tally.trials,
-    simulatedSteps: tally.steps,
-  };
-}
-
-/** T2c — the same drops on `?mph=50`, to show the preset does not move a tier. */
-export function tableDropPresetCheck(): BenchTable {
-  const tally = new Tally();
-  const rows: string[][] = [];
-
-  for (const surface of ['wood', 'dirt'] as const) {
-    for (const drop of T2_DROPS) {
-      const fixture = dropFixture({ drop, landingSurface: surface, landingGrade: 0 });
-      for (const speed of [8, 15, 25]) {
-        const shipped = tally.run(fixture, 'shipped65', {
-          targetMph: speed, lipS: fixture.lipS, hop: 'none', charge: 'none', maxSteps: 2600,
-        });
-        const fifty = tally.run(fixture, 'diagnostic50', {
-          targetMph: speed, lipS: fixture.lipS, hop: 'none', charge: 'none', maxSteps: 2600,
-        });
-        rows.push([
-          surface, metres(drop), `${speed}`,
-          `${mphText(shipped.takeoffMph)} / ${shipped.landingTier} / ${shipped.landingScore.toFixed(4)}`,
-          `${mphText(fifty.takeoffMph)} / ${fifty.landingTier} / ${fifty.landingScore.toFixed(4)}`,
-          shipped.landingTier === fifty.landingTier ? 'same tier' : 'DIFFERENT',
-        ]);
-      }
-    }
-  }
-
-  return {
-    id: 'T2c',
-    title: 'T2c — drop only on both presets (§36.8 Phase 0: "both wheel presets")',
-    geometry: ['level landing, flat wood and flat dirt, the six swept drops'],
-    notes: [
-      'The two presets have the same vertical hop and different drag (§36.2a). With the lip'
-        + ' speed controlled, a drop\'s landing is a question about the fall and the surface,'
-        + ' so the presets are expected to agree; the column exists to say so rather than assume it.',
-    ],
-    columns: ['landing', 'drop m', 'lip mph target', 'shipped 65: lip / tier / score',
-      'diagnostic 50: lip / tier / score', 'verdict'],
     rows,
     trials: tally.trials,
     simulatedSteps: tally.steps,
@@ -1997,7 +1944,6 @@ export function allTables(): readonly BenchTable[] {
     tableFlatHop(),
     tableFlatHopDiagnostic(),
     tableDropOnly(),
-    tableDropPresetCheck(),
     tableDropWithHop(),
     tableGap(),
     tableGapIntervals(),

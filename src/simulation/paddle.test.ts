@@ -375,13 +375,17 @@ function continuousActivePath(speed: number, subSteps: number): { x: number; y: 
  * than restated).
  *
  * **The absurd-speed case is derived from this rather than from a multiple of
- * the top speed** (M30 Phase 4). It used to ride four times top speed, which
- * was 89 m/s on the 50 mph wheel and inside the guard, and is 119 m/s on the
- * shipped 65 — past the guard, where the paddle correctly stops sweeping and
- * the case measured the guard instead of the sweep. What the case was always
- * reaching for is the *fastest carriage the sweep still has to be honest at*,
- * so that is what it rides now, and the assertion below keeps it absurd: it
- * has to stay at least twice anything the wheel can do.
+ * the top speed** (M30 Phase 4). It used to ride four times top speed, which is
+ * 119 m/s on the shipped 65 — past the guard, where the paddle correctly stops
+ * sweeping and the case measured the guard instead of the sweep. What the case
+ * was always reaching for is the *fastest carriage the sweep still has to be
+ * honest at*, so that is what it rides now, and the assertion below keeps it
+ * absurd: it has to stay at least twice anything the wheel can do.
+ *
+ * **q181 keeps the `?mph=` switch**, so the maximum-URL-speed guard above
+ * (`MAX_TOP_SPEED_MPH`, 90) is still live and is deliberately untouched by
+ * M38 Part B. This ceiling is measured against the shipped wheel; that one is
+ * measured against the fastest wheel the URL can build, and both are needed.
  */
 const SWEEP_CEILING_SPEED = PADDLE.maxStepSweep * SIMULATION.hz
   - new Paddle().legitimateStepSweep(0) * SIMULATION.hz;

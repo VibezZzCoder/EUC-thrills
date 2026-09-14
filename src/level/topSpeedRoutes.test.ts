@@ -23,16 +23,24 @@ import {
 
 /**
  * The `?mph=` world — M30 Phase 1 evidence (`docs/PLANS.md` §30.5 items 1, 2,
- * 4), **with the two wheels swapped at Phase 4**.
+ * 4).
  *
- * When this file was written 50 was the frozen table and 65 was the switch, so
- * every claim below was phrased as "what 65 does that the shipped wheel does
- * not". The owner chose 65 on 2026-09-03 (*"we will ship at 65. i pre-approve"*)
- * and Phase 4 moved the table, so the roles are reversed: **the shipped wheel
- * is 65 and `?mph=50` is the diagnostic back to M16's**. The claims are
- * unchanged — each is about the *faster* wheel and the *slower* one, not about
- * which is currently frozen — and they are re-derived here rather than
- * re-labelled, with the recorded counts re-measured on the build that ships.
+ * The owner chose 65 on 2026-09-03 (*"we will ship at 65. i pre-approve"*) and
+ * M30 Phase 4 moved the frozen table to it, so **the shipped wheel is 65** and
+ * `?mph=<n>` is a generic diagnostic over the 20–90 mph window.
+ *
+ * **M38 Part B (`docs/PLANS.md` §38.7) retired the 50 mph reference wheel.**
+ * This file used to survey the whole sweep twice — once shipped, once at 50 —
+ * and pin both. It now carries **one shipped seed survey with the shipped
+ * pins**; the claims that are about the *switch* rather than about a second
+ * wheel (override propagation, speed-scaled fairness, the density algebra,
+ * mismatched-rule rejection) stay as focused contracts, and where one of them
+ * needs a speed that is not the default it uses a plain example inside the
+ * window rather than a wheel anyone is invited to compare against. The
+ * `DENSITY_ANCHOR` derivation in `routeValidator.ts` stays exactly as it is:
+ * it is legacy density *calibration* that still controls the shipped hazard
+ * offer, not a wheel builders ride (re-anchoring it once thinned the road and
+ * the owner rejected that outcome).
  *
  * **A separate file from `generatedLevel.test.ts`, on purpose.** That file pins
  * the shipped wheel's records — the six adversarial seeds, the plan digests,
@@ -58,29 +66,30 @@ import {
  *      swing cycles of travel and does the same.
  *   4. **Density is a taste, and it goes the other way.** The separation floor
  *      is fairness and grows with the wheel; the *chance* of trying a hazard at
- *      a station is anchored on **M16's 50 mph wheel** and scaled **up** with
+ *      a station is anchored on **M16's legacy drag calibration** and scaled **up** with
  *      the top speed by `HAZARD.densityTopSpeedExponent`, because a faster
  *      wheel exists to be more thrilling and an emptier road is the opposite of
  *      one. Phase 1 had to amend this once — deriving the density from the
  *      *live* separation took a quarter of the holes off a 65 route — and
  *      **Phase 4 had to amend it again for the same reason in a different
- *      costume**: the anchor was spelled "the shipped wheel", which meant 50
- *      until the day 65 shipped and then quietly re-anchored itself, thinning
+ *      costume**: the anchor was spelled "the shipped wheel", which followed
+ *      the table and quietly re-anchored itself the day 65 shipped, thinning
  *      the shipped sweep from 81 holes to 63. It is frozen at 0.0147 now
  *      (`DENSITY_ANCHOR`), so the shipped 65 road is the road the owner rode.
  *      The exponent is 3 rather than 1 because the contracts refuse most of
  *      what the taste offers — the constant's comment carries the measured
  *      ladder.
- *   5. **A 65 route is the same road with a different set of holes.** Both
- *      content streams spend the same draws at every station whether or not
- *      they place anything, and neither runs until the geometry is decided — so
- *      the segments, the heightfield, the dressing and the checkpoints are
- *      byte-identical between the two builds of one seed and the attempt counts
- *      match.
- *   6. **The rules bite.** A route spaced for 50 fails when judged by the 65
- *      wheel, and a route spaced for 65 passes when judged by the 50 rules —
- *      wider spacing is a superset, so the faster wheel gets a denser road
- *      inside a stricter floor rather than a different set of contracts.
+ *   5. **A switched route is the same road with a different set of holes.**
+ *      Both content streams spend the same draws at every station whether or
+ *      not they place anything, and neither runs until the geometry is decided
+ *      — so the segments, the heightfield, the dressing and the checkpoints are
+ *      byte-identical between two builds of one seed and the attempt counts
+ *      match. Asserted once, on one seed.
+ *   6. **The rules bite.** A route spaced for a slower wheel fails when judged
+ *      by the shipped rules, and a shipped route passes when judged by the
+ *      slower rules — wider spacing is a superset, so the faster wheel gets a
+ *      denser road inside a stricter floor rather than a different set of
+ *      contracts.
  *   7. **The slice still validates across the whole `?mph=` window** (§30.5
  *      item 2). A rule the accepted level fails is a wrong rule, so this is the
  *      place that would say so.
@@ -94,6 +103,16 @@ import {
 
 /** The two seeds §30.5 item 3 reports by name, and the sweep the claims are made over. */
 const SWEEP = Array.from({ length: 16 }, (_, index) => `euc-${index + 1}`);
+
+/**
+ * One ordinary speed for the focused `?mph=` contracts below, slower than the
+ * shipped 65 and well inside the parser's 20–90 mph window.
+ *
+ * **M38 Part B**: this used to be 50, the retired reference wheel. Nothing
+ * asserted against it is a claim about *which* speed — every expectation is
+ * derived from the recipe or the generator, so the example is interchangeable.
+ */
+const DIAGNOSTIC_MPH = 58;
 
 /** Every hazard's distance along the required route, as the contracts measure it. */
 function hazardPlacements(layout: ReturnType<typeof generateLevel>['layout']) {
@@ -143,11 +162,11 @@ test('a build with no override rides the frozen table, by identity', () => {
 // What 65 moves, and what it does not
 // ---------------------------------------------------------------------------
 
-test('65 is the wheel the generator ships, and the 50 preset is the one that moves', () => {
-  // **Phase 4 swapped the sides.** `rideabilityAt(65)` used to be the override;
-  // it is now the frozen table's own wheel and has to agree with it, which is
-  // the generator's half of `topSpeedPreset.test.ts`' "the shipped table IS the
-  // 65 mph preset". `?mph=50` is the wheel that moves now.
+test('65 is the wheel the generator ships, and a ?mph= override is the one that moves', () => {
+  // `rideabilityAt(65)` is the frozen table's own wheel and has to agree with
+  // it, which is the generator's half of `topSpeedPreset.test.ts`' "the shipped
+  // table IS the 65 mph preset". Any other value in the window is what moves.
+  // **M38 Part B**: the example below is an ordinary speed, not a reference.
   const r65 = rideabilityAt(65);
   assert.ok(
     Math.abs(r65.topSpeed - RIDEABILITY.topSpeed) < 1e-9,
@@ -159,23 +178,28 @@ test('65 is the wheel the generator ships, and the 50 preset is the one that mov
   );
   assert.equal(r65.dragCoefficient, EUC.dragCoefficient);
 
-  const preset = topSpeedPreset(50);
-  const r50 = rideabilityAt(50);
+  // Propagation, derived rather than transcribed: whatever the parser hands
+  // the generator, the wheel it builds is the preset's own.
+  for (const mph of [20, DIAGNOSTIC_MPH, 90]) {
+    const preset = topSpeedPreset(mph);
+    const wheel = rideabilityAt(mph);
+    assert.ok(
+      Math.abs(wheel.topSpeed - preset.dragOnlyTop) < 1e-9,
+      `the generator's ${mph} wheel tops out at ${wheel.topSpeed} m/s and the preset says ${preset.dragOnlyTop}`,
+    );
+    assert.equal(wheel.dragCoefficient, preset.dragCoefficient);
+  }
   assert.ok(
-    Math.abs(r50.topSpeed - preset.dragOnlyTop) < 1e-9,
-    `the generator's 50 wheel tops out at ${r50.topSpeed} m/s and the preset says ${preset.dragOnlyTop}`,
+    rideabilityAt(DIAGNOSTIC_MPH).topSpeed < RIDEABILITY.topSpeed,
+    'a speed below the shipped one has to build a slower wheel, or the override is not reaching the generator',
   );
-  assert.ok(
-    Math.abs(r50.topSpeed - 22.880) < 0.001,
-    `the 50 mph drag-only top is ${r50.topSpeed.toFixed(4)} m/s`,
-  );
-  assert.ok(r50.topSpeed < RIDEABILITY.topSpeed, 'the A/B wheel is meant to be the slower one');
-  assert.equal(r50.dragCoefficient, preset.dragCoefficient);
 
   // **Phase 1 is not Phase 2.** The lateral ceiling, the hop and the stall
   // grade are functions of `maxLateralG`, the hop constants and the drive — and
   // the preset touches none of the three, at any speed it is asked for.
   for (const mph of [20, 50, 58, 80, 90]) {
+    // A plain sweep of the window the parser accepts — 50 is one legal value
+    // among these, carrying no status of its own (M38 Part B).
     const wheel = rideabilityAt(mph);
     assert.equal(wheel.lateralAccel, RIDEABILITY.lateralAccel, `${mph} lateral`);
     assert.equal(wheel.hopAirtime, RIDEABILITY.hopAirtime, `${mph} hop`);
@@ -193,8 +217,8 @@ test('fairness is a time, so the spacing scales exactly by the speed ratio', () 
   // the ratio here means a metre has been written down somewhere it should
   // have been derived.
   //
-  // **Swept over the whole `?mph=` window at Phase 4** rather than asserted at
-  // 65 alone, because 65 is the frozen table now and its "scale" is one.
+  // **Swept over the whole `?mph=` window** rather than asserted at one speed,
+  // because 65 is the frozen table and its own "scale" is one.
   for (const mph of [20, 50, 58, 80, 90]) {
     const scale = hazardRulesFor(rideabilityAt(mph)).separationMetres / HAZARD_RULES.separationMetres;
     const ratio = topSpeedPreset(mph).ratio;
@@ -222,13 +246,6 @@ test('fairness is a time, so the spacing scales exactly by the speed ratio', () 
     `the shipped lane-change response is ${hazards.respondMetres(r65.topSpeed).toFixed(1)} m — `
       + 'fact 6 expects ≈31',
   );
-  // And the wheel the A/B goes back to, whose numbers were the shipped ones
-  // until Phase 4: ≈63 m of separation, which is where M16 left it.
-  const fifty = hazardRulesFor(rideabilityAt(50));
-  assert.ok(
-    fifty.separationMetres > 60 && fifty.separationMetres < 67,
-    `the 50 separation is ${fifty.separationMetres.toFixed(1)} m — M16's own ≈63`,
-  );
 
   // And the eight rules that are facts about the road rather than about the
   // wheel do not move. `HAZARD.readMetres` — the sight walk's 40 m look-back —
@@ -248,15 +265,18 @@ test('fairness is a time, so the spacing scales exactly by the speed ratio', () 
     assert.equal(targets[key], TARGET_RULES[key], key);
   }
 
-  // 58 was the owner's middle option (§30.6); he chose 65.
-  const r58 = hazardRulesFor(rideabilityAt(58));
+  // One worked example off the shipped pins: 58 was the owner's middle option
+  // (§30.6); he chose 65. The separation is a time, so a slower wheel covers
+  // it in less road, and that is the only claim here.
+  const middle = hazardRulesFor(rideabilityAt(58));
   assert.ok(
-    r58.separationMetres > 70 && r58.separationMetres < 77,
-    `the 58 separation is ${r58.separationMetres.toFixed(1)} m`,
+    middle.separationMetres > 70 && middle.separationMetres < 77,
+    `the 58 separation is ${middle.separationMetres.toFixed(1)} m`,
   );
+  assert.ok(middle.separationMetres < hazards.separationMetres);
 });
 
-test('density is a taste that scales up with the wheel, anchored on M16\'s 50', () => {
+test('density is a taste that scales up with the wheel, on a frozen legacy anchor', () => {
   // **The rule, in one line each.** The fairness floor above is a *time* and
   // grows with the wheel; the density is not derived from anything and grows
   // with the wheel too, on purpose — deriving it from the live separation, as
@@ -268,9 +288,16 @@ test('density is a taste that scales up with the wheel, anchored on M16\'s 50', 
   // in the derivation.** "Anchored on the shipped wheel" was true prose and a
   // trap: the day 65 became the shipped wheel, the anchor moved with it, the
   // ratio went to exactly one, and the shipped sweep thinned from 81 holes to
-  // 63. The anchor is `DENSITY_ANCHOR` now — M16's 0.0147 wheel, frozen — so
-  // "the shipped road is the road he rode at 65" is a fact rather than a
+  // 63. The anchor is `DENSITY_ANCHOR` now — M16's frozen 0.0147 calibration —
+  // so "the shipped road is the road he rode at 65" is a fact rather than a
   // coincidence of which table happens to be frozen.
+  //
+  // **M38 Part B leaves this arithmetic alone on purpose** (`docs/PLANS.md`
+  // §38.7). `DENSITY_ANCHOR_DRAG_COEFFICIENT` is legacy density *calibration*
+  // that still controls the shipped hazard offer; it is not a wheel anybody
+  // rides and retiring it would be a separate measured redesign. The
+  // regression protection below is exactly what stops the road thinning
+  // again.
   const anchorChance = DENSITY_ANCHOR_RULES.profileStep / DENSITY_ANCHOR_RULES.separationMetres;
   assert.ok(
     Math.abs(DENSITY_ANCHOR.topSpeed - 22.843) < 0.001,
@@ -309,11 +336,6 @@ test('density is a taste that scales up with the wheel, anchored on M16\'s 50', 
     `the shipped road is offered ${(HAZARD_RULES.chancePerStation / anchorChance).toFixed(3)}× `
       + 'the anchor density, recorded at 2.208',
   );
-  // And the A/B goes back down it: `?mph=50` is the anchor road again.
-  assert.ok(
-    Math.abs(hazardRulesFor(rideabilityAt(50)).chancePerStation / anchorChance - 1) < 0.01,
-    'a ?mph=50 session no longer draws against M16\'s own density',
-  );
 
   // The exponent is a frozen constant and not a live tunable: the generator
   // reads this table and the session's mph and nothing else. **3 is the
@@ -330,177 +352,154 @@ test('density is a taste that scales up with the wheel, anchored on M16\'s 50', 
 // The same road with a different set of holes
 // ---------------------------------------------------------------------------
 
-test('route-41 at 50 is the same road, spaced for the wheel it is ridden on', () => {
+test('one seed under a ?mph= override is the same road, spaced for the wheel it is ridden on', () => {
+  // **The propagation contract, on one seed.** M38 Part B retired the second
+  // full reference-wheel survey this used to be half of; what is left is the
+  // claim that actually needs two builds of one seed — that the switch changes
+  // the *content* and nothing else — plus the shipped pins for route-41.
   const shipped = generateLevel('route-41');
-  const slow = generateLevel('route-41', undefined, undefined, 50);
-  const r50 = rideabilityAt(50);
+  const switched = generateLevel('route-41', undefined, undefined, DIAGNOSTIC_MPH);
+  const rules = rideabilityAt(DIAGNOSTIC_MPH);
 
-  assert.equal(slow.report.usedFallback, false, 'route-41 stopped building at 50');
-  assert.equal(slow.report.attempts, shipped.report.attempts, 'the 50 build took a different route');
-  assert.ok(validateRoute(slow.layout, r50).valid, 'the 50 route does not satisfy the 50 rules');
+  assert.equal(switched.report.usedFallback, false, `route-41 stopped building at ${DIAGNOSTIC_MPH}`);
+  assert.equal(
+    switched.report.attempts,
+    shipped.report.attempts,
+    `the ${DIAGNOSTIC_MPH} build took a different route`,
+  );
+  assert.ok(
+    validateRoute(switched.layout, rules).valid,
+    `the ${DIAGNOSTIC_MPH} route does not satisfy the ${DIAGNOSTIC_MPH} rules`,
+  );
 
   // **A record, not a ceiling.** Seven hazards and eighteen targets is the
-  // **shipped** route-41 since M30 Phase 4 — the same road the owner rode under
-  // `?mph=65`, byte for byte, which is what re-anchoring the density bought.
-  // `?mph=50` puts it back to the six and twenty-two M13 to M29 shipped. If
-  // these move, say why in `CHANGELOG.md` and re-record — do not relax the
-  // assertion.
+  // **shipped** route-41 since M30 Phase 4 — the same road the owner rode,
+  // byte for byte, which is what freezing the density anchor bought. If these
+  // move, say why in `CHANGELOG.md` and re-record — do not relax the assertion.
   const shippedHazards = (shipped.plan.hazards ?? []).length;
-  const slowHazards = (slow.plan.hazards ?? []).length;
   assert.equal(shippedHazards, 7, `the shipped route-41 carries ${shippedHazards} hazards, recorded at 7`);
-  assert.equal(slowHazards, 6, `route-41 at 50 carries ${slowHazards} hazards, recorded at 6`);
-  // **The direction is the claim; the number is the record.** While the density
-  // was derived from the fairness floor this road carried five at 65, and again
-  // at Phase 4 while the anchor followed the shipped wheel — a route that
-  // empties as the wheel gets faster is the defect this line exists to catch.
-  // The `>=` is deliberately weaker than the records above it: a future
-  // exponent may make this seven an eight, and that is a re-record; a six would
-  // be the rule breaking.
-  assert.ok(shippedHazards >= slowHazards,
-    `65 put ${shippedHazards} hazards on a road that carries ${slowHazards} at 50`);
-  assert.notDeepStrictEqual(
-    (slow.plan.hazards ?? []).map((hazard) => hazard.id),
-    (shipped.plan.hazards ?? []).map((hazard) => hazard.id),
-    'the 50 build placed the shipped wheel\'s exact holes',
+  assert.equal(
+    (shipped.plan.targets ?? []).length,
+    18,
+    `the shipped route-41 carries ${(shipped.plan.targets ?? []).length} targets, recorded at 18`,
   );
-  // Targets are untouched by the density amendment: their separation is a swing
-  // cycle and their chance per station is a flat constant, so a faster wheel
-  // still carries fewer stands.
-  assert.equal((slow.plan.targets ?? []).length, 22,
-    `route-41 at 50 carries ${(slow.plan.targets ?? []).length} targets, recorded at 22`);
-  assert.ok((shipped.plan.targets ?? []).length <= (slow.plan.targets ?? []).length);
+
+  // The switch really moved the content: a different set of holes, not merely
+  // a different count of the same ones. Which way the count goes on a single
+  // seed is a fact about that road — the direction claim is a sweep, and it
+  // lives with the density algebra above.
+  assert.notDeepStrictEqual(
+    (switched.plan.hazards ?? []).map((hazard) => hazard.id),
+    (shipped.plan.hazards ?? []).map((hazard) => hazard.id),
+    'the override build placed the shipped wheel\'s exact holes',
+  );
+  // Targets are untouched by the density amendment: their separation is a
+  // swing cycle and their chance per station is a flat constant, so a slower
+  // wheel still carries at least as many stands.
+  assert.ok((shipped.plan.targets ?? []).length <= (switched.plan.targets ?? []).length);
 
   // Every surviving pair is a pair its own wheel can recover between.
-  assert.equal(hazardSpacingRefusal(hazardPlacements(slow.layout), hazardRulesFor(r50)), null);
+  assert.equal(hazardSpacingRefusal(hazardPlacements(switched.layout), hazardRulesFor(rules)), null);
   assert.equal(hazardSpacingRefusal(hazardPlacements(shipped.layout), HAZARD_RULES), null);
 
   // -- And it is the same road ---------------------------------------------
   //
   // The hazards stream spends four draws at every station and the targets
   // stream three, whether or not anything lands, and neither runs until the
-  // geometry is decided. So a 50 build differs from the shipped 65 build in
-  // exactly the set of holes and stands and in nothing else — which is what
-  // makes the A/B a test of the *wheel* rather than a comparison of two worlds.
-  assert.deepStrictEqual(slow.plan.segments, shipped.plan.segments);
-  assert.deepStrictEqual(slow.plan.heightfield.heights, shipped.plan.heightfield.heights);
-  assert.deepStrictEqual(slow.plan.props, shipped.plan.props);
-  assert.deepStrictEqual(slow.plan.checkpoints, shipped.plan.checkpoints);
+  // geometry is decided. So an overridden build differs from the shipped build
+  // in exactly the set of holes and stands and in nothing else — which is what
+  // makes the switch a change of *wheel* rather than a change of world.
+  assert.deepStrictEqual(switched.plan.segments, shipped.plan.segments);
+  assert.deepStrictEqual(switched.plan.heightfield.heights, shipped.plan.heightfield.heights);
+  assert.deepStrictEqual(switched.plan.props, shipped.plan.props);
+  assert.deepStrictEqual(switched.plan.checkpoints, shipped.plan.checkpoints);
 });
 
-test('the shipped 65 route is the same road as its ?mph=50 twin across a seed sweep', () => {
-  // Measured before it was pinned: all sixteen agree, and the report names any
-  // that do not rather than the assertion hiding them behind the first.
+test('the shipped seed sweep keeps its recorded hazard count and its fairness floor', () => {
+  // **One shipped survey** (M38 Part B). This used to build all sixteen seeds
+  // twice — shipped and at the retired 50 mph reference — and pin both totals
+  // plus their ordering. The reference is gone; what the sweep is *for*
+  // survives, and it is the regression protection the owner's rejected
+  // thinning bought:
   //
-  // **"The same road" is the geometry, not the whole plan**, and the difference
-  // is measured rather than assumed. Four things legitimately move with the
-  // hazard set: the hazards, the targets, the heightfield's *surfaces* (a spill
-  // is painted into the cells it covers, so removing one gives the road its
-  // grip back) and the markings (a painted line is broken around a footprint).
-  // The heights, the segments, the dressing, the colliders and the checkpoints
-  // are byte-identical, which is what "the same road" has to mean.
-  const disagreed: string[] = [];
+  //   - **115 hazards across the sixteen seeds.** The density amendment and
+  //     the frozen anchor are what put it there. When the density was derived
+  //     from the live separation, and again when the anchor followed the
+  //     shipped table, this same sweep fell to 63 — an emptier road on a
+  //     faster wheel, which is the wrong way round and which the owner
+  //     rejected when he saw it. A number below this pin is that defect
+  //     returning; re-record it in `CHANGELOG.md` with a reason, never relax it.
+  //   - **The floor still binds, seed by seed.** The density scaled up; the
+  //     fairness rule did not move an inch, and every pair the shipped road
+  //     carries is a pair the shipped wheel can recover between. This is the
+  //     assertion that would fail if the taste were ever allowed to buy its
+  //     way past the floor.
+  const fellBack: string[] = [];
   const holes: string[] = [];
-  const r50 = hazardRulesFor(rideabilityAt(50));
   let shippedTotal = 0;
-  let slowTotal = 0;
   for (const seed of SWEEP) {
     const shipped = generateLevel(seed);
-    const slow = generateLevel(seed, undefined, undefined, 50);
-    if (shipped.report.usedFallback || slow.report.usedFallback) {
-      disagreed.push(`${seed}: fell back (${shipped.report.usedFallback}/${slow.report.usedFallback})`);
+    if (shipped.report.usedFallback) {
+      fellBack.push(seed);
       continue;
     }
-    const road = (level: typeof shipped): string => JSON.stringify([
-      level.plan.segments,
-      level.plan.heightfield.heights,
-      level.plan.props,
-      level.plan.checkpoints,
-      level.plan.solids,
-      level.plan.softBodies,
-    ]);
-    if (shipped.report.attempts !== slow.report.attempts) disagreed.push(`${seed} (attempts)`);
-    else if (road(shipped) !== road(slow)) disagreed.push(`${seed} (geometry)`);
-    holes.push(`${seed} ${(slow.plan.hazards ?? []).length}→${(shipped.plan.hazards ?? []).length}`);
+    holes.push(`${seed} ${(shipped.plan.hazards ?? []).length}`);
     shippedTotal += (shipped.plan.hazards ?? []).length;
-    slowTotal += (slow.plan.hazards ?? []).length;
-
-    // **The floor still binds, seed by seed.** The density scaled up; the
-    // fairness rule did not move an inch, and every pair the shipped 65 road
-    // carries is a pair the 65 wheel can recover between. This is the assertion
-    // that would fail if the taste were ever allowed to buy its way past the
-    // floor — and the same for the slower wheel against its own narrower floor.
     assert.equal(
       hazardSpacingRefusal(hazardPlacements(shipped.layout), HAZARD_RULES),
       null,
       `${seed}'s shipped road stacks two hazards inside one recovery`,
     );
-    assert.equal(
-      hazardSpacingRefusal(hazardPlacements(slow.layout), r50),
-      null,
-      `${seed}'s 50 road stacks two hazards inside one recovery`,
-    );
   }
-  assert.deepStrictEqual(disagreed, [], `these seeds built a different road at 50 — ${holes.join(', ')}`);
-
-  // **A total, not a per-seed rule**, and it stays a total on purpose. A given
-  // road can legitimately lose a hole at 65 — the wider floor refuses a pair the
-  // denser dice offered — and at exponent 1 two of these sixteen did exactly
-  // that. At 3 the offer is steep enough that **all sixteen gain** (81 → 115),
-  // but the rule being asserted is still the sweep, because which individual
-  // seed gains is a fact about that road rather than about the wheel. What must
-  // not happen is the sweep as a whole thinning out, which is what the derived
-  // density did — and what the shipped-wheel anchor did again at Phase 4,
-  // taking this same sweep to 63 until the anchor was frozen at M16's wheel.
-  assert.ok(
-    shippedTotal > slowTotal,
-    `the shipped 65 sweep carries ${shippedTotal} hazards against ?mph=50's ${slowTotal} — `
-      + `a faster wheel is meant to meet more road, not less (${holes.join(', ')})`,
-  );
-  assert.equal(slowTotal, 81, `the ?mph=50 sweep carries ${slowTotal} hazards, recorded at 81`);
-  assert.equal(shippedTotal, 115, `the shipped sweep carries ${shippedTotal} hazards, recorded at 115`);
+  assert.deepStrictEqual(fellBack, [], `these seeds fell back to the slice — ${holes.join(', ')}`);
+  assert.equal(shippedTotal, 115, `the shipped sweep carries ${shippedTotal} hazards, recorded at 115 (${holes.join(', ')})`);
 });
 
 // ---------------------------------------------------------------------------
 // The rules bite
 // ---------------------------------------------------------------------------
 
-test('a route spaced for 50 is refused by the 65 rules, and never the other way round', () => {
+test('a route spaced for a slower wheel is refused by the shipped rules, and never the other way round', () => {
   // **The whole reason the generator takes the switch.** Without it a rider
   // could be handed a road spaced for one wheel while riding another — which is
   // unfair by the game's own fairness rule, because two of the slower road's
   // holes sit inside one recovery of the faster wheel.
   //
-  // **Phase 4 reversed which way round that risk runs.** It used to be
-  // "`?mph=65` hands a rider the shipped 50 mph routes"; now the shipped wheel
-  // is the fast one and the diagnostic is the slow one, so the road that must
-  // be refused is the one `?mph=50` builds, judged by the shipped rules.
-  // Measured: `?mph=50`'s route-41 fails `target-density` (its stands are
-  // inside two swing cycles of the shipped wheel) and `?mph=50`'s `x67` fails
-  // `hazard-density` as well (two of its holes are inside one recovery). Both
-  // are named, because one contract firing is not evidence that the other can.
-  const route41 = validateRoute(generateLevel('route-41', undefined, undefined, 50).layout);
-  assert.equal(route41.valid, false, 'a 50-spaced route-41 passes the shipped rules unchanged');
+  // The shipped wheel is the fast one, so the road that must be refused is the
+  // one a *slower* override builds, judged by the shipped rules. **M38 Part B**:
+  // the override below is an ordinary example, not a reference wheel — every
+  // expectation is the contract's own verdict, measured on this build.
+  // Measured at 58: route-41 fails `target-density` (its stands are inside two
+  // swing cycles of the shipped wheel) and `x67` fails `hazard-density` as well
+  // (two of its holes are inside one recovery). Both are named, because one
+  // contract firing is not evidence that the other can.
+  const route41 = validateRoute(generateLevel('route-41', undefined, undefined, DIAGNOSTIC_MPH).layout);
+  assert.equal(
+    route41.valid,
+    false,
+    `a ${DIAGNOSTIC_MPH}-spaced route-41 passes the shipped rules unchanged`,
+  );
   assert.ok(
     route41.failures.some((failure) => failure.contract === 'target-density'),
-    `route-41 at 50 failed ${route41.failures.map((f) => f.contract).join(', ')}`,
+    `route-41 at ${DIAGNOSTIC_MPH} failed ${route41.failures.map((f) => f.contract).join(', ')}`,
   );
 
-  const x67 = validateRoute(generateLevel('x67', undefined, undefined, 50).layout);
+  const x67 = validateRoute(generateLevel('x67', undefined, undefined, DIAGNOSTIC_MPH).layout);
   assert.ok(
     x67.failures.some((failure) => failure.contract === 'hazard-density'),
-    `x67 at 50 failed ${x67.failures.map((f) => f.contract).join(', ')} — if no seed in the `
-      + 'sweep can fail the hazard rule at 65 any more, the spacing stopped following the wheel',
+    `x67 at ${DIAGNOSTIC_MPH} failed ${x67.failures.map((f) => f.contract).join(', ')} — if no seed in the `
+      + 'sweep can fail the hazard rule on the shipped wheel any more, the spacing stopped following the wheel',
   );
 
-  // And the converse: wider spacing is a superset, so the shipped 65 route is
-  // legal on the slower wheel too. A player who typed `?mph=50`, opened a route
-  // and then reloaded without the switch is riding a legal world, and so is one
-  // who did it the other way round.
+  // And the converse: wider spacing is a superset, so the shipped route is
+  // legal on a slower wheel too. A player who typed `?mph=`, opened a route and
+  // then reloaded without the switch is riding a legal world, and so is one who
+  // did it the other way round.
   for (const seed of ['route-41', 'x67', ...SWEEP.slice(0, 8)]) {
     const shipped = generateLevel(seed);
     if (shipped.report.usedFallback) continue;
-    const verdict = validateRoute(shipped.layout, rideabilityAt(50));
-    assert.ok(verdict.valid, `${seed}'s shipped 65 route fails the 50 rules: `
+    const verdict = validateRoute(shipped.layout, rideabilityAt(DIAGNOSTIC_MPH));
+    assert.ok(verdict.valid, `${seed}'s shipped route fails the ${DIAGNOSTIC_MPH} rules: `
       + verdict.failures.map((failure) => failure.detail).join('; '));
   }
 });
@@ -522,8 +521,9 @@ test('the hand-authored slice validates across the whole ?mph= window', () => {
   // reach is recorded here so the margin is on file rather than inferred.
   const layout = sliceRouteLayout();
   // 20 and 90 are the parser's own ends (`MIN_TOP_SPEED_MPH`,
-  // `MAX_TOP_SPEED_MPH`); 50 is the A/B and 58 was the middle option §30.6
-  // offered. The shipped 65 is covered by every other validation in the suite.
+  // `MAX_TOP_SPEED_MPH`); the values between them are ordinary samples of the
+  // window, 58 being the middle option §30.6 offered. The shipped 65 is
+  // covered by every other validation in the suite.
   for (const mph of [20, 50, 58, 80, 90]) {
     const rideability: Rideability = rideabilityAt(mph);
     const verdict = validateRoute(layout, rideability);

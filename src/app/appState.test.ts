@@ -53,7 +53,7 @@ test('ride input is live in exactly the ride states', () => {
   assert.deepEqual(riding, [...RIDE_STATES]);
   assert.deepEqual(
     [...RIDE_STATES],
-    ['freeRide', 'challenge', 'trackDay', 'knockabout', 'chase'],
+    ['freeRide', 'challenge', 'trackDay', 'trickRun', 'knockabout', 'chase'],
   );
   for (const id of APP_STATES) {
     assert.equal(
@@ -102,6 +102,13 @@ test('both scored rides are reachable, and leave only where they should', () => 
     [...APP_STATE_SPECS.trackDay.successors],
     ['paused', 'results', 'title'],
   );
+  // And Trick Run is the fifth (M38). It reaches `results` two ways and
+  // crosses nothing for either: the fixed clock runs out, or the player ends
+  // the run from the pause card. Identical list again, for the reason above.
+  assert.deepEqual(
+    [...APP_STATE_SPECS.trickRun.successors],
+    ['paused', 'results', 'title'],
+  );
   assert.ok(
     APP_STATE_SPECS.paused.successors.includes('results'),
     'a session that ends from the pause card has nowhere to report itself',
@@ -111,7 +118,7 @@ test('both scored rides are reachable, and leave only where they should', () => 
   // player who wants to stop being scored goes through the title deliberately.
   assert.deepEqual(
     [...APP_STATE_SPECS.results.successors],
-    ['challenge', 'trackDay', 'knockabout', 'chase', 'freeRide', 'title'],
+    ['challenge', 'trackDay', 'trickRun', 'knockabout', 'chase', 'freeRide', 'title'],
   );
   // **`freeRide` is here from M23 and it is the New route edge, nothing else.**
   // The rule it replaced — no unscored ride the player did not choose — was
@@ -338,20 +345,23 @@ test('the venue chooser needed no transition, and both its panels still lead whe
    */
   const routes = atTitle();
   routes.goTo('routes');
-  // The fresh-route panel's five, unchanged: a venue press adds none of them.
+  // The fresh-route panel's six. A venue press adds none of them; M38's
+  // contextual Trick Run action is the one edge this panel has gained, and it
+  // is a *mode* press rather than a place press.
   assert.deepEqual(
     [...APP_STATE_SPECS.routes.successors],
-    ['title', 'freeRide', 'challenge', 'knockabout', 'chase'],
+    ['title', 'freeRide', 'challenge', 'knockabout', 'chase', 'trickRun'],
   );
   assert.equal(routes.goTo('trackDay'), false, 'Track Day is still reached from the title');
   assert.equal(routes.current, 'routes', 'and a refusal leaves the panel where it was');
 
   const couch = atTitle();
   couch.goTo('couchJoin');
-  // The join panel's five, unchanged — `trackDay` is where a couch race rides.
+  // The join panel's six — `trackDay` is where a couch race rides, and
+  // `trickRun` is M38's fourth couch ride.
   assert.deepEqual(
     [...APP_STATE_SPECS.couchJoin.successors],
-    ['title', 'freeRide', 'trackDay', 'knockabout', 'routes'],
+    ['title', 'freeRide', 'trackDay', 'trickRun', 'knockabout', 'routes'],
   );
   assert.equal(couch.goTo('trackDay'), true, 'a room that picked a lap venue can still race on it');
 });

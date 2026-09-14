@@ -17,7 +17,15 @@ import { VENUE_IDS } from '../app/venues.ts';
 
 test('a venue press says which place is loaded and where the ride is', () => {
   const [tone, message] = routeStatusLine({ kind: 'venue-ready', venue: 'switchback' }, true);
-  assert.equal(message, 'Switchback Park is ready. Back to the title to ride it or lap it.');
+  // **And it names the action that press just made available** — M38 §38.6.
+  // The park is the one venue that hosts a Trick Run, so selecting it reveals
+  // a control on this panel, and a line that reported the swap without saying
+  // so would be the same silence this function was written to remove.
+  assert.equal(
+    message,
+    'Switchback Park is ready. Trick Run scores your tricks here, or Back to the '
+    + 'title to ride it or lap it.',
+  );
   // Not a refusal and not a wait: the world is already swapped when this is
   // written, so the line reads as the success it reports.
   assert.equal(tone, 'ready');
@@ -33,6 +41,12 @@ test('the line never offers a lap to a world that does not close one', () => {
 
   const [, belvar] = routeStatusLine({ kind: 'venue-ready', venue: 'track' }, true);
   assert.equal(belvar, 'BelVar Circuit is ready. Back to the title to ride it or lap it.');
+  // **The scoring clause is withdrawn for a venue that does not host one.**
+  // BelVar laps and the city does not, and neither scores tricks — a panel
+  // that kept offering the action after the selection moved would be the
+  // control lying about the place under it (M38 §38.6).
+  assert.ok(!belvar.includes('Trick Run'), 'BelVar was offered a run it does not host');
+  assert.ok(!city.includes('Trick Run'), 'the city was offered a run it does not host');
 });
 
 test('every venue the chooser offers is named rather than spelt', () => {
@@ -44,7 +58,11 @@ test('every venue the chooser offers is named rather than spelt', () => {
     assert.equal(tone, 'ready');
     assert.ok(message.endsWith('.'), `${venue} was left mid-sentence`);
     assert.ok(!message.includes(venue), `${venue} reached the player as an id`);
-    assert.ok(message.includes('is ready. Back to the title'), `${venue} lost the shape`);
+    assert.ok(message.includes('is ready.'), `${venue} lost the shape`);
+    assert.ok(
+      message.includes('Back to the title to ride it'),
+      `${venue} stopped saying where the ride is`,
+    );
   }
 });
 

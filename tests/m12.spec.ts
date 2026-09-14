@@ -170,11 +170,12 @@ test('GPU objects plateau across twelve sequential generations', async ({ page }
   ).toEqual(trace.baseline);
 });
 
-test('a generated route boots inside the budget, generation included', async ({ page }) => {
+test('a generated route boots inside the budget, generation included', { tag: '@performance' }, async ({ page }) => {
   // §9: three seconds to playable on a warm cache. Generation is new work at
   // boot — a route is laid, validated, and retried until it passes — so the
   // budget is measured on the *second* load, when the modules are cached and
-  // the only variable left is the generator.
+  // the only variable left is the generator. The explicit performance lane
+  // runs this alone, with no competing browser, build, export or headless work.
   await boot(page, `level=generated&seed=${WORST_SEED}`);
 
   const started = Date.now();
@@ -692,7 +693,6 @@ test('a gamepad alone can reach a route it cannot type', async ({ page }) => {
   };
 
   const DPAD_DOWN = 13;
-  const DPAD_RIGHT = 15;
   const A = 0;
   const B = 1;
 
@@ -705,13 +705,29 @@ test('a gamepad alone can reach a route it cannot type', async ({ page }) => {
   // the d-pad walks that geometry: Down travels a column, Right crosses to the
   // other one (M24's `ui/menuRows.ts`).
   //
+  // (The crossing's own button index lives in `tests/m9.spec.ts`, which is the
+  // spec that walks both columns; this one no longer presses Right, so it no
+  // longer names it.)
+  //
+  // **M38's ninth entrance moved it again**, and this is the ninth time that
+  // sentence has been written. Trick Run landed beside Track Day, which fills
+  // the grid one row further on and puts Fresh route at the *bottom of the
+  // left column* — so the path is four Downs and the Right that used to be in
+  // the middle of it would now walk into Police chase. Both legs are still
+  // exercised: the crossing is walked in full, both columns and every stop, by
+  // `tests/m9.spec.ts`.
+  //
   // The claim this test makes is unchanged and is the reason it survives every
   // one of those moves: **a pad has a complete path to a route**, whatever
-  // shape the panel is.
+  // shape the panel is. Every stop on the way is named rather than stepped
+  // over, so a tenth entrance fails here with the stop it actually reached.
   await page.locator('.euc-menu--title [data-menu="start"]').focus();
   await press(DPAD_DOWN);
-  await press(DPAD_RIGHT);
+  await expect(page.locator('.euc-menu--title [data-menu="couch"]')).toBeFocused();
   await press(DPAD_DOWN);
+  await expect(page.locator('.euc-menu--title [data-menu="track-day"]')).toBeFocused();
+  await press(DPAD_DOWN);
+  await expect(page.locator('.euc-menu--title [data-menu="knockabout"]')).toBeFocused();
   await press(DPAD_DOWN);
   await expect(page.locator('.euc-menu--title [data-menu="routes"]')).toBeFocused();
   await press(A);

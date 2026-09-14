@@ -3,6 +3,7 @@ import { EUC } from '../data/tuning.ts';
 import {
   COAST_STEPS,
   ON_TIME_STEPS,
+  PLAYABLE_WHEELS,
   STEP_SECONDS,
   apexStepsBeforeLip,
   runTrial,
@@ -28,8 +29,10 @@ import {
  * The installed feature windows — M36 Phase 2's measurement pass.
  *
  * §36.4: "Phase 0 must attach an actual pass/fail interval to each constructed
- * candidate, on both wheel presets, before Phase 1 fixes its dimensions;
- * **Phase 2 repeats it on the installed geometry**." T1–T10 measure fixtures.
+ * candidate ... before Phase 1 fixes its dimensions; **Phase 2 repeats it on
+ * the installed geometry**." §38.7 retires the second, 50 mph reference wheel
+ * that sentence once also named: every window here is the shipped 65 wheel,
+ * which is the wheel the game ships. T1–T10 measure fixtures.
  * T11–T14 measure `createSwitchbackLevel()` — the plan the game boots, with the
  * hillside under it, the blocks settled onto it and the corridor's own width —
  * through the same `runTrial` driver and the same press semantics.
@@ -62,16 +65,19 @@ class Tally {
   }
 }
 
-/** The presets a playable installed window is measured on. */
-const WHEELS: readonly BenchWheel[] = ['shipped65', 'diagnostic50'];
+/**
+ * The one wheel a playable installed window is measured on.
+ *
+ * §38.7 retires the 50 mph reference: 65 is what the game ships, so every
+ * window below is the shipped wheel and there is no comparison column. The
+ * generic `?mph=<n>` diagnostic is untouched, and a 50 mph approach on this
+ * wheel — the big jump's signed speed — is still an ordinary measured row.
+ */
+const WHEEL: BenchWheel = PLAYABLE_WHEELS[0];
 
 const mphText = (value: number): string => value.toFixed(2);
 const metres = (value: number): string => value.toFixed(3);
 const seconds = (value: number): string => value.toFixed(3);
-
-function wheelShort(wheel: BenchWheel): string {
-  return wheel === 'shipped65' ? '65' : '50';
-}
 
 /** A measurement that only exists when the wheel actually flew and landed. */
 function ifLanded(result: TrialResult, render: (result: TrialResult) => string): string {
@@ -165,7 +171,7 @@ const CHARGES: readonly { readonly id: BenchCharge | 'no-hop'; readonly label: s
 ];
 
 /**
- * T11 — every installed feature's window, both presets, on the built park.
+ * T11 — every installed feature's window on the built park, shipped wheel.
  *
  * `landed at` is metres past the lip, which is the number that decides how much
  * feature is left in front of the touchdown; `settling` is the metres of
@@ -178,34 +184,32 @@ export function tableParkWindows(): BenchTable {
   const rows: string[][] = [];
 
   for (const feature of INSTALLED_FEATURES) {
-    for (const wheel of WHEELS) {
-      for (const mph of feature.speeds) {
-        for (const charge of CHARGES) {
-          const result = ride(tally, feature, wheel, mph, {
-            charge: charge.id === 'no-hop' ? 'none' : charge.id,
-            lead: charge.id === 'no-hop' ? null : undefined,
-          });
-          const settling = result.landings.length === 0
-            ? '—'
-            : metres(feature.endS - result.landings[result.landings.length - 1].s);
-          rows.push([
-            feature.id, wheelShort(wheel), `${mph}`, charge.label,
-            ifLanded(result, (r) => mphText(r.takeoffMph)),
-            result.launched,
-            result.takeoffCharge.toFixed(3),
-            ifLanded(result, (r) => seconds(r.flightSeconds)),
-            ifLanded(result, (r) => metres(r.flightMetres)),
-            ifLanded(result, (r) => metres(r.touchdownS - feature.lipS)),
-            ifLanded(result, (r) => metres(r.apexMetres)),
-            result.landingTier,
-            ifLanded(result, (r) => r.landingScore.toFixed(4)),
-            result.landedOn,
-            `${result.landings.length}`,
-            ifLanded(result, (r) => mphText(r.speedLossMph)),
-            settling,
-            verdict(result),
-          ]);
-        }
+    for (const mph of feature.speeds) {
+      for (const charge of CHARGES) {
+        const result = ride(tally, feature, WHEEL, mph, {
+          charge: charge.id === 'no-hop' ? 'none' : charge.id,
+          lead: charge.id === 'no-hop' ? null : undefined,
+        });
+        const settling = result.landings.length === 0
+          ? '—'
+          : metres(feature.endS - result.landings[result.landings.length - 1].s);
+        rows.push([
+          feature.id, `${mph}`, charge.label,
+          ifLanded(result, (r) => mphText(r.takeoffMph)),
+          result.launched,
+          result.takeoffCharge.toFixed(3),
+          ifLanded(result, (r) => seconds(r.flightSeconds)),
+          ifLanded(result, (r) => metres(r.flightMetres)),
+          ifLanded(result, (r) => metres(r.touchdownS - feature.lipS)),
+          ifLanded(result, (r) => metres(r.apexMetres)),
+          result.landingTier,
+          ifLanded(result, (r) => r.landingScore.toFixed(4)),
+          result.landedOn,
+          `${result.landings.length}`,
+          ifLanded(result, (r) => mphText(r.speedLossMph)),
+          settling,
+          verdict(result),
+        ]);
       }
     }
   }
@@ -239,7 +243,7 @@ export function tableParkWindows(): BenchTable {
         + ` ${EUC.crashRecoverAutoSeconds} s at ${EUC.crashRecoverSpeedFactor} of its speed —`
         + ' no reset, no teleport — and the verdict column says when it did.',
     ],
-    columns: ['feature', 'wheel', 'lip mph target', 'input', 'lip mph', 'launch', 'actual charge', 'air s',
+    columns: ['feature', 'lip mph target', 'input', 'lip mph', 'launch', 'actual charge', 'air s',
       'air m', 'landed at m', 'apex m', 'tier', 'score', 'landed on', 'touchdowns',
       'speed lost mph', 'settling m', 'verdict'],
     rows,
@@ -274,30 +278,28 @@ export function tableInstalledApproach(): BenchTable {
     spawnS: kicker.lipS - 48,
   };
 
-  for (const wheel of WHEELS) {
-    for (const entry of APPROACH_ENTRIES) {
-      for (const charge of ['none', 'full'] as const) {
-        const result = tally.run(installedFixture(approach), wheel, {
-          // Full throttle the whole way: the question is the ceiling.
-          targetMph: 200,
-          startMph: entry,
-          lipS: approach.lipS,
-          hop: { stepsFromLip: ON_TIME_STEPS },
-          charge,
-          coastSteps: 1_000_000,
-          maxSteps: 6000,
-          rideThroughCrash: true,
-        });
-        rows.push([
-          wheelShort(wheel), `${entry}`, charge === 'full' ? 'hop + full' : 'hop',
-          ifLanded(result, (r) => mphText(r.takeoffMph)),
-          ifLanded(result, (r) => seconds(r.flightSeconds)),
-          ifLanded(result, (r) => metres(r.touchdownS - approach.lipS)),
-          ifLanded(result, (r) => metres(r.apexMetres)),
-          result.landingTier, ifLanded(result, (r) => r.landingScore.toFixed(4)),
-          verdict(result),
-        ]);
-      }
+  for (const entry of APPROACH_ENTRIES) {
+    for (const charge of ['none', 'full'] as const) {
+      const result = tally.run(installedFixture(approach), WHEEL, {
+        // Full throttle the whole way: the question is the ceiling.
+        targetMph: 200,
+        startMph: entry,
+        lipS: approach.lipS,
+        hop: { stepsFromLip: ON_TIME_STEPS },
+        charge,
+        coastSteps: 1_000_000,
+        maxSteps: 6000,
+        rideThroughCrash: true,
+      });
+      rows.push([
+        `${entry}`, charge === 'full' ? 'hop + full' : 'hop',
+        ifLanded(result, (r) => mphText(r.takeoffMph)),
+        ifLanded(result, (r) => seconds(r.flightSeconds)),
+        ifLanded(result, (r) => metres(r.touchdownS - approach.lipS)),
+        ifLanded(result, (r) => metres(r.apexMetres)),
+        result.landingTier, ifLanded(result, (r) => r.landingScore.toFixed(4)),
+        verdict(result),
+      ]);
     }
   }
 
@@ -313,12 +315,12 @@ export function tableInstalledApproach(): BenchTable {
     ],
     notes: [
       '**This is the row the landing hill\'s length is derived from.** The longest flight'
-        + ' the lip can throw is the fully charged hop in the last row of each preset, and'
+        + ' the lip can throw is the fully charged hop in the last row of this table, and'
         + ' the 30% face of `kicker-landing` runs from 16 m to 32 m past the lip so that'
         + ' flight is still on it at touchdown, with the 12.5% flare and the run-out'
         + ' beyond for anything faster than the approach can deliver.',
     ],
-    columns: ['wheel', 'hairpin exit mph', 'input', 'lip mph', 'air s', 'landed at m', 'apex m',
+    columns: ['hairpin exit mph', 'input', 'lip mph', 'air s', 'landed at m', 'apex m',
       'tier', 'score', 'verdict'],
     rows,
     trials: tally.trials,
@@ -354,7 +356,7 @@ const BIG_JUMP_SCRIPTS: readonly {
  *
  * The owner's first rides (2026-09-12): "a lot of the jumps are tame ... add
  * at least a big one". T11 sweeps the kicker as it sweeps every feature; this
- * is the same geometry read as an answer to that sentence, on both presets —
+ * is the same geometry read as an answer to that sentence —
  * the signed speed charged and unhopped, ten under, ten over — beside the
  * fastest lip speed the approach can actually deliver (T11b's top entry), which
  * is the row a player on the shipped wheel will really ride.
@@ -373,43 +375,15 @@ export function tableBigJump(): BenchTable {
     spawnS: kicker.lipS - 48,
   };
 
-  for (const wheel of WHEELS) {
-    for (const script of BIG_JUMP_SCRIPTS) {
-      // The lip-only fixture has insufficient run-up to fill the charge at
-      // high speed. Use the real approach and report the latched fraction.
-      const result = ride(tally, approach, wheel, script.mph, {
-        charge: script.charge,
-        lead: script.hop ? undefined : null,
-      });
-      rows.push([
-        wheelShort(wheel), script.label,
-        result.takeoffCharge.toFixed(3),
-        ifLanded(result, (r) => mphText(r.takeoffMph)),
-        ifLanded(result, (r) => seconds(r.flightSeconds)),
-        ifLanded(result, (r) => metres(r.flightMetres)),
-        ifLanded(result, (r) => metres(r.touchdownS - kicker.lipS)),
-        ifLanded(result, (r) => kickerLandedWhere(r.touchdownS - kicker.lipS)),
-        ifLanded(result, (r) => metres(r.apexMetres)),
-        result.landingTier,
-        ifLanded(result, (r) => r.landingScore.toFixed(4)),
-        ifLanded(result, (r) => mphText(r.speedLossMph)),
-        result.reachedEnd ? 'rode on to the merge' : `stopped at s = ${metres(result.finalS)}`,
-        verdict(result),
-      ]);
-    }
-    // The reachable row: full throttle from the hairpin's own ceiling.
-    const result = tally.run(installedFixture(approach), wheel, {
-      targetMph: 200,
-      startMph: APPROACH_ENTRIES[APPROACH_ENTRIES.length - 1],
-      lipS: approach.lipS,
-      hop: { stepsFromLip: ON_TIME_STEPS },
-      charge: 'full',
-      coastSteps: 1_000_000,
-      maxSteps: 6000,
-      rideThroughCrash: true,
+  for (const script of BIG_JUMP_SCRIPTS) {
+    // The lip-only fixture has insufficient run-up to fill the charge at
+    // high speed. Use the real approach and report the latched fraction.
+    const result = ride(tally, approach, WHEEL, script.mph, {
+      charge: script.charge,
+      lead: script.hop ? undefined : null,
     });
     rows.push([
-      wheelShort(wheel), 'what the approach delivers from the hairpin, fully charged',
+      script.label,
       result.takeoffCharge.toFixed(3),
       ifLanded(result, (r) => mphText(r.takeoffMph)),
       ifLanded(result, (r) => seconds(r.flightSeconds)),
@@ -424,16 +398,41 @@ export function tableBigJump(): BenchTable {
       verdict(result),
     ]);
   }
+  // The reachable row: full throttle from the hairpin's own ceiling.
+  const result = tally.run(installedFixture(approach), WHEEL, {
+    targetMph: 200,
+    startMph: APPROACH_ENTRIES[APPROACH_ENTRIES.length - 1],
+    lipS: approach.lipS,
+    hop: { stepsFromLip: ON_TIME_STEPS },
+    charge: 'full',
+    coastSteps: 1_000_000,
+    maxSteps: 6000,
+    rideThroughCrash: true,
+  });
+  rows.push([
+    'what the approach delivers from the hairpin, fully charged',
+    result.takeoffCharge.toFixed(3),
+    ifLanded(result, (r) => mphText(r.takeoffMph)),
+    ifLanded(result, (r) => seconds(r.flightSeconds)),
+    ifLanded(result, (r) => metres(r.flightMetres)),
+    ifLanded(result, (r) => metres(r.touchdownS - kicker.lipS)),
+    ifLanded(result, (r) => kickerLandedWhere(r.touchdownS - kicker.lipS)),
+    ifLanded(result, (r) => metres(r.apexMetres)),
+    result.landingTier,
+    ifLanded(result, (r) => r.landingScore.toFixed(4)),
+    ifLanded(result, (r) => mphText(r.speedLossMph)),
+    result.reachedEnd ? 'rode on to the merge' : `stopped at s = ${metres(result.finalS)}`,
+    verdict(result),
+  ]);
 
   return {
     id: 'T11c',
     title: 'T11c — the big jump: the owner\'s four rows, and the reachable one',
     geometry: kicker.geometry.map((line) => line),
     notes: [
-      'These rows start 48 m before the lip so the shipped wheel can fill its charge.'
-        + ' Read actual charge and lip speed alongside the requested input. An overspeed'
-        + ' diagnostic wheel may fail on the approach; a touchdown before the lip is not'
-        + ' a measurement of the kicker landing.',
+      'These rows start 48 m before the lip so the wheel can fill its charge.'
+        + ' Read actual charge and lip speed alongside the requested input. A touchdown'
+        + ' before the lip is not a measurement of the kicker landing.',
       '**The fact the shape is built on.** `EucController.land` scores impact as the closing'
         + ' speed along the *surface normal* — `-(vx·nx + vy·ny + vz·nz)` — so on a face'
         + ' that is already running away from the rider the horizontal speed comes OFF the'
@@ -455,10 +454,10 @@ export function tableBigJump(): BenchTable {
         + ' the run-out.',
       'Sixty is ten over the sign and past what T11b says the approach can deliver; its'
         + ' rows are the over-speed end of the window rather than a line a rider reaches.'
-        + ' On the `?mph=50` wheel a no-hop trial placed at 60 is already past that'
-        + ' wheel\'s own 49.4 mph cutout.',
+        + ' Fifty is the sign\'s own number ridden on the shipped 65 wheel — a feature trial,'
+        + ' not a wheel preset (§38.7).',
     ],
-    columns: ['wheel', 'script', 'actual charge', 'lip mph', 'air s', 'air m', 'landed at m', 'landed on',
+    columns: ['script', 'actual charge', 'lip mph', 'air s', 'air m', 'landed at m', 'landed on',
       'apex m', 'tier', 'score', 'speed lost mph', 'exit', 'verdict'],
     rows,
     trials: tally.trials,
@@ -476,7 +475,7 @@ const TIMINGS: readonly { readonly label: string; readonly offset: number }[] = 
 ];
 
 /**
- * T12 — the early/on-time/late press interval, per feature and per preset.
+ * T12 — the early/on-time/late press interval, per feature.
  *
  * §36.4 asks every feature record to carry one. The press is delivered exactly
  * as `app/Game.ts` delivers one, so a press that arrives on an illegal step
@@ -491,24 +490,22 @@ export function tableInstalledTiming(): BenchTable {
   for (const feature of INSTALLED_FEATURES) {
     const mph = feature.speeds[Math.floor(feature.speeds.length / 2)];
     const charge: BenchCharge = feature.press === 'apex' ? 'full' : 'none';
-    for (const wheel of WHEELS) {
-      for (const timing of TIMINGS) {
-        const result = ride(tally, feature, wheel, mph, {
-          charge,
-          lead: onTimeLead(feature, charge) + timing.offset,
-        });
-        rows.push([
-          feature.id, wheelShort(wheel), `${mph}`, charge, timing.label,
-          `${onTimeLead(feature, charge) + timing.offset}`,
-          result.hopFired,
-          ifLanded(result, (r) => r.launched),
-          ifLanded(result, (r) => metres(r.touchdownS - feature.lipS)),
-          result.landingTier,
-          ifLanded(result, (r) => r.landingScore.toFixed(4)),
-          result.landedOn,
-          verdict(result),
-        ]);
-      }
+    for (const timing of TIMINGS) {
+      const result = ride(tally, feature, WHEEL, mph, {
+        charge,
+        lead: onTimeLead(feature, charge) + timing.offset,
+      });
+      rows.push([
+        feature.id, `${mph}`, charge, timing.label,
+        `${onTimeLead(feature, charge) + timing.offset}`,
+        result.hopFired,
+        ifLanded(result, (r) => r.launched),
+        ifLanded(result, (r) => metres(r.touchdownS - feature.lipS)),
+        result.landingTier,
+        ifLanded(result, (r) => r.landingScore.toFixed(4)),
+        result.landedOn,
+        verdict(result),
+      ]);
     }
   }
 
@@ -522,7 +519,7 @@ export function tableInstalledTiming(): BenchTable {
       '`hop press` is `on-request` when the step was legal, `buffered` when the press waited'
         + ' in the action buffer and fired later, and `expired` when it lapsed unfired.',
     ],
-    columns: ['feature', 'wheel', 'lip mph', 'charge', 'timing', 'lead steps', 'hop press',
+    columns: ['feature', 'lip mph', 'charge', 'timing', 'lead steps', 'hop press',
       'launch', 'landed at m', 'tier', 'score', 'landed on', 'verdict'],
     rows,
     trials: tally.trials,
@@ -547,14 +544,59 @@ export function tableInstalledMisses(): BenchTable {
   for (const feature of INSTALLED_FEATURES) {
     const mph = feature.speeds[Math.floor(feature.speeds.length / 2)];
     const charge: BenchCharge = feature.press === 'apex' ? 'full' : 'none';
-    for (const wheel of WHEELS) {
-      for (const offset of [1.2, -1.2]) {
-        const result = ride(tally, feature, wheel, mph, {
-          charge, lateralOffset: offset, compare: true,
-        });
+    for (const offset of [1.2, -1.2]) {
+      const result = ride(tally, feature, WHEEL, mph, {
+        charge, lateralOffset: offset, compare: true,
+      });
+      rows.push([
+        feature.id, `${mph}`,
+        `${offset > 0 ? '+' : ''}${offset.toFixed(1)} m ${offset > 0 ? 'left' : 'right'}`,
+        ifLanded(result, (r) => metres(r.touchdownS - feature.lipS)),
+        ifLanded(result, (r) => metres(r.touchdownT)),
+        result.landingTier,
+        ifLanded(result, (r) => r.landingScore.toFixed(4)),
+        result.landedOn,
+        `${result.blockedSteps}`,
+        result.reachedEnd ? 'reached the merge' : `stopped at s = ${metres(result.finalS)}`,
+        verdict(result),
+      ]);
+    }
+    if (feature.id === 'kicker') {
+      // **The kicker's own credible misses.** Two of them, because the big
+      // jump has two ways to be wrong. The first is geometric: a hop from the
+      // FAR end of the twelve-metre table rather than from the lip, which is
+      // what a rider who rolls the lip and then hops late does — the flight
+      // starts at the brow with no face under it, and comes down on the 30%
+      // hill from a shallower, later arc. The second is speed: ten miles an
+      // hour over the sign, charged and not. T11b says the approach cannot
+      // deliver 60 mph to the lip, so these rows are the over-speed end §36.4
+      // asks every window to publish, measured past the reachable band rather
+      // than inside it.
+      const farEnd = feature.lipS + 12;
+      // Spawned two metres past the lip, ON the table: a trial placed at the
+      // lip's own edge rolls off the 0.15 m face first and reports that drop
+      // as its flight instead of the late hop.
+      const late = { ...feature, lipS: farEnd, spawnS: farEnd - 10 };
+      for (const charge2 of ['none', 'full'] as const) {
+        const result = ride(tally, late, WHEEL, 40, { charge: charge2, compare: true });
         rows.push([
-          feature.id, wheelShort(wheel), `${mph}`,
-          `${offset > 0 ? '+' : ''}${offset.toFixed(1)} m ${offset > 0 ? 'left' : 'right'}`,
+          feature.id, '40',
+          `hop off the TABLE's far end, ${charge2 === 'full' ? 'full charge' : 'no charge'}`,
+          ifLanded(result, (r) => metres(r.touchdownS - farEnd)),
+          ifLanded(result, (r) => metres(r.touchdownT)),
+          result.landingTier,
+          ifLanded(result, (r) => r.landingScore.toFixed(4)),
+          result.landedOn,
+          `${result.blockedSteps}`,
+          result.reachedEnd ? 'reached the merge' : `stopped at s = ${metres(result.finalS)}`,
+          verdict(result),
+        ]);
+      }
+      for (const charge2 of ['none', 'full'] as const) {
+        const result = ride(tally, feature, WHEEL, 60, { charge: charge2, compare: true });
+        rows.push([
+          feature.id, '60',
+          `10 mph over the sign, ${charge2 === 'full' ? 'full charge' : 'no charge'}`,
           ifLanded(result, (r) => metres(r.touchdownS - feature.lipS)),
           ifLanded(result, (r) => metres(r.touchdownT)),
           result.landingTier,
@@ -565,92 +607,45 @@ export function tableInstalledMisses(): BenchTable {
           verdict(result),
         ]);
       }
-      if (feature.id === 'kicker') {
-        // **The kicker's own credible misses.** Two of them, because the big
-        // jump has two ways to be wrong. The first is geometric: a hop from the
-        // FAR end of the twelve-metre table rather than from the lip, which is
-        // what a rider who rolls the lip and then hops late does — the flight
-        // starts at the brow with no face under it, and comes down on the 30%
-        // hill from a shallower, later arc. The second is speed: ten miles an
-        // hour over the sign, charged and not. T11b says the approach cannot
-        // deliver 60 mph to the lip, so these rows are the over-speed end §36.4
-        // asks every window to publish, measured past the reachable band rather
-        // than inside it.
-        const farEnd = feature.lipS + 12;
-        // Spawned two metres past the lip, ON the table: a trial placed at the
-        // lip's own edge rolls off the 0.15 m face first and reports that drop
-        // as its flight instead of the late hop.
-        const late = { ...feature, lipS: farEnd, spawnS: farEnd - 10 };
-        for (const charge2 of ['none', 'full'] as const) {
-          const result = ride(tally, late, wheel, 40, { charge: charge2, compare: true });
-          rows.push([
-            feature.id, wheelShort(wheel), '40',
-            `hop off the TABLE's far end, ${charge2 === 'full' ? 'full charge' : 'no charge'}`,
-            ifLanded(result, (r) => metres(r.touchdownS - farEnd)),
-            ifLanded(result, (r) => metres(r.touchdownT)),
-            result.landingTier,
-            ifLanded(result, (r) => r.landingScore.toFixed(4)),
-            result.landedOn,
-            `${result.blockedSteps}`,
-            result.reachedEnd ? 'reached the merge' : `stopped at s = ${metres(result.finalS)}`,
-            verdict(result),
-          ]);
-        }
-        for (const charge2 of ['none', 'full'] as const) {
-          const result = ride(tally, feature, wheel, 60, { charge: charge2, compare: true });
-          rows.push([
-            feature.id, wheelShort(wheel), '60',
-            `10 mph over the sign, ${charge2 === 'full' ? 'full charge' : 'no charge'}`,
-            ifLanded(result, (r) => metres(r.touchdownS - feature.lipS)),
-            ifLanded(result, (r) => metres(r.touchdownT)),
-            result.landingTier,
-            ifLanded(result, (r) => r.landingScore.toFixed(4)),
-            result.landedOn,
-            `${result.blockedSteps}`,
-            result.reachedEnd ? 'reached the merge' : `stopped at s = ${metres(result.finalS)}`,
-            verdict(result),
-          ]);
-        }
-      }
-      if (feature.spin === true) {
-        for (const [direction, spinMph] of [
-          ['left', mph], ['right', mph],
-          // And the over-speed end, which is the spin line's own failing bound:
-          // a 180 landed at 25 mph exits fakie at a speed past
-          // `EUC.maxReverseSpeed`, and the wheel spends the pad shedding it.
-          ['left', 25],
-        ] as const) {
-          // **The spin rows stop when the landing has settled, not at the
-          // merge.** Every other installed row rides until its progress
-          // reaches the feature's `endS`, and the 1,000,000-step coast above
-          // exists so that it can. A 180 cannot get there: the rider lands
-          // fakie, the throttle law then holds the target speed in the
-          // direction the wheel now FACES, and the trial turns round and rides
-          // back up the lap — so `s >= endS` never fires and the row ran the
-          // full 6,000-step ceiling, fifty simulated seconds, off the park and
-          // into the woods. It met one broadleaf at (114.7, 84.1) and printed
-          // thousands of `blocked steps` beside a clean 180 — and this table's
-          // own note calls `blocked` "the bonk signature", so the row read as
-          // if the trick bonked (p4-dressing open issue 1, M36 Phase 6).
-          // `COAST_STEPS` is the bench's own settling window and covers the
-          // `SPEED_AFTER_STEPS` read that the fakie exit column is; the
-          // landing, its tier, its score, the exit speed and the heading are
-          // all fixed long before it expires.
-          const result = ride(tally, feature, wheel, spinMph, {
-            charge, spinTap: direction, compare: true, coastSteps: COAST_STEPS,
-          });
-          rows.push([
-            feature.id, wheelShort(wheel), `${spinMph}`, `180 tapped ${direction}`,
-            ifLanded(result, (r) => metres(r.touchdownS - feature.lipS)),
-            ifLanded(result, (r) => metres(r.touchdownT)),
-            result.landingTier,
-            ifLanded(result, (r) => r.landingScore.toFixed(4)),
-            result.reversing ? `fakie at ${mphText(Math.abs(result.speedAfterMph))} mph` : 'forward',
-            `${result.blockedSteps}`,
-            `heading ${(result.headingChange * (180 / Math.PI)).toFixed(1)}°`,
-            verdict(result),
-          ]);
-        }
+    }
+    if (feature.spin === true) {
+      for (const [direction, spinMph] of [
+        ['left', mph], ['right', mph],
+        // And the over-speed end, which is the spin line's own failing bound:
+        // a 180 landed at 25 mph exits fakie at a speed past
+        // `EUC.maxReverseSpeed`, and the wheel spends the pad shedding it.
+        ['left', 25],
+      ] as const) {
+        // **The spin rows stop when the landing has settled, not at the
+        // merge.** Every other installed row rides until its progress
+        // reaches the feature's `endS`, and the 1,000,000-step coast above
+        // exists so that it can. A 180 cannot get there: the rider lands
+        // fakie, the throttle law then holds the target speed in the
+        // direction the wheel now FACES, and the trial turns round and rides
+        // back up the lap — so `s >= endS` never fires and the row ran the
+        // full 6,000-step ceiling, fifty simulated seconds, off the park and
+        // into the woods. It met one broadleaf at (114.7, 84.1) and printed
+        // thousands of `blocked steps` beside a clean 180 — and this table's
+        // own note calls `blocked` "the bonk signature", so the row read as
+        // if the trick bonked (p4-dressing open issue 1, M36 Phase 6).
+        // `COAST_STEPS` is the bench's own settling window and covers the
+        // `SPEED_AFTER_STEPS` read that the fakie exit column is; the
+        // landing, its tier, its score, the exit speed and the heading are
+        // all fixed long before it expires.
+        const result = ride(tally, feature, WHEEL, spinMph, {
+          charge, spinTap: direction, compare: true, coastSteps: COAST_STEPS,
+        });
+        rows.push([
+          feature.id, `${spinMph}`, `180 tapped ${direction}`,
+          ifLanded(result, (r) => metres(r.touchdownS - feature.lipS)),
+          ifLanded(result, (r) => metres(r.touchdownT)),
+          result.landingTier,
+          ifLanded(result, (r) => r.landingScore.toFixed(4)),
+          result.reversing ? `fakie at ${mphText(Math.abs(result.speedAfterMph))} mph` : 'forward',
+          `${result.blockedSteps}`,
+          `heading ${(result.headingChange * (180 / Math.PI)).toFixed(1)}°`,
+          verdict(result),
+        ]);
       }
     }
   }
@@ -670,7 +665,7 @@ export function tableInstalledMisses(): BenchTable {
         + ' the trial keeps riding — `reached the merge` in the second-to-last column is that'
         + ' claim measured rather than asserted.',
     ],
-    columns: ['feature', 'wheel', 'lip mph', 'line', 'landed at m', 'landed t m', 'tier', 'score',
+    columns: ['feature', 'lip mph', 'line', 'landed at m', 'landed t m', 'tier', 'score',
       'landed on', 'blocked steps', 'exit', 'verdict'],
     rows,
     trials: tally.trials,
@@ -706,7 +701,7 @@ const REVERSE_CASES: readonly {
  * `RouteBlocker.facing` meaning, verify directional geometry, and give free
  * riders a ramp back up." Nothing here is a one-way collider — the risers are
  * the same solid blocks from both sides, and what refuses a rider coming up is
- * their height against `TERRAIN.stepUpPedalFactor × WHEEL.pedalHeight`
+ * their height against `TERRAIN.stepUpPedalFactor × wheel.pedalHeight`
  * (0.216 m). The ramp back up is the other lateral half of the same corridor,
  * which is the bypass, and it is a plain gradient in both directions.
  */
@@ -716,34 +711,32 @@ export function tableInstalledReverse(): BenchTable {
 
   for (const reverse of REVERSE_CASES) {
     const feature = installedFeature(reverse.id);
-    for (const wheel of WHEELS) {
-      for (const mph of [5, 8, 12]) {
-        for (const line of ['feature', 'bypass'] as const) {
-          const t = line === 'feature' ? feature.technicalT : feature.bypassT;
-          const result = tally.run(
-            reverseFixture(feature, { fromS: reverse.fromS, metres: reverse.metres, t }),
-            wheel,
-            {
-              targetMph: mph,
-              startMph: mph,
-              lipS: null,
-              hop: 'none',
-              charge: 'none',
-              holdThrottle: true,
-              coastSteps: 1_000_000,
-              maxSteps: 4000,
-              rideThroughCrash: true,
-            },
-          );
-          rows.push([
-            reverse.id, wheelShort(wheel), `${mph}`, line, reverse.face,
-            `${result.blockedSteps}`,
-            result.reachedEnd ? 'CLIMBED IT' : 'refused at the face',
-            metres(Math.abs(result.finalS - reverse.fromS)),
-            mphText(result.finalMph),
-            verdict(result),
-          ]);
-        }
+    for (const mph of [5, 8, 12]) {
+      for (const line of ['feature', 'bypass'] as const) {
+        const t = line === 'feature' ? feature.technicalT : feature.bypassT;
+        const result = tally.run(
+          reverseFixture(feature, { fromS: reverse.fromS, metres: reverse.metres, t }),
+          WHEEL,
+          {
+            targetMph: mph,
+            startMph: mph,
+            lipS: null,
+            hop: 'none',
+            charge: 'none',
+            holdThrottle: true,
+            coastSteps: 1_000_000,
+            maxSteps: 4000,
+            rideThroughCrash: true,
+          },
+        );
+        rows.push([
+          reverse.id, `${mph}`, line, reverse.face,
+          `${result.blockedSteps}`,
+          result.reachedEnd ? 'CLIMBED IT' : 'refused at the face',
+          metres(Math.abs(result.finalS - reverse.fromS)),
+          mphText(result.finalMph),
+          verdict(result),
+        ]);
       }
     }
   }
@@ -761,7 +754,7 @@ export function tableInstalledReverse(): BenchTable {
       'No `RouteBlocker` and no one-way collider is involved. The risers are the same solid'
         + ' boxes from both sides and their height is the whole of the mechanism.',
     ],
-    columns: ['feature', 'wheel', 'mph', 'line', 'first face up', 'blocked steps', 'result',
+    columns: ['feature', 'mph', 'line', 'first face up', 'blocked steps', 'result',
       'metres climbed', 'exit mph', 'verdict'],
     rows,
     trials: tally.trials,
@@ -785,26 +778,24 @@ export function tableInstalledBypass(): BenchTable {
   for (const feature of INSTALLED_FEATURES) {
     const mph = feature.speeds[Math.floor(feature.speeds.length / 2)];
     const charge: BenchCharge = feature.press === 'apex' ? 'full' : 'none';
-    for (const wheel of WHEELS) {
-      const technical = ride(tally, feature, wheel, mph, { charge, compare: true });
-      const bypass = ride(tally, feature, wheel, mph, { bypass: true, lead: null, compare: true });
-      const span = (feature.compareEndS ?? feature.endS) - feature.spawnS;
-      const lost = technical.landings.reduce(
-        (total, landing) => total + (landing.takeoffMph - Math.abs(landing.speedAfterMph)),
-        0,
-      );
-      rows.push([
-        feature.id, wheelShort(wheel), `${mph}`, metres(span),
-        seconds(technical.steps * STEP_SECONDS),
-        seconds(bypass.steps * STEP_SECONDS),
-        seconds((technical.steps - bypass.steps) * STEP_SECONDS),
-        `${technical.landings.length}`, `${bypass.landings.length}`,
-        technical.landingTier, bypass.landings.length === 0 ? 'never left the ground' : bypass.landingTier,
-        mphText(lost),
-        mphText(technical.finalMph), mphText(bypass.finalMph),
-        bypass.crashed ? `bypass crashed: ${bypass.crashCause}` : 'bypass clean',
-      ]);
-    }
+    const technical = ride(tally, feature, WHEEL, mph, { charge, compare: true });
+    const bypass = ride(tally, feature, WHEEL, mph, { bypass: true, lead: null, compare: true });
+    const span = (feature.compareEndS ?? feature.endS) - feature.spawnS;
+    const lost = technical.landings.reduce(
+      (total, landing) => total + (landing.takeoffMph - Math.abs(landing.speedAfterMph)),
+      0,
+    );
+    rows.push([
+      feature.id, `${mph}`, metres(span),
+      seconds(technical.steps * STEP_SECONDS),
+      seconds(bypass.steps * STEP_SECONDS),
+      seconds((technical.steps - bypass.steps) * STEP_SECONDS),
+      `${technical.landings.length}`, `${bypass.landings.length}`,
+      technical.landingTier, bypass.landings.length === 0 ? 'never left the ground' : bypass.landingTier,
+      mphText(lost),
+      mphText(technical.finalMph), mphText(bypass.finalMph),
+      bypass.crashed ? `bypass crashed: ${bypass.crashCause}` : 'bypass clean',
+    ]);
   }
 
   return {
@@ -827,7 +818,7 @@ export function tableInstalledBypass(): BenchTable {
         + ' corridor carries nothing, so a bypass that left the ground would mean a fold had'
         + ' launched it.',
     ],
-    columns: ['feature', 'wheel', 'mph', 'span m', 'feature s', 'bypass s', 'difference s',
+    columns: ['feature', 'mph', 'span m', 'feature s', 'bypass s', 'difference s',
       'feature touchdowns', 'bypass touchdowns', 'feature tier', 'bypass tier',
       'feature speed lost mph', 'feature exit mph', 'bypass exit mph', 'note'],
     rows,

@@ -38,11 +38,17 @@ import {
  *   4. **That a default boot is byte-identical**: the shipped wheel, an empty
  *      store, and no `mph` in any address the game writes.
  *   5. **The crash camera at 65** — the natural cutout faceplant ridden flat
- *      out at the shipped 65 and under the `?mph=50` switch, the ragdoll's projected
+ *      out on the shipped wheel, the ragdoll's projected
  *      extent measured against the frame on every other fixed step of the
  *      crash, the way M16 judged 8.6 → 11.5 (`docs/PLANS.md` §16.2). The
- *      measurement found the arm is not what frames the body at either
- *      speed; the test pins that finding (see `CRASH_DISTANCE_EXPONENT`).
+ *      measurement found the arm is not what frames the body; the test pins
+ *      that finding (see `CRASH_DISTANCE_EXPONENT`).
+ *
+ * **M38 Part B (`docs/PLANS.md` §38.7) retired the 50 mph reference wheel.**
+ * The shipped wheel is 65 and is measured once; the switch is still here and
+ * still generic, so every claim about the switch *reaching* something rides a
+ * plain non-default example (58 mph below) whose expected values come from the
+ * recipe rather than from a wheel anyone is asked to compare against.
  *
  * The flat-out rides are on the proving ground: its pad, plaza and boulevard
  * are one 310 m straight, and a 65 mph wheel needs about 240 m to reach its
@@ -83,17 +89,23 @@ import {
 
 const MPH = 1 / METRES_PER_SECOND_PER_MPH;
 /**
- * The two wheels, **swapped at M30 Phase 4**.
+ * The shipped wheel, and one plain diagnostic example.
  *
- * `SIXTY_FIVE` is the shipped table now (the owner's decision of 2026-09-03),
- * so `topSpeedPreset(65)` is the identity and `?mph=65` writes nothing a store
+ * `SIXTY_FIVE` is the shipped table (the owner's decision of 2026-09-03), so
+ * `topSpeedPreset(65)` is the identity and `?mph=65` writes nothing a store
  * would keep — a `LiveTuning.set` equal to the default *clears* the override.
- * Every claim below about the switch reaching something therefore rides
- * `?mph=50`, M16's wheel, which is what the diagnostic is for now; every claim
- * about how the 65 wheel behaves rides the default boot.
+ * Every claim below about the switch reaching something therefore has to ride
+ * a speed that is **not** the default, or it would pass on an identity.
+ *
+ * `DIAGNOSTIC` is that speed. **M38 Part B**: it used to be `topSpeedPreset(50)`
+ * because 50 was the retired reference wheel; it is now 58 — an ordinary value
+ * inside the switch's 20–90 mph window, carrying no comparison and no special
+ * status. Every expected number below is derived from this preset rather than
+ * transcribed, so the example can be any legal speed.
  */
 const SIXTY_FIVE = topSpeedPreset(65);
-const FIFTY = topSpeedPreset(50);
+const DIAGNOSTIC_MPH = 58;
+const DIAGNOSTIC = topSpeedPreset(DIAGNOSTIC_MPH);
 
 interface Gate {
   centre: { x: number; y: number; z: number };
@@ -340,18 +352,18 @@ test('the shipped wheel puts the beeps at 52 mph and the cutout at 64.2 on a fla
   // slider range — and the controller derives the top speed those numbers
   // describe. This is the half that proves the parameter still reaches the
   // wheel at all, and it has to ride a speed that is not the shipped one.
-  await boot(page, 'level=proving&mph=50');
-  const fifty = await page.evaluate(() => ({
+  await boot(page, `level=proving&mph=${DIAGNOSTIC_MPH}`);
+  const diagnostic = await page.evaluate(() => ({
     overrides: window.game.snapshot().tuning.overrides,
     derivedTopSpeed: window.game.controller.derivedTopSpeed,
   }));
-  const writes = topSpeedWrites(FIFTY);
+  const writes = topSpeedWrites(DIAGNOSTIC);
   for (const path of TOP_SPEED_PATHS) {
-    expect(fifty.overrides[path], path).toBeCloseTo(writes[path], 9);
+    expect(diagnostic.overrides[path], path).toBeCloseTo(writes[path], 9);
   }
-  expect(Object.keys(fifty.overrides).sort()).toEqual([...TOP_SPEED_PATHS].sort());
-  expect(fifty.derivedTopSpeed).toBeCloseTo(FIFTY.dragOnlyTop, 6);
-  expect(fifty.derivedTopSpeed).toBeLessThan(store.derivedTopSpeed);
+  expect(Object.keys(diagnostic.overrides).sort()).toEqual([...TOP_SPEED_PATHS].sort());
+  expect(diagnostic.derivedTopSpeed).toBeCloseTo(DIAGNOSTIC.dragOnlyTop, 6);
+  expect(diagnostic.derivedTopSpeed).toBeLessThan(store.derivedTopSpeed);
 
   expect(errors).toEqual([]);
 });
@@ -396,19 +408,20 @@ test('a personal best set under ?mph= is refused, on the card and in the store',
 // ---------------------------------------------------------------------------
 
 test('the switch survives a fresh route, and worldLink writes only level and seed', async ({ page }) => {
-  // **`?mph=50` since M30 Phase 4**, because 65 is the frozen table: a switch
-  // that writes the defaults leaves an empty store, and this test's whole
-  // subject is whether the store *carries* the switch across an
-  // `installLevel`. Asking for the shipped speed would pass on an identity.
+  // **A non-default speed, because 65 is the frozen table**: a switch that
+  // writes the defaults leaves an empty store, and this test's whole subject
+  // is whether the store *carries* the switch across an `installLevel`.
+  // Asking for the shipped speed would pass on an identity. The value is an
+  // ordinary example (M38 Part B); nothing here is about which speed it is.
   const errors = collectErrors(page);
-  await boot(page, 'mph=50&debug=0');
+  await boot(page, `mph=${DIAGNOSTIC_MPH}&debug=0`);
 
   const before = await page.evaluate(() => ({
     derivedTopSpeed: window.game.controller.derivedTopSpeed,
     search: window.location.search,
     seed: window.game.snapshot().world.seed,
   }));
-  expect(before.derivedTopSpeed).toBeCloseTo(FIFTY.dragOnlyTop, 6);
+  expect(before.derivedTopSpeed).toBeCloseTo(DIAGNOSTIC.dragOnlyTop, 6);
   expect(before.seed).toBe('');
 
   // The pause card's New route is a real `installLevel`: a new plan, a new
@@ -433,9 +446,9 @@ test('the switch survives a fresh route, and worldLink writes only level and see
   }));
   expect(after.levelId).toBe('generated');
   expect(after.seed).not.toBe('');
-  // The new controller rides the 50 mph wheel: the store carried it.
-  expect(after.derivedTopSpeed).toBeCloseTo(FIFTY.dragOnlyTop, 6);
-  expect(after.drag).toBeCloseTo(FIFTY.dragCoefficient, 9);
+  // The new controller rides the wheel the switch asked for: the store carried it.
+  expect(after.derivedTopSpeed).toBeCloseTo(DIAGNOSTIC.dragOnlyTop, 6);
+  expect(after.drag).toBeCloseTo(DIAGNOSTIC.dragCoefficient, 9);
   expect(after.overrideCount).toBe(TOP_SPEED_PATHS.length);
 
   // `worldLink` rebuilt the address from the live href and rewrote `level`
@@ -443,7 +456,7 @@ test('the switch survives a fresh route, and worldLink writes only level and see
   // there, and nothing else was added. It is not level identity — the same
   // seed under no switch is the same route on the shipped wheel.
   const params = new URL(after.href).searchParams;
-  expect(params.get('mph')).toBe('50');
+  expect(params.get('mph')).toBe(String(DIAGNOSTIC_MPH));
   expect(params.get('debug')).toBe('0');
   expect(params.get('level')).toBe('generated');
   expect(params.get('seed')).toBe(after.seed);
@@ -504,83 +517,70 @@ test('the crash camera at 65: the body never nears the top of the frame, and the
   // **What this pins is a measurement, not a hope.** §30.4 item 2 asked for
   // M16's judgement repeated at 65 — M16 lengthened the arm because "a 50 mph
   // wipeout threw the ragdoll out through the *top* of the frame". Measured on
-  // today's crash, at both speeds, the body does no such thing: its highest
+  // today's crash the body does no such thing: its highest
   // point is a few hundredths above centre in the first frames, and it leaves
   // through the **bottom** — the camera is anchored on a wheel that rolls on
-  // at ~22 m/s (~28 at 65) while the ragdoll stops within metres, so the
-  // camera plane reaches the body's first corner at 0.65 s (50) / 0.40 s (65) with the crash
+  // at ~28 m/s while the ragdoll stops within metres, so the
+  // camera plane reaches the body's first corner at about 0.40 s with the crash
   // arm still at its riding length: it eases at `distanceResponseSeconds`
   // under the crash blend and has not moved yet. The arm therefore decides
-  // nothing about the body at either speed (11.5 → 18.0 m at 65 all exit at
-  // 0.35–0.37 s; M16's own 8.6 m at 50 exits at 0.60 s), and the preset keeps
-  // the plan's linear scale (`CRASH_DISTANCE_EXPONENT`). If any of the numbers
-  // below move, the camera changed and the exponent is worth re-measuring.
+  // nothing about the body (11.5 → 18.0 m all exit at 0.35–0.37 s), and the
+  // preset keeps the plan's linear scale (`CRASH_DISTANCE_EXPONENT`). If any
+  // of the numbers below move, the camera changed and the exponent is worth
+  // re-measuring.
+  //
+  // **M38 Part B: measured once, on the shipped wheel.** Phase 0 ran the same
+  // crash under the retired 50 mph reference as well and compared the two.
+  // The shipped wheel is 65; 50 certifies nothing about it, and the finding
+  // this test exists for — that the *arm* is not what frames the body — is a
+  // statement about one wheel, not about an ordering between two. The dated
+  // two-wheel figures survive in `CRASH_DISTANCE_EXPONENT` as history.
   const errors = collectErrors(page);
 
-  //
-  // **The two wheels swapped at M30 Phase 4**: 65 is the shipped table and 50
-  // is the switch, so the default boot is the fast leg and `?mph=50` is the
-  // slow one. Every measurement below is unchanged — this is the same pair of
-  // wheels, read from the other side.
-  await boot(page, 'level=proving&mph=50');
-  const fifty = await measureCrashFraming(page, null);
-  expect(fifty, 'the 50 mph wheel never cut out on the pad').not.toBeNull();
-  if (fifty === null) return;
-
   await boot(page, 'level=proving');
-  const sixtyFive = await measureCrashFraming(page, null);
-  expect(sixtyFive, 'the shipped 65 mph wheel never cut out on the straight').not.toBeNull();
-  if (sixtyFive === null) return;
+  const crash = await measureCrashFraming(page, null);
+  expect(crash, 'the shipped 65 mph wheel never cut out on the straight').not.toBeNull();
+  if (crash === null) return;
 
-  const describe = (label: string, r: NonNullable<typeof fifty>): string => (
-    `${label} @ arm ${r.crashDistance.toFixed(2)} m, ${r.cause}/${r.motion} at ${(r.crashSpeed * MPH).toFixed(1)} mph: `
+  const r = crash;
+  const report = `65 @ arm ${r.crashDistance.toFixed(2)} m, ${r.cause}/${r.motion} at ${(r.crashSpeed * MPH).toFixed(1)} mph: `
     + `body peak y ${r.peakY.toFixed(3)} at ${r.peakYAt.toFixed(2)} s, peak |x| ${r.peakX.toFixed(2)}, low y ${r.lowY.toFixed(2)}; `
     + `first corner behind the camera at ${r.passedAt.toFixed(2)} s, last at ${r.allBehindAt.toFixed(2)} s `
     + `(arm ${r.armAtPass.toFixed(2)} of riding ${r.armBefore.toFixed(2)}, `
     + `crash blend ${r.frameAtPass.toFixed(2)}); wheel peak |y| ${r.wheelPeakY.toFixed(2)}, behind ${r.wheelBehind}/${r.samples}; `
-    + `arm at the end ${r.armAtEnd.toFixed(2)}`
-  );
-  const report = `${describe('50', fifty)} || ${describe('65', sixtyFive)}`;
+    + `arm at the end ${r.armAtEnd.toFixed(2)}`;
   test.info().annotations.push({ type: 'crash framing', description: report });
   console.log(`[m30 crash framing] ${report}`);
 
-  for (const [label, r] of [['50', fifty], ['65', sixtyFive]] as const) {
-    expect(r.cause, label).toBe('cutout');
-    expect(r.motion, label).toBe('faceplant');
-    expect(r.recovered, label).toBe(true);
-    // Never out through the top: M16's failure mode is absent at both speeds.
-    expect(r.peakY, `${label}: ${report}`).toBeLessThan(0.15);
-    expect(r.peakY, `${label}: ${report}`).toBeGreaterThan(-0.15);
-    // Out through the bottom instead, and then behind the camera plane.
-    expect(r.lowY, `${label}: ${report}`).toBeLessThan(-1);
-    expect(Number.isNaN(r.passedAt), `${label}: no corner of the body ever went behind the camera — ${report}`).toBe(false);
-    expect(Number.isNaN(r.allBehindAt), `${label}: some corner of the body stayed in front — ${report}`).toBe(false);
-    expect(r.allBehindAt, `${label}: ${report}`).toBeGreaterThanOrEqual(r.passedAt);
-    // While the crash arm is still the riding arm — which is why its length
-    // has no purchase on the body.
-    expect(r.armAtPass, `${label}: ${report}`).toBeLessThan(r.armBefore + 1);
-    expect(r.armAtPass, `${label}: ${report}`).toBeLessThan(r.crashDistance - 3);
-    // The wheel — what the camera is actually framing — stays in shot.
-    expect(r.wheelBehind, label).toBe(0);
-    expect(r.wheelPeakY, label).toBeLessThan(0.5);
-  }
-  // The accepted 50: 11.5 m, exit at about two thirds of a second.
-  expect(fifty.crashDistance).toBeCloseTo(FIFTY.crashDistance, 9);
-  expect(fifty.passedAt).toBeGreaterThan(0.5);
-  expect(fifty.passedAt).toBeLessThan(0.9);
-  // The last corner follows the first within a tenth of a second (0.55 → 0.65 s
-  // measured): the body goes as one, not limb by limb.
-  expect(fifty.allBehindAt).toBeLessThan(0.9);
-  // 65 at the preset's arm: no worse above, sooner below — the relative speed
-  // between a rolling wheel and a stopped body is the whole of it.
-  expect(sixtyFive.crashDistance).toBeCloseTo(CAMERA.crashDistance, 9);
-  expect(sixtyFive.crashDistance).toBeCloseTo(SIXTY_FIVE.crashDistance, 9);
-  expect(sixtyFive.peakY).toBeLessThanOrEqual(fifty.peakY + 0.05);
-  expect(sixtyFive.passedAt).toBeGreaterThan(0.3);
-  expect(sixtyFive.passedAt).toBeLessThan(fifty.passedAt);
-  // 0.35 → 0.40 s measured; Codex's per-vertex probe put the whole body
-  // behind the camera at 0.45 s.
-  expect(sixtyFive.allBehindAt).toBeLessThan(0.6);
+  // -- The lifecycle the measurement is only meaningful inside -------------
+  expect(r.cause).toBe('cutout');
+  expect(r.motion).toBe('faceplant');
+  expect(r.recovered).toBe(true);
+  // Never out through the top: M16's failure mode is absent.
+  expect(r.peakY, report).toBeLessThan(0.15);
+  expect(r.peakY, report).toBeGreaterThan(-0.15);
+  // Out through the bottom instead, and then behind the camera plane.
+  expect(r.lowY, report).toBeLessThan(-1);
+  expect(Number.isNaN(r.passedAt), `no corner of the body ever went behind the camera — ${report}`).toBe(false);
+  expect(Number.isNaN(r.allBehindAt), `some corner of the body stayed in front — ${report}`).toBe(false);
+  expect(r.allBehindAt, report).toBeGreaterThanOrEqual(r.passedAt);
+  // While the crash arm is still the riding arm — which is why its length
+  // has no purchase on the body.
+  expect(r.armAtPass, report).toBeLessThan(r.armBefore + 1);
+  expect(r.armAtPass, report).toBeLessThan(r.crashDistance - 3);
+  // The wheel — what the camera is actually framing — stays in shot.
+  expect(r.wheelBehind).toBe(0);
+  expect(r.wheelPeakY).toBeLessThan(0.5);
+
+  // -- The framing itself, on the shipped arm ------------------------------
+  expect(r.crashDistance).toBeCloseTo(CAMERA.crashDistance, 9);
+  expect(r.crashDistance).toBeCloseTo(SIXTY_FIVE.crashDistance, 9);
+  // 0.40 s measured, with the last corner following within a tenth of a
+  // second: the body goes as one, not limb by limb. Codex's per-vertex probe
+  // put the whole body behind the camera at 0.45 s.
+  expect(r.passedAt, report).toBeGreaterThan(0.3);
+  expect(r.passedAt, report).toBeLessThan(0.6);
+  expect(r.allBehindAt, report).toBeLessThan(0.6);
 
   expect(errors).toEqual([]);
 });
@@ -598,15 +598,19 @@ function loadedContent(page: Page): Promise<{ hazards: string[]; targets: string
   }));
 }
 
-test('under ?mph=50 a route is spaced for the wheel it is ridden on, at boot and after a fresh route', async ({ page }) => {
-  // **M30 Phase 1's browser half** (`docs/PLANS.md` §30.5 item 1), **with the
-  // wheels swapped by Phase 4**. The arithmetic is proven headless
+test('under a ?mph= diagnostic a route is spaced for the wheel it is ridden on, at boot and after a fresh route', async ({ page }) => {
+  // **M30 Phase 1's browser half** (`docs/PLANS.md` §30.5 item 1). The
+  // arithmetic is proven headless
   // (`src/level/topSpeedRoutes.test.ts`): hazard and target separation are
-  // *times*, so the shipped 65 mph wheel is spaced ≈82 m and ≈26 m where the
-  // 50 is spaced ≈63 and ≈20, while the *density* is anchored on M16's 50 mph
-  // wheel and scaled up with the top speed — so route-41 carries seven holes
-  // on the shipped wheel against six under `?mph=50`, and not the same six
-  // inside them. What only a browser can answer is whether the switch reaches
+  // *times*, so a route generated for one top speed is not the route generated
+  // for another — the shipped 65 mph wheel is spaced ≈82 m and ≈26 m, and a
+  // slower diagnostic is spaced closer, while the *density* is a legacy
+  // calibration scaled with the top speed. So route-41 carries a different set
+  // of holes under the switch than on the shipped wheel, and not merely a
+  // different count of the same ones. **M38 Part B**: the example speed below
+  // is an ordinary value in the switch's window, not a reference wheel; what
+  // is under test is propagation, and the fixture derives every expectation
+  // from the generator itself. What only a browser can answer is whether the switch reaches
   // the **generator** through the two doors `Game` builds a world with — the
   // boot world built in the constructor, and `installLevel`'s fresh route,
   // which is the door M25's own lesson says a per-session value is most likely
@@ -617,21 +621,21 @@ test('under ?mph=50 a route is spaced for the wheel it is ridden on, at boot and
   // some *other* wheel.
   const errors = collectErrors(page);
   const shipped = generateLevel('route-41').plan;
-  const slow = generateLevel('route-41', undefined, undefined, 50).plan;
+  const switched = generateLevel('route-41', undefined, undefined, DIAGNOSTIC_MPH).plan;
   const shippedIds = (shipped.hazards ?? []).map((hazard) => hazard.id);
-  const slowIds = (slow.hazards ?? []).map((hazard) => hazard.id);
+  const switchedIds = (switched.hazards ?? []).map((hazard) => hazard.id);
   // The fixture has to be able to tell the two apart, or every assertion below
   // passes on a world that ignored the switch.
-  expect(slowIds).not.toEqual(shippedIds);
+  expect(switchedIds).not.toEqual(shippedIds);
 
-  await boot(page, 'mph=50&level=generated&seed=route-41');
+  await boot(page, `mph=${DIAGNOSTIC_MPH}&level=generated&seed=route-41`);
   const booted = await loadedContent(page);
   expect(booted.seed).toBe('route-41');
   expect(await page.evaluate(() => window.game.controller.derivedTopSpeed))
-    .toBeCloseTo(FIFTY.dragOnlyTop, 6);
+    .toBeCloseTo(DIAGNOSTIC.dragOnlyTop, 6);
 
-  expect(booted.hazards, 'the boot world was spaced for the shipped wheel').toEqual(slowIds);
-  expect(booted.targets).toEqual((slow.targets ?? []).map((target) => target.id));
+  expect(booted.hazards, 'the boot world was spaced for the shipped wheel').toEqual(switchedIds);
+  expect(booted.targets).toEqual((switched.targets ?? []).map((target) => target.id));
   expect(booted.hazards).not.toEqual(shippedIds);
 
   // -- And through `installLevel`, which builds the next world from scratch --
@@ -646,18 +650,15 @@ test('under ?mph=50 a route is spaced for the wheel it is ridden on, at boot and
 
   const fresh = await loadedContent(page);
   expect(fresh.seed).not.toBe('route-41');
-  const freshSlow = generateLevel(fresh.seed, undefined, undefined, 50).plan;
+  const freshSwitched = generateLevel(fresh.seed, undefined, undefined, DIAGNOSTIC_MPH).plan;
   const freshShipped = generateLevel(fresh.seed).plan;
-  expect(fresh.hazards, `the fresh route ${fresh.seed} was not spaced for 50`)
-    .toEqual((freshSlow.hazards ?? []).map((hazard) => hazard.id));
-  expect(fresh.targets).toEqual((freshSlow.targets ?? []).map((target) => target.id));
-  // Surprise-me picks the seed, so whether its 50 and 65 builds differ at all
-  // is luck. Assert the difference only where headless says there is one —
-  // otherwise this line would flake on a seed the switch happens to leave
-  // alone, which is a real and legal outcome. (On the density amendment all
-  // sixteen of `topSpeedRoutes.test.ts`'s sweep seeds gain hazards at 65 and
-  // none places the identical set at both speeds, where four of them used to;
-  // the guard stays, because a fresh route is not one of those sixteen.)
+  expect(fresh.hazards, `the fresh route ${fresh.seed} was not spaced for ${DIAGNOSTIC_MPH}`)
+    .toEqual((freshSwitched.hazards ?? []).map((hazard) => hazard.id));
+  expect(fresh.targets).toEqual((freshSwitched.targets ?? []).map((target) => target.id));
+  // Surprise-me picks the seed, so whether its switched and shipped builds
+  // differ at all is luck. Assert the difference only where the generator
+  // itself says there is one — otherwise this line would flake on a seed the
+  // switch happens to leave alone, which is a real and legal outcome.
   const freshShippedIds = (freshShipped.hazards ?? []).map((hazard) => hazard.id);
   if (JSON.stringify(freshShippedIds) !== JSON.stringify(fresh.hazards)) {
     expect(fresh.hazards).not.toEqual(freshShippedIds);
@@ -745,8 +746,10 @@ test('a real fast carve on the shipped wheel: the wheel holds its bank and the r
 
   const carve = await keyboardFastCarve(page);
   const euc = carve.euc;
-  const report = `${describeCarve('50', euc, carve.pelvisRoll)}, ridden ${carve.distance.toFixed(0)} m`;
-  testInfo.annotations.push({ type: 'lean at 50', description: report });
+  // The label is the wheel this rides: the default boot, which is the shipped
+  // 65 (it read '50' from before M30 Phase 4 swapped the two; M38 Part B).
+  const report = `${describeCarve('shipped 65', euc, carve.pelvisRoll)}, ridden ${carve.distance.toFixed(0)} m`;
+  testInfo.annotations.push({ type: 'lean on the shipped wheel', description: report });
   console.log(`[m30 lean] ${report}`);
 
   // The keyboard drove it, and the ride is where Phase 0 measured it:

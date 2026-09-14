@@ -4,6 +4,7 @@ import type { PropKind } from '../data/props.ts';
 import type { MaterialId } from '../data/surfaces.ts';
 import type { VenueLook } from '../data/venueLook.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
+import type { TrickZone } from './trickZones.ts';
 
 /**
  * LevelPlan — the plain, serializable description of a level.
@@ -585,6 +586,27 @@ export interface LevelPlan {
    * tightest radius the venue has (`LAP_SAMPLE_SPACING`).
    */
   lap?: LapCourse;
+  /**
+   * The ground a scoring flight may launch from — M38, `docs/PLANS.md` §38.10.
+   *
+   * **Absent, never empty**, the idiom `targets` and `lap` write down: a plan
+   * with no key is a world with no trick geometry, and the city, BelVar, the
+   * proving ground and every generated route never see it. Switchback Park is
+   * the one producer that emits any, one convex polygon per feature.
+   *
+   * It is here beside `lap` for the same reason `lap` is here: the *shape* of a
+   * feature's own half of its corridor is not recoverable from a `Segment`'s
+   * two sockets and its colliders, and a consumer that tried to reconstruct it
+   * would be metres wrong exactly where being wrong decides whether a hop
+   * scored. `level/` has the corridor frames at build time and samples them
+   * once, here.
+   *
+   * Emitting them changes nothing a renderer or a sampler reads: no
+   * `SurfaceId`, no `MaterialId`, no `PropPartId`, no collider, no draw call
+   * and no triangle. See `level/trickZones.ts` for the lookup and the
+   * well-formedness check every producer's own test runs.
+   */
+  trickZones?: readonly TrickZone[];
 }
 
 /**

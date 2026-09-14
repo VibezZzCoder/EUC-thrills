@@ -302,7 +302,15 @@ test('a venue press swaps the world behind the open panel and never navigates', 
   // place and the control that rides it; `Back → Track Day` is walked in full
   // by the Track Day case below, which is this sentence's promise kept.
   const status = page.locator(`${ROUTES} [data-menu="route-status"]`);
-  await expect(status).toHaveText('Switchback Park is ready. Back to the title to ride it or lap it.');
+  // **And the next action that press made available** — M38 §38.6. The park is
+  // the one venue that hosts a Trick Run, so the contextual action appears on
+  // this panel with the selection and the line says so; the two venues below
+  // keep the sentence exactly as it was, which is what makes this a clause
+  // about the place rather than a new shape for every card.
+  await expect(status).toHaveText(
+    'Switchback Park is ready. Trick Run scores your tricks here, or Back to the title '
+    + 'to ride it or lap it.',
+  );
   await expect(status).toHaveAttribute('data-tone', 'ready');
   // And `Ride this route` still means a route: the press neither armed it nor
   // moved the panel's emphasis off the control that makes one.

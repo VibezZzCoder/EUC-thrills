@@ -501,12 +501,13 @@ export interface AudioTuning {
    * The wheel's flat-pavement top speed, m/s — where every speed curve in
    * the bed saturates (M30 Phase 0). Live, unlike the rest of `AUDIO`'s
    * speed constants, because `?mph=` rebuilds the wheel for a session: left
-   * on a frozen 22.3 the wind, the tyre and the whine of a 65 mph wheel
-   * would all be at their ceiling from 50 mph up, which is exactly the
-   * M16 defect the constant's own note describes. The frozen default is
-   * 29.0576 since M30 Phase 4 — 65 is the wheel that ships — so it is now
-   * `?mph=50` that would be silent about its own last third if this were
-   * not live. Defaults to the constant, so a build that never writes it is
+   * on a frozen reference the wind, the tyre and the whine would saturate at
+   * the wrong speed on any wheel but the one it was frozen at, which is
+   * exactly the M16 defect the constant's own note describes. The frozen
+   * default is 29.0576 since M30 Phase 4 — 65 is the wheel that ships — so it
+   * is now a *slower* `?mph=` session that would be silent about its own last
+   * third if this were not live, and a faster one that would saturate early.
+   * Defaults to the constant, so a build that never writes it is
    * byte-identical.
    */
   speedReference: number;

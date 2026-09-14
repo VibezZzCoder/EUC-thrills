@@ -228,7 +228,7 @@ export function cycleGuest(
  * toggle's exact terms: what a session is for is not a saved preference, and
  * the options firewall keeps `simulation/` free of both.
  */
-export type CouchRide = 'freeRide' | 'knockabout' | 'race';
+export type CouchRide = 'freeRide' | 'knockabout' | 'race' | 'trickRun';
 
 /**
  * The rides a couch may be started into, in the order the panel offers them.
@@ -237,7 +237,9 @@ export type CouchRide = 'freeRide' | 'knockabout' | 'race';
  * and the specs all have to agree about what the choices are — and the day a
  * third one lands, a list is one edit and a hand-walked union is three.
  */
-export const COUCH_RIDES: readonly CouchRide[] = Object.freeze(['freeRide', 'race', 'knockabout']);
+export const COUCH_RIDES: readonly CouchRide[] = Object.freeze(
+  ['freeRide', 'race', 'knockabout', 'trickRun'],
+);
 
 /**
  * What each ride is called on the panel.
@@ -253,6 +255,10 @@ export const COUCH_RIDE_LABELS: Readonly<Record<CouchRide, string>> = Object.fre
   freeRide: 'Free ride',
   race: 'Race',
   knockabout: 'Knockabout',
+  // **The title's own words again** — M38. The fourth ride is last for the
+  // reason Knockabout was: a room that sits down to score tricks is choosing
+  // something on purpose, and the quietest ride stays the default.
+  trickRun: 'Trick Run',
 });
 
 /**

@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import {
   INSPECTION_CAMERA, CAMERA, CHALLENGE, CHASE, CONTACT, EUC, INPUT, KNOCKABOUT, RIDER, TARGET,
-  WHEEL,
+  SIMULATION, TRICK_RUN, WHEEL,
 } from '../data/tuning.ts';
 import { LiveTuning } from '../data/liveTuning.ts';
 import { GameRenderer } from '../render/Renderer.ts';
@@ -41,6 +41,7 @@ import {
   type LevelId,
 } from '../level/levels.ts';
 import type { Checkpoint, LevelPlan } from '../level/plan.ts';
+import { trickZoneAt } from '../level/trickZones.ts';
 import { topSpeedPreset } from '../simulation/topSpeedPreset.ts';
 import type { TerrainView } from '../render/terrain.ts';
 import type { PresentationRecipeId } from '../render/presentation.ts';
@@ -140,7 +141,7 @@ import { SafeStorage } from '../platform/storage.ts';
 import { OptionsStore, type GameOptions } from './options.ts';
 import { RecordsStore, type RouteRecord } from './records.ts';
 import { KnockaboutRecordsStore, type KnockaboutRecord } from './knockaboutRecords.ts';
-import { AppState, type AppStateId } from './appState.ts';
+import { AppState, isRideState, type AppStateId } from './appState.ts';
 import {
   ChallengeRun,
   type ChallengeEvent,
@@ -167,6 +168,13 @@ import {
   type TrickTally,
 } from '../simulation/trickEvents.ts';
 import {
+  TrickRun,
+  type TrickBookState,
+  type TrickRunPhase,
+  type TrickRunResult,
+} from '../simulation/trickRun.ts';
+import { TrickRecordsStore, type TrickRecord } from './trickRecords.ts';
+import {
   GhostPlayer,
   GhostRecorder,
   createGhostSample,
@@ -183,6 +191,7 @@ import {
   formatSpeed,
   type HudView,
   type LapFlash,
+  type TrickRunHudInput,
 } from '../ui/hudModel.ts';
 import {
   Menus,
@@ -208,7 +217,12 @@ import {
   isCouchRide,
   type CouchRide,
 } from './couch.ts';
-import { isTrackVenueId, isVenueId } from './venues.ts';
+import {
+  TRICK_RUN_DESTINATION,
+  isTrackVenueId,
+  isVenueId,
+  offersTrickRun,
+} from './venues.ts';
 import { paneGridFor } from '../shared/paneGrid.ts';
 
 /**
@@ -327,6 +341,51 @@ const MATCH_TABLE: ResultsTable = Object.freeze({
   extra: 'Targets',
 });
 
+/**
+ * The Trick Run's own three words — M38 §38.5.
+ *
+ * "Trick / Count / Points", and M26 Phase 6's rule is why they are here rather
+ * than inherited: the table below a results summary speaks the mode's own
+ * vocabulary, and this card's rows are not checkpoints, not times and not
+ * measured against a best.
+ *
+ * `delta` carries **Points** rather than a comparison, which is the one place
+ * this table bends `data-compare`'s usual meaning and does it deliberately:
+ * the alternative is a third column with no heading over it, which is the
+ * exact defect that type's own header records.
+ */
+const TRICK_RUN_TABLE: ResultsTable = Object.freeze({
+  caption: 'Run breakdown',
+  label: 'Trick',
+  value: 'Count',
+  delta: 'Points',
+});
+
+/** The couch card's rows are seats in seat order, with no comparison at all. */
+const COUCH_TRICK_RUN_TABLE: ResultsTable = Object.freeze({
+  caption: 'Scores',
+  label: 'Player',
+  value: 'Points',
+  delta: '',
+});
+
+/**
+ * What the pause card's one session-ending control says, per mode.
+ *
+ * The words are here rather than in `ui/menus.ts` for the reason the venue id
+ * crosses as an id: two modes share one slot, and which of them is paused is
+ * this file's fact. The screen still owns how a button is drawn.
+ */
+const TRACK_DAY_END_WORDS = Object.freeze({
+  label: 'End session',
+  note: 'Pit in and see your best lap',
+});
+
+const TRICK_RUN_END_WORDS = Object.freeze({
+  label: 'End run',
+  note: 'Stop the clock. An unfinished run sets no best',
+});
+
 const SPLITS_TABLE: ResultsTable = Object.freeze({
   caption: 'Splits',
   label: 'Checkpoint',
@@ -387,7 +446,8 @@ export type { CameraMode };
  * "nothing recorded" answer, which is what the card has always drawn from an
  * empty `lastResult`.
  */
-type ResultsMode = 'race' | 'match' | 'knockabout' | 'chase' | 'trackDay' | 'challenge';
+type ResultsMode =
+  'race' | 'match' | 'knockabout' | 'chase' | 'trackDay' | 'trickRun' | 'challenge';
 
 type RouteDestination = 'freeRide' | 'challenge' | 'knockabout' | 'chase';
 type RouteArrival = RouteDestination | 'choose';
@@ -690,6 +750,54 @@ export interface GameSnapshot {
     readonly sessionBest: number | null;
   };
   /**
+   * The Trick Run's referee, as a spec sees it — M38 §38.6.
+   *
+   * **Reported in every session, idle included**, exactly as `race` is and for
+   * its reason: "there is no hidden referee here" is the assertion this block
+   * exists to make, and a field that vanished outside the mode could not carry
+   * it. `phase: 'idle'` with no books is what every other mode looks like.
+   */
+  readonly trickRun: {
+    readonly phase: TrickRunPhase;
+    readonly remainingSteps: number;
+    readonly elapsedSteps: number;
+    readonly durationSteps: number;
+    /** The finished attempt ran its full clock. False while none has finished. */
+    readonly completed: boolean;
+    /** Whether the finished attempt became the stored best — `submit`'s answer. */
+    readonly wasRecord: boolean;
+    /** The comparable best snapshotted when this attempt armed, or null. */
+    readonly previousBest: number | null;
+    /** Whether this attempt may still be filed at all. §38.5's latch. */
+    readonly eligible: boolean;
+    readonly seats: readonly {
+      readonly seat: number;
+      readonly score: number;
+      readonly crashes: number;
+      readonly pendingPoints: number;
+      readonly tally: TrickTally;
+      /** Flights this run opened, landed or not — M38 q189's observability. */
+      readonly flights: number;
+      /**
+       * Flights that landed a trick off any park feature and were paid
+       * nothing for it — M38 q189. The rule's own counter, so a spec can see
+       * the refusal rather than infer it from a score that did not move.
+       */
+      readonly offZoneFlights: number;
+      /** The open flight's launch feature, or null. Null with nothing in the air. */
+      readonly openZone: string | null;
+      readonly lastAward: {
+        readonly kinds: readonly string[];
+        readonly landing: string;
+        readonly points: number;
+        /** True when the flight's feature had paid within the repeat window (q185). */
+        readonly repeated: boolean;
+        /** The feature the banked flight launched from, or null for none. */
+        readonly zone: string | null;
+      } | null;
+    }[];
+  };
+  /**
    * The stored personal best for the level being ridden, if there is one.
    *
    * `ghost` is reported as a sample count rather than as the track, because a
@@ -964,6 +1072,58 @@ export class Game {
   /** What the last finished race did, for the results card. Never stored. */
   private lastRace: RaceResult | null = null;
   /**
+   * The Trick Run's referee — M38 §38.4, and the fourth of them.
+   *
+   * **World-independent, so it is built once and never rebuilt.** The other
+   * three read the plan — checkpoints, a lap envelope, a through line — and a
+   * world swap replaces them because the course they judge is gone. This one
+   * judges a clock and what the rider landed under it, and neither is a
+   * property of the ground; what a world swap does to it is *abandon* the
+   * attempt (`installLevel`), which is §38.3's own rule rather than a rebuild.
+   *
+   * Public and mutable for `trackDay`'s first reason only: a browser spec
+   * asserts the rules rather than the pixels.
+   */
+  readonly trickRun = new TrickRun();
+  /** The last finished attempt, for the card and the bridge. */
+  private lastTrickRun: TrickRunResult | null = null;
+  /** Whether the store actually took that attempt's score. `submit`'s answer. */
+  private lastTrickRunWasRecord = false;
+  /**
+   * The comparable best standing *before* the attempt was armed — §38.5.
+   *
+   * `lastTrackDayPreviousSplits`' twin and against its failure: by the time the
+   * card is built the store may hold this very run, so re-reading it would
+   * compare a record with itself and print "+0" under a new personal best.
+   */
+  private lastTrickRunPreviousBest: TrickRecord | null = null;
+  /** Whether a filed best will still be there after a reload. Honesty, §38.5. */
+  private lastTrickRunSaved = false;
+  /** The plan id the attempt was armed on. A record is filed under this, or not at all. */
+  private trickRunLevelId = '';
+  /**
+   * Whether this attempt may still reach `submit` — §38.5's one latched
+   * eligibility decision.
+   *
+   * Set once when the run arms and only ever cleared: a non-default live
+   * tuning override or a QA teleport during the attempt disqualifies it, and
+   * putting the slider back does **not** re-qualify it. `Game.probing` is the
+   * other half and is deliberately *not* folded in here: it is a property of
+   * the session rather than of the attempt, and the filing decision asks both.
+   */
+  private trickRunEligible = false;
+  /**
+   * The struct the referee is handed each step, reused.
+   *
+   * A copy rather than `trickPool[seat]` itself, because one field has to
+   * differ: `crashed` is filled in `stepSeat`, and §38.4 requires a crash
+   * established *afterwards* — by the step's contact resolution — to be
+   * visible before any landing banks. Writing that back into the pool would
+   * change what the lap and race observers see, which is the one thing
+   * scoring is not allowed to do.
+   */
+  private readonly trickRunFacts: TrickFacts = createTrickFacts();
+  /**
    * Which grid slot each seat takes, rotated one place per race — §27.3.
    *
    * **Session state and nothing else.** The one asymmetry a start line leaves
@@ -1091,6 +1251,14 @@ export class Game {
   /** The referee: the clock, the bust, and the boundary. */
   readonly chaseRun = new ChaseRun();
   readonly chaseRecords: ChaseRecordsStore;
+  /**
+   * The Trick Run's personal bests — M38 §38.5, the fourth records sibling.
+   *
+   * Its own `SafeStorage` namespace for `trickRecords.ts`'s reason: a score of
+   * 42 filed beside a lap time would read as forty-two seconds and beat every
+   * real lap on the venue.
+   */
+  readonly trickRecords: TrickRecordsStore;
   /**
    * The route as one line, derived once per world.
    *
@@ -1315,6 +1483,28 @@ export class Game {
    * flight it interrupted and credits nothing for it.
    */
   private readonly seatTeleported: boolean[] = new Array<boolean>(COUCH_SEATS).fill(false);
+  /**
+   * Where each seat's **contact patch** last touched the ground, world XZ — M38 q189.
+   *
+   * The launch feature of a flight is the feature the wheel was *standing on*
+   * when it left, and on the takeoff step the pose is already in the air: a
+   * hop's impulse and a ledge's falling ground both open a gap on the very
+   * step `tookOff` is true, and the wheel has already travelled forward, which
+   * on a kicker's lip is past the polygon that names it. So the XZ is latched
+   * on every step the wheel is *down* and read on the step it is not — the
+   * last grounded contact, which is the thing the feature is a fact about.
+   *
+   * Filled in place, two numbers per seat, allocated once: this is written 120
+   * times a second per riding seat and §38's determinism contract is that the
+   * same script rides the same way whether a run is armed or not.
+   *
+   * A teleport re-seats it rather than leaving it under the old world's
+   * geometry, for the reason `seatTeleported` exists: a rider put somewhere is
+   * not a rider who rode there, and a stale patch would name a feature that is
+   * nowhere near them.
+   */
+  private readonly seatContactX: number[] = new Array<number>(COUCH_SEATS).fill(0);
+  private readonly seatContactZ: number[] = new Array<number>(COUCH_SEATS).fill(0);
   private readonly spineAt: SpineLocation = createSpineLocation();
   /** Scratch for the HUD's "which way is the route" arrow (M20). Allocation-free. */
   private readonly spineSample: SpineSample = createSpineSample();
@@ -1370,8 +1560,8 @@ export class Game {
    * `requestRoute` and `createLevel` in this file: hazard and target
    * separation are *times* paid in metres, so a route ridden at 65 mph is
    * spaced for 65 (≈82 m and ≈26 m rather than ≈63 and ≈20) and its jumps are
-   * judged against the run-up a 65 mph wheel actually builds. Without it the
-   * test ride would be the 50 mph routes with a faster wheel on them, which is
+   * judged against the run-up a 65 mph wheel actually builds. Without it an
+   * overridden wheel would ride routes spaced for the shipped one, which is
    * unfair by the game's own rule. The three hand-authored worlds ignore it and
    * are covered by tests instead (`level/levels.ts`, `BUILDERS`).
    */
@@ -1995,6 +2185,8 @@ export class Game {
     // The same `SafeStorage`, a different namespaced slot — M14, §13 q15.
     this.knockaboutRecords = new KnockaboutRecordsStore(storage);
     this.chaseRecords = new ChaseRecordsStore(storage);
+    // The same `SafeStorage`, a fourth namespaced slot — M38 §38.5.
+    this.trickRecords = new TrickRecordsStore(storage);
     this.appState = new AppState();
 
     this.renderer = new GameRenderer(canvas);
@@ -2212,7 +2404,20 @@ export class Game {
         onStartChase: () => this.enterChase(),
         // -- M23 ---------------------------------------------------------
         onStartTrackDay: (venue) => this.chooseTrackDay(venue),
-        onEndSession: () => this.endTrackDaySession(),
+        // -- M38 ---------------------------------------------------------
+        // One callback for every Trick Run control — the title's entry and the
+        // routes panel's contextual action both land here, because both mean
+        // "score tricks at the park" and `enterTrickRun` is what decides
+        // whether that is possible from where the player is standing.
+        onStartTrickRun: () => this.enterTrickRun(),
+        onRetryRun: () => this.retryTrickRun(),
+        // **One slot, two sessions** — see `enterState`. The door picks the
+        // session by the same predicates the words were chosen with, so a
+        // press can never end the mode the card is not describing.
+        onEndSession: () => {
+          if (this.canEndTrickRun()) this.endTrickRunSession();
+          else this.endTrackDaySession();
+        },
         // **Retry means the mode the run that just finished was in** — M14.
         // One button, two modes, and the results screen must not have to know
         // which: `lastKnockabout` is set only by a Knockabout run and cleared
@@ -2240,6 +2445,10 @@ export class Game {
             case 'knockabout': this.enterKnockabout(); break;
             case 'chase': this.enterChase(); break;
             case 'trackDay': this.enterTrackDay(); break;
+            // **Try again is a fresh fixed-clock attempt** — M38 §38.6. The
+            // entrance re-places the rider and re-arms, which is the same door
+            // the title takes, so a retried run is the same run.
+            case 'trickRun': this.enterTrickRun(); break;
             default: this.startChallenge(); break;
           }
         },
@@ -2458,7 +2667,15 @@ export class Game {
     // the tab comes back, and an input reset never does.
     document.addEventListener('visibilitychange', this.onVisibilityChange);
 
-    this.stopTuningListener = this.tuning.onChange(() => this.applyTuning());
+    this.stopTuningListener = this.tuning.onChange(() => {
+      // **The eligibility latch, and it only ever falls** — M38 §38.5. A
+      // non-default live value during an attempt disqualifies it, and dragging
+      // the slider back must not re-qualify the run it altered; asked of
+      // `overrideCount` rather than of the changed path because "any override
+      // at all" is the rule, and because F4's own reset writes through here.
+      if (this.tuning.overrideCount() > 0) this.trickRunEligible = false;
+      this.applyTuning();
+    });
     this.stopOptionsListener = this.options.onChange((options) => this.applyOptions(options));
     this.stopStateListener = this.appState.onChange((to, from) => this.enterState(to.id, from.id));
     this.applyTuning();
@@ -3200,7 +3417,16 @@ export class Game {
       clearTrickFacts(facts);
       facts.flightIndex = 0;
     }
+    // **And the attempt, whole** — M38 §38.3's "seat disposal abandons". A run
+    // is armed for a fixed number of seats sharing one clock, so a room that
+    // loses one is no longer riding the attempt it started; nothing partial is
+    // filed and the card goes with it.
+    if (this.trickRun.phase !== 'idle') this.abandonTrickRun();
     this.seatTeleported[index] = false;
+    // And the launch patch, for the same reason the facts above are cleared:
+    // the slot is the index's, not the rider's.
+    this.seatContactX[index] = 0;
+    this.seatContactZ[index] = 0;
     // **And their contact history** — QA repair, 2026-08-31. `stepContact`
     // clears every pair on a discontinuity, but only on a step it is handed —
     // and once this seat is gone, its pairs are outside the seat loop and
@@ -3524,6 +3750,12 @@ export class Game {
     // known to be solid, say — could otherwise only move the player, and the
     // per-seat rules that need a specific place would be untestable.
     const seat = this.requireSeat(index);
+    // **A teleport disqualifies the attempt** — M38 §38.5, and the latch falls
+    // before the rider moves so a spec cannot stand somebody at the lip of a
+    // jump and file the score. The run itself survives: the flight is
+    // discarded (the pool's `reset`), the clock keeps running, and the card
+    // says why no best was saved rather than hiding the run.
+    this.trickRunEligible = false;
     seat.controller.reset({ position, headingY });
     // A teleport ends the flight, so it ends the pose — M36 §36.5.
     this.clearOneFootPose(seat);
@@ -3583,6 +3815,11 @@ export class Game {
    * lap session owns seat 0's; everything else owns none, which is the null.
    */
   private sessionTricksFor(index: number): TrickTally | null {
+    // **The Trick Run first, because while it runs it owns the ride** — M38
+    // §38.4. Its entrance abandons the other two referees precisely so this
+    // chain can never have two answers; asking it first is the statement that
+    // it is the owner rather than a fourth opinion.
+    if (this.trickRun.phase !== 'idle') return this.trickRun.book(index)?.tally ?? null;
     const race = this.race.state;
     if (race.phase !== 'idle') return race.riders[index]?.tricks ?? null;
     const trackDay = this.trackDay.state;
@@ -3762,6 +3999,42 @@ export class Game {
         ghostVisible: this.renderer.secondRiderShown === 'ghost',
         sessionBest: this.lastTrackDay?.bestLapSeconds ?? null,
       },
+      trickRun: (() => {
+        const state = this.trickRun.state;
+        const finished = this.lastTrickRun;
+        return {
+          phase: state.phase,
+          remainingSteps: state.remainingSteps,
+          elapsedSteps: state.elapsedSteps,
+          durationSteps: state.durationSteps,
+          completed: finished?.completed ?? false,
+          wasRecord: this.lastTrickRunWasRecord,
+          previousBest: this.lastTrickRunPreviousBest?.score ?? null,
+          eligible: this.trickRunEligible,
+          // The live books while a run is on screen, the frozen ones once it
+          // has ended — which is the same object either way, because the
+          // referee freezes its books into the result.
+          seats: (finished !== null && state.phase !== 'running'
+            ? finished.books
+            : state.books).map((book) => ({
+            seat: book.seat,
+            score: book.score,
+            crashes: book.crashes,
+            pendingPoints: book.pendingPoints,
+            tally: book.tally,
+            flights: book.flights,
+            offZoneFlights: book.breakdown.offZoneFlights,
+            openZone: book.openZone,
+            lastAward: book.lastAward === null ? null : {
+              kinds: [...book.lastAward.kinds],
+              landing: book.lastAward.landing,
+              points: book.lastAward.points,
+              repeated: book.lastAward.repeated,
+              zone: book.lastAward.zone,
+            },
+          })),
+        };
+      })(),
       paddle: {
         // `equipped` is the mode's answer and the same for every seat; the
         // three below are this seat's own arm.
@@ -3941,6 +4214,31 @@ export class Game {
   }
 
   /**
+   * Start a Trick Run, for the automation wire — M38 §38.6.
+   *
+   * **The same guards as the buttons and no others.** `enterTrickRun` is the
+   * one entrance, so an invalid venue, an illegal state or a world with no
+   * start line refuses a bridge call exactly as it refuses a press — which is
+   * what stops a spec arming a run no player could have started, and stops a
+   * green suite describing a door that does not exist.
+   */
+  startTrickRun(): void {
+    this.enterTrickRun();
+  }
+
+  /**
+   * End a Trick Run early, for the automation wire — M38 §38.6.
+   *
+   * `endTrackDay`'s twin, and the two presses a player makes rather than a
+   * test-only door: pause, then End run. A spec that reached past the pause
+   * would assert a path nobody can take.
+   */
+  endTrickRun(): void {
+    if (this.appState.current === 'trickRun') this.goTo('paused');
+    this.endTrickRunSession();
+  }
+
+  /**
    * Start a police chase, for the automation wire — M18.
    *
    * `startKnockabout`'s twin and it exists for the same reason: a browser spec
@@ -3970,6 +4268,10 @@ export class Game {
     // mode that still remembers.
     this.knockaboutRecords.clearAll();
     this.chaseRecords.clearAll();
+    // **And the tricks namespace** — M38 §38.5. "Clear my records" that left a
+    // fourth store behind would be the half-answer M14's comment above names,
+    // discovered by opening the one mode that still remembers.
+    this.trickRecords.clearAll();
     this.loadRecordReference();
     // A lap best is filed in `records` beside the timed run's, so `clearAll`
     // above already took it — what this re-points is the *live* session: a
@@ -4090,6 +4392,7 @@ export class Game {
     if (this.lastKnockabout !== null) return 'knockabout';
     if (this.lastChase !== null) return 'chase';
     if (this.lastTrackDay !== null) return 'trackDay';
+    if (this.lastTrickRun !== null) return 'trickRun';
     return 'challenge';
   }
 
@@ -4108,6 +4411,13 @@ export class Game {
     this.lastTrackDayWasRecord = false;
     this.lastTrackDayGhostDropped = false;
     this.lastTrackDayPreviousSplits = [];
+    // **The attempt's card and its comparison, together** — M38 §38.5. The
+    // previous best is snapshotted at the arm, so a card left holding one from
+    // an abandoned attempt would print a delta against a run nobody rode.
+    this.lastTrickRun = null;
+    this.lastTrickRunWasRecord = false;
+    this.lastTrickRunPreviousBest = null;
+    this.lastTrickRunSaved = false;
   }
 
   // ---------------------------------------------------------------------------
@@ -4670,6 +4980,461 @@ export class Game {
     return this.appState.current === 'paused'
       && this.appState.rideReturn === 'trackDay'
       && this.race.state.phase === 'idle';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Trick Run (M38 §38.3–§38.6)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The player chose Trick Run — from the title, the routes panel, the couch
+   * join panel, a pause-card mode switch, Retry, or the QA bridge.
+   *
+   * **One entrance, one eligibility predicate, every control** (§38.6), modelled
+   * line for line on `enterTrackDay` and refusing in the same order — pending
+   * world work, then the transition, then the destination, then the world's own
+   * capability — because **everything after the refusals arms a referee, stands
+   * riders somewhere and can swap a world**, and a transition missing from
+   * `APP_STATE_SPECS` fails *silently*.
+   *
+   * **The offer roster is `app/venues.ts`' and the referee has never heard of
+   * it.** `offersTrickRun` is the pure predicate every door asks; `TrickRun`
+   * receives facts and a rules table, so invariant 22 holds — nothing in the
+   * scoring branches on which world is loaded. Switchback is the only member
+   * today (q176) and the day a second park is opened this method does not
+   * change.
+   *
+   * **The park is brought rather than demanded.** The title button explicitly
+   * selects it (§38.6's "no one-option selection screen"), which is
+   * `enterTrackDay`'s "this is the one entrance that brings its own world" said
+   * about a place rather than about a capability — and the probes and `?mph=`
+   * are replayed into the swap exactly as both of its siblings replay them.
+   *
+   * **A couch uses the existing grid-slot arithmetic and arms no `RaceRun`**
+   * (§38.3): the grid is a validated way to stand N riders at a start line, and
+   * a race is a different question about the same line. `seatResetThisStep` is
+   * deliberately untouched here — that latch belongs to `raceInputs`, and a
+   * second writer of a one-shot is a race between two modes (§37.3's rule 2).
+   */
+  private enterTrickRun(): void {
+    if (this.pendingRoute !== null) return;
+    if (this.appState.current !== 'trickRun' && !this.appState.canGoTo('trickRun')) return;
+
+    if (!offersTrickRun(this.levelId)) {
+      this.installLevel(
+        TRICK_RUN_DESTINATION,
+        '',
+        createLevel(
+          TRICK_RUN_DESTINATION,
+          DEFAULT_SEED,
+          this.hazardProbe,
+          this.targetProbe,
+          this.topSpeedMph,
+        ),
+      );
+    }
+    // After the swap, because that is what could have changed the answer — and
+    // a refused swap (a builder that vanished, a plan that failed) must not
+    // leave a run armed on a world that does not host one.
+    if (!offersTrickRun(this.levelId)) return;
+
+    // **Safe start and grid capability, before anything is armed.** The solo
+    // start is the line's own run-up (`resetChallengeRider`) and the couch
+    // start is the grid laid out in that line's frame; both need the plan to
+    // state one, so both are asked here rather than discovered by a rider
+    // standing at the level spawn with a clock already running.
+    const couch = this.seatCount > 1;
+    const start = this.levelPlan.checkpoints.find((checkpoint) => checkpoint.kind === 'start');
+    if (start === undefined || this.startLine() === null) return;
+
+    this.clearLastResults();
+    this.chaseRun.abandon();
+    this.abandonMatch();
+    this.challenge.abandon();
+    // **The other two referees are abandoned rather than left counting**
+    // (§38.4): a lap session and a race each own a `TrickObserver`, and two
+    // owners counting one session is how the two come to disagree.
+    this.trackDay.abandon();
+    this.race.abandon();
+
+    if (couch) this.placeRaceGrid();
+    else this.resetChallengeRider();
+
+    this.trickRunLevelId = this.levelPlan.id;
+    // **The latch, set once and only ever cleared** (§38.5). A run armed with
+    // a slider already dragged is disqualified from the first step rather than
+    // from the moment somebody touches it again.
+    this.trickRunEligible = this.tuning.overrideCount() === 0;
+    this.lastTrickRunPreviousBest = this.trickRunReference(couch);
+    this.trickRun.arm(this.seatCount);
+
+    this.renderer.setCheckpointProgress(0);
+    this.ghostRecorder.reset();
+    this.resultsIn = 0;
+    this.pendingLapFlash = null;
+    this.pendingSplit = null;
+    this.setRoutePurpose('ride');
+    this.goTo('trickRun');
+  }
+
+  /**
+   * The best this attempt is being ridden against, snapshotted at the arm.
+   *
+   * Null on a couch (§38.5: a couch session loads, compares and saves nothing,
+   * seat 0 included) and null under `Game.probing`, which is the *shared*
+   * diagnostic predicate rather than a second copy of it — the same getter that
+   * gates the filing below, asked here so a diagnostic run cannot even be shown
+   * a reference it will never be measured against.
+   */
+  private trickRunReference(couch: boolean): TrickRecord | null {
+    if (couch || this.probing) return null;
+    return this.trickRecords.comparableBest(
+      this.levelPlan.id,
+      this.trickRun.durationSteps,
+      this.trickRun.rulesRevision,
+    );
+  }
+
+  /**
+   * One fixed step of a Trick Run — §38.4's record → decide, once for the room.
+   *
+   * **Called above `Game.step`'s `worldReset` return**, with the paddle strikes
+   * and the contact pass, and for M37's reason restated for a clock: seat 0
+   * pressing `R` must not stop three guests' scoring, skip the shared deadline,
+   * or deliver this step's awards on the next one. Every live seat is recorded
+   * and the referee is stepped exactly once, whatever seat 0 did.
+   *
+   * **`crashed` is re-read after contact.** `stepSeat` fills `trickPool` before
+   * the step's pair test runs, so a rider rammed onto the ground on this step
+   * would otherwise bank a landing the world has already taken from them
+   * (§38.4 step 1). The re-read goes into this method's own struct: writing it
+   * back into the pool would change what the lap and race observers see.
+   *
+   * The app-state gate is the pause contract (§38.3). `settings` simulates —
+   * it is the pause one screen deeper — so a gate on the referee's phase alone
+   * would age the clock behind the volume slider.
+   */
+  private stepTrickRun(stepSeconds: number): void {
+    if (this.trickRun.phase !== 'running') return;
+    if (this.appState.current !== 'trickRun') return;
+
+    const seats = this.seats.length;
+    for (let index = 0; index < seats; index += 1) {
+      const facts = this.trickPool[index];
+      if (facts === undefined) continue;
+      const out = this.trickRunFacts;
+      out.flightIndex = facts.flightIndex;
+      out.tookOff = facts.tookOff;
+      out.hopped = facts.hopped;
+      out.hopCharge = facts.hopCharge;
+      out.spinCompleted = facts.spinCompleted;
+      out.oneFootQualified = facts.oneFootQualified;
+      out.touchedDown = facts.touchedDown;
+      out.landingQuality = facts.landingQuality;
+      out.crashed = facts.crashed || this.seats[index].controller.crashed;
+      out.reset = facts.reset;
+      // **q189 — which of the park's nine features this flight launched from.**
+      //
+      // Asked only where the answer can matter, and stated rather than
+      // decided: `trickZoneAt` is a pure point-in-polygon over the plan's own
+      // convex zones, the referee reads the argument only on the step
+      // `tookOff` is true, and a plan with no zones (every world but the park)
+      // answers null for every point, which is the shipped behaviour of every
+      // other venue by construction rather than by a branch on venue id.
+      //
+      // The point is the *contact patch's*, latched on the last grounded step
+      // (`seatContactX/Z`), not this step's airborne pose.
+      this.trickRun.record(index, out, trickZoneAt(
+        this.levelPlan.trickZones,
+        this.seatContactX[index] ?? 0,
+        this.seatContactZ[index] ?? 0,
+      ));
+    }
+
+    if (this.trickRun.step(stepSeconds).ended) this.finishTrickRun();
+  }
+
+  /**
+   * One seat's Trick Run lane, or `undefined` outside a run — M38 §38.6.
+   *
+   * **Absent rather than zeroed**, on `trackDay`'s terms: "not scoring" and
+   * "scoring, having landed nothing yet" are different things, and the second
+   * draws a clock and a zero rather than no lane at all.
+   *
+   * **The cue's clock is the run's own step count.** `TRICK_RUN.cueSeconds` is
+   * converted against the fixed rate and measured from the step the award
+   * banked on, so a paused game — which does not step — does not age the line
+   * behind the menu, and `advance(n)` reproduces the dwell exactly.
+   *
+   * `best` is solo-only and comes from the snapshot taken at the arm, never
+   * from a second read of the store: four panes each naming a different
+   * personal best is four scoreboards (§38.5's couch rule).
+   */
+  private trickRunHud(index: number): TrickRunHudInput | undefined {
+    const state = this.trickRun.state;
+    if (state.phase === 'idle') return undefined;
+    const book = state.books[index];
+    if (book === undefined) return undefined;
+    const cueSteps = TRICK_RUN.cueSeconds * SIMULATION.hz;
+    const sinceAward = book.lastAwardStep < 0
+      ? Number.POSITIVE_INFINITY
+      : state.elapsedSteps - book.lastAwardStep;
+    return {
+      phase: state.phase,
+      remainingSeconds: state.remainingSeconds,
+      score: book.score,
+      best: state.seats === 1 ? this.lastTrickRunPreviousBest?.score ?? null : null,
+      pendingPoints: book.pendingPoints,
+      lastAward: book.lastAward === null ? null : {
+        kinds: book.lastAward.kinds,
+        landing: book.lastAward.landing,
+        points: book.lastAward.points,
+        // **A flight that landed tricks and launched from nowhere** — q189.
+        // The rule is only worth saying on the flights it actually took
+        // something from, so a plain clean landing (no kinds) is not "off
+        // feature", it is a landing, and says so in the words it always has.
+        offFeature: book.lastAward.zone === null && book.lastAward.kinds.length > 0,
+      },
+      cueSecondsLeft: Math.max(0, (cueSteps - sinceAward) / SIMULATION.hz),
+    };
+  }
+
+  /** The clock ran out. The card is frozen, filed if it may be, and shown. */
+  private finishTrickRun(): void {
+    const result = this.trickRun.result();
+    if (result === null) return;
+    this.fileTrickRun(result);
+    this.lastTrickRun = result;
+    this.resultsIn = 0;
+    this.goTo('results');
+  }
+
+  /**
+   * May this pause end the run? — the control and the door, once.
+   *
+   * `canEndTrackDaySession`'s twin and written for its lesson: the button and
+   * the handler refuse on one expression, so a card cannot draw a control its
+   * own door will not serve.
+   */
+  private canEndTrickRun(): boolean {
+    return this.appState.current === 'paused'
+      && this.appState.rideReturn === 'trickRun'
+      && this.trickRun.phase === 'running';
+  }
+
+  /** The pause card's **End run** — an explicitly unfinished card (§38.3). */
+  private endTrickRunSession(): void {
+    if (!this.canEndTrickRun()) return;
+    const result = this.trickRun.end();
+    if (result === null) return;
+    // Asked anyway, and it refuses on `completed`: the full fixed duration is
+    // what makes an attempt comparable, so the one filing decision is the one
+    // place that says so rather than a caller remembering not to call.
+    this.fileTrickRun(result);
+    this.lastTrickRun = result;
+    this.resultsIn = 0;
+    this.goTo('results');
+  }
+
+  /** The pause card's **Retry** — a fresh clock and the start again (§38.3). */
+  private retryTrickRun(): void {
+    if (this.appState.current !== 'paused' || this.appState.rideReturn !== 'trickRun') return;
+    this.enterTrickRun();
+  }
+
+  /**
+   * **The one filing decision** — §38.5, and the whole of it.
+   *
+   * Five refusals, in the order they are cheapest to state, and none of them
+   * lives in `trickRecords.ts`: that file takes a record and decides whether it
+   * beats the stored one, and "completed", "solo", "diagnostic" and "eligible"
+   * are not words it should learn.
+   *
+   * **"New personal best" is `submit`'s answer**, never a second comparison
+   * here: the store owns what beats what, and a duplicate predicate is how two
+   * layers come to disagree at a margin of one point.
+   *
+   * **Persistence is reported rather than assumed.** An in-memory best is
+   * usable this session and must not be presented as saved for the next visit.
+   */
+  private fileTrickRun(result: TrickRunResult): void {
+    this.lastTrickRunWasRecord = false;
+    this.lastTrickRunSaved = false;
+    if (!result.completed) return;
+    if (result.seats !== 1) return;
+    if (this.probing) return;
+    if (!this.trickRunEligible) return;
+    // The world the attempt was armed on. A swap abandons the run outright, so
+    // this cannot normally differ; it is here because a record filed under the
+    // wrong venue is the one mistake this store cannot be talked out of.
+    if (this.trickRunLevelId !== this.levelPlan.id) return;
+    const book = result.books[0];
+    if (book === undefined) return;
+
+    this.lastTrickRunWasRecord = this.trickRecords.submit({
+      levelId: this.trickRunLevelId,
+      score: book.score,
+      durationSteps: result.durationSteps,
+      rulesRevision: result.rulesRevision,
+      setAt: new Date().toISOString(),
+    });
+    this.lastTrickRunSaved = this.trickRecords.persistent;
+  }
+
+  /**
+   * Leave the attempt behind — a venue change, the title, a seat disposal.
+   *
+   * §38.3: abandon and clear *before* the new world or session runs, and file
+   * nothing. The card goes with the run, because a frozen card over a world
+   * that has been replaced underneath it is M23's stranded-card defect.
+   */
+  private abandonTrickRun(): void {
+    this.trickRun.abandon();
+    this.lastTrickRun = null;
+    this.lastTrickRunWasRecord = false;
+    this.lastTrickRunPreviousBest = null;
+    this.lastTrickRunSaved = false;
+    this.trickRunEligible = false;
+    this.trickRunLevelId = '';
+  }
+
+  /**
+   * A finished attempt, in words — §38.5's card.
+   *
+   * **The breakdown is the referee's attribution**, never `count × value`: the
+   * counts beside the points are the observer's and the points are the
+   * scorer's, and the two deliberately disagree wherever a landing multiplier
+   * or a forfeit came between them. That is what `qualityAdjustment` is for,
+   * and it is why the column adds up.
+   *
+   * **The vocabulary travels with the numbers** (M26 Phase 6): this table says
+   * Trick / Count / Points and can never inherit Checkpoint / Time / vs best.
+   */
+  private buildTrickRunResults(result: TrickRunResult): ResultsView {
+    const elapsedSeconds = result.elapsedSteps / SIMULATION.hz;
+    const durationSeconds = result.durationSteps / SIMULATION.hz;
+    const clock = `${formatRunTime(elapsedSeconds)} of ${formatRunTime(durationSeconds)}`;
+    return result.seats > 1
+      ? this.buildCouchTrickRunResults(result, clock)
+      : this.buildSoloTrickRunResults(result, clock);
+  }
+
+  private buildSoloTrickRunResults(result: TrickRunResult, clock: string): ResultsView {
+    const book = result.books[0];
+    const notes: string[] = [clock];
+    if (book === undefined) {
+      return {
+        heading: 'Run ended',
+        isRecord: false,
+        totalCaption: 'Run score',
+        bestCaption: 'Previous best',
+        total: '0',
+        best: '—',
+        deltaToBest: '',
+        ahead: false,
+        table: TRICK_RUN_TABLE,
+        rows: [],
+        mode: 'trickRun',
+        notes,
+      };
+    }
+
+    const previous = this.lastTrickRunPreviousBest;
+    const delta = previous === null ? null : book.score - previous.score;
+
+    if (!result.completed) {
+      notes.push('Run ended early — the clock decides a comparable attempt, so no best was saved');
+    } else if (this.probing) {
+      notes.push('Diagnostic session — no best saved');
+    } else if (!this.trickRunEligible) {
+      notes.push('Development tuning or a teleport during the run — no best saved');
+    } else if (previous === null) {
+      notes.push('First completed run');
+    }
+    if (this.lastTrickRunWasRecord && !this.lastTrickRunSaved) {
+      notes.push('This browser will not save scores after you close the tab');
+    }
+    // **The rule, said where the number that proves it is** — M38 q189. A
+    // player who hopped their way down the start straight has a row of zeroes
+    // and no idea why; this is the one sentence that explains it, and it is
+    // printed only when it actually happened to them.
+    if (book.breakdown.offZoneFlights > 0) {
+      notes.push(book.breakdown.offZoneFlights === 1
+        ? 'Tricks only score on flights launched from a park feature; 1 landed off one.'
+        : `Tricks only score on flights launched from a park feature; ${book.breakdown.offZoneFlights} landed off one.`);
+    }
+    if (book.breakdown.chargedHopsForfeited > 0) {
+      notes.push(book.breakdown.chargedHopsForfeited === 1
+        ? 'One charged hop was forfeited before it banked'
+        : `${book.breakdown.chargedHopsForfeited} charged hops were forfeited before they banked`);
+    }
+
+    return {
+      heading: this.lastTrickRunWasRecord
+        ? 'New personal best'
+        : result.completed ? 'Run complete' : 'Run ended early',
+      isRecord: this.lastTrickRunWasRecord,
+      totalCaption: 'Run score',
+      bestCaption: 'Previous best',
+      total: `${book.score}`,
+      best: previous === null ? '—' : `${previous.score}`,
+      deltaToBest: delta === null || delta === 0 ? '' : `${delta > 0 ? '+' : ''}${delta}`,
+      ahead: delta !== null && delta > 0,
+      table: TRICK_RUN_TABLE,
+      rows: trickBreakdownRows(book),
+      // **Sent, and withdrawn by the screen** (`ResultsView.mode`). The four
+      // counts are already in this table's own Count column, so the region is
+      // a repeat on this card alone; the view keeps carrying them because the
+      // decision is a layout one and belongs where the layout is.
+      tricks: [tricksCounts('', book.tally)],
+      mode: 'trickRun',
+      notes,
+    };
+  }
+
+  /**
+   * The couch card — one named group per seat, in seat order, and no best.
+   *
+   * **No winner, no ranking, no tie-break** (q188): the rows are seats in seat
+   * order and the headline is the room's rather than anybody's, because a
+   * number at the top of this card with a name beside it would be the ranking
+   * §38.2 says this milestone does not add.
+   */
+  private buildCouchTrickRunResults(result: TrickRunResult, clock: string): ResultsView {
+    const nameFor = (seat: number): string => {
+      const rider = this.seats[seat];
+      return rider === undefined ? `Player ${seat + 1}` : characterSpec(rider.character).name;
+    };
+    // **The clock is the summary's, not a note's.** `bestCaption` beside the
+    // rider count already prints the run's length, and a note repeating it is
+    // a line this card cannot spare (§38.5's card is measured at the couch's
+    // own 1000 x 700 minimum, `tests/m38.spec.ts`).
+    const notes: string[] = ['Couch runs are not saved'];
+    if (!result.completed) notes.push(`Run ended early — ${clock}`);
+
+    return {
+      heading: result.completed ? 'Run complete' : 'Run ended early',
+      isRecord: false,
+      totalCaption: 'Riders',
+      bestCaption: 'Run length',
+      total: `${result.seats}`,
+      best: formatRunTime(result.durationSteps / SIMULATION.hz),
+      deltaToBest: '',
+      ahead: false,
+      table: COUCH_TRICK_RUN_TABLE,
+      rows: result.books.map((book) => ({
+        label: nameFor(book.seat),
+        time: `${book.score}`,
+        delta: '',
+        ahead: false,
+      })),
+      // **The region is the only place a couch sees a count.** This table
+      // carries a seat's *points*, not its tricks, so nothing here repeats
+      // anything and the region stays at every height (`ResultsView.mode`).
+      tricks: result.books.map((book) => tricksCounts(nameFor(book.seat), book.tally)),
+      mode: 'trickRunCouch',
+      notes,
+    };
   }
 
   /**
@@ -6234,6 +6999,7 @@ export class Game {
       // leaves, so the button under the finger still does the obvious thing.
       if (this.appState.current === 'paused') this.appState.resumeRide();
       else if (from === 'race') this.enterTrackDay();
+      else if (from === 'trickRun') this.enterTrickRun();
       else this.enterKnockabout();
       return;
     }
@@ -6244,6 +7010,14 @@ export class Game {
       return;
     }
     this.couchRide = ride;
+    if (ride === 'trickRun') {
+      // **The same door every other control takes** — M38 §38.6. Trick Run is
+      // the second couch ride that changes the world (the park is where it is
+      // ridden), which is why this cannot be a `goTo`: the room asked for a
+      // score and a score has a venue.
+      this.enterTrickRun();
+      return;
+    }
     if (ride === 'race') {
       // **The same door the join panel takes** — `enterTrackDay` swaps to the
       // circuit, arms the referee by seat count and lays out the grid. Racing
@@ -6297,11 +7071,16 @@ export class Game {
       if (this.appState.rideReturn === 'trackDay') {
         return this.race.state.phase === 'idle' ? null : 'race';
       }
+      // **`trickRun` is the one row whose state and couch ride are spelled
+      // the same** — M38. `isCouchRide('trickRun')` is true, so the line below
+      // already answers it; this comment exists because the line above it
+      // says the opposite about `trackDay` and the asymmetry is deliberate.
       return isCouchRide(this.appState.rideReturn) ? this.appState.rideReturn : null;
     }
     if (current !== 'results') return null;
     const mode = this.resultsMode();
     if (mode === 'race') return 'race';
+    if (mode === 'trickRun') return 'trickRun';
     return mode === 'match' ? 'knockabout' : null;
   }
 
@@ -6338,8 +7117,8 @@ export class Game {
    *
    * **`?mph=` joined at M30 Phase 0** for the same reason one layer down: it
    * changes the *wheel* without changing the level id, and a record has no
-   * tuning fingerprint, so a 65 mph best filed on the 50 mph leaderboard
-   * would be a cheat by accident (§30.2 fact 8).
+   * tuning fingerprint, so a best set on an overridden wheel filed against the
+   * shipped 65 mph one would be a cheat by accident (§30.2 fact 8).
    */
   private get probing(): boolean {
     return this.hazardProbe !== undefined
@@ -6789,6 +7568,9 @@ export class Game {
     if (mode === 'chase' && chase !== null) return this.buildChaseResults(chase);
     // And Track Day after those, on the same argument a fourth time.
     if (mode === 'trackDay' && trackDay !== null) return this.buildTrackDayResults(trackDay);
+    // And the Trick Run after those, on the same argument a fifth time.
+    const trickRun = this.lastTrickRun;
+    if (mode === 'trickRun' && trickRun !== null) return this.buildTrickRunResults(trickRun);
 
     const result = this.lastResult;
     if (result === null) {
@@ -7062,6 +7844,8 @@ export class Game {
       const ride = this.appState.rideReturn;
       return ride === 'challenge' || ride === 'knockabout' || ride === 'chase'
         ? ride
+        // A paused Trick Run lands here and gets `freeRide`, for the reason
+        // written against the results card below: no generated route hosts one.
         : 'freeRide';
     }
     if (current !== 'results') return null;
@@ -7084,6 +7868,11 @@ export class Game {
     // player actually asked for — a new place — with nothing pretending to keep
     // score on it.
     if (mode === 'trackDay') return 'freeRide';
+    // **And a Trick Run cannot follow one either** — M38 §38.6. The offer
+    // roster is a short list of hand-built parks and a generated route is not
+    // on it, so resuming the mode there would be offering a session that could
+    // never arm. The run is abandoned and nothing is filed (§38.3).
+    if (mode === 'trickRun') return 'freeRide';
     return 'challenge';
   }
 
@@ -7311,6 +8100,10 @@ export class Game {
     // And a race belongs to the circuit it was run on, for the same reason.
     this.race.abandon();
     this.lastRace = null;
+    // **And the Trick Run's attempt, before the new world runs** — M38 §38.3.
+    // The referee holds no geometry, so this is an abandonment rather than a
+    // rebuild: the score was about a place, and the place is being replaced.
+    this.abandonTrickRun();
     // The match's world is the discs and the two riders in it, and both are
     // being replaced.
     this.abandonMatch();
@@ -7932,6 +8725,21 @@ export class Game {
     this.spendRiderStrikes();
     this.stepContact(stepSeconds, seatReset);
 
+    // **And the Trick Run's own record-and-step, above the return** — M38
+    // §38.4, on `spendRiderStrikes`' hoist and `decideMatchAfterStrikes`'
+    // exactly. Every seat's facts are recorded and the room's referee is
+    // stepped once, whatever seat 0 did with `R`: a shared deadline that
+    // skipped a tick because the host respawned would be a clock three guests
+    // could not see stop, and awards held over to the next step are awards
+    // banked in somebody else's step.
+    //
+    // **Here rather than beside `stepTrackDay` fifty lines below** for that
+    // reason and for the other one §38.4 names: the crash this method's
+    // contact pass may have just established has to be visible before any
+    // landing banks, so the referee is fed after `stepContact` and never
+    // before it.
+    this.stepTrickRun(stepSeconds);
+
     // **And the decision the credit above it just earned** — M37 §37.3's
     // "seat 0's `worldReset` return cannot defer an unrelated winning exchange
     // to next tick", repaired after the Stage A verifiers demonstrated it.
@@ -8215,6 +9023,11 @@ export class Game {
         reset.reset = true;
       }
       this.seatTeleported[index] = false;
+      // The rider is standing somewhere new and the pose has already been
+      // collapsed onto it, so the contact patch is that spot — never the one
+      // they pressed R from, which is the fabrication §36.6 forbids.
+      this.seatContactX[index] = seat.currentPose.x;
+      this.seatContactZ[index] = seat.currentPose.z;
       return true;
     }
 
@@ -8333,6 +9146,23 @@ export class Game {
       // reach this line at all.
       facts.reset = this.seatTeleported[index] ?? false;
       this.seatTeleported[index] = false;
+    }
+
+    // -- M38 q189's launch feature: the last grounded contact patch ----------
+    //
+    // **Latched after the facts, and only while the wheel is down.** On the
+    // step `tookOff` is true `groundClearance` is already positive, so this
+    // branch does not run and the pair still holds the previous step's XZ —
+    // which is the patch the flight launched from. `groundClearance` is the
+    // controller's own `y - groundY` and is an exact zero while grounded (its
+    // getter says so), so this is the same predicate the pose-level
+    // `airborne` derivation uses and cannot disagree with it.
+    //
+    // It decides nothing here: `stepTrickRun` asks `trickZoneAt` what is under
+    // it, and outside a run nothing reads it at all.
+    if (seat.controller.groundClearance <= 0) {
+      this.seatContactX[index] = seat.currentPose.x;
+      this.seatContactZ[index] = seat.currentPose.z;
     }
 
     // -- M5's two contact events --------------------------------------------
@@ -9203,6 +10033,12 @@ export class Game {
           split: this.takePendingLapFlash(),
         }
         : undefined,
+      // The Trick Run's lane — M38 §38.6, and **keyed on the referee's phase**
+      // exactly as the two above are: a player who paused to read their score
+      // must not have the number they paused to read disappear, and the pause
+      // is also what freezes the award cue, because the cue's clock is the
+      // run's own step count rather than wall time.
+      trickRun: this.trickRunHud(index),
       // Read off the controller rather than derived from `pose.speed` — M20.
       // The cutout's thresholds are live-tunable and the controller owns them;
       // a HUD that recomputed the ratio would be a second opinion about when
@@ -9796,6 +10632,7 @@ export class Game {
       && state !== 'freeRide'
       && state !== 'knockabout'
       && state !== 'trackDay'
+      && state !== 'trickRun'
       && state !== 'routes'
     ) this.closeCouch();
     // And leaving the couch ride itself. Quit lands on `title` from the pause
@@ -9847,6 +10684,12 @@ export class Game {
     // volumes wearing the same renderer, and the `paused`/`settings` clause has
     // to ask *both* referees or a paused lap loses the lines it is being timed
     // against.
+    // **A Trick Run deliberately shows no gates.** Switchback carries a lap
+    // and therefore checkpoints, but nothing in this mode is measured against
+    // them (§38.3: lap completion does not end the run, there is no
+    // per-checkpoint scoring and no penalty for the safe line), so lighting a
+    // cascade of markers would be furniture belonging to a mode the player did
+    // not choose — M10's own reason for hiding them in free ride.
     const running = this.challenge.state.phase !== 'idle'
       || this.trackDay.state.phase !== 'idle';
     const timing = state === 'challenge'
@@ -9857,7 +10700,18 @@ export class Game {
     if (!timing) this.renderer.setGhostVisible(false);
 
     // The pit-in control exists only while there is a session to pit out of.
-    this.menus.setEndSessionAvailable(this.canEndTrackDaySession());
+    // **One slot, two sessions, and the words say which** — M23's pit-in and
+    // M38's End run. Both are "the only control in the game that ends a ride
+    // from a menu", both are drawn only while there is a session to end, and
+    // each names its own: a card offering "Pit in and see your best lap" over
+    // a trick score would be M26 Phase 6's vocabulary defect on a button.
+    this.menus.setEndSessionAvailable(
+      this.canEndTrackDaySession() || this.canEndTrickRun(),
+      this.canEndTrickRun() ? TRICK_RUN_END_WORDS : TRACK_DAY_END_WORDS,
+    );
+    // The Retry beside it exists only inside an attempt, for that same reason:
+    // "again" means nothing on a pause taken in a mode with no clock.
+    this.menus.setRetryRunAvailable(this.canEndTrickRun());
 
     // **And the couch's mode switch exists only while there is a couch** — the
     // owner's 2026-08-27 ride. Asked of the seat count rather than of how the
@@ -9898,7 +10752,10 @@ export class Game {
     // is not the results screen or a pause — M14. `lastKnockabout` is cleared
     // with it, which is what makes `buildResultsView` and the retry button able
     // to tell which mode they are looking at.
-    if (state === 'title' || state === 'freeRide' || state === 'challenge' || state === 'trackDay') {
+    if (
+      state === 'title' || state === 'freeRide' || state === 'challenge'
+      || state === 'trackDay' || state === 'trickRun'
+    ) {
       this.lastKnockabout = null;
       this.lastKnockaboutWasRecord = false;
       this.knockaboutSeconds = 0;
@@ -9956,6 +10813,32 @@ export class Game {
     // race left armed would keep a countdown on screen in a free ride.
     if ((state === 'title' || state === 'freeRide') && this.race.state.phase !== 'idle') {
       this.race.abandon();
+      this.resultsIn = 0;
+    }
+
+    // **And a Trick Run, on that argument a fourth time** — M38 §38.3. The
+    // couch's mode switch and *New route* both leave by `goTo('freeRide')`
+    // without re-entering a mode, which is the path that left a match running
+    // in a free ride at M26; the referee is part of the run, so it ends where
+    // the run does, and the HUD's own lane is gated on its phase precisely
+    // because "a running attempt only exists inside the mode" is true.
+    // Nothing is filed: leaving is abandoning (§38.3).
+    //
+    // **Every other ride, not only `freeRide`** — Phase 5's QA repair. The
+    // three blocks above name `title` and `freeRide` because the referees they
+    // end belong to worlds that a mode change swaps, and `installLevel` is what
+    // ends them on that path. A Trick Run is the first mode whose venue another
+    // mode *keeps*: Switchback carries a lap, so **Play next → Race** (and the
+    // Track Day, Knockabout and time-trial entrances beside it) reach their own
+    // referee without calling `installLevel` at all — and the attempt survived
+    // into the next session, drawing its lane over the race's own HUD in every
+    // pane. Derived from `RIDE_STATES` rather than re-enumerated, so the day a
+    // sixth mode is added it is already covered; `paused`, `settings` and
+    // `results` are deliberately outside it, because a paused attempt is one
+    // the player is coming back to and a card is the run it froze.
+    if ((state === 'title' || (isRideState(state) && state !== 'trickRun'))
+      && this.trickRun.phase !== 'idle') {
+      this.abandonTrickRun();
       this.resultsIn = 0;
     }
 
@@ -10379,6 +11262,16 @@ export class Game {
     // line above exists to avoid.
     if (this.couchRide === 'race') {
       this.enterTrackDay();
+      return;
+    }
+    // **And the fourth ride, on that argument again** — M38 §38.6. A Trick Run
+    // brings the park and arms one shared clock for the room; reaching past
+    // `enterTrickRun` with a `goTo` would put N riders at the level spawn with
+    // nobody keeping score, which is the mistake the two branches above exist
+    // to avoid. `startCouch` is the join panel's own door and M27 Phase 5's
+    // lesson is that this is the list a new member is most often missing from.
+    if (this.couchRide === 'trickRun') {
+      this.enterTrickRun();
       return;
     }
     this.goTo('freeRide');
@@ -11678,6 +12571,51 @@ function tricksCounts(rider: string, tally: TrickTally): TricksCounts {
     spinsLanded: `${tally.spinsLanded}`,
     oneFootAirs: `${tally.oneFootAirs}`,
   };
+}
+
+/**
+ * One book's breakdown as the card's rows — M38 §38.5.
+ *
+ * **Every figure comes from the referee's attribution**, and the points column
+ * adds exactly to the run score by construction: the first **seven** rows are
+ * the seven accumulators `TrickBreakdown` publishes — the two rows after them,
+ * off-feature flights and crashes, carry counts and an em dash and are
+ * deliberately outside the sum — `qualityAdjustment` is the
+ * signed difference the landing multipliers and the single rounding made, and
+ * `repeatAdjustment` is the signed (never positive) difference the diminishing
+ * repeat rule made — q185's owner decision, and the reason the count beside it
+ * is `repeatedFlights` rather than anything this file works out. A card that
+ * multiplied a count by a value instead would ignore the multiplier, the
+ * forfeits *and* the repeats, which is precisely what §38.4 forbids.
+ *
+ * The counts beside them are the observer's and deliberately need not agree:
+ * a charged hop counted at its launch and lost in the crash that followed is
+ * one in the Count column and nothing in the Points column, and the note under
+ * the table says how many of those there were.
+ *
+ * Crashes carry no points and say so with an em dash rather than a zero, which
+ * would read as a score of nothing rather than as a row that is not about
+ * points at all.
+ */
+function trickBreakdownRows(book: TrickBookState): ResultsRow[] {
+  const points = (value: number): string => `${value > 0 ? '+' : ''}${value}`;
+  return [
+    { label: 'Clean landings', time: `${book.tally.cleanLandings}`, delta: `${book.breakdown.cleanLandingPoints}`, ahead: false },
+    { label: 'Charged hops', time: `${book.tally.chargedHops}`, delta: `${book.breakdown.chargedHopPoints}`, ahead: false },
+    { label: '180s landed', time: `${book.tally.spinsLanded}`, delta: `${book.breakdown.spinPoints}`, ahead: false },
+    { label: 'One-foot airs', time: `${book.tally.oneFootAirs}`, delta: `${book.breakdown.oneFootPoints}`, ahead: false },
+    { label: 'Two tricks in a flight', time: '—', delta: `${book.breakdown.bonusPoints}`, ahead: false },
+    { label: 'Landing quality', time: '—', delta: points(book.breakdown.qualityAdjustment), ahead: false },
+    { label: 'Repeat visits', time: `${book.breakdown.repeatedFlights}`, delta: points(book.breakdown.repeatAdjustment), ahead: false },
+    // **A count row, not an adjustment** — M38 q189. Nothing was taken from a
+    // total these flights were never in: trick points only ever bank on a
+    // flight launched from a park feature, so the honest figure is *how many
+    // flights landed tricks somewhere else*, beside an em dash for the reason
+    // Crashes carries one. The note under the table says the rule; this row is
+    // the number it is about.
+    { label: 'Tricks off the features', time: `${book.breakdown.offZoneFlights}`, delta: '—', ahead: false },
+    { label: 'Crashes', time: `${book.crashes}`, delta: '—', ahead: false },
+  ];
 }
 
 function menuScreenFor(state: AppStateId): MenuScreen {

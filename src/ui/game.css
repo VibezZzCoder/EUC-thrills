@@ -496,8 +496,8 @@
  * director schedules the beeps with (`shared/overspeed.ts`), so the blink and
  * the sound are the same cue on two channels rather than two cues. It starts
  * at about one flash a second just past `EUC.overspeedBeepShare` (0.785) of
- * the derived top speed — 52 mph on the shipped 65 mph wheel, 40 mph on the
- * 50 mph wheel this was written for — and reaches seven a second at the edge:
+ * the derived top speed — 52 mph on the shipped 65 mph wheel, and the same
+ * share of whatever top speed the wheel has — and reaches seven a second at the edge:
  * the real alarm's own cadences, which is the "riding the beeps" feel made
  * visible.
  * ------------------------------------------------------------------------ */
@@ -663,6 +663,168 @@
   letter-spacing: 0.14em;
   text-transform: uppercase;
   opacity: 0.72;
+}
+
+/* ---------------------------------------------------------------------------
+ * The Trick Run's rows — M38 Phase 2, `docs/PLANS.md` §38.6
+ *
+ * **Inside the mode lane, not beside it.** §38.6 asks for remaining time, the
+ * banked score, the comparable best and one short award line, and three of
+ * those are already shapes this corner has: the caption (`TRICK RUN`), the
+ * headline figure the Knockabout tally and the chase clock share, and the
+ * second row a couch match's discs opened. Only the best, the pending total and
+ * the award line have no home, so only they are here — the corner gains rows
+ * rather than a fourth layout to switch between.
+ *
+ * **Every size is `--hud-vw`'d and clamped and there is no media query**, which
+ * is M25 Phase 3's finding restated at `DESIGN.md` §9: at 1000x700 a couch
+ * quadrant is 500 px wide while the *window* is 1000, so a `max-width` query
+ * would measure the wrong box. `--hud-vw` is 1% of the pane in a split and 1%
+ * of the window solo, so a proportion written in it needs no query to hold.
+ *
+ * **The reserved-lane clearance is a proportion minus a fixed padding, so it is
+ * not one number.** The lane is right-aligned inside a fixed `--lane-x-right`,
+ * and the playfield's middle fifth ends at 60% of the pane — so the room a
+ * right-aligned lane has is `40% - padding/width`, which is 36.4% of a 500 px
+ * couch quadrant, 38.2% of a 1000 px window and 34.9% of a 360 px phone. The
+ * split rule below takes M37's measured 37% because a couch pane is where four
+ * rows already crowd that corner; solo keeps a wider bound, because a phone's
+ * lane is three short rows that never reach the middle fifth *vertically* and
+ * the reserved-lane rule is a conjunction of both axes (`tests/m9.spec.ts`,
+ * `tests/m38-hud.spec.ts`). Stated as what it is rather than rounded into a
+ * claim about every window.
+ *
+ * **Measured, on the drawn lane, at the widest text the mode can produce** —
+ * `Charged hop + 180 + One-foot  +1,000` over `Pending +1,000`, `Best 12,345`,
+ * a `12,345` score and a `2:00` clock (`tests/m38-hud.spec.ts` reads all of it
+ * and fails on any row whose text is wider than its box):
+ *
+ *   - 360x800 phone: lane 187x113 at x=154, nothing clipped.
+ *   - 375x667 phone: lane 195x113 at x=162.
+ *   - 667x375 short landscape: lane 259x113 at x=389.
+ *   - 1000x520 and 1000x700: lane 301x119 at x=680.
+ *   - A couch half and a 2x2 quadrant: lane 259x96 at x=227 of a 500 px pane,
+ *     with the best row gone.
+ *
+ * **The one number to watch is vertical, not horizontal**: in a 500x350
+ * quadrant the lane's bottom edge is 120 px and the pane's middle fifth begins
+ * at 140 — 20 px of clearance, which is what a *sixth* row in this corner would
+ * spend. The horizontal crossing is deliberate and permitted: the lane reaches
+ * 45% of a quadrant, and the reserved-lane rule is a conjunction of both axes,
+ * so a corner that passes over the middle fifth's columns high above the rider
+ * has always been legal (M37's tally holds 37% because four rows there *do*
+ * drop into the vertical band; three short rows here do not).
+ * ------------------------------------------------------------------------ */
+
+.euc-hud__trick {
+  display: grid;
+  justify-items: end;
+  justify-self: end;
+  gap: 0.08rem;
+  margin-top: 0.18rem;
+  /* Bounded so the widest award line cannot widen the corner across the pane.
+     `ch` first, because a bound in `ch` is what stops the line growing past
+     what it can be read at on a wide desktop window. */
+  max-width: min(32ch, calc(52 * var(--hud-vw)));
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.euc-hud__trick[hidden] { display: none; }
+
+/* The comparable personal best — solo only.
+ *
+ * **Hidden in a split by the stylesheet, not by a branch in script**, and it is
+ * the §9n idiom rather than a shortcut: a saved best belongs to one rider at
+ * one venue, so four panes each naming a different one would be four
+ * scoreboards in one frame. The composition root already hands `best: null` to
+ * a couch seat (`ui/hudModel.ts`); this rule is what makes the row's absence a
+ * property of the layout rather than of a caller remembering. What a split
+ * gives up is the number to beat — which is the right thing to give up, since
+ * the person to beat is sitting next to them. */
+.euc-hud__trick-best {
+  font-size: clamp(0.8rem, calc(1.7 * var(--hud-vw)), 0.92rem);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  opacity: 0.75;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.euc-hud[data-split="left"] .euc-hud__trick-best,
+.euc-hud[data-split="right"] .euc-hud__trick-best { display: none; }
+
+/* Points in the air, which are not the player's yet.
+ *
+ * Quieter than the banked figure above it **and carrying the word "Pending" in
+ * its own text**: dimness is a manner and not a meaning, and the one thing this
+ * row exists to say would be lost in forced colours, in a screenshot and to
+ * anybody riding a bright park in the afternoon (`DESIGN.md` §6c's rule that
+ * colour is never the only cue, arriving through a score). */
+.euc-hud__trick-pending {
+  font-size: clamp(0.76rem, calc(1.55 * var(--hud-vw)), 0.86rem);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  opacity: 0.62;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.euc-hud__trick-pending[hidden] { display: none; }
+
+/* The award line — one row, and never a popup over the landing zone.
+ *
+ * §38.6: *"Use one short event line, not a popup over the landing zone"*. The
+ * middle fifth of the frame is where the rider and the ground they are about to
+ * meet are drawn (`DESIGN.md` §9), and a scoring cue that appeared there would
+ * cover the landing it is about at the moment the player most needs to see it.
+ *
+ * **The points never shrink and never ellipse; the words do.** A line too long
+ * for its pane loses the tail of "180 + One-foot" before it loses "+448",
+ * because the number is the half a player takes in at a glance and the words
+ * are the half they can reconstruct from the trick they just rode. */
+.euc-hud__trick-award {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  margin-top: 0.1rem;
+  max-width: 100%;
+}
+
+.euc-hud__trick-award[hidden] { display: none; }
+
+.euc-hud__trick-award-label {
+  min-width: 0;
+  font-size: clamp(0.8rem, calc(1.75 * var(--hud-vw)), 0.95rem);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  opacity: 0.88;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.euc-hud__trick-award-points {
+  flex: 0 0 auto;
+  /* Below the banked headline above it, because a single award is not the
+     score — and above the words beside it, because the number is what the
+     glance is for. */
+  font-size: clamp(0.92rem, calc(2 * var(--hud-vw)), 1.1rem);
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+@media (forced-colors: active) {
+  /* Forced colours throw the tints away, so what is left is the text — which
+     is where every one of these rows already carries its meaning. */
+  .euc-hud__trick-best,
+  .euc-hud__trick-pending,
+  .euc-hud__trick-award-label { opacity: 1; }
 }
 
 /* ---------------------------------------------------------------------------
@@ -2159,6 +2321,113 @@
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * **A room's counts are one row a rider, not one card a rider — M38.**
+ *
+ * The region was written for one group (a lap session) and for a race's four,
+ * where it sits on a card whose own rows are short. A Trick Run couch card
+ * carries a row per seat *and* a group per seat, and four stacked groups of
+ * four label/count pairs measured **289.7 px** at 1000 x 700 — more than the
+ * table, the notes and the chooser put together, on the panel whose contract
+ * is that every control on it is above the fold.
+ *
+ * So a region with more than one group lays each group out as a single line:
+ * the name, then the four counts side by side. Nothing is dropped — the same
+ * four labels and the same four numbers — and a one-rider card (the lap
+ * session's) keeps the roomier block it was designed with, because `:has()`
+ * asks how many groups there actually are rather than which mode drew them.
+ */
+/*
+ * **The results card's second lines, on desktop windows only — M38.**
+ *
+ * Two sentences come off this card and neither is a control. `New route`'s
+ * note is, in this file's own words, "an advertisement for a feature the
+ * player has now met" (**23 px** on the solo Trick Run card, **35** on a
+ * three-seat couch card, both of which were over the fold with it in); the
+ * chooser's note is "the same two sentences the join panel just showed these
+ * two people", and by the time a room reaches a results card it has met every
+ * ride this control offers on the join panel *and* the pause card, both of
+ * which keep their notes.
+ *
+ * **The width clause is the whole repair, and a first pass got it wrong.**
+ * Hiding these at every size broke the phone: on a handset a note is most of a
+ * button's height and is therefore a tap target — M20.1 §4.5 is the owner's
+ * own "takes a few presses" report, and `tests/touch.spec.ts` taps this exact
+ * note on this exact card. 62.5rem is 1000 px, which is `COUCH_MIN_WIDTH_PX`
+ * (`app/couch.ts`) and therefore the width below which no couch card exists at
+ * all; a phone is 412 and keeps both sentences.
+ */
+@media (min-width: 62.5rem) {
+  .euc-menu--results .euc-button__note,
+  .euc-menu--results [data-menu="results-couch"] .euc-field__note { display: none; }
+}
+
+/*
+ * **And on one card the region is a repeat, so it is withdrawn — M38.**
+ *
+ * The solo Trick Run card prints the four counts in its own table, in the
+ * Count column beside the points each kind earned — `Clean landings 3 +90`.
+ * The region above the notes then says `Clean landings 3` a second time, four
+ * rows of it, for **72.6 px** (59 px drawn plus the panel's own gap) on the
+ * tallest panel in the game: measured as built, the card ran 815 px of content
+ * into the 1000 x 700 window this suite runs in and the couch guarantees, and
+ * its lowest control sat 94.5 px below the fold.
+ *
+ * **Keyed on the mode, not on the group count.** `:has(…:nth-child(2))` above
+ * asks how many riders are on the card, which is the right question for a
+ * room's one-line rows and the wrong one here — what makes this region a
+ * repeat is the *table beside it*, and the couch Trick Run card, whose table
+ * carries points per seat and no counts at all, has one rider's worth of these
+ * numbers nowhere else. So the card names itself (`data-results-mode`, §9n's
+ * idiom) and this rule names the card. The lap-session and race cards, whose
+ * tables carry sector times and finishing places, are not selected and keep
+ * the block §9m designed.
+ */
+.euc-results[data-results-mode="trickRun"] .euc-results__tricks { display: none; }
+
+.euc-results__tricks-groups:has(.euc-results__trick-group:nth-child(2)) {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.2rem;
+}
+
+.euc-results__tricks-groups:has(.euc-results__trick-group:nth-child(2))
+  .euc-results__trick-group {
+  grid-template-columns: minmax(4rem, auto) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.2rem 0.7rem;
+  /* **No box around a line.** The bordered card is what makes one group read
+     as a block of its own; a row does not need one, and the border plus its
+     padding measured 12 px a seat — 48 px across a four-seat card, which is
+     the difference between `Back to title` being on the screen and not. The
+     rows are separated by the grid's own gap, exactly as the notes are. */
+  padding: 0;
+  border: 0;
+}
+
+/* And the line itself is set at the density of a note rather than of a stat:
+   four counts on one line do not need a stat's leading, and the last 13 px of
+   a four-seat card are here. */
+.euc-results__tricks-groups:has(.euc-results__trick-group:nth-child(2))
+  :is(.euc-results__trick dt, .euc-results__trick dd) {
+  line-height: 1.25;
+}
+
+.euc-results__tricks-groups:has(.euc-results__trick-group:nth-child(2))
+  .euc-results__trick-list {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0 0.6rem;
+}
+
+/* The label is the half that gives way when four pairs share one line: the
+   count is the information and it is two characters wide. */
+.euc-results__tricks-groups:has(.euc-results__trick-group:nth-child(2))
+  .euc-results__trick dt {
+  font-size: 0.7rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .euc-results__notes {
   display: grid;
   gap: 0.3rem;
@@ -2731,9 +3000,15 @@
  * eighth button rather than the window: a machine that is not offered a couch
  * still has seven, which is the layout that has shipped since M23 and must not
  * move. The threshold that decides the offer lives in `app/couch.ts`, once.
+ *
+ * **56rem became 60rem at M38**, on exactly the measurement above one button
+ * later: the ninth entrance takes the stacked couch title past an ordinary
+ * 1440x900 laptop by 4 px (`tests/m25.spec.ts`). 60rem is 960, which brings
+ * 900 inside the two-column tier and leaves every taller window — 1600x1000,
+ * 1920x1080 — on the stack it has always had, with room to spare.
  * ------------------------------------------------------------------------ */
 
-@media (max-height: 56rem) {
+@media (max-height: 60rem) {
   .euc-menu--title[data-couch="true"] .euc-menu__panel { width: min(46rem, 100%); }
 
   .euc-menu--title[data-couch="true"] .euc-menu__actions {
@@ -2820,8 +3095,6 @@
    * Windows shorter than this scrolled before the chooser existed and still do;
    * what the tier protects is every window that fitted.
    */
-  .euc-menu--results .euc-field__note,
-  .euc-menu--results .euc-button__note { display: none; }
 
   .euc-menu--results .euc-couch__mode {
     grid-template-columns: auto minmax(0, 1fr);
@@ -2845,6 +3118,38 @@
     padding: 0;
     border-width: 0;
     background: none;
+  }
+
+  /*
+   * **Four offers, one row — M38.**
+   *
+   * The row is one row everywhere since M38 (see `.euc-couch__modes`), and on
+   * this card at this tier it is only 525 px wide — four tracks of 128 px
+   * against about 142 px of button. So the *content* is trimmed here rather
+   * than the row being allowed to wrap: a second line was 33 px on the panel
+   * that is already the tallest in the game and whose whole contract is that
+   * every control on it can be reached without scrolling
+   * (`tests/m26.spec.ts`). Trimmed to about 113 px, which fits.
+   *
+   * The same trade every rule in this tier makes: a shorter control that is on
+   * screen beats a comfortable one that is not. The wide card keeps the full
+   * padding and type.
+   */
+  .euc-menu--results .euc-couch__modes {
+    gap: 0.25rem;
+  }
+
+  .euc-menu--results .euc-couch__mode-button {
+    gap: 0.35rem;
+    padding: 0.5rem 0.35rem;
+    font-size: 0.88rem;
+  }
+
+  /* The ring stays — it is the selected state's non-colour channel — and only
+     loses the two millimetres the track cannot spare. */
+  .euc-menu--results .euc-couch__mode-button::before {
+    width: 0.8rem;
+    height: 0.8rem;
   }
 
   /* The last 21 px, and the one place on this card where size is decoration
@@ -2881,6 +3186,88 @@
      breathing room, which is the right way round: the score is the thing being
      read, the padding is the thing making it look composed. */
   .euc-results__summary { padding: 0.45rem 0.9rem; }
+}
+
+/* ---------------------------------------------------------------------------
+ * A short window that is *wide* has a second axis — M38, the solo Trick Run
+ * card.
+ *
+ * **Nine rows do not fit a 500 px window in one column, and no amount of
+ * padding makes them.** With the repeated Tricks region withdrawn and the rows
+ * at the short tier's padding the card is 681 px of content; a 1000 x 560 or a
+ * 1600 x 500 window has 560 and 500. The trims left are the table's type, the
+ * notes' leading and the summary's figures — the three things on the card that
+ * are information rather than rhythm — and paying 125 px out of those is how a
+ * card ends up illegible. The alternative on every window in the contract is
+ * free: they are all **at least 1000 px wide**, and the card is 608.
+ *
+ * So under 40 rem of height and over 50 rem of width the card takes two
+ * columns — the summary and the notes down the left, the breakdown beside
+ * them, the heading and the actions spanning both — and the tallest thing on
+ * the card stops being a column of nine rows *under* everything else. Measured
+ * on the built card: 1000 x 640 goes 681 -> 507, 1000 x 560 the same, and
+ * 1000 x 520 and 1600 x 500 go 625 -> 459, every control above the fold with
+ * nothing trimmed and nothing hidden.
+ *
+ * **Both bounds are load-bearing.** The width, because a 375 px portrait phone
+ * shorter than 640 px would get two 170 px columns and a table that wraps
+ * every label — that window keeps the stack it has always had. The height,
+ * because a card that fits is a card that should be left alone: at 1000 x 700
+ * the single column measures 702 px and is what the panel was designed to look
+ * like.
+ *
+ * **Grid, not markup.** The DOM order is the reading order and it does not
+ * move — heading, summary, breakdown, notes, actions — and the placement below
+ * is the only thing that knows about columns, which is §9's rule that geometry
+ * lives in the stylesheet.
+ * ------------------------------------------------------------------------ */
+@media (max-height: 40rem) and (min-width: 50rem) {
+  .euc-results[data-results-mode="trickRun"] {
+    width: min(56rem, 100%);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    align-items: start;
+    column-gap: 1.1rem;
+  }
+
+  .euc-results[data-results-mode="trickRun"] .euc-results__heading,
+  .euc-results[data-results-mode="trickRun"] .euc-menu__actions {
+    grid-column: 1 / -1;
+  }
+
+  /* The breakdown is the tall one, so it takes the column it can be tall in
+     and the two short regions share the other. Named rows rather than
+     auto-placement, because the row a region lands in is the whole point. */
+  .euc-results[data-results-mode="trickRun"] .euc-results__summary {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .euc-results[data-results-mode="trickRun"] .euc-results__notes {
+    grid-column: 1;
+    grid-row: 3;
+    text-align: left;
+  }
+
+  .euc-results[data-results-mode="trickRun"] .euc-results__table {
+    grid-column: 2;
+    grid-row: 2 / span 2;
+  }
+
+  /* **And the labels keep their words.** `table-layout: fixed` takes its
+     columns from the header row and shares them equally, which is right when
+     all three carry times; here the two value columns carry `1` and `+90` and
+     the first carries `Two tricks in a flight`. At half the card's width the
+     equal share cut four of the nine labels to `Tricks off the feat…`, and a
+     truncated label is one that has stopped saying what it counts (§9m's own
+     words about this very vocabulary). The column is named here, in the tier
+     that narrows it. */
+  .euc-results[data-results-mode="trickRun"] .euc-results__table thead th:first-child {
+    width: 54%;
+  }
+
+  .euc-results[data-results-mode="trickRun"] .euc-results__table thead th:nth-child(2) {
+    width: 20%;
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -3177,9 +3564,31 @@
    It costs about 11 px of height per row, which is why the gap came in to
    0.3rem at the same time: the join panel's fit is pinned at 1000 x 520 with
    four seat cards on it. */
+/*
+ * **One row, always — M38.**
+ *
+ * This was `display: flex; flex-wrap: wrap`, which is right for a control that
+ * might have to wrap and wrong for this one, and the fourth ride is what made
+ * the difference visible: at the browser suite's own 1000 x 700 window the
+ * pause card laid out three buttons on one line and Trick Run alone on a
+ * second, 501 px wide (measured). That is a segmented control that has stopped
+ * looking like one — and, because `ui/menuRows.ts` navigates real rectangles,
+ * it is also **an input change**: Up from `Resume` landed on the stray fourth
+ * button instead of walking into the row, and Left/Right could not leave it
+ * (`tests/m37.spec.ts`).
+ *
+ * A track per child rather than a fixed count: the number of rides is
+ * `COUCH_RIDES.length` and it has changed three times. The narrowest place
+ * this control is ever drawn is a 1000 px window — the couch is refused below
+ * that (`app/couch.ts`) and the chooser is hidden outside a couch session — so
+ * four tracks are about 164 px against roughly 142 px of content, and the
+ * results card's short-window tier trims that content further where its own
+ * tracks are narrower.
+ */
 .euc-couch__modes {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   justify-content: center;
   gap: 0.3rem;
   width: 100%;
@@ -3497,6 +3906,30 @@
   .euc-results:has(.euc-results__table[data-compare="false"] tbody tr:nth-child(4))
     :is(.euc-results__row-label, .euc-results__row-time, .euc-results__row-delta,
         .euc-results__row-extra) {
+    padding: 0.28rem 0.5rem;
+  }
+
+  /*
+   * And the card with **nine** rows gives up the same 0.14rem — M38, the solo
+   * Trick Run card, and §9o's repair made once more on the next card to run
+   * out of height.
+   *
+   * The rule above cannot reach it: this table *compares* (its third column is
+   * the points each kind earned), so `data-compare="false"` is false here, and
+   * scoping by row count alone would collect a track day's sectors. The mode
+   * is the fact that causes the problem — four kinds, a bonus, two signed
+   * adjustments, an off-feature count and Crashes is nine rows where every
+   * other card in the game has at most five — so the mode is what the rule is
+   * scoped by, exactly as the rule above is scoped by the fourth seat.
+   *
+   * Measured at 1000 x 700 with the region above withdrawn: 742 px of content
+   * with the full padding, 702 with this — **40.3 px, 4.5 a row** — which is
+   * the difference between `Back to title` being on the screen and not. Here
+   * rather than unconditionally, because 50rem is the tier for windows that
+   * are short and a taller one never needed it (§9f's own boundary).
+   */
+  .euc-results[data-results-mode="trickRun"]
+    :is(.euc-results__row-label, .euc-results__row-time, .euc-results__row-delta) {
     padding: 0.28rem 0.5rem;
   }
 }
@@ -3923,6 +4356,14 @@
  * than the couch threshold and shorter than 50rem (800 px): three columns
  * without notes need 415 px, so it fits everything it now covers. Portrait
  * tablets are taller than 800 and keep their stack.
+ *
+ * **The limit stayed at 50rem when the ninth entrance landed — M38.** It was
+ * briefly moved to 53rem to take a 390x844 phone, and that was wrong by five
+ * pixels: a Pixel 7 is **412x839**, so a 848 px limit swallows the device the
+ * phone contract is written on and takes the title's notes away from it — and
+ * those notes are tap targets, not decoration (`tests/touch.spec.ts`, M20.1
+ * §4.5). A narrow phone gets its 390-wide saving from the tagline rule below
+ * instead, which costs a sentence rather than nine of them.
  */
 @media (max-height: 30rem), ((max-width: 62.49rem) and (max-height: 50rem)) {
   .euc-menu {
@@ -3962,6 +4403,30 @@
   .euc-menu--riders .euc-menu__tagline { display: none; }
 
   .euc-riders__heading { font-size: clamp(1.2rem, 5vh, 1.5rem); }
+}
+
+/*
+ * **A very narrow title drops its tagline — M38.**
+ *
+ * The ninth entrance put a 390x844 phone eight pixels past the fold with its
+ * credit line (`tests/m22.spec.ts`, measured on the live page: an 828 px panel
+ * in an 844 px viewport). The tier above would have taken every button note
+ * with it, and the notes are what a thumb aims at; the tagline is one sentence
+ * of advice above a screen whose buttons already say what they do, and
+ * removing it buys 16 px plus the panel's own gap — comfortably the ten this
+ * size was short.
+ *
+ * **26rem is 416 px, and the width clause is what keeps this a phone rule**:
+ * it takes every phone portrait the suite knows about — 360, 375, 390 and the
+ * Pixel 7's 412 — and leaves every tablet and window alone. The Pixel 7 is
+ * 412x839 and needed it too: nine buttons and their notes measured 13 px past
+ * its fold, and the honest saving there is the same sentence rather than the
+ * nine tap targets the tier above would have taken. The chooser and the couch
+ * title already drop this sentence at their own tiers, for the same reason and
+ * in the same words.
+ */
+@media (max-width: 26rem) {
+  .euc-menu--title .euc-menu__tagline { display: none; }
 }
 
 /* ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import {
   type ChallengeHudInput,
   type HudInput,
   type TrackDayHudInput,
+  type TrickRunHudInput,
 } from './hudModel.ts';
 
 const RIDING: HudInput = Object.freeze({
@@ -583,9 +584,9 @@ test('a crash is not a warning about anything', () => {
 test('the max-speed glyph is absent for the whole of ordinary riding', () => {
   const hud = new HudModel();
   // Nothing below `EUC.overspeedBeepShare` (0.785) of the derived top speed
-  // ever sees this — 52 mph on the shipped 65 mph wheel, 40 mph on the 50 mph
-  // wheel it was written for. That share is what keeps it non-annoying: a
-  // player pottering about is never told anything.
+  // ever sees this — 52 mph on the shipped 65 mph wheel, and the same share of
+  // whatever top speed a `?mph=` diagnostic builds. That share is what keeps it
+  // non-annoying: a player pottering about is never told anything.
   assert.equal(hud.update(0, at({ speed: 10 })).overspeed.visible, false);
   assert.equal(hud.update(0, at({ speed: 10, overspeed: 0 })).overspeed.visible, false);
 });
@@ -1254,4 +1255,346 @@ test('four riders fill four rows and the caller decides who is in them', () => {
   assert.equal(view.matchRows[3].name, 'Adonisb2');
   assert.equal(view.matchRows[0].name, 'P1 Cool Rider');
   assert.equal(view.matchField, '24 targets on the route');
+});
+
+/* ---------------------------------------------------------------------------
+ * The Trick Run lane — M38 Phase 2, `docs/PLANS.md` §38.6
+ *
+ * Every claim below is a *content* decision, which is the half of this lane
+ * that can be settled without a browser: which words the corner says, which
+ * rows exist, and what a number looks like once it is a string. Whether the
+ * result fits a 360 px phone and stays clear of the protected middle fifth is
+ * geometry and belongs to `tests/m38-hud.spec.ts`, where a real stylesheet can
+ * be measured.
+ * ------------------------------------------------------------------------ */
+
+function tricking(overrides: Partial<TrickRunHudInput> = {}): TrickRunHudInput {
+  return {
+    phase: 'running',
+    remainingSeconds: 90,
+    score: 0,
+    best: null,
+    pendingPoints: 0,
+    lastAward: null,
+    cueSecondsLeft: 0,
+    ...overrides,
+  };
+}
+
+function landed(
+  overrides: Partial<NonNullable<TrickRunHudInput['lastAward']>> = {},
+): NonNullable<TrickRunHudInput['lastAward']> {
+  return { kinds: [], landing: 'clean', points: 0, offFeature: false, ...overrides };
+}
+
+test('no trick run means no trick run lane, and the corner is left as it was', () => {
+  // Absent rather than zeroed, which is the rule every mode lane in this file
+  // follows: a ride that is not a trick run draws none of these rows at all,
+  // rather than a score of zero on a clock that is not running.
+  const view = new HudModel().update(0, at({}));
+  assert.equal(view.trickRun.visible, false);
+  assert.equal(view.trickRun.best, '');
+  assert.equal(view.trickRun.pending, '');
+  assert.equal(view.trickRun.awardLabel, '');
+  assert.equal(view.trickRun.awardPoints, '');
+  assert.equal(view.modeLabel, '', 'free ride still labels nothing');
+  assert.equal(view.knockabout, '');
+  assert.equal(view.modeSubLabel, '');
+});
+
+test('a running trick run says the mode, the banked score and the clock', () => {
+  const view = new HudModel().update(0, at({
+    trickRun: tricking({ score: 1240, remainingSeconds: 83.4 }),
+  }));
+  assert.equal(view.trickRun.visible, true);
+  assert.equal(view.modeLabel, 'Trick run');
+  assert.equal(view.knockabout, '1,240', 'the headline figure is the banked score');
+  assert.equal(view.modeSubLabel, 'Time');
+  // Ceiled, like every deadline in the game: the number reaching zero and the
+  // run ending are the same instant.
+  assert.equal(view.modeSub, '1:24');
+});
+
+test('the bell renames the figure and takes the clock away', () => {
+  // A deadline frozen at 0:00 over a final score is a second number claiming
+  // to still be live, and a figure whose caption still says "Trick run" reads
+  // as a HUD that has hung rather than as a run that has finished.
+  const view = new HudModel().update(0, at({
+    trickRun: tricking({ phase: 'ended', remainingSeconds: 0, score: 448 }),
+  }));
+  assert.equal(view.modeLabel, 'Final score');
+  assert.equal(view.knockabout, '448');
+  assert.equal(view.modeSubLabel, '');
+  assert.equal(view.modeSub, '');
+  assert.equal(view.trickRun.visible, true, 'the rows stay until the card arrives');
+});
+
+test('pending points are labelled, quiet, and never inflate the banked score', () => {
+  const hud = new HudModel();
+  const flying = hud.update(0, at({
+    trickRun: tricking({ score: 1240, pendingPoints: 225 }),
+  }));
+  assert.equal(flying.knockabout, '1,240', 'the headline is banked only');
+  assert.equal(flying.trickRun.pending, 'Pending +225');
+
+  // Nothing in the air, no row. A pending line with nothing in it would claim
+  // a flight that is not happening.
+  const grounded = hud.update(1, at({ trickRun: tricking({ score: 1240 }) }));
+  assert.equal(grounded.trickRun.pending, '');
+
+  // And the bell ends it whatever the referee's last reading said: a flight
+  // still in the air when the clock stops has nowhere to land.
+  const over = hud.update(2, at({
+    trickRun: tricking({ phase: 'ended', score: 1240, pendingPoints: 225 }),
+  }));
+  assert.equal(over.trickRun.pending, '');
+});
+
+test('the best is the comparable one, and its absence is a sentence rather than a blank', () => {
+  const hud = new HudModel();
+  const chasing = hud.update(0, at({ trickRun: tricking({ best: 12345 }) }));
+  assert.equal(chasing.trickRun.best, 'Best 12,345');
+
+  // Null is a solo rider's first attempt *and* a couch seat, which have no
+  // comparable best between them. The words are the solo reading; `game.css`
+  // is what keeps the row off a split pane.
+  const first = hud.update(1, at({ trickRun: tricking({ best: null }) }));
+  assert.equal(first.trickRun.best, 'No best yet');
+});
+
+test('a score is grouped in threes, by hand, at every size it can reach', () => {
+  // Grouped here rather than by `toLocaleString`, which would spell the same
+  // run four ways on four machines and disagree with the results card.
+  const hud = new HudModel();
+  const cases: readonly (readonly [number, string])[] = [
+    [0, '0'],
+    [7, '7'],
+    [999, '999'],
+    [1000, '1,000'],
+    [12345, '12,345'],
+    [1234567, '1,234,567'],
+    // Nothing in `TRICK_RUN` can produce either, which is exactly why the lane
+    // must not print `NaN` or `-40` if something upstream ever does.
+    [Number.NaN, '0'],
+    [-40, '0'],
+  ];
+  for (const [points, spelled] of cases) {
+    assert.equal(hud.update(0, at({ trickRun: tricking({ score: points }) })).knockabout, spelled);
+  }
+});
+
+test('the award line shows only while the referee says its dwell is left', () => {
+  // The dwell is the referee's, counted in the run's own fixed steps, so the
+  // cue freezes with a paused game instead of ageing behind the pause menu.
+  // This model keeps no fourth timestamp: the same reading at a later clock is
+  // still on screen, and a spent dwell is gone at the same clock.
+  const hud = new HudModel();
+  const award = landed({ kinds: ['spin-landed', 'one-foot-air'], points: 448 });
+
+  const up = hud.update(0, at({ trickRun: tricking({ lastAward: award, cueSecondsLeft: 2.5 }) }));
+  assert.equal(up.trickRun.awardLabel, '180 + One-foot');
+  assert.equal(up.trickRun.awardPoints, '+448');
+
+  const paused = hud.update(30, at({
+    trickRun: tricking({ lastAward: award, cueSecondsLeft: 2.5 }),
+  }));
+  assert.equal(paused.trickRun.awardLabel, '180 + One-foot', 'a paused cue does not age');
+
+  const spent = hud.update(0.2, at({
+    trickRun: tricking({ lastAward: award, cueSecondsLeft: 0 }),
+  }));
+  assert.equal(spent.trickRun.awardLabel, '');
+  assert.equal(spent.trickRun.awardPoints, '', 'the points go with the words');
+
+  // And a run that has landed nothing yet says nothing, whatever the dwell.
+  const nothing = hud.update(0, at({ trickRun: tricking({ cueSecondsLeft: 2.5 }) }));
+  assert.equal(nothing.trickRun.awardLabel, '');
+});
+
+test('every combination of counted kinds has one short spelling', () => {
+  const hud = new HudModel();
+  const cases: readonly (readonly [
+    readonly ('charged-hop' | 'spin-landed' | 'one-foot-air')[],
+    string,
+  ])[] = [
+    [['charged-hop'], 'Charged hop'],
+    [['spin-landed'], '180'],
+    [['one-foot-air'], 'One-foot'],
+    [['charged-hop', 'spin-landed'], 'Charged hop + 180'],
+    [['charged-hop', 'one-foot-air'], 'Charged hop + One-foot'],
+    [['spin-landed', 'one-foot-air'], '180 + One-foot'],
+    [['charged-hop', 'spin-landed', 'one-foot-air'], 'Charged hop + 180 + One-foot'],
+    // The order is the flight's, not the caller's, so one flight reads the
+    // same way every time it happens.
+    [['one-foot-air', 'spin-landed'], '180 + One-foot'],
+    // One flight cannot score a kind twice; a repeat is an upstream fault and
+    // printing it twice would dress the fault as a score.
+    [['spin-landed', 'spin-landed'], '180'],
+  ];
+  for (const [kinds, spelled] of cases) {
+    const view = hud.update(0, at({
+      trickRun: tricking({ lastAward: landed({ kinds, points: 1 }), cueSecondsLeft: 1 }),
+    }));
+    assert.equal(view.trickRun.awardLabel, spelled);
+  }
+});
+
+test('a flight with no trick in it is named by its landing, and none of the three scolds', () => {
+  // The tricks win the line when there are any; a plain touchdown is how a
+  // player learns that landing clean is itself worth something. A heavy or
+  // wobbled landing names the condition rather than giving an order — §9e's
+  // rule about `MAX SPEED`, arriving through a score.
+  const hud = new HudModel();
+  const cases: readonly (readonly ['clean' | 'heavy' | 'wobble', string])[] = [
+    ['clean', 'Clean landing'],
+    ['heavy', 'Heavy landing'],
+    ['wobble', 'Wobble landing'],
+  ];
+  for (const [landing, spelled] of cases) {
+    const view = hud.update(0, at({
+      trickRun: tricking({ lastAward: landed({ landing, points: 10 }), cueSecondsLeft: 1 }),
+    }));
+    assert.equal(view.trickRun.awardLabel, spelled);
+    assert.equal(view.trickRun.awardPoints, '+10');
+  }
+
+  // A forfeited flight still gets its line: the run just spent time on it, and
+  // the reason it was worth nothing belongs to the card.
+  const forfeit = hud.update(0, at({
+    trickRun: tricking({ lastAward: landed({ landing: 'wobble', points: 0 }), cueSecondsLeft: 1 }),
+  }));
+  assert.equal(forfeit.trickRun.awardPoints, '+0');
+});
+
+test('a flight launched off a park feature keeps its tricks on the line and loses their points', () => {
+  // M38 q189. The rule is *where the flight launched*, so the corner still
+  // names what was ridden — the player did ride it, and dropping the words
+  // would read as a missed trick rather than as a rule — and the qualifier
+  // says why the number is only the landing's.
+  const hud = new HudModel();
+  const view = hud.update(0, at({
+    trickRun: tricking({
+      lastAward: landed({
+        kinds: ['spin-landed', 'one-foot-air'],
+        points: 10,
+        offFeature: true,
+      }),
+      cueSecondsLeft: 2.5,
+    }),
+  }));
+  assert.equal(view.trickRun.awardLabel, '180 + One-foot · off feature');
+  assert.equal(view.trickRun.awardPoints, '+10', 'the clean landing, and nothing else');
+
+  // Joined by a middle dot rather than a fourth ` + `, which is the join that
+  // means "and this too scored".
+  assert.ok(!view.trickRun.awardLabel.includes('+ off feature'));
+
+  // Every combination carries it, in the flight's own order, after the tricks.
+  const cases: readonly (readonly [
+    readonly ('charged-hop' | 'spin-landed' | 'one-foot-air')[],
+    string,
+  ])[] = [
+    [['charged-hop'], 'Charged hop · off feature'],
+    [['spin-landed'], '180 · off feature'],
+    [['one-foot-air'], 'One-foot · off feature'],
+    [['charged-hop', 'spin-landed', 'one-foot-air'], 'Charged hop + 180 + One-foot · off feature'],
+  ];
+  for (const [kinds, spelled] of cases) {
+    const line = hud.update(0, at({
+      trickRun: tricking({
+        lastAward: landed({ kinds, points: 10, offFeature: true }),
+        cueSecondsLeft: 1,
+      }),
+    }));
+    assert.equal(line.trickRun.awardLabel, spelled);
+  }
+
+  // The feature itself is never named: the rule is "from a feature", and eight
+  // ids to chase in a corner is the progression §38.2 forbids.
+  assert.ok(!view.trickRun.awardLabel.match(/kicker|ledge|gap|tabletop/i));
+});
+
+test('a plain landing is never called off feature, and a feature flight says nothing extra', () => {
+  // Two negatives that matter as much as the positive. A touchdown with no
+  // trick in it had no trick points to lose, so qualifying it would invent a
+  // penalty; and a flight that *did* launch from a feature is the ordinary
+  // case, which the corner does not congratulate.
+  const hud = new HudModel();
+  for (const landing of ['clean', 'heavy', 'wobble'] as const) {
+    const plain = hud.update(0, at({
+      trickRun: tricking({
+        // Off a feature and with no kinds — the composition root will not send
+        // this, and the words must be the landing's if anything ever does.
+        lastAward: landed({ landing, points: 10, offFeature: false }),
+        cueSecondsLeft: 1,
+      }),
+    }));
+    assert.ok(!plain.trickRun.awardLabel.includes('off feature'));
+  }
+
+  const onFeature = hud.update(0, at({
+    trickRun: tricking({
+      lastAward: landed({ kinds: ['spin-landed'], points: 138, offFeature: false }),
+      cueSecondsLeft: 1,
+    }),
+  }));
+  assert.equal(onFeature.trickRun.awardLabel, '180');
+  assert.equal(onFeature.trickRun.awardPoints, '+138');
+});
+
+test('a spent dwell takes the off-feature qualifier with it', () => {
+  // The qualifier is part of the label, not a row of its own, so it obeys the
+  // referee's dwell exactly as the words it hangs off do.
+  const hud = new HudModel();
+  const view = hud.update(0, at({
+    trickRun: tricking({
+      lastAward: landed({ kinds: ['charged-hop'], points: 10, offFeature: true }),
+      cueSecondsLeft: 0,
+    }),
+  }));
+  assert.equal(view.trickRun.awardLabel, '');
+  assert.equal(view.trickRun.awardPoints, '');
+});
+
+test('a trick run empties the run lane rather than sharing its cell', () => {
+  // The mode is ridden at a lap-capable park, so a `trackDay` arriving beside
+  // it is the plausible mistake — and both draw into the same grid cell, which
+  // CSS resolves by stacking them silently on top of each other.
+  const hud = new HudModel();
+  const view = hud.update(0, at({
+    trickRun: tricking({ score: 100 }),
+    trackDay: lapping({ lap: 2, elapsed: 30, bestLapSeconds: 62.41 }),
+  }));
+  assert.equal(view.challenge.visible, false);
+  assert.equal(view.knockabout, '100', "and the corner is the trick run's");
+  assert.equal(view.modeLabel, 'Trick run');
+});
+
+test('the trick run outranks every other referee in the corner', () => {
+  // None of these can be live together — the order exists so that a corner is
+  // never two modes deep if one of them ever is.
+  const view = new HudModel().update(0, at({
+    trickRun: tricking({ score: 50 }),
+    knockabout: { struck: 3, total: 17 },
+    chase: chasing(),
+    race: { position: 2, seats: 4, lap: 1, laps: 3, gapSeconds: null, finished: false },
+  }));
+  assert.equal(view.modeLabel, 'Trick run');
+  assert.equal(view.modeSubLabel, 'Time');
+  assert.equal(view.matchRows.length, 0);
+});
+
+test("a crash keeps the trick run's numbers on screen", () => {
+  // Falling off is exactly the moment a player looks at what they had banked,
+  // and a lane that blinked out then would hide the answer to the question the
+  // crash just asked. The referee decides what a crashed flight forfeits; this
+  // file draws what it is handed.
+  const view = new HudModel().update(0, at({
+    crashed: true,
+    trickRun: tricking({ score: 1240, best: 900, remainingSeconds: 12 }),
+  }));
+  assert.equal(view.trickRun.visible, true);
+  assert.equal(view.knockabout, '1,240');
+  assert.equal(view.trickRun.best, 'Best 900');
+  assert.equal(view.modeSub, '0:12');
 });

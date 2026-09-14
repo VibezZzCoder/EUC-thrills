@@ -2008,9 +2008,20 @@ export async function boot(page: Page, query = ''): Promise<void> {
 /** Boot and stop at the title screen, without starting a ride. */
 export async function bootToTitle(page: Page, query = ''): Promise<void> {
   await page.goto(query ? `/?${query}` : '/');
-  await page.waitForFunction(() => typeof window.game === 'object' && window.game !== null, undefined, {
-    timeout: 90_000,
-  });
+  await page.waitForFunction(() => {
+    // A refused boot displays its reason without ever installing window.game.
+    // Check it during readiness polling so that failure does not cost 90 s for
+    // every selected spec. A hidden placeholder is normal during a healthy boot.
+    const error = document.getElementById('boot-error');
+    if (error) {
+      const bounds = error.getBoundingClientRect();
+      const visibility = getComputedStyle(error).visibility;
+      if (bounds.width > 0 && bounds.height > 0 && visibility !== 'hidden' && visibility !== 'collapse') {
+        throw new Error(`Game boot failed: ${error.textContent?.trim() || 'visible boot error panel'}`);
+      }
+    }
+    return typeof window.game === 'object' && window.game !== null;
+  }, undefined, { timeout: 90_000 });
   // A refused WebGL context replaces the loading shell with an error panel, and
   // every later assertion would then fail for the wrong reason.
   await expect(page.locator('#boot-error')).toBeHidden();

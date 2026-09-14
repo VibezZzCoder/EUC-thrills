@@ -31,6 +31,16 @@ import { boot, bootToTitle, collectErrors } from './harness.ts';
 const PARK = 'level=switchback';
 
 /**
+ * One ordinary speed for the `?mph=` diagnostic, below the shipped 65.
+ *
+ * **M38 Part B (`docs/PLANS.md` §38.7)**: the 50 mph reference wheel is
+ * retired. The switch itself stays exactly as it was — generic, 20–90 mph,
+ * filing no records — so the park's diagnostic spec rides a plain example
+ * rather than a wheel it is comparing the park against.
+ */
+const DIAGNOSTIC_MPH = 58;
+
+/**
  * The graybox's plan id — `-r2` is room to retire records (`switchbackLevel.ts`).
  *
  * Phase 2 moved the layout: beat 5 gained a take-off pitch and a level table,
@@ -897,11 +907,16 @@ test('a four-seat grid stands on the apron, spaced, level and behind the line', 
   expect(errors).toEqual([]);
 });
 
-test('?level=switchback&mph=50 is the same park on a slower wheel, and files nothing', async ({ page }) => {
+test('?level=switchback under a ?mph= diagnostic is the same park, and files nothing', async ({ page }) => {
   const errors = collectErrors(page);
 
   // The shipped wheel first, so the comparison is against a number this build
   // actually produces rather than against a constant copied from §30.
+  //
+  // **M38 Part B (`docs/PLANS.md` §38.7)**: the diagnostic speed below used to
+  // be 50, the retired reference wheel. It is now an ordinary value inside the
+  // switch's 20–90 mph window — nothing here is a claim about *which* speed,
+  // only that a generic `?mph=` ride is the same park and files nothing.
   //
   // `bootToTitle` rather than `boot` in both halves, and it is load-bearing:
   // `freeRide` lists no `trackDay` successor, so `startTrackDay` from a started
@@ -910,7 +925,7 @@ test('?level=switchback&mph=50 is the same park on a slower wheel, and files not
   await bootToTitle(page, PARK);
   const shipped = await page.evaluate(() => window.game.controller.derivedTopSpeed);
 
-  await bootToTitle(page, `${PARK}&mph=50`);
+  await bootToTitle(page, `${PARK}&mph=${DIAGNOSTIC_MPH}`);
   const probe = await page.evaluate(() => ({
     planId: window.game.levelPlan.id,
     link: window.game.snapshot().world.link,
@@ -925,17 +940,18 @@ test('?level=switchback&mph=50 is the same park on a slower wheel, and files not
   // the park's link still carries the wheel it is being ridden on.
   const params = new URL(probe.link).searchParams;
   expect(params.get('level')).toBe('switchback');
-  expect(params.get('mph')).toBe('50');
+  expect(params.get('mph')).toBe(String(DIAGNOSTIC_MPH));
   expect(params.get('seed')).toBeNull();
   expect(probe.link).toBe(probe.href);
 
-  // A slower wheel, and the comparison is the assertion: two boots, one number.
+  // The switch reached the wheel, and the comparison is the assertion: two
+  // boots, one number. A speed below the shipped one gives a lower derived top.
   expect(probe.derivedTopSpeed).toBeLessThan(shipped);
 
   // **And nothing reaches the store**, which is the half `?mph=` exists for:
-  // a record has no tuning fingerprint, so a lap set on the 50 mph wheel would
-  // be a cheat by accident on the 65 mph leaderboard (§30.2 fact 8). The store
-  // is able to save — that is what makes the refusal mean anything.
+  // a record has no tuning fingerprint, so a lap set on any diagnostic wheel
+  // would be a cheat by accident on the shipped leaderboard (§30.2 fact 8).
+  // The store is able to save — that is what makes the refusal mean anything.
   expect(probe.persistent).toBe(true);
   await page.evaluate(() => { window.game.clearRecords(); window.game.startTrackDay(); });
   const all = await lines(page);

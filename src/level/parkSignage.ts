@@ -247,8 +247,11 @@ export interface SignedFeature {
    * signed from one place — the eight metres of trail between the skinny's
    * plank and the step-up's deck — and that trail is the step-up's own
    * measured run-up. A full pad puts planking under the point the bench spawns
-   * its step-up trials at, and the bench says so: `diagnostic50` at 8 mph with
-   * half charge stopped mounting the 0.50 m face. A pad short enough to start
+   * its step-up trials at, and the bench said so when it was first measured:
+   * the since-retired 50 mph reference wheel at 8 mph with half charge stopped
+   * mounting the 0.50 m face. That is the historical reason for this clearance,
+   * not a continuing requirement — §38.7 accepts windows on the shipped 65
+   * wheel only, and the pad is authored short. A pad short enough to start
    * after that point leaves every window in `docs/JUMP_BENCH.md` exactly where
    * Phase 2 measured it, which is §36.4's "new scenery must not move any of
    * these boundaries" obeyed rather than argued with.
@@ -364,7 +367,7 @@ export interface ParkSignage {
 // ---------------------------------------------------------------------------
 
 /** Metres a second per mile an hour. */
-const MPS_PER_MPH = 0.44704;
+export const MPS_PER_MPH = 0.44704;
 
 /**
  * The wheel's braking at full lean, m/s².

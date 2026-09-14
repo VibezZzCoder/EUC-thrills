@@ -114,32 +114,36 @@ export type TopSpeedPath = (typeof TOP_SPEED_PATHS)[number];
  * 11.5 against a thrown ragdoll rather than scaling it ("a 50 mph wipeout
  * threw the ragdoll out through the *top* of the frame at the old arm
  * length"), so `tests/m30.spec.ts` repeated that measurement on today's
- * crash: the natural cutout faceplant ridden flat out at the shipped 65 and
- * under `?mph=50` (the measurement was taken at Phase 0, when those two were
- * the other way round), the eight corners of every visible rider mesh's bounding
+ * crash: the natural cutout faceplant ridden flat out on the shipped wheel,
+ * the eight corners of every visible rider mesh's bounding
  * box projected through the real chase camera on every other fixed step of
  * the crash — a bound on the body rather than its every vertex, and the times
  * below are the *first* corner behind the camera plane (Codex's independent
  * per-vertex probe, 2026-09-03: whole body off-screen by 0.40 s, behind the
- * camera by 0.45 s at 65). What it measured (2026-09-03, proving-ground
- * straight):
+ * camera by 0.45 s at 65).
+ *
+ * **The dated figures below are M30's historical record.** They were taken on
+ * 2026-09-03 across two wheels, when 65 was still the diagnostic and the
+ * frozen table was slower; M38 Part B (`docs/PLANS.md` §38.7) retired that
+ * comparison, and the spec now measures the shipped 65 alone. What it
+ * measured (2026-09-03, proving-ground straight):
  *
  *   - the body never approaches the top of the frame at either speed — its
  *     highest point is y ≈ +0.04 of ±1, in the first 0.05 s;
  *   - it leaves through the **bottom** instead — its first corner passes the
- *     camera plane at 0.65 s (50) and 0.40 s (65) — and is behind the camera
+ *     camera plane at 0.40 s on the shipped 65 (0.65 s on the slower wheel of
+ *     the day) — and is behind the camera
  *     for the rest of the crash. The
- *     camera is anchored on the wheel, the riderless wheel rolls on at ~22
- *     m/s (~28 at 65, `EUC.crashWheelDecel` 2.2 m/s²), and the ragdoll stops
+ *     camera is anchored on the wheel, the riderless wheel rolls on at ~28
+ *     m/s at 65 (`EUC.crashWheelDecel` 2.2 m/s²), and the ragdoll stops
  *     within a few metres — so the camera drives past the body while its arm
  *     is still 6.3–6.6 m of the crash target, because the arm eases at
  *     `CAMERA.distanceResponseSeconds` (0.55 s) *under* the crash blend and
  *     has not moved yet;
  *   - consequently the arm length decides nothing about the body: at 65,
  *     11.5 / 13.0 / 13.8 / 15.0 / 16.5 / 18.0 m all put the body behind the
- *     camera at 0.35–0.37 s, and M16's own 8.6 m at 50 exits at 0.60 s
- *     against 11.5's 0.63 s. A full-speed side fall (wobble at terminal,
- *     cutout off) measures the same shape at both speeds.
+ *     camera at 0.35–0.37 s. A full-speed side fall (wobble at terminal,
+ *     cutout off) measured the same shape.
  *
  * So the exponent stays at 1: the arm's *eventual* width (reached after
  * ~3 s) frames the riderless wheel's run-off, which grows with the speed it

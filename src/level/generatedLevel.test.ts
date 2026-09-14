@@ -703,8 +703,8 @@ test('generation alone does not consume the complete boot budget', () => {
  * fits fewer hazards into the same route: 9 → 6 on `route-41`, 12 → 6 on `x67`,
  * and so on down the list. That is the fairness rule doing exactly what it was
  * built to do — two hazards closer than one recovery apart is a crash the rider
- * could not have avoided, and at 50 mph one recovery is half as long again in
- * metres. Triangles fell with the hazard count and `route-278` gave back a draw
+ * could not have avoided, and on the pre-M30 50 mph wheel (historical; the
+ * shipped wheel is 65) one recovery was half as long again in metres. Triangles fell with the hazard count and `route-278` gave back a draw
  * call by losing its last pool. The roads are thinner, deliberately; if the
  * owner wants them busier again the answer is a faster recovery, not a shorter
  * gap.

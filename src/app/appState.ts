@@ -50,6 +50,7 @@ export type AppStateId =
   | 'freeRide'
   | 'challenge'
   | 'trackDay'
+  | 'trickRun'
   | 'knockabout'
   | 'chase'
   | 'paused'
@@ -66,6 +67,7 @@ export const APP_STATES: readonly AppStateId[] = [
   'freeRide',
   'challenge',
   'trackDay',
+  'trickRun',
   'knockabout',
   'chase',
   'paused',
@@ -81,7 +83,7 @@ export const APP_STATES: readonly AppStateId[] = [
  * `AppState.rideReturn` exists to remember which one.
  */
 export const RIDE_STATES: readonly AppStateId[] = [
-  'freeRide', 'challenge', 'trackDay', 'knockabout', 'chase',
+  'freeRide', 'challenge', 'trackDay', 'trickRun', 'knockabout', 'chase',
 ];
 
 export function isRideState(state: AppStateId): boolean {
@@ -194,8 +196,8 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     // riding is why anyone opened the game.
     successors: Object.freeze(
       [
-        'freeRide', 'couchJoin', 'challenge', 'trackDay', 'knockabout', 'chase',
-        'settings', 'routes', 'riderSelect',
+        'freeRide', 'couchJoin', 'challenge', 'trackDay', 'trickRun', 'knockabout',
+        'chase', 'settings', 'routes', 'riderSelect',
       ] as AppStateId[],
     ),
   }),
@@ -235,7 +237,7 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     showsMenu: true,
     resetsInput: true,
     successors: Object.freeze(
-      ['title', 'freeRide', 'challenge', 'knockabout', 'chase'] as AppStateId[],
+      ['title', 'freeRide', 'challenge', 'knockabout', 'chase', 'trickRun'] as AppStateId[],
     ),
   }),
   /**
@@ -308,7 +310,7 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     // and nothing says why. It cost a debugging session at M27 Phase 3 to
     // rediscover that, one row after the row that recorded it.
     successors: Object.freeze(
-      ['title', 'freeRide', 'trackDay', 'knockabout', 'routes'] as AppStateId[],
+      ['title', 'freeRide', 'trackDay', 'trickRun', 'knockabout', 'routes'] as AppStateId[],
     ),
   }),
   freeRide: Object.freeze({
@@ -361,6 +363,30 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
    */
   trackDay: Object.freeze({
     id: 'trackDay' as AppStateId,
+    simulates: true,
+    acceptsRideInput: true,
+    showsHud: true,
+    showsMenu: false,
+    resetsInput: true,
+    successors: Object.freeze(['paused', 'results', 'title'] as AppStateId[]),
+  }),
+  /**
+   * Trick Run — M38 §38.6, the sixth ride.
+   *
+   * `trackDay`'s row field for field, and the sixth application of the rule
+   * those two record: **a mode is what a ride is for.** The wheel, the camera,
+   * the input and the physics do not know a score is being kept, which is what
+   * §38.4 means by "prove scoring cannot change the ride" — the referee reads
+   * the same facts a free ride produces and nothing it decides reaches the
+   * controller.
+   *
+   * It reaches `results` the way a track day does and the way a timed run does
+   * not: nothing is crossed. A fixed clock runs out, or the player ends the run
+   * from the pause card, and both arrive at the same card with `completed`
+   * saying which happened.
+   */
+  trickRun: Object.freeze({
+    id: 'trickRun' as AppStateId,
     simulates: true,
     acceptsRideInput: true,
     showsHud: true,
@@ -425,7 +451,7 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     resetsInput: true,
     successors: Object.freeze(
       [
-        'freeRide', 'challenge', 'trackDay', 'knockabout', 'chase',
+        'freeRide', 'challenge', 'trackDay', 'trickRun', 'knockabout', 'chase',
         'settings', 'results', 'title',
       ] as AppStateId[],
     ),
@@ -464,7 +490,7 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     // destination, and refusing the edge left the player looking at a frozen
     // card over a world that had already been replaced underneath it.
     successors: Object.freeze(
-      ['challenge', 'trackDay', 'knockabout', 'chase', 'freeRide', 'title'] as AppStateId[],
+      ['challenge', 'trackDay', 'trickRun', 'knockabout', 'chase', 'freeRide', 'title'] as AppStateId[],
     ),
   }),
 });

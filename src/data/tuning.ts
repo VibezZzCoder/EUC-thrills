@@ -854,8 +854,10 @@ export const EUC = {
    * cutout, the cop's cap and the hazard spacing all moved without a line of
    * code naming a speed).
    *
-   * 0.0147 — the old 50 mph wheel — is still one URL away: `?mph=50` is the
-   * A/B, and it refuses records exactly as `?mph=65` used to (§30.2 fact 8).
+   * 0.0147 was the pre-M30 wheel's drag. It is no longer a reference wheel
+   * (M38 §38.7 retired that role): `?mph=<n>` remains a generic diagnostic at
+   * any supported speed, and every diagnostic ride refuses records (§30.2
+   * fact 8, q181).
    *
    * `level/routeValidator.ts` derives hazard fairness from the top speed this
    * produces, so a change here legitimately re-spaces generated hazards — and
@@ -6317,6 +6319,134 @@ export const TRICKS = {
    * close to this, and a flick reads 0.
    */
   chargedHopMinCharge: 0.95,
+} as const;
+
+/**
+ * The Trick Run — M38 §38.3. Every number the scoring referee reads, and the
+ * only place any of them lives.
+ *
+ * **Proposed starting values, not measured balance.** §38.3 is explicit: these
+ * are the values the owner rides against at G1, and the ride decides them. They
+ * are here rather than beside the arithmetic in `simulation/trickRun.ts` for
+ * `TRICKS`'s reason — a number nobody can find is a number nobody can move —
+ * and they are **not** player options (invariant 5) and not F4 sliders: the
+ * bench may evaluate an alternate rule object, a menu may not.
+ *
+ * `TRICKS.chargedHopMinCharge` stays where it is. It decides whether a hop
+ * *was* charged, which is the observer's question; this group decides what a
+ * charged hop is *worth*, which is the referee's, and the two must never be
+ * one table.
+ *
+ * Points are integers. A flight's trick subtotal is
+ * `round((distinct trick base points + eligible flight bonus) × landing
+ * multiplier)`, rounded once, and the clean-landing award sits outside the
+ * multiplier. At these values: a plain clean landing is 10, a charged clean hop
+ * 41, a clean 180 with a one-foot air 448, the same two on a heavy landing
+ * 350, and a crash 0 for that flight (§38.3's arithmetic examples).
+ */
+export const TRICK_RUN = {
+  /**
+   * The run's length in fixed steps — a count, never wall time, so a couch of
+   * four shares one clock and `advance(n)` reproduces a run exactly.
+   *
+   * **Provisional (q182).** 10 800 steps is 90 s at `SIMULATION.hz`, the
+   * middle of §38.8's 60/90/120 s trial candidates; Phase 0's measured
+   * routed attempts choose the shipped value and the owner's ride confirms
+   * it. A saved best carries the duration that produced it, so moving this
+   * cannot compare unlike runs.
+   */
+  durationSteps: 10800,
+  /** Banked once per surviving **clean** touchdown of a flight this run opened. */
+  cleanLandingPoints: 10,
+  /** A full-charge hop (the observer's `charged-hop`), banked only if that flight lands. */
+  chargedHopPoints: 25,
+  /** The observer's completed-and-landed 180. Never the controller's arming counter. */
+  spinLandedPoints: 200,
+  /** The observer's qualified-and-landed one-foot air, once per flight. */
+  oneFootAirPoints: 100,
+  /**
+   * How many *distinct* trick kinds one flight needs for the flight bonus.
+   * Charged hop, landed 180 and one-foot air are the kinds; a clean landing
+   * is not a second trick for this test.
+   */
+  multiTrickMinKinds: 2,
+  /** One bonus per qualifying flight. Three kinds earn the same single bonus. */
+  multiTrickBonusPoints: 50,
+  /** Landing multipliers on the flight's trick subtotal, by the controller's touchdown tier. */
+  cleanMultiplier: 1.25,
+  heavyMultiplier: 1.0,
+  wobbleMultiplier: 0.5,
+  /**
+   * Diminishing repeats — the owner's q185 decision, revised to **per feature**
+   * on 2026-09-14 (the fourth and final scoring decision of the milestone).
+   *
+   * **What a repeat is.** Landing a flight that launched from the **same
+   * feature** as an earlier flight, within `repeatWindowSeconds` of that
+   * flight banking. The first repeat pays `repeatDecay` of the whole flight
+   * (tricks, bonus and clean landing together), the second `repeatDecay²`,
+   * never below `repeatFloor`; the run of repeats fades one level for every
+   * `repeatFadeSeconds` of rest since that feature last paid, and never
+   * resets outright. Off the features is a "feature" of its own for this
+   * clock, so flat-ground clean landings decay the same way. Everything is
+   * timed on the run's own fixed steps, so a pause recovers nothing.
+   *
+   * **Why per feature and not per trick.** `docs/TRICK_BENCH.md` records the
+   * road here: at the proposed values a rider who never moved out-scored the
+   * routed line 37×; per-trick clocks (10 s, half then a quarter) closed
+   * mindless spam but left a burst-then-rest farmer at 4×; fading instead of
+   * resetting closed that but left a stander pacing one hop per window at
+   * 4.9×; the launch gate (`featureLaunchRequired`) made flat ground worth
+   * its landing alone — and Codex's follow-up found the same paced stander
+   * *inside* a feature's zone still banking 4,032 in ninety seconds. Every
+   * one of those clocks was keyed on the trick, and a trick is what a
+   * feature and a stander have in common. The place is what they do not: a
+   * routed lap revisits a feature once every ~90 s, so with a one-minute
+   * window the honest rider is never docked (the per-trick clocks docked a
+   * routed lap 33–56 %, because the timber corridor's three features sit
+   * within forty metres), while camping one feature is worth about two
+   * flights a run and rotating the corridor's three about five against the
+   * lap's eight.
+   *
+   * **What that leaves open, measured by the blind QA pass (2026-09-14) and
+   * pinned rather than decided.** The cap is two flights' worth *per feature*,
+   * so it multiplies by however many features a stationary rider can reach:
+   * the geometric sum is 896 points a feature at the measured 448-point
+   * standing bundle, against a routed 90 s attempt's 1,363–1,457. Switchback's
+   * `skinny` and `stepUp` zones are 1.8 m apart on one straight and `stairs`
+   * is on the same corridor, so camping two of them banks 1,708 and three of
+   * them 2,352 with no displacement worth the name. The pins are
+   * `trickRun.qa.test.ts`'s two camping cases and `tests/m38-blind.spec.ts`;
+   * a further scoring decision is the owner's and moves all of them with the
+   * bench's camping rows.
+   */
+  repeatWindowSeconds: 60,
+  repeatDecay: 0.5,
+  repeatFloor: 0,
+  /** Seconds of rest that forget one repeat level on a feature. Zero would reset on leaving the window. */
+  repeatFadeSeconds: 60,
+  /**
+   * Feature identity — the owner's third q185 decision (q189, 2026-09-13).
+   *
+   * `1`: the three trick kinds and the flight bonus bank only on a flight that
+   * **launched from one of the park's features** (`LevelPlan.trickZones`, the
+   * feature's own half of its corridor to 1.5 m past the lip). The clean
+   * landing banks anywhere. `0` turns the gate off, for the bench.
+   *
+   * Why the repeats were not enough: `docs/TRICK_BENCH.md` S3 measured a
+   * rider standing still and hopping once every 10.5 s — just outside the
+   * window, never docked — at 4,032 points in ninety seconds against the
+   * routed line's 685–1,109, because the park's own feature clustering docks
+   * the honest rider and a cadence rule cannot tell a stander from a rider.
+   * Where the flight left the ground can. A flat-ground 180 or one-foot air
+   * remains exactly as rideable as before; it is worth the landing and no
+   * more.
+   */
+  featureLaunchRequired: 1,
+  /**
+   * How long the HUD's one-line award cue dwells, seconds. Frozen with the
+   * run: a paused game does not step, so a cue does not age.
+   */
+  cueSeconds: 2.5,
 } as const;
 
 /**

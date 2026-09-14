@@ -39,7 +39,12 @@ import {
   COUCH_SEATS,
   type CouchRide,
 } from '../app/couch.ts';
-import { TRACK_VENUE_IDS, VENUE_IDS, type VenueId } from '../app/venues.ts';
+import {
+  TRACK_VENUE_IDS,
+  VENUE_IDS,
+  offersTrickRun,
+  type VenueId,
+} from '../app/venues.ts';
 import { rowNeighbour, rowStep, type ControlRect } from './menuRows.ts';
 
 /**
@@ -153,6 +158,24 @@ export interface MenuCallbacks {
    * decision to live.
    */
   onEndSession(): void;
+  /**
+   * The player chose Trick Run — M38 §38.6.
+   *
+   * **One callback for two controls**, because both mean the same thing: the
+   * title's entry explicitly selects Switchback Park and the routes panel's
+   * contextual action is offered only once that park is already loaded. Which
+   * of those is possible from where the player is standing is the caller's
+   * decision (`Game.enterTrickRun`), exactly as `onStartTrackDay`'s is.
+   */
+  onStartTrickRun(): void;
+  /**
+   * Start the attempt again from the pause card — M38 §38.3's Retry.
+   *
+   * A fresh clock, every seat's points and observer reset, and the start laid
+   * out again. Drawn only inside a run, because "again" means nothing on a
+   * pause taken in a mode with no clock.
+   */
+  onRetryRun(): void;
   /** Ride the same route again, from the results screen. */
   onRetryChallenge(): void;
   /** Leave the results screen for the title. */
@@ -571,6 +594,24 @@ export interface ResultsView {
    * keeping.
    */
   readonly tricks?: readonly TricksCounts[];
+  /**
+   * Which card this is, where a stylesheet has to tell two of them apart — M38.
+   *
+   * **A mode, not a shape.** The solo Trick Run card prints the four trick
+   * counts in the table's own Count column, so the Tricks region above the
+   * notes repeats them — four labels and four numbers the card has already
+   * said — and 72.6 px of a panel whose contract is that every control on it
+   * can be reached without scrolling. The couch Trick Run card's table carries
+   * *points* per seat and no counts at all, so its region is the only place
+   * those numbers appear and it stays.
+   *
+   * Keyed on the mode rather than on the group count for exactly that reason:
+   * `:has(...:nth-child(2))` asks how many riders there are, which is the
+   * right question for §9m's one-line-a-seat rule and the wrong one here — a
+   * one-rider card is not what makes the region a repeat. Every other card
+   * leaves this unset, because no rule asks about them.
+   */
+  readonly mode?: 'trickRun' | 'trickRunCouch';
   readonly notes: readonly string[];
 }
 
@@ -688,6 +729,10 @@ const TITLE_TEMPLATE = `
     <button type="button" class="euc-button" data-menu="track-day">
       <span class="euc-button__label">Track Day</span>
       <span class="euc-button__note">Choose a track. Your best lap rides with you</span>
+    </button>
+    <button type="button" class="euc-button" data-menu="trick-run">
+      <span class="euc-button__label">Trick Run</span>
+      <span class="euc-button__note">Score tricks at Switchback Park</span>
     </button>
     <button type="button" class="euc-button" data-menu="knockabout">
       <span class="euc-button__label">Knockabout</span>
@@ -1556,6 +1601,14 @@ function couchBlockNote(reason: CouchBlockReason, venue: string): string {
 /**
  * What the three rides are, in one paragraph under the chooser.
  *
+ * **It says "points" and never "score" — M38.** The word is not a preference:
+ * §36.6 forbids a Track Day's Tricks region calling its counts a score, and
+ * this paragraph sits inside the results card's own markup, hidden on a solo
+ * card but still in its text (`tests/m36_3.spec.ts` reads the panel, not the
+ * region). A sentence describing a *different* mode is not a licence to put
+ * that word on a card that must not use it, and "points for what they land"
+ * is the truer description of the rule anyway.
+ *
  * **"Everybody" rather than "two players" since M37** (§37.1, q167/q168):
  * Knockabout is a free-for-all at two, three and four, and the sentence that
  * named two was the player-facing half of the q94 lock-out. First to five is
@@ -1566,7 +1619,8 @@ function couchBlockNote(reason: CouchBlockReason, venue: string): string {
 function modeChooserNote(venue: string): string {
   return 'Free ride is riding, with nothing to win. Race is three laps of '
     + `${venue} from a standing grid. Knockabout gives everybody a paddle: `
-    + 'first to five knockdowns takes the match.';
+    + 'first to five knockdowns takes the match. Trick Run gives everybody one '
+    + 'clock at Switchback Park and points for what they land.';
 }
 
 /**
@@ -1878,6 +1932,15 @@ function routesTemplate(seedMaxLength: number): string {
       'Where to ride',
     )}
     <div class="euc-menu__actions">
+      <!-- **Contextual, and hidden rather than refused** — M38 §38.6. The venue
+           chooser above still only *selects* a place; this appears when that
+           place hosts a Trick Run and withdraws when it does not, so the
+           panel's primary action is never left trying to validate a seed for a
+           hand-built park. -->
+      <button type="button" class="euc-button" data-menu="trick-run" hidden>
+        <span class="euc-button__label">Trick Run</span>
+        <span class="euc-button__note">Score tricks at Switchback Park</span>
+      </button>
       <button type="button" class="euc-button" data-menu="copy-link" hidden>
         Copy a link to the route above
       </button>
@@ -2029,6 +2092,10 @@ ${modeChooserTemplate('switch-mode', 'euc-pause-mode')}
     <button type="button" class="euc-button" data-menu="end-session" hidden>
       <span class="euc-button__label">End session</span>
       <span class="euc-button__note">Pit in and see your best lap</span>
+    </button>
+    <button type="button" class="euc-button" data-menu="retry-run" hidden>
+      <span class="euc-button__label">Retry run</span>
+      <span class="euc-button__note">Start the clock again from the top</span>
     </button>
 ${NEW_ROUTE_BUTTON}
     <button type="button" class="euc-button" data-menu="settings">Settings</button>
@@ -2328,6 +2395,10 @@ export class Menus {
   setResults(view: ResultsView): void {
     const panel = this.results.querySelector<HTMLElement>('[data-menu="results-panel"]');
     if (panel) panel.dataset.record = view.isRecord ? 'true' : 'false';
+    // **The card says which card it is** — see `ResultsView.mode`. Written on
+    // every card, cleared on the ones that name no mode, so a rule scoped to
+    // one of them cannot be left behind on the next card the panel draws.
+    if (panel) panel.dataset.resultsMode = view.mode ?? '';
 
     this.setResultsText('results-heading', view.heading);
     this.setResultsText('results-total-caption', view.totalCaption);
@@ -2490,8 +2561,33 @@ export class Menus {
    * There is no title-screen half: Track Day brings its own circuit, so its
    * entrance is always live.
    */
-  setEndSessionAvailable(available: boolean): void {
+  setEndSessionAvailable(
+    available: boolean,
+    words: { readonly label: string; readonly note: string } | null = null,
+  ): void {
     const button = this.pause.querySelector<HTMLElement>('[data-menu="end-session"]');
+    if (button) button.hidden = !available;
+    // **The words travel with the control** — M38, and M26 Phase 6's rule
+    // applied to a button rather than to a table: one slot ends two different
+    // sessions, and a card offering "see your best lap" over a trick score
+    // would be three false words on the one screen whose job is to be
+    // believed. Written only when the caller says which session it is, so a
+    // hide never rewrites the label behind the player's back.
+    if (words === null || button === null) return;
+    const label = button.querySelector<HTMLElement>('.euc-button__label');
+    if (label && label.textContent !== words.label) label.textContent = words.label;
+    const note = button.querySelector<HTMLElement>('.euc-button__note');
+    if (note && note.textContent !== words.note) note.textContent = words.note;
+  }
+
+  /**
+   * Offer to start the attempt again, or do not — M38 §38.3's Retry.
+   *
+   * `setEndSessionAvailable`'s twin: an *exit* that only means anything inside
+   * one mode, hidden everywhere else rather than drawn and made to do nothing.
+   */
+  setRetryRunAvailable(available: boolean): void {
+    const button = this.pause.querySelector<HTMLElement>('[data-menu="retry-run"]');
     if (button) button.hidden = !available;
   }
 
@@ -2814,6 +2910,13 @@ export class Menus {
     writeVenueChooser(this.routes, view.world);
     writeVenueChooser(this.couch, view.world);
 
+    // **The contextual scoring action, from the same one writer** — M38
+    // §38.6. It is a fact about the loaded place, so it is written where every
+    // other fact about the loaded place is written; a second writer keyed on a
+    // press would disagree the moment `Game.pickVenue` refused one.
+    const trickRun = this.routes.querySelector<HTMLElement>('[data-menu="trick-run"]');
+    if (trickRun) trickRun.hidden = !offersTrickRun(view.world);
+
     // The copy button stays generated-only: a link is only worth copying when
     // it carries a seed somebody else could not otherwise guess.
     const copy = this.routes.querySelector<HTMLElement>('[data-menu="copy-link"]');
@@ -3132,6 +3235,8 @@ export class Menus {
       if (venue !== undefined) this.callbacks.onStartTrackDay(venue);
     }
     else if (action === 'end-session') this.callbacks.onEndSession();
+    else if (action === 'trick-run') this.callbacks.onStartTrickRun();
+    else if (action === 'retry-run') this.callbacks.onRetryRun();
     else if (action === 'resume') this.callbacks.onResume();
     else if (action === 'settings') this.callbacks.onOpenSettings();
     else if (action === 'back') this.callbacks.onCloseSettings();
@@ -3928,11 +4033,18 @@ export function routeStatusLine(status: RouteStatus, laps: boolean): [string, st
     // for. Saying so is the whole repair: the line used to go idle on a press
     // that had succeeded, and the seed refusal was what the player heard next.
     const place = VENUE_LABELS[status.venue];
+    // **And which next action this place has just made available** — M38
+    // §38.6. The scoring action appears on this panel when the selected venue
+    // hosts a run and withdraws when it does not, so the line that says the
+    // press landed is also the line that says what it earned.
+    const ride = laps
+      ? 'Back to the title to ride it or lap it.'
+      : 'Back to the title to ride it.';
     return [
       'ready',
-      laps
-        ? `${place} is ready. Back to the title to ride it or lap it.`
-        : `${place} is ready. Back to the title to ride it.`,
+      offersTrickRun(status.venue)
+        ? `${place} is ready. Trick Run scores your tricks here, or ${ride}`
+        : `${place} is ready. ${ride}`,
     ];
   }
   if (status.kind === 'copied') return ['ready', 'Link copied. Anyone who opens it rides this route.'];
