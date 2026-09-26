@@ -9,6 +9,7 @@ import {
   isRideState,
   type AppStateId,
 } from './appState.ts';
+import { COUCH_RIDES } from './couch.ts';
 
 test('every state is declared and every successor exists', () => {
   for (const id of APP_STATES) {
@@ -357,11 +358,27 @@ test('the venue chooser needed no transition, and both its panels still lead whe
 
   const couch = atTitle();
   couch.goTo('couchJoin');
-  // The join panel's six — `trackDay` is where a couch race rides, and
-  // `trickRun` is M38's fourth couch ride.
+  // The join panel's seven — `trackDay` is where a couch race rides,
+  // `trickRun` is M38's fourth couch ride, and `chase` is M39 Part P's fifth
+  // (§39.6b.3b), the same `chase` row the solo ride uses.
   assert.deepEqual(
     [...APP_STATE_SPECS.couchJoin.successors],
-    ['title', 'freeRide', 'trackDay', 'trickRun', 'knockabout', 'routes'],
+    ['title', 'freeRide', 'trackDay', 'trickRun', 'knockabout', 'routes', 'chase'],
   );
   assert.equal(couch.goTo('trackDay'), true, 'a room that picked a lap venue can still race on it');
+
+  // Every couch ride the panel offers must be a transition the table allows —
+  // a missing one fails silently (the button clicks, the panel stays). The
+  // race rides `trackDay`; every other ride is spelled as its own state.
+  for (const ride of COUCH_RIDES) {
+    const state = ride === 'race' ? 'trackDay' : ride;
+    const room = atTitle();
+    room.goTo('couchJoin');
+    assert.equal(room.goTo(state as AppStateId), true, `the join panel cannot start the ${ride}`);
+  }
+  // And the couch chase ends where the solo one does: on the results card.
+  const chased = atTitle();
+  chased.goTo('couchJoin');
+  chased.goTo('chase');
+  assert.equal(chased.goTo('results'), true, 'a couch chase has nowhere to show its standings');
 });

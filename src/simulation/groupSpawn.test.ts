@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { CHASE, GROUP_SPAWN, PADDLE, SIMULATION } from '../data/tuning.ts';
 import { NEUTRAL_ACTIONS } from '../input/actions.ts';
+import { buildLevelPlan } from '../level/buildPlan.ts';
 import { generateLevel } from '../level/generateRoute.ts';
 import { LEVEL_IDS, createLevel } from '../level/levels.ts';
 import type { Heightfield, LevelPlan } from '../level/plan.ts';
@@ -327,25 +328,37 @@ test('the pack is tested against its own ground plane, not a flat window', () =>
    * So the accepted pack there is asserted to contain a rider the old window
    * would have thrown away, and to be flat *relative to its own plane* all the
    * same.
+   *
+   * **M39 r6:** every generated town now starts on its level plaza, so the
+   * graded start sweep-19 used to provide is a built road at that same 3.18 %,
+   * along and across, with the spawn half way up it.
    */
-  const plan = generateLevel('sweep-19').plan;
+  const graded = 0.0318;
+  const plan = buildLevelPlan({ main: [{ id: 'graded-start', length: 240, halfWidth: 8,
+    // Graded both along and across, so a pack in a row across the road is on
+    // the slope as well as one strung along it.
+    climb: 240 * graded, linearClimb: true, crossSlope: Math.atan(graded), surface: 'pavement' }] }, {
+    id: 'graded-start-fixture',
+    spawn: { position: { x: 0, y: 120 * graded, z: 120 }, headingY: 0 },
+    surround: { height: 0, surface: 'grass' },
+  });
   const terrain = new PlanTerrainSampler(plan);
   const sample = createGroundSample();
   for (const count of [3, 4]) {
     const pack = groupSpawns(plan.spawn, count, terrain, 'bout-1', groupObstaclesFrom(plan), SEPARATION);
-    assert.ok(pack.ok, `sweep-19 N=${count} found no pack`);
+    assert.ok(pack.ok, `graded fixture N=${count} found no pack`);
     terrain.sampleGround(pack.centre.x, pack.centre.z, sample);
     const centreHeight = sample.height;
     const spread = pack.spawns.map((spawn) => Math.abs(spawn.position.y - centreHeight));
     assert.ok(
       Math.max(...spread) > SLOT_STEP_TOLERANCE_METRES,
-      `sweep-19 N=${count}: the pack sits within the old flat window, so this proves nothing`,
+      `graded fixture N=${count}: the pack sits within the old flat window, so this proves nothing`,
     );
     // And it is still a plane: the grade is the same all the way across, which
     // is what "not a step" means once the window has gone.
     assert.ok(
       Math.max(...spread) < GROUP_SPAWN.maxPackRiseMetres,
-      `sweep-19 N=${count}: the pack spans more than a start should`,
+      `graded fixture N=${count}: the pack spans more than a start should`,
     );
   }
 });

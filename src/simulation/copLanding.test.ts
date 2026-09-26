@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { CHASE, EUC, SIMULATION } from '../data/tuning.ts';
 import { generateLevel } from '../level/generateRoute.ts';
 import { planRegroup, regroupFloor, type RegroupCandidate } from './copRegroup.ts';
-import { CpuRider, type CpuView } from './cpuRider.ts';
+import { COP_WHEEL_TUNING, CpuRider, type CpuView } from './cpuRider.ts';
 import { createPose, EucController, type EucPose } from './EucController.ts';
 import { HazardField } from './hazards.ts';
 import { PlanTerrainSampler } from './planSampler.ts';
@@ -63,6 +63,11 @@ function sweepLandings(judged: boolean, pace: number): SweepResult {
       spawn: plan.spawn,
       hazards: new HazardField(plan.hazards ?? []),
       softBodies: new SoftBodyField(plan.softBodies ?? []),
+      // His own cutout edge, as `Game.installChaseWorld` builds him: since the
+      // owner tightened the player's edge on 2026-09-22 a cop on the default
+      // tuning would be a wheel the game never builds, and a return at the
+      // rider's flat-out pace would cut it out inside the window.
+      tuning: { ...COP_WHEEL_TUNING },
     });
     const pose: EucPose = createPose();
     const riderAt = createSpineSample();
@@ -104,8 +109,21 @@ function sweepLandings(judged: boolean, pace: number): SweepResult {
         cop.writePose(pose);
         readView();
         brain.place(view, judged ? candidate.distance : -1);
+        // **The rider rides on, flat out, as he would** (the brutal pass,
+        // 2026-09-25). The sweep used to hold him still at the spot while
+        // telling the brain he was doing `pace`: harmless while the return
+        // was 50 m and two seconds never reached him, and a fixture artefact
+        // once the return came in to 30 m — the cop reached a rider who claimed
+        // top speed and stood still, and was ridden past him into the road
+        // beyond. Moving him along his line at his pace keeps the window on the
+        // landing and the ride out of it, which is what is being judged.
         const quarry = { x: riderAt.x, y: riderAt.y, z: riderAt.z, speed: pace };
+        const ahead = createSpineSample();
         for (let step = 0; step < RIDE_SECONDS * SIMULATION.hz; step += 1) {
+          spine.sample(distance + direction * pace * step * STEP, ahead);
+          quarry.x = ahead.x;
+          quarry.y = ahead.y;
+          quarry.z = ahead.z;
           cop.writePose(pose);
           readView();
           cop.step(STEP, brain.step(STEP, view, quarry));

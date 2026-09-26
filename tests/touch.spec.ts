@@ -4,13 +4,15 @@ import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { SIGNS as SIGNS_TUNING } from '../src/data/markings.ts';
 import { CHARACTER_IDS } from '../src/data/riders.ts';
 import { ONE_FOOT, SIMULATION } from '../src/data/tuning.ts';
+import { RENDER_BUDGET } from '../src/data/renderCost.ts';
 import {
   SWITCHBACK_ENTRY_DISTANCE,
   SWITCHBACK_LAP_SEGMENT_IDS,
   SWITCHBACK_SIGNAGE,
 } from '../src/level/switchbackLevel.ts';
 import { TRACK_LAP_SEGMENT_IDS } from '../src/level/trackLevel.ts';
-import { boot, bootToTitle, collectErrors } from './harness.ts';
+import { ULTRA_TOGGLE_HELP, ULTRA_TOGGLE_WARNING } from '../src/ui/menus.ts';
+import { boot, bootAtTier, bootToTitle, collectErrors, DEAD_SEED, forceRefusal } from './harness.ts';
 
 /**
  * M11.5 — the on-screen controls, on a phone.
@@ -669,10 +671,12 @@ test.describe('M12 Phase 4 — a fresh route on a phone', () => {
 
   test('a refused seed is readable, and leaves the phone where it was', async ({ page }) => {
     const errors = collectErrors(page);
+    // route-12 builds since M39; the request boundary refuses it as a dead seed.
+    await forceRefusal(page);
     await bootToTitle(page);
     await page.locator('.euc-menu--title [data-menu="routes"]').tap();
 
-    await page.locator('#euc-seed').fill('route-12');
+    await page.locator('#euc-seed').fill(DEAD_SEED);
     await page.locator('.euc-menu--routes [data-menu="ride-route"]').tap();
     await expect
       .poll(async () => page.evaluate(() => window.game.snapshot().route.pending))
@@ -1055,6 +1059,84 @@ test.describe('M25 Phases 2-5 — the phone never meets a second rider or a spli
     expect(await page.evaluate(() => window.game.snapshot().couch.available)).toBe(false);
     await expect(page.locator('.euc-menu--title [data-menu="couch"]')).toBeHidden();
 
+    expect(errors).toEqual([]);
+  });
+
+  test('a phone’s chase is the solo face: one seat, no cop seat, three cops inside Contract 1', async ({ page }) => {
+    /*
+     * **M39 Part P on a phone** (§39.6b, "the solo face = the rule at one
+     * human (Contract 1, phone included)"). The couch face — a cop seat, a
+     * room, a count — is desktop only, and the phone reaches none of it
+     * because it reaches no second seat at all (`couchEligible`). What the
+     * phone *does* reach is the pack: three CPU cops in the one second-rider
+     * slot, which is exactly what Contract 1's raise under q209 was measured
+     * for. So this rides it through the title's own button, by touch, and
+     * holds the browser's own counters under the pinned ceiling — read from
+     * `src/data/renderCost.ts`, never written down here.
+     */
+    const errors = collectErrors(page);
+    await bootToTitle(page, 'level=generated&seed=route-41');
+    await page.locator('.euc-menu--title [data-menu="chase"]').tap();
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
+
+    const armed = await page.evaluate(() => {
+      const game = window.game;
+      const snapshot = game.snapshot();
+      return {
+        seats: game.seatCount,
+        views: game.renderer.viewCount,
+        room: snapshot.chase.room,
+        roles: snapshot.chase.pursuers.map((pursuer) => pursuer.role),
+        force: snapshot.chase.force,
+        installed: snapshot.rider.installed,
+        equipped: snapshot.paddle.equipped,
+        couch: snapshot.couch.available,
+      };
+    });
+    expect(armed.seats).toBe(1);
+    expect(armed.views).toBe(1);
+    expect(armed.couch).toBe(false);
+    // One outlaw, and the cop slot is the CPU's: no seat is Officer Dorkins.
+    expect(armed.room.couch).toBe(false);
+    expect(armed.room.outlawSeats).toEqual([0]);
+    expect(armed.room.copSeat).toBe(-1);
+    expect(armed.installed).not.toBe('cop');
+    // The pack, and no count: the solo face starts at once (q223 is the couch's).
+    expect(armed.force).toBe(3);
+    expect(armed.roles).toEqual(['tail', 'patrol', 'patrol']);
+    expect(armed.room.phase).toBe('running');
+    // The outlaw carries no paddle, so SWING stays off the glass.
+    expect(armed.equipped).toBe(false);
+    await expect(page.locator('.euc-touch')).toBeVisible();
+    await expect(page.locator('[data-touch="swing"]')).toBeHidden();
+
+    // Ride it, and read the frame the phone actually drew with the pack up.
+    const peak = await page.evaluate(() => {
+      const game = window.game;
+      game.loop.setRunning(false);
+      game.advance(60);
+      const scene = game.renderer.scene;
+      const trims = ['cop-rider', 'cop2-rider', 'cop3-rider']
+        .map((name) => scene.getObjectByName(name)?.visible === true);
+      const worst = { drawCalls: 0, triangles: 0 };
+      for (let sample = 0; sample < 60; sample += 1) {
+        game.setActions({ throttle: 1, steer: Math.sin(sample / 9) * 0.5 });
+        game.advance(20);
+        const render = game.snapshot().render;
+        worst.drawCalls = Math.max(worst.drawCalls, render.drawCalls);
+        worst.triangles = Math.max(worst.triangles, render.triangles);
+        if (game.snapshot().app.state !== 'chase') break;
+      }
+      game.setActions({ throttle: 0, steer: 0 });
+      return { trims, worst, seats: game.seatCount, cop: game.renderer.challengeCosts().copDrawCalls };
+    });
+    console.log(`[m39-phone-chase] worst ${JSON.stringify(peak.worst)} of ${RENDER_BUDGET.maxDrawCalls} / ${RENDER_BUDGET.maxTriangles}, pack ${peak.cop} calls`);
+    expect(peak.trims).toEqual([true, true, true]);
+    expect(peak.cop, 'the pack drew nothing').toBeGreaterThan(0);
+    expect(peak.seats, 'a second seat appeared during the ride').toBe(1);
+    expect(peak.worst.drawCalls).toBeGreaterThan(0);
+    expect(peak.worst.drawCalls).toBeLessThanOrEqual(RENDER_BUDGET.maxDrawCalls);
+    expect(peak.worst.triangles).toBeLessThanOrEqual(RENDER_BUDGET.maxTriangles);
     expect(errors).toEqual([]);
   });
 });
@@ -2282,3 +2364,402 @@ test.describe('M38 §38.6 — the Trick Run lane and the thumbs', () => {
     });
   }
 });
+
+/**
+ * M39 — Ultra Graphics is a phone's deliberate opt-in too (PLANS §39.6, q201).
+ *
+ * **Phones are offered it exactly as desktops are**: q201 superseded the
+ * desktop-only proposal, and the plan forbids gating the choice on screen
+ * width, pointer type or an assumption that every phone is weak. What this
+ * project can prove on an emulated phone is the *entrance* — layout, touch
+ * targets, the tap that opts in and the tap that returns to High, and the two
+ * entrances agreeing. Whether a phone runs Ultra well is the owner's ride on
+ * his own device (GU); emulation proves layout and touch, nothing about speed.
+ *
+ * **The state word is checked against what is drawn, not assumed.** A phone
+ * may be refused (a capability, a failed setup), and then the honest words are
+ * "Using High" under a pressed toggle — so the assertion reads the effective
+ * tier from `snapshot().quality` and holds the toggle to it, never "On" by
+ * default.
+ */
+test.describe('M39 — Ultra Graphics on a phone', () => {
+  const TOGGLE = '.euc-menu--title [data-menu="ultra"]';
+  const SETTINGS = '.euc-menu--title [data-menu="settings"]';
+
+  async function settle(page: Page): Promise<void> {
+    await page.evaluate(() => new Promise((done) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => done(null)));
+    }));
+  }
+
+  test('the toggle is a thumb-sized half of Settings’ row, upright and sideways', async ({ page }) => {
+    const errors = collectErrors(page);
+    await bootToTitle(page);
+
+    const toggle = page.locator(TOGGLE);
+    await expect(toggle).toBeVisible();
+    // The name is "Ultra Graphics" even where the label says only "Ultra", and
+    // the helper — visually hidden on a phone held upright — is still what a
+    // screen reader hears as the description.
+    await expect(toggle).toHaveAccessibleName('Ultra Graphics');
+    await expect(toggle).toHaveAccessibleDescription(ULTRA_TOGGLE_HELP);
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(toggle).toBeEnabled();
+
+    for (const size of [{ width: 412, height: 839 }, { width: 844, height: 390 }]) {
+      await page.setViewportSize(size);
+      await settle(page);
+      const where = `${size.width}x${size.height}`;
+      for (const selector of [SETTINGS, TOGGLE]) {
+        const box = await page.locator(selector).boundingBox();
+        expect(box, `${selector} has no box at ${where}`).not.toBeNull();
+        expect(box!.width, `${selector} is ${box!.width}px wide at ${where}`).toBeGreaterThanOrEqual(44);
+        expect(box!.height, `${selector} is ${box!.height}px tall at ${where}`).toBeGreaterThanOrEqual(44);
+        expect(box!.y + box!.height, `${selector} ends below the fold at ${where}`)
+          .toBeLessThanOrEqual(size.height + 0.5);
+      }
+      const settingsBox = (await page.locator(SETTINGS).boundingBox())!;
+      const toggleBox = (await page.locator(TOGGLE).boundingBox())!;
+      expect(Math.abs(toggleBox.y - settingsBox.y), `the pair left one row at ${where}`).toBeLessThan(0.5);
+      if (size.height > size.width) {
+        // Upright, the pair is no taller than Settings was alone, and the
+        // helper takes no room (it is clipped to a pixel, not removed).
+        expect(toggleBox.height, `the pair's row grew at ${where}`).toBeLessThanOrEqual(46);
+        const help = await page.locator('#euc-ultra-help').boundingBox();
+        expect((help?.width ?? 0) <= 1 && (help?.height ?? 0) <= 1, 'the helper took room upright')
+          .toBe(true);
+      }
+      const overflow = await page.evaluate(() => {
+        const root = document.querySelector<HTMLElement>('.euc-menu--title')!;
+        return root.scrollHeight - root.clientHeight;
+      });
+      expect(overflow, `the title scrolls at ${where}`).toBeLessThanOrEqual(1);
+    }
+
+    // **The offers scan sees the toggle.** The M25 phone tests fail any visible
+    // title control whose words mention a second player; the toggle's helper
+    // says "Single player only", which must be — and is — the opposite.
+    const offers = await page.locator('.euc-menu--title [data-menu]:visible').evaluateAll(
+      (nodes) => nodes.map((node) => `${node.getAttribute('data-menu')} ${node.textContent ?? ''}`),
+    );
+    expect(offers.some((entry) => entry.startsWith('ultra ')), 'the scan never reached the toggle')
+      .toBe(true);
+    for (const entry of offers) {
+      expect(entry.toLowerCase(), `the phone's title screen offers "${entry}"`)
+        .not.toMatch(/2 player|two player|couch|split/);
+    }
+
+    expect(errors).toEqual([]);
+  });
+
+  test('one tap opts a phone in, one more returns it to High, and Settings agrees', async ({ page }) => {
+    const errors = collectErrors(page);
+    await bootToTitle(page);
+    const toggle = page.locator(TOGGLE);
+    const stateWord = toggle.locator('[data-ultra-text]');
+    const quality = () => page.evaluate(() => window.game.snapshot().options.quality);
+
+    await toggle.tap();
+    await expect.poll(quality).toBe('ultra');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    // Honest words: "On" only over an Ultra frame, "Using High" over anything
+    // else — whichever this emulated phone's renderer actually drew.
+    await expect.poll(async () => {
+      const effective = await page.evaluate(() => window.game.snapshot().quality.effective);
+      const word = await stateWord.textContent();
+      return effective === 'ultra' ? word === 'On' : word === 'Using High';
+    }).toBe(true);
+
+    // The second tap is the way back: nothing was remembered before High, so
+    // High is what returns.
+    await toggle.tap();
+    await expect.poll(quality).toBe('high');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(stateWord).toHaveText('Off');
+    await expect.poll(() => page.evaluate(() => window.game.snapshot().quality.effective))
+      .toBe('high');
+
+    // **The other entrance, the same preference.** Settings offers Ultra on a
+    // phone (never gated on width or pointer), the warning stands beside it,
+    // choosing it presses the toggle, and choosing a tier turns it off.
+    await page.locator(SETTINGS).tap();
+    await page.waitForFunction(() => window.game.snapshot().app.menu === 'settings');
+    const select = page.locator('[data-option="quality"]');
+    await expect(select.locator('option[value="ultra"]')).toBeEnabled();
+    await expect(page.locator('#euc-quality-warning')).toContainText(
+      'Requires a capable GPU; smoothness and battery use vary by device.',
+    );
+    await select.selectOption('ultra');
+    await expect.poll(quality).toBe('ultra');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await select.selectOption('high');
+    await expect.poll(quality).toBe('high');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(stateWord).toHaveText('Off');
+
+    await page.evaluate(() => window.game.resetOptions());
+    expect(errors).toEqual([]);
+  });
+
+  /**
+   * **Codex QA C3 — the GPU warning is on a phone's screen, not only in its
+   * accessibility tree** (`docs/M39_ULTRA.md` A28, `DESIGN.md` §9g).
+   *
+   * Every phone tier hides the helper sentence (clipped to a pixel upright,
+   * `display: none` in the compact three-column title), and before C3 that
+   * left "Ultra Off" pressable with no warning in sight at 390x844 or 844x390.
+   * The fix is a short second line inside the button, the helper's first
+   * sentence, shown by exactly the tiers that hide the helper. So at every
+   * size here: **exactly one of the two is visible** — the line on a phone,
+   * the helper as a note on a phone just past 26rem (430x932) — and it is
+   * inside the button, inside the viewport, unclipped and not covered; the
+   * title still has nothing to scroll to; and the button's description is
+   * still the whole helper (the line is `aria-hidden`, so a screen reader
+   * hears the warning once).
+   *
+   * **Every state word, at every size (FU, Fable's QA finding 3).** 375x812 —
+   * an iPhone X/XS/11 Pro/12 mini/13 mini upright — was measured nowhere, and
+   * scrolled: 11 px with "Off" and 26 with "Using High", which left the
+   * label's line and made the toggle three lines. So the list now carries it
+   * and 393x852 beside the sizes C3 named, and the title is held in all four
+   * words: "Off"; "On" and "Using High", both by a real path (a saved Ultra
+   * drawn, and a saved Ultra under a diagnostic `?presentation=` override,
+   * journey 6 of `m39-ultra.spec.ts`); and "Single player only", which no
+   * phone can reach (the couch needs 1000 px and a fine pointer or a pad), so
+   * it is written into the toggle the way `Menus.sync` would write it — a
+   * guard that the day it becomes reachable, the title still fits. Upright,
+   * the three words a phone can show share the label's line with the warning
+   * under it, and the row stays within Settings' 46 px.
+   *
+   * **And every title button's words stay inside it (FU2).** "Knockabout"
+   * overflowed its three-column cell on every phone held upright under 50rem
+   * (past the border at 360x780 and 320x568) and nothing failed, because
+   * nothing scrolled. So each size also asserts that no label, note, state word
+   * or warning line leaves its button's content box, that the narrow compact
+   * title is two columns with the pair on one row, and — where a size once
+   * fitted by a hair (428x926 by 0.5 px, 740x360 and 800x360 not at all) —
+   * that the title clears by at least 8 px. Nineteen sizes now: 412x915,
+   * 932x430, 740x360, 800x360, 428x926 and 430x739 (a Pro Max in Safari) added.
+   */
+  test('the GPU warning stays visible beside the toggle at every phone size, upright and sideways', async ({ page }) => {
+    const errors = collectErrors(page);
+    await bootToTitle(page);
+    const toggle = page.locator(TOGGLE);
+    const stateWord = toggle.locator('[data-ultra-text]');
+    await expect(toggle).toHaveAccessibleName('Ultra Graphics');
+    await expect(toggle).toHaveAccessibleDescription(ULTRA_TOGGLE_HELP);
+    expect(ULTRA_TOGGLE_HELP.startsWith(ULTRA_TOGGLE_WARNING)).toBe(true);
+
+    type Shows = 'line' | 'note';
+    // `minSpare`: the title's unused height is held to a margin, not only to
+    // "does not scroll", where a size once fitted by a hair (FU2).
+    const SIZES: readonly { width: number; height: number; shows: Shows; minSpare?: number }[] = [
+      // Upright, the stack (26rem wide or less, over 50rem tall).
+      { width: 375, height: 812, shows: 'line' }, { width: 390, height: 844, shows: 'line' },
+      { width: 393, height: 852, shows: 'line' }, { width: 412, height: 839, shows: 'line' },
+      { width: 412, height: 915, shows: 'line' },
+      // Just past 26rem: the full stack, the helper as a note. 428x926 (iPhone
+      // Pro Max, standalone) fitted by 0.5 px until FU2 gave the stack under
+      // 60rem tier one's rhythm.
+      { width: 430, height: 932, shows: 'note' }, { width: 428, height: 926, shows: 'note', minSpare: 8 },
+      // Upright, the compact tier (50rem tall or less): two columns at 30rem
+      // and narrower since FU2, so "Knockabout" fits its button.
+      { width: 360, height: 780, shows: 'line' }, { width: 360, height: 800, shows: 'line' },
+      { width: 360, height: 640, shows: 'line' }, { width: 375, height: 667, shows: 'line' },
+      { width: 320, height: 568, shows: 'line' },
+      // A Pro Max in Safari, whose bars put it in the compact tier.
+      { width: 430, height: 739, shows: 'line' },
+      // Sideways — 740x360 and 800x360 (the 360x800 family on its side)
+      // scrolled 10 px until FU2's under-24rem rhythm.
+      { width: 844, height: 390, shows: 'line' }, { width: 667, height: 375, shows: 'line' },
+      { width: 915, height: 412, shows: 'line' }, { width: 932, height: 430, shows: 'line' },
+      { width: 740, height: 360, shows: 'line', minSpare: 8 }, { width: 800, height: 360, shows: 'line', minSpare: 8 },
+    ];
+    const upright = (size: { width: number; height: number }) => size.width <= 416 && size.height > 800;
+    // The compact title a phone held upright gets: two columns, the pair one row.
+    const narrowCompact = (size: { width: number; height: number }) => size.width <= 480 && size.height <= 800;
+
+    const check = async (size: (typeof SIZES)[number], what: string) => {
+      const where = `${size.width}x${size.height} (${what})`;
+      await expect(stateWord, where).toHaveText(what);
+      const facts = await compactWarningFacts(page);
+      expect(facts.warnSeen && facts.helpSeen, `the warning is on screen twice at ${where}`).toBe(false);
+      expect(size.shows === 'line' ? facts.warnSeen : facts.helpSeen,
+        `no visible GPU warning beside the toggle (the ${size.shows}) at ${where}`).toBe(true);
+      expect(facts.warnText).toBe(ULTRA_TOGGLE_WARNING);
+      expect(facts.warnAriaHidden, 'the compact line would be read twice').toBe('true');
+      const [shown, button] = [facts.shown!, facts.toggle];
+      expect(shown.left, `the warning leaves the button at ${where}`).toBeGreaterThanOrEqual(button.left - 0.5);
+      expect(shown.right, `the warning leaves the button at ${where}`).toBeLessThanOrEqual(button.right + 0.5);
+      expect(shown.top, `the warning leaves the button at ${where}`).toBeGreaterThanOrEqual(button.top - 0.5);
+      expect(shown.bottom, `the warning leaves the button at ${where}`).toBeLessThanOrEqual(button.bottom + 0.5);
+      expect(shown.left, `the warning starts off screen at ${where}`).toBeGreaterThanOrEqual(-0.5);
+      expect(shown.top, `the warning starts off screen at ${where}`).toBeGreaterThanOrEqual(-0.5);
+      expect(shown.right, `the warning ends off screen at ${where}`).toBeLessThanOrEqual(size.width + 0.5);
+      expect(shown.bottom, `the warning ends below the fold at ${where}`).toBeLessThanOrEqual(size.height + 0.5);
+      expect(facts.shownClipped, `the warning's words are clipped at ${where}`).toBeLessThanOrEqual(1);
+      expect(facts.shownOnTop, `something covers the warning at ${where}`).toBe(true);
+      expect(facts.overflow, `the title has ${facts.overflow}px to scroll at ${where}`).toBeLessThanOrEqual(1);
+      // **Every button's words inside its own text box (FU2).** "Knockabout"
+      // ran 5.8 px past its border at 360x780 and 18 at 320x568 in three
+      // columns, a failure no fit contract saw because nothing scrolled.
+      expect(facts.spills, `words outside their button at ${where}`).toEqual([]);
+      if (size.minSpare !== undefined) {
+        expect(facts.spare, `the title clears by only ${facts.spare}px at ${where}`)
+          .toBeGreaterThanOrEqual(size.minSpare);
+      }
+      await expect(toggle).toHaveAccessibleDescription(ULTRA_TOGGLE_HELP);
+      if (upright(size)) {
+        // The stack: two lines inside the 44 px floor, the state beside the label.
+        expect(facts.stateOnLabelLine, `"${what}" left the label's line at ${where}`).toBe(true);
+        expect(facts.toggle.bottom - facts.toggle.top, `the pair's row grew at ${where}`).toBeLessThanOrEqual(46);
+      }
+      if (narrowCompact(size)) {
+        // Two columns and the pair one spanning row, as in the stack.
+        expect(facts.pairOneRow, `Settings and Ultra left one row at ${where}`).toBe(true);
+        expect(facts.columns, `the compact title is not two columns at ${where}`).toBe(2);
+      }
+    };
+    const sweep = async (what: string) => {
+      for (const size of SIZES) {
+        await page.setViewportSize(size);
+        await settle(page);
+        await check(size, what);
+      }
+    };
+
+    await sweep('Off');
+
+    // "On", by a real path: a saved Ultra this emulated phone draws. The word
+    // is the frame's, never assumed (`qualityStateWords`), so a renderer that
+    // refused would say "Using High" here and this would fail as a refusal.
+    await bootAtTier(page, 'level=slice', 'ultra', { ride: false });
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect.poll(() => page.evaluate(() => window.game.snapshot().quality.effective),
+      { message: 'a saved Ultra was not drawn on the emulated phone' }).toBe('ultra');
+    await sweep('On');
+
+    // "Using High", the longest word a phone can show, by a real path.
+    await bootAtTier(page, 'level=slice&presentation=enhanced', 'ultra', { ride: false });
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await sweep('Using High');
+
+    // "Single player only": unreachable on a phone, written as `Menus.sync`
+    // writes it (disabled, still pressed, the kind and the word). It is too long
+    // to share the label's line in the upright half, so it wraps under it; the
+    // helper and the line both go (`visibility`, keeping their height, DESIGN
+    // §9g), and what is held is that the title still fits and the word shows.
+    for (const size of SIZES.filter((s) => upright(s) || s.shows === 'note')) {
+      await page.setViewportSize(size);
+      await settle(page);
+      await page.evaluate(() => {
+        const node = document.querySelector<HTMLButtonElement>('.euc-menu--title [data-menu="ultra"]')!;
+        node.disabled = true;
+        node.dataset.ultraState = 'unavailable';
+        node.querySelector('[data-ultra-text]')!.textContent = 'Single player only';
+      });
+      await settle(page);
+      const where = `${size.width}x${size.height} (Single player only, written)`;
+      const facts = await compactWarningFacts(page);
+      expect(facts.warnSeen || facts.helpSeen, `a disabled toggle showed its GPU warning at ${where}`).toBe(false);
+      expect(facts.stateInside, `the state word left the button at ${where}`).toBe(true);
+      expect(facts.toggle.bottom, `the toggle ends below the fold at ${where}`).toBeLessThanOrEqual(size.height + 0.5);
+      expect(facts.overflow, `the title has ${facts.overflow}px to scroll at ${where}`).toBeLessThanOrEqual(1);
+    }
+
+    // A real write puts the toggle back: resetting the options re-runs
+    // `Menus.sync`, which writes every field the block above forged.
+    await page.evaluate(() => window.game.resetOptions());
+    await expect(toggle).toBeEnabled();
+    await expect(stateWord).toHaveText('Off');
+    expect(errors).toEqual([]);
+  });
+});
+
+/**
+ * Where the title's Ultra warning is, and whether an eye can see it (C3).
+ *
+ * "Seen" is the strict sense: laid out, `visibility: visible`, larger than the
+ * visually-hidden pattern's one pixel and not clipped by a `clip-path` — so
+ * the helper clipped to a pixel on an upright phone counts as unseen, which is
+ * exactly the defect C3 names. `shown` is whichever of the line and the helper
+ * is seen; `shownOnTop` asks the page what is drawn at its centre, so a
+ * sibling painted over it fails; `shownClipped` is how far its words overflow
+ * their own box.
+ */
+async function compactWarningFacts(page: Page) {
+  return page.evaluate(() => {
+    const root = document.querySelector<HTMLElement>('.euc-menu--title')!;
+    const toggle = root.querySelector<HTMLElement>('[data-menu="ultra"]')!;
+    const warn = toggle.querySelector<HTMLElement>('.euc-ultra__warn');
+    const help = toggle.querySelector<HTMLElement>('#euc-ultra-help');
+    const label = toggle.querySelector<HTMLElement>('.euc-ultra__label')!;
+    const state = toggle.querySelector<HTMLElement>('[data-ultra-text]')!;
+    const seen = (node: HTMLElement | null): boolean => {
+      if (node === null) return false;
+      const style = getComputedStyle(node);
+      const box = node.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility === 'visible'
+        && box.width > 1 && box.height > 1 && style.clipPath === 'none';
+    };
+    const edges = (node: HTMLElement) => {
+      const box = node.getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+    };
+    const shown = seen(warn) ? warn : seen(help) ? help : null;
+    let shownOnTop = false;
+    if (shown !== null) {
+      const box = shown.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      shownOnTop = hit !== null && (hit === shown || shown.contains(hit));
+    }
+    const button = toggle.getBoundingClientRect();
+    const word = state.getBoundingClientRect();
+    // Every visible piece of words in every title button, against the
+    // button's content box (border and padding taken off): a label that
+    // overflows it is off-centre at best and past the border at worst (FU2).
+    const spills: string[] = [];
+    for (const node of root.querySelectorAll<HTMLElement>('.euc-menu__actions button')) {
+      if (node.offsetParent === null) continue;
+      const style = getComputedStyle(node);
+      const box = node.getBoundingClientRect();
+      const left = box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
+      const right = box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
+      for (const piece of node.querySelectorAll<HTMLElement>(
+        '.euc-button__label, .euc-button__note, .euc-ultra__state, .euc-ultra__warn',
+      )) {
+        if (!seen(piece)) continue;
+        const range = document.createRange();
+        range.selectNodeContents(piece);
+        for (const rect of range.getClientRects()) {
+          const past = Math.max(left - rect.left, rect.right - right);
+          if (rect.width > 0 && past > 0.5) {
+            spills.push(`${node.dataset.menu} "${piece.textContent?.trim()}" by ${past.toFixed(1)}px`);
+          }
+        }
+      }
+    }
+    const rootStyle = getComputedStyle(root);
+    const panel = root.querySelector<HTMLElement>('.euc-menu__panel')!;
+    const settings = root.querySelector<HTMLElement>('[data-menu="settings"]')!.getBoundingClientRect();
+    return {
+      spills,
+      spare: root.clientHeight - parseFloat(rootStyle.paddingTop) - parseFloat(rootStyle.paddingBottom)
+        - panel.getBoundingClientRect().height,
+      pairOneRow: Math.abs(settings.top - button.top) < 0.5,
+      columns: getComputedStyle(root.querySelector('.euc-menu__actions')!).gridTemplateColumns.split(' ').length,
+      warnSeen: seen(warn),
+      helpSeen: seen(help),
+      warnText: warn?.textContent ?? '',
+      warnAriaHidden: warn?.getAttribute('aria-hidden') ?? null,
+      shown: shown === null ? null : edges(shown),
+      shownClipped: shown === null ? 0 : Math.max(shown.scrollWidth - shown.clientWidth, shown.scrollHeight - shown.clientHeight),
+      shownOnTop,
+      toggle: edges(toggle),
+      stateInside: seen(state) && word.left >= button.left - 0.5 && word.right <= button.right + 0.5
+        && word.top >= button.top - 0.5 && word.bottom <= button.bottom + 0.5,
+      stateOnLabelLine: Math.abs(label.getBoundingClientRect().top - word.top) < 8,
+      overflow: root.scrollHeight - root.clientHeight,
+    };
+  });
+}

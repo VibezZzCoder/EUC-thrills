@@ -7,6 +7,9 @@ import { MATERIALS } from '../data/surfaces.ts';
 import { buildLevelPlan, fieldHeightAt, type HazardSpec } from '../level/buildPlan.ts';
 import type { LevelPlan } from '../level/plan.ts';
 import { createHazards } from './hazards.ts';
+import { createMarkings } from './markings.ts';
+import { createUltraShared } from './ultra/ultraMaterials.ts';
+import { ULTRA_FULL } from './ultra/ultraRecipe.ts';
 
 /**
  * The hazard mesh family — M13 Phase 2, rewritten with the family it tests.
@@ -633,5 +636,73 @@ test('a disposed hazard family leaves the scene exactly as it found it', () => {
     let objects = 0;
     scene.traverse(() => { objects += 1; });
     assert.equal(objects, 1, `after ${round + 1} build(s) the scene still holds a hazard group`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// M39 — an Ultra world changes the materials and nothing else
+// ---------------------------------------------------------------------------
+
+/** Every attribute and the index of a mesh, as plain arrays. */
+function geometryOf(mesh: THREE.Mesh): Record<string, number[]> {
+  const out: Record<string, number[]> = {};
+  for (const [name, attribute] of Object.entries(mesh.geometry.attributes)) out[name] = Array.from(attribute.array);
+  out.index = Array.from(mesh.geometry.index!.array);
+  return out;
+}
+
+test('on an Ultra world the hazards and the paint keep every triangle, tone and normal: only the material changes', () => {
+  const plan = hazardPlan([
+    pothole('a', 14, 'potholeDeep', 0.9, -1.5),
+    pothole('b', 30, 'potholeShallow', 0.7, 2),
+    spill('c', 52, 2.2),
+  ], 0.08);
+  const context = { recipe: ULTRA_FULL, shared: createUltraShared(), maxAnisotropy: 1 };
+  const ordinary = createHazards(plan);
+  const ultra = createHazards(plan, context);
+  try {
+    assert.equal(ultra.triangles, ordinary.triangles, 'the hazards gained or lost triangles');
+    assert.equal(ultra.drawCalls, ordinary.drawCalls);
+    assert.equal(ultra.potholes, ordinary.potholes);
+    for (const name of [GROUND_MESH, WATER_MESH]) {
+      const a = meshNamed(ultra, name)!;
+      const b = meshNamed(ordinary, name)!;
+      // Same positions, normals and vertex tones — which is to say the same
+      // dipole, since the rim and the pit are carried by the tones.
+      assert.deepEqual(geometryOf(a), geometryOf(b), `${name} geometry changed on an Ultra world`);
+      assert.equal(a.castShadow, false);
+      assert.equal(a.receiveShadow, true);
+      assert.equal(a.layers.isEnabled(5), false, `${name} joined the far-shadow layer`);
+      const material = a.material as THREE.MeshStandardMaterial;
+      const reference = b.material as THREE.MeshStandardMaterial;
+      assert.equal(material.polygonOffset, true);
+      assert.equal(material.polygonOffsetFactor, reference.polygonOffsetFactor);
+      assert.equal(material.polygonOffsetUnits, reference.polygonOffsetUnits);
+      assert.equal(material.vertexColors, true);
+      assert.equal(material.roughness, reference.roughness);
+    }
+  } finally {
+    ordinary.dispose();
+    ultra.dispose();
+  }
+
+  // The road paint is held to the same terms.
+  const paintPlan = hazardPlan([]);
+  const paint = createMarkings(paintPlan);
+  const ultraPaint = createMarkings(paintPlan, context);
+  try {
+    assert.equal(ultraPaint.triangles, paint.triangles);
+    assert.equal(ultraPaint.drawCalls, paint.drawCalls);
+    const a = ultraPaint.group.children[0] as THREE.Mesh | undefined;
+    const b = paint.group.children[0] as THREE.Mesh | undefined;
+    assert.equal(a === undefined, b === undefined);
+    if (a !== undefined && b !== undefined) {
+      assert.deepEqual(geometryOf(a), geometryOf(b), 'the paint geometry changed on an Ultra world');
+      assert.equal(a.castShadow, false);
+      assert.equal((a.material as THREE.MeshStandardMaterial).polygonOffset, true);
+    }
+  } finally {
+    paint.dispose();
+    ultraPaint.dispose();
   }
 });

@@ -1,5 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { DIAGNOSTICS, EUC } from '../data/tuning.ts';
+import { CHASE, DIAGNOSTICS, EUC } from '../data/tuning.ts';
 import type { ActionSnapshot } from '../input/actions.ts';
 import type { LoopStats } from '../app/loop.ts';
 import type { EucSnapshot } from '../simulation/EucController.ts';
@@ -58,7 +58,36 @@ export interface DebugContext {
   tuningOverrides: number;
   /** The audio model and context state (M8). */
   audio: AudioSnapshot;
+  /**
+   * The chase pack — M39 Part P (§39.6b.3 "Diagnostics"). Absent or null on a
+   * world with no pack, which is every world the chase refuses.
+   */
+  chase?: DebugChaseContext | null;
 }
+
+/** One pursuer as F3 lists him: role, state, gap and the cap that set his pace. */
+export interface DebugChasePursuer {
+  /** `tail` or `patrol`. */
+  readonly role: string;
+  /** `parked`, `waking`, `chasing` or `returning` in a round; `riding` outside one (the probe). */
+  readonly state: string;
+  /** Straight-line metres to the rider. */
+  readonly gap: number;
+  /** `CpuRider.capReason`: which rule decided his speed on his last step (`packmate` included). */
+  readonly cap: string;
+}
+
+/** The pack as F3 shows it — M39 Part P. */
+export interface DebugChaseContext {
+  /** Where the posts came from: `ring`, `spine`, `echelon` (flagged: no post could stand) or `none`. */
+  readonly posts: string;
+  /** `?cops=`'s count, or null with the probe off. */
+  readonly probe: number | null;
+  readonly pursuers: readonly DebugChasePursuer[];
+}
+
+/** One F3 row per pursuer the rule can field — the solo pack, `CHASE.roomSize − 1` (q207). */
+const PACK_ROWS = CHASE.roomSize - 1;
 
 const MS = new Intl.NumberFormat('en-GB', {
   minimumFractionDigits: 2,
@@ -389,6 +418,32 @@ export class DebugOverlay {
         .join('  '),
     );
 
+    // The pack (M39 Part P). What the director is doing is otherwise invisible
+    // from the saddle: which cop is asleep at his post, which one is riding in
+    // on a wake, which one is owed a return, and which rule is holding each
+    // one's pace. The echelon fallback is flagged, because it means no post
+    // on this world could stand and the patrols are riding behind the tail.
+    const chase = context.chase ?? null;
+    this.set(
+      'chasepack',
+      chase === null
+        ? '—'
+        : `${COUNT.format(chase.pursuers.length)} cop${chase.pursuers.length === 1 ? '' : 's'}`
+          + `  posts ${chase.posts}${chase.probe === null ? '' : `  ?cops=${chase.probe}`}`,
+      chase?.posts === 'echelon',
+    );
+    for (let index = 0; index < PACK_ROWS; index += 1) {
+      const pursuer = chase?.pursuers[index];
+      this.set(
+        `chasecop${index}`,
+        pursuer === undefined
+          ? '—'
+          : `${pursuer.role}  ${pursuer.state}  `
+            + `${Number.isFinite(pursuer.gap) ? `${COUNT.format(pursuer.gap)} m` : '—'}  cap ${pursuer.cap}`,
+        pursuer?.state === 'returning',
+      );
+    }
+
     this.set(
       'overrides',
       context.tuningOverrides === 0
@@ -499,6 +554,13 @@ export class DebugOverlay {
         ['audioworld', 'world'],
         ['audiovoices', 'voices'],
         ['audioplayed', 'one-shots'],
+      ]],
+      ['Chase pack', [
+        ['chasepack', 'pack'],
+        ...Array.from({ length: PACK_ROWS }, (_unused, index): [string, string] => [
+          `chasecop${index}`,
+          `cop ${index + 1}`,
+        ]),
       ]],
       ['Tuning', [['overrides', 'overrides']]],
     ];

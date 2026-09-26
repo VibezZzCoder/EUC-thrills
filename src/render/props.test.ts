@@ -1,9 +1,12 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import * as THREE from 'three';
+import { propPartCounts } from '../data/renderCost.ts';
 import {
   BUILDING_FACADE,
+  BUILDING_LOOKS,
   BUILDING_TONES,
   GANTRY_WORDMARK,
   PROP_BUDGET,
@@ -21,6 +24,13 @@ import { createProps } from './props.ts';
 import { FACADE_PAGES, type FacadePageId } from './facadeAtlas.ts';
 import { FOLIAGE_TONES } from './foliageKit.ts';
 import { BASELINE_PRESENTATION, ENHANCED_PRESENTATION, selectPresentation } from './presentation.ts';
+import { ULTRA_BUILDING_BUILDERS, ULTRA_FORM_BUILDERS, isReliefPart, ultraCasts } from './ultra/ultraKit.ts';
+import { SLOT_CLOSING, ULTRA_SLOT_ATTRIBUTE, ultraBuildingCap } from './ultra/ultraBuildings.ts';
+import { generateLevel } from '../level/generateRoute.ts';
+import { createUltraShared } from './ultra/ultraMaterials.ts';
+import { ULTRA_FULL, ULTRA_LIT, ULTRA_STATIC_LAYER, applyKitOverride } from './ultra/ultraRecipe.ts';
+import type { UltraBuildContext, UltraRecipe } from './ultra/ultraTypes.ts';
+import type { PartId, PropsView } from './props.ts';
 
 /**
  * The prop kit, measured rather than estimated.
@@ -615,4 +625,375 @@ test('the wordmark fits the banner it is bolted to, and keeps a margin of red', 
     size.letterHeight < size.bannerHeight,
     'the lettering is taller than the panel carrying it',
   );
+});
+
+// ---------------------------------------------------------------------------
+// M39 Phase 2 — district looks and landmarks
+// ---------------------------------------------------------------------------
+
+test('a building with a look draws exactly the pieces the cost model counts, and a roof faces outward', () => {
+  const props: Prop[] = BUILDING_LOOKS.map((look, index) => ({
+    kind: 'building',
+    position: { x: index * 60 + 3.7, y: 0, z: 11.3 },
+    rotationY: index * 0.4,
+    scale: 1,
+    size: { x: 12, y: look === 'residential' || look === 'industrial' ? 7 : 20, z: 16 },
+    look,
+  }));
+  const looked = createProps({ ...propOnlyPlan(), props });
+  try {
+    const predicted = new Map<string, number>();
+    for (const prop of props) for (const [part, count] of propPartCounts(prop)) predicted.set(part, (predicted.get(part) ?? 0) + count);
+    const built = new Map<string, number>();
+    for (const child of looked.group.children) built.set(child.name.replace('level-props-', ''), (child as THREE.InstancedMesh).count);
+    assert.deepEqual(Object.fromEntries([...built].sort()), Object.fromEntries([...predicted].sort()));
+    assert.ok(built.has('roofGable'), 'no look drew a roof');
+
+    // The roof prism: every face's winding points away from the prism's centroid.
+    const roof = looked.group.children.find((child) => child.name === 'level-props-roofGable') as THREE.InstancedMesh;
+    const position = roof.geometry.getAttribute('position');
+    const a = new THREE.Vector3(); const b = new THREE.Vector3(); const c = new THREE.Vector3();
+    const centroid = new THREE.Vector3(0, 1 / 3, 0);
+    for (let index = 0; index < position.count; index += 3) {
+      a.fromBufferAttribute(position, index);
+      b.fromBufferAttribute(position, index + 1);
+      c.fromBufferAttribute(position, index + 2);
+      const face = new THREE.Vector3().crossVectors(b.clone().sub(a), c.clone().sub(a));
+      const middle = a.clone().add(b).add(c).divideScalar(3).sub(centroid);
+      assert.ok(face.dot(middle) > 0, `roof triangle ${index / 3} winds inward`);
+    }
+    assert.equal(roof.castShadow, false, 'a building part that casts costs a shadow call the library bound has no room for');
+  } finally {
+    looked.dispose();
+  }
+});
+
+function propOnlyPlan(): LevelPlan {
+  return {
+    id: 'looks-probe',
+    spawn: { position: { x: 0, y: 0, z: 0 }, headingY: 0 },
+    surround: { height: 0, surface: 'grass' },
+    heightfield: { originX: 0, originZ: 0, spacing: 1, columns: 2, rows: 2, heights: [0, 0, 0, 0], surfaces: ['grass'] },
+    segments: [],
+    checkpoints: [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// M39 Ultra — the forms hook (`docs/M39_ULTRA.md` §6.3 W3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Everything an ordinary view's scene is made of, as one digest: every mesh's
+ * name, count, flags, layers, material parameters and depth-material
+ * presence, every geometry attribute buffer, every instance matrix and
+ * colour, and the view's own counters.
+ */
+function sceneDigest(built: PropsView): string {
+  const hash = createHash('sha256');
+  for (const child of built.group.children) {
+    const mesh = child as THREE.InstancedMesh;
+    const material = mesh.material as THREE.MeshStandardMaterial;
+    hash.update(`${mesh.name}|${mesh.count}|${mesh.castShadow}|${mesh.receiveShadow}|${mesh.layers.mask}|${material.roughness}|${material.metalness}|${material.vertexColors}|${material.color.getHex()}|${material.map !== null}|${mesh.customDepthMaterial === undefined}`);
+    const geometry = mesh.geometry;
+    for (const name of Object.keys(geometry.attributes).sort()) {
+      const attribute = geometry.getAttribute(name) as THREE.BufferAttribute;
+      hash.update(name);
+      hash.update(Buffer.from(new Float32Array(attribute.array as ArrayLike<number>).buffer));
+    }
+    hash.update(Buffer.from(new Float32Array(mesh.instanceMatrix.array).buffer));
+    hash.update(Buffer.from(new Float32Array(mesh.instanceColor!.array).buffer));
+  }
+  hash.update(`${built.props}|${built.instances}|${built.drawCalls}|${built.triangles}|${built.shadowDrawCalls}|${built.shadowTriangles}|${built.recipe}|${built.textures}`);
+  return hash.digest('hex');
+}
+
+test('ordinary createProps is byte-identical to the build before the Ultra hook', () => {
+  // Invariant 1 of M39: Low, Medium and High do not change. These digests
+  // were taken from this tree immediately before `createProps` learned about
+  // Ultra recipes (2026-09-23, W3), on the pinned three 0.185.1 and Node 26.
+  // A difference here is an ordinary-world change, not a stale number; the
+  // pre-Ultra goldens in `ordinaryParity.test.ts` are the independent check.
+  const track = createTrackLevel();
+  assert.equal(sceneDigest(createProps(plan)), 'be2238f4a0243a9d7184df389474d494bcba34935b16f1b5720c83f6833d69f6', 'the baseline slice changed');
+  assert.equal(sceneDigest(createProps(plan, ENHANCED_PRESENTATION)), '3160a0169b4b191ef9b2cb1fe837b9241d3eba5f0bd638f0fb1d619a100810ab', 'the enhanced slice changed');
+  assert.equal(sceneDigest(createProps(track, ENHANCED_PRESENTATION)), '59d61dd9f57c9c51e90cbf2dc0e796257299b67ac17bbcd4bd5595f84aa03135', 'the enhanced BelVar changed');
+  // And an ordinary view owns no Ultra resource at all.
+  for (const ordinary of [view, enhancedView]) {
+    assert.equal(ordinary.bytes, 0);
+    for (const child of ordinary.group.children) {
+      const mesh = child as THREE.InstancedMesh;
+      assert.equal(mesh.receiveShadow, false, `${mesh.name} receives on an ordinary world`);
+      assert.equal(mesh.customDepthMaterial, undefined, `${mesh.name} has a depth material on an ordinary world`);
+      assert.equal(mesh.layers.isEnabled(ULTRA_STATIC_LAYER), false, `${mesh.name} joined the static layer on an ordinary world`);
+    }
+  }
+});
+
+function ultraContext(recipe: UltraRecipe): UltraBuildContext {
+  // What the renderer hands `createProps`; headless, the shared uniforms need
+  // no GL context and the anisotropy is 1.
+  return { recipe, shared: createUltraShared(), maxAnisotropy: 1 };
+}
+
+const ultraView = createProps(plan, ULTRA_FULL, ultraContext(ULTRA_FULL));
+const trackEnhanced = createProps(createTrackLevel(), ENHANCED_PRESENTATION);
+const trackUltra = createProps(createTrackLevel(), ULTRA_FULL, ultraContext(ULTRA_FULL));
+
+test('an Ultra view keeps the enhanced buckets, names, instance counts, matrices and colours', () => {
+  for (const [enhanced, ultra, world] of [[enhancedView, ultraView, 'slice'], [trackEnhanced, trackUltra, 'BelVar']] as const) {
+    assert.equal(ultra.recipe, 'ultra-full');
+    assert.equal(ultra.props, enhanced.props);
+    assert.equal(ultra.instances, enhanced.instances);
+    assert.equal(ultra.drawCalls, enhanced.drawCalls, `${world}: the Ultra kit added a colour draw call`);
+    assert.equal(ultra.group.children.length, enhanced.group.children.length);
+    for (let index = 0; index < enhanced.group.children.length; index += 1) {
+      const a = enhanced.group.children[index] as THREE.InstancedMesh;
+      const b = ultra.group.children[index] as THREE.InstancedMesh;
+      assert.equal(b.name, a.name, `${world}: bucket ${index} renamed`);
+      assert.equal(b.count, a.count, `${world}: ${a.name} instance count moved`);
+      assert.deepEqual(Array.from(b.instanceMatrix.array), Array.from(a.instanceMatrix.array), `${world}: ${a.name} transforms moved`);
+      assert.deepEqual(Array.from(b.instanceColor!.array), Array.from(a.instanceColor!.array), `${world}: ${a.name} tints moved`);
+      // Only the triangles of a rebuilt part differ.
+      const part = a.name.replace('level-props-', '') as PartId;
+      const rebuilt = ULTRA_FORM_BUILDERS[part] !== undefined || ULTRA_BUILDING_BUILDERS[part] !== undefined;
+      const aTriangles = a.geometry.getAttribute('position').count / 3;
+      const bTriangles = b.geometry.getAttribute('position').count / 3;
+      if (rebuilt) assert.ok(bTriangles > aTriangles, `${world}: ${a.name} was not rebuilt`);
+      else assert.equal(bTriangles, aTriangles, `${world}: ${a.name} changed although §4 leaves it`);
+      // The instance-colour trap stays shut, and a rebuilt part's colour
+      // averages one (§4). A part §4 leaves alone keeps its own attribute —
+      // the gantry's three colours are ratios of its plate by design.
+      const colour = b.geometry.getAttribute('color');
+      assert.ok(colour !== undefined && colour.count === b.geometry.getAttribute('position').count, `${b.name} would render black`);
+      if (!rebuilt) {
+        assert.deepEqual(Array.from(colour.array), Array.from(a.geometry.getAttribute('color').array), `${b.name} colour changed although §4 leaves it`);
+        continue;
+      }
+      for (let channel = 0; channel < 3; channel += 1) {
+        let sum = 0;
+        for (let i = 0; i < colour.count; i += 1) sum += colour.getComponent(i, channel);
+        assert.ok(Math.abs(sum / colour.count - 1) < 1e-4, `${b.name} channel ${channel} averages ${sum / colour.count}`);
+      }
+      assert.ok((b.material as THREE.MeshStandardMaterial).vertexColors, `${b.name} does not enable vertexColors`);
+    }
+  }
+});
+
+test('on an Ultra world the buildings cast, every part receives, relief casts through its depth material, and casters join the static layer', () => {
+  for (const [enhanced, ultra] of [[enhancedView, ultraView], [trackEnhanced, trackUltra]] as const) {
+    let shadowCalls = 0;
+    let shadowTriangles = 0;
+    for (let index = 0; index < ultra.group.children.length; index += 1) {
+      const ordinary = enhanced.group.children[index] as THREE.InstancedMesh;
+      const mesh = ultra.group.children[index] as THREE.InstancedMesh;
+      const part = mesh.name.replace('level-props-', '') as PartId;
+      assert.equal(mesh.castShadow, ultraCasts(part, ordinary.castShadow, ULTRA_FULL.ultra), `${mesh.name} cast flag`);
+      assert.equal(mesh.receiveShadow, true, `${mesh.name} does not receive`);
+      assert.equal(mesh.customDepthMaterial !== undefined, isReliefPart(part), `${mesh.name} relief depth material`);
+      assert.equal(mesh.layers.isEnabled(ULTRA_STATIC_LAYER), mesh.castShadow, `${mesh.name} static layer`);
+      assert.ok(mesh.layers.isEnabled(0), `${mesh.name} left the default layer`);
+      if (mesh.castShadow) {
+        shadowCalls += 1;
+        shadowTriangles += (mesh.geometry.getAttribute('position').count / 3) * mesh.count;
+      }
+    }
+    assert.equal(ultra.shadowDrawCalls, shadowCalls, 'shadow calls do not follow the Ultra cast flags');
+    assert.equal(ultra.shadowTriangles, shadowTriangles);
+    assert.ok(ultra.shadowDrawCalls > enhanced.shadowDrawCalls, 'no building part casts on an Ultra world');
+  }
+  // One relief depth material for the whole view, but for a cap bucket that
+  // closes a slot (A16), which wears its own: the slice has one slot.
+  const depth = new Set(ultraView.group.children.map((child) => (child as THREE.InstancedMesh).customDepthMaterial).filter((m) => m !== undefined));
+  assert.equal(depth.size, 2);
+  for (const child of ultraView.group.children) {
+    const mesh = child as THREE.InstancedMesh;
+    if (mesh.customDepthMaterial === undefined) continue;
+    const slot = 'ULTRA_SLOT' in (mesh.customDepthMaterial.defines ?? {});
+    assert.equal(slot, mesh.name === 'level-props-buildingCap', `${mesh.name} slot depth material`);
+    assert.equal(slot, mesh.geometry.getAttribute(ULTRA_SLOT_ATTRIBUTE) !== undefined, `${mesh.name}: a slot material without its attribute, or the reverse`);
+  }
+  // BelVar has no slot: one relief depth material, and no attribute.
+  const track = new Set(trackUltra.group.children.map((child) => (child as THREE.InstancedMesh).customDepthMaterial).filter((m) => m !== undefined));
+  assert.equal(track.size, 1);
+});
+
+test('an Ultra recipe without a build context is refused rather than half-built', () => {
+  assert.throws(() => createProps(plan, ULTRA_FULL), /UltraBuildContext/);
+});
+
+test('the Ultra facade maps replace the ordinary atlas, are counted with their bytes, and go with the view', () => {
+  assert.equal(ultraView.textures, 3, 'an Ultra view with facades owns its albedo copy, normal and ORM pages');
+  assert.ok(ultraView.bytes > 0, 'the Ultra ledger would be charged nothing');
+  const probe = createProps(plan, ULTRA_FULL, ultraContext(ULTRA_FULL));
+  const depth = (probe.group.children.find((child) => (child as THREE.InstancedMesh).customDepthMaterial !== undefined) as THREE.InstancedMesh).customDepthMaterial!;
+  let depthDisposed = 0;
+  depth.addEventListener('dispose', () => { depthDisposed += 1; });
+  const original = THREE.Texture.prototype.dispose;
+  let textures = 0;
+  THREE.Texture.prototype.dispose = function counted(this: THREE.Texture) {
+    textures += 1;
+    original.call(this);
+  };
+  try {
+    probe.dispose();
+    probe.dispose();
+  } finally {
+    THREE.Texture.prototype.dispose = original;
+  }
+  assert.equal(textures, 3, `${textures} textures freed — the facade maps outlived the view, or were freed twice`);
+  assert.equal(depthDisposed, 1, 'the relief depth material outlived the view');
+  // Without facade maps the Ultra view falls back to the ordinary atlas; its
+  // bytes are then the caps' slot attribute alone (A16, 4 B a cap).
+  const noMaps = applyKitOverride(ULTRA_FULL, { facadeMaps: false });
+  const plain = createProps(plan, noMaps, ultraContext(noMaps));
+  const caps = plain.group.children.find((child) => child.name === 'level-props-buildingCap') as THREE.InstancedMesh;
+  assert.equal(plain.textures, 1);
+  assert.equal(plain.bytes, caps.count * 4);
+  plain.dispose();
+});
+
+test('ultra-lit keeps the enhanced foliage and furniture and still builds the Ultra buildings', () => {
+  const lit = createProps(plan, ULTRA_LIT, ultraContext(ULTRA_LIT));
+  try {
+    assert.equal(lit.recipe, 'ultra-lit');
+    for (let index = 0; index < lit.group.children.length; index += 1) {
+      const enhanced = enhancedView.group.children[index] as THREE.InstancedMesh;
+      const full = ultraView.group.children[index] as THREE.InstancedMesh;
+      const mesh = lit.group.children[index] as THREE.InstancedMesh;
+      const part = mesh.name.replace('level-props-', '') as PartId;
+      const triangles = mesh.geometry.getAttribute('position').count;
+      if (ULTRA_BUILDING_BUILDERS[part] !== undefined) {
+        assert.equal(triangles, full.geometry.getAttribute('position').count, `${mesh.name} lost its relief on ultra-lit`);
+        assert.ok(mesh.castShadow && mesh.customDepthMaterial !== undefined);
+      } else {
+        assert.equal(triangles, enhanced.geometry.getAttribute('position').count, `${mesh.name} kept an Ultra form on ultra-lit`);
+      }
+    }
+  } finally {
+    lit.dispose();
+  }
+});
+
+test('a kit without buildings draws the ordinary buildings with their ordinary flags', () => {
+  const recipe = applyKitOverride(ULTRA_FULL, { buildings: false });
+  const built = createProps(plan, recipe, ultraContext(recipe));
+  try {
+    for (let index = 0; index < built.group.children.length; index += 1) {
+      const enhanced = enhancedView.group.children[index] as THREE.InstancedMesh;
+      const mesh = built.group.children[index] as THREE.InstancedMesh;
+      const part = mesh.name.replace('level-props-', '') as PartId;
+      if (!isReliefPart(part)) continue;
+      assert.equal(mesh.geometry.getAttribute('position').count, enhanced.geometry.getAttribute('position').count, `${mesh.name} rebuilt without the buildings kit`);
+      assert.equal(mesh.geometry.getAttribute('ultraRelief'), undefined);
+      assert.equal(mesh.geometry.getAttribute(ULTRA_SLOT_ATTRIBUTE), undefined);
+      assert.equal(mesh.castShadow, enhanced.castShadow);
+      assert.equal(mesh.customDepthMaterial, undefined);
+    }
+  } finally {
+    built.dispose();
+  }
+});
+
+test('A16: the town\'s caps close their slots in the depth pass alone — one byte a side, never past a midline, nothing drawn moved', () => {
+  // Gauntlet round 2, item 3: the commercial street's sunlit sliver is sun
+  // through a 0.90 m slot between two parapets. The cap bucket carries a
+  // normalised byte per side per instance (metres, −x, +x, −z, +z) that only
+  // its own depth material reads.
+  const recipe = applyKitOverride(ULTRA_FULL, { facadeMaps: false });
+  const town = createProps(generateLevel('euc').plan, recipe, ultraContext(recipe));
+  try {
+    const caps = town.group.children.find((child) => child.name === 'level-props-buildingCap') as THREE.InstancedMesh;
+    const slot = caps.geometry.getAttribute(ULTRA_SLOT_ATTRIBUTE) as THREE.InstancedBufferAttribute;
+    assert.ok(slot instanceof THREE.InstancedBufferAttribute, 'the slot data is not per instance');
+    assert.ok(slot.array instanceof Uint8Array && slot.normalized && slot.itemSize === 4 && slot.count === caps.count);
+    assert.equal(town.bytes, slot.array.byteLength, 'the slot attribute is not in the Ultra ledger');
+    for (const child of town.group.children) {
+      if (child !== caps) assert.equal((child as THREE.InstancedMesh).geometry.getAttribute(ULTRA_SLOT_ATTRIBUTE), undefined, `${child.name} carries slot data`);
+    }
+    // The colour pass is untouched: the cap geometry is the Ultra cap plus the
+    // attribute, and the colour material never declares it.
+    const reference = ultraBuildingCap();
+    for (const name of Object.keys(reference.attributes)) {
+      assert.deepEqual(Array.from(caps.geometry.getAttribute(name).array), Array.from(reference.getAttribute(name).array), `the cap's ${name} changed`);
+    }
+    assert.ok(!('ULTRA_SLOT' in ((caps.material as THREE.Material).defines ?? {})));
+    assert.ok('ULTRA_SLOT' in (caps.customDepthMaterial!.defines ?? {}));
+    // The far map's half: only the slot bucket hangs a draw on its render hook.
+    for (const child of town.group.children) {
+      const own = Object.prototype.hasOwnProperty.call(child, 'onBeforeRender');
+      assert.equal(own, child === caps, `${child.name} render hook`);
+    }
+
+    // Every push, re-measured from the drawn instance matrices: sideways,
+    // toward an aligned cap under 2 m away, and never past the midline.
+    const matrix = new THREE.Matrix4();
+    const boxes = Array.from({ length: caps.count }, (_, index) => {
+      caps.getMatrixAt(index, matrix);
+      const e = matrix.elements;
+      const sx = Math.hypot(e[0], e[1], e[2]);
+      const sz = Math.hypot(e[8], e[9], e[10]);
+      return { x: e[12], z: e[14], ux: [e[0] / sx, e[2] / sx], uz: [e[8] / sz, e[10] / sz], hx: sx / 2, hz: sz / 2 };
+    });
+    const half = (box: typeof boxes[number], dx: number, dz: number): number =>
+      Math.abs(dx * box.ux[0] + dz * box.ux[1]) * box.hx + Math.abs(dx * box.uz[0] + dz * box.uz[1]) * box.hz;
+    let pushed = 0;
+    let commercial = 0;
+    for (let index = 0; index < caps.count; index += 1) {
+      const a = boxes[index];
+      for (let side = 0; side < 4; side += 1) {
+        const value = slot.array[index * 4 + side] / 255;
+        if (value === 0) continue;
+        pushed += 1;
+        const axis = side < 2 ? a.ux : a.uz;
+        const sign = side % 2 === 0 ? -1 : 1;
+        const n = [axis[0] * sign, axis[1] * sign];
+        const t = side < 2 ? a.uz : a.ux;
+        const along = side < 2 ? a.hz : a.hx;
+        let nearest = Infinity;
+        for (const b of boxes) {
+          if (b === a) continue;
+          // A neighbour faces this side when it runs along it; the nearest one
+          // along the side's own normal bounds the push.
+          const offset = (b.x - a.x) * t[0] + (b.z - a.z) * t[1];
+          const run = Math.min(along, offset + half(b, t[0], t[1])) - Math.max(-along, offset - half(b, t[0], t[1]));
+          if (run <= 0) continue;
+          const gap = (b.x - a.x) * n[0] + (b.z - a.z) * n[1] - half(b, n[0], n[1]) - (side < 2 ? a.hx : a.hz);
+          if (gap > 0 && gap < SLOT_CLOSING.maxGap) nearest = Math.min(nearest, gap);
+        }
+        assert.ok(nearest < SLOT_CLOSING.maxGap, `cap ${index} side ${side} pushed ${value} m with no cap under 2 m`);
+        assert.ok(value <= nearest / 2 + 1e-4, `cap ${index} side ${side} pushed ${value} m past the midline of ${nearest} m`);
+        // The commercial pair at the gauntlet's view: both parapets reach the midline.
+        if (Math.hypot(a.x - 240.14, a.z - 206.46) < 0.5 || Math.hypot(a.x - 256.57, a.z - 217.89) < 0.5) {
+          if (Math.abs(nearest - 0.895) < 0.01) {
+            commercial += 1;
+            assert.ok(value > nearest / 2 - 2 / 255, `the commercial slot stays ${nearest - 2 * value} m open`);
+          }
+        }
+      }
+    }
+    assert.ok(pushed >= 2, 'the town closes no slot at all');
+    assert.equal(commercial, 2, 'the commercial slot (gauntlet round 2, item 3) is not closed from both sides');
+  } finally {
+    town.dispose();
+  }
+});
+
+test('Ultra views are deterministic, and two of them share nothing', () => {
+  const again = createProps(plan, ULTRA_FULL, ultraContext(ULTRA_FULL));
+  try {
+    assert.equal(again.triangles, ultraView.triangles);
+    assert.equal(again.shadowTriangles, ultraView.shadowTriangles);
+    for (let index = 0; index < again.group.children.length; index += 1) {
+      const a = ultraView.group.children[index] as THREE.InstancedMesh;
+      const b = again.group.children[index] as THREE.InstancedMesh;
+      assert.notEqual(a.geometry, b.geometry, `${a.name} geometry is shared between views`);
+      for (const name of Object.keys(a.geometry.attributes)) {
+        assert.deepEqual(Array.from(b.geometry.getAttribute(name).array), Array.from(a.geometry.getAttribute(name).array), `${a.name} ${name} differs between builds`);
+      }
+    }
+  } finally {
+    again.dispose();
+  }
+  assert.ok((ultraView.group.children[0] as THREE.InstancedMesh).geometry.getAttribute('position') !== undefined);
 });

@@ -3,14 +3,14 @@
 **One wheel. Total freedom. Ride anywhere.**
 
 An open-source arcade riding game about electric unicycles, played in the
-browser. Lean into the throttle, carve a line through the city, hop a kerb, and
+browser. Lean into the throttle, carve a line through town, hop a kerb, and
 take the alley when you think you can hold it.
 
 > **Play:** [https://vibezzzcoder.github.io/EUC-thrills/](https://vibezzzcoder.github.io/EUC-thrills/)
 >
 > **Source:** [github.com/VibezZzCoder/EUC-thrills](https://github.com/VibezZzCoder/EUC-thrills) — an original work by [VibezZzCoder](https://github.com/VibezZzCoder)
 
-![EUC Thrills — Cool Rider airborne after striking a small traffic-island bollard, with the riderless wheel, bollard, road, and city each visible](https://vibezzzcoder.github.io/EUC-thrills/media/euc-thrills-gameplay.png)
+![EUC Thrills in Ultra graphics — Cool Rider diving head-first toward the camera after hitting a small bollard on the town's brick plaza, the riderless wheel beside the post below him, with houses under pitched roofs, a road, and the brick water tower behind](https://vibezzzcoder.github.io/EUC-thrills/media/euc-thrills-gameplay.png)
 
 **This is a work in progress.** The riding is the part that is meant to be
 right; everything around it is still growing, and later builds will look,
@@ -22,15 +22,28 @@ above is the place to say so.
 
 ## Riding
 
-You ride a suspension wheel, in a hand-built city loop that leaves a plaza,
-runs a boulevard, crosses a park and a river ford, climbs a gravel trail, and
-comes back — with a shortcut through an alley that is genuinely faster and
-genuinely riskier. **Fresh route** then generates new point-to-point courses
-from the same authored places, a different shape every time.
+You ride a suspension wheel around a town. The game opens on a ring of streets
+that leaves a plaza and comes back to it: shops and a boulevard downtown, houses
+and a kerb run in the residential quarter, a fork where an alley offers a
+quicker and riskier line, a park that drops down to a river ford, a gravel
+trail with a berm and a kicker, and a rough road home past an industrial yard
+and up the climb into the plaza. Side streets and cross streets run through the
+shopping and residential blocks, so there is often more than one way round.
+Every quarter has a landmark you can steer by from a long way off — a TV tower
+beside the plaza, a church steeple at the fork, a clock tower at the park gate,
+a fire lookout at the trailhead, and a water tower and a pair of boiler-house
+chimneys in the yard.
 
-Beside the city there are two places built by hand rather than generated, and
-both stay exactly where they are: **BelVar Circuit**, a kart-scale lap (see
-**Track Day**), and **Switchback Park**.
+That town is generated rather than built by hand: it is the route named `euc`.
+**Fresh route** builds a new town from the same pieces, a different shape every
+time.
+
+Beside the towns there are three places built by hand, and they stay exactly
+where they are: the **Original city**, the hand-built loop the game used to
+open on — a plaza, a boulevard, a park and a river ford, a gravel trail, and an
+alley shortcut — and still the route everything else is measured against;
+**BelVar Circuit**, a kart-scale lap (see **Track Day**); and **Switchback
+Park**.
 
 **Switchback Park** is a jump lap — about 950 metres of forested hillside with
 some fourteen metres of height in it, ridden as a loop: you come down through
@@ -51,14 +64,16 @@ it surprises you:
 
 - **You lean to go.** The throttle tips the wheel forward and the wheel pushes
   back; there is no engine note to chase, only load.
-- **It does about 65 mph flat out, and is handy at walking pace.** Top speed
-  takes a long straight and about eleven seconds of held throttle. At the other
-  end, a full-lock turn at walking pace fits inside a lane, and backwards
-  riding reaches about 15 mph — asked for from a standstill, twice.
-- **It beeps above 52 mph, and it means it.** About one beep a second when they
-  start, faster as you climb, a stream of them at the top. Ignore them all the way to
-  the ceiling and the motor lets go and you go over the front, exactly as a
-  real one does. Backing off even slightly is enough. Riders call sitting just
+- **It is geared for about 65 mph, and is handy at walking pace.** Held flat
+  out on a long straight it is doing nearly 58 mph within six seconds — which
+  is where the beeps begin (next). At the other end, a full-lock turn at
+  walking pace fits inside a lane, and backwards riding reaches about 15 mph —
+  asked for from a standstill, twice.
+- **It beeps from about 58 mph, and it means it.** About one beep a second when
+  they start, faster as you climb, a stream of them at the top. Ignore them all
+  the way to the ceiling, about 62 mph, and the motor lets go and you go over
+  the front, exactly as a real one does. Flat out, that is under three seconds
+  of warning. Backing off even slightly is enough. Riders call sitting just
   underneath that limit *riding the beeps*. With the sound off, a warning
   triangle blinks at the same rate.
 - **The wheel tells you when it is running out.** Take the climb back to the
@@ -67,14 +82,14 @@ it surprises you:
   make you slow down.
 - **Watch your pedals in a hard carve.** Lean far enough and a pedal grounds,
   which costs you speed and, if you were fast, the ride.
-- **On a Fresh route, watch the road itself.** A spill or a shallow pothole
-  sets the wheel weaving — slow down and it settles, hold your speed and it
-  puts you down. A deep hole at speed is simply a crash, and hopping clears any
-  of them. Bushes are foliage rather than walls: the wheel pushes through, loses
-  speed, and takes one jolt. Clean speed, rough ground, kerbs, landings, pedal
-  strikes, and the carve you are enjoying never start the weave. (The Drunkard
-  weaves on his own with your hands off the stick, and that is the character,
-  not the wheel — see **Riders**.)
+- **In the town and on every Fresh route, watch the road itself.** A spill or a
+  shallow pothole sets the wheel weaving — slow down and it settles, hold your
+  speed and it puts you down. A deep hole at speed is simply a crash, and
+  hopping clears any of them. Bushes are foliage rather than walls: the wheel
+  pushes through, loses speed, and takes one jolt. Clean speed, rough ground,
+  kerbs, landings, pedal strikes, and the carve you are enjoying never start
+  the weave. (The Drunkard weaves on his own with your hands off the stick, and
+  that is the character, not the wheel — see **Riders**.)
 
 Crashes are non-graphic but not stiff: the rider tumbles, catches the ground
 with their limbs, and settles into a comic rest while the wheel can bounce and
@@ -84,53 +99,49 @@ costs speed rather than the whole run.
 
 ## Modes
 
-**Start ride** — free ride in the world currently loaded, which is the city
+**Start ride** — free ride in the world currently loaded, which is the town
 until you choose otherwise. No clock, no objective, nothing to fail — and the
-way to practise BelVar Circuit or Switchback Park with nothing running.
+way to practise the Original city, BelVar Circuit or Switchback Park with
+nothing running.
 
 **2–4 Players (desktop)** — up to four riders on one screen. On a
 desktop-shaped machine the title screen offers **2–4 Players**: each player
 presses a button on their own controller — a gamepad, or this keyboard — to
 take a seat, picks their rider (you ride as different characters), chooses
-where the room is riding and what it is doing, and **Start riding** puts you in
-the world together, each in your own pane with your own camera and HUD. Two of
-you split the
-screen in halves; three or four get a two-by-two grid, and with three the
-spare quadrant becomes the room's scoreboard. Any player can pause for
-everybody, and each of you beeps, crashes, and recovers on your own. Riders
-are solid to each other: ride into a friend and you both get shoved apart,
-however fast you met, and an ordinary bump never knocks anybody down. Nothing
-a couch session does is saved. The mode is desktop-only: it needs a window at
-least 1000 pixels wide to keep the panes readable, so a phone never sees the
-button.
+where the room is riding and what it is playing, and **Start riding** puts you
+in the world together, each in your own pane with your own camera and HUD. Two
+of you split the screen in halves; three or four get a two-by-two grid, and
+with three the spare quadrant becomes the room's scoreboard. Any player can
+pause for everybody, and each of you beeps, crashes, and recovers on your own.
+Riders are solid to each other: ride into a friend and you both get shoved
+apart, however fast you met, and an ordinary bump never knocks anybody down.
+Nothing a couch session does is saved. The mode is desktop-only: it needs a
+window at least 1000 pixels wide to keep the panes readable, so a phone never
+sees the button.
 
-The join panel offers three things to do, and the pause menu and the results
+The join panel offers five things to do, and the pause menu and the results
 card both let you swap between them without going back to the title. Choosing
-Knockabout on a place without targets or enough starting room automatically
-builds a fresh course and takes everybody there, keeping each controller
-assigned to the same rider:
+Knockabout on a place without targets or enough starting room, or the chase on
+a place built by hand, automatically builds a fresh course and takes everybody
+there, keeping each controller assigned to the same rider:
 
 - **Free ride** — the world, shared. No clock, no objective, nothing to fail,
   and no paddles.
-- **Trick Run** — ninety seconds at **Switchback Park** for everybody at once,
-  one clock and a score per pane; the rules are the solo mode's below, nothing
-  is saved, and nobody is declared the winner — the numbers are the room's to
-  argue about.
 - **Race** — three laps of **BelVar Circuit** or **Switchback Park**, up to
-  four of you; which one is the **Riding at** row's answer, on the join panel or
-  on the Fresh route screen before anybody sits down. Everybody sits frozen on
-  the grid through a countdown and launches on GO; from there
-  it is Track Day's lap rules for each rider — the line always ends a lap, a
-  lap that skipped a sector line does not count, and the grass verge is a
-  mistake rather than cheating — with one clock for the whole room. Your pane
-  shows your position, lap, and the gap to the rider ahead; quick reset (`R`)
-  is a decision, and it costs you the lap you are on and nobody else's. When
-  the leader takes the flag everybody else finishes the lap they are on, a
-  finished rider keeps riding under a banner with their place locked, and the
-  card lists the room by laps, then by time — two riders who cross together
-  share the place, and the card counts what each of you landed the way Track
-  Day's does. No records, no ghost. Choosing it on a place that does not close
-  a lap — the city, or a generated route — takes the room to BelVar.
+  four of you; which one is the **Where to ride** row's answer, on the join
+  panel or on the Fresh route screen before anybody sits down. Everybody sits
+  frozen on the grid through a countdown and launches on GO; from there it is
+  Track Day's lap rules for each rider — the line always ends a lap, a lap that
+  skipped a sector line does not count, and the grass verge is a mistake rather
+  than cheating — with one clock for the whole room. Your pane shows your
+  position, lap, and the gap to the rider ahead; quick reset (`R`) is a
+  decision, and it costs you the lap you are on and nobody else's. When the
+  leader takes the flag everybody else finishes the lap they are on, a finished
+  rider keeps riding under a banner with their place locked, and the card lists
+  the room by laps, then by time — two riders who cross together share the
+  place, and the card counts what each of you landed the way Track Day's does.
+  No records, no ghost. Choosing it on a place that does not close a lap — the
+  town, the Original city, or any Fresh route — takes the room to BelVar.
 - **Knockabout** — a bout, for two, three or four of you. You each carry a
   paddle, and **the first to five knockdowns takes the match**. A committed
   swing that lands puts the rider you hit on the floor; a rider who has just
@@ -145,17 +156,43 @@ assigned to the same rider:
   short **3 – 2 – 1** count holds you there until GO; the draw is fresh
   every bout, so nobody keeps a corner. Two of you still start the moment
   the world loads, on the same line as before. Like everything else on the
-  couch, a match is not saved. It needs a course with targets: the join panel
-  opens the route generator when needed; the pause and results menus build
-  a suitable course automatically.
+  couch, a match is not saved. It needs a course with targets — the town and
+  every Fresh route have them; the join panel opens the route generator when
+  needed, and the pause and results menus build a suitable course
+  automatically.
+- **Trick Run** — ninety seconds at **Switchback Park** for everybody at once,
+  one clock and a score per pane; the rules are the solo mode's below, nothing
+  is saved, and nobody is declared the winner — the numbers are the room's to
+  argue about.
+- **Police chase** — up to three of you on the run from one cop, for five
+  minutes. **Any one of you can be the cop**: on this ride, and only this one,
+  Officer Dorkins joins the rider wheel on the seat cards, once, and whoever
+  picks him is the cop — the card says so. Nobody on him, and CPU cops fill the
+  room to four: two of them against two of you, one against three. Four humans
+  always include the cop; if nobody picks him, the last seat to sit down is
+  dealt him. Everybody, cops included, holds through a **3 – 2 – 1** count.
+  The solo chase's rules hold for every outlaw: a crash with a cop close, or
+  riding into one, is a bust. A human cop is the only seat with a paddle, and
+  his pane shows the clock, how many he has busted out of how many, and an
+  arrow and a distance to the nearest outlaw; he wins by busting everybody
+  before the five minutes are up.
+  He gets no help from the game — nothing puts him back behind you if you
+  shake him, and his quick reset only picks him up where he fell. An outlaw's
+  quick reset is giving up, and counts as a bust. A busted outlaw keeps a pane
+  and watches the nearest rider still standing — the camera button switches
+  who — and the card ranks the outlaws by how long they stayed free and names
+  who busted each one. It runs in the town or on a Fresh route: the join panel
+  opens the route generator when needed, and the pause and results menus build
+  one automatically.
 
 **Time trial** — race from the start line through five more checkpoints. The
 HUD points at the next one and shows the distance; each crossing gives you a
 split and, once you have a time to beat, the gap. Scoring is pure elapsed
 time — top speed and landing quality are shown for interest and count for
 nothing. Beat your best and the next attempt adds a translucent replay rider,
-so you can see *where* the time changed. In the city, the safe route and the
-faster alley cross the same checkpoints, so both lines stay comparable.
+so you can see *where* the time changed. Where a route offers a way round — the
+alley, a side street — both lines cross the same checkpoints, so every line
+stays comparable.
 
 **Trick Run** — ninety seconds at Switchback Park, and points for what you
 land. The button takes you straight to the park and starts the clock on the
@@ -170,11 +207,12 @@ flat hop is as rideable as ever and worth its landing, and the pane says *off
 feature* so you know why. **Each feature pays in full once a minute**: hit the
 same one again sooner and the whole flight pays half, then a quarter, and the
 game forgets one of those repeats for every minute you leave it alone — so
-the score is in riding the lap, not in camping one kicker. Your pane shows the clock, your banked score, a
-charged hop still in the air as *pending*, and the last thing you landed.
-The card at the end shows where every point came from, and a completed solo
-run is compared with your best at the park; **Try again** starts another. A
-run ended early from the pause menu is shown but never saved.
+the score is in riding the lap, not in camping one kicker. Your pane shows the
+clock, your banked score, a charged hop still in the air as *pending*, and the
+last thing you landed. The card at the end shows where every point came from,
+and a completed solo run is compared with your best at the park; **Ride it
+again** starts another. A run ended early from the pause menu is shown but
+never saved.
 
 **Track Day** — lap a hand-built course. The button asks which: **BelVar
 Circuit** is kart-scale, with barriers, kerbs, gravel runoff, a start gantry
@@ -201,58 +239,70 @@ when you cross the line. **Back** leaves you on the title with nothing changed.
   a score**; nothing is ranked, saved, or spent, and the counts decide nothing
   about the lap.
 
-**Knockabout** — carry a padded paddle along a Fresh route and knock down the
-yellow targets on its verges. Time a swing while holding a line near a target
-for a clean hit; riding through any visible part of a stand also works, but the
-clumsy hit sheds speed and adds a recoverable wobble. Your score is targets
-struck out of the route's total, the clock counts for nothing, and a target you
-pass stays standing until you come back for it. The city has no targets, so
-choosing Knockabout there opens the route generator.
+**Knockabout** — carry a padded paddle round the town or a Fresh route and
+knock down the yellow targets on its verges. Time a swing while holding a line
+near a target for a clean hit; riding through any visible part of a stand also
+works, but the clumsy hit sheds speed and adds a recoverable wobble. Your score
+is targets struck out of the route's total, the clock counts for nothing, and a
+target you pass stays standing until you come back for it. The places built by
+hand have no targets, so choosing Knockabout on one of them opens the route
+generator.
 
-**Police chase** — Officer Dorkins starts behind you on a Fresh route, and you
-survive five minutes to escape.
+**Police chase** — Officer Dorkins starts right behind you, two more patrol
+cops are waiting further round the town, and you survive five minutes to
+escape. It runs in the town and on any Fresh route; on a place built by hand
+the button opens the route generator.
 
-- He rides the same terrain, grip, hazards, kerbs, crashes, and recovery you
-  do — he is a CPU rider, not an obstacle on a rail. He pursues in either
-  direction and cuts across the field when you leave the road.
-- On a clear straight he can hold the wheel just under its cutout, so pinning
-  the throttle will not lose him. Corners, hazards, rough ground, and a cleaner
-  line are where the gap comes from.
-- He is a tracker. A gap you stretch past his reach gets closed — he turns up
-  on the road behind you again, at your pace, siren rising. Distance buys
-  breathing room, never safety.
-- He alone carries the paddle. A strike costs speed and adds a wobble; crashing
-  while he is close is the bust.
-- Hands off the law: riding into him is an instant bust. Contact only counts
-  when you are the one closing — him running you down scores nothing.
+- The cops ride the same terrain, grip, hazards, kerbs, crashes, and recovery
+  you do — they are CPU riders, not obstacles on a rail. They pursue in either
+  direction and cut across the field when you leave the road.
+- On a clear straight they ride right up near the wheel's top speed, so
+  pinning the throttle will not lose them. Corners, hazards, rough ground, and
+  a cleaner line are where the gap comes from.
+- A patrol wakes when you ride near it, and it joins in. The cops are
+  trackers, too: stretch a gap and it gets closed — a cop turns up on the road
+  behind you again, at your pace, siren rising, and another can be sent ahead
+  to wait on your road as a roadblock. None of them is ever put back where you
+  can see it happen, and a quiet spell is answered within seconds. Distance
+  buys breathing room, never safety.
+- Hiding does not work for long. Duck behind a building or a wall and a cop who
+  is close rides round it to reach you, and stopping altogether invites a
+  strike.
+- Only the cops carry paddles. A strike costs speed and adds a wobble; crashing
+  with any cop close is the bust.
+- Hands off the law: riding into any cop is an instant bust. Contact only
+  counts when you are the one closing — a cop running you down scores nothing.
 - The route is the arena. Going far into the surround puts a warning and a
-  countdown on screen and ends the run if you do not come back. Camping just
-  off the road is not a loophole — he follows.
+  countdown on screen and ends the run if you do not come back; side streets
+  are part of the route. Camping just off the road is not a loophole — they
+  follow.
 
 **Fresh route** — generate a new place to ride. **Surprise me** makes one
-instantly; typing a seed rebuilds the same place every time, which is how you
-send one to a friend. A rare seed may not produce a valid route, and the game
-says so and asks for another rather than quietly building something else. The
-seed stays visible and becomes part of the address, so sharing the link shares
-the ground.
+instantly; typing a route name (old hands call it the seed) rebuilds the same
+place every time, which is how you send one to a friend — the town the game
+opens on is `euc`. A rare name may not produce a valid route, and the game says
+so and asks for another rather than quietly building something else. The name
+stays visible and becomes part of the address, so sharing the link shares the
+ground.
 
-That screen is also where the hand-built places are chosen. A **Riding at** row
-offers **The city**, **BelVar Circuit** and **Switchback Park**; pressing one
-loads it there and then and says so, and **Back** takes you to the title, where
-**Start ride** rides it. With Switchback Park selected the screen also offers
-**Trick Run** directly. (**Track Day** asks for its track itself, so it needs
-no visit here.) Those places have addresses
-of their own — `?level=switchback` opens Switchback Park — so such a link
-shares as cleanly as a seed does.
+That screen is also where the places built by hand are chosen. A **Where to
+ride** row offers the **Original city**, **BelVar Circuit** and **Switchback
+Park**; pressing one loads it there and then and says so, and **Back** takes
+you to the title, where **Start ride** rides it. With Switchback Park selected
+the screen also offers **Trick Run** directly. (**Track Day** asks for its
+track itself, so it needs no visit here.) Those places have addresses of their
+own — `?level=switchback` opens Switchback Park, and `?level=slice` the
+Original city — so such a link shares as cleanly as a route name does.
 
 You do not have to come back to that screen for another course. Pause during
 any ride, or finish a run, and **New route** builds a fresh one and puts you
 straight back into whatever you were playing.
 
 Records are kept per course and per mode: time trial, best lap, Knockabout,
-Trick Run score and chase survival never overwrite each other, and switching riders changes nothing about
-any of them. Each venue is its own course, so a best lap at BelVar Circuit and a
-best lap at Switchback Park keep their own times and their own ghosts.
+Trick Run score and chase survival never overwrite each other, and switching
+riders changes nothing about any of them. Each venue is its own course, so a
+best lap at BelVar Circuit and a best lap at Switchback Park keep their own
+times and their own ghosts.
 
 ## Riders
 
@@ -262,7 +312,9 @@ sound** — each has their own crash sound, none is faster, and the custom wheel
 ride identically to the standard one, down to the last number. The Drunkard
 shares that same speed, grip and braking but rides his own way on purpose: a
 slow weave and the odd stumble that really do move him about the road. See
-The Drunkard below for what that is and is not.
+The Drunkard below for what that is and is not. (Officer Dorkins is not one of
+the nine: he is the law, and the only way to ride as him is to be the cop in a
+couch **Police chase**.)
 
 **Cool Rider** wears tailored black moto gear with reflective blue panels,
 padded trousers, fingerless gloves and a full-face helmet with a lightly
@@ -405,8 +457,8 @@ gentler one, not a twitchier one.
 | 180° spin jump | `Space` again on the way up |
 | One-foot air | Keep `Space` held down as you leave the ground |
 | Crouch, and charge a bigger hop | `Shift` |
-| Swing the paddle — Knockabout only | `F` |
-| Quick reset — back to the start, or restart the run (in a race, it costs you the lap) | `R` |
+| Swing the paddle — Knockabout, or the cop in a couch chase | `F` |
+| Quick reset — back to the start, or restart the run (in a race it costs you the lap; as an outlaw in a couch chase it means giving up) | `R` |
 | Mute · camera view · pause | `M` · `C` · `Esc` |
 
 Every key except `Esc` can be reassigned in **Settings → Controls**. `Esc`
@@ -422,7 +474,7 @@ always pauses, and `F3`/`F4` open developer overlays.
 | Hop · crouch | A · left bumper |
 | 180° spin jump | A again on the way up |
 | One-foot air | Keep A held down as you leave the ground |
-| Swing the paddle — Knockabout only | Right bumper |
+| Swing the paddle — Knockabout, or the cop in a couch chase | Right bumper |
 | Quick reset · camera view · pause | X · Y · Start |
 | In menus | Stick or D-pad to move, A to confirm, B to go back |
 
@@ -464,14 +516,30 @@ at the same records.
 
 ## Settings, saving, and your data
 
-Quality, field of view, and speed units; master, ride, and warning volumes on
-separate faders, so the wheel can still warn you with everything else turned
-down; full key rebinding; gamepad toggle and dead zone; on-screen controls,
-handedness, and size.
+Quality (Low, Medium, High, or Ultra — below), field of view, and speed units;
+master, ride, and warning volumes on separate faders, so the wheel can still
+warn you with everything else turned down; full key rebinding; gamepad toggle
+and dead zone; on-screen controls, handedness, and size.
 
 The ride itself is **identical at every setting** — nothing you can change
 alters how the wheel behaves, so a time set on Low compares with one set on
-High, and a time set with thumbs compares with one set on keys.
+Ultra, and a time set with thumbs compares with one set on keys.
+
+**Ultra graphics** is an optional fourth quality level for riding alone, on a
+desktop or a phone. It is never on unless you turn it on: with the **Ultra
+Graphics** button on the title screen, beside **Settings**, or with **Settings →
+Quality → Ultra**. Both are the same saved choice, and switching the title
+button off takes you back to the quality you had. Ultra lights the world from
+its own sky, gives buildings, trees and riders crisp shadows that carry on into
+the distance, grounds the riders with soft contact shade, and adds detail to
+facades, trees, road edges and the sky. It asks a lot of the graphics chip —
+the title button says *Higher GPU demand*, and Settings says smoothness and
+battery use vary by device. Switching takes a few seconds, and the button says
+**Loading Ultra graphics…** (or **Turning Ultra off…**) until it is done;
+further presses are ignored until then. Loading a new place also takes a
+moment longer with Ultra on. If your device cannot start it, the game says so
+and draws High instead. A couch session always draws High, and your Ultra comes
+back when you ride alone again.
 
 Your settings and best times are saved **in your own browser** and go nowhere
 else. There is no account, no server, and no analytics; the game makes no
@@ -492,7 +560,8 @@ than sitting blank.
 
 On a phone the game is doing the same work it does on a desktop, so an older
 handset will run it slower. **Quality** in Settings is the first thing to turn
-down, and it changes nothing about how the wheel rides.
+down, and it changes nothing about how the wheel rides. **Ultra** wants a
+capable graphics chip on any device; if it stutters, High is one press away.
 
 ## Building from source
 
@@ -538,14 +607,41 @@ list.
 
 ### Accepted direction
 
-- **More couch multiplayer.** Free ride, the bump, a four-seat race and a
-  Knockabout bout for two, three or four have all landed (see **2–4 Players**
-  above). What is left is **couch chase**. The shape is unchanged — local multiplayer on
-  desktop, single-player on mobile — and playing across two devices is not
-  cancelled but sits behind all of this.
+- **A desktop app to download.** The same game packaged to run as an app on
+  Windows, macOS and Linux, for anyone who would rather not play it in a
+  browser tab. It is planned next; the browser version stays exactly where it
+  is.
+- **Multiplayer stays on one screen for now.** Every couch mode the plan named
+  — free ride, the bump, a race, Knockabout for up to four, and now the chase —
+  has landed (see **2–4 Players** above). Local multiplayer stays a desktop
+  thing and the phone stays single-player; playing across two devices is not
+  cancelled, but it sits behind all of this.
 
 ### Recently landed
 
+- **A police chase with a pack, and a couch chase** (2026-09-25). Riding
+  alone, it is you against Officer Dorkins and two patrols, and the cops got
+  much harder to shake: they ride round buildings to reach a rider hiding
+  behind one, a quiet spell is answered within seconds, and a patrol can be
+  sent ahead to wait on your road. On one desktop screen, two to four of you
+  can play it too — up to three outlaws against one cop, who is either one of
+  you riding as Officer Dorkins or CPU cops filling the room.
+- **Ultra graphics** (2026-09-24). An optional fourth quality level for riding
+  alone, on desktop and phone: sky lighting, long crisp shadows that include the
+  buildings, contact shade under the riders, and richer trees, facades, road
+  edges and skies — with a loading notice while it switches. The ride is
+  identical, and Low, Medium and High draw exactly as they did.
+- **A town to ride round** (2026-09-22). The game now opens on a generated
+  town: one ring of streets out of the plaza and back — boulevard, kerb run,
+  fork and alley, park, river ford, gravel trail, berm, kicker and the climb
+  home — plus shopping and residential blocks with their own side streets.
+  Houses have pitched roofs, an industrial yard lines the road home, and six
+  landmarks tell you where you are. Every Fresh route is a town of its own,
+  and the hand-built city stays as the **Original city**.
+- **The overspeed cutout comes sooner** (2026-09-22). Players said they liked
+  the high-speed wipeout, and it was too hard to reach: the beeps now start at
+  about 58 mph instead of 52, and flat out the cutout arrives after under three
+  seconds of them instead of six and a half.
 - **Trick Run** (2026-09-13). Ninety seconds at Switchback Park with the four
   counted events given values, a landing-quality multiplier, a bonus for two
   tricks in one flight, tricks that score only from the park's features and
@@ -630,9 +726,10 @@ list.
   course, and more venues to lap. Track Day and the couch race, now at two
   venues, are the first of this; a race against something other than a friend on
   the same screen is still an idea.
-- **More world.** Downtown, industrial, deeper woodland, and more riverside —
-  while protecting the city-to-trail transition riders already like. Switchback
-  Park is a hillside of its own rather than more of this world.
+- **More world.** More kinds of district, deeper woodland and more riverside in
+  the towns, and more places built by hand — while protecting the
+  town-to-trail transition riders already like. Switchback Park is a hillside
+  of its own rather than more of this world.
 - **More rider voices.** Varied crash reactions and occasional hop, carve,
   impact, and top-speed calls, without turning the ride bed into chatter.
 - **More character and presentation.** A richer procedural look, more wheels and
@@ -642,6 +739,7 @@ list.
   on one; what is not there yet is anything that takes advantage of it — an
   offline copy, haptics on a landing or a pedal strike, a layout that adapts to
   a folding screen.
+- **More languages.** The menus in languages other than English.
 
 ### Deliberately not planned
 

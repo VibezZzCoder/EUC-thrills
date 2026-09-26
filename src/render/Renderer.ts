@@ -1,6 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
-import { CAMERA, EUC, FX, LIGHTING, RENDER } from '../data/tuning.ts';
+import { CAMERA, CHASE, EUC, FX, LIGHTING, RENDER } from '../data/tuning.ts';
 import {
   materialAppearance,
   surfaceProperties,
@@ -29,13 +29,39 @@ import {
   type VenueLook,
 } from '../data/venueLook.ts';
 import { createTerrain, type TerrainView } from './terrain.ts';
+import { releaseForLostContext } from './contextLoss.ts';
 import {
   presentationRecipe,
   selectPresentation,
   type PresentationRecipeId,
   type PresentationSelection,
+  type PresentationVerdict,
 } from './presentation.ts';
 import { paneBounds, paneGridFor, type PaneRect } from '../shared/paneGrid.ts';
+import { judgeUltra, type UltraCaps } from './ultra/ultraCost.ts';
+import { buildUltraEnvironment } from './ultra/ultraEnvironment.ts';
+import { ultraSkyOptions } from './ultra/ultraLighting.ts';
+import { ultraFramebufferStatus } from './ultra/ultraRendererState.ts';
+import {
+  bakeUltraSkyBackground,
+  measuredPropColourTriangles,
+  ultraPresentationCost,
+  UltraRuntime,
+  UltraSkyCache,
+  type BuiltPresentationCost,
+  type ShaderErrorHook,
+  type UltraHost,
+} from './ultra/ultraRuntime.ts';
+import type {
+  BuildRecipe,
+  UltraBuildContext,
+  UltraFaultPlant,
+  UltraKitOverride,
+  UltraLiveTuning,
+  UltraRefusal,
+  UltraReport,
+  UltraTierResult,
+} from './ultra/ultraTypes.ts';
 
 /**
  * Renderer, scene, camera, and the daytime lighting rig.
@@ -113,6 +139,13 @@ const EUC_PEDAL_STRIKE_REFERENCE_DEPTH = EUC.pedalStrikeReferenceDepth;
 const PARTICLE_COLOURS: Partial<Record<ParticleId, number>> = FX.particleColours;
 
 /**
+ * The pack's trims — M39 Part P (§39.6b.3, q207). The most CPU cops the rule
+ * ever fields is the solo face's `CHASE.roomSize − 1`, derived rather than
+ * written because `roomSize` is the rule's one constant.
+ */
+const PACK_TRIMS = CHASE.roomSize - 1;
+
+/**
  * The one place a venue's light is composed — M36 Phase 4.
  *
  * ## Why this is a unit and not four assignments in `setLevel`
@@ -155,7 +188,81 @@ const PARTICLE_COLOURS: Partial<Record<ParticleId, number>> = FX.particleColours
  *   2. A live override **survives a venue swap**: `apply` re-states the tuned
  *      values after the venue's, so switching BelVar → park → BelVar with
  *      exposure dragged to 1.3 leaves it at 1.3 throughout.
+ *
+ * ## The tier — M39 (`docs/M39_ULTRA.md` §3.1–§3.2, §3.6)
+ *
+ * The rig is hung at a tier. `'ordinary'` is every Low, Medium and High frame
+ * and is exactly the composition above, line for line. `'ultra'` changes three
+ * things and only through the hooks the renderer hands in: the fill moves from
+ * the hemisphere (kept, and written to W4's value — zero) to a PMREM
+ * environment painted from this look's own sky; the sky is the Ultra painter's;
+ * and both fill values are W4's `ultraFill`. Every value is absolute — nothing
+ * is multiplied in and divided back out — so leaving Ultra is simply the
+ * ordinary composition written again, and `applyTuned` stays last on both
+ * tiers so the F4 panel still wins (§3.1).
+ *
+ * The sky's repaint key includes the tier, and the environment is rebuilt when
+ * the look moves, so a venue swap at Ultra paints its sky and environment once.
+ * An Ultra sky or environment that cannot be built is **never left half-hung**:
+ * the rig falls back to the ordinary tier by itself, records `failure`, and the
+ * runtime reads that to name the stage it refuses on.
  */
+export type LightingTier = 'ordinary' | 'ultra';
+
+/** The painted-sky PMREM environment an Ultra light is filled by (T1). */
+export interface UltraEnvironment {
+  readonly texture: THREE.Texture;
+  /** The filtered target, when the builder names it: the activation checks its framebuffer (A28 C1). */
+  readonly target?: THREE.RenderTarget;
+  readonly bytes: number;
+  readonly cubeSize: number;
+  dispose(): void;
+}
+
+/**
+ * What the Ultra tier needs that an ordinary rig never builds. The renderer
+ * hands in `UltraRuntime.lightingHooks` (which time each build and are where a
+ * `?ultrafault=` sky or environment failure is planted);
+ * `levelLifecycle.test.ts` hands in counting fakes, which is how the whole tier
+ * walk is asserted without a GL context.
+ */
+/**
+ * An Ultra sky as the hook hands it to the rig: the painted equirect
+ * (`texture`, what the report and the ledger read) and, when the runtime made
+ * one, the colour-only cube it is drawn through (`background`, Fable F3 /
+ * A22). `dispose` takes both. With no `background` the rig hangs `texture`,
+ * and three converts it itself, as on the ordinary tier.
+ */
+export interface UltraSkyTexture extends SkyTexture {
+  readonly background?: THREE.Texture;
+}
+
+export interface VenueLightingHooks {
+  /** The Ultra sky for a look (T8). */
+  ultraSky(look: ResolvedVenueLook): UltraSkyTexture;
+  /**
+   * The part of the Ultra sky's repaint key a look does not carry: the
+   * installed plan's cumulus seed (`cumulusSeedFor(plan.id)`, gauntlet round
+   * 1 item 4). The rig repaints an Ultra sky when it moves on an unchanged
+   * look and tier, so two daylight worlds do not share one sky. Only ever
+   * read on the Ultra tier; absent reads 0.
+   */
+  ultraSkyKey?(): number;
+  /** The painted-sky environment for a look (T1), filtered once. */
+  ultraEnvironment(look: ResolvedVenueLook): UltraEnvironment;
+  /** The Ultra fill: W4's `ultraFill` with the live values bound. */
+  ultraFill(look: ResolvedVenueLook, tunedHemisphere: number | undefined): {
+    hemisphereIntensity: number;
+    environmentIntensity: number;
+  };
+}
+
+/** An Ultra piece the rig could not build, and fell back to the ordinary tier from. */
+export interface VenueLightingFailure {
+  readonly stage: 'sky' | 'environment';
+  readonly message: string;
+}
+
 export interface VenueLighting {
   /** The look the scene is wearing, with every gap filled from `LIGHTING`. */
   readonly look: ResolvedVenueLook;
@@ -167,8 +274,32 @@ export interface VenueLighting {
   readonly sunOffset: THREE.Vector3;
   /** The painted sky on `scene.background`. Replaced, never accumulated. */
   readonly sky: SkyTexture;
-  /** Wear a venue's look, or daylight when it has authored none. */
-  apply(authored: VenueLook | undefined): void;
+  /** The tier the light is hung at — M39. `'ordinary'` unless the renderer asked. */
+  readonly tier: LightingTier;
+  /** The Ultra environment on `scene.environment`; always null on the ordinary tier. */
+  readonly environment: UltraEnvironment | null;
+  /** Why the last attempt to hang the Ultra tier fell back; null when it did not. */
+  readonly failure: VenueLightingFailure | null;
+  /**
+   * Wear a venue's look, or daylight when it has authored none — at `tier`,
+   * which defaults to the current one, so a look and a tier change together
+   * paint once.
+   */
+  apply(authored: VenueLook | undefined, tier?: LightingTier): void;
+  /** Re-hang the current look at another tier. A no-op at the current one. */
+  setTier(tier: LightingTier): void;
+  /**
+   * Ultra only: re-run the fill (κ moved) and, when asked, rebuild the
+   * environment (β moved, or the GL context was restored).
+   */
+  refreshUltra(rebuildEnvironment: boolean): void;
+  /**
+   * Ultra only: the GL context was lost (A28, FE, `UltraRuntime.onContextLost`).
+   * The environment comes off the scene and is disposed while the lost
+   * context makes its deletes no-ops. `refreshUltra(true)` builds the next one
+   * on the restore, with no pre-loss object left to delete.
+   */
+  releaseUltraEnvironment(): void;
   /** What the F4 panel pushes. See the precedence rule above. */
   tune(values: {
     exposure?: number;
@@ -178,16 +309,54 @@ export interface VenueLighting {
   dispose(): void;
 }
 
-export function createVenueLighting(parts: {
-  readonly scene: THREE.Scene;
-  readonly sun: THREE.DirectionalLight;
-  readonly hemisphere: THREE.HemisphereLight;
-  setExposure(exposure: number): void;
-}): VenueLighting {
+/** Every field of two resolved looks equal — the environment's rebuild key. */
+function sameLook(a: ResolvedVenueLook, b: ResolvedVenueLook): boolean {
+  for (const key of Object.keys(a) as (keyof ResolvedVenueLook)[]) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
+export function createVenueLighting(
+  parts: {
+    readonly scene: THREE.Scene;
+    readonly sun: THREE.DirectionalLight;
+    readonly hemisphere: THREE.HemisphereLight;
+    setExposure(exposure: number): void;
+  },
+  hooks?: VenueLightingHooks,
+): VenueLighting {
   const { scene, sun, hemisphere, setExposure } = parts;
 
   const sunOffset = new THREE.Vector3();
   let look: ResolvedVenueLook = DAYLIGHT_LOOK;
+
+  // M39: the tier the light is hung at, the tier the live sky was painted for,
+  // and the Ultra environment (with the look it was filtered from). All three
+  // stay at their ordinary values for the life of an ordinary session.
+  let tier: LightingTier = 'ordinary';
+  let skyTier: LightingTier = 'ordinary';
+  // The Ultra sky's key beyond the look (the plan's cumulus seed), as painted.
+  // Written and read on the Ultra tier only.
+  let skyKey = 0;
+  let environment: UltraEnvironment | null = null;
+  let environmentLook: ResolvedVenueLook | null = null;
+  let failure: VenueLightingFailure | null = null;
+
+  const ultraHooks = (): VenueLightingHooks => {
+    if (hooks === undefined) throw new Error('the Ultra lighting tier needs the renderer’s hooks');
+    return hooks;
+  };
+
+  /**
+   * The Ultra sky's current key beyond the look; 0 when the hooks carry none,
+   * or a key that is not a finite number (Wave 4, R-L) — a NaN key would never
+   * equal itself and repaint the sky on every apply.
+   */
+  const ultraSkyKeyNow = (): number => {
+    const key = ultraHooks().ultraSkyKey?.();
+    return typeof key === 'number' && Number.isFinite(key) ? key | 0 : 0;
+  };
 
   // Painted once here so the first `apply` has something to compare against and
   // the no-descriptor path repaints nothing at all.
@@ -211,6 +380,109 @@ export function createVenueLighting(parts: {
     setExposure(tuned.exposure ?? look.exposure);
     sun.intensity = tuned.sunIntensity ?? look.sunIntensity;
     hemisphere.intensity = tuned.hemisphereIntensity ?? look.hemisphereIntensity;
+    // M39: on the Ultra tier the fill moves from the hemisphere to the
+    // environment. Both values are W4's, computed from this look and the tuned
+    // hemisphere — written over the line above, never multiplied into it — so
+    // the ordinary tier is the three lines above and nothing else.
+    if (tier === 'ultra') {
+      const fill = ultraHooks().ultraFill(look, tuned.hemisphereIntensity);
+      hemisphere.intensity = fill.hemisphereIntensity;
+      scene.environmentIntensity = fill.environmentIntensity;
+    }
+  };
+
+  /** The environment off the scene and disposed; the fill back to three's default. */
+  const dropEnvironment = (): void => {
+    scene.environment = null;
+    scene.environmentIntensity = 1;
+    const outgoing = environment;
+    environment = null;
+    environmentLook = null;
+    outgoing?.dispose();
+  };
+
+  /** Drop back to the ordinary tier after an Ultra piece failed, saying which. Never throws. */
+  const fallBack = (stage: VenueLightingFailure['stage'], error: unknown): void => {
+    failure = { stage, message: error instanceof Error ? error.message : String(error) };
+    tier = 'ordinary';
+    dropEnvironment();
+  };
+
+  /**
+   * Paint the sky for `target` at the current tier.
+   *
+   * The ordinary branch is the M36 sequence exactly — the outgoing texture is
+   * disposed *before* the replacement is built. The Ultra branch paints first:
+   * an Ultra painter can fail (a planted fault or a real one), and a failure
+   * must never leave `scene.background` on a disposed texture. Nothing uploads
+   * between the two statements either way — a `DataTexture` reaches the GPU on
+   * its first frame — so the GPU never holds two skies on either tier.
+   */
+  const repaintSky = (target: ResolvedVenueLook): void => {
+    if (tier === 'ultra') {
+      let painted: UltraSkyTexture | null = null;
+      const key = ultraSkyKeyNow();
+      try {
+        painted = ultraHooks().ultraSky(target);
+      } catch (error) {
+        fallBack('sky', error);
+      }
+      if (painted !== null) {
+        sky.dispose();
+        sky = painted;
+        // F3: the Ultra sky is drawn through its own colour-only cube when
+        // the runtime made one; `sky.texture` stays the painted equirect.
+        scene.background = painted.background ?? sky.texture;
+        skyTier = 'ultra';
+        skyKey = key;
+        return;
+      }
+    }
+    sky.dispose();
+    sky = createSky(target);
+    scene.background = sky.texture;
+    skyTier = 'ordinary';
+  };
+
+  /**
+   * Ultra only: the PMREM environment for the current look, rebuilt when the
+   * look moved (or when `force`d — β moved, or the context came back). The
+   * outgoing one goes first, so two PMREM targets never coexist (§5's switch
+   * peak). A failure falls the whole rig back, sky included.
+   */
+  const syncEnvironment = (force: boolean): void => {
+    if (!force && environment !== null && environmentLook !== null && sameLook(environmentLook, look)) {
+      return;
+    }
+    dropEnvironment();
+    let built: UltraEnvironment | null = null;
+    try {
+      built = ultraHooks().ultraEnvironment(look);
+    } catch (error) {
+      fallBack('environment', error);
+    }
+    if (built === null) {
+      if (skyTier !== tier) repaintSky(look);
+      return;
+    }
+    environment = built;
+    environmentLook = look;
+    scene.environment = built.texture;
+  };
+
+  /**
+   * Leave the tier the rig is hung at for `nextTier`, before the look is
+   * composed: entering Ultra needs the hooks (checked first, so a refused
+   * change moves nothing) and clears the last failure; leaving it takes the
+   * environment off. The sky and the fill follow in `apply`.
+   */
+  const enterTier = (nextTier: LightingTier): void => {
+    if (nextTier === 'ultra') {
+      ultraHooks();
+      failure = null;
+    }
+    tier = nextTier;
+    if (tier === 'ordinary') dropEnvironment();
   };
 
   const rig: VenueLighting = {
@@ -221,9 +493,21 @@ export function createVenueLighting(parts: {
     get sky(): SkyTexture {
       return sky;
     },
+    get tier(): LightingTier {
+      return tier;
+    },
+    get environment(): UltraEnvironment | null {
+      return environment;
+    },
+    get failure(): VenueLightingFailure | null {
+      return failure;
+    },
 
-    apply(authored: VenueLook | undefined): void {
+    apply(authored: VenueLook | undefined, nextTier: LightingTier = tier): void {
       const next = resolveVenueLook(authored);
+      // M39: a look and a tier changed together are composed once, at the
+      // tier they end on. An ordinary session never takes this branch.
+      if (nextTier !== tier) enterTier(nextTier);
 
       // **The sky is the one part of a look that costs a GPU resource**, so it
       // is the one part that is skipped when nothing about it moved — which is
@@ -232,11 +516,18 @@ export function createVenueLighting(parts: {
       // *before* the replacement is built: nothing renders between these two
       // statements, so the count never has two 1024x512 skies in it and
       // `resources().textures` plateaus across repeated rebuilds (invariant 10,
-      // `tests/m36.spec.ts`).
-      if (!sameSkyPaint(next, look)) {
-        sky.dispose();
-        sky = createSky(next);
-        scene.background = sky.texture;
+      // `tests/m36.spec.ts`). From M39 the key also carries the tier the live
+      // sky was painted for (§3.2), which on an ordinary session never differs,
+      // and the painting itself is `repaintSky`, whose ordinary branch is the
+      // three statements that stood here. On the Ultra tier only, the key
+      // also carries the plan's cumulus seed (`ultraSkyKey`), so a world swap
+      // between two daylight plans repaints; an ordinary rig never asks.
+      if (
+        !sameSkyPaint(next, look)
+        || skyTier !== tier
+        || (tier === 'ultra' && ultraSkyKeyNow() !== skyKey)
+      ) {
+        repaintSky(next);
       }
       look = next;
 
@@ -266,8 +557,29 @@ export function createVenueLighting(parts: {
       // and this is exactly `position.copy(sunOffset)`.
       sun.position.copy(sun.target.position).add(sunOffset);
 
+      // M39: the environment is this look's own sky, so it follows the look.
+      if (tier === 'ultra') syncEnvironment(false);
+
       // Last, so a slider a human is holding outlives the venue under it.
       applyTuned();
+    },
+
+    setTier(nextTier: LightingTier): void {
+      if (nextTier === tier) return;
+      // The current look, re-stated: every value it resolves to is the one
+      // already hung, so only the tier's own pieces move.
+      rig.apply(look, nextTier);
+    },
+
+    refreshUltra(rebuildEnvironment: boolean): void {
+      if (tier !== 'ultra') return;
+      if (rebuildEnvironment) syncEnvironment(true);
+      applyTuned();
+    },
+
+    releaseUltraEnvironment(): void {
+      if (tier !== 'ultra') return;
+      dropEnvironment();
     },
 
     tune(values): void {
@@ -293,6 +605,9 @@ export function createVenueLighting(parts: {
     dispose(): void {
       scene.background = null;
       sky.dispose();
+      // M39: an Ultra environment goes with the rig. The renderer tears Ultra
+      // down before this, so on every path but a failed one it is already null.
+      dropEnvironment();
     },
   };
 
@@ -329,6 +644,42 @@ export function forcedPresentation(
     cost: verdict?.cost ?? selected.cost,
     verdicts: selected.verdicts,
   };
+}
+
+/**
+ * `GameRenderer.presentation()` from M39: the ordinary `PresentationSelection`
+ * fields, unchanged in name and meaning — they describe what was **actually
+ * built**, which on an Ultra world is the Ultra rung — plus the tier the frame
+ * is drawn at and the Ultra report (§6.3 W5).
+ */
+export interface RendererPresentation {
+  readonly recipe: BuildRecipe;
+  readonly cost: BuiltPresentationCost;
+  /** The ordinary ladder's verdicts, both rungs, whatever was built. */
+  readonly verdicts: readonly PresentationVerdict[];
+  readonly tier: {
+    readonly effective: 'ultra' | 'ordinary';
+    readonly refusal: UltraRefusal | null;
+  };
+  /** `ultraReport()`, once Ultra has been asked for this session; null before. */
+  readonly ultra: UltraReport | null;
+}
+
+/** A failed program's logs, for the Ultra shader-error hook (three's own report is silenced by a hook). */
+function describeShaderError(
+  gl: WebGLRenderingContext,
+  program: WebGLProgram,
+  vertexShader: WebGLShader,
+  fragmentShader: WebGLShader,
+): string {
+  const logs = [
+    gl.getProgramInfoLog(program),
+    gl.getShaderInfoLog(vertexShader),
+    gl.getShaderInfoLog(fragmentShader),
+  ]
+    .map((log) => (log ?? '').trim())
+    .filter((log) => log.length > 0);
+  return logs.length > 0 ? logs.join('\n') : 'a program failed to link and left no log';
 }
 
 export class GameRenderer {
@@ -472,13 +823,35 @@ export class GameRenderer {
   /** Which rider the ghost is currently built as, so a repeat is a no-op. */
   private ghostCharacter: CharacterId = DEFAULT_CHARACTER;
   /**
-   * M18's cop. Built once and hidden, exactly as the ghost is.
+   * M18's cop — and since M39 Part P the whole pack. Built once and hidden,
+   * exactly as the ghost is.
    *
-   * See `secondRider` below for why he and the ghost are one slot.
+   * **One trim per pursuer the rule can field** (`CHASE.roomSize − 1`, three:
+   * the solo face's pack, q207). Index 0 is the tail, built with
+   * `createCopRider()` so every existing lookup — `cop-rider`, `cop-riding-rig`,
+   * `cop-rider-pelvis` in the M18 and M30 specs and Ultra's rig names — still
+   * finds him byte for byte; 1 and 2 are the patrols, `createCopRider({ index })`
+   * naming them `cop2-` and `cop3-` so no two nodes share a name (R-7). Plain
+   * rigs, not instanced (§39.6b.4: the instanced pack is modelled in the cost
+   * tool and held as GP's remedy, not shipped). All built here, at once,
+   * because a rig built mid-chase would upload two dozen geometries at the
+   * moment the player is being hunted — the ghost's argument, three times.
+   *
+   * See `secondRider` below for why the pack and the ghost are one slot.
    */
-  private cop: CopRider;
+  private readonly cops: readonly CopRider[];
+  /**
+   * How many trims of the pack the slot is showing: `cpuPackSize` in the solo
+   * face (three, or `?cops=`'s count), zero whenever the slot is not `cop`.
+   */
+  private packShown = 0;
   /**
    * **Which second rider the frame is showing, and it is one field on purpose.**
+   *
+   * M39 Part P (R-7) keeps the words: `cop` now shows the pack — 1..3 trims,
+   * `packShown` of them — and is still the one alternative to the ghost, so
+   * the solo reserve is the worse of the ghost frame and the *pack* frame
+   * (`render/renderCost.ts`, q209), never their sum.
    *
    * A Time-trial ghost and a chase cop are different modes and could have been
    * left as two independent booleans that simply never happened to be true
@@ -517,6 +890,31 @@ export class GameRenderer {
    * adaptive-quality step has one place to write.
    */
   private maxPixelRatio: number = RENDER.maxPixelRatio;
+
+  /**
+   * The ordinary tier `setQuality` last wrote — M39. The one fact about the
+   * ordinary rig the Ultra teardown needs, so it can write that rig back
+   * through W4's `shadowRigFor('ordinary', quality)` rather than remembering
+   * the sun's fields (§3.1: no snapshot restore). The constructor's rig is
+   * High's, so High is the answer until the app says otherwise.
+   */
+  private ordinaryQuality: 'low' | 'medium' | 'high' = 'high';
+
+  /**
+   * The Ultra runtime — M39 (`render/ultra/ultraRuntime.ts`). Every Ultra
+   * decision, resource and exit lives there; this file calls into it at a few
+   * guarded points and implements its `UltraHost`, the GPU-touching half.
+   * Constructed before the venue rig, whose Ultra hooks it supplies.
+   */
+  private readonly ultra: UltraRuntime;
+
+  /**
+   * The painted Ultra skies, CPU-side (Fable I1): a world swap or a return to
+   * the title under Ultra reuses a sky it has painted rather than painting
+   * 2048×1024 again. Empty on a session that never asks for Ultra, and
+   * emptied when Ultra is no longer wanted.
+   */
+  private readonly ultraSkies = new UltraSkyCache();
 
   /**
    * Fractional sparks owed from previous steps, **per emitter**.
@@ -650,6 +1048,10 @@ export class GameRenderer {
     this.scene.add(this.sun);
     this.scene.add(this.sun.target);
 
+    // M39: the Ultra runtime, before the rig it hands its hooks to. It builds
+    // nothing and writes nothing until the app asks for Ultra.
+    this.ultra = new UltraRuntime(this.createUltraHost());
+
     // The sky, the haze, both light colours, both intensities and the exposure,
     // composed together (invariant 6). Daylight until a plan authors a look.
     this.lighting = createVenueLighting({
@@ -659,7 +1061,7 @@ export class GameRenderer {
       setExposure: (exposure: number): void => {
         this.renderer.toneMappingExposure = exposure;
       },
-    });
+    }, this.ultra.lightingHooks);
 
     // Dust dissolves into the air, so it fades toward the same horizon colour
     // the fog uses — a particle that ends by becoming the air it is in never
@@ -684,8 +1086,15 @@ export class GameRenderer {
 
     this.ghost = createGhostRider();
     this.scene.add(this.ghost.group);
-    this.cop = createCopRider();
-    this.scene.add(this.cop.group);
+    // The pack's trims (M39 Part P): the tail first, un-indexed, so `cop-rider`
+    // is still him; then the patrols as `cop2-`, `cop3-`. Hidden until a chase.
+    const cops: CopRider[] = [];
+    for (let index = 0; index < PACK_TRIMS; index += 1) {
+      const cop = index === 0 ? createCopRider() : createCopRider({ index });
+      cops.push(cop);
+      this.scene.add(cop.group);
+    }
+    this.cops = cops;
 
     canvas.addEventListener('webglcontextlost', this.onContextLost);
     canvas.addEventListener('webglcontextrestored', this.onContextRestored);
@@ -928,17 +1337,21 @@ export class GameRenderer {
    * the game passes it — `app/Game.ts` reads it from a diagnostic URL
    * parameter, never from an option (the options firewall: a recipe is not
    * something a player configures).
+   *
+   * **M39: the world's tier is decided here too** (§6.3 W5). With Ultra
+   * wanted, no override and no sticky refusal, W7's `judgeUltra` prices the
+   * plan against the Ultra envelope *after* the ordinary selection has been
+   * made (its verdicts are always computed and always reported); a pass builds
+   * the Ultra rung and activates it, and a breach, a failure or a refusal
+   * builds the ordinary selection exactly as before and records why. The plan
+   * is never re-priced for admission and never trimmed. An override present
+   * while Ultra is wanted is itself the refusal (`presentation-override`), so
+   * a forced recipe can never be described as active Ultra.
    */
   setLevel(plan: LevelPlan, recipe?: PresentationRecipeId): TerrainView {
     this.terrain?.dispose();
+    this.terrain = null;
     this.palette = plan.palette;
-    // **The single rebuild path is the single place a venue's light is hung**,
-    // which is what makes park → BelVar → park restore each look without a
-    // second mechanism to keep in step: every venue swap in the game reaches
-    // here (`app/Game.ts:installLevel`), and a plan that authors no look
-    // resolves to the daylight every world but the park is judged at. The rig
-    // owns the ordering of sky, haze, key, fill and exposure (invariant 6).
-    this.lighting.apply(plan.look);
     // Presentation is a question asked of an immutable plan, never of the
     // generator: the richer topology is built only where every frame contract
     // still fits, and the plan is never trimmed to make it fit.
@@ -947,9 +1360,19 @@ export class GameRenderer {
       ? selected
       : forcedPresentation(selected, recipe);
     this.presentationSelection = selection;
-    const terrain = createTerrain(plan, selection.recipe);
-    this.terrain = terrain;
-    this.scene.add(terrain.group);
+    // **The single rebuild path is the single place a venue's light is hung**,
+    // which is what makes park → BelVar → park restore each look without a
+    // second mechanism to keep in step: every venue swap in the game reaches
+    // here (`app/Game.ts:installLevel`), and a plan that authors no look
+    // resolves to the daylight every world but the park is judged at. The rig
+    // owns the ordering of sky, haze, key, fill and exposure (invariant 6).
+    //
+    // From M39 the runtime hangs it (`lighting.apply(plan.look, tier)`), because
+    // the tier has to be decided first for the sky and environment to be
+    // painted once; on an ordinary session that is `apply(plan.look,
+    // 'ordinary')` followed by `createTerrain(plan, selection.recipe)`, the
+    // two calls this method always made, installed the way it always was.
+    const terrain = this.ultra.installWorld(plan, selection, recipe);
 
     // The gates are part of the level and are rebuilt with it. `plan.checkpoints`
     // is an empty array on the proving ground and on every test fixture, and
@@ -1084,11 +1507,18 @@ export class GameRenderer {
    * The single writer, so "the ghost is up" and "the cop is up" cannot both be
    * true however the callers are reordered. See `secondRider`.
    */
-  setSecondRider(who: 'none' | 'ghost' | 'cop'): void {
-    if (who === this.secondRider) return;
+  setSecondRider(who: 'none' | 'ghost' | 'cop', packSize = 1): void {
+    // How many trims `cop` shows (M39 Part P): clamped to the trims built, and
+    // zero whenever the slot holds anything else, so a hidden pack is never
+    // half-shown and a ghost frame never carries a cop.
+    const shown = who === 'cop' ? Math.max(1, Math.min(PACK_TRIMS, Math.floor(packSize))) : 0;
+    if (who === this.secondRider && shown === this.packShown) return;
     this.secondRider = who;
+    this.packShown = shown;
     this.ghost.setVisible(who === 'ghost');
-    this.cop.setVisible(who === 'cop');
+    for (let index = 0; index < this.cops.length; index += 1) {
+      this.cops[index].setVisible(index < shown);
+    }
   }
 
   /** Which second rider is on screen. For the QA bridge and the budget. */
@@ -1110,9 +1540,14 @@ export class GameRenderer {
     else if (this.secondRider === 'ghost') this.setSecondRider('none');
   }
 
-  /** Show or hide the cop — M18. Hides the ghost by construction, and vice versa. */
-  setCopVisible(visible: boolean): void {
-    if (visible) this.setSecondRider('cop');
+  /**
+   * Show or hide the cop — M18. Hides the ghost by construction, and vice versa.
+   *
+   * `packSize` (M39 Part P) is how many of the pack's trims ride: the tail and
+   * `packSize − 1` patrols. Absent is today's one cop.
+   */
+  setCopVisible(visible: boolean, packSize = 1): void {
+    if (visible) this.setSecondRider('cop', packSize);
     else if (this.secondRider === 'cop') this.setSecondRider('none');
   }
 
@@ -1124,8 +1559,21 @@ export class GameRenderer {
    * him at the stepped pose would leave him juddering beside a smooth player.
    */
   applyCop(pose: EucPose, head: THREE.Vector3 | null, angle: number, blend: number): void {
-    this.cop.applySwing(head, angle, blend);
-    this.cop.apply(pose);
+    this.applyPackmate(0, pose, head, angle, blend);
+  }
+
+  /**
+   * Pose one trim of the pack — M39 Part P (§2h). Index 0 is the tail
+   * (`applyCop`'s path); 1 and 2 the patrols. Each is posed from his own
+   * interpolated controller pose every frame, as the tail always was: three
+   * riders who moved differently from a player would read as scripted
+   * obstacles. An index past the trims built is ignored rather than thrown.
+   */
+  applyPackmate(index: number, pose: EucPose, head: THREE.Vector3 | null, angle: number, blend: number): void {
+    const cop = this.cops[index];
+    if (cop === undefined) return;
+    cop.applySwing(head, angle, blend);
+    cop.apply(pose);
   }
 
   /**
@@ -1144,9 +1592,286 @@ export class GameRenderer {
    * is the selector's prediction for it — `render/presentation.test.ts`
    * asserts the prediction equals the built scene for both recipes, so a
    * reported cost always names the representation it describes.
+   *
+   * **M39 extends it and changes none of its fields** (§6.3 W5). `tier` says
+   * which tier the frame is drawn at and why a requested Ultra is not; `ultra`
+   * is the whole `ultraReport()` once Ultra has been asked for (null on a
+   * session that never asked). `recipe` and `cost` keep describing what was
+   * **actually built**: while an Ultra rung is drawing, `recipe.id` is the
+   * Ultra id and `cost.frame.solo` is Ultra's own model (see
+   * `ultraPresentationCost` for the rest of the restatement), and `verdicts`
+   * are still the ordinary ladder's, both rungs, as always.
    */
-  presentation(): PresentationSelection | null {
-    return this.presentationSelection;
+  presentation(): RendererPresentation | null {
+    const selection = this.presentationSelection;
+    if (selection === null) return null;
+    const tier = { effective: this.effectiveTier(), refusal: this.ultra.refusal };
+    const ultra = this.ultra.requested || this.ultra.active ? this.ultraReport() : null;
+    const built = this.ultra.builtUltra();
+    const terrain = this.terrain;
+    if (built === null || terrain === null) return { ...selection, tier, ultra };
+    return {
+      recipe: built.recipe,
+      cost: ultraPresentationCost(selection.cost, built.recipe, built.cost, {
+        propColourTriangles: measuredPropColourTriangles(terrain.group),
+        blockColourTriangles: terrain.blockTriangles,
+      }),
+      verdicts: selection.verdicts,
+      tier,
+      ultra,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // M39 Ultra (`docs/M39_ULTRA.md` §6.2, §6.3 W5)
+  //
+  // The public face of `render/ultra/ultraRuntime.ts`. The app (`app/Game.ts`,
+  // through `app/renderTier.ts`) says what it wants; the runtime decides,
+  // builds, refuses and tears down; everything here is a one-line forward or
+  // the GPU-touching half of `UltraHost`. None of it runs on an ordinary frame.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Record whether the app wants Ultra and any `?ultrakit=` override. Takes
+   * effect at the next `setLevel` or `reconcileUltra`, never by itself — so a
+   * saved Ultra at boot is built once, by the first `setLevel`.
+   */
+  setUltraWanted(wanted: boolean, override?: UltraKitOverride | null): void {
+    this.ultra.setWanted(wanted, override ?? null);
+    if (!wanted) this.ultraSkies.clear();
+  }
+
+  /**
+   * The F4 `ULTRA.pixelBudget` knob (Fable I4; `Game.applyTuning` forwards
+   * it): T0's budget in device pixels. While Ultra draws the buffer follows at
+   * once, and the shadow maps follow it across A22's line; on an ordinary tier
+   * it moves nothing until Ultra is next built.
+   */
+  setUltraPixelBudget(pixels: number): void {
+    this.ultra.setPixelBudget(pixels);
+  }
+
+  /**
+   * Bring the built world in line with the intent (§6.3 W5): rebuilds only
+   * when the built recipe differs from what the intent resolves to now, and
+   * touches only the terrain and the tier's own resources — never gates,
+   * targets, ghost, cop or the plan. `terrainChanged` says whether the
+   * installed view was replaced (`app/Game.ts` reads it through
+   * `currentTerrain()`, so it never holds a disposed one).
+   */
+  reconcileUltra(): UltraTierResult {
+    return this.ultra.reconcile();
+  }
+
+  /** The tier the frame is drawn at: `'ultra'` only while an Ultra rung is built and drawing. */
+  effectiveTier(): 'ultra' | 'ordinary' {
+    return this.ultra.active ? 'ultra' : 'ordinary';
+  }
+
+  /**
+   * Everything Ultra reports — for the QA bridge, `ultra-compare`, the spec's
+   * envelope checks and the auditor. The sky, drawing buffer and program count
+   * are read live here; the recipe, refusal, model, ledger, rigs, timings and
+   * the safety-demotion count come from the runtime. On an ordinary session it
+   * is the ordinary frame's facts with an empty ledger and no tier cap.
+   */
+  ultraReport(): UltraReport {
+    const sky = this.lighting.sky.texture;
+    const buffer = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    return this.ultra.report({
+      sky: { width: sky.image.width, height: sky.image.height, anisotropy: sky.anisotropy },
+      drawingBuffer: {
+        width: buffer.x,
+        height: buffer.y,
+        ratio: this.lastPixelRatio,
+        tierCap: this.ultra.tierPixelCap(this.lastWidth, this.lastHeight),
+      },
+      programs: this.renderer.info.programs?.length ?? 0,
+    });
+  }
+
+  /**
+   * The terrain view the scene is drawing — the one `app/Game.ts` reads
+   * through its `terrainView` getter from W1, so a tier rebuild can never
+   * leave Game holding a disposed view. Throws before the first `setLevel`.
+   */
+  currentTerrain(): TerrainView {
+    if (this.terrain === null) throw new Error('no level is installed yet');
+    return this.terrain;
+  }
+
+  /**
+   * Plant an Ultra activation failure at a stage (`?ultrafault=`): the next
+   * activation fails there, tears down and refuses truthfully (sticky
+   * `setup-failed` with that stage). A28 C1's `gl-*` plants raise a genuine
+   * GL error at one allocation stage instead. Null clears the plant.
+   */
+  setUltraFault(plant: UltraFaultPlant | null): void {
+    this.ultra.setFault(plant);
+  }
+
+  /**
+   * The fifteen live Ultra values from the F4 panel (`Game.applyTuning`
+   * forwards `readUltraLive`). The runtime writes them through W4's functions:
+   * the shared uniforms (the shade lift's two among them), the near rig's
+   * three live values, the fill — and a PMREM rebuild only when `bounceLift`
+   * moved.
+   */
+  setUltraTuning(values: UltraLiveTuning): void {
+    this.ultra.setLive(values);
+  }
+
+  /**
+   * The GPU-touching half of the Ultra lifecycle, as `UltraRuntime` asks for
+   * it. Each member is the few lines only a live renderer can run; the
+   * runtime's state machine is tested headlessly against a fake of this.
+   */
+  private createUltraHost(): UltraHost {
+    return {
+      scene: this.scene,
+      sun: this.sun,
+      lighting: () => this.lighting,
+      ordinaryQuality: () => this.ordinaryQuality,
+      // The armed quad probe draws four panes, and says so: Ultra is solo only.
+      viewCount: () => (this.perfProbe !== null ? 4 : this.viewCameras.length),
+      probeCaps: () => this.probeUltraCaps(),
+      maxAnisotropy: () => this.renderer.capabilities.getMaxAnisotropy(),
+      judge: (plan, caps, override) => judgeUltra(plan, caps, override),
+      installedTerrain: () => this.terrain,
+      installTerrain: (plan, recipe, context, beforeBuild) => this.installTerrain(plan, recipe, context, beforeBuild),
+      // I1: painted once per sky, `createSky(look, options)` on a miss.
+      paintUltraSky: (look, cloudSeed) =>
+        this.ultraSkies.paint(look, ultraSkyOptions(this.renderer.capabilities.getMaxAnisotropy(), cloudSeed)),
+      bakeSkyBackground: (sky) => bakeUltraSkyBackground(this.renderer, sky),
+      canvas: () => ({
+        width: this.renderer.domElement.clientWidth,
+        height: this.renderer.domElement.clientHeight,
+        pixelRatio: Math.min(window.devicePixelRatio, this.maxPixelRatio),
+      }),
+      buildEnvironment: (look, live) => buildUltraEnvironment(this.renderer, look, live),
+      buildFarShadow: (far, sunOffsetUnit) => far.build(this.renderer, this.scene, sunOffsetUnit),
+      drawFirstFrame: () => this.drawUltraFirstFrame(),
+      readGlErrors: (limit) => {
+        const gl = this.renderer.getContext();
+        const codes: number[] = [];
+        for (let read = 0; read < limit; read += 1) {
+          const code = gl.getError();
+          if (code === gl.NO_ERROR) break;
+          codes.push(code);
+        }
+        return codes;
+      },
+      framebufferStatus: (target) => ultraFramebufferStatus(this.renderer, target),
+      raiseGlError: (code) => this.raiseUltraGlError(code),
+      setShaderErrorHook: (hook) => this.setShaderErrorHook(hook),
+      resize: () => {
+        this.resize();
+      },
+      setShadowFocus: (x, y, z) => this.setShadowFocus(x, y, z),
+      now: () => performance.now(),
+    };
+  }
+
+  /**
+   * One world at a time (§3.6 step 5): whatever is installed is disposed
+   * *before* the next view is built. `context` null is the ordinary call,
+   * `createTerrain(plan, recipe)` exactly, with the ordinary defaults.
+   */
+  private installTerrain(
+    plan: LevelPlan,
+    recipe: BuildRecipe,
+    context: UltraBuildContext | null,
+    beforeBuild?: () => void,
+  ): TerrainView {
+    this.terrain?.dispose();
+    this.terrain = null;
+    // The planted `?ultrafault=build` (Fable F1): here, with the old world
+    // already gone, exactly where a real builder exception would land.
+    beforeBuild?.();
+    const terrain = context === null
+      ? createTerrain(plan, recipe)
+      : createTerrain(plan, recipe, context);
+    this.terrain = terrain;
+    this.scene.add(terrain.group);
+    return terrain;
+  }
+
+  /**
+   * Activation step 1: WebGL2, a renderable half-float target (the PMREM
+   * filter renders into one) and a texture limit that fits the near map.
+   */
+  private probeUltraCaps(): UltraCaps {
+    const gl = this.renderer.getContext();
+    const extensions = this.renderer.extensions;
+    return {
+      webgl2: typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext,
+      halfFloatRenderable:
+        extensions.has('EXT_color_buffer_half_float') || extensions.has('EXT_color_buffer_float'),
+      maxTextureSize: this.renderer.capabilities.maxTextureSize,
+    };
+  }
+
+  /**
+   * Activation step 9: one solo Ultra frame, drawn now, then `gl.getError()`.
+   *
+   * It is `beginFrame` + the single-view `renderView`, minus `beginFrame`'s
+   * demotion check — this *is* the activation that check would demote.
+   * Every Ultra program compiles and the 4096 near map allocates here, so an
+   * out-of-memory is found at the switch rather than mid-ride. Nothing
+   * pending is drained first (A28 C1, Codex's post-GU finding): the
+   * activation drained the stale errors once, before its first allocation,
+   * and has read each stage's since, so a code pending here is Ultra's and is
+   * kept — the drain that stood here discarded the sky's, the environment's
+   * and the far map's.
+   */
+  private drawUltraFirstFrame(): number {
+    const gl = this.renderer.getContext();
+    this.renderer.info.reset();
+    this.renderer.setScissorTest(false);
+    this.renderer.setViewport(0, 0, this.lastWidth, this.lastHeight);
+    this.renderer.clear();
+    this.ultra.beforeSoloRender(this.camera);
+    this.renderer.render(this.scene, this.camera);
+    return gl.getError();
+  }
+
+  /**
+   * `?ultrafault=gl-*` (A28 C1): raise a genuine GL error on this context
+   * now, so a journey proves that an error from a real allocation stage
+   * reaches the activation's check. INVALID_FRAMEBUFFER_OPERATION is a clear
+   * into a draw framebuffer with no attachments; INVALID_ENUM is a
+   * `getParameter` of no parameter. The draw binding three believes in is put
+   * back exactly. Never called unless the address planted it.
+   */
+  private raiseUltraGlError(code: number): void {
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    if (code === gl.INVALID_ENUM) {
+      gl.getParameter(0);
+      return;
+    }
+    if (code === gl.INVALID_FRAMEBUFFER_OPERATION) {
+      const bound = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+      const empty = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, empty);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, bound);
+      gl.deleteFramebuffer(empty);
+      return;
+    }
+    throw new Error(`?ultrafault= cannot raise GL error 0x${code.toString(16)}`);
+  }
+
+  /**
+   * Install (or with null remove) the runtime's shader-error hook on
+   * `renderer.debug.onShaderError`. three calls it in place of its own report
+   * when a program fails to link, so the hook is handed the logs.
+   */
+  private setShaderErrorHook(hook: ShaderErrorHook | null): void {
+    this.renderer.debug.onShaderError = hook === null
+      ? null
+      : (gl, program, vertexShader, fragmentShader): void => {
+        hook(describeShaderError(gl, program, vertexShader, fragmentShader));
+      };
   }
 
   /**
@@ -1168,10 +1893,21 @@ export class GameRenderer {
       ghostDrawCalls: this.ghost.visible ? this.ghost.drawCalls : 0,
       ghostTriangles: this.ghost.visible ? this.ghost.triangles : 0,
       // Colour and shadow together, because that is what the frame is charged
-      // and what `NON_LEVEL_RESERVE` reserves.
-      copDrawCalls: this.cop.visible ? this.cop.drawCalls + this.cop.shadowDrawCalls : 0,
-      copTriangles: this.cop.visible ? this.cop.triangles : 0,
+      // and what `NON_LEVEL_RESERVE` reserves — summed over the pack's shown
+      // trims since M39 Part P, because the solo reserve wears the pack (q209).
+      copDrawCalls: this.packCost('calls'),
+      copTriangles: this.packCost('triangles'),
     };
+  }
+
+  /** The shown trims' colour + shadow calls, or their triangles. Zero while the pack is hidden. */
+  private packCost(axis: 'calls' | 'triangles'): number {
+    let total = 0;
+    for (const cop of this.cops) {
+      if (!cop.visible) continue;
+      total += axis === 'calls' ? cop.drawCalls + cop.shadowDrawCalls : cop.triangles;
+    }
+    return total;
   }
 
   /** Register the game-level reaction to a context loss. One consumer. */
@@ -1184,10 +1920,51 @@ export class GameRenderer {
     // keeps the restore path alive even if listener ordering ever changes —
     // without preventDefault the browser never fires `webglcontextrestored`.
     event.preventDefault();
-    this.contextCallbacks?.onLost();
+    // M39 (A28, FE): Ultra releases what the restore will rebuild while the
+    // context is lost, when WebGL makes every delete a no-op; a restore that
+    // deleted them instead raised INVALID_OPERATION. A no-op unless Ultra is
+    // active. Then (A28 follow-up, CL) everything else three set up before
+    // the loss is released the same way, on every tier (`releaseLostContext`).
+    // The game hears about the loss whatever happens in either.
+    try {
+      this.ultra.onContextLost();
+    } finally {
+      try {
+        this.releaseLostContext();
+      } finally {
+        this.contextCallbacks?.onLost();
+      }
+    }
   };
 
+  /**
+   * Everything three set up before a context loss, sent its `dispose` event
+   * while the loss makes each delete a no-op — A28 follow-up (CL;
+   * `render/contextLoss.ts` has the mechanism).
+   *
+   * Without it, the first `dispose()` after a restore of anything drawn
+   * before the loss — a world swap, a quality change, an Ultra exit, a rider
+   * swap — deleted WebGL objects of the lost context through three's
+   * pre-loss bookkeeping and raised INVALID_OPERATION, on every tier, and
+   * that bookkeeping stayed reachable. The scene graph is everything this
+   * renderer draws except the painted sky under Ultra, which is drawn
+   * through its own cube (the extra here); Ultra's off-scene maps were
+   * released by `ultra.onContextLost` just before. Nothing is taken off the
+   * scene: three sets each object up again the first time it is drawn after
+   * the restore, as it always did. Runs on a loss only — never on a frame.
+   */
+  private releaseLostContext(): void {
+    releaseForLostContext([this.scene], [this.lighting.sky.texture], this.renderer.properties);
+  }
+
   private readonly onContextRestored = (): void => {
+    // M39: three has re-initialised by now (its listener was added first), so
+    // the Ultra resources that held *rendered* content — the sky's background
+    // cube, the PMREM environment and the far map, all released at the loss —
+    // are rebuilt before the game hears the context is back. A no-op unless
+    // Ultra is active. Nothing else needs a rebuild: everything else was
+    // released at the loss and is set up again from its CPU data when drawn.
+    this.ultra.onContextRestored();
     this.contextCallbacks?.onRestored();
   };
 
@@ -1212,7 +1989,15 @@ export class GameRenderer {
     const canvas = this.renderer.domElement;
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
-    const pixelRatio = Math.min(window.devicePixelRatio, this.maxPixelRatio);
+    // M39 T0 (§2.1): Ultra's pixel budget is a third term here and never a
+    // write to `maxPixelRatio`, so the `applyTuning` push (q206) cannot clobber
+    // it and Ultra's ratio is never above High's. On every ordinary tier the
+    // term is `Infinity`, and `Math.min` is exactly the two-term answer.
+    const pixelRatio = Math.min(
+      window.devicePixelRatio,
+      this.maxPixelRatio,
+      this.ultra.tierPixelCap(width, height),
+    );
 
     if (width === 0 || height === 0) {
       return { layoutChanged: false, width: this.lastWidth, height: this.lastHeight };
@@ -1230,6 +2015,9 @@ export class GameRenderer {
 
     this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width, height, false);
+    // M39 A22: the Ultra shadow maps follow the drawing buffer across its
+    // size line. Guarded: an ordinary tier never makes the call.
+    if (this.ultra.active) this.ultra.onDrawingBuffer(canvas.width, canvas.height);
 
     // Only a real layout change alters the projection. A pixel-ratio-only
     // change backs the same CSS box with more device pixels.
@@ -1382,6 +2170,10 @@ export class GameRenderer {
   setViewCount(count: number): void {
     const wanted = Math.max(1, Math.floor(count));
     if (wanted === this.viewCameras.length) return;
+    // M39: Ultra is one view. The app leaves it before any split (`openCouch`'s
+    // first line), so this is only ever the backstop — a safety demotion that
+    // counts itself and says so once, never a throw (§6.3 W5, invariant 11).
+    if (wanted > 1 && this.ultra.active) this.ultra.safetyDemote(wanted);
     while (this.viewCameras.length < wanted) {
       this.viewCameras.push(new THREE.PerspectiveCamera(
         THREE.MathUtils.radToDeg(CAMERA.fovAtRest),
@@ -1531,6 +2323,8 @@ export class GameRenderer {
    * marked dirty by hand, and a missed one renders black.
    */
   setQuality(level: 'low' | 'medium' | 'high', maxPixelRatio: number): void {
+    // M39: remembered for the Ultra teardown, which writes this tier's rig back.
+    this.ordinaryQuality = level;
     const shadows = level !== 'low';
     if (this.sun.castShadow !== shadows) this.sun.castShadow = shadows;
 
@@ -1546,6 +2340,11 @@ export class GameRenderer {
 
     const ceiling = level === 'high' ? maxPixelRatio : level === 'medium' ? 1.5 : 1;
     this.setMaxPixelRatio(Math.min(maxPixelRatio, ceiling));
+
+    // M39: while an Ultra rig stands, the ordinary rig just written is written
+    // over again. The app only moves the ordinary tier under Ultra on its way
+    // out, and nothing renders between those two calls; a no-op otherwise.
+    this.ultra.onOrdinaryQuality();
   }
 
   /** Current drawing-surface state, for the QA bridge and the overlay. */
@@ -1566,6 +2365,10 @@ export class GameRenderer {
    * for one canvas.
    */
   beginFrame(): void {
+    // M39: a shader that failed while Ultra was active demotes here, at the top
+    // of the next frame — before the caller points the shadow focus and the
+    // surround plane, so the rebuilt ordinary world is drawn whole.
+    if (this.ultra.demotionPending) this.ultra.demote();
     this.renderer.info.reset();
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, this.lastWidth, this.lastHeight);
@@ -1605,6 +2408,10 @@ export class GameRenderer {
     if (this.viewCameras.length === 1) {
       this.renderer.setScissorTest(false);
       this.renderer.setViewport(0, 0, this.lastWidth, this.lastHeight);
+      // M39: the Ultra frame hook — finalise the near cascade from the focus
+      // the caller just set, and hand the Ultra materials this frame's rig and
+      // far map. Only while Ultra is active; the ordinary frame runs nothing.
+      if (this.ultra.active) this.ultra.beforeSoloRender(camera);
     } else {
       // Whole pixels from `viewBounds`, which tiles the canvas exactly once —
       // on both axes since M27 Phase 1, so a quadrant's own y and height come
@@ -1651,6 +2458,12 @@ export class GameRenderer {
   plantPerfQuadProbe(at: { x: number; y: number; z: number }, headingY: number): void {
     if (this.viewCameras.length !== 1) {
       throw new Error('the quad probe is a solo instrument; a couch split is active');
+    }
+    // M39: the probe measures the ordinary four-seat frame, and Ultra never
+    // draws more than one view — so it refuses rather than measuring a frame
+    // the game cannot draw (invariant 11).
+    if (this.ultra.active) {
+      throw new Error('the quad probe measures ordinary tiers; Ultra is active');
     }
     this.clearPerfQuadProbe();
 
@@ -1800,6 +2613,9 @@ export class GameRenderer {
   }
 
   dispose(): void {
+    // M39: every Ultra-owned resource first, through the one teardown — minus
+    // re-hanging an ordinary light and rebuilding a world nobody will see.
+    this.ultra.teardown('dispose');
     this.clearPerfQuadProbe();
     const canvas = this.renderer.domElement;
     canvas.removeEventListener('webglcontextlost', this.onContextLost);
@@ -1811,7 +2627,7 @@ export class GameRenderer {
     this.targets?.dispose();
     this.targets = null;
     this.ghost.dispose();
-    this.cop.dispose();
+    for (const cop of this.cops) cop.dispose();
     this.lighting.dispose();
     this.sparks.dispose();
     this.dust.dispose();

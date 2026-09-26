@@ -135,7 +135,11 @@ export const RIBBON_ROW_STEP = 1.25;
  * a line differently from the mesh it describes would be worse than no budget.
  */
 export function ribbonRows(length: number): number {
-  return Math.max(2, Math.ceil(length / RIBBON_ROW_STEP) + 1);
+  // A micrometre of slack (M39 r6): a line whose sampled length lands on a
+  // whole number of rows is a knife edge the last place of a sine decides, and
+  // sines are not bit-identical between JavaScript engines — so a browser drew
+  // a row the Node-side budget had not counted. The slack is far below a row.
+  return Math.max(2, Math.ceil(length / RIBBON_ROW_STEP - 1e-6) + 1);
 }
 
 /**

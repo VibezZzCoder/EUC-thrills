@@ -2,20 +2,32 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { CHASE, EUC, PADDLE, PHYSICS, SIMULATION } from '../data/tuning.ts';
+import { buildLevelPlan } from '../level/buildPlan.ts';
 import { generateLevel } from '../level/generateRoute.ts';
 import { topSpeedPreset } from './topSpeedPreset.ts';
 import { createLevel } from '../level/levels.ts';
 import type { LevelPlan } from '../level/plan.ts';
 import { RIDEABILITY } from '../level/routeValidator.ts';
-import { CpuRider, speedAtLateralLimit, type CpuQuarry, type CpuView } from './cpuRider.ts';
+import {
+  COP_WHEEL_TUNING,
+  CpuRider,
+  speedAtLateralLimit,
+  type CpuPackInput,
+  type CpuQuarry,
+  type CpuView,
+  type RouteBlocker,
+} from './cpuRider.ts';
 import { lateralCeilingG, type LateralCeilingTuning } from './lateralCeiling.ts';
 import { createPose, EucController, type EucPose } from './EucController.ts';
 import { HazardField } from './hazards.ts';
 import { Paddle, type HittableSet, type HittableVolume } from './paddle.ts';
 import { PlanTerrainSampler } from './planSampler.ts';
-import { RouteSpine } from './routeSpine.ts';
+import { createSpineSample, RouteSpine } from './routeSpine.ts';
 import { SoftBodyField } from './softBodies.ts';
+import { foldedRouteFixture } from './foldedRouteFixture.ts';
 import { createGroundSample } from './world.ts';
+import { buildRouteField, type RouteField } from './routeField.ts';
+import { followLine, packmateBands, type PackBody } from './copPack.ts';
 
 /**
  * M18 Phase 1's kill gate, headless.
@@ -78,6 +90,13 @@ interface RideOptions {
   /** The phantom stands still instead — the Codex M31 QA shape, with every close-quarters rule live. */
   readonly parkedQuarry?: boolean;
   /**
+   * The phantom leads him this many metres further down the line, moved every
+   * step, instead of standing at the start — clamped at the start itself. On
+   * a closed ring the start is also just past the end, so only a lead keeps
+   * the short way to the phantom the way back down the whole route.
+   */
+  readonly leadMetres?: number;
+  /**
    * The wheel's *Force lean*, radians, with the brain's drive and brake
    * beliefs derived from it exactly as `Game.applyTuning` derives them.
    */
@@ -109,12 +128,17 @@ function rideAlone(
       powerLimitSpeed: preset.powerLimitSpeed,
     }),
     ...(options.lean === undefined ? {} : { maxLeanPitch: options.lean }),
+    // His own cutout edge, exactly as `Game.installChaseWorld` and
+    // `Game.applyTuning` give his wheel (2026-09-22): the player's edge moved
+    // and his did not, so a harness on the default tuning would ride a wheel
+    // the game never builds.
+    ...COP_WHEEL_TUNING,
   };
   const controller = new EucController(sampler, {
     spawn: plan.spawn,
     hazards: new HazardField(plan.hazards ?? []),
     softBodies: new SoftBodyField(plan.softBodies ?? []),
-    ...(Object.keys(tuning).length === 0 ? {} : { tuning }),
+    tuning,
   });
   const brain = new CpuRider(spine, plan, sampler);
   brain.skill = skill;
@@ -129,6 +153,11 @@ function rideAlone(
   if (options.brakeBelief !== undefined) brain.brakeDeceleration = options.brakeBelief;
 
   const reverse = options.reverse === true;
+  // Where a parked rider waits. At the spawn on a point-to-point route; on a
+  // closed town ring the spawn is 8 m *ahead* of a cop starting at the line's
+  // end, across the seam, so the rider parks ~45 % of the ring back and the
+  // short way to them is still the ride back past the kicker (M39 r6).
+  const parkAt = spine.closed && options.parkedQuarry === true ? spine.length * 0.55 : 0;
   let quarry: CpuQuarry | null = null;
   if (reverse) {
     const endAt = spine.sample(spine.length - 8, { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 });
@@ -138,7 +167,7 @@ function rideAlone(
       position: { x: endAt.x, y: ground.height, z: endAt.z },
       headingY: endAt.headingY + Math.PI,
     });
-    const startAt = spine.sample(0, { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 });
+    const startAt = spine.sample(parkAt, { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 });
     quarry = { x: startAt.x, y: startAt.y, z: startAt.z, speed: options.parkedQuarry === true ? 0 : 28 };
   }
 
@@ -181,6 +210,13 @@ function rideAlone(
     if (controller.crashed && !wasCrashed) crashes += 1;
     wasCrashed = controller.crashed;
 
+    if (quarry !== null && options.leadMetres !== undefined) {
+      const lead = spine.sample(
+        Math.max(0, brain.routeDistance - options.leadMetres),
+        { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 },
+      );
+      quarry = { x: lead.x, y: lead.y, z: lead.z, speed: quarry.speed };
+    }
     controller.step(STEP, brain.step(STEP, view, quarry));
     seconds += STEP;
 
@@ -191,7 +227,7 @@ function rideAlone(
       offRouteSamples += 1;
     }
     const finished = reverse
-      ? brain.routeDistance <= FINISH_TOLERANCE_METRES
+      ? brain.routeDistance <= parkAt + FINISH_TOLERANCE_METRES
       : brain.routeDistance >= spine.length - FINISH_TOLERANCE_METRES;
     if (finished) {
       return {
@@ -373,7 +409,9 @@ test('a cursor that would jump to a hairpin’s other arm is asked which way he 
   // is nearer the other in plan; located plainly it jumps, located with the
   // arm's own facing it stays. Searched for rather than named, so a
   // regenerated route that moves the hairpin still exercises the rule.
-  const { plan } = generateLevel('sweep-39');
+  // M39 r6: town rings keep roads apart by construction, so the hairpin
+  // sweep-39 used to carry lives in a built fixture now.
+  const plan = foldedRouteFixture();
   const spine = RouteSpine.fromPlan(plan);
   assert.ok(spine !== null);
   const a = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
@@ -391,7 +429,7 @@ test('a cursor that would jump to a hairpin’s other arm is asked which way he 
       }
     }
   }
-  assert.ok(hairpin !== null, 'sweep-39 no longer has a hairpin to test against');
+  assert.ok(hairpin !== null, 'the folded fixture no longer has a hairpin to test against');
   spine.sample(hairpin.near, a);
   spine.sample(hairpin.far, b);
   // 70 % of the way from this arm to the other, so the other is nearer in
@@ -422,7 +460,8 @@ test('a rider on a divided road is tracked along their own lane, not the one bes
   // between. A global search cannot tell the lanes apart, so the rider read
   // as 335 m away on the other one and the cop turned to chase the reading.
   // The brain tracks the quarry windowed around its last answer instead.
-  const { plan } = generateLevel('sweep-39');
+  // M39 r6: the divided road is a built fixture now (see `foldedRouteFixture`).
+  const plan = foldedRouteFixture();
   const spine = RouteSpine.fromPlan(plan);
   assert.ok(spine !== null);
   const sampler = new PlanTerrainSampler(plan);
@@ -442,7 +481,7 @@ test('a rider on a divided road is tracked along their own lane, not the one bes
       }
     }
   }
-  assert.ok(lanes !== null, 'sweep-39 no longer has a divided road to test on');
+  assert.ok(lanes !== null, 'the folded fixture no longer has a divided road to test on');
   // The rider starts 40 m before the later lane, where a global search is
   // unambiguous, and rides 100 m along it at 20 m/s, hugging the side
   // nearer the other lane the way a rider cutting the inside does — so for
@@ -509,10 +548,25 @@ test('the high-speed policy follows the live wheel tuning it is given', () => {
     brain as unknown as { cutoutSpeed(): number }
   ).cutoutSpeed();
 
-  const shipped = Math.sqrt(
-    (EUC.leanToAccel * Math.sin(EUC.maxLeanPitch)) / EUC.dragCoefficient,
-  ) * EUC.cutoutSpeedShare * CHASE.cutoutMarginShare;
+  const top = Math.sqrt((EUC.leanToAccel * Math.sin(EUC.maxLeanPitch)) / EUC.dragCoefficient);
+  const shipped = top * CHASE.copCutoutSpeedShare * CHASE.cutoutMarginShare;
   assert.ok(Math.abs(cutoutSpeed() - shipped) < 1e-12);
+  // **Pinned where it was before the owner tightened the player's cutout**
+  // (2026-09-22). His ceiling used to be derived from the player's edge,
+  // 0.965 × 0.995 of the derived top; the player's edge moved to 0.94 and the
+  // owner called the chase too easy in the same message, so the cop keeps the
+  // old product — 28.56 m/s, 63.9 mph on the shipped 65 wheel. A change here
+  // is a change to how hard the chase is, and is the owner's to make.
+  assert.ok(
+    Math.abs(cutoutSpeed() - top * 0.965 * 0.995) < 1e-12,
+    `the cop's ceiling moved to ${(cutoutSpeed() * 2.236936).toFixed(2)} mph`,
+  );
+  assert.ok(Math.abs(cutoutSpeed() - 28.5595) < 0.001, `the cop's ceiling is ${cutoutSpeed().toFixed(4)} m/s`);
+  // And his wheel's own edge is above that ceiling, so the brain never rides
+  // him into a cutout his controller would fire — the player's edge now sits
+  // *below* it, which is exactly why his wheel does not take the player's.
+  assert.ok(top * COP_WHEEL_TUNING.cutoutSpeedShare > cutoutSpeed());
+  assert.ok(top * EUC.cutoutSpeedShare < cutoutSpeed());
 
   brain.driveAcceleration = 9;
   brain.dragCoefficient = 0.09;
@@ -738,16 +792,25 @@ test('a full-skill cop rides every pinned seed backwards too, and no seed is dow
   // route back down is a cop who is lost for half the clock. Codex's M31 QA
   // found the shipped sweep ran forward only and rode fresh seeds back to
   // extend the known dogleg residual; this is the reverse gate, on the same
-  // forty-eight seeds, led by a phantom at the start so the ride measures
-  // riding and nothing else. The dogleg (`sweep-29`, q128) is a clean ride
-  // since the cursor learned to adjudicate a jump by facing.
+  // forty-eight seeds, led by a phantom so the ride measures riding and
+  // nothing else. The dogleg (`sweep-29`, q128) is a clean ride since the
+  // cursor learned to adjudicate a jump by facing.
+  //
+  // **The phantom leads him by 150 m on the line, and no longer waits at the
+  // start** — M39's town ring (r6). A route is now a lap of a closed ring
+  // whose line ends where it began (since Codex's r6 QA it runs on past the
+  // finish into the plaza), so a phantom parked at the start was the *short*
+  // way round: every seed turned, crossed the seam in seconds and
+  // "finished" without riding a metre of the route backwards. A phantom moving ahead of him down the line keeps the short
+  // way the way back, and at 150 m (beyond `pursuitFarMetres`) he rides his
+  // own racing line exactly as he did behind the far-away phantom before.
   const failures: string[] = [];
   const down: string[] = [];
   let worstOffRoute = 0;
 
   for (const seed of SWEEP) {
     const { plan } = generateLevel(seed);
-    const ride = rideAlone(plan, 1, 240, null, { reverse: true });
+    const ride = rideAlone(plan, 1, 240, null, { reverse: true, leadMetres: 150 });
     worstOffRoute = Math.max(worstOffRoute, ride.worstOffRoute);
     if (ride.crashes > 0) down.push(`${seed}:${ride.crashes}`);
     if (!ride.finished) {
@@ -767,10 +830,22 @@ test('the brain’s braking belief follows Force lean exactly as its drive belie
   // *Force lean* 0.25 rad the brain believed 1.94× the deceleration it had.
   // `Game.applyTuning` now pushes the product of the live authority and the
   // live lean's sine; ridden at that lean, the derived belief is clean where
-  // the frozen belief still finds `sweep-15`'s deep hole — the same hole the
+  // the frozen belief still finds a deep hole the derived one brakes for in
+  // time — on the pre-M39 routes that was `sweep-15`'s, the same hole the
   // raw-authority belief found at the default lean (§30 q124).
+  //
+  // **Re-picked for M39's town ring (r6).** Every world is regenerated, and
+  // `sweep-15`'s hole is gone with its route: on r6 the frozen belief rides
+  // all four old seeds clean. Swept over the forty-eight pinned seeds plus the
+  // named ones at this lean, exactly one seed separates the beliefs:
+  // `sweep-30`, where the frozen belief meets a deep hole at 1,492 m at
+  // 7.2 m/s under the blocker cap (the wipeout is 6.5) and the derived belief
+  // rides the whole route clean — the same failure, a different hole. It
+  // does so with the pre-fix M39 brain too, so the pick does not lean on the
+  // brain changes made alongside it. (`sweep-41` puts both beliefs down at
+  // this lean, at the route's end, and so tells them nothing apart.)
   const lean = 0.25;
-  const seeds = ['route-41', 'sweep-15', 'escape', 'police'];
+  const seeds = ['route-41', 'sweep-30', 'escape', 'police'];
   const frozen = EUC.brakeAuthority * Math.sin(EUC.maxLeanPitch);
   const liveDown: string[] = [];
   const frozenDown: string[] = [];
@@ -979,13 +1054,20 @@ test('the brain never asks the wheel for something the actions cannot carry', ()
  * reproduction (standing square behind a corridor-spanning planter).
  */
 function pursueAroundWall(
-  seed: string,
   wallDistance: number,
   copDistance: number,
   lateral: number,
   maxSeconds = 60,
 ): PursuitResult & { readonly wallProjected: boolean } {
-  const { plan } = generateLevel(seed);
+  // A fixed, clear street isolates the synthetic wall. Generated seeds change
+  // furniture across revisions and can otherwise put the wall through a house.
+  const plan = buildLevelPlan({ main: [{ id: 'wall-street', length: 300,
+    halfWidth: 6, surface: 'pavement' }] }, {
+    id: 'wall-fixture', spawn: { position: { x: 0, y: 0, z: 0 }, headingY: 0 },
+    surround: { height: 0, surface: 'grass' },
+    checkpoints: [{ id: 'start', segment: 'wall-street', s: 8, kind: 'start', label: 'Start' },
+      { id: 'finish', segment: 'wall-street', s: 280, kind: 'finish', label: 'Finish' }],
+  });
   const spine = RouteSpine.fromPlan(plan)!;
   const at = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
   spine.sample(wallDistance, at);
@@ -1085,7 +1167,7 @@ test('a wall square across the corridor projects into the blocker field', () => 
   // standing on the line measured itself as flat road and vanished. Route
   // furniture never sits on the validated line, which is why 48 seeds never
   // noticed; a player parking the cop behind a plaza wall did.
-  const pursuit = pursueAroundWall('route-41', 120, 118, 0, 1);
+  const pursuit = pursueAroundWall(120, 118, 0, 1);
   assert.ok(pursuit.wallProjected, 'the on-line wall is invisible to the brain');
 });
 
@@ -1096,7 +1178,7 @@ test('a quarry camped behind a wall on the road is flanked, not besieged', () =>
   // and watch the cop ride side to side forever. The whole §4.2 fix is that
   // he now works the problem — brakes for the wall, tries its end, backs out
   // of the wedge, slides around, and closes.
-  const pursuit = pursueAroundWall('route-41', 120, 60, 0);
+  const pursuit = pursueAroundWall(120, 60, 0);
 
   assert.ok(
     pursuit.closest <= CHASE.swingRangeMetres,
@@ -1113,7 +1195,7 @@ test('a quarry camped behind a wall in the field is flanked, not besieged', () =
   // The same camp with both of them off the road: no blockers out here, so
   // this is the widening sideways walk on its own — the dead-reckoning half
   // of the fix, where the road's end-around reasoning cannot help.
-  const pursuit = pursueAroundWall('route-41', 120, 60, 14);
+  const pursuit = pursueAroundWall(140, 90, 14);
 
   assert.ok(
     pursuit.closest <= CHASE.swingRangeMetres,
@@ -1149,8 +1231,9 @@ function wedgeAboutFace(
   quarryBehindMetres: number,
   maxSeconds = 30,
   lateral = 0,
+  search = true,
 ): { recoverSeconds: number; hops: number; closest: number; crashes: number } {
-  const { plan } = generateLevel(seed);
+  const plan = seed === 'slice' ? createLevel('slice') : generateLevel(seed).plan;
   const spine = RouteSpine.fromPlan(plan)!;
   const at = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
   spine.sample(wallDistance, at);
@@ -1173,6 +1256,8 @@ function wedgeAboutFace(
     softBodies: new SoftBodyField(plan.softBodies ?? []),
   });
   const brain = new CpuRider(spine, plan, sampler);
+  // The close-quarters search off: the escape ladder as it stands without it.
+  if (!search) brain.navRangeMetres = -1;
 
   // Right against the face, pointed at it — the pose the owner watched.
   const copAt = { x: 0, y: 0, z: 0, headingY: 0, halfWidth: 0, distance: 0 };
@@ -1287,7 +1372,16 @@ test('the wedged-start siege breaks: one spin escape reaches around the wall', (
   // spin about-face, committed ride-out along the flank's own leg, around
   // the end and onto the quarry. Being wedged is allowed; staying wedged is
   // the defect.
-  const siege = wedgeAboutFace('route-41', 120, -8, 90);
+  // On the authored slice since M39 r6's Codex QA: a town ring's line is
+  // closed, and on route-41's block entry the cop now reads the true road
+  // past the plaza end and swerves round the wall's end in ~4 s with no spin
+  // at all — a way round is not a siege. The slice is point-to-point, and its
+  // 200 m wall is one the M24 move must break.
+  // **Since the brutal pass (2026-09-25) the close-quarters search finds the
+  // wall's end from the wedge itself** — a way round is not a siege — so the
+  // M24 move is exercised with the search off: it stays the backup for a
+  // wall the plan does not state, and the search must do at least as well.
+  const siege = wedgeAboutFace('slice', 200, -8, 90, 0, false);
   assert.ok(
     siege.closest <= CHASE.swingRangeMetres,
     `the siege held: closest ${siege.closest.toFixed(1)} m after 90 s`,
@@ -1297,6 +1391,10 @@ test('the wedged-start siege breaks: one spin escape reaches around the wall', (
     'the spin escape never fired — whatever got him around, it was not the M24 move',
   );
   assert.equal(siege.crashes, 0, `${siege.crashes} crashes escaping one wedge`);
+  const searched = wedgeAboutFace('slice', 200, -8, 90);
+  assert.ok(searched.closest <= CHASE.swingRangeMetres,
+    `the search left the siege standing: closest ${searched.closest.toFixed(1)} m after 90 s`);
+  assert.equal(searched.crashes, 0, `${searched.crashes} crashes finding the way round`);
 });
 
 test('a top-speed head-on rider is met by the cop paddle, not waved past', () => {
@@ -1480,4 +1578,479 @@ test('a stopped quarry inside the cop cone is hittable from either side', () => 
     brain.step(STEP, view, quarry).throttle > 0,
     'the cop stopped outside the stationary paddle envelope',
   );
+});
+
+// ---------------------------------------------------------------------------
+// M39 Part P — the pack (`docs/PLANS.md` §39.6b.3, `docs/M39_CHASE.md` §2c)
+// ---------------------------------------------------------------------------
+//
+// Three brains in one world: one shared route field, a per-step packmate
+// input, a quarry with an identity. Nothing below adds a steering law; every
+// case asks whether the brain's own vocabulary — blockers, the gap search, the
+// lateral follow — carries a pack, and whether a lone cop is untouched by it.
+
+/** A cop body for the pack harness: his wheel, his brain, what he senses. */
+interface PackCop {
+  readonly controller: EucController;
+  readonly brain: CpuRider;
+  readonly pose: EucPose;
+  readonly view: { -readonly [K in keyof CpuView]: CpuView[K] };
+  readonly bands: RouteBlocker[];
+  crashes: number;
+  wasCrashed: boolean;
+  finished: boolean;
+}
+
+function packCop(
+  plan: LevelPlan,
+  spine: RouteSpine,
+  sampler: PlanTerrainSampler,
+  field: RouteField | undefined,
+  distance: number,
+  reverse = false,
+): PackCop {
+  const controller = new EucController(sampler, {
+    spawn: plan.spawn,
+    hazards: new HazardField(plan.hazards ?? []),
+    softBodies: new SoftBodyField(plan.softBodies ?? []),
+    tuning: { ...COP_WHEEL_TUNING },
+  });
+  const at = spine.sample(distance, createSpineSample());
+  const ground = createGroundSample();
+  sampler.sampleGround(at.x, at.z, ground);
+  controller.reset({
+    position: { x: at.x, y: ground.height, z: at.z },
+    headingY: at.headingY + (reverse ? Math.PI : 0),
+  });
+  const brain = new CpuRider(spine, plan, sampler, field);
+  const pose = createPose();
+  controller.writePose(pose);
+  const view = {
+    x: pose.x, y: pose.y, z: pose.z, headingY: pose.headingY, speed: 0,
+    grounded: true, crashed: false, curbAhead: 0, lateralLimitG: EUC.maxLateralG,
+  };
+  brain.place(view, distance);
+  return { controller, brain, pose, view, bands: [], crashes: 0, wasCrashed: false, finished: false };
+}
+
+/** Read the body into the brain's view, and count the crash edge. */
+function sensePack(cop: PackCop): void {
+  const { controller, pose, view } = cop;
+  controller.writePose(pose);
+  view.x = pose.x;
+  view.y = pose.y;
+  view.z = pose.z;
+  view.headingY = pose.headingY;
+  view.speed = pose.speed;
+  view.grounded = pose.y - pose.groundY <= 1e-6;
+  view.crashed = controller.crashed;
+  view.curbAhead = controller.curbHeightAhead;
+  view.lateralLimitG = controller.lateralLimit;
+  if (controller.crashed && !cop.wasCrashed) cop.crashes += 1;
+  cop.wasCrashed = controller.crashed;
+}
+
+/**
+ * The pack as `copPack` reads it (§2b.2): each cop's route distance, line
+ * lateral and unsigned speed, standing while neither crashed nor finished.
+ * The brain's cases run the production `packmateBands` and `followLine`, so
+ * what is pinned here is the composition Game and the bench ride.
+ */
+function packBodies(cops: readonly PackCop[]): PackBody[] {
+  return cops.map((mate) => ({
+    distance: mate.brain.routeDistance,
+    lateral: mate.brain.lineLateral,
+    speed: Math.abs(mate.pose.speed),
+    standing: !mate.controller.crashed && !mate.finished,
+  }));
+}
+
+/** One fixed step of a pack: every body sensed, then every brain and wheel stepped. Cop 0 is the tail. */
+function stepPack(
+  cops: readonly PackCop[],
+  spine: RouteSpine,
+  quarry: CpuQuarry | null,
+  withPack = true,
+): void {
+  for (const cop of cops) sensePack(cop);
+  const bodies = withPack ? packBodies(cops) : [];
+  cops.forEach((cop, index) => {
+    if (cop.finished) return;
+    const halfWidth = withPack ? spine.sample(cop.brain.routeDistance, createSpineSample()).halfWidth : 0;
+    const pack: CpuPackInput | undefined = withPack
+      ? {
+        bands: packmateBands(index, bodies, spine, cop.bands),
+        followLine: followLine(index, index > 0 ? 'patrol' : 'tail', bodies, halfWidth, CHASE.packSpacingMetres, spine),
+      }
+      : undefined;
+    cop.controller.step(STEP, cop.brain.step(STEP, cop.view, quarry, pack));
+  });
+}
+
+test('a brain handed the shared field rides byte-identically to one that built its own', () => {
+  // §39.6b.4 "Field construction": share it, because the field is read-only
+  // and the brains keep only cursors. This is the claim that makes sharing
+  // free: the same inputs through the same builder, so the only difference
+  // is who called it. An empty pack input is the same brain again.
+  for (const seed of ['euc', 'sweep-15']) {
+    const { plan } = generateLevel(seed);
+    const spine = RouteSpine.fromPlan(plan);
+    assert.ok(spine !== null);
+    const sampler = new PlanTerrainSampler(plan);
+    const field = buildRouteField(spine, plan, sampler);
+    const cops = [
+      packCop(plan, spine, sampler, undefined, 0),
+      packCop(plan, spine, sampler, field, 0),
+      packCop(plan, spine, sampler, field, 0),
+    ];
+    const at = createSpineSample();
+    for (let step = 0; step < 25 * SIMULATION.hz; step += 1) {
+      // A quarry leading him for most of it, then nobody, then a parked one.
+      spine.sample(Math.min(spine.length, cops[0].brain.routeDistance + 40), at);
+      const quarry: CpuQuarry | null = step % 900 < 700 ? { x: at.x, y: at.y, z: at.z, speed: 12 } : null;
+      for (const cop of cops) sensePack(cop);
+      const intents = cops.map((cop, index) => {
+        const intent = index === 2
+          ? cop.brain.step(STEP, cop.view, quarry, { bands: [], followLine: null })
+          : cop.brain.step(STEP, cop.view, quarry);
+        return { ...intent, cap: cop.brain.capReason, capSpeed: cop.brain.capSpeed, offset: cop.brain.chosenOffset };
+      });
+      cops.forEach((cop, index) => cop.controller.step(STEP, intents[index]));
+      assert.deepStrictEqual(intents[1], intents[0], `${seed}: the shared field's brain parted at step ${step}`);
+      assert.deepStrictEqual(intents[2], intents[0], `${seed}: an empty pack parted at step ${step}`);
+    }
+  }
+});
+
+test('a quarry-less brain follows the pack line it is handed, and a null line is no pack at all', () => {
+  // §2c R-4: a non-null follow line applies with or without a quarry —
+  // the bench's baiter depends on it — and a null one leaves the route ride
+  // exactly the brain's own.
+  const { plan } = generateLevel('euc');
+  const spine = RouteSpine.fromPlan(plan);
+  assert.ok(spine !== null);
+  const sampler = new PlanTerrainSampler(plan);
+  const field = buildRouteField(spine, plan, sampler);
+  const left = packCop(plan, spine, sampler, field, 0);
+  const right = packCop(plan, spine, sampler, field, 0);
+  const plain = packCop(plan, spine, sampler, field, 0);
+  const nulled = packCop(plan, spine, sampler, field, 0);
+  const line = 1.5;
+  const lateral = { left: 0, right: 0, samples: 0 };
+  for (let step = 0; step < 20 * SIMULATION.hz; step += 1) {
+    for (const cop of [left, right, plain, nulled]) sensePack(cop);
+    left.controller.step(STEP, left.brain.step(STEP, left.view, null, { bands: [], followLine: line }));
+    right.controller.step(STEP, right.brain.step(STEP, right.view, null, { bands: [], followLine: -line }));
+    const own = { ...plain.brain.step(STEP, plain.view, null) };
+    const withNull = nulled.brain.step(STEP, nulled.view, null, { bands: [], followLine: null });
+    assert.deepStrictEqual({ ...withNull }, own, `a null follow line parted from no pack at step ${step}`);
+    plain.controller.step(STEP, own);
+    nulled.controller.step(STEP, withNull);
+    // After the first five seconds, measured against his own racing line.
+    if (step > 5 * SIMULATION.hz) {
+      lateral.left += left.brain.lineLateral - plain.brain.lineLateral;
+      lateral.right += right.brain.lineLateral - plain.brain.lineLateral;
+      lateral.samples += 1;
+    }
+  }
+  const meanLeft = lateral.left / lateral.samples;
+  const meanRight = lateral.right / lateral.samples;
+  assert.ok(meanLeft > 0.5, `told to ride ${line} m left, he averaged ${meanLeft.toFixed(2)} m left of his own line`);
+  assert.ok(meanRight < -0.5, `told to ride ${line} m right, he averaged ${(-meanRight).toFixed(2)} m right of it`);
+  assert.equal(left.crashes + right.crashes, 0, 'a pack line put a cop down');
+});
+
+/**
+ * Two cops nose to tail behind a rider running the line at 14 m/s — faster
+ * than the corners let a cop ride, so the chase stays a road pursuit rather
+ * than the close pursuit at arm's length (where a pack alongside is the
+ * intended outcome, q207). Measured over the steps where both are 12–80 m
+ * from the rider and within 10 m of each other by route: the share of them
+ * with the two cops inside 3 m of each other (the bench's stacking share, at
+ * road range), and their mean lateral separation.
+ */
+function stackingRun(seed: string, withPack: boolean): {
+  readonly together: number; readonly share: number; readonly lateral: number; readonly crashes: number;
+} {
+  const { plan } = generateLevel(seed);
+  const spine = RouteSpine.fromPlan(plan);
+  assert.ok(spine !== null);
+  const sampler = new PlanTerrainSampler(plan);
+  const field = buildRouteField(spine, plan, sampler);
+  const cops = [packCop(plan, spine, sampler, field, 65), packCop(plan, spine, sampler, field, 60)];
+  const at = createSpineSample();
+  let quarryAt = 105;
+  let together = 0;
+  let stacked = 0;
+  let lateral = 0;
+  for (let step = 0; step < 30 * SIMULATION.hz; step += 1) {
+    quarryAt += 14 * STEP;
+    spine.sample(quarryAt, at);
+    stepPack(cops, spine, { x: at.x, y: at.y, z: at.z, speed: 14, id: 0 }, withPack);
+    const [a, b] = cops;
+    if (a.controller.crashed || b.controller.crashed) continue;
+    const rangeA = Math.hypot(a.pose.x - at.x, a.pose.z - at.z);
+    const rangeB = Math.hypot(b.pose.x - at.x, b.pose.z - at.z);
+    if (rangeA <= 12 || rangeB <= 12 || rangeA >= 80 || rangeB >= 80) continue;
+    if (Math.abs(a.brain.routeDistance - b.brain.routeDistance) > 10) continue;
+    together += 1;
+    if (Math.hypot(a.pose.x - b.pose.x, a.pose.z - b.pose.z) <= 3) stacked += 1;
+    lateral += Math.abs(a.brain.lineLateral - b.brain.lineLateral);
+  }
+  return {
+    together,
+    share: stacked / Math.max(1, together),
+    lateral: lateral / Math.max(1, together),
+    crashes: cops[0].crashes + cops[1].crashes,
+  };
+}
+
+test('two cops on one line stack without the packmate band and spread with it', () => {
+  // §39.6b.3 "Not stacking": a packmate is a moving blocker and a patrol
+  // follows the roomier side of him. Without either, both copy the rider's
+  // line and ride it a wheel apart; with them, the second rides beside or
+  // behind the first, and neither goes down doing it.
+  for (const seed of ['euc', 'euc-7']) {
+    const alone = stackingRun(seed, false);
+    const pack = stackingRun(seed, true);
+    assert.ok(alone.share > 0.15,
+      `${seed}: without the band the fixture no longer stacks (${(alone.share * 100).toFixed(1)} %), so it tests nothing`);
+    assert.ok(pack.share <= 0.02,
+      `${seed}: with the band ${(pack.share * 100).toFixed(1)} % of close steps still had two cops inside 3 m`);
+    assert.ok(pack.lateral > alone.lateral * 1.5,
+      `${seed}: lateral separation ${pack.lateral.toFixed(2)} m with the band against ${alone.lateral.toFixed(2)} m without`);
+    assert.equal(pack.crashes, 0, `${seed}: the pack put a cop down`);
+  }
+});
+
+test('a packmate may shape his line and his pace, and never park him', () => {
+  // §39.6b.3: no cap derived from a packmate's speed may brake a cop below
+  // `TURN_TO_FACE_SPEED` (2 m/s). A packmate standing still across the whole
+  // road — the worst band there is — is not a wall: cops pass through each
+  // other, so the walls-alone search still finds the road, and he rides on.
+  const { plan } = generateLevel('euc');
+  const spine = RouteSpine.fromPlan(plan);
+  assert.ok(spine !== null);
+  const sampler = new PlanTerrainSampler(plan);
+  const cop = packCop(plan, spine, sampler, buildRouteField(spine, plan, sampler), 0);
+  let slowest = Infinity;
+  for (let step = 0; step < 12 * SIMULATION.hz; step += 1) {
+    sensePack(cop);
+    const inject = step >= 6 * SIMULATION.hz;
+    const ahead = cop.brain.routeDistance + 12;
+    const bands: RouteBlocker[] = inject
+      ? [{ from: ahead - 0.8, to: ahead + 0.8, left: 30, right: -30, safeSpeed: 0, facing: 0 }]
+      : [];
+    const intent = cop.brain.step(STEP, cop.view, null, { bands, followLine: null });
+    if (inject) {
+      slowest = Math.min(slowest, cop.brain.capSpeed);
+    }
+    cop.controller.step(STEP, intent);
+  }
+  assert.ok(slowest >= 2, `a standing packmate braked him to ${slowest.toFixed(2)} m/s`);
+  assert.equal(cop.crashes, 0);
+  // And one he is gaining on, on his line, is steered round in the brain's
+  // own words: the gate is a packmate's.
+  const second = packCop(plan, spine, sampler, cop.brain.routeField, 0);
+  let sawPackmate = false;
+  for (let step = 0; step < 8 * SIMULATION.hz && !sawPackmate; step += 1) {
+    sensePack(second);
+    const ahead = second.brain.routeDistance + 10;
+    const lateral = second.brain.lineLateral;
+    const bands: RouteBlocker[] = step >= 4 * SIMULATION.hz
+      ? [{ from: ahead - 0.8, to: ahead + 0.8, left: lateral + 0.35, right: lateral - 0.35, safeSpeed: 1, facing: 0 }]
+      : [];
+    const intent = second.brain.step(STEP, second.view, null, { bands, followLine: null });
+    if (second.brain.capReason === 'packmate') {
+      sawPackmate = true;
+      assert.ok(second.brain.capSpeed >= 2, `a packmate cap of ${second.brain.capSpeed.toFixed(2)} m/s`);
+    }
+    second.controller.step(STEP, intent);
+  }
+  assert.ok(sawPackmate, 'a slow packmate dead ahead on his line never decided his pace');
+});
+
+test('a quarry swap resets the quarry memory instead of thrashing the range', () => {
+  // §21.8's finding, the reason `CpuQuarry.id` exists: a pursuer handed the
+  // nearest of several riders each step measured the range from one rider
+  // last step to another this step, and read the difference as closing
+  // speed. Closing speed leads the head-on swing, so a thrashed range throws
+  // the paddle at a rider nowhere near reach. Here a parked cop watches one
+  // rider 60 m off and is then handed another 5 m ahead — outside the swing
+  // range, inside the lead a 20 m/s closing speed would buy.
+  const { plan } = generateLevel('euc');
+  const spine = RouteSpine.fromPlan(plan);
+  assert.ok(spine !== null);
+  const sampler = new PlanTerrainSampler(plan);
+  const field = buildRouteField(spine, plan, sampler);
+  const at = spine.sample(100, createSpineSample());
+  const view: CpuView = {
+    x: at.x, y: at.y, z: at.z, headingY: at.headingY, speed: 0,
+    grounded: true, crashed: false, curbAhead: 0, lateralLimitG: EUC.maxLateralG,
+  };
+  const far = spine.sample(160, createSpineSample());
+  const near = spine.sample(105, createSpineSample());
+  assert.ok(5 > CHASE.swingRangeMetres && 5 < PADDLE.reach + 20 * (PADDLE.windupSeconds + PADDLE.activeSeconds),
+    'the fixture no longer sits between the swing range and the thrashed lead');
+  const swap = (ids: boolean): { swung: boolean; located: number } => {
+    const brain = new CpuRider(spine, plan, sampler, field);
+    brain.place(view, 100);
+    for (let step = 0; step < 30; step += 1) {
+      brain.step(STEP, view, { x: far.x, y: far.y, z: far.z, speed: 20, ...(ids ? { id: 0 } : {}) });
+    }
+    const intent = brain.step(STEP, view, { x: near.x, y: near.y, z: near.z, speed: 20, ...(ids ? { id: 1 } : {}) });
+    return { swung: intent.swing, located: brain.quarryDistance };
+  };
+  const named = swap(true);
+  assert.equal(named.swung, false, 'a swap to a new rider read as a head-on pass and swung');
+  assert.ok(Math.abs(named.located - 105) < 3, `the new rider was found at ${named.located.toFixed(1)} m, not 105 m`);
+  // Without ids the brain cannot know, and the thrash is exactly what it was.
+  assert.equal(swap(false).swung, true, 'without ids the swap no longer thrashes, so this case tests nothing');
+});
+
+test('a regroup keeps the rider’s lane on a divided road (A-12, narrowed)', () => {
+  // `docs/M39_CHASE.md` A-12: §39.6b.3b asked `place()` to clear the quarry
+  // cursor, gated on this case. It regressed — the regroup's global locate
+  // answered the other lane of the divided road, 510 m along the line — so
+  // the rule is narrowed: `place()` keeps the cursor and only a new quarry
+  // id clears it. The rider hugs the divider, as in the M31 lane case above,
+  // and the cop is regrouped 20 m behind him where a global search is wrong.
+  const plan = foldedRouteFixture();
+  const spine = RouteSpine.fromPlan(plan);
+  assert.ok(spine !== null);
+  const sampler = new PlanTerrainSampler(plan);
+  const here = createSpineSample();
+  const there = createSpineSample();
+  const other = createSpineSample();
+  let lanes: { from: number; to: number } | null = null;
+  for (let d = 0; d < spine.length && lanes === null; d += 5) {
+    spine.sample(d, here);
+    for (let e = d + 200; e < spine.length; e += 5) {
+      spine.sample(e, there);
+      if (Math.hypot(here.x - there.x, here.z - there.z) < 4 && Math.cos(there.headingY - here.headingY) > 0.9) {
+        lanes = { from: d, to: e };
+        break;
+      }
+    }
+  }
+  assert.ok(lanes !== null, 'the folded fixture no longer has a divided road');
+  const start = lanes.to - 40;
+  const brain = new CpuRider(spine, plan, sampler);
+  spine.sample(start - 30, there);
+  const view: CpuView = {
+    x: there.x, y: there.y, z: there.z, headingY: there.headingY, speed: 0,
+    grounded: true, crashed: false, curbAhead: 0, lateralLimitG: EUC.maxLateralG,
+  };
+  brain.place(view);
+  const acrossAt = { distance: 0, offRoute: 0, halfWidth: 0 };
+  let regrouped = false;
+  let worst = 0;
+  let freshRead = Number.NaN;
+  let freshTruth = Number.NaN;
+  for (let step = 0; step * STEP * 20 < 100; step += 1) {
+    const truth = start + step * STEP * 20;
+    spine.sample(truth, here);
+    const across = spine.locate(here.x, here.z, truth - (lanes.to - lanes.from), acrossAt);
+    spine.sample(across.distance, other);
+    const toward = across.offRoute < 6 ? 0.6 : 0;
+    const quarry: CpuQuarry = {
+      x: here.x + (other.x - here.x) * toward, y: here.y, z: here.z + (other.z - here.z) * toward, speed: 20, id: 0,
+    };
+    const global = spine.locate(quarry.x, quarry.z, -1, { distance: 0, offRoute: 0, halfWidth: 0 });
+    if (!regrouped && step > 60 && Math.abs(global.distance - truth) > 100) {
+      regrouped = true;
+      spine.sample(truth - 20, there);
+      const landed: CpuView = { ...view, x: there.x, z: there.z, headingY: there.headingY };
+      brain.place(landed, truth - 20);
+      brain.step(STEP, landed, quarry);
+      // The state a cleared cursor would leave, for contrast: a brain with
+      // no quarry memory, placed the same way, looks the rider up globally.
+      const fresh = new CpuRider(spine, plan, sampler, brain.routeField);
+      fresh.place(landed, truth - 20);
+      fresh.step(STEP, landed, quarry);
+      freshRead = fresh.quarryDistance;
+      freshTruth = truth;
+    } else {
+      brain.step(STEP, view, quarry);
+    }
+    if (regrouped) worst = Math.max(worst, Math.abs(brain.quarryDistance - truth));
+  }
+  assert.ok(regrouped, 'the rider never reached a point a global search misreads');
+  assert.ok(Math.abs(freshRead - freshTruth) > 100,
+    'a cleared cursor now reads the rider’s lane too, so this case no longer gates A-12');
+  assert.ok(worst < 10, `after the regroup the tracked rider strayed ${worst.toFixed(1)} m from where he was`);
+});
+
+/**
+ * Both 48-seed gates with three brains sharing one field — `docs/PLANS.md`
+ * §39.6b.5's `cpuRider.ts` row. A pack of three rides every pinned seed
+ * nose to tail (the tail ahead, two patrols 5 m apart behind him, all on the
+ * line) with the packmate bands and the patrols' follow line live. There is
+ * no rider and there is no cop-to-cop contact, so any crash is a cop down on
+ * his own: the gate is the single cop's, a clean zero.
+ */
+function packGate(reverse: boolean): { readonly failures: string[]; readonly down: string[]; readonly worstOffRoute: number } {
+  const failures: string[] = [];
+  const down: string[] = [];
+  let worstOffRoute = 0;
+  const located = { distance: 0, offRoute: 0, halfWidth: 0 };
+  const phantom = createSpineSample();
+  for (const seed of SWEEP) {
+    const { plan } = generateLevel(seed);
+    const spine = RouteSpine.fromPlan(plan);
+    assert.ok(spine !== null);
+    const sampler = new PlanTerrainSampler(plan);
+    const field = buildRouteField(spine, plan, sampler);
+    const starts = reverse
+      ? [spine.length - 18, spine.length - 13, spine.length - 8]
+      : [10, 5, 0];
+    const cops = starts.map((distance) => packCop(plan, spine, sampler, field, distance, reverse));
+    for (let step = 0; step < 240 * SIMULATION.hz && !cops.every((cop) => cop.finished); step += 1) {
+      // Riding back, the reverse gate's phantom: 150 m down the line ahead
+      // of the LEADING cop, moving with him, the pack's one quarry. Anchored
+      // to the tail alone, a patrol who got ahead of a slowed tail closed on
+      // the phantom, and in close pursuit (inside 12 m, where the brain aims
+      // straight at its rider) he followed a quarry no real rider could be —
+      // one that rides through hazards — into a spill (sweep-28, patrol 1,
+      // 6.9 m/s, cause 'hazard'). The single cop's reverse gate keeps its
+      // phantom 150 m ahead of the cop himself; so does this one.
+      let quarry: CpuQuarry | null = null;
+      if (reverse) {
+        let lead = Infinity;
+        for (const cop of cops) if (!cop.finished) lead = Math.min(lead, cop.brain.routeDistance);
+        spine.sample(Math.max(0, lead - 150), phantom);
+        quarry = { x: phantom.x, y: phantom.y, z: phantom.z, speed: 28, id: 0 };
+      }
+      stepPack(cops, spine, quarry);
+      for (const cop of cops) {
+        if (cop.finished) continue;
+        spine.locate(cop.pose.x, cop.pose.z, cop.brain.routeDistance, located);
+        if (!cop.controller.crashed) worstOffRoute = Math.max(worstOffRoute, located.offRoute);
+        cop.finished = reverse
+          ? cop.brain.routeDistance <= FINISH_TOLERANCE_METRES
+          : cop.brain.routeDistance >= spine.length - FINISH_TOLERANCE_METRES;
+      }
+    }
+    cops.forEach((cop, index) => {
+      if (cop.crashes > 0) down.push(`${seed}#${index}:${cop.crashes}`);
+      if (!cop.finished) {
+        failures.push(`${seed}#${index}: stopped at ${cop.brain.routeDistance.toFixed(0)} m of ${spine.length.toFixed(0)} m`);
+      }
+    });
+  }
+  return { failures, down, worstOffRoute };
+}
+
+test('three cops sharing one field ride every pinned seed out, and no cop is down', () => {
+  const { failures, down, worstOffRoute } = packGate(false);
+  assert.deepEqual(failures, [], `a pack cop cannot ride these routes:\n${failures.join('\n')}`);
+  assert.deepEqual(down, [], `the pack sweep put a cop down on his own: ${down.join(' ')}`);
+  assert.ok(worstOffRoute < 12, `a pack cop wandered ${worstOffRoute.toFixed(1)} m off the line`);
+});
+
+test('three cops sharing one field ride every pinned seed backwards too, and no cop is down', () => {
+  const { failures, down, worstOffRoute } = packGate(true);
+  assert.deepEqual(failures, [], `a pack cop cannot ride these routes back:\n${failures.join('\n')}`);
+  assert.deepEqual(down, [], `the reverse pack sweep put a cop down on his own: ${down.join(' ')}`);
+  assert.ok(worstOffRoute < 12, `a pack cop wandered ${worstOffRoute.toFixed(1)} m off the line riding back`);
 });

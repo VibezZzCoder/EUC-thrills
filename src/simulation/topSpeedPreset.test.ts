@@ -28,7 +28,8 @@ import {
  * speed, and lands §30.2 fact 1's 65 mph numbers. **A controller under it
  * rides the wheel the numbers describe**: the beeps and the cutout are
  * shares of `derivedTopSpeed` and follow the drag on their own, so 65 puts
- * them at 52 and 64.2 mph without a line of code naming either. **And the
+ * them at 57.9 and 62.5 mph (52 and 64.2 before the owner moved both shares
+ * on 2026-09-22) without a line of code naming either. **And the
  * timings fact 7 estimated are measured here**, on the shipped wheel, headless
  * on a kilometre of pavement — the run-up and the flat-out run to the cutout,
  * joined by Phase 1's deep-hole braking distance (§30.5 item 3).
@@ -325,18 +326,26 @@ test('the F4 drag slider resolves the whole ?mph= window, and reset does not nee
   assert.equal(tuning.get('EUC.dragCoefficient'), EUC.dragCoefficient);
 });
 
-test('a wheel under the 65 preset beeps at 52 mph and lets go at 64.2', () => {
+test('a wheel under the 65 preset beeps at 57.9 mph and lets go at 62.5', () => {
+  // 52.2 and 64.2 until 2026-09-22, when the owner asked for later beeps and an
+  // easier cutout (`EUC.overspeedBeepShare` 0.785 → 0.87, `cutoutSpeedShare`
+  // 0.965 → 0.94). The ride below still fires a little over the threshold —
+  // 63.0 mph — because the speed keeps climbing through the half-second hold.
   const preset = topSpeedPreset(65);
   const euc = controllerUnder(preset, { cutoutEnabled: 1 });
   const top = euc.derivedTopSpeed;
   assert.ok(Math.abs(top - preset.dragOnlyTop) < 1e-9, 'the controller derives the preset\'s own top');
-  assert.ok(Math.abs(top * EUC.overspeedBeepShare * MPH - 52.2) < 0.2, `beep share at ${(top * EUC.overspeedBeepShare * MPH).toFixed(1)} mph`);
-  assert.ok(Math.abs(top * EUC.cutoutSpeedShare * MPH - 64.2) < 0.2, `cutout share at ${(top * EUC.cutoutSpeedShare * MPH).toFixed(1)} mph`);
+  assert.ok(Math.abs(top * EUC.overspeedBeepShare * MPH - 57.9) < 0.2, `beep share at ${(top * EUC.overspeedBeepShare * MPH).toFixed(1)} mph`);
+  assert.ok(Math.abs(top * EUC.cutoutSpeedShare * MPH - 62.5) < 0.2, `cutout share at ${(top * EUC.cutoutSpeedShare * MPH).toFixed(1)} mph`);
 
   const ride = timeFlatOut(euc, preset.pavementTerminal);
   assert.equal(euc.snapshot().crashCause, 'cutout', `the ride ended by ${euc.snapshot().crashCause}`);
-  assert.ok(Math.abs(ride.firstBeepMph - 52.2) < 0.5, `the first beep was at ${ride.firstBeepMph.toFixed(1)} mph`);
-  assert.ok(Math.abs(ride.cutoutMph - 64.2) < 0.5, `the cutout fired at ${ride.cutoutMph.toFixed(1)} mph`);
+  assert.ok(Math.abs(ride.firstBeepMph - 57.9) < 0.5, `the first beep was at ${ride.firstBeepMph.toFixed(1)} mph`);
+  // Measured, not the threshold: the wheel is still accelerating through the
+  // hold, so the ride lets go at 63.0 against a 62.5 edge (it was 64.3 against
+  // 64.2 when the edge sat where the acceleration had nearly run out).
+  assert.ok(ride.cutoutMph >= top * EUC.cutoutSpeedShare * MPH, `the cutout fired under its edge, at ${ride.cutoutMph.toFixed(1)} mph`);
+  assert.ok(Math.abs(ride.cutoutMph - 63.0) < 0.5, `the cutout fired at ${ride.cutoutMph.toFixed(1)} mph`);
 });
 
 test('the run-up and the cutout on the shipped wheel (fact 7\'s estimates, measured)', (t) => {

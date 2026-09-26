@@ -376,12 +376,14 @@ test('one seed under a ?mph= override is the same road, spaced for the wheel it 
   // **shipped** route-41 since M30 Phase 4 — the same road the owner rode,
   // byte for byte, which is what freezing the density anchor bought. If these
   // move, say why in `CHANGELOG.md` and re-record — do not relax the assertion.
+  // Re-recorded for M39 r6 (2026-09-22): route-41 is now a 2.4 km town ring,
+  // so 7 → 16 hazards and 18 → 38 targets at about the same density per kilometre.
   const shippedHazards = (shipped.plan.hazards ?? []).length;
-  assert.equal(shippedHazards, 7, `the shipped route-41 carries ${shippedHazards} hazards, recorded at 7`);
+  assert.equal(shippedHazards, 16, `the shipped route-41 carries ${shippedHazards} hazards, recorded at 16`);
   assert.equal(
     (shipped.plan.targets ?? []).length,
-    18,
-    `the shipped route-41 carries ${(shipped.plan.targets ?? []).length} targets, recorded at 18`,
+    38,
+    `the shipped route-41 carries ${(shipped.plan.targets ?? []).length} targets, recorded at 38`,
   );
 
   // The switch really moved the content: a different set of holes, not merely
@@ -452,7 +454,10 @@ test('the shipped seed sweep keeps its recorded hazard count and its fairness fl
     );
   }
   assert.deepStrictEqual(fellBack, [], `these seeds fell back to the slice — ${holes.join(', ')}`);
-  assert.equal(shippedTotal, 115, `the shipped sweep carries ${shippedTotal} hazards, recorded at 115 (${holes.join(', ')})`);
+  // M39 r6 re-record (2026-09-22): the sixteen seeds are ~2.4 km town rings
+  // rather than ~1.1 km routes. 115 → 290 is 6.5 → 7.2 hazards per km: the
+  // road is no thinner, which is the direction this pin protects.
+  assert.equal(shippedTotal, 290, `the shipped sweep carries ${shippedTotal} hazards, recorded at 290 (${holes.join(', ')})`);
 });
 
 // ---------------------------------------------------------------------------

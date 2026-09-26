@@ -557,6 +557,11 @@ test('the chase camera survives a resize and a restart without growing resources
 test('a full camera ride produces no console errors', async ({ page }, testInfo) => {
   const errors = collectErrors(page);
   await boot(page, 'debug=1');
+  // Sustained top speed is the fixture, and M20 put a cutout there. See
+  // `disableMaxSpeedCutout`. Since the 2026-09-22 retune (the cutout at 0.94
+  // of top speed) eight seconds flat out reaches it: the wheel cut out during
+  // the carve below and the camera had nothing to bank (probe, 2026-09-25).
+  await disableMaxSpeedCutout(page);
 
   // Every camera behaviour the milestone owns, driven from real keys.
   await page.keyboard.down('KeyW');

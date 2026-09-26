@@ -227,8 +227,15 @@ export function cycleGuest(
  * Held as couch-session state on `Game`, never a `GameOption`, on the contact
  * toggle's exact terms: what a session is for is not a saved preference, and
  * the options firewall keeps `simulation/` free of both.
+ *
+ * **The police chase joined at M39 Part P** (`docs/PLANS.md` §39.6b.3b), the
+ * day the couch chase stopped being unopened design: it is the same `chase`
+ * row with up to four seats, one rule with two faces — up to three outlaws
+ * against one cop slot, which is CPU Dorkinses or a human who picked Officer
+ * Dorkins on the join wheel (q215). Still no new menu and no new `AppStateId`,
+ * which is what this list promised on the race's day.
  */
-export type CouchRide = 'freeRide' | 'knockabout' | 'race' | 'trickRun';
+export type CouchRide = 'freeRide' | 'knockabout' | 'race' | 'trickRun' | 'chase';
 
 /**
  * The rides a couch may be started into, in the order the panel offers them.
@@ -238,7 +245,9 @@ export type CouchRide = 'freeRide' | 'knockabout' | 'race' | 'trickRun';
  * third one lands, a list is one edit and a hand-walked union is three.
  */
 export const COUCH_RIDES: readonly CouchRide[] = Object.freeze(
-  ['freeRide', 'race', 'knockabout', 'trickRun'],
+  // The chase is last (M39 Part P, A-9): being hunted is chosen on purpose,
+  // the argument that already put Knockabout and Trick Run late.
+  ['freeRide', 'race', 'knockabout', 'trickRun', 'chase'],
 );
 
 /**
@@ -259,6 +268,9 @@ export const COUCH_RIDE_LABELS: Readonly<Record<CouchRide, string>> = Object.fre
   // reason Knockabout was: a room that sits down to score tricks is choosing
   // something on purpose, and the quietest ride stays the default.
   trickRun: 'Trick Run',
+  // **The title's own words, a third time** — M39 Part P (A-9). The title's
+  // chase button says "Police chase", so the panel does too.
+  chase: 'Police chase',
 });
 
 /**
@@ -276,4 +288,85 @@ export const DEFAULT_COUCH_RIDE: CouchRide = 'freeRide';
 /** Is this string one of the rides a couch may be started into? */
 export function isCouchRide(value: string): value is CouchRide {
   return (COUCH_RIDES as readonly string[]).includes(value);
+}
+
+/** The chase's join wheel: the playable roster with the cop appended last (q215). */
+const CHASE_ROSTER: readonly CharacterId[] = Object.freeze<CharacterId[]>([...CHARACTER_IDS, 'cop']);
+
+/**
+ * The characters a couch seat may wear on `ride`, in the order the join wheel
+ * walks them — M39 Part P (§39.6b.3b, q215).
+ *
+ * The playable roster, plus Officer Dorkins **last and on the chase only**: the
+ * cop slot is taken by a human who picks the cop on the wheel, and on every
+ * other ride there is no cop slot for him to take. Last so every wheel a player
+ * already knows walks exactly as it did, and the cop is found by going one past
+ * the end rather than by learning a new order.
+ */
+export function rosterFor(ride: CouchRide): readonly CharacterId[] {
+  return ride === 'chase' ? CHASE_ROSTER : CHARACTER_IDS;
+}
+
+/**
+ * `cycleGuest`'s walk for a seat on a ride that may offer the cop — M39 Part P.
+ *
+ * The walk goes round the playable roster with the cop appended last, and
+ * **skips him unless the ride is the chase** (q215), exactly the way it skips
+ * a rider another seat is wearing (q68). So on every ride but the chase this is
+ * `cycleGuest`, step for step, and on the chase the cop is one more stop that
+ * `taken` refuses as soon as any seat holds him — **Dorkins is held by one seat
+ * at most**, and the wheel has no invalid state to recover from.
+ *
+ * The walk runs over the extended ring on every ride so that a seat still
+ * wearing the cop when the ride changes has a real position to step from: one
+ * press forward lands on the first playable rider, one press back on the last.
+ * A `current` on no ring at all falls back to `cycleGuest`'s own start, and a
+ * walk with nowhere to go returns `current` when the ride allows him and a
+ * distinct playable rider when it does not — total, like `guestBeside`.
+ */
+export function cycleSeatCharacter(
+  current: CharacterId,
+  taken: readonly CharacterId[],
+  delta: 1 | -1,
+  ride: CouchRide,
+): CharacterId {
+  const ring = CHASE_ROSTER;
+  const count = ring.length;
+  const from = ring.indexOf(current);
+  const start = from >= 0 ? from : Math.max(0, ring.indexOf(taken[0] ?? CHARACTER_IDS[0]));
+  const copOffered = ride === 'chase';
+  for (let step = 1; step <= count; step += 1) {
+    const id = ring[(((start + delta * step) % count) + count) % count];
+    if (id === 'cop' && !copOffered) continue;
+    if (!taken.includes(id)) return id;
+  }
+  return rosterFor(ride).includes(current) ? current : guestBeside(taken);
+}
+
+/**
+ * A couch roster made valid for `ride` — M39 Part P (§39.6b.3b, q215, q68).
+ *
+ * Off the chase nobody may be the cop, so a seat holding him is re-dealt a
+ * distinct playable rider (`guestBeside` over every other seat). On the chase
+ * he is kept on the **first** seat holding him and re-dealt on any other,
+ * because the cop slot is one slot and the distinct-characters rule refuses a
+ * second Dorkins exactly as it refuses a second anybody.
+ *
+ * This is the door rule M26 set for switching a room's ride: repair the roster
+ * **before** anything is written, so no seat is ever dressed, spawned or
+ * counted as a character its ride cannot hold. Returns a new array and never
+ * mutates its argument; every seat not holding the cop is returned as it was.
+ */
+export function rosterForRide(roster: readonly CharacterId[], ride: CouchRide): CharacterId[] {
+  const out = [...roster];
+  let copKept = false;
+  for (let seat = 0; seat < out.length; seat += 1) {
+    if (out[seat] !== 'cop') continue;
+    if (ride === 'chase' && !copKept) {
+      copKept = true;
+      continue;
+    }
+    out[seat] = guestBeside(out.filter((_, other) => other !== seat));
+  }
+  return out;
 }

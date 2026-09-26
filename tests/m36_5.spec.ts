@@ -268,7 +268,7 @@ test('the chooser stands in the two panels that choose a world, and nowhere else
     expect(row.map((button) => button.venue), `${panel}'s row`)
       .toEqual(['slice', 'track', 'switchback']);
     expect(row.map((button) => button.label))
-      .toEqual(['The city', 'BelVar Circuit', 'Switchback Park']);
+      .toEqual(['Original city', 'BelVar Circuit', 'Switchback Park']);
     // The loaded venue is lit and taken out of the pad's walk, in both copies.
     expect(row.map((button) => button.pressed)).toEqual(['false', 'false', 'true']);
     expect(row.map((button) => button.disabled)).toEqual([false, false, true]);
@@ -326,11 +326,13 @@ test('a venue press swaps the world behind the open panel and never navigates', 
   expect(await page.evaluate(() => window.location.search)).toBe(`?${BELVAR}`);
   await expect(status).toHaveText('BelVar Circuit is ready. Back to the title to ride it or lap it.');
   await pickVenue(page, ROUTES, 'slice', CITY_PLAN);
-  expect(await page.evaluate(() => window.location.search)).toBe('');
+  // Named in the address since M39 Phase 1: a bare link is the curated town
+  // now, so the hand-built city's shareable link has to say which place it is.
+  expect(await page.evaluate(() => window.location.search)).toBe('?level=slice');
   // The city keeps the shape and loses the lap clause: Track Day from here
   // goes to BelVar, so a line offering the city a lap would be the same lie
   // the Track Day note used to tell.
-  await expect(status).toHaveText('The city is ready. Back to the title to ride it.');
+  await expect(status).toHaveText('Original city is ready. Back to the title to ride it.');
   expect(await appState(page)).toBe('routes');
 
   // **A `data-venue` edited in the markup reaches the door and is refused.**

@@ -89,7 +89,7 @@ export const FOLIAGE_TONES = Object.freeze({
   soften: 0.42,
 });
 
-interface Lobe {
+export interface Lobe {
   readonly direction: readonly [number, number, number];
   /** Radial displacement at the lobe's centre, as a fraction of the radius. */
   readonly amplitude: number;
@@ -102,7 +102,7 @@ interface Lobe {
  * by eye so the outline is asymmetric from every side the chase camera sees.
  * The third hollow is under the crown, so the underside is not a dome.
  */
-const CROWN_LOBES: readonly Lobe[] = [
+export const CROWN_LOBES: readonly Lobe[] = [
   { direction: [0.55, 0.70, -0.35], amplitude: 0.30, sigma: 0.72 },
   { direction: [-0.88, 0.25, 0.32], amplitude: 0.24, sigma: 0.60 },
   { direction: [0.20, 0.30, 0.92], amplitude: 0.20, sigma: 0.60 },
@@ -114,7 +114,7 @@ const CROWN_LOBES: readonly Lobe[] = [
 ];
 
 /** The shrub's two swellings and one hollow. */
-const SHRUB_LOBES: readonly Lobe[] = [
+export const SHRUB_LOBES: readonly Lobe[] = [
   { direction: [0.62, 0.55, -0.55], amplitude: 0.20, sigma: 0.70 },
   { direction: [-0.80, 0.30, 0.50], amplitude: 0.15, sigma: 0.65 },
   { direction: [0.10, 0.20, 0.97], amplitude: -0.12, sigma: 0.55 },
@@ -139,7 +139,7 @@ export function lobeDisplacement(direction: readonly [number, number, number], l
 }
 
 /** A deterministic jitter in [-1, 1) for a vertex slot and a salt. */
-function jitter(index: number, salt: number): number {
+export function jitter(index: number, salt: number): number {
   return positionHash01(index, salt, 431) * 2 - 1;
 }
 
@@ -151,7 +151,7 @@ function jitter(index: number, salt: number): number {
  * vertex, so duplicate corners displace identically and the shell stays
  * closed. Returns the per-corner displacement for the tone pass.
  */
-function sculptSphere(
+export function sculptSphere(
   geometry: THREE.BufferGeometry,
   centre: readonly [number, number, number],
   radii: readonly [number, number, number],
@@ -200,7 +200,7 @@ function sculptSphere(
  * (the conifer and the shrub, whose burial and footprint are the envelope's
  * own edges).
  */
-function fitInto(
+export function fitInto(
   geometry: THREE.BufferGeometry,
   centre: readonly [number, number, number],
   envelope: Envelope,
@@ -283,7 +283,7 @@ export function toneFoliage(geometry: THREE.BufferGeometry, reach?: Float32Array
   geometry.setAttribute('color', new THREE.BufferAttribute(colours, 3));
 }
 
-function nonIndexed(source: THREE.BufferGeometry): THREE.BufferGeometry {
+export function nonIndexed(source: THREE.BufferGeometry): THREE.BufferGeometry {
   const geometry = source.index === null ? source : source.toNonIndexed();
   if (geometry !== source) source.dispose();
   geometry.deleteAttribute('uv');

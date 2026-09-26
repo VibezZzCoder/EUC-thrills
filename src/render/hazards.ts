@@ -5,6 +5,8 @@ import { fieldHeightAt } from '../level/buildPlan.ts';
 import { outlinePhase } from './groundNoise.ts';
 import type { Hazard, LevelPlan } from '../level/plan.ts';
 import { isContactHazard } from '../simulation/hazards.ts';
+import { ultraHazardGroundMaterial, ultraWaterMaterial } from './ultra/ultraMaterials.ts';
+import type { UltraBuildContext } from './ultra/ultraTypes.ts';
 
 /**
  * The world's hazards, drawn — potholes and the water in and on the road.
@@ -78,6 +80,17 @@ import { isContactHazard } from '../simulation/hazards.ts';
  * rode through; at 5 cm it is a chip of asphalt, which is a much smaller lie and
  * still the right way round — `level/plan.ts` explains at length why a pothole
  * built as a collider would be a slab of road at road height.
+ *
+ * ## On an Ultra world
+ *
+ * **Only the two materials change** (M39, `docs/M39_ULTRA.md` §3.3, §4): the
+ * geometry, the triangle counts and the dipole are exactly the ones above.
+ * The crushed asphalt takes the lighting owner's hazard-ground material —
+ * environment fill only, so the rim/pit ratio the readability contract holds
+ * is untouched — and the water takes its water material, which carries an
+ * explicit environment map so the puddle can be sky-tinted while staying
+ * readable. Both receive the same parameters, and the polygon offset, as the
+ * ordinary material; neither casts, and neither joins the far-shadow layer.
  */
 
 export interface HazardsView {
@@ -267,7 +280,7 @@ function crumbleAt(hazard: Hazard, theta: number): number {
   return 0.15 + 0.85 * (0.5 + 0.5 * wave);
 }
 
-export function createHazards(plan: LevelPlan): HazardsView {
+export function createHazards(plan: LevelPlan, context?: UltraBuildContext): HazardsView {
   const group = new THREE.Group();
   group.name = 'level-hazards';
 
@@ -457,9 +470,17 @@ export function createHazards(plan: LevelPlan): HazardsView {
   }
 
   const meshes: THREE.Mesh[] = [];
-  const groundMesh = ground.build('level-hazards-ground', POTHOLE.roughness);
+  const groundMesh = ground.build(
+    'level-hazards-ground',
+    POTHOLE.roughness,
+    context === undefined ? undefined : (parameters) => ultraHazardGroundMaterial(parameters, context),
+  );
   if (groundMesh !== undefined) meshes.push(groundMesh);
-  const waterMesh = water.build('level-hazards-water', PUDDLE.roughness);
+  const waterMesh = water.build(
+    'level-hazards-water',
+    PUDDLE.roughness,
+    context === undefined ? undefined : (parameters) => ultraWaterMaterial(parameters, context),
+  );
   if (waterMesh !== undefined) meshes.push(waterMesh);
   for (const mesh of meshes) group.add(mesh);
 
@@ -589,7 +610,12 @@ class Buffers {
     }
   }
 
-  build(name: string, roughness: number): THREE.Mesh | undefined {
+  build(
+    name: string,
+    roughness: number,
+    /** M39: the Ultra factory for this family's material. Absent, the ordinary one. */
+    ultraMaterial?: (parameters: THREE.MeshStandardMaterialParameters) => THREE.MeshStandardMaterial,
+  ): THREE.Mesh | undefined {
     if (this.indices.length === 0) return undefined;
 
     const geometry = new THREE.BufferGeometry();
@@ -599,14 +625,17 @@ class Buffers {
     geometry.setIndex(this.indices);
     geometry.computeBoundingSphere();
 
-    const material = new THREE.MeshStandardMaterial({
+    const parameters: THREE.MeshStandardMaterialParameters = {
       color: 0xffffff,
       roughness,
       metalness: 0,
       // Every tone in the family in one material, exactly as the two road paints
       // share one (`render/markings.ts`).
       vertexColors: true,
-    });
+    };
+    const material = ultraMaterial === undefined
+      ? new THREE.MeshStandardMaterial(parameters)
+      : ultraMaterial(parameters);
     // The offset pair is `render/markings.ts`'s, for its reasons: the 12 mm lift
     // alone loses at a hundred metres where the depth buffer coarsens, and the
     // offset alone loses between two heightfield samples, where the ground can

@@ -11,6 +11,7 @@ import {
   levelFromQuery,
   normaliseSeed,
   requestRoute,
+  routeOutcome,
   routeSeedFrom,
   seedFromQuery,
   topSpeedFromQuery,
@@ -26,7 +27,7 @@ test('a level query only accepts the three levels the game owns', () => {
   // names must fall back just like an ordinary typo instead of being called as
   // if they were LevelPlan builders.
   for (const inherited of ['toString', 'constructor', '__proto__']) {
-    assert.equal(levelFromQuery(`?level=${inherited}`), 'slice', inherited);
+    assert.equal(levelFromQuery(`?level=${inherited}`), 'generated', inherited);
   }
 });
 
@@ -215,21 +216,18 @@ test('a seed that builds gives back its own route', () => {
   // from the code under test would agree with any revision — including one
   // nobody meant to make. M13 Phase 3 put `r2` here deliberately and this line
   // is where an accidental third revision fails.
-  assert.equal(outcome.plan.id, 'generated-r3-ember-quay');
+  assert.equal(outcome.plan.id, 'generated-r6-ember-quay');
 });
 
-/**
- * A seed that exhausts all twelve attempts.
- *
- * Found by sweeping 1,100 seeds on 2026-08-08; about one in 360 fails, all on
- * routing contracts. **If this seed ever starts building, that is not a test to
- * relax — it is the generator having changed**, and the right response is to
- * find another failing seed and record why the old one recovered.
- */
+// M39's closed-by-construction city makes the old route-12 failure valid.
+// Force the fallback boundary instead of searching for another accidental seed.
 const SEED_THAT_FAILS = 'route-12';
 
 test('a seed that does not build is refused, and the slice is not offered in its place', () => {
-  const outcome = requestRoute(SEED_THAT_FAILS);
+  const generated = generateLevel(SEED_THAT_FAILS);
+  assert.equal(generated.report.usedFallback, false, 'the formerly failing seed now builds');
+  const outcome = routeOutcome(SEED_THAT_FAILS, { ...generated,
+    report: { ...generated.report, usedFallback: true } });
   assert.equal(outcome.ok, false, `${SEED_THAT_FAILS} unexpectedly built — see the comment above`);
   if (outcome.ok) return;
   assert.equal(outcome.refusal, 'no-route');

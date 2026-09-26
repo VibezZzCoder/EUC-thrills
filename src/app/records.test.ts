@@ -339,6 +339,29 @@ test('a ghost recorded on another level is refused', () => {
   assert.equal(records.routes.slice?.ghost, null);
 });
 
+test('M39 separates r6 records and ghosts without deleting earlier or authored records', () => {
+  const storage = new SafeStorage(new MemoryStore());
+  const records = new RecordsStore(storage);
+  records.submit(record({ levelId: 'generated-r3-euc', totalSeconds: 4, ghost: makeGhost('generated-r3-euc', 4) }));
+  records.submit(record({ levelId: 'generated-r4-euc', totalSeconds: 6 }));
+  records.submit(record({ levelId: 'generated-r5-euc', totalSeconds: 7 }));
+  records.submit(record({ levelId: 'slice', totalSeconds: 12 }));
+  assert.equal(records.best('generated-r6-euc'), null);
+  records.submit(record({ levelId: 'generated-r6-euc', totalSeconds: 5 }));
+  const restored = new RecordsStore(storage);
+  assert.equal(restored.best('generated-r3-euc')?.totalSeconds, 4);
+  assert.equal(restored.best('generated-r6-euc')?.totalSeconds, 5);
+  assert.equal(restored.best('generated-r4-euc')?.totalSeconds, 6);
+  assert.equal(restored.best('generated-r5-euc')?.totalSeconds, 7);
+  assert.equal(restored.best('slice')?.totalSeconds, 12);
+  const mismatched = coerceRecords({ routes: {
+    'generated-r6-euc': { totalSeconds: 4, ghost: makeGhost('generated-r5-euc', 4) },
+  } });
+  assert.equal(mismatched.routes['generated-r6-euc']?.ghost, null);
+  records.dispose();
+  restored.dispose();
+});
+
 // -- The store ---------------------------------------------------------------
 
 test('a submitted record is kept, announced, and reloads', () => {

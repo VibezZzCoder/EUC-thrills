@@ -178,6 +178,122 @@ export const BUILDING_TONES: readonly number[] = deepFreeze([
 ]);
 
 /**
+ * A building's district look or landmark — M39 Phase 2, "readable districts".
+ *
+ * **Optional, plain data, and absent everywhere but a generated town.** A
+ * building with no look is composed exactly as it always was (`render/props.ts`
+ * keeps that path byte for byte), which is what leaves the slice, BelVar,
+ * Switchback and the proving ground untouched. A look changes only the
+ * *composition* of the drawn building — its tones, its roof, the pieces a
+ * landmark is made of — from parts the kit already owns plus one roof part.
+ * It never changes the footprint, the height or the collider: those still come
+ * from the prop's metric `size`, exactly as for any building
+ * (`data/buildingLooks.ts` says what each look draws).
+ */
+export type BuildingLook =
+  | 'commercial'
+  | 'residential'
+  | 'industrial'
+  /** Downtown's home beacon: a slender TV tower near the plaza. */
+  | 'beacon'
+  /** Residential: a church with a spire. */
+  | 'steeple'
+  /** The park gate: a stone clock tower with a copper roof. */
+  | 'clockTower'
+  /** The trailhead: a timber fire-lookout tower. */
+  | 'lookout'
+  /** The industrial yard: a water tank on a brick tower. */
+  | 'waterTower'
+  /** The industrial yard: a boiler house with two tall chimneys. */
+  | 'chimneys';
+
+export const BUILDING_LOOKS: readonly BuildingLook[] = deepFreeze([
+  'commercial', 'residential', 'industrial',
+  'beacon', 'steeple', 'clockTower', 'lookout', 'waterTower', 'chimneys',
+] as BuildingLook[]);
+
+/**
+ * District body and roof tones (M39 Phase 2), sRGB hex with the linear value
+ * beside each (`DESIGN.md` §2). The three districts are told apart by hue
+ * family first and value second, because the facade atlas already multiplies
+ * every face down: residential is warm and light (every wall at 0.35–0.47
+ * linear luminance, lighter than the kit's cool grey, so a shaded house still
+ * reads as painted render rather than dark brick), commercial is the kit's own pale and cool greys plus
+ * stone and slate-blue, industrial is painted sheet metal. Every body tone
+ * stays under 0.6 linear after the ±12% building jitter and far above the
+ * 0.03 floor after the atlas's darkest glass; a house's roof sits a clear step
+ * darker than any house wall, so a roofline is a line, and a shed's roof reads
+ * apart from its sheeting by hue.
+ */
+export const DISTRICT_TONES = deepFreeze({
+  residential: {
+    walls: [
+      0xbdb5a0, // linear (0.52, 0.47, 0.36) — cream render
+      0xc2b394, // linear (0.55, 0.46, 0.30) — sand
+      0xc2a088, // linear (0.55, 0.36, 0.25) — peach render
+      0xa4b098, // linear (0.38, 0.44, 0.32) — pale sage
+      0xba9885, // linear (0.50, 0.32, 0.24) — light brick
+      0xa0a8b0, // linear (0.36, 0.40, 0.44) — pale blue-grey
+    ],
+    roofs: [
+      0x804f3e, // linear (0.22, 0.075, 0.045) — clay tile
+      0x4c4f55, // linear (0.07, 0.075, 0.09) — slate
+      0x685141, // linear (0.14, 0.08, 0.05) — brown tile
+    ],
+  },
+  commercial: {
+    walls: [
+      PROP_COLOURS.buildingPale,
+      PROP_COLOURS.buildingCool,
+      0xa09a8d, // linear (0.36, 0.33, 0.27) — dressed stone
+      0x7b8594, // linear (0.20, 0.24, 0.30) — slate-blue cladding
+    ],
+    roofs: [PROP_COLOURS.buildingCap],
+  },
+  industrial: {
+    walls: [
+      0x94654c, // linear (0.30, 0.13, 0.07) — rust-red sheeting
+      0x5a8080, // linear (0.10, 0.22, 0.22) — teal sheeting
+      0xa0947b, // linear (0.36, 0.30, 0.20) — dull tan
+      0x8a8d8f, // linear (0.26, 0.27, 0.28) — sheet grey
+      0x6f8068, // linear (0.16, 0.22, 0.14) — faded green
+    ],
+    roofs: [
+      0x757678, // linear (0.18, 0.185, 0.19) — galvanised
+      0x7b5541, // linear (0.20, 0.09, 0.05) — rusted roof
+    ],
+  },
+});
+
+/** Landmark tones (M39 Phase 2), sRGB hex, linear beside each. Never jittered. */
+export const LANDMARK_TONES = deepFreeze({
+  /** linear (0.45, 0.45, 0.43) — a TV tower's shaft. */
+  concrete: 0xb1b1ae,
+  /** linear (0.36, 0.37, 0.38) — its observation deck. */
+  deck: 0xa0a2a4,
+  /** linear (0.55, 0.55, 0.53) — the mast's white bands. */
+  white: 0xc2c2bf,
+  /** linear (0.45, 0.06, 0.05) — its red bands, the tip a rider looks for. */
+  red: 0xb14741,
+  /** linear (0.40, 0.37, 0.31) — church and clock-tower stone. */
+  stone: 0xa8a296,
+  /** linear (0.10, 0.22, 0.17) — weathered copper, the spires' roof. */
+  copper: 0x5a8072,
+  /** linear (0.07, 0.075, 0.09) — the nave's slate roof. */
+  slate: 0x4c4f55,
+  /** linear (0.16, 0.10, 0.06) — the lookout's timber. */
+  timber: 0x6f5a47,
+  /** linear (0.22, 0.075, 0.045) — the lookout cabin's roof. */
+  tile: 0x804f3e,
+  /** linear (0.30, 0.34, 0.32) — the water tank. */
+  tank: 0x949c98,
+  /** linear (0.30, 0.12, 0.08) — the water tower's and chimneys' brick. */
+  brick: 0x946151,
+  /** linear (0.18, 0.185, 0.19) — galvanised roofs. */
+  galvanised: 0x757678,
+});
+
+/**
  * Per-instance albedo jitter, as a fraction of the linear value.
  *
  * The same job the ground's mottle does (`DESIGN.md` §4) and the same rule:
@@ -859,8 +975,16 @@ export const PROP_BUDGET = deepFreeze({
    * else, so the frame stands at 99 of the 150 the budget allows.
    */
   maxDrawCalls: 32,
-  /** Triangles as `renderer.info` counts them — the shadow pass included. */
-  maxTriangles: 90_000,
+  /**
+   * Triangles as `renderer.info` counts them — the shadow pass included.
+   *
+   * **Raised from 90,000 to 125,000 on the owner's M39 authorization,
+   * 2026-09-22.** The town ring is a larger world with more of the same kit on
+   * it; with M32's enhanced crowns and walls its props measured up to 110,444
+   * over sixty seeds, so the old line would have forced every town onto the
+   * baseline look. Per-prop cost and draw calls are unchanged.
+   */
+  maxTriangles: 125_000,
   /**
    * Colour-pass triangles per prop, averaged.
    *

@@ -2,7 +2,18 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { AUDIO, CHASE, SIMULATION } from '../data/tuning.ts';
-import { ChaseRun, type ChaseInput } from './chase.ts';
+import {
+  ChaseRoom,
+  ChaseRun,
+  cpuPackSize,
+  nearestStandingPair,
+  roomSpec,
+  type ChaseArmOptions,
+  type ChaseDemand,
+  type ChaseEvent,
+  type ChaseInput,
+  type ChaseRoomInput,
+} from './chase.ts';
 
 /**
  * The chase's rules, headless — M18 Phase 3.
@@ -195,7 +206,10 @@ test('closing back inside the tracker line gives the whole hold back', () => {
   const run = new ChaseRun();
   run.arm();
   const far: ChaseInput = { offRoute: 0, copDistance: CHASE.trackerGapMetres + 20, crashed: false };
-  const near: ChaseInput = { offRoute: 0, copDistance: CHASE.trackerGapMetres - 10, crashed: false };
+  // Back inside the quiet line too (the brutal pass): with the quiet spell at
+  // seconds, a dip that stayed out of earshot would let the quiet clock —
+  // which runs out there as well — answer this fixture instead of the hold.
+  const near: ChaseInput = { offRoute: 0, copDistance: CHASE.trackerQuietGapMetres - 10, crashed: false };
 
   // Flirt with the line twice: most of a hold out, a moment back in, most of a
   // hold out again. Neither excursion may demand — the stray clock's rule.
@@ -373,7 +387,7 @@ const BLOWN: ChaseInput = { offRoute: 0, copDistance: CHASE.trackerGapMetres + 2
  * tunable — restated here and *measured* by the retry test, so a change on
  * either side is reported by the other.
  */
-const RETRY = 2;
+const RETRY = 1;
 
 /** Step `input` until the referee demands, and say how long that took. */
 function secondsUntilDemand(run: ChaseRun, input: ChaseInput, limit: number): number {
@@ -671,4 +685,697 @@ test('arming clears the quiet and stall clocks, and abandoning clears the respit
   run.arm();
   ride(run, CHASE.trackerHoldSeconds + 0.5, BLOWN);
   assert.equal(run.takeTrackerDemand(), true, 'the last run’s crash bought this run a respite');
+});
+
+// ---------------------------------------------------------------------------
+// The room — M39 Part P (§39.6b.3 "The endings", §39.6b.3b "The referee",
+// "The deal"; docs/M39_CHASE.md §2a). Every case above still runs through
+// `ChaseRun`, which is now the one-outlaw, one-cop room; the cases below ride
+// the room itself at its real N.
+// ---------------------------------------------------------------------------
+
+test('A-1: a crash edge beside a ragdolled cop is no longer a bust; beside a standing one it still is', () => {
+  // §39.6b.3: "caught on the crash edge with any STANDING cop inside
+  // bustRadiusMetres". The shipped referee read the radius alone, so a rider
+  // crashing onto a ragdolled Dorkins was busted by nobody standing — the one
+  // deliberate solo change the room makes, beside A-12 in the brain.
+  const run = new ChaseRun();
+  run.arm();
+  ride(run, 1, { offRoute: 0, copDistance: 2, crashed: true, copCrashed: true });
+  assert.equal(run.state.phase, 'running', 'a ragdolled officer made an arrest');
+  ride(run, 1, CALM);
+  ride(run, 1, { offRoute: 0, copDistance: 2, crashed: true, copCrashed: false });
+  assert.equal(run.state.outcome, 'caught', 'a standing cop no longer busts a crash beside him');
+});
+
+/** One cop's facts, terse: distances to each outlaw and whatever else the case needs. */
+interface CopFacts {
+  readonly d: readonly number[];
+  readonly crashed?: boolean;
+  readonly parked?: boolean;
+  readonly speed?: number;
+  readonly closing?: readonly number[];
+  readonly teleported?: boolean;
+  readonly paddleArmed?: boolean;
+}
+
+/** One outlaw's facts, terse: on the road and upright unless said otherwise. */
+interface OutFacts {
+  readonly offRoute?: number;
+  readonly crashed?: boolean;
+  readonly gaveUp?: boolean;
+  readonly teleported?: boolean;
+}
+
+/** A pose set. Cops ride at 20 m/s unless the case says otherwise, so no stall clock runs by accident. */
+function facts(outlaws: readonly OutFacts[], cops: readonly CopFacts[]): ChaseRoomInput {
+  return {
+    outlaws: outlaws.map((o) => ({
+      offRoute: o.offRoute ?? 0,
+      crashed: o.crashed ?? false,
+      gaveUp: o.gaveUp,
+      teleported: o.teleported,
+    })),
+    pursuers: cops.map((c) => ({
+      crashed: c.crashed ?? false,
+      parked: c.parked ?? false,
+      speed: c.speed ?? 20,
+      teleported: c.teleported,
+      paddleArmed: c.paddleArmed,
+      distance: c.d,
+      outlawClosing: c.closing ?? c.d.map(() => 0),
+    })),
+  };
+}
+
+/** Arm a room: `outlaws` humans against the rule's pack (or `cpu` cops, or a human cop). */
+function armRoom(
+  outlaws: number,
+  opts: { human?: boolean; cpu?: number; bell?: number; arm?: Partial<ChaseArmOptions> } = {},
+): ChaseRoom {
+  const room = new ChaseRoom();
+  room.arm(roomSpec(outlaws, opts.human ?? false, opts.cpu), {
+    bellSeconds: opts.bell ?? CHASE.escapeSeconds,
+    ...opts.arm,
+  });
+  return room;
+}
+
+interface Log {
+  readonly events: ChaseEvent[];
+  readonly demands: ChaseDemand[];
+  ended: boolean;
+}
+
+/** Step `seconds` of one pose set, or until the round ends, collecting events and (copied) demands. */
+function play(room: ChaseRoom, seconds: number, input: ChaseRoomInput, log?: Log): Log {
+  const out: Log = log ?? { events: [], demands: [], ended: false };
+  const steps = Math.round(seconds * SIMULATION.hz);
+  for (let step = 0; step < steps; step += 1) {
+    const result = room.step(STEP, input);
+    out.events.push(...result.events);
+    for (const demand of room.takeDemands()) out.demands.push({ ...demand });
+    if (result.ended) {
+      out.ended = true;
+      break;
+    }
+  }
+  return out;
+}
+
+/** Demands of one kind, for terse assertions. */
+function kinds(log: Log, kind: ChaseDemand['kind']): ChaseDemand[] {
+  return log.demands.filter((demand) => demand.kind === kind);
+}
+
+test('the rule’s arithmetic: roomSize − outlaws CPU cops, none beside a human, and arm refuses any other room', () => {
+  // q207: one human against three, two against two, three against one.
+  assert.equal(CHASE.roomSize, 4, 'the room is four (q207); every case below assumes it');
+  assert.equal(cpuPackSize(1, false), 3);
+  assert.equal(cpuPackSize(2, false), 2);
+  assert.equal(cpuPackSize(3, false), 1);
+  assert.equal(cpuPackSize(2, true), 0, 'a human cop is the slot: no CPU cop rides beside him');
+  assert.deepEqual(roomSpec(2, false).pursuers.map((p) => `${p.kind}:${p.role}`), ['cpu:tail', 'cpu:patrol']);
+  assert.deepEqual(roomSpec(1, false).pursuers.map((p) => p.role), ['tail', 'patrol', 'patrol']);
+  assert.deepEqual(roomSpec(3, true).pursuers, [{ kind: 'human', role: 'tail' }]);
+
+  const bell = { bellSeconds: 60 };
+  // Legal: every rule room, a human-cop room at every N, and the ?cops=1|2 probes.
+  for (const outlaws of [1, 2, 3]) {
+    assert.doesNotThrow(() => new ChaseRoom().arm(roomSpec(outlaws, false), bell));
+    assert.doesNotThrow(() => new ChaseRoom().arm(roomSpec(outlaws, true), bell));
+  }
+  assert.doesNotThrow(() => new ChaseRoom().arm(roomSpec(1, false, 1), bell));
+  assert.doesNotThrow(() => new ChaseRoom().arm(roomSpec(1, false, 2), bell));
+  // Illegal: no outlaw, a fourth outlaw, an overfull pack, a human beside CPU
+  // cops, a pack led by a patrol, an empty slot, a bell that is not a bell.
+  assert.throws(() => new ChaseRoom().arm(roomSpec(0, false, 1), bell));
+  assert.throws(() => new ChaseRoom().arm(roomSpec(4, true), bell));
+  assert.throws(() => new ChaseRoom().arm(roomSpec(3, false, 2), bell));
+  assert.throws(() => new ChaseRoom().arm({ outlaws: 1, pursuers: [{ kind: 'human', role: 'tail' }, { kind: 'cpu', role: 'patrol' }] }, bell));
+  assert.throws(() => new ChaseRoom().arm({ outlaws: 1, pursuers: [{ kind: 'cpu', role: 'patrol' }] }, bell));
+  assert.throws(() => new ChaseRoom().arm({ outlaws: 1, pursuers: [] }, bell));
+  assert.throws(() => new ChaseRoom().arm(roomSpec(1, false), { bellSeconds: Number.NaN }));
+});
+
+test('caught names the nearest standing cop in the radius — never a ragdolled or freshly placed one', () => {
+  const room = armRoom(1);
+  // Pursuer 0 is down at 2 m, pursuer 1 was placed this step at 3 m (M23's
+  // rule: a teleport voids his two-body facts), pursuer 2 stands at 8 m.
+  const log = play(room, 0.5, facts([{ crashed: true }], [
+    { d: [2], crashed: true }, { d: [3], teleported: true }, { d: [8] },
+  ]));
+  assert.equal(log.ended, true);
+  const out = log.events.find((event) => event.kind === 'out');
+  assert.ok(out !== undefined);
+  assert.equal(out.status, 'caught');
+  assert.equal(out.pursuer, 2, 'the bust was credited to a cop who could not have made it');
+  assert.equal(room.state.result?.pursuers[2].busts, 1);
+  assert.equal(room.state.result?.pursuers[0].busts, 0);
+  assert.equal(room.state.outlaws[0].by, 2);
+
+  // Nobody standing and un-placed inside the radius: the crash costs the
+  // recovery and nothing else.
+  const alone = armRoom(1);
+  play(alone, 2, facts([{ crashed: true }], [
+    { d: [2], crashed: true }, { d: [3], teleported: true }, { d: [CHASE.bustRadiusMetres + 1] },
+  ]));
+  assert.equal(alone.statusOf(0), 'standing');
+});
+
+test('caught names the striker when his landed swing preceded the crash inside the window', () => {
+  // A-7: a hard knock crashes on the strike's own step, a soft knock's wobble
+  // lands later; both belong to the swing's owner (q222) even when a packmate
+  // happens to be nearer by the time the rider hits the ground.
+  const upright = facts([{}], [{ d: [5] }, { d: [2] }]);
+  const down = facts([{ crashed: true }], [{ d: [5] }, { d: [2] }]);
+
+  const soft = armRoom(2, { cpu: 2 });
+  const softDown = facts([{ crashed: true }, {}], [{ d: [5, 300] }, { d: [2, 300] }]);
+  soft.recordStrike(0, 0);
+  play(soft, 0.5, facts([{}, {}], [{ d: [5, 300] }, { d: [2, 300] }]));
+  play(soft, STEP, softDown);
+  assert.equal(soft.statusOf(0), 'caught');
+  assert.equal(soft.creditOf(0), 0, 'a soft knock’s crash half a second later went to the nearer packmate');
+
+  const stale = armRoom(1, { cpu: 2 });
+  stale.recordStrike(0, 0);
+  play(stale, 1.5, upright);
+  play(stale, STEP, down);
+  assert.equal(stale.creditOf(0), 1, 'a swing from a second and a half ago still claimed the crash');
+
+  const hard = armRoom(1, { cpu: 2 });
+  hard.recordStrike(0, 0);
+  play(hard, STEP, down);
+  assert.equal(hard.creditOf(0), 0, 'the hard knock’s own-step crash was not the striker’s');
+
+  // A striker who is down himself when the rider falls hands the credit on.
+  const felled = armRoom(1, { cpu: 2 });
+  felled.recordStrike(0, 0);
+  play(felled, STEP, facts([{ crashed: true }], [{ d: [5], crashed: true }, { d: [2] }]));
+  assert.equal(felled.creditOf(0), 1);
+});
+
+test('touched names the cop touched, and the no-scoring-by-ramming clause holds per cop', () => {
+  // M24's promise at N cops: only the outlaw's own closing AGAINST THAT COP
+  // counts. Pursuer 0 grinds into a standing outlaw (her closing on him is
+  // zero); pursuer 1 is the one she rides into.
+  const rammed = armRoom(1, { cpu: 2 });
+  const grind = facts([{}], [{ d: [0.5], closing: [0] }, { d: [40], closing: [6] }]);
+  play(rammed, 30, grind);
+  assert.equal(rammed.statusOf(0), 'standing',
+    'a cop ramming her scored because she was closing on a different cop 40 m away');
+
+  const into = armRoom(1, { cpu: 2 });
+  const log = play(into, STEP, facts([{}], [
+    { d: [0.5], closing: [0] }, { d: [0.9], closing: [CHASE.touchBustClosingSpeed + 1] },
+  ]));
+  assert.equal(into.statusOf(0), 'touched');
+  assert.equal(into.creditOf(0), 1, 'the touch was credited to the nearer cop she was not riding into');
+  assert.equal(log.events.find((event) => event.kind === 'out')?.pursuer, 1);
+
+  // A step that placed either body voids the touch (M23's rule): a cop
+  // returned onto her, or her respawned into him, is nobody's ram.
+  const placedCop = armRoom(1, { cpu: 1 });
+  play(placedCop, 1, facts([{}], [{ d: [0.5], closing: [5], teleported: true }]));
+  assert.equal(placedCop.statusOf(0), 'standing', 'a cop teleported onto her was her ram');
+  const placedOutlaw = armRoom(1, { cpu: 1 });
+  play(placedOutlaw, 1, facts([{ teleported: true }], [{ d: [0.5], closing: [5] }]));
+  assert.equal(placedOutlaw.statusOf(0), 'standing', 'a respawn into the cop was her ram');
+  // And a ragdolled cop is touched by nobody.
+  const down = armRoom(1, { cpu: 1 });
+  play(down, 1, facts([{}], [{ d: [0.5], closing: [5], crashed: true }]));
+  assert.equal(down.statusOf(0), 'standing');
+});
+
+test('the bell first: a sweep on the bell’s own step is an escape, and the room says who got away', () => {
+  const room = armRoom(2, { bell: 10 });
+  // Outlaw 1 is caught early; outlaw 0 rides on to the bell.
+  play(room, 1, facts([{}, {}], [{ d: [300, 300] }, { d: [300, 300] }]));
+  play(room, STEP, facts([{}, { crashed: true }], [{ d: [300, 300] }, { d: [300, 2] }]));
+  assert.equal(room.statusOf(1), 'caught');
+  play(room, 10 - 1 - STEP * 2.5, facts([{}, {}], [{ d: [300, 300] }, { d: [300, 300] }]));
+  assert.equal(room.phase, 'running');
+  // The last standing outlaw crashes beside the cop on the step the bell rings.
+  const last = room.step(STEP, facts([{ crashed: true }, {}], [{ d: [1, 300] }, { d: [300, 300] }]));
+  assert.equal(last.ended, true);
+  assert.equal(room.statusOf(0), 'escaped', 'a crash after the whistle took the escape away');
+  const result = room.state.result;
+  assert.ok(result !== null);
+  assert.equal(result.swept, false);
+  assert.equal(result.escaped, 1);
+  assert.equal(result.outlaws[0].survived, 10);
+  assert.equal(result.outlaws[0].place, 1);
+  assert.equal(result.outlaws[1].place, 2);
+  assert.equal(result.outlaws[1].by, 1);
+  const ended = last.events.find((event) => event.kind === 'ended');
+  assert.equal(ended?.value, 1, 'the ended event did not carry how many got away');
+  // Ended: the bed fades, and the room answers nothing more.
+  assert.equal(room.sirenRangeMetres, Infinity);
+  assert.equal(room.step(STEP, facts([{ crashed: true }, {}], [{ d: [1, 1] }, { d: [1, 1] }])).ended, false);
+});
+
+test('the last standing outlaw going down ends the round early: the cop swept the room', () => {
+  const room = armRoom(2, { bell: 60 });
+  const clear = facts([{}, {}], [{ d: [300, 300] }, { d: [300, 300] }]);
+  play(room, 2, clear);
+  play(room, STEP, facts([{ crashed: true }, {}], [{ d: [2, 300] }, { d: [300, 300] }]));
+  assert.equal(room.phase, 'running', 'one outlaw down ended a room with another standing');
+  play(room, 3, facts([{}, {}], [{ d: [300, 300] }, { d: [300, 300] }]));
+  const log = play(room, STEP, facts([{}, { offRoute: 0, crashed: false }], [
+    { d: [300, 0.5], closing: [0, 3] }, { d: [300, 300] },
+  ]));
+  assert.equal(log.ended, true);
+  const result = room.state.result;
+  assert.ok(result !== null);
+  assert.equal(result.swept, true);
+  assert.equal(result.escaped, 0);
+  assert.deepEqual(result.outlaws.map((o) => o.status), ['caught', 'touched']);
+  assert.deepEqual(result.pursuers.map((p) => p.busts), [2, 0]);
+  // Placed by time standing: the later one down is ahead.
+  assert.deepEqual(result.outlaws.map((o) => o.place), [2, 1]);
+  assert.ok(result.seconds < 60 && Math.abs(result.seconds - result.outlaws[1].survived) < 1e-9);
+});
+
+test('placements are shared, never tie-broken: the escaped share first, and a shared second shares a place', () => {
+  // q86 (the Knockabout draw): places are 1 + the number who stood strictly
+  // longer, so equal times give equal places and nobody invents an order.
+  const room = armRoom(3, { bell: 5 });
+  play(room, 2, facts([{}, {}, {}], [{ d: [300, 300, 300] }]));
+  // Outlaws 0 and 1 go down on the same step; outlaw 2 rides to the bell.
+  play(room, STEP, facts([{ crashed: true }, { crashed: true }, {}], [{ d: [3, 4, 300] }]));
+  play(room, 5, facts([{}, {}, {}], [{ d: [300, 300, 300] }]));
+  const result = room.state.result;
+  assert.ok(result !== null);
+  assert.deepEqual(result.outlaws.map((o) => o.place), [2, 2, 1]);
+
+  const pair = armRoom(3, { bell: 5 });
+  play(pair, 1, facts([{}, {}, {}], [{ d: [300, 300, 300] }]));
+  play(pair, STEP, facts([{}, {}, { crashed: true }], [{ d: [300, 300, 2] }]));
+  play(pair, 5, facts([{}, {}, {}], [{ d: [300, 300, 300] }]));
+  assert.deepEqual(pair.state.result?.outlaws.map((o) => o.place), [1, 1, 3],
+    'two escapes did not share first, or the third was not third');
+  assert.deepEqual(pair.state.result?.outlaws.map((o) => o.status), ['escaped', 'escaped', 'caught']);
+});
+
+test('gave up: an outlaw’s R is his bust, credited to nobody, and the room rides on', () => {
+  // q225: a teleport out from under a cop is the one escape the mode cannot
+  // allow — even with a cop inside the bust radius, R is nobody's arrest.
+  const room = armRoom(2);
+  const log = play(room, STEP, facts([{ gaveUp: true }, {}], [{ d: [3, 300] }, { d: [300, 300] }]));
+  assert.equal(room.statusOf(0), 'gaveUp');
+  assert.equal(room.creditOf(0), -1);
+  assert.deepEqual(room.state.pursuers.map((p) => p.busts), [0, 0], 'somebody was credited with a give-up');
+  const out = log.events.find((event) => event.kind === 'out');
+  assert.equal(out?.status, 'gaveUp');
+  assert.equal(out?.pursuer, -1);
+  assert.equal(room.phase, 'running');
+  assert.equal(room.state.standing, 1);
+});
+
+test('the quiet clock is per outlaw: no standing cop inside HIS siren line, and the parked patrol answers it', () => {
+  // §39.6b.3b. 2v2: the tail (dealt outlaw 0 by A-6's fallback) rides 30 m
+  // from outlaw 0 and 100 m from outlaw 1; the patrol stands parked far from
+  // both. Outlaw 0 is pressed; outlaw 1 is free riding, and only his clock runs.
+  const room = armRoom(2);
+  assert.equal(room.quarryOf(0), 0);
+  assert.equal(room.quarryOf(1), 1);
+  const input = facts([{}, {}], [{ d: [30, 100] }, { d: [300, 300], parked: true }]);
+  const early = play(room, CHASE.trackerQuietSeconds - 0.5, input);
+  assert.equal(early.demands.length, 0, 'a clock fired early');
+  assert.equal(room.quietOf(0), 0, 'the pressed outlaw’s quiet clock ran');
+  assert.ok(Math.abs(room.quietOf(1) - (CHASE.trackerQuietSeconds - 0.5)) < STEP * 2);
+  assert.equal(room.state.pursuers[1].phase, 'parked');
+
+  const fired = play(room, 1, input);
+  // The director's answer since the brutal pass (2026-09-25): the parked
+  // patrol is sent ahead of him, a roadblock on his road (`intercept`). The
+  // tail is pressing outlaw 0, so he is not the answer; and the patrol is not
+  // sent twice inside `INTERCEPT_HOLD_SECONDS`, whatever the clock does next.
+  assert.deepEqual(fired.demands, [{ kind: 'intercept', pursuer: 1, outlaw: 1, cause: 'quiet' }]);
+  assert.equal(room.quarryOf(1), 1);
+  assert.equal(room.quarryOf(0), 0, 'the tail was pulled off the outlaw he is pressing');
+});
+
+test('R-9: a lone tail pressing one outlaw is never pulled off him by another’s quiet clock; lost, he is re-dealt', () => {
+  // 2 outlaws against one CPU cop (the ?cops= probe shape of the lone cop).
+  const pressing = armRoom(2, { cpu: 1 });
+  const busy = facts([{}, {}], [{ d: [30, 100] }]);
+  const log = play(pressing, CHASE.trackerQuietSeconds + 1, busy);
+  assert.equal(pressing.quarryOf(0), 0, 'a stranger’s quiet clock pulled the tail off his quarry');
+  assert.equal(log.demands.length, 0, 'the unanswerable quiet clock raised a demand');
+  // Wound back rather than left to fire every step: asked again after the retry.
+  assert.ok(pressing.quietOf(1) < CHASE.trackerQuietSeconds && pressing.quietOf(1) > CHASE.trackerQuietSeconds - RETRY - 1);
+
+  // The same tail, having lost outlaw 0 beyond his own quiet line. Outlaw 1's
+  // clock is ten seconds in before the tail drifts back.
+  const lost = armRoom(2, { cpu: 1 });
+  play(lost, 10, busy);
+  const drift = play(lost, 3, facts([{}, {}], [{ d: [80, 100] }]));
+  assert.equal(lost.quarryOf(0), 1, 'a tail who lost his quarry never took the quiet one');
+  assert.deepEqual(drift.demands.slice(0, 2), [
+    { kind: 're-deal', pursuer: 0, outlaw: 1, cause: 'quiet' },
+    { kind: 'tail-return', pursuer: 0, outlaw: 1, cause: 'quiet' },
+  ]);
+});
+
+test('the opening deal: an unchased outlaw before a nearer chased one, then doubling up; the fallback is p mod N', () => {
+  // q221 (1)–(2), D0. Both cops start nearer outlaw 0; the patrol still takes
+  // outlaw 1, because an outlaw nobody is chasing comes first.
+  const dealt = armRoom(2, { arm: { startDistances: [[10, 100], [12, 90]] } });
+  assert.equal(dealt.quarryOf(0), 0);
+  assert.equal(dealt.quarryOf(1), 1, 'a nearer chased outlaw beat an unchased one');
+  const flipped = armRoom(2, { arm: { startDistances: [[100, 10], [12, 90]] } });
+  assert.deepEqual([flipped.quarryOf(0), flipped.quarryOf(1)], [1, 0]);
+  // A-6's fallback, and the solo room: every cop on outlaw 0 from the first step.
+  const fallback = armRoom(2);
+  assert.deepEqual([fallback.quarryOf(0), fallback.quarryOf(1)], [0, 1]);
+  const solo = armRoom(1);
+  assert.deepEqual([solo.quarryOf(0), solo.quarryOf(1), solo.quarryOf(2)], [0, 0, 0]);
+  // The lone cop opens on the nearest (nobody has been unpressured yet).
+  const lone = armRoom(3, { arm: { startDistances: [[50, 10, 30]] } });
+  assert.equal(lone.quarryOf(0), 1);
+  // A human cop is never dealt.
+  assert.equal(armRoom(3, { human: true }).quarryOf(0), -1);
+});
+
+test('the deal is re-dealt the moment the quarry goes down, hold or no hold', () => {
+  // q221 (4), D1. The patrol is 5 m behind outlaw 1, inside close pursuit and
+  // well inside the hold, when outlaw 1 goes down: forced, at once, onto the
+  // outlaw still standing.
+  const room = armRoom(2);
+  play(room, 0.25, facts([{}, {}], [{ d: [30, 300] }, { d: [300, 5] }]));
+  const log = play(room, STEP, facts([{}, { crashed: true }], [{ d: [30, 300] }, { d: [300, 5] }]));
+  assert.equal(room.statusOf(1), 'caught');
+  assert.equal(room.quarryOf(1), 0, 'a cop kept chasing a busted outlaw');
+  assert.deepEqual(kinds(log, 're-deal'), [{ kind: 're-deal', pursuer: 1, outlaw: 0, cause: 'deal' }]);
+  assert.equal(room.state.pursuers[1].dealtFor, 0, 'a new deal kept the old one’s age');
+});
+
+test('coverage waits for the hold, an armed paddle and close pursuit before moving a surplus cop', () => {
+  // q221 (3), D2. A start row the tail can read and a patrol row it cannot:
+  // the tail takes the nearer outlaw 1 by the forced rule, and the patrol's
+  // fallback (1 mod 2) doubles him up — outlaw 0 is unchased.
+  const room = armRoom(2, { arm: { startDistances: [[40, 30]] } });
+  assert.deepEqual([room.quarryOf(0), room.quarryOf(1)], [1, 1]);
+  const input = (tailArmed: boolean, patrolToOne: number) => facts([{}, {}], [
+    { d: [40, 30], paddleArmed: tailArmed }, { d: [45, patrolToOne] },
+  ]);
+  play(room, CHASE.dealHoldSeconds - 0.5, input(false, 60));
+  assert.deepEqual([room.quarryOf(0), room.quarryOf(1)], [1, 1], 'a deal changed inside its hold');
+
+  // Past the hold, the tail is the nearer surplus to outlaw 0 but his paddle is
+  // wound up, and the patrol is in close pursuit of outlaw 1: nobody moves.
+  play(room, 1, input(true, CHASE.pursuitNearMetres - 5));
+  assert.deepEqual([room.quarryOf(0), room.quarryOf(1)], [1, 1],
+    'a cop was re-dealt with his paddle armed or on his quarry’s wheel');
+  // The patrol drops back out of close pursuit: he may change, and he does.
+  const log = play(room, STEP, input(true, CHASE.pursuitNearMetres + 20));
+  assert.deepEqual([room.quarryOf(0), room.quarryOf(1)], [1, 0]);
+  assert.deepEqual(log.demands, [{ kind: 're-deal', pursuer: 1, outlaw: 0, cause: 'deal' }]);
+});
+
+test('a lone cop keeps his quarry until he loses him, then takes the outlaw unpressured longest, not the nearest', () => {
+  // q221: "the pressure rotates on the quiet clocks and nobody free-rides".
+  // 3v1: the tail is dealt outlaw 0 and loses him (200 m, past the tracker
+  // line); outlaw 2 is the nearest at 40 m but pressed, outlaw 1 at 70 m has
+  // been unpressured the whole time.
+  const room = armRoom(3);
+  assert.equal(room.quarryOf(0), 0);
+  const input = facts([{}, {}, {}], [{ d: [200, 70, 40] }]);
+  // Until the deal has held, the gap's answer is the shipped return behind him.
+  const early = play(room, CHASE.dealHoldSeconds - 0.5, input);
+  assert.ok(kinds(early, 'tail-return').length >= 1, 'the lost quarry was never regrouped behind');
+  assert.ok(kinds(early, 'tail-return').every((d) => d.outlaw === 0 && d.cause === 'gap'));
+  assert.equal(room.quarryOf(0), 0, 'the deal changed inside its hold');
+  const later = play(room, RETRY + 1, input);
+  assert.equal(room.quarryOf(0), 1, 'the lone cop took the nearest outlaw rather than the one unpressured longest');
+  assert.deepEqual(kinds(later, 're-deal')[0], { kind: 're-deal', pursuer: 0, outlaw: 1, cause: 'gap' });
+  assert.equal(room.state.outlaws[2].unpressured, 0);
+
+  // D1 for the lone cop uses the same key: his quarry goes down and he takes
+  // the outlaw unpressured longest.
+  const forced = armRoom(3);
+  play(forced, 5, facts([{}, {}, {}], [{ d: [30, 90, 40] }]));
+  play(forced, STEP, facts([{ crashed: true }, {}, {}], [{ d: [3, 90, 40] }]));
+  assert.equal(forced.quarryOf(0), 1);
+});
+
+test('a human cop carries no clocks, receives no demands and is never dealt — and busts like any standing cop', () => {
+  // §39.6b.3b: "He has no director". Every outlaw far away for a minute.
+  const room = armRoom(2, { human: true });
+  const log = play(room, 60, facts([{}, {}], [{ d: [500, 800], speed: 0 }]));
+  assert.equal(log.demands.length, 0, 'a human cop was sent a demand');
+  assert.equal(room.quarryOf(0), -1);
+  const cop = room.state.pursuers[0];
+  assert.deepEqual([cop.kind, cop.phase, cop.gap, cop.stall, cop.respite], ['human', 'chasing', 0, 0, 0]);
+  assert.deepEqual([room.quietOf(0), room.quietOf(1)], [0, 0], 'the quiet clock ran with nobody to answer it');
+  // His bearing readout's facts: the nearest standing outlaw and the range.
+  assert.deepEqual([cop.nearestOutlaw, cop.nearestOutlawMetres], [0, 500]);
+
+  // Down, he busts nobody; standing, a crash beside him is his bust.
+  play(room, 1, facts([{ crashed: true }, {}], [{ d: [2, 800], crashed: true }]));
+  assert.equal(room.statusOf(0), 'standing');
+  play(room, 1, facts([{}, {}], [{ d: [500, 800] }]));
+  play(room, STEP, facts([{}, { crashed: true }], [{ d: [500, 2] }]));
+  assert.equal(room.statusOf(1), 'caught');
+  assert.equal(room.creditOf(1), 0);
+  assert.equal(room.state.pursuers[0].busts, 1);
+});
+
+test('the siren is the room’s nearest riding cop to a standing outlaw — never one cop’s own gap', () => {
+  // §39.6b.3b "Sound": one bed, one number, whoever holds the slot. §21.9's
+  // trap was a siren fed the cop's own gap; the reduction below cannot be
+  // that. Pursuer 0's own gap to his quarry is 100 m; the room's nearest
+  // riding pair is 30 m; a parked patrol 5 m away is asleep and silent (R-19),
+  // and a ragdolled one is nobody.
+  const input = facts([{}, {}], [
+    { d: [100, 30] }, { d: [5, 5], parked: true }, { d: [3, 3], crashed: true },
+  ]);
+  assert.equal(nearestStandingPair(input, [true, true]), 30);
+  assert.equal(nearestStandingPair(input, [true, false]), 100, 'a busted outlaw still fed the siren');
+  assert.equal(nearestStandingPair(input, [false, false]), Infinity);
+
+  const room = armRoom(2);
+  assert.equal(room.quarryOf(0), 0);
+  play(room, 1, facts([{}, {}], [{ d: [100, 250] }, { d: [250, 30] }]));
+  assert.equal(room.sirenRangeMetres, 30, 'the siren read a cop’s own gap instead of the room’s nearest pair');
+  assert.equal(room.nearestCopMetres(0), 100, 'seat 0’s own chase lane lost its nearest cop');
+  assert.equal(room.nearestCopMetres(1), 30);
+  // The outlaw the patrol was on goes down: the bed follows who is standing.
+  play(room, STEP, facts([{}, { crashed: true }], [{ d: [100, 250] }, { d: [250, 2] }]));
+  assert.equal(room.statusOf(1), 'caught');
+  assert.equal(room.sirenRangeMetres, 100);
+  // Not running: silent.
+  assert.equal(new ChaseRoom().sirenRangeMetres, Infinity);
+});
+
+test('a crashed outlaw accumulates nothing on any clock — his own or his cop’s', () => {
+  // "A crashed rider accumulates nothing on any clock, as today", per outlaw:
+  // outlaw 1 lies far from every cop for half a minute (no bust — nobody near).
+  const room = armRoom(2);
+  play(room, 2, facts([{}, {}], [{ d: [30, 200] }, { d: [300, 200], speed: 0 }]));
+  const before = room.state.outlaws[1].unpressured;
+  play(room, 30, facts([{}, { crashed: true }], [{ d: [30, 200] }, { d: [300, 200], speed: 0 }]));
+  assert.equal(room.statusOf(1), 'standing');
+  assert.equal(room.quietOf(1), 0, 'a downed outlaw’s quiet clock ran');
+  assert.equal(room.state.outlaws[1].unpressured, before, 'a downed outlaw banked unpressured time');
+  const patrol = room.state.pursuers[1];
+  assert.equal(patrol.quarry, 1);
+  assert.deepEqual([patrol.gap, patrol.stall], [0, 0], 'a cop’s clocks ran on a quarry who is down');
+});
+
+test('the proximity wake: an outlaw inside the wake range of a parked patrol wakes him, once, and he rides in waking', () => {
+  // §39.6b.3 "Waking": straight line, the siren's onset, heard as it happens.
+  const room = armRoom(1);
+  const log = play(room, 0.5, facts([{}], [
+    { d: [30] }, { d: [CHASE.patrolWakeMetres - 5], parked: true }, { d: [CHASE.patrolWakeMetres + 50], parked: true },
+  ]));
+  assert.deepEqual(log.demands, [{ kind: 'patrol-wake', pursuer: 1, outlaw: 0, cause: 'proximity' }],
+    'the wake was missed, repeated, or woke the patrol out of range');
+  // Game flips his flag; he is a chaser with the shipped brain from here.
+  play(room, STEP, facts([{}], [{ d: [30] }, { d: [50] }, { d: [300], parked: true }]));
+  assert.equal(room.state.pursuers[1].phase, 'chasing', 'a patrol woken inside the tracker line never engaged');
+  assert.equal(room.state.pursuers[2].phase, 'parked');
+});
+
+test('A-4: a waking patrol’s gap clock waits until he engages, unless he is losing ground; he is then sent ahead', () => {
+  // A patrol woken 400 m away must be allowed to ride in (else the director's
+  // second siren never arrives), but one who cannot close must not ride for
+  // ever. The tail sits 30 m off the outlaw so no quiet clock runs.
+  const room = armRoom(1);
+  const far = facts([{}], [{ d: [30] }, { d: [400] }, { d: [400], parked: true }]);
+  const riding = play(room, CHASE.trackerHoldSeconds * 3, far);
+  assert.equal(riding.demands.length, 0, 'a waking patrol riding in was returned to his post');
+  assert.equal(room.state.pursuers[1].phase, 'waking');
+  assert.equal(room.state.pursuers[1].gap, 0);
+  // Losing ground: 25 m worse than his best since the deal.
+  const losing = play(room, CHASE.trackerHoldSeconds + 0.5, facts([{}], [{ d: [30] }, { d: [425] }, { d: [400], parked: true }]));
+  // The brutal pass: his return is a roadblock ahead of the rider (Game falls
+  // back to a fixed post when no spot on the road qualifies), never the tail's
+  // return behind him (q206).
+  assert.deepEqual(kinds(losing, 'intercept'), [{ kind: 'intercept', pursuer: 1, outlaw: 0, cause: 'gap' }],
+    'a patrol who could not close was never sent ahead — or took the tail’s return (q206)');
+  assert.equal(kinds(losing, 'tail-return').length, 0);
+  assert.equal(kinds(losing, 'post-return').length, 0);
+});
+
+// The brutal pass (2026-09-25) replaced QA r1's quiet *wake* — the nearest
+// parked patrol woken a third of the ring away and left to ride in for a whole
+// quiet spell before anybody else was asked — with two answers in one step:
+// the tail back behind the rider and a patrol sent ahead of him. The owner's
+// ride: "it took a while of riding in silence before i ran into the next cop".
+// QA r1's three cases pinned the removed answer and are replaced by these.
+
+test('brutal pass: the quiet clock is answered by the tail behind AND a patrol ahead, in the same step', () => {
+  // Solo face: the tail trails at 100 m (inside his own tracker line, out of
+  // earshot), both patrols parked far away. The old director woke patrol 1
+  // and nothing else; this one returns Dorkins and sends patrol 1 ahead.
+  const room = armRoom(1);
+  const parkedBoth = facts([{}], [{ d: [100] }, { d: [400], parked: true }, { d: [600], parked: true }]);
+  const log = play(room, CHASE.trackerQuietSeconds + STEP * 2, parkedBoth);
+  assert.deepEqual(log.demands, [
+    { kind: 'tail-return', pursuer: 0, outlaw: 0, cause: 'quiet' },
+    { kind: 'intercept', pursuer: 1, outlaw: 0, cause: 'quiet' },
+  ], 'the quiet clock was not answered from both ends at once');
+  assert.equal(kinds(log, 'patrol-wake').length, 0, 'a patrol was woken a third of the ring away instead');
+});
+
+test('brutal pass: a patrol sent ahead is not moved again inside the hold; the next spell sends the other one', () => {
+  // The return behind is refused (Game could not place him: the tail stays at
+  // 100 m), so the quiet clock asks again after the retry. Patrol 1 stands
+  // parked where he was sent; he is not sent anywhere again for ten seconds,
+  // and the next ask sends patrol 2 instead.
+  const room = armRoom(1);
+  const parkedBoth = facts([{}], [{ d: [100] }, { d: [400], parked: true }, { d: [600], parked: true }]);
+  play(room, CHASE.trackerQuietSeconds + STEP * 2, parkedBoth);
+  const after = play(room, RETRY * 3 + STEP * 2, parkedBoth);
+  const returns = kinds(after, 'tail-return');
+  assert.ok(returns.length >= 2, `a refused return was asked ${returns.length} times in ${RETRY * 3} s, not after every retry`);
+  const sent = kinds(after, 'intercept');
+  assert.ok(sent.every((demand) => demand.pursuer !== 1), 'the patrol just sent ahead was moved again inside the hold');
+  assert.deepEqual(sent.map((demand) => demand.pursuer), [2], 'the other patrol was not sent, or sent twice');
+});
+
+test('brutal pass: a tail still riding in on his quarry is not "lost" to another outlaw’s quiet clock', () => {
+  // 2 outlaws against the lone tail: he closes on outlaw 0 from 150 m at
+  // 20 m/s while outlaw 1 goes quiet. Closing, he keeps his quarry; once he
+  // stops closing out there, R-9 takes him as before.
+  const room = armRoom(2, { cpu: 1 });
+  const closingIn = (seconds: number): ChaseRoomInput => facts([{}, {}], [{ d: [Math.max(62, 150 - 20 * seconds), 300] }]);
+  const steps = Math.round((CHASE.trackerQuietSeconds + 0.5) * SIMULATION.hz);
+  for (let step = 1; step <= steps; step += 1) {
+    room.step(STEP, closingIn(step * STEP));
+    assert.ok(room.takeDemands().every((demand) => demand.outlaw !== 1),
+      'the tail riding in was dealt the other outlaw');
+  }
+  // Stalled at 62 m (the closure has run out), he is lost again: R-9 re-deals him.
+  const log = play(room, CHASE.trackerQuietSeconds + 1, facts([{}, {}], [{ d: [62, 300] }]));
+  assert.ok(kinds(log, 're-deal').some((demand) => demand.pursuer === 0 && demand.outlaw === 1),
+    'a tail who stopped closing out of earshot was never re-dealt');
+});
+
+test('brutal pass: a patrol pressing his own quarry is never sent ahead of another', () => {
+  // 2v2: the patrol presses outlaw 1 at 30 m; outlaw 0 goes quiet. The tail is
+  // his and is returned; the patrol stays on outlaw 1.
+  const room = armRoom(2);
+  const input = facts([{}, {}], [{ d: [100, 300] }, { d: [300, 30] }]);
+  const log = play(room, CHASE.trackerQuietSeconds + STEP * 2, input);
+  assert.deepEqual(log.demands, [{ kind: 'tail-return', pursuer: 0, outlaw: 0, cause: 'quiet' }]);
+  assert.equal(room.quarryOf(1), 1, 'the patrol was pulled off the outlaw he is pressing');
+});
+
+test('brutal pass: a patrol parked nowhere near his quarry is sent ahead after the idle spell; one within reach waits', () => {
+  // Solo face, the tail pressing at 30 m (no quiet clock runs). Patrol 1's post
+  // is 800 m from the rider, patrol 2's 150 m: the first becomes a roadblock
+  // after `roadblockIdleSeconds`, the second is left for the rider to reach.
+  const room = armRoom(1);
+  const input = facts([{}], [{ d: [30] }, { d: [800], parked: true }, { d: [150], parked: true }]);
+  const early = play(room, CHASE.roadblockIdleSeconds - 0.5, input);
+  assert.equal(early.demands.length, 0, 'a patrol was moved before his idle spell was up');
+  const fired = play(room, 1, input);
+  assert.deepEqual(fired.demands, [{ kind: 'intercept', pursuer: 1, outlaw: 0, cause: 'idle' }]);
+  // Game parks him ahead, 250 m off the rider: not moved again inside the
+  // hold, even though he is still further out than the idle line; and the
+  // patrol within reach is never moved at all.
+  const after = play(room, 9, facts([{}], [{ d: [30] }, { d: [250], parked: true }, { d: [150], parked: true }]));
+  assert.equal(after.demands.length, 0, 'a roadblock was moved again inside the hold, or the near patrol was moved');
+});
+
+test('a stall sends a patrol ahead and the tail behind his quarry; a stall never re-deals', () => {
+  const room = armRoom(2);
+  // Both cops engaged, then stuck: speed zero, well away from their quarries.
+  play(room, 1, facts([{}, {}], [{ d: [40, 45] }, { d: [45, 40] }]));
+  const stuck = play(room, CHASE.trackerStallSeconds + 0.5, facts([{}, {}], [
+    { d: [40, 45], speed: 0 }, { d: [45, 40], speed: 0 },
+  ]));
+  assert.deepEqual(stuck.demands, [
+    { kind: 'tail-return', pursuer: 0, outlaw: 0, cause: 'stall' },
+    { kind: 'intercept', pursuer: 1, outlaw: 1, cause: 'stall' },
+  ]);
+  assert.deepEqual([room.quarryOf(0), room.quarryOf(1)], [0, 1]);
+});
+
+test('a downed cop’s respite is his alone: the other cops’ clocks keep running', () => {
+  // §39.6b.3 "Returning": a baited crash holds that cop's clocks and his alone.
+  const room = armRoom(1);
+  const input = (tailDown: boolean) => facts([{}], [
+    { d: [CHASE.trackerGapMetres + 20], crashed: tailDown }, { d: [CHASE.trackerGapMetres + 20] }, { d: [CHASE.trackerGapMetres + 20] },
+  ]);
+  // Everybody engaged first (inside the tracker line), then the gap blows out
+  // while the tail lies in the road.
+  play(room, 0.5, facts([{}], [{ d: [100] }, { d: [100] }, { d: [100] }]));
+  play(room, 1, input(true));
+  play(room, 0.5, input(false));
+  const state = room.state;
+  assert.ok(state.pursuers[0].respite > CHASE.trackerRespiteSeconds - 1);
+  assert.equal(state.pursuers[1].respite, 0, 'the tail’s crash bought his packmate a respite');
+  assert.equal(state.pursuers[0].gap, 0);
+  assert.ok(state.pursuers[1].gap > 1, 'a packmate’s gap clock was held by the tail’s crash');
+});
+
+test('the couch count holds the room: count, GO, then the round — nothing decided while it counts', () => {
+  // q223: the couch chase always counts (the race's and the fight's
+  // convention: "3" for the whole third second, GO replaces "1").
+  const room = armRoom(2, { arm: { countdownSeconds: 3 } });
+  assert.equal(room.phase, 'countdown');
+  const input = facts([{ crashed: true, offRoute: 999 }, {}], [{ d: [1, 1] }, { d: [1, 1] }]);
+  const events: ChaseEvent[] = [];
+  for (let step = 0; step < 4 * SIMULATION.hz && room.phase === 'countdown'; step += 1) {
+    events.push(...room.step(STEP, input).events);
+  }
+  assert.deepEqual(events.map((e) => e.kind === 'count' ? e.value : e.kind), [3, 2, 1, 'go']);
+  assert.equal(room.phase, 'running');
+  assert.equal(room.statusOf(0), 'standing', 'a crash during the count was decided');
+  assert.equal(room.state.remaining, room.state.bellSeconds, 'the bell ran during the count');
+});
+
+test('the cop hold freezes the director, and the deal still covers the room', () => {
+  // q224: while elapsed < copHoldSeconds the pursuers are held; every clock
+  // is held at zero and nothing is demanded.
+  const room = new ChaseRoom();
+  room.copHoldSeconds = 5;
+  room.arm(roomSpec(1, false), { bellSeconds: 60 });
+  const blown = facts([{}], [{ d: [400], speed: 0 }, { d: [400] }, { d: [400], parked: true }]);
+  const held = play(room, 4.5, blown);
+  assert.equal(room.pursuersHeld, true);
+  assert.equal(held.demands.length, 0, 'a held pursuer was sent a demand');
+  assert.deepEqual([room.state.pursuers[0].gap, room.quietOf(0)], [0, 0]);
+  play(room, 1, blown);
+  assert.equal(room.pursuersHeld, false);
+  assert.ok(room.state.pursuers[0].gap > 0, 'the clocks never started after the hold');
+});
+
+test('abandoning a room clears every fact, demands included; re-arming deals afresh', () => {
+  const room = armRoom(1);
+  play(room, CHASE.trackerHoldSeconds + 0.5, facts([{}], [{ d: [400] }, { d: [400] }, { d: [400] }]));
+  room.step(STEP, facts([{}], [{ d: [400] }, { d: [400] }, { d: [400] }]));
+  room.abandon();
+  assert.equal(room.takeDemands().length, 0, 'a demand survived abandon');
+  assert.equal(room.phase, 'idle');
+  assert.equal(room.quarryOf(0), -1);
+  room.arm(roomSpec(1, false), { bellSeconds: 60 });
+  assert.equal(room.quarryOf(0), 0);
+  assert.equal(room.state.pursuers[0].gap, 0);
+  assert.equal(room.state.result, null);
 });

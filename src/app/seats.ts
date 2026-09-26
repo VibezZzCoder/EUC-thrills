@@ -306,4 +306,114 @@ export interface RiderSeat {
    * and the honest version of that guard is that it retires their own.
    */
   hoppedSinceHudUpdate: boolean;
+
+  // -- The chase room's seat facts — M39 Part P (§39.6b.3b) -------------------
+
+  /**
+   * Whose body this seat's camera is following while its own rider is out of
+   * the room, or `null`/absent for its own rider — q216, q226.
+   *
+   * **Only a busted outlaw in a couch chase ever holds a target.** He stays on
+   * the couch and in the room (one out, the rest ride on), his rig is hidden
+   * and out of contact, and his pane is still his, so it has to look at
+   * *somebody*: the nearest standing outlaw when he goes down (Game picks that
+   * with positions), then whatever `nextSpectateTarget` answers on each
+   * camera-cycle press. Optional; absent or `null` means the seat's own
+   * rider. Written by Game's `watch` and cleared by `releaseChaseSeats`; read
+   * by `followedPose` (the step, the render and `refreshRoomPanes`),
+   * `cycleSpectate`, the out-beat loop in `stepChaseWatchers` and the QA
+   * snapshot.
+   *
+   * Session state like `character`: it never reaches `GameOptions`.
+   */
+  spectating?: SpectateTarget | null;
+}
+
+/**
+ * Which side of the chase rule a seat is on — M39 Part P (§39.6b.3b, q215).
+ *
+ * Up to three outlaws against one cop slot, and a human takes the cop slot by
+ * picking Officer Dorkins on the join wheel. So the role is **derived from the
+ * seat's character and never stored**: a stored role could disagree with the
+ * rig the seat is drawn as, and the whole couch would then argue with what it
+ * can see. Outside a couch chase no seat can hold the cop (`rosterForRide`
+ * re-deals him before anything is written), so every seat reads `'outlaw'`.
+ */
+export type SeatRole = 'outlaw' | 'cop';
+
+/** `'cop'` exactly when the seat wears Officer Dorkins (q215); everybody else is an outlaw. */
+export function seatRole(character: CharacterId): SeatRole {
+  return character === 'cop' ? 'cop' : 'outlaw';
+}
+
+/**
+ * What a busted outlaw's camera can be following — q226.
+ *
+ * A seat index for a body another seat rides (a standing outlaw, or the human
+ * cop), a pursuer index for a CPU Dorkins. Two kinds rather than one number
+ * because the two lists are indexed separately (`Game.seats`, the room's
+ * pursuers) and a bare index would be a seat on one press and a cop on the
+ * next.
+ */
+export type SpectateTarget =
+  | { readonly kind: 'seat'; readonly index: number }
+  | { readonly kind: 'pursuer'; readonly index: number };
+
+/**
+ * Where the spectator's cycle order puts a target: standing outlaw seats
+ * first, by seat index, then the cop (the human cop's seat, or each CPU
+ * pursuer by index). A number rather than a list position, so a target that
+ * has just left the list (an outlaw who went down while being watched) still
+ * has a place to step on from.
+ */
+function spectateRank(target: SpectateTarget, copSeat: number): number {
+  if (target.kind === 'pursuer') return 1_000 + target.index;
+  return target.index === copSeat ? 1_000 : target.index;
+}
+
+/**
+ * The camera-cycle press for a busted outlaw — q226 ("the nearest standing
+ * outlaw; the camera press cycles to the next standing body, the cop last").
+ *
+ * The cycle is: every standing outlaw seat ascending (never `self`, who is the
+ * one watching), then the cop — the human cop's seat when `copSeat` is a seat,
+ * else each standing CPU pursuer ascending (`copSeat` −1) — and then round
+ * again. `current` null starts at the first entry. A `current` that is no
+ * longer in the cycle (the outlaw he was watching went down too) steps to the
+ * first entry after where it stood rather than jumping back to the start, so a
+ * press still reads as "next". Null only when there is nobody left standing to
+ * watch, which is the moment the room has ended anyway.
+ *
+ * Game picks the *first* target with positions (the nearest standing outlaw);
+ * this only cycles, so it stays a pure function of indices. Called on a button
+ * press, never per step, so the small list it builds is not a hot allocation.
+ */
+export function nextSpectateTarget(
+  current: SpectateTarget | null,
+  self: number,
+  standingOutlawSeats: readonly number[],
+  copSeat: number,
+  standingPursuers: readonly number[],
+): SpectateTarget | null {
+  const cycle: SpectateTarget[] = [];
+  for (const seat of [...standingOutlawSeats].sort((a, b) => a - b)) {
+    if (seat === self || seat === copSeat) continue;
+    if (cycle.some((entry) => entry.index === seat)) continue;
+    cycle.push({ kind: 'seat', index: seat });
+  }
+  if (copSeat >= 0) {
+    if (copSeat !== self) cycle.push({ kind: 'seat', index: copSeat });
+  } else {
+    for (const pursuer of [...standingPursuers].sort((a, b) => a - b)) {
+      if (cycle.some((entry) => entry.kind === 'pursuer' && entry.index === pursuer)) continue;
+      cycle.push({ kind: 'pursuer', index: pursuer });
+    }
+  }
+  if (cycle.length === 0) return null;
+  if (current === null) return cycle[0];
+
+  const at = cycle.findIndex((entry) => entry.kind === current.kind && entry.index === current.index);
+  if (at >= 0) return cycle[(at + 1) % cycle.length];
+  const rank = spectateRank(current, copSeat);
+  return cycle.find((entry) => spectateRank(entry, copSeat) > rank) ?? cycle[0];
 }

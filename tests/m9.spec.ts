@@ -58,6 +58,13 @@ test.describe('M9 — HUD, menus, options', () => {
     await expect(page.locator('.euc-menu--title')).toContainText('Cool Rider');
     await expect(page.locator('.euc-menu--title [data-menu="controls"]')).toHaveCount(0);
     await expect(page.locator('.euc-menu--title [data-menu="settings"]')).toBeVisible();
+    // And beside Settings, M39's shortcut — never on by default (q201): a fresh
+    // install is High, so the toggle is unpressed and says Off.
+    const ultra = page.locator('.euc-menu--title [data-menu="ultra"]');
+    await expect(ultra).toBeVisible();
+    await expect(ultra).toHaveAccessibleName('Ultra Graphics');
+    await expect(ultra).toHaveAttribute('aria-pressed', 'false');
+    await expect(ultra.locator('[data-ultra-text]')).toHaveText('Off');
 
     await start.click();
     expect(await app(page)).toMatchObject({ state: 'freeRide', menu: 'none', acceptsRideInput: true });
@@ -542,6 +549,12 @@ test.describe('M9 — HUD, menus, options', () => {
     // no vertical axis at all. Both columns are walked below, so every entrance
     // is still named — a control that stops being reachable still fails here.
     // A activates what is focused.
+    //
+    // **M39 split Settings' own cell, and moved no stop.** The Ultra Graphics
+    // toggle takes the right half of the cell Settings had (`game.css`, DESIGN
+    // §9g), with Settings the wider track so that Down from Police chase still
+    // lands on Settings rather than on a tie; Right from Settings is the
+    // toggle, and Left comes back. Nothing above that cell moved.
     await pulse(13);
     await expect(menuButton(page, 'title', 'couch')).toBeFocused();
     await pulse(13);
@@ -567,6 +580,13 @@ test.describe('M9 — HUD, menus, options', () => {
 
     // Settings is the bottom of the right column, one row below Police chase.
     await pulse(13);
+    await expect(menuButton(page, 'title', 'settings')).toBeFocused();
+    // The Ultra toggle is beside it, one Right away, and Left comes home. The
+    // pad only walks here: pressing A on the toggle would change the quality
+    // tier under a test that is about navigation.
+    await pulse(15);
+    await expect(menuButton(page, 'title', 'ultra')).toBeFocused();
+    await pulse(14);
     await expect(menuButton(page, 'title', 'settings')).toBeFocused();
     await pulse(0);
     await page.waitForFunction(() => window.game.snapshot().app.state === 'settings');
@@ -899,6 +919,12 @@ test.describe('M9 — HUD, menus, options', () => {
     // Invariant 10, applied to the layer M9 added: the HUD and three menu
     // surfaces are DOM, but the quality preset disposes and rebuilds a shadow
     // map, and that is a GPU object.
+    //
+    // **Ultra is in the cycle since M39**, and it is the tier this plateau
+    // matters most for: it builds a world's worth of its own geometry, maps and
+    // targets, and every one of them must be gone again when the cycle comes
+    // back to High (`docs/M39_ULTRA.md` §3.6, invariant 10). The cycle ends on
+    // High because the comparison is against a High boot.
     const errors = collectErrors(page);
     await boot(page);
     await page.evaluate(() => window.game.advance(120));
@@ -911,6 +937,8 @@ test.describe('M9 — HUD, menus, options', () => {
         game.setAppState('settings');
         game.setOptions({ quality: 'low' });
         game.setOptions({ quality: 'medium' });
+        game.setOptions({ quality: 'high' });
+        game.setOptions({ quality: 'ultra' });
         game.setOptions({ quality: 'high' });
         game.setAppState('paused');
         game.setAppState('title');

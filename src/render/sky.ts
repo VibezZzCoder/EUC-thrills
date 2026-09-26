@@ -1,8 +1,8 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
-import { LIGHTING } from '../data/tuning.ts';
-import { DAYLIGHT_LOOK, type ResolvedVenueLook } from '../data/venueLook.ts';
-import { paintSky } from './skyImage.ts';
+import { LIGHTING, ULTRA } from '../data/tuning.ts';
+import { DAYLIGHT_LOOK, sameSkyPaint, type ResolvedVenueLook } from '../data/venueLook.ts';
+import { paintSky, type CumulusParams, type SkyConstruction, type SkyParams } from './skyImage.ts';
 
 /**
  * The painted sky, as a `THREE.DataTexture` ready for `scene.background`.
@@ -30,6 +30,182 @@ export interface SkyTexture {
 }
 
 /**
+ * How the sky is painted beyond the look — M39's Ultra sky (T8, amendment A2).
+ *
+ * **Every field optional, and `{}` is the ordinary sky, byte for byte**: the
+ * 1024×512 image at anisotropy 1 that every Low/Medium/High frame wears
+ * (`sky.test.ts` holds that). The Ultra rung passes `ultraSkyOptions(…)` from
+ * `render/ultra/ultraLighting.ts`: 2048×1024, one finer cloud octave,
+ * anisotropy 4 and the daylight cumulus. Declared here, beside the painter it
+ * configures, and re-exported from `ultraLighting.ts` so W0's import path
+ * keeps working.
+ *
+ * Part of the sky's repaint key (§3.2 "the repaint key includes the tier"):
+ * `sameSkyOptions` is what the venue rig compares beside `sameSkyPaint`, so a
+ * tier switch on an unchanged venue still repaints, and leaving Ultra paints
+ * the ordinary sky again rather than keeping the Ultra one.
+ */
+export interface SkyOptions {
+  readonly width?: number;
+  readonly height?: number;
+  readonly anisotropy?: number;
+  /** Amplitude of the extra fine cloud octave; 0 or absent paints none. */
+  readonly fineOctaveAmplitude?: number;
+  /** Sparse fair-weather cumulus on a daylight venue's sky (A2). */
+  readonly daylightClouds?: boolean;
+  /**
+   * Multiplies the construction's cloud edge softness (pre-R1 calibration,
+   * `M39_ULTRA.md` §U2): under 1 the wisps' edges sharpen, which is what lets
+   * the fine octave's detail show — softness is the width of the opacity ramp
+   * above the threshold, so where the clouds are and how far they reach is
+   * unchanged (§8.3: "only cloud sharpness may change"). Absent or 1 paints
+   * the construction's softness exactly. **Only on a venue that authors its
+   * own sky** (Switchback): a daylight sky's Ultra detail is the cumulus, and
+   * sharper wisps there moved the haze band over the rooftops (§U2).
+   */
+  readonly cloudSoftnessScale?: number;
+  /**
+   * The cumulus layout's seed (gauntlet round 1: "placement varied per
+   * plan"): `cumulusSeedFor(plan.id)`, so two worlds that share a heading do
+   * not share a sky. Absent is 0. Read only with `daylightClouds`.
+   */
+  readonly cloudSeed?: number;
+}
+
+/**
+ * The cumulus seed for a plan id: FNV-1a over its UTF-16 code units, as a
+ * signed 32-bit integer. Pure and stable across sessions, so a world wears
+ * the same sky every time it is ridden, and different worlds different ones.
+ */
+export function cumulusSeedFor(planId: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < planId.length; index += 1) {
+    hash ^= planId.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash | 0;
+}
+
+/** The ordinary sky's options: none. Frozen so a caller cannot widen it by accident. */
+const ORDINARY_SKY: SkyOptions = Object.freeze({});
+
+/**
+ * The sky's construction — every `SkyParams` field a venue's look does not
+ * move, straight from `LIGHTING`. Shared by the sky and the Ultra environment
+ * (`ultraEnvironment.ts`), so the environment's upper half is the same sky the
+ * player sees behind the frame.
+ */
+export function skyConstruction(): SkyConstruction {
+  return {
+    gradientExponent: LIGHTING.skyGradientExponent,
+    sunCoreSpread: LIGHTING.skySunCoreSpread,
+    sunGlowSpread: LIGHTING.skySunGlowSpread,
+    sunGlowStrength: LIGHTING.skySunGlowStrength,
+    sunHorizonWarmth: LIGHTING.skySunHorizonWarmth,
+    sunHorizonSpread: LIGHTING.skySunHorizonSpread,
+    sunHorizonPeak: LIGHTING.skySunHorizonPeak,
+    cloudLitColour: LIGHTING.skyCloudLitColour,
+    cloudShadeColour: LIGHTING.skyCloudShadeColour,
+    cloudCoverage: LIGHTING.skyCloudCoverage,
+    cloudSoftness: LIGHTING.skyCloudSoftness,
+    cloudScale: LIGHTING.skyCloudScale,
+    cloudHorizonFade: LIGHTING.skyCloudHorizonFade,
+  };
+}
+
+/**
+ * Whether a look wears the daylight sky — the venues amendment A2 gives the
+ * cumulus to (town, generated routes, the slice, the proving ground, BelVar).
+ *
+ * Decided by the five painted fields (`sameSkyPaint`) rather than by a venue
+ * id, so the rule needs no list and cannot miss a new daylight world; a venue
+ * that authors its own sky — Switchback's warm afternoon — keeps exactly the
+ * clouds it was accepted with.
+ */
+export function wearsDaylightSky(look: ResolvedVenueLook): boolean {
+  return sameSkyPaint(look, DAYLIGHT_LOOK);
+}
+
+/** The cumulus layer's parameters, from `ULTRA.sky.cumulus` (degrees → radians), for a seed. */
+export function daylightCumulus(seed = 0): CumulusParams {
+  const c = ULTRA.sky.cumulus;
+  const radians = Math.PI / 180;
+  return {
+    seed: seed | 0,
+    count: c.count,
+    fill: c.fill,
+    baseMin: c.baseMinDegrees * radians,
+    baseMax: c.baseMaxDegrees * radians,
+    topMax: c.topDegrees * radians,
+    widthMin: c.widthMinDegrees * radians,
+    widthMax: c.widthMaxDegrees * radians,
+    aspect: c.aspect,
+    puffs: c.puffs,
+    billow: c.billow,
+    billowFrequency: c.billowFrequency,
+    edge: c.edgeDegrees * radians,
+    litColour: c.litColour,
+    shadeColour: c.shadeColour,
+    baseShade: c.baseShade,
+    lightFloor: c.lightFloor,
+    haze: c.haze,
+    opacity: c.opacity,
+  };
+}
+
+/**
+ * Exactly the painter arguments `createSky(look, options)` uses. Exported so
+ * a test (and the environment) can reach the same list without a texture.
+ *
+ * With `{}` this is the pre-M39 argument list: the Ultra fields are not
+ * present at all, and the painter reads them only when they are.
+ */
+export function skyParamsFor(look: ResolvedVenueLook, options: SkyOptions = ORDINARY_SKY): SkyParams {
+  const base: SkyParams = {
+    width: options.width ?? LIGHTING.skyTextureWidth,
+    height: options.height ?? LIGHTING.skyTextureHeight,
+    zenithColour: look.skyZenithColour,
+    // The haze's colour and the sky's bottom stop are one field on the look,
+    // so the band `DESIGN.md` §6 forbids cannot come back through a venue.
+    horizonColour: look.horizonColour,
+    // Derived from the two constants that aim the directional light, so the
+    // painted sun and the shadows in the frame can never disagree.
+    sunAzimuth: look.sunAzimuth,
+    sunElevation: look.sunElevation,
+    sunColour: look.skySunColour,
+    ...skyConstruction(),
+  };
+  const fine = options.fineOctaveAmplitude ?? 0;
+  const cumulus = options.daylightClouds === true && wearsDaylightSky(look);
+  // The sharper wisps are the Ultra sky detail of a venue that authors its own
+  // clouds (Switchback); a daylight sky's is the A2 cumulus, and its wisps
+  // stay as soft as High's so the haze band over the rooftops does not move.
+  const softness = wearsDaylightSky(look) ? 1 : options.cloudSoftnessScale ?? 1;
+  if (fine <= 0 && !cumulus && softness === 1) return base;
+  return {
+    ...base,
+    ...(softness !== 1 ? { cloudSoftness: base.cloudSoftness * softness } : {}),
+    ...(fine > 0 ? { fineOctaveAmplitude: fine } : {}),
+    ...(cumulus ? { cumulus: daylightCumulus(options.cloudSeed ?? 0) } : {}),
+  };
+}
+
+/**
+ * Whether two option sets paint and sample the same sky — the tier half of
+ * the repaint key (§3.2). Compares the *resolved* values, so `{}` and an
+ * explicit `{ width: 1024, height: 512, anisotropy: 1 }` agree.
+ */
+export function sameSkyOptions(a: SkyOptions, b: SkyOptions): boolean {
+  return (a.width ?? LIGHTING.skyTextureWidth) === (b.width ?? LIGHTING.skyTextureWidth)
+    && (a.height ?? LIGHTING.skyTextureHeight) === (b.height ?? LIGHTING.skyTextureHeight)
+    && (a.anisotropy ?? 1) === (b.anisotropy ?? 1)
+    && (a.fineOctaveAmplitude ?? 0) === (b.fineOctaveAmplitude ?? 0)
+    && (a.daylightClouds === true) === (b.daylightClouds === true)
+    && (a.cloudSoftnessScale ?? 1) === (b.cloudSoftnessScale ?? 1)
+    && (a.cloudSeed ?? 0) === (b.cloudSeed ?? 0);
+}
+
+/**
  * Paint the sky a venue asked for — M36 Phase 4.
  *
  * **Five of its parameters now come from the look and the rest still come from
@@ -44,37 +220,20 @@ export interface SkyTexture {
  * With no argument the pixels are what M7.5 shipped, byte for byte — the
  * default look is literally the `LIGHTING` values this function used to read
  * inline, and `sky.test.ts` paints both ways and compares the buffers.
+ *
+ * **M39: an optional second argument, for Ultra only.** `options` may widen
+ * the texture, add the fine octave, raise the anisotropy and paint the
+ * daylight cumulus; omitted (or `{}`), every byte and every texture field is
+ * the ordinary sky's. The horizon row is untouched either way: the Ultra
+ * details live inside the cloud fade, which is zero at and below the horizon.
  */
-export function createSky(look: ResolvedVenueLook = DAYLIGHT_LOOK): SkyTexture {
-  const width = LIGHTING.skyTextureWidth;
-  const height = LIGHTING.skyTextureHeight;
-
-  const pixels = paintSky({
-    width,
-    height,
-    zenithColour: look.skyZenithColour,
-    // The haze's colour and the sky's bottom stop are one field on the look,
-    // so the band `DESIGN.md` §6 forbids cannot come back through a venue.
-    horizonColour: look.horizonColour,
-    gradientExponent: LIGHTING.skyGradientExponent,
-    // Derived from the two constants that aim the directional light, so the
-    // painted sun and the shadows in the frame can never disagree.
-    sunAzimuth: look.sunAzimuth,
-    sunElevation: look.sunElevation,
-    sunColour: look.skySunColour,
-    sunCoreSpread: LIGHTING.skySunCoreSpread,
-    sunGlowSpread: LIGHTING.skySunGlowSpread,
-    sunGlowStrength: LIGHTING.skySunGlowStrength,
-    sunHorizonWarmth: LIGHTING.skySunHorizonWarmth,
-    sunHorizonSpread: LIGHTING.skySunHorizonSpread,
-    sunHorizonPeak: LIGHTING.skySunHorizonPeak,
-    cloudLitColour: LIGHTING.skyCloudLitColour,
-    cloudShadeColour: LIGHTING.skyCloudShadeColour,
-    cloudCoverage: LIGHTING.skyCloudCoverage,
-    cloudSoftness: LIGHTING.skyCloudSoftness,
-    cloudScale: LIGHTING.skyCloudScale,
-    cloudHorizonFade: LIGHTING.skyCloudHorizonFade,
-  });
+export function createSky(
+  look: ResolvedVenueLook = DAYLIGHT_LOOK,
+  options: SkyOptions = ORDINARY_SKY,
+): SkyTexture {
+  const params = skyParamsFor(look, options);
+  const { width, height } = params;
+  const pixels = paintSky(params);
 
   const texture = new THREE.DataTexture(pixels, width, height, THREE.RGBAFormat);
   texture.name = 'sky';
@@ -93,7 +252,10 @@ export function createSky(look: ResolvedVenueLook = DAYLIGHT_LOOK): SkyTexture {
   // camera axis and heavily minified toward the poles; mipmaps are what stop
   // the cloud field from crawling as the camera yaws.
   texture.generateMipmaps = true;
-  texture.anisotropy = 1;
+  // 1 on every ordinary sky. The Ultra sky asks for 4 (capped by the device):
+  // the plane-projected clouds are seen at a grazing angle near the horizon,
+  // which is exactly where isotropic filtering smears them.
+  texture.anisotropy = options.anisotropy ?? 1;
   texture.needsUpdate = true;
 
   return {

@@ -1,7 +1,9 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { boot, bootToTitle, collectErrors } from './harness.ts';
-import { CHARACTER_IDS } from '../src/data/riders.ts';
+import { CHARACTER_IDS, CHARACTERS, COP_CHARACTER, type PlayableCharacterId } from '../src/data/riders.ts';
+import { CHASE, EUC, KNOCKABOUT } from '../src/data/tuning.ts';
 import { SLOT_LATERAL_METRES, SLOT_MIN_SEPARATION_METRES } from '../src/simulation/spawnSlots.ts';
 import { RENDER_BUDGET, RENDER_BUDGET_SPLIT, SPLIT_PASSES } from '../src/data/renderCost.ts';
 
@@ -2012,7 +2014,15 @@ test('both riders are heard, and each crash speaks its own character', async ({ 
 
 test('the guest’s max-speed warning beeps even while the player is standing still', async ({ page }) => {
   const errors = collectErrors(page);
-  await bootToCouchTitle(page);
+  // **On the proving ground since 2026-09-24**, the second spec below's own
+  // reason. The 2026-09-22 cutout retune moved the first beep to 0.87 of top
+  // speed (`EUC.overspeedBeepShare`), about 118 m of flat-out riding from a
+  // standing start; the slice's straight ends in an obstacle at z ≈ 116 m, so
+  // the guest crashed at 25.8 m/s with overspeed still 0 and this measured the
+  // slice's length rather than the mix. The couch door is unchanged: the same
+  // title button and the same panel, on the flat instrument.
+  await bootToTitle(page, 'level=proving');
+  await page.waitForFunction(() => window.game.snapshot().couch.available);
   await openJoinPanel(page);
   await page.evaluate(() => window.game.setAppState('freeRide'));
   await page.waitForFunction(() => window.game.snapshot().app.acceptsRideInput);
@@ -2061,9 +2071,61 @@ test('the guest’s max-speed warning beeps even while the player is standing st
  * that broke first (1600 × 500 overflowed by 67 px before the layout tiers
  * below 56 rem and 40 rem existed, and 1000 × 560 by 7).
  */
-test('the title and the join panel fit every desktop window that is offered them', async ({ page }) => {
+test('the title and the join panel fit every desktop window that is offered them', async ({ page }, testInfo) => {
   const errors = collectErrors(page);
   await bootToTitle(page);
+
+  /**
+   * **The title's M39 fit, measured where it is asserted** (`DESIGN.md` §9g).
+   *
+   * The Ultra Graphics toggle shares Settings' row, and which shape the pair
+   * takes is the stylesheet's per tier — one row in the stack, Settings' old
+   * cell on the couch grid, two cells where three columns would split it. The
+   * design record wants the measured numbers rather than the predicted ones
+   * (the rider chooser's lesson, §9d: the tier arithmetic has been wrong in
+   * both directions), so this loop reports them as it goes: the title's spare
+   * height, the pair's boxes, the tier it was in and whether the state word
+   * shared the label's line. Reported, never asserted — the assertions are the
+   * `inside`/`unscrollable` calls below, exactly as for every other control.
+   */
+  const titleFit: unknown[] = [];
+  const measureTitle = async (at: { width: number; height: number }) => {
+    const row = await page.evaluate(() => {
+      const root = document.querySelector<HTMLElement>('.euc-menu--title')!;
+      const panel = root.querySelector<HTMLElement>('.euc-menu__panel')!;
+      const style = getComputedStyle(root);
+      const box = (selector: string) => {
+        const node = root.querySelector<HTMLElement>(selector);
+        if (node === null) return null;
+        const bounds = node.getBoundingClientRect();
+        return {
+          x: Math.round(bounds.x * 10) / 10,
+          y: Math.round(bounds.y * 10) / 10,
+          w: Math.round(bounds.width * 10) / 10,
+          h: Math.round(bounds.height * 10) / 10,
+        };
+      };
+      const actions = [...root.querySelectorAll<HTMLElement>('.euc-menu__actions button')]
+        .filter((node) => node.offsetParent !== null);
+      const label = root.querySelector<HTMLElement>('[data-menu="ultra"] .euc-ultra__label');
+      const state = root.querySelector<HTMLElement>('[data-menu="ultra"] [data-ultra-text]');
+      return {
+        spare: Math.round((root.clientHeight - parseFloat(style.paddingTop)
+          - parseFloat(style.paddingBottom) - panel.getBoundingClientRect().height) * 10) / 10,
+        rows: new Set(actions.map((node) => Math.round(node.getBoundingClientRect().top))).size,
+        utility: getComputedStyle(root.querySelector('.euc-menu__utility')!).display,
+        longLabel: getComputedStyle(root.querySelector('.euc-ultra__long')!).display !== 'none',
+        stateOnLabelLine: label !== null && state !== null
+          && Math.abs(label.getBoundingClientRect().top - state.getBoundingClientRect().top) < 8,
+        routes: box('[data-menu="routes"]'),
+        settings: box('[data-menu="settings"]'),
+        ultra: box('[data-menu="ultra"]'),
+      };
+    });
+    const entry = { viewport: `${at.width}x${at.height}`, ...row };
+    titleFit.push(entry);
+    console.log(`[m39-title-fit] ${JSON.stringify(entry)}`);
+  };
 
   const VIEWPORTS = [
     { width: 1000, height: 700 },   // the browser suite's own window
@@ -2119,9 +2181,12 @@ test('the title and the join panel fit every desktop window that is offered them
       await page.evaluate(() => window.game.snapshot().couch.available),
       `no couch offered at ${viewport.width}x${viewport.height}`,
     ).toBe(true);
+    await measureTitle(viewport);
     await unscrollable('.euc-menu--title', viewport);
     await inside('.euc-menu--title [data-menu="couch"]', viewport);
     await inside('.euc-menu--title [data-menu="settings"]', viewport);
+    // M39: the toggle beside it is held to the same fit (DESIGN §9g).
+    await inside('.euc-menu--title [data-menu="ultra"]', viewport);
     await inside('.euc-menu--title .euc-credit', viewport);
 
     // And the panel behind that button, whose own cards and armed Start have
@@ -2157,6 +2222,32 @@ test('the title and the join panel fit every desktop window that is offered them
     // button at the far end is the one a row that has stopped fitting puts
     // outside the panel, and it has been a different button three times now.
     await inside('.euc-menu--couch [data-couch-mode="trickRun"]', viewport);
+    // **And the fifth — M39 Part P, the police chase** (§39.6b.4b, "the join
+    // panel and the two doors"). It is the far end of the row now, and the
+    // ride that puts a new card state on the panel: Officer Dorkins on a
+    // seat's wheel, whose hint line changes to `The cop`. So the chase is
+    // chosen and seat 0 is walked to him before the cards are measured again
+    // — the cards and the arrow row are measured *with* him on one of them,
+    // which is the fit the owner's room will actually sit down to.
+    await inside('.euc-menu--couch [data-couch-mode="chase"]', viewport);
+    await page.locator('.euc-menu--couch [data-couch-mode="chase"]').click();
+    await walkSeatTo(page, 0, COP_CHARACTER.name);
+    await expect(page.locator('.euc-menu--couch [data-couch-seat="0"]')).toHaveAttribute('data-couch-role', 'cop');
+    await unscrollable('.euc-menu--couch', viewport);
+    for (const seat of ['0', '1', '2', '3']) {
+      await inside(`.euc-menu--couch [data-couch-seat="${seat}"]`, viewport);
+    }
+    await inside('.euc-menu--couch [data-couch-seat="0"] .euc-couch__hint', viewport);
+    await inside('.euc-menu--couch [data-couch-mode="chase"]', viewport);
+    // The arrows stay one row with him on a card (`ui/menuRows.ts` clusters by
+    // geometry, so a card whose name wrapped would split the pad's walk).
+    const arrowTops = await page.locator('.euc-menu--couch [data-menu="couch-prev"]').evaluateAll(
+      (nodes) => nodes.map((node) => node.getBoundingClientRect().top),
+    );
+    expect(
+      Math.max(...arrowTops) - Math.min(...arrowTops),
+      `the rider arrows left one row with Officer Dorkins on a card at ${viewport.width}x${viewport.height}`,
+    ).toBeLessThanOrEqual(1.5);
     // The contact toggle was measured here too until the same ride retired it.
     // Nothing replaces that line: a control that does not exist has no fit.
     await inside('.euc-menu--couch [data-menu="couch-start"]', viewport);
@@ -2164,6 +2255,10 @@ test('the title and the join panel fit every desktop window that is offered them
     await page.locator('.euc-menu--couch [data-menu="couch-back"]').click();
     await page.waitForFunction(() => window.game.snapshot().app.state === 'title');
   }
+  await testInfo.attach('m39-title-fit.json', {
+    body: JSON.stringify(titleFit, null, 2),
+    contentType: 'application/json',
+  });
   expect(errors).toEqual([]);
 });
 
@@ -2304,6 +2399,17 @@ test('a player on the ground does not take the guest’s warnings away', async (
     const game = window.game;
     game.loop.setRunning(false);
     game.spawnSecondRider();
+    // **The guest rides four metres further off the player's line** (about
+    // 5.6 m beside him instead of 1.6) — 2026-09-24. Since
+    // the cutout retune (band 0.87 → 0.94 of top speed) both riders need about
+    // 118 m to reach it, and by then the player's crash weave had drifted him
+    // to within 0.1 m of the guest's line: his sliding body caught the guest
+    // up 70 steps into the window and the bump took her out of the band
+    // (overspeed 0.47 → 0 at 26.9 → 24.3 m/s, measured). That measured contact
+    // rather than the mix, so the two lines are kept apart instead.
+    const guest = game.snapshotFor(1).euc;
+    const aside = { x: guest.position.x - 4, z: guest.position.z };
+    game.placeRider({ x: aside.x, y: game.sampleGround(aside.x, aside.z).height, z: aside.z }, guest.headingY, 1);
 
     // Both up into the cutout band together.
     let up = 0;
@@ -2822,5 +2928,1072 @@ test('a keyboard holding no seat steers nobody, and still pauses', async ({ page
   await page.waitForFunction(() => window.game.snapshot().app.menu === 'pause');
   expect(await page.evaluate(() => window.game.snapshot().app.menu)).toBe('pause');
 
+  expect(errors).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// M39 Part P — the couch face of the chase (§39.6b.3b, q215–q228)
+// ---------------------------------------------------------------------------
+
+/**
+ * **The rule's second face, as a room meets it.** Up to three outlaws against
+ * one cop slot; the slot is a CPU pack sized `roomSize − outlaws` or one human
+ * wearing Officer Dorkins, who is offered on the join wheel on this ride only
+ * and to one seat at a time (q215). The referee's arithmetic is headless
+ * (`simulation/chase.test.ts`, the bench); what only a browser can say is the
+ * room: the panel and both doors, the seats dealt from the rigs, the count
+ * holding every body, the pack slot sized by the room, the cop seat's rig,
+ * paddle and lane, a busted pane turned into a spectator's, the room card in
+ * the idle quadrant, the results card, and that a couch files nothing.
+ *
+ * The bridge fields these read are Game's (`snapshot().chase.room`,
+ * `couch.host`, per-seat `paddle.equipped`, the per-seat HUD).
+ */
+
+/**
+ * Where the room-card and results-card captures go (M27's instrument: the
+ * quarter-pane captures are looked at, not only asserted). Repo-relative by
+ * default, like M37's (invariant 23).
+ */
+const CHASE_SHOTS = `${process.env.M39_SHOTS ?? 'test-results/m39'}/couch-chase`;
+
+async function saveChaseShot(
+  page: import('@playwright/test').Page,
+  testInfo: import('@playwright/test').TestInfo,
+  name: string,
+): Promise<void> {
+  const body = await page.screenshot();
+  mkdirSync(CHASE_SHOTS, { recursive: true });
+  writeFileSync(`${CHASE_SHOTS}/${name}.png`, body);
+  await testInfo.attach(name, { body, contentType: 'image/png' });
+}
+
+/** The m18 suite's dense town: a ring for the patrol's post and room for a grid. */
+const CHASE_SEED = 'route-41';
+
+/** Seat names as the join panel spells them. */
+const NAME_OF = new Map<string, string>(CHARACTERS.map((spec) => [spec.id, spec.name]));
+
+/**
+ * Walk a seat's join wheel forward until its card names `name`, and return
+ * every name the wheel showed on the way (one full lap at most).
+ */
+async function walkSeatTo(
+  page: import('@playwright/test').Page,
+  seat: number,
+  name: string,
+): Promise<string[]> {
+  const label = page.locator(`.euc-menu--couch [data-couch-rider="${seat}"]`);
+  const step = page.locator(`.euc-menu--couch [data-couch-seat="${seat}"] [data-menu="couch-next"]`);
+  const seen: string[] = [(await label.textContent()) ?? ''];
+  for (let press = 0; press <= CHARACTER_IDS.length + 1 && seen[seen.length - 1] !== name; press += 1) {
+    await step.click();
+    seen.push((await label.textContent()) ?? '');
+  }
+  expect(seen[seen.length - 1], `seat ${seat}'s wheel never reached ${name}: ${seen.join(' → ')}`).toBe(name);
+  return seen;
+}
+
+/** Walk a seat's wheel one full lap from where it stands and report every name it showed. */
+async function lapOfSeat(page: import('@playwright/test').Page, seat: number): Promise<string[]> {
+  const label = page.locator(`.euc-menu--couch [data-couch-rider="${seat}"]`);
+  const step = page.locator(`.euc-menu--couch [data-couch-seat="${seat}"] [data-menu="couch-next"]`);
+  const first = (await label.textContent()) ?? '';
+  const seen: string[] = [first];
+  for (let press = 0; press <= CHARACTER_IDS.length + 1; press += 1) {
+    await step.click();
+    const next = (await label.textContent()) ?? '';
+    if (next === first) break;
+    seen.push(next);
+  }
+  return seen;
+}
+
+/**
+ * Seat a couch chase through the QA bridge and arm it — the P6 builder's
+ * recipe. `guests` are playable riders for seats 1..n; `copSeat` true seats a
+ * human Officer Dorkins last (`spawnRider('cop')`, legal only on the chase).
+ */
+async function armCouchChase(
+  page: import('@playwright/test').Page,
+  options: {
+    readonly guests: readonly PlayableCharacterId[];
+    readonly host?: PlayableCharacterId;
+    readonly humanCop?: boolean;
+    readonly query?: string;
+    /** F4 values set before the arm, which is when the room reads its bell. */
+    readonly tuning?: Readonly<Record<string, number>>;
+  },
+): Promise<void> {
+  await bootToTitle(page, `level=generated&seed=${CHASE_SEED}${options.query ?? ''}`);
+  await page.evaluate((spec) => {
+    const game = window.game;
+    game.loop.setRunning(false);
+    game.clearRecords();
+    for (const [path, value] of Object.entries(spec.tuning)) game.tuning.set(path, value);
+    if (spec.host !== undefined) game.setOptions({ character: spec.host });
+    game.setCouchRide('chase');
+    for (const guest of spec.guests) game.spawnSecondRider(guest);
+    if (spec.humanCop) game.spawnRider('cop');
+    game.startChase();
+  }, { guests: [...options.guests], host: options.host, humanCop: options.humanCop === true, tuning: { ...options.tuning } });
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
+}
+
+/** Ride out the count (q223) and a step past GO. */
+async function rideOutChaseCount(page: import('@playwright/test').Page): Promise<void> {
+  await page.evaluate((steps) => {
+    window.game.advance(steps);
+  }, Math.ceil(KNOCKABOUT.countdownSeconds * 120) + 4);
+  expect(await page.evaluate(() => window.game.snapshot().chase.room.phase)).toBe('running');
+}
+
+/** A seat's R: pressed for two steps, released for one — the P6 recipe. */
+async function pressR(page: import('@playwright/test').Page, seat: number): Promise<void> {
+  await page.evaluate((at) => {
+    const game = window.game;
+    game.setActionsFor(at, { throttle: 0, reset: true });
+    game.advance(2);
+    game.setActionsFor(at, { reset: false });
+    game.advance(1);
+  }, seat);
+}
+
+async function paint(page: import('@playwright/test').Page): Promise<void> {
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+}
+
+test('the join panel offers Officer Dorkins on the police chase only, and to one seat', async ({ page }) => {
+  // q215: the cop slot is taken by a human who picks the cop on the wheel. He
+  // is offered on the chase and nowhere else, and once the slot is held
+  // nobody else's wheel offers him. Leaving the ride re-deals him before
+  // anything is written (§39.6b.3b "the two doors" — the panel's own chooser
+  // is the first door a room meets).
+  const errors = collectErrors(page);
+  await twoPads(page);
+  await bootToCouchTitle(page);
+  await page.waitForFunction(() => window.game.snapshot().input.pads === 2);
+  await openJoinPanel(page);
+  await pulsePad(page, 0, PAD_A);
+  await page.waitForFunction(() => window.game.snapshot().input.devices[0] === 'pad:0');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.game.snapshot().couch.ready);
+
+  // The fifth ride is on the row, in the panel's own words.
+  await expect(page.locator('.euc-menu--couch [data-couch-mode="chase"]')).toHaveText(/Police chase/);
+
+  // Free ride: a whole lap of seat 0's wheel never shows him. The lap is the
+  // playable roster less what the other cards wear (q68), so the lap and the
+  // other cards together are exactly the playable roster.
+  const playable = CHARACTERS.map((spec) => spec.name).sort();
+  const otherCards = async (): Promise<string[]> => page.locator(
+    '.euc-menu--couch [data-couch-seat]:not([data-couch-seat="0"]) [data-couch-rider]',
+  ).allTextContents();
+  const freeLap = await lapOfSeat(page, 0);
+  expect(freeLap).not.toContain(COP_CHARACTER.name);
+  expect([...freeLap, ...(await otherCards())].sort()).toEqual(playable);
+
+  // The chase: exactly once a lap, and seat 0 can stop on him.
+  await page.locator('.euc-menu--couch [data-couch-mode="chase"]').click();
+  expect(await page.evaluate(() => window.game.snapshot().couch.ride)).toBe('chase');
+  const chaseLap = await lapOfSeat(page, 0);
+  expect(chaseLap.filter((name) => name === COP_CHARACTER.name)).toHaveLength(1);
+  expect([...chaseLap, ...(await otherCards())].sort()).toEqual([...playable, COP_CHARACTER.name].sort());
+  const walked = await walkSeatTo(page, 0, COP_CHARACTER.name);
+  // The host's wheel writes his saved rider as it passes each playable one
+  // (M25's rule for seat 0); the last it passed before the cop is his saved
+  // rider now, and stepping onto the cop writes nothing.
+  const lastPlayable = CHARACTERS.find((spec) => spec.name === walked[walked.length - 2])!.id;
+  const seatZero = page.locator('.euc-menu--couch [data-couch-seat="0"]');
+  await expect(seatZero).toHaveAttribute('data-couch-role', 'cop');
+  await expect(seatZero.locator('.euc-couch__hint')).toHaveText('The cop');
+  await expect(seatZero.locator('.euc-couch__hint')).toHaveAttribute('aria-hidden', 'false');
+  expect(await page.evaluate(() => window.game.snapshot().couch.host)).toBe('cop');
+  // The host's cop is session state: the saved rider is never the cop.
+  expect(await page.evaluate(() => window.game.snapshot().options.character)).toBe(lastPlayable);
+
+  // Once held, a lap of the other seat's wheel never offers him.
+  const guestLap = await lapOfSeat(page, 1);
+  expect(guestLap).not.toContain(COP_CHARACTER.name);
+  await expect(page.locator('.euc-menu--couch [data-couch-seat="1"]')).toHaveAttribute('data-couch-role', 'outlaw');
+
+  // Choosing another ride re-deals the cop seat before anything is written.
+  await page.locator('.euc-menu--couch [data-couch-mode="freeRide"]').click();
+  const after = await page.evaluate(() => ({
+    host: window.game.snapshot().couch.host,
+    guests: window.game.snapshot().couch.guests,
+    saved: window.game.snapshot().options.character,
+  }));
+  expect(after.host).not.toBe('cop');
+  expect(after.guests).not.toContain('cop');
+  // He is given his saved rider back, and the record was never the cop.
+  expect(after.saved).toBe(lastPlayable);
+  expect(after.host).toBe(after.saved);
+  await expect(seatZero).toHaveAttribute('data-couch-role', 'outlaw');
+  await expect(page.locator('.euc-menu--couch [data-couch-rider="0"]')).not.toHaveText(COP_CHARACTER.name);
+  expect(errors).toEqual([]);
+});
+
+/** Pause, then Settings' "Reset everything to defaults" and back to the ride — the door a player takes. */
+async function resetFromPause(page: import('@playwright/test').Page): Promise<void> {
+  await page.evaluate(() => window.game.setAppState('paused'));
+  await page.locator('.euc-menu--pause [data-menu="settings"]').click();
+  expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('settings');
+  await page.locator('.euc-menu--settings [data-menu="reset"]').click();
+}
+
+async function backToTheRide(page: import('@playwright/test').Page): Promise<void> {
+  await page.locator('.euc-menu--settings [data-menu="back"]').click();
+  expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('paused');
+  await page.locator('.euc-menu--pause [data-menu="resume"]').click();
+  expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('chase');
+}
+
+test('Settings’ reset mid-chase resets the saved rider and keeps the host on Officer Dorkins (QA r3)', async ({ page }) => {
+  // q215's two places (§25.5): the host's cop is `hostCop` and his rig, moved
+  // together. The reset rewrites the saved rider, and the options listener
+  // used to dress seat 0 in it — the card, the wheel and the room's cop seat
+  // went on saying "the cop" while he rode a playable rig with the paddle,
+  // and "Ride it again" silently gave the slot to the CPU.
+  const errors = collectErrors(page);
+  await twoPads(page);
+  // A generated route, so the panel's Start rides straight into the chase.
+  await bootToTitle(page, `level=generated&seed=${CHASE_SEED}`);
+  await page.waitForFunction(() => window.game.snapshot().couch.available);
+  await page.waitForFunction(() => window.game.snapshot().input.pads === 2);
+  await openJoinPanel(page);
+  await pulsePad(page, 0, PAD_A);
+  await page.waitForFunction(() => window.game.snapshot().input.devices[0] === 'pad:0');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.game.snapshot().couch.ready);
+  await page.locator('.euc-menu--couch [data-couch-mode="chase"]').click();
+  await walkSeatTo(page, 0, COP_CHARACTER.name);
+  const saved = await page.evaluate(() => window.game.snapshot().options.character);
+  expect(saved, 'the wheel left the record on the default, so the reset would change nothing').not.toBe('cool-rider');
+  await page.locator('.euc-menu--couch [data-menu="couch-start"]').click();
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
+  await page.evaluate(() => window.game.loop.setRunning(false));
+  await rideOutChaseCount(page);
+
+  const seated = async () => page.evaluate(() => {
+    const game = window.game;
+    const snapshot = game.snapshot();
+    return {
+      host: snapshot.couch.host,
+      installed: [0, 1].map((seat) => game.snapshotFor(seat).rider.installed),
+      copSeat: snapshot.chase.room.copSeat,
+      outlawSeats: snapshot.chase.room.outlawSeats,
+      pack: snapshot.chase.room.pack,
+    };
+  });
+  const before = await seated();
+  expect(before.host).toBe('cop');
+  expect(before.installed[0]).toBe('cop');
+  expect(before.copSeat).toBe(0);
+  expect(before.outlawSeats).toEqual([1]);
+  expect(before.pack).toBe(0);
+
+  await resetFromPause(page);
+  // The record is reset; the seat is not.
+  expect(await page.evaluate(() => window.game.snapshot().options.character)).toBe('cool-rider');
+  expect(await seated()).toEqual(before);
+
+  await backToTheRide(page);
+  const riding = await page.evaluate(() => {
+    const game = window.game;
+    game.advance(12);
+    return {
+      installed: game.snapshotFor(0).rider.installed,
+      equipped: [0, 1].map((seat) => game.snapshotFor(seat).paddle.equipped),
+    };
+  });
+  expect(riding.installed).toBe('cop');
+  expect(riding.equipped).toEqual([true, false]);
+
+  // "Ride it again": the room is dealt from the rigs, and the host still holds the slot.
+  await pressR(page, 1);
+  await page.evaluate((steps) => window.game.advance(steps), Math.ceil((CHASE.resultsDelaySeconds + 0.4) * 120));
+  expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('results');
+  await page.locator('[data-menu="results-couch"] [data-couch-mode="chase"]').click();
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
+  expect(await seated()).toEqual(before);
+  expect(errors).toEqual([]);
+});
+
+test('Settings’ reset re-dresses a busted host without standing him back in the world (QA r3)', async ({ page }) => {
+  // The same door with the host out and watching: the reset dresses seat 0 in
+  // the default rider — and q68's repair re-dresses the busted guest who was
+  // wearing it — but a fresh rig is born visible, and his pane is following
+  // somebody else. Neither body comes back, and his camera stays on the rider
+  // it follows rather than being snapped onto his own parked wheel.
+  const errors = collectErrors(page);
+  await armCouchChase(page, {
+    host: 'trollina',
+    guests: ['cool-rider', 'red-rider'],
+    tuning: { 'CHASE.copHoldSeconds': 15 },
+  });
+  await rideOutChaseCount(page);
+  await page.evaluate(() => {
+    window.game.setActionsFor(2, { throttle: 0.7 });
+    window.game.advance(120);
+  });
+  await pressR(page, 0);
+  await pressR(page, 1);
+  await page.evaluate((steps) => window.game.advance(steps), Math.ceil((CHASE.resultsDelaySeconds + 0.4) * 120));
+
+  const read = async () => page.evaluate(() => {
+    const game = window.game;
+    const room = game.snapshot().chase.room;
+    const seats = (game as unknown as { seats: readonly { rig: { group: { visible: boolean } } }[] }).seats;
+    return {
+      state: game.snapshot().app.state,
+      out: room.out,
+      spectating: room.spectating,
+      shown: seats.map((seat) => seat.rig.group.visible),
+      installed: [0, 1, 2].map((seat) => game.snapshotFor(seat).rider.installed),
+    };
+  });
+  const before = await read();
+  expect(before.state).toBe('chase');
+  expect(before.out).toEqual([true, true, false]);
+  expect(before.shown).toEqual([false, false, true]);
+  expect(before.spectating[0]).toEqual({ kind: 'seat', index: 2 });
+  expect(before.installed).toEqual(['trollina', 'cool-rider', 'red-rider']);
+
+  // Through the pause card to Settings, then the reset itself read on either
+  // side in one synchronous call: a paused pane keeps orbiting its body frame
+  // by frame, so only a read with no frame between says whether the re-dress
+  // itself moved the camera. `resetOptions` is exactly what the panel's
+  // "Reset everything to defaults" calls (`onResetOptions`).
+  await page.evaluate(() => window.game.setAppState('paused'));
+  await page.locator('.euc-menu--pause [data-menu="settings"]').click();
+  expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('settings');
+  const camera = await page.evaluate(() => {
+    const game = window.game;
+    const before = JSON.stringify(game.snapshotFor(0).camera);
+    game.resetOptions();
+    return { before, after: JSON.stringify(game.snapshotFor(0).camera) };
+  });
+  expect(camera.after, 'the re-dress snapped the watching pane onto his own parked wheel').toBe(camera.before);
+  const after = await read();
+  expect(after.installed[0], 'the reset did not dress the host in the default rider').toBe('cool-rider');
+  expect(after.installed[1], 'q68: two seats on one rider').not.toBe('cool-rider');
+  expect(new Set(after.installed).size).toBe(3);
+  expect(after.shown, 'a re-dress stood a busted rider back in the world').toEqual([false, false, true]);
+  expect(after.out).toEqual(before.out);
+  expect(after.spectating).toEqual(before.spectating);
+
+  await backToTheRide(page);
+  const later = await page.evaluate(() => {
+    const game = window.game;
+    game.advance(12);
+    const seats = (game as unknown as { seats: readonly { rig: { group: { visible: boolean } } }[] }).seats;
+    return { shown: seats.map((seat) => seat.rig.group.visible), watching: game.snapshot().chase.room.spectating[0] };
+  });
+  expect(later.shown).toEqual([false, false, true]);
+  expect(later.watching).toEqual({ kind: 'seat', index: 2 });
+  expect(errors).toEqual([]);
+});
+
+test('a 2v2 room: the CPU holds the slot with two cops, and the count holds every body until GO', async ({ page }) => {
+  // q207 at two outlaws: `cpuPackSize(2, false)` is two — the tail and one
+  // patrol, both trims in the one slot, the third hidden. q223: the count
+  // always runs and freezes every seat and every cop; nothing a press did
+  // during it survives GO.
+  const errors = collectErrors(page);
+  await armCouchChase(page, { guests: ['trollina'] });
+
+  const armed = await page.evaluate(() => {
+    const game = window.game;
+    const snapshot = game.snapshot();
+    return {
+      room: snapshot.chase.room,
+      roles: snapshot.chase.pursuers.map((p) => p.role),
+      force: snapshot.chase.force,
+      countdown: game.snapshotFor(0).hud.countdown,
+    };
+  });
+  expect(armed.room.couch).toBe(true);
+  expect(armed.room.outlawSeats).toEqual([0, 1]);
+  expect(armed.room.copSeat).toBe(-1);
+  expect(armed.room.pack).toBe(2);
+  expect(armed.roles).toEqual(['tail', 'patrol']);
+  expect(armed.room.phase).toBe('countdown');
+  expect(armed.room.bellSeconds).toBe(CHASE.couchEscapeSeconds);
+  expect(armed.countdown).not.toBe('');
+
+  await paint(page);
+  const drawn = await page.evaluate(() => {
+    const game = window.game;
+    const scene = game.renderer.scene;
+    return {
+      slot: game.renderer.secondRiderShown,
+      trims: ['cop-rider', 'cop2-rider', 'cop3-rider'].map((name) => scene.getObjectByName(name)?.visible === true),
+      views: game.renderer.viewCount,
+    };
+  });
+  expect(drawn).toEqual({ slot: 'cop', trims: [true, true, false], views: 2 });
+
+  const frozen = await page.evaluate(() => {
+    const game = window.game;
+    game.setActionsFor(0, { throttle: 1, steer: 0.5 });
+    game.setActionsFor(1, { throttle: 1, steer: -0.5 });
+    const where = () => [
+      game.snapshotFor(0).euc.position, game.snapshotFor(1).euc.position,
+      ...game.snapshot().chase.pursuers.map((p) => ({ x: p.x, z: p.z })),
+    ];
+    const before = where();
+    game.advance(120);
+    const after = where();
+    return {
+      moved: before.map((b, i) => Math.hypot(after[i].x - b.x, after[i].z - b.z)),
+      phase: game.snapshot().chase.room.phase,
+    };
+  });
+  expect(frozen.phase).toBe('countdown');
+  for (const [index, moved] of frozen.moved.entries()) {
+    expect(moved, `body ${index} moved during the count`).toBeLessThan(1e-6);
+  }
+
+  const go = await page.evaluate((steps) => {
+    const game = window.game;
+    game.advance(steps);
+    return { phase: game.snapshot().chase.room.phase, speeds: [0, 1].map((i) => game.snapshotFor(i).euc.speed) };
+  }, Math.ceil(KNOCKABOUT.countdownSeconds * 120));
+  expect(go.phase).toBe('running');
+  expect(Math.min(...go.speeds), 'GO did not release the room').toBeGreaterThan(1);
+
+  // Each outlaw pane is an outlaw's lane: Survive, and the room's clock.
+  for (const seat of [0, 1]) {
+    const hud = await page.evaluate((at) => window.game.snapshotFor(at).hud, seat);
+    expect(hud.modeLabel, `seat ${seat}'s lane`).toBe('Survive');
+  }
+  expect(errors).toEqual([]);
+});
+
+test('an outlaw’s R gives up, and his pane becomes a spectator’s that follows and cycles', async ({ page }) => {
+  // q225: an outlaw's R is his bust, credited to nobody, and it never
+  // teleports him. q216/q226: after the crash beat his rig leaves the world,
+  // his pane follows the nearest standing outlaw, the camera press walks the
+  // standing bodies, and his lane reads the spectator tag.
+  const errors = collectErrors(page);
+  await armCouchChase(page, { guests: ['trollina'] });
+  await rideOutChaseCount(page);
+  await page.evaluate(() => {
+    window.game.setActionsFor(0, { throttle: 0.6 });
+    window.game.advance(120);
+  });
+
+  const before = await page.evaluate(() => window.game.snapshotFor(1).euc.position);
+  await pressR(page, 1);
+  const gave = await page.evaluate(() => {
+    const game = window.game;
+    return {
+      at: game.snapshotFor(1).euc.position,
+      outlaw: game.snapshot().chase.room.outlaws[1],
+      objective: game.snapshotFor(1).hud.objective,
+      state: game.snapshot().app.state,
+    };
+  });
+  expect(gave.outlaw.status).toBe('gaveUp');
+  expect(gave.outlaw.by, 'a give-up was credited to a cop').toBe(-1);
+  expect(Math.hypot(gave.at.x - before.x, gave.at.z - before.z), 'R moved the outlaw').toBeLessThan(3);
+  expect(gave.objective).toMatch(/^GAVE UP \d+:\d\d$/);
+  expect(gave.state, 'one give-up ended a room with an outlaw still standing').toBe('chase');
+
+  const watching = await page.evaluate((steps) => {
+    const game = window.game;
+    game.advance(steps);
+    const room = game.snapshot().chase.room;
+    return {
+      out: room.out,
+      spectating: room.spectating,
+      standing: room.standing,
+      lane: { label: game.snapshotFor(1).hud.modeLabel, sub: game.snapshotFor(1).hud.modeSub },
+    };
+  }, Math.ceil((CHASE.resultsDelaySeconds + 0.4) * 120));
+  expect(watching.out).toEqual([false, true]);
+  expect(watching.spectating[0]).toBeNull();
+  expect(watching.spectating[1]).toEqual({ kind: 'seat', index: 0 });
+  expect(watching.standing).toBe(1);
+  expect(watching.lane).toEqual({ label: 'Survive', sub: '1 of 2' });
+
+  // The camera press moves him on: the next standing body, the cops last.
+  const cycled = await page.evaluate(() => {
+    const game = window.game;
+    game.setActionsFor(1, { cameraCycle: true });
+    game.advance(1);
+    game.setActionsFor(1, { cameraCycle: false });
+    game.advance(1);
+    return game.snapshot().chase.room.spectating[1];
+  });
+  expect(cycled).not.toEqual({ kind: 'seat', index: 0 });
+  expect(cycled?.kind).toBe('pursuer');
+
+  // And the room's card says what he did, in its own words.
+  await pressR(page, 0);
+  await page.evaluate((steps) => window.game.advance(steps), Math.ceil((CHASE.resultsDelaySeconds + 0.4) * 120));
+  expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('results');
+  await expect(page.locator('.euc-menu--results [data-menu="results-rows"]')).toContainText('Gave up');
+  await expect(page.locator('.euc-menu--results [data-menu="results-notes"]')).toContainText('Couch chases are not saved');
+  expect(errors).toEqual([]);
+});
+
+test('a busted outlaw’s wheel leaves the world with his rig: parked where it lies, never up again, never rolling', async ({ page }) => {
+  // QA r1 (§39.6b.3b "Busted, then watching", q216; "removed, not tuned").
+  // Hiding the rig used to leave the controller running under neutral input:
+  // an outlaw who went out moving rolled on unseen, and one who went out
+  // crashed got himself up on the auto-recover 2 s after the hide, with the
+  // recovery chirp, and rolled on too — feeding his own pane's speedo.
+  const errors = collectErrors(page);
+  // The cops are held (q224's F4 hold, its maximum) for the whole case, so
+  // the round cannot end under it: seat 0 must still be standing when the
+  // hidden wheel is read after the recover window.
+  await armCouchChase(page, { guests: ['trollina'], tuning: { 'CHASE.copHoldSeconds': 15 } });
+  await rideOutChaseCount(page);
+  await page.evaluate(() => {
+    const game = window.game;
+    game.setActionsFor(0, { throttle: 0.6 });
+    game.setActionsFor(1, { throttle: 0.8 });
+    game.advance(180);
+  });
+  const moving = await page.evaluate(() => window.game.snapshotFor(1).euc.speed);
+  expect(moving, 'the outlaw was not moving when he gave up').toBeGreaterThan(3);
+  await pressR(page, 1);
+
+  // The crash beat plays, then the hide: his wheel is stopped on the spot.
+  const hidden = await page.evaluate((steps) => {
+    const game = window.game;
+    game.advance(steps);
+    const euc = game.snapshotFor(1).euc;
+    return { out: game.snapshot().chase.room.out, position: euc.position, speed: euc.speed, crashed: euc.crashed };
+  }, Math.ceil((CHASE.resultsDelaySeconds + 0.1) * 120));
+  expect(hidden.out).toEqual([false, true]);
+  expect(hidden.speed, 'the hidden wheel still carries speed').toBe(0);
+  expect(hidden.crashed).toBe(false);
+
+  // Past the controller's own auto-recover window, it has not moved a hair.
+  const later = await page.evaluate((steps) => {
+    const game = window.game;
+    game.advance(steps);
+    const euc = game.snapshotFor(1).euc;
+    return { position: euc.position, speed: euc.speed, crashed: euc.crashed, state: game.snapshot().app.state };
+  }, Math.ceil((EUC.crashRecoverAutoSeconds + 1) * 120));
+  expect(later.state, 'the room ended while one outlaw still stood').toBe('chase');
+  expect(Math.hypot(later.position.x - hidden.position.x, later.position.z - hidden.position.z),
+    'the hidden wheel moved after the hide').toBeLessThan(1e-6);
+  expect(later.speed).toBe(0);
+  expect(later.crashed).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+/** Press a busted seat's camera button until its pane follows `wanted` (a few presses at most). */
+async function spectateUntil(
+  page: import('@playwright/test').Page,
+  seat: number,
+  wanted: { readonly kind: 'seat' | 'pursuer'; readonly index: number },
+): Promise<void> {
+  const reached = await page.evaluate(({ at, target }) => {
+    const game = window.game;
+    for (let press = 0; press < 6; press += 1) {
+      const now = game.snapshot().chase.room.spectating[at];
+      if (now !== null && now.kind === target.kind && now.index === target.index) return true;
+      game.setActionsFor(at, { cameraCycle: true });
+      game.advance(1);
+      game.setActionsFor(at, { cameraCycle: false });
+      game.advance(1);
+    }
+    const last = game.snapshot().chase.room.spectating[at];
+    return last !== null && last.kind === target.kind && last.index === target.index;
+  }, { at: seat, target: wanted });
+  expect(reached, `seat ${seat}'s camera press never reached ${wanted.kind} ${wanted.index}`).toBe(true);
+}
+
+test('a spectator watching a rider go down sees his bust, and is handed on when the rig leaves (QA r2)', async ({ page }) => {
+  // §39.6b.3b "Busted, then watching": the busted rider's own pane plays the
+  // crash beat, and so does every pane watching him — the hand-on to the
+  // nearest standing outlaw (q226) happens on the step his rig leaves the
+  // world, never on the step the referee rules him out. The cops are held for
+  // the whole case (q224's F4 hold) so nothing but the two R presses ends
+  // anybody.
+  const errors = collectErrors(page);
+  await armCouchChase(page, { guests: ['trollina', 'red-rider'], tuning: { 'CHASE.copHoldSeconds': 15 } });
+  await rideOutChaseCount(page);
+  await pressR(page, 0);
+  await page.evaluate((steps) => window.game.advance(steps), Math.ceil((CHASE.resultsDelaySeconds + 0.2) * 120));
+  await spectateUntil(page, 0, { kind: 'seat', index: 1 });
+
+  // Seat 1 gives up, one fixed step at a time.
+  const trace = await page.evaluate(() => {
+    const game = window.game;
+    game.setActionsFor(1, { throttle: 0, reset: true });
+    const rows: { status: string; out: boolean; watching: { kind: string; index: number } | null }[] = [];
+    let released = false;
+    for (let step = 0; step < 240; step += 1) {
+      game.advance(1);
+      const room = game.snapshot().chase.room;
+      if (!released && room.outlaws[1].status !== 'standing') {
+        game.setActionsFor(1, { reset: false });
+        released = true;
+      }
+      rows.push({ status: room.outlaws[1].status, out: room.out[1], watching: room.spectating[0] });
+    }
+    return { rows, state: game.snapshot().app.state, standing: game.snapshot().chase.room.outlaws[2].status };
+  });
+  const goneAt = trace.rows.findIndex((row) => row.status !== 'standing');
+  const hiddenAt = trace.rows.findIndex((row) => row.out);
+  expect(goneAt, 'seat 1 never gave up').toBeGreaterThanOrEqual(0);
+  expect(trace.rows[goneAt].status).toBe('gaveUp');
+  expect(hiddenAt, 'seat 1\'s rig never left the world').toBeGreaterThan(goneAt);
+  // The beat is the frozen table's 1.6 s at 120 Hz, give or take the step
+  // the event and the first decrement share.
+  expect(hiddenAt - goneAt).toBeGreaterThanOrEqual(Math.floor(CHASE.resultsDelaySeconds * 120) - 1);
+  for (let step = goneAt; step < hiddenAt; step += 1) {
+    expect(trace.rows[step].watching, `the watcher was cut away ${step - goneAt} steps into the beat`)
+      .toEqual({ kind: 'seat', index: 1 });
+  }
+  expect(trace.rows[hiddenAt].watching, 'the watcher was not handed on as the rig left').toEqual({ kind: 'seat', index: 2 });
+  expect(trace.standing).toBe('standing');
+  expect(trace.state).toBe('chase');
+  expect(errors).toEqual([]);
+});
+
+test('the last outlaw going down keeps every spectator on him through the card delay (QA r2)', async ({ page }) => {
+  // The round-ending bust: the referee ends the room on the step the last
+  // outlaw goes out, and nothing steps the room during the card delay — so a
+  // spectator who is not handed on at that step watches the bust to the
+  // card, as the busted rider's own pane does.
+  const errors = collectErrors(page);
+  await armCouchChase(page, { guests: ['trollina'], tuning: { 'CHASE.copHoldSeconds': 15 } });
+  await rideOutChaseCount(page);
+  await pressR(page, 0);
+  await page.evaluate((steps) => window.game.advance(steps), Math.ceil((CHASE.resultsDelaySeconds + 0.2) * 120));
+  expect(await page.evaluate(() => window.game.snapshot().chase.room.spectating[0])).toEqual({ kind: 'seat', index: 1 });
+
+  const trace = await page.evaluate(() => {
+    const game = window.game;
+    game.setActionsFor(1, { throttle: 0, reset: true });
+    const rows: { status: string; state: string; watching: { kind: string; index: number } | null }[] = [];
+    let released = false;
+    for (let step = 0; step < 240; step += 1) {
+      game.advance(1);
+      const snap = game.snapshot();
+      if (!released && snap.chase.room.outlaws[1].status !== 'standing') {
+        game.setActionsFor(1, { reset: false });
+        released = true;
+      }
+      rows.push({ status: snap.chase.room.outlaws[1].status, state: snap.app.state, watching: snap.chase.room.spectating[0] });
+      if (snap.app.state === 'results') break;
+    }
+    return rows;
+  });
+  const endedAt = trace.findIndex((row) => row.status !== 'standing');
+  const cardAt = trace.findIndex((row) => row.state === 'results');
+  expect(endedAt, 'seat 1 never gave up').toBeGreaterThanOrEqual(0);
+  expect(cardAt, 'the card never came').toBeGreaterThan(endedAt);
+  for (let step = endedAt; step < cardAt; step += 1) {
+    expect(trace[step].watching, `the spectator was cut to another body ${step - endedAt} steps into the delay`)
+      .toEqual({ kind: 'seat', index: 1 });
+  }
+  expect(errors).toEqual([]);
+});
+
+test('a spectator following the lone CPU cop neither holds his return off nor gets a stale pan when he is placed (QA r2)', async ({ page }) => {
+  // §39.6b.3b "Returns with several cameras": no body appears where anyone is
+  // looking. A busted outlaw's pane following the CPU tail is glued to the
+  // body being moved — it cannot see a body appear — so it is not asked about
+  // the tail's own return. Judged by it, the rung ahead of the tail (in its
+  // cone every retry) used to be refused for as long as the gap sat in that
+  // window: a spectator could hold the lone tail off his teammates.
+  // Arranged at the F4 ends: the tail starts 80 m back and is held 5 s, the
+  // tracker fires past 60 m after 1 s, and returns 30 m behind the quarry —
+  // dead ahead of the tail the spectator is following.
+  const errors = collectErrors(page);
+  await armCouchChase(page, {
+    guests: ['trollina', 'red-rider'],
+    tuning: {
+      'CHASE.copHoldSeconds': 5,
+      'CHASE.spawnGapMetres': 80,
+      'CHASE.trackerGapMetres': 60,
+      'CHASE.trackerReturnMetres': 30,
+      'CHASE.trackerHoldSeconds': 1,
+    },
+  });
+  await rideOutChaseCount(page);
+  expect(await page.evaluate(() => window.game.snapshot().chase.room.pack)).toBe(1);
+  await pressR(page, 0);
+  await page.evaluate((steps) => window.game.advance(steps), Math.ceil((CHASE.resultsDelaySeconds + 0.2) * 120));
+  await spectateUntil(page, 0, { kind: 'pursuer', index: 0 });
+
+  const ride = await page.evaluate(() => {
+    const game = window.game;
+    const before = game.snapshot().chase;
+    const held = game.chaseRoom.pursuersHeld;
+    let placedAt = -1;
+    for (let step = 0; step < 6 * 120 && placedAt < 0; step += 1) {
+      game.advance(1);
+      if (game.snapshot().chase.demands.tailReturns > before.demands.tailReturns) placedAt = step;
+    }
+    const after = game.snapshot().chase;
+    return {
+      held,
+      gapBefore: before.pursuers[0].gap,
+      placedAt,
+      refused: after.demands.refusedReturns - before.demands.refusedReturns,
+      watching: after.room.spectating[0],
+      gapAfter: after.pursuers[0].gap,
+      state: game.snapshot().app.state,
+    };
+  });
+  expect(ride.held, 'the arrangement needs the tail still held when the spectator settles on him').toBe(true);
+  expect(ride.gapBefore, 'the tail did not start beyond the tracker line').toBeGreaterThan(60);
+  expect(ride.refused, 'the spectator\'s own pane refused the return of the cop it follows').toBe(0);
+  expect(ride.placedAt, 'the tail was never returned').toBeGreaterThanOrEqual(0);
+  expect(ride.watching, 'the spectator lost the cop he was following').toEqual({ kind: 'pursuer', index: 0 });
+  expect(ride.gapAfter).toBeLessThan(60);
+  expect(ride.state).toBe('chase');
+  expect(errors).toEqual([]);
+});
+
+test('a 2v1 room with a human cop: his rig, his paddle alone, his lane with a bearing, no CPU pack', async ({ page }) => {
+  // q217/q218/q220: one seat wearing Officer Dorkins holds the cop slot, so
+  // there is no CPU cop at all; he rides the full cop rig, he is the only
+  // seat with a paddle, and his lane is the clock, his busts and one arrow and
+  // one distance to the nearest standing outlaw. R-11: he is outside rider
+  // contact, and a touch on him is the outlaw's bust, credited to him.
+  const errors = collectErrors(page);
+  await armCouchChase(page, { guests: ['trollina'], humanCop: true });
+  await rideOutChaseCount(page);
+  await paint(page);
+
+  const room = await page.evaluate(() => {
+    const game = window.game;
+    const snapshot = game.snapshot();
+    return {
+      room: snapshot.chase.room,
+      pursuers: snapshot.chase.pursuers.length,
+      installed: [0, 1, 2].map((seat) => game.snapshotFor(seat).rider.installed),
+      equipped: [0, 1, 2].map((seat) => game.snapshotFor(seat).paddle.equipped),
+      slot: game.renderer.secondRiderShown,
+      trims: ['cop-rider', 'cop2-rider', 'cop3-rider'].map((name) => game.renderer.scene.getObjectByName(name)?.visible === true),
+      lane: game.snapshotFor(2).hud,
+    };
+  });
+  expect(room.room.copSeat).toBe(2);
+  expect(room.room.outlawSeats).toEqual([0, 1]);
+  expect(room.room.pack).toBe(0);
+  expect(room.pursuers).toBe(0);
+  expect(room.slot).toBe('none');
+  expect(room.trims).toEqual([false, false, false]);
+  expect(room.installed[2]).toBe('cop');
+  expect(room.equipped, 'the paddle is not the cop seat’s alone').toEqual([false, false, true]);
+  expect(room.lane.modeLabel).toBe('Bust everyone');
+  expect(room.lane.modeSub).toBe('0 of 2');
+  expect(room.lane.objective, 'the cop lane shows no bearing to an outlaw').toMatch(/^\S{1,2} \d[\d.,]* k?m$/);
+
+  // An outlaw rides into the standing cop: a touch, credited to him.
+  const touched = await page.evaluate(() => {
+    const game = window.game;
+    const cop = game.snapshotFor(2).euc;
+    const heading = cop.headingY;
+    const from = { x: cop.position.x - Math.sin(heading) * 14, z: cop.position.z - Math.cos(heading) * 14 };
+    game.placeRider({ x: from.x, y: game.sampleGround(from.x, from.z).height, z: from.z }, heading, 0);
+    game.setActionsFor(2, { throttle: 0 });
+    game.setActionsFor(0, { throttle: 1 });
+    let status = 'standing';
+    for (let step = 0; step < 600 && status === 'standing'; step += 1) {
+      game.advance(1);
+      status = game.snapshot().chase.room.outlaws[0].status;
+    }
+    return {
+      status,
+      by: game.snapshot().chase.room.outlaws[0].by,
+      busts: game.snapshot().chase.room.busts,
+      lane: game.snapshotFor(2).hud.modeSub,
+      copDown: game.snapshotFor(2).euc.crashed,
+    };
+  });
+  expect(touched.status).toBe('touched');
+  expect(touched.by).toBe(0);
+  expect(touched.busts[0]).toBe(1);
+  expect(touched.lane).toBe('1 of 2');
+  expect(touched.copDown, 'the cop was knocked down by the rider who touched him').toBe(false);
+
+  // A bust turns his pane into a spectator's (q216/q226): the tag names the
+  // cop and when, and the pane follows the outlaw still standing.
+  const watching = await page.evaluate((steps) => {
+    const game = window.game;
+    game.setActionsFor(0, { throttle: 0 });
+    game.advance(steps);
+    const room = game.snapshot().chase.room;
+    return { out: room.out, spectating: room.spectating[0], objective: game.snapshotFor(0).hud.objective };
+  }, Math.ceil((CHASE.resultsDelaySeconds + 0.4) * 120));
+  expect(watching.out).toEqual([true, false, false]);
+  expect(watching.spectating).toEqual({ kind: 'seat', index: 1 });
+  expect(watching.objective).toMatch(/^BUSTED \d+:\d\d — Officer Dorkins$/);
+  expect(errors).toEqual([]);
+});
+
+test('three seats put the room card in the idle quadrant, and it fits a quarter pane at its worst', async ({ page }, testInfo) => {
+  // §39.6b.4b "the room card and the results card at a quarter pane": the
+  // three-seat quadrant carries the room card with the announcer off, and
+  // with the longest names and the longest statuses lit it still fits the
+  // 500 × 350 quadrant of the suite's window and the 960 × 540 quadrant of a
+  // 1080p screen (DESIGN §9j's floor; q174's exception and nothing smaller).
+  const errors = collectErrors(page);
+  const longest = [...CHARACTERS].sort((a, b) => b.name.length - a.name.length).slice(0, 3).map((spec) => spec.id);
+  await page.setViewportSize({ width: 1000, height: 700 });
+  await armCouchChase(page, { host: longest[0], guests: [longest[1], longest[2]] });
+  await rideOutChaseCount(page);
+
+  const dealt = await page.evaluate(() => window.game.snapshot().chase.room);
+  expect(dealt.outlawSeats).toEqual([0, 1, 2]);
+  expect(dealt.pack).toBe(1);
+
+  // The worst rows: one outlaw out of bounds, one given up, one riding.
+  await page.evaluate(({ limit }) => {
+    const game = window.game;
+    const start = game.snapshotFor(1).euc;
+    const away = limit * 2.5;
+    const x = start.position.x + Math.cos(start.headingY) * away;
+    const z = start.position.z - Math.sin(start.headingY) * away;
+    game.placeRider({ x, y: game.sampleGround(x, z).height, z }, start.headingY, 1);
+  }, { limit: CHASE.strayLimitMetres });
+  await pressR(page, 2);
+  await page.evaluate((steps) => {
+    const game = window.game;
+    for (let chunk = 0; chunk < steps / 30; chunk += 1) {
+      game.advance(30);
+      if (game.snapshot().chase.room.outlaws[1].status !== 'standing') break;
+    }
+    game.advance(Math.ceil(2 * 120));
+  }, Math.ceil((CHASE.strayGraceSeconds + 4) * 120));
+  const statuses = await page.evaluate(() => window.game.snapshot().chase.room.outlaws.map((o) => o.status));
+  expect(statuses[1]).toBe('strayed');
+  expect(statuses[2]).toBe('gaveUp');
+
+  const names = longest.map((id) => NAME_OF.get(id)!);
+  for (const [width, height] of [[1000, 700], [1920, 1080]] as const) {
+    await page.setViewportSize({ width, height });
+    await page.evaluate(() => window.game.advance(2));
+    await paint(page);
+    const card = await page.evaluate(() => {
+      const root = document.querySelector<HTMLElement>('.euc-idle')!;
+      const box = root.getBoundingClientRect();
+      const rows = [...root.querySelectorAll<HTMLElement>('.euc-idle__label, .euc-idle__value, .euc-idle__title')]
+        .map((node) => {
+          const r = node.getBoundingClientRect();
+          return { text: node.textContent ?? '', left: r.left, right: r.right, top: r.top, bottom: r.bottom, lines: Math.round(r.height / parseFloat(getComputedStyle(node).lineHeight || '16')) };
+        });
+      return {
+        hidden: root.hidden,
+        live: root.getAttribute('aria-live'),
+        box: { left: box.left, top: box.top, right: box.right, bottom: box.bottom },
+        text: root.textContent ?? '',
+        rows,
+        window: { width: window.innerWidth, height: window.innerHeight },
+      };
+    });
+    const at = `${width}x${height}`;
+    expect(card.hidden, `no room card at ${at}`).toBe(false);
+    expect(card.live, 'the room card announces over the count').toBe('off');
+    expect(card.box.left).toBeCloseTo(card.window.width / 2, 0);
+    expect(card.box.top).toBeCloseTo(card.window.height / 2, 0);
+    for (const name of names) expect(card.text, `${name} is not on the card at ${at}`).toContain(name);
+    expect(card.text).toContain('Out of bounds');
+    expect(card.text).toContain('Gave up');
+    expect(card.text).toContain('Officer Dorkins (CPU)');
+    for (const row of card.rows) {
+      expect(row.right, `"${row.text}" runs out of the quadrant at ${at}`).toBeLessThanOrEqual(card.box.right + 0.5);
+      expect(row.bottom, `"${row.text}" runs below the quadrant at ${at}`).toBeLessThanOrEqual(card.box.bottom + 0.5);
+      expect(row.left).toBeGreaterThanOrEqual(card.box.left - 0.5);
+    }
+    await saveChaseShot(page, testInfo, `room-card-${at}`);
+  }
+
+  // **The results card, with the same worst rows** — three outlaws ended three
+  // ways and the CPU cop's row, at the suite's window and at 1080p. The card
+  // is a full-window menu rather than a quarter pane, so it is held to the
+  // menu's own fit: every row and every control inside the window, nothing
+  // scrolled into view.
+  await page.setViewportSize({ width: 1000, height: 700 });
+  await pressR(page, 0);
+  await page.evaluate((steps) => window.game.advance(steps), Math.ceil((CHASE.resultsDelaySeconds + 0.4) * 120));
+  expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('results');
+  const rows = page.locator('.euc-menu--results [data-menu="results-rows"]');
+  await expect(rows).toContainText('Out of bounds');
+  await expect(rows).toContainText('Gave up');
+  await expect(rows).toContainText('Officer Dorkins (CPU)');
+  for (const name of names) await expect(rows).toContainText(name);
+  await expect(page.locator('.euc-menu--results [data-menu="results-notes"]')).toContainText('Couch chases are not saved');
+  for (const [width, height] of [[1000, 700], [1920, 1080]] as const) {
+    await page.setViewportSize({ width, height });
+    await paint(page);
+    const fit = await page.evaluate(() => {
+      const menu = document.querySelector<HTMLElement>('.euc-menu--results')!;
+      const panel = menu.querySelector<HTMLElement>('.euc-results')!;
+      return {
+        overflow: menu.scrollHeight - menu.clientHeight,
+        scrolled: menu.scrollTop,
+        window: window.innerHeight,
+        rows: panel.querySelectorAll('[data-menu="results-rows"] tr').length,
+        controls: [...panel.querySelectorAll<HTMLElement>('button, [data-couch-mode]')]
+          .filter((node) => node.offsetParent !== null)
+          .map((node) => ({
+            what: node.dataset.couchMode ?? node.dataset.menu ?? '',
+            top: node.getBoundingClientRect().top,
+            bottom: node.getBoundingClientRect().bottom,
+          })),
+      };
+    });
+    const at = `${width}x${height}`;
+    // Three outlaws and the cop.
+    expect(fit.rows, `the card lost a row at ${at}`).toBe(4);
+    expect(fit.controls.map((c) => c.what), `the chooser has no chase at ${at}`).toContain('chase');
+    expect(fit.overflow, `the results card has ${fit.overflow}px below the fold at ${at}`).toBeLessThanOrEqual(4);
+    expect(fit.scrolled).toBeLessThanOrEqual(1);
+    for (const control of fit.controls) {
+      expect(control.bottom, `"${control.what}" ends below the fold at ${at}`).toBeLessThanOrEqual(fit.window);
+      expect(control.top, `"${control.what}" starts above the window at ${at}`).toBeGreaterThanOrEqual(0);
+    }
+    await saveChaseShot(page, testInfo, `results-card-${at}`);
+  }
+  expect(errors).toEqual([]);
+});
+
+test('both doors offer the chase, and a cop seat switched away is re-dealt before anything is written', async ({ page }) => {
+  // §39.6b.4b "the join panel and the two doors": the pause card's chooser and
+  // the results card's both carry the police chase, and a door that leaves
+  // the chase gives the cop seat a playable rider (`rosterForRide`) before
+  // any rig, card or ride is written — so no ride ever holds a seat dressed
+  // as a character it cannot seat.
+  const errors = collectErrors(page);
+  await armCouchChase(page, { guests: ['trollina'], humanCop: true });
+  const saved = await page.evaluate(() => window.game.snapshot().options.character);
+  await rideOutChaseCount(page);
+
+  // The pause door: the chase is on it, and leaving through it re-deals Dorkins.
+  await page.evaluate(() => window.game.setAppState('paused'));
+  await expect(page.locator('[data-menu="pause-couch"] [data-couch-mode="chase"]')).toBeVisible();
+  await page.locator('[data-menu="pause-couch"] [data-couch-mode="freeRide"]').click();
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'freeRide');
+  const away = await page.evaluate(() => {
+    const game = window.game;
+    game.advance(2);
+    const snapshot = game.snapshot();
+    return {
+      installed: [0, 1, 2].map((seat) => game.snapshotFor(seat).rider.installed),
+      host: snapshot.couch.host,
+      guests: snapshot.couch.guests,
+      saved: snapshot.options.character,
+      phase: snapshot.chase.room.phase,
+      equipped: [0, 1, 2].map((seat) => game.snapshotFor(seat).paddle.equipped),
+    };
+  });
+  expect(away.installed).not.toContain('cop');
+  expect(away.guests).not.toContain('cop');
+  expect(away.host).not.toBe('cop');
+  expect(away.saved).toBe(saved);
+  expect(away.phase).toBe('idle');
+  expect(new Set(away.installed).size, 'the re-deal put two seats on one rider (q68)').toBe(3);
+  expect(away.equipped).toEqual([false, false, false]);
+
+  // Back through the same door: three seats and nobody on Dorkins is three
+  // outlaws and one CPU cop, dealt from the rigs.
+  await page.evaluate(() => window.game.setAppState('paused'));
+  await page.locator('[data-menu="pause-couch"] [data-couch-mode="chase"]').click();
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
+  const back = await page.evaluate(() => window.game.snapshot().chase.room);
+  expect(back.couch).toBe(true);
+  expect(back.outlawSeats).toEqual([0, 1, 2]);
+  expect(back.copSeat).toBe(-1);
+  expect(back.pack).toBe(1);
+  expect(back.phase).toBe('countdown');
+
+  // The results door: a finished round offers the chase again, and it rides.
+  await rideOutChaseCount(page);
+  for (const seat of [0, 1, 2]) await pressR(page, seat);
+  await page.evaluate((steps) => window.game.advance(steps), Math.ceil((CHASE.resultsDelaySeconds + 0.4) * 120));
+  expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('results');
+  const again = page.locator('[data-menu="results-couch"] [data-couch-mode="chase"]');
+  await expect(again).toBeVisible();
+  await again.click();
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
+  expect(await page.evaluate(() => window.game.snapshot().chase.room.phase)).toBe('countdown');
+  expect(errors).toEqual([]);
+});
+
+test('a couch chase files nothing, escaped or busted, and a solo chase after the couch files as before', async ({ page }) => {
+  // The standing rule with one predicate (`Game.couchSession`, §2h): a couch
+  // round files no record whichever way it ends, and the results card says
+  // so. The couch closing gives the solo face its records back unchanged.
+  const errors = collectErrors(page);
+  await armCouchChase(page, { guests: ['trollina'], tuning: { 'CHASE.couchEscapeSeconds': 30 } });
+  expect(await page.evaluate(() => window.game.snapshot().chase.room.bellSeconds)).toBe(30);
+  await rideOutChaseCount(page);
+
+  const stored = () => page.evaluate(() => {
+    const game = window.game;
+    return [1, 2, 3].map((force) => game.chaseRecords.best(game.levelPlan.id, force));
+  });
+
+  // Round one: ride out the bell. Whoever is still standing at it escapes.
+  const first = await page.evaluate(() => {
+    const game = window.game;
+    for (let chunk = 0; chunk < 200 && game.snapshot().app.state === 'chase'; chunk += 1) {
+      game.setActionsFor(0, { throttle: 0.6 });
+      game.setActionsFor(1, { throttle: 0.6, steer: 0.05 });
+      game.advance(30);
+    }
+    return {
+      state: game.snapshot().app.state,
+      statuses: game.snapshot().chase.room.outlaws.map((o) => o.status),
+      best: game.snapshot().chase.best,
+    };
+  });
+  console.log(`[m39-couch-no-record] round one ended ${JSON.stringify(first.statuses)}`);
+  expect(first.state).toBe('results');
+  expect(first.statuses.every((status) => status !== 'standing')).toBe(true);
+  // The fixed step is deterministic, so this ride always ends one of each —
+  // measured 2026-09-24: `["escaped","caught"]`. Both endings are therefore
+  // held to "files nothing" by the one round.
+  expect(first.statuses).toContain('escaped');
+  expect(first.statuses.some((status) => status === 'caught' || status === 'touched')).toBe(true);
+  expect(first.best).toBeNull();
+  expect(await stored()).toEqual([null, null, null]);
+  await expect(page.locator('.euc-menu--results [data-menu="results-notes"]')).toContainText('Couch chases are not saved');
+
+  // Round two, through the results door: both give up — a sweep.
+  await page.locator('[data-menu="results-couch"] [data-couch-mode="chase"]').click();
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
+  await rideOutChaseCount(page);
+  await pressR(page, 0);
+  await pressR(page, 1);
+  await page.evaluate((steps) => window.game.advance(steps), Math.ceil((CHASE.resultsDelaySeconds + 0.4) * 120));
+  expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('results');
+  expect(await stored()).toEqual([null, null, null]);
+
+  // The couch closes; a solo chase files against three cops, as it always did.
+  const solo = await page.evaluate(() => {
+    const game = window.game;
+    game.setAppState('title');
+    game.advance(1);
+    const seats = game.seatCount;
+    game.tuning.set('CHASE.escapeSeconds', 30);
+    game.startChase();
+    const couch = game.snapshot().chase.room.couch;
+    game.setActions({ throttle: 0.6 });
+    for (let chunk = 0; chunk < 300 && game.snapshot().app.state !== 'results'; chunk += 1) game.advance(30);
+    return { seats, couch, state: game.snapshot().app.state };
+  });
+  expect(solo.seats).toBe(1);
+  expect(solo.couch).toBe(false);
+  expect(solo.state).toBe('results');
+  const after = await stored();
+  expect(after[0]).toBeNull();
+  expect(after[2], 'the solo chase after the couch filed nothing').not.toBeNull();
+  await expect(page.locator('.euc-menu--results [data-menu="results-notes"]')).not.toContainText('Couch chases are not saved');
   expect(errors).toEqual([]);
 });

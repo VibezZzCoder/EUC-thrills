@@ -72,7 +72,12 @@ test('Escape pauses the simulation, shows the pause menu, and Escape resumes', a
 
 test('losing the WebGL context freezes the game and shows the recovery notice', async ({ page }) => {
   // No console-emptiness assertion here: the browser itself logs the forced
-  // context loss, and that message is the mechanism, not a defect.
+  // context loss, and that message is the mechanism, not a defect. What must
+  // never print is WebGL rejecting a delete of the lost context's objects.
+  const deadDeletes: string[] = [];
+  page.on('console', (message) => {
+    if (/does not belong to this context/.test(message.text())) deadDeletes.push(message.text());
+  });
   await boot(page);
 
   await page.evaluate(() => {
@@ -112,6 +117,41 @@ test('losing the WebGL context freezes the game and shows the recovery notice', 
   // And it still draws: a rendered frame after restore has real draw calls.
   await page.evaluate(() => window.game.advance(1));
   expect(await page.evaluate(() => window.qa.snap().render.drawCalls)).toBeGreaterThan(0);
+
+  // **And nothing drawn before the loss is deleted on the restored context**
+  // (M39 A28 follow-up, CL). A quality change drops the pre-loss shadow map,
+  // a rider swap the pre-loss rig and ghost, a world swap the pre-loss world:
+  // each once raised INVALID_OPERATION through three's pre-loss bookkeeping.
+  // The flags are drained first, then read after each path's own frame.
+  const flags = await page.evaluate(() => {
+    const game = window.game;
+    const gl = game.renderer.renderer.getContext();
+    const drain = (): number[] => {
+      const codes: number[] = [];
+      for (let i = 0; i < 16; i += 1) {
+        const code = gl.getError();
+        if (code === gl.NO_ERROR) break;
+        codes.push(code);
+      }
+      return codes;
+    };
+    game.loop.setRunning(false);
+    const read: Record<string, number[]> = { pending: drain() };
+    game.setOptions({ quality: 'medium' });
+    game.advance(2);
+    read.quality = drain();
+    game.setOptions({ character: 'trollina' });
+    game.advance(2);
+    read.rider = drain();
+    game.setAppState('title');
+    game.startTrackDay();
+    game.advance(2);
+    read.world = drain();
+    return read;
+  });
+  expect(flags).toEqual({ pending: [], quality: [], rider: [], world: [] });
+  expect(await page.evaluate(() => window.game.levelPlan.id)).toBe('belvar-r1');
+  expect(deadDeletes).toEqual([]);
 });
 
 test('reset lands exactly on the spawn even while movement input is held', async ({ page }) => {

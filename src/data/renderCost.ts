@@ -1,7 +1,8 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { deepFreeze } from '../shared/freeze.ts';
 import { positionHash01 } from '../shared/maths.ts';
-import { BUILDING_FACADE, PROP_SIZES, type PropKind } from './props.ts';
+import { BUILDING_FACADE, PROP_SIZES, type BuildingLook, type PropKind } from './props.ts';
+import { composeBuilding } from './buildingLooks.ts';
 import { MATERIALS, SURFACES } from './surfaces.ts';
 
 /**
@@ -17,8 +18,10 @@ import { MATERIALS, SURFACES } from './surfaces.ts';
  * Measured costs regenerate from the built scene; budget ceilings are owner
  * decisions. The 2026-09-09 Cool Rider pass raised triangle ceilings by each
  * frame's measured reserve growth per view, retaining its level allowance.
- * Draw ceilings stay 160 / 460 / 1,400; older milestone arithmetic below is
- * historical. The test regenerates the measurement and compares. That is
+ * Draw ceilings stayed 160 / 460 / 1,400 then; M39 Part P's pack (q209,
+ * q219) and QA r2's live particle fields have since moved them, by R-5's
+ * passes × reserve growth, to 214 / 516 / 1,408. Older milestone arithmetic
+ * below is historical. The test regenerates the measurement and compares. That is
  * the mitigation `docs/PLANS.md` §12 names for the top render risk: a cost
  * model that drifts from reality is a budget that passes while the frame dies.
  *
@@ -63,13 +66,15 @@ export type PropPartId =
   | 'buildingTall'
   | 'buildingCap'
   | 'tyreStack'
-  | 'gantrySpan';
+  | 'gantrySpan'
+  /** M39 Phase 2: a pitched roof, drawn only for a building with a `look`. */
+  | 'roofGable';
 
 export const PROP_PART_IDS: readonly PropPartId[] = deepFreeze([
   'trunk', 'crown', 'coniferFoliage', 'shrub', 'lampPost', 'lampHead',
   'benchWood', 'benchMetal', 'litterBin', 'bollardCap', 'signPost', 'signPlate',
   'fenceBay', 'buildingBody', 'buildingLow', 'buildingTall', 'buildingCap',
-  'tyreStack', 'gantrySpan',
+  'tyreStack', 'gantrySpan', 'roofGable',
 ]);
 
 export interface PartCost {
@@ -112,6 +117,10 @@ export const PART_COSTS: Readonly<Record<PropPartId, PartCost>> = deepFreeze({
   // name is 65 segments where its first word was 29. One instance in the
   // world, so it is 432 triangles on the frame and no draw call at all.
   gantrySpan: { triangles: 984, castsShadow: true },
+  // M39 Phase 2. Two slopes, two gable ends and the eave's underside. It does
+  // not cast: no building does, and a casting part would take the library
+  // bound to 161 against the 160 ceiling.
+  roofGable: { triangles: 8, castsShadow: false },
 });
 
 /**
@@ -195,6 +204,8 @@ export interface CostableProp {
   readonly kind: PropKind;
   readonly position: { readonly x: number; readonly y: number; readonly z: number };
   readonly size?: { readonly x: number; readonly y: number; readonly z: number };
+  /** M39 Phase 2's district look or landmark; only `building` reads it. */
+  readonly look?: BuildingLook;
 }
 
 /**
@@ -215,6 +226,15 @@ export function propPartCounts(
   const simple = SIMPLE_PROP_PARTS[prop.kind];
   if (simple !== undefined) {
     for (const part of simple) add(part);
+    return into;
+  }
+
+  // A building with a look is exactly the pieces `data/buildingLooks.ts`
+  // composes — the same list `render/props.ts` instances, piece for piece.
+  if (prop.look !== undefined) {
+    for (const piece of composeBuilding({ position: prop.position, size: prop.size, look: prop.look })) {
+      add(piece.part);
+    }
     return into;
   }
 
@@ -346,6 +366,27 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  *
  * What has moved, most recent first:
  *
+ *   - **M39 Part P QA r2, the particle fields (2026-09-24): every reserve
+ *     +2 calls (142 → 144, 176 → 178, 270 → 272), triangles unmoved.** The
+ *     spark and dust fields were built and walked but measured at rest, and a
+ *     field is a hidden `Points` until it holds a particle, so no reserve had
+ *     ever counted the call each draws while a burst is in the air — reachable
+ *     in every mode (`docs/PLANS.md` §21.11's own correction, applied). The
+ *     reserve now emits one particle into each before measuring, as the paddle
+ *     is aimed; `--write` moved the three ceilings by passes × 2 (R-5), so
+ *     every level share is unchanged.
+ *   - **M39 Part P, the pack (2026-09-23): the single reserve 90 → 142 calls
+ *     and 126,618 → 130,236 triangles; the split reserve 150 → 176 calls,
+ *     triangles unmoved; the quad reserve unmoved.** The chase rule with two
+ *     faces (`docs/PLANS.md` §39.6b): the solo second-rider slot holds three
+ *     cop trims instead of one (q209, "no more mr nice guy"), +52 calls — two
+ *     more 26-call trims — and +3,618 triangles over the ghost frame that set
+ *     the old triangle axis; the split sweep gained the 2v2 couch room, two
+ *     seat rigs and two trims a pass, +26 calls (q219). Every grid room — the
+ *     human cop at full rig (53 calls, 16,690 triangles, under every playable
+ *     rig) or one trim — fits the quad reserve as it stood. `RENDER_BUDGET`
+ *     and `RENDER_BUDGET_SPLIT` moved by the same growth times their passes,
+ *     so the level's share of every contract is unchanged (notes below).
  *   - **The gloves pass (2026-09-11): the quad reserve 234,110 → 234,542
  *     triangles, the split reserve, the single reserve and every draw call on
  *     all three unmoved.** The owner rode the roster and found five hands
@@ -531,8 +572,8 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  *     triangle reserve; draw calls did not move.
  */
 export const NON_LEVEL_RESERVE = deepFreeze({
-  drawCalls: 90,
-  triangles: 126_618,
+  drawCalls: 144,
+  triangles: 130_236,
 });
 
 /**
@@ -560,7 +601,7 @@ export const NON_LEVEL_RESERVE = deepFreeze({
  * out, and a comment inside the braces makes the tool throw.
  */
 export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
-  drawCalls: 150,
+  drawCalls: 178,
   triangles: 179_358,
 });
 
@@ -590,7 +631,7 @@ export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
  * the whole object out, and a comment inside the braces makes the tool throw.
  */
 export const QUAD_NON_LEVEL_RESERVE = deepFreeze({
-  drawCalls: 270,
+  drawCalls: 272,
   triangles: 245_150,
 });
 
@@ -598,8 +639,9 @@ export const QUAD_NON_LEVEL_RESERVE = deepFreeze({
  * The §9 ceilings, as machine-readable numbers.
  *
  * `docs/PLANS.md` §9 and `AGENTS.md` are the authority; this is the copy the
- * validator compares against, and `render/renderCost.test.ts` asserts the two
- * still agree with the documents by naming them here.
+ * validator compares against. `render/renderCost.test.ts` pins the numbers;
+ * the documents are kept in step with them by hand at each raise, which is
+ * why they are named here.
  *
  * **Frame interval and FPS are deliberately absent.** No agent reports them
  * (`AGENTS.md`), and a contract that cannot be evaluated headlessly has no
@@ -622,7 +664,7 @@ export const RENDER_BUDGET = deepFreeze({
    * work is a design argument rather than a budget one. Triangles were not
    * touched: 400 k was never the binding constraint.
    */
-  maxDrawCalls: 160,
+  maxDrawCalls: 214,
   /**
    * **Raised from 400 k to 460 k by the owner on 2026-08-19** — M23 Phase A1d,
    * the same instruction that moved the draw-call ceiling.
@@ -632,7 +674,7 @@ export const RENDER_BUDGET = deepFreeze({
    * ring count, a hand that is a hand, hair that is a mass rather than ropes.
    * The measured cost is **+36,770 triangles on the worst reserve**, which
    * took the densest known route from 78.9% of the old ceiling to 88.1% — past
-   * the 80% line `level/generatedLevel.test.ts` holds as the point where
+   * the historical 80% line `level/generatedLevel.test.ts` held as the point where
    * scaling work would be needed.
    *
    * Sixty thousand rather than a round doubling, and triangles rather than
@@ -642,9 +684,43 @@ export const RENDER_BUDGET = deepFreeze({
    * densest route is now 353 k, which an M1 or a recent iPhone chews through
    * far below its limit. The new ceiling puts that route at 76.6% and restores
    * the margin the 80% rule exists to protect.
+   *
+   * **Raised from 160 to 212 under q209 on 2026-09-23** — M39 Part P, the
+   * solo chase against three cops (`docs/PLANS.md` §39.6b.4; budget raises
+   * authorized by the owner for the milestone). Exactly the solo reserve's
+   * growth when it put on the pack of three trims (90 → 142, +52), so the
+   * level keeps its 70 calls — the library's set-union bound, which this
+   * ceiling has equalled plus the reserve since M23 — and no generated world
+   * or presentation choice moves. The measured worst frame beside it: the
+   * `euc` town, 51 level calls + 142 = **193**, the "~192" §39.6b.2b expected;
+   * never the ceiling itself (`docs/M39_CHASE.md` §2f, R-5). Written by
+   * `node tools/render-cost.mjs --write`, which moves a ceiling by passes ×
+   * its reserve's growth and never down.
+   *
+   * **212 → 214 on 2026-09-24** (M39 Part P QA r2) by that same rule: the
+   * reserve now counts both particle fields live (+2 calls), so the ceiling
+   * is still exactly 70 + the reserve (70 + 144) and the worst town frame
+   * 51 + 144 = **195**.
    */
+  // M39 spends part of the old 20% planning reserve with owner authorization;
+  // admission and presentation still enforce every hard frame ceiling.
   // Owner-authorized Cool Rider detail pass: 73,344 more reserved triangles; retain route headroom.
-  maxTriangles: 533_344,
+  /**
+   * **Raised from 533,344 to 640,000 on the owner's M39 authorization,
+   * 2026-09-22** (*"all budget increases are authorized"*). The town ring
+   * (generated r6) carries every accepted beat, two district blocks and a
+   * closing road — about 2.5 km of road on a ~760 m heightfield — and the cost
+   * is ground, not dressing: over sixty seeds the frame measured 505k–581k
+   * (median 538k), of which props are under 50k. Draw calls are untouched
+   * (139 measured against 160). The new line leaves ~10% over the worst sampled
+   * seed. Phone acceptance of the raise is the owner's G2 device ride.
+   *
+   * **Then 640,000 → 643,618 under q209 on 2026-09-23** (M39 Part P): the
+   * solo reserve's triangle growth with the pack (+3,618), by the same rule as
+   * the calls above, so the level's 513,382 is unchanged. Measured worst town
+   * frame: `euc-18`, 494,024 + 130,236 = **624,260**.
+   */
+  maxTriangles: 643_618,
 });
 
 /**
@@ -686,7 +762,8 @@ export const QUAD_PASSES = 4;
  * `RENDER_BUDGET` above — it is a second contract, pinned the same way, in the
  * same file, regenerated by the same tool and asserted in the same test.
  * Every single-player frame is still governed by `RENDER_BUDGET`, one pass,
- * 160 calls, 460 k triangles, and nothing here relaxes that.
+ * 214 calls / 643,618 triangles (q209, 2026-09-23; +2 for the live particle
+ * fields, 2026-09-24), and nothing here relaxes that.
  *
  * **Chosen by measurement, not by ballpark.** §25.4 offered "roughly 420 calls
  * and 0.9 M triangles" as an estimate and said in the same breath that it was
@@ -716,12 +793,26 @@ export const RENDER_BUDGET_SPLIT = deepFreeze({
    * for the characters after Maribel are eighteen calls in a split frame, and
    * a ceiling with less slack than that would make the next rider a Contract 2
    * problem before it was a design one.
+   *
+   * **Raised from 460 to 512 under q219 on 2026-09-23** — M39 Part P, the
+   * couch chase. The 2v2 room (two outlaws, two CPU trims in the slot) is one
+   * trim dearer a pass than a pair wearing the lone cop, and it set the split
+   * reserve at 176 (+26): the bound became (70 + 176) × 2 = **492 of 460**,
+   * the figure §39.6b.4b expected. The ceiling moved by twice the growth
+   * (+52), so each pass keeps the 80 calls of level room it had and the
+   * slack above the bound stays 20 (440 of 460 before, 492 of 512 now). Measured worst town frame: the `euc` town,
+   * (51 + 176) × 2 = **454**. Triangles unmoved: no two-pane room outweighs a
+   * pair wearing a companion.
+   *
+   * **512 → 516 on 2026-09-24** (M39 Part P QA r2): the split reserve counts
+   * both particle fields live (176 → 178), twice over the passes; the bound
+   * is (70 + 178) × 2 = 496 and the worst town frame (51 + 178) × 2 = 458.
    */
-  maxDrawCalls: 460,
+  maxDrawCalls: 516,
   /**
    * The measured frame is 561,036, and this is not written against it.
    *
-   * `level/generatedLevel.test.ts` holds routes to 80% of Contract 1's
+   * The original sizing used 80% of Contract 1's
    * triangle ceiling — 368,000 — as the point past which scaling work would be
    * needed. A split session can be started on a generated world, so the number
    * that has to fit is the one at that line:
@@ -733,7 +824,10 @@ export const RENDER_BUDGET_SPLIT = deepFreeze({
    * has always been — so the round number is the honest one here.
    */
   // Two rendered views of the revised hero reserve.
-  maxTriangles: 1_160_952,
+  // M39 r6 (owner-authorized): raised 1,160,952 → 1,374,264, derived from the
+  // new Contract 1 so each view keeps the same level room below solo as before
+  // (5,608 triangles tighter per view). Worst sampled town: 1,341,892 enhanced.
+  maxTriangles: 1_374_264,
 });
 
 /**
@@ -742,7 +836,7 @@ export const RENDER_BUDGET_SPLIT = deepFreeze({
  * A third ceiling on Contract 2's exact terms (§27.5): not an exemption from
  * either of the two above, but its own contract, in the same file, regenerated
  * by the same tool, asserted in the same test. Every single-player frame is
- * still `RENDER_BUDGET`, one pass, 160 calls, 460 k triangles; every two-seat
+ * still `RENDER_BUDGET`, one pass, 214 calls / 643,618 triangles; every two-seat
  * frame is still `RENDER_BUDGET_SPLIT`; and **neither moved a byte to make
  * room for this one.**
  *
@@ -782,12 +876,16 @@ export const RENDER_BUDGET_QUAD = deepFreeze({
    * them — and a quad character costs 36, so the same margin is 52. Less than
    * that and the next rider is a Contract 3 problem before it is a design one,
    * which is the trap Contract 2's own note names.
+   *
+   * **1,400 → 1,408 on 2026-09-24** (M39 Part P QA r2): the quad reserve
+   * counts both particle fields live (270 → 272), four passes over; the bound
+   * is (70 + 272) × 4 = 1,368, so the 40 calls of headroom are unchanged.
    */
-  maxDrawCalls: 1_400,
+  maxDrawCalls: 1_408,
   /**
    * The measured frame is 1,933,528, and this is not written against it.
    *
-   * `level/generatedLevel.test.ts` holds routes to 80% of Contract 1's
+   * The original sizing used 80% of Contract 1's
    * triangle ceiling — 368,000 — as the point past which scaling work would be
    * needed, and q98 (a) means a four-seat session can be started on exactly
    * such a world. So the number that has to fit is the one at that line:
@@ -800,7 +898,10 @@ export const RENDER_BUDGET_QUAD = deepFreeze({
    * is *stated* rather than eyeballed.
    */
   // Four rendered views of the revised hero reserve.
-  maxTriangles: 2_569_352,
+  // M39 r6 (owner-authorized): raised 2,569,352 → 2,995,976, derived from the
+  // new Contract 1 so each view keeps the same level room below solo as before
+  // (9,538 triangles tighter per view). Worst sampled town: 2,946,952 enhanced.
+  maxTriangles: 2_995_976,
 });
 
 /**

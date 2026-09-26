@@ -121,3 +121,116 @@ test('a control missing from the list moves nowhere rather than throwing', () =>
   assert.equal(rowStep(RIDER_GRID, -1, 1), -1);
   assert.equal(rowNeighbour(RIDER_GRID, -1, 1), null);
 });
+
+// -- M39: the title's utility row ---------------------------------------------
+//
+// Settings and the Ultra Graphics toggle share one row (`game.css`, DESIGN
+// §9g), and the row is `1.08fr 1fr` rather than halves for a pad's sake:
+// `rowStep` lands on the target row's horizontally nearest control, and two
+// equal halves under a full-width control are *exactly* as near as each other.
+// The fixtures are built from the stylesheet's own arithmetic so the ratio is
+// tested where it is used.
+
+/** `game.css`'s `.euc-menu__utility` tracks: Settings 1.08fr, Ultra 1fr. */
+const UTILITY_SPLIT = 1.08;
+
+/** Settings and Ultra inside a cell `left..left+width`, split as the stylesheet splits it. */
+function utilityPair(left: number, width: number, gap: number, top: number, height: number,
+  split = UTILITY_SPLIT): [ControlRect, ControlRect] {
+  const settings = ((width - gap) * split) / (split + 1);
+  const ultra = width - gap - settings;
+  return [
+    rect(left, top, settings, height),
+    rect(left + settings + gap, top, ultra, height),
+  ];
+}
+
+/**
+ * The stack (one column, 1920×1080): Police chase and Fresh route full width,
+ * the pair below, the rider chip centred under it. 544 px panel at x = 688;
+ * the pair is as tall as the Ultra toggle with its helper line.
+ */
+const STACK: ControlRect[] = [
+  rect(688, 610, 544, 66), // 0 Police chase
+  rect(688, 686, 544, 66), // 1 Fresh route
+  ...utilityPair(688, 544, 9.6, 762, 84), // 2 Settings, 3 Ultra
+  rect(810, 880, 300, 36), // 4 rider chip, centred on the panel
+];
+
+/**
+ * The couch grid (1000×700): two 364 px columns at x = 132 and 504, 8 px gap.
+ * Knockabout | Police chase, then Fresh route | the pair inside Settings' old
+ * cell, then the chip.
+ */
+const COUCH: ControlRect[] = [
+  rect(132, 400, 364, 79), // 0 Knockabout
+  rect(504, 400, 364, 79), // 1 Police chase
+  rect(132, 487, 364, 96), // 2 Fresh route (stretched to the pair's row)
+  ...utilityPair(504, 364, 8, 487, 96), // 3 Settings, 4 Ultra
+  rect(350, 595, 300, 36), // 5 rider chip
+];
+
+function distanceX(a: ControlRect, b: ControlRect): number {
+  return Math.abs((a.left + a.width / 2) - (b.left + b.width / 2));
+}
+
+test('the utility pair is one row, and Right from Settings is Ultra', () => {
+  assert.deepEqual(clusterRows(STACK), [[0], [1], [2, 3], [4]]);
+  assert.equal(rowNeighbour(STACK, 2, 1), 3);
+  assert.equal(rowNeighbour(STACK, 3, -1), 2);
+  // The row ends at Ultra: Right goes nowhere rather than down to the chip.
+  assert.equal(rowNeighbour(STACK, 3, 1), null);
+  assert.equal(rowNeighbour(STACK, 2, -1), null);
+
+  // On the couch grid the pair shares a row with Fresh route, and a sideways
+  // walk crosses all three in reading order.
+  assert.deepEqual(clusterRows(COUCH), [[0, 1], [2, 3, 4], [5]]);
+  assert.equal(rowNeighbour(COUCH, 2, 1), 3);
+  assert.equal(rowNeighbour(COUCH, 3, 1), 4);
+  assert.equal(rowNeighbour(COUCH, 3, -1), 2);
+});
+
+test('Down onto the pair lands on Settings, with no tie to break', () => {
+  // From the full-width Fresh route in the stack, and from Police chase above
+  // the right-hand cell on the couch grid — the two stops `tests/m9.spec.ts`
+  // walks — Settings is the nearer centre by a margin, not by a rounding.
+  assert.equal(rowStep(STACK, 1, 1), 2);
+  assert.equal(rowStep(COUCH, 1, 1), 3);
+
+  const stackMargin = distanceX(STACK[3], STACK[1]) - distanceX(STACK[2], STACK[1]);
+  const couchMargin = distanceX(COUCH[4], COUCH[1]) - distanceX(COUCH[3], COUCH[1]);
+  // (Ultra's distance − Settings' distance) is (Settings − Ultra) / 2, the
+  // eight hundredths' dividend: ≈ 10 px in the stack and ≈ 7 px on the couch
+  // grid — far past the half-pixel a layout rounds by.
+  assert.ok(stackMargin > 5, `stack margin ${stackMargin.toFixed(2)} px`);
+  assert.ok(couchMargin > 3, `couch margin ${couchMargin.toFixed(2)} px`);
+
+  // And Up from either half returns to the control above; Down from either
+  // reaches the chip, so the pair is never a dead end for the walk.
+  assert.equal(rowStep(STACK, 2, -1), 1);
+  assert.equal(rowStep(STACK, 3, -1), 1);
+  assert.equal(rowStep(STACK, 2, 1), 4);
+  assert.equal(rowStep(STACK, 3, 1), 4);
+  assert.equal(rowStep(COUCH, 3, -1), 1);
+  assert.equal(rowStep(COUCH, 4, -1), 1);
+  // Up from the centred chip lands on Settings too — the nearer half again.
+  assert.equal(rowStep(STACK, 4, -1), 2);
+});
+
+test('equal halves would tie, which is why Settings is the wider track', () => {
+  // The same stack with `1fr 1fr`: the two centres are the same distance from
+  // Fresh route's, so the answer is whichever the sort happens to put first —
+  // and half a pixel of layout rounding on Ultra's box flips it.
+  const [settings, ultra] = utilityPair(688, 544, 9.6, 762, 84, 1);
+  const even: ControlRect[] = [STACK[0], STACK[1], settings, ultra, STACK[4]];
+  assert.ok(Math.abs(distanceX(settings, even[1]) - distanceX(ultra, even[1])) < 1e-9);
+
+  const nudged: ControlRect[] = [...even];
+  nudged[3] = rect(ultra.left - 0.5, ultra.top, ultra.width, ultra.height);
+  assert.equal(rowStep(nudged, 1, 1), 3, 'a half-pixel nudge did not flip equal halves');
+
+  // The shipped split survives the same nudge.
+  const shipped: ControlRect[] = [...STACK];
+  shipped[3] = rect(STACK[3].left - 0.5, STACK[3].top, STACK[3].width, STACK[3].height);
+  assert.equal(rowStep(shipped, 1, 1), 2);
+});

@@ -2,7 +2,7 @@
 import { expect, test } from '@playwright/test';
 import { CHARACTER_IDS } from '../src/data/riders.ts';
 import { RENDER_BUDGET } from '../src/data/renderCost.ts';
-import { boot, bootToTitle, collectErrors } from './harness.ts';
+import { boot, bootToTitle, collectErrors, DEAD_SEED, forceRefusal } from './harness.ts';
 
 /**
  * M14.5 — a second rider, and a fresh-route entrance a casual player can read.
@@ -235,6 +235,7 @@ test('the fresh-route panel leads with the control that needs no knowledge', asy
   // The M14.5 rework, as a claim rather than as a screenshot: a player who has
   // never heard the word "seed" can reach a route without typing, and the panel
   // says what it is for before it asks for anything.
+  await forceRefusal(page);
   const errors = collectErrors(page);
   await bootToTitle(page);
 
@@ -262,16 +263,18 @@ test('the fresh-route panel leads with the control that needs no knowledge', asy
   await expect(page.locator('#euc-seed')).toBeVisible();
   await expect(page.locator('.euc-menu--routes #euc-routes-hint')).toContainText('seed');
 
-  // A refusal points at the fix rather than only at the mistake. `route-12` is
+  // A refusal points at the fix rather than only at the mistake. `DEAD_SEED` is
   // m12's pinned dead seed — one that reaches the generator and fails to make a
-  // route, rather than one that merely looks unlikely.
-  await page.locator('#euc-seed').fill('route-12');
+  // route, rather than one that merely looks unlikely. M39's town ring builds
+  // the old one, so the refusal is forced at the request boundary exactly as
+  // m12 forces it (`forceRefusal`, `tests/harness.ts`).
+  await page.locator('#euc-seed').fill(DEAD_SEED);
   await page.locator('.euc-menu--routes [data-menu="ride-route"]').click();
   await expect.poll(async () => page.evaluate(() => window.game.snapshot().route.status))
     .toBe('no-route');
   const status = page.locator('.euc-menu--routes [data-menu="route-status"]');
   await expect(status).toHaveAttribute('data-tone', 'refused');
-  await expect(status).toContainText('route-12');
+  await expect(status).toContainText(DEAD_SEED);
   await expect(status).toContainText('Surprise me');
   // And the world did not move, which is the owner's q6 answer and is the one
   // thing about this panel that may never change.

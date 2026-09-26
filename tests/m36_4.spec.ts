@@ -110,7 +110,8 @@ for (const world of [
   // descriptor. These two rows are unchanged and are what "nothing else moved"
   // means: a world that starts authoring a light fails here.
   { name: 'BelVar Circuit', query: BELVAR, id: 'belvar-r1' },
-  { name: 'the slice', query: '', id: 'm7-slice' },
+  // Named since M39 Phase 1: a bare launch is the curated town now.
+  { name: 'the slice', query: 'level=slice', id: 'm7-slice' },
 ]) {
   test(`${world.name} is lit by the daylight it shipped with`, async ({ page }) => {
     // **The fallback the verification plan names, and the reason it is the

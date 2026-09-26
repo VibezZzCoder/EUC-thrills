@@ -46,6 +46,19 @@
    */
   --delta-ahead: #8ef0b4;
 
+  /*
+   * The Ultra Graphics toggle's fire — M39, q201 ("a fire/similar accent").
+   *
+   * **Its own pair, and never `--accent` or `--cue-warn`.** `--accent` is the
+   * focus ring, the primary fill, THRILLS and every slider (§9d's reason for
+   * `--rider-swatch`), and `--cue-warn` is the wheel's power ladder: an amber
+   * toggle on the title would be the status light's warning colour used for
+   * something that is not a warning. The outer flame is a hot red-orange and
+   * the core a yellow, so the lit flame reads as fire rather than as a cue.
+   */
+  --ultra-flame: #ff5a3c;
+  --ultra-flame-core: #ffc34d;
+
   --panel: rgba(13, 16, 20, 0.92);
   --panel-edge: #2b3542;
   --shade: rgba(7, 9, 12, 0.72);
@@ -495,8 +508,8 @@
  * `--beep-period` is written by `ui/hud.ts` from the same arithmetic the audio
  * director schedules the beeps with (`shared/overspeed.ts`), so the blink and
  * the sound are the same cue on two channels rather than two cues. It starts
- * at about one flash a second just past `EUC.overspeedBeepShare` (0.785) of
- * the derived top speed — 52 mph on the shipped 65 mph wheel, and the same
+ * at about one flash a second just past `EUC.overspeedBeepShare` (0.87 since
+ * 2026-09-22) of the derived top speed — 57.9 mph on the shipped 65 mph wheel, and the same
  * share of whatever top speed the wheel has — and reaches seven a second at the edge:
  * the real alarm's own cadences, which is the "riding the beeps" feel made
  * visible.
@@ -1934,6 +1947,45 @@
   line-height: 1.45;
 }
 
+/*
+ * The quality field's two M39 lines — the Ultra warning and the session's
+ * reason — both notes and neither a control.
+ *
+ * **The warning names its tier in the flame's own colour**, because the note
+ * sits under a select holding four tiers and "Requires a capable GPU" has to
+ * say which one it is about. A word, not a glyph: the flame is the title's
+ * mark, and a second copy here would be decoration beside a sentence that
+ * already says it.
+ *
+ * **The readout is full ink, not dim**, because it is the one line on this
+ * panel that tells a player the thing they chose is not what they are seeing —
+ * "Single player only — this session uses High", "Ultra couldn't start here —
+ * using High (…)". A dim line under a select is advice; this is a fact about
+ * the frame behind the panel. It is `hidden` while there is nothing to say,
+ * with the explicit rule §9 requires beside every element this layer hides.
+ */
+.euc-quality-warning__tag {
+  color: var(--ultra-flame);
+  font-weight: 700;
+}
+
+.euc-quality-state {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.euc-quality-state[hidden] { display: none; }
+
+/* The loading notice's Settings half (2026-09-25): while a switch across
+   Ultra runs the readout says so ("Loading Ultra graphics…"), and the shared
+   sweep (`.euc-busy-sweep`, with the title toggle's rules) runs under it —
+   a short line, left-aligned with the notes, never wider than the field. */
+.euc-quality-sweep {
+  grid-column: 1 / -1;
+  width: min(12rem, 100%);
+  margin-top: -0.1rem;
+}
+
 .euc-field input[type="range"] {
   width: 100%;
   accent-color: var(--accent);
@@ -3020,6 +3072,50 @@
 }
 
 /*
+ * **A wide title with no couch takes the same two columns — the touch tablet
+ * (FU, 2026-09-23; Fable's QA observation outside A28).**
+ *
+ * The rule above assumed a window 1000 px wide is always offered the couch, and
+ * with a fine pointer it is. A **touch tablet with no pad seen** is not
+ * (`couchEligible`: a fine pointer or a pad), so a tablet held sideways with no
+ * mouse, trackpad or pad fell through to the one-column stack — eight rows
+ * since Trick Run, and the stack needs about 880 px — and scrolled: 19 px at
+ * 1024x768, 44 at 1194x834, 58 at 1180x820, 87 at 1024x700, 107 at 1133x680
+ * (a browser's toolbars make a real landscape viewport shorter than its
+ * screen). No project ever built that machine: `tests/m22.spec.ts` walks these
+ * sizes with a fine pointer, where the couch puts them in the two columns
+ * above.
+ *
+ * So below 60rem of height, **every title at least 62.5rem wide** takes two
+ * columns with its notes on. 62.5rem is 1000 px, the couch's own width
+ * (`COUCH_MIN_WIDTH_PX`), the same number the compact tier's
+ * `max-width: 62.49rem` clause already stops at — so the three tiers still meet
+ * without a gap: under it the compact tier (50rem and shorter) or the stack;
+ * at it and over, two columns with or without the couch. **Plain class chains,
+ * not `:not([data-couch="true"])`**: a plain chain has the compact tier's
+ * bare-chain specificity, and this block is earlier, so a window that is also
+ * under 30rem tall still gets three columns. On a couch title these three
+ * rules say exactly what the attribute-scoped ones above say, and those
+ * outrank them, so nothing with a fine pointer moves by a pixel.
+ *
+ * With Time trial and no couch that is seven cells under `Start ride`, so the
+ * Settings/Ultra pair sits alone in the last row's left cell — the shape the
+ * couch title already has on a world with no Time trial (BelVar, the park).
+ * Measured after, a coarse pointer with no pad: 1024x768 clears by 150.8,
+ * 1180x820 by 131, 1194x834 by 145, 1024x700 by 82.8, 1133x680 by 62.8; the
+ * fine-pointer windows measure exactly as before.
+ */
+@media (max-height: 60rem) and (min-width: 62.5rem) {
+  .euc-menu--title .euc-menu__panel { width: min(46rem, 100%); }
+
+  .euc-menu--title .euc-menu__actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .euc-menu--title [data-menu="start"] { grid-column: 1 / -1; }
+}
+
+/*
  * And the notes go earlier than they otherwise would, for the same reason.
  *
  * Two columns buys four rows back and runs out again at about 560 px of window
@@ -3032,7 +3128,18 @@
  *
  * The 30 rem block below still does this for *every* title. This one only
  * brings it forward where an eighth entrance made it necessary.
+ *
+ * **And for the wide title with no couch (FU, 2026-09-23)**, the first block
+ * below: the two columns it gained above run out the same way — a touch tablet
+ * at 1024x600 scrolled 17 px with its notes, 65 at 1024x552 — so at 62.5rem
+ * and wider the notes and the tagline go here for every title, couch or not
+ * (131.2 and 83.2 px clear after).
  */
+@media (max-height: 40rem) and (min-width: 62.5rem) {
+  .euc-menu--title .euc-button__note,
+  .euc-menu--title .euc-menu__tagline { display: none; }
+}
+
 @media (max-height: 40rem) {
   .euc-menu--title[data-couch="true"] .euc-button__note,
   .euc-menu--title[data-couch="true"] .euc-menu__tagline { display: none; }
@@ -3666,6 +3773,44 @@
   border-color: var(--accent);
   background: var(--accent);
   box-shadow: inset 0 0 0 2px #0d1014;
+}
+
+/*
+ * **Five offers, one row — M39 Part P (R-UI-1).**
+ *
+ * The chase made the row five rides long. The join panel's 160 px tracks
+ * still hold every label on one line, but the pause and results cards give
+ * each track 102–103 px against 113–145 px of content, so every label wrapped
+ * to two lines (buttons 40 → 51–53 px) and pushed `Back to title` below the
+ * fold at 1000 x 560 and 1600 x 500 (`tests/m26.spec.ts`, `tests/m38.spec.ts`).
+ * So on those two cards, and only when the row has five offers, the tracks
+ * are sized by their content and share the leftover as space between, and the
+ * results card's short-tier trim applies at every height. Measured
+ * (`DESIGN.md` §9q; the per-window table is in docs/M39_CHASE.md "P6 — UI
+ * notes"): 40 px buttons on one row, and every overflow equal to the
+ * four-button figure at all thirteen windows.
+ *
+ * **`minmax(0, auto)`, not `auto`** (2026-09-25): an `auto` track cannot
+ * shrink below its label, so a couch card left open in a window narrowed
+ * below the 1000 px start (`tests/m36_3.spec.ts` walks 375 and 740 px) forced
+ * the row to 460 px and scrolled the menu sideways. A zero minimum keeps the
+ * content-sized tracks wherever they fit and lets them shrink like the
+ * four-offer row's `minmax(0, 1fr)` where they do not.
+ */
+:is(.euc-menu--pause, .euc-menu--results) .euc-couch__modes:has(> :nth-child(5)) {
+  grid-auto-columns: minmax(0, auto);
+  justify-content: space-between;
+}
+
+:is(.euc-menu--pause, .euc-menu--results) .euc-couch__modes:has(> :nth-child(5)) .euc-couch__mode-button {
+  gap: 0.35rem;
+  padding: 0.5rem 0.35rem;
+  font-size: 0.88rem;
+}
+
+:is(.euc-menu--pause, .euc-menu--results) .euc-couch__modes:has(> :nth-child(5)) .euc-couch__mode-button::before {
+  width: 0.8rem;
+  height: 0.8rem;
 }
 
 /* The pause menu's copy of the chooser — the same control, the same words, a
@@ -4427,6 +4572,550 @@
  */
 @media (max-width: 26rem) {
   .euc-menu--title .euc-menu__tagline { display: none; }
+}
+
+/*
+ * **A phone's title fits on the phone project too — M39, 2026-09-23.**
+ *
+ * No test held the Pixel 7 claim above (`tests/m22.spec.ts` measures 390x844
+ * and 412x915), and it did not hold: M39's toggle test on the phone project
+ * (`tests/touch.spec.ts`, the Pixel 7 descriptor, a *coarse* pointer) found the
+ * title **2.86 px past the fold at 412x839** without the tagline — the 412-wide
+ * stack wraps exactly as the 390-wide one does, a 793.9 px panel plus 48 px of
+ * chrome in 839 — and **7 px past at 844x390**, where the coarse floor makes
+ * every compact row 44 px. Both were there before the Ultra pair existed: the
+ * same page with Settings put back as a bare grid item measures the same
+ * overflow, and the pair's row is 0.39 px taller than Settings alone (44.39
+ * against 44).
+ *
+ * - **Upright, the rhythm pays** — M23's first move (the 42rem tier above:
+ *   "from the rhythm first"), never a note. Between the heading, the actions,
+ *   the world line, the chip and the credit the panel's gap steps from 1.15rem
+ *   to the short-window tier's 0.85rem: 4 × 4.8 = 19.2 px. Keyed on width, as
+ *   the tagline is, and **only on the stack**: under 50rem of height a phone is
+ *   already in the compact tier with its own 0.6rem gap, which this rule's
+ *   extra class would otherwise outrank.
+ * - **Sideways, the tagline goes** — the sentence the upright phone, the
+ *   chooser and the couch title already drop, 18 px plus a 9.6 px gap. Keyed
+ *   on the coarse pointer as well as the height, because the coarse floor is
+ *   what costs the room: a fine-pointer window this short fits with the
+ *   sentence (`tests/m22.spec.ts`, 844x390 and 667x375) and keeps it.
+ *
+ * Neither rule touches a button: every target keeps its 44 px floor, its
+ * note and its padding, and the pair keeps one row.
+ *
+ * **And upright, the rest of the short-window tier's rhythm — Codex QA C3
+ * follow-up (FU), 2026-09-23.** The gap alone left the stack needing a 774.7
+ * px panel at 375, 390 and 412 wide (they wrap alike) and 792.4 at 360, so
+ * any upright phone between 800 and about 823 px tall still scrolled: **11 px
+ * at 375x812** (iPhone X/XS/11 Pro/12 mini/13 mini) and 36 at 360x804. Nothing
+ * with a screen that height reaches the compact tier, whose clause stops at
+ * 50rem. So the stack takes the rest of tier one's rhythm (the 50rem block
+ * above, which every window 800 px tall or shorter already has): the actions'
+ * gap 0.6rem → 0.5rem (7 gaps × 1.6 = 11.2 px) and each button's block padding
+ * 0.75rem → 0.6rem (4.8 px a noted button, about 31 px in all). Still no note,
+ * no label and no floor: every target keeps its 44 px minimum, and the Ultra
+ * toggle keeps its own 0.3rem (the block below is later and as specific).
+ * Measured after (Pixel 7 descriptor): 375x812 clears by 32.4, 360x804 by
+ * 6.6, 390x844 and 412x839 by 64.4 and 59.4.
+ */
+@media (max-width: 26rem) and (min-height: 50.01rem) {
+  .euc-menu--title .euc-menu__panel { gap: 0.85rem; }
+
+  .euc-menu--title .euc-menu__actions { gap: 0.5rem; }
+
+  .euc-menu--title .euc-button { padding-block: 0.6rem; }
+}
+
+/*
+ * **And every other stack under 60rem tall — FU2, 2026-09-23 (FU's residuals
+ * 1 and 3).** Under the couch width nothing between 50rem (the compact tier's
+ * top) and the stack's own need took a title: the one-column stack needs about
+ * 880 px at full chrome once its panel is 34rem wide, and more when it is
+ * narrower (its notes wrap more: about 926 at 428 wide). So a window 801 px
+ * tall scrolled 62–77 px from 768 to 999 wide (999x820 by 48, 900x850 by 18,
+ * coarse 28), and 428x926 (iPhone Pro Max, standalone) fitted by 0.5.
+ * **Tier one's rhythm, not two columns**: the three moves above plus the 50rem
+ * tier's block padding on the backdrop (0.9rem), from 26rem to the couch width and up to
+ * 60rem — the height under which a wide title already takes two columns — so
+ * no stack between 800 and 960 px keeps full chrome. FU's candidate (two
+ * columns from 48rem) also fitted, but it would have moved desktop windows that
+ * fit onto the no-couch grid nobody has walked with a keyboard; this keeps the
+ * layout and moves only spacing. Measured after (fine / coarse): 768x801 30.8 /
+ * 19, 999x801 25.7 / 13.9, 999x820 44.7, 900x850 74.7 / 62.9, 600x801 42.9,
+ * 500x801 32.3, 428x926 +92. Narrower than about 470 px it still runs out at
+ * 801–830 (420x801 −34): no phone reaches that band (DESIGN §9g).
+ */
+@media (min-width: 26.01rem) and (max-width: 62.49rem) and (min-height: 50.01rem) and (max-height: 60rem) {
+  .euc-menu--title {
+    padding-top: max(0.9rem, env(safe-area-inset-top));
+    padding-bottom: max(0.9rem, env(safe-area-inset-bottom));
+  }
+
+  .euc-menu--title .euc-menu__panel { gap: 0.85rem; }
+
+  .euc-menu--title .euc-menu__actions { gap: 0.5rem; }
+
+  .euc-menu--title .euc-button { padding-block: 0.6rem; }
+}
+
+@media (pointer: coarse) and (max-height: 30rem) {
+  .euc-menu--title .euc-menu__tagline { display: none; }
+}
+
+/*
+ * **A phone on its side under 24rem gives a little more chrome back — FU2,
+ * 2026-09-23.** Every Android held sideways at 360 px tall (740x360, 780x360,
+ * 800x360 — the 360x800 family) scrolled the compact title by 10 px on the
+ * phone project, and a fine-pointer window 360 tall by 12; 667x375 cleared by
+ * only 7.8 (coarse) and 3.5 (fine). Rhythm first (§9f), nothing dropped: the
+ * backdrop's block padding 0.75rem → 0.5rem, the panel's gap 0.6rem → 0.45rem,
+ * the actions' gap 0.5rem → 0.4rem (the portrait phone tier's own value).
+ * Every target keeps its 44 px floor. Measured after: 360 tall clears by 15.3
+ * (coarse) and 12–13 (fine), 375 by 30 and 27. Under about 350 px it still
+ * runs out (800x340 −5, 568x320 −25; DESIGN §9g).
+ */
+@media (max-height: 24rem) {
+  .euc-menu--title {
+    padding-top: max(0.5rem, env(safe-area-inset-top));
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+  }
+
+  .euc-menu--title .euc-menu__panel { gap: 0.45rem; }
+
+  .euc-menu--title .euc-menu__actions { gap: 0.4rem; }
+}
+
+/* ---------------------------------------------------------------------------
+ * Settings and Ultra Graphics share a row — M39, q201
+ *
+ * **The one recorded exception to "the title is not meant to grow"**
+ * (`DESIGN.md` §9d, the exception itself in §9g). The owner asked for a
+ * prominent main-menu toggle and, the same day, called the Settings tile
+ * oversized ("use roughly half its desktop row for Settings and put the
+ * clearly labeled Ultra enabling control beside it"). So the toggle is not a
+ * tenth row: it takes half of the row Settings already had, and every tier
+ * below is chosen so that no tier needs more rows than it already needed for
+ * a world with Time trial.
+ *
+ *   - **Stack** (one column): the pair is one row, Settings the wider track.
+ *     `1.08fr 1fr` rather than halves because a pad walks real geometry
+ *     (`ui/menuRows.ts`): Down from a full-width Fresh route, or from Police
+ *     chase above the right-hand cell on the couch grid, lands on the control
+ *     whose centre is nearest — and two equal halves put Settings and Ultra
+ *     at the same distance, where a pixel of rounding decides. The eight
+ *     hundredths make Settings nearer by construction.
+ *   - **Couch two-column** (the 60rem tier above): the wrapper is one grid
+ *     item, so the pair takes Settings' old cell beside Fresh route and the
+ *     grid does not gain a row.
+ *   - **Couch at 40rem and below**: the notes go (the tier above) and the
+ *     pair stays in that one cell with the short label, one line each. This
+ *     is the one place the build departs from the spec's first table, which
+ *     spread the pair with `display: contents`: with Time trial offered that
+ *     is nine cells in two columns, a fifth row, and a predicted overrun at
+ *     1280x485 and 1600x500. The short label costs nothing and adds no row.
+ *   - **Compact three-column**: `display: contents`, so Settings and Ultra
+ *     are two ordinary cells. With Time trial offered that is eight cells, or
+ *     nine with the couch — three rows either way, the count this tier already
+ *     had. On a world with no Time trial (BelVar, the park) and no couch it is
+ *     seven cells and a third row where there were two: the same three-row
+ *     title every timed world already fits. The short label keeps each cell to
+ *     one line in a 105–230 px track wherever its state word allows. **At
+ *     30rem and narrower (a phone upright, FU2)** the grid is two columns and
+ *     the pair is one spanning row again, as in the stack.
+ *   - **Phone portrait** (26rem, every supported phone upright): the short
+ *     label, one line, and the helper visually hidden but still the button's
+ *     description — the row stays the height Settings was alone.
+ *   - **The compact warning (Codex QA C3)**: every tier above that hides the
+ *     helper shows its first sentence, "Higher GPU demand", as a small second
+ *     line in the button instead (`.euc-ultra__warn` below), so the GPU
+ *     warning is visible beside the control at every size.
+ *
+ * **The short label is a visual label only.** The button's name is its
+ * `aria-label`, "Ultra Graphics", at every size; the word " Graphics" is a
+ * span that tiers hide, so what a screen reader says never depends on a
+ * breakpoint.
+ * ------------------------------------------------------------------------ */
+
+.euc-menu--title .euc-menu__utility {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr);
+  /* The actions grid's own gap at every tier, so the pair's gap is never the
+     one gap on the panel that does not tighten with the rest. */
+  gap: inherit;
+}
+
+/* A `display` of our own beats the user agent's `[hidden]` (§9). The compact
+   tier below sets one too, and names `:not([hidden])` so it never wins over
+   this rule. */
+.euc-menu--title .euc-menu__utility[hidden],
+.euc-menu--title .euc-button--ultra[hidden] { display: none; }
+
+.euc-menu--title .euc-button--ultra {
+  /* The anchor for the phone tier's visually hidden helper, which is
+     absolutely positioned and must not escape to the scrolling menu root. */
+  position: relative;
+  /* Narrower than a button's 1.4rem, and more specific than the coarse
+     pointer's 1.1rem below: this half-row has to hold a flame, a label and a
+     state word on one line in every tier that asks it to. The 2.75rem height
+     floor still applies to it untouched. */
+  padding-inline: 0.8rem;
+}
+
+/*
+ * The head line: flame, label, state. A wrapping flex row, so a state word
+ * that no longer fits beside the label moves under it rather than being
+ * clipped — the couch grid's half-cell takes that branch with the full label,
+ * and every tier that must stay one line uses the short label instead.
+ */
+.euc-ultra__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1rem 0.4rem;
+}
+
+/* No taller than the label's own line (1.15em against the label's ~1.2), so
+   the head line is exactly as tall as the word "Settings" beside it and the
+   phone row stays the 45 px Settings was alone. */
+.euc-ultra__flame {
+  flex: none;
+  width: 0.92em;
+  height: 1.15em;
+  overflow: visible;
+}
+
+/* Off: an outline flame, in the flame's own colour — the accent is on the
+   title whether or not the tier is, which is what "prominent" asked for. */
+.euc-ultra__flame-body {
+  fill: none;
+  stroke: var(--ultra-flame);
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+}
+
+.euc-ultra__flame-core {
+  fill: var(--ultra-flame-core);
+  opacity: 0;
+}
+
+.euc-ultra__state {
+  color: var(--ink-dim);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/*
+ * The compact GPU warning — Codex QA C3 (`docs/M39_ULTRA.md` A28).
+ *
+ * q201 asked for the warning *with* the toggle, and every tier below that
+ * hides the helper (a phone upright, the compact three-column title, the couch
+ * title at 40rem and below) left a player free to press Ultra without seeing
+ * it. So wherever the helper goes, its first sentence — "Higher GPU demand" —
+ * stays as a small second line inside the button, and only there: where the
+ * helper is a visible note this line is `display: none`, so the warning is on
+ * screen exactly once at every size.
+ *
+ * The helper's own look, one step smaller: dim ink and the note's weight, so
+ * it reads as the note shortened rather than as a second state word (which is
+ * 700 and sits on the line above). It is `aria-hidden` in the markup — the
+ * button's description is still the whole helper, so a screen reader hears
+ * the warning once. The tiers that show it also bring the button's block
+ * padding in to 0.3rem, so the two lines fit inside the 44 px touch floor and
+ * the upright phone's row stays Settings' height.
+ */
+.euc-ultra__warn {
+  display: none;
+  color: var(--ink-dim);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.1;
+  text-wrap: balance;
+}
+
+/*
+ * Pressed: a tint, not a fill — M39's look. A second border line drawn as an
+ * inset shadow rather than a thicker border, so pressing the toggle moves no
+ * pixel of layout (the "Riding now" pill's no-reflow rule, §9d), and a 16 %
+ * wash of the flame behind the words. The accent fill is the one thing a tint
+ * must not become: the primary button already means "press this", and a lit
+ * toggle is a statement about the frame, not an instruction.
+ *
+ * Pressed means *asked for*. The word beside the flame says whether it is
+ * drawn: "On" in the core's yellow, or "Using High" in the dim ink when a
+ * refusal or a suspension is drawing the ordinary frame instead.
+ */
+.euc-menu--title .euc-button--ultra[aria-pressed="true"] {
+  border-color: var(--ultra-flame);
+  box-shadow: inset 0 0 0 1px var(--ultra-flame);
+  background: color-mix(in srgb, var(--ultra-flame) 16%, #182029);
+}
+
+.euc-menu--title .euc-button--ultra[aria-pressed="true"]:hover {
+  background: color-mix(in srgb, var(--ultra-flame) 22%, #182029);
+}
+
+.euc-button--ultra[aria-pressed="true"] .euc-ultra__flame-body { fill: var(--ultra-flame); }
+.euc-button--ultra[aria-pressed="true"] .euc-ultra__flame-core { opacity: 1; }
+.euc-button--ultra[data-ultra-state="on"] .euc-ultra__state { color: var(--ultra-flame-core); }
+
+/*
+ * Disabled: the standard look (§9g), with the tint and the lit flame taken
+ * away too — a saved Ultra under a couch session is still `aria-pressed`, and
+ * a half-transparent lit toggle would read as "on, but greyed" when the truth
+ * is "not offered here". The state word says "Single player only", so the
+ * helper's own identical sentence is hidden rather than said twice; hidden
+ * with `visibility`, which keeps its height, so a session starting or ending
+ * never reflows the title under a thumb.
+ */
+.euc-menu--title .euc-button--ultra:disabled,
+.euc-menu--title .euc-button--ultra:disabled:hover {
+  background: #182029;
+  border-color: var(--panel-edge);
+  box-shadow: none;
+}
+
+.euc-button--ultra:disabled .euc-ultra__flame-body { fill: none; }
+.euc-button--ultra:disabled .euc-ultra__flame-core { opacity: 0; }
+/* The compact warning goes with the helper, and for the same reasons: the
+   state word already says "Single player only", a control that cannot turn
+   Ultra on has no GPU cost to warn about, and `visibility` keeps the line's
+   height so a session starting never reflows the title. (Today a disabled
+   toggle is only ever drawn on the hidden title behind a couch session.) */
+.euc-button--ultra:disabled .euc-ultra__help,
+.euc-button--ultra:disabled .euc-ultra__warn { visibility: hidden; }
+
+/* Couch at 40rem and below: the notes are already gone (the 40rem tier
+   above), and the pair keeps Settings' one cell with the short label — and
+   the compact warning under it (C3). */
+@media (max-height: 40rem) {
+  .euc-menu--title[data-couch="true"] .euc-ultra__long { display: none; }
+
+  .euc-menu--title[data-couch="true"] .euc-ultra__warn { display: block; }
+
+  .euc-menu--title[data-couch="true"] .euc-button--ultra { padding-block: 0.3rem; }
+}
+
+/* And the wide title with no couch (a touch tablet, FU): its notes go at the
+   same 40rem once it is 62.5rem wide (the tiers above), so the pair does
+   what the couch's does — short label, one cell, the compact warning line. */
+@media (max-height: 40rem) and (min-width: 62.5rem) {
+  .euc-menu--title .euc-ultra__long { display: none; }
+
+  .euc-menu--title .euc-ultra__warn { display: block; }
+
+  .euc-menu--title .euc-button--ultra { padding-block: 0.3rem; }
+}
+
+/* Compact three-column: the pair becomes two ordinary cells, and the label is
+   the short one. Both selectors, for the specificity reason the three-column
+   rule above states — the attribute-scoped couch rules must not outrank it.
+   The notes are gone here, so the compact warning stands in (C3). */
+@media (max-height: 30rem), ((max-width: 62.49rem) and (max-height: 50rem)) {
+  .euc-menu--title[data-couch="true"] .euc-menu__utility:not([hidden]),
+  .euc-menu--title .euc-menu__utility:not([hidden]) { display: contents; }
+
+  .euc-menu--title[data-couch="true"] .euc-ultra__long,
+  .euc-menu--title .euc-ultra__long { display: none; }
+
+  .euc-menu--title[data-couch="true"] .euc-ultra__warn,
+  .euc-menu--title .euc-ultra__warn { display: block; }
+
+  .euc-menu--title[data-couch="true"] .euc-button--ultra,
+  .euc-menu--title .euc-button--ultra { padding-block: 0.3rem; }
+}
+
+/*
+ * **A narrow compact title takes two columns — FU2, 2026-09-23 (FU's
+ * residual 2).** Three columns in a phone held upright give each cell about
+ * 67 px of text room at 360 wide (104 px less 1.1rem of coarse padding a side)
+ * and 54 at 320, and "Knockabout", the one one-word label, is 91 px: it ran
+ * 24 px past its text box and 5.8 past the border at 360x780 (the 360x800
+ * family), 18 past the border at 320x568, and into the padding at every width
+ * up to 480 (6.3 px at 414x736, 1–1.7 at a Pro Max in Safari); every
+ * two-word label broke onto a second line. **The column count is derived from the label**:
+ * three columns hold it from about 433 px (coarse) and 462 (fine), so at 30rem
+ * and narrower the grid takes two — no smaller type, no padding off the 44 px
+ * target, no hyphen. Every label then sits on one line, the Settings/Ultra pair
+ * spans as one row (the stack's own `1.08fr 1fr`, so Right from Settings is
+ * still the toggle), and "Using High" keeps the label's line down to 360. It
+ * costs a row and gives back the wrapped ones: 360x780 clears by 325 (was
+ * 322), 375x667 by 219, 320x568 by 105; every label is inside its box.
+ * Both selectors, for the specificity reason above; later in the file than
+ * the compact rules it narrows.
+ */
+@media (max-width: 30rem) and (max-height: 50rem) {
+  .euc-menu--title[data-couch="true"] .euc-menu__actions,
+  .euc-menu--title .euc-menu__actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .euc-menu--title[data-couch="true"] .euc-menu__utility:not([hidden]),
+  .euc-menu--title .euc-menu__utility:not([hidden]) {
+    display: grid;
+    grid-column: 1 / -1;
+  }
+}
+
+/* Phone portrait: flame, "Ultra" and the state on one line, and the helper
+   present for a screen reader (it is the button's description) and absent
+   for the eye — the riders legend's pattern (§9d). **Its first sentence stays
+   visible** as the compact warning's second line (C3), and the block padding
+   comes in so the two lines fit the 44 px floor: the row stays Settings'
+   height. The inline padding, the gap and the state word's tracking come
+   down so the longest state, "Using High", still fits beside the label in
+   the 153 px half a **375** px phone gives it: at 0.6rem / 0.3rem / 0.02em
+   it needed 132.4 px of a 131.8 px room, wrapped under the label and made the
+   row three lines and 59.8 px (Fable's QA, finding 3). At 0.45rem / 0.2rem /
+   0 it needs about 126 of 137 at 375 and of 129 at 360, and 390 keeps the
+   most room it has had; narrower than about 352 px it wraps under the label
+   again (344x882, a fold's cover screen, still fits by 51 px). */
+@media (max-width: 26rem) {
+  .euc-menu--title .euc-ultra__long { display: none; }
+
+  .euc-menu--title .euc-button--ultra { padding-inline: 0.45rem; padding-block: 0.3rem; }
+
+  .euc-menu--title .euc-ultra__warn { display: block; }
+
+  .euc-menu--title .euc-ultra__head { column-gap: 0.2rem; }
+
+  .euc-menu--title .euc-ultra__state { letter-spacing: 0; }
+
+  .euc-menu--title .euc-ultra__help {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+/*
+ * **The busy toggle — the loading notice** (the owner's desktop and iPhone
+ * rides, 2026-09-25: the game froze for a couple of seconds on the press with
+ * nothing to say why, and players mash what does not answer).
+ *
+ * While a switch across Ultra runs, `Menus.writeQuality` sets `aria-busy` and
+ * fills the busy line; this lays the line and a sweep bar *over* the button's
+ * own face instead of beside it. The face keeps its box (`visibility`, the
+ * disabled state's rule), so the busy state reflows nothing at any tier — the
+ * title's fit margins are a few pixels at some sizes (§9g) — and the overlay
+ * is `inset: 0` inside the button, so it can never leave it or cover another
+ * control. 0.9rem where the helper is a note (the stack, the couch's two
+ * columns); 0.8rem on two balanced lines in every tier that hides the notes,
+ * which is where the smallest cell is (about 125 px of text room and 40 px of
+ * height) — the sweep sits 3 px above the bottom edge, under the second line.
+ *
+ * **The sweep is the boot shell's** (`index.html`'s `#boot-bar`, the same
+ * 35 % bar and 1.15 s ease), in the flame colour because it is this control's
+ * accent. It animates `transform` only, which the compositor runs by itself:
+ * in Chromium and Safari it keeps moving while the page's own thread is busy
+ * building Ultra, which is the whole point of it. Reduced motion stills it to
+ * a dim full-width line (the global block's zero-length animation plus the
+ * width rule below), as the boot shell does.
+ */
+.euc-ultra__busy { display: none; }
+
+.euc-menu--title .euc-button--ultra[aria-busy="true"] { cursor: progress; }
+
+.euc-menu--title .euc-button--ultra[aria-busy="true"] > :not(.euc-ultra__busy) { visibility: hidden; }
+
+.euc-menu--title .euc-button--ultra[aria-busy="true"] .euc-ultra__busy {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  padding: 0.3rem 0.5rem;
+  pointer-events: none;
+}
+
+.euc-ultra__busy-text {
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1.1;
+  text-align: center;
+  text-wrap: balance;
+}
+
+/* The tiers that hide the notes — phone upright, the compact grid, and the
+   couch and wide titles at 40rem and below — have the short cells. */
+@media (max-width: 26rem), (max-height: 40rem), ((max-width: 62.49rem) and (max-height: 50rem)) {
+  .euc-ultra__busy-text { font-size: 0.8rem; }
+}
+
+.euc-ultra__sweep {
+  position: absolute;
+  left: 0.6rem;
+  right: 0.6rem;
+  bottom: 3px;
+}
+
+/* The title's polite status region: the notice's words for a screen reader,
+   nothing for the eye (the riders legend's recipe, §9d). Absolutely placed,
+   so it is never a cell of the utility row or of the compact grid it joins
+   under `display: contents`. */
+.euc-ultra__status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The shared sweep: a track and a bar. The Settings copy sits under the
+   quality readout (`.euc-quality-sweep`). */
+.euc-busy-sweep {
+  display: block;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--panel-edge);
+  overflow: hidden;
+}
+
+.euc-busy-sweep[hidden] { display: none; }
+
+.euc-busy-sweep__bar {
+  display: block;
+  width: 35%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ultra-flame);
+  animation: euc-busy-sweep 1.15s ease-in-out infinite;
+  will-change: transform;
+}
+
+@keyframes euc-busy-sweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(320%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .euc-busy-sweep__bar { width: 100%; opacity: 0.55; }
+}
+
+/* Forced colours throw the tint, the inset line and the flame's colours away,
+   so the words carry the state — "On", "Off", "Using High" — as they were
+   written to. The pressed border takes the system highlight so a pressed
+   toggle is still a different shape from an unpressed one, and the flame
+   draws in the text colour: outline when off, solid when pressed. */
+@media (forced-colors: active) {
+  .euc-menu--title .euc-button--ultra[aria-pressed="true"] { border-color: Highlight; }
+  .euc-ultra__flame-body { stroke: CanvasText; }
+  .euc-button--ultra[aria-pressed="true"] .euc-ultra__flame-body { fill: CanvasText; }
+  .euc-ultra__flame-core { display: none; }
+  /* The busy line is words and keeps them; the sweep's track and bar take the
+     system colours so the bar still reads against its track. */
+  .euc-busy-sweep { background: Canvas; outline: 1px solid CanvasText; }
+  .euc-busy-sweep__bar { background: Highlight; }
 }
 
 /* ---------------------------------------------------------------------------

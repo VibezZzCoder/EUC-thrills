@@ -7,8 +7,11 @@ import type { BoxCollider } from '../level/plan.ts';
 import { colliderMaterial } from '../level/renderBudget.ts';
 import { createSliceLevel } from '../level/sliceLevel.ts';
 import { createTrackLevel } from '../level/trackLevel.ts';
+import { createSwitchbackLevel } from '../level/switchbackLevel.ts';
 import { BASELINE_PRESENTATION, ENHANCED_PRESENTATION } from './presentation.ts';
 import { createTerrain } from './terrain.ts';
+import { createUltraShared } from './ultra/ultraMaterials.ts';
+import { ULTRA_FULL } from './ultra/ultraRecipe.ts';
 import {
   WALL_COURSES,
   colliderTriangles,
@@ -151,4 +154,108 @@ test('BelVar\'s barrier is untouched by the enhanced recipe', () => {
     baseline.dispose();
   }
   assert.ok(SURFACES.pavement !== undefined);
+});
+
+// ---------------------------------------------------------------------------
+// M39 T9 — the Ultra blocks (`render/ultra/ultraBlocks.ts`)
+// ---------------------------------------------------------------------------
+
+/** Every vertex of one block mesh, as `x,y,z` strings, sorted — a multiset to compare. */
+function vertexKeys(mesh: THREE.Mesh, keep: (index: number) => boolean): string[] {
+  const position = mesh.geometry.getAttribute('position');
+  const keys: string[] = [];
+  for (let i = 0; i < position.count; i += 1) {
+    if (keep(i)) keys.push(`${position.getX(i)},${position.getY(i)},${position.getZ(i)}`);
+  }
+  return keys.sort();
+}
+
+test('the Ultra blocks are the same boxes: every vertex on its collider, tops and lips untouched', () => {
+  for (const plan of [createSliceLevel(), createSwitchbackLevel()]) {
+    const ultra = createTerrain(plan, ULTRA_FULL, { recipe: ULTRA_FULL, shared: createUltraShared(), maxAnisotropy: 1 });
+    const enhanced = createTerrain(plan, ENHANCED_PRESENTATION);
+    try {
+      for (const child of ultra.group.children) {
+        if (!child.name.startsWith('level-blocks-')) continue;
+        const mesh = child as THREE.Mesh;
+        const twin = enhanced.group.children.find((other) => other.name === child.name) as THREE.Mesh;
+        const id = child.name.slice('level-blocks-'.length);
+        const boxes = plan.segments.flatMap((segment) => segment.colliders)
+          .filter((box) => colliderMaterial(box) === id);
+        const position = mesh.geometry.getAttribute('position');
+        const normal = mesh.geometry.getAttribute('normal');
+        const onBox = (x: number, y: number, z: number): boolean => boxes.some((box) => {
+          const cos = Math.cos(box.rotationY); const sin = Math.sin(box.rotationY);
+          const dx = x - box.centre.x; const dy = y - box.centre.y; const dz = z - box.centre.z;
+          const lx = cos * dx - sin * dz; const lz = sin * dx + cos * dz;
+          const inside = Math.abs(lx) <= box.halfExtents.x + 1e-4 && Math.abs(dy) <= box.halfExtents.y + 1e-4 && Math.abs(lz) <= box.halfExtents.z + 1e-4;
+          const onFace = Math.abs(Math.abs(lx) - box.halfExtents.x) < 1e-4 || Math.abs(Math.abs(dy) - box.halfExtents.y) < 1e-4 || Math.abs(Math.abs(lz) - box.halfExtents.z) < 1e-4;
+          return inside && onFace;
+        });
+        for (let i = 0; i < position.count; i += 1) {
+          assert.ok(onBox(position.getX(i), position.getY(i), position.getZ(i)), `${child.name} vertex ${i} left its collider`);
+        }
+        // Tops: the same floats, face for face. Lips: every vertex at a box's
+        // top height on a vertical face, the same multiset as the enhanced wall.
+        const up = (mesh2: THREE.Mesh) => (i: number): boolean => mesh2.geometry.getAttribute('normal').getY(i) === 1;
+        assert.deepEqual(vertexKeys(mesh, up(mesh)), vertexKeys(twin, up(twin)), `${child.name} tops moved`);
+        const tops = new Set(boxes.map((box) => box.centre.y + box.halfExtents.y));
+        const lip = (mesh2: THREE.Mesh) => (i: number): boolean => mesh2.geometry.getAttribute('normal').getY(i) === 0
+          && tops.has(mesh2.geometry.getAttribute('position').getY(i));
+        assert.deepEqual(new Set(vertexKeys(mesh, lip(mesh))), new Set(vertexKeys(twin, lip(twin))), `${child.name} lip edges moved`);
+        assert.ok(normal.count === position.count);
+      }
+    } finally {
+      ultra.dispose();
+      enhanced.dispose();
+    }
+  }
+});
+
+test('BelVar\'s barrier on an Ultra world: identical positions and tones, only an AO attribute added', () => {
+  const plan = createTrackLevel();
+  const ultra = createTerrain(plan, ULTRA_FULL, { recipe: ULTRA_FULL, shared: createUltraShared(), maxAnisotropy: 1 });
+  const enhanced = createTerrain(plan, ENHANCED_PRESENTATION);
+  try {
+    for (const name of ['level-blocks-concrete', 'level-blocks-signalRed']) {
+      const a = ultra.group.children.find((child) => child.name === name) as THREE.Mesh | undefined;
+      const b = enhanced.group.children.find((child) => child.name === name) as THREE.Mesh | undefined;
+      assert.ok(a !== undefined && b !== undefined, `${name} missing`);
+      for (const attribute of ['position', 'normal', 'color']) {
+        assert.deepEqual(
+          Array.from(a.geometry.getAttribute(attribute).array),
+          Array.from(b.geometry.getAttribute(attribute).array),
+          `${name} ${attribute} changed`,
+        );
+      }
+      assert.deepEqual(Array.from(a.geometry.index!.array), Array.from(b.geometry.index!.array));
+      assert.ok(a.geometry.getAttribute('ultraAo') !== undefined, `${name} has no base AO`);
+      assert.ok(a.layers.isEnabled(5), `${name} is missing from the far-shadow layer`);
+    }
+    assert.equal(ultra.blockTriangles, enhanced.blockTriangles, 'the circuit\'s blocks gained triangles');
+  } finally {
+    ultra.dispose();
+    enhanced.dispose();
+  }
+});
+
+test('tall wood on an Ultra world is boards: flat courses about the plank height, within their tone', () => {
+  const plan = createSwitchbackLevel();
+  const ultra = createTerrain(plan, ULTRA_FULL, { recipe: ULTRA_FULL, shared: createUltraShared(), maxAnisotropy: 1 });
+  try {
+    const wood = ultra.group.children.find((child) => child.name === 'level-blocks-wood') as THREE.Mesh | undefined;
+    assert.ok(wood !== undefined, 'Switchback has no wood blocks');
+    const colour = wood.geometry.getAttribute('color');
+    const normal = wood.geometry.getAttribute('normal');
+    let toned = 0;
+    for (let i = 0; i < colour.count; i += 4) {
+      // Each quad is four vertices of one tone.
+      for (let k = 1; k < 4; k += 1) assert.equal(colour.getX(i + k), colour.getX(i), 'a plank course is not flat');
+      assert.ok(Math.abs(colour.getX(i) - 1) <= 0.04 + 1e-9, 'a plank strays past its tone');
+      if (normal.getY(i) === 0 && colour.getX(i) !== 1) toned += 1;
+    }
+    assert.ok(toned > 0, 'no wood face was planked');
+  } finally {
+    ultra.dispose();
+  }
 });

@@ -1,4 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { StreetLoops } from '../simulation/streetLoops.ts';
 import * as THREE from 'three';
 import {
   INSPECTION_CAMERA, CAMERA, CHALLENGE, CHASE, CONTACT, EUC, INPUT, KNOCKABOUT, RIDER, TARGET,
@@ -66,7 +67,13 @@ import {
   type DeviceId,
 } from '../input/inputRouter.ts';
 import type { RiderSource } from '../input/riderSource.ts';
-import type { CameraMode, RiderSeat } from './seats.ts';
+import {
+  nextSpectateTarget,
+  seatRole,
+  type CameraMode,
+  type RiderSeat,
+  type SpectateTarget,
+} from './seats.ts';
 import {
   cancelOneFoot,
   createOneFootPose,
@@ -84,6 +91,7 @@ import {
   lerpPose,
   type EucPose,
   type EucSnapshot,
+  type Spawn,
 } from '../simulation/EucController.ts';
 import { clamp, lerp, wrapAngle } from '../shared/maths.ts';
 import { HazardField } from '../simulation/hazards.ts';
@@ -116,9 +124,43 @@ import {
   type GroupSpawnResult,
 } from '../simulation/groupSpawn.ts';
 import { StrikeBatch, type StrikeParticipant } from '../simulation/strikeBatch.ts';
-import { ChaseRun, type ChaseOutcome, type ChasePhase } from '../simulation/chase.ts';
-import { CpuRider, type CpuView } from '../simulation/cpuRider.ts';
-import { planRegroup, regroupFloor, type RegroupJudge } from '../simulation/copRegroup.ts';
+import {
+  ChaseRoom,
+  cpuPackSize,
+  roomSpec,
+  type ChaseDemand,
+  type ChaseEvent,
+  type ChaseOutcome,
+  type ChasePhase,
+  type ChaseRoomInput,
+  type ChaseRoomState,
+  type OutlawStatus,
+  type PursuerPhase,
+  type PursuerRole,
+} from '../simulation/chase.ts';
+import { COP_WHEEL_TUNING, CpuRider, type CapReason, type CpuView } from '../simulation/cpuRider.ts';
+import {
+  planRegroup,
+  regroupFloor,
+  type RegroupJudge,
+  type RegroupRefusals,
+} from '../simulation/copRegroup.ts';
+import {
+  bearingTo,
+  chooseIntercept,
+  choosePatrolPosts,
+  choosePostReturn,
+  followLine,
+  framedByAnyPane,
+  INTERCEPT_WAKE_MARGIN_METRES,
+  packmateBands,
+  packmatePositions,
+  postHoldSlope,
+  type PackBody,
+  type PatrolPost,
+  type PatrolPosts,
+} from '../simulation/copPack.ts';
+import { buildRouteField, type RouteBlocker, type RouteField } from '../simulation/routeField.ts';
 import {
   RouteSpine,
   createSpineLocation,
@@ -134,11 +176,38 @@ import { SAMPLE_URLS } from '../audio/samples.ts';
 import type { BusVolumes } from '../audio/mix.ts';
 import { FixedStepLoop, createBrowserScheduler, type FrameSample, type LoopStats } from './loop.ts';
 import { FrameProfiler, type ProfileReport } from '../diagnostics/profile.ts';
-import { DebugOverlay, type DebugContext } from '../diagnostics/DebugOverlay.ts';
+import { DebugOverlay, type DebugContext, type DebugChasePursuer } from '../diagnostics/DebugOverlay.ts';
 import { TuningPanel } from '../diagnostics/TuningPanel.ts';
 import { ScreenNotice } from '../ui/notice.ts';
 import { SafeStorage } from '../platform/storage.ts';
-import { OptionsStore, type GameOptions } from './options.ts';
+import {
+  OptionsStore,
+  type GameOptions,
+  type OrdinaryQuality,
+  type QualityLevel,
+} from './options.ts';
+import {
+  ULTRA_NOT_WANTED,
+  ULTRA_SWITCH_PAINT_FRAMES,
+  ULTRA_SWITCH_SETTLE_FRAMES,
+  multiplayerAfter,
+  qualityStateFor,
+  resolveRenderTier,
+  returnTierAfter,
+  ultraFaultFrom,
+  ultraKitOverrideFrom,
+  ultraSwitchFor,
+  ultraToggleTarget,
+  type QualityStateView,
+  type RenderTierInput,
+  type UltraLiveState,
+} from './renderTier.ts';
+import { readUltraLive } from '../render/ultra/ultraLighting.ts';
+import type {
+  BuildRecipeId,
+  UltraFaultPlant,
+  UltraKitOverride,
+} from '../render/ultra/ultraTypes.ts';
 import { RecordsStore, type RouteRecord } from './records.ts';
 import { KnockaboutRecordsStore, type KnockaboutRecord } from './knockaboutRecords.ts';
 import { AppState, isRideState, type AppStateId } from './appState.ts';
@@ -185,10 +254,22 @@ import {
 import { Hud } from '../ui/hud.ts';
 import { IdlePane } from '../ui/idlePane.ts';
 import {
+  CHASE_TOUCH_NOTE,
+  chaseRoomResults,
+  oneCopBestNote,
+  type ChaseCardCop,
+  type ChaseCardOutlaw,
+  type ChaseRoomResultsInput,
+} from '../ui/chaseRoomCard.ts';
+import { createCopRidingRig } from '../render/copRider.ts';
+import {
   HudModel,
   formatDelta,
   formatRunTime,
   formatSpeed,
+  type ChaseCopHudInput,
+  type ChaseSpectatorStatus,
+  type HudInput,
   type HudView,
   type LapFlash,
   type TrickRunHudInput,
@@ -211,10 +292,11 @@ import {
   COUCH_SEATS,
   DEFAULT_COUCH_RIDE,
   couchEligible,
-  cycleGuest,
+  cycleSeatCharacter,
   guestBeside,
   guestRoster,
   isCouchRide,
+  rosterForRide,
   type CouchRide,
 } from './couch.ts';
 import {
@@ -452,6 +534,16 @@ type ResultsMode =
 type RouteDestination = 'freeRide' | 'challenge' | 'knockabout' | 'chase';
 type RouteArrival = RouteDestination | 'choose';
 
+/**
+ * Which moment asked `Game.applyRenderTier` to re-resolve the tier — M39 W1
+ * (`docs/M39_ULTRA.md` §6.3). Every one is a session or world boundary or an
+ * options change; none is a frame. `boot` and `world` are the two followed at
+ * once by `renderer.setLevel`, which builds whatever the intent says, so they
+ * push intent only.
+ */
+type RenderTierTrigger =
+  | 'boot' | 'options' | 'couch-open' | 'seat-spawn' | 'couch-close' | 'title' | 'world';
+
 const CAMERA_MODES: readonly CameraMode[] = ['chase', 'orbit'];
 
 /**
@@ -462,6 +554,206 @@ const CAMERA_MODES: readonly CameraMode[] = ['chase', 'orbit'];
  * title screen.
  */
 const NO_ACTIONS: readonly never[] = Object.freeze([]);
+
+/** One pursuer as a browser spec sees him — M39 Part P (`GameSnapshot.chase.pursuers`). */
+export interface ChasePursuerSnapshot {
+  readonly role: PursuerRole;
+  /** The referee's phase, `returning` while a demanded return is owed, `riding` outside a round. */
+  readonly phase: PursuerPhase | 'returning' | 'riding';
+  readonly parked: boolean;
+  readonly crashed: boolean;
+  /** His own straight-line metres to the rider. */
+  readonly gap: number;
+  readonly x: number;
+  readonly z: number;
+  /** The outlaw the referee dealt him, −1 for none (and always −1 outside a round). */
+  readonly quarry: number;
+  readonly busts: number;
+  readonly capReason: CapReason;
+}
+
+/**
+ * A couch chase's room, as a browser spec sees it — M39 Part P (§39.6b.3b).
+ * Everything the room decides and nothing it draws: who is who, how every
+ * outlaw stands, who is watching whom, and the return cone's two inputs.
+ */
+export interface ChaseRoomSnapshot {
+  /** The round was armed for a couch (`couchSession` at the entrance). */
+  readonly couch: boolean;
+  readonly phase: 'idle' | 'countdown' | 'running' | 'ended';
+  /** Seconds of the count left (q223); 0 outside it. */
+  readonly countdown: number;
+  readonly bellSeconds: number;
+  /** Outlaw k's seat. */
+  readonly outlawSeats: readonly number[];
+  /** The seat holding Officer Dorkins (q215), −1 for a CPU slot. */
+  readonly copSeat: number;
+  /** CPU cops in the room: `cpuPackSize(outlaws, humanCop)`, or the solo pack. */
+  readonly pack: number;
+  /** The room holds the cop after GO (q224). */
+  readonly pursuersHeld: boolean;
+  readonly standing: number;
+  readonly outlaws: readonly {
+    readonly seat: number;
+    readonly status: OutlawStatus;
+    /** The credited pursuer (the human cop is pursuer 0), −1 for none. */
+    readonly by: number;
+    readonly survived: number;
+    readonly place: number;
+    readonly nearestCopMetres: number;
+  }[];
+  /** Busts credited to each pursuer, index-for-index with the room's pursuers. */
+  readonly busts: readonly number[];
+  /** Per chair: its rig has left the world (q216). */
+  readonly out: readonly boolean[];
+  /** Per chair: whom its pane is watching (q226), null for its own rider. */
+  readonly spectating: readonly (SpectateTarget | null)[];
+  /** Per drawn pane: its horizontal half-angle now, radians (`paneHalfAngle`). */
+  readonly paneHalfAngles: readonly number[];
+  /** The cone a return refuses inside now: F4's, or the widest pane's if wider. */
+  readonly returnCone: number;
+}
+
+/** The referee's demands in one round, as Game performed them — M39 Part P. */
+export interface ChaseDemandCounts {
+  readonly proximityWakes: number;
+  readonly quietWakes: number;
+  /** Tail returns placed (a `planRegroup` rung accepted). */
+  readonly tailReturns: number;
+  /** Post returns placed (a post accepted). */
+  readonly postReturns: number;
+  /** Patrols sent ahead and parked on the rider's road (the brutal pass's roadblock, `interceptAhead`). */
+  readonly roadblocks: number;
+  /** Returns demanded and not placed: the cop down, no rung, no roadblock spot or no post qualifying. */
+  readonly refusedReturns: number;
+  readonly reDeals: number;
+}
+
+/**
+ * One CPU pursuer — M39 Part P (§39.6b.3, `docs/M39_CHASE.md` §2h).
+ *
+ * **The four cop fields became this record**: M18's `copController`,
+ * `copBrain`, `copPaddle` and the poses, view, gap and strike latch around
+ * them, held once per pursuer in `Game.pursuers`. Three of them in the solo
+ * face (q207: `cpuPackSize(1, false)`), differing only in `role` — where they
+ * begin and where they return — and nothing in `cpuRider.ts` knows the word.
+ *
+ * The body and the brain are the world's and rebuilt with it (a controller
+ * outliving its plan carries the last route's hazards into this one's road);
+ * the paddle, the poses, the view and the per-step scratch are the pursuer
+ * *slot's* (`PursuerParts`), built once and reused by whoever holds the slot,
+ * so a world swap allocates two objects per cop and the fixed step allocates
+ * nothing.
+ */
+interface Pursuer extends PursuerParts {
+  readonly index: number;
+  readonly role: PursuerRole;
+  readonly controller: EucController;
+  readonly brain: CpuRider;
+  /** The brain's own word on a spot (`CpuRider.landingAllowance`, Codex's M31 QA), bound once. */
+  readonly landing: RegroupJudge;
+  /** His post (a patrol), or null — the tail, or a patrol no post could stand for (echelon). */
+  readonly post: PatrolPost | null;
+  /** Standing at his post (§39.6b.3 "Waking"). Game flips it on a wake and on an accepted post return. */
+  parked: boolean;
+  /** One swing, one strike — `copStrikeSwing`, per cop since Part P (§39.6b.3 "The strike"). */
+  strikeSwing: number;
+  /** Straight-line metres to the rider, refreshed each step he rides. */
+  gap: number;
+  /** Placed by a start, a return or a post since the last room step: his two-body facts are void once (M23's rule). */
+  placed: boolean;
+  /** A return the referee demanded could not be placed and is owed — F3's `returning`. */
+  returning: boolean;
+}
+
+/**
+ * What a pursuer slot keeps across worlds — the paddle (built once, like M18's
+ * `copPaddle`, so a swing state machine never outlives nothing), his three
+ * poses, the paddle head, the brain's view, and the pack input's scratch.
+ */
+interface PursuerParts {
+  readonly paddle: Paddle;
+  readonly previous: EucPose;
+  readonly current: EucPose;
+  readonly render: EucPose;
+  readonly head: THREE.Vector3;
+  /** Filled in place each step; the brain reads it and keeps nothing. */
+  readonly view: { -readonly [K in keyof CpuView]: CpuView[K] };
+  /** `packmateBands`' caller-owned list. */
+  readonly bands: RouteBlocker[];
+  /** The quarry handed to his brain, written in place. `id` is the outlaw index (§21.8). */
+  readonly quarry: { x: number; y: number; z: number; speed: number; id: number };
+  /** The pack input handed to his brain, written in place. */
+  readonly pack: { bands: readonly RouteBlocker[]; followLine: number | null; mates: readonly { x: number; z: number }[] };
+  /** `packmatePositions`' caller-owned list: the other standing cops, for the close-quarters search. */
+  readonly mates: { x: number; z: number }[];
+  /** His body as the other brains see it this step (`copPack.PackBody`), snapshotted before anyone steps. */
+  readonly body: { distance: number; lateral: number; speed: number; standing: boolean; x: number; z: number };
+  /** His facts for the referee, written in place (index-for-index with `ChaseRoomSpec.pursuers`). */
+  readonly facts: {
+    crashed: boolean;
+    parked: boolean;
+    speed: number;
+    teleported: boolean;
+    paddleArmed: boolean;
+    distance: number[];
+    outlawClosing: number[];
+  };
+}
+
+function createPursuerParts(): PursuerParts {
+  return {
+    paddle: new Paddle(),
+    previous: createPose(),
+    current: createPose(),
+    render: createPose(),
+    head: new THREE.Vector3(),
+    view: {
+      x: 0, y: 0, z: 0, headingY: 0, speed: 0,
+      grounded: true, crashed: false, curbAhead: 0, lateralLimitG: EUC.maxLateralG,
+    },
+    bands: [],
+    quarry: { x: 0, y: 0, z: 0, speed: 0, id: -1 },
+    pack: { bands: [], followLine: null, mates: [] },
+    mates: [],
+    body: { distance: 0, lateral: 0, speed: 0, standing: true, x: 0, z: 0 },
+    // One outlaw in the solo face (§2a.1: index-for-index with the room's
+    // outlaws); the couch face sizes these when it arms a wider room.
+    facts: {
+      crashed: false, parked: false, speed: 0, teleported: false, paddleArmed: false,
+      distance: [Infinity], outlawClosing: [0],
+    },
+  };
+}
+
+/**
+ * The most CPU cops the rule fields — the solo face's pack, `CHASE.roomSize − 1`
+ * (q207). Derived, never written: `roomSize` is the rule's one constant.
+ */
+const MAX_PACK = CHASE.roomSize - 1;
+
+/**
+ * The force a solo chase best is filed and read under — the rule's pack at one
+ * human, three (q208, q207). A `?cops=` run is a probe and files nothing, so
+ * no other force is ever written from the solo face.
+ */
+const SOLO_CHASE_FORCE = cpuPackSize(1, false);
+
+/** A new round's demand counts, all zero. */
+function emptyDemandCounts(): { -readonly [K in keyof ChaseDemandCounts]: number } {
+  return { proximityWakes: 0, quietWakes: 0, tailReturns: 0, postReturns: 0, roadblocks: 0, refusedReturns: 0, reDeals: 0 };
+}
+
+/**
+ * Did the last step move a body further than its own wheel could — a crash
+ * respawn or a placement? The bench's `movedByReset` and `Paddle`'s teleport
+ * guard: the step's travel against the faster of the two speeds, plus a metre
+ * of slack. The referee voids a teleported body's two-body facts (M23's rule).
+ */
+function movedByReset(previous: EucPose, current: EucPose, dt: number): boolean {
+  const travel = Math.hypot(current.x - previous.x, current.z - previous.z);
+  return travel > Math.max(Math.abs(current.speed), Math.abs(previous.speed)) * dt + 1;
+}
 
 export interface ResourceCounts {
   readonly geometries: number;
@@ -613,6 +905,34 @@ export interface GameSnapshot {
   readonly hud: HudView & { readonly prompt: string | null; readonly visible: boolean };
   /** The player's options, and whether they will survive a reload. */
   readonly options: GameOptions & { readonly persistent: boolean };
+  /**
+   * The render tier: what was asked for against what is drawing — M39
+   * (`docs/PLANS.md` §39.6, `docs/M39_ULTRA.md` §6.3 W1).
+   *
+   * **Additive, and `options.quality` above keeps meaning what it always
+   * has**: the saved request. A saved Ultra in a couch session reads
+   * `options.quality === 'ultra'` and `quality.effective === 'high'`, which is
+   * the split the plan asks for made observable — the preference is never
+   * overwritten to make the frame honest.
+   *
+   * `effective` is read from the renderer at call time, never from the last
+   * thing the game asked it for, so a renderer that fell back on its own
+   * still reports High here. `recipe` is the recipe the installed world was
+   * actually built with (`renderer.ultraReport().recipe`), Ultra rung or
+   * ordinary. `multiplayer` is the session flag, not the seat count: a
+   * one-seat remnant of a couch session still reads true until the session
+   * ends. `suspension` is the state's machine-readable why, beside `reason`'s
+   * words.
+   */
+  readonly quality: {
+    readonly requested: QualityLevel;
+    readonly effective: QualityLevel;
+    readonly reason: string | null;
+    readonly suspension: QualityStateView['suspension'];
+    readonly multiplayer: boolean;
+    readonly ultraOffered: boolean;
+    readonly recipe: BuildRecipeId;
+  };
   /** Whether a gamepad is connected and being read. */
   readonly gamepadConnected: boolean;
 
@@ -652,9 +972,15 @@ export interface GameSnapshot {
     /** Whether every seat is held, which is what arms Start. */
     readonly ready: boolean;
     /** Who seat 1 will ride as. Never written to the options record. */
-    readonly guest: PlayableCharacterId;
+    readonly guest: CharacterId;
+    /**
+     * Who seat 0's card is showing — the options record, or `'cop'` while the
+     * host holds the cop slot on the chase (M39 Part P, q215). Never written
+     * to the options record.
+     */
+    readonly host: CharacterId;
     /** Who every guest card is showing, seat 1 first — M27 Phase 1. */
-    readonly guests: readonly PlayableCharacterId[];
+    readonly guests: readonly CharacterId[];
     /** What the session on the panel is for — M26 Phase 5, q78. */
     readonly ride: CouchRide;
   };
@@ -885,7 +1211,7 @@ export interface GameSnapshot {
     readonly survived: number;
     readonly straying: boolean;
     readonly copGap: number;
-    /** How far the rider is from the route spine, metres. Infinity with none. */
+    /** Distance from the canonical route or a declared city street loop, metres. */
     readonly offRoute: number;
     /** The director's free-riding clock, seconds beyond the quiet line (§31). */
     readonly quiet: number;
@@ -894,6 +1220,28 @@ export interface GameSnapshot {
     readonly secondRider: 'none' | 'ghost' | 'cop';
     readonly best: number | null;
     readonly bestEscaped: boolean;
+    /**
+     * The pack — M39 Part P (§39.6b.3). One entry per pursuer this world
+     * built, index-for-index with the referee's pursuers: the tail first, then
+     * the patrols. `phase` is the referee's word while a round is armed
+     * (`parked`, `waking`, `chasing`), `returning` while a return the referee
+     * demanded is still owed, and `riding` outside a round (the probe). `gap`
+     * is his own straight-line metres to the rider; `copGap` above is the
+     * nearest *standing* one's, which is what the bust and the HUD read.
+     */
+    readonly pursuers: readonly ChasePursuerSnapshot[];
+    /** Where the patrols' posts came from (F3's word), or `none` for a pack with no patrols. */
+    readonly posts: PatrolPosts['source'] | 'none';
+    /** The cop count this world's pack was built at: `cpuPackSize(1, false)`, or `?cops=`'s. */
+    readonly force: number;
+    /** `?cops=`'s count, or null with the probe off — which is every player. */
+    readonly copsProbe: number | null;
+    /** The pursuer the round's ending credited (caught or touched), −1 for none or still running. */
+    readonly bustedBy: number;
+    /** The referee's demands this round, as Game performed them — the specs' window on the director. */
+    readonly demands: ChaseDemandCounts;
+    /** The couch face's room — M39 Part P (§39.6b.3b). `couch` is false for every solo round. */
+    readonly room: ChaseRoomSnapshot;
   };
   readonly record: {
     readonly totalSeconds: number | null;
@@ -1171,7 +1519,7 @@ export class Game {
   /**
    * The couch match's referee — M26 Phase 4 (§26.5).
    *
-   * `readonly` and built once, on `chaseRun`'s terms and for its reason: it is
+   * `readonly` and built once, on the chase referee's terms and for its reason: it is
    * handed no world, so a world swap has nothing to rebuild in it. Which
    * referee a Knockabout run answers to is decided by **seat count** at the
    * mode's entrance, and everything downstream asks this object's own phase
@@ -1248,8 +1596,14 @@ export class Game {
   // the title screen of the hand-authored city, which is where most players
   // spend their first minute.
 
-  /** The referee: the clock, the bust, and the boundary. */
-  readonly chaseRun = new ChaseRun();
+  /**
+   * The referee: the clock, the busts, the boundary, the deal and the
+   * director — M39 Part P's `ChaseRoom` since P2 (§39.6b.3 "The endings"), in
+   * the place M18's `ChaseRun` held. The solo face is its one-outlaw case,
+   * armed for the pack `installChaseWorld` built; `ChaseRun` stays in
+   * `simulation/chase.ts` as the one-cop wrapper its own suite pins (A-2).
+   */
+  readonly chaseRoom = new ChaseRoom();
   readonly chaseRecords: ChaseRecordsStore;
   /**
    * The Trick Run's personal bests — M38 §38.5, the fourth records sibling.
@@ -1266,45 +1620,159 @@ export class Game {
    * every fixture. `Game.chaseAvailable` is that fact said as a question.
    */
   private spine: RouteSpine | null = null;
+  private streetLoops: StreetLoops | null = null;
   /**
-   * The cop's body and his brain.
+   * The pack — M39 Part P (§39.6b.3). Empty on a world that cannot host a
+   * chase; otherwise `packSize` CPU pursuers, the tail first.
    *
-   * **A second `EucController` over the same sampler**, which is the whole of
-   * what makes him ride like a player: hazards, wobble, kerbs, the wall
-   * standoff and the ragdoll are all his too, and none of it is code this file
-   * had to write. Rebuilt with the world beside the player's own controller,
-   * for the reason the hazard field is: one outliving its plan would put the
-   * last route's potholes under this one's cop.
+   * Each is **a second `EucController` over the same sampler**, which is the
+   * whole of what makes him ride like a player: hazards, wobble, kerbs, the
+   * wall standoff and the ragdoll are all his too, and none of it is code this
+   * file had to write. Rebuilt with the world beside the player's own
+   * controller, for the reason the hazard field is: one outliving its plan
+   * would put the last route's potholes under this one's cop.
    */
-  private copController: EucController | null = null;
-  private copBrain: CpuRider | null = null;
+  private pursuers: Pursuer[] = [];
   /**
-   * The super tracker's landing judge: the brain's own word on a spot
-   * (`CpuRider.landingAllowance`, Codex's M31 QA). Built once so a regroup
-   * allocates nothing; a missing brain allows everything, and `regroupCop`
-   * has already returned by then.
+   * The slots the pack is dealt into, built once: each one's paddle is **his,
+   * and only his** (§13 q28, one per cop since §39.6b.3 "The strike") — a
+   * separate `Paddle` from the player's, because two wielders swinging one
+   * state machine would share a cooldown and a swing phase. `Game.paddle`
+   * stays exactly what it was: Knockabout's, in the player's hands.
    */
-  private readonly copLanding: RegroupJudge = (distance, direction) => (
-    this.copBrain === null ? Infinity : this.copBrain.landingAllowance(distance, direction)
-  );
+  private readonly pursuerParts: readonly PursuerParts[] =
+    Array.from({ length: MAX_PACK }, () => createPursuerParts());
+  /** This world's patrol posts (`copPack.choosePatrolPosts`), null with no patrols or no spine. */
+  private patrolPosts: PatrolPosts | null = null;
   /**
-   * His paddle. **His, and only his** — §13 q28.
-   *
-   * A separate `Paddle` from the player's, because two wielders swinging one
-   * state machine would share a cooldown and a swing phase. `Game.paddle` stays
-   * exactly what it was: Knockabout's, in the player's hands.
+   * The referee's input, built once per world around the pursuers' own
+   * `facts` and the one outlaw's (§2a.1). Null with no pack.
    */
-  private readonly copPaddle = new Paddle();
-  private readonly copPrevious: EucPose = createPose();
-  private readonly copCurrent: EucPose = createPose();
-  private readonly copRender: EucPose = createPose();
-  private readonly copHead = new THREE.Vector3();
-  /** Filled in place each step; the brain reads it and keeps nothing. */
-  private readonly copView: { -readonly [K in keyof CpuView]: CpuView[K] } = {
-    x: 0, y: 0, z: 0, headingY: 0, speed: 0,
-    grounded: true, crashed: false, curbAhead: 0, lateralLimitG: EUC.maxLateralG,
+  private chaseInput: ChaseRoomInput | null = null;
+  /** The solo outlaw's facts — seat 0's, written in place each step. */
+  private readonly outlawFacts = { offRoute: 0, crashed: false, teleported: false, gaveUp: false };
+  /**
+   * Every outlaw's facts, index-for-index with the room's outlaws — M39 Part
+   * P's couch face (§39.6b.3b, §2a.1). Entry 0 **is** `outlawFacts`, so the
+   * solo face writes the object it always wrote; the other two exist for a
+   * couch of three outlaws and are built once.
+   */
+  private readonly outlawFactsPool: { offRoute: number; crashed: boolean; teleported: boolean; gaveUp: boolean }[] = [
+    this.outlawFacts,
+    ...Array.from({ length: CHASE.roomSize - 2 }, () => ({ offRoute: 0, crashed: false, teleported: false, gaveUp: false })),
+  ];
+  /**
+   * The human cop's facts, the room's pursuer 0 when a seat holds the slot
+   * (§2a.1, q215). A seat rather than a `Pursuer`: he has no brain, no
+   * director and no post, and his body is his seat's controller.
+   */
+  private readonly humanCopFacts: Pursuer['facts'] = {
+    crashed: false, parked: false, speed: 0, teleported: false, paddleArmed: false,
+    distance: [Infinity], outlawClosing: [0],
   };
-  /** The rider, as the one thing the cop's paddle can hit. See `RiderTarget`. */
+  /**
+   * Was this round armed for a couch? — §39.6b.3b. Set where a round is dealt
+   * (`dealChaseRoom`) from `couchSession`, and cleared with the couch. Every
+   * couch-only rule below asks it, so a solo round takes exactly the path the
+   * solo face shipped with.
+   */
+  private chaseIsCouch = false;
+  /** Outlaw k's seat, index-for-index with the room's outlaws; `[0]` solo. Game keeps the map (§2a.1). */
+  private readonly chaseOutlawSeats: number[] = [0];
+  /** Each chair's outlaw index this round, −1 for the cop's seat or a chair outside the room. */
+  private readonly chaseSeatOutlaw: number[] =
+    Array.from({ length: COUCH_SEATS }, (_unused, seat) => (seat === 0 ? 0 : -1));
+  /** The seat holding Officer Dorkins this round (q215), −1 while the slot is the CPU's. */
+  private chaseCopSeat = -1;
+  /**
+   * q225: an outlaw seat's R in a couch chase, latched where the seat's R is
+   * read (`stepSeat`) and handed to the referee as `OutlawFacts.gaveUp` by
+   * `stepChase`, which clears it — the `seatResetThisStep` pattern, because
+   * seat 0's R used to return from `step` before the referee ran (§2a.1).
+   */
+  private readonly chaseGiveUp: boolean[] = new Array<boolean>(COUCH_SEATS).fill(false);
+  /** A seat put somewhere this step (the cop righted in place, q225): his two-body facts are void once. */
+  private readonly chaseSeatPlaced: boolean[] = new Array<boolean>(COUCH_SEATS).fill(false);
+  /**
+   * q216: the chairs whose rig has left the world — an outlaw down for good,
+   * his crash beat played. Hidden, out of contact, out of every strike set,
+   * and his pane a spectator's. Cleared at every arm.
+   */
+  private readonly chaseSeatOut: boolean[] = new Array<boolean>(COUCH_SEATS).fill(false);
+  /** Seconds left of each busted outlaw's crash beat before his rig leaves (−1 = none running). */
+  private readonly chaseOutBeat: number[] = new Array<number>(COUCH_SEATS).fill(-1);
+  /** Each outlaw's route distance this step, for his own home arrow (the solo face reads `spineAt`). */
+  private readonly chaseOutlawDistance: number[] = new Array<number>(COUCH_SEATS).fill(0);
+  /** The grid's rotation for the couch chase, `gridRotation`'s own rule (§39.6b.3b "The start"). */
+  private chaseGridRotation = 0;
+  /**
+   * Seat 0 holds Officer Dorkins on the join wheel (q215). **Session state,
+   * never the options record**: seat 0's card is the player's saved rider
+   * everywhere else, and a cop written into `GameOptions.character` would be
+   * a rider the chooser cannot offer, persisted. Cleared with the couch and
+   * by every door that re-deals the cop (`rosterForRide`).
+   */
+  private hostCop = false;
+  /** The last couch round's card, frozen at its end (q222); null for every solo round. */
+  private lastChaseRoom: ChaseRoomResultsInput | null = null;
+  /** The room read once per drawn frame for the couch lanes and the room card (`state` allocates). */
+  private chaseFrameState: ChaseRoomState | null = null;
+  /** This world's shared route field, kept so a room of another size can re-deal its pack on it. */
+  private routeField: RouteField | null = null;
+  /** The cop seat's bearing readout (q220), written in place. */
+  private readonly copBearing = { bearing: Number.NaN, range: Number.POSITIVE_INFINITY };
+  /** One pane per human chair for the every-pane return predicate, built once; `panes` is refilled from these. */
+  private readonly paneSlots: readonly { x: number; z: number; headingY: number }[] =
+    Array.from({ length: COUCH_SEATS }, () => ({ x: 0, z: 0, headingY: 0 }));
+  /**
+   * The widest horizontal half-angle any human pane showed at the last
+   * refresh, radians — §39.6b.3b "Returns with several cameras", measured
+   * rather than assumed (`paneHalfAngle`). A return, solo or couch, refuses
+   * on the wider of it and F4's `returnConeRadians`.
+   */
+  private widestPaneHalfAngle = 0;
+  /** The pack as `copPack` reads it, one entry per pursuer, rebuilt per world around the slots' `body`. */
+  private packBodies: readonly PackBody[] = [];
+  /** Every other cop's position for a return's occupied-rung and occupied-post refusals. Reused. */
+  private readonly otherCops: { x: number; z: number }[] = [];
+  /** `otherCops`' entries, allocated once. */
+  private readonly otherCopSpots: readonly { x: number; z: number }[] =
+    Array.from({ length: MAX_PACK }, () => ({ x: 0, z: 0 }));
+  /** Scratch for a pursuer's follow line (the corridor's half width where he rides). */
+  private readonly pursuerSample: SpineSample = createSpineSample();
+  /**
+   * The human panes, for the every-pane return predicate: the solo face's one
+   * (seat 0's camera), or one per chair in a couch room (§39.6b.3b "Returns
+   * with several cameras"). Refilled from `paneSlots`, so nothing allocates.
+   */
+  private readonly panes: { x: number; z: number; headingY: number }[] = [this.paneSlots[0]];
+  /**
+   * The tail return's refusals (§2d): the other cops' spots and the pane
+   * cone, bound once so a return allocates nothing. The spacing is written
+   * from F4's live value at each return.
+   */
+  private readonly regroupRefusals: { -readonly [K in keyof RegroupRefusals]: RegroupRefusals[K] } = {
+    others: this.otherCops,
+    spacingMetres: CHASE.packSpacingMetres,
+    framed: (x, z) => framedByAnyPane(
+      x, z, this.panes,
+      this.returnCone(),
+      this.tuning.get('CHASE.patrolReturnMetres'),
+      this.chaseRoom.bustRadiusMetres + 1,
+    ),
+  };
+  /** What the referee asked for this round and what Game made of it (the QA bridge's `demands`). */
+  private chaseDemandCounts = emptyDemandCounts();
+  /** F3's rows for the pack, one per slot, filled in place (`debugChaseContext`). */
+  private readonly debugChaseRowPool: { -readonly [K in keyof DebugChasePursuer]: DebugChasePursuer[K] }[] =
+    Array.from({ length: MAX_PACK }, () => ({ role: '', state: '', gap: Infinity, cap: '' }));
+  private readonly debugChaseRows: DebugChasePursuer[] = [];
+  private readonly debugChase: { posts: string; probe: number | null; pursuers: readonly DebugChasePursuer[] } = {
+    posts: 'none',
+    probe: null,
+    pursuers: this.debugChaseRows,
+  };
+  /** The rider, as the one thing the cops' paddles can hit. See `RiderTarget`. */
   private readonly riderTarget = new RiderTarget();
 
   /**
@@ -1319,15 +1787,6 @@ export class Game {
    */
   private readonly seatQuarries = new SeatQuarries();
   private readonly seatHittables = new SeatHittables();
-
-  /**
-   * Which of the cop's swings has already landed — M26 Phase 3.
-   *
-   * `RiderSeat.lastRiderStrikeSwings`' counterpart, and it lives on `Game`
-   * rather than on a seat for the same reason `copPaddle` does: the cop is not
-   * a seat, and his paddle is built once and outlives every world.
-   */
-  private copStrikeSwing = -1;
 
   /**
    * Where each rider was when this tick began — M26 Phase 3, and it exists to
@@ -1508,7 +1967,15 @@ export class Game {
   private readonly spineAt: SpineLocation = createSpineLocation();
   /** Scratch for the HUD's "which way is the route" arrow (M20). Allocation-free. */
   private readonly spineSample: SpineSample = createSpineSample();
-  /** How far the cop is from the rider right now, metres. */
+  /**
+   * How far the nearest standing cop is from the rider right now, metres — the
+   * pack's reduction since M39 Part P (§39.6b.3 "Sound, HUD, card": `copClose`
+   * is *any* cop inside the bust radius), the same one the referee's
+   * `nearestCopMetres` makes, kept here because the probe rides the pack with
+   * no referee to ask. Parked patrols count: a cop standing at his post beside
+   * the rider is close. Never the siren's input — that is the room's riding
+   * pair (§2a.5).
+   */
   private copGap = Infinity;
   /** What the last finished chase did, for the results screen. */
   private lastChase: { survived: number; escaped: boolean; outcome: string } | null = null;
@@ -1524,6 +1991,23 @@ export class Game {
    * the world everybody else rides.
    */
   private readonly chaseProbe: boolean;
+  /**
+   * `?cops=1|2|3` — the pack's A/B, M39 Part P (§39.6b.3 "Diagnostics").
+   *
+   * Sizes the solo pack instead of the rule (`cpuPackSize(1, false)`, three):
+   * `?cops=1` is one cop on the new referee — the shipped chase plus A-1,
+   * A-12 and the tail rung's pane refusal (docs/M39_CHASE.md §1 rule 3,
+   * §2d), so the A/B against `?cops=3` varies the count alone — `?cops=2` a
+   * tail and one patrol, `?cops=3` the rule itself. Parsed beside
+   * `?chaseprobe=` in spirit and read here as a field initialiser, on
+   * `presentationOverride`'s terms, because the boot world's pack is built in
+   * the constructor. **It joins `probing`** (R-14, §39.6b.3 "Records"): a run
+   * against a pack the rule did not deal is filed nowhere, and takes the
+   * existing "Diagnostic run — personal best not saved" note rather than a
+   * second predicate. Not an option, not level identity, never saved.
+   */
+  private readonly copsProbe: number | undefined
+    = copsProbeFrom(typeof window === 'undefined' ? '' : window.location.search);
 
   /**
    * M13 Phase 2's diagnostic hazard cadence, metres, or undefined.
@@ -1593,8 +2077,91 @@ export class Game {
   private readonly presentationOverride: PresentationRecipeId | undefined
     = presentationOverrideFrom(typeof window === 'undefined' ? '' : window.location.search);
 
+  /**
+   * `?ultrakit=` and `?ultrafault=` — M39's two Ultra diagnostics
+   * (`docs/M39_ULTRA.md` §6.3 W1, §8.1), on `?presentation=`'s exact terms.
+   *
+   * `?ultrakit=-lighting` builds Ultra with one component switched off, which
+   * is how U1 shows what the forms and surfaces earn alone; `?ultrafault=sky`
+   * makes the next Ultra activation fail at that stage, which is how the
+   * fallback to High is proved from outside. Both are read from the address
+   * and never from `GameOptions`, never saved and never written back, and
+   * neither is part of `probing`: they change what is drawn and nothing the
+   * simulation can see. The grammar is `app/renderTier.ts`'s, where it is
+   * tested. Field initialisers for `presentationOverride`'s reason: both
+   * must be in the renderer before the constructor builds the boot world.
+   */
+  private readonly ultraKitOverride: UltraKitOverride | null
+    = ultraKitOverrideFrom(typeof window === 'undefined' ? '' : window.location.search);
+  private readonly ultraFault: UltraFaultPlant | null
+    = ultraFaultFrom(typeof window === 'undefined' ? '' : window.location.search);
+
+  /**
+   * Whether a multiplayer session owns the frame — M39 (PLANS §39.6).
+   *
+   * **A flag, not a seat count.** It rises at the first line of `openCouch`
+   * and whenever a second seat is about to join the scene, and falls only
+   * where the session ends: `closeCouch`, and the title. "A one-seat remnant
+   * of a couch session remains multiplayer until that session ends", so a
+   * guest leaving mid-session leaves this true and the frame on High. The
+   * transitions are `renderTier.ts:multiplayerAfter`'s.
+   */
+  private multiplayerSession = false;
+  /**
+   * The ordinary tier the title's Ultra toggle turns back to — session only.
+   *
+   * Recorded whenever the requested quality moves from an ordinary tier to
+   * Ultra, from either entrance, and cleared when Ultra is left
+   * (`renderTier.ts:returnTierAfter`); null means "High". Never persisted:
+   * PLANS §39.6 asks for the *previous ordinary tier for the session*, and a
+   * saved Ultra at the next boot has none to return to.
+   */
+  private ultraReturnTier: OrdinaryQuality | null = null;
+  /**
+   * What `renderer.setQuality` was last told, or null before it was told
+   * anything. **The guard that keeps session boundaries from calling it**:
+   * the ordinary tier under a couch session is the one under solo play, so
+   * opening and closing a couch never re-runs `setQuality` — which would
+   * silently undo `applyTuning`'s pixel-ratio reset (q206) for Low and Medium
+   * players, a behaviour change this milestone is not allowed to make.
+   */
+  private appliedOrdinary: OrdinaryQuality | null = null;
+  /** What `renderer.setUltraWanted` was last told. */
+  private appliedUltraWanted = false;
+  /**
+   * A quality choice that switches Ultra on or off, waiting for its notice to
+   * reach the screen — the loading notice (the owner's rides, 2026-09-25).
+   *
+   * `pendingRoute`'s pattern: the press writes "Loading Ultra graphics…"
+   * (`menus.setQualityBusy`) and arms this; `beforeFrame` counts
+   * `ULTRA_SWITCH_PAINT_FRAMES` frames down and then makes the change, whose
+   * `applyRenderTier` is the one- to three-second freeze. Driven from the
+   * loop, so the game keeps one `requestAnimationFrame` owner.
+   */
+  private pendingQuality: { readonly from: QualityLevel; readonly to: QualityLevel } | null = null;
+  private pendingQualityFrames = 0;
+  /**
+   * Frames the busy state outlives the switch (`ULTRA_SWITCH_SETTLE_FRAMES`),
+   * so presses the browser queued behind the freeze reach a control that
+   * refuses them. Zero when no switch is in flight.
+   */
+  private qualitySettleFrames = 0;
+
   private terrain: PlanTerrainSampler;
-  private terrainView: TerrainView;
+  /**
+   * The terrain view the renderer is drawing — **asked for, never held**
+   * (M39 W1).
+   *
+   * A field until M39, assigned from `setLevel`'s return at the two build
+   * sites. An Ultra tier change rebuilds the renderer's terrain *without* a
+   * `setLevel` (`renderer.reconcileUltra`), and a field would then have held
+   * the disposed view — the next frame's `setSurroundCentre` writing into
+   * freed geometry. Reading through `currentTerrain()` makes that state
+   * unrepresentable rather than merely avoided.
+   */
+  private get terrainView(): TerrainView {
+    return this.renderer.currentTerrain();
+  }
   /**
    * The world's potholes and its shrubs, built once per world and handed to
    * every rider in it — M25 Phase 2.
@@ -1792,7 +2359,7 @@ export class Game {
   /**
    * One body per seat, filled in place from the seats' poses.
    *
-   * Scratch for the same reason as `copView` and `spineSample`: this runs in
+   * Scratch for the same reason as each pursuer's `view` and `spineSample`: this runs in
    * the fixed step and allocating here is allocating in the frame loop.
    *
    * **Sized from `COUCH_SEATS` rather than from the seats present**, so the
@@ -1874,7 +2441,12 @@ export class Game {
    * Seeded so that a couch nobody has touched already obeys q68: each seat
    * takes the first rider none of the seats before it is wearing.
    */
-  private readonly guestCharacters: PlayableCharacterId[] =
+  // **The cop joins the cards on the chase ride only** — M39 Part P (q215).
+  // `CharacterId` rather than `PlayableCharacterId` because a guest who picks
+  // Officer Dorkins on the join wheel is the cop slot's holder; every door
+  // that leaves the chase re-deals him before anything is written
+  // (`dealRosterFor`), so off the chase this list is playable riders only.
+  private readonly guestCharacters: CharacterId[] =
     guestRoster(DEFAULT_CHARACTER, COUCH_SEATS);
   /** `matchRosterNames`' one buffer — see that method for why it is reused. */
   private readonly matchRoster: string[] = [];
@@ -2216,7 +2788,7 @@ export class Game {
       this.seed = boot.seed;
       this.levelPlan = boot.plan;
     } else {
-      this.levelId = levelId === 'generated' ? DEFAULT_LEVEL : levelId;
+      this.levelId = levelId === 'generated' ? 'slice' : levelId;
       this.levelPlan = createLevel(this.levelId, seed, hazardProbe, targetProbe, topSpeedMph);
       if (boot !== null) this.routeStatus = { kind: 'no-route', seed: boot.seed };
     }
@@ -2227,7 +2799,17 @@ export class Game {
     // be added to the other or the first world of a session behaves unlike
     // every world after it, which is the least findable class of bug this file
     // can produce.
-    this.terrainView = this.renderer.setLevel(this.levelPlan, this.presentationOverride);
+    //
+    // **The Ultra intent goes in before the first build** — M39 W1. A saved
+    // Ultra told to the renderer after this `setLevel` would build the boot
+    // world twice, ordinary and then Ultra; told here, it builds once. A
+    // planted `?ultrafault=` has to be in place for that same first build.
+    // An ordinary player's boot does neither: `applyRenderTier('boot')`
+    // returns at once unless Ultra is wanted, and `setQuality` stays where it
+    // always ran, in `applyOptions` after the first `applyTuning`.
+    if (this.ultraFault !== null) this.renderer.setUltraFault(this.ultraFault);
+    this.applyRenderTier('boot');
+    this.renderer.setLevel(this.levelPlan, this.presentationOverride);
     this.hazards = new HazardField(this.levelPlan.hazards ?? []);
     this.softBodies = new SoftBodyField(this.levelPlan.softBodies ?? []);
     // A local rather than a field, because it is about to become seat 0's and
@@ -2395,7 +2977,13 @@ export class Game {
           this.resetRider();
           this.goTo('title');
         },
-        onChange: (patch) => this.options.set(patch),
+        // A quality choice goes through `requestQuality`, which lets a switch
+        // across Ultra say so before it freezes the game (M39's loading
+        // notice); everything else, and every ordinary tier, is set at once.
+        onChange: (patch) => {
+          if (patch.quality !== undefined && Object.keys(patch).length === 1) this.requestQuality(patch.quality);
+          else this.options.set(patch);
+        },
         onResetOptions: () => this.resetOptions(),
 
         // -- M10 -------------------------------------------------------------
@@ -2504,6 +3092,14 @@ export class Game {
         // separable by a spec.
         onSetCouchRide: (ride) => this.setCouchRide(ride),
         onSwitchCouchRide: (ride) => this.switchCouchRide(ride),
+
+        // -- M39 (PLANS §39.6, q201) -----------------------------------------
+        // The title's Ultra Graphics shortcut: a second door onto the *same*
+        // quality field Settings writes, never a Boolean of its own. It goes
+        // through the store like every other choice, so the tier change,
+        // the saved value and both entrances' labels all follow from
+        // `applyOptions` — one path, whichever door was used.
+        onToggleUltra: () => this.toggleUltra(),
       },
       seedMaxLength: MAX_SEED_LENGTH,
     });
@@ -2951,8 +3547,14 @@ export class Game {
    *
    * The card is shown only while the HUD is — it is a HUD element in every
    * sense but the seat, so it disappears with the menus for the same reason.
+   *
+   * `frame` is the couch room already read for this drawn frame
+   * (`chaseFrameState`), so the room card never takes a second `state` (it
+   * allocates, and a drawn frame reads it once — QA r2). The callers outside
+   * a frame (a layout change, a ride switch, a state transition) pass
+   * nothing and read the room fresh, so they never show a stale card.
    */
-  private updateIdlePane(): void {
+  private updateIdlePane(frame: ChaseRoomState | null = null): void {
     const hole = this.seats.length > 1 ? this.renderer.idleViewBounds() : null;
     if (hole === null) {
       this.idlePane?.dispose();
@@ -3008,6 +3610,34 @@ export class Game {
             knockdowns: match.scores[seat]?.knockdowns ?? 0,
             discs: match.scores[seat]?.discs ?? 0,
           })),
+      });
+      pane.setVisible(this.appState.spec.showsHud);
+      return;
+    }
+
+    // **The couch chase's room card** — M39 Part P (§39.6b.3b "Sound, HUD,
+    // card"): the clock, every outlaw's state and time, the cop's busts, read
+    // from nobody's point of view, with the announcer muted for the fight's
+    // reason (a running chase changes a row every second). Gated on the
+    // referee's own phase, as the bout's card is: a room paused to read it
+    // keeps it.
+    if (this.chaseIsCouch && this.chaseRoom.phase !== 'idle') {
+      const room = frame ?? this.chaseRoom.state;
+      pane.setAnnouncing(false);
+      pane.setChaseRoom({
+        phase: room.phase,
+        remaining: room.remaining,
+        outlaws: this.chaseOutlawSeats.map((seatIndex, outlaw): ChaseCardOutlaw => ({
+          seat: seatIndex,
+          name: characterSpec(this.seats[seatIndex]?.character ?? DEFAULT_CHARACTER).name,
+          status: room.outlaws[outlaw]?.status ?? 'standing',
+          survived: room.outlaws[outlaw]?.survived ?? 0,
+          place: room.outlaws[outlaw]?.place ?? 0,
+        })),
+        cop: {
+          seat: this.chaseCopSeat,
+          busts: room.pursuers.reduce((sum, pursuer) => sum + pursuer.busts, 0),
+        },
       });
       pane.setVisible(this.appState.spec.showsHud);
       return;
@@ -3288,7 +3918,7 @@ export class Game {
    * you; do it three hundred metres out and they are back at the start, which
    * is the honest answer rather than a surprising one.
    */
-  spawnRider(character?: PlayableCharacterId): number {
+  spawnRider(character?: CharacterId): number {
     if (this.seats.length >= COUCH_SEATS) {
       throw new Error(`the couch is full (seats: ${this.seats.length} of ${COUCH_SEATS})`);
     }
@@ -3311,10 +3941,23 @@ export class Game {
     // against the host alone would have let seats 2 and 3 arrive as twins —
     // which reads as a rendering bug rather than as a rule that was never
     // widened.
+    //
+    // **The cop for a couch-chase seat and nothing else** — M39 Part P
+    // (§39.6b.3b, q215). Officer Dorkins is on the join wheel only while the
+    // room has chosen the chase, and the seat that holds him *is* the cop
+    // slot; asked for on any other ride he is a preference refused like a
+    // taken rider, so no other session can seat him. A guest is always seat
+    // 1 or later and a phone never seats one (`couchEligible`), which is why
+    // the mobile contract still pins one seat and no cop seat.
     const taken = this.seatedCharacters();
     const id = character !== undefined && !taken.includes(character)
+      && (character !== 'cop' || this.couchRide === 'chase')
       ? character
       : this.characterBeside(taken);
+    // The seat and the panel's card move together (§25.5's two places): a
+    // cop seated here is that card's pick, so the door that re-deals him
+    // (`dealRosterFor`) finds him in both.
+    if (id === 'cop') this.setGuestCharacter(index, id);
     const controller = new EucController(this.terrain, {
       spawn: this.spawnForSeat(index),
       // **The world's own fields, shared rather than rebuilt.** Both are
@@ -3332,7 +3975,16 @@ export class Game {
     // re-dressed would be the leak the safeguard exists to close.
     controller.setRideStyle(this.rideStyleFromStore(id));
 
-    const rig = createRidingRig(riderLook(id), machineLook(machineForCharacter(id)));
+    const rig = rigFor(id);
+    // **A second seat is a multiplayer session, and Ultra leaves before it
+    // arrives** — M39 W1. Here rather than only in `openCouch` because the QA
+    // bridge seats riders directly, and before the rig joins the scene and
+    // before `applyViewCount` below splits the frame: Ultra is a single-view
+    // recipe, so the renderer must already be ordinary when either happens
+    // (it would otherwise have to demote itself, which counts as a fault).
+    // A no-op when `openCouch` already did it, and for ordinary tiers.
+    this.multiplayerSession = multiplayerAfter(this.multiplayerSession, 'seat-spawn');
+    this.applyRenderTier('seat-spawn');
     this.renderer.scene.add(rig.group);
 
     // A device-less `ActionState`, built by the router because the router is
@@ -3574,11 +4226,11 @@ export class Game {
    * throwing: the callers are a panel redraw and a spawn, and neither should
    * fail because a seat count moved underneath it.
    */
-  private guestCharacterFor(seat: number): PlayableCharacterId {
+  private guestCharacterFor(seat: number): CharacterId {
     return this.guestCharacters[Math.max(0, seat - 1)] ?? this.guestCharacters[0];
   }
 
-  private setGuestCharacter(seat: number, id: PlayableCharacterId): void {
+  private setGuestCharacter(seat: number, id: CharacterId): void {
     const index = seat - 1;
     if (index < 0 || index >= this.guestCharacters.length) return;
     this.guestCharacters[index] = id;
@@ -3941,6 +4593,7 @@ export class Game {
         visible: seat.hud?.visible ?? false,
       },
       options: { ...this.options.current, persistent: this.options.persistent },
+      quality: this.qualitySnapshot(),
       gamepadConnected: this.gamepad.connected,
       input: {
         claiming: this.router.claiming,
@@ -3963,6 +4616,7 @@ export class Game {
         // cannot see seat 3's rider cannot fail when seat 3 wears seat 2's.
         guest: this.guestCharacterFor(1),
         guests: [...this.guestCharacters],
+        host: this.hostCharacter,
       },
       // Rider contact — M26 Phase 1. **Both halves, because they answer
       // different questions**: `enabled` is what the room asked for and what
@@ -4036,9 +4690,10 @@ export class Game {
         };
       })(),
       paddle: {
-        // `equipped` is the mode's answer and the same for every seat; the
-        // three below are this seat's own arm.
-        equipped: this.paddleEquipped,
+        // `equipped` is this seat's answer since M39 Part P (R-11): the mode's,
+        // the same for every seat, except in a couch chase, where only the
+        // cop's seat carries one. The three below are this seat's own arm.
+        equipped: this.paddleEquippedFor(index),
         phase: seat.paddle.phase,
         head: seat.paddle.headPosition,
         reseeded: seat.paddle.reseeded,
@@ -4076,8 +4731,16 @@ export class Game {
         };
       })(),
       chase: (() => {
-        const state = this.chaseRun.state;
-        const best = this.probing ? null : this.chaseRecords.best(this.levelPlan.id);
+        const room = this.chaseRoom;
+        const { phase, outcome } = this.chaseOutcome();
+        const armed = room.phase !== 'idle';
+        const strayedFor = armed ? room.strayClockOf(0) : 0;
+        // The force this mode files and reads (q208): the rule's three. A
+        // probe reads no record at all.
+        const best = this.probing ? null : this.chaseRecords.best(this.levelPlan.id, SOLO_CHASE_FORCE);
+        // The referee's view of the pack, once per snapshot (its `state`
+        // allocates, which a bridge read may).
+        const roomPursuers = armed ? room.state.pursuers : null;
         let offRoute = Infinity;
         if (this.spine !== null) {
           // Seat 0's, not `seat`'s: the chase is seat 0's in stage 1 (§25.3),
@@ -4085,22 +4748,46 @@ export class Game {
           // gap that are seat 0's would be three numbers about two riders.
           const chased = this.seats[0].currentPose;
           this.spine.locate(chased.x, chased.z, -1, this.spineAt);
-          offRoute = this.spineAt.offRoute;
+          offRoute = this.streetLoops?.offRoute(chased.x, chased.z, this.spineAt.offRoute)
+            ?? this.spineAt.offRoute;
         }
         return {
           available: this.chaseAvailable,
-          phase: state.phase,
-          outcome: state.outcome,
-          remaining: state.remaining,
-          survived: state.survived,
-          straying: state.straying,
+          phase,
+          outcome,
+          // Before a round the full bell, as M18's referee reported it.
+          remaining: armed ? room.remaining : this.tuning.get('CHASE.escapeSeconds'),
+          survived: room.elapsed,
+          straying: strayedFor > 0,
           copGap: this.copGap,
           offRoute,
-          quiet: state.quiet,
-          respite: state.respite,
+          quiet: armed ? room.quietOf(0) : 0,
+          // The tail's respite: M18's field named his, and he is still pursuer 0.
+          respite: armed ? room.respiteOf(0) : 0,
           secondRider: this.renderer.secondRiderShown,
           best: best?.seconds ?? null,
           bestEscaped: best?.escaped ?? false,
+          pursuers: this.pursuers.map((pursuer): ChasePursuerSnapshot => {
+            const referee = roomPursuers?.[pursuer.index] ?? null;
+            return {
+              role: pursuer.role,
+              phase: this.pursuerPhaseWord(pursuer, referee?.phase ?? null),
+              parked: pursuer.parked,
+              crashed: pursuer.controller.crashed,
+              gap: pursuer.gap,
+              x: pursuer.current.x,
+              z: pursuer.current.z,
+              quarry: referee?.quarry ?? -1,
+              busts: referee?.busts ?? 0,
+              capReason: pursuer.brain.capReason,
+            };
+          }),
+          posts: this.patrolPosts?.source ?? 'none',
+          force: this.pursuers.length,
+          copsProbe: this.copsProbe ?? null,
+          bustedBy: room.phase === 'ended' ? room.creditOf(0) : -1,
+          demands: { ...this.chaseDemandCounts },
+          room: this.chaseRoomSnapshot(),
         };
       })(),
       record: (() => {
@@ -4290,6 +4977,13 @@ export class Game {
    * unseen, and they would never appear again.
    */
   resetOptions(): void {
+    // The toggle's memory is session state about a choice the reset is
+    // taking away (M39 W1), so it goes first — a reset from Ultra lands on
+    // High, and a later toggle off must not return to a tier from before it.
+    this.ultraReturnTier = null;
+    // A switch still waiting for its notice to paint is a choice the reset
+    // takes away as well; it must not land on top of the defaults.
+    this.cancelQualitySwitch();
     this.options.reset();
     // **Seat 0 restarts from the record; every other seat restarts empty** —
     // M25 Phase 3. Restoring a guest's prompts from the player's saved list
@@ -4328,7 +5022,7 @@ export class Game {
     if (!this.challenge.available) return;
 
     this.clearLastResults();
-    this.chaseRun.abandon();
+    this.chaseRoom.abandon();
     this.abandonMatch();
     this.trackDay.abandon();
     // **And the race**, which the other three entrances learned to stand down
@@ -4407,6 +5101,7 @@ export class Game {
     this.lastMatch = null;
     this.lastChase = null;
     this.lastChaseWasRecord = false;
+    this.lastChaseRoom = null;
     this.lastTrackDay = null;
     this.lastTrackDayWasRecord = false;
     this.lastTrackDayGhostDropped = false;
@@ -4501,11 +5196,13 @@ export class Game {
     // **Whichever referee this session is actually going to run**, on
     // `enterKnockabout`'s rule: the mode's front door asks the referee it is
     // about to arm, not a sibling that happens to answer the same today.
-    const racing = this.seatCount > 1;
+    // Asked of `couchSession` since M39 Part P — the one predicate that says a
+    // couch keeps nothing (§39.6b.3b "Records"): a race files no lap.
+    const racing = this.couchSession;
     if (!(racing ? this.race.available : this.trackDay.available)) return;
 
     this.clearLastResults();
-    this.chaseRun.abandon();
+    this.chaseRoom.abandon();
     this.abandonMatch();
     this.challenge.abandon();
 
@@ -5043,12 +5740,14 @@ export class Game {
     // start is the grid laid out in that line's frame; both need the plan to
     // state one, so both are asked here rather than discovered by a rider
     // standing at the level spawn with a clock already running.
-    const couch = this.seatCount > 1;
+    // `couchSession`, the records' one predicate since M39 Part P: a couch
+    // attempt loads, compares and files nothing (§38.5).
+    const couch = this.couchSession;
     const start = this.levelPlan.checkpoints.find((checkpoint) => checkpoint.kind === 'start');
     if (start === undefined || this.startLine() === null) return;
 
     this.clearLastResults();
-    this.chaseRun.abandon();
+    this.chaseRoom.abandon();
     this.abandonMatch();
     this.challenge.abandon();
     // **The other two referees are abandoned rather than left counting**
@@ -5261,7 +5960,10 @@ export class Game {
     this.lastTrickRunWasRecord = false;
     this.lastTrickRunSaved = false;
     if (!result.completed) return;
-    if (result.seats !== 1) return;
+    // `couchSession`, the records' one predicate (§39.6b.3b "Records"); the
+    // referee's own count stays beside it as the run's provenance, like
+    // `completed`.
+    if (this.couchSession || result.seats !== 1) return;
     if (this.probing) return;
     if (!this.trickRunEligible) return;
     // The world the attempt was armed on. A swap abandons the run outright, so
@@ -5510,7 +6212,7 @@ export class Game {
     this.renderer.resetTargets();
     this.knockaboutSeconds = 0;
     this.clearLastResults();
-    this.chaseRun.abandon();
+    this.chaseRoom.abandon();
     this.trackDay.abandon();
     // A race belongs to the circuit, and a fight is not one (see
     // `startChallenge` for why this line exists on all three entrances).
@@ -5533,7 +6235,10 @@ export class Game {
     // controller above `EucController.step` while it runs, `handleMatchEvent`
     // plays the room's cue and `buildHudModel` announces it in seat 0's pane.
     this.abandonMatch();
-    if (this.seatCount >= 2) {
+    // `couchSession` since M39 Part P: the predicate a couch match's
+    // no-record rule is asked by (a match files nothing; `finishKnockabout`,
+    // which files, is reached only with the referee idle).
+    if (this.couchSession) {
       this.match.arm(this.seatCount, this.seatCount >= 3 ? KNOCKABOUT.countdownSeconds : 0);
     }
     // **Then the pack, before anybody is stood anywhere** — M37 §37.4, q170.
@@ -5937,7 +6642,11 @@ export class Game {
     // A probe session changes the course without changing its id, so a best set
     // on one would be filed against a world nobody else can ride. One
     // chokepoint, shared with the timed run's three.
-    if (!this.probing) {
+    //
+    // **And a couch files nothing**, asked of the records' one predicate
+    // (M39 Part P, §39.6b.3b): a couch session arms the match instead and
+    // never reaches this, and the rule is stated where the record is written.
+    if (!this.probing && !this.couchSession) {
       const candidate: KnockaboutRecord = {
         levelId: this.levelPlan.id,
         struck: result.struck,
@@ -6184,33 +6893,171 @@ export class Game {
   // ---------------------------------------------------------------------------
 
   /**
-   * Build the chase's world half — M18.
+   * Build the chase's world half — M18, and the whole pack's since M39 Part P.
    *
    * Called from the constructor and from `installLevel`, because those are the
    * two places a world arrives and anything built in one and not the other
    * makes the first world of a session behave unlike every world after it.
+   *
+   * **One route field for the whole pack** (§39.6b.4 "Field construction",
+   * q214's first remedy). `buildRouteField` projects the world's blockers and
+   * builds the street rings once, and every brain — and this file's own
+   * `StreetLoops`, on the field's own ring instances (R-18) — reads that one
+   * read-only field: three private builds measured 143 ms against 48 ms shared
+   * on the reference Mac (`docs/M39_CHASE.md`, the bench's C4). Then the posts,
+   * chosen once from the plan alone and deterministic per seed, so a player
+   * learns the town's beat (§39.6b.3 "Posts"); then the pursuers, the tail
+   * first. `postStandoffMetres` is read here, so its F4 slider applies from
+   * the next world (§2h).
    */
   private installChaseWorld(plan: LevelPlan): void {
-    this.chaseRun.abandon();
+    this.chaseRoom.abandon();
     this.abandonMatch();
-    this.copPaddle.cancel();
+    for (const parts of this.pursuerParts) parts.paddle.cancel();
+    this.pursuers = [];
+    this.packBodies = [];
+    this.patrolPosts = null;
+    this.chaseInput = null;
+    this.routeField = null;
+    this.copGap = Infinity;
     this.spine = RouteSpine.fromPlan(plan);
-    if (this.spine === null) {
-      this.copController = null;
-      this.copBrain = null;
-      this.copGap = Infinity;
+    const spine = this.spine;
+    if (spine === null) {
+      this.streetLoops = new StreetLoops(plan);
       return;
     }
-    this.copController = new EucController(this.terrain, {
+    const field = buildRouteField(spine, plan, this.terrain);
+    this.routeField = field;
+    this.streetLoops = new StreetLoops(plan, { rings: field.streetRings, mainLengths: field.streetMainLengths });
+    this.buildPack(this.packSize, plan, spine, field);
+  }
+
+  /**
+   * Deal this world a pack of `count` CPU pursuers on its one field — the
+   * solo face's `packSize` at every world install, and a couch room's own
+   * size at its entrance (`sizePack`, §39.6b.3b "The room"). Zero is a legal
+   * pack: beside a human cop the CPU fields nobody.
+   *
+   * The posts are chosen for the pack's own patrol count, because the ring
+   * fractions are (A-5): two patrols stand at the ring's thirds, a 2v2
+   * room's one patrol at its half.
+   */
+  private buildPack(count: number, plan: LevelPlan, spine: RouteSpine, field: RouteField): void {
+    this.patrolPosts = null;
+    if (count <= 0) {
+      this.pursuers = [];
+      this.packBodies = [];
+      this.chaseInput = { outlaws: [this.outlawFacts], pursuers: [] };
+      return;
+    }
+    const tail = this.buildPursuer(0, 'tail', null, plan, spine, field);
+    const pursuers: Pursuer[] = [tail];
+    if (count > 1) {
+      // Judged by the tail's brain: every brain on this world believes the one
+      // field, and a post is a spot a cop is stood on with no run-up — exactly
+      // the landing judge's question (§2b.1). The walk's metres are F4's live
+      // values (R-20), the stand-off above all, and so is the gradient he can
+      // stand still on (QA r2): rolling resistance at the live scale, the
+      // same number his parked wheel will be holding against.
+      const posts = choosePatrolPosts(plan, spine, field.blockers, this.terrain, count - 1, tail.landing, {
+        postStandoffMetres: this.tuning.get('CHASE.postStandoffMetres'),
+        trackerGapMetres: this.tuning.get('CHASE.trackerGapMetres'),
+        riderHitRadius: this.tuning.get('CHASE.riderHitRadius'),
+        streetMargin: CHASE.streetMargin,
+        holdSlope: postHoldSlope(this.tuning.get('TERRAIN.rollingResistanceScale')),
+      });
+      this.patrolPosts = posts;
+      for (let index = 1; index < count; index += 1) {
+        pursuers.push(this.buildPursuer(index, 'patrol', posts.posts[index - 1] ?? null, plan, spine, field));
+      }
+    }
+    this.pursuers = pursuers;
+    this.packBodies = pursuers.map((pursuer) => pursuer.body);
+    this.chaseInput = {
+      outlaws: [this.outlawFacts],
+      pursuers: pursuers.map((pursuer) => pursuer.facts),
+    };
+  }
+
+  /**
+   * One pursuer of this world's pack, dealt into slot `index` — M39 Part P.
+   *
+   * His wheel is the cop's wheel from birth — his own cutout edge
+   * (`COP_WHEEL_TUNING`, 2026-09-22), not only from the next `applyTuning` —
+   * and his brain reads the world's one shared field. The slot's paddle,
+   * poses and scratch are reused, so nothing here is a per-step cost.
+   */
+  private buildPursuer(
+    index: number,
+    role: PursuerRole,
+    post: PatrolPost | null,
+    plan: LevelPlan,
+    spine: RouteSpine,
+    field: RouteField,
+  ): Pursuer {
+    const controller = new EucController(this.terrain, {
       spawn: plan.spawn,
       hazards: new HazardField(plan.hazards ?? []),
       softBodies: new SoftBodyField(plan.softBodies ?? []),
+      tuning: { ...COP_WHEEL_TUNING },
     });
     // Sober by data rather than by default — M29 S3. The roster says so for
     // him as for everyone, and the chase's threat never inherits a style
     // because a default happened to be the right one.
-    this.copController.setRideStyle(this.rideStyleFromStore('cop'));
-    this.copBrain = new CpuRider(this.spine, plan, this.terrain);
+    controller.setRideStyle(this.rideStyleFromStore('cop'));
+    const brain = new CpuRider(spine, plan, this.terrain, field);
+    return {
+      ...this.pursuerParts[index],
+      index,
+      role,
+      controller,
+      brain,
+      // The super tracker's landing judge: the brain's own word on a spot
+      // (`CpuRider.landingAllowance`, Codex's M31 QA). Bound once so a return
+      // allocates nothing.
+      landing: (distance, direction) => brain.landingAllowance(distance, direction),
+      post,
+      parked: false,
+      strikeSwing: -1,
+      gap: Infinity,
+      placed: false,
+      returning: false,
+    };
+  }
+
+  /**
+   * How many CPU cops this world's pack holds — the rule at one human,
+   * `cpuPackSize(1, false)` (three: q207, "no more Mr Nice Guy"), or
+   * `?cops=`'s A/B count.
+   */
+  private get packSize(): number {
+    return this.copsProbe ?? cpuPackSize(1, false);
+  }
+
+  /**
+   * The tail's controller — M18's `copController`, kept under that name as a
+   * read-only alias because `tests/m20.spec.ts` and `tests/m30.spec.ts` reach
+   * it through a cast (`controller`'s own argument above: a cast reaches past
+   * the compiler, so a deleted property would fail those specs at runtime).
+   * Null with no pack.
+   */
+  get copController(): EucController | null {
+    return this.pursuers[0]?.controller ?? null;
+  }
+
+  /** The tail's brain — M18's `copBrain`, the same alias for the same casts. Null with no pack. */
+  get copBrain(): CpuRider | null {
+    return this.pursuers[0]?.brain ?? null;
+  }
+
+  /** The tail's pose — M18's `copCurrent`, read through a cast by `tests/m18.spec.ts` and `tests/m26.spec.ts`. */
+  get copCurrent(): EucPose {
+    return this.pursuerParts[0].current;
+  }
+
+  /** The tail's paddle — M18's `copPaddle`, the same casts. Built once and never replaced, as it always was. */
+  get copPaddle(): Paddle {
+    return this.pursuerParts[0].paddle;
   }
 
   /**
@@ -6241,7 +7088,12 @@ export class Game {
    * mode needs. Name the fix, do not apologise, never silently swap the world.
    */
   private enterChase(): void {
-    if (!this.chaseAvailable || this.copController === null || this.copBrain === null) {
+    // **The venue rule is the solo chase's for the couch too** (§39.6b.3b
+    // "The room"): the town or a fresh route. The join panel's entrance and
+    // the title's both land on the routes panel's `needs-route` line from
+    // here; the pause and results cards' doors build a route first
+    // (`switchCouchRide`), because `routes` is not their successor.
+    if (!this.chaseAvailable || this.routeField === null) {
       this.openRoutes('chase');
       this.setRouteStatus({ kind: 'needs-route' });
       return;
@@ -6261,52 +7113,356 @@ export class Game {
     // wrong before the count existed as well.
     this.abandonMatch();
     this.resultsIn = 0;
-    // Deliberately **not** `resetChallengeRider`: there is no start gate to run
-    // up to, and the chase begins where the world begins — which is also what
-    // makes "ride it again" mean the same thing every time.
-    this.resetRider();
-    this.chaseRun.arm();
+    // **Who is who, then the pack the rule deals that room** — M39 Part P
+    // (§39.6b.3b "The room", q207, q215). Solo, the one outlaw against the
+    // world's `packSize` (three, or `?cops=`'s count). In a couch, every seat
+    // wearing a rider is an outlaw and the seat wearing Officer Dorkins is the
+    // cop; the CPU fills the slot with `roomSize − outlaws` cops when nobody
+    // picked him, and fields nobody beside a human cop. The CPU never fills
+    // anything but the cop slot. Any rig a previous round took out of the
+    // world is back in it first.
+    this.releaseChaseSeats();
+    this.dealChaseRoom();
+    this.sizePack(this.chaseIsCouch ? cpuPackSize(this.chaseOutlaws, this.chaseCopSeat >= 0) : this.packSize);
+    if (this.chaseIsCouch) {
+      // **Every seat, on the room's start** (§39.6b.3b "The start"): the
+      // outlaws on the race grid at the spawn, the human cop in the tail's
+      // place, the CPU pack behind the rearmost outlaw and at its posts.
+      this.placeChaseGrid();
+    } else {
+      // Deliberately **not** `resetChallengeRider`: there is no start gate to
+      // run up to, and the chase begins where the world begins — which is
+      // also what makes "ride it again" mean the same thing every time. The
+      // reset stands the pack where a round begins (`placePackAtStart`).
+      this.resetRider();
+    }
+    this.armChaseRoom();
     this.setRoutePurpose('ride');
     this.goTo('chase');
   }
 
   /**
-   * Put the cop `CHASE.spawnGapMetres` behind the rider, stopped.
-   *
-   * Behind along the rider's own heading rather than back along the route,
-   * because the two agree at a spawn and only the first is defined when this is
-   * called from a reset in the middle of one. Resolved against the ground so a
-   * spawn on a slope does not bury him or drop him from a height.
+   * The outlaws in this round — the solo face's one (§39.6b.3), or every seat
+   * of a couch room but the cop's (§39.6b.3b). Everything below is written
+   * for the room it is handed.
    */
-  private placeCopBehindRider(): void {
-    // The rider he is behind. Seat 0's in stage 1 — the cop is not a seat (§25.3).
-    const seat = this.seats[0];
-    const cop = this.copController;
-    if (cop === null || this.copBrain === null) return;
+  private get chaseOutlaws(): number {
+    return this.chaseOutlawSeats.length;
+  }
 
+  /**
+   * Who is who in this round — M39 Part P (§39.6b.3b "The room", q215).
+   *
+   * **The role is read off the rig, never stored** (`seatRole`): the seat
+   * wearing Officer Dorkins is the cop, and every other seat is an outlaw
+   * whose index is its order among the outlaws — outlaw k is not a seat index
+   * (§2a.1), which is why the two maps live here. Solo, the map is seat 0 as
+   * outlaw 0 and nothing else, whatever the couch fields say.
+   *
+   * `chaseIsCouch` is `couchSession`, asked once here so every rule that
+   * differs by face reads the answer the round was armed with.
+   */
+  private dealChaseRoom(): void {
+    const couch = this.couchSession;
+    this.chaseIsCouch = couch;
+    this.chaseSeatOutlaw.fill(-1);
+    this.chaseOutlawSeats.length = 0;
+    this.chaseCopSeat = -1;
+    if (!couch) {
+      this.chaseOutlawSeats.push(0);
+      this.chaseSeatOutlaw[0] = 0;
+      return;
+    }
+    // **A full room has no chair for the CPU** (§39.6b.3b "The room": at most
+    // `roomSize` bodies, one cop slot). Four humans with nobody on Officer
+    // Dorkins would be four outlaws and a CPU cop in a room of four — a room
+    // the rule cannot seat and the referee refuses. A refused Start would be
+    // a control that does nothing, so the last seat to sit down is dealt the
+    // cop instead, through both places at once (the card and the rig, §25.5),
+    // before anything else is written; he reads "The cop" on the panel from
+    // then on, and any seat may take him on the wheel next time.
+    const seated = this.seats.some((rider) => seatRole(rider.character) === 'cop');
+    const last = this.seats.length - 1;
+    if (!seated && this.seats.length >= CHASE.roomSize && last >= 1) {
+      this.setGuestCharacter(last, 'cop');
+      this.dressSeat(this.seats[last], 'cop');
+      this.updateCouchPanel();
+    }
+    for (let seat = 0; seat < this.seats.length; seat += 1) {
+      if (seatRole(this.seats[seat].character) === 'cop' && this.chaseCopSeat < 0) {
+        this.chaseCopSeat = seat;
+        continue;
+      }
+      this.chaseSeatOutlaw[seat] = this.chaseOutlawSeats.length;
+      this.chaseOutlawSeats.push(seat);
+    }
+  }
+
+  /**
+   * Re-deal this world's pack at the room's size, if it is not that size
+   * already — M39 Part P (§39.6b.3b "The room").
+   *
+   * `installChaseWorld` deals the solo face's pack with every world, so a
+   * solo round finds it built and this changes nothing. A couch room of two
+   * outlaws rides two cops, three outlaws one, and a human cop none, and each
+   * of those is dealt here on the world's one shared field (so it costs the
+   * brains and their controllers, never a field). The live F4 values reach
+   * the new controllers and brains through `applyTuning`, the one push every
+   * fresh world already takes.
+   */
+  private sizePack(count: number): void {
+    if (this.pursuers.length === count) return;
+    const spine = this.spine;
+    const field = this.routeField;
+    if (spine === null || field === null) return;
+    for (const parts of this.pursuerParts) parts.paddle.cancel();
+    this.buildPack(count, this.levelPlan, spine, field);
+    this.applyTuning();
+  }
+
+  /**
+   * Stand every seat where a couch chase begins — M39 Part P (§39.6b.3b "The
+   * start", R-22).
+   *
+   * **The outlaws take the race grid's slots on the spine at the spawn**,
+   * rotated one place per round as the race's grid is (`placeRaceGrid`), so
+   * nobody starts on the front row twice before everybody has. A one-outlaw
+   * room keeps the plain spawn, as the solo face does (R-22). **The human cop
+   * takes the tail's place**, `spawnGapMetres` behind the rearmost outlaw,
+   * stopped — the same spot the CPU tail is stood on (`placePackAtStart`),
+   * which follows. Every seat goes through `resetRiderTo`, so each one's
+   * camera, HUD dwell and swing are reset with it: `resetSeats`' promise,
+   * kept on the room's own slots.
+   */
+  private placeChaseGrid(): void {
+    const spawn = this.levelPlan.spawn;
+    const line = { centre: spawn.position, headingY: spawn.headingY };
+    const outlaws = this.chaseOutlawSeats.length;
+    for (let k = 0; k < outlaws; k += 1) {
+      const rider = this.seats[this.chaseOutlawSeats[k]];
+      if (rider === undefined) continue;
+      this.resetRiderTo(
+        outlaws === 1 ? spawn : raceGridSlot(line, (k + this.chaseGridRotation) % outlaws, this.terrain),
+        rider,
+      );
+    }
+    this.chaseGridRotation = (this.chaseGridRotation + 1) % Math.max(1, outlaws);
+    const cop = this.seats[this.chaseCopSeat];
+    if (cop !== undefined) {
+      this.resetRiderTo(this.spotBehind(this.rearmostOutlawPose(), this.tuning.get('CHASE.spawnGapMetres')), cop);
+    }
+    // After every outlaw is on his slot: `resetRiderTo` stood the pack behind
+    // whoever seat 0 was on the way, and "behind" means the rearmost outlaw.
+    this.placePackAtStart();
+  }
+
+  /**
+   * The outlaw furthest back along the spawn's heading — who the tail starts
+   * behind (§39.6b.3b "The start"). Seat 0's pose for a solo round, or when
+   * the room's seats have gone.
+   */
+  private rearmostOutlawPose(): EucPose {
+    let rear = this.seats[0].currentPose;
+    if (!this.chaseIsCouch) return rear;
+    const spawn = this.levelPlan.spawn;
+    const headX = Math.sin(spawn.headingY);
+    const headZ = Math.cos(spawn.headingY);
+    let rearAlong = Infinity;
+    for (const seat of this.chaseOutlawSeats) {
+      const pose = this.seats[seat]?.currentPose;
+      if (pose === undefined) continue;
+      const along = (pose.x - spawn.position.x) * headX + (pose.z - spawn.position.z) * headZ;
+      if (along < rearAlong) {
+        rearAlong = along;
+        rear = pose;
+      }
+    }
+    return rear;
+  }
+
+  /**
+   * Arm the referee for this round's room — M39 Part P (§39.6b.3, §39.6b.3b).
+   *
+   * **Solo**: one outlaw against the pack `installChaseWorld` built,
+   * `roomSpec(1, false, pack)` — the tail first and the patrols after him,
+   * which is `?cops=`'s legal room too — with no count, and the solo bell.
+   * **A couch**: every outlaw seat against the pack `sizePack` dealt, or
+   * against the human cop alone (`roomSpec(outlaws, true)`); the couch's own
+   * bell (q217), and the count **always**, even at two (q223), with the
+   * pursuers frozen through it so the only head start is the 20 m. The bell
+   * is read here, as `ChaseRun` read its clock at `arm`, so a slider moved
+   * mid-round applies from the next one; the cop's hold (q224) is snapshotted
+   * by the room at the same moment. The start distances feed the opening deal
+   * (D0) — solo, every cop is dealt the one outlaw either way — and a human
+   * cop is never dealt, so his room has none.
+   *
+   * The referee's input is built here around the room's own facts:
+   * `outlawFactsPool`'s first `outlaws` entries (entry 0 is the solo face's
+   * `outlawFacts`), and every pursuer's facts sized to the room's outlaws.
+   */
+  private armChaseRoom(): void {
+    const outlaws = this.chaseOutlaws;
+    const humanCop = this.chaseCopSeat >= 0;
+    const couch = this.chaseIsCouch;
+    const bell = couch
+      ? this.tuning.get('CHASE.couchEscapeSeconds')
+      : this.tuning.get('CHASE.escapeSeconds');
+    const pursuerFacts = humanCop ? [this.humanCopFacts] : this.pursuers.map((pursuer) => pursuer.facts);
+    for (const facts of pursuerFacts) {
+      if (facts.distance.length === outlaws) continue;
+      facts.distance.length = 0;
+      facts.outlawClosing.length = 0;
+      for (let k = 0; k < outlaws; k += 1) {
+        facts.distance.push(Infinity);
+        facts.outlawClosing.push(0);
+      }
+    }
+    for (const facts of this.outlawFactsPool) facts.gaveUp = false;
+    this.chaseInput = { outlaws: this.outlawFactsPool.slice(0, outlaws), pursuers: pursuerFacts };
+    // The cop's hold (q224) is the couch face's remedy and nobody else's: the
+    // solo chase has no start hold — the 20 m is the head start, as it always
+    // was (`chase.ts`'s wrapper rule, F4's own note) — so F4's Cop hold is
+    // read here for a couch room only, and the solo arm zeroes it (QA r2: a
+    // 5 s hold tried at GC used to freeze the solo pack for 5 s after GO).
+    // The room reads it only at `arm`, so this is the one place it is set.
+    this.chaseRoom.copHoldSeconds = couch ? this.tuning.get('CHASE.copHoldSeconds') : 0;
+    this.chaseRoom.arm(roomSpec(outlaws, humanCop, humanCop ? undefined : this.pursuers.length), {
+      bellSeconds: bell,
+      countdownSeconds: couch ? KNOCKABOUT.countdownSeconds : 0,
+      startDistances: humanCop
+        ? undefined
+        : couch
+          ? this.pursuers.map((pursuer) => this.chaseOutlawSeats.map((seat) => {
+            const pose = this.seats[seat].currentPose;
+            return Math.hypot(pursuer.current.x - pose.x, pursuer.current.z - pose.z);
+          }))
+          : this.pursuers.map((pursuer) => [pursuer.gap]),
+    });
+    this.chaseDemandCounts = emptyDemandCounts();
+    for (const pursuer of this.pursuers) pursuer.returning = false;
+    this.chaseGiveUp.fill(false);
+    this.chaseSeatPlaced.fill(false);
+  }
+
+  /**
+   * Stand the pack where a round begins — M18's `placeCopBehindRider`, for
+   * every pursuer since M39 Part P (§39.6b.3 "Roles"; R-12's solo R).
+   *
+   * **The tail** `CHASE.spawnGapMetres` behind the rider, stopped — behind
+   * along the rider's own heading rather than back along the route, because
+   * the two agree at a spawn and only the first is defined when this is
+   * called from a reset in the middle of one, and resolved against the ground
+   * so a spawn on a slope does not bury him or drop him from a height. In a
+   * couch room "the rider" is the rearmost outlaw on the grid (§39.6b.3b).
+   * **Every patrol** parked at his post, facing along the ring toward the
+   * spawn (A-5) — or, when no post could stand for him, in echelon
+   * `packSpacingMetres` a rung behind the tail, riding from GO (§2b.1). Solo R
+   * runs this too: the room's start re-run, the referee's clocks and bell
+   * untouched, as they always were.
+   */
+  private placePackAtStart(): void {
+    if (this.pursuers.length === 0) return;
+    // The rider they are behind: seat 0's — the solo face's one outlaw — or
+    // a couch room's rearmost.
+    const rider = this.rearmostOutlawPose();
     const gap = this.tuning.get('CHASE.spawnGapMetres');
-    const heading = seat.currentPose.headingY;
-    const x = seat.currentPose.x - Math.sin(heading) * gap;
-    const z = seat.currentPose.z - Math.cos(heading) * gap;
+    const spacing = this.tuning.get('CHASE.packSpacingMetres');
+    for (const pursuer of this.pursuers) {
+      const post = pursuer.post;
+      if (post !== null) {
+        this.placePursuer(
+          pursuer,
+          { position: { x: post.x, y: post.y, z: post.z }, headingY: post.headingY },
+          0,
+          post.distance,
+        );
+        pursuer.parked = true;
+      } else {
+        this.placePursuer(pursuer, this.spotBehind(rider, gap + pursuer.index * spacing), 0, -1);
+        pursuer.parked = false;
+      }
+      pursuer.returning = false;
+    }
+    this.refreshCopGap();
+  }
+
+  /** `metres` behind a pose along its own heading, on the ground there — `placeCopBehindRider`'s spot. */
+  private spotBehind(pose: EucPose, metres: number): Spawn {
+    const heading = pose.headingY;
+    const x = pose.x - Math.sin(heading) * metres;
+    const z = pose.z - Math.cos(heading) * metres;
     const ground = createGroundSample();
     this.terrain.sampleGround(x, z, ground);
-    cop.reset({ position: { x, y: ground.height, z }, headingY: heading });
+    return { position: { x, y: ground.height, z }, headingY: heading };
+  }
 
-    cop.writePose(this.copCurrent);
-    copyPose(this.copCurrent, this.copPrevious);
-    copyPose(this.copCurrent, this.copRender);
-    // The brain's cursor is a windowed search around its last answer, so a body
-    // that has just been put somewhere else has to be found again globally —
-    // `Paddle.reseed`'s reasoning, one object along.
-    this.writeCopView();
-    this.copBrain.place(this.copView);
-    this.copPaddle.cancel();
-    this.copGap = gap;
+  /**
+   * Put one pursuer somewhere — a start, a tail return or a post return.
+   *
+   * The body-was-moved bookkeeping every placement shares, M18's and M20.2's:
+   * no interpolation streak across the map, a brain cursor found again — the
+   * cursor is a windowed search around its last answer, so a body just put
+   * somewhere else must be found again, near the route distance the caller
+   * chose when it knows one (a folded route's global search can answer the
+   * other arm, `CpuRider.place`'s note) — and no swing surviving a relocation.
+   * `placed` voids his two-body facts for the referee's next step (M23's rule:
+   * a placement is never a bust or a touch).
+   */
+  private placePursuer(pursuer: Pursuer, spawn: Spawn, speed: number, near: number): void {
+    pursuer.controller.reset(spawn, speed);
+    pursuer.controller.writePose(pursuer.current);
+    copyPose(pursuer.current, pursuer.previous);
+    copyPose(pursuer.current, pursuer.render);
+    // A spectator following him is carried with him (QA r2): his camera is
+    // snapped onto the new pose — `watch`'s rule for anything that was put
+    // somewhere — rather than easing a 100–300 m cut in from a stale heading.
+    // Only after the placement, so a refused return never touches his pane.
+    for (const seat of this.seats) {
+      const target = seat.spectating;
+      if (target !== undefined && target !== null && target.kind === 'pursuer' && target.index === pursuer.index) {
+        this.watch(seat, target);
+      }
+    }
+    this.writePursuerView(pursuer);
+    pursuer.brain.place(pursuer.view, near);
+    pursuer.paddle.cancel();
+    pursuer.placed = true;
+    pursuer.gap = this.gapFor(pursuer.current);
+  }
+
+  /**
+   * A pursuer's `gap`: straight-line metres to the rider — seat 0's, the
+   * solo face's one outlaw, exactly as M18 measured it — or, in a couch room,
+   * to the nearest outlaw still standing (the room's own reduction for that
+   * cop, §2a.5's `nearestOutlaw`). F3, the QA bridge and a demanded return's
+   * `returning` flag read it; the referee is fed its pairwise distances.
+   */
+  private gapFor(pose: EucPose): number {
+    if (!this.chaseIsCouch) {
+      const rider = this.seats[0].currentPose;
+      const dx = pose.x - rider.x;
+      const dz = pose.z - rider.z;
+      return Math.sqrt(dx * dx + dz * dz);
+    }
+    const room = this.chaseRoom;
+    const armed = room.phase !== 'idle';
+    let nearest = Infinity;
+    for (let outlaw = 0; outlaw < this.chaseOutlawSeats.length; outlaw += 1) {
+      const rider = this.seats[this.chaseOutlawSeats[outlaw]];
+      if (rider === undefined || (armed && room.statusOf(outlaw) !== 'standing')) continue;
+      const dx = pose.x - rider.currentPose.x;
+      const dz = pose.z - rider.currentPose.z;
+      const range = Math.sqrt(dx * dx + dz * dz);
+      if (range < nearest) nearest = range;
+    }
+    return nearest;
   }
 
   /**
    * The super tracker's regroup — M20.2, the owner's "always knows where you
-   * are and goes to find you".
+   * are and goes to find you", and since M39 Part P the **tail's** return
+   * alone (q206: only Dorkins uses the 50 m return; a patrol returns to a
+   * post). Answers whether he was placed.
    *
    * The referee (`simulation/chase.ts`) has just ruled that the gap sat beyond
    * `CHASE.trackerGapMetres` for the whole hold, which two equal wheels can
@@ -6315,7 +7471,7 @@ export class Game {
    * rider's direction of travel, arriving at the rider's pace — position is
    * granted, a faster wheel never is, and his own throttle law immediately
    * holds whatever his ceiling allows. On the route rather than straight
-   * behind the rider's heading (`placeCopBehindRider`'s shape), because a
+   * behind the rider's heading (`placePackAtStart`'s shape), because a
    * mid-ride heading can point across a field or into a block, and the spine
    * is the one line guaranteed to be road.
    *
@@ -6336,15 +7492,21 @@ export class Game {
    * crash. The planner shows every rung to the brain's `landingAllowance`,
    * walks further back when a rung is refused, and the entry speed is the
    * rider's pace or the spot's allowance, whichever is less.
+   *
+   * **Two more refusals since Part P** (§2d), each walking the ladder on like
+   * a folded rung: a rung within `packSpacingMetres` of another cop (a body
+   * never appears on a packmate), and a rung the rider's camera frames —
+   * **no body appears where anyone is looking** (§39.6b.3b, the solo face's
+   * one pane).
    */
-  private regroupCop(): void {
-    // The rider he is regrouping on. Seat 0's in stage 1 (§25.3).
-    const seat = this.seats[0];
-    const cop = this.copController;
-    const brain = this.copBrain;
+  private regroupTail(pursuer: Pursuer, outlaw: number): boolean {
+    // The rider he is regrouping on: the outlaw the demand names — seat 0,
+    // the solo face's one outlaw, or that outlaw's seat in a couch room.
+    const seat = this.seats[this.chaseOutlawSeats[outlaw] ?? 0];
+    if (seat === undefined) return false;
     const spine = this.spine;
-    if (cop === null || brain === null || spine === null) return;
-    if (cop.crashed) return;
+    if (spine === null) return false;
+    if (pursuer.controller.crashed) return false;
 
     // The placement is `simulation/copRegroup.ts`'s arithmetic (the chase
     // pass), so the headless bench and the suite stand him exactly where
@@ -6354,66 +7516,345 @@ export class Game {
     // route start) — and the referee simply demands again after another
     // hold; skipping one regroup is fair, materialising inside the bust
     // radius is not.
+    // A rider on a side street, a cross street or the alley is on the road the
+    // chase allows, and projecting them onto the canonical road would land the
+    // cop a block away (M39 QA). **Since the brutal pass he is returned behind
+    // the rider on that street** — the loop's own ring, judged by what stands
+    // on it (`CpuRider.landingAllowanceOnStreet`) — where M39 skipped the
+    // return and a rider who took every side street rode in silence.
+    let ring = -1;
+    if (this.streetLoops !== null) {
+      spine.locate(seat.currentPose.x, seat.currentPose.z, -1, this.spineAt);
+      ring = this.streetLoops.alternateRing(seat.currentPose.x, seat.currentPose.z,
+        this.spineAt.offRoute, this.spineAt.halfWidth);
+    }
     const back = this.tuning.get('CHASE.trackerReturnMetres');
-    const candidate = planRegroup(
-      spine,
-      seat.currentPose,
-      back,
-      regroupFloor(back, this.chaseRun.bustRadiusMetres),
-      { at: this.spineAt, sample: this.spineSample },
-      this.copLanding,
-      brain.quarryDistance,
-    );
-    if (candidate === null) return;
+    this.fillOtherCops(pursuer.index);
+    this.refreshPane(pursuer.index);
+    this.regroupRefusals.spacingMetres = this.tuning.get('CHASE.packSpacingMetres');
+    const brain = pursuer.brain;
+    const candidate = ring >= 0 && this.streetLoops !== null
+      ? planRegroup(
+        this.streetLoops.ring(ring),
+        seat.currentPose,
+        back,
+        regroupFloor(back, this.chaseRoom.bustRadiusMetres),
+        { at: this.spineAt, sample: this.spineSample },
+        (distance, direction) => brain.landingAllowanceOnStreet(ring, distance, direction),
+        -1,
+        this.regroupRefusals,
+      )
+      : planRegroup(
+        spine,
+        seat.currentPose,
+        back,
+        regroupFloor(back, this.chaseRoom.bustRadiusMetres),
+        { at: this.spineAt, sample: this.spineSample },
+        pursuer.landing,
+        pursuer.brain.quarryDistance,
+        this.regroupRefusals,
+      );
+    if (candidate === null) return false;
 
     // Position is granted, a faster wheel never is, and neither is a pace
     // the spot cannot carry: the rider's speed (or his own, if he had more),
-    // capped by what the landing allows.
-    cop.reset(
+    // capped by what the landing allows. Told where he was put: a folded
+    // route's global search can answer the other arm.
+    this.placePursuer(
+      pursuer,
       {
         position: { x: candidate.x, y: candidate.y, z: candidate.z },
         headingY: candidate.headingY,
       },
       Math.min(
         candidate.entrySpeed,
-        Math.max(Math.abs(this.copCurrent.speed), Math.abs(seat.currentPose.speed)),
+        Math.max(Math.abs(pursuer.current.speed), Math.abs(seat.currentPose.speed)),
       ),
+      // A distance on a street ring is not one on the canonical line: the
+      // brain finds itself globally there.
+      ring >= 0 ? -1 : candidate.distance,
     );
-
-    // The same body-was-moved bookkeeping `placeCopBehindRider` does: no
-    // interpolation streak across the map, a globally re-found brain cursor,
-    // and no swing surviving a relocation.
-    cop.writePose(this.copCurrent);
-    copyPose(this.copCurrent, this.copPrevious);
-    copyPose(this.copCurrent, this.copRender);
-    this.writeCopView();
-    // Told where he was put: a folded route's global search can answer the
-    // other arm (`CpuRider.place`'s note).
-    brain.place(this.copView, candidate.distance);
-    this.copPaddle.cancel();
-    const placedX = this.copCurrent.x - seat.currentPose.x;
-    const placedZ = this.copCurrent.z - seat.currentPose.z;
-    this.copGap = Math.sqrt(placedX * placedX + placedZ * placedZ);
-  }
-
-  /** Fill the brain's view from the cop's own pose. Allocation-free. */
-  private writeCopView(): void {
-    const cop = this.copController;
-    if (cop === null) return;
-    const view = this.copView;
-    view.x = this.copCurrent.x;
-    view.y = this.copCurrent.y;
-    view.z = this.copCurrent.z;
-    view.headingY = this.copCurrent.headingY;
-    view.speed = this.copCurrent.speed;
-    view.grounded = this.copCurrent.y - this.copCurrent.groundY <= 1e-6;
-    view.crashed = cop.crashed;
-    view.curbAhead = cop.curbHeightAhead;
-    view.lateralLimitG = cop.lateralLimit;
+    return true;
   }
 
   /**
-   * Is the cop riding this step?
+   * A patrol sent ahead of an outlaw — the brutal pass's roadblock
+   * (`copPack.chooseIntercept`). Answers whether he was placed.
+   *
+   * Parked on the rider's own road ahead of him, off the racing line on the
+   * roomier side, facing back at him, where no human pane frames the spot:
+   * the q127 re-entry from the front (a parked, visible cop the rider rides
+   * toward, woken as the siren starts), placed where the rider is going
+   * rather than at a fixed post a third of the ring away. When no spot on his
+   * road qualifies, the fixed posts are asked (`returnToPost`); when none of
+   * those does either, he keeps riding — skipping a return is fair, appearing
+   * in view is not.
+   */
+  private interceptAhead(pursuer: Pursuer, outlaw: number): boolean {
+    const spine = this.spine;
+    const field = this.routeField;
+    const quarry = this.seats[this.chaseOutlawSeats[outlaw] ?? 0];
+    if (spine === null || field === null || quarry === undefined || pursuer.controller.crashed) return false;
+    this.fillOtherCops(pursuer.index);
+    this.refreshPane(pursuer.index);
+    const cone = this.returnCone();
+    const far = this.tuning.get('CHASE.patrolReturnMetres');
+    const near = this.chaseRoom.bustRadiusMetres + 1;
+    const spot = chooseIntercept(
+      spine,
+      field.blockers,
+      this.terrain,
+      quarry.currentPose,
+      -1,
+      this.otherCops,
+      (x, z) => framedByAnyPane(x, z, this.panes, cone, far, near),
+      pursuer.landing,
+      {
+        minAheadMetres: CHASE.interceptMinAheadMetres,
+        maxAheadMetres: CHASE.interceptMaxAheadMetres,
+        minStraightMetres: this.tuning.get('CHASE.patrolWakeMetres') + INTERCEPT_WAKE_MARGIN_METRES,
+        postStandoffMetres: this.tuning.get('CHASE.postStandoffMetres'),
+        packSpacingMetres: this.tuning.get('CHASE.packSpacingMetres'),
+        riderHitRadius: this.tuning.get('CHASE.riderHitRadius'),
+        streetMargin: CHASE.streetMargin,
+        holdSlope: postHoldSlope(this.tuning.get('TERRAIN.rollingResistanceScale')),
+      },
+    );
+    if (spot === null) return this.returnToPost(pursuer, outlaw);
+    this.placePursuer(
+      pursuer,
+      { position: { x: spot.x, y: spot.y, z: spot.z }, headingY: spot.headingY },
+      0,
+      spot.distance,
+    );
+    // A roadblock is for a rider on the move. One standing still (a hider:
+    // `CHASE.navSlowQuarrySpeed`, the search's own line) would never reach
+    // it, so the patrol put out of view near him rides in to find him.
+    pursuer.parked = Math.abs(quarry.currentPose.speed) >= CHASE.navSlowQuarrySpeed;
+    return true;
+  }
+
+  /**
+   * A patrol's return — M39 Part P (§39.6b.3 "Returning"). Answers whether he
+   * was placed.
+   *
+   * His gap or stall clock fired, and a patrol never takes the tail's 50 m
+   * return (q206): he goes back to a post and parks there for the next wake.
+   * The post is `copPack.choosePostReturn`'s: beyond the tracker line from the
+   * rider, behind his travel or further ahead than `patrolReturnMetres`, not
+   * occupied by another cop, and outside every human pane's forward cone
+   * within `patrolReturnMetres` (a measured line: `tuning.ts` says what it
+   * hides down the road and what it leaves across the ring's interior).
+   * So a re-entry from the front is always a parked, visible cop the player
+   * rides toward, never a rider materialising ahead; and **if no post
+   * qualifies he keeps riding**, because skipping a return is fair and
+   * appearing in view is not — the referee asks again after its retry. He
+   * stands there at rest, which a post was judged for when it was chosen:
+   * level with the road, allowed by the landing judge, and no steeper
+   * downhill along the heading he parks at than rolling resistance holds
+   * (`copPack.postHoldSlope`, QA r2) — so the parked cop stays on his post.
+   */
+  private returnToPost(pursuer: Pursuer, outlaw: number): boolean {
+    const posts = this.patrolPosts;
+    // The quarry the demand names: seat 0 solo, his seat in a couch room.
+    const quarry = this.seats[this.chaseOutlawSeats[outlaw] ?? 0];
+    if (posts === null || quarry === undefined || pursuer.controller.crashed) return false;
+    this.fillOtherCops(pursuer.index);
+    this.refreshPane(pursuer.index);
+    const post = choosePostReturn(posts.posts, quarry.currentPose, this.otherCops, this.panes, {
+      trackerGapMetres: this.chaseRoom.trackerGapMetres,
+      patrolReturnMetres: this.tuning.get('CHASE.patrolReturnMetres'),
+      returnConeRadians: this.returnCone(),
+      packSpacingMetres: this.tuning.get('CHASE.packSpacingMetres'),
+      nearMetres: this.chaseRoom.bustRadiusMetres + 1,
+    });
+    if (post === null) return false;
+    this.placePursuer(
+      pursuer,
+      { position: { x: post.x, y: post.y, z: post.z }, headingY: post.headingY },
+      0,
+      post.distance,
+    );
+    pursuer.parked = true;
+    return true;
+  }
+
+  /** Every cop but `except`, where he stands now — the occupied rung's and post's input. Allocation-free. */
+  private fillOtherCops(except: number): void {
+    const others = this.otherCops;
+    others.length = 0;
+    for (const pursuer of this.pursuers) {
+      if (pursuer.index === except) continue;
+      const spot = this.otherCopSpots[others.length];
+      spot.x = pursuer.current.x;
+      spot.z = pursuer.current.z;
+      others.push(spot);
+    }
+  }
+
+  /**
+   * The solo face's selected camera, resolved at the fixed step. The chase
+   * view sits behind its follow yaw; orbit faces the rider from its current
+   * angle (`writeReturnPane`). The bench uses the chase view (§2g).
+   *
+   * `moving` is the pursuer whose return is being judged: in a couch room a
+   * spectator's pane glued to him is left out (`refreshRoomPanes`). The solo
+   * face's one pane is the rider's and never follows a cop.
+   */
+  private refreshPane(moving = -1): void {
+    if (this.chaseIsCouch) {
+      this.refreshRoomPanes(moving);
+      return;
+    }
+    // The solo face's one pane, written where it always was.
+    if (this.panes.length !== 1) {
+      this.panes.length = 1;
+      this.panes[0] = this.paneSlots[0];
+    }
+    const seat = this.seats[0];
+    const pane = this.panes[0];
+    const fov = this.writeReturnPane(seat, seat.currentPose, pane);
+    // And its half-angle, as the couch measures every chair's: on a 32:9
+    // monitor the solo pane (1.235 rad at speed) is wider than F4's 1.2, and
+    // "no body appears where anyone is looking" holds for one player too
+    // (§39.6b.3b, P6's measurement). Every 16:9 to 21:9 window is narrower
+    // than the cone, so there the rule is F4's value exactly, as the bench's.
+    this.widestPaneHalfAngle = this.paneHalfAngle(seat, 0, fov);
+  }
+
+  /**
+   * Every human pane in a couch room — §39.6b.3b "Returns with several
+   * cameras": **no body appears where anyone is looking**.
+   *
+   * One pane per chair, whatever the chair is doing: a standing outlaw's, a
+   * watching outlaw's (his camera stood behind the body he follows, q226) and
+   * the human cop's. Each uses the selected view's position, heading and FOV
+   * around the pose it frames, as the solo pane does (`writeReturnPane`).
+   *
+   * Beside it, **the widest horizontal half-angle any pane shows right now**,
+   * derived rather than assumed (`paneHalfAngle`): a return refuses on the
+   * wider of it and F4's `returnConeRadians`, so a pane wider than the tuned
+   * cone (a quadrant on a 21:9 monitor, seat 0's trim at speed) is still
+   * honoured, and the slider still moves the cone above it.
+   *
+   * **Except a pane glued to the body being moved** (`moving`, QA r2): a
+   * spectator following that CPU cop is centred on him wherever he is put,
+   * so his camera cannot see a body *appear* — it is carried with the body
+   * (and snapped there, `placePursuer`). Judged by it, a return would be
+   * refused for what lies ahead of the cop he follows (a busted outlaw could
+   * hold the tail off his teammates by watching him), or accepted anywhere
+   * behind, while the panes that stay put were never asked. So the spot is
+   * judged by the panes that stay where they are.
+   */
+  private refreshRoomPanes(moving = -1): void {
+    const panes = this.panes;
+    panes.length = 0;
+    const views = this.renderer.viewCount;
+    let widest = 0;
+    for (let index = 0; index < this.seats.length && index < this.paneSlots.length; index += 1) {
+      const seat = this.seats[index];
+      const target = seat.spectating;
+      if (moving >= 0 && target !== undefined && target !== null
+        && target.kind === 'pursuer' && target.index === moving) continue;
+      const pose = this.followedPose(seat, false);
+      const pane = this.paneSlots[index];
+      const fov = this.writeReturnPane(seat, pose, pane);
+      panes.push(pane);
+      if (index < views) widest = Math.max(widest, this.paneHalfAngle(seat, index, fov));
+    }
+    this.widestPaneHalfAngle = widest;
+  }
+
+  /** The selected view, on placeCamera's terms: orbit can look behind the rider. */
+  private writeReturnPane(
+    seat: RiderSeat,
+    pose: EucPose,
+    pane: { x: number; z: number; headingY: number },
+  ): number {
+    if (seat.cameraMode === 'orbit') {
+      const radius = CAMERA.distanceAtRest * INSPECTION_CAMERA.distanceFactor;
+      pane.x = pose.x + Math.sin(seat.orbitAngle) * radius;
+      pane.z = pose.z + Math.cos(seat.orbitAngle) * radius;
+      pane.headingY = seat.orbitAngle + Math.PI;
+      return seat.chase.tuning.fovAtRest;
+    }
+    const camera = seat.currentCamera;
+    pane.x = pose.x - Math.sin(camera.yaw) * camera.armDistance;
+    pane.z = pose.z - Math.cos(camera.yaw) * camera.armDistance;
+    pane.headingY = camera.yaw;
+    return camera.fov;
+  }
+
+  /**
+   * One pane's horizontal half-angle, radians: `atan(tan(v / 2) × aspect)` —
+   * M39 Part P, the measurement §39.6b.7 asks the return cone to rest on.
+   *
+   * `v` is the vertical angle the renderer will actually draw this pane at:
+   * the chase camera's own (plus seat 0's saved trim), or orbit's untrimmed
+   * resting FOV (`placeCamera`), then the split's widening — capped —
+   * exactly as `GameRenderer.splitFieldOfView` applies it. The aspect is the
+   * pane's own rounded bounds (`viewBounds`), so an odd canvas is measured
+   * as drawn. `docs/M39_CHASE.md` "P6 — room wiring notes" records what it
+   * reads across window shapes.
+   */
+  private paneHalfAngle(seat: RiderSeat, view: number, fov: number): number {
+    const views = this.renderer.viewCount;
+    let vertical = fov + (seat.cameraMode === 'chase' && this.ownsTheFrame(seat) ? this.fieldOfViewTrimRadians : 0);
+    if (views >= 2) {
+      const gain = paneGridFor(views).rows > 1
+        ? this.tuning.get('CAMERA.quadFovGain')
+        : this.tuning.get('CAMERA.splitFovGain');
+      vertical = Math.min(this.tuning.get('CAMERA.splitFovCap'), vertical * gain);
+    }
+    const bounds = this.renderer.viewBounds(view);
+    const aspect = bounds.height > 0 ? bounds.width / bounds.height : 1;
+    return Math.atan(Math.tan(vertical / 2) * aspect);
+  }
+
+  /**
+   * The cone a return is refused inside, radians: the wider of F4's
+   * `returnConeRadians` and the widest human pane's measured half-angle at
+   * the last refresh — seat 0's alone in the solo face, every chair's in a
+   * couch room — so the rule holds for every pane shape the game is drawn in
+   * (§39.6b.3b). On a 16:9 to 21:9 window every pane is narrower than the
+   * tuned 1.2 (P6's measurement), so the answer there is F4's value.
+   */
+  private returnCone(): number {
+    return Math.max(this.tuning.get('CHASE.returnConeRadians'), this.widestPaneHalfAngle);
+  }
+
+  /** Fill a pursuer's brain view from his own pose. Allocation-free. */
+  private writePursuerView(pursuer: Pursuer): void {
+    const view = pursuer.view;
+    const pose = pursuer.current;
+    view.x = pose.x;
+    view.y = pose.y;
+    view.z = pose.z;
+    view.headingY = pose.headingY;
+    view.speed = pose.speed;
+    view.grounded = pose.y - pose.groundY <= 1e-6;
+    view.crashed = pursuer.controller.crashed;
+    view.curbAhead = pursuer.controller.curbHeightAhead;
+    view.lateralLimitG = pursuer.controller.lateralLimit;
+  }
+
+  /**
+   * The nearest standing cop's range to the rider — `copGap`'s reduction:
+   * every pursuer not ragdolled, parked ones included (§2a.5's
+   * `nearestCopMetres`). Infinity when every cop is down, because a
+   * ragdolled officer arrests nobody (A-1) and so is never "close".
+   */
+  private refreshCopGap(): void {
+    let nearest = Infinity;
+    for (const pursuer of this.pursuers) {
+      if (pursuer.controller.crashed) continue;
+      if (pursuer.gap < nearest) nearest = pursuer.gap;
+    }
+    this.copGap = nearest;
+  }
+
+  /**
+   * Is the pack riding this step?
    *
    * The mode, plus the diagnostic — `paddleEquipped`'s shape exactly, and for
    * the same reason: something has to decide when a second rider is in the
@@ -6421,125 +7862,247 @@ export class Game {
    * budget from each having their own opinion.
    */
   private get copRiding(): boolean {
-    return this.copController !== null
+    return this.pursuers.length > 0
       && (this.appState.current === 'chase' || this.chaseProbe);
   }
 
   /**
-   * One fixed step of the cop — M18.
+   * One fixed step of the pack — M18's `stepCop`, for every pursuer since
+   * M39 Part P (§39.6b.3, `docs/M39_CHASE.md` §2h).
    *
    * Stepped here, at the fixed rate, from the pose the player's own step just
-   * produced, so `advance(n)` reaches the same chase every run. The order
-   * inside is the order the player's own step uses and for the same reasons:
-   * think, ride, then swing at the pose that riding produced.
+   * produced, so `advance(n)` reaches the same chase every run. **The order is
+   * the bench's** (`src/bench/chaseBench.ts`, the reference composition), so
+   * the headless numbers are this step's numbers:
+   *
+   *   1. every pursuer's body is snapshotted once (`PackBody`), **before any
+   *      of them steps** — so no brain sees a packmate a step ahead of
+   *      another, and the pack's order changes nothing a brain can read;
+   *   2. then per pursuer: the brain with the pack input (the packmates as
+   *      moving blockers, `packmateBands`, and his follow line,
+   *      `followLine`) → the controller → his own paddle, on his own swing
+   *      cooldown and his own one-swing-one-strike latch, with a landed swing
+   *      handed to the referee (`recordStrike`) before its step.
+   *
+   * A parked patrol's brain is not stepped at all and his wheel is stood on
+   * neutral; a held pack (`pursuersHeld`, q224) thinks nothing and rides
+   * neutral. **No cop-to-cop physics**: cops pass through each other as they
+   * always could, and the bands are what keep that from being visible.
    */
-  private stepCop(stepSeconds: number): void {
-    const cop = this.copController;
-    const brain = this.copBrain;
-    if (cop === null || brain === null || !this.copRiding) return;
-    // The rider he is chasing. Seat 0's in stage 1 (§25.3).
+  private stepPursuers(stepSeconds: number): void {
+    if (!this.copRiding) return;
+    const spine = this.spine;
+    if (spine === null) return;
+    // **The count freezes everybody, the pack included** (q223): nothing
+    // thinks and nothing rides until GO, so the outlaws' head start is the
+    // 20 m and nothing else. Never true solo (no count).
+    if (this.chaseFrozen) return;
+    // The rider they are chasing. Seat 0's: the solo face's one outlaw.
     const seat = this.seats[0];
-
-    copyPose(this.copCurrent, this.copPrevious);
-    this.writeCopView();
-
+    const room = this.chaseRoom;
+    const inChase = this.appState.current === 'chase';
+    // **A couch room hunts every outlaw** (§39.6b.3b): each cop's quarry is
+    // the one the referee dealt him, and his paddle may reach any outlaw
+    // still standing. The probe has no rules, so it rides the solo face.
+    const couch = this.chaseIsCouch && inChase;
     // The quarry, and it is null while the rider is down: a cop who kept
     // steering at a crashed rider would ride into them, and the run is either
     // already over or the rider is getting up.
-    const chasing = this.appState.current === 'chase' && !seat.controller.crashed;
-    // The brain's intent is read *once* and used twice — the wheel rides it and
-    // the paddle swings on it. Calling `step` a second time to ask about the
-    // swing would advance a state machine that is only allowed to advance once
-    // per fixed step, which is the shape of bug `advance(n)` cannot reproduce.
-    const intent = brain.step(
-      stepSeconds,
-      this.copView,
-      chasing
-        ? {
-          x: seat.currentPose.x,
-          y: seat.currentPose.y,
-          z: seat.currentPose.z,
-          speed: seat.currentPose.speed,
-        }
-        : null,
-    );
-    const wantsSwing = intent.swing;
-    const swingSide = brain.swingSide;
-    cop.step(stepSeconds, intent);
-    cop.writePose(this.copCurrent);
+    const chasing = inChase && !seat.controller.crashed;
+    const held = room.pursuersHeld;
+    // Cop hold is a physical hold, as the countdown is. Neutral intent still
+    // integrates gravity and lets the tail roll down a sloping start.
+    if (held) return;
+    const hitRadius = this.tuning.get('CHASE.riderHitRadius');
+    const spacing = this.tuning.get('CHASE.packSpacingMetres');
 
-    const dx = this.copCurrent.x - seat.currentPose.x;
-    const dz = this.copCurrent.z - seat.currentPose.z;
-    this.copGap = Math.sqrt(dx * dx + dz * dz);
-
-    // **The strike.** The rider is a one-entry `HittableSet` and the paddle is
-    // M14's same generic weapon — the swept segment, the teleport guard and the
-    // sort are the same code that knocks targets down. The cop only supplies
-    // which mirrored side to commit when a new swing starts. What a hit *means* is this
-    // method's answer, and it is the M14 body knock: one soft-body wobble and a
-    // shove through `EucController.softKnock`, the fourth and last sanctioned
-    // wobble caller. Nothing here reaches `injectWobble`, and a strike never
-    // ends a run on its own (§13 q25).
-    this.riderTarget.place(
-      seat.currentPose.x,
-      seat.currentPose.y,
-      seat.currentPose.z,
-      this.tuning.get('CHASE.riderHitRadius'),
-      chasing,
-    );
-    const hits = this.copPaddle.step(
-      stepSeconds,
-      {
-        x: this.copCurrent.x,
-        y: this.copCurrent.y,
-        z: this.copCurrent.z,
-        // The clean heading, never `headingY + wobbleYaw` — M13's visual
-        // ownership rule, and the same argument `stepPaddle` states at length.
-        headingY: this.copCurrent.headingY,
-      },
-      this.copView.crashed ? false : wantsSwing,
-      this.riderTarget,
-      swingSide,
-    );
-
-    for (const hit of hits) {
-      if (hit.id !== RIDER_VOLUME_ID) continue;
-      // **One swing, one strike** — and this is where the rule was missing
-      // rather than where it is new. The cop has swept the rider volume since
-      // M18 and spent every step of it, so a swing that stayed in reach
-      // delivered two or three body knocks and could pile a parked rider past
-      // `wobbleCrashEnergy` on its own. It read as pressure because the quarry
-      // is usually moving through the arc; it is a strike counted several
-      // times, and the hard knock is what made it visible.
-      if (this.copStrikeSwing === this.copPaddle.swingCount) continue;
-      this.copStrikeSwing = this.copPaddle.swingCount;
-      this.audio.hit();
-      // **The hard knock, and the cop gets it because the paddle does not know
-      // who is holding it** — M26 Phase 3, q75. One weapon, one rule, and
-      // deliberately no `CHASE` override on the threshold: the owner has twice
-      // ruled that the chase is meant to be hard (§13 q27, q83), so a cop who
-      // lands more knockdowns is the intended outcome rather than a number to
-      // tune away. §26.2 prices it: his one-touch ending moves from 1.1 m to
-      // about 1.75 m and gains a wind-up.
-      if (
-        this.copPaddle.committed
-        && seat.controller.hardKnock(this.copPaddle.headTravelX, this.copPaddle.headTravelZ)
-      ) {
-        continue;
-      }
-      seat.controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
+    // 1. Every body, once, before anybody moves.
+    for (const pursuer of this.pursuers) {
+      const body = pursuer.body;
+      body.distance = pursuer.brain.routeDistance;
+      body.lateral = pursuer.brain.lineLateral;
+      body.speed = Math.abs(pursuer.current.speed);
+      body.standing = !pursuer.controller.crashed;
+      body.x = pursuer.current.x;
+      body.z = pursuer.current.z;
     }
+
+    // **The strike's target.** The rider is a one-entry `HittableSet` and each
+    // paddle is M14's same generic weapon — the swept segment, the teleport
+    // guard and the sort are the same code that knocks targets down. Placed
+    // once for the whole pack, at this step's rider, which is the tick's world
+    // every paddle is judged against. A couch room places every standing
+    // outlaw instead, each with his own seat's id, so a hit names its victim.
+    let targets: HittableSet = this.riderTarget;
+    if (couch) {
+      targets = this.aimAtOutlaws(hitRadius);
+    } else {
+      this.riderTarget.place(
+        seat.currentPose.x,
+        seat.currentPose.y,
+        seat.currentPose.z,
+        hitRadius,
+        chasing,
+      );
+    }
+
+    // 2. Per pursuer: brain → controller → paddle.
+    for (const pursuer of this.pursuers) {
+      const { brain, controller, paddle } = pursuer;
+      copyPose(pursuer.current, pursuer.previous);
+      this.writePursuerView(pursuer);
+
+      // **Parked binds only inside a round**: the probe (`?chaseprobe=1`) has
+      // no rules, so nothing parks and nothing wakes — the pack just rides.
+      const parked = pursuer.parked && inChase;
+      let intent: ActionSnapshot = NEUTRAL_ACTIONS;
+      if (!parked) {
+        // The deal is the referee's, never a brain's (q221): whoever it dealt
+        // him, handed over with the outlaw's index as the quarry's id (§21.8).
+        const outlaw = couch
+          ? this.couchQuarryOf(pursuer.index)
+          : chasing ? room.quarryOf(pursuer.index) : -1;
+        const quarry = outlaw >= 0 ? pursuer.quarry : null;
+        if (quarry !== null) {
+          const pose = couch ? this.seats[this.chaseOutlawSeats[outlaw]].currentPose : seat.currentPose;
+          quarry.x = pose.x;
+          quarry.y = pose.y;
+          quarry.z = pose.z;
+          quarry.speed = pose.speed;
+          quarry.id = outlaw;
+        }
+        pursuer.pack.bands = packmateBands(pursuer.index, this.packBodies, spine, pursuer.bands, hitRadius);
+        spine.sample(brain.routeDistance, this.pursuerSample);
+        pursuer.pack.followLine = followLine(
+          pursuer.index, pursuer.role, this.packBodies, this.pursuerSample.halfWidth, spacing, spine,
+        );
+        // Where the others stand, for the close-quarters search (the brutal
+        // pass): a second cop comes round the other side of the block.
+        pursuer.pack.mates = packmatePositions(pursuer.index, this.packBodies, pursuer.mates);
+        // The brain's intent is read *once* and used twice — the wheel rides it
+        // and the paddle swings on it. Calling `step` a second time to ask about
+        // the swing would advance a state machine that is only allowed to
+        // advance once per fixed step, which is the shape of bug `advance(n)`
+        // cannot reproduce.
+        intent = brain.step(stepSeconds, pursuer.view, quarry, pursuer.pack);
+      }
+      const wantsSwing = intent.swing;
+      const swingSide = brain.swingSide;
+      controller.step(stepSeconds, intent);
+      controller.writePose(pursuer.current);
+
+      pursuer.gap = this.gapFor(pursuer.current);
+      // A return he was owed is spent once he is back inside the tracker line
+      // by his own riding: F3's `returning` names a cop still out of it.
+      if (pursuer.returning && pursuer.gap <= room.trackerGapMetres) pursuer.returning = false;
+
+      // What a hit *means* is this method's answer, and it is the M14 body
+      // knock: one soft-body wobble and a shove through
+      // `EucController.softKnock`, the fourth and last sanctioned wobble
+      // caller. Nothing here reaches `injectWobble`, and a strike never ends a
+      // run on its own (§13 q25) — the crash that follows it is the bust.
+      const hits = paddle.step(
+        stepSeconds,
+        {
+          x: pursuer.current.x,
+          y: pursuer.current.y,
+          z: pursuer.current.z,
+          // The clean heading, never `headingY + wobbleYaw` — M13's visual
+          // ownership rule, and the same argument `stepPaddle` states at length.
+          headingY: pursuer.current.headingY,
+        },
+        pursuer.view.crashed ? false : wantsSwing,
+        targets,
+        swingSide,
+      );
+
+      for (const hit of hits) {
+        // The solo quarry wears the bare `rider`; a couch outlaw his seat's
+        // `rider-<seat>` (`SEAT_VOLUME_IDS`), which is how the hit names him.
+        const victimSeat = couch ? riderVolumeSeat(hit.id) : -1;
+        if (couch ? victimSeat < 0 : hit.id !== RIDER_VOLUME_ID) continue;
+        // **One swing, one strike** — per cop since Part P, each with his own
+        // latch. The cop has swept the rider volume since M18 and spent every
+        // step of it, so a swing that stayed in reach delivered two or three
+        // body knocks and could pile a parked rider past `wobbleCrashEnergy` on
+        // its own; three paddles alongside land more knocks, which is the
+        // intended outcome of a mode ruled hard three times (§13 q27, q83,
+        // q207), never one knock counted thrice.
+        if (pursuer.strikeSwing === paddle.swingCount) continue;
+        pursuer.strikeSwing = paddle.swingCount;
+        const victim = couch ? this.seats[victimSeat] : seat;
+        // Handed to the referee before its step, like `KnockaboutMatch.knockdown`:
+        // the crash that follows names this cop (A-7).
+        room.recordStrike(pursuer.index, couch ? this.chaseSeatOutlaw[victimSeat] : 0);
+        this.audio.hit();
+        // **The hard knock, and the cop gets it because the paddle does not know
+        // who is holding it** — M26 Phase 3, q75. One weapon, one rule, and
+        // deliberately no `CHASE` override on the threshold: the owner has twice
+        // ruled that the chase is meant to be hard (§13 q27, q83), and q212
+        // keeps the ruling with three paddles — the first landed strike still
+        // ends the run.
+        if (
+          paddle.committed
+          && victim.controller.hardKnock(paddle.headTravelX, paddle.headTravelZ)
+        ) {
+          continue;
+        }
+        victim.controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
+      }
+    }
+    this.refreshCopGap();
   }
 
   /**
-   * One fixed step of the chase's rules — M18.
+   * The outlaw a CPU cop hunts this step in a couch room, or −1 — the
+   * referee's deal (q221), handed over only while that outlaw is standing,
+   * upright and still in the world. A cop who kept steering at a downed rider
+   * would ride into him, which is the solo face's `chasing` rule per outlaw.
+   */
+  private couchQuarryOf(pursuer: number): number {
+    const outlaw = this.chaseRoom.quarryOf(pursuer);
+    if (outlaw < 0) return -1;
+    const seatIndex = this.chaseOutlawSeats[outlaw] ?? -1;
+    const rider = this.seats[seatIndex];
+    if (rider === undefined || rider.controller.crashed || this.chaseSeatOut[seatIndex]) return -1;
+    return this.chaseRoom.statusOf(outlaw) === 'standing' ? outlaw : -1;
+  }
+
+  /**
+   * Every standing outlaw as the pack's paddles may hit them — M39 Part P
+   * (§2h: "the paddle against the outlaws' hittable set, never a spectator's
+   * hidden rig"). `SeatQuarries` refilled for the pack, each outlaw at the
+   * pose this step produced and empty while he is down, the cop's seat and
+   * every out-of-the-room chair hidden. Nobody swings on behalf of a seat, so
+   * no chair is skipped as the swinger's own.
+   */
+  private aimAtOutlaws(radius: number): HittableSet {
+    for (let seat = 0; seat < COUCH_SEATS; seat += 1) {
+      const rider = this.seats[seat];
+      const outlaw = this.chaseSeatOutlaw[seat] ?? -1;
+      if (rider === undefined || seat >= this.seatCount || outlaw < 0 || this.outOfChaseStrikes(seat)) {
+        this.seatQuarries.hide(seat);
+        continue;
+      }
+      const pose = rider.currentPose;
+      this.seatQuarries.place(seat, pose.x, pose.y, pose.z, radius, !rider.controller.crashed);
+    }
+    this.seatQuarries.aimFor(-1);
+    return this.seatQuarries;
+  }
+
+  /**
+   * One fixed step of the chase's rules — M18, over the whole pack since M39
+   * Part P.
    *
-   * The referee owns all three endings; this hands it the three facts it needs
-   * and spends the results delay, exactly as `stepKnockabout` does.
+   * The referee owns every ending; this hands it the facts it needs — the
+   * outlaw's, and each pursuer's — steps it once, and then performs what it
+   * demanded, exactly as the bench does (`src/bench/chaseBench.ts`). It also
+   * spends the results delay, exactly as `stepKnockabout` does.
    */
   private stepChase(stepSeconds: number): void {
     if (this.appState.current !== 'chase') return;
-    // The rider the referee is judging. Seat 0's in stage 1 (§25.3).
+    // The rider the referee is judging. Seat 0's: the solo face's one outlaw.
     const seat = this.seats[0];
 
     if (this.resultsIn > 0) {
@@ -6551,72 +8114,711 @@ export class Game {
       return;
     }
 
+    // **An ended round reaches its card even if the delay was taken from it**
+    // — q175, fixed for the chase as `stepKnockabout` fixed it for the bout.
+    // The solo R zeroes `resultsIn` (a timed run's R restarts the run, and the
+    // card belongs to the run thrown away); a chase has no restart to arm, so
+    // an R pressed inside the delay left the round `ended`, the room quiet
+    // (`ChaseRoom.step` answers an ended round with a quiet step) and nobody
+    // on the way to the card. Read off the referee's own phase, so any future
+    // path that spends the delay early is covered too. `lastChase` was frozen
+    // by `finishChase` on the ending step.
+    if (this.chaseRoom.phase === 'ended') {
+      this.goTo('results');
+      return;
+    }
+
     const spine = this.spine;
-    if (spine === null) return;
+    const input = this.chaseInput;
+    if (spine === null || input === null) return;
+
+    // **The couch chase's count** (q223): the referee spends it and says the
+    // digits and GO; nothing is recorded or decided while it runs, and every
+    // seat and cop is held (`chaseFrozen`). Never true solo.
+    if (this.chaseRoom.phase === 'countdown') {
+      const counted = this.chaseRoom.step(stepSeconds, input);
+      for (const event of counted.events) this.handleChaseEvent(event);
+      return;
+    }
+
+    if (this.chaseIsCouch) {
+      this.writeRoomFacts(stepSeconds, spine);
+      this.stepChaseRoom(stepSeconds, input);
+      return;
+    }
+
     spine.locate(seat.currentPose.x, seat.currentPose.z, -1, this.spineAt);
 
-    // How fast the rider's own motion is closing on the cop, for the touch
-    // bust — M24. The rider's contribution alone, read off the step's real
-    // displacement (which sees airborne travel and wobble weave, where a
-    // heading would lie): the rider's move measured against where the cop
-    // *ended up* this step, so the cop's own motion contributes nothing.
-    // Capped by the rider's own physical speed, the `maxStepSweep` argument
-    // one system over — a respawn or reset teleports a pose, and a teleport
-    // must read as nothing rather than as a ram. `copGap` was refreshed by
-    // `stepCop` this very step.
-    const riderClosingSpeed = Math.min(
-      stepSeconds > 0
-        ? (Math.hypot(
-          seat.previousPose.x - this.copCurrent.x,
-          seat.previousPose.z - this.copCurrent.z,
-        ) - this.copGap) / stepSeconds
-        : 0,
-      Math.abs(seat.currentPose.speed),
-    );
+    const outlaw = this.outlawFacts;
+    outlaw.offRoute = this.streetLoops?.offRoute(seat.currentPose.x, seat.currentPose.z, this.spineAt.offRoute)
+      ?? this.spineAt.offRoute;
+    outlaw.crashed = seat.controller.crashed;
+    // A crash respawn moved him further than his wheel could: his touch is void
+    // this step (M23's rule, the bench's `movedByReset`).
+    outlaw.teleported = movedByReset(seat.previousPose, seat.currentPose, stepSeconds);
 
-    const ended = this.chaseRun.step(stepSeconds, {
-      offRoute: this.spineAt.offRoute,
-      copDistance: this.copGap,
-      crashed: seat.controller.crashed,
-      riderClosingSpeed,
-      copCrashed: this.copController?.crashed ?? true,
-      copSpeed: Math.abs(this.copCurrent.speed),
-    });
-    if (ended) this.finishChase();
-    // The super tracker (M20.2). Asked after the endings so a run that just
-    // finished never regroups a cop onto its results card.
-    else if (this.chaseRun.takeTrackerDemand()) this.regroupCop();
+    for (const pursuer of this.pursuers) {
+      const facts = pursuer.facts;
+      const cop = pursuer.current;
+      facts.crashed = pursuer.controller.crashed;
+      facts.parked = pursuer.parked;
+      facts.speed = Math.abs(cop.speed);
+      facts.teleported = pursuer.placed || movedByReset(pursuer.previous, cop, stepSeconds);
+      // q221 (3): a deal cannot change while his swing is wound up or live —
+      // `windup` or `active`, never `recover` (R-16).
+      facts.paddleArmed = pursuer.paddle.phase === 'windup' || pursuer.paddle.phase === 'active';
+      facts.distance[0] = pursuer.gap;
+      // How fast the rider's own motion is closing on *this* cop, for the touch
+      // bust — M24, per pair since Part P. The rider's contribution alone, read
+      // off the step's real displacement (which sees airborne travel and wobble
+      // weave, where a heading would lie): the rider's move measured against
+      // where the cop *ended up* this step, so the cop's own motion contributes
+      // nothing — a cop steered into a passing rider scores nothing, however
+      // many cops there are. Capped by the rider's own physical speed, the
+      // `maxStepSweep` argument one system over: a respawn or reset teleports a
+      // pose, and a teleport must read as nothing rather than as a ram.
+      facts.outlawClosing[0] = Math.min(
+        stepSeconds > 0
+          ? (Math.hypot(seat.previousPose.x - cop.x, seat.previousPose.z - cop.z) - pursuer.gap) / stepSeconds
+          : 0,
+        Math.abs(seat.currentPose.speed),
+      );
+      pursuer.placed = false;
+    }
+
+    const result = this.chaseRoom.step(stepSeconds, input);
+    // The demands are this step's and consumed on read; taken after every
+    // step so none outlives the step that raised it.
+    const demands = this.chaseRoom.takeDemands();
+    if (result.ended) {
+      this.finishChase();
+      return;
+    }
+    // The director's demands (§39.6b.3), performed after the endings so a run
+    // that just finished never regroups a cop onto its results card (M20.2).
+    for (let index = 0; index < demands.length; index += 1) this.performDemand(demands[index]);
+  }
+
+  /**
+   * A couch room's facts for the referee, every outlaw and every pursuer —
+   * M39 Part P (§39.6b.3b "The referee", §2h), in the bench's order.
+   *
+   * Per outlaw (his seat, `chaseOutlawSeats`): off the route by the same
+   * `StreetLoops` answer the solo face asks, crashed, teleported (a respawn
+   * or a placement since his last step, M23's rule) and his R as *gave up*
+   * (q225). Per pursuer, CPU or the human cop alike: crashed, parked, speed,
+   * teleported, the paddle armed (R-16), and **the distance and the outlaw's
+   * own closing speed to every outlaw** — M24's touch rule per pair, so a cop
+   * who steers into a passing outlaw scores nothing whoever holds the slot.
+   * Written in place into arrays sized at `arm`; nothing allocates.
+   */
+  private writeRoomFacts(stepSeconds: number, spine: RouteSpine): void {
+    const outlaws = this.chaseOutlawSeats.length;
+    for (let outlaw = 0; outlaw < outlaws; outlaw += 1) {
+      const seatIndex = this.chaseOutlawSeats[outlaw];
+      const rider = this.seats[seatIndex];
+      const facts = this.outlawFactsPool[outlaw];
+      if (rider === undefined || facts === undefined) continue;
+      const pose = rider.currentPose;
+      spine.locate(pose.x, pose.z, -1, this.spineAt);
+      // Kept for his own home arrow (`chaseLaneFor`), which the solo face
+      // reads straight off `spineAt`.
+      this.chaseOutlawDistance[outlaw] = this.spineAt.distance;
+      facts.offRoute = this.streetLoops?.offRoute(pose.x, pose.z, this.spineAt.offRoute)
+        ?? this.spineAt.offRoute;
+      facts.crashed = rider.controller.crashed;
+      facts.teleported = this.chaseSeatPlaced[seatIndex] || movedByReset(rider.previousPose, pose, stepSeconds);
+      facts.gaveUp = this.chaseGiveUp[seatIndex];
+    }
+
+    for (const pursuer of this.pursuers) {
+      const facts = pursuer.facts;
+      const cop = pursuer.current;
+      facts.crashed = pursuer.controller.crashed;
+      facts.parked = pursuer.parked;
+      facts.speed = Math.abs(cop.speed);
+      facts.teleported = pursuer.placed || movedByReset(pursuer.previous, cop, stepSeconds);
+      // q221 (3): a deal cannot change while his swing is wound up or live.
+      facts.paddleArmed = pursuer.paddle.phase === 'windup' || pursuer.paddle.phase === 'active';
+      this.writePairFacts(facts, cop, stepSeconds);
+      pursuer.placed = false;
+    }
+
+    // **The human cop is the room's pursuer 0** (§2a.1): his seat is his
+    // body. No director reads his clocks — he has none — but the bust, the
+    // touch and his bearing readout all read these.
+    const copSeat = this.chaseCopSeat;
+    const cop = this.seats[copSeat];
+    if (copSeat >= 0 && cop !== undefined) {
+      const facts = this.humanCopFacts;
+      facts.crashed = cop.controller.crashed;
+      facts.parked = false;
+      facts.speed = Math.abs(cop.currentPose.speed);
+      facts.teleported = this.chaseSeatPlaced[copSeat] || movedByReset(cop.previousPose, cop.currentPose, stepSeconds);
+      facts.paddleArmed = cop.paddle.phase === 'windup' || cop.paddle.phase === 'active';
+      this.writePairFacts(facts, cop.currentPose, stepSeconds);
+    }
+  }
+
+  /**
+   * One cop's distance and every outlaw's own closing speed on him — the
+   * solo face's per-pair arithmetic (`stepChase`), for each outlaw of the
+   * room: the outlaw's move measured against where the cop *ended up* this
+   * step, so the cop's own motion contributes nothing, capped by the outlaw's
+   * own speed so a teleport reads as nothing rather than as a ram (M24).
+   */
+  private writePairFacts(facts: Pursuer['facts'], cop: EucPose, stepSeconds: number): void {
+    for (let outlaw = 0; outlaw < this.chaseOutlawSeats.length; outlaw += 1) {
+      const rider = this.seats[this.chaseOutlawSeats[outlaw]];
+      if (rider === undefined) continue;
+      const dx = cop.x - rider.currentPose.x;
+      const dz = cop.z - rider.currentPose.z;
+      const range = Math.sqrt(dx * dx + dz * dz);
+      facts.distance[outlaw] = range;
+      facts.outlawClosing[outlaw] = Math.min(
+        stepSeconds > 0
+          ? (Math.hypot(rider.previousPose.x - cop.x, rider.previousPose.z - cop.z) - range) / stepSeconds
+          : 0,
+        Math.abs(rider.currentPose.speed),
+      );
+    }
+  }
+
+  /**
+   * Step a couch room once and act on it — M39 Part P (§39.6b.3b), the
+   * bench's order: record → decide → sweep inside the referee, then this
+   * step's endings (the touch's knock, the crash beat that ends in a
+   * spectator), then the round's end, then the director's demands. The
+   * latches the referee has now read (every R as *gave up*, every placement)
+   * are spent, whatever it made of them.
+   */
+  private stepChaseRoom(stepSeconds: number, input: ChaseRoomInput): void {
+    const result = this.chaseRoom.step(stepSeconds, input);
+    const demands = this.chaseRoom.takeDemands();
+    this.chaseGiveUp.fill(false);
+    this.chaseSeatPlaced.fill(false);
+    for (const event of result.events) this.handleChaseEvent(event);
+    this.stepChaseWatchers(stepSeconds);
+    if (result.ended) {
+      this.finishChase();
+      return;
+    }
+    for (let index = 0; index < demands.length; index += 1) this.performDemand(demands[index]);
+  }
+
+  /**
+   * A count digit, GO, or an outlaw going out — M39 Part P (§39.6b.3b).
+   *
+   * **The count and GO are the race's and the bout's cues** (`raceCount`,
+   * `raceGo`), one per event for the room, and **GO is the fourth
+   * menu-boundary door** (`handleRaceEvent`, `handleMatchEvent`): every
+   * one-shot latched through the freeze is dropped (a hop or a swing that
+   * fired on the first live step would be a jump-start nobody pressed for),
+   * every paddle reseeded, the contact history and any held one-foot dwell
+   * cleared. GO is the boundary for one-shots and the room's one cue.
+   *
+   * **An outlaw going out** keeps his pane and plays his crash beat as the
+   * solo face's card delay does (`CHASE.resultsDelaySeconds`), and then his
+   * rig leaves the world (`stepChaseWatchers`). A touch lands as the body
+   * knock the solo face gives it at the card (M24): the ram *feels* like
+   * hitting a person rather than a tripwire.
+   */
+  private handleChaseEvent(event: ChaseEvent): void {
+    if (event.kind === 'count') {
+      this.audio.raceCount();
+      return;
+    }
+    if (event.kind === 'go') {
+      this.router.clearPending();
+      for (const seat of this.seats) seat.paddle.cancel();
+      this.clearContactHistory();
+      this.cancelOneFootPoses();
+      this.audio.raceGo();
+      return;
+    }
+    if (event.kind !== 'out' || !this.chaseIsCouch) return;
+    const seatIndex = this.chaseOutlawSeats[event.outlaw] ?? -1;
+    const rider = this.seats[seatIndex];
+    if (rider === undefined) return;
+    if (event.status === 'touched') {
+      this.audio.hit();
+      rider.controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
+    }
+    // Read off the frozen table, as the card's delay is: how long a crash
+    // beat plays is not a thing anybody tunes by feel at a gate.
+    this.chaseOutBeat[seatIndex] = CHASE.resultsDelaySeconds;
+  }
+
+  /**
+   * The busted outlaws, once a step — M39 Part P (§39.6b.3b "Busted, then
+   * watching", q216, q226).
+   *
+   * A crash beat that has played out takes his rig out of the world: hidden,
+   * out of contact (`outOfChaseContact`), out of every strike set
+   * (`outOfChaseStrikes`, `aimAtOutlaws`) and so out of every reserve's worst
+   * case by construction, his swing cancelled, and his wheel parked where it
+   * lies and no longer stepped (`standStill`, `stepSeat`). His pane turns to
+   * the nearest standing outlaw. And a pane already watching somebody who has
+   * gone down moves on by itself — to the nearest standing outlaw, else the
+   * cop — **when that rider's rig leaves the world**, not before: the bust a
+   * spectator was watching plays out on his pane exactly as it does on the
+   * busted rider's own (QA r2), and then nobody is left watching an empty spot.
+   *
+   * Two passes, so the hand-on lands on the hide step whatever the seat
+   * order: first every beat runs and the seats whose beat ran out leave the
+   * world, then every watching pane that can no longer keep its body — the
+   * seats just hidden among them — is handed on.
+   */
+  private stepChaseWatchers(stepSeconds: number): void {
+    for (let seatIndex = 0; seatIndex < this.seats.length; seatIndex += 1) {
+      if (this.chaseOutBeat[seatIndex] < 0 || this.chaseSeatOut[seatIndex]) continue;
+      this.chaseOutBeat[seatIndex] -= stepSeconds;
+      if (this.chaseOutBeat[seatIndex] > 0) continue;
+      const seat = this.seats[seatIndex];
+      this.chaseOutBeat[seatIndex] = -1;
+      this.chaseSeatOut[seatIndex] = true;
+      seat.rig.group.visible = false;
+      // **And his wheel leaves with it** (QA r1): parked where it lies,
+      // stopped and upright, and stepped no more (`stepSeat`), so it
+      // cannot get itself up on the controller's auto-recover, chirp,
+      // roll on, spray or feed his own pane's speedo and the room's bed.
+      this.standStill(seat, seatIndex);
+      seat.paddle.cancel();
+      seat.cameraMode = 'chase';
+      // Nobody yet: the hand-on pass below deals his pane its first body.
+      seat.spectating = null;
+    }
+    for (let seatIndex = 0; seatIndex < this.seats.length; seatIndex += 1) {
+      const seat = this.seats[seatIndex];
+      if (this.chaseSeatOut[seatIndex] && !this.watchable(seat.spectating ?? null)) {
+        this.watch(seat, this.nearestWatchTarget(seatIndex));
+      }
+    }
+  }
+
+  /**
+   * Can a watching pane keep following this? — an outlaw still in the world
+   * (standing, or busted with his crash beat still playing: the watcher sees
+   * the bust he was watching, and is handed on when the rig leaves, QA r2),
+   * the human cop's seat, or a CPU cop of this world's pack (down or not: he
+   * gets up, and a camera that left a fallen cop would be a jump the watcher
+   * did not ask for). Null is "nobody", which is never watchable. A body
+   * going down is still never *chosen* — `nearestWatchTarget` and the camera
+   * press take standing outlaws only.
+   */
+  private watchable(target: SpectateTarget | null): boolean {
+    if (target === null) return false;
+    if (target.kind === 'pursuer') return target.index < this.pursuers.length;
+    if (target.index === this.chaseCopSeat) return this.seats[target.index] !== undefined;
+    const outlaw = this.chaseSeatOutlaw[target.index] ?? -1;
+    return outlaw >= 0 && !this.chaseSeatOut[target.index]
+      && (this.chaseRoom.statusOf(outlaw) === 'standing' || this.chaseOutBeat[target.index] >= 0);
+  }
+
+  /**
+   * Who a pane starts watching — q226's default: **the nearest standing
+   * outlaw** (by straight line from where the watcher went down), else the
+   * cop — the human cop's seat, or the nearest standing CPU cop — else
+   * nobody, which is the moment the round has ended anyway.
+   */
+  private nearestWatchTarget(self: number): SpectateTarget | null {
+    const from = this.seats[self]?.currentPose;
+    if (from === undefined) return null;
+    let best: SpectateTarget | null = null;
+    let bestRange = Infinity;
+    for (let outlaw = 0; outlaw < this.chaseOutlawSeats.length; outlaw += 1) {
+      const seatIndex = this.chaseOutlawSeats[outlaw];
+      if (seatIndex === self || this.chaseSeatOut[seatIndex]) continue;
+      if (this.chaseRoom.statusOf(outlaw) !== 'standing') continue;
+      const pose = this.seats[seatIndex]?.currentPose;
+      if (pose === undefined) continue;
+      const range = Math.hypot(pose.x - from.x, pose.z - from.z);
+      if (range < bestRange) {
+        bestRange = range;
+        best = { kind: 'seat', index: seatIndex };
+      }
+    }
+    if (best !== null) return best;
+    if (this.seats[this.chaseCopSeat] !== undefined) return { kind: 'seat', index: this.chaseCopSeat };
+    for (const pursuer of this.pursuers) {
+      if (pursuer.controller.crashed) continue;
+      const range = Math.hypot(pursuer.current.x - from.x, pursuer.current.z - from.z);
+      if (range < bestRange) {
+        bestRange = range;
+        best = { kind: 'pursuer', index: pursuer.index };
+      }
+    }
+    return best;
+  }
+
+  /**
+   * The camera-cycle press of a watching outlaw — q226: the next standing
+   * body, outlaws first by seat, the cop last (`nextSpectateTarget`). With one
+   * body left to watch the press does nothing. A press, never a step, so the
+   * small lists it builds are not a hot allocation.
+   */
+  private cycleSpectate(seat: RiderSeat, index: number): void {
+    const standingOutlawSeats: number[] = [];
+    for (let outlaw = 0; outlaw < this.chaseOutlawSeats.length; outlaw += 1) {
+      const seatIndex = this.chaseOutlawSeats[outlaw];
+      if (this.chaseSeatOut[seatIndex] || this.chaseRoom.statusOf(outlaw) !== 'standing') continue;
+      standingOutlawSeats.push(seatIndex);
+    }
+    const standingPursuers = this.pursuers
+      .filter((pursuer) => !pursuer.controller.crashed)
+      .map((pursuer) => pursuer.index);
+    const current = seat.spectating ?? null;
+    const next = nextSpectateTarget(current, index, standingOutlawSeats, this.chaseCopSeat, standingPursuers);
+    if (next === null) return;
+    // A cycle of one answers the body already watched (QA r1): the press
+    // moves nowhere, so it is a no-op rather than a camera snap that throws
+    // away the lag, arm, field of view and bank the pane has built up.
+    if (current !== null && next.kind === current.kind && next.index === current.index) return;
+    this.watch(seat, next);
+  }
+
+  /**
+   * Point one watching pane at a body — the seat's own `ChaseCamera`, snapped
+   * onto the new pose rather than eased across the map to it, which is
+   * `syncCamera`'s rule for anything that was *put* somewhere. No new camera
+   * and no new pass (§39.6b.3b): the view slot draws that body's drawn pose.
+   */
+  private watch(seat: RiderSeat, target: SpectateTarget | null): void {
+    seat.spectating = target;
+    const pose = this.followedPose(seat, false);
+    seat.chase.reset(this.readChaseInput(seat, pose));
+    seat.chase.writeState(seat.currentCamera);
+    copyChaseCameraState(seat.currentCamera, seat.previousCamera);
+    copyChaseCameraState(seat.currentCamera, seat.renderCamera);
+  }
+
+  /**
+   * The pose a seat's camera frames — its own rider, or the body a watching
+   * outlaw follows (q226): another seat's pose or a CPU cop's. `render` picks
+   * the interpolated pose the frame draws, otherwise the fixed step's.
+   */
+  private followedPose(seat: RiderSeat, render: boolean): EucPose {
+    const target = seat.spectating;
+    if (target !== undefined && target !== null) {
+      if (target.kind === 'seat') {
+        const other = this.seats[target.index];
+        if (other !== undefined) return render ? other.renderPose : other.currentPose;
+      } else {
+        const pursuer = this.pursuers[target.index];
+        if (pursuer !== undefined) return render ? pursuer.render : pursuer.current;
+      }
+    }
+    return render ? seat.renderPose : seat.currentPose;
+  }
+
+  /**
+   * Put every chair back in the world — the round is over or being re-armed.
+   * Rigs shown, nobody watching, no beat running, no latch pending. Called at
+   * every chase entrance and on the way out of a couch chase (`enterState`),
+   * so a hidden rig cannot follow its rider into the next mode.
+   */
+  private releaseChaseSeats(): void {
+    for (let index = 0; index < this.seats.length; index += 1) {
+      const seat = this.seats[index];
+      if (this.chaseSeatOut[index]) {
+        seat.rig.group.visible = true;
+        seat.spectating = null;
+        this.syncCamera(seat);
+      } else if (seat.spectating !== undefined && seat.spectating !== null) {
+        seat.spectating = null;
+        this.syncCamera(seat);
+      }
+    }
+    this.chaseSeatOut.fill(false);
+    this.chaseOutBeat.fill(-1);
+    this.chaseGiveUp.fill(false);
+    this.chaseSeatPlaced.fill(false);
+  }
+
+  /**
+   * Is this seat's input muted in a couch chase? — a busted outlaw (his pane
+   * is watching, q216) or the cop seat while the room holds the cop after GO
+   * (q224). Never true solo, and never for an outlaw who escaped at the bell.
+   */
+  private chaseSeatMuted(index: number): boolean {
+    if (!this.couchChaseLive) return false;
+    const room = this.chaseRoom;
+    if (index === this.chaseCopSeat) return room.pursuersHeld;
+    const outlaw = this.chaseSeatOutlaw[index] ?? -1;
+    if (outlaw < 0 || room.phase === 'idle') return false;
+    const status = room.statusOf(outlaw);
+    return status !== 'standing' && status !== 'escaped';
+  }
+
+  /**
+   * The cop's R when he is down — q225: **rights him where he lies**, stopped
+   * and upright on the ground under him. Not a reset to anywhere: no
+   * director, no return, never a teleport (§39.6b.3b "The human cop"). The
+   * rider's half of `resetRiderTo` — the poses, the camera snap, the HUD
+   * dwell, the swing — without its world half (the mix, the particles, the
+   * pack), which belong to a respawn and not to a man getting up. His two-body
+   * facts are void for the referee's next step (`chaseSeatPlaced`).
+   */
+  private rightInPlace(seat: RiderSeat, index: number): void {
+    this.standStill(seat, index);
+    seat.paddle.cancel();
+    this.syncCamera(seat);
+    seat.hudModel.reset();
+    this.chaseSeatPlaced[index] = true;
+  }
+
+  /**
+   * A rider stopped where he lies — upright, still, on the ground under him,
+   * his input edges and his voice's crash book cleared (`resetRider`, so no
+   * recovery chirp can follow). Never a teleport. The shared half of the cop's
+   * R (`rightInPlace`) and of a busted outlaw's hide (`stepChaseWatchers`,
+   * QA r1). The controller's spawn rebinds to the spot, which is harmless:
+   * every chase entrance re-stands each seat on an explicit grid spawn
+   * (`placeChaseGrid`).
+   */
+  private standStill(seat: RiderSeat, index: number): void {
+    const pose = seat.currentPose;
+    const ground = createGroundSample();
+    this.terrain.sampleGround(pose.x, pose.z, ground);
+    seat.controller.reset({ position: { x: pose.x, y: ground.height, z: pose.z }, headingY: pose.headingY });
+    this.clearOneFootPose(seat);
+    this.syncSeatPose(seat);
+    seat.lastThrottle = 0;
+    seat.lastSteer = 0;
+    seat.wasCrashed = false;
+    seat.lastStumbles = 0;
+    this.audio.resetRider(index);
+  }
+
+  /**
+   * Do what the referee asked — M39 Part P (§2h), the bench's dispatch.
+   *
+   * - **`tail-return`** — the tail's regroup (`regroupTail`), refusals and all.
+   * - **`post-return`** — a patrol back to a qualifying post, parked.
+   * - **`patrol-wake`** — unparked, and his brain found where he stands (near
+   *   his post's route distance). His way to the rider is `StreetLoops`' short
+   *   way round the ring, with its seam wrap and hysteresis unchanged — the
+   *   brain's own pursuit of the quarry it was just dealt; nothing about his
+   *   pursuit is new (§39.6b.3 "Waking").
+   * - **`re-deal`** — nothing: the new quarry is read from `quarryOf` on the
+   *   next step. Counted for F3 and the specs.
+   *
+   * A return that cannot be placed is simply not placed: the referee has
+   * already wound his clocks back by the retry and asks again.
+   */
+  private performDemand(demand: ChaseDemand): void {
+    const pursuer = this.pursuers[demand.pursuer];
+    if (pursuer === undefined) return;
+    const counts = this.chaseDemandCounts;
+    switch (demand.kind) {
+      case 're-deal':
+        counts.reDeals += 1;
+        return;
+      case 'patrol-wake':
+        if (demand.cause === 'proximity') counts.proximityWakes += 1;
+        else counts.quietWakes += 1;
+        pursuer.parked = false;
+        pursuer.returning = false;
+        this.writePursuerView(pursuer);
+        pursuer.brain.place(pursuer.view, pursuer.post?.distance ?? -1);
+        return;
+      case 'tail-return':
+        if (this.regroupTail(pursuer, demand.outlaw)) {
+          counts.tailReturns += 1;
+          pursuer.returning = false;
+        } else {
+          counts.refusedReturns += 1;
+          pursuer.returning = true;
+        }
+        return;
+      case 'post-return':
+        if (this.returnToPost(pursuer, demand.outlaw)) {
+          counts.postReturns += 1;
+          pursuer.returning = false;
+        } else {
+          counts.refusedReturns += 1;
+          pursuer.returning = true;
+        }
+        return;
+      case 'intercept':
+        // Ahead on his road, else a post, else he keeps riding (`interceptAhead`).
+        if (this.interceptAhead(pursuer, demand.outlaw)) {
+          counts.roadblocks += 1;
+          pursuer.returning = false;
+        } else {
+          counts.refusedReturns += 1;
+          pursuer.returning = true;
+        }
+        return;
+    }
+  }
+
+  /**
+   * The pack for F3 — M39 Part P (§39.6b.3 "Diagnostics"): each pursuer's
+   * role, state, gap and cap reason, and where the posts came from. Filled in
+   * place into slot-owned rows, on the overlay's rule that a visible panel
+   * does not allocate a fresh report every refresh; the referee's `state`
+   * (which does allocate) is read once per refresh, a few times a second, and
+   * only while F3 is open. Null with no pack.
+   */
+  private debugChaseContext(): DebugContext['chase'] {
+    if (this.pursuers.length === 0 && !(this.chaseIsCouch && this.chaseCopSeat >= 0)) return null;
+    const room = this.chaseRoom;
+    const referee = room.phase === 'idle' ? null : room.state.pursuers;
+    const rows = this.debugChaseRows;
+    rows.length = 0;
+    for (const pursuer of this.pursuers) {
+      const row = this.debugChaseRowPool[pursuer.index];
+      row.role = pursuer.role;
+      row.state = this.pursuerPhaseWord(pursuer, referee?.[pursuer.index]?.phase ?? null);
+      row.gap = pursuer.gap;
+      row.cap = pursuer.parked && this.appState.current === 'chase' ? '—' : pursuer.brain.capReason;
+      rows.push(row);
+    }
+    // **F3 names the slot's holder** (§39.6b.3b "Claiming the slot"): a seat
+    // holding Officer Dorkins is the room's pursuer 0, listed as his chair
+    // where the CPU pack's rows would be — no director, so no cap and no
+    // return — while a CPU slot is its tail and patrols as above.
+    const copSeat = this.chaseCopSeat;
+    const cop = this.seats[copSeat];
+    if (this.chaseIsCouch && copSeat >= 0 && cop !== undefined && rows.length < this.debugChaseRowPool.length) {
+      const row = this.debugChaseRowPool[rows.length];
+      row.role = `P${copSeat + 1} (seat)`;
+      row.state = cop.controller.crashed ? 'down' : referee?.[0]?.phase ?? 'riding';
+      row.gap = this.gapFor(cop.currentPose);
+      row.cap = '—';
+      rows.push(row);
+    }
+    const context = this.debugChase;
+    context.posts = this.patrolPosts?.source ?? 'none';
+    context.probe = this.copsProbe ?? null;
+    return context;
+  }
+
+  /**
+   * The couch room for the QA bridge — M39 Part P. Read once per snapshot
+   * (the referee's `state` allocates, which a bridge read may). The pane
+   * half-angles are measured fresh here, from the same arithmetic a return
+   * refuses on (`paneHalfAngle`), so a spec can read what every pane shows.
+   */
+  private chaseRoomSnapshot(): ChaseRoomSnapshot {
+    const room = this.chaseRoom;
+    const armed = room.phase !== 'idle';
+    const state = armed ? room.state : null;
+    const views = Math.min(this.renderer.viewCount, this.seats.length);
+    const halfAngles: number[] = [];
+    for (let view = 0; view < views; view += 1) {
+      halfAngles.push(this.paneHalfAngle(this.seats[view], view, this.seats[view].currentCamera.fov));
+    }
+    if (this.chaseIsCouch) this.refreshRoomPanes();
+    return {
+      couch: this.chaseIsCouch,
+      phase: room.phase,
+      countdown: state?.countdown ?? 0,
+      bellSeconds: state?.bellSeconds ?? 0,
+      outlawSeats: [...this.chaseOutlawSeats],
+      copSeat: this.chaseCopSeat,
+      pack: this.pursuers.length,
+      pursuersHeld: room.pursuersHeld,
+      standing: state?.standing ?? this.chaseOutlawSeats.length,
+      outlaws: this.chaseOutlawSeats.map((seat, outlaw) => ({
+        seat,
+        status: state?.outlaws[outlaw]?.status ?? 'standing',
+        by: state?.outlaws[outlaw]?.by ?? -1,
+        survived: state?.outlaws[outlaw]?.survived ?? 0,
+        place: state?.outlaws[outlaw]?.place ?? 0,
+        nearestCopMetres: state?.outlaws[outlaw]?.nearestCopMetres ?? Infinity,
+      })),
+      busts: state?.pursuers.map((pursuer) => pursuer.busts) ?? [],
+      out: this.seats.map((_seat, index) => this.chaseSeatOut[index] === true),
+      spectating: this.seats.map((seat) => seat.spectating ?? null),
+      paneHalfAngles: halfAngles,
+      returnCone: this.returnCone(),
+    };
+  }
+
+  /**
+   * A pursuer's state in F3's and the QA bridge's words (§39.6b.3
+   * "Diagnostics": parked / waking / chasing / returning) — the referee's
+   * phase while a round is armed, `returning` while a return it demanded is
+   * still owed; outside a round (the probe, the title's world) `riding`, or
+   * `parked` for a patrol standing at his post.
+   */
+  private pursuerPhaseWord(pursuer: Pursuer, referee: PursuerPhase | null): ChasePursuerSnapshot['phase'] {
+    if (referee === null) return pursuer.parked && !this.chaseProbe ? 'parked' : 'riding';
+    if (referee !== 'parked' && pursuer.returning) return 'returning';
+    return referee;
+  }
+
+  /**
+   * The solo outlaw's ending in M18's words — the room's status mapped the
+   * way `ChaseRun.state` maps it (§2a.6), so the QA bridge, the card and the
+   * records keep one vocabulary. `gaveUp` is a couch-only ending (q225) and
+   * never set solo.
+   */
+  private chaseOutcome(): { readonly phase: ChasePhase; readonly outcome: ChaseOutcome } {
+    const room = this.chaseRoom;
+    if (room.phase === 'running' || room.phase === 'countdown') return { phase: 'running', outcome: 'none' };
+    if (room.phase !== 'ended') return { phase: 'idle', outcome: 'none' };
+    const status = room.statusOf(0);
+    return {
+      phase: status === 'escaped' ? 'escaped' : 'busted',
+      outcome: status === 'standing' || status === 'gaveUp' ? 'none' : status,
+    };
   }
 
   /** The clock ran out, or it did not. Score it, offer it, and show the card. */
   private finishChase(): void {
-    const state = this.chaseRun.state;
+    // **A couch round is the room's card, and nothing is filed** (§39.6b.3b
+    // "Sound, HUD, card, records"): the card is frozen from the referee's
+    // result, every outlaw's touch has already landed as its own knock on its
+    // own step (`handleChaseEvent`), and the card waits the same delay.
+    if (this.chaseIsCouch) {
+      this.freezeChaseRoomCard();
+      this.resultsIn = CHASE.resultsDelaySeconds;
+      return;
+    }
+    const { outcome } = this.chaseOutcome();
     // The touch bust lands as a body knock — M24. The referee decided the run;
     // this is what the ram *feels* like: the strike's own thud and stagger, so
     // riding into him reads as hitting a person rather than a tripwire. The
     // same public `softKnock` the paddle strike spends, so the wobble-caller
     // census is untouched, and the ride is already over before the wobble can
     // cost anything.
-    if (state.outcome === 'touched') {
+    if (outcome === 'touched') {
       this.audio.hit();
       this.seats[0].controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
     }
+    // Seconds standing: the bell for an escape, the ending step otherwise —
+    // `ChaseRun`'s `escapeSeconds − remaining`, off the room's own clock.
+    const survived = this.chaseRoom.elapsed;
     this.lastChase = {
-      survived: state.survived,
-      escaped: state.outcome === 'escaped',
-      outcome: state.outcome,
+      survived,
+      escaped: outcome === 'escaped',
+      outcome,
     };
     this.lastChaseWasRecord = false;
 
-    // A probe session rides a world nobody else can ride, so no best is filed
-    // from one. The chase probe is deliberately absent from `probing` — it
-    // changes no world — but a *hazard* or *target* probe changes this one.
-    if (!this.probing) {
+    // A probe session rides a world — or, since `?cops=` joined `probing`, a
+    // pack — nobody else can ride, so no best is filed from one. The chase
+    // probe is deliberately absent from `probing` — it changes no world — but
+    // a *hazard* or *target* probe changes this one.
+    //
+    // **And nothing is filed from a couch** — `couchSession`, the one
+    // predicate all four record sites ask (§39.6b.3b "Records"). A couch round
+    // never reaches this line (it returns above with its card), and the
+    // question is asked here anyway so the rule is read where a record is
+    // written rather than inferred from a branch.
+    if (!this.probing && !this.couchSession) {
       const candidate: ChaseRecord = {
         levelId: this.levelPlan.id,
-        seconds: state.survived,
-        escaped: state.outcome === 'escaped',
+        seconds: survived,
+        escaped: outcome === 'escaped',
         setAt: new Date().toISOString(),
+        // **Filed by the force it was ridden against** (q208): the rule's
+        // pack at one human, three. A three-cop best neither evicts nor is
+        // compared with the one-cop bests every save before Part P holds.
+        force: SOLO_CHASE_FORCE,
       };
       this.lastChaseWasRecord = this.chaseRecords.submit(candidate);
     }
@@ -6628,16 +8830,63 @@ export class Game {
   }
 
   /**
+   * Freeze a couch round's card — M39 Part P (§39.6b.3b, q222).
+   *
+   * **Everything on it is the referee's**: the headline from `swept` and
+   * `escaped`, every outlaw's shared place (q86), how long he stood and how
+   * he went, the cop's busts summed over the slot — whoever held it, which
+   * `ChaseCardCop.seat` names (q227: "Officer Dorkins (P3)" or the CPU). Game
+   * adds only what it alone knows: whose seat each outlaw is and who is
+   * wearing it (the name is each seat's "You", q222, q68), and the route
+   * seed. The words are `ui/chaseRoomCard.ts`'s. `lastChase` is set beside
+   * it so `resultsMode` reads a chase; nothing about it is a record.
+   */
+  private freezeChaseRoomCard(): void {
+    const state = this.chaseRoom.state;
+    const result = state.result;
+    const outlaws: ChaseCardOutlaw[] = this.chaseOutlawSeats.map((seatIndex, outlaw) => {
+      const ended = result?.outlaws[outlaw];
+      const live = state.outlaws[outlaw];
+      const rider = this.seats[seatIndex];
+      return {
+        seat: seatIndex,
+        name: characterSpec(rider?.character ?? DEFAULT_CHARACTER).name,
+        status: ended?.status ?? live?.status ?? 'standing',
+        survived: ended?.survived ?? live?.survived ?? 0,
+        place: ended?.place ?? live?.place ?? 0,
+      };
+    });
+    let busts = 0;
+    for (const pursuer of result?.pursuers ?? state.pursuers) busts += pursuer.busts;
+    const cop: ChaseCardCop = { seat: this.chaseCopSeat, busts };
+    this.lastChaseRoom = {
+      seconds: result?.seconds ?? state.elapsed,
+      bellSeconds: result?.bellSeconds ?? state.bellSeconds,
+      swept: result?.swept ?? false,
+      escaped: result?.escaped ?? 0,
+      outlaws,
+      cop,
+      seed: this.levelId === 'generated' ? this.seed : '',
+    };
+    this.lastChase = {
+      survived: this.chaseRoom.elapsed,
+      escaped: (result?.escaped ?? 0) > 0,
+      outcome: 'none',
+    };
+    this.lastChaseWasRecord = false;
+  }
+
+  /**
    * A finished chase, as words — M18.
    *
    * Three outcomes and three headings, because the player already knows which
    * one happened and a card that hedged would be describing something else.
    * The rows are the two facts worth having: how long they lasted, and what the
-   * best on this route is. Formatting is upstream, like every number that
-   * reaches this screen.
+   * best on this route is — against the pack this run was ridden against
+   * (q208). Formatting is upstream, like every number that reaches this screen.
    */
   private buildChaseResults(run: { survived: number; escaped: boolean; outcome: string }): ResultsView {
-    const best = this.probing ? null : this.chaseRecords.best(this.levelPlan.id);
+    const best = this.probing ? null : this.chaseRecords.best(this.levelPlan.id, SOLO_CHASE_FORCE);
     // The score to beat is the one standing *before* this run, so on a record
     // run the comparison comes off the run rather than off the store.
     const previous = this.lastChaseWasRecord ? null : best;
@@ -6647,8 +8896,17 @@ export class Game {
     else if (!this.chaseRecords.persistent) {
       notes.push('This browser is not keeping personal bests');
     }
+    // q213: the one-cop best survives in storage and is never compared — one
+    // line says it is there, and nothing else does. A probe reads no record.
+    // The words are `ui/chaseRoomCard.ts`'s (`oneCopBestNote`), after the
+    // diagnostic and persistence notes and before the outcome's.
+    const oneCop = oneCopBestNote(this.probing ? null : this.chaseRecords.best(this.levelPlan.id, 1));
+    if (oneCop !== null) notes.push(oneCop);
     if (run.outcome === 'strayed') notes.push('You left the route and the clock ran out on it');
-    if (run.outcome === 'touched') notes.push('You touched Officer Dorkins — that is an instant bust');
+    // An officer, not a name: with three identical rigs on the road (q211) the
+    // rule is the point, not which of them it was (§39.6b.3 "Sound, HUD,
+    // card"). Written once, in `ui/chaseRoomCard.ts`.
+    if (run.outcome === 'touched') notes.push(CHASE_TOUCH_NOTE);
 
     const heading = run.escaped
       ? (this.lastChaseWasRecord ? 'Escaped — new record' : 'Escaped')
@@ -6841,7 +9099,59 @@ export class Game {
     // ride the phase-2 and phase-1 gates in the same session — "does a target
     // read far enough ahead" and "does throwing the paddle at nothing feel like
     // swinging something" — and both need a paddle in hand outside the mode.
-    return this.appState.current === 'knockabout' || this.targetProbe !== undefined;
+    //
+    // **And the cop seat of a couch chase** — M39 Part P (§39.6b.3b, R-11).
+    // Since the chase gave one seat a paddle and the others none, this getter
+    // is "does *any* seat carry one" — the touch button's question, which a
+    // phone never asks of a couch — and every per-seat reader goes through
+    // `paddleEquippedFor`.
+    return this.appState.current === 'knockabout' || this.targetProbe !== undefined
+      || this.couchCopArmed;
+  }
+
+  /**
+   * Is *this* seat carrying a paddle? — M39 Part P (§39.6b.3b, R-11, §13 q28).
+   *
+   * `paddleEquipped` stopped being one answer for the room the day a seat
+   * could be the cop: in a couch chase the cop seat swings and the outlaws do
+   * not (a symmetric paddle is fine at 1v1 and indefensible at 3v1). Every
+   * other mode is every seat alike, exactly as before, so Knockabout and the
+   * target probe read the Game-wide answer unchanged. The swing's legality,
+   * its step, the drawn paddle and the QA bridge all ask here, so the four
+   * cannot disagree about who is armed.
+   */
+  paddleEquippedFor(seat: number): boolean {
+    if (this.couchChaseLive) return seat === this.chaseCopSeat;
+    return this.paddleEquipped;
+  }
+
+  /** A couch chase is on screen and a seat holds the cop: the one seat with a paddle (R-11). */
+  private get couchCopArmed(): boolean {
+    return this.couchChaseLive && this.chaseCopSeat >= 0;
+  }
+
+  /**
+   * Is a couch chase being ridden? — M39 Part P. The room was armed for a
+   * couch and the app is in the ride (a pause, the settings screen and the
+   * results card are not riding, and ask their own questions).
+   */
+  private get couchChaseLive(): boolean {
+    return this.chaseIsCouch && this.appState.current === 'chase';
+  }
+
+  /**
+   * Is this a couch session? — **the one predicate every record site asks**,
+   * M39 Part P (§39.6b.3b "Records", §2h).
+   *
+   * Nothing a couch rides is filed: not a Knockabout run, not a race's laps,
+   * not a Trick Run score, not a chase. Four modes learned that rule one at a
+   * time and each wrote its own seat-count test (`seatCount > 1`,
+   * `seatCount >= 2`, `seats !== 1`); this names it once so the fifth mode
+   * asks rather than rediscovers it. Two or more seats, because a seat is a
+   * rider in the world and one rider is the solo game.
+   */
+  get couchSession(): boolean {
+    return this.seatCount >= 2;
   }
 
   /**
@@ -6908,7 +9218,21 @@ export class Game {
    * different opinions about it.
    */
   get startFrozen(): boolean {
-    return this.raceFrozen || this.matchFrozen;
+    return this.raceFrozen || this.matchFrozen || this.chaseFrozen;
+  }
+
+  /**
+   * Is the couch chase's count still holding the room? — M39 Part P (q223),
+   * `matchFrozen`'s sibling and frozen the same way: the step is stopped,
+   * not emptied, because the grid is laid out at the town's spawn and a
+   * spine can start on a slope — neutral input would let a rider roll off
+   * his slot before GO. The pursuers are held with everybody (`stepPursuers`
+   * returns on it), so the outlaws' only head start is the 20 m.
+   *
+   * Never true solo: the solo face arms with no count.
+   */
+  get chaseFrozen(): boolean {
+    return this.appState.current === 'chase' && this.chaseRoom.phase === 'countdown';
   }
 
   get contactLive(): boolean {
@@ -6937,6 +9261,9 @@ export class Game {
    */
   setCouchRide(ride: string): void {
     if (!isCouchRide(ride)) return;
+    // Leaving the chase on the join panel re-deals the cop card first (q215):
+    // the wheel only offers him on the chase, so no other ride may keep him.
+    this.dealRosterFor(ride);
     // **No width refusal since M37** (§37.1). This line read
     // `if (this.rideBlockedForSeats(ride)) return;` — the door agreeing with
     // the greyed button, on `switchCouchRide`'s rule that the two must refuse
@@ -6985,8 +9312,9 @@ export class Game {
     // `!== COUCH_SEATS` while a couch was always exactly two seats, so it was
     // simultaneously "this is a couch" and "this couch is full"; the day the
     // constant moved to four it became a switch that only worked for rooms of
-    // exactly four people. What it always meant is `seatCount >= 2`.
-    if (this.seatCount < 2) return;
+    // exactly four people. What it always meant is `seatCount >= 2` — which
+    // since M39 Part P has a name (`couchSession`).
+    if (!this.couchSession) return;
     // **And the width refusal that used to sit here is gone** — M37 §37.1.
     // It read `if (this.rideBlockedForSeats(ride)) return;`, because
     // Knockabout was a two-seat fight until its four-player rules were opened
@@ -7000,6 +9328,7 @@ export class Game {
       if (this.appState.current === 'paused') this.appState.resumeRide();
       else if (from === 'race') this.enterTrackDay();
       else if (from === 'trickRun') this.enterTrickRun();
+      else if (from === 'chase') this.enterChase();
       else this.enterKnockabout();
       return;
     }
@@ -7009,6 +9338,20 @@ export class Game {
       this.newRouteHere('knockabout');
       return;
     }
+    // **The chase's venue rule, on the same terms** — M39 Part P (§39.6b.3b):
+    // the town or a fresh route. Neither card may open the routes panel (it is
+    // not their successor), so a room asking for the chase from BelVar or
+    // Switchback is given a fresh route and the chase on it, the mode
+    // committed only when the route has built (`rideLoadedWorld`).
+    if (ride === 'chase' && !this.chaseAvailable) {
+      this.newRouteHere('chase');
+      return;
+    }
+    // **The cop is re-dealt before anything is written** — q215, M26's
+    // refusal-before-write rule: leaving the chase gives the seat holding
+    // Officer Dorkins a playable rider now, ahead of the ride, the world and
+    // the referee, so no other mode ever begins with a cop seated in it.
+    this.dealRosterFor(ride);
     this.couchRide = ride;
     if (ride === 'trickRun') {
       // **The same door every other control takes** — M38 §38.6. Trick Run is
@@ -7032,6 +9375,15 @@ export class Game {
       // 2026-08-28 the order matters twice over, because the armed match is
       // what widens those slots (`slotSpacing`).
       this.enterKnockabout();
+      return;
+    }
+    if (ride === 'chase') {
+      // **The same door the join panel takes** — M39 Part P. `enterChase`
+      // deals the room, sizes the pack, stands every seat on the room's start
+      // and counts; a `goTo` would be a chase with no referee. Reached here
+      // with the wheel as it stands (q215), so the slot is the CPU's until a
+      // room picks Dorkins on the join panel.
+      this.enterChase();
       return;
     }
     // **The state first, then the riders.** `enterState('freeRide')` is what
@@ -7081,6 +9433,9 @@ export class Game {
     const mode = this.resultsMode();
     if (mode === 'race') return 'race';
     if (mode === 'trickRun') return 'trickRun';
+    // A couch chase's card is the chase's (M39 Part P); a solo chase's is not
+    // a couch card, and a solo player never reaches the switch (`couchSession`).
+    if (mode === 'chase') return 'chase';
     return mode === 'match' ? 'knockabout' : null;
   }
 
@@ -7119,11 +9474,17 @@ export class Game {
    * changes the *wheel* without changing the level id, and a record has no
    * tuning fingerprint, so a best set on an overridden wheel filed against the
    * shipped 65 mph one would be a cheat by accident (§30.2 fact 8).
+   *
+   * **`?cops=` joined at M39 Part P** (R-14): it changes the *pack* without
+   * changing the level id, and a chase best is filed by the force it was
+   * ridden against (q208) — a one-cop A/B run filed as a three-cop best would
+   * be the same accident one mode over.
    */
   private get probing(): boolean {
     return this.hazardProbe !== undefined
       || this.targetProbe !== undefined
-      || this.topSpeedMph !== undefined;
+      || this.topSpeedMph !== undefined
+      || this.copsProbe !== undefined;
   }
 
   /**
@@ -7149,9 +9510,11 @@ export class Game {
    * nobody to swing at and is the clause that says so, rather than leaving
    * `seats[1]` to be undefined somewhere downstream.
    *
-   * The cop is deliberately not reachable from here. He is not a seat, he only
-   * exists in a mode where nobody else carries a paddle, and a couch chase is
-   * postponed (q73).
+   * This stays the one-clause room test. In a couch chase the cop is a seat
+   * (M39 Part P, §39.6b.3b, q215) and the one seat with a paddle; he is never
+   * a victim (q73), and a chair the chase has taken out is not there to be
+   * hit — both are removed from the set inside `aimAt` (`outOfChaseStrikes`),
+   * not here.
    */
   private strikeableOpponents(index: number): boolean {
     return this.seatCount >= 2 && index < this.seatCount;
@@ -7180,7 +9543,11 @@ export class Game {
   private aimAt(index: number): HittableSet {
     for (let seat = 0; seat < COUCH_SEATS; seat += 1) {
       const opponent = this.seats[seat];
-      if (opponent === undefined || seat >= this.seatCount) {
+      // **Nobody the chase has taken out of the world** — M39 Part P
+      // (§39.6b.3b): the cop's own seat is never a victim (q73), and an outlaw
+      // who is down for good is out of every strike set from the step he went
+      // down, his hidden rig after it included.
+      if (opponent === undefined || seat >= this.seatCount || this.outOfChaseStrikes(seat)) {
         this.seatQuarries.hide(seat);
         continue;
       }
@@ -7200,14 +9567,43 @@ export class Game {
       );
     }
     this.seatQuarries.aimFor(index);
-    this.seatHittables.field = this.targets;
+    // The discs are level furniture in a chase: the cop's paddle is for
+    // outlaws, and a disc knocked over by a swing at a person would be a
+    // Knockabout event in a mode that keeps no discs (§39.6b.3b).
+    this.seatHittables.field = this.couchChaseLive ? null : this.targets;
     this.seatHittables.rider = this.seatQuarries;
     return this.seatHittables;
   }
 
+  /**
+   * Is this chair out of every strike set in a couch chase? — M39 Part P
+   * (§39.6b.3b, q73, q216). The cop's seat is never a victim, and an outlaw
+   * whose round is over — busted, gave up, strayed, or hidden and watching —
+   * is not there to be hit. False outside an armed couch room.
+   */
+  private outOfChaseStrikes(seat: number): boolean {
+    if (!this.chaseIsCouch || this.chaseRoom.phase === 'idle') return false;
+    if (seat === this.chaseCopSeat || this.chaseSeatOut[seat]) return true;
+    const outlaw = this.chaseSeatOutlaw[seat] ?? -1;
+    return outlaw >= 0 && this.chaseRoom.statusOf(outlaw) !== 'standing';
+  }
+
+  /**
+   * Is this chair outside rider-to-rider contact in a couch chase? — M39
+   * Part P (§39.6b.3b, q73). The cop seat is, as the CPU cop always was:
+   * touching him is the outlaw's bust on the outlaw's own closing speed, so a
+   * shove on top would be the contact rule deciding a chase rule. So is a
+   * watching outlaw, whose rig has left the world. `contactLive` stays the
+   * couch's unconditional answer for everybody else.
+   */
+  private outOfChaseContact(seat: number): boolean {
+    if (!this.chaseIsCouch || this.chaseRoom.phase === 'idle') return false;
+    return seat === this.chaseCopSeat || this.chaseSeatOut[seat] === true;
+  }
+
   /** Can a swing start on this step? Legality, exactly as `canAcceptHop` is. */
-  private canAcceptSwing(seat: RiderSeat): boolean {
-    return this.paddleEquipped && !seat.paddle.swinging && !seat.controller.crashed;
+  private canAcceptSwing(seat: RiderSeat, index: number): boolean {
+    return this.paddleEquippedFor(index) && !seat.paddle.swinging && !seat.controller.crashed;
   }
 
   /**
@@ -7229,7 +9625,7 @@ export class Game {
     stepSeconds: number,
     swingRequested: boolean,
   ): void {
-    if (!this.paddleEquipped) return;
+    if (!this.paddleEquippedFor(index)) return;
 
     // A crashed rider keeps hold of the paddle — the owner's call, and it
     // matches the wheel's own spin-out flourish — but they are not swinging it.
@@ -7331,6 +9727,11 @@ export class Game {
     // check cannot tell the two ways apart. Gated on `paddleEquipped` with the
     // rest of this method: in free ride and the timed run the targets stay
     // level furniture the wheel passes straight through.
+    //
+    // **And in a couch chase**, where the cop is the one seat with a paddle
+    // (M39 Part P): riding into a disc there scores for no referee, so the
+    // disc stays furniture for him as for everybody else.
+    if (this.couchChaseLive) return;
     const knockRadius = this.tuning.get('TARGET.bodyKnockRadius');
     if (knockRadius <= 0) return;
     const previous = seat.previousPose;
@@ -7565,7 +9966,12 @@ export class Game {
     // And the chase after it, on the same argument again: a chase leaves both
     // of the other two untouched. The five are mutually exclusive because a
     // ride is one mode, and each entrance clears the other four's last result.
-    if (mode === 'chase' && chase !== null) return this.buildChaseResults(chase);
+    // A couch round's card is the room's (q222), one card over every pane.
+    if (mode === 'chase' && chase !== null) {
+      return this.lastChaseRoom !== null
+        ? chaseRoomResults(this.lastChaseRoom)
+        : this.buildChaseResults(chase);
+    }
     // And Track Day after those, on the same argument a fourth time.
     if (mode === 'trackDay' && trackDay !== null) return this.buildTrackDayResults(trackDay);
     // And the Trick Run after those, on the same argument a fifth time.
@@ -8059,7 +10465,12 @@ export class Game {
 
   /** Start the mode the player chose before (or on) the route panel. */
   private rideLoadedWorld(destination: RouteDestination): void {
-    if (this.seatCount >= 2 && isCouchRide(destination)) this.couchRide = destination;
+    // The deferred half of a couch door (`switchCouchRide`): the cop is
+    // re-dealt before the ride is written, as the door itself would have.
+    if (this.couchSession && isCouchRide(destination)) {
+      this.dealRosterFor(destination);
+      this.couchRide = destination;
+    }
     if (destination === 'challenge') this.startChallenge();
     else if (destination === 'knockabout') this.enterKnockabout();
     else if (destination === 'chase') this.enterChase();
@@ -8081,7 +10492,7 @@ export class Game {
    * the developer panel has overridden — live in `LiveTuning`, not in the
    * controller. Skipping it would make a world swap silently reset the ride.
    *
-   * A generated plan's id is `generated-r3-<seed>`, personal bests are filed
+   * A generated plan's id is `generated-r6-<seed>`, personal bests are filed
    * under `levelPlan.id`, and a stored ghost refuses to load against a
    * different id (`app/records.ts:coerceGhost`). `recordForCurrentWorld` closes
    * the diagnostic exception: `?hazardprobe=` changes the course without
@@ -8123,7 +10534,13 @@ export class Game {
     this.levelId = levelId;
     this.seed = seed;
     this.levelPlan = plan;
-    this.terrainView = this.renderer.setLevel(plan, this.presentationOverride);
+    // M39 W1: the tier's intent only, because the `setLevel` below builds
+    // whatever it says — and afterwards the words, because an envelope
+    // refusal is a fact about *this* world and a new world can earn or lose
+    // Ultra on its own. Both do nothing for a player who never asked for it.
+    this.applyRenderTier('world');
+    this.renderer.setLevel(plan, this.presentationOverride);
+    if (this.appliedUltraWanted) this.publishQualityState();
     this.terrain = new PlanTerrainSampler(plan);
     // Rebuilt with the world, like the sampler and the referee above them, and
     // for the same reason: a hazard field outliving its plan would put the last
@@ -8242,7 +10659,12 @@ export class Game {
     // exactly what `syncSeatPose`'s own note says it was extracted to stop.
     // The two lines below `dressSeat` moved past `setCharacter`, which is
     // provably free: that method touches only the ghost rig.
-    this.syncCamera(seat);
+    //
+    // **Not for a pane that is watching somebody else** — M39 Part P, QA r3.
+    // A busted host's camera follows another body (`followedPose`), and a
+    // re-dress moves nobody it follows; `syncCamera` would snap it onto his
+    // own parked wheel and ease it back across the map on the next step.
+    if (seat.spectating === undefined || seat.spectating === null) this.syncCamera(seat);
 
     // **q68, held after the fact and not only at the join panel.** The rule is
     // that two riders on one screen are never the same character, and the
@@ -8279,9 +10701,18 @@ export class Game {
    * else, so nobody else's interpolation may be collapsed.
    */
   private dressSeat(seat: RiderSeat, id: CharacterId): void {
+    // **A rig out of the world stays out of it** — M39 Part P, QA r3. The
+    // one reason a seat's rig is hidden is a couch chase outlaw who is out
+    // (`stepChaseWatchers`), and `releaseChaseSeats` is the one door back. A
+    // re-dress (Settings' reset from the pause card, q68's repair of a guest
+    // wearing the host's new rider) changes who he is, never whether he is
+    // there: a fresh rig is born visible, and would stand his parked body
+    // back in the world mid-round.
+    const shown = seat.rig.group.visible;
     this.renderer.scene.remove(seat.rig.group);
     seat.rig.dispose();
-    seat.rig = createRidingRig(riderLook(id), machineLook(machineForCharacter(id)));
+    seat.rig = rigFor(id);
+    seat.rig.group.visible = shown;
     // A new rig is born with both boots on its pedals; the seat's one-foot
     // state is zeroed to match rather than pushed into it — M36 §36.5. A
     // re-dress happens from a menu, and a foot half-out from before it would
@@ -8350,7 +10781,7 @@ export class Game {
   private worldLink(): string {
     const url = new URL(window.location.href);
     if (this.levelId === 'slice') {
-      url.searchParams.delete('level');
+      url.searchParams.set('level', 'slice');
       url.searchParams.delete('seed');
     } else if (this.levelId === 'generated') {
       url.searchParams.set('level', 'generated');
@@ -8553,6 +10984,11 @@ export class Game {
     // buffer expiry compares against the simulation clock, while menu-repeat
     // pacing runs in the player's time — and the pause menu is exactly the
     // place the simulation clock is frozen, which is where repeats died.
+    //
+    // A quality switch across Ultra steps first (M39's loading notice): its
+    // busy state is still up when this frame's poll reads a pad button held
+    // through the switch's freeze, so that press is refused, not queued.
+    if (this.pendingQuality !== null || this.qualitySettleFrames > 0) this.stepQualitySwitch();
     this.gamepad.poll(this.simTimeSeconds, nowMs / 1000);
 
     // A route the player asked for on the previous frame (M12 Phase 4). Here
@@ -8797,12 +11233,13 @@ export class Game {
     // untouched.
     this.renderer.stepTargets(stepSeconds);
 
-    // The cop, and then the chase's rules — M18, stepped here for the reason
-    // everything above is: he is fed the pose this step just produced, at the
-    // fixed rate, so `advance(n)` reaches the same chase every run. He rides
-    // before the referee looks, so the gap the bust is judged on is this step's
-    // gap rather than the last one's.
-    this.stepCop(stepSeconds);
+    // The pack, and then the chase's rules — M18, stepped here for the reason
+    // everything above is: they are fed the pose this step just produced, at
+    // the fixed rate, so `advance(n)` reaches the same chase every run. They
+    // ride before the referee looks, so the gaps the busts are judged on are
+    // this step's gaps rather than the last one's. Below seat 0's `worldReset`
+    // return, as the cop always was: a reset step integrates nothing.
+    this.stepPursuers(stepSeconds);
 
     // The Knockabout run — M14, stepped beside the timed one and never inside
     // it: the two are alternatives, and a mode that had to check whether the
@@ -8830,7 +11267,9 @@ export class Game {
     const orbitRate = this.tuning.get('INSPECTION_CAMERA.orbitRate');
     for (const seat of this.seats) {
       copyChaseCameraState(seat.currentCamera, seat.previousCamera);
-      seat.chase.step(stepSeconds, this.readChaseInput(seat, seat.currentPose));
+      // A watching outlaw's camera follows the body he is watching (M39 Part
+      // P, q226): the same camera on another seat's pose, no new pass.
+      seat.chase.step(stepSeconds, this.readChaseInput(seat, this.followedPose(seat, false)));
       seat.chase.writeState(seat.currentCamera);
 
       // Diagnostic orbit. Also stepped rather than driven from wall time, so a
@@ -8914,7 +11353,13 @@ export class Game {
     // **Either count** since M37 (§37.4): `startFrozen` is the race's freeze
     // or the bout's, and what they share is that no rider has been released.
     const held = riding && !this.startFrozen;
-    const sampledActions = held
+    // **A couch chase mutes two kinds of seat** — M39 Part P (§39.6b.3b): a
+    // busted outlaw's pane is watching, so every input but the camera's is
+    // dead (q216, q226); and the cop seat's input is discarded while the room
+    // holds him after GO (q224). His physics is held below, on the CPU pack's
+    // terms in `stepPursuers`. Never true solo.
+    const muted = held && this.chaseSeatMuted(index);
+    const sampledActions = held && !muted
       ? seat.source.sample(this.simTimeSeconds)
       : NEUTRAL_ACTIONS;
 
@@ -8945,9 +11390,13 @@ export class Game {
     // has always had: `riding` is false there, the menu owns the pad, and a
     // pause claimed by a seat on the pause screen would eat the press the card
     // is waiting for.
+    //
+    // **And while the chase counts** — M39 Part P (q223): the couch chase's
+    // count is a bout's freeze, and a room held for three seconds may still
+    // pause and mute exactly as a room held by a bout may.
     const oneShots = held
       ? PRESSED_ACTIONS
-      : (riding && this.matchFrozen ? FROZEN_PRESSED_ACTIONS : NO_ACTIONS);
+      : (riding && (this.matchFrozen || this.chaseFrozen) ? FROZEN_PRESSED_ACTIONS : NO_ACTIONS);
     for (const action of oneShots) {
       // The latch is a buffer, not merely an edge detector. Legality belongs
       // to the controller, so an early Space press stays pending while the
@@ -8964,11 +11413,36 @@ export class Game {
       // swinging at two targets in quick succession is early rather than
       // ignored. Past the action buffer it lapses, which is what stops a
       // forgotten press firing at a target half a route later.
-      if (action === 'swing' && !this.canAcceptSwing(seat)) continue;
+      if (action === 'swing' && !this.canAcceptSwing(seat, index)) continue;
       if (!seat.source.consume(action, this.simTimeSeconds)) continue;
       seat.consumed[action] += 1;
+      // A muted chase seat claims its presses and drops them (the latch would
+      // otherwise fire on the first live step); the camera, pause and mute
+      // stay his.
+      if (muted && action !== 'cameraCycle' && action !== 'pause' && action !== 'muteAudio') continue;
       if (action === 'hop') hopForController = true;
       if (action === 'swing') swingForPaddle = true;
+      // **R by role in a couch chase** — M39 Part P (q225, R-12). An
+      // outlaw's R is his bust, recorded as *gave up* and credited to nobody:
+      // a teleport out from under a cop is the one escape the mode cannot
+      // allow, so nothing moves him — the press is latched here and handed to
+      // the referee by `stepChase` (above seat 0's `worldReset` return, which
+      // is why it is a latch and not an act). The cop's R does nothing while
+      // he stands and rights him where he lies when he is down: no director,
+      // no return, never a teleport (§39.6b.3b "The human cop"). Neither
+      // spends the results delay, so an ended round can no longer be
+      // stranded by an R (q175) in a couch at all.
+      if (action === 'reset' && this.couchChaseLive) {
+        if (index === this.chaseCopSeat) {
+          if (seat.controller.crashed) {
+            this.rightInPlace(seat, index);
+            didReset = true;
+          }
+        } else if ((this.chaseSeatOutlaw[index] ?? -1) >= 0) {
+          this.chaseGiveUp[index] = true;
+        }
+        continue;
+      }
       if (action === 'reset') {
         // A lap session resets to the start line's run-up exactly as a timed
         // run does, and for the reason below: `TrackDayRun.restart` throws the
@@ -8999,7 +11473,12 @@ export class Game {
         this.resultsIn = 0;
         didReset = true;
       }
-      if (action === 'cameraCycle') this.cycleCamera(seat);
+      // A watching outlaw's camera press moves his pane to the next standing
+      // body instead of cycling the view (q226, `nextSpectateTarget`).
+      if (action === 'cameraCycle') {
+        if (this.chaseIsCouch && this.chaseSeatOut[index]) this.cycleSpectate(seat, index);
+        else this.cycleCamera(seat);
+      }
       // **The two global one-shots are collected, not fired** — M25 Phase 4
       // (§25.9's any-seat-once). Every seat still *claims* its own latch here,
       // because a latch left pending would fire on the next tick instead; what
@@ -9076,6 +11555,32 @@ export class Game {
       // teleport anybody. Nothing is in flight at a bout's start, so this
       // changes no trick outcome; what it changes is that the two freezes now
       // agree.
+      this.seatTeleported[index] = false;
+      return false;
+    }
+    // **And the couch chase's count, the same way** — M39 Part P (q223). A
+    // separate branch rather than a widened `matchFrozen` so the bout's own
+    // held-step count stays the bout's (`countdownHeldSteps`).
+    if (this.chaseFrozen) {
+      this.seatTeleported[index] = false;
+      return false;
+    }
+    // The human cop shares the CPU pack's physical hold after GO (q224).
+    // Keep the one-shot loop above live for pause/mute, but do not let neutral
+    // input roll him downhill while the outlaws take their head start.
+    if (this.couchChaseLive && index === this.chaseCopSeat && this.chaseRoom.pursuersHeld) {
+      this.seatTeleported[index] = false;
+      return false;
+    }
+    // **A busted outlaw's chair is out of the world** — M39 Part P QA r1
+    // (§39.6b.3b "Busted, then watching", q216). Once his crash beat has
+    // played, his rig is hidden and his wheel parked (`stepChaseWatchers`);
+    // stepping it on would let the controller's auto-recover stand an
+    // invisible body up, play the recovery cue and roll it on, feeding the
+    // spray, the sparks and the crash voice. The one-shots above are still
+    // claimed — the camera press is his spectator's cycle, pause and mute stay
+    // his — and nothing below runs. `false`: nothing teleported.
+    if (this.chaseIsCouch && this.chaseSeatOut[index]) {
       this.seatTeleported[index] = false;
       return false;
     }
@@ -9512,6 +12017,16 @@ export class Game {
       // did, *every* attacker whose committed paddle was in that batch earns it
       // (q173). A shove is not a knockdown and never was.
       if (down) for (const attacker of outcome.credited) this.match.knockdown(attacker);
+      // **The human cop's landed swing, handed to the chase's referee** — M39
+      // Part P (§39.6b.3b, R-11). He is the one paddle in a couch chase and
+      // the room's pursuer 0, so a strike that reached an outlaw — a hard
+      // knock or a shove alike — is recorded before the room's step, as the
+      // CPU pack's are (`stepPursuers`), and the crash that follows inside
+      // the credit window is his bust (A-7). Nothing here decides it.
+      if (this.chaseIsCouch && (outcome.credited.length > 0 || outcome.shoves.length > 0)) {
+        const outlaw = this.chaseSeatOutlaw[outcome.victim] ?? -1;
+        if (outlaw >= 0) this.chaseRoom.recordStrike(0, outlaw);
+      }
       for (let i = 0; i < outcome.shoves.length; i += 1) {
         // The same cost the cop's strike has spent since M18, and misfiled in
         // the same way `riderHitRadius` is: it is what a paddle takes off a
@@ -9555,7 +12070,8 @@ export class Game {
     // on the step the bout was armed. Clearing on every frozen step is also
     // what makes the contact half of GO's clear a statement rather than a
     // hope: by the time the room is released the map is already empty.
-    if (!this.contactLive || seatReset || this.matchFrozen) {
+    // **And the chase's count**, on the bout's own argument (M39 Part P, q223).
+    if (!this.contactLive || seatReset || this.matchFrozen || this.chaseFrozen) {
       this.clearContactHistory();
       return;
     }
@@ -9588,6 +12104,13 @@ export class Game {
     // shoves would.
     for (let first = 0; first < seats; first += 1) {
       for (let second = first + 1; second < seats; second += 1) {
+        // The cop seat and a watching outlaw are outside contact in a couch
+        // chase (M39 Part P, q73) — and a pair that is not resolved has no
+        // history, this method's own rule, so its cooldown is forgotten.
+        if (this.outOfChaseContact(first) || this.outOfChaseContact(second)) {
+          this.contactPairs.get(contactKey(first, second))?.clear();
+          continue;
+        }
         this.stepContactPair(stepSeconds, first, second, tuning);
       }
     }
@@ -9708,7 +12231,7 @@ export class Game {
     // passes below, because both rigs are in the one scene and both are drawn
     // by both passes — a rig posed inside the pass loop would be posed twice
     // per frame for no gain.
-    for (const other of this.seats) this.renderSeat(other, alpha);
+    for (let index = 0; index < this.seats.length; index += 1) this.renderSeat(this.seats[index], index, alpha);
     const seat = this.seats[0];
 
     // Seat 0's interpolated pose, for the things that are still genuinely
@@ -9716,21 +12239,27 @@ export class Game {
     // split at Phase 3 reads its own seat's pose inside the pass loop.
     const pose = seat.renderPose;
 
-    // **The cop, at the same interpolated moment as the player** — M18. He is a
-    // live rider stepped at the fixed rate, so drawing him at his stepped pose
-    // would leave him juddering beside a player who is smooth, and at 65 mph
-    // one step is a quarter of a metre. `setCopVisible` is the single writer of
-    // the second-rider slot, so showing him hides the ghost by construction.
+    // **The pack, at the same interpolated moment as the player** — M18's cop,
+    // every pursuer since M39 Part P. Each is a live rider stepped at the fixed
+    // rate, so drawing him at his stepped pose would leave him juddering beside
+    // a player who is smooth, and at 65 mph one step is a quarter of a metre.
+    // `setCopVisible` is the single writer of the second-rider slot, so showing
+    // the pack hides the ghost by construction; it shows exactly the trims this
+    // world's pack holds (the tail's is `cop-rider`, the patrols' `cop2-`,
+    // `cop3-`), so the frame draws what exists and nothing else.
     if (this.copRiding) {
-      lerpPose(this.copPrevious, this.copCurrent, alpha, this.copRender);
-      this.copPaddle.writeHeadFor(this.copRender, this.copHead);
-      this.renderer.setCopVisible(true);
-      this.renderer.applyCop(
-        this.copRender,
-        this.copHead,
-        this.copPaddle.angle,
-        this.copPaddle.armCommitment,
-      );
+      this.renderer.setCopVisible(true, this.pursuers.length);
+      for (const pursuer of this.pursuers) {
+        lerpPose(pursuer.previous, pursuer.current, alpha, pursuer.render);
+        pursuer.paddle.writeHeadFor(pursuer.render, pursuer.head);
+        this.renderer.applyPackmate(
+          pursuer.index,
+          pursuer.render,
+          pursuer.head,
+          pursuer.paddle.angle,
+          pursuer.paddle.armCommitment,
+        );
+      }
     } else if (this.renderer.secondRiderShown === 'cop') {
       this.renderer.setCopVisible(false);
     }
@@ -9745,6 +12274,11 @@ export class Game {
     // Both HUDs, before the passes, because the DOM is drawn by the browser
     // over the whole canvas rather than inside either half's scissor box.
     // The step clock is read once and cleared once (see `updateHud`).
+    // The couch room, read once for every pane's lane and the room card —
+    // M39 Part P. Its `state` allocates, which a drawn frame may do once.
+    this.chaseFrameState = this.chaseIsCouch && this.chaseRoom.phase !== 'idle'
+      ? this.chaseRoom.state
+      : null;
     const hudSeconds = this.hudStepSeconds;
     this.hudStepSeconds = 0;
     for (let view = 0; view < this.seats.length; view += 1) {
@@ -9755,8 +12289,9 @@ export class Game {
     // transition, which is right for "who is on the couch" and wrong for a
     // standings board: the positions move every lap and nothing about the
     // seats moves with them. `IdlePane.setCard` diffs the composed text, so a
-    // frame that changes nothing writes no DOM.
-    this.updateIdlePane();
+    // frame that changes nothing writes no DOM. The couch chase's card reads
+    // the room this frame already read (`chaseFrameState`), not a second one.
+    this.updateIdlePane(this.chaseFrameState);
 
     // **The frame, one pass per seat** — M25 Phase 3 (docs/PLANS.md §25.5).
     //
@@ -9780,7 +12315,10 @@ export class Game {
     const views = this.renderer.viewCount;
     for (let view = 0; view < views && view < this.seats.length; view += 1) {
       const drawn = this.seats[view];
-      const at = drawn.renderPose;
+      // The pose this pane is looking at: the seat's own rider, or the body a
+      // watching outlaw follows (M39 Part P, q226) — his view slot draws that
+      // seat's drawn pose, so the shadow and the ground follow it too.
+      const at = this.followedPose(drawn, true);
       this.renderer.setShadowFocus(at.x, at.y, at.z);
       this.terrainView.setSurroundCentre(at.x, at.z);
       this.placeCamera(drawn, view, alpha);
@@ -9817,7 +12355,7 @@ export class Game {
    * interpolate before the head is written, write the head before the stance
    * is solved, solve the stance before the status light is stated.
    */
-  private renderSeat(seat: RiderSeat, alpha: number): void {
+  private renderSeat(seat: RiderSeat, index: number, alpha: number): void {
     // Interpolating between the two most recent states is the other half of a
     // fixed-step loop; without it the view stutters whenever the display
     // cadence and the step rate disagree, which is almost always.
@@ -9833,7 +12371,9 @@ export class Game {
     // the *interpolated* pose: the hit test swept through a fixed-step head, and
     // drawing that one would leave the paddle up to a quarter of a metre behind
     // its own rider at 65 mph.
-    if (this.paddleEquipped) {
+    // Per seat since M39 Part P (R-11): in a couch chase only the cop's rig
+    // carries one.
+    if (this.paddleEquippedFor(index)) {
       seat.paddle.writeHeadFor(pose, seat.paddleHead);
       seat.rig.applySwing(seat.paddleHead, seat.paddle.angle, seat.paddle.armCommitment);
     } else {
@@ -9943,9 +12483,15 @@ export class Game {
       // region from every other pane), so a second countdown element would be
       // a second voice for a room that already has one. The two counts cannot
       // overlap: a race and a match are different app states.
+      //
+      // **And the couch chase's count, through the same field** — M39 Part P
+      // (q223): one count element, one announcing pane, for the third room
+      // that counts. Never present solo.
       countdown: this.race.state.phase === 'countdown'
         ? this.race.state.countdown
-        : (matchState.phase === 'countdown' ? matchState.countdown : undefined),
+        : (matchState.phase === 'countdown'
+          ? matchState.countdown
+          : (this.chaseFrozen ? this.chaseFrameState?.countdown : undefined)),
       // **The standings, in this seat's own pane** — M27 Phase 4 (§27.4), and
       // gated on the referee's own phase for M23's lap-lane reason: a player
       // pauses *to read a number*, and a lane keyed on the app state would
@@ -9993,17 +12539,34 @@ export class Game {
       // the same terms, and it carries the two cues the player cannot see for
       // themselves: whether the boundary's clock is running, and whether the
       // cop is inside the radius where a crash would end the run.
+      // Read through the referee's allocation-free accessors (`state` would
+      // build the whole room once per seat per frame). `copClose` is *any*
+      // standing cop inside the bust radius (§39.6b.3 "Sound, HUD, card").
       chase: this.appState.current === 'chase'
-        ? {
-          remaining: this.chaseRun.state.remaining,
-          straying: this.chaseRun.state.straying,
-          copClose: this.copGap <= this.chaseRun.bustRadiusMetres,
-          // The two facts §4.4 asked for. The grace comes off the referee, so
-          // the number on screen is the clock the rule is actually keeping
-          // rather than a copy of it maintained here.
-          strayGrace: this.chaseRun.state.strayGrace,
-          homeRadians: this.directionToRoute(pose),
-        }
+        ? (this.chaseIsCouch
+          ? this.couchChaseLane(index, pose)
+          : {
+            remaining: this.chaseRoom.phase === 'idle'
+              ? this.tuning.get('CHASE.escapeSeconds')
+              : this.chaseRoom.remaining,
+            straying: this.chaseRoom.phase !== 'idle' && this.chaseRoom.strayClockOf(0) > 0,
+            copClose: this.copGap <= this.chaseRoom.bustRadiusMetres,
+            // The two facts §4.4 asked for. The grace comes off the referee, so
+            // the number on screen is the clock the rule is actually keeping
+            // rather than a copy of it maintained here.
+            strayGrace: Math.max(
+              0,
+              this.chaseRoom.strayGraceSeconds
+                - (this.chaseRoom.phase === 'idle' ? 0 : this.chaseRoom.strayClockOf(0)),
+            ),
+            homeRadians: this.directionToRoute(pose),
+          })
+        : undefined,
+      // **The cop seat's lane** — M39 Part P (§39.6b.3b "The human cop",
+      // q220): the clock, his busts, and one arrow and one number to the
+      // nearest standing outlaw. Mutually exclusive with `chase` by seat role.
+      chaseCop: this.appState.current === 'chase' && this.chaseIsCouch && index === this.chaseCopSeat
+        ? this.copLane(pose)
         : undefined,
       // The lap lane — M23. It shares the run lane with the timed run and the
       // two can never both be present: they are different app states, and
@@ -10206,16 +12769,24 @@ export class Game {
     // Infinity the moment it is not — the director owes escape, bust, and
     // quit no separate treatment because they all arrive as the same fact.
     // The probe (`?chaseprobe=1`) has no rules and no pursuit, and stays
-    // silent through the same expression. Closing speed is the gap's own
+    // silent through the same expression. Closing speed is the range's own
     // derivative, clamped against the teleports a reset can produce.
+    //
+    // **One bed, fed by the room's nearest riding pair** (M39 Part P, §2a.5):
+    // `sirenRangeMetres` is the nearest standing, *unparked* cop to the
+    // standing rider — never any one cop's own gap (§21.9's trap), and never
+    // a patrol asleep at his post (R-19): he joins the bed the step he wakes.
+    // A second and third siren are not built; three sirens on a handset are
+    // the thing the annoyance bar removes rather than tunes (§39.6b.3).
     const pursuing = this.appState.current === 'chase'
-      && this.chaseRun.state.phase === 'running';
-    if (pursuing) {
-      input.copRangeMetres = this.copGap;
+      && this.chaseRoom.phase === 'running';
+    const sirenRange = this.chaseRoom.sirenRangeMetres;
+    if (pursuing && Number.isFinite(sirenRange)) {
+      input.copRangeMetres = sirenRange;
       input.copClosingSpeed = dt > 0 && Number.isFinite(this.lastSirenGap)
-        ? clamp((this.lastSirenGap - this.copGap) / dt, -15, 15)
+        ? clamp((this.lastSirenGap - sirenRange) / dt, -15, 15)
         : 0;
-      this.lastSirenGap = this.copGap;
+      this.lastSirenGap = sirenRange;
     } else {
       input.copRangeMetres = Number.POSITIVE_INFINITY;
       input.copClosingSpeed = 0;
@@ -10273,7 +12844,7 @@ export class Game {
    */
   private placeCamera(seat: RiderSeat, view: number, alpha: number): void {
     const camera = this.renderer.cameraFor(view);
-    const pose = seat.renderPose;
+    const pose = this.followedPose(seat, true);
 
     if (seat.cameraMode === 'orbit') {
       const angle = seat.previousOrbitAngle
@@ -10361,6 +12932,7 @@ export class Game {
     context.profile = this.profiler.report();
     context.tuningOverrides = this.tuning.overrideCount();
     context.audio = this.audio.snapshot();
+    context.chase = this.debugChaseContext();
 
     this.overlay.update(context, nowMs);
   };
@@ -10499,10 +13071,12 @@ export class Game {
     // spawn on pavement.
     this.audio.reset();
     this.lastSuspensionOffset = 0;
-    // And the cop goes back behind whoever he is chasing — M18. After
+    // And the pack goes back where a round begins — M18's cop behind whoever
+    // he is chasing, the patrols back at their posts (M39 Part P, R-12's solo
+    // R: the room's start re-run, its clocks and bell untouched). After
     // `syncPoses`, because it reads the rider's freshly written pose to decide
     // where "behind" is.
-    this.placeCopBehindRider();
+    this.placePackAtStart();
   }
 
   /** Eight-way HUD bearing, derived from the active plan checkpoint. */
@@ -10539,9 +13113,19 @@ export class Game {
    * player will follow without thinking.
    */
   private directionToRoute(pose: EucPose): number {
+    return this.directionToRouteAt(pose, this.spineAt.distance);
+  }
+
+  /**
+   * `directionToRoute` from a route distance the caller already located —
+   * M39 Part P: each couch outlaw's own, kept by `writeRoomFacts` from the
+   * same `locate` the referee's off-route fact came from, so his arrow points
+   * at the road the rule is measuring him against.
+   */
+  private directionToRouteAt(pose: EucPose, distance: number): number {
     const spine = this.spine;
     if (spine === null) return Number.NaN;
-    spine.sample(this.spineAt.distance, this.spineSample);
+    spine.sample(distance, this.spineSample);
     const dx = this.spineSample.x - pose.x;
     const dz = this.spineSample.z - pose.z;
     // Standing on the line is the one case with no bearing to give. It cannot
@@ -10549,6 +13133,85 @@ export class Game {
     // struct is shared and a caller from anywhere else would get `atan2(0, 0)`.
     if (dx * dx + dz * dz < 1e-6) return Number.NaN;
     return wrapAngle(Math.atan2(dx, dz) - pose.headingY);
+  }
+
+  /**
+   * One outlaw's chase lane in a couch room — M39 Part P (§39.6b.3b "Sound,
+   * HUD, card", q216). **That seat's facts, not seat 0's**: his clock is the
+   * room's, but "he is right behind you" is *his* nearest standing cop
+   * (`nearestCopMetres`, parked patrols included, §2a.5), the stray banner and
+   * its grace are his own clock, and the home arrow points from where he is
+   * to the road he is measured against. Once he is out, the lane turns
+   * spectator (`ChaseSpectatorHudInput`): how and when he went, and how many
+   * of the room are still standing. Undefined for the cop's seat, whose lane
+   * is `copLane`.
+   */
+  private couchChaseLane(index: number, pose: EucPose): HudInput['chase'] {
+    const outlaw = this.chaseSeatOutlaw[index] ?? -1;
+    if (outlaw < 0) return undefined;
+    const room = this.chaseRoom;
+    const armed = room.phase !== 'idle';
+    const status: OutlawStatus = armed ? room.statusOf(outlaw) : 'standing';
+    const standing = status === 'standing';
+    const strayed = armed && standing ? room.strayClockOf(outlaw) : 0;
+    const watching = spectatorStatus(status);
+    const state = this.chaseFrameState;
+    return {
+      remaining: armed ? room.remaining : this.tuning.get('CHASE.couchEscapeSeconds'),
+      straying: strayed > 0,
+      copClose: standing && room.nearestCopMetres(outlaw) <= room.bustRadiusMetres,
+      strayGrace: Math.max(0, room.strayGraceSeconds - strayed),
+      homeRadians: this.directionToRouteAt(pose, this.chaseOutlawDistance[outlaw] ?? 0),
+      spectator: watching === null
+        ? undefined
+        : {
+          status: watching,
+          endedAt: state?.outlaws[outlaw]?.endedAt ?? room.elapsed,
+          standing: state?.standing ?? 0,
+          outlaws: this.chaseOutlawSeats.length,
+        },
+    };
+  }
+
+  /**
+   * The cop seat's lane — M39 Part P (§39.6b.3b "The human cop", q220): the
+   * room's clock, his busts *n* of *N*, and **one arrow and one number to the
+   * nearest standing outlaw** — `copPack.bearingTo` from the pose his pane is
+   * drawn at to that outlaw's, the same straight-line arithmetic the siren
+   * reads on the other side. No readout outside a running round or with
+   * nobody standing (non-finite, which `ui/hudModel.ts` draws as nothing).
+   */
+  private copLane(pose: EucPose): ChaseCopHudInput {
+    const room = this.chaseRoom;
+    const running = room.phase === 'running';
+    let target: EucPose | null = null;
+    let nearest = Infinity;
+    if (running) {
+      for (let outlaw = 0; outlaw < this.chaseOutlawSeats.length; outlaw += 1) {
+        const seatIndex = this.chaseOutlawSeats[outlaw];
+        const rider = this.seats[seatIndex];
+        if (rider === undefined || this.chaseSeatOut[seatIndex] || room.statusOf(outlaw) !== 'standing') continue;
+        const range = Math.hypot(rider.renderPose.x - pose.x, rider.renderPose.z - pose.z);
+        if (range < nearest) {
+          nearest = range;
+          target = rider.renderPose;
+        }
+      }
+    }
+    const readout = this.copBearing;
+    if (target === null) {
+      readout.bearing = Number.NaN;
+      readout.range = Number.POSITIVE_INFINITY;
+    } else {
+      bearingTo(pose, target, readout);
+    }
+    return {
+      remaining: room.phase === 'idle' ? this.tuning.get('CHASE.couchEscapeSeconds') : room.remaining,
+      busts: this.chaseFrameState?.pursuers[0]?.busts ?? 0,
+      outlaws: this.chaseOutlawSeats.length,
+      bearing: readout.bearing,
+      range: readout.range,
+    };
   }
 
   /**
@@ -10643,11 +13306,48 @@ export class Game {
       && state !== 'trackDay'
       && state !== 'trickRun'
       && state !== 'routes'
+      // **And the chase, the day it became a couch ride** — M39 Part P
+      // (§39.6b.3b: "both couch-exit lists learn the new ride the day it
+      // lands, not at an audit"). `appState.ts`' `couchJoin` successors are
+      // the other list.
+      && state !== 'chase'
     ) this.closeCouch();
     // And leaving the couch ride itself. Quit lands on `title` from the pause
     // card; the results screen has no couch to come from in stage 1, and a
     // world swap keeps both seats on purpose (`installLevel`).
     if (state === 'title' && this.seats.length > 1) this.closeCouch();
+    // **The cop goes back to being nobody's at the title** — q215. A room that
+    // shrank to one seat never reaches `closeCouch`, and a host still wearing
+    // Officer Dorkins there would carry him into the solo game.
+    if (state === 'title') this.dealRosterFor(DEFAULT_COUCH_RIDE);
+    // **Leaving a couch chase for anything that is not its pause, its
+    // settings or its card** stands the room down and puts every chair back
+    // in the world — M39 Part P (§39.6b.3b). The mode entrances abandon the
+    // referee themselves; a free ride reached by the couch switch does not,
+    // and a watching outlaw's hidden rig must not follow him into it.
+    if (
+      this.chaseIsCouch
+      && state !== 'chase' && state !== 'paused' && state !== 'settings' && state !== 'results'
+    ) {
+      this.chaseRoom.abandon();
+      this.releaseChaseSeats();
+      this.chaseIsCouch = false;
+    }
+    // **The title is where a multiplayer session ends, whatever is left of
+    // it** — M39 W1. `closeCouch` above ends a session that still has guests;
+    // this ends the one-seat remnant, which PLANS §39.6 keeps multiplayer
+    // (and so on High) until exactly this moment, and gives a saved Ultra
+    // back. Otherwise, while Ultra is wanted, the two menus that show the
+    // tier re-read it on arrival: a renderer that demoted itself mid-ride
+    // (a shader that failed to compile is only found at the next frame) is
+    // then shown as High before anyone reads a stale "On". Neither arm runs
+    // for a player who never asked for Ultra.
+    if (state === 'title' && this.multiplayerSession) {
+      this.multiplayerSession = multiplayerAfter(this.multiplayerSession, 'title');
+      this.applyRenderTier('title');
+    } else if ((state === 'title' || state === 'settings') && this.appliedUltraWanted) {
+      this.publishQualityState();
+    }
 
     // **The panel and the ride count the split differently** (`viewSeats`), so
     // crossing that boundary is a moment the number can change without a seat
@@ -10733,7 +13433,7 @@ export class Game {
     // `switchCouchRide` asks it there: the door and the control must refuse and
     // offer on identical terms, or a button is drawn that its own handler will
     // not serve.
-    const switchable = this.seatCount >= 2 ? this.couchRideOnScreen() : null;
+    const switchable = this.couchSession ? this.couchRideOnScreen() : null;
     // A missing prerequisite changes the mode press into a fresh-course
     // request. Keep it reachable by keyboard, pointer and every claimed pad.
     const blocked = NO_RIDES_BLOCKED;
@@ -11151,6 +13851,14 @@ export class Game {
    * the machinery rather than the only thing standing between them.
    */
   private openCouch(): void {
+    // **High before anything else happens** — M39 W1 (PLANS §39.6). With a
+    // saved Ultra, "entering a couch/multiplayer session uses ordinary High
+    // before its first frame", so the session flag rises on the first line,
+    // ahead of the guest's rig and the split below; the saved preference is
+    // untouched and comes back when the session ends. Low, Medium and High
+    // pass straight through: their ordinary tier does not change here.
+    this.multiplayerSession = multiplayerAfter(this.multiplayerSession, 'couch-open');
+    this.applyRenderTier('couch-open');
     // **Contact goes back on, every time, and that is a decision rather than a
     // consequence** — q81, M26 Phase 2. The owner asked for it about the
     // player: *"contact should reset to on in case players forget it
@@ -11169,13 +13877,14 @@ export class Game {
     // Phase 5. A session starts here, so what the last one was for is not what
     // this one is for; two people sitting down get the ride with no rules
     // attached, and choosing a fight stays something you do on purpose.
+    this.dealRosterFor(DEFAULT_COUCH_RIDE);
     this.couchRide = DEFAULT_COUCH_RIDE;
     // **q68 re-derived for the whole couch** — M27 Phase 1. The player may have
     // changed who *they* are since the last visit, and with four cards the
     // repair is not "move the guest": it is "deal the guests again", because
     // one guest stepping aside can land on another guest.
     const host = this.seats[0].character;
-    if (this.guestCharacters.includes(host as PlayableCharacterId)) {
+    if (this.guestCharacters.includes(host)) {
       const dealt = guestRoster(host, COUCH_SEATS);
       for (let index = 0; index < this.guestCharacters.length; index += 1) {
         this.guestCharacters[index] = dealt[index];
@@ -11223,10 +13932,27 @@ export class Game {
   private closeCouch(): void {
     this.endClaiming();
     this.clearClaims();
+    // **A couch chase ends with the couch** — M39 Part P. The room is stood
+    // down and every chair put back in the world before anybody leaves, so a
+    // host who was watching when the room broke up is not left hidden in his
+    // own solo game.
+    if (this.chaseIsCouch) {
+      this.chaseRoom.abandon();
+      this.releaseChaseSeats();
+      this.chaseIsCouch = false;
+    }
     // Every guest, not "the" guest: a room that grew to four leaves four rigs
     // and four panes behind, and a loop that ran once would have left two of
     // them standing in a single-player world.
     while (this.seats.length > 1) this.despawnRider();
+    // **And the cop with it** — q215: the host goes back to his saved rider
+    // and no guest card keeps Officer Dorkins into the next session.
+    this.dealRosterFor(DEFAULT_COUCH_RIDE);
+    // **The session ends here, after the last guest has gone** — M39 W1. Not
+    // before: the frame must be back to one view before a saved Ultra is
+    // rebuilt over it, and the loop above is what takes it there.
+    this.multiplayerSession = multiplayerAfter(this.multiplayerSession, 'couch-close');
+    this.applyRenderTier('couch-close');
     this.updateCouchPanel();
   }
 
@@ -11281,6 +14007,17 @@ export class Game {
     // lesson is that this is the list a new member is most often missing from.
     if (this.couchRide === 'trickRun') {
       this.enterTrickRun();
+      return;
+    }
+    // **And the fifth, the chase** — M39 Part P (§39.6b.3b "The room"). The
+    // room is dealt from the rigs the join wheel dressed (the seat wearing
+    // Officer Dorkins is the cop), the pack is sized by the rule, every seat
+    // is stood on the room's start and the count begins; a `goTo` past
+    // `enterChase` would be a chase with nobody keeping it. A world that
+    // cannot host one sends the room to the routes panel's `needs-route`
+    // line, as the title's entrance does, with every seat kept.
+    if (this.couchRide === 'chase') {
+      this.enterChase();
       return;
     }
     this.goTo('freeRide');
@@ -11369,12 +14106,39 @@ export class Game {
     // With four cards the rider to step over is whoever any of the other three
     // is wearing, and a walk that skipped one of them would offer a rider the
     // panel would then have to take away.
-    const taken = this.couchCharacters().filter((_, index) => index !== seat);
+    const cards = this.couchCharacters();
+    const taken = cards.filter((_, index) => index !== seat);
+    // **Officer Dorkins is on the wheel on the chase only, once** — M39 Part
+    // P (q215). `cycleSeatCharacter` is `cycleGuest`'s walk with the cop
+    // appended last when the room has chosen the chase; `taken` still
+    // refuses him to a second card, because q68's distinctness is the
+    // roster's rule and he is on the roster now.
+    const moved = cycleSeatCharacter(cards[seat] ?? DEFAULT_CHARACTER, taken, delta, this.couchRide);
     if (seat === 0) {
-      this.options.set({ character: cycleGuest(this.options.current.character, taken, delta) });
+      // **Seat 0's cop is session state, never the options record**: the
+      // saved rider is what the player rides alone and what the chooser can
+      // offer, and a cop written there would be neither. The rig and the
+      // panel move together (§25.5's two places): `hostCop` is the field,
+      // `dressSeat` the rig.
+      if (moved === 'cop') {
+        this.hostCop = true;
+        this.dressSeat(this.seats[0], 'cop');
+        this.updateCouchPanel();
+        return;
+      }
+      const wasCop = this.hostCop;
+      this.hostCop = false;
+      if (moved !== this.options.current.character) {
+        // Every rider but the cop is playable, and `moved` is not the cop.
+        this.options.set({ character: moved as PlayableCharacterId });
+      } else if (wasCop) {
+        // Back to the saved rider: no option changes, so the rig is put back
+        // by hand, with `installCharacter`'s q68 repair of anybody wearing him.
+        this.installCharacter(moved);
+        this.updateCouchPanel();
+      }
       return;
     }
-    const moved = cycleGuest(this.guestCharacterFor(seat), taken, delta);
     this.setGuestCharacter(seat, moved);
     // A card may belong to a chair nobody has put out yet (`growCouch`), which
     // is not a reason to refuse the arrow: the choice is remembered and worn
@@ -11392,8 +14156,65 @@ export class Game {
    * true of on screen. Seat 0 is the options record for the reason
    * `updateCouchPanel` states; the rest are session state.
    */
+  /**
+   * Who seat 0's card is showing — the options record, or Officer Dorkins
+   * while the host holds the cop slot on the chase (q215). The one reader
+   * both the panel and the wheel ask, so the card cannot name somebody the
+   * rig is not wearing.
+   */
+  private get hostCharacter(): CharacterId {
+    return this.hostCop ? 'cop' : this.options.current.character;
+  }
+
+  /**
+   * Re-deal the cop for a ride that is not the chase — M39 Part P (q215),
+   * **M26's refusal-before-write rule** at every door that leaves the chase:
+   * the join panel's chooser, both couch doors (the pause card and the
+   * results card), the deferred route build behind them, and the couch's
+   * own opening and closing.
+   *
+   * The whole roster is worked out first and written after, `rosterForRide`
+   * doing the dealing: the host goes back to the saved rider he never stopped
+   * owning (seat 0's rider is the one that never moves), a guest card holding
+   * the cop gets a playable rider nobody else is wearing, and a guest card
+   * that took the host's saved rider while he was the cop steps aside for him
+   * (q68). Then each change reaches the field and the rig together (§25.5's
+   * two places) — and only then does the caller write the ride. Switching
+   * *to* the chase leaves the wheel as it stands: the slot is the CPU's until
+   * somebody picks him. A no-op whenever no card holds the cop.
+   */
+  private dealRosterFor(ride: CouchRide): void {
+    if (ride === 'chase') return;
+    // **What each chair is actually wearing**, the rig over the card where a
+    // seat exists (q68 is about who is on screen), so a cop seated by any
+    // door is found and re-dealt.
+    const cards = this.couchCharacters().map((card, seat) => (
+      seat > 0 ? this.seats[seat]?.character ?? card : card
+    ));
+    if (!cards.includes('cop')) return;
+    const start = [...cards];
+    if (this.hostCop) start[0] = this.options.current.character;
+    const next = rosterForRide(start, ride);
+    for (let seat = 1; seat < next.length; seat += 1) {
+      if (next.slice(0, seat).includes(next[seat])) {
+        next[seat] = guestBeside(next.filter((_, other) => other !== seat));
+      }
+    }
+    if (this.hostCop) {
+      this.hostCop = false;
+      this.dressSeat(this.seats[0], next[0]);
+    }
+    for (let seat = 1; seat < next.length && seat < COUCH_SEATS; seat += 1) {
+      if (next[seat] === cards[seat]) continue;
+      this.setGuestCharacter(seat, next[seat]);
+      const guest = this.seats[seat];
+      if (guest !== undefined) this.dressSeat(guest, next[seat]);
+    }
+    this.updateCouchPanel();
+  }
+
   private couchCharacters(): CharacterId[] {
-    const cards: CharacterId[] = [this.options.current.character];
+    const cards: CharacterId[] = [this.hostCharacter];
     for (let seat = 1; seat < COUCH_SEATS; seat += 1) cards.push(this.guestCharacterFor(seat));
     return cards;
   }
@@ -11427,7 +14248,9 @@ export class Game {
         // which is the options firewall showing through the panel. It is also
         // the typed answer: `RiderSeat.character` is a `CharacterId`, and the
         // roster the cards cycle contains no cop.
-        character: index === 0 ? this.options.current.character : this.guestCharacterFor(index),
+        // Since M39 Part P the cop too, on the chase (q215): seat 0's card
+        // reads `hostCharacter`, the options record or the session's cop.
+        character: index === 0 ? this.hostCharacter : this.guestCharacterFor(index),
         // **Whether there is a chair here at all** — M27 Phase 1. Four cards
         // are always drawn and a seat exists only when somebody could sit in
         // it (`growCouch`), so the card for a chair that is not out yet says
@@ -11753,6 +14576,13 @@ export class Game {
       sunIntensity: this.tuning.get('LIGHTING.sunIntensity'),
       hemisphereIntensity: this.tuning.get('LIGHTING.hemisphereIntensity'),
     });
+    // The fifteen live Ultra values (F4's `ULTRA.*`, M39) travel the same
+    // road as the lighting above: read here as plain numbers, pushed to the
+    // renderer, which owns what they mean. Pushed whatever the tier, so an
+    // Ultra switched on later starts from the panel's values rather than the
+    // table's; the renderer only acts on them while Ultra is drawing.
+    this.renderer.setUltraTuning(readUltraLive((path) => this.tuning.get(path)));
+    this.renderer.setUltraPixelBudget(this.tuning.get('ULTRA.pixelBudget'));
     this.renderer.setMaxPixelRatio(this.tuning.get('RENDER.maxPixelRatio'));
     this.loop.setMaxStepsPerFrame(this.tuning.get('SIMULATION.maxStepsPerFrame'));
 
@@ -11900,7 +14730,16 @@ export class Game {
     for (const seat of this.seats) {
       seat.controller.setTuning(controllerTuning);
     }
-    this.copController?.setTuning(controllerTuning);
+    // **Except his cutout edge** (2026-09-22). The owner tightened the
+    // player's cutout and in the same breath called the chase too easy, so the
+    // cop's wheel keeps the pre-change edge his brain's ceiling is a margin
+    // under (`CHASE.copCutoutSpeedShare`). Spread last so no shared field can
+    // put his wheel's edge below the speed his brain rides to.
+    // Every cop of the pack alike (§39.6b.3: one brain and one wheel,
+    // differing only in role).
+    for (const pursuer of this.pursuers) {
+      pursuer.controller.setTuning({ ...controllerTuning, ...COP_WHEEL_TUNING });
+    }
 
     // **The Drunkard's numbers, on the same loop** — M29 safeguard S7. The
     // `DRUNK` group's sliders move a *copy* of `DRUNK_STYLE` built off the
@@ -11914,7 +14753,7 @@ export class Game {
     for (const seat of this.seats) {
       seat.controller.setRideStyle(this.rideStyleFromStore(seat.character));
     }
-    this.copController?.setRideStyle(this.rideStyleFromStore('cop'));
+    for (const pursuer of this.pursuers) pursuer.controller.setRideStyle(this.rideStyleFromStore('cop'));
 
     // The paddle's live subset — M14. Pushed here rather than read through the
     // tuning table inside the swing, on the pattern the controller above uses:
@@ -11935,23 +14774,39 @@ export class Game {
     // it is used — a spawn, a strike, a finish — which is once in a while
     // rather than 120 times a second, and reading them there keeps the value
     // beside the code it decides.
-    this.chaseRun.escapeSeconds = this.tuning.get('CHASE.escapeSeconds');
-    this.chaseRun.bustRadiusMetres = this.tuning.get('CHASE.bustRadiusMetres');
-    this.chaseRun.touchBustMetres = this.tuning.get('CHASE.touchBustMetres');
-    this.chaseRun.touchBustClosingSpeed = this.tuning.get('CHASE.touchBustClosingSpeed');
-    this.chaseRun.strayLimitMetres = this.tuning.get('CHASE.strayLimitMetres');
-    this.chaseRun.strayGraceSeconds = this.tuning.get('CHASE.strayGraceSeconds');
-    this.chaseRun.trackerGapMetres = this.tuning.get('CHASE.trackerGapMetres');
-    this.chaseRun.trackerHoldSeconds = this.tuning.get('CHASE.trackerHoldSeconds');
+    //
+    // `CHASE.escapeSeconds` joined that list at M39 Part P: the referee takes
+    // its bell at `arm` (`armChaseRoom` reads it there, as `ChaseRun` read its
+    // clock), so a slider moved mid-round applies from the next round.
+    const room = this.chaseRoom;
+    room.bustRadiusMetres = this.tuning.get('CHASE.bustRadiusMetres');
+    room.touchBustMetres = this.tuning.get('CHASE.touchBustMetres');
+    room.touchBustClosingSpeed = this.tuning.get('CHASE.touchBustClosingSpeed');
+    room.strayLimitMetres = this.tuning.get('CHASE.strayLimitMetres');
+    room.strayGraceSeconds = this.tuning.get('CHASE.strayGraceSeconds');
+    room.trackerGapMetres = this.tuning.get('CHASE.trackerGapMetres');
+    room.trackerHoldSeconds = this.tuning.get('CHASE.trackerHoldSeconds');
     // The pressure director's clocks — the chase pass (§31). The stall speed
     // and gap are deliberately not on the panel: a stall is a fact about a
     // wheel going nowhere, not a taste.
-    this.chaseRun.trackerQuietGapMetres = this.tuning.get('CHASE.trackerQuietGapMetres');
-    this.chaseRun.trackerQuietSeconds = this.tuning.get('CHASE.trackerQuietSeconds');
-    this.chaseRun.trackerRespiteSeconds = this.tuning.get('CHASE.trackerRespiteSeconds');
-    this.chaseRun.trackerStallSeconds = this.tuning.get('CHASE.trackerStallSeconds');
-    if (this.copBrain !== null) {
-      const brain = this.copBrain;
+    room.trackerQuietGapMetres = this.tuning.get('CHASE.trackerQuietGapMetres');
+    room.trackerQuietSeconds = this.tuning.get('CHASE.trackerQuietSeconds');
+    room.trackerRespiteSeconds = this.tuning.get('CHASE.trackerRespiteSeconds');
+    room.trackerStallSeconds = this.tuning.get('CHASE.trackerStallSeconds');
+    // **The pack's three live rules** (M39 Part P, §2h: F4 rows that move
+    // nothing teach distrust). The wake range and the deal's hold are read by
+    // the referee every step; the cop's hold (q224) is set at the couch arm
+    // itself (`armChaseRoom`), and the solo arm zeroes it (QA r2). The
+    // deal's close-pursuit hold is the brain's own close-pursuit line, so one
+    // slider moves both (q221 (3)). The other four of the eight are read where
+    // they are used: the post stand-off at `installChaseWorld` (so it applies
+    // from the next world), the return range, the pack spacing and the return
+    // cone at each return and each step, and the couch bell at the arm.
+    room.patrolWakeMetres = this.tuning.get('CHASE.patrolWakeMetres');
+    room.dealHoldSeconds = this.tuning.get('CHASE.dealHoldSeconds');
+    room.pursuitNearMetres = this.tuning.get('CHASE.pursuitNearMetres');
+    for (const pursuer of this.pursuers) {
+      const brain = pursuer.brain;
       brain.skill = this.tuning.get('CHASE.copSkill');
       brain.lookaheadSeconds = this.tuning.get('CHASE.lookaheadSeconds');
       brain.steerGain = this.tuning.get('CHASE.steerGain');
@@ -11976,7 +14831,9 @@ export class Game {
       // frozen table, so a retuned lean split the two beliefs 1.94×).
       brain.brakeDeceleration = controllerTuning.brakeAuthority
         * Math.sin(controllerTuning.maxLeanPitch);
-      brain.cutoutSpeedShare = controllerTuning.cutoutSpeedShare;
+      // His wheel's edge, not the player's: the same value his controller was
+      // handed above, so belief and machine agree (2026-09-22).
+      brain.cutoutSpeedShare = COP_WHEEL_TUNING.cutoutSpeedShare;
       // **And the give's whole schedule** (M30 Phase 2's QA repair). It shipped
       // missing, so *Grip at speed* and *Grip rise shape* reached the cop's
       // wheel through `setTuning` above and never reached his belief about a
@@ -12030,14 +14887,21 @@ export class Game {
     // above sets that paddle from these very entries — and it stops the cop's
     // weapon depending on a *seat* existing, which is the coupling M25 Phase 1
     // would otherwise have written into the one subsystem it must not disturb.
-    this.copPaddle.reach = this.tuning.get('PADDLE.reach');
-    this.copPaddle.headRadius = this.tuning.get('PADDLE.headRadius');
-    this.copPaddle.windupSeconds = this.tuning.get('PADDLE.windupSeconds');
-    this.copPaddle.activeSeconds = this.tuning.get('PADDLE.activeSeconds');
-    this.copPaddle.recoverSeconds = this.tuning.get('PADDLE.recoverSeconds');
-    this.copPaddle.startAngle = this.tuning.get('PADDLE.startAngle');
-    this.copPaddle.sweepRadians = this.tuning.get('PADDLE.sweepRadians');
-    this.copPaddle.hardKnockShare = this.tuning.get('PADDLE.hardKnockShare');
+    //
+    // Every slot's paddle, not only the live pack's: they are built once and
+    // outlive every world, so a `?cops=` world that leaves a slot empty must
+    // not leave its weapon on stale numbers for the next world that fills it.
+    for (const parts of this.pursuerParts) {
+      const paddle = parts.paddle;
+      paddle.reach = this.tuning.get('PADDLE.reach');
+      paddle.headRadius = this.tuning.get('PADDLE.headRadius');
+      paddle.windupSeconds = this.tuning.get('PADDLE.windupSeconds');
+      paddle.activeSeconds = this.tuning.get('PADDLE.activeSeconds');
+      paddle.recoverSeconds = this.tuning.get('PADDLE.recoverSeconds');
+      paddle.startAngle = this.tuning.get('PADDLE.startAngle');
+      paddle.sweepRadians = this.tuning.get('PADDLE.sweepRadians');
+      paddle.hardKnockShare = this.tuning.get('PADDLE.hardKnockShare');
+    }
     // The match's one number, on the same terms: it is what the owner's Phase 5
     // ride is for, and a knob that is not here cannot move during it.
     this.match.matchKnockdowns = this.tuning.get('KNOCKABOUT.matchKnockdowns');
@@ -12096,12 +14960,233 @@ export class Game {
         for (const seat of this.seats) {
           seat.controller.setSurfaceResponse(id, overrides);
         }
-        this.copController?.setSurfaceResponse(id, overrides);
+        for (const pursuer of this.pursuers) pursuer.controller.setSurfaceResponse(id, overrides);
       }
     }
 
     // INSPECTION_CAMERA.orbitRate is read in `step` rather than pushed here:
     // it is consumed once per step, so a pushed copy could only ever be stale.
+  }
+
+  // ---------------------------------------------------------------------------
+  // The render tier — M39 (PLANS §39.6, `docs/M39_ULTRA.md` §6.3 W1)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Bring the renderer's tier in line with the requested quality and the
+   * session, then tell the menus what is actually drawing. **Idempotent**:
+   * every trigger may call it as often as it likes, and a call that finds
+   * nothing to change changes nothing.
+   *
+   * The resolution is `renderTier.ts`'s and is pure; this method only pushes
+   * its answer, in an order that never has the renderer doing two things at
+   * once:
+   *
+   *   1. **Leave Ultra first**, when it is no longer wanted: the intent goes
+   *      off and `reconcileUltra` tears Ultra down to exact High *before*
+   *      `setQuality` is told anything. Ultra is therefore only ever left to,
+   *      and entered from, a renderer that is plainly High — a Settings move
+   *      from Ultra to Medium is Ultra → High (the teardown) and then the
+   *      High → Medium `setQuality` every player already makes, and
+   *      `setQuality` never runs under a live Ultra rig.
+   *   2. `setQuality`, **only when the ordinary tier changed** — the
+   *      `appliedOrdinary` guard. Session boundaries never change it (a couch
+   *      under a saved Ultra is High, as solo Ultra's floor is), so they never
+   *      re-run it and never quietly repair `applyTuning`'s pixel-ratio reset
+   *      for Low and Medium players (q206, recorded, deliberately not fixed).
+   *   3. The Ultra intent on, and `reconcileUltra` — except for `boot` and
+   *      `world`, which are followed at once by a `setLevel` that builds
+   *      whatever the intent says; reconciling first would build twice.
+   *   4. Re-read what the renderer did and publish it (`publishQualityState`)
+   *      — skipped likewise before a `setLevel`, whose caller publishes after.
+   *
+   * **The ordinary path touches no Ultra API.** With Ultra neither wanted
+   * now nor at the last call, steps 1 and 3 do nothing and step 4 describes
+   * the state without asking the renderer. A `boot` call for an ordinary tier
+   * returns at once, so an ordinary player's first `setQuality` stays where
+   * it always was: in `applyOptions`, after the first `applyTuning`.
+   *
+   * **Riding state is untouched by any of it** (§7.1 invariant 4): no
+   * `installLevel`, no `placeRider`, no tuning write. A tier change replaces
+   * renderer-owned resources and nothing else, which is why `terrainView` is
+   * a getter now.
+   */
+  private applyRenderTier(trigger: RenderTierTrigger): void {
+    const resolution = resolveRenderTier({ ...this.renderTierFacts(), refused: false });
+    if (trigger === 'boot' && !resolution.wantUltra) return;
+    const setLevelFollows = trigger === 'boot' || trigger === 'world';
+
+    if (this.appliedUltraWanted && !resolution.wantUltra) {
+      this.renderer.setUltraWanted(false, this.ultraKitOverride);
+      this.appliedUltraWanted = false;
+      // Unconditional, even before a `setLevel`: leaving must complete before
+      // `setQuality` below may run. (No world swap changes the intent today —
+      // the request and the session are both unchanged across one — so this
+      // never costs a second build in practice.)
+      this.renderer.reconcileUltra();
+    }
+    if (resolution.ordinary !== this.appliedOrdinary) {
+      this.renderer.setQuality(resolution.ordinary, this.tuning.get('RENDER.maxPixelRatio'));
+      this.appliedOrdinary = resolution.ordinary;
+    }
+    if (resolution.wantUltra) {
+      this.renderer.setUltraWanted(true, this.ultraKitOverride);
+      this.appliedUltraWanted = true;
+      if (!setLevelFollows) this.renderer.reconcileUltra();
+    }
+    if (!setLevelFollows) this.publishQualityState();
+  }
+
+  /** The session facts `resolveRenderTier` needs, minus what only the renderer knows. */
+  private renderTierFacts(): Omit<RenderTierInput, 'refused'> {
+    return {
+      requested: this.options.current.quality,
+      multiplayerSession: this.multiplayerSession,
+      presentationOverride: this.presentationOverride !== undefined,
+    };
+  }
+
+  /**
+   * What the renderer says about Ultra now — asked only while Ultra is
+   * wanted, so an ordinary player's state is described without a call.
+   */
+  private ultraLiveState(): UltraLiveState {
+    if (!this.appliedUltraWanted) return ULTRA_NOT_WANTED;
+    return {
+      active: this.renderer.effectiveTier() === 'ultra',
+      refusal: this.renderer.ultraReport().refusal,
+    };
+  }
+
+  /**
+   * The requested and effective tiers and why they differ, from the facts
+   * and the live renderer (`renderTier.ts:qualityStateFor`) — the one state
+   * both menu entrances and the QA bridge are shown.
+   */
+  private qualityStateNow(): QualityStateView {
+    return qualityStateFor(this.renderTierFacts(), this.ultraLiveState());
+  }
+
+  /** Hand the menus the current tier state — the title toggle and Settings read it. */
+  private publishQualityState(): void {
+    this.menus.setQualityState(this.qualityStateNow());
+  }
+
+  /** `snapshot().quality` — see `GameSnapshot.quality`. Computed live, never cached. */
+  private qualitySnapshot(): GameSnapshot['quality'] {
+    const state = this.qualityStateNow();
+    return {
+      requested: state.requested,
+      effective: state.effective,
+      reason: state.reason,
+      suspension: state.suspension,
+      multiplayer: this.multiplayerSession,
+      ultraOffered: state.ultraOffered,
+      recipe: this.renderer.ultraReport().recipe,
+    };
+  }
+
+  /**
+   * The title's Ultra Graphics toggle.
+   *
+   * Refused while a multiplayer session owns the frame, so a stray press can
+   * never overwrite the saved preference there; otherwise on → `ultra`, off →
+   * the ordinary tier the player came from this session, or High
+   * (`renderTier.ts:ultraToggleTarget`). Written into the store like every
+   * other choice, so `applyOptions` makes the change and records the return
+   * tier whichever entrance was used — through `requestQuality`, which says
+   * "Loading Ultra graphics…" before the switch freezes the game.
+   */
+  private toggleUltra(): void {
+    if (this.qualitySwitchBusy()) return;
+    const next = ultraToggleTarget(
+      this.options.current.quality,
+      this.ultraReturnTier,
+      this.multiplayerSession,
+    );
+    if (next !== null) this.requestQuality(next);
+  }
+
+  // ---------------------------------------------------------------------------
+  // The loading notice — M39 follow-up (the owner's rides, 2026-09-25)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A quality choice from either menu entrance: the title toggle, or Settings'
+   * select (which the pause menu opens too).
+   *
+   * **A choice that switches Ultra on or off waits for its notice.** The
+   * switch is `applyRenderTier`'s synchronous `reconcileUltra` — a world, a
+   * sky, an environment light, a far map and every Ultra program in one call,
+   * a second or more on a desktop and "a couple of secs" on an iPhone — and
+   * made inside the press it froze the game before anything could be drawn,
+   * so a player saw a dead button and pressed it again. Now the press writes
+   * the busy state ("Loading Ultra graphics…", `aria-busy`), the loop draws
+   * `ULTRA_SWITCH_PAINT_FRAMES` frames with it on screen, and only then is
+   * the option set (`stepQualitySwitch`). Every other choice — Low, Medium and
+   * High among themselves, or leaving a saved Ultra a couch session is
+   * already drawing as High — is set at once, as it always was
+   * (`renderTier.ts:ultraSwitchFor`).
+   *
+   * **While a switch is in flight the choice is refused**, here and in the
+   * menus, so mashing cannot queue a second switch behind the first. The QA
+   * bridge's `setOptions` does not come through here: a spec that sets a tier
+   * directly still gets it synchronously.
+   */
+  private requestQuality(to: QualityLevel): void {
+    if (this.qualitySwitchBusy()) return;
+    const from = this.options.current.quality;
+    const direction = ultraSwitchFor({ ...this.renderTierFacts(), requested: to }, this.appliedUltraWanted);
+    if (direction === null) {
+      this.options.set({ quality: to });
+      return;
+    }
+    this.pendingQuality = { from, to };
+    this.pendingQualityFrames = ULTRA_SWITCH_PAINT_FRAMES;
+    this.menus.setQualityBusy({ direction, from, to });
+  }
+
+  /** A switch is waiting to run, or has run and its busy state has not cleared. */
+  private qualitySwitchBusy(): boolean {
+    return this.pendingQuality !== null || this.qualitySettleFrames > 0;
+  }
+
+  /**
+   * One frame of a switch's life, from `beforeFrame`: count the paint frames
+   * down, then make the change (the freeze), then hold the busy state
+   * `ULTRA_SWITCH_SETTLE_FRAMES` frames more so the presses the browser queued
+   * behind the freeze are refused, then clear it.
+   *
+   * The change is made only if it is still the one that was asked for: a
+   * reset in between took it away (`cancelQualitySwitch`), and a couch
+   * session opened in between owns the frame, where Ultra is never chosen.
+   */
+  private stepQualitySwitch(): void {
+    const work = this.pendingQuality;
+    if (work !== null) {
+      if (this.pendingQualityFrames > 0) {
+        this.pendingQualityFrames -= 1;
+        return;
+      }
+      this.pendingQuality = null;
+      if (this.options.current.quality === work.from && !(work.to === 'ultra' && this.multiplayerSession)) {
+        this.options.set({ quality: work.to });
+      }
+      this.qualitySettleFrames = ULTRA_SWITCH_SETTLE_FRAMES;
+      return;
+    }
+    if (this.qualitySettleFrames === 0) return;
+    this.qualitySettleFrames -= 1;
+    if (this.qualitySettleFrames === 0) this.menus.setQualityBusy(null);
+  }
+
+  /** Drop a switch that has not run yet, and its notice. */
+  private cancelQualitySwitch(): void {
+    if (this.pendingQuality === null) return;
+    this.pendingQuality = null;
+    this.pendingQualityFrames = 0;
+    this.qualitySettleFrames = 0;
+    this.menus.setQualityBusy(null);
   }
 
   /**
@@ -12136,7 +15221,20 @@ export class Game {
     if (previous === null || options.quality !== previous.quality) {
       // Quality: resolution and shadow detail. Both are presentation, and the
       // ride is bit-identical at every setting.
-      this.renderer.setQuality(options.quality, this.tuning.get('RENDER.maxPixelRatio'));
+      //
+      // M39: through the render tier rather than straight to `setQuality`,
+      // because the request is no longer always what is drawn (a couch
+      // session, an override or a refusal draws High under a saved Ultra).
+      // For Low, Medium and High it is the same single `setQuality` call this
+      // branch always made — including at boot, after the first
+      // `applyTuning`, exactly where it always ran. The toggle's return tier
+      // is recorded first, from whichever entrance made the change.
+      this.ultraReturnTier = returnTierAfter(
+        previous === null ? null : previous.quality,
+        options.quality,
+        this.ultraReturnTier,
+      );
+      this.applyRenderTier('options');
     }
 
     if (
@@ -12203,7 +15301,16 @@ export class Game {
     // where the rig was already built wearing this character above — so the
     // swap is skipped and only the audio voice is (re)stated.
     if (previous !== null && options.character !== previous.character) {
-      this.installCharacter(options.character);
+      // **Not while the host holds Officer Dorkins** — M39 Part P, QA r3. The
+      // cop seat is session state (q215's two places: `hostCop` and the rig
+      // move together), and Settings' "Reset everything to defaults" is
+      // reachable from the pause card mid-chase: dressing seat 0 here would
+      // put the cop seat in a playable rig while `hostCop` and the room's
+      // `chaseCopSeat` still said he was the cop. The record changes and the
+      // seat does not; `dealRosterFor` dresses seat 0 from the record at the
+      // next door that leaves the chase (the title's included), as it would
+      // have for a record that changed before he picked the cop.
+      if (!this.hostCop) this.installCharacter(options.character);
       // **The join panel is a reader of this record too** — M25 Phase 5. Seat
       // 0's card names whoever the player has chosen, and the one control that
       // changes it goes through the options store rather than writing the card,
@@ -12292,6 +15399,25 @@ function presentationOverrideFrom(search: string): PresentationRecipeId | undefi
   return raw === 'baseline' || raw === 'enhanced' ? raw : undefined;
 }
 
+/**
+ * `?cops=1|2|3` — the solo pack's A/B size (M39 Part P, §39.6b.3
+ * "Diagnostics"), or undefined.
+ *
+ * Only the whole numbers a solo room can legally field (`1..CHASE.roomSize −
+ * 1`, the referee's own `arm` rule) are read; anything else is ignored rather
+ * than clamped, on `presentationOverrideFrom`'s rule that a malformed
+ * diagnostic starts the game as shipped instead of guessing what was meant —
+ * and an ignored value is not a probe, so it refuses no record.
+ */
+function copsProbeFrom(search: string): number | undefined {
+  const raw = new URLSearchParams(search).get('cops');
+  if (raw === null) return undefined;
+  const value = raw.trim();
+  if (!/^[0-9]$/.test(value)) return undefined;
+  const count = Number(value);
+  return count >= 1 && count <= CHASE.roomSize - 1 ? count : undefined;
+}
+
 function readNumberParam(
   params: URLSearchParams,
   name: string,
@@ -12317,6 +15443,36 @@ function readNumberParam(
  */
 function crashVoiceFor(id: CharacterId): CrashVoiceId {
   return characterSpec(id).crashVoice;
+}
+
+/**
+ * The spectator tag's status for an outlaw who is out, or null while he
+ * stands or once he escaped at the bell — the four endings a watching pane
+ * can carry (`ChaseSpectatorStatus`, q216).
+ */
+function spectatorStatus(status: OutlawStatus): ChaseSpectatorStatus | null {
+  return status === 'caught' || status === 'touched' || status === 'strayed' || status === 'gaveUp'
+    ? status
+    : null;
+}
+
+/**
+ * The rig a seat wears — every seat's one door since M39 Part P (§39.6b.3b,
+ * q218).
+ *
+ * **Officer Dorkins in a seat is the cop at full rig** (`createCopRidingRig`):
+ * his uniform on his painted-headlamp wheel, every part casting its shadow —
+ * the rig `renderCost.test.ts` measures as the seated cop (53 calls, under
+ * every playable rig) — and never the pack's 26-call trim, which is a CPU
+ * cop's economy and not a person's. `riderLook('cop')` would find the uniform
+ * but put it on the standard wheel, which is why the cop is named here rather
+ * than falling through. Everybody else is their own look on their own
+ * machine, exactly as before.
+ */
+function rigFor(id: CharacterId): RidingRig {
+  return id === 'cop'
+    ? createCopRidingRig()
+    : createRidingRig(riderLook(id), machineLook(machineForCharacter(id)));
 }
 
 /**

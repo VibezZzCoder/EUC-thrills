@@ -97,7 +97,7 @@ function start(): void {
   try {
     // The world the page was opened at. `?level=proving` gets the M4 course,
     // `?level=generated&seed=<seed>` gets a seeded route from M12's segment
-    // library, and anything else — including a typo — gets the shipped slice
+    // library, and anything else — including a typo — gets the curated city
     // (`level/levels.ts`).
     //
     // **This is no longer the only way the world can be chosen.** Until M12

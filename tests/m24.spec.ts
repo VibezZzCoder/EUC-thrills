@@ -156,7 +156,9 @@ test('touching the cop busts the rider, and the cop closing scores nothing', asy
   // ended the run, not just that it ended.
   await expect(page.locator('.euc-menu--results')).toBeVisible();
   await expect(page.locator('.euc-menu--results')).toContainText('Busted');
-  await expect(page.locator('.euc-menu--results')).toContainText('touched Officer Dorkins');
+  // M39 Part P (§39.6b.3): with a pack on the road the sentence names the
+  // role, not the officer — `CHASE_TOUCH_NOTE`, "You touched an officer".
+  await expect(page.locator('.euc-menu--results')).toContainText('touched an officer');
   expect(errors).toEqual([]);
 });
 
@@ -296,14 +298,39 @@ test('a pad operates the settings dropdowns, and binding rows are one stop each'
   // pad's A did nothing on, because `.click()` on a native select is a
   // no-op. A full lap of presses returns to the starting value, so the
   // cycle provably wraps rather than sticking at the last option.
+  //
+  // **The lap passes through Ultra since M39**, and that is asserted rather
+  // than left to the count: Ultra is the last option, so the first press from
+  // the default High lands on it, and a single-player session offers it — a
+  // lap that stepped over it here would be the couch rule (a disabled option
+  // is skipped) leaking into a session that is not a couch.
+  //
+  // **A step onto or off Ultra waits for its loading notice** (M39 follow-up,
+  // 2026-09-25): the switch runs two frames after the press, and the select
+  // refuses presses until it has settled — a pad's A mashed through the
+  // freeze must not queue another switch. So each press waits for the select
+  // to stop being busy before the next; an ordinary step never is.
+  const settled = () => page.waitForFunction(
+    () => !document.querySelector('[data-option="quality"]')?.hasAttribute('aria-busy'),
+  );
   const qualityStart = await page.evaluate(() => window.game.snapshot().options.quality);
+  expect(qualityStart).toBe('high');
   await pulse(page, CONFIRM);
+  await settled();
   const qualityNext = await page.evaluate(() => window.game.snapshot().options.quality);
   expect(qualityNext).not.toBe(qualityStart);
+  expect(qualityNext).toBe('ultra');
   const qualityCount = await page.evaluate(
     () => (document.querySelector('[data-option="quality"]') as HTMLSelectElement).options.length,
   );
-  for (let press = 1; press < qualityCount; press += 1) await pulse(page, CONFIRM);
+  expect(qualityCount).toBe(4);
+  const lap: string[] = [qualityNext];
+  for (let press = 1; press < qualityCount; press += 1) {
+    await pulse(page, CONFIRM);
+    await settled();
+    lap.push(await page.evaluate(() => window.game.snapshot().options.quality));
+  }
+  expect(lap).toEqual(['ultra', 'low', 'medium', 'high']);
   expect(await page.evaluate(() => window.game.snapshot().options.quality)).toBe(qualityStart);
 
   // Down walks the Display rows to the speed-unit dropdown, and confirm

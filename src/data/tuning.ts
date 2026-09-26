@@ -2115,9 +2115,37 @@ export const EUC = {
    * unfairness §18.6 says is removed rather than tuned. `ui/hudModel.ts` draws
    * a warning glyph on the same schedule for a player riding with the sound
    * off, and that glyph is not optional either.
+   *
+   * **Tightened by the owner on 2026-09-22, after riding the 65 mph build**:
+   * *"the high speed beeps maybe start too early and it is a bit hard to crash
+   * due to overspeeding (cut out). it just beeps a lot at the top speed before
+   * the wipeout. players have given feedback that they like the high speed
+   * cutout, so the current safeguard is too strong. overspeed wipeouts should
+   * trigger more easily than they currently do."* Measured through the real
+   * controller, flat pavement, full throttle: the shipped 65 wheel beeped for
+   * **6.5 s (30 beeps)** from 52.3 mph at 4.6 s to the cutout at 11.1 s, and
+   * the `?mph=50` wheel for 5.2 s (24 beeps). With the band moved to
+   * 0.87 → 0.94 the 65 wheel first beeps at 57.9 mph at 5.8 s and cuts out at
+   * 8.5 s — **2.7 s, 10 beeps** — and the 50 wheel beeps for 2.2 s (8 beeps)
+   * before cutting out at 6.7 s. Every rule above still holds: the beeps are
+   * still the whole net, the glyph still mandatory, the edge still a share,
+   * and riding the beeps is still a skill — only the band is narrower and
+   * nearer the edge. **The cop does not follow this edge**; his wheel keeps
+   * the pre-change one (`CHASE.copCutoutSpeedShare`), so a chase the owner
+   * already finds too easy did not get easier by the player's wheel getting
+   * touchier.
    */
   /**
    * Where the beeps start, as a share of top speed.
+   *
+   * **0.87 since 2026-09-22 — 57.9 mph on the shipped 65, 44.5 on the 50.**
+   * The owner's words are in the block above: the beeps started too early and
+   * went on too long. The number offered to him was about 0.84 (~56 mph); the
+   * measurement said 0.84 still left 3.2 s and 13 beeps of warning flat out on
+   * the 65, against the roughly two seconds that was the point, so the share
+   * went on to 0.87. It still leaves a 4.6 mph band below the edge to ride
+   * the beeps in, and ten beeps on the way through it. Everything below this
+   * paragraph is the constant's history and still true of its *direction*.
    *
    * 0.785 was **40 mph on the 50 mph wheel** and is **52 mph on the shipped
    * 65** (M30 Phase 4). The owner's first number was 30 mph; he rode that
@@ -2129,9 +2157,10 @@ export const EUC = {
    * and the day came: M30 Phase 4 moved the wheel and this constant did not
    * have to be found by hand, which is the whole point of writing it this way.
    * His floor of 40 mph is honoured with room to spare, and the warning still
-   * arrives at the same fraction of the way to the edge.
+   * arrives at the same fraction of the way to the edge. (That fraction was
+   * 0.785 until 2026-09-22; see above.)
    */
-  overspeedBeepShare: 0.785,
+  overspeedBeepShare: 0.87,
   /**
    * Where the wheel gives up, as a share of top speed.
    *
@@ -2142,13 +2171,21 @@ export const EUC = {
    * resistance puts the real pavement terminal near 0.975 of the drag-only
    * figure this is a share of.
    *
-   * At 0.965 a rider holding full throttle on flat pavement reaches it after
-   * roughly ten seconds flat out, and a rider who backs off by a few percent
-   * sits underneath it indefinitely with the beeps at their fastest. That gap
-   * is the mechanic: **riding the beeps**, in the owner's words, is a real
-   * thing to be good at rather than a warning to obey.
+   * It shipped at 0.965, where a rider holding full throttle on flat pavement
+   * on the 65 wheel reached it after 11.1 s. **0.94 since 2026-09-22**, by the
+   * owner's *"overspeed wipeouts should trigger more easily than they
+   * currently do"*: 62.5 mph on the shipped 65 (49.4 → 48.1 on the 50), and
+   * flat out now reaches it at 8.5 s (6.7 s on the 50). A rider who backs off
+   * by a few percent still sits underneath it indefinitely with the beeps at
+   * their fastest. That gap is the mechanic: **riding the beeps**, in the
+   * owner's words, is a real thing to be good at rather than a warning to
+   * obey — it is simply a smaller gap to ride in than it was.
+   *
+   * **The cop's wheel is not moved by this constant** — see
+   * `CHASE.copCutoutSpeedShare`, which keeps his edge, and so his top speed,
+   * where they were before the owner tightened the player's.
    */
-  cutoutSpeedShare: 0.965,
+  cutoutSpeedShare: 0.94,
   /**
    * How long the wheel must be over that speed before it lets go, seconds.
    *
@@ -6227,6 +6264,1404 @@ export const RENDER = {
 } as const;
 
 /**
+ * The optional Ultra graphics recipe — M39 (`docs/PLANS.md` §39.6,
+ * `docs/M39_ULTRA.md` §§2–4). **Start values**, written by W0 and owned from
+ * Wave 1 by the lighting owner (W4); U2 tunes them against the measured gates
+ * and records every change and its reason in `M39_ULTRA.md` §U2.
+ *
+ * **Nothing here reaches Low, Medium or High.** Every reader of this block is
+ * an Ultra branch in `render/ultra/*` (or `render/Renderer.ts` on the Ultra
+ * path), so an ordinary frame is byte-identical whatever these say — that is
+ * invariant 1 of `M39_ULTRA.md` §7.1, and the U0 parity captures are its
+ * evidence. The block lives here rather than in `render/` because invariant 4
+ * puts every constant that shapes the look in this file; it is deliberately
+ * outside the architecture scan that keeps the word `ultra` out of `level/`,
+ * `simulation/` and admission data (§6.3 W7).
+ *
+ * **Two kinds of number.** The thirteen top-level scalars (`nearBias` …
+ * `specAA`) are the fields of `UltraLiveTuning` and are registered on the F4
+ * panel as `ULTRA.<field>`, so the owner's eye and the U2 tuning captures can
+ * move them live (`--tune ULTRA.nearBias=0` is the gauntlet's planted defect).
+ * Everything nested is a construction constant — a size, a band, a count —
+ * read at build time and changed only here, with two exceptions since the
+ * final touch (post round 4): `shade.lift` and `shade.liftFar`, the last two
+ * `UltraLiveTuning` fields, are on F4 as `ULTRA.shade.lift` / `.liftFar` for
+ * the owner's round-4 trades.
+ *
+ * **Absolute, never a delta** (§3.1). The lighting writers compute every
+ * value from the resolved look, this table and the live set; nothing here is
+ * multiplied into an ordinary value and later divided back out, so leaving
+ * Ultra re-runs the ordinary writers and lands exactly where High was.
+ */
+export const ULTRA = {
+  /**
+   * The drawing-buffer pixel budget, device pixels (T0, §2.1): 2880×1800, the
+   * MacBookAir10,1's retina buffer in its default "looks like 1440×900" mode.
+   * Ultra's ratio is `min(dpr, maxPixelRatio, √(pixelBudget / cssPixels))`,
+   * applied as a separate tier cap so `applyTuning`'s `setMaxPixelRatio` push
+   * (q206) cannot clobber it — and so Ultra never draws more pixels than High.
+   * **A26** raised it from the panel's native 2560×1600 (4,096,000): the
+   * retina pair measured Ultra 1.33–1.41× softer than High there at 4.1 MP
+   * and 1.01–1.04× at 5.18 MP, the pixel count High already draws. Equal to
+   * `ULTRA_ENVELOPE.drawingBufferPixels` (`ultraCost.test.ts`); live on F4.
+   */
+  pixelBudget: 5_184_000,
+
+  // -- The thirteen live values (`UltraLiveTuning`, F4 `ULTRA.<field>`) -----
+  /** Near cascade depth bias (T2). High's is −0.0005; the 4096 map's 2.69 cm texel wants less. */
+  nearBias: -0.00025,
+  /** Near cascade normal bias, metres (T2). High's is 0.02. */
+  nearNormalBias: 0.025,
+  /** Near cascade PCF radius, texels (T2). High's is 1. */
+  nearRadius: 1.25,
+  /**
+   * κ — scales the environment fill: `environmentIntensity = κ·fill/π`, with
+   * `fill` the tuned-or-venue hemisphere intensity (daylight 0.350κ,
+   * Switchback 0.388κ). Calibrated so **up-facing** shade matches High.
+   * 1 was the uncalibrated start (first light: canyon road luma 31; sunlit
+   * road −2.6 % against High on the shaded-contact view).
+   * **1.25 (pre-R1 calibration, `M39_ULTRA.md` §U2):** measured shaded/sunlit
+   * road within −1 … +4.4 % of High's and sunlit road within −1.6 … +0.1 %
+   * on every town, slice and BelVar view; 1.35 overshot the shade by 5–9 %.
+   * The painted zenith's cosine-weighted sky is 0.76 × High's hemisphere in
+   * luminance, so the analytic parity is 1.32; the ratio gate measures High's
+   * rider- and tree-shadow penumbra too, which is why it lands lower.
+   */
+  envKappa: 1.25,
+  /**
+   * β — the environment's lower hemisphere is the venue's `groundBounceColour`
+   * × β (T1, §3.2): the warm ground bounce that lifts walls, undersides and
+   * canopies out of navy-black (defect D1). A change rebuilds the PMREM.
+   */
+  bounceLift: 1.5,
+  /** Ground indirect-specular multiplier (§3.3): the road stays the calmest plane. */
+  groundSpec: 0.5,
+  /**
+   * Glass indirect-specular multiplier (§3.3): the painted sky on shaded glass.
+   * 1.6 at W4. **1.2 (Wave 3, R-L):** round 1 read the steeple view's glazing
+   * as washed out; on its shaded face the windows measured 0.80 × the wall
+   * (High 0.64), the sky reflection lifting them toward the wall. 1.2 keeps
+   * the sky in the glass and gives the window back its dark read.
+   */
+  glassSpec: 1.2,
+  /**
+   * Water `envMapIntensity` multiplier (T11): body/road 0.55–0.85, meniscus
+   * brightest. 0.8 at W4 measured body/road 0.955 on the shaded-contact
+   * puddle (pre-R1 calibration, §U2); 0.45 measures 0.73 there and 0.79 on
+   * the steeple's.
+   */
+  waterSpec: 0.45,
+  /** Overall scale on the analytic contact-AO occluders below (T5). 1 = as authored. */
+  contactStrength: 1.0,
+  /**
+   * Share of contact AO applied to *direct* light (§3.3). **0 by default:**
+   * AO is indirect-only so the sunlit road cannot darken. The lighting owner
+   * may raise it to ≤ 0.3 on non-road surfaces only if the sunlit-road ±2 %
+   * gate still passes; the slider's ceiling is that rule.
+   */
+  contactDirectShare: 0,
+  /** Foliage wrap diffuse (T3/§3.3), inside the shadowed direct term. */
+  foliageWrap: 0.30,
+  /**
+   * Foliage back-light transmission (T3/§3.3), `≤ 0.22` by the spec and
+   * already shadowed — there is deliberately no shadow floor (judge 3: trees
+   * would glow in building shade). The slider's ceiling is that rule.
+   */
+  foliageTransmission: 0.22,
+  /** k in the geometric specular-AA floor `roughness = max(r, k·|fwidth(n)|)` (§2.2). */
+  specAA: 0.35,
+
+  /**
+   * The near cascade (T2, §3.2): one 4096 map, ±55 m, pushed ahead of the
+   * rider along the camera's horizontal forward, texel-snapped in light space
+   * and faded to unshadowed over its outer edge band. The bias/normal-bias/
+   * radius live above because they are live.
+   */
+  near: {
+    /** Map edge, texels. 128 MiB as three allocates it (High: 2048, 32 MiB). Cut order step 4 is 3072. */
+    mapSize: 4096,
+    /** Half-extent of the orthographic box, metres (High: `LIGHTING.shadowRadius` 30). */
+    extent: 55,
+    /** Box centre = rider + forwardShare × extent along camera-horizontal forward (19.25 m). */
+    forwardShare: 0.35,
+    /** The rider stays at least this far inside the box's rear edge, metres. */
+    rearInsetMetres: 35,
+    /** Sun distance from the box centre, metres. Clears the 48 m beacon at 55° and 33°. */
+    lightDistance: 150,
+    near: 1,
+    far: 320,
+    intensity: 1,
+    /** Outer share of the box over which shadow fades to 1 (≈ 6.6 m), so there is no switch-on line. */
+    fadeShare: 0.12,
+    /** Light-space texel snap, so the map does not crawl as the rider moves. */
+    snap: true,
+  },
+
+  /**
+   * The near map's filter on the ground and its paint (Wave 4, R-L; gauntlet
+   * round 2 items 2b and 5). three's PCF is five taps turned per pixel by
+   * interleaved-gradient noise: a dithered penumbra MSAA never resolves (the
+   * player's "wavy, noisy penumbra" under the Switchback kicker), and a
+   * one-texel edge wherever the shadow lies, so at 45 m the industrial slab
+   * read as a hard-edged cut-out ("a hole", 5/5). The ground, markings,
+   * pothole ground and water take a **fixed** 16-tap disk instead (no noise,
+   * so it holds still in motion) whose radius grows with view distance: the
+   * live `nearRadius` (1.25 texels, today's softness, and the planted
+   * `nearRadius 0` still stair-steps) out to `groundRampMetres[0]`, rising to
+   * `groundFarSpreadTexels` by `groundRampMetres[1]` — the aerial perspective
+   * of a shadow's edge, as the fog is of its value. On level ground at 45 m a
+   * pixel spans most of a metre of depth, so it softens the along-road edges;
+   * the across-road ones are the static-shade lift's (R-G).
+   */
+  nearFilter: {
+    /** Taps in the fixed disk (a Vogel spiral with no per-pixel turn). */
+    taps: 16,
+    /** The disk's radius at the far end of the ramp, texels (±0.32 m on the 2.69 cm texel). */
+    groundFarSpreadTexels: 12,
+    /** View distance, metres, over which the radius grows from `nearRadius` to the far spread. */
+    groundRampMetres: [15, 45],
+    /**
+     * The edge reconstruction (final wave, P-LT; Fable F4): near the camera
+     * the ground's disk is this many times the live radius wide, and a
+     * smoothstep of slope `edgeWiden` at ½ restores the edge's contrast
+     * (`ultraMaterials.ts` `NEAR_FILTER_GLSL`). The fixed disk at the rig's
+     * 1.25 texels drew the rider's cast shadow with one bead per texel along
+     * its edge (residential, 1×); at 1.6 the beads' ripple falls 42 % and the
+     * penumbra is a touch crisper (1.05 texels 20–80 % against 1.12). Handed
+     * over to the plain disk across `groundRampMetres`. 1 turns it off.
+     * A construction constant, baked into the patch text.
+     */
+    edgeWiden: 1.6,
+    /**
+     * A28, Trade 2 (Codex's post-GU QA; the industrial crest slab): the
+     * ground's disk also spans this angular **radius on screen**, degrees
+     * (0.35° is about 5 pixels at 1080 lines), reached over
+     * `groundScreenRampMetres` of view distance (nothing inside 12 m, so the
+     * rider's shadow and every near edge keep today's). Measured on the slab:
+     * its edges' 10–90 % widths 0.8 → 4.4 px (near) and 2.2 → 7.0 px (far),
+     * with the dashes still 66 luma off the shaded road inside it (High's
+     * sunlit road: 55). Why a screen kernel: the ramp above is isotropic in
+     * light space, and on the crest one pixel spans about 0.2 m of depth
+     * against 0.03 m across the road (7:1), so any kernel isotropic in metres
+     * is either under a pixel on the across-road edges (the slab's "hard
+     * polygon", A20's "cannot be softened in light space") or mush along the
+     * road. The disk's taps are mapped from screen pixels into the near map
+     * through the fragment's own screen derivatives (`ultraMaterials.ts`
+     * `GROUND_SCREEN_KERNEL`), so every ground shadow edge past the ramp is
+     * graded over the same few pixels in every direction, whatever its angle
+     * to the camera — the aerial perspective of an edge. The same 16 taps; the
+     * lift's static classification leans out by the same kernel
+     * (`ultraFarShadeAround`), so the widened penumbra lifts whole and no
+     * unlifted rim returns. Construction constants, baked into the patch text.
+     */
+    /**
+     * **A29 (round 5): the screen kernel is off, and compiled out.** Round 5
+     * judged A28's paler, graded slab worse than U5's on every count (five of
+     * five critics read it as "a floating smudge with no caster"), so the
+     * crest slab returns to U5. While this is false no program carries the
+     * kernel: not its main() block, not its PCSS far-caster disk (16 near-map
+     * taps) and not the static-shade lean's four far-map diagonals — the
+     * ground filter is U5's text. True puts it back on the ground, paint,
+     * pothole ground and water, behind the define `ULTRA_GROUND_SCREEN_KERNEL`
+     * (`ultraGroundDetail.ts`), which is also how the kernel's own tests build
+     * it. The values below stay as A28 measured them.
+     */
+    groundScreenKernel: false,
+    groundScreenSpreadDegrees: 0.35,
+    groundScreenRampMetres: [12, 24],
+    /**
+     * …and never more than this many metres of ground along the pixel's
+     * longer axis (the view's depth on flat ground): at 45 m on the flat one
+     * pixel spans about a metre, and a far building-shade strip a few pixels
+     * tall kept its shape only under this cap (the commercial canyon's
+     * 35–65 m bands).
+     */
+    groundScreenMaxMetres: 1.5,
+    /**
+     * …and only under a far caster, metres of height: the screen kernel
+     * applies where the near map finds an occluder more than this far above
+     * the receiver along the sun ray (a second pass of the same disk, twice as
+     * wide, compared that much nearer the light) — the rule of a
+     * percentage-closer soft shadow, whose penumbra grows with the distance
+     * from receiver to occluder. A building's shade far from its walls (the
+     * crest slab) is graded; a tree's (crowns top out under about 10 m at the
+     * largest placed scale), a lamp's, an obstacle's and the rider's keep
+     * today's edge, so tree shade still grounds its tree (Trade 3).
+     */
+    groundScreenCasterMetres: 10,
+  },
+
+  /**
+   * The static far shadow (T12, §3.4): a manual depth render of the layer-5
+   * casters into an Ultra-owned 3072² target, **once per world activation**
+   * and after context restore — never mid-ride — sampled only by Ultra
+   * patches and blended against the near map's own edge fade.
+   *
+   * **On by default (coordinator amendment A1, 2026-09-23)** on `ultra-full`;
+   * `ultra-lit` keeps it off. Gauntlet round 1 judges it: blockiness or a seam
+   * turns it off, or raises the map to 3072 under a byte-envelope amendment.
+   */
+  farShadow: {
+    enabled: true,
+    /**
+     * Map edge, texels. The box is a per-instance light-space rectangle
+     * (pre-R1 calibration, §U2); at 2048 its coarser axis drew 0.667 m texels
+     * in town (1366 × 1160 m; the first-light square fit drew 0.92 m), 0.34 m
+     * on the slice, 0.25 m at BelVar and 0.15 m at Switchback.
+     * **3072 (stabilizer, 2026-09-23, under the §5 byte-envelope amendment
+     * A1 names):** the town's texel is 0.445 m, measured in a locked capture,
+     * for +25 MiB steady (45 MiB at 5 B/texel). `ULTRA_ENVELOPE.farShadowMap`
+     * and `bytes` were amended with it (`M39_ULTRA.md` §5); a raise past
+     * 3072 needs another amendment.
+     */
+    mapSize: 3072,
+    /**
+     * Width of the far map's own edge fade, metres (§6.2 start value; W4's
+     * use): the far term eases to unshadowed over this band inside the far
+     * box's light-space edge, so a caster clipped by the world-fitted box can
+     * never draw a hard line where the map ends. Receivers outside the box are
+     * correctly unshadowed anyway — a shadow lands at its caster's light-space
+     * (x, y) — so the band is a guard, not a look.
+     */
+    fadeMetres: 40,
+    /**
+     * Hardware PCF taps on the far map (`sampler2DShadow`, `LessEqualCompare`):
+     * four bilinear compare fetches of four taps each, on a square
+     * `pcfSpreadTexels` either side of the lookup — a tent about three texels
+     * wide. One fetch (W4's 4 taps) left the far shade's edges stair-stepped
+     * in town (pre-R1 calibration, §U2). Fetched only where the far map is
+     * seen: inside the near box, where the near map alone rules, it is skipped.
+     */
+    pcfTaps: 16,
+    /** Offset of the four far-map fetches from the lookup, texels, on each axis. */
+    pcfSpreadTexels: 0.75,
+    /**
+     * Receiver normal offset, in far-map texels (0.2–0.5 m). The far map is
+     * rendered back faces only (three's own shadow convention), so a lit face
+     * sits in front of its own caster's stored depth and needs no depth bias;
+     * this offset only keeps the bilinear footprint off the contact line.
+     */
+    normalOffsetTexels: 1,
+    /** Margin around the casters' world bounds in the fitted light box, metres. */
+    boxMarginMetres: 2,
+    /** Depth margin in front of the highest and behind the lowest caster, metres. */
+    depthMarginMetres: 10,
+  },
+
+  /**
+   * The painted-sky environment (T1, §3.2): `paintEnvironment(look)` at
+   * 1024×512, PMREM-filtered once per activation. Upper half the venue's own
+   * sky with the sun core removed and the aureole halved; lower half the
+   * ground bounce × β (`bounceLift`), blended from `horizonColour` over 6°.
+   */
+  env: {
+    width: 1024,
+    height: 512,
+    /** The painted sun core's strength in the environment: removed, so no fake specular sun. */
+    sunCoreStrength: 0,
+    /** The aureole's share of the painted sky's own. */
+    aureoleScale: 0.5,
+    /** The horizon → bounce blend, degrees below the horizon. */
+    horizonBlendDegrees: 6,
+    /** The hemisphere light is kept (lights === 2) and zeroed; the environment is the fill. */
+    hemisphereIntensity: 0,
+    /**
+     * Fill chroma (pre-R1 calibration, `M39_ULTRA.md` §U2): the share of the
+     * painted sky's own colour its *diffuse* fill keeps on sky-facing faces.
+     * The painted zenith is a deep blue, so an up-facing face in cast shade
+     * (the whole canyon road once buildings cast) went navy at first light;
+     * the fill is desaturated toward its own luminance instead, in the shader
+     * (`ultraMaterials.ts`, after `lights_fragment_maps`), so κ still sets the
+     * value and this only sets the hue. Weighted by the face's sky share
+     * `(1 + n·up)/2`: a down-facing soffit keeps the warm bounce whole.
+     * Glossy specular — sky on glass, metal and water — is untouched and
+     * stays blue; a rough surface's reflection takes its own hue instead.
+     * 0.15 measured the shaded road's OKLCH chroma at 0.22–0.49 × High's.
+     */
+    fillSaturation: 0.15,
+    /**
+     * The same share **in sun** (shadow visibility × a steep N·L ramp): a
+     * sunlit face keeps most of the fill's sky hue, as High's hemisphere gives
+     * it, so the sunlit road keeps High's faint coolness. Measured (§U2): at
+     * 0.15 in sun too the road went neutral and road-dominated frames fell
+     * under High's chroma; at 1 the painted zenith (B/R 2.97 against High's
+     * hemisphere 2.44) tinted sunlit grass bluer than High's. 0.8 is where
+     * the painted fill's B/R meets High's (analytic 0.77); the rest of the
+     * greying of sunlit grass and brick was their rough specular, which now
+     * takes the surface's own hue (`FILL_CHROMA`).
+     */
+    fillSunSaturation: 0.8,
+    /**
+     * How far the desaturated fill leans toward the venue's haze hue (the fog
+     * colour, which is `horizonColour` by contract — derived, never authored
+     * per venue): the town's cool pale haze gives "slightly cool, not blue"
+     * shade, Switchback's warm haze the warm late-afternoon fill.
+     */
+    fillHazeTint: 0.4,
+  },
+
+  /**
+   * The Ultra sky (T8, §3.2): the same painter at 2048×1024 with one finer
+   * cloud octave, sampled with anisotropy 4 — magnified 3.5× instead of 7×
+   * (defect D7). The horizon row stays `horizonColour` exactly.
+   */
+  sky: {
+    width: 2048,
+    height: 1024,
+    /**
+     * Amplitude of the extra fine cloud octave, relative to the next coarser
+     * one. 0.5 at W4; 0.75 from the pre-R1 calibration (§U2), with the edge
+     * sharpening below, which is what makes it visible at all.
+     */
+    fineOctaveAmplitude: 0.75,
+    /**
+     * The wisps' edge softness on the Ultra sky, as a share of the
+     * construction's (pre-R1 calibration, §U2). At 1 Switchback's authored
+     * streaks painted at 2048 looked the same as the 1024 sky: the soft ramp
+     * blurred away the fine octave. 0.6 draws the same clouds in the same
+     * places with defined, detailed edges. Only on a venue that authors its
+     * own sky: on the daylight skies it moved the rooftop haze band (§U2),
+     * and their Ultra detail is the cumulus, which has its own softness.
+     */
+    cloudSoftnessScale: 0.6,
+    anisotropy: 4,
+    /**
+     * Sparse fair-weather cumulus on the **daylight** venues' Ultra sky (town,
+     * slice, BelVar) — coordinator amendment A2. Same deterministic painter;
+     * Switchback keeps its authored clouds; the ΔE ≤ 2 gate applies to
+     * non-cloud pixels only. The mood keeper judges it.
+     */
+    daylightClouds: true,
+    /**
+     * The cumulus layer's construction (A2), painted over the ordinary wisps
+     * by `render/skyImage.ts` (`cumulusLayout`, `cumulusPixel`).
+     *
+     * **Rebuilt after gauntlet round 1 (R-L, 2026-09-23, `M39_ULTRA.md` §U2
+     * "Wave 3 — R-L").** Five of five critics read W4's noise cumulus as a
+     * grey smudge or smoke: a threshold on fBm has no top and no base, so its
+     * shading invented a grey core and a grey underside darker than the haze;
+     * it sat anywhere, so a cloud's dark base filled the rooftop haze band and
+     * another's tail hung off the frame's top edge; and one field for every
+     * plan put the same cloud in the same place on the plaza and at BelVar.
+     * These are **discrete** fair-weather cumulus instead: seeded slots on a
+     * ring, perspective-sized, each a smooth union of dome puffs cut flat at
+     * its base, with a one-texel edge, white tops under the clip line and a
+     * base no darker than the haze.
+     *
+     * **The band is measured, not guessed.** The chase camera draws 64.74°
+     * vertically with the horizon on row ≈ 410 of 1080 (pitch ≈ 8.7° down),
+     * so its top edge is at 23.7° elevation mid-frame and **16.9° in the top
+     * corners**. `topDegrees` 16 keeps every cloud clear of the frame top
+     * everywhere; `baseMinDegrees` 10 puts every base above the rooftop haze
+     * band of a typical street (distant roofs at ≈ 5–8°, and the band is the
+     * 40 sky rows over them, ≈ 2.5°).
+     */
+    cumulus: {
+      /** Slots around the full 360° ring; each may hold one cloud, jittered across its slot. */
+      count: 16,
+      /** The chance a slot holds a cloud: ≈ 10 on the ring, 1–4 in a 97° frame, uneven gaps. */
+      fill: 0.62,
+      /** The lowest and highest base elevation, degrees. */
+      baseMinDegrees: 10,
+      baseMaxDegrees: 12.5,
+      /** No cloud top above this, degrees — under the frame's 16.9° top corners. */
+      topDegrees: 16,
+      /** Width at the lowest base, degrees; ×tan(base)/tan(baseMin) higher up. */
+      widthMinDegrees: 4.5,
+      widthMaxDegrees: 16,
+      /** Dome height / width. */
+      aspect: 0.42,
+      /** Domes in a cloud's lower course (a middle course of 60 % and 1–2 turrets are added). */
+      puffs: 6,
+      /** Cauliflower relief on the upper edge, share of the cloud's height. */
+      billow: 0.06,
+      /** Bumps per cloud height along that edge. */
+      billowFrequency: 3.2,
+      /** Edge half-width, degrees: half a 2048 texel (0.176°), so crisp but anti-aliased. */
+      edgeDegrees: 0.09,
+      /** Sunlit tops, sRGB hex: luma ≈ 247, under the clip gate's 250. */
+      litColour: 0xf5f7fb,
+      /** The flat base, sRGB hex: luma ≈ 214, over the daylight haze's 210. */
+      shadeColour: 0xccd7e5,
+      /** How far the base band falls toward the base colour. */
+      baseShade: 0.7,
+      /** The least sun a face keeps: a back-lit body stays pale (no grey core). */
+      lightFloor: 0.45,
+      /** Aerial perspective: the lowest (farthest) clouds take this share of the haze. */
+      haze: 0.15,
+      /** Fair-weather cumulus is opaque. */
+      opacity: 1,
+    },
+  },
+
+  /**
+   * Material response and specular AA (§2.2, §3.3, T11). Roughness floors
+   * stop the new glossy glass, metal and water sparkling at 60–120 m.
+   */
+  specular: {
+    glassRoughness: 0.10,
+    glassF0: 0.04,
+    glassRoughnessFloor: 0.08,
+    metalRoughnessFloor: 0.35,
+    /**
+     * Glass reflecting *below* the horizon keeps this share of it (Wave 3,
+     * R-L). Street-level panes look down, so they mirror the environment's
+     * lower half — the ground bounce × β, a lifted grey brighter than any real
+     * street — and at `glassSpec` that washed the ground-floor glazing out
+     * (round 1, pair-13). Upper windows reflect the sky and are untouched.
+     */
+    glassGroundReflect: 0.4,
+  },
+
+  /**
+   * The hazard-read families (Wave 3, R-L; A11's obstacle-face gate): what a
+   * rider must read *as an obstacle* keeps High's dark face against the
+   * ground. Round 1 measured the plaza bollards lifted from 22 to 46 luma —
+   * painted metal reflecting the painted sky — and the mood keeper and hawk
+   * read them as lower-contrast. `envResponse` is the share of the
+   * environment (diffuse fill and reflection) these materials take; the sun
+   * and its shadow are untouched. Props: the bollard finial and the tyre
+   * stack (`ULTRA_HAZARD_READ_PARTS`); the bollard posts and barriers are
+   * collider blocks and take the same argument in the block family.
+   *
+   * Per part, measured against u0-high (obstacle face luma against the
+   * adjacent ground ring, Weber): the painted-metal finial reflects the sky
+   * and needs 0.4; the rubber stack only takes the diffuse fill, and at 0.4 it
+   * fell back to High's 21-luma black box (round 1 counted that a High
+   * defect), so 0.7 keeps its form at ≥ 0.9 × High's contrast.
+   */
+  hazardRead: {
+    bollardCap: 0.4,
+    tyreStack: 0.7,
+  },
+
+  /**
+   * Foliage response beyond the two live values (pre-R1 calibration,
+   * `M39_ULTRA.md` §U2). Construction constants, read by the foliage patch.
+   */
+  foliage: {
+    /**
+     * Sky light through the canopy: foliage takes this multiple of the
+     * environment's diffuse fill. Leaves are thin and a crown is mostly gaps,
+     * so a canopy's shaded side sees the sky through itself — which is why a
+     * tree in shade is a readable green mass and not a black hole. At 1 the
+     * crowns' self-shaded halves measured 33–40 luma (§8.3 wants ≥ 45); 1.5
+     * left four views at 41–45; 1.75 passed every view, and 2.0 lifts the
+     * conifers standing in building shade (industrial yard, about 31 luma)
+     * over the frame's dark threshold. Indirect only, so a tree in building
+     * shade gains exactly as much as its fill and no more: the crown-in-shade
+     * / shaded-facade ratio (≤ 1.3, "no glow"; 0.3–0.8 measured at 1.75) is
+     * the ceiling this number answers to.
+     */
+    skyFill: 2.0,
+    /**
+     * The back-light lobe's exponent: `pow(sat(V·−L), p)`. 4 at W4 hid the
+     * rim unless the camera looked almost straight into the sun; 2 lets
+     * Switchback's low warm sun rim the conifers across a wider arc. Still
+     * inside the shadowed direct term, so still never in shade.
+     */
+    transmissionPower: 2,
+    /**
+     * Foliage's own near-map filter (Wave 3, R-L): a fixed 3×3 tent of
+     * hardware-PCF fetches this many texels apart, in place of three's five
+     * taps turned per pixel by interleaved-gradient noise. On the serrated
+     * conifer tiers that dither drew blotchy teeth that crawled in motion
+     * (round 1: pair-04, motion-01/04/05). At 2.5 texels (6.7 cm on the 4096
+     * map) the tent's footprint is about ±9 cm, so a tier's shade under the
+     * one above is one soft band; it is fixed, so it holds still.
+     */
+    shadowSpreadTexels: 2.5,
+    /**
+     * Foliage's receive bias along the light, metres (Wave 3, R-L): a leaf
+     * surface is not shadowed by occluders within this distance of it along
+     * the sun ray. It removes the self-shadow of a tier's own teeth and facet
+     * creases — which is what speckled — and keeps the shade of the tier above
+     * (its tooth tips hang about 0.5 m over the tier below's cone, more along
+     * a 33–55° ray), of other trees and of buildings. For R-F's serration: any
+     * tooth relief under this depth no longer self-shadows at all.
+     */
+    receiveBiasMetres: 0.15,
+  },
+
+  /**
+   * Facades (T4, §4): companion normal + ORM pages on `FACADE_PAGES` with
+   * painted mips and a Toksvig roughness rise, the Ultra albedo copy's
+   * anisotropy, per-region roughness, and the metric base AO on indirect.
+   */
+  facade: {
+    /** Normal and ORM page edge, texels (2 × 5.6 MiB with mips). */
+    mapSize: 1024,
+    /** Gutter around each page rect, texels, copying its edge so mips never bleed. */
+    gutterTexels: 16,
+    /** Albedo anisotropy = min(this, the device's maximum). */
+    anisotropyCap: 16,
+    wallRoughness: 0.92,
+    spandrelRoughness: 0.85,
+    plinthRoughness: 0.9,
+    /** Base AO `mix(baseAoFloor, 1, smoothstep(0, baseAoMetres, h))`, indirect only. */
+    baseAoFloor: 0.70,
+    baseAoMetres: 2,
+    /**
+     * The facade's own receive (Wave 4, R-L; gauntlet round 2 item 6). At a
+     * grazing sun (the residential block's street face, N·L ≈ 0.1) three's
+     * dithered five-tap penumbra of the shopfront soffit's shadow is smeared
+     * down the recessed band as vertical combing, and PCF taps that straddle
+     * the soffit's own edge a few centimetres off drew serrated teeth along
+     * the first-floor ledge (3 critics). Facades therefore take the ground's
+     * fixed disk at the live `nearRadius`, and:
+     *
+     * - `receiveBiasMetres`: a receive bias along the light. A face is not
+     *   shadowed by occluders within this distance of it along the sun ray.
+     *   Every real facade shadow comes from farther: the soffit sits 0.25 m
+     *   (`relief.revealDepth`) proud of its band along any ray, and a cap's
+     *   groove step 0.08 m (`relief.capGrooveDepth`).
+     * - `slopeNormalScale`: the near rig's normal offset × (1 + k·(1 − N·L)),
+     *   slope-scaled, so a grazing face looks up its shadow a little farther
+     *   off its own surface.
+     * - `nlFade`: the sun faded to form shade as N·L falls from the second
+     *   number to the first, so the last few per cent of a grazing face's sun
+     *   (where a shadow texel smears across a metre of wall) cannot comb.
+     */
+    receiveBiasMetres: 0.06,
+    slopeNormalScale: 1,
+    nlFade: [0.02, 0.12],
+    /**
+     * The facade disk's radius is the live `nearRadius` × (`spreadScale` +
+     * `grazeSpread` × (1 − smoothstep(0, 0.5, N·L))). A caster edge's
+     * one-texel stair steps stretch ≈ 1/(N·L) down a wall: at the rig's own
+     * 1.25 texels the commercial soffit's shadow line kept small regular
+     * teeth (N·L ≈ 0.55), and on the residential block the sun grazes
+     * (N·L ≈ 0.1) the comb went but streaks stayed; at 2 texels (× 1.6) the
+     * soffit's teeth were softer but still there. 2 × 1.25 = 2.5 texels on a
+     * face the sun meets, up to 3.5 as it grazes; the 16 taps stay about
+     * 1.5 texels apart at most — at radius 4 they sat 1.8 apart and the
+     * stair steps came back as separate stripes (measured). Both scale the
+     * live radius, so the planted `nearRadius 0` still stair-steps.
+     */
+    spreadScale: 2,
+    grazeSpread: 0.8,
+    /**
+     * The facade's cast-shade lift (final wave, P-LT; round 3 item 4): where
+     * a sun-facing facade is in cast shade, its indirect diffuse is
+     * × (1 + this × shade), a floor at about the facade's form shade instead
+     * of a dark patch (the slice's crown-shaped "lump" on its plinth: core
+     * luma 46 → 70, against 107 sunlit and the view's form-shade mean of 69).
+     * Only shade from casters more than `liftCasterMetres` up the sun ray
+     * lifts (the near map compared that far nearer the sun), so the facade's
+     * own relief — a soffit's line, a reveal, a cap groove — keeps its
+     * darkness (`ultraMaterials.ts` `FACADE_CAST_LIFT`).
+     * A construction constant, baked into the patch text.
+     */
+    castShadeLift: 1.0,
+    /**
+     * The facade lift's caster test, metres along the sun ray: shade from an
+     * occluder nearer the wall than this is the wall's own relief and does
+     * not lift. Over a soffit's or reveal's reach at a moderate sun (0.25 m
+     * proud: well under a metre along the ray), under the few metres from a
+     * plinth to a street tree's crown or to the next building.
+     */
+    liftCasterMetres: 2,
+    /**
+     * The facade disk's distance ramp (final wave, P-LT; round 3 item 4):
+     * past `farRampMetres[0]` of view distance the radius grows, by
+     * `farRampMetres[1]`, to `farSpreadTexels` at the shipped `nearRadius`
+     * (a multiple of the live radius, so the planted radius 0 stays hard) —
+     * the ground's aerial softening of a shade edge (`nearFilter`), so a
+     * crown's shade that runs from the grass up a plinth 55 m off keeps one
+     * softness instead of turning crisp on the wall. It starts at 30 m, past
+     * the residential recess and the commercial soffit Wave 4 measured
+     * (23–27 m), which stay exactly as they were.
+     */
+    farSpreadTexels: 12,
+    farRampMetres: [30, 60],
+  },
+
+  /**
+   * Geometric relief (T4, §4), all metric through the `ultraRelief` attribute
+   * and all **inward only**, so every vertex stays inside the collider box and
+   * `BUILDING_CLEARANCE`, and mirrored in `customDepthMaterial`.
+   */
+  relief: {
+    /** Ground-floor shopfront pane set back from the facade, metres. */
+    revealDepth: 0.25,
+    /** Building-cap vertical-edge chamfer, metres. */
+    capChamfer: 0.15,
+    /** Cap groove: this far below the top, metres … */
+    capGrooveDrop: 0.3,
+    /** … and recessed this far, metres. */
+    capGrooveDepth: 0.08,
+    /** Roof-gable eave fascia depth, metres. */
+    eaveFascia: 0.25,
+    /** Tile courses as a world-metric slope stripe: pitch, metres … */
+    tilePitch: 0.35,
+    /** … ± tone share … */
+    tileTone: 0.05,
+    /** … faded out by `fwidth` past about this distance, metres. */
+    tileFadeMetres: 40,
+  },
+
+  /**
+   * Ultra forms (T3, T7, §4). Envelopes are `data/props.ts`'s and are never
+   * restated here; these are the shape budgets and tones the builders start
+   * from. Integer hashes only, with the new salts 13, 17, 19, 23, 29, 31.
+   */
+  forms: {
+    crown: {
+      /** Merged icosphere(1,1) lobe clusters, fitted uniformly into `CROWN_ENVELOPE`. */
+      lobeClusters: 5,
+      /** Normal softening toward the radial direction; faceting kept. */
+      soften: 0.5,
+      /** Chromatic tones, normalised per channel to a mean of exactly 1.0. */
+      tipTone: [1.14, 1.18, 0.86],
+      hollowTone: [0.84, 0.90, 1.04],
+    },
+    conifer: {
+      tiers: 6,
+      sides: 9,
+      /** Vertices around each serrated rim. */
+      rimVertices: 18,
+      tipTone: [1.12, 1.15, 0.90],
+      skirtTone: [0.82, 0.88, 1.05],
+    },
+    trunk: {
+      sides: 8,
+      /** Root flare, metres (trunk r ≤ 0.30 m by the envelope). */
+      rootFlare: 0.30,
+      /** Branch stubs, each ending inside the crown. */
+      branchStubs: 2,
+    },
+    tyre: {
+      tori: 4,
+      radialSegments: 12,
+      tubularSegments: 6,
+    },
+    bench: {
+      seatSlats: 4,
+      backSlats: 3,
+    },
+    /** New integer-hash salts (3, 5, 7, 9 and 11 are in use). */
+    salts: [13, 17, 19, 23, 29, 31],
+  },
+
+  /**
+   * Analytic contact AO (T5, §4): per heightfield corner, from `plan.props`
+   * and colliders through a spatial hash so shared corners agree. The product
+   * of every occluder's term is darken-only and clamped at `floor`.
+   */
+  contact: {
+    floor: 0.55,
+    /**
+     * Band, metres, and strength per occluder class.
+     *
+     * **Building 0.40 → 0.22 (Wave 3, R-G; gauntlet round 1 item 9):** at 0.40
+     * the footprint band drew a black strip along wall bases (the blue house on
+     * the residential view) and, over the grass and brick at canyon wall feet,
+     * carried most of the share-under-32 fails. 0.22 keeps a readable contact
+     * line at the wall foot without the crush.
+     */
+    building: { band: 2.5, strength: 0.22 },
+    /**
+     * The share of the analytic contact AO the ground's *non-road* surfaces
+     * take on direct light (Wave 4, R-G; A18, round-2 item 10: "baked contact
+     * occlusion where the ground meets buildings, walls, trees and props",
+     * three of five critics). Applied by the ground patch alone, on top of
+     * the shared `contactDirectShare` (0), and never on the rank-1 road
+     * (`ULTRA_ROAD`), so the sunlit road cannot darken; the two together stay
+     * within §3.3's 0.3.
+     */
+    groundDirectShare: 0.15,
+    /** Walls and blocks: band = min(bandMax, bandHeightShare × height). */
+    wall: { bandMax: 1.2, bandHeightShare: 0.8, strength: 0.35 },
+    /** Crown canopy disc — sky occlusion under the tree. */
+    crown: { band: 2.45, strength: 0.22 },
+    trunk: { band: 1.0, strength: 0.35 },
+    shrub: { band: 1.3, strength: 0.30 },
+    tyre: { band: 0.8, strength: 0.35 },
+    fence: { band: 0.35, strength: 0.20 },
+    /** Lamp, bollard, bin and sign. */
+    furniture: { band: 0.5, strength: 0.25 },
+    /**
+     * The dynamic contact occluders (coordinator amendment A9; Wave 3, R-G):
+     * the rider's wheel and body footprint, and the cop's when he is out, fed
+     * every solo frame from `ultraRuntime.ts` as the shared uniforms
+     * `ultraContactPoints` (x, z, radius, strength) / `ultraContactCount` and
+     * read by the ground patch alone. In cast shade only indirect light is
+     * left, so nothing static can ground a moving rider there — five of five
+     * round-1 critics called the canyon rider "ungrounded". Each occluder is
+     * `1 − strength·(1 − t²)²` at `t = d / radius` (soft centre, zero slope at
+     * the rim, so no halo line), the product clamped at `floor`, on indirect
+     * light and on `directShare` of the direct.
+     */
+    riders: {
+      /**
+       * Round the tyre's contact patch. It too keeps only `sunShare` of its
+       * strength outside static shade (Wave 4), where the tyre's own cast
+       * shadow is its contact line.
+       */
+      wheel: { radius: 0.6, strength: 0.6, sunShare: 0.125 },
+      /**
+       * Round the rider's pelvis, projected to the ground: the body's sky
+       * occlusion. **Directional (Wave 4, R-G; A15, round-2 item 1c):** a
+       * round pool read as "only a blob" to four of five round-2 critics in
+       * the canyon. It is stretched `stretch` × `radius` along the sun's
+       * ground azimuth and `across` × `radius` across it, its centre
+       * `downSunMetres` down-sun of the pelvis — so it reads as the rider's
+       * shade, pointing the way his cast shadow does in sun. It keeps
+       * `sunShare` of its strength where no static shade lies (the far map):
+       * in sun his real cast shadow grounds him, and a whole pool along it only
+       * deepened it (0.17–0.21 × the sunlit road against High's 0.26–0.31).
+       * **Final wave (P-GR; A20, round-3 item 1b):** still "a blob" to five
+       * of five round-3 critics — the Wave-4 ellipse (2.1 m along, 0.84 m
+       * across, 0.5 m down-sun) lay almost centred on the rider. Now a streak:
+       * 1.9 m along and 0.47 m across, centred 1.05 m down-sun, so it runs from
+       * just behind the wheel to about 3 m out along his shadow's azimuth,
+       * denser (0.45, and the wheel's core 0.6); in sun each keeps no more
+       * than Wave 4's darkening (`sunShare` × strength 0.06 and 0.075), so the
+       * rider's cast shadow stays at High's value (0.25–0.29 × sunlit).
+       * **A28:** this streak is the pool's *sun* shape only; in static shade
+       * it gives way to `shade` below (and the wheel's to its own round core).
+       */
+      body: {
+        radius: 1.05, strength: 0.45, stretch: 1.8, across: 0.45, downSunMetres: 1.05, sunShare: 0.13,
+        /**
+         * **The body's pool in static shade (A28, Trade 1; Codex's post-GU
+         * QA, five of five round-4 critics: "a formless, diffuse down-sun
+         * streak").** Where a building or a tree shades the ground there is
+         * no sun, so the streak above has no business there: the ground
+         * patch weighs the streak by `sunShare × (1 − shade)` and this
+         * compact, round pool by `shade` (the static shade the lift finds at
+         * each ground point), so in a canyon the contact sits under the wheel
+         * and feet and at a shade edge each point blends continuously back to
+         * the sun shape. `radius` in metres, `strength` as the others;
+         * centred `towardPelvis` of the way from the wheel's contact to the
+         * pelvis's ground point, so it follows a lean. Measured (scratchpad
+         * `codexqa/vr`): with the wheel's core (0.6 m, 0.6) it reads as one
+         * soft oval pedal to pedal and about 0.9 m either side of the wheel,
+         * darkest under the tyre; the ring round the rider keeps its median
+         * (the separation row's ground, 92.44 luma at lift 2.1, unmoved).
+         */
+        shade: { radius: 0.8, strength: 0.3, towardPelvis: 0.5 },
+      },
+      /** The product never darkens below this. */
+      floor: 0.4,
+      /**
+       * Share of the occlusion applied to direct light. Small: in sun the
+       * rider's real cast shadow grounds him, and a large share would draw a
+       * blob on the sunlit side.
+       */
+      directShare: 0.06,
+      /** The wheel's height above the ground, metres, over which both occluders fade out (a hop, a jump). */
+      liftFade: [0.12, 1.1],
+      /** The pelvis's height above the ground, metres, over which the body occluder fades (a ragdoll in flight). */
+      bodyLiftFade: [1.5, 2.6],
+    },
+  },
+
+  /**
+   * Shade on up-facing ground (coordinator amendment A7; Wave 3, R-G). The
+   * painted-sky fill alone left a canyon road in building shade at about
+   * 0.30 × the sunlit road — the near-black "hole, pit or oil" all five
+   * round-1 critics named and both hawk vetoes rested on. A7 wants large cast
+   * shade on the road at 0.45–0.62 × sunlit, sunlit road untouched and the
+   * rider's own shadow no lighter than 0.45 × sunlit.
+   *
+   * The ground and block patches therefore scale **indirect diffuse** by
+   * `1 + lift·shade·up`, where `shade` is where the sun is shadowed (the
+   * patched `getShadow`'s visibility × a steep N·L ramp, exactly the fill's
+   * own "sun share") **and** the static far map says a building or tree
+   * casts there, and `up` is how up-facing the face is. The far-map gate is
+   * what keeps the rider's own shadow (and a lamp post's, a fence's) at its
+   * High darkness: the far map holds only static casters, never a rider, so
+   * only large static shade lifts. On a rung with no far map every shade
+   * lifts. Sunlit ground has `shade` 0 and is untouched to the bit.
+   */
+  shade: {
+    /**
+     * Indirect diffuse × (1 + lift) in full static shade on an up-facing face.
+     * Measured (Wave 3, R-G; cast shade on the road over High's sunlit road,
+     * same view): 0 → 0.31 (commercial canyon, industrial slab), 1.6 → 0.65
+     * on both — over A7's 0.62 ceiling and a canyon that read overcast. 1.05
+     * sat in the band's middle (see `M39_ULTRA.md` §U2 "Wave 3 — R-G"), and
+     * still read as dusk: low *and* blue (road B/R 1.27).
+     * **1.3 (Wave 4, R-G; A14's 0.50–0.70 within 30 m):** with the lifted
+     * share warmed (`liftWarmth`) the canyon measures 0.588 × its sunlit road
+     * at B/R 1.11, the industrial crest 0.605 (≤ 30 m) and 0.59 (30–45 m).
+     * This is the lift at the camera; `liftFar` takes over with distance.
+     * **1.7 (final wave, P-GR; A20, round-3 item 1a):** 0.588 read gloomy or
+     * overcast to five of five round-3 critics, and the dark suit sank into
+     * the road; A20 aims the canyon at 0.66–0.68. Measured (scratchpad
+     * `pgr/c4`): the canyon ≤ 20 m 0.663 × its sunlit road at B/R 1.10, the
+     * rider's absolute separation 0.56 → 0.64 × High's, the kerb band still
+     * ≥ High's (0.685 against 0.673), the obstacle rows unmoved (the lift
+     * stays tall-caster-gated).
+     * **Live on F4 (final touch, post round 4)** as `ULTRA.shade.lift`, the
+     * shared `ultraShadeLift` uniform: the owner's Trade 1(b) lever.
+     * **2.1 (A28, Codex's post-GU QA; Trade 1 reopened):** the near street
+     * shade may rise to 0.70–0.76 × sunlit while it still reads as shade, and
+     * helps the rider's separation. Measured (scratchpad `codexqa/vs`): the
+     * canyon ≤ 20 m 0.663 → 0.738 × its sunlit road, B/R 1.103 → 1.089; the
+     * kerb band held over High's by `surfaceShare.brick` (the raise alone put
+     * it at 0.668 against 0.673: a quarter of that band is sunlit, the road
+     * beside it is not); the obstacle and rider-shadow rows unmoved (the lift
+     * stays tall-caster-gated).
+     * **2.2 (A28, Fable F-A2; builder FR):** the rider may no longer buy his
+     * separation with a black body (`ULTRA.rider.shadeLight`), so the street
+     * carries more of it, inside A28's 0.76 ceiling. Measured on commercial
+     * (scratchpad `codexqa/fr`): **2.2 → the canyon 0.755 × its sunlit road,
+     * B/R 1.085, the kerb band 0.684 (High 0.673), 20–35 m 0.757 against its
+     * 0.769 ceiling**, the far bands unmoved; 2.22 gave 0.758, too close to
+     * 0.76 (and off the F4 slider's grid). Elsewhere the change is under two
+     * levels but for 18 pixels. Both A28 rider rows cannot pass at once
+     * inside 0.76 (see `ULTRA.rider.shadeLight`).
+     */
+    lift: 2.2,
+    /**
+     * A14's aerial perspective of shade (Wave 4, R-G; round-2 item 2a): the
+     * lift rises from `lift` to `liftFar` as the view distance goes over
+     * `liftDistance` (metres, smoothstep), so a distant slab of cast shade
+     * reads lighter than the shade at the wheel — as fog does to everything
+     * else — and never as a hole (the industrial crest, 5/5 round-2 critics).
+     * A14 holds cast shade within 30 m at 0.50–0.70 × the sunlit road and lets
+     * it ramp to ≤ 0.80 by 80 m; the ramp starts at 10 m and stays under that
+     * rising ceiling (measured: the commercial far band 0.68 at 51 m against
+     * 0.74, the industrial crest 0.59 at 33 m against 0.71).
+     * **2.2 over [20, 36] m (final wave, P-GR; A20, round-3 item 2):** A20
+     * holds the first 20 m at the near band and lets the lift ramp from there
+     * to about 0.75 by 35 m and ≤ 0.80 by 80 m, so the industrial crest slab
+     * (27–33 m; "oil, pothole or hole" to five of five critics) reads as
+     * distant shade. Measured (`pgr/c4`): the slab 0.70 over 20–35 m (0.725 at
+     * 30–35 m) against the ramp's 0.73; the commercial far bands 0.74–0.75 at
+     * 45–57 m against 0.76–0.77. A steeper or higher ramp broke the commercial
+     * 50–65 m ceiling, where fog already lifts the ratio.
+     * **Live on F4 (final touch)** as `ULTRA.shade.liftFar`, the shared
+     * `ultraShadeLiftFar` uniform: the owner's Trade 2(b) lever.
+     * **2.5 over [20, 30] m (A28, Trade 2 reopened):** the crest slab
+     * (27–36 m, "oil or wet patch" to the hawk in every round) paler, at
+     * 0.76–0.82 × sunlit, and — with the ground filter's screen kernel
+     * (`nearFilter.groundScreen*`) — graded rather than cut. Measured
+     * (scratchpad `codexqa/vs`): the slab 0.720 → 0.797 over 27–36 m; its
+     * edges' 10–90 % widths 0.8 → 4.4 px (near) and 2.2 → 7.0 px (far). A28
+     * amends A20's gate ramp to match (`tools/ultra-metrics.mjs` `A14`: 0.76 at
+     * 20 m, 0.82 at 35 m, 0.85 at 80 m); the commercial far bands read 0.81 at
+     * 45 m and 0.80 at 57 m under it (A20's 2.2 over [20, 36] left them 0.75).
+     * **2.2 over [20, 36] m again (A29, round 5):** the paler, graded slab
+     * came out worse than U5's on every count (richer 5/0 → 3/2, reads slower
+     * 2/5 → 4/5, score preference 5/5 → 1/5), read by all five critics as "a
+     * floating smudge with no caster", so Trade 2 reverts to U5: these values,
+     * the screen kernel off (`nearFilter.groundScreenKernel`), and the slab
+     * row back on A20's ramp (`tools/ultra-metrics.mjs` `A29`). With `lift`
+     * at A28's 2.2 the two amounts are now equal, so the lift is 2.2 at every
+     * distance; U5's slab (under `lift` 1.7) ramped from about 1.9 at 27 m to
+     * 2.2 at 36 m. See `M39_ULTRA.md` §U2 "A29".
+     */
+    liftFar: 2.2,
+    liftDistance: [20, 36],
+    /**
+     * The share of the lifted light that takes the ground bounce's hue rather
+     * than the sky fill's (A14; round-2 item 1a). The lift had multiplied the
+     * sky-blue fill, so the lifted canyon stayed blue — B/R 1.27 on the road,
+     * read as dusk or overcast by five of five critics. The lifted share is
+     * light off the sunlit street and facades, so it takes the environment's
+     * own down-facing irradiance hue (the look's `groundBounceColour` × β):
+     * A14 wants shaded-road B/R ≤ 1.12 (High's sunlit road 1.06). At 1 the
+     * canyon went neutral grey (B/R 1.045) and the frame's chroma fell under
+     * High's (0.0156 against 0.0175); 0.65 keeps a trace of the sky's blue:
+     * B/R 1.11, chroma 0.0178.
+     * **0.6 (final wave, P-GR):** at `lift` 1.7 the warmed share is most of
+     * the canyon's light, so 0.65 left it B/R 1.09 with the frame's chroma
+     * level with High's (0.0175 against 0.0175); 0.55 gave 1.116 against the
+     * 1.12 ceiling; 0.6 gives B/R 1.10 and chroma 0.0181 (`pgr/c4`).
+     */
+    liftWarmth: 0.6,
+    /**
+     * A28, Trade 3 (and Trade 1's kerb): the lift's share by ground surface —
+     * a multiplier on `lift`/`liftFar` for each detail kind (`GROUND_DETAIL_KIND`
+     * in `ultraGroundDetail.ts`), taken per material and, across a filled band
+     * edge, blended by the edge field's cover toward the filling surface's.
+     * The road, wood and the spill (kind none) and the dirt trail keep the whole
+     * lift, so rank-1 road stays exactly at A20/A28. Road paint and block tops
+     * keep the whole lift as well. It takes the lift's *cast* part only: a
+     * bank's form shade (`selfShadeShare`) keeps its lift.
+     *
+     * - **Turf (grass, gravel verges) 0.4:** tree shade on the slice's grass
+     *   read weak at 0.47 × the sunlit grass (High 0.21; three round-4 critics,
+     *   "slightly floaty"); A28 aims at about 0.30–0.40. Measured: the slice
+     *   0.474 → 0.357 (the `tree shade on turf` gate row).
+     * - **Brick 1.1:** the kerb band. Trade 1's raise lifts the whole
+     *   commercial road but only three quarters of its kerb band (the rest is
+     *   sunlit), so kerb/road fell under High's (0.668 against 0.673); a
+     *   little more lift on shaded brick holds it (0.689 at 1.1, 0.710 at 1.2).
+     */
+    surfaceShare: { grass: 0.4, gravel: 0.4, dirt: 1, brick: 1.1 },
+    /**
+     * View distance, metres, over which a share under 1 (turf) comes in from
+     * the whole lift. At 0.4 all the way in, the vegetated bank's conifer
+     * shade 6–18 m from the camera fell to 23–31 luma over 44k px — the
+     * near-black band the final touch had lifted — and the town's share < 32
+     * gate read 0.0325 against 0.03. The slice's tree shadows lie 21–36 m out.
+     */
+    surfaceShareMetres: [8, 20],
+    /**
+     * The tall-caster test (A14; round-2 item 5), metres: only shade from a
+     * static caster taller than this lifts. Kickers, boxes, steps, bollards,
+     * benches and shrubs (≤ 2.2 m) keep their cast shadow at High's darkness;
+     * buildings and trees (crowns from 3.1 m) lift. See
+     * `ultraShadeLiftDeclarationsGlsl` for how the far map answers it.
+     */
+    tallCasterMetres: 2.5,
+    /** `up = smoothstep(a, b, n.y)` on the world normal: a block's top against its faces. */
+    upFacing: [0.35, 0.85],
+    /**
+     * The same ramp on the ground, which has no walls: a bank is ground too.
+     * At the blocks' ramp the vegetated view's 40° hillside, in conifer shade,
+     * kept only half its lift and sat at luma 28–31 (share < 32 0.029).
+     */
+    groundUpFacing: [0.0, 0.5],
+    /**
+     * The lift's share on a face turned from the sun (N·L ≤ 0: a bank's form
+     * shade), which the far map does not see because the heightfield never
+     * casts. No rider's shadow can fall there, so it is safe to lift; less
+     * than the whole lift, so a hill keeps its modelling. The vegetated
+     * view's far bank sat at luma 27 (share < 32 0.029 of the frame).
+     */
+    selfShadeShare: 0.6,
+    /** `static = smoothstep(a, b, 1 − farVisibility)`: how far-map shade gates the lift. */
+    staticShade: [0.12, 0.55],
+    /**
+     * Collider blocks (item 7 of the round-1 list): vertical faces take this
+     * share of the environment's diffuse fill. The fill's bright horizon and
+     * β-lifted bounce had raised shaded step, kicker and bollard faces (the
+     * Switchback kicker 30 → 58) until obstacles merged into the ground
+     * around them. Tops keep the whole fill and take the ground's lift.
+     */
+    blockSideFill: 0.5,
+    /**
+     * …and this share of the environment's sky sheen. The plaza's metal
+     * bollards reflected the painted sky from 23 to 42–46 luma against the
+     * brick (High's are near-black posts), halving their contrast; a hazard
+     * post must read as one before it reads as painted metal.
+     */
+    blockSideSpec: 0.4,
+    /**
+     * …and a block's top keeps this share of its sky sheen (the ground keeps
+     * `groundSpec`, 0.5). High reflects no sky, so a step's top read a little
+     * darker than the trail around it; at a grazing chase-camera view the
+     * smoother deck wood caught enough painted sky to close that gap
+     * (vegetated step tops 0.60 × High's contrast at the ground's 0.5). The
+     * other way round, a top lighter than the ground around it (Switchback's
+     * decks, BelVar's barrier) loses contrast as its sheen falls: 0.2 put
+     * those at 0.78–0.79 and the vegetated steps at 0.90. 0.28 is inside
+     * every view's ≥ 0.8 (measured, `M39_ULTRA.md` §U2 "Wave 3 — R-G").
+     */
+    blockTopSpec: 0.28,
+  },
+
+  /**
+   * The rider, his wheel and the cop on the Ultra tier (coordinator amendment
+   * A15; Wave 4, R-G; round-2 item 4).
+   */
+  rider: {
+    /**
+     * The share of the Ultra environment the rider, wheel and cop materials
+     * take (`envMapIntensity = environmentIntensity × envResponse`, through an
+     * explicit `envMap` — the same PMREM, the same cube-UV program — written
+     * and restored exactly by `ultraRuntime.ts`). The whole painted sky lifted
+     * the dark suit toward the ground behind it: on every daylight view the
+     * rider's contrast against his ring was 0.57–0.86 × High's (plaza lowest),
+     * and two round-2 critics read him "washed" or "veiled". A15 wants ≥ 0.9 ×
+     * High in sun and ≥ 0.8 × High in shade on every view. No rim light, suit
+     * colour, geometry, UV or animation change (invariant 8; A28 widens it
+     * for `shadeLight` below only, in static shade).
+     *
+     * **0.56 (measured, Wave 4):** the rider's mean luma lands within about
+     * 1.5 of High's on every view, and A8 reads 1.01–1.08 × High (the canyon
+     * 1.02 in shade). The window is narrow at Switchback, where the grey suit
+     * and the brown dirt are within ten luma at both tiers, so the ratio swung
+     * 0.67–1.22 across the calibration captures (0.56 with the shipped pools:
+     * 0.97). Lower darkens BelVar's rider past High's share < 32.
+     */
+    envResponse: 0.56,
+    /**
+     * **The rider's light in static shade (A28, Trade 1).** In a building's
+     * or a tree's shade the suit sank into the road: 5/5 round-4 critics
+     * read High faster on commercial, and the rider's absolute separation
+     * was 0.640 × High's (rider 15.65 on 84.44 luma) against A28's 0.80.
+     * Where the static far map says a caster shades a point *of the rider*
+     * (per fragment, so a kicker's low shade reaches only his shins; never
+     * his own shadow, which the far map never holds), the rider, wheel and
+     * cop materials re-weight the environment toward the sky above them
+     * (`ultraRiderShadow.ts`):
+     *
+     * - the diffuse fill × `mix(bodyKeep, skyGain, key)`, `key` a smoothstep
+     *   of the world normal's y over `keyUp` — the helmet crown, shoulders,
+     *   upper arms, a leaning back and the pedals catch the sky strip; the
+     *   sides and underside keep `bodyKeep` of the painted environment, whose
+     *   lower half is a *sunlit* street's bounce × β, not the shaded one
+     *   around him;
+     * - the sheen (the specular `radiance`) × `sheenKeep` where the
+     *   reflection looks below the horizon (a smoothstep of its y over
+     *   `sheenSky`), for the same reason: the rough suit mirrored the
+     *   β-lifted bounce, a grey veil over the whole body.
+     *
+     * The sun, the albedo, the geometry and the animation are untouched, and
+     * outside static shade the term is exactly 1 (the other nine views'
+     * rider rows are unmoved). Measured on commercial (scratchpad
+     * `codexqa/vr`, the separation row, median |ΔL|; High 107.42): lift 2.2
+     * and no term 0.734 (rider 15.65); {0.55, 2.2, [0.2, 0.9]} 0.797
+     * (8.87); {0.5, 3.2, [0.05, 0.75]} 0.779 (10.72, too wide a key);
+     * {0.4, 4.5, [0.2, 0.7]} 0.807 at lift 2.2, 0.788 at lift 2.1 (7.79);
+     * with the sheen at 0.4, 0.815 (4.86); **at 0.55, 0.813 (5.08) at lift
+     * 2.1** (near shade 0.7395 × sunlit), the Weber row 1.107 × High. The
+     * lit tops hold p90 ≈ 44 luma (High's sunlit suit 64), so nothing
+     * glows. The ground ring is `ULTRA.shade.lift`'s: at this rider the row
+     * reaches 0.80 once the near shade is ≥ about 0.727 × sunlit.
+     *
+     * **`bodyKeep` 0.4 → 0.8 (Fable 5.1's QA of A28, F-A2; builder FR).**
+     * That 0.813 was bought mostly with a black body: rider median 15.65 →
+     * 5.08 luma, p25 4.07, 58 % of his pixels under 8 — the legs, the lower
+     * torso and the wheel one black mass. A28 now says separation may not be
+     * bought with darkness, and the rider row carries a black-crush guard
+     * (`tools/ultra-metrics.mjs`: p25 ≥ 10 luma in static shade; High's
+     * sunlit rider 14.65). Measured on commercial (scratchpad `codexqa/fr`),
+     * the sky key and the sheen cut kept: `bodyKeep` 0.75 → p25 9.79, median
+     * 10.87, share < 8 10.2 % (separation 0.759 at lift 2.1); **0.8 → p25
+     * 10.72, median 11.8, share < 8 8.3 %** (separation 0.769 at the
+     * shipped lift 2.2, 0.779 at 2.22; the rider's pixels do not depend on
+     * the lift). The shorts, calves and boots read apart from the wheel
+     * shell again; Weber 1.037 × High, and in sun nothing changes. **The two rows cannot both pass inside A28's 0.76 street
+     * ceiling, for any rider:** p25 ≤ median, so p25 ≥ 10 caps the median
+     * separation at (ring − 10) / 107.42, and the ring at 0.76 × sunlit is
+     * about 95.6 luma — 0.797 at most, 0.78 with this body's own median − p25
+     * gap of about 1 luma. The separation row stays under 0.80 here; the
+     * trade is the coordinator's (FR.md).
+     */
+    shadeLight: { bodyKeep: 0.8, skyGain: 4.5, keyUp: [0.2, 0.7], sheenKeep: 0.55, sheenSky: [-0.2, 0.3] },
+  },
+
+  /**
+   * Fill-only corner edge fill (T6, §4) — the kill flag. A corner is filled
+   * only where the other three cells around it are one outranking surface;
+   * bands never lose a cell. Off drops the attributes and the patch.
+   */
+  edgeFill: true,
+
+  /**
+   * Brick paving joints (T10): running bond at the 2.8 m module in world XZ,
+   * on `brick` only and never on a rank-1 (road) surface, faded by `fwidth`.
+   */
+  brickJoints: {
+    moduleMetres: 2.8,
+    /**
+     * 0.02 at W6, kept (Wave 4, R-G): round 2's item 10 allowed about 3.5 cm
+     * so the plaza's joints could be seen at chase distance, but measured it
+     * cost the plaza strip's shimmer index 1.127 → 1.159, over the 1.15 gate
+     * (the joints under the wheel stream across the screen). Widening them
+     * needs a near-field fade-in in the shared joint GLSL first.
+     * **0.035 (final wave, P-GR; A18, Fable I2)** with that fade-in
+     * (`nearFadeFootprintMetres`): the joints under the wheel, which stream
+     * across the screen, are not drawn; from a few metres out they are. The
+     * plaza strip's shimmer index went 1.129 → 1.102 (`pgr/c4-strip`): the
+     * near joints were what streamed. At ≤ 6 % darker they are still subtle.
+     */
+    jointMetres: 0.035,
+    /**
+     * The near-field fade-in (final wave, P-GR): a joint is drawn only as one
+     * pixel's ground footprint grows from the first number to the second,
+     * metres — so not under the wheel (about 0.01 m a pixel on the plaza's
+     * chase view) and fully by a few metres ahead. Baked into the patch text.
+     */
+    nearFadeFootprintMetres: [0.014, 0.028],
+    /** At most this much darker than the brick. */
+    darken: 0.06,
+    /**
+     * The `fwidth` fade: a joint is drawn box-filtered (its coverage of the
+     * pixel, so it never widens to a pixel-wide line), and fades out entirely
+     * as one pixel's ground footprint grows from the first number to the
+     * second, metres. Stability beats detail: past that the joints are sub-
+     * pixel texture and would only shimmer.
+     */
+    fadeFootprintMetres: [0.08, 0.16],
+  },
+
+  /**
+   * Collider blocks (T9): vertical-face base AO and plank courses on faces at
+   * least `minFaceHeight` tall. Tops and lip edges are never touched, and
+   * BelVar's barrier vertices stay byte-identical (attributes added only).
+   */
+  blocks: {
+    minFaceHeight: 0.6,
+    /** Base AO `0.75 → 1` over the bottom `baseAoMetres`. */
+    baseAoFloor: 0.75,
+    baseAoMetres: 0.6,
+    /** Plank course height, metres … */
+    plankCourse: 0.25,
+    /** … and its ± tone share. */
+    plankTone: 0.04,
+  },
+
+  /**
+   * The Ultra ground's own surface (pre-R1 ground pass, `M39_ULTRA.md` §U2
+   * "Pre-R1 ground (G)"): the smooth band-boundary edge field (T6 revised),
+   * the painted per-surface detail maps and the smoothed turf normals. Built
+   * by `render/ultra/ultraGroundDetail.ts` and `groundContact.ts`, which read
+   * it as `ULTRA_GROUND`. Migrated here from that module's frozen table by
+   * the stabilizer (2026-09-23), values unchanged. Construction constants,
+   * read at build time; the road (pavement, rough pavement) never takes any
+   * of it (§7.1 invariant 7).
+   */
+  ground: {
+    /**
+     * The smooth edge field (T6 revised). A band boundary is the taut line
+     * through the corridor between the outranking band and `capCells` into the
+     * lower surface: for a regular 1:n staircase, the straight line through
+     * the band's convex corners while `n/(n+1) ≤ capCells`, a kneed ramp past
+     * that, and one near-straight line through an irregular digital staircase
+     * (see `groundContact.ts`, `edgeFillFor`).
+     */
+    edge: {
+      /**
+       * The most a filled point may sit from the outranking surface, in cells.
+       * §6's rule is ½ cell; the exact straight line needs `n/(n+1)` for a 1:n
+       * staircase — 0.667 at 1:2 and 0.75 at 1:3 — so the cap is 0.75, the
+       * ceiling the brief allows for a shallow diagonal. At ½ a 1:2 line would
+       * zig-zag between 45° and 18° segments with a half-cell amplitude.
+       */
+      capCells: 0.75,
+      /**
+       * …and never more than this many metres, whatever the spacing: the
+       * visual boundary is a gameplay honesty, and Switchback's 1.5 m cells
+       * would otherwise let turf cover 1.1 m of the riding trail.
+       */
+      capMetres: 0.75,
+      /**
+       * The cap into a **drivable** cell, in cells (coordinator amendment
+       * A12; Wave 3, R-G): the rank-1 road (pavement, rough pavement) and the
+       * dirt the riding trails are laid in. The visual edge of what is ridden
+       * never moves more than half a cell from the ridden grid, so the ridden
+       * width reads true; `capCells` (¾) stays between non-drivable surfaces —
+       * and on the gravel verges, where a ½ cap drew the grass edge back into
+       * a visible sawtooth at the steeple (measured, `M39_ULTRA.md` §U2). A
+       * 1:1 boundary is still exact at ½ (it needs n/(n+1) = ½); a shallower
+       * one becomes a kneed ramp with a bump of at most ½ − ½/n.
+       */
+      drivableCapCells: 0.5,
+      /**
+       * The rounded knee on a drivable edge, in cells (coordinator amendment
+       * A18; Wave 4, R-G; round-2 item 8): at the ½ cap a 1:2 or 1:3 boundary
+       * is a kneed ramp, and its knee — where the ramp meets the cap — is
+       * drawn as the smooth maximum of the two lines' signed distances over
+       * this width, a tangent-continuous turn instead of a kink.
+       */
+      kneeRoundCells: 0.5,
+      /**
+       * …and the knee's gate is lifted by this share of that width before the
+       * boundary is pulled taut, because the rounding dips under the corner by
+       * about a quarter of it: the rounded knee keeps to the ½ cap.
+       */
+      kneeLiftShare: 0.28,
+      /** A filled cell keeps at least this share of its area uncovered. */
+      minKeptArea: 0.1,
+      /** `ultraEdge` for "no line here", in cells: far outside every cell. */
+      sentinel: -4,
+    },
+
+    /** The painted detail maps and the per-surface detail they feed. */
+    detail: {
+      enabled: true,
+      /** Texel edges. Power-of-two, so the painted chain halves exactly. */
+      grassSize: 512,
+      stoneSize: 512,
+      soilSize: 512,
+      broadSize: 256,
+      /**
+       * Contrast kept per mip level of the fine maps (level 0 first; the last
+       * entry repeats). Mean-preserving by construction (it scales deviations
+       * from 127.5), it is what keeps sub-pixel blades and pebbles from
+       * sparkling before the `fwidth` fade has taken them out.
+       */
+      fineRolloff: [1, 1, 0.85, 0.65, 0.45, 0.3, 0.2, 0.12, 0.06, 0],
+      /** Blades a texel² of the grass map, their length and width in texels. */
+      grassBlades: 0.075,
+      bladeLength: [6, 15],
+      bladeWidth: 1.25,
+      /** Clump lattice cells across the grass map (mid-scale tufting). */
+      grassClumpCells: 8,
+      /** Pebble lattice cells across the stone map, and pebble radius as a share of a cell. */
+      stoneCells: 32,
+      pebbleRadius: [0.42, 0.74],
+      /**
+       * The soil map (packed trail dirt): value-noise undulation from this
+       * lattice up (five octaves), and this many small stones a texel² pressed
+       * into it, their radius in texels.
+       */
+      soilCells: 12,
+      soilStones: 0.005,
+      soilStoneRadius: [1.4, 3.2],
+      /** Lattice cells of the broad map's three noise channels (R luma, G hue, B wear). */
+      broadCells: [4, 3, 12],
+      /** A channel is encoded so its decoded standard deviation is 1 / this (clipped beyond). */
+      encodeSpread: 3,
+
+      /**
+       * Each sample's frame: period in metres and rotation in radians. Two
+       * samples of one map at incommensurate periods and angles, averaged, so
+       * no tile repeat reads across a lawn.
+       */
+      frames: {
+        grassA: { period: 1.9, angle: 0 },
+        grassB: { period: 3.1, angle: 0.7 },
+        gravelA: { period: 0.9, angle: 0.3 },
+        gravelB: { period: 1.37, angle: 1.9 },
+        dirtA: { period: 3.3, angle: 0.45 },
+        dirtB: { period: 5.1, angle: 2.2 },
+        broadA: { period: 64, angle: 0.2 },
+        broadB: { period: 157, angle: 1.4 },
+        /**
+         * The turf's mid-scale patches (Wave 3, R-G; round-1 item 12): one
+         * more sample of the broad map at a riding-distance scale, so a lawn
+         * or a bank breaks into lusher and drier drifts a few metres across
+         * where the 64/157 m layers read as one flat plane from the chase
+         * camera. Smooth and mipmapped: nothing in it can shimmer.
+         */
+        broadMid: { period: 13, angle: 2.9 },
+        wearA: { period: 23, angle: 0.9 },
+        wearB: { period: 37, angle: 2.6 },
+        /** I2's metre-scale undulation (final wave, P-GR): the broad map's luma channel read as a height, one repeat per 14 m (features about 1–3.5 m). */
+        undulation: { period: 14, angle: 1.1 },
+      },
+
+      /**
+       * One scale on every *fine* term below — the slopes and the blade,
+       * clump and pebble tones — leaving the low-frequency albedo alone. It is
+       * the knob between surface texture and the §8.3 shimmer index: that
+       * index is Ultra's frame-to-frame |Δ luma| in a rolling strip over
+       * High's, and a textured ground streaming past at 8 m/s differs frame to
+       * frame where High's flat tiles do not, aliasing or no aliasing (see
+       * `docs/M39_ULTRA.md` §U2 "Pre-R1 ground (G)" for the measured split).
+       * 0 keeps only the slow variation, which moves smoothly.
+       *
+       * **0 (coordinator amendment A10; Wave 3, R-G).** Two round-1 critics
+       * saw the fine layer as grain crawling on the vegetated hillside and the
+       * Switchback dirt, and it cost the shimmer index 1.24 and 1.91 there. A
+       * near-field-only variant could not be shown to pass: Switchback's strip
+       * reads 1.26 at 0 on its non-ground content alone. At 0 the fine terms
+       * are not compiled at all; the low-frequency variation, the edge field
+       * and the smoothed turf stay.
+       */
+      fine: 0,
+      /**
+       * Per-surface amplitudes. `slope` is the standard deviation of the world
+       * slope the normal is tilted by; the tint terms are standard deviations
+       * of a zero-mean multiplier (so ±2σ is the range the brief names).
+       * `fade` is the pixel footprint in metres (the geometric mean of the
+       * screen-space derivatives of world XZ) over which the fine layers
+       * leave, so nothing sub-pixel is left to shimmer.
+       */
+      grass: {
+        slope: 0.1,
+        blade: 0.02,
+        clump: 0.02,
+        /** ±7 % at 2σ: the brief's ±6–8 % low-frequency variation. */
+        lowLuma: 0.035,
+        /** Olive ↔ blue-green: σ of the per-channel shift along the hue axis. */
+        hue: [0.018, 0.004, -0.03],
+        /** σ of the mid-scale drifts' luma (±10 % at 2σ) and of their hue (drier yellow-green ↔ lusher). */
+        midLuma: 0.05,
+        midHue: [0.02, 0.008, -0.025],
+        /**
+         * …faded in by pixel footprint (metres), so they live at riding
+         * distance and not under the wheel, where the ground streams past
+         * fastest: at full strength everywhere they cost the plaza strip's
+         * shimmer index 0.012 (1.132 → 1.144 against the 1.15 gate).
+         */
+        midFade: [0.012, 0.035],
+        /**
+         * Tufts at riding distance (Wave 4, R-G; A18, round-2 item 10 — "grass
+         * blade and colour noise", five of five critics): the grass map's blade
+         * tone and clump field as albedo only (no slope), σ `rideBlade` /
+         * `rideClump`, faded in by pixel footprint over `rideFade` (metres) so
+         * the ground streaming under the wheel carries none of it — that is
+         * where a world-locked pattern costs the shimmer index — and faded out
+         * at distance by the map's own painted mip roll-off. Independent of
+         * `fine`: at `fine` 0 this is the only term that samples the grass map.
+         * Measured against the shimmer index: blades 0.02 + clumps 0.025 from
+         * a 0.007–0.016 m footprint took the vegetated strip 1.064 → 1.138;
+         * clumps alone at 0.02 from 0.015–0.04 m, 1.074.
+         */
+        rideBlade: 0,
+        rideClump: 0.02,
+        rideFade: [0.015, 0.04],
+        fade: [0.008, 0.035],
+        clumpFade: [0.03, 0.12],
+      },
+      /**
+       * I2 (Fable; final wave, P-GR): a metre-scale undulation of the shading
+       * normal on grass and gravel — never the road, the riding trail's dirt,
+       * wood or a deck — so turf stops reading as flat faceted cells at chase
+       * distance. `slope` is the standard deviation of the world slope it tilts
+       * by (the broad map's luma channel as a height at `frames.undulation`, its
+       * slope by forward differences, scaled from the painted map itself); it
+       * fades out over `fadeMetres` of view distance and over `fadeFootprint`
+       * of pixel footprint (metres), so nothing distant or grazing can shimmer.
+       * Shading only: the shadow lookups keep the geometric normal.
+       * Measured (`pgr/c3`, `pgr/c4`): at 0.08 the turf's luma moved by σ 2.2–2.9
+       * (about 3 %), barely seen; at 0.14 the banks roll visibly and the shimmer
+       * index holds (vegetated strip 1.083 → 1.100, Switchback 1.082, both
+       * ≤ 1.15). The diamonds that still read as facets are the per-cell tint
+       * (§4 keeps it), which a normal cannot remove.
+       *
+       * **Off: A25** (coordinator, 2026-09-23). §0.3 rejects grass normal
+       * undulation, and the u4 capture showed it reading as smudges on the
+       * vegetated bank. `slope` 0 compiles the term out of the ground GLSL
+       * entirely (`undulationGlsl` / `undulationCall` emit nothing); the rest
+       * of this block stays as the measured record of I2.
+       */
+      undulation: {
+        slope: 0,
+        fadeMetres: [12, 25],
+        fadeFootprint: [0.08, 0.2],
+      },
+      gravel: {
+        slope: 0.12,
+        tone: 0.02,
+        lowLuma: 0.02,
+        fade: [0.015, 0.05],
+      },
+      /**
+       * The riding surface at Switchback: relief only, low amplitude, and no
+       * albedo term at all — the trail's mean luma gate ([56, 66]) is about
+       * lighting, not paint.
+       */
+      dirt: {
+        slope: 0.035,
+        fade: [0.015, 0.07],
+      },
+      /**
+       * Brick bands: slow wear blotches only. A fine grit was tried and cut —
+       * on the plaza it tripled the near ground's frame-to-frame difference
+       * for texture nobody reads at riding speed.
+       */
+      brick: {
+        wear: 0.022,
+      },
+    },
+
+    /**
+     * Smooth-shaded turf slopes (optional, attribute-only): each heightfield
+     * corner's normal on the grass banks and verges is the Gaussian mean of
+     * its neighbours' within `radiusCells`, eased in over `rampCells` from any
+     * other surface's corner, so the road, the riding trail, the decks and
+     * every edge of them keep today's normals exactly.
+     */
+    smoothNormals: {
+      enabled: true,
+      radiusCells: 2,
+      rampCells: 2,
+    },
+  },
+} as const;
+
+/**
  * The one-foot air pose's clock — M36 (`docs/PLANS.md` §36.5).
  *
  * The pose is *presentation*: `app/oneFootPose.ts` steps it once per fixed
@@ -7371,6 +8806,13 @@ export const CONTACT = {
  * strike constant here and adding one is a design change rather than a tune.
  */
 export const CHASE = {
+  /** M39 authored-block navigation; metres except the anticipation in seconds.
+   * This selects a local road aim; the ordinary controller/grip/brakes apply. */
+  streetMargin: 3,
+  streetJoinReach: 35,
+  streetCloseMetres: 10,
+  streetAnticipationSeconds: 3,
+  streetSampleMetres: 5,
   // -- The run ---------------------------------------------------------------
 
   /**
@@ -7422,9 +8864,21 @@ export const CHASE = {
    * every close-range behaviour (§4.2 wall choreography included) is
    * untouched.
    */
-  trackerGapMetres: 130,
-  trackerReturnMetres: 50,
-  trackerHoldSeconds: 3.0,
+  //
+  // **The brutal pass (2026-09-25)** — the owner's ride: *"it was still easy
+  // to escape him by speeding away. it took a while of riding in silence
+  // before i ran into the next cop. We can be a lot less merciful in this
+  // mode."* Every clock below was shortened, and every one stays nested as
+  // before (`chase.test.ts`): the gap line 130 → 100 m and its hold 3 → 1.5 s;
+  // the return 50 → 30 m, still behind the rider's camera and inside the quiet
+  // reset line, so an accepted return is heard at once; the quiet spell
+  // 12 → 3 s; the respite 8 → 4 s; the stall 6 → 2.5 s. A quiet spell is now
+  // answered from both ends at once (`simulation/chase.ts`): the tail behind
+  // him and a patrol parked ahead of him on his road. The measured cost and
+  // effect are in `docs/M39_CHASE.md` "Brutal pass".
+  trackerGapMetres: 100,
+  trackerReturnMetres: 30,
+  trackerHoldSeconds: 1.5,
   /**
    * The pressure director — the chase pass (`docs/PLANS.md` §31), and the
    * owner's third reopening of the easy escape: *"once Officer Dorkins falls
@@ -7462,10 +8916,11 @@ export const CHASE = {
    * he is close enough that the rider's next corner, hazard or turn at the
    * route's end is his to use.
    */
+  // Brutal pass: quiet 12 → 3 s, respite 8 → 4 s, stall 6 → 2.5 s (see above).
   trackerQuietGapMetres: 60,
-  trackerQuietSeconds: 12,
-  trackerRespiteSeconds: 8,
-  trackerStallSeconds: 6,
+  trackerQuietSeconds: 3,
+  trackerRespiteSeconds: 4,
+  trackerStallSeconds: 2.5,
   trackerStallSpeed: 1.0,
   trackerStallGapMetres: 20,
   /**
@@ -7593,8 +9048,34 @@ export const CHASE = {
    * a transient brush with the edge never accrues it. The other half of the
    * same fix is in `cpuRider.ts`: a proportional-only throttle sagged ~4 mph
    * below any cap it was given, so the cap was never the binding number.
+   *
+   * A share of **his** wheel's cutout, `copCutoutSpeedShare` below, not the
+   * player's since 2026-09-22.
    */
   cutoutMarginShare: 0.995,
+  /**
+   * Where the cop's own wheel cuts out, as a share of its derived top speed —
+   * **the player's pre-2026-09-22 edge, pinned.**
+   *
+   * The owner tightened the player's cutout that day (`EUC.cutoutSpeedShare`
+   * 0.965 → 0.94, his words there) and in the same breath the chase is already
+   * too easy. The cop's ceiling had always been derived from the player's edge
+   * — top × `EUC.cutoutSpeedShare` × `cutoutMarginShare` — so following it
+   * would have cut his top speed by 1.1 mph on the 65 wheel and handed every
+   * player an easier escape nobody asked for. This constant keeps the whole
+   * old relationship for him instead: his brain rides to top × 0.965 × 0.995
+   * (28.56 m/s, 63.9 mph on the shipped 65; 21.97 m/s, 49.1 mph under
+   * `?mph=50`), and `Game.applyTuning` hands his *controller* the same 0.965 so
+   * his wheel cannot now cut out underneath the ceiling his brain rides to.
+   *
+   * It is the one field of the ride tuning his wheel does not share with the
+   * player's, and it is a share of the same live derived top speed, so a drag
+   * change or a `?mph=` preset still moves him with everyone. Not on F4: the
+   * *Cop speed ceiling* slider (`cutoutMarginShare`) is the knob for how hard
+   * he rides, and the cutout-enabled switch still governs his wheel as it
+   * governs the player's.
+   */
+  copCutoutSpeedShare: 0.965,
   /**
    * Share of the wheel's lateral limit the cop will spend in a corner.
    *
@@ -7683,6 +9164,48 @@ export const CHASE = {
    */
   fieldRangeMetres: 45,
   /**
+   * The close-quarters search — the brutal pass (2026-09-25), the owner's
+   * *"hiding behind obstacles (on the outside) and watching it run side to
+   * side (on the inside) like i'm invisible"*.
+   *
+   * Inside `navRangeMetres` (straight line) of a quarry who is off the road or
+   * slower than `navSlowQuarrySpeed` — parked, shuffling, creeping round a
+   * corner — the cop stops reasoning along the spine and **finds his way to
+   * him** on the world's navigation grid (`simulation/navGrid.ts`): a bounded
+   * A* round the solids the plan states, re-planned four times a second, and
+   * steered corner to corner with the ordinary pursuit law. A moving rider on
+   * the road is the spine's, as ever; the search is local, not a route
+   * planner (AGENTS, the M18 rules). The ladder under it — the stuck crawl,
+   * the spin escape — stays the backup for what the plan does not draw.
+   *
+   * Past the field range on purpose, so every off-road camp inside the stray
+   * limit is inside it, and short enough that a search window of 128 m holds
+   * any detour round a town block.
+   */
+  navRangeMetres: 55,
+  navSlowQuarrySpeed: 3.5,
+  /**
+   * How fast the cop rides through a strike on a quarry who is standing
+   * still, m/s — the brutal pass.
+   *
+   * A parked rider is not met at arm's length and matched at zero (the
+   * standoff that held the M18 cop hovering half a metre off a rider his
+   * paddle could not reach from there): he is passed at a jog, a paddle's
+   * reach to one side, with the swing led onto him, and passed again from the
+   * other way if it misses. Every landed strike is a knockdown
+   * (`PADDLE.hardKnockShare` 0), so the pass is the bust — which is why it
+   * can be a jog: under the wheel's own obstacle crash speed
+   * (`EUC.obstacleCrashSpeed`, 3.5), so a pass that brushes the wall a rider
+   * hides against scrapes it instead of putting the cop down (the field
+   * wall-camp fixture crashed him five times a minute at 5 m/s).
+   */
+  attackPassSpeed: 3.2,
+  /**
+   * How far to one side of a standing quarry the attack pass aims, metres:
+   * the paddle's reach, less a little, so the head sweeps through him.
+   */
+  attackOffsetMetres: 1.2,
+  /**
    * How far ahead a kerb has to be for the cop to hop it, metres of feeler
    * reading. Read off the controller's own `curbAhead`, so he hops the things
    * the game already knows are in front of a wheel rather than things the brain
@@ -7752,6 +9275,196 @@ export const CHASE = {
    * is the crash a rider fails to ride out of (§13 q25), not this.
    */
   strikeSpeedCost: 5.0,
+
+  // -- The pack and the room — M39 Part P (docs/PLANS.md §39.6b) ------------
+  //
+  // The owner's rule of 2026-09-23, verbatim in §39.6b: up to THREE outlaws
+  // against ONE cop slot; the slot held by the CPU is a pack that fills the
+  // room to four, held by a human it is his seat and nobody beside him. Every
+  // number below is a rule's parameter rather than a speed: rule 1 of this
+  // group still binds (§13 q27, "no faster cop wheel, for the CPU and for a
+  // human alike"), so difficulty arrives by numbers and coordination and
+  // nothing here touches the wheel. `docs/M39_CHASE.md` is the build contract
+  // that names who reads each one.
+
+  /**
+   * How many bodies a chase room holds — the rule's one constant (§39.6b.3b).
+   *
+   * The cop slot is a role, not a chair: held by the CPU it is a pack of
+   * `roomSize − outlaws` Officer Dorkins pursuers (one human → three, two →
+   * two, three → one); held by a human it is one seat and no CPU beside him,
+   * so 1v1, 2v1 and 3v1 are all legal. The solo face — the owner's one
+   * player against three cops — is simply the rule at one human, and his
+   * count is frozen: *"fixed at 3. no more mr nice guy. people what it to be
+   * HARD"* (q207). So the pack size is derived (`simulation/chase.ts`,
+   * `cpuPackSize`) and never stored — there is no `packSize` — and this is
+   * **deliberately not on F4**: a room size is not a tune, q207 declined the
+   * 1/2/3 ladder rather than deferring it, and `?cops=` is the solo A/B probe
+   * that files no record. The CPU never fills anything but the cop slot.
+   */
+  roomSize: 4,
+  /**
+   * How far a patrol post stands off the through line, metres — q206's
+   * patrol posts (§39.6b.3 "Posts").
+   *
+   * A parked cop is a visible, readable thing the rider rides toward with
+   * open eyes — the reading the route-end head-on already has — and never an
+   * obstacle on the racing line: off the kerb on the roomier side, clamped
+   * inside the corridor so a post never stands in a hedge or a wall, and
+   * judged by the brain's own `landingAllowance` like any rung. 3.5 m puts
+   * him a lane's width off the line on the town's roads. Read once per world
+   * when the posts are chosen, so a slider change applies from the next
+   * world.
+   */
+  postStandoffMetres: 3.5,
+  /**
+   * How close a rider must come for a parked patrol to wake, metres — q206
+   * (§39.6b.3 "Waking"). Straight line.
+   *
+   * **Equal to `AUDIO.sirenFarMetres` on purpose**, so the wake is *heard* as
+   * it happens: the siren reaches the rider at the same metre the cop starts
+   * rolling, and a patrol can never wake silently inside earshot or sit
+   * audible and asleep. Pinned against the audio table by
+   * `data/liveTuning.test.ts`, the way `trackerQuietGapMetres` is pinned by
+   * `simulation/chase.test.ts` — move the siren and that test says which of
+   * the two lines has to follow.
+   */
+  patrolWakeMetres: 60,
+  /**
+   * The least distance ahead a patrol may be returned to a post, metres, and
+   * the far edge of "a pane frames it" — §39.6b.3 "Returning", q127's rule
+   * restated.
+   *
+   * A patrol's regroup parks him at a post the player cannot see: beyond the
+   * tracker line from his quarry and either behind the rider's travel or
+   * further ahead than this, outside every pane's forward cone
+   * (`returnConeRadians`). So a re-entry from the front is always a parked,
+   * visible cop the player rides toward, never a rider materialising ahead.
+   *
+   * **Measured against the camera, QA r1 (2026-09-24)** — the measurement
+   * §39.6b.7 ordered at P2, which the first value never had. The chase
+   * camera draws every rig to the fog's far edge, `LIGHTING.fogFar` 470 m
+   * (fog from 120 m; `CAMERA.far` 500; no distance cull on the cop trims), so
+   * 200 m is not the camera's reach. What 200 m is:
+   * - **Down the road, beyond the frame.** No corpus ring has a straight
+   *   approach to a post longer than this line (the road within 6 m of the
+   *   sight line, the post within 20° of the rider's nose; the longest is
+   *   184 m, on `harbour-spark-42`), so a post "further ahead than 200 m" is
+   *   never in view down the rider's own street.
+   *   `bench/chaseBench.test.ts` pins that on the corpus, so a replaced seed
+   *   cannot silently reopen it.
+   * - **A size-and-fog threshold across the ring's open interior.** A pane
+   *   has clear forward sightlines of 424–462 m across the interior. Of the
+   *   bench's accepted post returns, 4 of 22–30 landed inside a pane's drawn
+   *   frustum, 222–390 m ahead and 38–53° off his heading, 28–77 % fogged;
+   *   1–3 of them had a clear line of sight (by how tree trunks are counted):
+   *   a 4–6 px figure at 1080p, in the edge of the frame.
+   * 470 (the drawn range) was measured as the alternative and is **not** the
+   * default: with the quiet clock's QA r1 repair in, it refused most forward
+   * returns (post-return refusals on the bench: solo3 3 → 30, 2v2 0 → 21) and
+   * cost the evader's pressure — solo3 audible share, median 81.8 → 68.9 %,
+   * and a 46.1 s worst quiet spell on `euc` (18.6 s at 200). Whether a 4–6 px
+   * figure appearing off-axis is worth that is the owner's call on F4 at GP:
+   * raise it toward 470 if a far cop ever reads as materialising.
+   */
+  patrolReturnMetres: 200,
+  /**
+   * Where a patrol sent ahead of a rider may stand, metres of road ahead of
+   * him — the brutal pass's roadblock (`copPack.chooseIntercept`).
+   *
+   * The referee sends one whenever a rider's quiet clock runs out (beside the
+   * tail's return behind him) and whenever a patrol's own gap or stall clock
+   * fires, where it used to park him at a fixed post a third of the ring away.
+   * The walk takes the **nearest** spot on the rider's line that no human
+   * pane frames, past the wake line in a straight line, clear, level and
+   * judged: on a straight that is past `patrolReturnMetres`, round a bend it
+   * can be the near end. Past the far end he falls back to a post.
+   */
+  interceptMinAheadMetres: 100,
+  interceptMaxAheadMetres: 420,
+  /**
+   * How long a parked patrol stands further than `patrolReturnMetres` from
+   * his quarry before he is sent ahead of him anyway, seconds — the brutal
+   * pass. Posts are where the pack starts and falls back to, not where it
+   * waits: a patrol nobody is riding toward is a roadblock waiting to be
+   * placed.
+   */
+  roadblockIdleSeconds: 10,
+  /**
+   * The pack's pitch, metres by route — §39.6b.3 "Not stacking".
+   *
+   * A cop whose packmate is within this by route takes the roomier side of
+   * him by this much (the lateral-follow offset, `simulation/copPack.ts`), so
+   * the echelon forms without anyone braking for anyone; and a return rung or
+   * a post within this of another cop is occupied and refused like a folded
+   * rung. 5 m is a wheel-and-rider's length with room to swerve.
+   */
+  packSpacingMetres: 5,
+  /**
+   * The couch chase's bell, seconds — q217 ("sweep before the bell").
+   *
+   * A human cop wins only by busting every outlaw before it; anyone standing
+   * at it means the outlaws win. The solo five minutes (`escapeSeconds`)
+   * until his ride says otherwise, and a separate number because q217 put it
+   * on F4 for the couch alone: a shorter bell is one of the three remedies on
+   * record for a human cop who cannot close (§21.7), and shortening it must
+   * not shorten the solo chase. Handed to the referee when a round is armed.
+   */
+  couchEscapeSeconds: 300,
+  /**
+   * How long a cop keeps the outlaw he was dealt before the referee may deal
+   * him another, seconds — q221 ("one quarry per cop ... latched with
+   * hysteresis").
+   *
+   * §21.8 warned that a naive per-step nearest pick thrashes the brain's
+   * range memory, which feeds the head-on swing lead. Six seconds is long
+   * enough that a cop commits to a corner, short enough that a nearer
+   * unchased outlaw is taken inside a straight. A deal also never changes
+   * while his paddle is armed or he is inside `pursuitNearMetres` of his
+   * quarry, and always changes when the quarry goes down for good.
+   */
+  // Brutal pass: 6 → 2.5 s — it must stay inside the quiet spell (q221's
+  // latch cannot outlast the clock it answers; `liveTuning.test.ts` pins it).
+  dealHoldSeconds: 2.5,
+  /**
+   * Half-angle of a pane's forward cone for the return rule, radians —
+   * §39.6b.3b "Returns with several cameras": no body appears where anyone
+   * is looking.
+   *
+   * A CPU return (a tail rung or a patrol post) is refused when any human
+   * pane frames it: inside this angle of that seat camera's heading and
+   * within `patrolReturnMetres` of it.
+   *
+   * **Measured at P6 (2026-09-24), no longer provisional.** A pane's
+   * horizontal half-angle is `atan(tan(v / 2) × aspect)`, where `v` is the
+   * vertical angle it is drawn at: `CAMERA.fovAtSpeed` 1.36 (plus seat 0's
+   * trim, up to 12° = 0.209), then the split's widening — halves × 1.22,
+   * quadrants × 1, both capped at 1.52. Read in a running couch chase, the
+   * renderer's drawn cameras agreeing to 0.0003 rad:
+   * - 16:9 solo or quadrant: atan(tan(0.68) × 1.778) = 0.962 (1.036 trimmed);
+   * - 16:9 half: atan(tan(0.8296) × 0.889) = 0.702;
+   * - 21:9 quadrant: 1.092 (1.156 trimmed) — the widest on any 16:9 to 21:9
+   *   window;
+   * - 19.5:9 phone, solo: about 1.05 (1.14 trimmed).
+   * 1.2 is that widest measured pane, 1.156, plus 0.044 for a camera trailing
+   * its rider through a turn. Only a 32:9 quadrant (1.235, 1.283 trimmed) or
+   * a 3.2:1 test window (1.201) is wider, and Game refuses a return on
+   * `max(returnConeRadians, the widest pane measured live)` in both faces, so
+   * this value is the tuned floor plus margin, not a cap every pane must fit
+   * under (docs/M39_CHASE.md "P6 — room wiring notes").
+   */
+  returnConeRadians: 1.2,
+  /**
+   * How long every pursuer is held after GO, seconds — q224's
+   * hide-and-seek start.
+   *
+   * **Ships at 0, and 0 switches the hold off**: the 20 m spawn gap is the
+   * head start, as in the solo chase. It is on F4 so the owner's ride can try
+   * five seconds if a human cop never closes (the likelier case, by §21.7)
+   * or closes too fast. It is one of the three remedies on record, and the
+   * director's clocks are held with the pursuers.
+   */
+  copHoldSeconds: 0,
 } as const;
 
 /**
@@ -7888,6 +9601,8 @@ export const TUNING = deepFreeze({
   CHALLENGE,
   SIMULATION,
   RENDER,
+  // M39: addressed by path (`ULTRA.nearBias`, `ULTRA.shade.lift` …) for the fifteen live values.
+  ULTRA,
   INPUT,
   DIAGNOSTICS,
   // Re-exported rather than redefined: `data/surfaces.ts` is the table, and
@@ -8932,9 +10647,9 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     max: 0.95,
     step: 0.005,
     note: 'Where the beeps start, as a share of the wheel\'s own top speed. '
-      + '0.785 is just over 40 mph on the shipped ride — the owner moved it up '
-      + 'from 30 after riding. A share rather than a speed so it follows a '
-      + 'drag change.',
+      + '0.87 is about 58 mph on the shipped 65 mph ride — the owner moved it '
+      + 'up from 30 mph, then asked on 2026-09-22 for later, shorter beeps. A '
+      + 'share rather than a speed so it follows a drag change.',
   },
   {
     path: 'EUC.cutoutSpeedShare',
@@ -8947,7 +10662,10 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     note: 'Where the wheel lets go. Must stay under about 0.975 or rolling '
       + 'resistance means flat pavement never reaches it and the cutout can '
       + 'only ever fire downhill. The gap between this and 1.0 is the room a '
-      + 'rider has to sit just underneath it — "riding the beeps".',
+      + 'rider has to sit just underneath it — "riding the beeps". 0.94 since '
+      + 'the owner asked for easier cutouts on 2026-09-22; the cop\'s wheel '
+      + 'keeps its own edge (CHASE.copCutoutSpeedShare) and does not follow '
+      + 'this slider.',
   },
   {
     path: 'EUC.cutoutHoldSeconds',
@@ -9650,6 +11368,215 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
       + 'viewport change.',
   },
 
+  // Ultra graphics (M39, `docs/M39_ULTRA.md`). The fifteen `UltraLiveTuning`
+  // fields, in that interface's order (the thirteen W4 values, then the
+  // static-shade lift's two). **Ultra-only:** Low, Medium and High
+  // never read one, so on an ordinary tier these sliders move nothing — which
+  // is why every note says so rather than leaving the panel to teach it.
+  // `Game.applyTuning` forwards them through `readUltraLive` (W1), and the
+  // U2 captures move them with `ultra-compare --tune`.
+  {
+    path: 'ULTRA.nearBias',
+    group: 'Ultra — shadow',
+    label: 'Near shadow bias',
+    unit: '',
+    // Up to +0.001 so the gauntlet's planted acne (`nearBias=0`) is reachable.
+    min: -0.002,
+    max: 0.001,
+    step: 0.00005,
+    note: 'Ultra only. Depth bias of the 4096 near cascade. Toward zero brings '
+      + 'acne on sunlit faces; too negative lifts shadows off their casters.',
+  },
+  {
+    path: 'ULTRA.nearNormalBias',
+    group: 'Ultra — shadow',
+    label: 'Near normal bias',
+    unit: 'm',
+    min: 0,
+    max: 0.1,
+    step: 0.001,
+    note: 'Ultra only. Normal offset of the near cascade. Check at Switchback’s '
+      + '33° sun, where acne shows first.',
+  },
+  {
+    path: 'ULTRA.nearRadius',
+    group: 'Ultra — shadow',
+    label: 'Near PCF radius',
+    unit: 'texels',
+    min: 0,
+    max: 4,
+    step: 0.05,
+    note: 'Ultra only. Softness of the near cascade’s edge. Wider hides crawl '
+      + 'and costs crispness under the rider.',
+  },
+  {
+    path: 'ULTRA.envKappa',
+    group: 'Ultra — fill',
+    label: 'Environment κ',
+    unit: '×',
+    min: 0,
+    max: 3,
+    step: 0.01,
+    note: 'Ultra only. Scales the painted-sky environment fill against the '
+      + 'venue’s hemisphere value. Calibrated so up-facing shade matches High.',
+  },
+  {
+    path: 'ULTRA.bounceLift',
+    group: 'Ultra — fill',
+    label: 'Ground bounce β',
+    unit: '×',
+    min: 0,
+    max: 3,
+    step: 0.05,
+    note: 'Ultra only. Brightness of the environment’s lower half — the warm '
+      + 'bounce that lifts walls and canopies. Rebuilds the environment.',
+  },
+  {
+    path: 'ULTRA.groundSpec',
+    group: 'Ultra — response',
+    label: 'Ground reflection',
+    unit: '×',
+    min: 0,
+    max: 1.5,
+    step: 0.05,
+    note: 'Ultra only. Indirect specular on the ground. The road must stay the '
+      + 'calmest plane in the frame.',
+  },
+  {
+    path: 'ULTRA.glassSpec',
+    group: 'Ultra — response',
+    label: 'Glass reflection',
+    unit: '×',
+    min: 0,
+    max: 3,
+    step: 0.05,
+    note: 'Ultra only. How much painted sky the glass shows. Glass should never '
+      + 'outshine the lit wall except for a sun glint.',
+  },
+  {
+    path: 'ULTRA.waterSpec',
+    group: 'Ultra — response',
+    label: 'Water reflection',
+    unit: '×',
+    min: 0,
+    max: 2,
+    step: 0.05,
+    note: 'Ultra only. Puddle sky tint. The body stays 0.55–0.85 of the road and '
+      + 'the meniscus the brightest ring.',
+  },
+  {
+    path: 'ULTRA.contactStrength',
+    group: 'Ultra — response',
+    label: 'Contact AO strength',
+    unit: '×',
+    min: 0,
+    max: 1.5,
+    step: 0.05,
+    note: 'Ultra only. Scales the analytic contact darkening under props and '
+      + 'walls. Darken-only, never below its floor.',
+  },
+  {
+    path: 'ULTRA.contactDirectShare',
+    group: 'Ultra — response',
+    label: 'Contact AO on sun',
+    unit: '',
+    min: 0,
+    max: 0.3,
+    step: 0.01,
+    note: 'Ultra only. Share of contact AO applied to direct light, on non-road '
+      + 'surfaces. Zero keeps the sunlit road exactly as bright as High.',
+  },
+  {
+    path: 'ULTRA.foliageWrap',
+    group: 'Ultra — response',
+    label: 'Foliage wrap',
+    unit: '',
+    min: 0,
+    max: 0.6,
+    step: 0.01,
+    note: 'Ultra only. Wrap lighting on crowns and conifers, so the terminator '
+      + 'is soft rather than a black half.',
+  },
+  {
+    path: 'ULTRA.foliageTransmission',
+    group: 'Ultra — response',
+    label: 'Foliage back-light',
+    unit: '',
+    min: 0,
+    max: 0.22,
+    step: 0.01,
+    note: 'Ultra only. Warm back-lit rims on leaves, already shadowed. Capped at '
+      + '0.22 so trees never glow in building shade.',
+  },
+  {
+    path: 'ULTRA.specAA',
+    group: 'Ultra — response',
+    label: 'Specular AA',
+    unit: '',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    note: 'Ultra only. Geometric roughness floor against sparkle on glossy glass, '
+      + 'metal and water at distance.',
+  },
+  // The static-shade lift's two amounts (A14/A20; final touch, post round 4):
+  // `UltraLiveTuning.shadeLift` / `.shadeLiftFar`, forwarded like the thirteen
+  // above to the shared `ultraShadeLift` / `ultraShadeLiftFar` uniforms that
+  // the ground, road-paint and block patches read. On the panel so the owner
+  // can judge the round-4 trades on his ride: Trade 1(b), a lighter near
+  // street in building shade (the rider's only separation lever), and
+  // Trade 2(b), a paler distant slab. The near value is A28's (Codex's
+  // post-GU QA reopened Trades 1 and 2); the far one is U5's again (A29:
+  // round 5 rejected A28's paler slab).
+  {
+    path: 'ULTRA.shade.lift',
+    group: 'Ultra — shade',
+    label: 'Street shade lift (near)',
+    unit: '×',
+    min: 0,
+    max: 3,
+    step: 0.05,
+    note: 'Ultra only. Raise to brighten building shade on the street; the '
+      + 'critics’ Trade 1/2. The lift within 20 m of the camera (2.2 holds the '
+      + 'commercial canyon at 0.755 × its sunlit road, A28); 0 turns the lift off. '
+      + 'Turf takes 0.4 of it past 20 m (tree shade on grass, Trade 3). '
+      + 'The rider’s own shadow stays dark, except within about 0.8 m of '
+      + 'building or tree shade.',
+  },
+  {
+    path: 'ULTRA.shade.liftFar',
+    group: 'Ultra — shade',
+    label: 'Street shade lift (far)',
+    unit: '×',
+    min: 0,
+    max: 4,
+    step: 0.05,
+    note: 'Ultra only. Raise to brighten building shade on the street; the '
+      + 'critics’ Trade 1/2. The lift from 36 m out, ramped from the near one '
+      + 'over 20–36 m: raise it for a paler industrial crest slab (Trade 2b). '
+      + '2.2 is U5’s value (A29: round 5 preferred U5’s slab to A28’s paler 2.5).',
+  },
+  // The owner's pixel knob (M39 §2.1 and §9 q4; Fable I4): not one of the
+  // fifteen `UltraLiveTuning` values, so it travels on its own push
+  // (`Game.applyTuning` → `GameRenderer.setUltraPixelBudget`). The runtime
+  // reads it only while Ultra draws; an ordinary tier's ratio never sees it.
+  {
+    path: 'ULTRA.pixelBudget',
+    group: 'Ultra — pixels',
+    label: 'Ultra pixel budget',
+    unit: 'px',
+    // From about 1 MP to past a 4K panel's 8,294,400, on a 64,000 grid that
+    // lands on the shipped 5,184,000 (A26, the Air's retina buffer) and on
+    // the earlier 4,096,000 (its native panel).
+    min: 1_024_000,
+    max: 8_320_000,
+    step: 64_000,
+    note: 'Ultra only. Most device pixels an Ultra frame may draw; never more '
+      + 'than High’s own ratio. 5,184,000 draws an Air at retina; 8,294,400 a 4K '
+      + 'panel at 1×. Under 2,000,000 px the shadow maps drop to 2048, live (once '
+      + 'on, they drop only under 1,800,000).',
+  },
+
   // Audio (M8). Balance is the whole of this milestone's exit question, and
   // balance is judged by ear on a real ride — so the levels that decide it are
   // on the panel rather than only in the defaults above. These are developer
@@ -10094,7 +12021,7 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     group: 'Ride — chase',
     label: 'Tracker return',
     unit: 'm',
-    min: 30,
+    min: 20,
     max: 200,
     step: 5,
     note: 'How far behind you he turns up again. Just inside the siren’s far '
@@ -10130,9 +12057,9 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     group: 'Ride — chase',
     label: 'Quiet seconds',
     unit: 's',
-    min: 3,
+    min: 1,
     max: 60,
-    step: 1,
+    step: 0.5,
     note: 'How long a quiet spell may last before he is brought back. The '
       + 'longest stretch of free riding the mode allows.',
   },
@@ -10152,9 +12079,9 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     group: 'Ride — chase',
     label: 'Stall seconds',
     unit: 's',
-    min: 2,
+    min: 1,
     max: 30,
-    step: 1,
+    step: 0.5,
     note: 'A cop going nowhere for this long, well away from you, is stuck on '
       + 'something and is brought back.',
   },
@@ -10365,5 +12292,109 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
     note: 'Speed a landed strike costs you. The wobble that comes with it is the '
       + 'soft-body knock’s own and is not a slider, by the standing rule — what '
       + 'ends the run is the crash you fail to ride out of.',
+  },
+
+  // The pack and the room — M39 Part P (§39.6b.7). The solo face's four
+  // knobs, then the couch face's four; `CHASE.roomSize` is deliberately
+  // absent (q207 froze the count, and `?cops=` is the A/B probe).
+  {
+    path: 'CHASE.postStandoffMetres',
+    group: 'Ride — chase',
+    label: 'Post stand-off',
+    unit: 'm',
+    min: 1,
+    max: 8,
+    step: 0.5,
+    note: 'How far a parked patrol stands off the through line — off the kerb '
+      + 'on the roomier side, clamped inside the corridor. The posts are chosen '
+      + 'once per world, so a change applies from the next route.',
+  },
+  {
+    path: 'CHASE.patrolWakeMetres',
+    group: 'Ride — chase',
+    label: 'Wake range',
+    unit: 'm',
+    min: 20,
+    max: 150,
+    step: 5,
+    note: 'How close you come before a parked patrol wakes. At 60 m it is the '
+      + 'siren’s own onset, so the wake is heard as it happens; below it a '
+      + 'parked patrol stays silent until you are that close and the siren '
+      + 'starts as he wakes; above it one wakes in silence beyond the siren line.',
+  },
+  {
+    path: 'CHASE.patrolReturnMetres',
+    group: 'Ride — chase',
+    label: 'Patrol return',
+    unit: 'm',
+    min: 100,
+    max: 500,
+    step: 10,
+    note: 'The least distance ahead a patrol may be returned to a post, and how '
+      + 'far a pane counts as seeing. Lower it and returns land closer ahead — '
+      + 'too low and a cop can reappear where you could have seen him. At 470 m '
+      + '(the fog’s far edge) nothing can appear in view, but most forward '
+      + 'returns are refused and the chase goes quieter.',
+  },
+  {
+    path: 'CHASE.packSpacingMetres',
+    group: 'Ride — chase',
+    label: 'Pack spacing',
+    unit: 'm',
+    min: 2,
+    max: 15,
+    step: 0.5,
+    note: 'The pack’s pitch by route: a cop this close behind a packmate takes '
+      + 'the roomier side of him, and a return spot this close to another cop is '
+      + 'refused. Raise it if the cops ride in a line; lower it for a tighter box.',
+  },
+  {
+    path: 'CHASE.couchEscapeSeconds',
+    group: 'Ride — chase',
+    label: 'Couch bell',
+    unit: 's',
+    min: 30,
+    max: 600,
+    step: 10,
+    note: 'How long the outlaws must last in a couch chase; a human cop wins '
+      + 'only by busting everyone before it. The solo five minutes until the '
+      + 'ride says otherwise. Shortening it never shortens the solo chase.',
+  },
+  {
+    path: 'CHASE.dealHoldSeconds',
+    group: 'Ride — chase',
+    label: 'Deal hold',
+    unit: 's',
+    min: 0,
+    max: 30,
+    step: 0.5,
+    note: 'How long a CPU cop keeps the outlaw he was dealt before he may be '
+      + 'dealt another. Long enough to commit to a corner; short enough that a '
+      + 'nearer unchased outlaw is taken inside a straight.',
+  },
+  {
+    path: 'CHASE.returnConeRadians',
+    group: 'Ride — chase',
+    label: 'Return cone',
+    unit: 'rad',
+    min: 0.5,
+    max: 2,
+    step: 0.05,
+    note: 'Half-angle of every player’s view for the return rule: no cop is '
+      + 'returned where anyone is looking. The widest pane measured on a 16:9 '
+      + 'to 21:9 window is 1.16 rad; a wider pane is measured live and always '
+      + 'honoured, so narrowing this only removes the turn margin.',
+  },
+  {
+    path: 'CHASE.copHoldSeconds',
+    group: 'Ride — chase',
+    label: 'Cop hold',
+    unit: 's',
+    min: 0,
+    max: 15,
+    step: 0.5,
+    note: 'How long every cop is held after GO — hide-and-seek. 0 switches it '
+      + 'off and the 20 m spawn gap is the head start; try 5 s if a human cop '
+      + 'never closes, or closes too fast.',
   },
 ]);

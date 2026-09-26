@@ -1,9 +1,12 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { CHASE, EUC, PADDLE, PHYSICS, TERRAIN, WHEEL } from '../data/tuning.ts';
+import { StreetLoops } from './streetLoops.ts';
+import { CHASE, EUC, PADDLE, PHYSICS } from '../data/tuning.ts';
 import type { ActionSnapshot } from '../input/actions.ts';
-import type { BoxCollider, LevelPlan } from '../level/plan.ts';
+import type { LevelPlan } from '../level/plan.ts';
 import { lateralCeilingG, type LateralCeilingTuning } from './lateralCeiling.ts';
 import type { SwingSide } from './paddle.ts';
+import { NavPlanner, navBesideWall, navFree, navLineClear, type NavGrid } from './navGrid.ts';
+import { BLOCKER_MARGIN, buildRouteField, type RouteBlocker, type RouteField } from './routeField.ts';
 import {
   createSpineLocation,
   createSpineSample,
@@ -11,7 +14,7 @@ import {
   type SpineLocation,
   type SpineSample,
 } from './routeSpine.ts';
-import { createGroundSample, type TerrainSampler } from './world.ts';
+import type { TerrainSampler } from './world.ts';
 
 /**
  * The cop's brain — M18 Phase 1.
@@ -122,33 +125,57 @@ export interface CpuQuarry {
   readonly y: number;
   readonly z: number;
   readonly speed: number;
+  /**
+   * Who this is — the outlaw's index in the room (M39 Part P, §39.6b.3b).
+   *
+   * A change of id between steps resets every memory the brain keeps about
+   * *the* quarry: where he was found on the line, where he was last step, the
+   * last range, the orbit detector and the flank. Everything the brain
+   * derives from consecutive quarry positions — the closing speed that leads
+   * a head-on swing above all — would otherwise be measured across two
+   * different riders (§21.8's finding: a per-step nearest pick thrashed
+   * `lastQuarryRange`, and a thrashed range reads as a head-on pass). Absent
+   * means "the same quarry always", which is every caller before Part P.
+   */
+  readonly id?: number;
 }
 
 /**
- * Something on the line worth not hitting, in the line's own coordinates.
+ * The pack's per-step input — M39 Part P, §39.6b.3 "Not stacking".
  *
- * One shape for hazards and solids alike: a span of route it occupies, the band
- * across the road it blocks, and how fast it may be met. A pothole may be met
- * slowly; a bollard may not be met at all, which is `Infinity`'s meaning here
- * and is why `safeSpeed` is a number rather than a flag.
+ * **Two rules, both in the brain's own vocabulary, so no steering law is
+ * written for a pack.** The composition root builds this each step (from
+ * `copPack.packmateBands` and `copPack.followLine`) and the brain never learns
+ * why: nothing in this file knows which cop is which or what a pack is for.
  */
-export interface RouteBlocker {
-  /** Where it starts and ends along the line, metres. */
-  readonly from: number;
-  readonly to: number;
-  /** The band it blocks across the road: positive is to the **left**. */
-  readonly left: number;
-  readonly right: number;
-  /** How fast it may be passed through, m/s. Zero means "not at all". */
-  readonly safeSpeed: number;
+export interface CpuPackInput {
   /**
-   * Which way along the line it presents a face: `0` both ways, `1` only to a
-   * rider travelling toward the route's end, `-1` only to one riding back —
-   * the chase pass. A staircase is three drops one way and three walls the
-   * other, and a cop rides half of every chase back the way he came.
+   * The other standing cops as moving blockers, in this brain's canonical
+   * frame (seam-shifted by the builder on a closed spine). Filed into the
+   * nearest-blocking search, the gate's conflict set and the course test
+   * alongside the field's blockers, so the gap search and the swerve law
+   * spread the pack across the corridor the way they spread round a bollard
+   * row. A second, separately scanned list (two entries at most): the field's
+   * list is sorted and its scans break early.
    */
-  readonly facing: 0 | 1 | -1;
+  readonly bands: readonly RouteBlocker[];
+  /**
+   * The lateral line to follow instead of the quarry's, metres left of the
+   * spine; `null` copies the quarry's line as shipped. Applied with or
+   * without a quarry (§2c R-4), with the range blend of the quarry's line.
+   */
+  readonly followLine: number | null;
+  /**
+   * The other standing cops where they are, world x/z (the brutal pass).
+   * Read by the close-quarters search alone: a packmate nearer the quarry
+   * makes the ground round him and his way in cost more, so this cop comes
+   * round the other side of the block rather than queueing behind him.
+   * Absent or empty: no packmates to weigh.
+   */
+  readonly mates?: readonly { readonly x: number; readonly z: number }[];
 }
+
+export type { RouteBlocker } from './routeField.ts';
 
 /** Shortest signed difference between two angles, radians. */
 function wrapAngle(radians: number): number {
@@ -187,7 +214,32 @@ function wander(distance: number, cycles: number): number {
  */
 export type CapReason =
   | 'none' | 'corner' | 'blocker' | 'endAround' | 'routeEnd' | 'standOff'
-  | 'strayed' | 'detour' | 'flank' | 'swerve' | 'nextGate' | 'uTurn';
+  | 'strayed' | 'detour' | 'flank' | 'swerve' | 'nextGate' | 'uTurn'
+  // A packmate's band decided it (M39 Part P, §39.6b.3): the gate he is
+  // threading is another cop's, or the pace through it is. Never below
+  // `TURN_TO_FACE_SPEED` — a packmate may shape the line, never park him.
+  | 'packmate'
+  // The close-quarters search decided it (the brutal pass): a corner of the
+  // path round what stands between them, or the pass through a strike.
+  | 'nav' | 'attack';
+
+/**
+ * The ride-tuning fields the cop's *wheel* takes on top of the player's —
+ * spread after the shared record wherever his `EucController` is built or
+ * retuned (`Game.installChaseWorld`, `Game.applyTuning`, and every harness that
+ * rides him), so the wheel under him cuts out where this brain believes it does.
+ *
+ * One field since the owner tightened the player's cutout on 2026-09-22:
+ * `CHASE.copCutoutSpeedShare` keeps his edge — and with it his top speed —
+ * where it was. Everything else about his ride is still the player's.
+ */
+export const COP_WHEEL_TUNING: Readonly<{ cutoutSpeedShare: number }> = Object.freeze({
+  cutoutSpeedShare: CHASE.copCutoutSpeedShare,
+});
+
+/** The pack input's "no packmates": one frozen empty list, so no step allocates. */
+const NO_BANDS: readonly RouteBlocker[] = Object.freeze([]);
+
 
 export class CpuRider {
   // -- Live tuning. Seeded from the frozen defaults, replaced by F4 -----------
@@ -226,8 +278,15 @@ export class CpuRider {
   brakeDeceleration: number = EUC.brakeAuthority * Math.sin(EUC.maxLeanPitch);
   /** Quadratic drag used by the shared live ride, 1/m. */
   dragCoefficient: number = EUC.dragCoefficient;
-  /** The controller's cutout threshold as a share of derived top speed. */
-  cutoutSpeedShare: number = EUC.cutoutSpeedShare;
+  /**
+   * His wheel's cutout threshold as a share of derived top speed.
+   *
+   * `CHASE.copCutoutSpeedShare`, not the player's `EUC.cutoutSpeedShare`,
+   * since the owner tightened the player's edge on 2026-09-22: the cop's
+   * ceiling is pinned where it was, and `Game.applyTuning` hands his
+   * controller the same share so the wheel under him agrees with this belief.
+   */
+  cutoutSpeedShare: number = CHASE.copCutoutSpeedShare;
   /**
    * **The give's schedule, pushed rather than imported** — M30 Phase 2's QA
    * repair.
@@ -294,12 +353,74 @@ export class CpuRider {
   pursuitFarMetres: number = CHASE.pursuitFarMetres;
   hotCorneringMargin: number = CHASE.hotCorneringMargin;
   fieldRangeMetres: number = CHASE.fieldRangeMetres;
+  navRangeMetres: number = CHASE.navRangeMetres;
+  navSlowQuarrySpeed: number = CHASE.navSlowQuarrySpeed;
+  attackPassSpeed: number = CHASE.attackPassSpeed;
+  attackOffsetMetres: number = CHASE.attackOffsetMetres;
 
   private readonly spine: RouteSpine;
+  private readonly streets: StreetLoops;
+  /**
+   * The route field — the canonical line's blockers and the street loops'
+   * rings — shared read-only with every other brain in the world (M39 Part P,
+   * `simulation/routeField.ts`). The brain keeps only cursors into it.
+   */
+  private readonly field: RouteField;
   private readonly blockers: readonly RouteBlocker[];
+  /**
+   * Each street loop's own road and what stands on it, in its own line's
+   * coordinates — for the street aim, which rides roads the canonical line
+   * does not carry (M39: the town ring's seam, a block's alternate arm).
+   */
+  private readonly streetFields: RouteField['streetFields'];
+  /** The town ring's length, metres — the loop with no alternate; 0 without one. */
+  private readonly townRingLength: number;
+  /** The world's navigation grid (the shared field's), or null for a field built without one. */
+  private readonly navGrid: NavGrid | null;
+  /** This brain's search over it, made on first use (a scripted outlaw never pays for one). */
+  private navPlanner: NavPlanner | null = null;
+  /** Whether the close-quarters search has the wheel. Hysteretic; see `navigate`. */
+  private navEngaged = false;
+  /** Whether the last search found a path, and which of its corners he is riding at. */
+  private navHasPath = false;
+  private navNext = 1;
+  /** Seconds to the next search, and where the last one was aimed. */
+  private navReplanIn = 0;
+  private navGoalX = Number.NaN;
+  private navGoalZ = Number.NaN;
+  /** Which side of a standing quarry the strike pass goes by: +1 his left of the line in, −1 his right. */
+  private attackSide: 1 | -1 = 1;
+  /** Scratch for the packmates the search steers round. */
+  private readonly repelX = new Float64Array(NAV_MAX_REPEL);
+  private readonly repelZ = new Float64Array(NAV_MAX_REPEL);
+  /** This step's navigation answer, read by `step`. */
+  private readonly navOut = {
+    aimX: 0,
+    aimZ: 0,
+    cap: Infinity,
+    reason: 'nav' as CapReason,
+    remaining: Infinity,
+    attack: false,
+  };
+  private readonly streetHere: SpineLocation = createSpineLocation();
+  private readonly streetThere: SpineLocation = createSpineLocation();
+  private readonly streetAt: SpineSample = createSpineSample();
+  /** `streetFieldFor`'s answer, reused between steps. */
+  private readonly streetRide = {
+    field: null as RouteField['streetFields'][number] | null,
+    here: 0,
+    direction: 1 as 1 | -1,
+    lateral: 0,
+  };
 
   /** Where the brain believes it is on the line. Windowed, so it cannot jump. */
   private cursor = 0;
+  /** His signed lateral on the line at the last step or placement, metres left. */
+  private selfLateralValue = 0;
+  /** The last non-null quarry's id; a change resets the quarry memory. */
+  private lastQuarryId: number | undefined = undefined;
+  /** This step's packmate bands; empty without a pack. Set per step, never kept. */
+  private packBands: readonly RouteBlocker[] = NO_BANDS;
   /** Which way along the route the quarry currently is: +1 toward the end. */
   private pursuitDirection: 1 | -1 = 1;
   /** Whether the chase has left the road for the grass. Hysteretic; see step. */
@@ -442,7 +563,11 @@ export class CpuRider {
   private readonly aim: SpineSample = createSpineSample();
   private readonly curveA: SpineSample = createSpineSample();
   private readonly curveB: SpineSample = createSpineSample();
+  /** Scratch for the course prediction; nothing else writes it. */
+  private readonly courseAt: SpineSample = createSpineSample();
   private readonly quarryAt: SpineLocation = createSpineLocation();
+  /** Scratch for `acrossSeam`. */
+  private readonly seamAt: SpineLocation = createSpineLocation();
   /**
    * Where the quarry was last found along the line, metres; negative for
    * never. The quarry is located *windowed* around this, the way the cop's
@@ -484,14 +609,48 @@ export class CpuRider {
    * `ground` is read **at construction only**, never in the step.
    *
    * It is the one honest way to ask how high the road is under a point
-   * (invariant 3), and the projection below needs that to tell a bridge deck —
-   * which the rider rides *on* — from the railing beside it. Keeping it out of
-   * the step is what keeps the brain sensing what a rider senses rather than
-   * querying the world 120 times a second.
+   * (invariant 3), and the projection that builds the route field needs that
+   * to tell a bridge deck — which the rider rides *on* — from the railing
+   * beside it. Keeping it out of the step is what keeps the brain sensing what
+   * a rider senses rather than querying the world 120 times a second.
+   *
+   * **`field` is the world's shared route field** (M39 Part P, §39.6b.4
+   * "Field construction"): built once by `buildRouteField` and handed to every
+   * brain, so a pack of three projects the world once rather than three
+   * times. Absent, the brain builds its own — the same pure builder on the
+   * same inputs, so a lone cop is byte-identical to the brain that projected
+   * the world in its own constructor. A field built on another line is
+   * refused outright: its blockers would be distances along a road this brain
+   * is not riding.
    */
-  constructor(spine: RouteSpine, plan: LevelPlan, ground: TerrainSampler) {
+  constructor(spine: RouteSpine, plan: LevelPlan, ground: TerrainSampler, field?: RouteField) {
+    if (field !== undefined && field.spine !== spine) {
+      throw new Error('CpuRider: the route field was built on a different spine');
+    }
+    const shared = field ?? buildRouteField(spine, plan, ground);
     this.spine = spine;
-    this.blockers = routeBlockers(spine, plan, ground);
+    this.field = shared;
+    // The field's own rings, not a second set (§2c R-18): three brains on one
+    // field build the town's street rings once, in `buildRouteField`.
+    this.streets = new StreetLoops(plan, { rings: shared.streetRings, mainLengths: shared.streetMainLengths });
+    this.blockers = shared.blockers;
+    this.streetFields = shared.streetFields;
+    this.townRingLength = shared.townRingLength;
+    this.navGrid = shared.nav ?? null;
+  }
+
+  /** The route field this brain reads — the shared one, or the one it built. */
+  get routeField(): RouteField {
+    return this.field;
+  }
+
+  /**
+   * His signed lateral on the line, metres left of the spine, as of the last
+   * step (or placement) — what `copPack.packmateBands` files him at in the
+   * other brains' conflict sets.
+   */
+  get lineLateral(): number {
+    return this.selfLateralValue;
   }
 
   /** How far along the route the brain believes it is, metres. */
@@ -569,10 +728,30 @@ export class CpuRider {
    * and he has no run-up to read the road with.
    */
   landingAllowance(distance: number, direction: 1 | -1): number | null {
+    return this.landingAllowanceOn(this.spine, this.blockers, distance, direction);
+  }
+
+  /**
+   * `landingAllowance` on one street loop's ring rather than the canonical
+   * line — the brutal pass: a regroup onto the side street the rider took is
+   * judged by what stands on that street (the field's own `streetFields`).
+   */
+  landingAllowanceOnStreet(ring: number, distance: number, direction: 1 | -1): number | null {
+    const street = this.streetFields[ring];
+    if (street === undefined) return null;
+    return this.landingAllowanceOn(street.ring, street.blockers, distance, direction);
+  }
+
+  private landingAllowanceOn(
+    spine: RouteSpine,
+    blockers: readonly RouteBlocker[],
+    distance: number,
+    direction: 1 | -1,
+  ): number | null {
     const braking = Math.max(1, this.brakeDeceleration);
     const reaction = 1 / this.brakeSafety;
     let allowance = Infinity;
-    for (const blocker of this.blockers) {
+    for (const blocker of blockers) {
       if (blocker.facing !== 0 && blocker.facing !== direction) continue;
       // A wobble is not a landing hazard, and it is never worth braking for.
       if (blocker.safeSpeed === Infinity) continue;
@@ -589,7 +768,7 @@ export class CpuRider {
     }
     const cornerFactor = PHYSICS.gravity * this.corneringMargin;
     for (let ahead = 0; ahead <= LANDING_LOOK_METRES; ahead += CORNER_SCAN_METRES) {
-      const curvature = Math.abs(this.spine.curvature(
+      const curvature = Math.abs(spine.curvature(
         distance + direction * ahead,
         distance + direction * (ahead + CORNER_SCAN_METRES),
         this.curveA,
@@ -623,6 +802,9 @@ export class CpuRider {
       this.spine.locate(view.x, view.z, -1, this.location);
     }
     this.cursor = this.location.distance;
+    this.spine.sample(this.cursor, this.curveA);
+    this.selfLateralValue = (view.x - this.curveA.x) * Math.cos(this.curveA.headingY)
+      - (view.z - this.curveA.z) * Math.sin(this.curveA.headingY);
     this.lastHeading = view.headingY;
     this.hasHeading = true;
     this.swingCooldown = 0;
@@ -633,6 +815,22 @@ export class CpuRider {
     this.fieldPursuit = false;
     this.noProgressSeconds = 0;
     this.bestRecentRange = Infinity;
+    this.navEngaged = false;
+    this.navHasPath = false;
+    this.navReplanIn = 0;
+    // **The quarry cursor is kept** (M39 Part P, A-12 narrowed —
+    // `docs/M39_CHASE.md` §2c). §39.6b.3b asked `place()` to clear it with
+    // the rest of the quarry state, and measured on the folded fixture's
+    // divided road that is the M31 lane bug back: a regroup that lands the
+    // cop behind a rider hugging the lane divider turns the next quarry
+    // locate global, and the global answer is the other lane, 510 m away
+    // along the line — the brain then tracked that lane for the rest of the
+    // stretch. His own teleport says nothing about where the *rider* is, so
+    // the window that was tracking the rider keeps tracking him; what the
+    // plan's clearing was for — a new quarry must not inherit the old one's
+    // memory — is the quarry id's rule in `step`, which forgets it all on a
+    // swap. The range is still forgotten above: his own jump would read as
+    // the rider's closing speed.
     this.endFlank();
   }
 
@@ -643,8 +841,10 @@ export class CpuRider {
    * next call — the controller reads it immediately and keeps nothing, which is
    * what makes that safe and allocation-free.
    */
-  step(dt: number, view: CpuView, quarry: CpuQuarry | null): ActionSnapshot {
+  step(dt: number, view: CpuView, quarry: CpuQuarry | null, pack?: CpuPackInput): ActionSnapshot {
     const actions = this.actions;
+    this.packBands = pack === undefined ? NO_BANDS : pack.bands;
+    const followLine = pack === undefined ? null : pack.followLine;
     actions.throttle = 0;
     actions.steer = 0;
     actions.crouch = false;
@@ -700,6 +900,7 @@ export class CpuRider {
     if (this.location.offRoute > RELOCATE_METRES) {
       this.spine.locate(view.x, view.z, -1, this.location);
     }
+    this.acrossSeam(view.x, view.z, this.location);
     this.cursor = this.location.distance;
     // Which side of the line he is on, signed. `SpineLocation.offRoute` is
     // deliberately unsigned; the gap choice below is the one consumer that
@@ -707,6 +908,7 @@ export class CpuRider {
     this.spine.sample(this.cursor, this.curveA);
     const selfLateral = (view.x - this.curveA.x) * Math.cos(this.curveA.headingY)
       - (view.z - this.curveA.z) * Math.sin(this.curveA.headingY);
+    this.selfLateralValue = selfLateral;
 
     const skill = clamp(this.skill, 0, 1);
     const lookahead = Math.max(this.lookaheadMinMetres, view.speed * this.lookaheadSeconds);
@@ -724,6 +926,29 @@ export class CpuRider {
     // the swing range plus the clearance already used for line choice: inside
     // that band he holds his approach instead of flipping direction every time
     // the two riders trade half a metre.
+    // **A different rider is a different quarry** (M39 Part P, §39.6b.3b,
+    // §21.8). Every memory below is about *the* quarry — where he was found
+    // on the line, where he stood last step, the last range the closing speed
+    // is observed from, the orbit detector's best range, the flank's spot —
+    // and a swap carried across in them reads the distance between two riders
+    // as one rider's motion: a thrashed range is a closing speed of tens of
+    // metres a second, and a closing speed leads a head-on swing. So a change
+    // of id forgets them, the way a teleport of his own does in `place()`,
+    // and the new quarry is found on the whole line rather than in the old
+    // one's window. An absent id is the same quarry always.
+    if (quarry !== null && quarry.id !== this.lastQuarryId) {
+      this.lastQuarryId = quarry.id;
+      this.quarryCursor = -1;
+      this.quarryLastX = Number.NaN;
+      this.quarryLastZ = Number.NaN;
+      this.lastQuarryRange = Infinity;
+      this.noProgressSeconds = 0;
+      this.bestRecentRange = Infinity;
+      this.navEngaged = false;
+      this.navHasPath = false;
+      this.navReplanIn = 0;
+      this.endFlank();
+    }
     if (quarry !== null) {
       const previousQuarry = this.quarryCursor;
       this.spine.locate(quarry.x, quarry.z, this.quarryCursor, this.quarryAt);
@@ -743,10 +968,18 @@ export class CpuRider {
           this.spine.locate(quarry.x, quarry.z, previousQuarry, this.quarryAt, Math.atan2(moveX, moveZ));
         }
       }
+      this.acrossSeam(quarry.x, quarry.z, this.quarryAt);
       this.quarryCursor = this.quarryAt.distance;
       this.quarryLastX = quarry.x;
       this.quarryLastZ = quarry.z;
       routeGap = this.quarryAt.distance - this.cursor;
+      // On a closed ring the short way round is the gap (M39 r6 QA): a rider
+      // just past the seam is metres ahead, not a lap behind.
+      if (this.spine.closed) {
+        const whole = this.spine.length;
+        if (routeGap > whole / 2) routeGap -= whole;
+        else if (routeGap < -whole / 2) routeGap += whole;
+      }
       quarryRange = Math.hypot(quarry.x - view.x, quarry.z - view.z);
       quarrySpeed = Math.abs(quarry.speed);
       // Range rate is the one fact a scalar-speed quarry cannot state directly:
@@ -801,6 +1034,27 @@ export class CpuRider {
       this.fieldPursuit = false;
     }
     const field = this.fieldPursuit && quarry !== null;
+
+    // -- The close-quarters search (the brutal pass) -------------------------
+    //
+    // A quarry near and off the road, or near and barely moving, is found on
+    // the navigation grid rather than along the spine: the owner's plaza camp
+    // (a rider parked behind the plaza block, a cop running up and down the
+    // plaza's middle "like i'm invisible") was a spine pursuit that could not
+    // see round the block and a field pursuit that could only ram it. The
+    // search replaces both there, and the flank with them — it knows where
+    // the block's ends are, so there is nothing to walk along. What it does
+    // not know (a wall the plan does not state) the stuck crawl and the spin
+    // escape still answer, and the search starts again from wherever they
+    // leave him.
+    const navigating = quarry !== null
+      && this.navigate(dt, view, quarry, quarryRange, quarrySpeed, pack?.mates);
+    if (quarry === null) {
+      this.navEngaged = false;
+      this.navHasPath = false;
+    }
+    if (navigating) this.endFlank();
+    const nav = this.navOut;
 
     // -- The flank -----------------------------------------------------------
     //
@@ -859,7 +1113,32 @@ export class CpuRider {
      * spine's corner profile, its blockers and its corridor describe the road,
      * and neither chase is on it.
      */
-    const direct = field || flanking;
+    let streetAim = quarry === null ? null : this.streets.aim(view, quarry, lookahead);
+    // **A loop street's merge is not the loop street** — M39's town ring,
+    // ridden back (`sweep-0`, `sweep-22`, `sweep-39`). `StreetLoops` is meant
+    // to take the wheel only where the canonical brain cannot see the answer:
+    // a rider on an alternate arm, or the short way round across the seam.
+    // It tells an alternate arm by where the nearest point of its ring lies,
+    // and where the alley's exit merges into the road's last metres that
+    // point is on the alley for a cop riding the road — so a cop heading
+    // back past the merge read as *in* the alley, took its reversed stairs
+    // and dog-leg as the short way to a rider 150 m behind him on the open
+    // road, and rode them blind until a wall put him down, 45 m off the
+    // line, over and over from the same respawn. So the brain asks the
+    // question the way the stray rule and the regroup already do — against
+    // the canonical road (`StreetLoops.onAlternate`) — and with both riders
+    // on the canonical road it keeps a street aim only for the seam, the
+    // one thing the canonical line cannot answer.
+    if (streetAim !== null && quarry !== null
+      && !this.streets.onAlternate(view.x, view.z, this.location.offRoute, this.location.halfWidth)
+      && !this.streets.onAlternate(quarry.x, quarry.z, this.quarryAt.offRoute, this.quarryAt.halfWidth)
+      && !(this.townRingLength > 0 && Math.abs(routeGap) > this.townRingLength / 2)) {
+      streetAim = null;
+    }
+    // The search has the wheel: the streets' aim is a road aim, and he is not
+    // riding a road to this quarry.
+    if (navigating) streetAim = null;
+    const direct = field || flanking || streetAim !== null || navigating;
 
     this.spine.sample(this.cursor + direction * lookahead, this.aim);
 
@@ -889,7 +1168,16 @@ export class CpuRider {
         0,
         1,
       );
-    if (quarry !== null) {
+    // **A packmate's line is offset from the rider's, not stacked on it**
+    // (M39 Part P, §39.6b.3 "Not stacking"). The composition root hands a cop
+    // with a packmate close by the roomier side of him to follow instead; the
+    // term and its blend with range are the quarry's own, so no new steering
+    // law is written. It applies with or without a quarry (§2c R-4), and
+    // with none there is no range to blend by, so it is followed in full.
+    if (followLine !== null) {
+      offset += clamp(followLine, -this.aim.halfWidth, this.aim.halfWidth)
+        * this.pursuitLateralFollow * (1 - (quarry === null ? 0 : far));
+    } else if (quarry !== null) {
       this.spine.sample(this.quarryAt.distance, this.curveA);
       const dx = quarry.x - this.curveA.x;
       const dz = quarry.z - this.curveA.z;
@@ -996,6 +1284,26 @@ export class CpuRider {
     // offset that clears everything close enough to matter, as near as possible
     // to the line they wanted.
     const room = this.hazardClearanceMetres;
+    /**
+     * The swerve law: the fastest he may be now and still move `sideways`
+     * metres across before `distance` metres of road run out, braking as he
+     * goes. The seconds the move needs are read at the lateral the corner
+     * solver would grant — once, at the speed he is doing, which for a lane
+     * change ahead of a gate is the safe side (`k = 1`, the solver's fixed
+     * point in lateral units) — and spread along the approach the way the
+     * corner profile is (see the cap below, which is its first consumer).
+     */
+    const swerveSpeed = (sideways: number, distance: number): number => {
+      const lateral = Math.max(0.5, speedAtLateralLimit(1, cornerFactor, this.lateralCeiling) ** 2);
+      const seconds = Math.sqrt((2 * sideways) / lateral) / Math.max(0.05, optimism);
+      const brakeIn = braking * reaction;
+      const turnIn = brakeIn * seconds * seconds;
+      const atLine = (distance / seconds) ** 2;
+      const spread = turnIn < distance
+        ? 2 * brakeIn * distance - brakeIn * brakeIn * seconds * seconds
+        : atLine;
+      return Math.sqrt(Math.max(0, Math.min(atLine, spread)));
+    };
     // How far up the line a blocker is looked for. Floored, and the floor is
     // the chase pass's: a window of lookahead plus stopping distance is seven
     // metres at 9 m/s, so a cop easing out of one gate met the next — a post
@@ -1032,6 +1340,44 @@ export class CpuRider {
     // the centre and clipped the pier at speed.
     const lineLow = Math.min(selfLateral, offset);
     const lineHigh = Math.max(selfLateral, offset);
+    // **Where his present course is taking him, not only where he is** — M39's
+    // town ring (`sweep-39`). The band above is where he is and where he wants
+    // to be, and both are points: out of an S-bend at pace the wheel's yaw
+    // builds for most of a second, and he crossed his own line at 14 m/s with
+    // a quarter of a metre of sideways travel for every metre of road. The
+    // deep hole on the outside of the riverside's left-hander was two metres
+    // clear of both points and dead on his course; it entered the band eight
+    // metres out, which is no distance to shed nine metres a second in. So the
+    // course is carried forward as the arc he is actually on — his heading
+    // and his measured turn rate, the controller's facts rather than the
+    // line's — and a thing that would put him down at the pace he is doing is
+    // in the way when that arc meets it.
+    const courseTurnRate = dt > 0 ? wrapAngle(view.headingY - this.lastHeading) / dt : 0;
+    const courseBend = view.speed > 1 ? clamp(courseTurnRate / view.speed, -COURSE_MAX_BEND, COURSE_MAX_BEND) : 0;
+    /** His lateral on the line `ahead` metres on, if he holds his present arc. */
+    const courseLateral = (ahead: number): number => {
+      if (view.speed <= 1 || ahead <= 0) return selfLateral;
+      const heading = view.headingY;
+      let x: number;
+      let z: number;
+      if (Math.abs(courseBend * ahead) < 1e-4) {
+        x = view.x + Math.sin(heading) * ahead;
+        z = view.z + Math.cos(heading) * ahead;
+      } else {
+        x = view.x + (Math.cos(heading) - Math.cos(heading + courseBend * ahead)) / courseBend;
+        z = view.z + (Math.sin(heading + courseBend * ahead) - Math.sin(heading)) / courseBend;
+      }
+      this.spine.sample(this.cursor + direction * ahead, this.courseAt);
+      return (x - this.courseAt.x) * Math.cos(this.courseAt.headingY)
+        - (z - this.courseAt.z) * Math.sin(this.courseAt.headingY);
+    };
+    /** Whether his course meets `blocker`, which would put him down at this pace. */
+    const onCourse = (blocker: RouteBlocker): boolean => {
+      if (blocker.safeSpeed >= view.speed) return false;
+      const ahead = direction > 0 ? blocker.from - this.cursor : this.cursor - blocker.to;
+      const course = courseLateral(Math.max(0, ahead));
+      return course > blocker.right - TIGHT_ROOM && course < blocker.left + TIGHT_ROOM;
+    };
     /** The chosen line rounds the conflict set's end, outside the corridor. */
     let endAround = false;
     let blocking: RouteBlocker | null = null;
@@ -1042,7 +1388,7 @@ export class CpuRider {
         if (blocker.to < this.cursor + BEHIND_MARGIN) continue;
         if (blocker.from > this.cursor + near) break;
         if (blocker.facing === -1) continue;
-        if (blocker.right - room > lineHigh || blocker.left + room < lineLow) continue;
+        if ((blocker.right - room > lineHigh || blocker.left + room < lineLow) && !onCourse(blocker)) continue;
         blocking = blocker;
         break;
       }
@@ -1052,11 +1398,43 @@ export class CpuRider {
         if (blocker.from > this.cursor - BEHIND_MARGIN) continue;
         if (blocker.to < this.cursor - near) break;
         if (blocker.facing === 1) continue;
-        if (blocker.right - room > lineHigh || blocker.left + room < lineLow) continue;
+        if ((blocker.right - room > lineHigh || blocker.left + room < lineLow) && !onCourse(blocker)) continue;
         blocking = blocker;
         break;
       }
     }
+    // **A packmate is a moving blocker** (M39 Part P, §39.6b.3 "Not
+    // stacking"). The other cops arrive as bands in the field's own
+    // vocabulary and are asked the field's own questions — in the window, on
+    // his line or his course — so the gap search and the swerve law below
+    // spread the pack across the road the way they spread round a bollard
+    // row. Scanned apart from the field (two entries at most) because the
+    // field's list is sorted and its scans break early; the nearer face wins.
+    const bands = this.packBands;
+    if (!direct) {
+      for (const band of bands) {
+        const ahead = direction > 0 ? band.from - this.cursor : this.cursor - band.to;
+        const past = direction > 0 ? band.to - this.cursor : this.cursor - band.from;
+        if (past < BEHIND_MARGIN || ahead > near) continue;
+        // **A packmate he is not gaining on is not in his way.** A band's
+        // `safeSpeed` is the packmate's own pace, and the field's meaning of
+        // it — how fast the thing may be met — makes one riding at his pace
+        // or faster a thing he never meets: the course test already reads it
+        // so. Filed as a standing post instead, the band had a cop swerve
+        // round a packmate pulling away from him and drop more than ten metres
+        // behind him inside five seconds on every seed of the two-cop fixture
+        // (`cpuRider.test.ts`, measured before this line); the echelon is
+        // meant to form "without anyone braking for anyone" (§39.6b.3).
+        if (band.safeSpeed >= view.speed) continue;
+        if (band.facing !== 0 && band.facing !== direction) continue;
+        if ((band.right - room > lineHigh || band.left + room < lineLow) && !onCourse(band)) continue;
+        if (blocking !== null
+          && ahead >= (direction > 0 ? blocking.from - this.cursor : this.cursor - blocking.to)) continue;
+        blocking = band;
+      }
+    }
+    /** Whether the gate he is threading is a packmate's rather than the road's. */
+    const packmateGate = blocking !== null && bands.length > 0 && bands.indexOf(blocking) >= 0;
 
     let avoidAt = Infinity;
     /** The width of the opening he is threading at the nearest gate; -1 for none. */
@@ -1074,6 +1452,13 @@ export class CpuRider {
         if (blocker.from > gateHigh) break;
         if (blocker.facing !== 0 && blocker.facing !== direction) continue;
         this.conflicts.push(blocker);
+      }
+      // The packmates in the same gate, after the road's own furniture.
+      for (const band of bands) {
+        if (band.to < gateLow || band.from > gateHigh) continue;
+        if (band.safeSpeed >= view.speed) continue;
+        if (band.facing !== 0 && band.facing !== direction) continue;
+        this.conflicts.push(band);
       }
 
       // **He aims at the middle of the gap, not at its edge.** A gateway is
@@ -1103,6 +1488,10 @@ export class CpuRider {
         for (const blocker of this.conflicts) {
           if (tier === 1 && blocker.safeSpeed === Infinity) continue;
           if (tier === 2 && blocker.safeSpeed > 0) continue;
+          // A packmate is never a wall: cops pass through each other (no
+          // cop-to-cop physics, §39.6b.3), so the walls-alone search that
+          // decides whether any line exists does not count a parked one.
+          if (tier === 2 && bands.length > 0 && bands.indexOf(blocker) >= 0) continue;
           this.gaps.push(blocker.right - TIGHT_ROOM, blocker.left + TIGHT_ROOM);
         }
 
@@ -1156,7 +1545,45 @@ export class CpuRider {
         };
       };
 
-      let chosen = search(0);
+      // **A line on the far side of a wall is only a line while he can still
+      // get across in front of it** — M39's town ring (`sweep-40`). The score
+      // above credits width, and width is measured across the whole gate: a
+      // bollard on the boulevard's traffic island with a shallow hole twelve
+      // metres beyond it left a 0.8 m slot on his side and ten clear metres
+      // on the other, and six metres short of the post at 12 m/s the wide
+      // side's credit finally outweighed the three metres to reach it. He
+      // turned across the post's own band with no room to finish the move,
+      // and met the post. Every opening is still offered; one reached by
+      // crossing something that would put him down at the pace he is doing
+      // is refused while the swerve law — the same one that prices his
+      // speed below — says the crossing cannot be finished before it. When
+      // nothing passes, the choice is exactly what it was, so this only ever
+      // keeps him on his side of a wall he has already committed to.
+      const crossable = (line: number): boolean => {
+        for (const blocker of this.conflicts) {
+          if (blocker.safeSpeed >= view.speed) continue;
+          const low = blocker.right - TIGHT_ROOM;
+          const high = blocker.left + TIGHT_ROOM;
+          // Inside its band already: every way out is a crossing, and the
+          // choice between them is the score's.
+          if (selfLateral > low && selfLateral < high) continue;
+          const across = line > selfLateral
+            ? low > selfLateral && low < line
+            : high < selfLateral && high > line;
+          if (!across) continue;
+          const ahead = direction > 0 ? blocker.from - this.cursor : this.cursor - blocker.to;
+          const clear = line > selfLateral ? high - selfLateral : selfLateral - low;
+          if (view.speed > swerveSpeed(clear, Math.max(0, ahead))) return false;
+        }
+        return true;
+      };
+      /** The search, preferring openings he can still reach without a crossing he cannot make. */
+      const searchCommitted = (tier: 0 | 1 | 2): ReturnType<typeof search> => {
+        const committed = search(tier, limit, crossable);
+        return committed.width >= 0 ? committed : search(tier);
+      };
+
+      let chosen = searchCommitted(0);
       // **A wobble never closes an opening a wall left him** — M30 Phase 2's
       // QA repair.
       //
@@ -1190,7 +1617,7 @@ export class CpuRider {
       // end-around's case (§4.2's wall camp), and answering it here would take
       // the flank away from a pursuit that needs it.
       if (chosen.width >= 0 && Math.abs(chosen.line) > this.aim.halfWidth) {
-        const hard = search(1);
+        const hard = searchCommitted(1);
         if (hard.width >= 0 && Math.abs(hard.line) <= this.aim.halfWidth) chosen = hard;
       }
       // **And a wobble is worth a swerve, not a lane change** — the chase
@@ -1201,7 +1628,7 @@ export class CpuRider {
       // `SOFT_SWERVE_WORTH_METRES` nearer where he already is, he takes it and
       // rides whatever is spilt on it.
       if (chosen.width >= 0) {
-        const hard = search(1);
+        const hard = searchCommitted(1);
         if (hard.width >= 0 && Math.abs(hard.line) <= this.aim.halfWidth
           && Math.abs(hard.line - selfLateral) + SOFT_SWERVE_WORTH_METRES
             < Math.abs(chosen.line - selfLateral)) {
@@ -1217,14 +1644,18 @@ export class CpuRider {
       // the alley's walls. Ask the walls alone; if they leave a line on the
       // road, take it at the pace the slowest thing on it allows.
       let slowThrough = Infinity;
+      /** Whether the slowest thing on that line is a packmate (§39.6b.3). */
+      let slowThroughPackmate = false;
       if (chosen.width < 0) {
-        const walls = search(2);
+        const walls = searchCommitted(2);
         if (walls.width >= 0 && Math.abs(walls.line) <= this.aim.halfWidth) {
           chosen = walls;
           for (const blocker of this.conflicts) {
             if (blocker.safeSpeed === 0 || blocker.safeSpeed === Infinity) continue;
-            if (walls.line + TIGHT_ROOM > blocker.right && walls.line - TIGHT_ROOM < blocker.left) {
-              slowThrough = Math.min(slowThrough, blocker.safeSpeed);
+            if (walls.line + TIGHT_ROOM > blocker.right && walls.line - TIGHT_ROOM < blocker.left
+              && blocker.safeSpeed < slowThrough) {
+              slowThrough = blocker.safeSpeed;
+              slowThroughPackmate = bands.length > 0 && bands.indexOf(blocker) >= 0;
             }
           }
         }
@@ -1267,7 +1698,12 @@ export class CpuRider {
         const margin = Math.min(room, bestWidth / 2);
         offset = clamp(offset, bestLow + margin, bestHigh - margin);
         if (slowThrough < Infinity) {
-          cap = bind(allow(slowThrough, Math.max(0, avoidAt)), 'blocker');
+          // Behind a packmate he matches the packmate's pace at him — and no
+          // lower than a cop needs to turn to face his quarry: a cap derived
+          // from a packmate may never park him (§39.6b.3).
+          cap = slowThroughPackmate
+            ? bind(Math.max(allow(slowThrough, Math.max(0, avoidAt)), TURN_TO_FACE_SPEED), 'packmate')
+            : bind(allow(slowThrough, Math.max(0, avoidAt)), 'blocker');
         }
       } else if (quarry !== null) {
         // **No gap the corridor offers — but a wall has ends, and the
@@ -1316,7 +1752,9 @@ export class CpuRider {
         // that is zero, which is a cop stopping — correct, and rare, because a
         // route the validator passed has a rideable line through it and the
         // subtraction above is what finds it.
-        cap = bind(allow(blocking.safeSpeed, Math.max(0, avoidAt)), 'blocker');
+        cap = packmateGate
+          ? bind(Math.max(allow(blocking.safeSpeed, Math.max(0, avoidAt)), TURN_TO_FACE_SPEED), 'packmate')
+          : bind(allow(blocking.safeSpeed, Math.max(0, avoidAt)), 'blocker');
       }
 
       // **Aim at the thing being avoided, not past it.** Pure pursuit corrects
@@ -1366,7 +1804,9 @@ export class CpuRider {
     // metres would otherwise be protected by this very cap, the cop braking to
     // a stand at the line's end while aiming at somebody standing past it.
     // Nor in close pursuit, whose whole leg is shorter than the margin.
-    if (!direct && !closePursuit) {
+    // A closed town ring has no end to stop at (M39 r6 QA): its last metre is
+    // the plaza's first, and the cursor re-seats across the seam.
+    if (!direct && !closePursuit && !this.spine.closed) {
       const endMargin = quarry === null ? END_MARGIN_METRES : 0;
       const routeLeft = direction > 0
         ? this.spine.length - endMargin - this.cursor
@@ -1396,9 +1836,12 @@ export class CpuRider {
       // this cap entirely: it is a slide *across* the quarry's range, and a
       // cop wedged at arm's length behind a wall would otherwise crawl the
       // whole flank at walking pace — which is the parked cop again, slower.
-      const closingDistance = direct
-        ? quarryRange
-        : Math.max(Math.abs(routeGap), quarryRange);
+      // Searching, the way in is the path, never shorter than the line.
+      const closingDistance = navigating
+        ? Math.max(quarryRange, nav.remaining)
+        : direct
+          ? quarryRange
+          : Math.max(Math.abs(routeGap), quarryRange);
       const standOff = allow(quarrySpeed, closingDistance - strikeStandOff);
       // **Matching a stationary quarry is a deadlock unless he is already
       // facing them, because a stationary wheel cannot turn** — M26 Phase 3's
@@ -1422,7 +1865,11 @@ export class CpuRider {
       const facingQuarry = Math.abs(wrapAngle(
         Math.atan2(quarry.x - view.x, quarry.z - view.z) - view.headingY,
       )) <= this.swingConeRadians;
-      cap = bind(facingQuarry ? standOff : Math.max(standOff, TURN_TO_FACE_SPEED), 'standOff');
+      // The strike pass rides *through* a standing quarry at its own pace
+      // (below), so the hold at arm's length is not his.
+      if (!(navigating && nav.attack)) {
+        cap = bind(facingQuarry ? standOff : Math.max(standOff, TURN_TO_FACE_SPEED), 'standOff');
+      }
     }
 
     // Off the road is somewhere to leave, not somewhere to hurry through: the
@@ -1431,13 +1878,22 @@ export class CpuRider {
     // Measured from a *share* of the corridor rather than from its edge: by the
     // time a rider is off the road they are already in the dressing, and the
     // useful moment to shed speed is while they are still running wide on it.
-    const strayed = Math.max(0, this.location.offRoute - this.location.halfWidth * CORRIDOR_SHARE);
+    // A side street the rider may legally take is road for the cop too (M39
+    // QA): measured to the nearest loop street, not only the canonical road.
+    const strayed = Math.max(0, this.streets.offRoute(view.x, view.z, this.location.offRoute)
+      - this.location.halfWidth * CORRIDOR_SHARE);
     if (strayed > 0) cap = bind(Math.max(6, 20 - strayed * 2), 'strayed');
 
     // -- Turn the aim point into intent --------------------------------------
     let aimX: number;
     let aimZ: number;
-    if (detouring) {
+    if (navigating) {
+      // Corner to corner round what stands between them, then the strike.
+      aimX = nav.aimX;
+      aimZ = nav.aimZ;
+      cap = bind(this.navCornerCap(view, cornerFactor, allow), 'nav');
+      if (nav.attack) cap = bind(nav.cap, 'attack');
+    } else if (detouring) {
       // Sideways, deliberately: the detour's whole content is an aim point
       // held a fixed reach away in the direction chosen when the ram failed.
       // Recomputed from where he *is* each step so pure pursuit always has it
@@ -1543,21 +1999,18 @@ export class CpuRider {
         sideways = Math.abs(clamped - selfLateral);
         aimAt = Math.max(MIN_AIM_METRES, avoidAt);
         atGate = true;
+        // **And from his course when his course is what meets it** (`sweep-39`,
+        // above): crossing his line on the way to the far side of it, he owes
+        // nothing measured from where he is and everything measured from where
+        // he is going. Only when the course actually meets something in the
+        // gate that would put him down — on an open gate the ordinary tracking
+        // error is the corner profile's business, as it always was.
+        if (blocking !== null && this.conflicts.some(onCourse)) {
+          sideways = Math.max(sideways, Math.abs(clamped - courseLateral(Math.max(0, avoidAt))));
+        }
       }
       if (atGate && sideways > 0.05) {
-        // The seconds the move needs, at the lateral the corner solver would
-        // grant the speed at the gate — read once, at the speed he is doing,
-        // which for a lane change ahead of a gate is the safe side (`k = 1`,
-        // the solver's fixed point in lateral units).
-        const lateral = Math.max(0.5, speedAtLateralLimit(1, cornerFactor, this.lateralCeiling) ** 2);
-        const seconds = Math.sqrt((2 * sideways) / lateral) / Math.max(0.05, optimism);
-        const brakeIn = braking * reaction;
-        const turnIn = brakeIn * seconds * seconds;
-        const atLine = (aimAt / seconds) ** 2;
-        const spread = turnIn < aimAt
-          ? 2 * brakeIn * aimAt - brakeIn * brakeIn * seconds * seconds
-          : atLine;
-        cap = bind(Math.max(SWERVE_SPEED_FLOOR, Math.sqrt(Math.max(0, Math.min(atLine, spread)))), 'swerve');
+        cap = bind(Math.max(SWERVE_SPEED_FLOOR, swerveSpeed(sideways, aimAt)), packmateGate ? 'packmate' : 'swerve');
       } else if (sideways > 0.05) {
         // Optimism rather than `reaction` itself: the same knob seen a second
         // time, normalised so a full-skill cop swerves at exactly the physics
@@ -1632,6 +2085,44 @@ export class CpuRider {
       aimZ = this.aim.z - Math.sin(this.aim.headingY) * clamped;
     }
 
+    if (streetAim !== null) {
+      aimX = streetAim.x;
+      aimZ = streetAim.z;
+      // The corner rule the ordinary brain uses, in its units: the square root
+      // of the radius, allowed the braking distance to each bend (M39 QA — the
+      // first version passed the radius itself and never slowed for a block).
+      for (let bend = 0; bend < streetAim.bendCount; bend += 1) {
+        cap = bind(allow(
+          speedAtLateralLimit(1 / Math.sqrt(streetAim.bendCurvature[bend]), cornerFactor, this.lateralCeiling),
+          streetAim.bendAt[bend],
+        ), 'corner');
+      }
+      // **And the things on that street** — M39's town ring. The street aim
+      // is a road aim, but it is `direct`, so the canonical line's blockers
+      // were never read — and across the town ring's seam there is no
+      // canonical line to read them from: the eighty-odd metres that close
+      // the ring are nobody's route. Ridden back toward a rider at the start
+      // (`sweep-24`, `qa-chase-4`), he turned for the short way round and met
+      // a deep hole on the closing street at 17 m/s. The street's own field
+      // has it. The aim holds the street's centre and does not steer round
+      // anything, so what is on the way is met at a pace it can be met at:
+      // a hole or a step at its own, a face at the probe pace the flank's
+      // straight-at-them legs use, after which the wall standoff and the stuck
+      // ladder own it exactly as they did.
+      const street = this.streetFieldFor(view, streetAim);
+      if (street.field !== null) {
+        const { field, here, direction: way, lateral } = street;
+        const whole = field.ring.length;
+        for (const blocker of field.blockers) {
+          let ahead = way > 0 ? blocker.from - here : here - blocker.to;
+          if (ahead < -BEHIND_MARGIN) ahead += whole;
+          if (ahead > near || ahead < -BEHIND_MARGIN) continue;
+          if (blocker.facing !== 0 && blocker.facing !== way) continue;
+          if (blocker.right - room > Math.max(lateral, 0) || blocker.left + room < Math.min(lateral, 0)) continue;
+          cap = bind(allow(Math.max(blocker.safeSpeed, FLANK_PROBE_SPEED), Math.max(0, ahead)), 'blocker');
+        }
+      }
+    }
     this.lastOffset = offset;
     this.lastAimX = aimX;
     this.lastAimZ = aimZ;
@@ -1735,7 +2226,11 @@ export class CpuRider {
       // one — power into a wall kills its speed, and steer is disarmed at a
       // standstill. The flank's sideways slide from a stand is the one
       // manoeuvre that regains room.
-      if (this.stuckSeconds > STUCK_SECONDS) this.beginDetour(quarry, quarryRange, view, selfLateral);
+      // Searching, the search is the memory: it starts again from here.
+      if (this.stuckSeconds > STUCK_SECONDS) {
+        if (navigating) this.navReplanIn = 0;
+        else this.beginDetour(quarry, quarryRange, view, selfLateral);
+      }
       this.stuckSeconds = 0;
     }
     // **Circling is a siege too** — see `noProgressSeconds`. Only a quarry
@@ -1744,7 +2239,7 @@ export class CpuRider {
     // Never on top of the ladder: a wedge arms its own detour, and a second
     // `beginDetour` in the same breath flips the side back and doubles the
     // span — M24's pumped alternation, which shredded the walk's legs.
-    if (quarry !== null && !holdingQuarry && !this.flanking
+    if (quarry !== null && !holdingQuarry && !this.flanking && !navigating
       && this.stuckSeconds <= STUCK_SECONDS && Math.abs(view.speed) > STUCK_SPEED * 3
       && quarrySpeed < NO_PROGRESS_QUARRY_SPEED && quarryRange < NO_PROGRESS_RANGE_METRES
       && Math.abs(routeGap) <= CLOSE_PURSUIT_ROUTE_METRES) {
@@ -1780,8 +2275,10 @@ export class CpuRider {
       actions.steer = bearing >= 0 ? 1 : -1;
       if (this.stuckSeconds > STUCK_SECONDS + STUCK_REVERSE_SECONDS) {
         // Boxed in enough that even reversing went nowhere. Detour from a
-        // stand rather than reverse forever.
-        this.beginDetour(quarry, quarryRange, view, selfLateral);
+        // stand rather than reverse forever — or, searching, search again
+        // from where the crawl left him.
+        if (navigating) this.navReplanIn = 0;
+        else this.beginDetour(quarry, quarryRange, view, selfLateral);
         this.stuckSeconds = 0;
       }
     }
@@ -1820,7 +2317,7 @@ export class CpuRider {
         // hard the widening walk shredded its own half-finished legs (the
         // from-distance camp fixture caught it at 6.3 m closest). A leg in
         // progress keeps its direction; the ride-out below just drives it.
-        if (this.detourRemaining <= 0) this.beginDetour(quarry, quarryRange, view, selfLateral);
+        if (this.detourRemaining <= 0 && !navigating) this.beginDetour(quarry, quarryRange, view, selfLateral);
       } else {
         actions.hop = false;
         // A launch that never happened — refused hop, retuned compression —
@@ -1865,13 +2362,30 @@ export class CpuRider {
       // ordinary range remains the floor for slow and same-direction chases.
       const contactSeconds = Math.max(0, this.paddleWindupSeconds)
         + Math.max(0, this.paddleActiveSeconds);
+      // **And never from further than the paddle reaches** (the brutal pass).
+      // The floor was `swingRangeMetres`, 3.4 m, which leads a swing only for
+      // a closure the lead already covers: a cop creeping up on a parked
+      // rider at 2 m/s wound up at 3.4 m and ended the swing 3 m short — then
+      // sat inside the arc's reach on the cooldown. The floor is now the
+      // nearer of that and the swing's own envelope for a rider's body.
+      const envelope = PADDLE.pivotOffset + Math.max(0, this.paddleReachMetres)
+        + PADDLE.headRadius + CHASE.riderHitRadius - STRIKE_ENVELOPE_MARGIN;
       const ledRange = Math.max(
-        this.swingRangeMetres,
+        Math.min(this.swingRangeMetres, envelope),
         Math.max(0, this.paddleReachMetres) + quarryClosingSpeed * contactSeconds,
       );
       if (range <= ledRange) {
         const toQuarry = wrapAngle(Math.atan2(dx, dz) - view.headingY);
-        if (Math.abs(toQuarry) <= this.swingConeRadians) {
+        // **Beside him counts, at arm's length** (the brutal pass). The arc
+        // sweeps from well behind the shoulder to the nose, so a rider a
+        // paddle's reach off to the side is struck — measured, 1.2–1.4 m
+        // out, to ±105° — and the 60° cone left a cop circling a parked
+        // rider at arm's length, never swinging. Past arm's length the cone
+        // is the tuned one: that swing has to be led onto him.
+        const cone = range <= CLOSE_SWING_METRES
+          ? Math.max(this.swingConeRadians, CLOSE_SWING_CONE_RADIANS)
+          : this.swingConeRadians;
+        if (Math.abs(toQuarry) <= cone) {
           // The authored player forehand travels through the rider's right.
           // A cop has a target on either side, so mirror the same physical arc
           // when the quarry is left of his nose. The paddle latches this value
@@ -1901,9 +2415,11 @@ export class CpuRider {
   /**
    * The fastest the cop will ask for, m/s — M20.
    *
-   * `EucController.derivedTopSpeed` × the cutout share × his own margin, and
-   * the three wheel values are pushed from the same live tuning record as his
-   * controller, so a drag or drive change moves this with both riders. He is
+   * `EucController.derivedTopSpeed` × his wheel's cutout share × his own
+   * margin, and the drive and drag are pushed from the same live tuning record
+   * as his controller, so a drag or drive change moves this with both riders.
+   * The cutout share is his own (`CHASE.copCutoutSpeedShare`, 2026-09-22), so
+   * a change to the *player's* edge does not move it. He is
    * not handed the controller: a brain that held one could read anything on
    * it, and it has never needed more than the `CpuView` it is given.
    *
@@ -1965,6 +2481,65 @@ export class CpuRider {
    * first cut of this excused it and ended every slide on the spot. Soft
    * bands are not walls.
    */
+  /**
+   * Which loop's road the street aim is riding, where he is on it, which way,
+   * and how far off its centre — `field` is `null` when none can be told. The
+   * answer is reused between steps, like the step's own intent. The aim
+   * point is sampled on a ring's centreline by construction, so the ring it
+   * lies on is the one being ridden; loops sharing a street share its
+   * furniture, so the first such ring answers for all of them.
+   */
+  private streetFieldFor(
+    view: CpuView,
+    aim: { x: number; z: number },
+  ): typeof this.streetRide {
+    const ride = this.streetRide;
+    ride.field = null;
+    for (const field of this.streetFields) {
+      field.ring.locate(aim.x, aim.z, -1, this.streetThere);
+      if (this.streetThere.offRoute > STREET_AIM_ON_RING_METRES) continue;
+      field.ring.locate(view.x, view.z, -1, this.streetHere);
+      if (this.streetHere.offRoute > this.streetHere.halfWidth + CHASE.streetJoinReach) continue;
+      const whole = field.ring.length;
+      let gap = this.streetThere.distance - this.streetHere.distance;
+      if (gap > whole / 2) gap -= whole;
+      if (gap < -whole / 2) gap += whole;
+      field.ring.sample(this.streetHere.distance, this.streetAt);
+      const lateral = (view.x - this.streetAt.x) * Math.cos(this.streetAt.headingY)
+        - (view.z - this.streetAt.z) * Math.sin(this.streetAt.headingY);
+      ride.field = field;
+      ride.here = this.streetHere.distance;
+      ride.direction = gap < 0 ? -1 : 1;
+      ride.lateral = lateral;
+      return ride;
+    }
+    return ride;
+  }
+
+  /**
+   * **A closed ring's seam is ridden through, not stopped at (M39 r6 Codex
+   * QA).** The town spine ends where it began, in the plaza, but its distances
+   * are open, so a windowed locate near one end cannot see the other: a cop
+   * riding home kept a cursor pinned at the last metre while he stood in the
+   * plaza, read a rider 25 m in as 2,475 m behind and dithered at the seam.
+   * Near either end the other end's window is asked too, and the clearly
+   * nearer answer wins — the two ends coincide, so at the seam itself the
+   * answers tie and the cursor keeps its side.
+   */
+  private acrossSeam(x: number, z: number, located: SpineLocation): void {
+    if (!this.spine.closed) return;
+    const whole = this.spine.length;
+    let other: number;
+    if (located.distance > whole - SEAM_WINDOW_METRES) other = 0;
+    else if (located.distance < SEAM_WINDOW_METRES) other = whole;
+    else return;
+    this.spine.locate(x, z, other, this.seamAt);
+    if (this.seamAt.offRoute >= located.offRoute - SEAM_PREFERENCE_METRES) return;
+    located.distance = this.seamAt.distance;
+    located.offRoute = this.seamAt.offRoute;
+    located.halfWidth = this.seamAt.halfWidth;
+  }
+
   private lineClear(fromX: number, fromZ: number, toX: number, toZ: number): boolean {
     const dx = toX - fromX;
     const dz = toZ - fromZ;
@@ -2062,6 +2637,286 @@ export class CpuRider {
     this.detourSpan = DETOUR_SPAN_BASE_METRES;
     this.detourSide = 1;
     this.flankFreeSeconds = 0;
+  }
+
+  /**
+   * The close-quarters search, one step — the brutal pass. Answers whether it
+   * has the wheel, and leaves its aim, the path still to ride and the strike
+   * pass (if any) in `navOut`.
+   *
+   * **When.** A quarry inside `navRangeMetres` who is off the road (measured
+   * to the nearest street a rider may legally take) or slower than
+   * `navSlowQuarrySpeed`; both edges hysteretic, the range and the pace, on
+   * the field pursuit's pattern. A moving rider on the road is the spine's.
+   *
+   * **How.** A* on the shared grid from where he is to where the quarry is,
+   * again every `NAV_REPLAN_SECONDS` or when the quarry has moved; a packmate
+   * already nearer the quarry costs the ground round him and his way in, so a
+   * second cop takes the other end of the block. He rides at the first corner
+   * of the path he cannot already see past, so a corner is never cut through
+   * a wall. In sight and within `NAV_ATTACK_METRES` of a quarry standing
+   * still, the aim goes past him a paddle's reach to one side — the strike
+   * pass — at `attackPassSpeed`, never faster than stops short of what lies
+   * past him.
+   */
+  private navigate(
+    dt: number,
+    view: CpuView,
+    quarry: CpuQuarry,
+    range: number,
+    quarrySpeed: number,
+    mates: readonly { readonly x: number; readonly z: number }[] | undefined,
+  ): boolean {
+    const grid = this.navGrid;
+    if (grid === null) {
+      this.navEngaged = false;
+      return false;
+    }
+    const engaged = this.navEngaged;
+    const reach = this.navRangeMetres * (engaged ? NAV_RANGE_EXIT_SHARE : 1);
+    const slow = quarrySpeed < this.navSlowQuarrySpeed * (engaged ? NAV_SLOW_EXIT_SHARE : 1);
+    // The cheap tests first: the street rings are located only for a quarry
+    // in range and moving, the one case the answer turns on.
+    const offRoad = range < reach && !slow
+      && this.streets.offRoute(quarry.x, quarry.z, this.quarryAt.offRoute) - this.quarryAt.halfWidth
+        > (engaged ? FIELD_EXIT_MARGIN : FIELD_ENTER_MARGIN);
+    this.navEngaged = range < reach && (offRoad || slow);
+    if (!this.navEngaged) {
+      this.navHasPath = false;
+      return false;
+    }
+
+    // Searched at a bounded rate whatever the answer was: a failed search (a
+    // quarry walled off, or out of the window) waits its turn like any other,
+    // so a hopeless search is a cost four times a second, never every step.
+    // **And no step pays for a long one**: a search runs at most
+    // `NAV_STEP_EXPANSIONS` cells a step and carries on the next, the last
+    // path found steering him meanwhile.
+    this.navReplanIn -= dt;
+    if (this.navPlanner === null) this.navPlanner = new NavPlanner(grid);
+    const searcher = this.navPlanner;
+    if (searcher.searching) {
+      const state = searcher.advance(NAV_STEP_EXPANSIONS);
+      if (state === 1) {
+        this.navHasPath = true;
+        this.navNext = 1;
+      } else if (state === -1) {
+        this.navHasPath = false;
+      }
+    } else {
+      const moved = Math.hypot(quarry.x - this.navGoalX, quarry.z - this.navGoalZ);
+      if (this.navReplanIn <= 0 || (this.navHasPath && !(moved < NAV_GOAL_MOVE_METRES))) {
+        let repel = 0;
+        if (mates !== undefined) {
+          for (const mate of mates) {
+            if (repel > NAV_MAX_REPEL - 2) break;
+            const mateRange = Math.hypot(mate.x - quarry.x, mate.z - quarry.z);
+            // Only a packmate ahead of him on the way in: the nearer cop takes
+            // the short way, the next one the other.
+            if (mateRange > range - NAV_REPEL_LEAD_METRES || mateRange > this.navRangeMetres) continue;
+            this.repelX[repel] = mate.x;
+            this.repelZ[repel] = mate.z;
+            repel += 1;
+            this.repelX[repel] = (mate.x + quarry.x) / 2;
+            this.repelZ[repel] = (mate.z + quarry.z) / 2;
+            repel += 1;
+          }
+        }
+        this.navReplanIn = NAV_REPLAN_SECONDS;
+        this.navGoalX = quarry.x;
+        this.navGoalZ = quarry.z;
+        if (searcher.start(
+          view.x, view.z, quarry.x, quarry.z,
+          this.repelX, this.repelZ, repel, NAV_REPEL_METRES, NAV_REPEL_COST,
+        )) {
+          const state = searcher.advance(NAV_STEP_EXPANSIONS);
+          if (state === 1) {
+            this.navHasPath = true;
+            this.navNext = 1;
+          } else if (state === -1) {
+            this.navHasPath = false;
+          }
+        } else {
+          this.navHasPath = false;
+        }
+      }
+    }
+    if (!this.navHasPath) return false;
+
+    const planner = this.navPlanner!;
+    const px = planner.pathX;
+    const pz = planner.pathZ;
+    const count = planner.pathLength;
+    // The corner he rides at: the first one he cannot already see past.
+    const switchRadius = Math.max(NAV_SWITCH_METRES, Math.abs(view.speed) * NAV_SWITCH_SECONDS);
+    while (this.navNext < count - 1) {
+      const near = Math.hypot(px[this.navNext] - view.x, pz[this.navNext] - view.z) < switchRadius;
+      if (!near && !navLineClear(grid, view.x, view.z, px[this.navNext + 1], pz[this.navNext + 1], NAV_LOS_SKIP_METRES)) break;
+      this.navNext += 1;
+    }
+    // Wide of the leg he is on (a crash, a knock, a slide): search again next step.
+    {
+      const ax = px[this.navNext - 1];
+      const az = pz[this.navNext - 1];
+      const bx = px[this.navNext];
+      const bz = pz[this.navNext];
+      const lx = bx - ax;
+      const lz = bz - az;
+      const length2 = lx * lx + lz * lz;
+      const t = length2 > 1e-9 ? Math.max(0, Math.min(1, ((view.x - ax) * lx + (view.z - az) * lz) / length2)) : 0;
+      if (Math.hypot(view.x - (ax + lx * t), view.z - (az + lz * t)) > NAV_OFF_PATH_METRES) this.navReplanIn = 0;
+    }
+
+    const out = this.navOut;
+    let remaining = Math.hypot(px[this.navNext] - view.x, pz[this.navNext] - view.z);
+    for (let k = this.navNext; k < count - 1; k += 1) remaining += Math.hypot(px[k + 1] - px[k], pz[k + 1] - pz[k]);
+    out.remaining = remaining;
+    out.aimX = px[this.navNext];
+    out.aimZ = pz[this.navNext];
+    out.attack = false;
+    out.cap = Infinity;
+
+    // The strike pass: in sight, near, and standing still.
+    if (remaining <= NAV_ATTACK_METRES && quarrySpeed < NAV_ATTACK_SLOW_SPEED
+      && navLineClear(grid, view.x, view.z, quarry.x, quarry.z, NAV_LOS_SKIP_METRES)) {
+      const dx = quarry.x - view.x;
+      const dz = quarry.z - view.z;
+      const length = Math.hypot(dx, dz);
+      if (length > 1e-3 && length < NAV_ATTACK_TOO_CLOSE) {
+        // On top of him: the paddle passes outside a rider this close. Open
+        // the range away from him — the most open of eight bearings, nearest
+        // straight away first, so the back-off never runs into the wall he is
+        // hiding against — and come again.
+        const away = Math.atan2(-dx, -dz);
+        let bestX = view.x - (dx / length) * NAV_ATTACK_BACK_OFF_METRES;
+        let bestZ = view.z - (dz / length) * NAV_ATTACK_BACK_OFF_METRES;
+        let bestRun = -1;
+        for (const turn of BACK_OFF_TURNS) {
+          const bearing = away + turn;
+          const sx = Math.sin(bearing);
+          const sz = Math.cos(bearing);
+          let run = 0;
+          while (run < NAV_ATTACK_BACK_OFF_METRES && navFree(grid, view.x + sx * (run + 0.5), view.z + sz * (run + 0.5))) run += 0.5;
+          if (run > bestRun + 0.5) {
+            bestRun = run;
+            bestX = view.x + sx * NAV_ATTACK_BACK_OFF_METRES;
+            bestZ = view.z + sz * NAV_ATTACK_BACK_OFF_METRES;
+          }
+          if (run >= NAV_ATTACK_BACK_OFF_METRES) break;
+        }
+        out.aimX = bestX;
+        out.aimZ = bestZ;
+        out.attack = true;
+        out.cap = Math.min(this.attackPassSpeed, NAV_TIGHT_SPEED);
+      } else if (length > 1e-3) {
+        const ux = dx / length;
+        const uz = dz / length;
+        // Left of the line in is (uz, −ux): the file's one convention.
+        const offset = this.attackOffsetMetres;
+        const freeSide = (side: 1 | -1): boolean => navFree(grid, quarry.x + side * uz * offset, quarry.z - side * ux * offset);
+        let side: 1 | -1 = this.attackSide;
+        // Away from a packmate already on him, so the two come from both sides.
+        if (mates !== undefined) {
+          let nearest = Infinity;
+          let mateSide = 0;
+          for (const mate of mates) {
+            const mateRange = Math.hypot(mate.x - quarry.x, mate.z - quarry.z);
+            if (mateRange > NAV_ATTACK_METRES || mateRange >= nearest) continue;
+            nearest = mateRange;
+            mateSide = (mate.x - quarry.x) * uz - (mate.z - quarry.z) * ux >= 0 ? 1 : -1;
+          }
+          if (mateSide !== 0) side = mateSide > 0 ? -1 : 1;
+        }
+        if (!freeSide(side)) side = side === 1 ? -1 : 1;
+        if (freeSide(side)) {
+          this.attackSide = side;
+          const beside = { x: quarry.x + side * uz * offset, z: quarry.z - side * ux * offset };
+          // How far past him the ground stays open, so the pass stops short of a wall.
+          let run = 0;
+          while (run < NAV_ATTACK_THROUGH_METRES && navFree(grid, beside.x + ux * (run + 0.5), beside.z + uz * (run + 0.5))) run += 0.5;
+          out.aimX = beside.x + ux * Math.max(run, 1);
+          out.aimZ = beside.z + uz * Math.max(run, 1);
+          out.attack = true;
+          const braking = Math.max(1, this.brakeDeceleration) / Math.max(1, this.brakeSafety);
+          const room = Math.max(0, length + run - NAV_ATTACK_STOP_ROOM);
+          out.cap = Math.min(this.attackPassSpeed, Math.sqrt(FLANK_PROBE_SPEED * FLANK_PROBE_SPEED + 2 * braking * room));
+        } else {
+          out.aimX = quarry.x;
+          out.aimZ = quarry.z;
+        }
+      }
+    }
+    return true;
+  }
+
+  /**
+   * The pace the path allows from here, m/s: every corner still ahead within
+   * `NAV_CORNER_LOOK_METRES`, taken on the arc tangent to both of its legs at
+   * half the shorter one, at the grip he corners with, and braked for by the
+   * step's own law. Never below `NAV_CORNER_FLOOR` — a corner is a turn, not
+   * a stop.
+   */
+  private navCornerCap(
+    view: CpuView,
+    cornerFactor: number,
+    allow: (limit: number, distance: number) => number,
+  ): number {
+    const planner = this.navPlanner;
+    if (planner === null) return Infinity;
+    const px = planner.pathX;
+    const pz = planner.pathZ;
+    const count = planner.pathLength;
+    let cap = Infinity;
+    let along = 0;
+    let fromX = view.x;
+    let fromZ = view.z;
+    for (let k = this.navNext; k < count - 1; k += 1) {
+      const inX = px[k] - fromX;
+      const inZ = pz[k] - fromZ;
+      const outX = px[k + 1] - px[k];
+      const outZ = pz[k + 1] - pz[k];
+      const lengthIn = Math.hypot(inX, inZ);
+      const lengthOut = Math.hypot(outX, outZ);
+      along += lengthIn;
+      if (along > NAV_CORNER_LOOK_METRES) break;
+      if (lengthIn > 1e-3 && lengthOut > 1e-3) {
+        const cosine = (inX * outX + inZ * outZ) / (lengthIn * lengthOut);
+        const turn = Math.acos(Math.max(-1, Math.min(1, cosine)));
+        if (turn > NAV_CORNER_MIN_TURN) {
+          const tangent = Math.min(lengthIn, lengthOut) / 2;
+          const radius = Math.max(0.25, tangent / Math.tan(turn / 2));
+          const limit = Math.max(NAV_CORNER_FLOOR, speedAtLateralLimit(Math.sqrt(radius), cornerFactor, this.lateralCeiling));
+          cap = Math.min(cap, allow(limit, Math.max(0, along - tangent)));
+        }
+      }
+      fromX = px[k];
+      fromZ = pz[k];
+    }
+    // And past a wall's edge at a pace that does not clip it: every metre of
+    // the path within `NAV_TIGHT_LOOK_METRES` over a cell beside a solid.
+    const grid = this.navGrid;
+    if (grid !== null) {
+      let travelled = 0;
+      let ax = view.x;
+      let az = view.z;
+      for (let k = this.navNext; k < count && travelled < NAV_TIGHT_LOOK_METRES; k += 1) {
+        const bx = px[k];
+        const bz = pz[k];
+        const leg = Math.hypot(bx - ax, bz - az);
+        for (let along = 1; along <= leg && travelled + along <= NAV_TIGHT_LOOK_METRES; along += 1) {
+          const t = along / leg;
+          if (navBesideWall(grid, ax + (bx - ax) * t, az + (bz - az) * t)) {
+            cap = Math.min(cap, allow(NAV_TIGHT_SPEED, Math.max(0, travelled + along - 1)));
+            travelled = NAV_TIGHT_LOOK_METRES;
+            break;
+          }
+        }
+        travelled += leg;
+        ax = bx;
+        az = bz;
+      }
+    }
+    return cap;
   }
 }
 
@@ -2161,12 +3016,23 @@ const GAP_WIDTH_CAP = 6;
 const CORRIDOR_SHARE = 0.8;
 /** How far off the line the windowed search stops being believed, metres. */
 const RELOCATE_METRES = 30;
+/** How near either end of a closed spine a cursor asks the other end, metres. */
+const SEAM_WINDOW_METRES = 40;
+/** How much nearer the other end's answer must be to re-seat a cursor, metres. */
+const SEAM_PREFERENCE_METRES = 0.5;
 /**
  * A cursor moving further than this along the route in one step has jumped
  * — a fold's other arm, or a genuine cut across one — and is adjudicated by
  * facing, metres. Well above what a wheel covers in a step at any speed.
  */
 const CURSOR_JUMP_METRES = 10;
+/** An aim point this close to a ring's centreline is on that ring, metres. */
+const STREET_AIM_ON_RING_METRES = 0.5;
+/**
+ * The tightest arc his course is carried forward on, 1/m — a guard against a
+ * respawn's heading step reading as a turn rate, far above any bend ridden.
+ */
+const COURSE_MAX_BEND = 0.25;
 /** The slowest a swerve may ask him to go, m/s. Below this he is stopping. */
 const SWERVE_SPEED_FLOOR = 5;
 /**
@@ -2212,6 +3078,68 @@ const TURN_TO_FACE_SPEED = 2;
 const DETOUR_SPEED = 8;
 /** A flank's straight-at-them legs stay below the obstacle crash speed. */
 const FLANK_PROBE_SPEED = EUC.obstacleCrashSpeed * 0.7;
+/** How much short of the swing's full envelope the led-swing floor sits, metres: the head must be *through* him. */
+const STRIKE_ENVELOPE_MARGIN = 0.25;
+/** Inside this range a swing is thrown at a rider beside him, not only ahead, metres... */
+const CLOSE_SWING_METRES = 1.6;
+/** ...within this of his nose, radians (the arc's measured reach at arm's length is ±105°). */
+const CLOSE_SWING_CONE_RADIANS = 1.8;
+/** Closer than this the paddle passes outside him: the strike pass backs off first, metres. */
+const NAV_ATTACK_TOO_CLOSE = 1.0;
+/** How far the back-off opens the range, metres. */
+const NAV_ATTACK_BACK_OFF_METRES = 4;
+/** The bearings the back-off tries, radians off straight away from him, nearest first. */
+const BACK_OFF_TURNS: readonly number[] = [0, Math.PI / 4, -Math.PI / 4, Math.PI / 2, -Math.PI / 2, (3 * Math.PI) / 4, (-3 * Math.PI) / 4];
+/**
+ * The pace a path allows past a wall's edge (a cell beside a solid), m/s:
+ * under the wheel's own obstacle crash speed, so a post or a face brushed on
+ * the way in is a scrape (the wall standoff) and never a ragdoll.
+ */
+const NAV_TIGHT_SPEED = EUC.obstacleCrashSpeed * 0.9;
+/** How far along the path the tight-passage pace is looked for, metres. */
+const NAV_TIGHT_LOOK_METRES = 20;
+/** The close-quarters search's hysteresis: disengaged only past this share of `navRangeMetres`... */
+const NAV_RANGE_EXIT_SHARE = 1.3;
+/** ...or once the quarry is moving faster than this share of `navSlowQuarrySpeed` (and on the road). */
+const NAV_SLOW_EXIT_SHARE = 1.5;
+/** How often the search runs while it has the wheel, seconds (four times a second). */
+const NAV_REPLAN_SECONDS = 0.25;
+/**
+ * The most cells one step of a search expands, per brain: a plaza's search
+ * finishes in one step (a few hundred cells), a long detour round a block is
+ * spread over a handful, and no fixed step pays for a whole search.
+ */
+const NAV_STEP_EXPANSIONS = 500;
+/** A quarry who has moved this far from the last search's goal is searched for again at once, metres. */
+const NAV_GOAL_MOVE_METRES = 1.5;
+/** A corner this near is passed, metres, or this many seconds of his travel ahead. */
+const NAV_SWITCH_METRES = 1.5;
+const NAV_SWITCH_SECONDS = 0.3;
+/** The first metres of a sight line from the wheel are not asked (it may stand in a wall's clearance). */
+const NAV_LOS_SKIP_METRES = 0.75;
+/** Wider than this off the leg he rides, the path is searched again, metres. */
+const NAV_OFF_PATH_METRES = 3.5;
+/** Corners further along the path than this do not bound his pace yet, metres. */
+const NAV_CORNER_LOOK_METRES = 45;
+/** A turn gentler than this is no corner, radians. */
+const NAV_CORNER_MIN_TURN = 0.12;
+/** The slowest a path corner asks for, m/s: a turn, not a stop. */
+const NAV_CORNER_FLOOR = 2.5;
+/** Within this much path of a quarry in sight, the strike pass begins, metres. */
+const NAV_ATTACK_METRES = 9;
+/** Only a quarry slower than this is struck in passing; a moving one is matched, m/s. */
+const NAV_ATTACK_SLOW_SPEED = 2.5;
+/** How far past a standing quarry the pass aims when the ground is open, metres. */
+const NAV_ATTACK_THROUGH_METRES = 4;
+/** The pass stops this short of whatever ends the open ground past him, metres. */
+const NAV_ATTACK_STOP_ROOM = 1.2;
+/** Packmates the search weighs, two points each (his body and his way in). */
+const NAV_MAX_REPEL = 6;
+/** A packmate this much nearer the quarry is ahead of him on the way in, metres. */
+const NAV_REPEL_LEAD_METRES = 2;
+/** How far round a packmate the ground costs more, metres, and how much (tenths of a cell a cell). */
+const NAV_REPEL_METRES = 6;
+const NAV_REPEL_COST = 30;
 /** The furthest a side is felt before a slide commits to it, metres. */
 const DETOUR_SIDE_PROBE_MAX_METRES = 12;
 /** A slide needs at least this much room on one side or it is not thrown, metres. */
@@ -2288,13 +3216,6 @@ const WEDGE_SAME_SPOT_METRES = 8;
  * than the line that also dodges every spill, he takes the nearer one.
  */
 const SOFT_SWERVE_WORTH_METRES = 2.0;
-/**
- * The pace a step the wheel cannot mount but a hop can clear is taken at, m/s
- * — the chase pass. The feeler reads a face 0.55 m ahead and the hop needs
- * about a tenth of a second to leave the ground, so a step is met at a walk
- * and hopped, exactly as a player takes a staircase the wrong way.
- */
-const STEP_HOP_SPEED = 2.5;
 /** Seconds of close pursuit with no new closest range before the flank arms. */
 const NO_PROGRESS_SECONDS = 4;
 /** Inside this range a standing quarry that is not getting nearer is a siege, metres. */
@@ -2332,325 +3253,3 @@ const FIELD_EXIT_MARGIN = 0.75;
 /** The range hysteresis: engaged at the tunable range, dropped at this share over. */
 const FIELD_RANGE_EXIT_SHARE = 1.3;
 
-/**
- * How high something has to be before it is worth steering around, metres.
- *
- * Below this it is a kerb, a ledge or a ramp lip — things the wheel climbs, and
- * things `curbAhead` and the hop already answer. A brain that swerved around
- * every kerb would refuse to ride the kerb run, which is a beat.
- *
- * **The wheel's own step limit, not a round number** — the chase pass. It was
- * 0.35 m, and `EucController` mounts nothing taller than
- * `WHEEL.pedalHeight × TERRAIN.stepUpPedalFactor` (0.216 m): the trail's
- * 0.30 m rocks sat in the band between, invisible to the brain and a wall to
- * the wheel, and a cop who no longer crawled past them at the old swerve
- * law's 12 m/s met them at 17 and went over the bars on three pinned seeds.
- * Anything the wheel cannot climb is a thing to steer around.
- */
-const BLOCKER_MIN_HEIGHT = WHEEL.pedalHeight * TERRAIN.stepUpPedalFactor;
-/** How far outside the corridor a blocker still matters, metres. */
-const BLOCKER_MARGIN = 5;
-/** How much of a deck's outer edge is filed as its flank, metres. */
-const DECK_FLANK_METRES = 0.5;
-/** How finely the line is walked for steps in the ground, metres. */
-const STEP_SCAN_METRES = 0.5;
-/** Two rises this close along the line are one step, metres. */
-const STEP_MERGE_METRES = 1.5;
-/** Roughly how large a piece a solid is chopped into before projecting, metres. */
-const PIECE_METRES = 1.5;
-/** The most pieces a solid is chopped into on one axis. A building is not a wall. */
-const PIECE_MAX = 8;
-
-/**
- * Everything on the line worth avoiding, in the line's own coordinates.
- *
- * Run once per world at `Game.installLevel`, never in the step. The hazards
- * come from `plan.hazards` and the solid geometry from the segments' own
- * colliders and `plan.solids` — the two arrays `simulation/planSampler.ts`
- * reads and cannot tell apart, which is the correct reading: a wall is a wall.
- *
- * **`plan.softBodies` is deliberately absent.** A shrub is pass-through by
- * construction (M15) and a cop who steered around bushes would be a cop who
- * cannot be lured into one — which is half of what the escaping player has
- * (§13 q28).
- */
-function routeBlockers(
-  spine: RouteSpine,
-  plan: LevelPlan,
-  ground: TerrainSampler,
-): RouteBlocker[] {
-  const out: RouteBlocker[] = [];
-  const located = createSpineLocation();
-  const at = createSpineSample();
-  const under = createGroundSample();
-
-  /**
-   * How high the road is where the line passes `distance`.
-   *
-   * **Sampled at the *line*, never at the box**, and the difference is the
-   * whole point. The sampler resolves a collider by its top face, so asking it
-   * about the railing's own footprint answers with the top of the railing and
-   * every railing in the game becomes invisible. Asking it about the road
-   * beside one answers with the deck, which is what the rider is standing on
-   * and what a thing's height has to be measured against.
-   */
-  const roadHeightAt = (distance: number): number => {
-    spine.sample(distance, at);
-    ground.sampleGround(at.x, at.z, under);
-    return under.height;
-  };
-
-  /**
-   * The road as measured just clear of a box's own span, not under it.
-   *
-   * The line-sampling rule above has a blind spot the §4.2 wall repro found:
-   * a solid standing *on* the line is its own footprint, so the sampler
-   * answers with its top face and the box measures itself as flat road —
-   * which is how a wall square across the corridor projected to nothing and
-   * the cop rode at it forever. Sampling just before and just after the span
-   * and keeping the lower answer measures the box against the road a rider
-   * arrives on. The ford's deck stays invisible either way: its top *is* the
-   * road on both approaches, so the difference stays under the threshold.
-   */
-  const roadBesideBox = (distance: number, radius: number): number => Math.min(
-    roadHeightAt(distance - radius - 0.6),
-    roadHeightAt(distance + radius + 0.6),
-  );
-  /**
-   * The face a box shows a rider arriving from before it and from after it,
-   * metres above the road they arrive on — the chase pass. A staircase slab
-   * is flush with the road behind it and a step above the road ahead of it,
-   * so it is a drop to a rider descending and a wall to one climbing; both
-   * answers are kept and the scans read the one for their direction.
-   */
-  const faces = (top: number, distance: number, radius: number): { forward: number; backward: number } => ({
-    forward: top - roadHeightAt(distance - radius - 0.6),
-    backward: top - roadHeightAt(distance + radius + 0.6),
-  });
-  /**
-   * What a face this tall may be met at. Taller than a hop clears, nothing;
-   * between the wheel's own step and the hop's reach, a walk and a hop.
-   */
-  const facePace = (height: number): number => (
-    height <= CHASE.hopMaxCurbHeight ? STEP_HOP_SPEED : 0
-  );
-
-  /**
-   * Where a world point sits on the line: how far along, and how far across.
-   *
-   * **The along-line component is added back, and that is not a refinement.**
-   * `locate` clamps to the ends of the line, so everything behind the start
-   * projects onto distance zero — and its across-the-line offset is then
-   * measured in a frame it is nowhere near, which smears a building standing
-   * *behind* the spawn into a band right across the road in front of it. One
-   * pinned seed sat at the start line for four minutes waiting for a gap in it.
-   * Adding the forward component gives a signed distance that is negative
-   * behind the start and past the length beyond the end, and both are then
-   * simply not on the route.
-   */
-  const lateralOf = (x: number, z: number, near: number): { distance: number; lateral: number } => {
-    spine.locate(x, z, near, located);
-    spine.sample(located.distance, at);
-    const dx = x - at.x;
-    const dz = z - at.z;
-    const cos = Math.cos(at.headingY);
-    const sin = Math.sin(at.headingY);
-    return {
-      distance: located.distance + (dx * sin + dz * cos),
-      lateral: dx * cos - dz * sin,
-    };
-  };
-
-  for (const hazard of plan.hazards ?? []) {
-    const { distance, lateral } = lateralOf(hazard.centre.x, hazard.centre.z, -1);
-    if (distance < -hazard.radius || distance > spine.length + hazard.radius) continue;
-    out.push({
-      from: distance - hazard.radius,
-      to: distance + hazard.radius,
-      left: lateral + hazard.radius,
-      right: lateral - hazard.radius,
-      // A deep pothole is the wipeout (`level/plan.ts`); a spill and a shallow
-      // hole cost a wobble a cop rides out like anybody else, so they are worth
-      // a swerve and never worth braking for.
-      safeSpeed: hazard.kind === 'potholeDeep' ? EUC.hazardCrashSpeed * 0.7 : Infinity,
-      facing: 0,
-    });
-  }
-
-  const solids: BoxCollider[] = [
-    ...plan.segments.flatMap((segment) => segment.colliders),
-    ...(plan.solids ?? []),
-  ];
-
-  for (const box of solids) {
-    // The cheap rejection first: a route carries hundreds of these and almost
-    // all of them are dressing well off the road. One projection each.
-    const circum = Math.hypot(box.halfExtents.x, box.halfExtents.z);
-    const centre = lateralOf(box.centre.x, box.centre.z, -1);
-    if (centre.distance < -circum || centre.distance > spine.length + circum) continue;
-    spine.sample(centre.distance, at);
-    const halfWidthHere = at.halfWidth;
-    if (Math.abs(centre.lateral) > halfWidthHere + circum + BLOCKER_MARGIN) continue;
-    // Low enough to ride over or hop — a kerb, a ledge, a ramp lip, or the deck
-    // of the ford, which is a two-metre-wide box whose top face *is* the road.
-    // Measured against the road under the line rather than against the line's
-    // own interpolated height: the line runs straight between two sockets and
-    // the ford's deck is flat, so on the approach the two disagree by enough to
-    // make the road the rider crosses read as a wall across it. Two of the
-    // pinned seeds stopped dead at the water's edge on exactly that.
-    if (box.centre.y + box.halfExtents.y - roadBesideBox(centre.distance, circum)
-      < BLOCKER_MIN_HEIGHT) {
-      continue;
-    }
-
-    // **Then in pieces, and the subdivision is the whole correctness of this
-    // function.** Distance-along and offset-across are curvilinear coordinates,
-    // and a shape large compared with the bend it sits on distorts wildly in
-    // them: a fourteen-metre wall on the outside of a corner has corners that
-    // project ten metres apart across the road, so its bounding band covers the
-    // entire corridor and the cop brakes to a stop in front of an open bend.
-    // That is exactly what two of the pinned seeds did. Chopped into pieces
-    // roughly a wheel's length across, every piece is small compared with the
-    // curve and its band is where it actually is.
-    const cos = Math.cos(box.rotationY);
-    const sin = Math.sin(box.rotationY);
-    const alongX = Math.min(PIECE_MAX, Math.max(1, Math.ceil(box.halfExtents.x / PIECE_METRES)));
-    const alongZ = Math.min(PIECE_MAX, Math.max(1, Math.ceil(box.halfExtents.z / PIECE_METRES)));
-    const halfX = box.halfExtents.x / alongX;
-    const halfZ = box.halfExtents.z / alongZ;
-    const circumradius = Math.hypot(halfX, halfZ);
-
-    for (let i = 0; i < alongX; i += 1) {
-      for (let j = 0; j < alongZ; j += 1) {
-        const ox = -box.halfExtents.x + (2 * i + 1) * halfX;
-        const oz = -box.halfExtents.z + (2 * j + 1) * halfZ;
-        const piece = lateralOf(
-          box.centre.x + ox * cos + oz * sin,
-          box.centre.z - ox * sin + oz * cos,
-          centre.distance,
-        );
-        // Off either end of the line is not on the route at all.
-        if (piece.distance < -circumradius || piece.distance > spine.length + circumradius) continue;
-        spine.sample(piece.distance, at);
-        // **A piece's band is its own shape turned into the road's frame, not
-        // its circumscribed circle** — the chase pass. A piece of the ford's
-        // rail is 0.1 m thick and 1.75 m long; as a circle it stood 1.75 m
-        // across the road on each side, and two rails 6 m apart left the brain
-        // a 1.1 m slot through a 6 m boardwalk he crawled at 5 m/s and still
-        // clipped. Turned by the box's own yaw against the road's heading here,
-        // the rail is 0.1 m wide and the §4.2 wall is 0.35 m deep, which is
-        // what they are.
-        const turn = box.rotationY - at.headingY;
-        const turnCos = Math.abs(Math.cos(turn));
-        const turnSin = Math.abs(Math.sin(turn));
-        const across = halfX * turnCos + halfZ * turnSin;
-        const along = halfX * turnSin + halfZ * turnCos;
-        const radius = along;
-        // Per piece, so the half of a building that faces the road is a blocker
-        // and the half behind it is not.
-        if (Math.abs(piece.lateral) > at.halfWidth + across + BLOCKER_MARGIN) continue;
-        const top = box.centre.y + box.halfExtents.y;
-        if (top - roadBesideBox(piece.distance, radius) < BLOCKER_MIN_HEIGHT) continue;
-        // **A box whose top is the road is a deck, not a wall** — the chase
-        // pass. The ford's deck, the alley's step slabs and the kicker's ramp
-        // all carry the line on their top face, and a rider arrives on one
-        // of them from road that is level with it, or a mountable lip below
-        // it. Such a box has no face of its own to steer around; where its
-        // far edge is a drop or a wall, the ground scan below sees the jump
-        // and files it with the direction it faces. What stays here is the
-        // thing that stands above the road on both sides: a wall.
-        const face = faces(top, piece.distance, radius);
-        if (Math.min(face.forward, face.backward) < BLOCKER_MIN_HEIGHT) {
-          // **A deck's flanks are walls where the ground beside it is lower.**
-          // The kicker's ramp is 6 m wide on an 8.8 m road; a cop steering
-          // round its lip on the road beside it met the ramp's 1.2 m side.
-          // File the outer strip of the deck on each side that stands off the
-          // ground, so the line past a deck keeps the wheel's room from it.
-          for (const side of [1, -1] as const) {
-            const edge = piece.lateral + side * across;
-            const beside = edge + side * 0.6;
-            ground.sampleGround(
-              at.x + Math.cos(at.headingY) * beside,
-              at.z - Math.sin(at.headingY) * beside,
-              under,
-            );
-            if (top - under.height < BLOCKER_MIN_HEIGHT) continue;
-            out.push({
-              from: piece.distance - along,
-              to: piece.distance + along,
-              left: side > 0 ? edge : edge + DECK_FLANK_METRES,
-              right: side > 0 ? edge - DECK_FLANK_METRES : edge,
-              safeSpeed: facePace(top - under.height),
-              facing: 0,
-            });
-          }
-          continue;
-        }
-        out.push({
-          from: piece.distance - along,
-          to: piece.distance + along,
-          left: piece.lateral + across,
-          right: piece.lateral - across,
-          safeSpeed: facePace(Math.min(face.forward, face.backward)),
-          facing: 0,
-        });
-      }
-    }
-  }
-
-  // -- Steps in the ground itself — the chase pass --------------------------
-  //
-  // A staircase is three 0.30 m drops one way and three walls the other, and
-  // the kicker's lip is a jump one way and a 1.2 m face from the landing;
-  // none of it is a box standing on the road, so none of it was in this
-  // field, and a cop riding a route back the way he came — which is half of
-  // every chase, because the player turns at the ends — met all of it at
-  // speed. Walk the line, file every rise the wheel cannot mount, and give it
-  // the direction it faces; the lateral scan says how much of the road it
-  // crosses, so the kicker's lip leaves the road beside the ramp open, which
-  // is the bypass a player takes.
-  const stepBefore = createSpineSample();
-  const stepAfter = createSpineSample();
-  const groundA = createGroundSample();
-  const groundB = createGroundSample();
-  const heightAt = (sample: SpineSample, lateral: number, sink: typeof groundA): number => {
-    ground.sampleGround(
-      sample.x + Math.cos(sample.headingY) * lateral,
-      sample.z - Math.sin(sample.headingY) * lateral,
-      sink,
-    );
-    return sink.height;
-  };
-  let lastStepAt = -Infinity;
-  for (let distance = STEP_SCAN_METRES; distance <= spine.length; distance += STEP_SCAN_METRES) {
-    spine.sample(distance - STEP_SCAN_METRES, stepBefore);
-    spine.sample(distance, stepAfter);
-    const rise = heightAt(stepAfter, 0, groundB) - heightAt(stepBefore, 0, groundA);
-    if (Math.abs(rise) < BLOCKER_MIN_HEIGHT || distance - lastStepAt < STEP_MERGE_METRES) continue;
-    lastStepAt = distance;
-    const reach = (side: 1 | -1): number => {
-      let extent = 0;
-      for (let lateral = 1; lateral <= stepAfter.halfWidth + BLOCKER_MARGIN; lateral += 1) {
-        const there = heightAt(stepAfter, side * lateral, groundB)
-          - heightAt(stepBefore, side * lateral, groundA);
-        if (Math.abs(there) < BLOCKER_MIN_HEIGHT || Math.sign(there) !== Math.sign(rise)) break;
-        extent = lateral;
-      }
-      // The edge lies somewhere in the metre past the last sample that was
-      // still a step; claim the whole metre, because the thing that makes
-      // the step — a ramp's flank, a slab's end — is a wall at that edge.
-      return extent + 1;
-    };
-    out.push({
-      from: distance - STEP_SCAN_METRES - 0.25,
-      to: distance + 0.25,
-      left: reach(1),
-      right: -reach(-1),
-      safeSpeed: facePace(Math.abs(rise)),
-      facing: rise > 0 ? 1 : -1,
-    });
-  }
-
-  out.sort((a, b) => a.from - b.from);
-  return out;
-}

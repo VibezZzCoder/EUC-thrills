@@ -326,6 +326,11 @@ export interface BuildOptions {
  */
 export const PROP_MAX_GROUND_SLOPE = Math.PI * 35 / 180;
 
+/** Kinds that must stand level on a generated route, not merely not too steep. */
+const LEVEL_FURNITURE: ReadonlySet<PropKind> = new Set<PropKind>(['bench', 'litterBin']);
+/** The most a level-furniture footprint's ground may rise end to end, metres. */
+const LEVEL_FURNITURE_MAX_RISE = 0.12;
+
 /**
  * A checkpoint authored against a segment, not against world coordinates.
  *
@@ -444,6 +449,43 @@ function ease01(u: number): number {
  * central, which is the answer that keeps a join from developing a seam down
  * the middle of the route.
  */
+/**
+ * Which segments' bounds can reach each cell of a coarse grid — M39 r6.
+ *
+ * A town ring is ~140 segments on a ~560k-sample heightfield, and asking every
+ * segment about every sample made rasterising most of a generated world's boot
+ * time. The grid only narrows *which* segments are asked; each cell lists them
+ * in their original order, so ties resolve exactly as the full scan did and the
+ * emitted plan is byte-identical. Built once per placed array.
+ */
+const SEGMENT_GRID_CELL = 16;
+const segmentGrids = new WeakMap<readonly PlacedSegment[], {
+  minX: number; minZ: number; columns: number; rows: number; cells: (readonly number[])[];
+}>();
+
+function segmentGrid(placed: readonly PlacedSegment[]) {
+  const cached = segmentGrids.get(placed);
+  if (cached !== undefined) return cached;
+  let minX = Infinity; let minZ = Infinity; let maxX = -Infinity; let maxZ = -Infinity;
+  for (const segment of placed) {
+    minX = Math.min(minX, segment.minX); minZ = Math.min(minZ, segment.minZ);
+    maxX = Math.max(maxX, segment.maxX); maxZ = Math.max(maxZ, segment.maxZ);
+  }
+  const columns = Math.max(1, Math.ceil((maxX - minX) / SEGMENT_GRID_CELL) + 1);
+  const rows = Math.max(1, Math.ceil((maxZ - minZ) / SEGMENT_GRID_CELL) + 1);
+  const cells: number[][] = Array.from({ length: columns * rows }, () => []);
+  placed.forEach((segment, index) => {
+    const c0 = Math.floor((segment.minX - minX) / SEGMENT_GRID_CELL);
+    const c1 = Math.floor((segment.maxX - minX) / SEGMENT_GRID_CELL);
+    const r0 = Math.floor((segment.minZ - minZ) / SEGMENT_GRID_CELL);
+    const r1 = Math.floor((segment.maxZ - minZ) / SEGMENT_GRID_CELL);
+    for (let r = r0; r <= r1; r += 1) for (let c = c0; c <= c1; c += 1) cells[r * columns + c].push(index);
+  });
+  const grid = { minX, minZ, columns, rows, cells };
+  segmentGrids.set(placed, grid);
+  return grid;
+}
+
 function bestSegmentAt(
   placed: readonly PlacedSegment[],
   x: number,
@@ -453,7 +495,12 @@ function bestSegmentAt(
     | { segment: PlacedSegment; outside: number; s: number; t: number; height: number }
     | null = null;
 
-  for (const segment of placed) {
+  const grid = segmentGrid(placed);
+  const column = Math.floor((x - grid.minX) / SEGMENT_GRID_CELL);
+  const row = Math.floor((z - grid.minZ) / SEGMENT_GRID_CELL);
+  if (column < 0 || row < 0 || column >= grid.columns || row >= grid.rows) return null;
+  for (const index of grid.cells[row * grid.columns + column]) {
+    const segment = placed[index];
     const query = querySegment(segment, x, z);
     if (query === null) continue;
 
@@ -553,7 +600,14 @@ export function buildLevelPlan(
       // Inside the corridor the segment's own height; beyond it, eased down to
       // that ground across the shoulder, which turns every embankment into
       // something a rider can climb rather than a wall they bounce off.
-      const weight = shoulder > 0 ? 1 - ease01(clamp01(best.outside / shoulder)) : 0;
+      const eased = shoulder > 0 ? 1 - ease01(clamp01(best.outside / shoulder)) : 0;
+      // **A shoulder that has all but finished is finished** (M39 r6). At the
+      // very edge of a shoulder the weight is a few parts in 10^16, and whether
+      // it is that or exactly nothing turns on the last place of a sine —
+      // which is not the same in every JavaScript engine. The coverage rule
+      // compares heights to the surround exactly, so that last place decided
+      // whether a browser drew two cells a test in Node had not predicted.
+      const weight = eased < 1e-9 ? 0 : eased;
       heights[row * columns + column] = floor + (best.height - floor) * weight;
     }
   }
@@ -769,11 +823,18 @@ export function buildLevelPlan(
   // the hand-authored levels, whose dressing was placed by somebody looking at
   // it; see `BuildOptions.settleProps`.
   const settle = options.settleProps === true;
-  const onStandableGround = !settle ? outsideBuildings : outsideBuildings.filter((prop) => (
-    prop.onCollider === true
-    || prop.kind === 'building'
-    || baseGround(heightfield, options.surround, prop).slope <= PROP_MAX_GROUND_SLOPE
-  ));
+  //
+  // Furniture made to stand level — a bench, a bin — is held to a far tighter
+  // rule than a tree: settled onto the lowest ground under it, a bench on a
+  // cutting's bank sank its uphill end 0.8 m into the grass (owner, r6 ride,
+  // 2026-09-22). It may only stand where its footprint rises by a few
+  // centimetres; elsewhere the generator leaves it out.
+  const onStandableGround = !settle ? outsideBuildings : outsideBuildings.filter((prop) => {
+    if (prop.onCollider === true || prop.kind === 'building') return true;
+    const ground = baseGround(heightfield, options.surround, prop);
+    if (LEVEL_FURNITURE.has(prop.kind)) return ground.rise <= LEVEL_FURNITURE_MAX_RISE;
+    return ground.slope <= PROP_MAX_GROUND_SLOPE;
+  });
 
   const authored = resolveStructuralConflicts(heightfield, options.surround, onStandableGround);
   const props: Prop[] = authored.map(
@@ -2066,13 +2127,13 @@ function baseGround(
   field: Heightfield,
   surround: Surround,
   prop: PlacedProp,
-): { lowest: number; slope: number } {
+): { lowest: number; slope: number; rise: number } {
   const footprint = PROP_FOOTPRINTS[prop.kind];
   const reach = footprint.shape === 'circle'
     ? footprint.radius * prop.scale
     : Math.max(footprint.halfX, footprint.halfZ) * prop.scale;
   const centre = fieldHeightAt(field, surround, prop.x, prop.z);
-  if (reach <= 0) return { lowest: centre, slope: 0 };
+  if (reach <= 0) return { lowest: centre, slope: 0, rise: 0 };
 
   let lowest = centre;
   let highest = centre;
@@ -2092,7 +2153,7 @@ function baseGround(
     if (height > highest) highest = height;
   }
 
-  return { lowest, slope: Math.atan((highest - lowest) / (2 * reach)) };
+  return { lowest, slope: Math.atan((highest - lowest) / (2 * reach)), rise: highest - lowest };
 }
 
 function resolveProp(
@@ -2139,6 +2200,8 @@ function resolveProp(
       ...size,
       y: size.y + (centreY - baseY) / prop.scale,
     },
+    // Render composition only (M39 Phase 2); absent keeps the plan's bytes.
+    ...(prop.look === undefined ? {} : { look: prop.look }),
   };
 }
 

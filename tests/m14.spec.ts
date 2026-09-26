@@ -136,7 +136,7 @@ test('the world carries targets, the mode starts, and a swing knocks one down', 
   });
 
   // The level-identity revision §13 q16 asked for, spent at M14.
-  expect(world.levelId).toBe(`generated-r3-${SEED}`);
+  expect(world.levelId).toBe(`generated-r6-${SEED}`);
   expect(world.targets).toBeGreaterThan(4);
   expect(world.equipped).toBe(true);
   // "In the mode, having hit nothing yet" draws a lane; it is not the same as
@@ -259,7 +259,23 @@ test('riding into a target knocks it out, at a bush’s price — never a crash'
   const outcome = await page.evaluate(({ bodyKnockRadius }) => {
     const game = window.game;
     const plan = game.buildLevel('generated', 'route-41');
-    const stand = (plan.targets ?? [])[3];
+    // A stand whose straight-north approach and run-out are open, level ground:
+    // the ride below goes due north through it and on for a few seconds, and
+    // which stand has that clear line is a fact about the town's layout (M39
+    // r6 moved the old index-3 stand beside a bank), not about the knock.
+    const solids = plan.solids ?? [];
+    const clearLine = (target: { base: { x: number; z: number } }): boolean => {
+      const base = game.sampleGround(target.base.x, target.base.z).height;
+      for (let dz = -10; dz <= 40; dz += 2) {
+        const x = target.base.x; const z = target.base.z + dz;
+        if (Math.abs(game.sampleGround(x, z).height - base) > 0.4) return false;
+        if (solids.some((box) => Math.hypot(box.centre.x - x, box.centre.z - z)
+          < Math.hypot(box.halfExtents.x, box.halfExtents.z) + 2)) return false;
+      }
+      return true;
+    };
+    const targets = plan.targets ?? [];
+    const stand = clearLine(targets[3]) ? targets[3] : targets.find(clearLine)!;
     // `TargetField.eachBodyNear` is only a broadphase: its AABB deliberately
     // includes empty corners around the visible stand. Prove the body-knock
     // owner applies the exact union rather than treating every candidate as

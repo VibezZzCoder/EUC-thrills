@@ -243,7 +243,10 @@ test('the presentation boundary is one-way: enhanced prices can never reach admi
   // or simulation/ could import the enhanced side, a seed's accepted layout
   // would depend on its art. The options firewall already seals level/ and
   // simulation/ from render/; data/ is not sealed, so it is named here.
-  const ENHANCED_FILES = /presentation|enhancedCatalog|wallCourses|foliageKit|facadeAtlas/;
+  // M39 adds `ultra`: the Ultra recipe, catalogue, envelope and every
+  // `render/ultra/*` module are presentation too, priced after a plan is
+  // immutable and never by admission (`docs/M39_ULTRA.md` invariant 3).
+  const ENHANCED_FILES = /presentation|enhancedCatalog|wallCourses|foliageKit|facadeAtlas|ultra/;
   const offenders: string[] = [];
   let scanned = 0;
   for (const directoryName of ['data', 'level', 'simulation']) {
@@ -268,6 +271,162 @@ test('the presentation boundary is one-way: enhanced prices can never reach admi
   assert.ok(renderFiles.includes('render/presentation.ts'));
   assert.equal(forbiddenLayerFor('../render/enhancedCatalog.ts', ['render']), 'render');
   assert.ok(ENHANCED_FILES.test('../render/presentation.ts'));
+  assert.ok(renderFiles.includes('render/ultra/ultraCatalog.ts'));
+  assert.ok(renderFiles.includes('render/ultra/ultraCost.ts'));
+  assert.ok(ENHANCED_FILES.test('../render/ultra/ultraCatalog.ts'));
+  assert.ok(ENHANCED_FILES.test('./ultraEnvelope.ts'));
+});
+
+/**
+ * The source text of a file with its comments removed — M39.
+ *
+ * A small scanner rather than a regex, because a regex that strips `//…`
+ * also eats the `//` inside `'https://…'` and a `/*` inside a string, and a
+ * scan that ran over the wrong text would pass for the wrong reason. String
+ * and template literals are kept (a string saying `'ultra'` in `level/` is a
+ * breach); line and block comments go (a comment explaining why Ultra never
+ * reaches admission is not). A regular-expression literal is recognised by
+ * the usual rule — a `/` where an operand is expected, after one of
+ * `( , = : [ ! & | ? { } ; + - * % < > ~ ^` or at the start — and kept
+ * whole, so a quote or a `//` inside one cannot pair with a later string and
+ * hide real code as a "comment".
+ */
+export function stripComments(source: string): string {
+  let out = '';
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (char === '/' && next === '/') {
+      while (index < source.length && source[index] !== '\n') index += 1;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      const end = source.indexOf('*/', index + 2);
+      index = end < 0 ? source.length : end + 2;
+      out += ' ';
+      continue;
+    }
+    if (char === '/' && /[(,=:[!&|?{};+\-*%<>~^]$|^$/.test(out.trimEnd().slice(-1))) {
+      const start = index;
+      let inClass = false;
+      index += 1;
+      while (index < source.length && source[index] !== '\n') {
+        const at = source[index];
+        if (at === '\\') index += 1;
+        else if (at === '[') inClass = true;
+        else if (at === ']') inClass = false;
+        else if (at === '/' && !inClass) break;
+        index += 1;
+      }
+      index += 1;
+      out += source.slice(start, index);
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      const start = index;
+      index += 1;
+      while (index < source.length && source[index] !== char) {
+        if (source[index] === '\\') index += 1;
+        index += 1;
+      }
+      index += 1;
+      out += source.slice(start, index);
+      continue;
+    }
+    out += char;
+    index += 1;
+  }
+  return out;
+}
+
+/**
+ * The word Ultra, as a token: `/\bultra\b/i` (§6.3 W7), plus the camel and
+ * snake spellings an identifier would carry it in (`isUltraRecipe`,
+ * `ULTRA_FULL`, `ultraCost`), which a word boundary alone does not see.
+ * `defaultRagdollTuning` contains the letters and is not the word.
+ */
+export function findUltraTokens(source: string): string[] {
+  const found: string[] = [];
+  for (const pattern of [/\bultra\b/gi, /\bultra|Ultra|ULTRA/g]) {
+    for (const match of stripComments(source).matchAll(pattern)) found.push(match[0]);
+  }
+  return found;
+}
+
+/**
+ * Admission, generation and simulation never mention Ultra — M39
+ * (`docs/M39_ULTRA.md` invariant 3, PLANS §39.6: "`data/props.ts` placement
+ * dimensions, `level/` admission and `simulation/` never read Ultra
+ * preference").
+ *
+ * The import firewall above already keeps these files from *reaching* the
+ * Ultra modules; this scan keeps them from *knowing about* Ultra at all — a
+ * `quality === 'ultra'` branch, an `ultra` field on a plan type, an
+ * envelope constant copied into a data table. `data/tuning.ts` is
+ * deliberately absent: the `ULTRA` block is where invariant 4 puts every
+ * constant that shapes the look, and nothing in admission reads it.
+ */
+const ULTRA_FREE_TREES = ['level', 'simulation'];
+const ULTRA_FREE_FILES = [
+  'data/renderCost.ts',
+  'data/props.ts',
+  'data/buildingLooks.ts',
+  'data/surfaces.ts',
+  'data/venueLook.ts',
+];
+
+test('the Ultra token detector sees the word, not the letters, and not a comment', () => {
+  assert.deepEqual(findUltraTokens(`if (quality === 'ultra') return;`), ['ultra', 'ultra']);
+  assert.deepEqual(findUltraTokens(`const tier = "Ultra";`), ['Ultra', 'Ultra']);
+  assert.deepEqual(findUltraTokens(`ULTRA.near.extent`), ['ULTRA', 'ULTRA']);
+  assert.deepEqual(findUltraTokens(`import { isUltraRecipe } from './x.ts';`), ['Ultra']);
+  assert.deepEqual(findUltraTokens(`const recipe = ULTRA_FULL;`), ['ULTRA']);
+  assert.deepEqual(findUltraTokens(`return ultraCost(plan);`), ['ultra']);
+  assert.deepEqual(findUltraTokens(`const t = \`${'${'}x} ultra\`;`), ['ultra', 'ultra']);
+  // Not the word.
+  assert.deepEqual(findUltraTokens(`export function defaultRagdollTuning() {}`), []);
+  assert.deepEqual(findUltraTokens(`const multiplier = 2; // no ultra here`), []);
+  assert.deepEqual(findUltraTokens(`/* Ultra never reaches admission */ const a = 1;`), []);
+  assert.deepEqual(findUltraTokens(`/**\n * ULTRA is render-side.\n */\nconst b = 2;`), []);
+  // A comment marker inside a string is string, and the string is scanned.
+  assert.deepEqual(findUltraTokens(`const url = 'https://x.example/ultra';`), ['ultra', 'ultra']);
+  assert.equal(stripComments(`a /* x */ b // y\nc`), `a   b \nc`);
+  // A quote or a comment marker inside a regular-expression literal pairs
+  // with nothing, and code after it is still code.
+  assert.deepEqual(findUltraTokens(`const q = /'/.test(s); const u = 'http://ultra';`), ['ultra', 'ultra']);
+  assert.deepEqual(findUltraTokens(`const r = s.split(/\\/\\//); const t = 'Ultra';`), ['Ultra', 'Ultra']);
+  assert.deepEqual(findUltraTokens(`const half = a / 2; // ultra`), []);
+});
+
+test('admission, generation and simulation never mention Ultra', () => {
+  const files = [
+    ...ULTRA_FREE_TREES.flatMap((tree) => collectSourceFiles(join(SOURCE_ROOT, tree))),
+    ...ULTRA_FREE_FILES.map((file) => join(SOURCE_ROOT, file)),
+  ];
+  const offenders: string[] = [];
+  let scanned = 0;
+  for (const file of files) {
+    scanned += 1;
+    const tokens = findUltraTokens(readFileSync(file, 'utf8'));
+    if (tokens.length > 0) offenders.push(`${relative(SOURCE_ROOT, file)}: ${[...new Set(tokens)].join(', ')}`);
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'Ultra is a render-side recipe with its own envelope. Nothing in level/, '
+      + 'simulation/ or the admission data may name it (docs/M39_ULTRA.md '
+      + 'invariant 3); put the branch in render/ultra/ and the constant in '
+      + 'data/tuning.ts\'s ULTRA block.\n' + offenders.join('\n'),
+  );
+  // Every named file exists, and the trees are populated, so the scan cannot
+  // pass by reading nothing.
+  for (const file of ULTRA_FREE_FILES) {
+    assert.ok(files.includes(join(SOURCE_ROOT, file)));
+    assert.ok(readFileSync(join(SOURCE_ROOT, file), 'utf8').length > 0, `${file} is empty`);
+  }
+  assert.ok(scanned >= 40, `Expected to scan the level and simulation trees, scanned ${scanned}.`);
+  assert.ok(!ULTRA_FREE_FILES.includes('data/tuning.ts'), 'tuning.ts is deliberately outside this scan');
 });
 
 test('the sealed half really is reachable from a test that could catch a breach', () => {

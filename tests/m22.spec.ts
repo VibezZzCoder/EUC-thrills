@@ -1,5 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { CHARACTERS, CHARACTER_IDS } from '../src/data/riders.ts';
 import { COUCH_MIN_WIDTH_PX } from '../src/app/couch.ts';
 import { boot, bootToTitle, collectErrors } from './harness.ts';
@@ -223,12 +223,33 @@ test('chooser, title and pause fit every supported phone and tablet size with no
     // The title: every action, the world line, the chip, and the credit. The
     // list is spelled out rather than queried, so a button that stops being
     // rendered fails here instead of quietly dropping out of the contract.
+    //
+    // **`ultra` since M39** — the Ultra Graphics toggle shares Settings' row
+    // (DESIGN §9g), and phones are offered it exactly as desktops are (q201),
+    // so it is held to the same fit at every size here: one line beside
+    // Settings in portrait, its own cell in the three-column tiers.
     for (const control of [
       'start', 'challenge', 'track-day', 'trick-run', 'knockabout', 'chase', 'routes',
-      'settings', 'riders',
+      'settings', 'ultra', 'riders',
     ]) {
       await fits(page.locator(`.euc-menu--title [data-menu="${control}"]`), viewport.height,
         `title ${control} at ${viewport.width}x${viewport.height}`);
+    }
+
+    // **And on a phone held upright the pair costs the title nothing** — M39.
+    // Those windows are the stack (taller than 50rem, narrower than 26rem), and
+    // the phone contract has the least room of any: a Pixel 7's title fitted by
+    // one sentence at M38. So the toggle shows its short label on one line and
+    // the row stays as tall as Settings was alone (45 px at full chrome).
+    if (viewport.width <= 416 && viewport.height > 800) {
+      const settingsBox = await page.locator('.euc-menu--title [data-menu="settings"]').boundingBox();
+      const ultraBox = await page.locator('.euc-menu--title [data-menu="ultra"]').boundingBox();
+      expect(settingsBox && ultraBox, `the pair has no box at ${viewport.width}x${viewport.height}`)
+        .toBeTruthy();
+      expect(Math.abs(ultraBox!.y - settingsBox!.y), 'Settings and Ultra left one row')
+        .toBeLessThan(0.5);
+      expect(ultraBox!.height, `the pair's row grew at ${viewport.width}x${viewport.height}`)
+        .toBeLessThanOrEqual(46);
     }
 
     // **The couch entrance, pinned at its own boundary** — M25 Phase 5.
@@ -311,3 +332,228 @@ test('chooser, title and pause fit every supported phone and tablet size with no
 
   expect(errors).toEqual([]);
 });
+
+/**
+ * **The same contract on a touch tablet with no pad — FU, 2026-09-23** (Fable's
+ * QA of A28, an observation outside it).
+ *
+ * The tablets above run in the chromium project, whose pointer is fine, so at
+ * 1000 px and wider the couch is offered and puts the title in its two
+ * columns. A real tablet held sideways has a *coarse* pointer, and without a
+ * pad it is not offered the couch (`couchEligible`) — so the title fell through
+ * to the one-column stack, which needs about 880 px since Trick Run, and
+ * scrolled: 19 px at 1024x768, 58 at 1180x820, 44 at 1194x834, 87 at 1024x700.
+ * No project produces that machine, so this block builds it (AGENTS.md: "a rule
+ * that no project can reach is a rule nobody has verified"): `hasTouch` makes
+ * `(pointer: coarse)` match and leaves `(any-pointer: fine)` false, which is
+ * exactly the tablet `couchEligible` refuses. `game.css` now gives every title
+ * 62.5rem and wider two columns below 60rem of height, couch or not, and drops
+ * the notes below 40rem as the couch title does.
+ *
+ * Both orientations of the tablets above, plus shorter landscape heights of
+ * the kind a browser's toolbars leave (1024x700, 1133x680) and a 1024x600
+ * tablet, which is the 40rem tier. The chooser is held too: a coarse card is
+ * taller, and a fit contract that measures only the title would pass while
+ * the chooser clipped.
+ */
+test.describe('a touch tablet with no pad', () => {
+  test.use({ hasTouch: true, viewport: { width: 1024, height: 768 } });
+
+  test('the title and the chooser fit every touch tablet size with nothing to scroll to, couch or not', async ({ page }) => {
+    const errors = collectErrors(page);
+    await bootToTitle(page);
+
+    // The premise, asserted rather than assumed: a coarse pointer and no couch.
+    // If either were false this would be measuring the desktop layout again.
+    expect(await page.evaluate(() => window.matchMedia('(pointer: coarse)').matches),
+      'this context is not actually coarse-pointered').toBe(true);
+    expect(await page.evaluate(() => window.game.snapshot().couch.available),
+      'a touch tablet with no pad was offered the couch').toBe(false);
+
+    const tallest = [...CHARACTERS].sort((a, b) => b.blurb.length - a.blurb.length)[0].id;
+    await page.evaluate((id) => window.game.setOptions({ character: id }), tallest);
+
+    const VIEWPORTS = [
+      { width: 1024, height: 768 }, { width: 768, height: 1024 },
+      { width: 1180, height: 820 }, { width: 820, height: 1180 },
+      { width: 1194, height: 834 }, { width: 834, height: 1194 },
+      { width: 1024, height: 700 }, { width: 1133, height: 680 },
+      { width: 1024, height: 600 },
+    ];
+
+    const unscrollable = async (menu: string, where: string) => {
+      const overflow = await page.evaluate((sel) => {
+        const root = document.querySelector<HTMLElement>(sel)!;
+        return root.scrollHeight - root.clientHeight;
+      }, menu);
+      expect(overflow, `${menu} has ${overflow}px hidden below the fold at ${where}`).toBeLessThanOrEqual(1);
+    };
+    const fits = async (locator: import('@playwright/test').Locator, height: number, what: string) => {
+      const box = await locator.boundingBox();
+      expect(box, `${what} has no box`).not.toBeNull();
+      expect(box!.y, `${what} starts above the viewport`).toBeGreaterThanOrEqual(-0.5);
+      expect(box!.y + box!.height, `${what} ends below the viewport`).toBeLessThanOrEqual(height + 0.5);
+    };
+
+    for (const viewport of VIEWPORTS) {
+      await page.setViewportSize(viewport);
+      await page.evaluate(() => new Promise((done) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => done(null)));
+      }));
+      const where = `${viewport.width}x${viewport.height} (touch, no pad)`;
+
+      await expect(page.locator('.euc-menu--title [data-menu="couch"]'), `couch offered at ${where}`).toBeHidden();
+      for (const control of [
+        'start', 'challenge', 'track-day', 'trick-run', 'knockabout', 'chase', 'routes',
+        'settings', 'ultra', 'riders',
+      ]) {
+        await fits(page.locator(`.euc-menu--title [data-menu="${control}"]`), viewport.height,
+          `title ${control} at ${where}`);
+      }
+      await fits(page.locator('.euc-menu--title .euc-credit'), viewport.height, `title credit at ${where}`);
+      await unscrollable('.euc-menu--title', where);
+
+      await page.locator('.euc-menu--title [data-menu="riders"]').click();
+      for (const id of CHARACTER_IDS) {
+        await fits(page.locator(`.euc-menu--riders [data-rider="${id}"]`), viewport.height, `card ${id} at ${where}`);
+      }
+      await fits(page.locator('.euc-menu--riders [data-menu="riders-back"]'), viewport.height,
+        `chooser Done at ${where}`);
+      await unscrollable('.euc-menu--riders', where);
+      await page.keyboard.press('Escape');
+      await page.locator('.euc-menu--title:not([hidden])').waitFor();
+    }
+
+    expect(errors).toEqual([]);
+  });
+
+  test('the title fits the window grid on a touch screen with no pad (FU2)', async ({ page }) => {
+    const errors = collectErrors(page);
+    await bootToTitle(page);
+    expect(await page.evaluate(() => window.matchMedia('(pointer: coarse)').matches),
+      'this context is not actually coarse-pointered').toBe(true);
+    await sweepTitleGrid(page, [...TITLE_GRID, ...TITLE_GRID_NARROW], 'touch, no pad', () => false);
+    expect(errors).toEqual([]);
+  });
+});
+
+/**
+ * **A touch screen with a pad is offered the couch — FU2.** The one machine
+ * that puts the couch's ninth entrance on a title with the coarse floors: a
+ * tablet or a touch laptop with a controller seen (`couchEligible`). It is
+ * the tightest title at the notes' boundary (1000x641 clears by about 6 px),
+ * and no project reached it. The fake pad is the m9 suite's, on the real
+ * Gamepad API path.
+ */
+test.describe('a touch screen with a pad', () => {
+  test.use({ hasTouch: true, viewport: { width: 1024, height: 768 } });
+
+  test('the title fits the window grid with the couch offered (FU2)', async ({ page }) => {
+    const errors = collectErrors(page);
+    await page.addInitScript(() => {
+      const pad = {
+        index: 0, id: 'fake standard pad', connected: true, mapping: 'standard', axes: [0, 0, 0, 0],
+        buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0, touched: false })),
+      };
+      navigator.getGamepads = () => [pad] as never;
+    });
+    await bootToTitle(page);
+    await page.waitForFunction(() => window.game.snapshot().gamepadConnected);
+    expect(await page.evaluate(() => window.matchMedia('(pointer: coarse)').matches),
+      'this context is not actually coarse-pointered').toBe(true);
+    await sweepTitleGrid(page, TITLE_GRID, 'touch and a pad', (width) => width >= COUCH_MIN_WIDTH_PX);
+    expect(errors).toEqual([]);
+  });
+});
+
+/**
+ * **The title over a grid of windows, not a list of devices — FU2,
+ * 2026-09-23 (FU's residuals).**
+ *
+ * Every list above samples devices and the boundaries M29 derived, and the
+ * stack's own need — about 880 px at a 34rem panel, more when narrower — was
+ * not one of them: under the couch width a window between 800 and about
+ * 880 px tall scrolled (768x801 by 62, 999x820 by 48, 900x850 by 18), and a
+ * phone held sideways at 360 px tall by 10. So this walks 768–1999 × 600–900
+ * across every tier boundary in it (640/641 for the notes, 800/801 for the
+ * compact tier, the couch's 999/1000) on each machine that reaches a
+ * different tier, plus the stack band and short windows under 768 on the
+ * machines that have them. At each: nothing to scroll, every title control and
+ * the credit inside the viewport, and every button's words inside its own text
+ * box. The couch offer is asserted too, so a grid walked on the wrong machine
+ * fails rather than measuring the other layout.
+ */
+const TITLE_GRID: readonly { width: number; height: number }[] = [768, 834, 900, 999, 1000, 1280, 1600, 1999]
+  .flatMap((width) => [600, 640, 641, 700, 800, 801, 820, 850, 880, 900].map((height) => ({ width, height })));
+/** Under 768: the stack's band (widths a desktop window reaches) and short windows. */
+const TITLE_GRID_NARROW: readonly { width: number; height: number }[] = [
+  { width: 500, height: 801 }, { width: 600, height: 801 }, { width: 700, height: 820 },
+  { width: 767, height: 850 }, { width: 600, height: 900 },
+  { width: 640, height: 360 }, { width: 740, height: 360 }, { width: 667, height: 375 },
+];
+
+test('the title fits every window from 768 to 1999 wide and 600 to 900 tall (FU2)', async ({ page }) => {
+  const errors = collectErrors(page);
+  await bootToTitle(page);
+  await sweepTitleGrid(page, [...TITLE_GRID, ...TITLE_GRID_NARROW], 'fine pointer',
+    (width) => width >= COUCH_MIN_WIDTH_PX);
+  expect(errors).toEqual([]);
+});
+
+async function sweepTitleGrid(
+  page: Page,
+  sizes: readonly { width: number; height: number }[],
+  machine: string,
+  couchAt: (width: number) => boolean,
+): Promise<void> {
+  for (const size of sizes) {
+    await page.setViewportSize(size);
+    const where = `${size.width}x${size.height} (${machine})`;
+    // The couch offer is re-derived from the canvas's width on the next frame.
+    await expect.poll(() => page.evaluate(() => window.game.snapshot().couch.available),
+      { message: `the couch offer at ${where}` }).toBe(couchAt(size.width));
+    await page.evaluate(() => new Promise((done) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => done(null)));
+    }));
+    const facts = await page.evaluate(() => {
+      const root = document.querySelector<HTMLElement>('.euc-menu--title')!;
+      const seen = (node: Element): boolean => {
+        const style = getComputedStyle(node);
+        const box = node.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility === 'visible'
+          && box.width > 1 && box.height > 1 && style.clipPath === 'none';
+      };
+      const outside: string[] = [];
+      for (const node of root.querySelectorAll<HTMLElement>('[data-menu], .euc-credit')) {
+        if (node.offsetParent === null) continue;
+        const box = node.getBoundingClientRect();
+        if (box.top < -0.5 || box.bottom > innerHeight + 0.5) outside.push(node.dataset.menu ?? 'credit');
+      }
+      const spills: string[] = [];
+      for (const button of root.querySelectorAll<HTMLElement>('.euc-menu__actions button')) {
+        if (button.offsetParent === null) continue;
+        const style = getComputedStyle(button);
+        const box = button.getBoundingClientRect();
+        const left = box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
+        const right = box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
+        for (const piece of button.querySelectorAll(
+          '.euc-button__label, .euc-button__note, .euc-ultra__state, .euc-ultra__warn',
+        )) {
+          if (!seen(piece)) continue;
+          const range = document.createRange();
+          range.selectNodeContents(piece);
+          for (const rect of range.getClientRects()) {
+            const past = Math.max(left - rect.left, rect.right - right);
+            if (rect.width > 0 && past > 0.5) {
+              spills.push(`${button.dataset.menu} "${piece.textContent?.trim()}" by ${past.toFixed(1)}px`);
+            }
+          }
+        }
+      }
+      return { overflow: root.scrollHeight - root.clientHeight, outside, spills };
+    });
+    expect(facts.overflow, `the title has ${facts.overflow}px to scroll at ${where}`).toBeLessThanOrEqual(1);
+    expect(facts.outside, `title controls outside the viewport at ${where}`).toEqual([]);
+    expect(facts.spills, `words outside their button at ${where}`).toEqual([]);
+  }
+}

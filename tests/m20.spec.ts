@@ -305,6 +305,7 @@ test('live ride tuning reaches both controllers and the cop high-speed policy', 
         derivedTopSpeed: number;
         tuning: {
           maxLeanPitch: number; leanToAccel: number; brakeAuthority: number; dragCoefficient: number;
+          cutoutSpeedShare: number;
         };
       } | null;
       copBrain: {
@@ -341,6 +342,7 @@ test('live ride tuning reaches both controllers and the cop high-speed policy', 
       controllerBrake: cop.tuning.brakeAuthority * Math.sin(cop.tuning.maxLeanPitch),
       copLean: cop.tuning.maxLeanPitch,
       liveCutout: game.tuning.get('EUC.cutoutSpeedShare'),
+      copCutout: cop.tuning.cutoutSpeedShare,
     };
   });
 
@@ -352,7 +354,13 @@ test('live ride tuning reaches both controllers and the cop high-speed policy', 
   expect(result.copLean).toBe(0.25);
   expect(result.brainBrake).toBeCloseTo(result.controllerBrake, 12);
   expect(result.brainDrag).toBe(result.copDrag);
-  expect(result.brainCutout).toBe(result.liveCutout);
+  // **His wheel's edge, not the player's, since 2026-09-22.** The owner
+  // tightened the player's cutout and called the chase too easy in the same
+  // breath, so the cop keeps the pre-change edge: the brain's belief is his
+  // controller's, and neither is the live player slider.
+  expect(result.brainCutout).toBe(result.copCutout);
+  expect(result.copCutout).toBe(CHASE.copCutoutSpeedShare);
+  expect(result.liveCutout).not.toBe(result.copCutout);
   expect(errors).toEqual([]);
 });
 

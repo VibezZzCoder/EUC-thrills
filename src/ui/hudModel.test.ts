@@ -4,10 +4,14 @@ import { test } from 'node:test';
 import { CHALLENGE, CHASE, TRACK_DAY } from '../data/tuning.ts';
 import {
   HudModel,
+  chaseSpectatorTag,
+  copBearingLine,
+  formatChaseClock,
   formatDelta,
   formatRunTime,
   formatSpeed,
   type ChallengeHudInput,
+  type ChaseCopHudInput,
   type HudInput,
   type TrackDayHudInput,
   type TrickRunHudInput,
@@ -583,8 +587,8 @@ test('a crash is not a warning about anything', () => {
 
 test('the max-speed glyph is absent for the whole of ordinary riding', () => {
   const hud = new HudModel();
-  // Nothing below `EUC.overspeedBeepShare` (0.785) of the derived top speed
-  // ever sees this — 52 mph on the shipped 65 mph wheel, and the same share of
+  // Nothing below `EUC.overspeedBeepShare` (0.87 since 2026-09-22) of the
+  // derived top speed ever sees this — 57.9 mph on the shipped 65 mph wheel, and the same share of
   // whatever top speed a `?mph=` diagnostic builds. That share is what keeps it
   // non-annoying: a player pottering about is never told anything.
   assert.equal(hud.update(0, at({ speed: 10 })).overspeed.visible, false);
@@ -1597,4 +1601,83 @@ test("a crash keeps the trick run's numbers on screen", () => {
   assert.equal(view.knockabout, '1,240');
   assert.equal(view.trickRun.best, 'Best 900');
   assert.equal(view.modeSub, '0:12');
+});
+
+// -- M39 Part P: the cop seat, the watching outlaw, and the solo lane ---------
+
+/** The cop seat's facts with an outlaw 45 m dead ahead. */
+function copping(overrides: Partial<ChaseCopHudInput> = {}): ChaseCopHudInput {
+  return { remaining: 252.3, busts: 1, outlaws: 3, bearing: 0, range: 45, ...overrides };
+}
+
+test("the cop seat's lane is the clock, busts n of N and one arrow with one number (q220)", () => {
+  const view = new HudModel().update(0, at({ chaseCop: copping({ bearing: Math.PI / 4, range: 47 }) }));
+  // The figure is the room's clock, spelled as the outlaws' is.
+  assert.equal(view.chase, '4:13');
+  assert.equal(view.modeLabel, 'Bust everyone');
+  // The tally rides the second row, under the clock (§9j).
+  assert.equal(view.modeSubLabel, 'Busts');
+  assert.equal(view.modeSub, '1 of 3');
+  // One arrow, one number, in the line that already points: +π/4 is to his
+  // left and ahead, and 47 m quantises to the five-metre step.
+  assert.equal(view.objective, '↖ 45 m');
+  // No boundary and no stray banner: the stray rule is the outlaws'.
+  assert.equal(view.stray.visible, false);
+});
+
+test("the cop's readout follows the nearest outlaw's side, and says nothing without one", () => {
+  assert.equal(copBearingLine(0, 12), '↑ 10 m');
+  assert.equal(copBearingLine(-Math.PI / 2, 130), '→ 130 m');
+  assert.equal(copBearingLine(Math.PI, 8), '↓ 10 m');
+  // Nobody standing, or a round not running: no half-sentence.
+  assert.equal(copBearingLine(Number.NaN, 40), '');
+  assert.equal(copBearingLine(0.3, Number.POSITIVE_INFINITY), '');
+  const view = new HudModel().update(0, at({ chaseCop: copping({ bearing: Number.NaN, range: Number.NaN }) }));
+  assert.equal(view.objective, '');
+  // And a cop on the floor still has his clock and his tally in the corner.
+  const down = new HudModel().update(0, at({ crashed: true, chaseCop: copping({ busts: 2 }) }));
+  assert.equal(down.chase, '4:13');
+  assert.equal(down.modeSub, '2 of 3');
+});
+
+test('a busted outlaw watches under his tag and the room standings (q216)', () => {
+  const hud = new HudModel();
+  // He was straying when he went down; the banner must not follow him into
+  // the spectator's pane.
+  hud.update(0, at({ chase: chasing({ straying: true, strayGrace: 3 }) }));
+  const view = hud.update(0.1, at({
+    chase: chasing({
+      remaining: 166,
+      straying: true,
+      copClose: true,
+      spectator: { status: 'caught', endedAt: 134.8, standing: 2, outlaws: 3 },
+    }),
+  }));
+  assert.equal(view.objective, 'BUSTED 2:14 — Officer Dorkins');
+  assert.equal(view.stray.visible, false, 'a watching pane was told to go back to the route');
+  // The room's clock keeps the corner and the second row is the standings.
+  assert.equal(view.modeLabel, 'Survive');
+  assert.equal(view.chase, '2:46');
+  assert.equal(view.modeSubLabel, 'Standing');
+  assert.equal(view.modeSub, '2 of 3');
+});
+
+test('the spectator tag names the officer only for a bust (q225)', () => {
+  assert.equal(chaseSpectatorTag({ status: 'touched', endedAt: 61.9, standing: 1, outlaws: 2 }),
+    'BUSTED 1:01 — Officer Dorkins');
+  assert.equal(chaseSpectatorTag({ status: 'gaveUp', endedAt: 30, standing: 1, outlaws: 2 }), 'GAVE UP 0:30');
+  assert.equal(chaseSpectatorTag({ status: 'strayed', endedAt: 200.2, standing: 1, outlaws: 2 }),
+    'OUT OF BOUNDS 3:20');
+  // A moment floors where a deadline ceils.
+  assert.equal(formatChaseClock(134.99), '2:14');
+  assert.equal(formatChaseClock(Number.NaN), '0:00');
+});
+
+test('the solo lane is unchanged by Part P: one clock, no second row, per-seat cop line', () => {
+  const view = new HudModel().update(0, at({ chase: chasing({ remaining: 299.2, copClose: true }) }));
+  assert.equal(view.modeLabel, 'Survive');
+  assert.equal(view.chase, '5:00');
+  assert.equal(view.modeSubLabel, '');
+  assert.equal(view.modeSub, '');
+  assert.equal(view.objective, 'He is right behind you');
 });

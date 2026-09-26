@@ -100,6 +100,44 @@ const REGROUP_RUNGS = 6;
 const REGROUP_USEFUL_PACE = 10;
 
 /**
+ * Two more refusals a rung can meet once the chase has a pack and a couch
+ * (§39.6b.3 "Not stacking", §39.6b.3b "Returns with several cameras").
+ *
+ * **Inputs, not knowledge.** The planner does not know what a packmate or a
+ * pane is and imports nothing that does (`copPack.ts` owns that arithmetic):
+ * the composition root binds `copPack.framedByAnyPane` to the frame's panes
+ * and hands in the other cops' positions, and each is one more reason a rung
+ * is refused *like a folded one* — the ladder walks on further back, which
+ * is always fair, and a ladder with nothing left answers `null` so the cop
+ * keeps riding. Skipping a return is fair; a body appearing on top of a
+ * packmate, or where anyone is looking, is not.
+ */
+export interface RegroupRefusals {
+  /** Other cops' positions; a rung within `spacingMetres` of any is occupied. */
+  readonly others: readonly { readonly x: number; readonly z: number }[];
+  /** `CHASE.packSpacingMetres` (live on F4), metres. */
+  readonly spacingMetres: number;
+  /**
+   * Whether any human pane frames the rung — `copPack.framedByAnyPane`,
+   * bound by the caller. `null` = no pane rule. The rule's name: **no body
+   * appears where anyone is looking.**
+   */
+  readonly framed: ((x: number, z: number) => boolean) | null;
+}
+
+/** Whether another cop already stands within `spacingMetres` of a spot. */
+function occupied(x: number, z: number, refusals: RegroupRefusals): boolean {
+  const limit = refusals.spacingMetres * refusals.spacingMetres;
+  for (let index = 0; index < refusals.others.length; index += 1) {
+    const other = refusals.others[index];
+    const dx = other.x - x;
+    const dz = other.z - z;
+    if (dx * dx + dz * dz <= limit) return true;
+  }
+  return false;
+}
+
+/**
  * Plan a return `back` metres behind the rider along the route, or refuse.
  *
  * `minimumGap` is the world-space floor every rung must clear — see
@@ -110,7 +148,9 @@ const REGROUP_USEFUL_PACE = 10;
  * divided road a global search cannot tell the rider's lane from the one
  * beside it (`CpuRider.quarryDistance`'s note), and a return measured from
  * the wrong lane stands the cop behind a wall. `scratch` are caller-owned so
- * the fixed step allocates nothing.
+ * the fixed step allocates nothing. `refusals` (M39 Part P) adds the occupied
+ * rung and the framed rung; `null` — and equally an empty `others` with no
+ * pane rule — is the solo tail's ladder exactly.
  */
 export function planRegroup(
   spine: RouteSpine,
@@ -120,6 +160,7 @@ export function planRegroup(
   scratch: { readonly at: SpineLocation; readonly sample: SpineSample },
   judge: RegroupJudge | null = null,
   near = -1,
+  refusals: RegroupRefusals | null = null,
 ): RegroupCandidate | null {
   spine.locate(rider.x, rider.z, near, scratch.at);
   if (near >= 0 && scratch.at.offRoute > REGROUP_RELOCATE_METRES) {
@@ -143,6 +184,13 @@ export function planRegroup(
     const dz = scratch.sample.z - rider.z;
     const gap = Math.sqrt(dx * dx + dz * dz);
     if (gap < minimumGap) continue;
+
+    // Occupied by a packmate, or framed by a human pane: refused like a fold,
+    // before the judge is troubled with it (§39.6b.3, §39.6b.3b).
+    if (refusals !== null) {
+      if (occupied(scratch.sample.x, scratch.sample.z, refusals)) continue;
+      if (refusals.framed !== null && refusals.framed(scratch.sample.x, scratch.sample.z)) continue;
+    }
 
     const entrySpeed = judge === null ? Infinity : judge(scratch.sample.distance, direction);
     if (entrySpeed === null) continue;

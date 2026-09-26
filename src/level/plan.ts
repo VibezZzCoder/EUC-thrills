@@ -1,6 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import type { MarkingPaint } from '../data/markings.ts';
-import type { PropKind } from '../data/props.ts';
+import type { BuildingLook, PropKind } from '../data/props.ts';
 import type { MaterialId } from '../data/surfaces.ts';
 import type { VenueLook } from '../data/venueLook.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
@@ -208,6 +208,12 @@ export interface Prop {
    * which is why every other kind is a fixed shape at a uniform scale.
    */
   size?: Vec3;
+  /**
+   * A building's district look or landmark (M39 Phase 2). Render composition
+   * only — the footprint, height and collider are still `size`'s — and absent
+   * on every hand-authored world, whose buildings draw exactly as before.
+   */
+  look?: BuildingLook;
 }
 
 /**
@@ -436,6 +442,9 @@ export interface Target {
 
 export interface LevelPlan {
   id: string;
+  /** Required reconnecting streets. Ordered segment ids, both arms forward
+   * between the same sockets. Chase uses these bounded loops, not a navmesh. */
+  streetLoops?: readonly { readonly main: readonly string[]; readonly alternate: readonly string[] }[];
   /** Where a new or recovering rider starts. */
   spawn: { position: Vec3; headingY: number };
   surround: Surround;

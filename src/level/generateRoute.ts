@@ -1,4 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { CITY_ROUTE_FLOOR_METRES, layTownRing, quarterFrontage, type RingQuarter } from './cityRing.ts';
+import { townDressing } from './townDressing.ts';
 import type { PropKind } from '../data/props.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 import {
@@ -48,8 +50,10 @@ import {
   facingRoute,
   leftOf,
   placeGraph,
+  propsOf,
   querySegment,
   surfaceAtLateral,
+  type PlacedProp,
   type PlacedSegment,
   type SegmentBranch,
   type SegmentProp,
@@ -58,14 +62,8 @@ import {
 import {
   LIBRARY_BEATS,
   LIBRARY_CONNECTORS,
-  REQUIRED_ROUTE_FLOOR_METRES,
-  canFollow,
-  instantiate,
-  segmentCost,
   type LibraryPiece,
-  type OptionalBranch,
 } from './segmentLibrary.ts';
-import { RENDER_BUDGET } from '../data/renderCost.ts';
 import { HAZARD, TARGET } from '../data/tuning.ts';
 import {
   SEED_DOMAINS,
@@ -199,20 +197,6 @@ const GENERATION = {
 } as const;
 
 /**
- * How much of the render budget a route may spend before it is refused.
- *
- * The contract itself is `withinRenderBudget` on the finished plan, and it is
- * the one that decides. This is the **pre-screen**: the summed per-piece cost
- * from Phase 0's table, checked while the route is still being laid, so an
- * obviously over-budget route is abandoned before a quarter of a million
- * heightfield samples are rasterised for it. The isolated rows over-estimate by
- * about a quarter because beats that cross share ground, so the pre-screen is
- * generous on purpose — a false rejection here would throw away a route the
- * real contract would have passed.
- */
-const PRESCREEN_TRIANGLE_CEILING = RENDER_BUDGET.maxTriangles * 1.25;
-
-/**
  * The step the wheel can lever itself onto, shared with the validator.
  *
  * Two corridors that overlap at more than this have a cliff between them, and
@@ -236,18 +220,6 @@ interface LaidPiece {
   readonly jumps: readonly RouteJump[];
 }
 
-/** A piece the generator has decided to try, with everything placing it needs. */
-interface Candidate {
-  readonly piece: LibraryPiece;
-  readonly instance: string;
-  readonly segments: readonly PlacedSegment[];
-  readonly main: SegmentSpec[];
-  readonly branches: SegmentBranch[];
-  readonly exitSegmentId: string;
-  readonly throughIds: readonly string[];
-  readonly optional: readonly OptionalBranch[];
-}
-
 interface LaidRoute {
   readonly graph: { main: SegmentSpec[]; branches: SegmentBranch[] };
   readonly placed: readonly PlacedSegment[];
@@ -258,6 +230,12 @@ interface LaidRoute {
   readonly shortcuts: readonly RouteShortcut[];
   readonly adjacency: Map<string, Set<string>>;
   readonly pieceOf: Map<string, string>;
+  /** Which quarter of the town each segment belongs to (M39 r6). */
+  readonly quarterOf: ReadonlyMap<string, RingQuarter>;
+  /** Stations in riding order, for the generation report. */
+  readonly stations: readonly string[];
+  /** The reconnecting streets the chase may use, built from what was laid. */
+  readonly streetLoops: { main: string[]; alternate: string[] }[];
   readonly requiredLength: number;
   /**
    * The gates, decided here rather than in `generateLevel` — M13 Phase 3.
@@ -355,18 +333,6 @@ const FAMILY_GRADES: ReadonlyMap<string, readonly number[]> = (() => {
   for (const climbs of table.values()) climbs.sort((a, b) => a - b);
   return table;
 })();
-
-/**
- * The connectors the *route* stream may choose between.
- *
- * The flat member of every shape, and nothing else: elevation is the terrain
- * domain's decision, and a route stream that could pick `link-road-fall`
- * directly would be making it. Derived by keeping the flat members rather than
- * by listing the graded ones, so adding a steeper variant cannot quietly hand
- * elevation back to the wrong stream.
- */
-const CONNECTOR_POOL: readonly LibraryPiece[] = LIBRARY_CONNECTORS
-  .filter((piece) => (piece.main[0].climb ?? 0) === 0);
 
 /**
  * The surfaces stream's one job: what the verge of a neutral join is made of.
@@ -469,7 +435,9 @@ function connectorSpecs(graph: { main: SegmentSpec[]; branches: SegmentBranch[] 
   const visit = (list: SegmentSpec[]): void => {
     for (let index = 0; index < list.length; index += 1) {
       const spec = list[index];
-      if (!spec.id.startsWith('link-')) continue;
+      // The town ring's closing road is a neutral join too (M39 r6): it takes
+      // verge bands and dressing, and no grade (it has no family to draw from).
+      if (!spec.id.startsWith('link-') && !spec.id.startsWith('close-')) continue;
       out.push({ spec, replace: (next) => { list[index] = next; } });
     }
   };
@@ -504,12 +472,21 @@ function applyGrades(
   graph: { main: SegmentSpec[]; branches: SegmentBranch[] },
   terrain: RandomStream,
   surround: number,
+  /** Joins that stay level — a town's streets (M39 r6). */
+  level: (id: string) => boolean = () => false,
+  /**
+   * Re-balances whatever the route's own closure absorbs after a grade — the
+   * town ring's closing road (M39 r6). False when it cannot.
+   */
+  settle: () => boolean = () => true,
 ): void {
   const connectors = connectorSpecs(graph);
   for (const entry of connectors) {
     const family = entry.spec.id.split('@')[0].split('-').slice(0, 2).join('-');
     const grades = FAMILY_GRADES.get(family);
     if (grades === undefined || grades.length === 0) continue;
+    if (level(entry.spec.id)) continue;
+    const scale = Math.min(1, entry.spec.length / 36);
 
     // Where the route has got to by this join. Re-placed each time, because the
     // grade chosen for one connector moves everything after it.
@@ -517,7 +494,26 @@ function applyGrades(
     const here = placed.find((segment) => segment.spec.id === entry.spec.id);
     const drift = (here?.entry.position.y ?? 0) - surround;
 
+    // **Look ahead, M39 r6.** On a closed ring the beats after this join carry
+    // their own fixed climbs (the park falls 5.8 m to the ford), so a grade
+    // that is harmless here can put the riverside past the band later. A grade
+    // is offered only if the whole route, with this join graded and the ones
+    // after it still level, stays inside the band — a choice, not a repair.
+    const reach = (climb: number): number => {
+      const original = entry.spec;
+      entry.replace({ ...original, climb: climb * scale });
+      let worst = settle() ? 0 : Infinity;
+      for (const segment of placeGraph(graph, SPAWN)) {
+        worst = Math.max(worst, Math.abs(segment.entry.position.y - surround), Math.abs(segment.exit.position.y - surround));
+      }
+      entry.replace(original);
+      settle();
+      return worst;
+    };
+    const reaches = new Map(grades.map((climb) => [climb, reach(climb)]));
+    const fewest = Math.min(...reaches.values());
     const chosen = terrain.weighted([...grades], (climb) => {
+      if (reaches.get(climb)! > ROUTE_ELEVATION_BAND * 0.9 && reaches.get(climb)! > fewest) return 0;
       // A grade that shortens the distance back to the surround is preferred in
       // proportion to how far out the route already is; at the surround itself
       // every grade weighs the same and the seed chooses freely.
@@ -529,7 +525,10 @@ function applyGrades(
 
     // Only the elevation profile moves. The id keeps its instance suffix, so
     // every branch root and through-line reference still resolves.
-    entry.replace({ ...entry.spec, climb: chosen });
+    // A town-ring steering join can be shorter than the library's own 36–40 m
+    // joins; its grade keeps the family's slope rather than its rise (M39 r6).
+    entry.replace({ ...entry.spec, climb: chosen * scale });
+    settle();
   }
 }
 
@@ -1013,208 +1012,61 @@ function layRoute(
   streams: ReturnType<typeof createSeedStreams>,
   hazardRules: HazardRules,
 ): LayResult {
-  const route = streams.route;
   const terrain = streams.terrain;
   const surfaces = streams.surfaces;
   const dressing = streams.dressing;
 
-  const graph: { main: SegmentSpec[]; branches: SegmentBranch[] } = { main: [], branches: [] };
+  // -- The town ring (M39, r6) ----------------------------------------------
+  // The plan view is the route stream's alone: which order the quarters' beats
+  // take, the blocks' sizes, the loop's shape and the joins between. The same
+  // construction filter as ever refuses a join that would meet laid ground at
+  // a step or a wall; nothing is nudged into legality.
+  const laid = layTownRing(streams.route, dressing, {
+    collides: (fresh, others, links) => {
+      const adjacency = new Map<string, Set<string>>();
+      for (const [a, b] of links) {
+        if (!adjacency.has(a)) adjacency.set(a, new Set());
+        if (!adjacency.has(b)) adjacency.set(b, new Set());
+        adjacency.get(a)!.add(b);
+        adjacency.get(b)!.add(a);
+      }
+      const all = [...others, ...fresh];
+      return fresh.some((segment) => meetsBadly(segment, all.filter((other) => other.spec.id !== segment.spec.id), adjacency));
+    },
+  });
+  const ring = laid.ring;
+  if (ring === null) return { route: null, reason: laid.reason };
+
+  const graph = ring.graph;
   const adjacency = new Map<string, Set<string>>();
-  const pieceOf = new Map<string, string>();
-  const pieces: LaidPiece[] = [];
-  const throughIds: string[] = [];
-  const optionalIds: string[] = [];
-  const jumps: RouteJump[] = [];
-  const shortcuts: RouteShortcut[] = [];
-  const beatUses = new Map<string, number>();
-  /** Every optional branch actually laid, so the terrain pass can revisit them. */
-  const optionalLaid: { branch: SegmentBranch; ids: readonly string[] }[] = [];
-
-  let placed: PlacedSegment[] = [];
-  let requiredLength = 0;
-  let triangles = 0;
-  let current: LibraryPiece | null = null;
-  /**
-   * The last *beat*, which is not the last piece.
-   *
-   * A neutral join between two boulevards does not stop them being two
-   * boulevards in a row, and forty metres of blank road between them arguably
-   * makes it read worse rather than better. So the no-repeat rule is tracked
-   * against the beats a rider would name, not against the pieces the generator
-   * happened to place.
-   */
-  let lastBeat: string | null = null;
-  let attachTo: string | undefined;
-
   const link = (a: string, b: string): void => {
     if (!adjacency.has(a)) adjacency.set(a, new Set());
     if (!adjacency.has(b)) adjacency.set(b, new Set());
     adjacency.get(a)!.add(b);
     adjacency.get(b)!.add(a);
   };
+  for (let i = 1; i < graph.main.length; i++) link(graph.main[i - 1].id, graph.main[i].id);
+  for (const branch of graph.branches) {
+    const ids = [branch.from, ...branch.specs.map((s) => s.id)];
+    for (let i = 1; i < ids.length; i++) link(ids[i - 1], ids[i]);
+  }
+  const throughIds = [...ring.throughIds];
+  const shortcuts: RouteShortcut[] = [...ring.shortcuts];
+  for (const shortcut of shortcuts) link(shortcut.exitId, shortcut.rejoinId);
+  const pieceOf = new Map(ring.pieceOf);
+  const jumps: RouteJump[] = [...ring.jumps];
+  const optionalIds: string[] = [];
+  const optionalLaid: { branch: SegmentBranch; ids: readonly string[] }[] = [];
+  const streetLoops = ring.streetLoops.map((loop) => ({ main: [...loop.main], alternate: [...loop.alternate] }));
 
-  for (let step = 0; step < GENERATION.maxPieces; step += 1) {
-    // -- Choose ------------------------------------------------------------
-    // A local binding, because `current` is reassigned at the end of the loop
-    // and a closure over it would not narrow.
-    const from: LibraryPiece | null = current;
-    const beats: LibraryPiece[] = LIBRARY_BEATS.filter((piece) => {
-      // The first piece has nothing to match, so the only requirement is
-      // somewhere wide enough to find the throttle in before the level asks
-      // for anything — the same argument the plaza makes in the slice.
-      if (from === null) return piece.entry.halfWidth >= 7;
-      if (!canFollow(from, piece)) return false;
-      // A beat immediately after itself is the single most obvious way for a
-      // stitched route to read as a corridor rather than a place, and it is
-      // free to refuse.
-      if (piece.id === lastBeat) return false;
-      return (beatUses.get(piece.id) ?? 0) < GENERATION.maxBeatUses;
-    });
-    const connectors: LibraryPiece[] = from === null
-      ? []
-      : CONNECTOR_POOL.filter((piece) => canFollow(from, piece));
-
-    if (beats.length === 0 && connectors.length === 0) {
-      return {
-        route: null,
-        reason: `nothing in the library can follow ${from?.id ?? 'the start'} — a library `
-          + 'gap rather than an unlucky seed',
-      };
-    }
-
-    const wantBeat = beats.length > 0 && (
-      connectors.length === 0
-      || route.next() > GENERATION.connectorWeight / (GENERATION.connectorWeight + 3)
-    );
-    const pool = wantBeat ? beats : connectors;
-
-    // Try candidates in a seeded order until one fits. Choosing among what is
-    // legal is construction; it is not repair.
-    //
-    // The order is drawn by weight without replacement rather than shuffled
-    // flat, because two of the weights carry real design intent:
-    //
-    //   - **An unused beat is strongly preferred.** A route made of one beat
-    //     five times is valid and is not a place, and variety is the cheapest
-    //     thing that fights the valid-but-joyless risk `docs/PLANS.md` §12
-    //     gates this milestone on.
-    //   - **The opening piece is weighted by how much room it gives.** §6's
-    //     beat 1 is a wide brick square on purpose — "a rider gets a wide brick
-    //     square to find the throttle in before the level asks for anything" —
-    //     and a route that opens on a curb run starts the player on a hop
-    //     lesson. Weighted by the square of the entry width, so the plaza wins
-    //     most of the time and the other wide beats still get a turn.
-    const weightOf = (piece: LibraryPiece): number => {
-      if (from === null) return piece.entry.halfWidth ** 2;
-      if (piece.role === 'connector') return GENERATION.connectorWeight;
-      const uses = beatUses.get(piece.id) ?? 0;
-      return uses === 0 ? GENERATION.unusedBeatWeight : GENERATION.usedBeatWeight / uses;
-    };
-
-    const remaining = [...pool];
-    const shuffled: LibraryPiece[] = [];
-    while (remaining.length > 0) {
-      const picked = route.weighted(remaining, weightOf);
-      shuffled.push(picked);
-      remaining.splice(remaining.indexOf(picked), 1);
-    }
-
-    let chosen: Candidate | null = null;
-
-    for (const candidate of shuffled) {
-      const instance = `${step}`;
-      const relaid = instantiate(candidate, instance, { attachTo, dropOptional: true });
-      const main = [...relaid.main];
-      const branches = [...relaid.branches];
-
-      const trial = {
-        main: graph.main.length === 0 ? main : graph.main,
-        branches: graph.main.length === 0 ? [...graph.branches, ...branches]
-          : [...graph.branches, ...branches],
-      };
-      const trialPlaced = placeGraph(trial, SPAWN);
-      const fresh = trialPlaced.filter(
-        (segment) => !placed.some((old) => old.spec.id === segment.spec.id),
-      );
-
-      // Provisional adjacency, so the crossing check does not report the seam
-      // this piece was just attached by.
-      const provisional = new Map<string, Set<string>>();
-      for (const [id, set] of adjacency) provisional.set(id, new Set(set));
-      const linkProvisional = (a: string, b: string): void => {
-        if (!provisional.has(a)) provisional.set(a, new Set());
-        if (!provisional.has(b)) provisional.set(b, new Set());
-        provisional.get(a)!.add(b);
-        provisional.get(b)!.add(a);
-      };
-      const ids = fresh.map((segment) => segment.spec.id);
-      for (let index = 1; index < ids.length; index += 1) linkProvisional(ids[index - 1], ids[index]);
-      for (const id of ids) if (attachTo !== undefined) linkProvisional(attachTo, id);
-
-      const collides = fresh.some((segment) => meetsBadly(
-        segment,
-        trialPlaced.filter((other) => other.spec.id !== segment.spec.id),
-        provisional,
-      ));
-      if (collides) continue;
-
-      chosen = {
-        piece: candidate,
-        instance,
-        segments: fresh,
-        main,
-        branches,
-        exitSegmentId: relaid.exitSegmentId,
-        throughIds: relaid.throughIds,
-        optional: instantiate(candidate, instance, { attachTo }).optional,
-      };
-      break;
-    }
-
-    if (chosen === null) {
-      // Nothing legal fits here. If the route is already long enough, stop;
-      // otherwise the attempt has run out of room and is abandoned whole.
-      if (requiredLength >= REQUIRED_ROUTE_FLOOR_METRES) break;
-      return {
-        route: null,
-        reason: `the route boxed itself in after ${pieces.length} pieces and `
-          + `${requiredLength.toFixed(0)} m: every legal continuation from `
-          + `${current?.name ?? 'the start'} would cross ground already laid`,
-      };
-    }
-
-    // -- Commit ------------------------------------------------------------
-    if (graph.main.length === 0) graph.main = chosen.main;
-    graph.branches.push(...chosen.branches);
-
-    const freshIds = chosen.segments.map((segment) => segment.spec.id);
-    for (let index = 1; index < freshIds.length; index += 1) link(freshIds[index - 1], freshIds[index]);
-    if (attachTo !== undefined) for (const id of freshIds) link(attachTo, id);
-
-    placed = placeGraph(graph, SPAWN);
-    for (const id of chosen.throughIds) {
-      throughIds.push(id);
-      requiredLength += placed.find((segment) => segment.spec.id === id)?.spec.length ?? 0;
-      triangles += segmentCost(id.split('@')[0]).triangles;
-    }
-
-    // The kicker's landing is a through branch, and it is the one jump the
-    // library carries. Named from the piece rather than guessed from geometry.
-    if (chosen.piece.id === 'kicker') {
-      jumps.push({
-        name: `the kicker (${chosen.instance})`,
-        lipId: `kicker-run@${chosen.instance}`,
-        landingId: `kicker-land@${chosen.instance}`,
-      });
-    }
-
-    // -- Optional branches: dropped, never retried (master §6.3) -----------
-    for (const optional of chosen.optional) {
-      if (route.next() > GENERATION.optionalKeepChance) continue;
-      // A branch off a branch — the alley-only ledge hangs off the alley, not
-      // off the route the alley leaves. Dropping the alley has to drop the
-      // ledge with it, or `placeGraph` is asked to root a branch on a segment
-      // nobody placed. Found by a forty-seed sweep, which is what sweeps are for.
+  // -- Optional branches: dropped, never retried (master §6.3) -------------
+  // The beats' own pockets and shortcuts — the terrace, the drainage channel,
+  // the alley and its ledge, the kicker's chicken line — kept by the route
+  // stream's chance and then only where they meet nothing laid.
+  let placed: PlacedSegment[] = placeGraph(graph, SPAWN);
+  for (const beat of ring.beats) {
+    for (const optional of beat.optional) {
+      if (streams.route.next() > GENERATION.optionalKeepChance) continue;
       if (!placed.some((segment) => segment.spec.id === optional.branch.from)) continue;
       const trial = { main: graph.main, branches: [...graph.branches, optional.branch] };
       const trialPlaced = placeGraph(trial, SPAWN);
@@ -1222,11 +1074,21 @@ function layRoute(
       const provisional = new Map<string, Set<string>>();
       for (const [id, set] of adjacency) provisional.set(id, new Set(set));
       const ids = [optional.branch.from, ...optional.ids];
+      const pieceIds = new Set([...beat.optional.flatMap((entry) => entry.ids),
+        ...[...pieceOf].filter(([, piece]) => piece === `${beat.piece.id}@${beat.instance}`).map(([id]) => id)]);
       for (let index = 1; index < ids.length; index += 1) {
         if (!provisional.has(ids[index - 1])) provisional.set(ids[index - 1], new Set());
         if (!provisional.has(ids[index])) provisional.set(ids[index], new Set());
         provisional.get(ids[index - 1])!.add(ids[index]);
         provisional.get(ids[index])!.add(ids[index - 1]);
+      }
+      // A beat's pockets overlap its own road by authorship (the chicken line
+      // round the kicker's mound); only other pieces can refuse them.
+      for (const id of optional.ids) {
+        for (const other of pieceIds) {
+          if (!provisional.has(id)) provisional.set(id, new Set());
+          provisional.get(id)!.add(other);
+        }
       }
       const collides = fresh.some((segment) => meetsBadly(
         segment,
@@ -1234,16 +1096,12 @@ function layRoute(
         provisional,
       ));
       if (collides) continue;
-
-      // And a pocket whose own shoulder cannot reach the surround is dropped
-      // rather than retried (master §6.3). The alley is authored with a
-      // two-metre shoulder and its ledge with none at all, because in the slice
-      // they sit at the level of the ground beside them; where the route has
-      // climbed five metres they would stand on a wall.
       const walled = fresh.some((segment) => {
         const shoulder = segment.spec.shoulder ?? DEFAULT_SHOULDER;
+        const parent = placed.find((candidate) => candidate.spec.id === optional.branch.from);
+        const ground = parent?.exit.position.y ?? SPAWN.position.y;
         return [segment.entry, segment.exit].some((socket) => Math.atan(
-          Math.abs(socket.position.y - SPAWN.position.y) / Math.max(shoulder, 0.5),
+          Math.abs(socket.position.y - ground) / Math.max(shoulder, 0.5),
         ) > SHOULDER_SLOPE_CEILING);
       });
       if (walled) continue;
@@ -1253,86 +1111,82 @@ function layRoute(
       placed = trialPlaced;
       optionalIds.push(...optional.ids);
       for (let index = 1; index < ids.length; index += 1) link(ids[index - 1], ids[index]);
-      for (const id of optional.ids) triangles += segmentCost(id.split('@')[0]).triangles;
-
-      // The alley is the library's one shortcut, and a shortcut has to come
-      // back — which is what `checkReconnect` then proves rather than assumes.
+      for (const id of optional.ids) pieceOf.set(id, `${beat.piece.id}@${beat.instance}`);
       if (optional.name === 'alley shortcut') {
         shortcuts.push({
-          name: `alley (${chosen.instance})`,
+          name: `alley (${beat.instance})`,
           fromId: optional.branch.from,
           exitId: optional.ids[optional.ids.length - 1],
-          rejoinId: chosen.exitSegmentId,
+          rejoinId: beat.exitId,
         });
+        link(optional.ids[optional.ids.length - 1], beat.exitId);
+        // The alley is a second way round the fork's block: the road the long
+        // way, the alley the short. Both run from the fork's mouth to the park.
+        const forkIds = throughIds.filter((id) => pieceOf.get(id) === `fork@${beat.instance}`);
+        streetLoops.unshift({ main: forkIds.slice(1), alternate: optional.ids.filter((id) => !id.startsWith('alley-ledge')) });
       }
     }
-
-    for (const segment of placed) {
-      if (!pieceOf.has(segment.spec.id)) pieceOf.set(segment.spec.id, `${chosen.piece.id}@${chosen.instance}`);
-    }
-    pieces.push({
-      piece: chosen.piece,
-      instance: chosen.instance,
-      exitSegmentId: chosen.exitSegmentId,
-      throughIds: chosen.throughIds,
-      optionalIds: chosen.optional.flatMap((entry) => entry.ids),
-      shortcuts: [],
-      jumps: [],
-    });
-    if (chosen.piece.beat !== null) {
-      beatUses.set(chosen.piece.id, (beatUses.get(chosen.piece.id) ?? 0) + 1);
-      lastBeat = chosen.piece.id;
-    }
-    attachTo = chosen.exitSegmentId;
-    current = chosen.piece;
-
-    if (triangles > PRESCREEN_TRIANGLE_CEILING) {
-      return {
-        route: null,
-        reason: `the pre-screen put the route past ${PRESCREEN_TRIANGLE_CEILING.toFixed(0)} `
-          + 'triangles before it was even rasterised',
-      };
-    }
-    if (requiredLength >= REQUIRED_ROUTE_FLOOR_METRES && chosen.piece.beat !== null) break;
   }
 
-  if (requiredLength < REQUIRED_ROUTE_FLOOR_METRES) {
+  // -- The passes that run after the route exists ---------------------------
+  const closureLength = ring.closureIds.reduce((sum, id) => sum + (findSpec(graph, id)?.length ?? 0), 0);
+  const homeId = ring.throughIds[ring.throughIds.length - 1];
+  function settleClosure(): boolean {
+    const now = placeGraph(graph, SPAWN);
+    const home = now.find((segment) => segment.spec.id === homeId)!;
+    const drift = SPAWN.position.y - home.exit.position.y;
+    const total = ring!.closureIds.reduce((sum, id) => sum + (findSpec(graph, id)?.climb ?? 0), 0) + drift;
+    for (const id of ring!.closureIds) {
+      const spec = findSpec(graph, id)!;
+      replaceSpec(graph, id, { ...spec, climb: total * spec.length / closureLength });
+    }
+    return 1.5 * Math.abs(total) / closureLength <= ROUTE_CLOSURE_MAX_GRADE;
+  }
+  applyGrades(graph, terrain, SPAWN.position.y, (id) => {
+    const quarter = ring.quarterOf.get(id);
+    return quarter === 'downtown' || quarter === 'residential';
+  }, settleClosure);
+  dropWalledBranches(graph, optionalLaid, optionalIds, SPAWN.position.y);
+  const retained = new Set([...graph.main, ...graph.branches.flatMap((b) => b.specs)].map((s) => s.id));
+  for (let i = shortcuts.length - 1; i >= 0; i--) {
+    if (!retained.has(shortcuts[i].exitId)) shortcuts.splice(i, 1);
+  }
+  for (let i = streetLoops.length - 1; i >= 0; i--) {
+    if (![...streetLoops[i].main, ...streetLoops[i].alternate].every((id) => retained.has(id))) streetLoops.splice(i, 1);
+  }
+  // The closing road takes up whatever height the grades left between the two
+  // halves, so the ring still arrives at the plaza's own height. Eased per
+  // segment, so every socket stays level; too steep is a rejection, never a
+  // repair.
+  if (!settleClosure()) {
     return {
       route: null,
-      reason: `the route reached the ${GENERATION.maxPieces}-piece ceiling at only `
-        + `${requiredLength.toFixed(0)} m, short of the `
-        + `${REQUIRED_ROUTE_FLOOR_METRES.toFixed(0)} m floor`,
+      reason: 'the grades leave the far side of town too much height to make up on its closing road',
+    };
+  }
+  applyVergeBands(graph, surfaces);
+  applyVergeDressing(graph, dressing);
+  // Frontage along the joins inside the town quarters (M39 r6).
+  for (const entry of connectorSpecs(graph)) {
+    const quarter = ring.quarterOf.get(entry.spec.id);
+    if (quarter === undefined) continue;
+    const frontage = quarterFrontage(entry.spec, quarter, () => dressing.next());
+    if (frontage.length > 0) entry.replace({ ...entry.spec, props: [...(entry.spec.props ?? []), ...frontage] });
+  }
+  placed = placeGraph(graph, SPAWN);
+
+  let requiredLength = 0;
+  for (const id of throughIds) requiredLength += placed.find((segment) => segment.spec.id === id)?.spec.length ?? 0;
+  if (requiredLength < CITY_ROUTE_FLOOR_METRES) {
+    return {
+      route: null,
+      reason: `the town ring is ${requiredLength.toFixed(0)} m, short of the `
+        + `${CITY_ROUTE_FLOOR_METRES.toFixed(0)} m floor`,
     };
   }
 
-  // -- The three passes that run after the route exists ---------------------
-  //
-  // **Order matters, and so does the fact that they run here rather than inside
-  // the search.** The first draft applied them to every candidate the search
-  // *tried*, which meant the cosmetic streams were consumed by routes that were
-  // then thrown away — so a dressing reroll could shift which candidate a later
-  // draw landed on. Running them over the finished route makes the independence
-  // structural instead of incidental: `surfaces` and `dressing` cannot alter one
-  // metre of geometry because by the time they draw, the geometry is decided.
-  //
-  // `terrain` is different and the difference is worth stating. It is not a
-  // cosmetic domain — it is the ground — so it *does* change the world, and a
-  // route that was legal flat can be illegal on hills. That is a rejection and
-  // a retry, not a repair.
-  applyGrades(graph, terrain, SPAWN.position.y);
-  dropWalledBranches(graph, optionalLaid, optionalIds, SPAWN.position.y);
-  applyVergeBands(graph, surfaces);
-  applyVergeDressing(graph, dressing);
-  placed = placeGraph(graph, SPAWN);
-
-  // **The hazard pass runs last, on the finished world** (M13 Phase 3). It is
-  // the only pass that has to see the ground exactly as the player will meet
-  // it: a sight line is drawn over the elevation the terrain stream chose, and
-  // a hazard on a branch the walled-branch drop has just removed would be a
-  // hole in a piece of road nobody placed. It reads no draw any earlier pass
-  // made — see `placeHazards` for why running after the verge bands does not
-  // make it a function of the surfaces seed.
-  const checkpoints = routeCheckpoints(placed, throughIds);
+  const loopMains = new Set(streetLoops.filter((loop) => loop.alternate.length > 0).flatMap((loop) => loop.main));
+  const checkpoints = routeCheckpoints(placed, throughIds, loopMains);
   const hazardSpecs = placeHazards(
     placed,
     throughIds,
@@ -1347,18 +1201,41 @@ function layRoute(
     route: {
       graph,
       placed,
-      pieces,
+      pieces: ring.beats.map((beat) => ({
+        piece: beat.piece, instance: beat.instance, exitSegmentId: beat.exitId,
+        throughIds: [], optionalIds: [], shortcuts: [], jumps: [],
+      })),
+      stations: ring.stations,
       throughIds,
       optionalIds,
       jumps,
       shortcuts,
       adjacency,
       pieceOf,
+      quarterOf: ring.quarterOf,
+      streetLoops,
       requiredLength,
       checkpoints,
       hazards: hazardSpecs,
     },
   };
+}
+
+/** Steepest eased grade the ring's closing road may carry (the slice's return climb is ~9%). */
+const ROUTE_CLOSURE_MAX_GRADE = 0.1;
+
+function findSpec(graph: { main: SegmentSpec[]; branches: SegmentBranch[] }, id: string): SegmentSpec | undefined {
+  return graph.main.find((spec) => spec.id === id)
+    ?? graph.branches.flatMap((branch) => branch.specs).find((spec) => spec.id === id);
+}
+
+function replaceSpec(graph: { main: SegmentSpec[]; branches: SegmentBranch[] }, id: string, next: SegmentSpec): void {
+  const index = graph.main.findIndex((spec) => spec.id === id);
+  if (index >= 0) { graph.main[index] = next; return; }
+  for (const branch of graph.branches) {
+    const at = branch.specs.findIndex((spec) => spec.id === id);
+    if (at >= 0) { (branch.specs as SegmentSpec[])[at] = next; return; }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1478,6 +1355,32 @@ function worldDressing(
   return props;
 }
 
+/**
+ * The world dressing plus M39 Phase 2's sheds and landmarks, appended after it.
+ *
+ * Appended rather than interleaved, and drawn from the dressing stream only
+ * after every value it already supplied: every prop a town carried before
+ * Phase 2 is byte-identical and still first in the list, so the builder's
+ * order-dependent guards (a building buried in an earlier one is the one
+ * refused) meet them exactly as before. See `level/townDressing.ts`.
+ */
+function withTownDressing(
+  laid: LaidRoute,
+  world: ReturnType<typeof worldDressing>,
+  draw: () => number,
+): (ReturnType<typeof worldDressing>[number] | PlacedProp)[] {
+  const buildings: PlacedProp[] = [
+    ...laid.placed.flatMap(propsOf).filter((prop) => prop.kind === 'building'),
+    ...world.filter((prop) => prop.kind === 'building'),
+  ];
+  return [...world, ...townDressing({
+    placed: laid.placed,
+    throughIds: laid.throughIds,
+    quarterOf: laid.quarterOf,
+    buildings,
+  }, draw)];
+}
+
 // ---------------------------------------------------------------------------
 // Checkpoints
 // ---------------------------------------------------------------------------
@@ -1494,6 +1397,12 @@ function worldDressing(
 function routeCheckpoints(
   placed: readonly PlacedSegment[],
   throughIds: readonly string[],
+  /**
+   * Segments with a reconnecting alternative (a block's main arm, the fork's
+   * long way round). A gate there would make the side street skip it, so the
+   * gate slides to the nearest leg every line shares — M39 QA.
+   */
+  shared: ReadonlySet<string> = new Set(),
 ): CheckpointSpec[] {
   const byId = new Map(placed.map((segment) => [segment.spec.id, segment]));
   const legs: { id: string; from: number; length: number }[] = [];
@@ -1512,7 +1421,12 @@ function routeCheckpoints(
     // Inset from both ends so the first gate is not on the spawn and the last
     // is not on the final metre of the world.
     const distance = total * (0.04 + (0.92 * index) / Math.max(1, count - 1));
-    const leg = legs.find((entry) => distance < entry.from + entry.length) ?? legs[legs.length - 1];
+    const natural = legs.find((entry) => distance < entry.from + entry.length) ?? legs[legs.length - 1];
+    const eligible = legs.filter((entry) => !shared.has(entry.id) && entry.length >= 8);
+    const leg = shared.has(natural.id) && eligible.length > 0
+      ? eligible.reduce((best, entry) => (Math.abs(entry.from + entry.length / 2 - distance)
+        < Math.abs(best.from + best.length / 2 - distance) ? entry : best))
+      : natural;
     // Never on a seam: a gate on a socket is a gate whose volume straddles two
     // corridors that may disagree about their heading.
     const s = Math.min(leg.length - 4, Math.max(4, distance - leg.from));
@@ -1524,6 +1438,10 @@ function routeCheckpoints(
       label: index === 0 ? 'Start' : index === count - 1 ? 'Finish' : `Split ${index}`,
     });
   }
+  const first = legs[0];
+  out[0] = { id: 'start', segment: first.id, s: 8, kind: 'start', label: 'Start' };
+  const along = (gate: CheckpointSpec): number => (legs.find((leg) => leg.id === gate.segment)?.from ?? 0) + gate.s;
+  out.sort((a, b) => along(a) - along(b));
   return out;
 }
 
@@ -1617,7 +1535,8 @@ export interface GeneratedLevel {
  * `MAX_SEED_LENGTH` leaves twenty-seven of headroom under the sixty-four both
  * record stores independently cap a level id at.
  */
-export const GENERATED_LEVEL_PREFIX = 'generated-r3-';
+/** M39's town ring replaces r5's roads; never compare an r3–r5 record or ghost with it. */
+export const GENERATED_LEVEL_PREFIX = 'generated-r6-';
 
 /**
  * The hand-authored slice, described as a route so the validator can judge it.
@@ -1737,15 +1656,15 @@ export function generateLevel(
       continue;
     }
 
-    const plan = buildLevelPlan(laid.graph, {
+    const builtPlan = buildLevelPlan(laid.graph, {
       id: `${GENERATED_LEVEL_PREFIX}${label}`,
       spawn: SPAWN,
       // Grass at the route's own start height, exactly as the slice does it, so
       // riding off the course is a climb onto a meadow rather than a fall off
       // the world. Go-anywhere is LOCKED.
       surround: { height: 0, surface: 'grass' },
-      props: worldDressing(laid.placed, () => streams.dressing.next())
-        .map((prop) => ({ ...prop })),
+      props: withTownDressing(laid, worldDressing(laid.placed, () => streams.dressing.next())
+        .map((prop) => ({ ...prop })), () => streams.dressing.next()),
       checkpoints: laid.checkpoints,
       // What the generator put in the road — M13 Phase 3. Placed on the laid
       // route above, where every rule about them can still be evaluated against
@@ -1800,6 +1719,7 @@ export function generateLevel(
     // Skipped entirely under `?targetprobe=`, on the terms `withProbeHazards`
     // records: the diagnostic owns the verge while it is on, and a world with
     // two authors is a world no rule describes.
+    const plan: LevelPlan = { ...builtPlan, streetLoops: laid.streetLoops.map((loop) => ({ main: [...loop.main], alternate: [...loop.alternate] })) };
     const targetSpecs = targetProbeMetres === undefined
       ? placeTargets(plan, laid.placed, laid.throughIds, streams.targets, targetRules)
       : [];
@@ -1852,9 +1772,7 @@ export function generateLevel(
         rejections,
         usedFallback: false,
         verdict,
-        beats: laid.pieces
-          .filter((entry) => entry.piece.beat !== null)
-          .map((entry) => entry.piece.name),
+        beats: [...laid.stations],
         requiredLength: verdict.requiredLength,
         optionalSegments: laid.optionalIds.length,
         drawCallsPredicted: cost.drawCalls,

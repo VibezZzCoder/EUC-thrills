@@ -24,7 +24,8 @@ import {
  *
  *   1. **That the switch reaches the wheel the player rides** — through the
  *      URL, the store, `applyTuning` and a real `EucController` on a real
- *      world — so the beeps arrive at 52 mph and the wheel lets go at 64.2 on
+ *      world — so the beeps arrive at 57.9 mph and the wheel lets go at 62.5
+ *      (52 and 64.2 until the owner moved the shares on 2026-09-22) on
  *      a flat-out ride, and the store holds the preset *exactly* rather than
  *      a slider-clamped neighbour of it.
  *   2. **That records are refused**, on the card and in the store, which is
@@ -52,7 +53,8 @@ import {
  *
  * The flat-out rides are on the proving ground: its pad, plaza and boulevard
  * are one 310 m straight, and a 65 mph wheel needs about 240 m to reach its
- * cutout (measured headless) — the slice's longest paved run has two corners
+ * cutout (measured headless; 166 m since the owner lowered the edge to 0.94 on
+ * 2026-09-22) — the slice's longest paved run has two corners
  * inside that distance. The slice boot below proves the thresholds and the
  * records; the proving ground proves the ride.
  *
@@ -315,7 +317,7 @@ function measureCrashFraming(page: Page, crashDistance: number | null) {
 // The switch reaches the wheel
 // ---------------------------------------------------------------------------
 
-test('the shipped wheel puts the beeps at 52 mph and the cutout at 64.2 on a flat-out ride', async ({ page }) => {
+test('the shipped wheel puts the beeps at 57.9 mph and the cutout at 62.5 on a flat-out ride', async ({ page }) => {
   const errors = collectErrors(page);
   await boot(page, 'level=proving');
 
@@ -338,11 +340,16 @@ test('the shipped wheel puts the beeps at 52 mph and the cutout at 64.2 on a fla
   if (ride === null) return;
   expect(ride.crashCause).toBe('cutout');
   expect(ride.crashMotion).toBe('faceplant');
-  // §30.2 fact 1: 0.785 × 29.74 = 23.3 m/s (52 mph), 0.965 × 29.74 = 28.7 (64.2).
-  expect(ride.firstBeep * MPH).toBeGreaterThan(51.6);
-  expect(ride.firstBeep * MPH).toBeLessThan(52.8);
-  expect(ride.lastRiding * MPH).toBeGreaterThan(63.6);
-  expect(ride.lastRiding * MPH).toBeLessThan(64.8);
+  // §30.2 fact 1 put these at 0.785 × 29.74 = 23.3 m/s (52 mph) and
+  // 0.965 × 29.74 = 28.7 (64.2). The owner moved both on 2026-09-22 — later
+  // beeps, an easier cutout — so 0.87 × 29.74 = 25.9 m/s (57.9 mph) and
+  // 0.94 × 29.74 = 28.0 (62.5). The wheel is still accelerating through the
+  // hold at the new edge, so the last riding speed is measured headless at
+  // 63.0, half a mile an hour past the threshold rather than a tenth.
+  expect(ride.firstBeep * MPH).toBeGreaterThan(57.3);
+  expect(ride.firstBeep * MPH).toBeLessThan(58.5);
+  expect(ride.lastRiding * MPH).toBeGreaterThan(62.4);
+  expect(ride.lastRiding * MPH).toBeLessThan(63.6);
   // On the straight — pad, plaza and boulevard — rather than into the sweep.
   expect(ride.crashZ).toBeLessThan(310);
 
@@ -422,7 +429,10 @@ test('the switch survives a fresh route, and worldLink writes only level and see
     seed: window.game.snapshot().world.seed,
   }));
   expect(before.derivedTopSpeed).toBeCloseTo(DIAGNOSTIC.dragOnlyTop, 6);
-  expect(before.seed).toBe('');
+  // A plain launch is the curated town since M39 Phase 1 (`DEFAULT_LEVEL`
+  // `generated`, `DEFAULT_SEED` `euc`), where it had been the hand-built city
+  // with no seed; the New route below must still move it to a fresh one.
+  expect(before.seed).toBe('euc');
 
   // The pause card's New route is a real `installLevel`: a new plan, a new
   // sampler, a **new controller**, and `applyTuning()` replayed onto it.
@@ -446,6 +456,7 @@ test('the switch survives a fresh route, and worldLink writes only level and see
   }));
   expect(after.levelId).toBe('generated');
   expect(after.seed).not.toBe('');
+  expect(after.seed, 'New route kept the launch town instead of building a fresh one').not.toBe(before.seed);
   // The new controller rides the wheel the switch asked for: the store carried it.
   expect(after.derivedTopSpeed).toBeCloseTo(DIAGNOSTIC.dragOnlyTop, 6);
   expect(after.drag).toBeCloseTo(DIAGNOSTIC.dragCoefficient, 9);
@@ -874,14 +885,17 @@ test('the cop leans on the same expression, and his pelvis is the same hinge', a
   //
   // The world is the slice under `?chaseprobe=1` — the M18 probe, a
   // brain-ridden cop on whatever world is loaded with no chase rules — which
-  // is exactly the address his fast-carve baseline was captured at.
+  // is exactly the address his fast-carve baseline was captured at. **Named**:
+  // since M39 Phase 1 a plain launch is the curated town, where the straight
+  // ahead of the spawn is not flat and one step's bank change drops the settle
+  // (M30 Phase 3b) mid-carve, so this case read a flick's pose, not a carve's.
   //
   // What this pins is that his rig is not a second implementation: his rig is
   // the player's with every node name prefixed `cop-` (`render/copRider.ts`),
   // and the pelvis hinge on it has to be the same expression over his own
   // controller's numbers.
   const errors = collectErrors(page);
-  await boot(page, 'chaseprobe=1');
+  await boot(page, 'level=slice&chaseprobe=1');
 
   const carve = await page.evaluate(({ flatOut, carveSteps }) => {
     const game = window.game;
@@ -1307,8 +1321,14 @@ test('at 65 the cop still holds the corridor through the fastest corner he meets
       // first draft read three single-sample spikes of 47, 30 and 19 metres
       // between neighbours a tenth of a second and three metres apart, which
       // is a mis-location rather than a cop.
-      spine.locate(sample.x, sample.z, near < 0 ? -1 : near + travelled, location);
-      near = near < 0 ? location.distance : near + travelled;
+      // **On a closed ring the window wraps** (the brutal pass, 2026-09-25):
+      // the cop starts behind the ring's seam, and a window carried past the
+      // ring's length fell off the end of the line and measured him hundreds
+      // of metres "off" it — equal in both rides while both ran the same
+      // course, and not once the harder cop ended one of them sooner.
+      const wrap = (d: number): number => (spine.closed ? ((d % spine.length) + spine.length) % spine.length : d);
+      spine.locate(sample.x, sample.z, near < 0 ? -1 : wrap(near + travelled), location);
+      near = near < 0 ? location.distance : wrap(near + travelled);
       travelled = 0;
       // He spawns `CHASE.spawnGapMetres` *behind* the route's start, so his
       // first seconds are legitimately off a line that has not begun yet.

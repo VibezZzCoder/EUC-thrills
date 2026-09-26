@@ -2,12 +2,15 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
+  cumulusLayout,
   hexToLinear,
   linearToSrgb,
+  paintEnvironment,
   paintSky,
   skyDirection,
   skyDirectionUv,
   srgbToLinear,
+  type CumulusParams,
   type SkyParams,
 } from './skyImage.ts';
 
@@ -405,4 +408,269 @@ test('the sun’s horizon warmth is exactly zero at the horizon, in every direct
     worstIn(peakRow) >= 8,
     `the warmth only moved ${worstIn(peakRow)} bytes at its own peak — it is not wired`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// M39 Ultra — the fine octave, the daylight cumulus and the environment
+// ---------------------------------------------------------------------------
+
+/** A cumulus layer shaped like `ULTRA.sky.cumulus` (degrees → radians). */
+const DEG = Math.PI / 180;
+const CUMULUS: CumulusParams = {
+  seed: 0,
+  count: 14,
+  fill: 0.72,
+  baseMin: 10 * DEG,
+  baseMax: 12 * DEG,
+  topMax: 16 * DEG,
+  widthMin: 6 * DEG,
+  widthMax: 15 * DEG,
+  aspect: 0.42,
+  puffs: 6,
+  billow: 0.06,
+  billowFrequency: 3.2,
+  edge: 0.09 * DEG,
+  litColour: 0xf5f7fb,
+  shadeColour: 0xccd7e5,
+  baseShade: 0.7,
+  lightFloor: 0.45,
+  haze: 0.15,
+  opacity: 1,
+};
+
+const luma = (r: number, g: number, b: number): number => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+/** The first row whose centre is above `sin(elevation) = floor`, i.e. where any cloud may start. */
+function firstCloudRow(params: SkyParams): number {
+  for (let row = 0; row < params.height; row += 1) {
+    if (Math.sin(Math.PI * ((row + 0.5) / params.height - 0.5)) > params.cloudHorizonFade) return row;
+  }
+  return params.height;
+}
+
+test('the Ultra fields are absent-means-ordinary: 0 and undefined paint the same bytes', () => {
+  // `paintSky` reads them only when present, so every ordinary sky is the
+  // painter M7.5 shipped (sky.test.ts holds that to the literal argument list).
+  assert.deepEqual(paintSky({ ...BASE, fineOctaveAmplitude: 0 }), paintSky(BASE));
+  assert.deepEqual(paintSky({ ...BASE, fineOctaveAmplitude: undefined, cumulus: undefined }), paintSky(BASE));
+});
+
+test('the fine octave adds edge detail to the clouds that are there, and nothing to a clear sky', () => {
+  const plain = paintSky({ ...BASE, width: 256, height: 128 });
+  const fine = paintSky({ ...BASE, width: 256, height: 128, fineOctaveAmplitude: 0.5 });
+  assert.notDeepEqual(fine, plain);
+  // Zero-mean and small: no texel moves far, so where the clouds are is unchanged.
+  let worst = 0;
+  for (let index = 0; index < plain.length; index += 1) worst = Math.max(worst, Math.abs(fine[index] - plain[index]));
+  assert.ok(worst < 48, `the fifth octave moved a texel by ${worst}`);
+  // A clear sky has nothing for it to perturb.
+  assert.deepEqual(
+    paintSky({ ...CLEAR, width: 256, height: 128, fineOctaveAmplitude: 0.5 }),
+    paintSky({ ...CLEAR, width: 256, height: 128 }),
+  );
+});
+
+test('the cumulus is deterministic and adds cloud brighter than the sky behind it', () => {
+  const params: SkyParams = { ...CLEAR, width: 512, height: 256, cumulus: CUMULUS };
+  const once = paintSky(params);
+  assert.deepEqual(paintSky({ ...params }), once);
+  const clear = paintSky({ ...CLEAR, width: 512, height: 256 });
+  // White cloud over blue sky lifts red most; 12 bytes is a visible cloud.
+  let brighter = 0;
+  for (let index = 0; index < once.length; index += 4) {
+    if (once[index] > clear[index] + 12) brighter += 1;
+  }
+  // Sparse: present, and nowhere near overcast.
+  const share = brighter / (params.width * params.height / 2);
+  assert.ok(share > 0.005 && share < 0.25, `cumulus covers ${(share * 100).toFixed(1)}% of the upper sky`);
+});
+
+// Gauntlet round 1 (Wave 3, R-L): the cumulus read as grey smoke, sat in the
+// rooftop haze band and hung off the frame's top edge, and two plans sharing a
+// heading showed the same cloud. These hold the rebuilt layer to the fix.
+
+test('the cumulus stays inside its band: nothing under baseMin, nothing over topMax', () => {
+  const layout = cumulusLayout(CUMULUS);
+  assert.ok(layout.length >= 6, `only ${layout.length} clouds on the ring`);
+  for (const cloud of layout) {
+    assert.ok(cloud.base >= CUMULUS.baseMin - 1e-12 && cloud.base <= CUMULUS.baseMax + 1e-12, `base ${cloud.base / DEG}°`);
+    // The dome, lifted by the most the billow can add, stays under the top.
+    assert.ok(cloud.base + cloud.height * (1 + CUMULUS.billow) <= CUMULUS.topMax + 1e-12, `top ${(cloud.base + cloud.height) / DEG}°`);
+    for (const puff of cloud.puffs) assert.ok(puff.y + puff.r <= cloud.height + 1e-12, 'a puff pokes over the dome');
+  }
+  // Painted: every texel the layer moves lies inside the band (one texel of
+  // edge either side).
+  const params: SkyParams = { ...CLEAR, width: 1024, height: 512, cumulus: CUMULUS };
+  const clouded = paintSky(params);
+  const clear = paintSky({ ...CLEAR, width: 1024, height: 512 });
+  const texel = Math.PI / params.height;
+  let moved = 0;
+  for (let row = 0; row < params.height; row += 1) {
+    const latitude = Math.PI * ((row + 0.5) / params.height - 0.5);
+    for (let column = 0; column < params.width; column += 1) {
+      const i = (row * params.width + column) * 4;
+      if (clouded[i] === clear[i] && clouded[i + 1] === clear[i + 1] && clouded[i + 2] === clear[i + 2]) continue;
+      moved += 1;
+      assert.ok(
+        latitude >= CUMULUS.baseMin - CUMULUS.edge - texel && latitude <= CUMULUS.topMax + CUMULUS.edge + texel,
+        `a cloud texel at ${(latitude / DEG).toFixed(2)}°`,
+      );
+    }
+  }
+  assert.ok(moved > 0, 'the layer painted nothing');
+});
+
+test('the cumulus is never darker than the sky behind it, and its body is no darker than the haze', () => {
+  const params: SkyParams = { ...CLEAR, width: 1024, height: 512, cumulus: CUMULUS };
+  const clouded = paintSky(params);
+  const clear = paintSky({ ...CLEAR, width: 1024, height: 512 });
+  let brightest = 0;
+  for (let i = 0; i < clouded.length; i += 4) {
+    const withCloud = luma(clouded[i], clouded[i + 1], clouded[i + 2]);
+    const without = luma(clear[i], clear[i + 1], clear[i + 2]);
+    assert.ok(withCloud >= without - 1, `a cloud darkened the sky from ${without} to ${withCloud}`);
+    if (withCloud !== without) brightest = Math.max(brightest, withCloud);
+  }
+  // Lit tops stay under the clip gate (§8.3: luma > 250).
+  assert.ok(brightest <= 250, `a cloud top reached luma ${brightest}`);
+  // No grey core: each cloud's body — its centre, 40 % up the dome — is at
+  // least the horizon haze's value, whichever way the sun falls on it.
+  const [hr, hg, hb] = channels(params.horizonColour);
+  const haze = luma(hr, hg, hb);
+  for (const cloud of cumulusLayout(CUMULUS)) {
+    const latitude = cloud.base + cloud.height * 0.4;
+    const row = Math.floor((latitude / Math.PI + 0.5) * params.height);
+    const column = Math.floor(((cloud.longitude / (Math.PI * 2)) + 0.5) * params.width) % params.width;
+    const i = (row * params.width + column) * 4;
+    const body = luma(clouded[i], clouded[i + 1], clouded[i + 2]);
+    assert.ok(body >= haze - 1, `a cloud body at luma ${body.toFixed(1)} under the haze's ${haze.toFixed(1)}`);
+  }
+});
+
+test('the seed places the clouds: the same seed the same sky, another seed another', () => {
+  const a = cumulusLayout(CUMULUS);
+  assert.deepEqual(cumulusLayout({ ...CUMULUS }), a);
+  const b = cumulusLayout({ ...CUMULUS, seed: 229099229 });
+  assert.notDeepEqual(b.map((cloud) => cloud.longitude), a.map((cloud) => cloud.longitude));
+  const size = { width: 512, height: 256 };
+  assert.notDeepEqual(
+    paintSky({ ...CLEAR, ...size, cumulus: { ...CUMULUS, seed: 229099229 } }),
+    paintSky({ ...CLEAR, ...size, cumulus: CUMULUS }),
+  );
+});
+
+test('the Ultra sky details never reach the horizon: every row below the cloud floor is byte-identical', () => {
+  // The horizon row stays `horizonColour` exactly (§3.2, A2): the fine octave
+  // and the cumulus live inside the cloud fade, which is zero at and below it.
+  for (const base of [BASE, { ...BASE, sunElevation: 0.58, sunAzimuth: -1.75, horizonColour: 0xdfc8a8 }]) {
+    const params: SkyParams = { ...base, width: 256, height: 512 };
+    const plain = paintSky(params);
+    const ultra = paintSky({ ...params, fineOctaveAmplitude: 0.5, cumulus: CUMULUS });
+    const rows = firstCloudRow(params);
+    assert.ok(rows > params.height / 2, 'the fixture has no rows below the floor');
+    const end = rows * params.width * 4;
+    assert.deepEqual(ultra.subarray(0, end), plain.subarray(0, end));
+    // …and the nadir row is the horizon colour itself.
+    const [r, g, b] = channels(params.horizonColour);
+    assert.deepEqual([ultra[0], ultra[1], ultra[2]], [r, g, b]);
+  }
+});
+
+const ENVIRONMENT_LOOK = {
+  skyZenithColour: 0x5892d8,
+  horizonColour: 0xbcd6ee,
+  sunAzimuth: 2.36,
+  sunElevation: 0.96,
+  skySunColour: 0xfff2dc,
+  groundBounceColour: 0xb2ab97,
+};
+const ENVIRONMENT_OPTIONS = {
+  width: 256,
+  height: 128,
+  bounceLift: 1.5,
+  sunCoreStrength: 0,
+  aureoleScale: 0.5,
+  horizonBlendDegrees: 6,
+  construction: {
+    gradientExponent: 0.62,
+    sunCoreSpread: 0.055,
+    sunGlowSpread: 0.34,
+    sunGlowStrength: 0.75,
+    sunHorizonWarmth: 0.3,
+    sunHorizonSpread: 1.05,
+    sunHorizonPeak: 0.2,
+    cloudLitColour: 0xfdfeff,
+    cloudShadeColour: 0xb9c8da,
+    cloudCoverage: 0.46,
+    cloudSoftness: 0.26,
+    cloudScale: 0.55,
+    cloudHorizonFade: 0.045,
+  },
+} as const;
+
+test('the environment’s lower half is the ground bounce × β, flat below the blend band', () => {
+  const pixels = paintEnvironment(ENVIRONMENT_LOOK, ENVIRONMENT_OPTIONS);
+  const { width, height, bounceLift, horizonBlendDegrees } = ENVIRONMENT_OPTIONS;
+  assert.equal(pixels.length, width * height * 4);
+  const bounce = hexToLinear(ENVIRONMENT_LOOK.groundBounceColour);
+  const blend = (horizonBlendDegrees * Math.PI) / 180;
+  let checked = 0;
+  for (let row = 0; row < height; row += 1) {
+    const latitude = Math.PI * ((row + 0.5) / height - 0.5);
+    if (latitude > -blend) continue;
+    for (let column = 0; column < width; column += 1) {
+      const offset = (row * width + column) * 4;
+      assert.equal(pixels[offset], Math.fround(bounce.r * bounceLift));
+      assert.equal(pixels[offset + 1], Math.fround(bounce.g * bounceLift));
+      assert.equal(pixels[offset + 2], Math.fround(bounce.b * bounceLift));
+      assert.equal(pixels[offset + 3], 1);
+      checked += 1;
+    }
+  }
+  assert.ok(checked > width * height * 0.4);
+});
+
+test('the environment meets the horizon at the horizon colour, with no seam', () => {
+  const pixels = paintEnvironment(ENVIRONMENT_LOOK, { ...ENVIRONMENT_OPTIONS, height: 512, width: 64 });
+  const horizon = hexToLinear(ENVIRONMENT_LOOK.horizonColour);
+  const width = 64;
+  const below = (512 / 2 - 1) * width * 4; // the row just under the horizon
+  const above = (512 / 2) * width * 4; // the row just over it
+  // Just below: the bounce blend has barely begun (smoothstep of half a
+  // texel of 6°), so it is the horizon colour to well inside a byte.
+  for (let channel = 0; channel < 3; channel += 1) {
+    const value = [horizon.r, horizon.g, horizon.b][channel];
+    assert.ok(Math.abs(pixels[below + channel] - value) < 0.002, `below: ${pixels[below + channel]} vs ${value}`);
+  }
+  // Just above: the sky's own first row, which has climbed half a texel up
+  // the ramp — the same few per cent the ordinary sky's first row has. The
+  // step across the horizon is that climb and nothing more: no seam.
+  for (let channel = 0; channel < 3; channel += 1) {
+    const step = Math.abs(pixels[above + channel] - pixels[below + channel]);
+    assert.ok(step < 0.03, `a ${step} step across the horizon in channel ${channel}`);
+  }
+});
+
+test('the environment carries no sun core: nothing in it is brighter than the lit sky', () => {
+  const pixels = paintEnvironment(ENVIRONMENT_LOOK, ENVIRONMENT_OPTIONS);
+  let brightest = 0;
+  for (let index = 0; index < pixels.length; index += 4) {
+    brightest = Math.max(brightest, 0.2126 * pixels[index] + 0.7152 * pixels[index + 1] + 0.0722 * pixels[index + 2]);
+  }
+  // The core would be 4× the sun colour (`boost = 1 + core × 3`).
+  assert.ok(brightest <= 1.0001, `a texel reached ${brightest}`);
+  // With the core put back, the sun is there — the option is what removed it.
+  const withCore = paintEnvironment(ENVIRONMENT_LOOK, { ...ENVIRONMENT_OPTIONS, sunCoreStrength: 1, aureoleScale: 1 });
+  let cored = 0;
+  for (let index = 0; index < withCore.length; index += 4) cored = Math.max(cored, withCore[index + 1]);
+  assert.ok(cored > 1.5, `the core option is not wired (${cored})`);
+});
+
+test('the environment is deterministic, and β moves only the lower half', () => {
+  const a = paintEnvironment(ENVIRONMENT_LOOK, ENVIRONMENT_OPTIONS);
+  assert.deepEqual(paintEnvironment(ENVIRONMENT_LOOK, { ...ENVIRONMENT_OPTIONS }), a);
+  const b = paintEnvironment(ENVIRONMENT_LOOK, { ...ENVIRONMENT_OPTIONS, bounceLift: 3 });
+  const half = (ENVIRONMENT_OPTIONS.height / 2) * ENVIRONMENT_OPTIONS.width * 4;
+  assert.deepEqual(b.subarray(half), a.subarray(half));
+  assert.notDeepEqual(b.subarray(0, half), a.subarray(0, half));
 });

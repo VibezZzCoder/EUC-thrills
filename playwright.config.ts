@@ -48,6 +48,32 @@ function positiveInteger(name: string, fallback: number): number {
   return value;
 }
 
+/**
+ * The dev server's port (M39 Part P finalize, 2026-09-24).
+ *
+ * **Unset, nothing changes**: the base URL is `http://127.0.0.1:5173`, the
+ * server command is the plain `npm run dev -- --host 127.0.0.1`, and an
+ * existing server there is reused, exactly as before this override existed.
+ *
+ * `EUC_PORT=5197` moves the base URL and the dev server together. It exists
+ * because another workspace project's Vite server can hold 5173 on a shared
+ * machine, and `reuseExistingServer` would then run the suite against *that*
+ * app. With the override the command also passes `--strictPort`: a port that
+ * is already taken fails the start instead of letting Vite drift to the next
+ * free port, which Playwright would not be waiting on. Pick a free port; a
+ * server already listening on it is reused, as on 5173.
+ */
+function devServerPort(): number {
+  const value = positiveInteger('EUC_PORT', 5173);
+  if (value > 65_535) {
+    throw new Error(`EUC_PORT must be a TCP port (1-65535); received ${JSON.stringify(process.env.EUC_PORT)}`);
+  }
+  return value;
+}
+const PORT = devServerPort();
+const PORT_OVERRIDDEN = process.env.EUC_PORT !== undefined;
+const BASE_URL = `http://127.0.0.1:${PORT}`;
+
 export default defineConfig({
   testDir: './tests',
   // Playwright clears its output directory at startup. Keep that cleanup away
@@ -93,7 +119,7 @@ export default defineConfig({
   timeout: 120_000,
   expect: { timeout: 20_000 },
   use: {
-    baseURL: 'http://127.0.0.1:5173',
+    baseURL: BASE_URL,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
@@ -146,8 +172,12 @@ export default defineConfig({
     // Vite's default `localhost` can resolve to ::1 in a managed environment
     // where the listen is then rejected. The explicit IPv4 loopback is the
     // launch contract used across this workspace.
-    command: 'npm run dev -- --host 127.0.0.1',
-    url: 'http://127.0.0.1:5173',
+    // `EUC_PORT` (above) adds the port and `--strictPort`; unset, the command
+    // is the one this suite always ran.
+    command: PORT_OVERRIDDEN
+      ? `npm run dev -- --host 127.0.0.1 --port ${PORT} --strictPort`
+      : 'npm run dev -- --host 127.0.0.1',
+    url: BASE_URL,
     reuseExistingServer: true,
     timeout: 60_000,
   },

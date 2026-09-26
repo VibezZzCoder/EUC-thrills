@@ -1,6 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { MARKINGS, markingWidth, type MarkingPaint, type MarkingRole } from '../data/markings.ts';
-import type { PropKind } from '../data/props.ts';
+import type { BuildingLook, PropKind } from '../data/props.ts';
 import type { MaterialId } from '../data/surfaces.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 import type { BoxCollider, SegmentSocket } from './plan.ts';
@@ -125,6 +125,8 @@ export interface SegmentProp {
   scale?: number;
   /** Metric size, for `building`. See `Prop.size`. */
   size?: Vec3;
+  /** A building's district look or landmark (M39 Phase 2). See `Prop.look`. */
+  look?: BuildingLook;
   /**
    * Height above the sampled ground, metres. Default 0.
    *
@@ -212,6 +214,8 @@ export interface PlacedProp {
   rotationY: number;
   scale: number;
   size?: Vec3;
+  /** See `Prop.look`. */
+  look?: BuildingLook;
   /** Height above the ground at `(x, z)`, metres. */
   lift: number;
   /** See `SegmentProp.onCollider`. */
@@ -788,6 +792,7 @@ export function propsOf(placed: PlacedSegment): PlacedProp[] {
       rotationY: heading + (prop.yaw ?? 0),
       scale: prop.scale ?? 1,
       ...(prop.size === undefined ? {} : { size: { ...prop.size } }),
+      ...(prop.look === undefined ? {} : { look: prop.look }),
       lift: prop.lift ?? 0,
       ...(prop.onCollider === true
         ? {

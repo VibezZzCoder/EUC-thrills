@@ -268,9 +268,10 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
    * players" is who is riding, not what the ride is for, and this project's
    * own principle — *a mode is what a ride is for* — is what refused the
    * plan's first draft of a `twoPlayerFreeRide` row. So the join panel is a
-   * menu that hands a two-seat session to the ride that already exists, and a
-   * future couch chase reuses `chase` with two seats rather than breeding
-   * `twoPlayerChase`.
+   * menu that hands a two-seat session to the ride that already exists, and
+   * the couch chase reuses `chase` with up to four seats rather than breeding
+   * `twoPlayerChase` — which is what M39 Part P did (§39.6b.3b), exactly as
+   * this row said it would.
    *
    * It differs from `riderSelect` in exactly one successor, and for the
    * mirror of that state's own reason. Choosing a rider is choosing what to
@@ -280,14 +281,17 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
    * both players until they are both holding something, and the moment they
    * are, the only thing left to do is go.
    *
-   * **Three rides now, and the chase is still not one of them.** This said
+   * **Five rides now, and the chase is the last of them.** This said
    * "`freeRide` and not the other four" while stage 1 was two riders in one
    * world with nothing being refereed (§25.6); Knockabout arrived at M26 Phase
-   * 5 and the race at M27 Phase 3, so the panel starts whichever of the three
-   * the room chose (`CouchRide`). A couch chase is still real unopened design;
-   * Knockabout's three- and four-player rules were too until the owner
-   * reopened q94 and M37 answered them (`docs/PLANS.md` §37.1), which changed
-   * who the panel may start a fight for and no transition in this table.
+   * 5, the race at M27 Phase 3 and Trick Run at M38, so the panel starts
+   * whichever the room chose (`CouchRide`). The couch chase was real unopened
+   * design until M39 Part P answered it (`docs/PLANS.md` §39.6b.3b, q215–q222):
+   * up to three outlaws against one cop slot, the slot a human who picked
+   * Officer Dorkins or CPU Dorkinses filling the room to four. Knockabout's
+   * three- and four-player rules were unopened too until the owner reopened q94
+   * and M37 answered them (§37.1), which changed who the panel may start a
+   * fight for and no transition in this table; the chase changed one.
    */
   couchJoin: Object.freeze({
     id: 'couchJoin' as AppStateId,
@@ -309,8 +313,14 @@ export const APP_STATE_SPECS: Readonly<Record<AppStateId, AppStateSpec>> = Objec
     // missing from it fails silently**: the button clicks, the panel stays,
     // and nothing says why. It cost a debugging session at M27 Phase 3 to
     // rediscover that, one row after the row that recorded it.
+    //
+    // **`chase` joined at M39 Part P** (§39.6b.3b), appended so every existing
+    // exit keeps its place. It is one of the *two* couch-exit lists: the other
+    // is `Game`'s `from === 'couchJoin'` list, which decides which exits keep
+    // the seats — and a chase missing from that one would send every guest
+    // home on the way into the room, M27 Phase 5's defect one ride along.
     successors: Object.freeze(
-      ['title', 'freeRide', 'trackDay', 'trickRun', 'knockabout', 'routes'] as AppStateId[],
+      ['title', 'freeRide', 'trackDay', 'trickRun', 'knockabout', 'routes', 'chase'] as AppStateId[],
     ),
   }),
   freeRide: Object.freeze({

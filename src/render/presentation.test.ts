@@ -218,11 +218,12 @@ function coniferPlan(count: number, shrubs = 0): LevelPlan {
 
 test('PROP_BUDGET.maxTriangles is a boundary: at it enhanced, one conifer over baseline', () => {
   // An enhanced conifer is 2 × 48 = 96 triangles with its shadow and a shrub
-  // 2 × 20 = 40 in either recipe; 935 conifers and 6 shrubs land the family on
-  // 90,000 exactly, which is the only way to test a ceiling from both sides.
+  // 2 × 20 = 40 in either recipe; 1,300 conifers and 5 shrubs land the family
+  // on 125,000 exactly (M39's raised ceiling), which is the only way to test a
+  // ceiling from both sides.
   const conifer = 2 * ENHANCED_PART_COSTS.coniferFoliage!.triangles;
   const shrub = 2 * PART_COSTS.shrub.triangles;
-  const shrubs = 6;
+  const shrubs = 5;
   const exact = (PROP_BUDGET.maxTriangles - shrubs * shrub) / conifer;
   assert.equal(exact, Math.floor(exact), 'the fixture must land on the ceiling exactly');
 
@@ -235,7 +236,7 @@ test('PROP_BUDGET.maxTriangles is a boundary: at it enhanced, one conifer over b
 
   const over = selectPresentation(coniferPlan(exact + 1, shrubs));
   assert.equal(over.recipe.id, 'baseline', 'one conifer over the ceiling falls back');
-  assert.match(over.verdicts[0].breaches.join('\n'), /prop triangles \(shadows included\) against a ceiling of 90000/);
+  assert.match(over.verdicts[0].breaches.join('\n'), new RegExp(`prop triangles \\(shadows included\\) against a ceiling of ${PROP_BUDGET.maxTriangles}`));
   // And the fallback is the baseline rung's own cost, not a trimmed enhanced one.
   assert.equal(
     over.cost.propTriangles,
@@ -301,7 +302,7 @@ test('a fixture beyond every ceiling names every ceiling, and still falls back t
   const huge = coniferPlan(6000);
   const verdict = judgePresentation(huge, ENHANCED_PRESENTATION);
   for (const ceiling of [
-    /prop triangles \(shadows included\) against a ceiling of 90000/,
+    new RegExp(`prop triangles \\(shadows included\\) against a ceiling of ${PROP_BUDGET.maxTriangles}`),
     new RegExp(`solo triangles against a ceiling of ${RENDER_BUDGET.maxTriangles}`),
     new RegExp(`split triangles against a ceiling of ${RENDER_BUDGET_SPLIT.maxTriangles}`),
     new RegExp(`quad triangles against a ceiling of ${RENDER_BUDGET_QUAD.maxTriangles}`),

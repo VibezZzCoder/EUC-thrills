@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test } from '@playwright/test';
 import { bootToTitle, collectErrors } from './harness.ts';
-import { CHASE, PADDLE } from '../src/data/tuning.ts';
+import { AUDIO, CHASE, PADDLE } from '../src/data/tuning.ts';
 
 /**
  * M18 — the police chase, in a real browser.
@@ -231,7 +231,11 @@ test('the drawn cop stands where the simulated cop is', async ({ page }) => {
     return {
       rig: rig === undefined ? null : { x: rig.position.x, y: rig.position.y, z: rig.position.z },
       rider,
-      gap: game.snapshot().chase.copGap,
+      // **The tail's own gap, not `copGap`** — M39 Part P (§39.6b.3). `copGap`
+      // became the nearest *standing* cop of three, parked patrols included,
+      // so on a ride past a post it can be a patrol's distance while
+      // `cop-rider` is still the tail. The rig under test is the tail's.
+      gap: game.snapshot().chase.pursuers[0].gap,
     };
   });
 
@@ -470,8 +474,8 @@ test('the tracker refuses an overlapping regroup, then returns safely when the r
   // first build's proof accidentally exposed a worse defect: at the route
   // start, sampling 30 m behind clamps to the start and put the cop 1.1 m from
   // the rider. Its assertion treated any large gap reduction as success. Pin
-  // both halves now: no overlap when there is no route behind the rider, and a
-  // real return once the rider is placed far enough along the same route.
+  // both halves now: no overlap at the start, and a real return once the
+  // rider is placed far enough along the same route.
   const errors = collectErrors(page);
   await bootChase(page);
 
@@ -483,10 +487,15 @@ test('the tracker refuses an overlapping regroup, then returns safely when the r
     game.tuning.set('CHASE.trackerHoldSeconds', 1);
     game.startChase();
 
+    // **The tail's own gap throughout** — M39 Part P. The regroup is the
+    // tail's (`regroupTail`); `copGap` is now the nearest standing cop of
+    // three, and a rider placed at a checkpoint can land inside a parked
+    // patrol's reach, which would read as a "snap" that no return made.
+    const tailGap = (): number => game.snapshot().chase.pursuers[0].gap;
     const startGaps: number[] = [];
     for (let chunk = 0; chunk < 8; chunk += 1) {
       game.advance(30);
-      startGaps.push(game.snapshot().chase.copGap);
+      startGaps.push(tailGap());
     }
 
     // Start a clean run, then place the rider at a real route checkpoint. The
@@ -506,7 +515,7 @@ test('the tracker refuses an overlapping regroup, then returns safely when the r
     let gapAfterSnap = Infinity;
     for (let chunk = 0; chunk < 20; chunk += 1) {
       game.advance(30);
-      const gap = game.snapshot().chase.copGap;
+      const gap = tailGap();
       const previous = placedGaps[placedGaps.length - 1];
       placedGaps.push(gap);
       if (previous !== undefined && previous - gap > 20) {
@@ -515,15 +524,22 @@ test('the tracker refuses an overlapping regroup, then returns safely when the r
         break;
       }
     }
-    return { startGaps, snapped, gapAfterSnap };
+    return { startGaps, snapped, gapAfterSnap, tailReturns: game.snapshot().chase.demands.tailReturns };
   });
 
-  // The opening really was beyond the trigger, but the invalid candidate was
-  // refused instead of collapsing to the rider's own position.
+  // The opening really was beyond the trigger, and nothing collapsed onto the
+  // rider's own position. Since M39 r6's Codex QA a town's line is a closed
+  // ring, so a rider at the start has real road behind them — the return
+  // climb — and the tracker may legitimately bring the cop back there; it
+  // must still land outside the bust radius. The open-route start clamp the
+  // first build blessed is refused headless (`copRegroup.test.ts`).
   expect(tracked.startGaps[0]).toBeGreaterThan(60);
-  expect(Math.min(...tracked.startGaps)).toBeGreaterThan(60);
+  expect(Math.min(...tracked.startGaps)).toBeGreaterThan(CHASE.bustRadiusMetres);
   // With real route behind the rider, the regroup fires at a safe separation.
   expect(tracked.snapped).toBe(true);
+  // And the snap was a return the referee demanded and Game placed, which is
+  // what the demand counter says since M39 Part P — not a patrol waking.
+  expect(tracked.tailReturns).toBeGreaterThanOrEqual(1);
   expect(tracked.gapAfterSnap).toBeGreaterThan(CHASE.bustRadiusMetres);
   expect(tracked.gapAfterSnap).toBeGreaterThan(25);
   expect(tracked.gapAfterSnap).toBeLessThan(40);
@@ -673,5 +689,377 @@ test('the siren reaches the real output bus and obeys mute', async ({ page }) =>
   expect(measured.audible).toBeGreaterThan(0.005);
   expect(measured.muted).toBeLessThan(1e-4);
   expect(measured.restored).toBeGreaterThan(0.005);
+  expect(errors).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// M39 Part P — the solo face: one outlaw against a pack of three
+// ---------------------------------------------------------------------------
+
+/**
+ * **The pack, as a browser proves it** (`docs/PLANS.md` §39.6b.3, q206–q209).
+ *
+ * The referee's arithmetic over N outlaws and M pursuers is headless
+ * (`simulation/chase.test.ts`, `copPack.test.ts`, the bench). What only a
+ * browser can say is the composition: three controllers stepped by one loop,
+ * three trims in the one second-rider slot, each drawn where his own pose is,
+ * the wake and the bust reaching the real referee through Game's step, and the
+ * card and the record store agreeing about which force a run was ridden
+ * against. The bridge fields these read are Game's (`snapshot().chase.pursuers`,
+ * `posts`, `force`, `copsProbe`, `bustedBy`, `demands`).
+ */
+
+/** The pursuer poses Game holds privately — read as diagnostics, never written. */
+interface PackInternals {
+  readonly pursuers: readonly { readonly current: { x: number; z: number; headingY: number } }[];
+}
+
+/**
+ * Stand the rider `metres` from patrol `index`, still, inside his wake range,
+ * and step until he leaves his post or the run ends. The solo builder's
+ * measured recipe: 40 m ahead of a parked patrol wakes him on proximity.
+ */
+async function standBeforePatrol(
+  page: import('@playwright/test').Page,
+  index: number,
+  metres: number,
+): Promise<{ wakeGap: number; wokeAtChunk: number; wakes: number }> {
+  return page.evaluate(({ at, reach }) => {
+    const game = window.game;
+    const internal = game as unknown as PackInternals;
+    const cop = internal.pursuers[at].current;
+    const x = cop.x + Math.sin(cop.headingY) * reach;
+    const z = cop.z + Math.cos(cop.headingY) * reach;
+    const ground = game.sampleGround(x, z);
+    game.placeRider({ x, y: ground.height, z }, cop.headingY + Math.PI);
+    game.clearActions();
+    for (let chunk = 0; chunk < 80; chunk += 1) {
+      game.advance(3);
+      const snapshot = game.snapshot();
+      const patrol = snapshot.chase.pursuers[at];
+      if (!patrol.parked) {
+        return { wakeGap: patrol.gap, wokeAtChunk: chunk, wakes: snapshot.chase.demands.proximityWakes };
+      }
+      if (snapshot.chase.phase !== 'running') break;
+    }
+    const snapshot = game.snapshot();
+    return { wakeGap: Infinity, wokeAtChunk: -1, wakes: snapshot.chase.demands.proximityWakes };
+  }, { at: index, reach: metres });
+}
+
+test('the solo chase rides three cops: a tail and two patrols at their posts, each drawn where he is', async ({ page }) => {
+  // q207: one human is three CPU cops (`cpuPackSize(1, false)`). The tail
+  // starts 20 m behind as M18's one cop did; the patrols stand at posts on the
+  // town ring, parked, until the referee wakes them (§39.6b.3).
+  const errors = collectErrors(page);
+  await bootChase(page);
+
+  const pack = await page.evaluate(() => {
+    const game = window.game;
+    game.advance(60);
+    const chase = game.snapshot().chase;
+    const scene = game.renderer.scene;
+    const drawn = (['cop-rider', 'cop2-rider', 'cop3-rider'] as const).map((name, index) => {
+      const root = scene.getObjectByName(name);
+      const rigName = index === 0 ? 'cop-riding-rig' : `cop${index + 1}-riding-rig`;
+      const rig = root?.getObjectByName(rigName);
+      rig?.updateWorldMatrix(true, false);
+      const m = rig?.matrixWorld.elements;
+      return {
+        visible: root?.visible === true,
+        at: m === undefined ? null : { x: m[12], z: m[14] },
+      };
+    });
+    return {
+      force: chase.force,
+      probe: chase.copsProbe,
+      posts: chase.posts,
+      second: chase.secondRider,
+      slot: game.renderer.secondRiderShown,
+      pursuers: chase.pursuers.map((p) => ({
+        role: p.role, phase: p.phase, parked: p.parked, crashed: p.crashed, x: p.x, z: p.z, gap: p.gap,
+      })),
+      copGap: chase.copGap,
+      drawn,
+    };
+  });
+
+  expect(pack.force, 'the shipped chase is not the three-cop chase').toBe(3);
+  expect(pack.probe).toBeNull();
+  expect(pack.pursuers.map((p) => p.role)).toEqual(['tail', 'patrol', 'patrol']);
+  // route-41 is a town with a ring, so both patrols have a post (q206); the
+  // echelon fallback would put them behind the tail, unparked.
+  expect(pack.posts).toBe('ring');
+  expect(pack.pursuers[0].parked).toBe(false);
+  expect(pack.pursuers[1].parked && pack.pursuers[2].parked, 'a patrol left his post unprompted').toBe(true);
+  expect(pack.pursuers.map((p) => p.phase)).toEqual(['chasing', 'parked', 'parked']);
+  expect(pack.pursuers.every((p) => !p.crashed)).toBe(true);
+  // One slot, keeping its word (R-7): the pack is `cop`, and all three trims
+  // are up in it.
+  expect(pack.second).toBe('cop');
+  expect(pack.slot).toBe('cop');
+  expect(pack.drawn.map((d) => d.visible)).toEqual([true, true, true]);
+  // **Each trim stands where his own pose is** — the M18 claim, three times.
+  // A trim posed from the wrong pursuer's pose, or left at its build-time
+  // origin, fails here on the cop it belongs to.
+  for (let index = 0; index < 3; index += 1) {
+    const at = pack.drawn[index].at;
+    expect(at, `trim ${index} has no rig`).not.toBeNull();
+    const off = Math.hypot(at!.x - pack.pursuers[index].x, at!.z - pack.pursuers[index].z);
+    expect(off, `trim ${index} is ${off.toFixed(2)} m from pursuer ${index}`).toBeLessThan(1.5);
+  }
+  // `copGap` is the nearest standing cop, so it is never above any one of them.
+  expect(pack.copGap).toBeLessThanOrEqual(Math.min(...pack.pursuers.map((p) => p.gap)) + 1e-6);
+  expect(errors).toEqual([]);
+});
+
+test('a parked patrol wakes inside the siren line, and a patrol bust ends the run credited to him', async ({ page }) => {
+  // q206's promise and §39.6b.3's wake rule together: a patrol sleeps at his
+  // post until the rider is inside `patrolWakeMetres`, which is the siren's
+  // far edge on purpose, so a wake is *heard* as it happens. Then the run is
+  // ended by him rather than the tail, and the referee's attribution names
+  // which cop it was (`bustedBy`, a pursuer index).
+  expect(CHASE.patrolWakeMetres, 'the wake left the siren line').toBe(AUDIO.sirenFarMetres);
+  const errors = collectErrors(page);
+  await bootChase(page);
+  await page.evaluate(() => window.game.advance(10));
+
+  const woke = await standBeforePatrol(page, 1, 40);
+  expect(woke.wokeAtChunk, 'patrol 1 never left his post with the rider 40 m away').toBeGreaterThanOrEqual(0);
+  expect(woke.wakes).toBeGreaterThanOrEqual(1);
+  expect(woke.wakeGap).toBeLessThanOrEqual(CHASE.patrolWakeMetres);
+
+  const ended = await page.evaluate(() => {
+    const game = window.game;
+    let sirenOnceWoken = 0;
+    let closest = Infinity;
+    for (let chunk = 0; chunk < 400; chunk += 1) {
+      game.advance(6);
+      const snapshot = game.snapshot();
+      sirenOnceWoken = Math.max(sirenOnceWoken, snapshot.audio.sirenGain);
+      closest = Math.min(closest, snapshot.chase.pursuers[1].gap);
+      if (snapshot.chase.phase !== 'running') break;
+    }
+    for (let chunk = 0; chunk < 60 && game.snapshot().app.state !== 'results'; chunk += 1) game.advance(10);
+    const snapshot = game.snapshot();
+    return {
+      phase: snapshot.chase.phase,
+      outcome: snapshot.chase.outcome,
+      bustedBy: snapshot.chase.bustedBy,
+      roles: snapshot.chase.pursuers.map((p) => p.role),
+      busts: snapshot.chase.pursuers.map((p) => p.busts),
+      state: snapshot.app.state,
+      sirenOnceWoken,
+      closest,
+    };
+  });
+
+  // He came in with the siren up, all the way to the rider.
+  expect(ended.sirenOnceWoken).toBeGreaterThan(0);
+  expect(ended.closest).toBeLessThan(CHASE.swingRangeMetres);
+  // And a patrol, not the tail, ended it: the credit is his and only his.
+  expect(['caught', 'touched']).toContain(ended.outcome);
+  expect(ended.bustedBy, 'no pursuer was credited with the bust').toBeGreaterThanOrEqual(1);
+  expect(ended.roles[ended.bustedBy]).toBe('patrol');
+  expect(ended.busts[ended.bustedBy]).toBe(1);
+  expect(ended.busts.reduce((a, b) => a + b, 0), 'a bust was credited twice').toBe(1);
+  expect(ended.state).toBe('results');
+  await expect(page.locator('.euc-menu--results [data-menu="results-heading"]')).toHaveText(/Busted/);
+  expect(errors).toEqual([]);
+});
+
+test('?cops=1 is the one-cop chase, and it files no record', async ({ page }) => {
+  // R-14: the pre-Part-P chase kept for an A/B ride. It is a diagnostic, so it
+  // joins `Game.probing` and takes the existing diagnostic note — a best set
+  // against one cop by a probe would otherwise be read as a three-cop best, or
+  // shadow a real one-cop best from before Part P.
+  const errors = collectErrors(page);
+  await bootToTitle(page, `level=generated&seed=${SEED}&cops=1`);
+
+  const run = await page.evaluate(() => {
+    const game = window.game;
+    game.clearRecords();
+    game.tuning.set('CHASE.escapeSeconds', 30);
+    game.startChase();
+    game.setActions({ throttle: 0.6 });
+    game.advance(2);
+    const scene = game.renderer.scene;
+    const trims = ['cop-rider', 'cop2-rider', 'cop3-rider'].map((name) => scene.getObjectByName(name)?.visible === true);
+    const chase = game.snapshot().chase;
+    const start = { force: chase.force, probe: chase.copsProbe, roles: chase.pursuers.map((p) => p.role), posts: chase.posts };
+    for (let chunk = 0; chunk < 300; chunk += 1) {
+      game.advance(30);
+      if (game.snapshot().app.state === 'results') break;
+    }
+    const id = game.levelPlan.id;
+    return {
+      trims,
+      start,
+      state: game.snapshot().app.state,
+      best: game.snapshot().chase.best,
+      stored: [1, 2, 3].map((force) => game.chaseRecords.best(id, force)),
+    };
+  });
+
+  expect(run.start).toEqual({ force: 1, probe: 1, roles: ['tail'], posts: 'none' });
+  expect(run.trims).toEqual([true, false, false]);
+  expect(run.state).toBe('results');
+  expect(run.best).toBeNull();
+  expect(run.stored).toEqual([null, null, null]);
+  await expect(page.locator('.euc-menu--results [data-menu="results-notes"]'))
+    .toContainText('Diagnostic run — personal best not saved');
+  expect(errors).toEqual([]);
+});
+
+test('the shipped chase files against three cops, and a one-cop best is named on the card — q208, q213', async ({ page }) => {
+  // q208: a best set against three cops is not comparable with one set against
+  // one, so the store keeps them apart by force and the card reads force 3.
+  // q213: a player who has a pre-Part-P best is told it still exists, in one
+  // line, rather than finding his record "gone".
+  const errors = collectErrors(page);
+  await bootToTitle(page, `level=generated&seed=${SEED}`);
+
+  const run = await page.evaluate(() => {
+    const game = window.game;
+    game.clearRecords();
+    const id = game.levelPlan.id;
+    // An old row: no `force`, which reads as one cop (R-8).
+    game.chaseRecords.submit({ levelId: id, seconds: 300, escaped: true, setAt: new Date().toISOString() });
+    game.tuning.set('CHASE.escapeSeconds', 30);
+    game.startChase();
+    const before = game.snapshot().chase.best;
+    game.setActions({ throttle: 0.6 });
+    for (let chunk = 0; chunk < 300; chunk += 1) {
+      game.advance(30);
+      if (game.snapshot().app.state === 'results') break;
+    }
+    return {
+      before,
+      state: game.snapshot().app.state,
+      best: game.snapshot().chase.best,
+      one: game.chaseRecords.best(id, 1),
+      three: game.chaseRecords.best(id, 3),
+    };
+  });
+
+  // The one-cop best is not the three-cop best the card starts from.
+  expect(run.before).toBeNull();
+  expect(run.state).toBe('results');
+  expect(run.three, 'the three-cop run filed nothing').not.toBeNull();
+  expect(run.three!.force).toBe(3);
+  expect(run.best).toBe(run.three!.seconds);
+  expect(run.one).toMatchObject({ seconds: 300, escaped: true, force: 1 });
+  await expect(page.locator('.euc-menu--results [data-menu="results-notes"]'))
+    .toContainText('Best against one cop: 5:00.00, escaped');
+  expect(errors).toEqual([]);
+});
+
+test('touching any officer is a bust, the card says so in the plan’s words, and R in the delay still reaches it', async ({ page }) => {
+  // §39.6b.3 "Sound, HUD, card": with three cops the note names no one of
+  // them — "You touched an officer". M24's ram, against the tail, on the
+  // values M24's own fixture uses (`wobble=0`, the paddle's knock share at the
+  // top of its slider so his swing cannot end it first). And q175: an R
+  // pressed in the results delay used to strand an ended run on the road.
+  const errors = collectErrors(page);
+  await bootToTitle(page, `level=generated&seed=${SEED}&wobble=0`);
+  await page.evaluate(() => {
+    window.game.tuning.set('PADDLE.hardKnockShare', 3);
+    window.game.startChase();
+  });
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
+
+  const rammed = await page.evaluate(() => {
+    const game = window.game;
+    game.clearActions();
+    game.setActions({ throttle: -1 });
+    for (let chunk = 0; chunk < 160; chunk += 1) {
+      game.advance(5);
+      const snapshot = game.snapshot();
+      if (snapshot.chase.phase !== 'running') {
+        // R inside the delay (q175). The R zeroes the delay; the fix is that
+        // the ended round still reaches its card rather than sitting on the
+        // road with the referee answering quiet steps.
+        const inDelay = snapshot.app.state === 'chase' && snapshot.challenge.resultsIn > 0;
+        game.setActions({ throttle: 0, reset: true });
+        game.advance(2);
+        game.setActions({ reset: false });
+        for (let wait = 0; wait < 60 && game.snapshot().app.state !== 'results'; wait += 1) game.advance(1);
+        const end = game.snapshot();
+        return {
+          outcome: snapshot.chase.outcome,
+          bustedBy: end.chase.bustedBy,
+          role: end.chase.pursuers[Math.max(0, end.chase.bustedBy)]?.role ?? null,
+          inDelay,
+          state: end.app.state,
+        };
+      }
+    }
+    return { outcome: 'none', bustedBy: -1, role: null, inDelay: false, state: game.snapshot().app.state };
+  });
+
+  expect(rammed.outcome, JSON.stringify(rammed)).toBe('touched');
+  expect(rammed.inDelay, 'the R was not pressed inside the results delay').toBe(true);
+  expect(rammed.state, 'an R in the results delay stranded the run (q175)').toBe('results');
+  expect(rammed.bustedBy).toBeGreaterThanOrEqual(0);
+  const notes = page.locator('.euc-menu--results [data-menu="results-notes"]');
+  await expect(notes).toContainText('You touched an officer — that is an instant bust');
+  await expect(notes).not.toContainText('touched Officer Dorkins');
+  expect(errors).toEqual([]);
+});
+
+test('F3 lists the pack: the count, where the posts came from, and every cop’s state', async ({ page }) => {
+  // The director is otherwise invisible from the saddle (§39.6b.3, F3): which
+  // cop is asleep, which is riding in, which is owed a return.
+  const errors = collectErrors(page);
+  await bootToTitle(page, `level=generated&seed=${SEED}&debug=1`);
+  await page.evaluate(() => {
+    window.game.startChase();
+    window.game.advance(30);
+  });
+  const overlay = page.locator('#euc-debug-overlay');
+  await expect(overlay).toBeVisible();
+  await expect(overlay.locator('[data-field="chasepack"]')).toContainText('3 cops');
+  await expect(overlay.locator('[data-field="chasepack"]')).toContainText('posts ring');
+  await expect(overlay.locator('[data-field="chasecop0"]')).toContainText(/^tail\s+chasing\s+\d+ m\s+cap /);
+  await expect(overlay.locator('[data-field="chasecop1"]')).toContainText(/^patrol\s+parked\s/);
+  await expect(overlay.locator('[data-field="chasecop2"]')).toContainText(/^patrol\s+parked\s/);
+  expect(errors).toEqual([]);
+});
+
+test('F4’s Cop hold is the couch face’s remedy: a solo chase ignores it and the tail rides from GO (QA r2)', async ({ page }) => {
+  // q224's hold is listed under the couch face and the solo chase has none —
+  // the 20 m spawn gap is the head start. The room is shared by both faces
+  // and snapshots the hold at `arm`, so the solo arm has to zero it: a 5 s
+  // hold tried for a human cop at GC used to freeze Dorkins 20 m behind the
+  // next solo rider for 5 s after GO.
+  const errors = collectErrors(page);
+  await bootToTitle(page, `level=generated&seed=${SEED}`);
+  await page.evaluate(() => {
+    const game = window.game;
+    game.loop.setRunning(false);
+    game.tuning.set('CHASE.copHoldSeconds', 5);
+    game.startChase();
+  });
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
+  const ride = await page.evaluate(() => {
+    const game = window.game;
+    const room = game.chaseRoom;
+    const start = game.snapshot().chase.pursuers[0];
+    const atGo = { phase: room.phase, held: room.pursuersHeld, hold: room.copHoldSeconds };
+    game.advance(120);
+    const later = game.snapshot().chase.pursuers[0];
+    return {
+      atGo,
+      heldAfterOne: room.pursuersHeld,
+      tailMoved: Math.hypot(later.x - start.x, later.z - start.z),
+      knob: game.tuning.get('CHASE.copHoldSeconds'),
+    };
+  });
+  expect(ride.knob, 'the knob was not set, so this proves nothing').toBe(5);
+  expect(ride.atGo.phase).toBe('running');
+  expect(ride.atGo.hold, 'the solo arm carried the couch face’s hold').toBe(0);
+  expect(ride.atGo.held, 'the solo pack is held after GO').toBe(false);
+  expect(ride.heldAfterOne).toBe(false);
+  expect(ride.tailMoved, 'the tail stood still for the first second of a solo chase').toBeGreaterThan(0.5);
   expect(errors).toEqual([]);
 });

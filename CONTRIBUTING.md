@@ -31,6 +31,10 @@ describe the shape — it may already be planned, rejected, or in progress.
   (first run: `npx playwright install chromium`). Check the changed interaction
   and relevant desktop or touch layout. `test:browser:one` and
   `test:browser:serial` require a target and force one Chromium worker.
+  The suite serves the game on port 5173 and reuses a server already there;
+  if another project holds that port, pick a free one with `EUC_PORT` (for
+  example `EUC_PORT=5197 npm run test:browser -- <spec>`) and the dev server
+  and the tests move together.
 - Include the commands, scope, results, and any unverified behavior in the PR.
   Full suites are explicit (`test:full` and `test:browser:full`) and need a
   reason, such as a change spanning systems or uncertain dependencies; they

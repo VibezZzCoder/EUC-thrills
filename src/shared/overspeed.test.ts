@@ -101,9 +101,11 @@ test('the three glyph steps split the ramp and none of them is the whole of it',
   assert.equal(overspeedLevel(0.1), 'notice');
   assert.equal(overspeedLevel(0.5), 'warn');
   assert.equal(overspeedLevel(1), 'critical');
-  // The top step must arrive with room to act on it. At the shipped shares the
-  // last 22% of the band is about a mile and a half per hour, which is a second
-  // or so of full throttle — enough to see the glyph turn red and lift off.
+  // The top step must arrive with room to act on it. At the shipped shares
+  // (0.87 → 0.94 since 2026-09-22) the last 22% of the band is about a mile per
+  // hour, which flat out on pavement is 1.2 s of red glyph before the wheel
+  // lets go (it was 3.7 s on the old, wider band) — still a second or so,
+  // enough to see the glyph turn red and lift off.
   assert.ok(overspeedLevel(0.77) !== 'critical' && overspeedLevel(0.79) === 'critical');
 });
 
@@ -122,6 +124,16 @@ test('the first beep lands no earlier than the owner\'s 40 mph', () => {
   // by the two claims that are actually load-bearing: the beep is still the
   // same *fraction* of the way to the edge, and it still leaves a usable band
   // between itself and the cutout.
+  //
+  // **And moved by hand on 2026-09-22, which is what the pin is for.** The
+  // owner rode the 65 build and asked for later beeps and an easier cutout —
+  // "it just beeps a lot at the top speed before the wipeout" — so the share
+  // went 0.785 → 0.87 (52.2 → 57.9 mph) and the cutout 0.965 → 0.94. The band
+  // floor comes down from 8 mph to 4 with it, and that is the owner's ask
+  // rather than a loosening: 12 mph of band was 6.5 s and 30 beeps flat out,
+  // which is exactly what he called too much. 4.6 mph is 2.7 s and ten beeps
+  // on the shipped wheel; the floor keeps a band that still has a slow end, so
+  // the rate still tells a rider riding the beeps where they are in it.
   const top = Math.sqrt((EUC.leanToAccel * Math.sin(EUC.maxLeanPitch)) / EUC.dragCoefficient);
   const firstBeepMph = top * EUC.overspeedBeepShare * 2.236936;
   const cutoutMph = top * EUC.cutoutSpeedShare * 2.236936;
@@ -130,13 +142,13 @@ test('the first beep lands no earlier than the owner\'s 40 mph', () => {
     `the beeps start at ${firstBeepMph.toFixed(1)} mph, and the owner asked for no earlier than 40`,
   );
   assert.ok(
-    Math.abs(firstBeepMph - 52.2) < 0.5,
+    Math.abs(firstBeepMph - 57.9) < 0.5,
     `the beeps start at ${firstBeepMph.toFixed(1)} mph, where the shipped 65 mph wheel puts them `
-      + 'at 52.2 — if the wheel moved this moves with it and is re-pinned here, and if the share '
+      + 'at 57.9 — if the wheel moved this moves with it and is re-pinned here, and if the share '
       + 'was edited by hand this is what noticed',
   );
   assert.ok(
-    cutoutMph - firstBeepMph > 8,
+    cutoutMph - firstBeepMph > 4,
     `only ${(cutoutMph - firstBeepMph).toFixed(1)} mph between the first beep and the cutout — `
       + 'the warning has to leave room to act on it',
   );

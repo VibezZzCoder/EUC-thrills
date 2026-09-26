@@ -4,6 +4,8 @@ import { MARKINGS, MARKING_PAINTS } from '../data/markings.ts';
 import { fieldHeightAt } from '../level/buildPlan.ts';
 import type { LevelPlan } from '../level/plan.ts';
 import { appendMarking, createRibbonTarget } from '../shared/markingRibbon.ts';
+import { ultraMarkingMaterial } from './ultra/ultraMaterials.ts';
+import type { UltraBuildContext } from './ultra/ultraTypes.ts';
 
 /**
  * The world's road paint, built from the `LevelPlan` and from nothing else.
@@ -30,6 +32,13 @@ import { appendMarking, createRibbonTarget } from '../shared/markingRibbon.ts';
  *   road puts the two ribbon edges at different heights. Sampling the same
  *   `LevelPlan` here keeps the visible paint on the visible road without making
  *   the renderer a gameplay authority.
+ *
+ * **On an Ultra world (M39) only the material changes** (`docs/M39_ULTRA.md`
+ * §4: "geometry, triangle counts and the dipole untouched; Ultra material
+ * only"). The same parameters go to the lighting owner's marking factory,
+ * which gives the paint its environment fill and nothing else, so the paint
+ * ratios the readability contract measures are the ones built here. The
+ * polygon offset below is applied to either material.
  */
 
 export interface MarkingsView {
@@ -44,7 +53,7 @@ export interface MarkingsView {
   dispose(): void;
 }
 
-export function createMarkings(plan: LevelPlan): MarkingsView {
+export function createMarkings(plan: LevelPlan, context?: UltraBuildContext): MarkingsView {
   const group = new THREE.Group();
   group.name = 'level-markings';
 
@@ -97,14 +106,17 @@ export function createMarkings(plan: LevelPlan): MarkingsView {
   geometry.setIndex(target.indices);
   geometry.computeBoundingSphere();
 
-  const material = new THREE.MeshStandardMaterial({
+  const parameters: THREE.MeshStandardMaterialParameters = {
     color: 0xffffff,
     roughness: 0.82,
     metalness: 0,
     // The paint's own tone and its wear both travel on the vertex colour, which
     // is what keeps two paints and every scuffed metre of them in one material.
     vertexColors: true,
-  });
+  };
+  const material = context === undefined
+    ? new THREE.MeshStandardMaterial(parameters)
+    : ultraMarkingMaterial(parameters, context);
   // Belt and braces against z-fighting, and both halves are needed. The 15 mm
   // lift alone loses at a hundred metres, where the depth buffer's resolution
   // is coarser than the gap; the polygon offset alone loses on a mesh whose

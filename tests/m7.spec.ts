@@ -128,12 +128,18 @@ test('the game ships the slice level, and the renderer built it from the plan', 
 test('the proving ground is still reachable, and is not what a player gets', async ({ page }) => {
   // M7's answer to `docs/PLANS.md` §10 decision 5, made visible: the M2–M6
   // measuring instrument survives as a diagnostic behind a query parameter, and
-  // the shipped world is the slice.
+  // an unknown level falls back to the shipped world. That world was the slice
+  // until M39 Phase 1 made the curated town the plain launch, so the fallback
+  // is compared with whatever a bare launch loads rather than with a name.
   await boot(page, 'level=proving');
   expect((await page.evaluate(() => window.qa.snap())).levelPlanId).toBe('m4-proving-ground');
 
+  await boot(page, '');
+  const shipped = (await page.evaluate(() => window.qa.snap())).levelPlanId;
+  expect(shipped).not.toBe('m4-proving-ground');
+
   await boot(page, 'level=nonsense');
-  expect((await page.evaluate(() => window.qa.snap())).levelPlanId).toBe('m7-slice');
+  expect((await page.evaluate(() => window.qa.snap())).levelPlanId).toBe(shipped);
 });
 
 test('the rider starts in the plaza with room to find the throttle', async ({ page }) => {

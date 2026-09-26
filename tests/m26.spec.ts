@@ -1341,12 +1341,14 @@ test('a pad walks the join panel, and presses the mode it wants', async ({ page 
 
   await pulsePad(page, PAD_DPAD_DOWN);
   await expect(
-    // **The far end is Trick Run since M38**, and that is the assertion rather
-    // than an incidental relabelling: the mode row gained a fourth button, so
-    // the button nearest the right-hand end of the rider row changed with it.
-    // Naming it is what proves Down still keeps the column instead of jumping
-    // to the head of the row.
-    page.locator(`${MODE_BUTTON}[data-couch-mode="trickRun"]`),
+    // **The far end is the police chase since M39 Part P** (it was Trick Run
+    // from M38), and that is the assertion rather than an incidental
+    // relabelling: the mode row gained a fifth button, so the button under
+    // the right-hand end of the rider row changed with it — measured
+    // 2026-09-24 at 1000 × 700, seat 3's `›` spans 867–901 px and the chase
+    // button 750–910 px. Naming it is what proves Down still keeps the column
+    // instead of jumping to the head of the row.
+    page.locator(`${MODE_BUTTON}[data-couch-mode="chase"]`),
     'down from the far end of the rider row reaches the mode row, keeping the column',
   ).toBeFocused();
   // Back to the near end, and down again — the column is kept on both sides.
@@ -1360,12 +1362,13 @@ test('a pad walks the join panel, and presses the mode it wants', async ({ page 
     page.locator(`${MODE_BUTTON}[data-couch-mode="freeRide"]`),
     'down from the rider arrows reaches the mode row',
   ).toBeFocused();
-  // **The row is four stops wide now, and that is the change.** A `<select>`
+  // **The row is five stops wide now, and that is the change.** A `<select>`
   // was one stop the d-pad *adjusted*; a segmented row is a stop per mode the
   // d-pad *walks*, so Right is a move rather than a value change — M27 Phase 3
-  // put the race between the two that were already there, and M38 put Trick
-  // Run after them. Every stop is named, which is what makes a fifth ride fail
-  // here rather than quietly becoming unreachable.
+  // put the race between the two that were already there, M38 put Trick Run
+  // after them, and M39 Part P put the police chase at the end. Every stop is
+  // named, which is what made the fifth ride fail here rather than quietly
+  // becoming unreachable.
   await pulsePad(page, PAD_DPAD_RIGHT);
   await expect(
     page.locator(`${MODE_BUTTON}[data-couch-mode="race"]`),
@@ -1379,7 +1382,12 @@ test('a pad walks the join panel, and presses the mode it wants', async ({ page 
   await pulsePad(page, PAD_DPAD_RIGHT);
   await expect(
     page.locator(`${MODE_BUTTON}[data-couch-mode="trickRun"]`),
-    'and Right once more reaches Trick Run at the end of the row',
+    'and Right once more reaches Trick Run',
+  ).toBeFocused();
+  await pulsePad(page, PAD_DPAD_RIGHT);
+  await expect(
+    page.locator(`${MODE_BUTTON}[data-couch-mode="chase"]`),
+    'and Right again reaches the police chase at the end of the row',
   ).toBeFocused();
   await pulsePad(page, PAD_DPAD_DOWN);
   await expect(
@@ -1454,8 +1462,13 @@ test('a stale mode value never reaches the state machine', async ({ page }) => {
    * Synthetic because the panel carries only rides that exist, which is the
    * whole reason the guard needs a stand-in. Directional rather than merely
    * "unchanged": the mode is moved to Knockabout first, so a handler that had
-   * lost the guard would be caught writing `chase` rather than writing the
-   * value it already held.
+   * lost the guard would be caught writing the stale value rather than writing
+   * the value it already held.
+   *
+   * **The stand-in was `chase` until M39 Part P made the police chase a real
+   * couch ride** (§39.6b.3b), at which point the "stale" value was a live one
+   * and this spec failed for the right reason. It is now `policeChase`: the
+   * shape of a plausible rename, and a value no ride uses.
    */
   const errors = collectErrors(page);
   await bootToJoinPanel(page);
@@ -1469,7 +1482,7 @@ test('a stale mode value never reaches the state machine', async ({ page }) => {
     const stale = document.createElement('button');
     stale.type = 'button';
     stale.dataset.menu = 'couch-mode';
-    stale.dataset.couchMode = 'chase';
+    stale.dataset.couchMode = 'policeChase';
     panel.appendChild(stale);
     stale.click();
     const ride = window.game.snapshot().couch.ride;
@@ -2918,7 +2931,12 @@ test('a couch Knockabout on a world with no discs keeps the guest while a route 
    */
   const errors = collectErrors(page);
   await onePad(page);
-  await bootToJoinPanel(page);
+  // **On the slice by name since M39**: the game now boots into a generated
+  // town that carries 33 discs (measured 2026-09-24), so the default world no
+  // longer asks this question at all. The slice still carries none, and the
+  // detour through the routes panel is still the path every target-free world
+  // takes — so the claim is asked where it can still be asked.
+  await bootToJoinPanel(page, 'level=slice');
 
   const slice = await page.evaluate(() => window.game.snapshot().targets.total);
   expect(slice, 'the fixture must really be a world with nothing to knock down').toBe(0);
@@ -4059,6 +4077,9 @@ test('the results card still reaches its own buttons with the chooser on it', as
     // the end of the row, so it is the one a wrap puts on a second line and
     // therefore the one this contract most needs to name.
     '[data-menu="results-couch"] [data-couch-mode="trickRun"]',
+    // **And the fifth — M39 Part P's police chase**, now the far end of the
+    // row and so, by the same argument, the one a wrap moves first.
+    '[data-menu="results-couch"] [data-couch-mode="chase"]',
     '[data-menu="retry"]',
     '[data-menu="new-route"]',
     '[data-menu="results-title"]',

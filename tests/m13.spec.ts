@@ -38,8 +38,12 @@ import { centrelineAt, headingAt } from '../src/level/segments.ts';
  * extents, particle counts, draw calls and GPU object counts.
  */
 
-/** Dense enough that every beat of the slice carries one. */
-const PROBE = 'hazardprobe=30';
+/**
+ * Dense enough that every beat of the slice carries one. The slice by name:
+ * from M39 a bare query launches the generated town (M39 r6 QA — these
+ * instruments had silently moved off the world they measure).
+ */
+const PROBE = 'level=slice&hazardprobe=30';
 
 /**
  * A separate, denser fixture for the readability proof.
@@ -51,7 +55,7 @@ const PROBE = 'hazardprobe=30';
  * hazard on), **long enough** to stand forty route-metres back from a target,
  * and **wide enough** to stand off the centreline while doing it.
  */
-const READ_PROBE = 'hazardprobe=10';
+const READ_PROBE = 'level=slice&hazardprobe=10';
 const READ_SEGMENT_ID = 'park-gate';
 const READ_TARGET_S = 42;
 const READ_SEGMENT = SLICE_GRAPH.main.find((segment) => segment.id === READ_SEGMENT_ID);
@@ -101,14 +105,14 @@ test('a world without the probe has no hazards, and the mesh is absent with them
 test('a diagnostic hazard course cannot write a best or ghost for the ordinary route', async ({ page }) => {
   const errors = collectErrors(page);
   const seed = 'ember-quay';
-  await bootToTitle(page, `level=generated&seed=${seed}&${PROBE}`);
+  await bootToTitle(page, `level=generated&seed=${seed}&hazardprobe=30`);
   await page.evaluate(() => window.game.clearRecords());
 
   const identity = await page.evaluate(() => ({
     id: window.game.levelPlan.id,
     hazards: window.game.levelPlan.hazards?.length ?? 0,
   }));
-  expect(identity.id).toBe(`generated-r3-${seed}`);
+  expect(identity.id).toBe(`generated-r6-${seed}`);
   expect(identity.hazards).toBeGreaterThan(0);
 
   await page.evaluate(() => window.game.startTimeTrial());

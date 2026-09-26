@@ -1,6 +1,8 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import {
   CHARACTERS,
+  COP_CHARACTER,
+  characterSpec,
   isPlayableCharacter,
   type CharacterId,
   type PlayableCharacterId,
@@ -31,6 +33,7 @@ import {
   TOUCH_SCALE_MAX,
   TOUCH_SCALE_MIN,
   type GameOptions,
+  type QualityLevel,
   type TouchControlsMode,
 } from '../app/options.ts';
 import {
@@ -39,6 +42,7 @@ import {
   COUCH_SEATS,
   type CouchRide,
 } from '../app/couch.ts';
+import type { QualityStateView, UltraSwitch } from '../app/renderTier.ts';
 import {
   TRACK_VENUE_IDS,
   VENUE_IDS,
@@ -287,6 +291,24 @@ export interface MenuCallbacks {
    * quit to main menu."*
    */
   onSwitchCouchRide(ride: string): void;
+
+  // -- M39 (PLANS §39.6, q201) ------------------------------------------------
+  /**
+   * The title's **Ultra Graphics** shortcut was pressed.
+   *
+   * **A door, not a value.** The toggle is a shortcut to the one quality
+   * preference, so this callback carries nothing: what "on" and "off" mean —
+   * remember the ordinary tier for the session, restore it or High, refuse in
+   * multiplayer — is `app/Game.ts`'s, because the session facts live there.
+   *
+   * **And the button never writes its own state.** A press reaches here and
+   * nowhere else; the pressed look and the On/Off words arrive afterwards,
+   * through `Menus.sync`, from whatever the composition root actually did.
+   * A toggle that lit itself optimistically would be a second opinion about
+   * the preference, and the one place it would be wrong is exactly the place
+   * that matters — a press Game refused.
+   */
+  onToggleUltra(): void;
 }
 
 /**
@@ -360,7 +382,7 @@ export interface WorldView {
  * `app/venues.ts` says why.
  */
 const VENUE_LABELS: Readonly<Record<VenueId, string>> = Object.freeze({
-  slice: 'The city',
+  slice: 'Original city',
   track: 'BelVar Circuit',
   switchback: 'Switchback Park',
 });
@@ -682,6 +704,285 @@ function riderChipTemplate(): string {
   </button>`;
 }
 
+// -- M39: one quality preference, two entrances -------------------------------
+
+/**
+ * The helper's first sentence, without its full stop — the **compact title's
+ * visible GPU warning** (Codex QA C3, `docs/M39_ULTRA.md` A28).
+ *
+ * Wherever a tier has no room for the helper as a note (a phone upright, the
+ * compact three-column title, the couch title at 40rem and below), these words
+ * stand as a small second line inside the toggle instead, so nobody can press
+ * Ultra without seeing that it costs GPU. The line is `aria-hidden`: the
+ * button's description is still the whole helper, so a screen reader hears
+ * the warning once, not twice. "Single player only" is left to the state word,
+ * which says it whenever it is true. The helper below is built from this
+ * constant, so the two cannot drift apart.
+ */
+export const ULTRA_TOGGLE_WARNING = 'Higher GPU demand';
+
+/**
+ * The title toggle's helper line — PLANS §39.6's suggested words, verbatim.
+ *
+ * **Exported so a test can read the words a player reads**, rather than a
+ * copy of them. Two contracts lean on this sentence: it is the GPU-demand
+ * warning q201 asks to stand beside the control, and it is scanned by the
+ * phone's offers check (`tests/touch.spec.ts`), which fails any title text
+ * that mentions a second player on a device that can never seat one. "Single
+ * player only" is the phrase that has to pass that scan, so the wording is
+ * pinned headlessly as well (`menus.test.ts`).
+ */
+export const ULTRA_TOGGLE_HELP = `${ULTRA_TOGGLE_WARNING}. Single player only.`;
+
+/**
+ * The Settings warning beside the quality control — PLANS §39.6, verbatim.
+ *
+ * A tradeoff explanation, not a promise: it names what varies (smoothness,
+ * battery) and never a rate a device will hold. It is a note, not a modal and
+ * not a benchmark, because the plan forbids both before a deliberate press.
+ */
+export const QUALITY_ULTRA_WARNING =
+  'Requires a capable GPU; smoothness and battery use vary by device.';
+
+/**
+ * What the two entrances say about the quality preference, as data.
+ *
+ * `kind` is the stylesheet's hook and `state` the words; they travel together
+ * so the look and the sentence cannot disagree (the same rule the rider card's
+ * `aria-pressed` and "Riding now" follow). `readout` is the Settings line and
+ * is empty when there is nothing to explain.
+ */
+export interface QualityWords {
+  /** `aria-pressed`: the player *asked* for Ultra. Never what is drawn. */
+  readonly pressed: boolean;
+  /** A multiplayer session owns the frame, so neither entrance may choose Ultra. */
+  readonly disabled: boolean;
+  readonly kind: 'on' | 'off' | 'fallback' | 'unavailable';
+  /** 'On' | 'Off' | 'Using High' | 'Single player only'. */
+  readonly state: string;
+  readonly readout: string;
+}
+
+/**
+ * The title toggle's state and the Settings readout, from the requested tier
+ * and the renderer's answer — pure, so every wording is pinned headlessly.
+ *
+ * **"On" means drawn, never asked for.** PLANS §39.6 forbids "an Ultra active
+ * label over the ordinary path", so the word is earned only by an effective
+ * Ultra frame. A request the renderer has not confirmed — no view yet, a view
+ * describing a different request, a refusal, a diagnostic override — reads
+ * "Using High", and the pressed look carries the request on its own.
+ *
+ * `requested` is the saved preference (`GameOptions.quality`, which is what
+ * `Menus.sync` holds). The view is trusted only while it describes that same
+ * request: `app/Game.ts` pushes options and tier facts in separate calls, and
+ * a view left over from the previous request must not light the new one.
+ * `ultraOffered` is the exception — whether a multiplayer session owns the
+ * frame is a fact about the session, not about the request, so a stale view
+ * still carries it.
+ */
+export function qualityStateWords(
+  requested: QualityLevel,
+  view: QualityStateView | null,
+): QualityWords {
+  const offered = view?.ultraOffered ?? true;
+  const current = view !== null && view.requested === requested ? view : null;
+  const pressed = requested === 'ultra';
+  const effective: QualityLevel = current?.effective ?? (pressed ? 'high' : requested);
+  const suspension = current?.suspension ?? null;
+
+  const readout = suspension === 'multiplayer'
+    ? 'Single player only — this session uses High'
+    : suspension === 'presentation-override'
+      ? 'Diagnostic override — using High'
+      : suspension === 'refused'
+        ? refusalReadout(current?.reason ?? null)
+        : '';
+
+  if (!offered) {
+    return { pressed, disabled: true, kind: 'unavailable', state: 'Single player only', readout };
+  }
+  if (pressed && effective === 'ultra') {
+    return { pressed, disabled: false, kind: 'on', state: 'On', readout };
+  }
+  if (pressed) {
+    return { pressed, disabled: false, kind: 'fallback', state: 'Using High', readout };
+  }
+  return { pressed, disabled: false, kind: 'off', state: 'Off', readout };
+}
+
+/**
+ * The loading notice — the owner's desktop and iPhone rides, 2026-09-25
+ * ("needs like a 'loading...' message … so it is obvious why it frozen";
+ * "don't want players to start mashing recklessly cause they don't know if its
+ * working or not").
+ *
+ * Exported so a test reads the words a player reads. The switch they describe
+ * is `renderTier.ts:UltraSwitch`; entering is the long one, so it gets the
+ * word he asked for.
+ */
+export const ULTRA_LOADING_NOTICE = 'Loading Ultra graphics…';
+export const ULTRA_LEAVING_NOTICE = 'Turning Ultra off…';
+
+/**
+ * A switch across Ultra under way, as the menus are told it by `app/Game.ts`.
+ *
+ * `from` is the saved tier when the press landed and `to` the one being
+ * switched to: the toggle keeps showing `from` (its pressed tint and state)
+ * under the notice until the work is done, so the new state lands in one write
+ * with the notice's clearing, and the select shows `to`, the choice the player
+ * just made.
+ */
+export interface QualityBusy {
+  readonly direction: UltraSwitch;
+  readonly from: QualityLevel;
+  readonly to: QualityLevel;
+}
+
+/** The busy words: the toggle's (covered) state word, and the notice itself. */
+export interface QualityBusyWords {
+  readonly state: string;
+  readonly notice: string;
+}
+
+export function qualityBusyWords(busy: QualityBusy): QualityBusyWords {
+  return busy.direction === 'entering'
+    ? { state: 'Loading…', notice: ULTRA_LOADING_NOTICE }
+    : { state: 'Switching…', notice: ULTRA_LEAVING_NOTICE };
+}
+
+/**
+ * Write `attribute="true"` or remove it, touching the DOM only on a change —
+ * absent rather than "false" when idle, so an idle control's markup is
+ * exactly what it was before the busy state existed.
+ */
+function setBusy(node: HTMLElement, busy: boolean, attribute = 'aria-busy'): void {
+  if (busy && node.getAttribute(attribute) !== 'true') node.setAttribute(attribute, 'true');
+  else if (!busy && node.hasAttribute(attribute)) node.removeAttribute(attribute);
+}
+
+/**
+ * "Ultra couldn't start here — using High (<reason>)".
+ *
+ * The reason is the renderer's own words, carried through `app/Game.ts`, and
+ * a sentence inside brackets does not end with a full stop of its own — so a
+ * trailing one is dropped rather than printed as "(… .)". No reason at all
+ * drops the brackets rather than printing an empty pair.
+ */
+function refusalReadout(reason: string | null): string {
+  const said = (reason ?? '').trim().replace(/\.+$/, '').trim();
+  return said === ''
+    ? 'Ultra couldn’t start here — using High'
+    : `Ultra couldn’t start here — using High (${said})`;
+}
+
+/**
+ * The next option a pad or arrow press may land on, skipping disabled ones.
+ *
+ * `confirm()` wraps (A on a select steps round the list, M24) and
+ * `adjustControl()` clamps (left/right stop at the ends, M24 §4.6); both skip
+ * a disabled option, which is how a multiplayer session's Ultra entry stays
+ * unreachable from a pad while the saved preference underneath it is left
+ * alone. **An option that cannot be reached leaves the selection where it
+ * is** — the clamped walk from High towards a disabled Ultra goes nowhere
+ * rather than jumping past it, and a wrapped walk that meets only disabled
+ * options returns home.
+ *
+ * With nothing disabled this is exactly the old arithmetic: `(i + 1) % n` for
+ * confirm and `clamp(i ± 1)` for a press, so every ordinary select steps
+ * precisely as it did.
+ */
+export function stepEnabledOption(
+  disabled: readonly boolean[],
+  from: number,
+  delta: 1 | -1,
+  wrap: boolean,
+): number {
+  const count = disabled.length;
+  if (count === 0) return from;
+  for (let step = 1; step <= count; step += 1) {
+    let at = from + delta * step;
+    if (wrap) at = ((at % count) + count) % count;
+    else if (at < 0 || at >= count) return from;
+    if (at === from) return from;
+    if (!disabled[at]) return at;
+  }
+  return from;
+}
+
+/**
+ * The title's utility row: Settings, and the **Ultra Graphics** shortcut
+ * beside it — M39, q201, and the owner's 2026-09-22 layout note ("use roughly
+ * half its desktop row for Settings and put the clearly labeled Ultra enabling
+ * control beside it").
+ *
+ * **The wrapper has no `data-menu`**, because it is a layout box and not a
+ * control: a click landing in the gap between the two buttons must resolve to
+ * nothing rather than to a hook the dispatch does not know. Everything the
+ * row does at each window size is `game.css`'s (`DESIGN.md` §9g's M39 block):
+ * one row of two in the stack, the pair inside Settings' old cell on the couch
+ * grid, and `display: contents` where three columns would otherwise split it.
+ *
+ * **The toggle is one `<button>` with `aria-pressed`**, the rider card's
+ * grammar (§9d): a single preference the player turns on and off, where a
+ * checkbox would read as a second setting beside the quality select, which is
+ * the one thing PLANS says this is not. Its name is fixed by `aria-label` —
+ * "Ultra Graphics" at every size, including the phone tier that shows only
+ * "Ultra" — and the helper line is its description, visible where there is
+ * room and hidden from the eye (never removed) where there is not. **Where it
+ * is hidden, `ULTRA_TOGGLE_WARNING` stands in as a visible second line**
+ * (Codex QA C3): `aria-hidden`, because the description already says it, and
+ * shown by the same tiers that hide the helper, so exactly one of the two is
+ * on screen at every size. The state word and the pressed tint are written by
+ * `Menus.sync` and nothing else.
+ *
+ * **The flame is static inline SVG, and deliberately so.** No flicker (the
+ * spec's rejected list): an animated accent on the title is a thing that
+ * moves while the player is reading, and the state it would decorate is
+ * already carried by a word and a tint. An outline when off, lit when on —
+ * two paths and a class, and forced-colours mode keeps the text.
+ *
+ * **The busy face** (the loading notice, 2026-09-25): while a switch across
+ * Ultra runs, `Menus.writeQuality` sets `aria-busy` and fills
+ * `[data-ultra-busy-text]`, and the stylesheet lays that line and a sweep bar
+ * over the button's own face, which keeps its box (`visibility`), so the busy
+ * state never reflows the title. The line is `aria-hidden` — the button's name
+ * and description stay what they were — and the same words go to
+ * `[data-ultra-status]`, a visually hidden polite status region beside the
+ * button (a live region inside a `<button>` is not one a screen reader
+ * reliably hears). Neither hook is a `data-menu`: they live inside and beside
+ * a control (§14.5's rule).
+ */
+const ULTRA_UTILITY = `
+    <div class="euc-menu__utility">
+      <button type="button" class="euc-button" data-menu="settings">
+        <span class="euc-button__label">Settings</span>
+      </button>
+      <button type="button" class="euc-button euc-button--ultra" data-menu="ultra"
+              aria-pressed="false" aria-label="Ultra Graphics" aria-describedby="euc-ultra-help"
+              data-ultra-state="off">
+        <span class="euc-ultra__head">
+          <svg class="euc-ultra__flame" viewBox="0 0 16 20" aria-hidden="true" focusable="false">
+            <path class="euc-ultra__flame-body"
+                  d="M8.4 1.2c.5 3.1 2.6 4.6 3.9 6.7 1 1.6 1.5 3.2 1.5 4.9 0 3.6-2.6 6.2-5.8 6.2
+                     S2.2 16.4 2.2 13c0-2.6 1.2-4.4 2.9-5.8-.1 1.6.4 2.8 1.4 3.4-.4-3.5.3-6.8 1.9-9.4z"/>
+            <path class="euc-ultra__flame-core"
+                  d="M8.3 10.4c.3 1.5 1.1 2.2 1.7 3.1.4.6.6 1.2.6 1.9 0 1.5-1.1 2.6-2.6 2.6
+                     s-2.6-1-2.6-2.5c0-1.4.8-2.3 1.8-3 0 .7.3 1.2.8 1.4-.2-1.3 0-2.4.3-3.5z"/>
+          </svg>
+          <span class="euc-button__label euc-ultra__label">Ultra<span class="euc-ultra__long"> Graphics</span></span>
+          <span class="euc-ultra__state" data-ultra-text>Off</span>
+        </span>
+        <span class="euc-ultra__warn" aria-hidden="true">${ULTRA_TOGGLE_WARNING}</span>
+        <span class="euc-button__note euc-ultra__help" id="euc-ultra-help">${ULTRA_TOGGLE_HELP}</span>
+        <span class="euc-ultra__busy" aria-hidden="true">
+          <span class="euc-ultra__busy-text" data-ultra-busy-text></span>
+          <span class="euc-busy-sweep euc-ultra__sweep"><span class="euc-busy-sweep__bar"></span></span>
+        </span>
+      </button>
+      <span class="euc-ultra__status" role="status" data-ultra-status></span>
+    </div>`;
+
 /**
  * The title screen.
  *
@@ -702,6 +1003,14 @@ function riderChipTemplate(): string {
  * rather than adding a fifth action button also respects a decision already
  * taken once: `Controls` was removed from this screen after playtest for
  * duplicating Settings, and this screen does not want to grow.
+ *
+ * **M39 grew it anyway, and says so** (`DESIGN.md` §9g). q201 asks for a
+ * *prominent* main-menu Ultra Graphics toggle, which a chip or a Settings row
+ * would not be, so the one recorded exception to "not meant to grow" is a
+ * control that takes half of Settings' own row rather than a row of its own:
+ * `ULTRA_UTILITY` above. It sits after Fresh route in the DOM, so the Tab
+ * order runs routes → Settings → Ultra → rider chip → credit, and a pad's
+ * Right from Settings is the Ultra toggle.
  *
  * **The credit line is the game's only anchor.** People share the play link
  * without naming the author, so the title screen — the one surface inside
@@ -745,10 +1054,7 @@ const TITLE_TEMPLATE = `
     <button type="button" class="euc-button" data-menu="routes">
       <span class="euc-button__label">Fresh route</span>
       <span class="euc-button__note">Have the game procedurally generate a brand-new place to ride</span>
-    </button>
-    <button type="button" class="euc-button" data-menu="settings">
-      <span class="euc-button__label">Settings</span>
-    </button>
+    </button>${ULTRA_UTILITY}
   </div>
   <p class="euc-world" data-menu="world"></p>
   ${riderChipTemplate()}
@@ -1441,8 +1747,16 @@ export interface CouchSeatView {
   readonly padNumber: number | null;
   /** True while this seat's device has gone and the seat is being held. */
   readonly awaiting: boolean;
-  /** Who this seat will ride as. */
-  readonly character: PlayableCharacterId;
+  /**
+   * Who this seat will ride as.
+   *
+   * **`CharacterId` since M39 Part P, not `PlayableCharacterId`** (§39.6b.3b,
+   * q215): on the chase ride the wheel offers Officer Dorkins once
+   * (`cycleSeatCharacter`), and the seat that holds him is the cop. Off the
+   * chase `rosterForRide` re-deals him before anything is written, so every
+   * other ride still only ever hands this a playable rider.
+   */
+  readonly character: CharacterId;
   /**
    * Whether this chair is out — M27 Phase 1.
    *
@@ -1599,7 +1913,14 @@ function couchBlockNote(reason: CouchBlockReason, venue: string): string {
 }
 
 /**
- * What the three rides are, in one paragraph under the chooser.
+ * What the rides are, in one paragraph under the chooser.
+ *
+ * **The chase's sentence says both faces in one clause** — M39 Part P
+ * (§39.6b.3b, q215): with nobody on the wheel's cop the slot is CPU Dorkinses,
+ * and with somebody on it he is the cop. "Rides as him" is the wheel's own
+ * verb and it is true on all three cards this note stands on — the pause and
+ * results copies cannot change a seat's rider, but the sentence does not ask
+ * them to; it says what the ride is.
  *
  * **It says "points" and never "score" — M38.** The word is not a preference:
  * §36.6 forbids a Track Day's Tricks region calling its counts a score, and
@@ -1616,11 +1937,12 @@ function couchBlockNote(reason: CouchBlockReason, venue: string): string {
  * because it sits under a segmented control on a panel with a measured fit
  * (`tests/m25.spec.ts`'s twelve-viewport loop).
  */
-function modeChooserNote(venue: string): string {
+export function modeChooserNote(venue: string): string {
   return 'Free ride is riding, with nothing to win. Race is three laps of '
     + `${venue} from a standing grid. Knockabout gives everybody a paddle: `
     + 'first to five knockdowns takes the match. Trick Run gives everybody one '
-    + 'clock at Switchback Park and points for what they land.';
+    + 'clock at Switchback Park and points for what they land. Police chase sets '
+    + 'Officer Dorkins on everybody, unless one of you rides as him.';
 }
 
 /**
@@ -1721,6 +2043,23 @@ function writeVenueChooser(root: HTMLElement, world: WorldView['world']): void {
 }
 
 /**
+ * The line under a seat card's arrows — the owner's 2026-08-27 ride ("players
+ * might not even realize u can swap charachters"). Exported so a test reads
+ * the words a player reads.
+ */
+export const COUCH_RIDER_HINT = 'Change rider';
+
+/**
+ * The same line on the seat holding Officer Dorkins — M39 Part P (q215).
+ *
+ * The room's answer to "who is the cop?", on the card itself: the cop slot is
+ * whichever seat picked him on the wheel, and a seat card that only said his
+ * name would read as a costume rather than a role. `setCouchView` says why it
+ * stands here rather than beside the name (a fit, measured in §9k's terms).
+ */
+export const COUCH_COP_HINT = 'The cop';
+
+/**
  * The couch join panel — M25 Phase 5 (`docs/PLANS.md` §25.5), two to four seats.
  *
  * **A menu, not a mode.** Nothing on this screen is a ride: it exists to get
@@ -1782,7 +2121,7 @@ function couchTemplate(): string {
           <button type="button" class="euc-couch__step" data-menu="couch-next"
                   data-couch-step="${seat}" aria-label="Next rider for player ${seat + 1}">&#8250;</button>
         </div>
-        <p class="euc-couch__hint" aria-hidden="true">Change rider</p>
+        <p class="euc-couch__hint" aria-hidden="true">${COUCH_RIDER_HINT}</p>
       </div>`).join('');
 
   return `
@@ -2173,6 +2512,25 @@ export class Menus {
   private pauseBlockReason: CouchBlockReason = null;
   private resultsBlockReason: CouchBlockReason = null;
 
+  // -- M39 ---------------------------------------------------------------------
+  /**
+   * What the renderer last said about the quality preference, or null before
+   * `app/Game.ts` has said anything.
+   *
+   * Held rather than written straight to the DOM because the words it feeds
+   * depend on the *saved* preference too, and that arrives through `sync` —
+   * two inputs, one writer (`writeQuality`), so the title toggle, the Settings
+   * option and the readout are always composed from the same pair.
+   */
+  private qualityState: QualityStateView | null = null;
+  /**
+   * A switch across Ultra under way (`setQualityBusy`), or null. The third
+   * input to `writeQuality`, and the reason both entrances refuse a press:
+   * while it is set, the toggle's click and the select's input do nothing but
+   * put the select back on the tier being loaded.
+   */
+  private qualityBusy: QualityBusy | null = null;
+
   constructor(initial: GameOptions, config: MenuOptions) {
     this.callbacks = config.callbacks;
     this.parent = config.parent ?? document.body;
@@ -2297,7 +2655,9 @@ export class Menus {
 
     this.setValue('fieldOfViewTrim', options.fieldOfViewTrim);
     this.setText('fieldOfViewTrim-value', `${options.fieldOfViewTrim > 0 ? '+' : ''}${options.fieldOfViewTrim}°`);
-    this.setSelect('quality', options.quality);
+    // While a switch is loading, the select keeps the choice being loaded
+    // rather than snapping back to the saved tier for a frame or two.
+    this.setSelect('quality', this.qualityBusy?.to ?? options.quality);
     this.setSelect('speedUnit', options.speedUnit);
 
     this.setValue('volumeMaster', Math.round(options.volumeMaster * 100));
@@ -2318,6 +2678,90 @@ export class Menus {
     this.setText('touchScale-value', `${Math.round(options.touchScale * 100)}%`);
 
     this.renderBindings();
+    // Last, after the select has taken the saved value: disabling the Ultra
+    // option must never be what moves the selection off it.
+    this.writeQuality();
+  }
+
+  /**
+   * The quality preference's two entrances and its readout, from one place.
+   *
+   * **The single writer of the toggle's pressed state and words** (§6.3 W2),
+   * reached only from `sync` — `setQualityState` stores its view and calls
+   * `sync` rather than writing anything itself. Every write is guarded, like
+   * every other write in this file, so a redundant call changes no attribute
+   * a screen reader or a stylesheet could notice.
+   *
+   * **The Ultra option is disabled, never removed or deselected**, in a
+   * multiplayer session: the select keeps showing a saved Ultra (the readout
+   * says why this session draws High), a pad cannot step onto it
+   * (`stepEnabledOption`), and nothing here writes the preference back — that
+   * is the "do not silently overwrite the saved preference" half of q201.
+   */
+  private writeQuality(): void {
+    // **While a switch runs, the toggle keeps the state it was pressed in**
+    // (the loading notice, 2026-09-25): `from`'s pressed tint under the busy
+    // face, so the new state — tint, word and `aria-pressed` — lands in one
+    // write, as the notice clears, rather than a frame or two before the
+    // switch is done and presses are taken again.
+    const busy = this.qualityBusy;
+    const words = qualityStateWords(busy?.from ?? this.options.quality, this.qualityState);
+    const busyWords = busy === null ? null : qualityBusyWords(busy);
+    const kind = busyWords === null ? words.kind : 'busy';
+    const state = busyWords?.state ?? words.state;
+    const notice = busyWords?.notice ?? '';
+
+    const toggle = this.title.querySelector<HTMLButtonElement>('[data-menu="ultra"]');
+    if (toggle) {
+      const pressed = words.pressed ? 'true' : 'false';
+      if (toggle.getAttribute('aria-pressed') !== pressed) toggle.setAttribute('aria-pressed', pressed);
+      if (toggle.disabled !== words.disabled) toggle.disabled = words.disabled;
+      if (toggle.dataset.ultraState !== kind) toggle.dataset.ultraState = kind;
+      const stateNode = toggle.querySelector<HTMLElement>('[data-ultra-text]');
+      if (stateNode && stateNode.textContent !== state) stateNode.textContent = state;
+      setBusy(toggle, busy !== null);
+      const line = toggle.querySelector<HTMLElement>('[data-ultra-busy-text]');
+      if (line && line.textContent !== notice) line.textContent = notice;
+    }
+    const status = this.title.querySelector<HTMLElement>('[data-ultra-status]');
+    if (status && status.textContent !== notice) status.textContent = notice;
+
+    const select = this.settings.querySelector<HTMLSelectElement>('[data-option="quality"]');
+    if (select) setBusy(select, busy !== null);
+    const option = this.settings.querySelector<HTMLOptionElement>(
+      '[data-option="quality"] option[value="ultra"]',
+    );
+    if (option && option.disabled !== words.disabled) option.disabled = words.disabled;
+
+    // The readout is already the panel's polite live region, so the notice
+    // rides in it: beside the select, in the pause menu's Settings as well as
+    // the title's, where the toggle is not on screen.
+    const readout = this.settings.querySelector<HTMLElement>('[data-readout="quality-state"]');
+    if (readout) {
+      const text = busyWords?.notice ?? words.readout;
+      if (readout.textContent !== text) readout.textContent = text;
+      const hidden = text === '';
+      if (readout.hidden !== hidden) readout.hidden = hidden;
+      setBusy(readout, busy !== null, 'data-busy');
+    }
+    const sweep = this.settings.querySelector<HTMLElement>('[data-quality-sweep]');
+    if (sweep && sweep.hidden !== (busy === null)) sweep.hidden = busy === null;
+  }
+
+  /**
+   * A switch across Ultra has started, or (null) finished — the loading notice
+   * (the owner's rides, 2026-09-25).
+   *
+   * `app/Game.ts` calls this with the busy state *before* the work and lets
+   * the loop draw two frames, so the notice is on screen while the game is
+   * frozen; it clears it two frames after the work, once the presses queued
+   * behind the freeze have been delivered to a control that refuses them.
+   * Stored and written through `sync`, like the tier state, so the toggle,
+   * the select and the readout keep their one writer.
+   */
+  setQualityBusy(busy: QualityBusy | null): void {
+    this.qualityBusy = busy;
+    this.sync(this.options);
   }
 
   /**
@@ -2380,6 +2824,26 @@ export class Menus {
   setPersistenceWarning(persistent: boolean): void {
     const node = this.settings.querySelector<HTMLElement>('[data-menu="persistence"]');
     if (node) node.hidden = persistent;
+  }
+
+  /**
+   * The requested-versus-effective quality facts (M39, `app/renderTier.ts`).
+   *
+   * Called by `app/Game.ts` at every tier trigger — boot, an options change,
+   * a couch session opening or closing, a world swap — with what the renderer
+   * actually drew. **Stored, then written through `sync`**, so the toggle and
+   * the Settings panel have exactly one writer and are composed from the saved
+   * preference and this view together (`qualityStateWords` says how a view that
+   * describes a different request is treated).
+   *
+   * Nothing is announced on the title: the toggle's state word is ordinary
+   * text inside the button. The Settings readout is a polite live region,
+   * because the one time it changes while being looked at is a player choosing
+   * Ultra and being told, in the same breath, that it could not start.
+   */
+  setQualityState(state: QualityStateView): void {
+    this.qualityState = state;
+    this.sync(this.options);
   }
 
   /**
@@ -2638,11 +3102,35 @@ export class Menus {
       const value = claimed ? 'true' : 'false';
       if (card.dataset.claimed !== value) card.dataset.claimed = value;
 
-      const character = CHARACTERS.find((one) => one.id === entry.character) ?? CHARACTERS[0];
+      // `characterSpec` rather than a find over `CHARACTERS`, because the cop is
+      // deliberately not in the playable roster (M18) and a seat holding him on
+      // the chase ride (q215) must be drawn as him, not as the roster's first.
+      const character = characterSpec(entry.character);
       card.style.setProperty('--rider-swatch', character.swatch);
 
       const name = card.querySelector<HTMLElement>(`[data-couch-rider="${seat}"]`);
       if (name && name.textContent !== character.name) name.textContent = character.name;
+
+      // **The seat holding Dorkins says it holds the slot** — M39 Part P
+      // (q215): the room has to know who the cop is before Start, and the
+      // name alone reads as a costume. The words go in the hint line under
+      // the arrows rather than after the name, and the reason is a fit: the
+      // name track is a 10.5rem card's (§9k) and `Officer Dorkins — the cop`
+      // wraps it to two lines, which lifts that card's arrows off the row the
+      // pad walks (`ui/menuRows.ts` clusters by geometry). `The cop` is
+      // shorter than `Change rider`, so it costs no height anywhere; and it
+      // stops being `aria-hidden` on that card only, so a screen reader hears
+      // "Officer Dorkins, the cop" where a sighted player reads it.
+      const hint = card.querySelector<HTMLElement>('.euc-couch__hint');
+      if (hint) {
+        const cop = entry.character === COP_CHARACTER.id;
+        const words = cop ? COUCH_COP_HINT : COUCH_RIDER_HINT;
+        if (hint.textContent !== words) hint.textContent = words;
+        const hidden = cop ? 'false' : 'true';
+        if (hint.getAttribute('aria-hidden') !== hidden) hint.setAttribute('aria-hidden', hidden);
+        const role = cop ? 'cop' : 'outlaw';
+        if (card.dataset.couchRole !== role) card.dataset.couchRole = role;
+      }
 
       const status = card.querySelector<HTMLElement>(`[data-couch-status="${seat}"]`);
       const line = couchSeatLine(entry, view.spare);
@@ -3288,6 +3776,22 @@ export class Menus {
         this.callbacks.onCycleCouchRider(Number(seat), action === 'couch-next' ? 1 : -1);
       }
     }
+    // -- M39 -----------------------------------------------------------------
+    // A door, not a value: the press is reported and nothing else. The pressed
+    // look and the words come back through `sync` from what Game did with it.
+    // **The disabled check is here as well as on the element**: a click on the
+    // flame or a word *inside* a disabled button is a click on that child, and
+    // engines have not always agreed about whether the parent's `disabled`
+    // swallows it. The multiplayer refusal is Game's too; this makes it the
+    // button's without relying on either. **And nothing while a switch is
+    // loading** (the loading notice, 2026-09-25): every device reaches the
+    // toggle through this click — a pad's A and a key's Enter or Space are
+    // clicks by the time they land here — so this one check is what stops a
+    // mashing player queueing toggles behind the freeze. Game refuses too.
+    else if (action === 'ultra') {
+      const toggle = target.closest<HTMLButtonElement>('[data-menu="ultra"]');
+      if (toggle !== null && !toggle.disabled && this.qualityBusy === null) this.callbacks.onToggleUltra();
+    }
     else if (action === 'pick-rider') {
       const id = target.closest<HTMLElement>('[data-rider]')?.dataset.rider;
       // Guarded rather than cast, because M18 put a rider in `CharacterId` that
@@ -3328,6 +3832,15 @@ export class Menus {
     if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLSelectElement)) return;
     const option = target.dataset.option;
     if (option === undefined) return;
+
+    // A quality choice while a switch is loading is refused, whichever way it
+    // came — a pointer in the dropdown, a key, a pad's Left/Right or A (both
+    // arrive here as this event): the select goes back to the tier being
+    // loaded and nothing is reported (the loading notice, 2026-09-25).
+    if (option === 'quality' && this.qualityBusy !== null) {
+      this.setSelect('quality', this.qualityBusy.to);
+      return;
+    }
 
     if (target instanceof HTMLInputElement && target.type === 'checkbox') {
       this.callbacks.onChange({ [option]: target.checked } as Partial<GameOptions>);
@@ -3577,9 +4090,16 @@ export class Menus {
     // step to the next option, wrapping, through the same `input` event the
     // pointer path fires. Everything else keeps the click, which is right for
     // buttons and cards.
+    //
+    // **A disabled option is stepped over** (M39): a couch session disables
+    // Ultra, and a pad's A must go round the list without landing on it —
+    // `stepEnabledOption` is the old `(i + 1) % n` whenever nothing is
+    // disabled, so every ordinary select cycles exactly as it did.
     if (focused instanceof HTMLSelectElement) {
       if (focused.options.length === 0) return;
-      focused.selectedIndex = (focused.selectedIndex + 1) % focused.options.length;
+      const next = stepEnabledOption(optionsDisabled(focused), focused.selectedIndex, 1, true);
+      if (next === focused.selectedIndex) return;
+      focused.selectedIndex = next;
       focused.dispatchEvent(new Event('input', { bubbles: true }));
       return;
     }
@@ -3599,7 +4119,9 @@ export class Menus {
       return true;
     }
     if (control instanceof HTMLSelectElement) {
-      const next = Math.max(0, Math.min(control.options.length - 1, control.selectedIndex + delta));
+      // Clamped at the ends as before, and over a disabled option rather than
+      // onto it (M39) — from High, Right in a couch session stays on High.
+      const next = stepEnabledOption(optionsDisabled(control), control.selectedIndex, delta, false);
       if (next !== control.selectedIndex) {
         control.selectedIndex = next;
         control.dispatchEvent(new Event('input', { bubbles: true }));
@@ -3710,6 +4232,23 @@ export class Menus {
     if (node && node.textContent !== text) node.textContent = text;
   }
 
+  /**
+   * The Settings panel's markup.
+   *
+   * **The quality field carries M39's second entrance** and three facts about
+   * it, none of which is a control. The Ultra option comes from
+   * `QUALITY_LEVELS` (last, so the ordinary tiers step exactly as they did);
+   * the warning is a plain note beside it, never focusable, so Down from
+   * Quality still reaches Field of view and Speed units in the same two
+   * presses; and the readout is a `data-readout` rather than a `data-option`,
+   * because every `data-option` on this panel is a labelled control and the
+   * M9 shape check counts them. The select is described by both notes, so a
+   * screen reader hears the tradeoff and the session's reason with the value.
+   * While a switch across Ultra runs, the readout carries the loading notice
+   * (it is already the panel's polite live region) and the sweep under it
+   * shows, so the pause menu's Settings — where the title toggle is not on
+   * screen — says what the freeze is right beside the control that caused it.
+   */
   private settingsTemplate(): string {
     const qualityOptions = QUALITY_LEVELS
       .map((level) => `<option value="${level}">${level[0].toUpperCase()}${level.slice(1)}</option>`)
@@ -3750,12 +4289,20 @@ export class Menus {
 
       <div class="euc-field">
         <label class="euc-field__label" for="euc-opt-quality">Quality</label>
-        <select id="euc-opt-quality" data-option="quality">${qualityOptions}</select>
+        <select id="euc-opt-quality" data-option="quality"
+                aria-describedby="euc-quality-warning euc-quality-state">${qualityOptions}</select>
         <span class="euc-field__value"></span>
         <p class="euc-field__note">
           Lower settings reduce resolution and shadow detail. The ride itself is
           identical at every setting.
         </p>
+        <p class="euc-field__note euc-quality-warning" id="euc-quality-warning">
+          <span class="euc-quality-warning__tag">Ultra</span> ${QUALITY_ULTRA_WARNING}
+        </p>
+        <span class="euc-field__note euc-quality-state" id="euc-quality-state"
+              data-readout="quality-state" aria-live="polite" hidden></span>
+        <span class="euc-busy-sweep euc-quality-sweep" data-quality-sweep aria-hidden="true" hidden><span
+              class="euc-busy-sweep__bar"></span></span>
       </div>
 
       <div class="euc-field">
@@ -4052,6 +4599,11 @@ export function routeStatusLine(status: RouteStatus, laps: boolean): [string, st
     return ['refused', `This browser wouldn’t let the game copy it. The link is ${status.link}`];
   }
   return ['idle', ''];
+}
+
+/** A select's options as `stepEnabledOption` reads them: disabled or not, in order. */
+function optionsDisabled(select: HTMLSelectElement): boolean[] {
+  return [...select.options].map((option) => option.disabled);
 }
 
 function focusableSelector(): string {

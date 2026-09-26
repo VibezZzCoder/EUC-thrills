@@ -4,6 +4,7 @@ import type { RunPhase } from '../simulation/challenge.ts';
 import type { LapPhase } from '../simulation/trackDay.ts';
 import { SPEED_UNITS, type SpeedUnit } from '../app/options.ts';
 import { AUDIO, CHALLENGE, CHASE, TRACK_DAY } from '../data/tuning.ts';
+import { COP_CHARACTER } from '../data/riders.ts';
 import {
   overspeedBeepPeriod,
   overspeedLevel,
@@ -256,6 +257,48 @@ export interface ChallengeHudView {
   readonly ahead: boolean;
 }
 
+/**
+ * How a busted outlaw went out, for his spectator tag — M39 Part P (q216).
+ *
+ * `OutlawStatus` minus the two a watching pane can never carry: `standing`
+ * (he would still be riding) and `escaped` (the bell ends the round, so there
+ * is nothing left to watch). Spelled here rather than imported, so the HUD's
+ * input stays a list of facts the screen can say and the referee's union can
+ * grow a state without silently growing a tag nobody wrote.
+ */
+export type ChaseSpectatorStatus = 'caught' | 'touched' | 'strayed' | 'gaveUp';
+
+/** A busted outlaw's pane, watching — M39 Part P (§39.6b.3b, q216, q226). */
+export interface ChaseSpectatorHudInput {
+  readonly status: ChaseSpectatorStatus;
+  /** Room-clock seconds since GO at which he went out (`OutlawState.endedAt`). */
+  readonly endedAt: number;
+  /** Outlaws still standing in the room (`ChaseRoomState.standing`). */
+  readonly standing: number;
+  /** Outlaws the room started with (`ChaseRoomSpec.outlaws`). */
+  readonly outlaws: number;
+}
+
+/**
+ * The cop seat's facts — M39 Part P (§39.6b.3b, q217, q220).
+ *
+ * `bearing` and `range` are `copPack.bearingTo(copPose, nearest standing
+ * outlaw)` handed over raw: radians relative to the seat's heading, positive
+ * to his left (the project's +Y yaw convention, as `homeRadians` is), and
+ * metres. Either non-finite — nobody standing, or a round not running — draws
+ * no readout rather than a wrong one.
+ */
+export interface ChaseCopHudInput {
+  /** Seconds to the bell (`ChaseRoomState.remaining`). */
+  readonly remaining: number;
+  /** Outlaws credited to this seat (`PursuerState.busts` of pursuer 0). */
+  readonly busts: number;
+  /** Outlaws the room started with: the *N* of "busts n of N". */
+  readonly outlaws: number;
+  readonly bearing: number;
+  readonly range: number;
+}
+
 export interface HudInput {
   /** Signed along the heading, m/s. Negative is reverse. */
   readonly speed: number;
@@ -393,7 +436,32 @@ export interface HudInput {
      * no arrow rather than a wrong one.
      */
     readonly homeRadians: number;
+    /**
+     * This outlaw is out and his pane is watching — M39 Part P (§39.6b.3b,
+     * q216, q226). Absent while he stands, and always absent solo: the solo
+     * face has one outlaw, and his going down is the end of the round.
+     *
+     * Present, it turns the pane into a spectator's: the objective line says
+     * how and when he went ("BUSTED 2:14 — Officer Dorkins"), the corner keeps
+     * the room's clock and says how many are still standing, and the stray
+     * banner and the "right behind you" line go, because neither describes the
+     * body the camera is now following.
+     */
+    readonly spectator?: ChaseSpectatorHudInput;
   };
+  /**
+   * The cop seat's lane — M39 Part P (§39.6b.3b "The human cop", q220).
+   * Absent on every other seat, and always absent solo (nobody rides the cop
+   * alone). Mutually exclusive with `chase` by seat role (`seatRole`).
+   *
+   * Three facts, and no new element: the clock in the corner's figure (the
+   * chase lane's own), busts *n* of *N* in the row under it, and **one arrow
+   * and one number** to the nearest standing outlaw in the objective line —
+   * the eight-way glyph the chase lane's home arrow and the time trial's
+   * checkpoint arrow already use, with the distance quantised by the same
+   * rule, so it does not churn in the corner of a moving frame.
+   */
+  readonly chaseCop?: ChaseCopHudInput;
   /**
    * How near the max-speed cutout the wheel is, 0..1 — M20.
    *
@@ -640,8 +708,9 @@ export interface StrayHudView {
  * **Non-obstructive by construction**, which is what the owner asked for: it is
  * a glyph and two words in the same top-centre column as the banner above,
  * never in the middle of the frame, and it does not exist at all below
- * `EUC.overspeedBeepShare` (0.785) of the derived top speed — **52 mph on the
- * shipped 65 mph wheel**. It is a share, not an absolute, so it keeps its place
+ * `EUC.overspeedBeepShare` (0.87 since the owner's 2026-09-22 ride; 0.785
+ * before) of the derived top speed — **57.9 mph on the shipped 65 mph
+ * wheel**. It is a share, not an absolute, so it keeps its place
  * in the range whatever wheel ships, including under a `?mph=` diagnostic: a
  * player who never goes near the top of it never sees it once.
  *
@@ -1015,6 +1084,60 @@ function formatDeadline(seconds: number): string {
 }
 
 /**
+ * A moment on the room's clock as `M:SS`, floored — M39 Part P.
+ *
+ * **Floored, where `formatDeadline` ceils**, and for the mirror of its reason:
+ * a deadline must not read zero while the clock is still alive, and a moment
+ * that has *happened* must not read a second it had not reached. An outlaw
+ * busted at 134.8 s went out at `2:14`, not `2:15`. Whole seconds, because the
+ * spectator tag, the room card and the room's results headline are read
+ * across a sofa, and the hundredths are the results table's (`formatRunTime`).
+ * Non-finite or negative reads as `0:00`, on the deadline's own terms.
+ */
+export function formatChaseClock(seconds: number): string {
+  const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  const whole = Math.floor(safe);
+  const minutes = Math.floor(whole / 60);
+  return `${minutes}:${String(whole - minutes * 60).padStart(2, '0')}`;
+}
+
+/**
+ * The busted outlaw's tag — M39 Part P (§39.6b.3b "Busted, then watching", q216).
+ *
+ * `BUSTED 2:14 — Officer Dorkins`, the plan's words: capitals because it is a
+ * verdict stamped over a pane that is now showing somebody else, and the
+ * officer's name because a room of four wants to know who did it. Touching
+ * him is a bust like any other (M24's rule), so it reads the same.
+ *
+ * **Gave up and out of bounds name nobody** (q225): an outlaw's R is his bust
+ * credited to no one, and a stray is the route's verdict rather than the
+ * cop's, so a name after either would be a credit the referee never gave.
+ */
+export function chaseSpectatorTag(spectator: ChaseSpectatorHudInput): string {
+  const at = formatChaseClock(spectator.endedAt);
+  if (spectator.status === 'gaveUp') return `GAVE UP ${at}`;
+  if (spectator.status === 'strayed') return `OUT OF BOUNDS ${at}`;
+  return `BUSTED ${at} — ${COP_CHARACTER.name}`;
+}
+
+/**
+ * The cop seat's readout — one arrow and one number (q220).
+ *
+ * `formatDirection`'s eight glyphs and `formatDistance`'s five- and ten-metre
+ * steps, both chosen elsewhere against churn in peripheral vision and reused
+ * here rather than re-derived: a bearing that swung through every degree, or
+ * a range that ticked every metre, would be the moving instrument §9 rules
+ * out. Empty when either half is missing — an arrow with no range, or a range
+ * with nowhere to point, is half a sentence.
+ */
+export function copBearingLine(bearing: number, range: number): string {
+  const arrow = formatDirection(bearing);
+  const distance = formatDistance(range);
+  if (arrow === '' || distance === '') return '';
+  return `${arrow} ${distance}`;
+}
+
+/**
  * A score, grouped in threes — M38 Phase 2.
  *
  * **Grouped by hand rather than by `toLocaleString`**, which would spell the
@@ -1179,7 +1302,7 @@ function overspeedView(overspeed: number): OverspeedHudView {
 
 /** The label above the one corner shared by Knockabout and the police chase. */
 function modeLaneLabel(
-  input: Pick<HudInput, 'knockabout' | 'chase' | 'match' | 'race' | 'trickRun'>,
+  input: Pick<HudInput, 'knockabout' | 'chase' | 'chaseCop' | 'match' | 'race' | 'trickRun'>,
 ): string {
   // **The trick run before all of them** — M38 Phase 2, §38.6, and the reason
   // is on `HudInput.trickRun`: the referees never coexist, so the order is
@@ -1202,6 +1325,11 @@ function modeLaneLabel(
     return input.race.finished ? 'Finished' : `Lap ${input.race.lap} / ${input.race.laps}`;
   }
   if (input.chase !== undefined) return 'Survive';
+  // **The cop's word for the same clock** — M39 Part P (q217). The outlaws
+  // survive it; he wins by sweeping the room before it runs out, and the label
+  // over his figure says so in the words the results headline uses when he
+  // does ("Officer Dorkins busted everyone").
+  if (input.chaseCop !== undefined) return 'Bust everyone';
   // **Ahead of `knockabout`**, because a match is a Knockabout run and the
   // discs are its side tally rather than the thing on the line — M26 Phase 5.
   // The label says whose number is first so the half never has to be counted
@@ -1315,6 +1443,20 @@ function modeSubLane(input: HudInput): { readonly label: string; readonly value:
     if (gap === null) return { label: 'Riders', value: `${input.race.seats}` };
     if (input.race.finished && gap <= 0) return { label: 'Gap', value: 'Winner' };
     return { label: 'Gap', value: `+${Math.max(0, gap).toFixed(2)}` };
+  }
+  // **The cop's second row is his tally** — M39 Part P (§39.6b.3b). Busts
+  // *n* of *N*, under the clock, on §9j's rule: the second row is a different
+  // question from the figure above it (how many, against how long).
+  if (input.chaseCop !== undefined) {
+    return { label: 'Busts', value: `${input.chaseCop.busts} of ${input.chaseCop.outlaws}` };
+  }
+  // **And a watching outlaw's is the room's** (q216): he has no clock of his
+  // own left to survive, so the row under the room's clock says how many of
+  // the others still do. The solo lane never reaches this — `spectator` is
+  // a couch fact — so the chase's one-clock corner is unchanged there.
+  const spectator = input.chase?.spectator;
+  if (spectator !== undefined) {
+    return { label: 'Standing', value: `${spectator.standing} of ${spectator.outlaws}` };
   }
   if (input.match === undefined) return NO_SUB_LANE;
   // **And the second row steps aside with the first** — M37 §37.5. The wide
@@ -1561,7 +1703,7 @@ export class HudModel {
         offRoute: false,
         challenge: this.runLane(nowSeconds, input),
         knockabout: modeLane(input),
-        chase: chaseLane(input.chase),
+        chase: chaseLane(input.chase ?? input.chaseCop),
         modeLabel: modeLaneLabel(input),
         modeSubLabel: down.label,
         modeSub: down.value,
@@ -1640,7 +1782,7 @@ export class HudModel {
       offRoute: this.offRoute,
       challenge: this.runLane(nowSeconds, input),
       knockabout: modeLane(input),
-      chase: chaseLane(input.chase),
+      chase: chaseLane(input.chase ?? input.chaseCop),
       modeLabel: modeLaneLabel(input),
       modeSubLabel: sub.label,
       modeSub: sub.value,
@@ -1671,7 +1813,11 @@ export class HudModel {
     nowSeconds: number,
     chase: HudInput['chase'],
   ): StrayHudView {
-    if (chase === undefined) {
+    // **A watching pane has no boundary** — M39 Part P (q216). His rig has
+    // left the world, so a banner pointing him back to a route he is no longer
+    // riding would be an instruction to nobody; the latch goes with it, so a
+    // round that restarts does not open on a stale banner.
+    if (chase === undefined || chase.spectator !== undefined) {
       this.strayingSince = Number.NEGATIVE_INFINITY;
       return NO_STRAY;
     }
@@ -1710,7 +1856,7 @@ export class HudModel {
    * quiet so the finish itself is the only thing happening on screen.
    */
   private objectiveFor(
-    input: Pick<HudInput, 'challenge' | 'trackDay' | 'chase' | 'race'>,
+    input: Pick<HudInput, 'challenge' | 'trackDay' | 'chase' | 'chaseCop' | 'race'>,
   ): string {
     // **The finished rider's banner** — q97. They keep riding, so the pane is
     // not dead; what changes is that the line above them names where they came
@@ -1738,9 +1884,22 @@ export class HudModel {
     // which would be the M10 results-screen defect, where two live copies of
     // one number read as an unfinished screen.
     if (chase !== undefined) {
+      // **The spectator's tag first** — M39 Part P (q216). A busted outlaw's
+      // pane is following somebody else's body, so the two lines below (which
+      // describe *his* boundary and *his* cop) have stopped being about anyone
+      // on screen; the one sentence left to say is how and when he went.
+      if (chase.spectator !== undefined) return chaseSpectatorTag(chase.spectator);
       if (chase.straying) return '';
       if (chase.copClose) return 'He is right behind you';
       return '';
+    }
+    // **The cop's bearing takes the line** — M39 Part P (q220). One arrow and
+    // one number, nothing else: the objective line is the lane that already
+    // points (§9's "a live objective points as well as names"), it is not a
+    // live region, so a range that changes every few frames is never read
+    // aloud, and it needs no element the HUD does not already have.
+    if (input.chaseCop !== undefined) {
+      return copBearingLine(input.chaseCop.bearing, input.chaseCop.range);
     }
     // **Track Day speaks only on the out lap**, and that is a decision rather
     // than an omission. A circuit tells a rider where to go by being a circuit:

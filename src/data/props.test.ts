@@ -6,6 +6,8 @@ import {
   BUILDING_FACADE,
   BUILDING_MAX_JOIN_FRACTION,
   BUILDING_TONES,
+  DISTRICT_TONES,
+  LANDMARK_TONES,
   PROP_BUDGET,
   PROP_COLOURS,
   PROP_FOOTPRINTS,
@@ -339,4 +341,30 @@ test('the facade bands are storeys rather than stripes', () => {
     BUILDING_FACADE.highRiseHeight / BUILDING_FACADE.highFloors
       > BUILDING_FACADE.minFloorHeight,
   );
+});
+
+test('district and landmark tones stay inside the palette, and a roof reads apart from its wall', () => {
+  // M39 Phase 2. Walls take the building jitter both ways; every value must
+  // stay inside DESIGN.md §2's 0.03–0.6 linear luminance after it.
+  const jitter = PROP_TINT_JITTER.building;
+  for (const [district, tones] of Object.entries(DISTRICT_TONES)) {
+    for (const tone of [...tones.walls, ...tones.roofs]) {
+      assert.ok(luminance(tone) * (1 - jitter) > 0.03, `${district} ${tone.toString(16)} crushes`);
+      assert.ok(luminance(tone) * (1 + jitter) < 0.6, `${district} ${tone.toString(16)} blows out`);
+    }
+    // A house's roofline is a line: its lightest roof is darker than its
+    // darkest wall. (A shed's galvanised roof over rust sheeting reads apart
+    // by hue instead, as real ones do.)
+    if (district === 'residential') {
+      assert.ok(Math.max(...tones.roofs.map(luminance)) < Math.min(...tones.walls.map(luminance)),
+        `${district} roofs do not read apart from their walls`);
+    }
+  }
+  for (const [name, tone] of Object.entries(LANDMARK_TONES)) {
+    assert.ok(luminance(tone) > 0.03 && luminance(tone) < 0.6, `landmark ${name} is outside the palette`);
+  }
+  // Residential is the light district: every wall lighter than the kit's cool grey.
+  for (const tone of DISTRICT_TONES.residential.walls) {
+    assert.ok(luminance(tone) > luminance(PROP_COLOURS.buildingCool), `${tone.toString(16)} is not a light house`);
+  }
 });

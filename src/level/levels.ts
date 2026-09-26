@@ -1,5 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { generateLevel } from './generateRoute.ts';
+import { generateLevel, type GeneratedLevel } from './generateRoute.ts';
 import type { LevelPlan } from './plan.ts';
 import { createProvingGround } from './provingGround.ts';
 import { createSliceLevel } from './sliceLevel.ts';
@@ -84,7 +84,8 @@ import { createTrackLevel } from './trackLevel.ts';
  */
 export type LevelId = 'slice' | 'proving' | 'generated' | 'track' | 'switchback';
 
-export const DEFAULT_LEVEL: LevelId = 'slice';
+/** M39 curated expanded launch; explicit authored-world links still win. */
+export const DEFAULT_LEVEL: LevelId = 'generated';
 
 /**
  * The seed a generated level is built from when the query string names none.
@@ -188,7 +189,7 @@ export function levelFromQuery(search: string): LevelId {
  *
  * **Phase 4 settled `docs/PLANS.md` §13 question 5 and built the entrance**, so
  * this is no longer the only way in: the title screen offers a fresh route, the
- * seed is visible and enterable, and the slice remains the default world. The
+ * seed is visible and enterable. M39 makes the curated generated city the default. The
  * query parameter survives as the diagnostic it always was — and as the shape
  * of a shared link, which is why `normaliseSeed` runs on it. A seed typed into
  * the field and the same seed arriving in a URL have to mean one place.
@@ -362,7 +363,7 @@ export const MIN_TARGET_PROBE_METRES = 13;
  * How long a seed may be.
  *
  * **Derived from the record store, not chosen.** A generated plan's id is
- * `generated-r3-<seed>` (`generateRoute.ts`, `GENERATED_LEVEL_PREFIX`), personal
+ * `generated-r6-<seed>` (`generateRoute.ts`, `GENERATED_LEVEL_PREFIX`), personal
  * bests are filed under that id, and both `app/records.ts` and
  * `simulation/ghost.ts` cap a level id at 64 characters — independently, in two
  * files that may not import each other. A seed long enough to breach it
@@ -429,7 +430,7 @@ export type RouteOutcome =
  * different world has been lied to about the one promise a seed makes.
  *
  * So the fallback plan is discarded here and the seed is refused. The slice is
- * still reachable — it is the default world and one button away — but it is
+ * still reachable through Original city or an explicit slice link, but it is
  * never something a player asked for by name and did not get.
  */
 export function requestRoute(
@@ -444,6 +445,12 @@ export function requestRoute(
   // The session's wheel, so the route a player asked for is spaced for the
   // wheel they will ride it on — M30 Phase 1, `?mph=` and nothing else.
   const generated = generateLevel(seed, hazardProbeMetres, targetProbeMetres, topSpeedMph);
+  return routeOutcome(seed, generated);
+}
+
+/** Keep fallback rejection independently checkable when a formerly failing
+ * seed starts building after a layout revision. */
+export function routeOutcome(seed: string, generated: GeneratedLevel): RouteOutcome {
   if (generated.report.usedFallback) return { ok: false, seed, refusal: 'no-route' };
   return { ok: true, seed, plan: generated.plan };
 }

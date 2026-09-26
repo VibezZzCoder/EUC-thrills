@@ -35,10 +35,29 @@ import type { PressedAction, HeldAction } from '../input/actions.ts';
  * Nothing here touches the DOM, so all of it is `node --test` territory.
  */
 
-/** Rendering effort. Presentation only — the simulation is identical in each. */
-export type QualityLevel = 'low' | 'medium' | 'high';
+/**
+ * The three tiers the renderer has always drawn (M9). Every multiplayer
+ * session, every fallback and every renderer `setQuality` call speaks only
+ * these — Ultra is never one of them, it is a request resolved on top of one.
+ */
+export type OrdinaryQuality = 'low' | 'medium' | 'high';
 
-export const QUALITY_LEVELS: readonly QualityLevel[] = ['low', 'medium', 'high'];
+/**
+ * Rendering effort. Presentation only — the simulation is identical in each.
+ *
+ * **M39 (PLANS §39.6, q201):** `ultra` is the optional heavier recipe for a
+ * single-player view. It is one preference with two entrances (the title
+ * toggle and Settings), never a second Boolean, and never the default — a
+ * fresh install and an unreadable store still land on `high`. What the player
+ * *requested* is this field; what the renderer *draws* is resolved separately
+ * (`app/renderTier.ts`), so a couch session or a refused recipe draws High
+ * without overwriting the saved choice.
+ */
+export type QualityLevel = OrdinaryQuality | 'ultra';
+
+/** Ultra is deliberately last: Settings lists these in order, and the cycle a
+ *  pad or arrow key walks must meet Low/Medium/High exactly where it did. */
+export const QUALITY_LEVELS: readonly QualityLevel[] = ['low', 'medium', 'high', 'ultra'];
 
 /**
  * What the speed readout is labelled in.

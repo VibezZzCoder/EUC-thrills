@@ -1,17 +1,23 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import type * as THREE from 'three';
+import * as THREE from 'three';
 import { PROP_FOOTPRINTS, PROP_SIZES, PROP_SPREADS, PROP_VERTICAL_SPANS } from '../data/props.ts';
 import {
   CONIFER_ENVELOPE,
   CONIFER_TIERS,
   CROWN_ENVELOPE,
+  CROWN_LOBES,
   FOLIAGE_TONES,
   SHRUB_ENVELOPE,
+  SHRUB_LOBES,
   enhancedConifer,
   enhancedCrown,
   extentsOf,
+  fitInto,
+  jitter,
+  nonIndexed,
+  sculptSphere,
   shapedShrub,
   type Envelope,
 } from './foliageKit.ts';
@@ -186,4 +192,42 @@ test('the builders are deterministic', () => {
     assert.deepEqual(Array.from(a.position.array), Array.from(b.position.array));
     assert.deepEqual(Array.from(a.color.array), Array.from(b.color.array));
   }
+});
+
+// ---------------------------------------------------------------------------
+// The helpers the M39 Ultra forms reuse (`render/ultra/ultraFoliage.ts`)
+// ---------------------------------------------------------------------------
+
+test('the exported sculpting helpers keep a sphere closed, deterministic and inside the box it is fitted to', () => {
+  // M39 exports these (the `export` keyword only) so the Ultra crown and shrub
+  // sculpt with exactly the enhanced shapes' mathematics. Pin what they promise.
+  const sculpt = (salt: number): THREE.BufferGeometry => {
+    const geometry = nonIndexed(new THREE.IcosahedronGeometry(1, 1));
+    assert.equal(geometry.index, null);
+    assert.equal(geometry.getAttribute('uv'), undefined, 'nonIndexed keeps the UVs');
+    sculptSphere(geometry, [0, 5, 0], [2, 1.6, 1.8], CROWN_LOBES, 3.6, CROWN_ENVELOPE, salt, 'uniform');
+    return geometry;
+  };
+  const a = sculpt(13);
+  within(extentsOf(a), CROWN_ENVELOPE);
+  const shell = shellIsClosed(a);
+  assert.ok(shell.closed && shell.volume > 0, 'a sculpted sphere is no longer a closed shell');
+  assert.deepEqual(Array.from(a.getAttribute('position').array), Array.from(sculpt(13).getAttribute('position').array));
+  assert.notDeepEqual(Array.from(a.getAttribute('position').array), Array.from(sculpt(29).getAttribute('position').array), 'the salt does nothing');
+  assert.ok(jitter(7, 13) >= -1 && jitter(7, 13) < 1 && jitter(7, 13) === jitter(7, 13));
+
+  // fitInto: 'uniform' keeps proportions, 'axis' fills each axis independently.
+  const box = (): THREE.BufferGeometry => new THREE.BoxGeometry(4, 2, 1).toNonIndexed();
+  const tight: Envelope = { min: [-1, -1, -1], max: [1, 1, 1] };
+  const uniform = box();
+  fitInto(uniform, [0, 0, 0], tight, 'uniform');
+  const u = extentsOf(uniform);
+  assert.ok(Math.abs(u.max[0] - 1) < 1e-9 && Math.abs(u.max[1] - 0.5) < 1e-9, `uniform fit gave ${u.max}`);
+  const axis = box();
+  fitInto(axis, [0, 0, 0], tight, 'axis');
+  const x = extentsOf(axis);
+  assert.ok(Math.abs(x.max[0] - 1) < 1e-9 && Math.abs(x.max[1] - 1) < 1e-9 && Math.abs(x.max[2] - 0.5) < 1e-9, `axis fit gave ${x.max}`);
+  // The lobe tables are the ones the enhanced shapes use, and stay authored.
+  assert.equal(CROWN_LOBES.length, 8);
+  assert.equal(SHRUB_LOBES.length, 3);
 });

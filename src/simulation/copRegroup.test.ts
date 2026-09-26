@@ -9,6 +9,7 @@ import {
 import {
   createSpineLocation, createSpineSample, RouteSpine, type SpineLocation, type SpineSample,
 } from './routeSpine.ts';
+import { foldedRouteFixture } from './foldedRouteFixture.ts';
 
 /**
  * Where the super tracker puts the cop back, headless — the chase pass (§31).
@@ -22,9 +23,9 @@ import {
  * rider's own spawn; a folded route putting "50 m back" a few metres away)
  * are asserted on a real generated spine rather than ridden for.
  *
- * `route-41` is the chase pass's measuring route, and it has both things a
- * planner has to be right about: gentle bends nearly everywhere, and one real
- * fold near its end where the line doubles back on itself. Nothing below is
+ * `route-41` is the chase pass's measuring route: gentle bends nearly
+ * everywhere. Its fold went with M39 r6 (town rings keep roads apart), so the
+ * fold the planner must refuse comes from `foldedRouteFixture`. Nothing below is
  * stated in world coordinates: a candidate is located back onto the spine and
  * judged in route distance, headings are compared wrapped, and the fold is
  * *searched for* rather than named, so a regenerated route that moves the
@@ -101,18 +102,37 @@ test('a rider riding the route backwards gets the cop 50 m further along it, fac
 });
 
 test('a rider still in the route’s first metres is refused, not handed their own spawn', () => {
-  // `RouteSpine.sample` clamps at both ends: 50 m behind a rider at 5 m is
-  // the start point, 5 m from them. M20.2's first browser proof blessed
-  // exactly that as a "large gap reduction" (1.1 m from the rider), which is
-  // why the refusal exists. Both ends, because the clamp is at both ends.
-  assert.equal(planRegroup(spine, riderAt(5), 50, 13, freshScratch()), null,
+  // `RouteSpine.sample` clamps at both ends of an open route: 50 m behind a
+  // rider at 5 m is the start point, 5 m from them. M20.2's first browser
+  // proof blessed exactly that as a "large gap reduction" (1.1 m from the
+  // rider), which is why the refusal exists. Both ends, because the clamp is
+  // at both ends. On an open route — a town ring's line is closed since M39
+  // r6's Codex QA, and has no end to clamp at (below).
+  const open = RouteSpine.fromPlan(foldedRouteFixture())!;
+  assert.equal(open.closed, false);
+  const standing = (distance: number, reversed = false): RegroupRider => {
+    const here = open.sample(distance, createSpineSample());
+    return { x: here.x, z: here.z, headingY: reversed ? here.headingY + Math.PI : here.headingY };
+  };
+  assert.equal(planRegroup(open, standing(5), 50, 13, freshScratch()), null,
     'the start clamp was blessed');
-  assert.equal(planRegroup(spine, riderAt(spine.length - 5, true), 50, 13, freshScratch()), null,
+  assert.equal(planRegroup(open, standing(open.length - 5, true), 50, 13, freshScratch()), null,
     'the end clamp was blessed');
   // And it is the clamp that refuses, not the gap floor: with no floor at
   // all the answer is the same.
-  assert.equal(planRegroup(spine, riderAt(5), 50, 0, freshScratch()), null,
+  assert.equal(planRegroup(open, standing(5), 50, 0, freshScratch()), null,
     'the start clamp only refused because of the floor');
+});
+
+test('on a closed town ring, 50 m behind a rider in the plaza is the return road', () => {
+  // M39 r6: the ring's line runs on through the return climb into the plaza
+  // it left, so "behind" a rider just past the start/finish seam is the road
+  // they rode in on — a real placement, not a clamp.
+  assert.equal(spine.closed, true, 'route-41 is a closed town ring');
+  const placed = planRegroup(spine, riderAt(5), 50, 13, freshScratch());
+  assert.ok(placed !== null, 'a rider in the plaza has road behind them');
+  const along = routeDistanceOf(placed);
+  assert.ok(Math.abs(along - (spine.length - 45)) < 3, `placed at ${along.toFixed(0)} m of ${spine.length.toFixed(0)} m`);
 });
 
 test('a candidate closer than the floor in the world is refused, and the ladder walks on past it', () => {
@@ -209,19 +229,30 @@ test('the floor lets every bend through and refuses the fold, where M20.2’s fl
   assert.ok(oldAtBend === null || oldAtBend.back > back,
     'the old floor let the bend through as asked, so this test no longer tells the two apart');
 
-  // The fold: two arms of the line a few metres apart in the world. route-41
-  // has one, and it is inside the bust radius — exactly the placement that
-  // would hand the cop a crash that is his doing. The rung at the fold is
-  // refused; what the ladder answers, if anything, is a rung further back
-  // that clears the floor.
+  // The fold: two arms of the line a few metres apart in the world. Before
+  // M39 r6 route-41 had one; town rings keep roads apart by construction, so
+  // the fold is a built fixture now (`foldedRouteFixture`). A cop placed at a
+  // fold inside the bust radius is handed a crash that is his doing. The rung
+  // at the fold is refused; what the ladder answers, if anything, is a rung
+  // further back that clears the floor.
+  const folded = RouteSpine.fromPlan(foldedRouteFixture())!;
+  const foldRider = (distance: number): RegroupRider => {
+    const at = folded.sample(distance, createSpineSample());
+    return { x: at.x, z: at.z, headingY: at.headingY };
+  };
+  fold = { distance: -1, chord: Infinity };
+  for (let distance = back + 1; distance < folded.length - 1; distance += 1) {
+    const unfolded = planRegroup(folded, foldRider(distance), back, 0, freshScratch());
+    if (unfolded !== null && unfolded.gap < fold.chord) fold = { distance, chord: unfolded.gap };
+  }
   assert.ok(fold.chord < CHASE.bustRadiusMetres + 1,
-    `route-41’s tightest ${back} m return is ${fold.chord} m away at ${fold.distance} m — no fold to refuse`);
-  const atFold = planRegroup(spine, riderAt(fold.distance), back, floor, freshScratch());
+    `the fixture's tightest ${back} m return is ${fold.chord} m away at ${fold.distance} m — no fold to refuse`);
+  const atFold = planRegroup(folded, foldRider(fold.distance), back, floor, freshScratch());
   if (atFold !== null) {
     assert.ok(atFold.back > back && atFold.gap >= floor,
       `the floor placed the cop ${atFold.gap} m from the rider at the fold, ${atFold.back} m back`);
   }
-  const unfloored = planRegroup(spine, riderAt(fold.distance), back, 0, freshScratch());
+  const unfloored = planRegroup(folded, foldRider(fold.distance), back, 0, freshScratch());
   assert.ok(unfloored !== null && unfloored.back === back,
     'the fold was refused by the route clamp, not by the floor');
 });
@@ -321,4 +352,49 @@ test('the ladder walks only so far, and never closer than asked', () => {
   assert.ok(asked.every((ask) => ask.distance <= 350 + 1e-6), 'a rung was closer to the rider than the return asked for');
   const furthest = Math.min(...asked.map((ask) => ask.distance));
   assert.ok(350 - furthest <= 40, `the ladder walked ${350 - furthest} m past the return, which is a different regroup`);
+});
+
+// -- M39 Part P: the occupied rung and the framed rung (§39.6b.3, §39.6b.3b) --
+
+test('no refusals, or empty ones, are the solo tail’s ladder exactly', () => {
+  const judge: RegroupJudge = (distance) => (distance < 342 ? 18 : 6);
+  for (const reversed of [false, true]) {
+    const rider = riderAt(400, reversed);
+    const shipped = planRegroup(spine, rider, 50, 13, freshScratch(), judge);
+    assert.deepEqual(planRegroup(spine, rider, 50, 13, freshScratch(), judge, -1, null), shipped);
+    assert.deepEqual(planRegroup(spine, rider, 50, 13, freshScratch(), judge, -1,
+      { others: [], spacingMetres: CHASE.packSpacingMetres, framed: null }), shipped,
+    'an empty pack with no pane rule moved the tail');
+    // A packmate far away and a pane that frames nothing move nothing either.
+    assert.deepEqual(planRegroup(spine, rider, 50, 13, freshScratch(), judge, -1,
+      { others: [{ x: 1e6, z: 1e6 }], spacingMetres: CHASE.packSpacingMetres, framed: () => false }), shipped);
+  }
+});
+
+test('a rung another cop stands on is refused like a folded one, and the ladder walks on back', () => {
+  const rider = riderAt(400);
+  const free = planRegroup(spine, rider, 50, 13, freshScratch());
+  assert.ok(free !== null && free.back === 50);
+  const { judge, asked } = recording(() => 20);
+  const taken = planRegroup(spine, rider, 50, 13, freshScratch(), judge, -1,
+    { others: [{ x: free.x + 1, z: free.z }], spacingMetres: CHASE.packSpacingMetres, framed: null });
+  assert.ok(taken !== null, 'one occupied rung refused the whole regroup');
+  assert.ok(taken.back > 50, `he was stood on his packmate (${taken.back} m back)`);
+  assert.ok(Math.hypot(taken.x - free.x - 1, taken.z - free.z) > CHASE.packSpacingMetres,
+    'the answer is still within the packmate’s spacing');
+  assert.ok(asked.every((ask) => Math.abs(ask.distance - free.distance) > 1),
+    'the judge was asked about the occupied rung');
+});
+
+test('a rung any pane frames is refused; a ladder that is all in view answers null and he keeps riding', () => {
+  const rider = riderAt(400);
+  const at = createSpineLocation();
+  // Every rung nearer than 358 m along the route is in somebody's view.
+  const framed = (x: number, z: number): boolean => spine.locate(x, z, -1, at).distance > 342;
+  const answer = planRegroup(spine, rider, 50, 13, freshScratch(), null, -1,
+    { others: [], spacingMetres: CHASE.packSpacingMetres, framed });
+  assert.ok(answer !== null && answer.back === 60, `the ladder answered ${answer?.back} m back, not the first unframed rung`);
+  assert.equal(planRegroup(spine, rider, 50, 13, freshScratch(), null, -1,
+    { others: [], spacingMetres: CHASE.packSpacingMetres, framed: () => true }), null,
+  'a return where everyone is looking was answered');
 });

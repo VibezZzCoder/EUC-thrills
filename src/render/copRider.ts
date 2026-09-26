@@ -93,7 +93,7 @@ const DROPPED_MESHES: ReadonlySet<string> = new Set([
  * paint, and `render/euc.ts` applies it at build. Same band, same values, same
  * pixels — `renderCost.test.ts` would notice a moved vertex as a moved call.
  */
-const COP_MACHINE_LOOK: MachineLook = {
+export const COP_MACHINE_LOOK: MachineLook = {
   ...STANDARD_MACHINE_LOOK,
   paintShell: (geometry: THREE.BufferGeometry): void => {
     geometry.computeBoundingBox();
@@ -148,14 +148,62 @@ export interface CopRider {
   dispose(): void;
 }
 
-export function createCopRider(): CopRider {
+/**
+ * How a cop rig is built — M39 Part P (`docs/PLANS.md` §39.6b, `docs/M39_CHASE.md` §2f).
+ *
+ * Both fields are optional and their absence is the rig this file has always
+ * built, byte for byte: the 26-call trim, named `cop-`.
+ */
+export interface CopRiderOptions {
+  /**
+   * **The cop at full rig** — q218. `DROPPED_MESHES` restored and every part
+   * keeping the shadow the rig gives it; the uniform unchanged. This is the
+   * seated human cop's rig, who is a seat like any other and is looked at from
+   * his own camera three metres away, where the trim's two rules stop being
+   * true. `COP_LOOK` deliberately has no elbow pads, sleeve panels or separate
+   * seat mesh, so the full cop measures *fewer* meshes than a playable rig —
+   * no part is added to reach a number (R-6); `renderCost.test.ts` holds it
+   * equal to `createCopRidingRig()` and no dearer than the worst playable.
+   */
+  readonly full?: boolean;
+  /**
+   * Which trim of the pack (R-7). 0 or absent keeps today's `cop-` prefix byte
+   * for byte (`cop-rider`, `cop-riding-rig`, `cop-rider-pelvis`), so every
+   * existing lookup — the M18 and M30 specs, Ultra's rig name — still finds
+   * the tail. n ≥ 1 prefixes `cop{n+1}-` (`cop2-rider`, `cop3-rider`), so each
+   * trim of a three-cop pack (q209) is addressable and no two nodes in the
+   * scene share a name — `getObjectByName`'s first-match walk is the reason,
+   * as the prefix note below records.
+   */
+  readonly index?: number;
+}
+
+/** The node prefix for a trim of the pack: `cop-` for the tail, `cop2-`, `cop3-` after him. */
+function copPrefix(index: number): string {
+  return index >= 1 ? `cop${Math.floor(index) + 1}-` : 'cop-';
+}
+
+/**
+ * The seated human cop's rig — M39 Part P, q218.
+ *
+ * `createRidingRig(COP_LOOK, COP_MACHINE_LOOK)`, untrimmed and un-prefixed: a
+ * seat rig like any other, which is what the couch's cop seat installs. The
+ * render-cost model seats it in the chase rooms (`render/renderCost.ts`).
+ */
+export function createCopRidingRig(): RidingRig {
+  return createRidingRig(COP_LOOK, COP_MACHINE_LOOK);
+}
+
+export function createCopRider(options: CopRiderOptions = {}): CopRider {
+  const full = options.full === true;
+  const prefix = copPrefix(options.index ?? 0);
   const group = new THREE.Group();
-  group.name = 'cop-rider';
+  group.name = `${prefix}rider`;
   // Hidden until a chase starts. Free ride, the timed run and Knockabout must
   // cost nothing for a rider who is not in them.
   group.visible = false;
 
-  const rig: RidingRig = createRidingRig(COP_LOOK, COP_MACHINE_LOOK);
+  const rig: RidingRig = createCopRidingRig();
   group.add(rig.group);
 
   // **Every name in the cop's copy of the rig is prefixed**, for the reason
@@ -189,10 +237,12 @@ export function createCopRider(): CopRider {
       // nothing extra in a single-pass shadow map.
     });
   };
-  trim();
+  // The full rig (q218) skips the trim and keeps every part and every shadow
+  // the rig was built with — `createCopRidingRig()`'s cost, prefixed.
+  if (!full) trim();
 
   rig.group.traverse((object) => {
-    if (object.name !== '') object.name = `cop-${object.name}`;
+    if (object.name !== '') object.name = `${prefix}${object.name}`;
   });
 
   let drawCalls = 0;

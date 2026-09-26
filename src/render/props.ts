@@ -21,7 +21,20 @@ import {
   type FacadeAtlas,
   type FacadePageId,
 } from './facadeAtlas.ts';
-import { BASELINE_PRESENTATION, type PresentationRecipe, type PresentationRecipeId } from './presentation.ts';
+import { BASELINE_PRESENTATION } from './presentation.ts';
+import { composeBuilding } from '../data/buildingLooks.ts';
+import { ULTRA_BUILDING_BUILDERS, ULTRA_FORM_BUILDERS, isReliefPart, ultraCasts } from './ultra/ultraKit.ts';
+import {
+  ULTRA_SLOT_ATTRIBUTE,
+  installUltraSlotFarCaster,
+  ultraSlotClosing,
+  ultraSlotDepth,
+  ultraSlotFarDepth,
+} from './ultra/ultraBuildings.ts';
+import { ULTRA_STATIC_LAYER, isUltraRecipe } from './ultra/ultraRecipe.ts';
+import { ultraPropMaterial, ultraReliefDepthMaterial } from './ultra/ultraMaterials.ts';
+import { createUltraFacadeMaps } from './ultra/facadeMaterialAtlas.ts';
+import type { BuildRecipe, BuildRecipeId, UltraBuildContext, UltraFacadeMaps } from './ultra/ultraTypes.ts';
 
 /**
  * The world's dressing, built from the `LevelPlan` and from nothing else.
@@ -100,10 +113,23 @@ export interface PropsView {
    */
   readonly shadowDrawCalls: number;
   readonly shadowTriangles: number;
-  /** Which topology this view was built with (`render/presentation.ts`). */
-  readonly recipe: PresentationRecipeId;
-  /** GPU textures this view owns: the facade atlas when a facade is present. */
+  /**
+   * Which topology this view was built with (`render/presentation.ts`), or the
+   * Ultra rung it was built with (M39, `render/ultra/ultraRecipe.ts`).
+   */
+  readonly recipe: BuildRecipeId;
+  /**
+   * GPU textures this view owns: the facade atlas when a facade is present —
+   * or, on an Ultra view with facade maps, the three Ultra facade textures
+   * (its own albedo copy, the normal and the ORM pages) in its place.
+   */
   readonly textures: number;
+  /**
+   * Bytes of Ultra-owned GPU data this view holds, for the Ultra ledger: the
+   * facade maps, plus the caps' slot-closing attribute (A16, 4 B a cap
+   * instance) when any cap closes a slot. Always 0 on an ordinary view.
+   */
+  readonly bytes: number;
   dispose(): void;
 }
 
@@ -113,7 +139,7 @@ export interface PropsView {
  * that tops one of the level's own trunk colliders are the same triangles in
  * the same draw call.
  */
-type PartId =
+export type PartId =
   | 'trunk'
   | 'crown'
   | 'coniferFoliage'
@@ -132,7 +158,8 @@ type PartId =
   | 'buildingTall'
   | 'buildingCap'
   | 'tyreStack'
-  | 'gantrySpan';
+  | 'gantrySpan'
+  | 'roofGable';
 
 interface PartDefinition {
   /** Built once, on first use. Local space, origin at the prop's base. */
@@ -545,6 +572,23 @@ const PARTS: Readonly<Record<PartId, PartDefinition>> = {
     tint: 0,
     castShadow: true,
   },
+
+  /**
+   * A pitched roof — M39 Phase 2's one new part. A unit triangular prism
+   * standing on its base, the ridge along local z at the top: two slopes, two
+   * gable ends and the underside an eave shows from the street. Houses wear
+   * one, a shed a row of shallow ones, a spire two crossed at right angles
+   * (`data/buildingLooks.ts`). It never casts, like every building part, which
+   * is what keeps the library bound at the 160 ceiling.
+   */
+  roofGable: {
+    build: () => roofGable(),
+    albedo: 0xffffff,
+    roughness: 0.85,
+    metalness: 0,
+    tint: 0,
+    castShadow: false,
+  },
 };
 
 /** Which parts each kind emits. Buildings are the one kind that computes. */
@@ -956,6 +1000,30 @@ function createFacadeTexture(): THREE.DataTexture {
   return texture;
 }
 
+/**
+ * The roof prism, wound so every face's `(b - a) × (c - a)` points outward —
+ * derived, not flipped until it looked right (`props.test.ts` checks it).
+ */
+function roofGable(): THREE.BufferGeometry {
+  const h = 0.5;
+  const triangles: [number, number, number][][] = [
+    // The two slopes, ridge at (0, 1, z).
+    [[-h, 0, h], [0, 1, h], [0, 1, -h]], [[-h, 0, h], [0, 1, -h], [-h, 0, -h]],
+    [[h, 0, -h], [0, 1, -h], [0, 1, h]], [[h, 0, -h], [0, 1, h], [h, 0, h]],
+    // The gable ends.
+    [[-h, 0, h], [h, 0, h], [0, 1, h]],
+    [[h, 0, -h], [-h, 0, -h], [0, 1, -h]],
+    // The underside, seen only under an eave.
+    [[-h, 0, -h], [h, 0, -h], [h, 0, h]], [[-h, 0, -h], [h, 0, h], [-h, 0, h]],
+  ];
+  const positions: number[] = [];
+  for (const triangle of triangles) for (const vertex of triangle) positions.push(...vertex);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 /** A faceted lobe: the canopy, the shrub, and the bollard's finial. */
 function blob(
   radius: number,
@@ -1001,10 +1069,28 @@ interface Bucket {
   readonly colours: number[];
 }
 
+/**
+ * Build a plan's dressing under a recipe.
+ *
+ * **M39 Ultra** (`docs/M39_ULTRA.md` §6.3 W3): an Ultra rung arrives with a
+ * `context` (the shared uniforms, the device's anisotropy) and its kit, and
+ * changes only what §4 lets it — each part's triangles (`ULTRA_FORM_BUILDERS`,
+ * `ULTRA_BUILDING_BUILDERS`), its material, cast/receive flags, the relief
+ * depth material and the static-shadow layer. The buckets, their names, the
+ * instance counts, matrices and colours are computed above the branch and are
+ * identical to the enhanced world's. Every Ultra statement below sits behind
+ * `kit !== null`; with an ordinary recipe (and with no `context`, the
+ * default) this function executes exactly the statements it always did.
+ */
 export function createProps(
   plan: LevelPlan,
-  recipe: PresentationRecipe = BASELINE_PRESENTATION,
+  recipe: BuildRecipe = BASELINE_PRESENTATION,
+  context?: UltraBuildContext,
 ): PropsView {
+  const kit = isUltraRecipe(recipe) ? recipe.ultra : null;
+  if (kit !== null && context === undefined) {
+    throw new Error(`createProps: the Ultra recipe "${recipe.id}" needs an UltraBuildContext`);
+  }
   const group = new THREE.Group();
   group.name = 'level-props';
 
@@ -1053,6 +1139,22 @@ export function createProps(
     const simple = SIMPLE_PARTS[prop.kind];
     if (simple !== undefined) {
       for (const part of simple) emit(part, base, tintOf(part, prop, 11));
+      continue;
+    }
+
+    // M39 Phase 2: a building with a district look or a landmark is the
+    // pieces `data/buildingLooks.ts` composes, one instance each. Untagged
+    // buildings never reach this branch and draw exactly as before.
+    if (prop.kind === 'building' && prop.look !== undefined) {
+      const look = prop.look;
+      for (const piece of composeBuilding({ position: prop.position, size: prop.size, look })) {
+        quaternion.setFromAxisAngle(up, piece.yaw);
+        position.set(piece.x, piece.y, piece.z);
+        scale.set(piece.sx, piece.sy, piece.sz);
+        local.compose(position, quaternion, scale);
+        colour.setHex(piece.tone).multiplyScalar(piece.jitter);
+        emit(piece.part, composed.multiplyMatrices(base, local), colour);
+      }
       continue;
     }
 
@@ -1126,28 +1228,76 @@ export function createProps(
 
   const matrix = new THREE.Matrix4();
   let atlas: THREE.DataTexture | null = null;
+  // M39 Ultra only: the view's facade maps (created once, with the first
+  // facade part) and the one relief depth material every relief part shares.
+  let maps: UltraFacadeMaps | null = null;
+  let reliefDepth: THREE.MeshDepthMaterial | null = null;
+  // A16: the cap bucket's own depth material when any cap closes a slot, and
+  // the bytes of its per-instance attribute (Ultra-owned, in the ledger).
+  let slotDepth: THREE.MeshDepthMaterial | null = null;
+  let slotFarDepth: THREE.MeshDepthMaterial | null = null;
+  let slotBytes = 0;
   for (const [part, bucket] of buckets) {
     const definition = PARTS[part];
     const count = bucket.colours.length / 3;
     if (count === 0) continue;
 
-    const build = (recipe.foliage ? ENHANCED_BUILDERS[part] : undefined) ?? definition.build;
+    const build = (kit?.forms ? ULTRA_FORM_BUILDERS[part] : undefined)
+      ?? (kit?.buildings ? ULTRA_BUILDING_BUILDERS[part] : undefined)
+      ?? (recipe.foliage ? ENHANCED_BUILDERS[part] : undefined)
+      ?? definition.build;
     const geometry = withInstanceColour(build());
-    if (definition.atlas === true && atlas === null) atlas = createFacadeTexture();
-    const material = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: definition.roughness,
-      metalness: definition.metalness,
-      // Required for `instanceColor` to reach the fragment shader at all. The
-      // geometry's white `color` attribute is the other half of it.
-      vertexColors: true,
-      map: definition.atlas === true ? atlas : null,
-    });
+    if (kit !== null && kit.facadeMaps && definition.atlas === true) {
+      // Ultra samples its own albedo copy (same texels, anisotropy set) with
+      // the normal and ORM pages, so the ordinary atlas is never uploaded.
+      if (maps === null) maps = createUltraFacadeMaps(context!.maxAnisotropy);
+    } else if (definition.atlas === true && atlas === null) atlas = createFacadeTexture();
+    const material = kit === null
+      ? new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        roughness: definition.roughness,
+        metalness: definition.metalness,
+        // Required for `instanceColor` to reach the fragment shader at all. The
+        // geometry's white `color` attribute is the other half of it.
+        vertexColors: true,
+        map: definition.atlas === true ? atlas : null,
+      })
+      : ultraPropMaterial(part, {
+        roughness: definition.roughness,
+        metalness: definition.metalness,
+        map: definition.atlas === true ? (maps?.albedo ?? atlas) : null,
+      }, context!, definition.atlas === true ? maps : null);
 
     const mesh = new THREE.InstancedMesh(geometry, material, count);
     mesh.name = `level-props-${part}`;
     mesh.castShadow = definition.castShadow;
     mesh.receiveShadow = false;
+    if (kit !== null) {
+      // D2: building parts cast under the Ultra kit; every other part keeps
+      // its authored flag. Every part receives once the Ultra lighting is on.
+      mesh.castShadow = ultraCasts(part, definition.castShadow, kit);
+      mesh.receiveShadow = kit.lighting;
+      // A16, round 2 item 3: caps under 2 m from a neighbouring cap close the
+      // slot between them in the shadow depth passes only — one byte per side
+      // per instance, read by the cap's own near depth material
+      // (`ultraSlotDepth`) and by its far-map draw (`ultraSlotFarDepth`).
+      const slots = kit.buildings && part === 'buildingCap' ? ultraSlotClosing(bucket.matrices, count) : null;
+      if (slots !== null) {
+        geometry.setAttribute(ULTRA_SLOT_ATTRIBUTE, new THREE.InstancedBufferAttribute(slots, 4, true));
+        slotBytes += slots.byteLength;
+        slotDepth = ultraSlotDepth(ultraReliefDepthMaterial(context!));
+        mesh.customDepthMaterial = slotDepth;
+        slotFarDepth = ultraSlotFarDepth();
+        installUltraSlotFarCaster(mesh, slotFarDepth);
+      } else if (kit.buildings && isReliefPart(part)) {
+        // The shadow pass draws the relief where the colour pass does.
+        if (reliefDepth === null) reliefDepth = ultraReliefDepthMaterial(context!);
+        mesh.customDepthMaterial = reliefDepth;
+      }
+      // What casts is what the static far map freezes (§3.4); nothing else
+      // joins its layer.
+      if (mesh.castShadow) mesh.layers.enable(ULTRA_STATIC_LAYER);
+    }
     for (let index = 0; index < count; index += 1) {
       matrix.fromArray(bucket.matrices, index * 16);
       mesh.setMatrixAt(index, matrix);
@@ -1172,7 +1322,7 @@ export function createProps(
     instances += count;
     triangles += partTriangles;
     drawCalls += 1;
-    if (definition.castShadow) {
+    if (kit === null ? definition.castShadow : mesh.castShadow) {
       shadowDrawCalls += 1;
       shadowTriangles += partTriangles;
     }
@@ -1187,7 +1337,8 @@ export function createProps(
     shadowDrawCalls,
     shadowTriangles,
     recipe: recipe.id,
-    textures: atlas === null ? 0 : 1,
+    textures: (atlas === null ? 0 : 1) + (maps === null ? 0 : 3),
+    bytes: (maps === null ? 0 : maps.bytes) + slotBytes,
 
     dispose(): void {
       // InstancedMesh owns the GPU buffers behind instanceMatrix and
@@ -1200,6 +1351,17 @@ export function createProps(
       // material's dispose() never releases its map (three's cleanup guide).
       atlas?.dispose();
       atlas = null;
+      // M39 Ultra: the facade maps, the shared relief depth material and the
+      // caps' two slot depth materials are the view's too, and go with it
+      // (invariant 10). The slot attribute goes with the cap's geometry.
+      maps?.dispose();
+      maps = null;
+      reliefDepth?.dispose();
+      reliefDepth = null;
+      slotDepth?.dispose();
+      slotDepth = null;
+      slotFarDepth?.dispose();
+      slotFarDepth = null;
       meshes.length = 0;
       geometries.length = 0;
       materials.length = 0;

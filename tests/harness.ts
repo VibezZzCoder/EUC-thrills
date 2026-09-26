@@ -1,7 +1,9 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, type ConsoleMessage, type Page } from '@playwright/test';
 import type { Game, GameSnapshot, ResourceCounts } from '../src/app/Game.ts';
+import { OPTIONS_KEY, type QualityLevel } from '../src/app/options.ts';
 import type { PressedAction, ScriptedActions } from '../src/input/actions.ts';
+import { STORAGE_PREFIX } from '../src/platform/storage.ts';
 
 /**
  * Shared browser-test harness.
@@ -350,6 +352,15 @@ export interface Toolkit {
        * were and takes away only the speed a human would have braked off.
        */
       maxSpeed?: number;
+      /**
+       * Simulation steps per steering command. Defaults to 2.
+       *
+       * Every `advance` renders a frame, and a 2.4 km M39 town drawn in the
+       * headless browser's software renderer made a two-step stride spend its
+       * whole timeout on frames nobody reads. A longer stride renders less; at
+       * 6 the driver still re-aims every 50 ms.
+       */
+      stride?: number;
       /**
        * Record the ride every N steps, rather than only its summary — M23.
        *
@@ -1018,8 +1029,9 @@ function installToolkit(): void {
         // meant to be tested on its recoveries.
         const eased = throttle * Math.max(0.25, 1 - Math.abs(error));
         game.setActions({ throttle: euc.speed > maxSpeed ? 0 : eased, steer });
-        game.advance(2);
-        steps += 2;
+        const stride = options.stride ?? 2;
+        game.advance(stride);
+        steps += stride;
 
         const after = game.snapshot().euc;
         sumSpeed += after.speed;
@@ -1995,7 +2007,7 @@ export const PROVING_GROUND = 'level=proving';
  * `tests/m9.spec.ts` is the exception and uses `bootToTitle` below, because the
  * title screen is the thing it is testing.
  */
-export async function boot(page: Page, query = ''): Promise<void> {
+export async function boot(page: Page, query = 'level=slice'): Promise<void> {
   await bootToTitle(page, query);
   await page.evaluate(() => {
     // Through the real state machine, so a spec reaches the state a player
@@ -2005,8 +2017,25 @@ export async function boot(page: Page, query = ''): Promise<void> {
   await page.waitForFunction(() => window.game.snapshot().app.acceptsRideInput);
 }
 
-/** Boot and stop at the title screen, without starting a ride. */
-export async function bootToTitle(page: Page, query = ''): Promise<void> {
+/** M39's town ring builds the old dead seed. Force the request boundary in a
+ * browser fixture; `levels.test.ts` exercises a real fallback result. */
+export const DEAD_SEED = 'route-12';
+
+/** Make `DEAD_SEED` refuse at the request boundary, as a real dead seed would. */
+export async function forceRefusal(page: Page, seed: string = DEAD_SEED): Promise<void> {
+  await page.route('**/src/level/levels.ts*', async (route) => {
+    const response = await route.fetch();
+    const source = await response.text();
+    const marker = 'const seed = normaliseSeed(rawSeed);';
+    expect(source).toContain(marker);
+    await route.fulfill({ response, body: source.replace(marker,
+      `${marker} if (seed === "${seed}") return { ok: false, seed, refusal: "no-route" };`) });
+  });
+}
+
+/** Boot the fixed reference world for existing ride instruments. Pass an empty
+ * query explicitly to exercise M39's curated player launch. */
+export async function bootToTitle(page: Page, query = 'level=slice'): Promise<void> {
   await page.goto(query ? `/?${query}` : '/');
   await page.waitForFunction(() => {
     // A refused boot displays its reason without ever installing window.game.
@@ -2032,4 +2061,149 @@ export async function bootToTitle(page: Page, query = ''): Promise<void> {
   // A screenshot taken while the 320 ms boot transition is still fading is a
   // screenshot of the loading shell, not of the game state the test names.
   await expect(page.locator('#boot')).toBeHidden();
+}
+
+// ---------------------------------------------------------------------------
+// M39: booting at a render tier
+// ---------------------------------------------------------------------------
+
+/**
+ * The saved-options key: `platform/storage.ts`'s schema-versioned prefix plus
+ * `app/options.ts`'s `OPTIONS_KEY`, imported rather than restated so the seed
+ * cannot drift from the store. `tools/ultra-compare.mjs` seeds the same key.
+ */
+const OPTIONS_STORAGE_KEY = `${STORAGE_PREFIX}${OPTIONS_KEY}`;
+
+/** The session-storage flag the start wrapper reads — see `bootAtTier`. */
+const FREEZE_FLAG = 'euc-m39.freezeAtStart';
+
+/** How a `bootAtTier` boot ends. Every field is optional. */
+export interface BootAtTierOptions {
+  /**
+   * Enter free ride after the title, exactly as `boot` does. Default true;
+   * false leaves the game on the title card, which is where both of Ultra's
+   * entrances and the couch panel live.
+   */
+  readonly ride?: boolean;
+  /**
+   * Stop the loop from its very first frame, so the title never takes a
+   * wall-clock step (`tools/ultra-compare.mjs`'s recipe, which is how U0's
+   * captures reached 10/10 byte-identical runs). With `ride` the loop is
+   * stopped again in the same task that enters free ride. Every step after
+   * that is one a spec took through `advance`, so two boots of the same world
+   * start their rides from the same tick. Default false.
+   */
+  readonly freezeAtStart?: boolean;
+  /** More fields for the seeded options record (merged under `quality`). */
+  readonly options?: Readonly<Record<string, unknown>>;
+}
+
+/** Pages that already carry the start wrapper: it is installed once per page. */
+const startWrapped = new WeakSet<Page>();
+/** Makes every seed's marker unique within this worker. */
+let seedSerial = 0;
+
+/**
+ * Boot with the player's saved quality already set to `tier` — M39
+ * (`docs/M39_ULTRA.md` §6.3 W9).
+ *
+ * **The real path, not a side door.** The tier is written into the player's
+ * own options record before the page's first script runs, so the game reads
+ * it the way it reads a returning player's saved choice: a saved Ultra is
+ * built by the first `setLevel`, exactly as PLANS §39.6 wants ("a saved Ultra
+ * builds once"). Nothing calls `setOptions` after boot and no renderer API is
+ * reached past. The record also marks the first-ride prompts and the rider
+ * chooser as seen, as `ultra-compare.mjs` does, so no onboarding card sits
+ * over a frame a spec compares.
+ *
+ * **Written once per call, not on every load.** An init script runs on every
+ * navigation, and a seed that ran again on a reload would overwrite whatever
+ * the game had saved since — hiding exactly the persistence a spec reloads to
+ * see. Each call's script carries its own marker in `sessionStorage`, which
+ * survives a reload in the same tab: the first load writes the record, every
+ * later load leaves it alone. A second call on the same page registers a
+ * second script, which writes on the next load. Init scripts run in
+ * registration order, so the newest seed is the one a boot gets.
+ *
+ * `freezeAtStart` wraps `window.game.start` through a property setter, as
+ * `ultra-compare.mjs` does: `main.ts` publishes the game and then starts it,
+ * and the wrapper stops the loop the moment it starts. Rendering continues
+ * (the loop draws while frozen), so `bootToTitle`'s first-frame wait still
+ * passes. The wrapper is installed once per page and does nothing unless the
+ * newest seed asked for it.
+ *
+ * Ends where `boot` ends (free ride, accepting input) unless `ride` is false,
+ * in which case it ends on the title. Either way it requires that the saved
+ * quality the game loaded is `tier`. A private window that refused storage
+ * would boot at the default, and every assertion after that would be about
+ * High.
+ */
+export async function bootAtTier(
+  page: Page,
+  query: string,
+  tier: QualityLevel,
+  settings: BootAtTierOptions = {},
+): Promise<void> {
+  const record = {
+    seenPrompts: ['ride', 'brake', 'hop'],
+    seenRiderChooser: true,
+    ...(settings.options ?? {}),
+    quality: tier,
+  };
+  seedSerial += 1;
+  const marker = `euc-m39.seed.${Date.now().toString(36)}.${seedSerial}`;
+  await page.addInitScript(({ key, value, seed, freeze, freezeFlag }) => {
+    try {
+      if (window.sessionStorage.getItem(seed) !== null) return;
+      window.localStorage.setItem(key, value);
+      window.sessionStorage.setItem(freezeFlag, freeze ? '1' : '0');
+      window.sessionStorage.setItem(seed, '1');
+    } catch {
+      // Storage refused (an opaque origin, a locked-down profile): the game
+      // boots at its default and the quality check below says so.
+    }
+  }, {
+    key: OPTIONS_STORAGE_KEY,
+    value: JSON.stringify(record),
+    seed: marker,
+    freeze: settings.freezeAtStart === true,
+    freezeFlag: FREEZE_FLAG,
+  });
+
+  if (!startWrapped.has(page)) {
+    startWrapped.add(page);
+    await page.addInitScript((freezeFlag) => {
+      let current: unknown;
+      Object.defineProperty(window, 'game', {
+        configurable: true,
+        enumerable: true,
+        get() { return current; },
+        set(game: { start(...args: unknown[]): unknown; loop: { setRunning(running: boolean): void } }) {
+          current = game;
+          let freeze = false;
+          try { freeze = window.sessionStorage.getItem(freezeFlag) === '1'; } catch { /* no storage: no freeze */ }
+          if (!freeze || game === null || typeof game !== 'object') return;
+          const start = game.start.bind(game);
+          game.start = (...args: unknown[]) => {
+            const result = start(...args);
+            game.loop.setRunning(false);
+            return result;
+          };
+        },
+      });
+    }, FREEZE_FLAG);
+  }
+
+  await bootToTitle(page, query);
+  const loaded = await page.evaluate(() => window.game.snapshot().options.quality);
+  expect(loaded, `the seeded quality "${tier}" did not reach the options store`).toBe(tier);
+
+  if (settings.ride === false) return;
+  await page.evaluate((freeze) => {
+    window.game.setAppState('freeRide');
+    // Same task as the state change, so no animation frame can step between
+    // the two (the state machine starts the loop; this stops it again).
+    if (freeze) window.game.loop.setRunning(false);
+  }, settings.freezeAtStart === true);
+  await page.waitForFunction(() => window.game.snapshot().app.acceptsRideInput);
 }

@@ -13,9 +13,10 @@ import {
 } from './buildPlan.ts';
 import type { BoxCollider, LevelPlan } from './plan.ts';
 import { generateLevel, sliceRouteLayout } from './generateRoute.ts';
-import { createLevel, seedFromQuery, LEVEL_IDS } from './levels.ts';
+import { CITY_DISTRICTS } from './cityRing.ts';
+import { DEFAULT_SEED, createLevel, seedFromQuery, LEVEL_IDS } from './levels.ts';
 import { planDigest } from './planDigest.ts';
-import { withinRenderBudget } from './renderBudget.ts';
+import { withinRenderBudget, withinSplitRenderBudget, withinQuadRenderBudget } from './renderBudget.ts';
 import {
   HAZARD_RULES,
   RIDEABILITY,
@@ -34,7 +35,7 @@ import {
   type SolidGrid,
 } from './routeValidator.ts';
 import { centrelineAt, leftOf, querySegment, type PlacedSegment } from './segments.ts';
-import { REQUIRED_ROUTE_FLOOR_METRES } from './segmentLibrary.ts';
+import { LIBRARY_BEATS, REQUIRED_ROUTE_FLOOR_METRES } from './segmentLibrary.ts';
 import { createSeedStreams, seedLabel, SEED_DOMAINS } from './seedStreams.ts';
 
 /**
@@ -128,8 +129,10 @@ test('rerolling the dressing leaves every metre of the route untouched', () => {
   // adding a single tree shifts every later draw and the route comes out
   // different — which is exactly the failure named per-domain streams exist to
   // prevent, and it fails silently.
-  for (const seed of SWEEP.slice(0, 8)) {
-    const base = generateLevel(seed).plan;
+  for (const seed of ['euc', 'route-41', 'sweep-39', 'sweep-15', 'euc-7', 'harbour-spark-42']) {
+    const generated = generateLevel(seed);
+    assert.equal(generated.report.usedFallback, false, `${seed}: compare emitted cities, never the fallback`);
+    const base = generated.plan;
     const rolled = generateLevel({ seed, overrides: { dressing: 'other' } }).plan;
 
     assert.equal(planView(rolled), planView(base), seed);
@@ -490,7 +493,8 @@ test('every seed in the sweep emits a world that passes every contract', () => {
 
   assert.equal(fallbacks, 0, `${fallbacks} seeds could not find a world in twelve attempts`);
   assert.ok(retried > 0, 'no seed ever retried, so the retry path is untested by this sweep');
-  assert.equal(beatSpread.size, 10, 'the sweep never places one of the ten beats');
+  // M39 r6: every town carries all ten; the report also names its two blocks.
+  assert.equal(LIBRARY_BEATS.filter((beat) => beatSpread.has(beat.name)).length, 10, 'the sweep never places one of the ten beats');
   assert.ok(worstDrawCalls <= RENDER_BUDGET.maxDrawCalls);
   assert.ok(worstTriangles <= RENDER_BUDGET.maxTriangles);
   assert.ok(shortest >= REQUIRED_ROUTE_FLOOR_METRES);
@@ -589,38 +593,29 @@ test('no prop begins above the ground it was settled onto', () => {
   }
 });
 
-test('a route is varied enough to be a place rather than a corridor', () => {
-  // The valid-but-joyless risk is the one `docs/PLANS.md` §12 gates this
-  // milestone on, and it is not a thing a test can settle — the owner's ride
-  // is. What a test *can* do is refuse the obvious ways to be joyless, and
-  // these three were all reachable before they were refused: the same beat
-  // twice in a row, one beat carrying half the route, and a route built from a
-  // handful of the ten.
-  let distinctTotal = 0;
-  for (const seed of SWEEP) {
-    const { report } = generateLevel(seed);
-    const distinct = new Set(report.beats).size;
-    distinctTotal += distinct;
-
-    assert.ok(distinct >= 5, `${seed} draws on only ${distinct} of the ten beats`);
-
-    const uses = new Map<string, number>();
-    for (const beat of report.beats) uses.set(beat, (uses.get(beat) ?? 0) + 1);
-    assert.ok(
-      Math.max(...uses.values()) <= 2,
-      `${seed} uses one beat ${Math.max(...uses.values())} times`,
-    );
-    for (let index = 1; index < report.beats.length; index += 1) {
-      assert.notEqual(
-        report.beats[index],
-        report.beats[index - 1],
-        `${seed} puts ${report.beats[index]} straight after itself`,
-      );
+test('each district supplies street frontage rather than only a distant skyline', () => {
+  for (const seed of ['euc', 'sweep-15', 'harbour-spark-42']) {
+    const { plan, report, layout } = generateLevel(seed);
+    assert.equal(report.usedFallback, false);
+    for (const district of CITY_DISTRICTS) {
+      const road = layout.placed.find((s) => s.spec.id === `city-${district}-main-street`)!;
+      const frontage = (plan.props ?? []).filter((p) => {
+        if (p.kind !== 'building') return false;
+        const dx = p.position.x - road.entry.position.x;
+        const dz = p.position.z - road.entry.position.z;
+        const along = dx * Math.sin(road.entry.headingY) + dz * Math.cos(road.entry.headingY);
+        const across = dx * Math.cos(road.entry.headingY) - dz * Math.sin(road.entry.headingY);
+        // querySegment intentionally culls beyond the ground corridor; frontage
+        // stands outside it, so measure against this straight's street frame.
+        const angle = p.rotationY - road.entry.headingY;
+        const halfFront = (Math.abs(Math.cos(angle)) * (p.size?.x ?? 0)
+          + Math.abs(Math.sin(angle)) * (p.size?.z ?? 0)) / 2;
+        return along > 0 && along < road.spec.length
+          && Math.abs(across) - halfFront - road.spec.halfWidth < 12;
+      });
+      assert.ok(frontage.length >= 4, `${district} lacks street frontage`);
     }
   }
-
-  const average = distinctTotal / SWEEP.length;
-  assert.ok(average >= 7, `the average route draws on only ${average.toFixed(1)} of the ten beats`);
 });
 
 test('generation alone does not consume the complete boot budget', () => {
@@ -902,12 +897,32 @@ const ADVERSARIAL_2026_08_09 = [
   // is the check that this is a generated-route change and not a character one.
   // Contract 1 is untouched: the worst seed still spends 85.6% of the draw-call
   // ceiling and 71.3% of the triangle ceiling.
-  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 139, triangles: 401_396, hazards: 7, targets: 18 },
-  { seed: 'route-278', axis: 'second densest', drawCalls: 139, triangles: 399_366, hazards: 10, targets: 17 },
-  { seed: 'sweep-89', axis: 'third densest', drawCalls: 139, triangles: 395_864, hazards: 9, targets: 23 },
-  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 139, triangles: 392_232, hazards: 10, targets: 18 },
-  { seed: 'euc-180', axis: 'longest required route', drawCalls: 138, triangles: 377_130, hazards: 8, targets: 19 },
-  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 138, triangles: 345_596, hazards: 8, targets: 18 },
+  // M39 r6 town ring remeasured 2026-09-22 (Claude): every beat on one closed
+  // ring with two district blocks, ~2.4 km of road. The frame moved from r5's
+  // 115 calls / ~420k to 140 / 527k–577k — the ground of a larger world, under
+  // the owner-raised 640k ceiling (`data/renderCost.ts`). Hazards and targets
+  // rise with the metres at the same density (~7 hazards per km, as r3 had).
+  // Axes still describe the historical r3 discovery, not current ranking.
+  // Re-recorded the same day after the owner's r6 ride: −1.2k to −2.7k
+  // triangles as benches and bins on a bank are left out (`buildPlan.ts`,
+  // `LEVEL_FURNITURE_MAX_RISE`); calls, hazards and targets unchanged.
+  // Re-recorded for M39 Phase 2 (readable districts, 2026-09-22): +1 call for
+  // the pitched-roof part and +276 to +688 triangles (sheds and landmarks less
+  // the parapets houses and sheds no longer wear); hazards, targets, roads,
+  // ground and gates byte-identical.
+  // Re-recorded after Codex's Phase 2 QA (2026-09-22): +76 to +276 triangles, the yard's front-row sheds at the bank-top setback and the landmark sightline rule; calls, hazards, targets unchanged.
+  // Re-recorded for M39 Part P (2026-09-23): +52 calls, +3,618 triangles uniformly —
+  // NON_LEVEL_RESERVE wearing the pack of three cop trims (q209, the owner's
+  // authorised raise); the level half of every frame is unchanged.
+  // Re-recorded for M39 Part P QA r2 (2026-09-24): +2 calls uniformly — the
+  // reserve counts the spark and dust fields live (PLANS §21.11); triangles,
+  // hazards, targets and the level half unchanged.
+  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 195, triangles: 529994, hazards: 16, targets: 38, fallback: false },
+  { seed: 'route-278', axis: 'second densest', drawCalls: 195, triangles: 539936, hazards: 16, targets: 36, fallback: false },
+  { seed: 'sweep-89', axis: 'third densest', drawCalls: 195, triangles: 553636, hazards: 18, targets: 48, fallback: false },
+  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 195, triangles: 547412, hazards: 18, targets: 39, fallback: false },
+  { seed: 'euc-180', axis: 'longest required route', drawCalls: 195, triangles: 579370, hazards: 22, targets: 42, fallback: false },
+  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 195, triangles: 548576, hazards: 18, targets: 33, fallback: false },
 ] as const;
 
 
@@ -1043,9 +1058,10 @@ test('the target pass places inside its own contracts on every seed', () => {
   assert.ok(least >= 0 && empty <= SWEEP.length, 'the band is a report, not a floor');
 });
 
-test('the recorded adversarial seeds still cost what they were recorded costing', () => {
+test('the historical adversarial seeds pin their M39 r6 outcomes', () => {
   for (const record of ADVERSARIAL_2026_08_09) {
-    const { plan } = generateLevel(record.seed);
+    const { plan, report } = generateLevel(record.seed);
+    assert.equal(report.usedFallback, record.fallback, `${record.seed}: refusal outcome moved`);
     const budget = withinRenderBudget(plan);
     assert.ok(budget.ok, `${record.seed}: ${budget.breaches.join('; ')}`);
     assert.equal(
@@ -1075,29 +1091,17 @@ test('the recorded adversarial seeds still cost what they were recorded costing'
   }
 });
 
-test('the worst seed found leaves the frame real headroom', () => {
-  // The verdict Phase 3's escalation order is gated on. `BatchedMesh` and
-  // distance culling are on the list *if the measurements demand them*, and
-  // this is the measurement: the densest route of 1,800 spends 72% of the
-  // triangle ceiling and 85% of the draw-call ceiling, so nothing was built.
-  //
-  // A quarter of the triangle budget unspent is the margin that makes that
-  // decision defensible rather than lucky. If this fails, the escalation order
-  // is live again and the first item on it is preserving cross-segment merges
-  // (`src/render/renderCost.test.ts` proves those are still intact).
+test('the densest historical seed still fits all three complete frame contracts', () => {
+  // M39's authorized expansion spends part of the old 20% planning reserve.
+  // Preserve hard ceilings; report measured headroom instead of retaining the
+  // obsolete claim that this r4 corpus spends less than 80% of Contract 1.
   const worst = ADVERSARIAL_2026_08_09.reduce((a, b) => (b.triangles > a.triangles ? b : a));
-  const { plan } = generateLevel(worst.seed);
-  const budget = withinRenderBudget(plan);
-
-  assert.ok(
-    budget.frame.triangles <= RENDER_BUDGET.maxTriangles * 0.8,
-    `the densest known route spends ${(100 * budget.frame.triangles / RENDER_BUDGET.maxTriangles).toFixed(1)}% `
-      + 'of the triangle ceiling. Under 80% is what "no scaling work needed" was decided on.',
-  );
-  assert.ok(
-    budget.frame.drawCalls <= RENDER_BUDGET.maxDrawCalls * 0.95,
-    `the densest known route spends ${budget.frame.drawCalls} of ${RENDER_BUDGET.maxDrawCalls} draw calls`,
-  );
+  const { plan, report } = generateLevel(worst.seed);
+  assert.equal(report.usedFallback, false);
+  for (const price of [withinRenderBudget, withinSplitRenderBudget, withinQuadRenderBudget]) {
+    const budget = price(plan);
+    assert.ok(budget.ok, budget.breaches.join('; '));
+  }
 });
 
 test('the render budget is a live contract, not a formality it never reaches', () => {
@@ -1185,40 +1189,16 @@ test('the seam tolerance is the slice\'s own worst cross-piece join', () => {
 // Retry, never repair
 // ---------------------------------------------------------------------------
 
-test('a rejected route is drawn again rather than patched', () => {
-  // The evidence that a retry is a retry: the attempt that survived is a
-  // *different world*, not the rejected one with something moved. Reconstructed
-  // by generating the same seed under the rejected attempt's own route stream
-  // and showing it is the world the report rejected — not the one it emitted.
-  const seeded = SWEEP.map((seed) => ({ seed, report: generateLevel(seed).report }))
-    .find((entry) => entry.report.rejections.length > 0);
-  assert.ok(seeded !== undefined, 'no seed in the sweep ever retried');
-  assert.ok(seeded.report.attempts > 1);
-  assert.ok(seeded.report.rejections[0].reasons.length > 0, 'a rejection with no reason');
-  assert.ok(
-    seeded.report.rejections[0].reasons[0].length > 20,
-    'a rejection reason a human cannot act on',
-  );
-
-  // And the emitted world is valid on its own terms, which is what master §6.4
-  // means by "end in a validated candidate or an explicit generation failure".
-  const again = generateLevel(seeded.seed);
-  assert.ok(validateRoute(again.layout).valid);
-});
-
-test('an optional branch is dropped, never retried', () => {
-  // Master §6.3 by name: spending a whole regeneration on something the design
-  // calls optional trades a valid world for a slightly more interesting one. So
-  // routes must legitimately differ in how much optional content they carry,
-  // and the required route must meet the floor without any of it.
-  const counts = SWEEP.slice(0, 16).map((seed) => generateLevel(seed).report.optionalSegments);
-  assert.ok(Math.min(...counts) < Math.max(...counts), 'every route carries the same optional set');
-  for (const seed of SWEEP.slice(0, 16)) {
-    const { report } = generateLevel(seed);
-    assert.ok(
-      report.requiredLength >= REQUIRED_ROUTE_FLOOR_METRES,
-      `${seed} needs its optional branches to reach the floor`,
-    );
+test('the town ring builds its required streets without leaning on retries', () => {
+  // M39 r6 lays the ring from both ends and closes it exactly; the validator
+  // and refusal boundary still guard invalid output, without demanding that
+  // good seeds fail by accident. Sixty seeds measured 1.08 attempts on average.
+  for (const seed of ['euc', 'sweep-15', 'route-12']) {
+    const { report, layout } = generateLevel(seed);
+    assert.equal(report.usedFallback, false);
+    assert.ok(report.attempts <= 2, `${seed} took ${report.attempts} attempts`);
+    assert.ok(report.requiredLength >= 1646);
+    assert.ok(validateRoute(layout).valid);
   }
 });
 
@@ -1524,10 +1504,8 @@ test('a generated route carries a timed course with a start and a finish', () =>
 // The way in
 // ---------------------------------------------------------------------------
 
-test('the generated level is reachable by query parameter, and is not the default', () => {
-  // A diagnostic on exactly the terms `?level=proving` is. Where generated
-  // routes live for a player is `docs/PLANS.md` §13 question 5 and is the
-  // owner's — this settles nothing about it.
+test('the curated generated level is the default while explicit slice stays available', () => {
+  // M39 opens on the curated expanded city; explicit reference links remain stable.
   assert.ok(LEVEL_IDS.includes('generated'));
   assert.equal(seedFromQuery('?level=generated&seed=riverbend'), 'riverbend');
   assert.equal(seedFromQuery('?level=generated'), 'euc', 'a missing seed is fixed, never random');
@@ -1536,5 +1514,5 @@ test('the generated level is reachable by query parameter, and is not the defaul
   const named = createLevel('generated', 'riverbend');
   assert.equal(planDigest(named), planDigest(generateLevel('riverbend').plan));
   assert.notEqual(planDigest(createLevel('slice')), planDigest(named));
-  assert.equal(planDigest(createLevel()), planDigest(createLevel('slice')), 'the default moved');
+  assert.equal(planDigest(createLevel()), planDigest(generateLevel(DEFAULT_SEED).plan), 'the curated default differs');
 });

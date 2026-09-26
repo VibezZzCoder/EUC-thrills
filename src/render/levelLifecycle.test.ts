@@ -5,10 +5,21 @@ import * as THREE from 'three';
 import { generateLevel } from '../level/generateRoute.ts';
 import { createSliceLevel } from '../level/sliceLevel.ts';
 import type { LevelPlan } from '../level/plan.ts';
-import { createTerrain } from './terrain.ts';
-import { createVenueLighting, type VenueLighting } from './Renderer.ts';
+import { createTerrain, type TerrainView } from './terrain.ts';
+import {
+  createVenueLighting,
+  type UltraEnvironment,
+  type UltraSkyTexture,
+  type VenueLighting,
+  type VenueLightingHooks,
+} from './Renderer.ts';
 import { LIGHTING } from '../data/tuning.ts';
-import type { VenueLook } from '../data/venueLook.ts';
+import type { ResolvedVenueLook, VenueLook } from '../data/venueLook.ts';
+import { ENHANCED_PRESENTATION, type PresentationSelection } from './presentation.ts';
+import type { SkyTexture } from './sky.ts';
+import { HEADLESS_CAPS } from './ultra/ultraCost.ts';
+import { applyKitOverride, ULTRA_FULL } from './ultra/ultraRecipe.ts';
+import { UltraRuntime, type UltraHost } from './ultra/ultraRuntime.ts';
 
 /**
  * Regeneration is a lifecycle event — M12 Phase 3.
@@ -385,4 +396,595 @@ test('the F4 panel wins over a venue, and only while a value is actually tuned',
   fixture.rig.tune({ exposure: LIGHTING.exposure });
   assert.equal(fixture.values().exposure, WARM_LATE_AFTERNOON.exposure);
   fixture.rig.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// The Ultra tier is a lifecycle event of the same rig — M39 (§3.6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Hooks that build nothing on a GPU and count everything: the Ultra sky, the
+ * PMREM environment (the "counting fake environment factory" of §6.3 W5) and
+ * every fill the rig asks for, with the tuned hemisphere it was handed. The
+ * fill is a fake too — a recognisable function of its inputs — so what is
+ * asserted is the rig's *wiring and restoration*, never W4's numbers, which
+ * W4's own tests own and U2 tunes.
+ */
+interface CountingHooks {
+  readonly hooks: VenueLightingHooks;
+  readonly counts: {
+    skiesPainted: number;
+    skiesDisposed: number;
+    environmentsBuilt: number;
+    environmentsDisposed: number;
+  };
+  /** The tuned hemisphere each fill was handed, in order. */
+  readonly tunedSeen: (number | undefined)[];
+  failNext: 'sky' | 'environment' | null;
+}
+
+/** The fake fill: hemisphere kept and zeroed, environment = fill / π. */
+function fakeFill(look: ResolvedVenueLook, tuned: number | undefined): {
+  hemisphereIntensity: number;
+  environmentIntensity: number;
+} {
+  return { hemisphereIntensity: 0, environmentIntensity: (tuned ?? look.hemisphereIntensity) / Math.PI };
+}
+
+function countingHooks(): CountingHooks {
+  const counts = { skiesPainted: 0, skiesDisposed: 0, environmentsBuilt: 0, environmentsDisposed: 0 };
+  const tunedSeen: (number | undefined)[] = [];
+  const state: CountingHooks = {
+    counts,
+    tunedSeen,
+    failNext: null,
+    hooks: {
+      ultraSky(): SkyTexture {
+        if (state.failNext === 'sky') throw new Error('no Ultra sky today');
+        counts.skiesPainted += 1;
+        const texture = new THREE.DataTexture(new Uint8Array(16 * 8 * 4), 16, 8, THREE.RGBAFormat);
+        texture.name = 'ultra-sky';
+        return {
+          texture,
+          dispose(): void {
+            counts.skiesDisposed += 1;
+            texture.dispose();
+          },
+        };
+      },
+      ultraEnvironment(): UltraEnvironment {
+        if (state.failNext === 'environment') throw new Error('no environment today');
+        counts.environmentsBuilt += 1;
+        const texture = new THREE.DataTexture(new Uint8Array(4), 1, 1, THREE.RGBAFormat);
+        texture.name = 'ultra-environment';
+        return {
+          texture,
+          bytes: 6 * 1024 * 1024,
+          cubeSize: 256,
+          dispose(): void {
+            counts.environmentsDisposed += 1;
+            texture.dispose();
+          },
+        };
+      },
+      ultraFill(look, tunedHemisphere) {
+        tunedSeen.push(tunedHemisphere);
+        return fakeFill(look, tunedHemisphere);
+      },
+    },
+  };
+  return state;
+}
+
+interface TierFixture {
+  readonly rig: VenueLighting;
+  readonly scene: THREE.Scene;
+  readonly sun: THREE.DirectionalLight;
+  readonly hemisphere: THREE.HemisphereLight;
+  readonly counting: CountingHooks;
+  /** Ordinary skies: built by `createSky`, told apart from the fakes by name. */
+  readonly ordinarySkies: { built: number; disposed: number };
+  /** Every field the rig writes on either tier, as plain values. */
+  values(): Record<string, unknown>;
+}
+
+/** The M36 fixture above, with the Ultra hooks — and every rig-written field. */
+function tierFixture(): TierFixture {
+  const scene = new THREE.Scene();
+  const hemisphere = new THREE.HemisphereLight(0x000000, 0x000000, 0);
+  const sun = new THREE.DirectionalLight(0x000000, 0);
+  scene.add(hemisphere);
+  scene.add(sun);
+  scene.add(sun.target);
+  let exposure = Number.NaN;
+  const counting = countingHooks();
+  const rig = createVenueLighting(
+    {
+      scene,
+      sun,
+      hemisphere,
+      setExposure: (value: number): void => {
+        exposure = value;
+      },
+    },
+    counting.hooks,
+  );
+
+  const ordinarySkies = { built: 0, disposed: 0 };
+  const seen = new Set<THREE.Texture>();
+  const watch = (): void => {
+    const texture = rig.sky.texture;
+    if (seen.has(texture) || texture.name !== 'sky') return;
+    seen.add(texture);
+    ordinarySkies.built += 1;
+    texture.addEventListener('dispose', () => {
+      ordinarySkies.disposed += 1;
+    });
+  };
+  watch();
+
+  return {
+    rig,
+    scene,
+    sun,
+    hemisphere,
+    counting,
+    ordinarySkies,
+    values(): Record<string, unknown> {
+      watch();
+      const fog = scene.fog as THREE.Fog;
+      const background = scene.background as THREE.DataTexture;
+      return {
+        tier: rig.tier,
+        fog: [fog.color.getHex(), fog.near, fog.far],
+        hemisphere: [hemisphere.color.getHex(), hemisphere.groundColor.getHex(), hemisphere.intensity],
+        sun: [sun.color.getHex(), sun.intensity],
+        sunOffset: rig.sunOffset.toArray(),
+        sunPosition: sun.position.toArray(),
+        exposure,
+        environment: scene.environment === null ? null : scene.environment.name,
+        environmentIntensity: scene.environmentIntensity,
+        rigEnvironment: rig.environment === null ? null : rig.environment.cubeSize,
+        sky: [background.name, background.image.width, background.image.height],
+        skyIsBackground: background === rig.sky.texture,
+      };
+    },
+  };
+}
+
+test('daylight → ultra → daylight restores every rig-written field, and leaves one sky alive', () => {
+  const fixture = tierFixture();
+  const daylight = fixture.values();
+
+  fixture.rig.setTier('ultra');
+  const ultra = fixture.values();
+  assert.equal(ultra.tier, 'ultra');
+  assert.equal(ultra.environment, 'ultra-environment', 'the environment is the fill');
+  assert.equal(ultra.hemisphere instanceof Array && ultra.hemisphere[2], 0, 'the hemisphere is kept and zeroed');
+  assert.equal(ultra.environmentIntensity, LIGHTING.hemisphereIntensity / Math.PI);
+  assert.deepEqual(ultra.sky, ['ultra-sky', 16, 8], 'the Ultra sky is the background');
+  // The look itself does not move with the tier (§3.2: sun, fog, exposure unchanged).
+  assert.deepEqual(
+    { fog: ultra.fog, sun: ultra.sun, sunOffset: ultra.sunOffset, exposure: ultra.exposure },
+    { fog: daylight.fog, sun: daylight.sun, sunOffset: daylight.sunOffset, exposure: daylight.exposure },
+  );
+  // A repeat is a no-op: nothing rebuilt.
+  fixture.rig.setTier('ultra');
+  assert.equal(fixture.counting.counts.environmentsBuilt, 1);
+  assert.equal(fixture.counting.counts.skiesPainted, 1);
+
+  fixture.rig.setTier('ordinary');
+  assert.deepEqual(fixture.values(), daylight, 'leaving Ultra left something of it on the light');
+  const { counts } = fixture.counting;
+  assert.equal(counts.environmentsDisposed, counts.environmentsBuilt, 'the PMREM target went with the tier');
+  assert.equal(counts.skiesDisposed, counts.skiesPainted, 'the Ultra sky went with the tier');
+  assert.equal(fixture.ordinarySkies.built, 2, 'the 1024 sky was repainted for the look');
+  assert.equal(fixture.ordinarySkies.disposed, 1, 'and exactly one ordinary sky is alive');
+  assert.equal(fixture.rig.failure, null);
+
+  fixture.rig.dispose();
+  assert.equal(fixture.ordinarySkies.disposed, 2);
+});
+
+test('an Ultra sky that brings its own background cube is drawn through it, and the ordinary sky comes back on exit (F3)', () => {
+  const counting = countingHooks();
+  let cubes = 0;
+  let cubesDisposed = 0;
+  const hooks: VenueLightingHooks = {
+    ...counting.hooks,
+    // The runtime's hook shape: the equirect as `texture`, its cube as `background`.
+    ultraSky(look): UltraSkyTexture {
+      const sky = counting.hooks.ultraSky(look);
+      const cube = new THREE.CubeTexture();
+      cube.name = 'ultra-sky-cube';
+      cubes += 1;
+      return {
+        texture: sky.texture,
+        background: cube,
+        dispose(): void {
+          cubesDisposed += 1;
+          cube.dispose();
+          sky.dispose();
+        },
+      };
+    },
+  };
+  const scene = new THREE.Scene();
+  const hemisphere = new THREE.HemisphereLight(0x000000, 0x000000, 0);
+  const sun = new THREE.DirectionalLight(0x000000, 0);
+  const rig = createVenueLighting({ scene, sun, hemisphere, setExposure: () => {} }, hooks);
+  const ordinary = scene.background as THREE.Texture;
+  assert.equal(ordinary, rig.sky.texture, 'the ordinary rig hangs the equirect, for three to convert');
+
+  rig.setTier('ultra');
+  assert.equal((scene.background as THREE.Texture).name, 'ultra-sky-cube', 'the cube is the background');
+  assert.equal(rig.sky.texture.name, 'ultra-sky', 'the rig still holds, and reports, the painted equirect');
+  rig.apply(WARM_LATE_AFTERNOON);
+  assert.equal(cubes, 2);
+  assert.equal(cubesDisposed, 1, 'the outgoing cube went with its sky');
+
+  rig.setTier('ordinary');
+  assert.equal(cubesDisposed, cubes, 'no cube outlives the tier');
+  assert.equal(scene.background, rig.sky.texture, 'the ordinary equirect is the background again');
+  assert.equal((scene.background as THREE.Texture).name, 'sky');
+  rig.dispose();
+});
+
+test('park → ultra → slice → ordinary lands exactly where park → slice does', () => {
+  const walked = tierFixture();
+  walked.rig.apply(WARM_LATE_AFTERNOON);
+  walked.rig.setTier('ultra');
+  const parkUltra = walked.values();
+  walked.rig.apply(undefined);
+  const sliceUltra = walked.values();
+  walked.rig.setTier('ordinary');
+
+  const direct = tierFixture();
+  direct.rig.apply(WARM_LATE_AFTERNOON);
+  direct.rig.apply(undefined);
+
+  assert.deepEqual(walked.values(), direct.values());
+  // The swap at Ultra rebuilt the environment for the new look, and repainted
+  // the Ultra sky — once each, disposing the outgoing ones first.
+  const { counts } = walked.counting;
+  assert.equal(counts.environmentsBuilt, 2);
+  assert.equal(counts.environmentsDisposed, 2);
+  assert.equal(counts.skiesPainted, 2);
+  assert.equal(counts.skiesDisposed, 2);
+  assert.notDeepEqual(parkUltra.environmentIntensity, sliceUltra.environmentIntensity,
+    'the fill follows the look it is hung for');
+  assert.equal(parkUltra.environmentIntensity, WARM_LATE_AFTERNOON.hemisphereIntensity! / Math.PI);
+
+  // A look and a tier changed together paint once, at the tier they end on.
+  const together = tierFixture();
+  together.rig.apply(WARM_LATE_AFTERNOON, 'ultra');
+  assert.equal(together.ordinarySkies.built, 1, 'no ordinary park sky was painted on the way in');
+  assert.equal(together.counting.counts.skiesPainted, 1);
+  assert.deepEqual(together.values(), parkUltra);
+});
+
+test('the F4 panel wins over a venue at Ultra too, in both directions of a tier change', () => {
+  const fixture = tierFixture();
+  // An untouched panel, pushed as `applyTuning` pushes it: not an override.
+  fixture.rig.tune({
+    exposure: LIGHTING.exposure,
+    sunIntensity: LIGHTING.sunIntensity,
+    hemisphereIntensity: LIGHTING.hemisphereIntensity,
+  });
+  fixture.rig.apply(WARM_LATE_AFTERNOON, 'ultra');
+  assert.equal(fixture.counting.tunedSeen.at(-1), undefined, 'the fill saw no tuned hemisphere');
+  assert.equal(fixture.scene.environmentIntensity, WARM_LATE_AFTERNOON.hemisphereIntensity! / Math.PI);
+
+  // A dragged hemisphere reaches the Ultra fill, absolute, not the light.
+  fixture.rig.tune({ hemisphereIntensity: 0.8 });
+  assert.equal(fixture.counting.tunedSeen.at(-1), 0.8);
+  assert.equal(fixture.scene.environmentIntensity, 0.8 / Math.PI);
+  assert.equal(fixture.hemisphere.intensity, 0);
+
+  // A dragged exposure survives the tier change in both directions.
+  fixture.rig.tune({ exposure: 1.4 });
+  fixture.rig.setTier('ordinary');
+  assert.equal(fixture.values().exposure, 1.4, 'leaving Ultra dropped the override');
+  assert.equal(fixture.hemisphere.intensity, 0.8, 'the tuned hemisphere is the ordinary fill again');
+  fixture.rig.setTier('ultra');
+  assert.equal(fixture.values().exposure, 1.4, 'entering Ultra dropped the override');
+  assert.equal(fixture.scene.environmentIntensity, 0.8 / Math.PI);
+
+  // Dragged back to their exact defaults, both go back to the venue.
+  fixture.rig.tune({ exposure: LIGHTING.exposure, hemisphereIntensity: LIGHTING.hemisphereIntensity });
+  assert.equal(fixture.values().exposure, WARM_LATE_AFTERNOON.exposure);
+  assert.equal(fixture.counting.tunedSeen.at(-1), undefined);
+  fixture.rig.setTier('ordinary');
+  assert.equal(fixture.hemisphere.intensity, WARM_LATE_AFTERNOON.hemisphereIntensity);
+  assert.equal(fixture.scene.environmentIntensity, 1);
+});
+
+test('an Ultra piece that cannot be built falls back to exactly the ordinary light', () => {
+  for (const piece of ['sky', 'environment'] as const) {
+    const fixture = tierFixture();
+    fixture.rig.apply(WARM_LATE_AFTERNOON);
+    const ordinary = fixture.values();
+
+    fixture.counting.failNext = piece;
+    fixture.rig.setTier('ultra');
+    assert.equal(fixture.rig.tier, 'ordinary', `a failed ${piece} left the rig on the Ultra tier`);
+    assert.equal(fixture.rig.failure?.stage, piece);
+    assert.deepEqual(
+      { ...fixture.values(), sky: null },
+      { ...ordinary, sky: null },
+      `a failed ${piece} left part of Ultra on the light`,
+    );
+    assert.equal((fixture.values().sky as unknown[])[0], 'sky', 'the background is an ordinary sky');
+    const { counts } = fixture.counting;
+    assert.equal(counts.environmentsDisposed, counts.environmentsBuilt);
+    assert.equal(counts.skiesDisposed, counts.skiesPainted);
+
+    // The next attempt starts clean.
+    fixture.counting.failNext = null;
+    fixture.rig.setTier('ultra');
+    assert.equal(fixture.rig.tier, 'ultra');
+    assert.equal(fixture.rig.failure, null);
+    fixture.rig.dispose();
+  }
+});
+
+test('A28, FE: a lost context takes the Ultra environment down once, and the restore\'s refresh builds the next with nothing to dispose', () => {
+  const fixture = tierFixture();
+  fixture.rig.apply(WARM_LATE_AFTERNOON, 'ultra');
+  const hung = fixture.values();
+  const { counts } = fixture.counting;
+  assert.equal(counts.environmentsBuilt, 1);
+  const skies = { painted: counts.skiesPainted, disposed: counts.skiesDisposed };
+
+  // The loss (`UltraRuntime.onContextLost`): off the scene and disposed, while
+  // the lost context makes the deletes no-ops. The tier and the sky stand.
+  fixture.rig.releaseUltraEnvironment();
+  assert.equal(counts.environmentsDisposed, 1);
+  assert.equal(fixture.rig.environment, null);
+  assert.equal(fixture.scene.environment, null);
+  assert.equal(fixture.rig.tier, 'ultra', 'a loss is not a tier change');
+  assert.deepEqual({ painted: counts.skiesPainted, disposed: counts.skiesDisposed }, skies);
+  fixture.rig.releaseUltraEnvironment();
+  assert.equal(counts.environmentsDisposed, 1, 'a second release disposed again');
+
+  // The restore (`refreshUltra(true)`): one new environment, nothing disposed,
+  // and the light is the one that was hung before the loss.
+  fixture.rig.refreshUltra(true);
+  assert.equal(counts.environmentsBuilt, 2);
+  assert.equal(counts.environmentsDisposed, 1, 'the restore disposed an environment');
+  assert.deepEqual(fixture.values(), hung);
+
+  // Off the tier a release is a no-op; leaving disposes the rebuilt one.
+  fixture.rig.setTier('ordinary');
+  assert.equal(counts.environmentsDisposed, 2);
+  fixture.rig.releaseUltraEnvironment();
+  assert.equal(counts.environmentsDisposed, 2);
+  fixture.rig.dispose();
+});
+
+test('an ordinary rig never calls a hook, and refuses the Ultra tier without them', () => {
+  const fixture = tierFixture();
+  fixture.rig.apply(WARM_LATE_AFTERNOON);
+  fixture.rig.apply(undefined);
+  fixture.rig.tune({ exposure: 1.3 });
+  fixture.rig.refreshUltra(true);
+  fixture.rig.releaseUltraEnvironment();
+  assert.deepEqual(fixture.counting.counts, {
+    skiesPainted: 0,
+    skiesDisposed: 0,
+    environmentsBuilt: 0,
+    environmentsDisposed: 0,
+  });
+  assert.equal(fixture.counting.tunedSeen.length, 0);
+
+  const bare = lightingFixture();
+  assert.throws(() => bare.rig.setTier('ultra'), /hooks/);
+  assert.equal(bare.rig.tier, 'ordinary', 'a refused tier change moves nothing');
+  bare.rig.dispose();
+});
+
+/**
+ * The whole §3.6 teardown through the runtime, with the shadow rig: a real
+ * `UltraRuntime` over the rig above, W4's real rig writers, and fakes for the
+ * GPU half. `ultraRuntime.test.ts` walks every fault stage; this is the
+ * lifecycle walk the card names — daylight → ultra → daylight, and
+ * park → ultra → slice → ordinary — compared field by field, shadow rig
+ * included, with a world built without Ultra at all.
+ */
+function runtimeFixture(): {
+  runtime: UltraRuntime;
+  tier: TierFixture;
+  values(): Record<string, unknown>;
+  world(look?: VenueLook): void;
+} {
+  const tier = tierFixture();
+  const { scene, sun } = tier;
+  // The renderer constructor's ordinary cascade.
+  sun.castShadow = true;
+  sun.shadow.mapSize.setScalar(LIGHTING.shadowMapSize);
+  sun.shadow.bias = LIGHTING.shadowBias;
+  sun.shadow.normalBias = LIGHTING.shadowNormalBias;
+  const box = sun.shadow.camera;
+  box.left = -LIGHTING.shadowRadius;
+  box.right = LIGHTING.shadowRadius;
+  box.top = LIGHTING.shadowRadius;
+  box.bottom = -LIGHTING.shadowRadius;
+  box.near = 1;
+  box.far = LIGHTING.sunDistance * 2;
+  box.updateProjectionMatrix();
+  const camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.1, 500);
+  camera.position.set(0, 2, -5);
+  camera.lookAt(0, 1, 0);
+
+  let terrain: TerrainView | null = null;
+  // The runtime reads only the recipe off the selection (to rebuild the
+  // ordinary world); the cost is the renderer's to report, not this walk's.
+  const selection: PresentationSelection = {
+    recipe: ENHANCED_PRESENTATION,
+    cost: {} as PresentationSelection['cost'],
+    verdicts: [],
+  };
+  const host: UltraHost = {
+    scene,
+    sun,
+    lighting: () => tier.rig,
+    ordinaryQuality: () => 'high',
+    viewCount: () => 1,
+    probeCaps: () => HEADLESS_CAPS,
+    maxAnisotropy: () => 1,
+    judge: (_plan, _caps, override) => ({
+      recipe: applyKitOverride(ULTRA_FULL, override),
+      cost: null,
+      refusal: null,
+      rungs: [],
+    }),
+    installedTerrain: () => terrain,
+    installTerrain: (_plan, recipe) => {
+      terrain?.dispose();
+      const group = new THREE.Group();
+      scene.add(group);
+      terrain = {
+        group,
+        recipe: recipe.id,
+        ultra: null,
+        dispose: (): void => {
+          group.removeFromParent();
+        },
+      } as unknown as TerrainView;
+      return terrain;
+    },
+    paintUltraSky: (look) => tier.counting.hooks.ultraSky(look),
+    buildEnvironment: (look) => tier.counting.hooks.ultraEnvironment(look),
+    buildFarShadow: () => {},
+    drawFirstFrame: () => {
+      runtime.beforeSoloRender(camera);
+      return 0;
+    },
+    setShaderErrorHook: () => {},
+    canvas: () => ({ width: 1920, height: 1080, pixelRatio: 1 }),
+    resize: () => {},
+    setShadowFocus: (x, y, z) => {
+      const offset = tier.rig.sunOffset;
+      sun.target.position.set(x, y, z);
+      sun.position.set(x + offset.x, y + offset.y, z + offset.z);
+    },
+    now: () => 0,
+  };
+  // The runtime's own hooks are what the renderer hands the rig; here the rig
+  // already has the counting ones, and the host routes the runtime's builds
+  // to them, so both count the same pieces.
+  const runtime = new UltraRuntime(host);
+  const plans = new Map<VenueLook | undefined, LevelPlan>();
+  const world = (look?: VenueLook): void => {
+    let plan = plans.get(look);
+    if (plan === undefined) {
+      plan = { look } as unknown as LevelPlan;
+      plans.set(look, plan);
+    }
+    runtime.installWorld(plan, selection, undefined);
+  };
+  world();
+  return {
+    runtime,
+    tier,
+    world,
+    values(): Record<string, unknown> {
+      const shadow = sun.shadow;
+      return {
+        ...tier.values(),
+        shadowRig: [
+          shadow.mapSize.x,
+          shadow.bias,
+          shadow.normalBias,
+          shadow.radius,
+          shadow.intensity,
+          box.left,
+          box.right,
+          box.top,
+          box.bottom,
+          box.near,
+          box.far,
+        ],
+        sunTarget: sun.target.position.toArray(),
+        terrain: terrain?.recipe ?? null,
+      };
+    },
+  };
+}
+
+test('the §3.6 teardown restores the light and the shadow rig together, walked through the runtime', () => {
+  // daylight → ultra → daylight
+  const walked = runtimeFixture();
+  const daylight = walked.values();
+  walked.runtime.setWanted(true, null);
+  walked.runtime.reconcile();
+  const ultra = walked.values();
+  assert.equal(ultra.tier, 'ultra');
+  assert.equal(ultra.terrain, 'ultra-full');
+  assert.notDeepEqual(ultra.shadowRig, daylight.shadowRig, 'the Ultra rig was written');
+  walked.runtime.setWanted(false, null);
+  walked.runtime.reconcile();
+  assert.deepEqual(walked.values(), daylight);
+
+  // park → ultra → slice → ordinary, against park → slice with no Ultra at all
+  const toured = runtimeFixture();
+  toured.world(WARM_LATE_AFTERNOON);
+  toured.runtime.setWanted(true, null);
+  toured.runtime.reconcile();
+  toured.world();
+  assert.equal(toured.runtime.active, true, 'the slice was built at Ultra');
+  toured.runtime.setWanted(false, null);
+  toured.runtime.reconcile();
+
+  const direct = runtimeFixture();
+  direct.world(WARM_LATE_AFTERNOON);
+  direct.world();
+  assert.deepEqual(toured.values(), direct.values());
+  const { counts } = toured.tier.counting;
+  assert.equal(counts.environmentsDisposed, counts.environmentsBuilt);
+  assert.equal(counts.skiesDisposed, counts.skiesPainted);
+});
+
+test('the Ultra sky key (the plan’s cumulus seed) repaints on the Ultra tier only, and an ordinary rig never reads it', () => {
+  const counting = countingHooks();
+  let key = 7;
+  let keyReads = 0;
+  const hooks: VenueLightingHooks = {
+    ...counting.hooks,
+    ultraSkyKey: (): number => {
+      keyReads += 1;
+      return key;
+    },
+  };
+  const scene = new THREE.Scene();
+  const hemisphere = new THREE.HemisphereLight(0x000000, 0x000000, 0);
+  const sun = new THREE.DirectionalLight(0x000000, 0);
+  const rig = createVenueLighting({ scene, sun, hemisphere, setExposure: () => {} }, hooks);
+
+  // Ordinary: world swaps and a moved key are invisible to the rig.
+  rig.apply(undefined);
+  key = 8;
+  rig.apply(undefined);
+  assert.equal(keyReads, 0, 'an ordinary rig never asks for the Ultra sky key');
+  assert.equal(counting.counts.skiesPainted, 0);
+
+  // Ultra: one sky on entry; the same look and key paints nothing more…
+  rig.setTier('ultra');
+  assert.equal(counting.counts.skiesPainted, 1);
+  rig.apply(undefined);
+  assert.equal(counting.counts.skiesPainted, 1);
+  // …and a moved key on the same look repaints once, disposing the old sky first.
+  key = 9;
+  rig.apply(undefined);
+  assert.equal(counting.counts.skiesPainted, 2);
+  assert.equal(counting.counts.skiesDisposed, 1);
+  assert.equal(counting.counts.environmentsBuilt, 1, 'the environment follows the look alone');
+
+  // Back to ordinary: the key is not read again.
+  rig.setTier('ordinary');
+  const reads = keyReads;
+  key = 10;
+  rig.apply(undefined);
+  assert.equal(keyReads, reads);
+  assert.equal(counting.counts.skiesDisposed, counting.counts.skiesPainted);
 });

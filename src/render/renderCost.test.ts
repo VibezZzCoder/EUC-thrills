@@ -31,15 +31,29 @@ import { createProvingGround } from '../level/provingGround.ts';
 import { createSliceLevel } from '../level/sliceLevel.ts';
 import { terrainCells } from '../level/terrainCoverage.ts';
 import {
+  categoryOf,
+  chaseRooms,
+  chaseRoomViews,
+  headlessUltraContext,
+  measureChaseRoomScene,
+  measureCopRig,
   measureLevelScene,
   measureNonLevelScene,
   measurePartTriangles,
   measurePropKinds,
   measureQuadNonLevelScene,
+  measureSeatRig,
   measureSplitNonLevelScene,
+  modelInstancedPackReserve,
   playableSubsets,
+  type SceneCost,
 } from './renderCost.ts';
+import { createCopRider } from './copRider.ts';
+import { CHASE } from '../data/tuning.ts';
+import { COP_LOOK } from './riderLook.ts';
+import { BASELINE_PRESENTATION, ENHANCED_PRESENTATION } from './presentation.ts';
 import { PLAYABLE_RIDER_LOOKS } from './riderLook.ts';
+import { ULTRA_FULL, ULTRA_LADDER, ULTRA_LIT } from './ultra/ultraRecipe.ts';
 
 /**
  * The render-cost model, regenerated from the built scene — M12 Phase 0.
@@ -228,6 +242,27 @@ test('the non-level reserve is what the rest of the scene actually costs', () =>
   assert.equal(NON_LEVEL_RESERVE.triangles, measured.totalTriangles);
 });
 
+test('QA r2: every reserve counts both particle fields live — one colour call each, no triangles, no shadow', () => {
+  // A field is a hidden `Points` until it holds a particle, and
+  // `measureObject` skips an invisible node, so a reserve measured with the
+  // fields at rest silently dropped the call each draws while a pedal
+  // strike's sparks or a rough surface's dust are in the air — reachable in
+  // every mode (PLANS §21.11). The reserve emits one into each first.
+  for (const [label, measured] of [
+    ['solo', measureNonLevelScene(slice.checkpoints)],
+    ['split', measureSplitNonLevelScene(slice.checkpoints)],
+    ['quad', measureQuadNonLevelScene(slice.checkpoints)],
+  ] as const) {
+    for (const name of ['fx-sparks', 'fx-dust']) {
+      const rows = measured.meshes.filter((mesh) => mesh.name === name);
+      assert.equal(rows.length, 1, `${label}: ${name} is not in the reserve`);
+      assert.equal(rows[0].calls, 1, `${label}: ${name} is not one call`);
+      assert.equal(rows[0].triangles, 0);
+      assert.equal(rows[0].castsShadow, false);
+    }
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Contract 2 — the desktop split frame (M25 Phase 3)
 // ---------------------------------------------------------------------------
@@ -250,6 +285,9 @@ test('a split pass costs one whole extra rider, and nothing else doubles', () =>
   // would grow by more than a rider and the ceiling above would be wrong
   // without anything failing — so the difference is asserted, not just the
   // total. The floor is a rider and a machine; the ceiling is two of them.
+  // (From M39 Part P the solo reserve wears the pack of three trims and the
+  // split one the 2v2 room, so the difference is no longer exactly one rider;
+  // the bounds still hold, and the rooms' own shapes are pinned below.)
   const extraCalls = SPLIT_NON_LEVEL_RESERVE.drawCalls - NON_LEVEL_RESERVE.drawCalls;
   const extraTriangles = SPLIT_NON_LEVEL_RESERVE.triangles - NON_LEVEL_RESERVE.triangles;
   assert.ok(extraCalls > 0, 'a second seated rider cost nothing, so nothing was seated');
@@ -296,8 +334,8 @@ test('no split frame the library can build breaches the Contract 2 ceiling', () 
   );
 });
 
-test('a route at the generator’s own triangle line still fits a split frame', () => {
-  // `level/generatedLevel.test.ts` holds generated routes to 80% of Contract
+test('a route at the historical 80% sizing line still fits a split frame', () => {
+  // Historical sizing reference: 80% of Contract
   // 1's triangle ceiling as the point past which scaling work is needed. A
   // couch session can be started on a generated world, so the frame that has
   // to fit is the one at that line — not the slice, which is far below it.
@@ -385,6 +423,184 @@ test('a quad pass costs two more riders than a split pass, and nothing else grow
 });
 
 // ---------------------------------------------------------------------------
+// M39 Part P — the cop rig and the chase rooms (docs/M39_CHASE.md §2f)
+// ---------------------------------------------------------------------------
+
+/** Every mesh name under a cop rider, in walk order, and what the rig says it costs. */
+function copShape(options?: Parameters<typeof createCopRider>[0]): {
+  names: string[]; calls: number; shadowCalls: number; triangles: number;
+} {
+  const cop = createCopRider(options);
+  try {
+    const names: string[] = [];
+    cop.group.traverse((object) => { names.push(object.name); });
+    return { names, calls: cop.drawCalls, shadowCalls: cop.shadowDrawCalls, triangles: cop.triangles };
+  } finally {
+    cop.dispose();
+  }
+}
+
+const sameCost = (a: SceneCost, b: SceneCost): void => {
+  assert.equal(a.drawCalls, b.drawCalls, 'colour calls');
+  assert.equal(a.shadowDrawCalls, b.shadowDrawCalls, 'shadow calls');
+  assert.equal(a.totalDrawCalls, b.totalDrawCalls, 'calls');
+  assert.equal(a.totalTriangles, b.totalTriangles, 'triangles');
+};
+
+test('the shipped cop trim is the rig it always was, and trim 0 is it byte for byte', () => {
+  // The record's first row (§39.6b.4: "the cop rig today"), measured on
+  // 2026-09-23 before Part P built anything: 23 colour calls and 3 shadow
+  // calls — the wheel's shell, the torso and the head (SHADOW_MIN_TRIANGLES)
+  // — 26 in all, and 10,878 triangles across both passes, posed and armed.
+  const trim = measureCopRig();
+  assert.equal(trim.drawCalls, 23);
+  assert.equal(trim.shadowDrawCalls, 3);
+  assert.equal(trim.totalDrawCalls, 26);
+  assert.equal(trim.totalTriangles, 10_878);
+  // `index: 0` is the absent option (R-7): the same names, the same cost, so
+  // every existing lookup (`cop-rider`, `cop-riding-rig`, the specs) holds.
+  const absent = copShape();
+  assert.deepEqual(copShape({ index: 0 }), absent);
+  assert.deepEqual(copShape({ full: false }), absent);
+  assert.equal(absent.names[0], 'cop-rider');
+  assert.ok(absent.names.includes('cop-riding-rig'));
+  assert.ok(absent.names.every((name) => name === '' || name.startsWith('cop-')));
+});
+
+test('each trim of the pack is addressable, and no two share a node name', () => {
+  // `getObjectByName` returns the first match of a depth-first walk, so a
+  // second `cop-rider` in the scene would redirect every lookup onto whichever
+  // came first — the M10 lesson `copRider.ts` records. Trims 1 and 2 are
+  // `cop2-` and `cop3-`, and cost exactly what the tail costs.
+  const shapes = [0, 1, 2].map((index) => copShape({ index }));
+  assert.equal(shapes[1].names[0], 'cop2-rider');
+  assert.equal(shapes[2].names[0], 'cop3-rider');
+  const named = shapes.flatMap((shape) => shape.names.filter((name) => name !== ''));
+  assert.equal(new Set(named).size, named.length, 'two nodes of the pack share a name');
+  for (const shape of shapes.slice(1)) {
+    assert.equal(shape.calls, shapes[0].calls);
+    assert.equal(shape.shadowCalls, shapes[0].shadowCalls);
+    assert.equal(shape.triangles, shapes[0].triangles);
+  }
+  sameCost(measureCopRig({ index: 2 }), measureCopRig());
+});
+
+test('the full cop rig is the seated cop\'s rig, and no dearer than any playable rig (R-6)', () => {
+  // q218: the human cop rides at full rig — the trim restored, every part
+  // keeping the shadow the rig gives it, the uniform unchanged. It is the seat
+  // rig `createCopRidingRig()` builds, and because `COP_LOOK` has no elbow
+  // pads, sleeve panels or separate seat mesh it measures fewer calls and
+  // fewer triangles than the worst playable rig — no part added to reach a
+  // number. Measured 2026-09-23: 30 + 23 = 53 calls, 16,690 triangles.
+  const full = measureCopRig({ full: true });
+  sameCost(full, measureSeatRig('cop'));
+  const trim = measureCopRig();
+  assert.ok(full.totalDrawCalls > trim.totalDrawCalls, 'the full rig restored nothing');
+  assert.ok(full.shadowDrawCalls > trim.shadowDrawCalls, 'the full rig casts no more than the trim');
+  const playable = PLAYABLE_RIDER_LOOKS.map((look) => measureSeatRig(look));
+  const worstCalls = Math.max(...playable.map((rig) => rig.totalDrawCalls));
+  const worstTriangles = Math.max(...playable.map((rig) => rig.totalTriangles));
+  assert.ok(full.totalDrawCalls <= worstCalls, `the full cop costs ${full.totalDrawCalls} calls against ${worstCalls}`);
+  assert.ok(full.totalTriangles <= worstTriangles, `the full cop costs ${full.totalTriangles} triangles against ${worstTriangles}`);
+});
+
+test('the chase rooms are every room the rule allows, and nothing else', () => {
+  // §39.6b: up to three outlaws against one cop slot; the slot is a CPU pack
+  // of `roomSize − outlaws` trims or one human, never both; outlaws are
+  // distinct playable characters (q68) and never Dorkins, who is offered only
+  // to the cop seat.
+  const choose = (n: number, k: number): number => {
+    let result = 1;
+    for (let i = 0; i < k; i += 1) result = (result * (n - i)) / (i + 1);
+    return result;
+  };
+  const roster = PLAYABLE_RIDER_LOOKS.length;
+  const shapes = (views: 1 | 2 | 4): string[] => chaseRooms(views).map((room) => (
+    `${room.outlaws.length}${room.copSeated ? 'h' : 'c'}${room.pack}`
+  ));
+  const count = (views: 1 | 2 | 4, shape: string): number => shapes(views).filter((s) => s === shape).length;
+  assert.equal(count(1, `1c${CHASE.roomSize - 1}`), roster);
+  assert.equal(chaseRooms(1).length, roster);
+  assert.equal(count(2, '1h0'), roster);
+  assert.equal(count(2, `2c${CHASE.roomSize - 2}`), choose(roster, 2));
+  assert.equal(chaseRooms(2).length, roster + choose(roster, 2));
+  assert.equal(count(4, '2h0'), choose(roster, 2));
+  assert.equal(count(4, `3c${CHASE.roomSize - 3}`), choose(roster, 3));
+  assert.equal(count(4, '3h0'), choose(roster, 3));
+  assert.equal(chaseRooms(4).length, choose(roster, 2) + 2 * choose(roster, 3));
+  for (const views of [1, 2, 4] as const) {
+    for (const room of chaseRooms(views)) {
+      const ids = room.outlaws.map((look) => look.id);
+      assert.equal(new Set(ids).size, ids.length, 'a room repeated a character (q68)');
+      assert.ok(!ids.includes(COP_LOOK.id), 'an outlaw wore the cop');
+      assert.ok(room.outlaws.length >= 1 && room.outlaws.length <= 3);
+      assert.equal(room.pack, room.copSeated ? 0 : CHASE.roomSize - room.outlaws.length);
+      assert.ok(chaseRoomViews(room) <= views, 'a room has more panes than its contract draws');
+    }
+  }
+  assert.throws(
+    () => measureChaseRoomScene(slice.checkpoints, { outlaws: [PLAYABLE_RIDER_LOOKS[0]], copSeated: true, pack: 1 }),
+    /never share a room/,
+  );
+});
+
+test('the solo reserve wears the pack of three, and the pack adds exactly two trims', () => {
+  // q209: the solo chase is three cops, so the second-rider slot holds three
+  // trims and the reserve is taken in that state. The shape is asserted as
+  // well as the size: a solo room costs the lone-trim frame plus exactly two
+  // more trims, so nothing else in the scene grew with the pack.
+  const trim = measureCopRig();
+  const rooms = chaseRooms(1).map((room) => measureChaseRoomScene(slice.checkpoints, room));
+  const worstCalls = Math.max(...rooms.map((room) => room.totalDrawCalls));
+  assert.equal(worstCalls, NON_LEVEL_RESERVE.drawCalls, 'the pack is the solo reserve\'s call axis');
+  for (const room of rooms) {
+    assert.ok(room.totalDrawCalls <= NON_LEVEL_RESERVE.drawCalls);
+    assert.ok(room.totalTriangles <= NON_LEVEL_RESERVE.triangles);
+  }
+  const look = PLAYABLE_RIDER_LOOKS[0];
+  const pack = measureChaseRoomScene(slice.checkpoints, { outlaws: [look], copSeated: false, pack: 3 });
+  const one = measureChaseRoomScene(slice.checkpoints, { outlaws: [look], copSeated: false, pack: 1 });
+  assert.equal(pack.totalDrawCalls - one.totalDrawCalls, 2 * trim.totalDrawCalls);
+  assert.equal(pack.totalTriangles - one.totalTriangles, 2 * trim.totalTriangles);
+});
+
+test('the instanced pack is modelled at the lone trim\'s calls and the plain pack\'s triangles', () => {
+  // §39.6b.4's third row, a model and not a build: three cops from one set of
+  // draw calls leaves the call axis where one cop put it and costs every
+  // triangle the plain pack does. Held as the remedy if the phone rejects the
+  // plain route; this pins the arithmetic the report prints.
+  const instanced = modelInstancedPackReserve(slice.checkpoints);
+  assert.ok(instanced.totalDrawCalls < NON_LEVEL_RESERVE.drawCalls, 'instancing saved no call');
+  assert.equal(instanced.totalTriangles, NON_LEVEL_RESERVE.triangles, 'instancing changed the triangle axis');
+});
+
+test('the split reserve covers every two-pane room, and 2v2 is the room that sets it', () => {
+  // q219: 2v2 with the CPU holding the slot — two seat rigs and two trims a
+  // pass — is one trim dearer than a pair wearing the lone cop, and it is the
+  // split reserve's call axis now.
+  const rooms = chaseRooms(2).map((room) => ({ room, cost: measureChaseRoomScene(slice.checkpoints, room) }));
+  for (const { cost } of rooms) {
+    assert.ok(cost.totalDrawCalls <= SPLIT_NON_LEVEL_RESERVE.drawCalls);
+    assert.ok(cost.totalTriangles <= SPLIT_NON_LEVEL_RESERVE.triangles);
+  }
+  const dearest = rooms.reduce((a, b) => (b.cost.totalDrawCalls > a.cost.totalDrawCalls ? b : a));
+  assert.equal(dearest.cost.totalDrawCalls, SPLIT_NON_LEVEL_RESERVE.drawCalls);
+  assert.equal(dearest.room.outlaws.length, 2);
+  assert.equal(dearest.room.pack, 2);
+});
+
+test('every grid room fits the quad reserve: the cop at full rig moves nothing', () => {
+  // The 3v1 human room is four seat rigs, one of them the cop at full rig; the
+  // uniform's delta over the playable rig it stands in for is negative on both
+  // axes (the full-rig test above), so Contract 3's reserve holds.
+  for (const room of chaseRooms(4)) {
+    const cost = measureChaseRoomScene(slice.checkpoints, room);
+    assert.ok(cost.totalDrawCalls <= QUAD_NON_LEVEL_RESERVE.drawCalls);
+    assert.ok(cost.totalTriangles <= QUAD_NON_LEVEL_RESERVE.triangles);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // M27 Phase 1 — Contract 3, the grid ceiling (the scope lock, answered)
 //
 // Phase 0 stood a tripwire here asserting that `RENDER_BUDGET_QUAD` and
@@ -444,7 +660,7 @@ test('no grid frame the library can build breaches the Contract 3 ceiling', () =
   );
 });
 
-test('a route at the generator’s own triangle line still fits a grid frame', () => {
+test('a route at the historical 80% sizing line still fits a grid frame', () => {
   // The half q98 (a) is actually about. The owner declined to cap generated
   // worlds at two seats, so the frame that has to fit is the heaviest one a
   // four-seat session can open — a route at the generator's 80% line, four
@@ -462,16 +678,49 @@ test('a route at the generator’s own triangle line still fits a grid frame', (
 test('the three frame ceilings retain their distinct pass counts', () => {
   // Owner-authorized hero detail raises triangle allowances; the draw-call
   // ceilings and the available level geometry remain unchanged.
-  assert.equal(RENDER_BUDGET.maxDrawCalls, 160);
-  assert.equal(RENDER_BUDGET.maxTriangles, 533_344);
-  assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls, 460);
-  assert.equal(RENDER_BUDGET_SPLIT.maxTriangles, 1_160_952);
+  // M39 Part P (2026-09-23): Contract 1 raised under q209 by exactly the
+  // solo reserve's growth when it put on the pack of three cops (+52 calls,
+  // +3,618 triangles), and Contract 2's calls under q219 by twice the split
+  // reserve's growth for the 2v2 room (+26 a pass). The rule and its figures
+  // are in `docs/M39_CHASE.md`'s render-cost measurements; the level's share
+  // of each is pinned by the test below this one. QA r2 (2026-09-24): every
+  // reserve +2 calls for the two particle fields measured live, so by the
+  // same rule 212 → 214, 512 → 516 and 1,400 → 1,408.
+  assert.equal(RENDER_BUDGET.maxDrawCalls, 214);
+  // M39 r6 (2026-09-22): triangles raised on the owner's authorization for the
+  // town ring's larger ground; draw calls unchanged.
+  assert.equal(RENDER_BUDGET.maxTriangles, 643_618);
+  assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls, 516);
+  assert.equal(RENDER_BUDGET_SPLIT.maxTriangles, 1_374_264);
   assert.ok(RENDER_BUDGET_QUAD.maxDrawCalls > RENDER_BUDGET_SPLIT.maxDrawCalls);
   assert.ok(RENDER_BUDGET_QUAD.maxTriangles > RENDER_BUDGET_SPLIT.maxTriangles);
   // And it is not four halves: the level is drawn four times but the world —
   // the gates, the particle pools, the background — is still shared, so a grid
   // frame costs less than two split frames.
   assert.ok(RENDER_BUDGET_QUAD.maxDrawCalls < RENDER_BUDGET_SPLIT.maxDrawCalls * 4);
+});
+
+test('Part P moved every ceiling with its reserve: the level keeps the share it had', () => {
+  // **The library-plus-reserve lines** — M39 Part P (q209, q219; R-5). The
+  // ceilings moved by `passes × reserve growth` and nothing else, so what a
+  // level may spend under each contract is exactly what it was the day before
+  // the pack: 70 calls and 513,382 triangles in a solo frame, 80 calls a pass
+  // in the split and the grid, and the triangle rooms below. These are the
+  // numbers `level/renderBudget.ts` and `render/presentation.ts` judge worlds
+  // against, and a change here moves generated worlds — which Part P promised
+  // it would not.
+  assert.equal(RENDER_BUDGET.maxDrawCalls - NON_LEVEL_RESERVE.drawCalls, 70, 'the solo level share (calls)');
+  assert.equal(RENDER_BUDGET.maxTriangles - NON_LEVEL_RESERVE.triangles, 513_382, 'the solo level share (triangles)');
+  assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls / SPLIT_PASSES - SPLIT_NON_LEVEL_RESERVE.drawCalls, 80);
+  assert.equal(RENDER_BUDGET_SPLIT.maxTriangles / SPLIT_PASSES - SPLIT_NON_LEVEL_RESERVE.triangles, 507_774);
+  assert.equal(RENDER_BUDGET_QUAD.maxDrawCalls / QUAD_PASSES - QUAD_NON_LEVEL_RESERVE.drawCalls, 80);
+  assert.equal(RENDER_BUDGET_QUAD.maxTriangles / QUAD_PASSES - QUAD_NON_LEVEL_RESERVE.triangles, 503_844);
+  // Contract 1 is still exactly the set-union bound, as it has been since the
+  // library bound was derived: the library at its largest plus the reserve.
+  assert.equal(RENDER_BUDGET.maxDrawCalls, LIBRARY_MAX_DRAW_CALLS + NON_LEVEL_RESERVE.drawCalls);
+  // And the q219 bound the owner was shown (~492 of 460) is the bound now
+  // under the raised ceiling.
+  assert.ok((LIBRARY_MAX_DRAW_CALLS + SPLIT_NON_LEVEL_RESERVE.drawCalls) * SPLIT_PASSES <= RENDER_BUDGET_SPLIT.maxDrawCalls);
 });
 
 test('the grid retains draw-call headroom after adding the rider face and visor', () => {
@@ -487,8 +736,10 @@ test('the grid retains draw-call headroom after adding the rider face and visor'
   // Not a promise that a whole character fits — Contract 2 does not make that
   // promise either — but a statement of what the margin is in the unit that
   // matters, so a future edit that halves it has to say so.
+  // M39 Phase 2 (2026-09-22) says so: the town's pitched-roof part is one
+  // non-casting colour call per pass, 44 → 40, with every ceiling unchanged.
   assert.ok(
-    headroom >= 44,
+    headroom >= 40,
     `${headroom} calls of headroom against ${callsPerCharacter * QUAD_PASSES} for a `
       + 'character in a grid frame; Contract 2 left the equivalent of 1.44 characters '
       + 'and this leaves less',
@@ -499,8 +750,8 @@ test('the split frame is judged against its own larger ceiling', () => {
   // Distinct frame budgets still apply after the owner-authorized upgrade.
   assert.ok(RENDER_BUDGET_SPLIT.maxDrawCalls > RENDER_BUDGET.maxDrawCalls);
   assert.ok(RENDER_BUDGET_SPLIT.maxTriangles > RENDER_BUDGET.maxTriangles);
-  assert.equal(RENDER_BUDGET.maxDrawCalls, 160, 'Contract 1 moved');
-  assert.equal(RENDER_BUDGET.maxTriangles, 533_344, 'Contract 1 moved');
+  assert.equal(RENDER_BUDGET.maxDrawCalls, 214, 'Contract 1 moved');
+  assert.equal(RENDER_BUDGET.maxTriangles, 643_618, 'Contract 1 moved');
   // And a single-player verdict is still judged against Contract 1: a plan
   // that fits the split ceiling but not the phone one must still be refused.
   const verdict = withinRenderBudget(slice);
@@ -556,10 +807,13 @@ test('a generated route merges across segment boundaries exactly as the slice do
   // hand-authored one (invariant 2) — but "by construction" is exactly the
   // kind of claim that stops being true when somebody adds a per-segment
   // special case, and nothing else would fail if it did.
-  for (const seed of ['sweep-0', 'sweep-11', 'sweep-29']) {
-    const plan = generateLevel(seed).plan;
+  for (const seed of ['euc', 'x67']) {
+    const { plan, report } = generateLevel(seed);
+    assert.equal(report.usedFallback, false, 'measure expanded geometry, never the fallback');
     const measured = measureLevelScene(plan);
     const predicted = planRenderCost(plan);
+    assert.equal(measured.totalDrawCalls, predicted.drawCalls);
+    assert.equal(measured.totalTriangles, predicted.triangles);
 
     const meshes = (prefix: string): number =>
       measured.meshes.filter((mesh) => mesh.name.startsWith(prefix)).length;
@@ -893,4 +1147,41 @@ test('moving the coverage rule out of render/terrain.ts changed no geometry', ()
   assert.equal(provingMeasured.cellsDrawn, 28_288);
   assert.equal(provingMeasured.totalDrawCalls, 17);
   assert.equal(provingMeasured.totalTriangles, 113_564);
+});
+
+// ---------------------------------------------------------------------------
+// M39: the instrument measures an Ultra rung too
+// ---------------------------------------------------------------------------
+
+test('the ordinary measurement is the call it always was', () => {
+  // `measureLevelScene` and `measurePartTriangles` accept any recipe the
+  // renderer can build from M39 on; with no recipe, or an ordinary one, they
+  // build with no Ultra context and must measure exactly what they did.
+  assert.deepEqual(measureLevelScene(slice), measureLevelScene(slice, BASELINE_PRESENTATION));
+  assert.deepEqual(
+    Object.fromEntries(measurePartTriangles()),
+    Object.fromEntries(measurePartTriangles(BASELINE_PRESENTATION)),
+  );
+});
+
+test('an Ultra rung is measured with a headless context, in the ordinary buckets', () => {
+  const context = headlessUltraContext(ULTRA_LIT);
+  assert.equal(context.recipe, ULTRA_LIT);
+  assert.equal(context.maxAnisotropy, 1, 'no device under node --test');
+  // §5 layer 2: Ultra meshes keep the level-props-* / level-blocks-* names,
+  // so `categoryOf` needs no change and every mesh lands where it did.
+  const enhanced = measureLevelScene(slice, ENHANCED_PRESENTATION);
+  for (const rung of ULTRA_LADDER) {
+    const ultra = measureLevelScene(slice, rung);
+    assert.deepEqual(
+      ultra.meshes.map((mesh) => `${categoryOf(mesh.name)}:${mesh.name}:${mesh.calls}:${mesh.instances}`),
+      enhanced.meshes.map((mesh) => `${categoryOf(mesh.name)}:${mesh.name}:${mesh.calls}:${mesh.instances}`),
+      `${rung.id}: same meshes, same groups, same instances, same categories`,
+    );
+    assert.equal(ultra.cellsDrawn, enhanced.cellsDrawn, `${rung.id}: no heightfield cell added or dropped`);
+    assert.equal(ultra.byCategory.heightfield.triangles, enhanced.byCategory.heightfield.triangles,
+      `${rung.id}: the ground gains attributes, never triangles`);
+  }
+  // Every part the kit builds is measured under the full rung as well.
+  assert.deepEqual([...measurePartTriangles(ULTRA_FULL).keys()].sort(), [...PROP_PART_IDS].sort());
 });

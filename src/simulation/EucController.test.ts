@@ -12,7 +12,7 @@ import { TRACK_LAP_SEGMENT_IDS, createTrackLevel } from '../level/trackLevel.ts'
 import type { Hazard, HazardKind, LevelPlan } from '../level/plan.ts';
 import type { SegmentSpec } from '../level/segments.ts';
 import { RIDEABILITY } from '../level/routeValidator.ts';
-import { CpuRider, type CpuView } from './cpuRider.ts';
+import { COP_WHEEL_TUNING, CpuRider, type CpuView } from './cpuRider.ts';
 import { HazardField } from './hazards.ts';
 import { RouteSpine } from './routeSpine.ts';
 import { SoftBodyField } from './softBodies.ts';
@@ -5183,8 +5183,14 @@ test('the beeps start well past the owner\'s 40 mph floor and reach the edge bef
   // beep from 40.4 to 52.3 without anybody editing a constant. His floor is
   // honoured with twelve miles an hour to spare, and the pin below is what
   // notices if the *share* is ever edited by hand.
+  //
+  // **And it was, on 2026-09-22, by the owner's ask** — "the high speed beeps
+  // maybe start too early", with the cutout made easier in the same message.
+  // `overspeedBeepShare` went 0.785 → 0.87, so the first beep moved from 52.3
+  // to 57.9 mph and the pin moved with it: still well past his floor, and the
+  // band it opens is still the only one the cutout can be reached through.
   assert.ok(
-    firstBeepSpeed * 2.236936 >= 40 && firstBeepSpeed * 2.236936 < 53,
+    firstBeepSpeed * 2.236936 >= 57 && firstBeepSpeed * 2.236936 < 59,
     `the first beep was at ${(firstBeepSpeed * 2.236936).toFixed(1)} mph`,
   );
   // Full throttle on flat pavement reaches the edge, which is the whole
@@ -5210,12 +5216,21 @@ test('the rider gets seconds of accelerating beeps before it fires, not an ambus
     if (euc.overspeed > 0) beepingFor += STEP;
     if (euc.snapshot().crashed) break;
   }
-  // Measured at about 5 s on the shipped tuning (down from 6.5 when the band
-  // started at 30 mph rather than the owner's revised 40). The floor is
-  // deliberately well under that: what this pins is that the warning is a
-  // *warning* and not a formality, and a fixture that demanded the exact
-  // figure would fail on every legitimate tuning change instead.
-  assert.ok(beepingFor > 3, `only ${beepingFor.toFixed(2)}s of beeps before the wheel let go`);
+  // Measured at about 5 s on the 50 mph wheel (down from 6.5 when the band
+  // started at 30 mph rather than the owner's revised 40), and 6.5 s — thirty
+  // beeps — on the shipped 65 until 2026-09-22, when the owner rode it and
+  // said *"it just beeps a lot at the top speed before the wipeout"*. The band
+  // is now 0.87 → 0.94 of top speed and this ride measures 2.7 s and ten beeps.
+  //
+  // Both bounds are the owner's. The floor came down from 3 s to 2 by his ask,
+  // and is still what pins that the warning is a *warning* and not a
+  // formality: two seconds of accelerating beeps, the last half-second of them
+  // at the fastest rate, is the least a rider can lift off on. The ceiling is
+  // new and is the other half of the same sentence — a band that drifts back
+  // to beeping for most of a straight is the thing he asked to have removed.
+  // Neither demands the exact figure, which every legitimate tune would move.
+  assert.ok(beepingFor > 2, `only ${beepingFor.toFixed(2)}s of beeps before the wheel let go`);
+  assert.ok(beepingFor < 4, `${beepingFor.toFixed(2)}s of beeps before the wheel let go — the owner asked for fewer`);
 });
 
 test('backing off is the counterplay: the hold resets and the wheel keeps going', () => {
@@ -5228,16 +5243,19 @@ test('backing off is the counterplay: the hold resets and the wheel keeps going'
   assert.ok(euc.overspeedHeld > 0, 'the fixture never reached the cutout speed');
   assert.equal(euc.snapshot().crashed, false, 'it fired before the hold was up');
 
-  // ...and off it. **Half a second, not three**, and the number is the point:
-  // drag at this speed is 7 m/s², so a wheel that coasts for three seconds has
-  // lost fifteen metres per second and is nowhere near the band any more. The
-  // counterplay this test is about is a *lift*, not a stop.
-  const after = hold(euc, 0.5, actions({ throttle: 0 }));
+  // ...and off it. **A quarter of a second, not three**, and the number is the
+  // point: drag at this speed is 7 m/s², so a wheel that coasts for three
+  // seconds has lost fifteen metres per second and is nowhere near the band
+  // any more. The counterplay this test is about is a *lift*, not a stop. It
+  // was half a second until 2026-09-22, when the owner narrowed the band to
+  // 0.87 → 0.94 of top speed (~2.1 m/s): a half-second lift now sheds the whole
+  // of it, so a quarter is the lift that still leaves a rider in the warning.
+  const after = hold(euc, 0.25, actions({ throttle: 0 }));
   assert.equal(after.crashed, false, 'lifting off did not save the rider');
   assert.equal(euc.overspeedHeld, 0, 'the hold is reset, not decayed');
-  // Above zero rather than a mid-band figure: since the owner moved the first
-  // beep to 40 mph the band is ~4 m/s wide, and drag at the top of it sheds
-  // most of that in this half second. What matters is that a *lift* leaves the
+  // Above zero rather than a mid-band figure: the band is ~2.1 m/s wide on the
+  // shipped wheel since 2026-09-22, and drag at the top of it sheds more than
+  // a third of that in this quarter second. What matters is that a *lift* leaves the
   // rider still inside the warning rather than teleported to silence.
   assert.ok(euc.overspeed > 0, 'and the beeps are still going, which is the point');
 });
@@ -5252,8 +5270,12 @@ test('riding the beeps: a steady speed just under the edge is survivable indefin
   let fastestSeen = 0;
   for (let i = 0; i < SIMULATION.hz * 30; i += 1) {
     // The simplest possible pilot: full throttle under the edge, off it above.
+    // **0.15 m/s under it since 2026-09-22** (0.35 before). The owner narrowed
+    // the band to ~2.1 m/s, so 0.35 under the edge is only 83 % of the way up
+    // it and no longer the fastest beeps; a third of a mile an hour under is,
+    // and the bang-bang pilot still never accrues the hold there.
     const speed = Math.abs(euc.snapshot().speed);
-    euc.step(STEP, actions({ throttle: speed < edge - 0.35 ? 1 : 0 }));
+    euc.step(STEP, actions({ throttle: speed < edge - 0.15 ? 1 : 0 }));
     fastestSeen = Math.max(fastestSeen, speed);
     if (euc.snapshot().crashed) break;
   }
@@ -7173,6 +7195,13 @@ function followRoute(plan: LevelPlan, spine: RouteSpine, style: RideStyle | null
     spawn: plan.spawn,
     hazards: new HazardField(plan.hazards ?? []),
     softBodies: new SoftBodyField(plan.softBodies ?? []),
+    // The follower *is* `CpuRider`, and it rides to a ceiling set under the
+    // cop's wheel's edge — which since 2026-09-22 is not the player's (the
+    // owner tightened the player's cutout and kept the cop's). Riding the
+    // follower on the player's edge would cut it out on every long straight
+    // and measure the cutout, not the style; on the cop's wheel the sample is
+    // the one this test recorded its figures on.
+    tuning: { ...COP_WHEEL_TUNING },
   });
   if (style) euc.setRideStyle(style);
   const brain = new CpuRider(spine, plan, sampler);

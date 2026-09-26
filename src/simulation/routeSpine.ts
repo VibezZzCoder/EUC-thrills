@@ -176,6 +176,14 @@ function neighboursOf(nodes: readonly EndNode[]): Neighbour[][] {
   // Indexed by node, so "leaving segment S through end E" has its own list.
   const out: Neighbour[][] = nodes.map(() => []);
 
+  // **A bridge spans a missing joint, never a joint that is there (M39 r6
+  // QA).** An end already stitched to another segment has its road; bridging
+  // it as well let the walk jump a short join whole — a town ring's joins are
+  // often under `GAP_JOIN` end to end, and a 150° one's chord runs ~10 m
+  // inside its bend, so the cop's line cut the corner across the verge.
+  const stitched = nodes.map((from, a) => nodes.some((to, b) => a !== b && to.segment !== from.segment
+    && Math.hypot(to.x - from.x, to.z - from.z) <= TIGHT_JOIN));
+
   for (let a = 0; a < nodes.length; a += 1) {
     for (let b = 0; b < nodes.length; b += 1) {
       if (a === b) continue;
@@ -189,6 +197,7 @@ function neighboursOf(nodes: readonly EndNode[]): Neighbour[][] {
       if (gap > GAP_JOIN) continue;
 
       if (gap > TIGHT_JOIN) {
+        if (stitched[a]) continue;
         // A bridged jump, and the heading test is what makes it safe. A
         // hairpin's two legs pass within metres of each other pointing in
         // opposite directions, and without this they would be welded into a
@@ -224,6 +233,9 @@ function segmentLength(segment: Segment): number {
   return chord * (half / Math.sin(half));
 }
 
+/** What a street loop's alternate costs the canonical walk, per metre. */
+const ALTERNATE_STREET_WEIGHT = 10;
+
 /** A traversal: which segment, and which way round. */
 interface Step {
   readonly segment: number;
@@ -243,6 +255,7 @@ function walkTo(
   neighbours: readonly Neighbour[][],
   from: Step,
   goal: number,
+  weight: Float64Array | null = null,
 ): Step[] | null {
   const stateCount = segments.length * 2;
   const stateOf = (step: Step): number => step.segment * 2 + (step.forward ? 0 : 1);
@@ -280,7 +293,8 @@ function walkTo(
     for (const neighbour of neighbours[leavingNode]) {
       // Arriving at a neighbour's entry means riding it forward.
       const next = neighbour.segment * 2 + (neighbour.enteringAtEntry ? 0 : 1);
-      const cost = currentCost + neighbour.cost + segmentLength(segments[neighbour.segment]);
+      const cost = currentCost + neighbour.cost
+        + segmentLength(segments[neighbour.segment]) * (weight?.[neighbour.segment] ?? 1);
       if (cost >= best[next]) continue;
       best[next] = cost;
       cameFrom[next] = current;
@@ -313,8 +327,17 @@ function pointToSegment(
 export class RouteSpine {
   private readonly points: readonly SpinePoint[];
 
-  private constructor(points: readonly SpinePoint[]) {
+  /**
+   * Whether the line ends where it began — a town ring ridden home into the
+   * plaza it left (M39 r6). Distances stay open and clamped, exactly as on a
+   * point-to-point route; a caller that tracks a rider across the seam asks
+   * this and re-seats its own cursor (`CpuRider`).
+   */
+  readonly closed: boolean;
+
+  private constructor(points: readonly SpinePoint[], closed = false) {
     this.points = points;
+    this.closed = closed;
   }
 
   /** Total length of the line, metres. */
@@ -354,18 +377,15 @@ export class RouteSpine {
     const neighbours = neighboursOf(nodes);
 
     // Which segment each gate stands on. A checkpoint is a gate *across* the
-    // route, so the nearest segment chord is the one it belongs to.
+    // route, so the nearest segment line is the one it belongs to — the curve,
+    // not the chord: a town join turns up to 150°, and its chord runs ~18 m
+    // inside the road it spans (M39 r6 QA).
     const gateSegments: number[] = [];
     for (const gate of gates) {
       let bestIndex = -1;
       let bestDistance = Infinity;
       for (let index = 0; index < segments.length; index += 1) {
-        const segment = segments[index];
-        const { distance } = pointToSegment(
-          gate.centre.x, gate.centre.z,
-          segment.entry.position.x, segment.entry.position.z,
-          segment.exit.position.x, segment.exit.position.z,
-        );
+        const distance = distanceToCurve(segments[index], gate.centre.x, gate.centre.z);
         if (distance >= bestDistance) continue;
         bestDistance = distance;
         bestIndex = index;
@@ -394,18 +414,76 @@ export class RouteSpine {
       forward: nodes[startNode].entry,
     };
 
+    // **A way round is never the road (M39 r6).** A street loop's alternate —
+    // a block's side street, a cross street, the alley — rejoins the road it
+    // leaves, and on a town ring the gates cannot sit on the road beside it
+    // (a side street would skip them). So the walk is told: an alternate costs
+    // ten times its length, which keeps the canonical line on the through road
+    // even where the alternate is far shorter — the alley is a third of the
+    // fork's road and full of steps and bollards the cop parks against.
+    const alternates = new Set((plan.streetLoops ?? []).flatMap((loop) => loop.alternate));
+    const weight = new Float64Array(segments.length).fill(1);
+    for (let index = 0; index < segments.length; index += 1) {
+      if (alternates.has(segments[index].id)) weight[index] = ALTERNATE_STREET_WEIGHT;
+    }
+
     const route: Step[] = [first];
     for (const goal of gateSegments) {
       const here = route[route.length - 1];
       if (here.segment === goal) continue;
-      const leg = walkTo(segments, neighbours, here, goal);
+      const leg = walkTo(segments, neighbours, here, goal, weight);
       // A route whose gates cannot be joined up is a route this file will not
       // guess at. Refusing is what makes the null case above meaningful.
       if (leg === null) return null;
       route.push(...leg.slice(1));
     }
 
+    // **A closed town rides home (M39 r6 QA).** The finish gate stands short of
+    // the plaza so its volume is not on the world's last metre, but a ring's
+    // road runs on past it — up the return climb and back into the plaza the
+    // spine left. Stopping the walk at the gate left the cop ~100 m of road it
+    // could not see, so a rider ahead on the return was a rider *behind* it.
+    // Walk on to the start segment: on a ring the far end of the finish leg
+    // reaches it riding the same way the spine began; on a point-to-point
+    // route it dead-ends (the walk never turns round) and nothing is added.
+    const tail = walkTo(segments, neighbours, route[route.length - 1], first.segment, weight);
+    if (tail !== null && tail.length > 2 && tail[tail.length - 1].forward === first.forward) {
+      route.push(...tail.slice(1, -1));
+      const points = samplePoints(segments, route);
+      const head = points[0];
+      const end = points[points.length - 1];
+      return new RouteSpine(points, Math.hypot(end.x - head.x, end.z - head.z) <= TIGHT_JOIN);
+    }
+
     return new RouteSpine(samplePoints(segments, route));
+  }
+
+  /** A declared local street traversal; callers retain the canonical race/
+   * tracker spine. No graph search, world mutation or alternate physics. */
+  static fromTraversal(
+    plan: LevelPlan,
+    traversal: readonly { id: string; forward: boolean }[],
+    options?: { readonly closeWhenJoined?: boolean },
+  ): RouteSpine {
+    const route = traversal.map(({ id, forward }) => {
+      const segment = plan.segments.findIndex((s) => s.id === id);
+      if (segment < 0) throw new Error(`street traversal names missing segment ${id}`);
+      return { segment, forward };
+    });
+    const points = samplePoints(plan.segments, route);
+    // **A traversal that laps may close (M39 Part P, §2c R-3).** Absent or
+    // false, the line stays unclosed exactly as before — `StreetLoops`' rings,
+    // the route field and the patrol posts' ring all rely on that. Asked for,
+    // it closes on `fromPlan`'s own test: the last sampled point within
+    // `TIGHT_JOIN` of the first. The chase bench's evader needs this so a
+    // forward ride through every alternate arm laps rather than parking on
+    // the line's end after one lap.
+    if (options?.closeWhenJoined === true && points.length > 1) {
+      const head = points[0];
+      const end = points[points.length - 1];
+      return new RouteSpine(points, Math.hypot(end.x - head.x, end.z - head.z) <= TIGHT_JOIN);
+    }
+    return new RouteSpine(points);
   }
 
   /**
@@ -413,7 +491,8 @@ export class RouteSpine {
    *
    * Clamped at both ends rather than wrapping: a generated route is
    * point-to-point (§13 q6), so past the end there is no more route and the
-   * honest answer is the last point rather than the first.
+   * honest answer is the last point rather than the first. A `closed` line
+   * (a town ring, M39 r6) is the exception and wraps.
    */
   sample(distance: number, out: SpineSample): SpineSample {
     const points = this.points;
@@ -423,7 +502,10 @@ export class RouteSpine {
       return out;
     }
 
-    const target = Math.min(Math.max(distance, 0), this.length);
+    // A closed ring wraps: past its last metre is its first (M39 r6).
+    const target = this.closed && this.length > 0
+      ? ((distance % this.length) + this.length) % this.length
+      : Math.min(Math.max(distance, 0), this.length);
     let index = 0;
     // Linear from the front. A route is a few hundred points and this runs
     // twice per step; a binary search would be faster and would also be the
@@ -553,6 +635,76 @@ export class RouteSpine {
   }
 }
 
+const CURVE_SCRATCH = { x: 0, z: 0 };
+/** How closely a chord must follow the mean heading to be read as one arc, radians. */
+const ARC_CHORD_TOLERANCE = 0.01;
+/** The share of a half-width a chord-sized curve may cut before it is arc-sized. */
+const ARC_SIZING_SHARE = 0.4;
+
+/**
+ * The point `t` (0–1) along a segment's line in plan, ridden `forward` or not.
+ *
+ * A cubic Hermite between the sockets. Its tangents are the chord, or — on a
+ * wide arc the chord-sized curve would cut — sized for the arc the two
+ * headings imply: `4R·tan(θ/4)`, which over the chord `2R·sin(θ/2)` is 1.25
+ * at 120° and 1.59 at 150°, where the cubic stays within centimetres of the
+ * true arc. Both tangents point the way the route is travelled; the socket
+ * being *left* through already does when the segment is ridden backwards, which
+ * is why the flip is on the pair rather than on one of them.
+ */
+function curveAt(segment: Segment, forward: boolean, t: number, out: { x: number; z: number }): void {
+  const from: SegmentSocket = forward ? segment.entry : segment.exit;
+  const to: SegmentSocket = forward ? segment.exit : segment.entry;
+  const fromHeading = forward ? from.headingY : from.headingY + Math.PI;
+  const toHeading = forward ? to.headingY : to.headingY + Math.PI;
+  const dx = to.position.x - from.position.x;
+  const dz = to.position.z - from.position.z;
+  const chord = Math.sqrt(dx * dx + dz * dz);
+  const turn = wrapAngle(toHeading - fromHeading);
+  const half = Math.abs(turn) / 2;
+  // **Arc-sized only where the chord-sized curve would leave the road's
+  // middle.** The chord-sized cubic cuts a circular arc's midpoint by
+  // R·(1 − cos(θ/2) − sin²(θ/2)/2): 0.2 m on a 60° join, 3 m on a 104° one of
+  // radius 40, 8.8 m on a 150° path join — which is the M39 r6 QA defect. A
+  // segment is resized when its sockets describe one arc (the chord runs along
+  // the mean heading) and that cut exceeds `ARC_SIZING_SHARE` of its
+  // half-width. Everything else keeps the line the brain was tuned on: sizing
+  // every arc moved a 104° closing bend's line 3 m out, and a cop riding it
+  // back accelerated through the S into the ford's narrower neck (`sweep-35`).
+  let scale = chord;
+  if (half >= 5e-5 && chord > 1e-6
+    && Math.abs(wrapAngle(Math.atan2(dx, dz) - (fromHeading + turn / 2))) < ARC_CHORD_TOLERANCE) {
+    const radius = chord / (2 * Math.sin(half));
+    const cut = radius * (1 - Math.cos(half) - (Math.sin(half) ** 2) / 2);
+    if (cut > ARC_SIZING_SHARE * Math.min(from.halfWidth, to.halfWidth)) {
+      scale = chord * (2 * Math.tan(half / 2)) / Math.sin(half);
+    }
+  }
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const h00 = 2 * t3 - 3 * t2 + 1;
+  const h10 = t3 - 2 * t2 + t;
+  const h01 = -2 * t3 + 3 * t2;
+  const h11 = t3 - t2;
+  out.x = h00 * from.position.x + h10 * Math.sin(fromHeading) * scale + h01 * to.position.x + h11 * Math.sin(toHeading) * scale;
+  out.z = h00 * from.position.z + h10 * Math.cos(fromHeading) * scale + h01 * to.position.z + h11 * Math.cos(toHeading) * scale;
+}
+
+/** The plan distance from a point to a segment's line (`curveAt`), metres. */
+function distanceToCurve(segment: Segment, px: number, pz: number): number {
+  const a = { x: 0, z: 0 };
+  const b = { x: 0, z: 0 };
+  const pieces = 12;
+  let best = Infinity;
+  curveAt(segment, true, 0, a);
+  for (let piece = 1; piece <= pieces; piece += 1) {
+    curveAt(segment, true, piece / pieces, b);
+    best = Math.min(best, pointToSegment(px, pz, a.x, a.z, b.x, b.z).distance);
+    a.x = b.x; a.z = b.z;
+  }
+  return best;
+}
+
 /** How far either side of the last known position `locate` searches, metres. */
 const LOCATE_WINDOW = 45;
 /**
@@ -566,11 +718,10 @@ const LOCATE_FACING_METRES = 8;
 /**
  * Turn an ordered traversal into the sampled line.
  *
- * The Hermite is the whole of the geometry: two positions, two tangents scaled
- * by the chord, and a cubic. Its one approximation is that a beat whose sockets
- * disagree by more than a right angle bows slightly more than the arc the
- * generator laid — which no beat in the library does, and which would cost
- * centimetres on a road metres wide if one did.
+ * The Hermite is the whole of the geometry: two positions, two tangents and a
+ * cubic (`curveAt`). A wide arc's tangents are sized for the arc the sockets
+ * imply rather than the bare chord — M39 r6's town joins turn up to 150°, and a
+ * chord-sized tangent there cut the bend ~9 m inside the road's centre.
  */
 function samplePoints(segments: readonly Segment[], route: readonly Step[]): SpinePoint[] {
   const points: SpinePoint[] = [];
@@ -594,37 +745,16 @@ function samplePoints(segments: readonly Segment[], route: readonly Step[]): Spi
     const segment = segments[step.segment];
     const from: SegmentSocket = step.forward ? segment.entry : segment.exit;
     const to: SegmentSocket = step.forward ? segment.exit : segment.entry;
-    // Both tangents point the way the route is travelled. The socket that is
-    // being *left* through already does when the segment is ridden backwards,
-    // which is why the flip is on the pair rather than on one of them.
-    const fromHeading = step.forward ? from.headingY : from.headingY + Math.PI;
-    const toHeading = step.forward ? to.headingY : to.headingY + Math.PI;
-
-    const dx = to.position.x - from.position.x;
-    const dz = to.position.z - from.position.z;
-    const chord = Math.sqrt(dx * dx + dz * dz);
-    const divisions = Math.max(2, Math.ceil(chord / SAMPLE_SPACING));
-
-    const t0x = Math.sin(fromHeading) * chord;
-    const t0z = Math.cos(fromHeading) * chord;
-    const t1x = Math.sin(toHeading) * chord;
-    const t1z = Math.cos(toHeading) * chord;
-
+    const divisions = Math.max(2, Math.ceil(segmentLength(segment) / SAMPLE_SPACING));
     for (let division = 0; division <= divisions; division += 1) {
       const t = division / divisions;
-      const t2 = t * t;
-      const t3 = t2 * t;
-      const h00 = 2 * t3 - 3 * t2 + 1;
-      const h10 = t3 - 2 * t2 + t;
-      const h01 = -2 * t3 + 3 * t2;
-      const h11 = t3 - t2;
-
+      curveAt(segment, step.forward, t, CURVE_SCRATCH);
       push(
-        h00 * from.position.x + h10 * t0x + h01 * to.position.x + h11 * t1x,
+        CURVE_SCRATCH.x,
         // Height is linear between the sockets. The ground is the sampler's
         // answer and this is only ever a reference height (invariant 3).
         from.position.y + (to.position.y - from.position.y) * t,
-        h00 * from.position.z + h10 * t0z + h01 * to.position.z + h11 * t1z,
+        CURVE_SCRATCH.z,
         from.halfWidth + (to.halfWidth - from.halfWidth) * t,
       );
     }

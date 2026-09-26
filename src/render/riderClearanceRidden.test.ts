@@ -408,7 +408,8 @@ test('the can never comes within 40 mm of his thigh on any ride the machine can 
           tuning.powerLimitSpeed = preset.powerLimitSpeed;
         }
         // The cutout is left exactly as it ships. Flat out on the flat *does*
-        // reach `cutoutSpeedShare` and cut out (8.7 s on the shipped wheel), so
+        // reach `cutoutSpeedShare` and cut out (8.5 s on the shipped 65 since
+        // the owner lowered the edge on 2026-09-22; 11.1 s before), so
         // the throttle is governed off the over-speed warning below — which is
         // what a player who wants to stay fast does, and which keeps every
         // sample a riding sample rather than a crash one.

@@ -1452,7 +1452,7 @@ test('the room a solo rider is in still has nobody to hit', async ({ page }) => 
 const RECORDS_KEY = `${STORAGE_PREFIX}${KNOCKABOUT_RECORDS_KEY}`;
 
 /** What `level=generated&seed=route-41` builds, asserted rather than assumed. */
-const BRAWL_LEVEL_ID = `generated-r3-${BRAWL_SEED}`;
+const BRAWL_LEVEL_ID = `generated-r6-${BRAWL_SEED}`;
 
 /** A solo personal best that is already on the machine when the room boots. */
 const PRELOADED_BEST = {
@@ -1670,8 +1670,12 @@ test('the fixtures are measured against the weapon and not against a copied numb
 //      off a real `Paddle` exactly as Phase 2's headless sweep reads it.
 // ===========================================================================
 
-/** The city the game boots into, which carries nothing to knock down. */
-const BARE_WORLD = '';
+/**
+ * The hand-authored city, which carries nothing to knock down. Named rather
+ * than the bare launch: from M39 a plain boot opens a generated town, which
+ * has targets (the r5 default already broke this fixture's premise).
+ */
+const BARE_WORLD = 'level=slice';
 
 /** What the group start must leave between the closest two riders, metres. */
 const GROUP_SEPARATION_METRES = groupSeparation(new Paddle());
@@ -1693,7 +1697,11 @@ const GROUP_SEPARATION_METRES = groupSeparation(new Paddle());
  * before this spec was written, and the number the positive control below
  * expects to see once the room is released.
  */
-const HILL = { x: 17, z: 124, headingY: 0.91255, gradeAtLeast: 0.03 } as const;
+// **M39 r6 re-pick.** route-41 is now a town ring whose first 250 m are level
+// downtown, so the hill is the park gate's pavement descent (6.5 %, measured
+// with this spec's own two-metre read) — steeper than the 4.09 % above, so the
+// positive control rolls further, and the same surface the creep is about.
+const HILL = { x: 604.55, z: -160.72, headingY: 3.66668, gradeAtLeast: 0.03 } as const;
 
 // ---------------------------------------------------------------------------
 // Stage B helpers — the panel's own controls
@@ -1730,12 +1738,15 @@ for (const presser of [0, 1, 2, 3]) {
     // be a row rather than four buttons that happen to be adjacent.
     if (presser === 3) {
       // Shift+Tab from `Resume` enters the chooser at its *last* control, which
-      // is Trick Run since M38 and was Knockabout before it: one more press.
+      // is the police chase since M39 Part P (§39.6b.4, the fifth ride), Trick
+      // Run at M38 and Knockabout before it: one more press per offer.
       await page.keyboard.press('Shift+Tab');
       await expect(
-        page.locator('[data-menu="pause-couch"] [data-couch-mode="trickRun"]'),
+        page.locator('[data-menu="pause-couch"] [data-couch-mode="chase"]'),
         'Shift+Tab from Resume enters the chooser at its last offer',
       ).toBeFocused();
+      await page.keyboard.press('Shift+Tab');
+      await expect(page.locator('[data-menu="pause-couch"] [data-couch-mode="trickRun"]')).toBeFocused();
       await page.keyboard.press('Shift+Tab');
     } else {
       await claimWithPad(page, presser, 12);
@@ -1746,7 +1757,9 @@ for (const presser of [0, 1, 2, 3]) {
       await claimWithPad(page, presser, 15);
       await expect(
         page.locator('[data-menu="pause-couch"] [data-couch-mode="trickRun"]'),
-        'and Right reaches the end of the row',
+        // One stop right of Knockabout: the end of the row at M38, and one
+        // short of it since the chase became the fifth offer (§39.6b.4).
+        'and Right reaches the next offer along the row',
       ).toBeFocused();
       await claimWithPad(page, presser, 14);
     }
@@ -1943,8 +1956,9 @@ for (const seats of [3, 4] as const) {
       ).toBe(false);
       // The chooser is a report, and the report still names the room's choice.
       expect(await chooserPressed(page)).toEqual([
-        // The fourth offer is M38's Trick Run, last in the panel's own order.
-        'freeRide:false', 'race:false', 'knockabout:true', 'trickRun:false',
+        // The fourth offer is M38's Trick Run and the fifth M39's police
+        // chase (§39.6b.4), last in the panel's own order.
+        'freeRide:false', 'race:false', 'knockabout:true', 'trickRun:false', 'chase:false',
       ]);
     }
 
@@ -2322,11 +2336,13 @@ test('the reach slider re-asks the no-room question instead of being answered fr
    *
    * **Driven through the real slider and the real producer.** The QA scale
    * fixes a separation budget the world genuinely cannot stretch over: at the
-   * slider's minimum the pack the shipped search must clear is 1.80 m × 24 =
-   * 43.2 m and `route-41` accepts it; at its maximum it is 3.20 m × 24 =
-   * 76.8 m and the same world refuses all thirty-two candidates. The world's
-   * own boundary sits at ≈55 m (headless bisection over the shipped
+   * slider's minimum the pack the shipped search must clear is 1.80 m × 34 =
+   * 61.2 m and `route-41` accepts it; at its maximum it is 3.20 m × 34 =
+   * 108.8 m and the same world refuses all thirty-two candidates. The world's
+   * own boundary sits at ≈81 m (headless bisection over the shipped
    * `groupSpawns`), so both ends are far clear of it and nothing is stubbed.
+   * (M39 r6: the scale was 24 against a ≈55 m boundary; the town ring's plaza
+   * start is roomier, so the scale moved rather than the question.)
    * Both directions are asserted, because a memo that had simply been dropped
    * would also have to come *back* to yes.
    */
@@ -2347,7 +2363,7 @@ test('the reach slider re-asks the no-room question instead of being answered fr
 
   // -- The narrow weapon: the world has room, and the card says so -----------
   await setReach(0.8);
-  await page.evaluate(() => { window.game.setGroupSpawnSeparationScale(24); });
+  await page.evaluate(() => { window.game.setGroupSpawnSeparationScale(34); });
   await pauseFromSeat(page, 1);
   await expect(page.locator(PAUSE_KNOCKABOUT), 'the world refused a bout it can hold')
     .toBeEnabled();
@@ -3822,7 +3838,7 @@ async function lightEveryCue(page: Page): Promise<{
     // **Both thresholds are dragged down to the road speeds a generated route
     // allows.** The capture tool does this to the power ladder
     // (`powerComfortSpeed`) on a lap circuit's own straight; a bout is fought
-    // on a route with things to hit, where nobody reaches 52 mph in the seconds
+    // on a route with things to hit, where nobody reaches 58 mph in the seconds
     // a spec can spend, so the max-speed band's floor comes down with it. What
     // is being arranged here is the worst *HUD*, not the worst physics.
     game.tuning.set('EUC.powerComfortSpeed', 4);
@@ -5113,7 +5129,10 @@ for (const seats of [3, 4] as const) {
 for (const exit of ['resume', 'settings', 'quit'] as const) {
   test(`leaving via ${exit} cancels a pending mode course`, async ({ page }) => {
     const errors = collectErrors(page);
-    await sitDown(page, 4, '');
+    // The hand-authored city by name (M39 QA): these were written when a bare
+    // boot opened it. It has nothing to knock down, so Knockabout requests a
+    // mode course, and cancelling one on the city leaves the status idle.
+    await sitDown(page, 4, 'level=slice');
     await page.locator(COUCH_START).click();
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => window.game.snapshot().app.state === 'paused');
@@ -5144,7 +5163,8 @@ for (const exit of ['resume', 'settings', 'quit'] as const) {
 
 test('a mode course that cannot fit the room leaves it intact and can be retried', async ({ page }) => {
   const errors = collectErrors(page);
-  await sitDown(page, 4, '');
+  // The hand-authored city by name, as the three cancellation cases above.
+  await sitDown(page, 4, 'level=slice');
   await page.locator(COUCH_START).click();
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => window.game.snapshot().app.state === 'paused');
