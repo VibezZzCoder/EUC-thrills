@@ -250,6 +250,17 @@ export const DEFAULT_OPTIONS: GameOptions = Object.freeze({
   seenRiderChooser: false,
 });
 
+/**
+ * Defaults that depend on the device, decided once at boot (owner,
+ * 2026-10-04). A device whose primary pointer is a finger — a phone or tablet
+ * — starts on Medium: the living world made High several times the Sep 26
+ * frame, and no handset has measured it yet. A choice the player saved always
+ * wins, and a touchscreen laptop (fine primary pointer) keeps High.
+ */
+export function deviceDefaults(primaryPointerCoarse: boolean): Partial<GameOptions> {
+  return primaryPointerCoarse ? { quality: 'medium' } : {};
+}
+
 /** Where the record lives inside `SafeStorage`'s namespace. */
 export const OPTIONS_KEY = 'options';
 
@@ -404,8 +415,8 @@ export class OptionsStore {
   /**
    * @param storage Where the record lives.
    * @param defaults Overrides for the shipped defaults. Reserved for harnesses
-   *   and future platform-derived defaults; the running game currently uses
-   *   the shipped record unchanged.
+   *   and platform-derived defaults; the running game passes
+   *   `deviceDefaults` (a phone or tablet starts on Medium).
    */
   constructor(storage: SafeStorage, defaults: Partial<GameOptions> = {}) {
     this.storage = storage;

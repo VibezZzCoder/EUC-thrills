@@ -45,9 +45,10 @@
  * `--write` also rewrites the three `RENDER_BUDGET*` ceilings by one rule
  * (R-5): each moves by exactly `passes × (new reserve − old reserve)` on each
  * axis, reading the old reserve from the file before rewriting it, and never
- * moves down — so the level's share of every contract, every generated world
- * and every presentation choice are byte-identical, and a second `--write` is
- * a no-op. The dated prose note above a raised ceiling stays hand-written.
+ * moves down. This reserve rule retains the previously authorized level share;
+ * the separate environment R15 amendment adds three library slots per view
+ * without changing reserves or triangle ceilings. A second `--write` is a
+ * no-op. The dated prose note above a raised ceiling stays hand-written.
  *
  * Draw calls, triangles, instance counts, and GPU object counts are reportable
  * evidence. A frame interval is not (`AGENTS.md`); nothing here measures time.
@@ -332,7 +333,7 @@ out(`A ${TRACK_LAP_METRES.toFixed(0)} m closed circuit of ${track.segments.lengt
 out('two-colour modular barrier down both sides, a start gantry, tyre stacks, a');
 out('paddock inside the loop, a site fence and sparse planting.');
 out();
-out('**B1 spent seven of the ten calls the library had spare**');
+out('**Historically, B1 spent seven of the ten calls the library then had spare.**');
 out('(`LIBRARY_MAX_DRAW_CALLS` is now ' + LIBRARY_MAX_DRAW_CALLS + ' against a reserve of ' + NON_LEVEL_RESERVE.drawCalls + '), and only');
 out('four things cost anything at all: the signal-red barrier material, the tyre');
 out('stack and the gantry span — two each, a colour pass and a shadow pass — and');
@@ -897,11 +898,11 @@ for (const [contract, passes] of [[chaseContracts[0], 1], [chaseContracts[1], SP
 }
 out('```');
 out();
-out('The ceilings move by one rule (`docs/M39_CHASE.md` §2f, R-5): each by exactly');
-out('its passes times its own reserve\'s growth, on each axis, never down — so the');
-out('level\'s share of every contract is what it was, and no generated world, no');
-out('presentation choice and no generator refusal moves. The measured town frame');
-out('sits beside each ceiling; it is never the ceiling.');
+out('Reserve changes follow R-5 (`docs/M39_CHASE.md` §2f): each ceiling moves');
+out('by its passes times its own reserve\'s growth, on each axis, never down.');
+out('The separate owner-authorized environment R15 amendment adds three shared');
+out('route-face library slots per view, with reserves and triangle ceilings unchanged.');
+out('The measured town frame sits beside each ceiling; it is never the ceiling.');
 out();
 
 // ---------------------------------------------------------------------------

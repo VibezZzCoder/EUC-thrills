@@ -52,8 +52,14 @@ test('a cold-start Knockabout choice survives Surprise me and starts the mode', 
   });
   await page.locator('.euc-menu--routes [data-menu="surprise"]').click();
 
+  // 2026-10-04: the route builds behind the loading cover, which enters the
+  // mode inside its covered work and draws (and so publishes the HUD lane)
+  // only once the cover lifts. Wait for the arrival a player sees.
+  await expect.poll(async () => page.evaluate(() => window.game.snapshot().route.pending), { timeout: 90_000 })
+    .toBe(false);
   await expect.poll(async () => page.evaluate(() => window.game.snapshot().app.state))
     .toBe('knockabout');
+  await page.waitForFunction(() => window.game.snapshot().hud.knockabout !== '');
   const snapshot = await page.evaluate(() => window.game.snapshot());
   expect(snapshot.world).toMatchObject({ generated: true, seed: 'amber-arch' });
   expect(snapshot.targets.total).toBeGreaterThan(0);
@@ -128,7 +134,9 @@ test('the world carries targets, the mode starts, and a swing knocks one down', 
   const world = await page.evaluate(() => {
     const snapshot = window.game.snapshot();
     return {
-      levelId: snapshot.levelPlanId,
+      // 2026-10-04: a living world's plan id is a composition hash; the
+      // seed-bearing identity is the record key (`app/populationWorld.ts`).
+      levelId: window.game.levelPlan.recordWorldId,
       targets: snapshot.level.targets,
       equipped: snapshot.paddle.equipped,
       hud: snapshot.hud.knockabout,
@@ -136,7 +144,7 @@ test('the world carries targets, the mode starts, and a swing knocks one down', 
   });
 
   // The level-identity revision §13 q16 asked for, spent at M14.
-  expect(world.levelId).toBe(`generated-r6-${SEED}`);
+  expect(world.levelId).toBe(`generated-r6-${SEED}~living-r1`);
   expect(world.targets).toBeGreaterThan(4);
   expect(world.equipped).toBe(true);
   // "In the mode, having hit nothing yet" draws a lane; it is not the same as

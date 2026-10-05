@@ -651,6 +651,8 @@ test('T13 prints the 180 as the clean landing it is, not as a bonk fifty seconds
 
   // And the landings themselves did not move with the scope: the three scores
   // and the two heading signs are the ones the table has always printed.
+  // 2026-10-04: r5 drew the trail cues straight on dirt; the owner kept r4's
+  // wood grip under them (`gripBands`), so these are r4's numbers again.
   assert.deepEqual(
     rows.map((row) => [row[1], row[6], row[9]]),
     [
@@ -870,6 +872,8 @@ test('the big-jump report measures full charge, not just a held crouch request',
     if (row[0].includes('no hop')) assert.equal(row[chargeColumn], '0.000');
     if (row[0].startsWith("the sign's 50 mph, full crouch")) {
       assert.equal(row[table.columns.indexOf('landed on')], 'landing face');
+      // 2026-10-04: clean, as on r4: the cue pads keep wood grip under r5's
+      // dirt-drawn cues (owner decision; on bare dirt it graded heavy).
       assert.equal(row[table.columns.indexOf('tier')], 'clean');
     }
   }

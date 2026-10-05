@@ -1,5 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { Game } from './Game.ts';
+import { loadingPaint, type LoadingScreen } from '../ui/loadingScreen.ts';
 import {
   hazardProbeFromQuery,
   levelFromQuery,
@@ -19,22 +20,6 @@ import { PROVENANCE, provenanceLine } from '../data/provenance.ts';
  * that none of it is reachable only through a page load.
  */
 
-const boot = document.getElementById('boot');
-const bootStatus = document.getElementById('boot-status');
-const bootError = document.getElementById('boot-error');
-
-function fail(message: string, detail?: unknown): void {
-  const text = detail instanceof Error ? `${message}\n\n${detail.message}` : message;
-  if (bootError) {
-    bootError.textContent = text;
-    bootError.hidden = false;
-  }
-  if (bootStatus) bootStatus.textContent = 'Could not start';
-  const track = document.getElementById('boot-track');
-  if (track) track.hidden = true;
-  console.error(message, detail);
-}
-
 /** Can this browser give us a WebGL context at all? */
 function isWebGLAvailable(): boolean {
   try {
@@ -43,18 +28,6 @@ function isWebGLAvailable(): boolean {
   } catch {
     return false;
   }
-}
-
-function dismissBootShell(): void {
-  if (!boot) return;
-  boot.classList.add('is-dismissed');
-  const hide = () => {
-    boot.hidden = true;
-  };
-  boot.addEventListener('transitionend', hide, { once: true });
-  // Belt and braces: if the transition is suppressed by reduced-motion or the
-  // element is already opaque-zero, transitionend never fires.
-  window.setTimeout(hide, 400);
 }
 
 /**
@@ -74,10 +47,10 @@ function announceOrigin(): void {
   console.info(`${provenanceLine()} · Play: ${PROVENANCE.homepageUrl}`);
 }
 
-function start(): void {
+export async function start(loading: LoadingScreen): Promise<void> {
   const canvas = document.getElementById('viewport');
   if (!(canvas instanceof HTMLCanvasElement)) {
-    fail('The rendering surface is missing from the page.');
+    loading.fail('The rendering surface is missing from the page.');
     return;
   }
 
@@ -86,7 +59,7 @@ function start(): void {
   // as "your browser cannot do WebGL", which sends them off to change graphics
   // settings that were never the problem — and hides the real fault from us.
   if (!isWebGLAvailable()) {
-    fail(
+    loading.fail(
       'EUC Thrills needs WebGL, and this browser could not provide it. '
         + 'Try updating the browser, or enabling hardware acceleration in its settings.',
     );
@@ -108,7 +81,7 @@ function start(): void {
     // three teardowns deliberately. What survives unchanged is that the world
     // is settled *before the first frame*, so a boot never draws one frame of
     // a place the player did not ask for.
-    game = new Game(
+    game = await Game.create(
       canvas,
       levelFromQuery(window.location.search),
       seedFromQuery(window.location.search),
@@ -124,13 +97,28 @@ function start(): void {
       // live-tuning store by the constructor, so it survives every world swap
       // the way `?wobble=` does. See `level/levels.ts:topSpeedFromQuery`.
       topSpeedFromQuery(window.location.search),
+      async (label, completed) => { loading.stage(label, completed, 9); await loadingPaint(); },
     );
   } catch (error) {
-    fail('EUC Thrills could not start.', error);
+    loading.fail('EUC Thrills could not start.', error);
     return;
   }
 
-  game.applyDebugQuery(window.location.search);
+  game.setLoadingScreen(loading);
+  try {
+    game.applyDebugQuery(window.location.search);
+    loading.stage('Preparing the first view', 8, 9);
+    await loadingPaint();
+    // Link the first view's programs before its first drawn frame (RP-8): a
+    // draw during the parallel compile blocks on each link. Optional work.
+    game.renderer.resize();
+    try { await game.renderer.warmPrograms(); } catch { /* the first frames link lazily instead */ }
+    game.prepareFirstFrame();
+  } catch (error) {
+    game.dispose();
+    loading.fail('The first view could not be prepared. Please try again.', error);
+    return;
+  }
 
   // There is deliberately no `resize` listener here. The loop polls the
   // renderer's idempotent `resize()` every frame, which already covers window
@@ -152,14 +140,11 @@ function start(): void {
   // build misbehaves (master starter 16.1).
   (window as Window & { game?: Game }).game = game;
 
+  loading.stage('Ready to ride', 9, 9);
+  loading.complete();
   game.start();
-  dismissBootShell();
+  game.preloadOptionalAudio();
 }
 
 announceOrigin();
 
-try {
-  start();
-} catch (error) {
-  fail('EUC Thrills failed to start.', error);
-}

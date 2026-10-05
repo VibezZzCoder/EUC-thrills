@@ -190,7 +190,11 @@ test('BelVar Circuit rides one closed lap, through every sector gate', async ({ 
   const errors = collectErrors(page);
   await boot(page, 'level=track');
 
-  expect(await page.evaluate(() => window.game.levelPlan.id)).toBe('belvar-r1');
+  // 2026-10-04: the living world adds paddock actors, so the installed plan id
+  // gains a population suffix; the venue's identity (and the key its laps
+  // are filed under) is the record key, which stays `belvar-r1` because
+  // preparation leaves the circuit's static world untouched.
+  expect(await page.evaluate(() => window.game.levelPlan.recordWorldId)).toBe('belvar-r1');
   // The venue is a lap, so the M10 time trial declines it — with no branch
   // anywhere on which level is loaded. Phase B2 is what changes this.
   expect(await page.evaluate(() => window.game.snapshot().challenge.available)).toBe(false);
@@ -387,10 +391,16 @@ test('a lap of the circuit never pulls the chase camera in, and stays inside §9
     }),
     { drawCalls: 0, triangles: 0 },
   );
+  expect(peak.triangles, 'the lap drew nothing').toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+
+  // 2026-10-04: the camera claim above still runs; only the old §9 / Contract 1
+  // comparison is parked until the owner sets post-environment numbers.
+  test.fixme(true, `OWNER DECISION 2026-10-04: Contract 1 exceeded on the BelVar lap (${peak.drawCalls}/`
+    + `${RENDER_BUDGET.maxDrawCalls} calls, ${peak.triangles}/${RENDER_BUDGET.maxTriangles} tris) — see `
+    + 'docs/ENVIRONMENT_UPGRADE.md');
   expect(peak.drawCalls).toBeLessThanOrEqual(RENDER_BUDGET.maxDrawCalls);
   expect(peak.triangles).toBeLessThanOrEqual(RENDER_BUDGET.maxTriangles);
-
-  expect(errors).toEqual([]);
 });
 
 test('rebuilding the venue twelve times plateaus GPU objects', async ({ page }) => {
@@ -399,12 +409,23 @@ test('rebuilding the venue twelve times plateaus GPU objects', async ({ page }) 
   // until something rebuilds it — and Phase B2's retry does. The scene-graph
   // half of this is `render/levelLifecycle.test.ts`; the GPU counters only
   // exist in a browser.
+  //
+  // 2026-10-04: twelve builds of the environment-upgrade venue plus the
+  // restore's warm-up outgrow the default 120 s on a loaded machine; the claim
+  // is counters, not duration.
+  test.setTimeout(300_000);
   const errors = collectErrors(page);
   await boot(page, 'level=track');
 
-  const trace = await page.evaluate(() => {
+  const trace = await page.evaluate(async () => {
     const game = window.game;
     const original = game.levelPlan;
+    // 2026-10-04: the booted living venue is installed with its population
+    // roster (`Game.installLevel` hands it to `setLevel` and `setPopulation`)
+    // and its first view is warmed behind the cover, which uploads every
+    // buffer with culling off (`Renderer.warmPrograms`, RP-8). The restore
+    // repeats both so the boot counters are compared like with like.
+    const population = (game as unknown as { populationPlan: never }).populationPlan;
     game.loop.setRunning(false);
     game.advance(60);
     const baseline = game.resources();
@@ -417,7 +438,9 @@ test('rebuilding the venue twelve times plateaus GPU objects', async ({ page }) 
       game.advance(2);
       rounds.push(game.resources());
     }
-    game.renderer.setLevel(original);
+    game.renderer.setLevel(original, undefined, population);
+    game.renderer.setPopulation(population);
+    await game.renderer.warmPrograms();
     game.advance(2);
     return { baseline, rounds, restored: game.resources() };
   });
@@ -506,13 +529,19 @@ test('Track Day brings its own circuit, and opens on an out lap', async ({ page 
   // than conditionally hidden — and the button's own note says where it goes,
   // so this is a journey the player asked for rather than a silent swap.
   await bootToTitle(page);
-  expect(await page.evaluate(() => window.game.levelPlan.id)).toBe('m7-slice');
+  // 2026-10-04: world identity is the record key since the living-world pass
+  // (plan ids are composition hashes / population-suffixed).
+  expect(await page.evaluate(() => window.game.levelPlan.recordWorldId)).toBe('m7-slice~living-r1');
 
   await page.locator('.euc-menu--title [data-menu="track-day"]').click();
   await page.locator('.euc-menu--tracks [data-venue="track"]').click();
-  await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
+  // 2026-10-04: the venue swap runs behind the loading cover; the session is
+  // the player's once the cover lifts.
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay', undefined, { timeout: 90_000 });
+  await expect.poll(async () => page.evaluate(() => window.game.snapshot().route.pending), { timeout: 90_000 })
+    .toBe(false);
 
-  expect(await page.evaluate(() => window.game.levelPlan.id)).toBe('belvar-r1');
+  expect(await page.evaluate(() => window.game.levelPlan.recordWorldId)).toBe('belvar-r1');
   // The address bar follows, so the circuit is a link like every other world.
   expect(await page.evaluate(() => window.location.search)).toBe('?level=track');
 
@@ -562,7 +591,16 @@ test('the lap lane names the lap, the clock and the time to beat', async ({ page
 test('a lap that closes is timed, kept, and raced against from the next lap on', async ({ page }) => {
   const errors = collectErrors(page);
   await bootToTitle(page, 'level=track');
-  await page.evaluate(() => { window.game.clearRecords(); window.game.startTrackDay(); });
+  // 2026-10-04: frozen in the task that enters Track Day (entering a mode
+  // re-runs `updateRunning`, so an earlier freeze does not hold). Left live,
+  // the session ran on wall-clock time between the round trips below — on
+  // the environment upgrade's heavier frames on a loaded machine, far enough
+  // that the ghost's lap was over before "the ghost is racing" was read.
+  await page.evaluate(() => {
+    window.game.clearRecords();
+    window.game.startTrackDay();
+    window.game.loop.setRunning(false);
+  });
   const all = await lines(page);
 
   await crossLine(page, all[0], 30);

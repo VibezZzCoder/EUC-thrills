@@ -50,7 +50,7 @@ const SPEC_BY_ID = new Map(SLICE_SPECS.map((spec) => [spec.id, spec]));
 // The Phase 1 gate
 // ---------------------------------------------------------------------------
 
-test('the slice still emits the plan the library was extracted from', () => {
+test('the slice preserves its extracted riding plan beside explicit living authoring', () => {
   // The digest and its reasoning live in planDigest.test.ts. Repeated here
   // because this is the file whose change would break it, and a test that fails
   // next to the cause is worth two that fail far from it.
@@ -59,7 +59,13 @@ test('the slice still emits the plan the library was extracted from', () => {
   // generated-route ride, the shared-playtest shrub-collision pass, then the
   // M15 soft-foliage rerouting of those same shrub boxes. Every revision is
   // itemised beside its pin in planDigest.test.ts.
-  assert.equal(planDigest(createSliceLevel()), '76a2d24495a2a0e333497b2111b1a6af');
+  // The environment overhaul explicitly added populationPaths; mirror the
+  // historical riding-field gate in planDigest.test.ts without re-pinning it.
+  const current = createSliceLevel(), historical = { ...current };
+  assert.ok((current.populationPaths?.length ?? 0) > 0);
+  delete historical.populationPaths;
+  assert.notEqual(planDigest(current), planDigest(historical));
+  assert.equal(planDigest(historical), '76a2d24495a2a0e333497b2111b1a6af');
 });
 
 test('the library points at the slice\'s own specs, not at copies of them', () => {
@@ -449,18 +455,22 @@ test('a mismatch is reported with a reason a human can act on', () => {
   assert.ok(reasons.some((reason) => reason.includes('crease')));
 });
 
-test('the connectors are neutral: no blocks, no dressing, no paint', () => {
+test('connectors have no set pieces; only the explicit road family carries traffic paint', () => {
   assert.ok(LIBRARY_CONNECTORS.length >= 10, 'too few joins to change direction with');
   for (const piece of LIBRARY_CONNECTORS) {
     assert.equal(piece.branches.length, 0, `${piece.id} has a branch and is not a join`);
     for (const spec of piece.main) {
       assert.equal(spec.blocks, undefined, `${piece.id} carries a block`);
       assert.equal(spec.props, undefined, `${piece.id} carries dressing`);
-      assert.equal(spec.markings, undefined, `${piece.id} carries paint`);
+      if (piece.id.startsWith('link-road-')) {
+        assert.equal(spec.markings?.length, 3, `${piece.id} lost road grammar`);
+      } else {
+        assert.equal(spec.markings, undefined, `${piece.id} is intentionally unmarked`);
+      }
     }
     assert.equal(piece.cost.colliders, 0);
     assert.equal(piece.cost.props, 0);
-    assert.equal(piece.cost.markingQuads, 0);
+    assert.equal(piece.cost.markingQuads > 0, piece.id.startsWith('link-road-'));
   }
 });
 

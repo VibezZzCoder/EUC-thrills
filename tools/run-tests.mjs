@@ -14,6 +14,8 @@ const mode = argv.shift();
 const commandSeparator = mode === 'command' ? argv.indexOf('--') : -1;
 const forwardedCommand = commandSeparator >= 0 ? argv.splice(commandSeparator).slice(1) : [];
 const env = { ...process.env };
+/** Escape limit for `browser --full` (see `main`). */
+const FULL_BROWSER_ESCAPE_MS = 5 * 60 * 60_000;
 // The exporter exercises this CLI from a test fixture. Its intentional child
 // runner must execute tests, not inherit Node's already-inside-a-test marker.
 delete env.NODE_TEST_CONTEXT;
@@ -69,9 +71,14 @@ async function main() {
   }
   const dryRun = takeFlag('--dry-run');
   const list = takeFlag('--list');
-  const timeoutMs = integer(takeValue('--timeout-ms') ?? env.EUC_TEST_TIMEOUT_MS,
-    mode === 'browser' ? 45 * 60_000 : mode === 'performance' ? 5 * 60_000 : 30 * 60_000, 'Run timeout');
   const full = takeFlag('--full');
+  // The full browser suite outgrew 45 minutes with the living world (2.7 h at
+  // four workers, 2026-10-04): an escape limit shorter than the run made the
+  // documented command fail by construction. Still an escape limit, not a
+  // target; Playwright's own global limit follows it unless set explicitly.
+  const timeoutMs = integer(takeValue('--timeout-ms') ?? env.EUC_TEST_TIMEOUT_MS,
+    mode === 'browser' ? (full ? FULL_BROWSER_ESCAPE_MS : 45 * 60_000) : mode === 'performance' ? 5 * 60_000 : 30 * 60_000, 'Run timeout');
+  if (mode === 'browser' && full) env.EUC_GLOBAL_TIMEOUT_MS ??= String(timeoutMs);
   const smoke = takeFlag('--smoke');
   const serial = takeFlag('--serial');
   const commands = [];

@@ -41,6 +41,7 @@ export const GROUPS = Object.freeze({
     'src/render/riderClearance.test.ts', 'src/render/riderClearanceRidden.test.ts',
     'src/level/generatedLevel.test.ts', 'src/level/topSpeedRoutes.test.ts',
     'src/render/renderCost.test.ts', 'tools/render-cost.test.mjs',
+    'src/app/districtCorridorSeeds.test.ts', 'src/app/populationCensus.test.ts',
   ) },
 });
 

@@ -108,11 +108,14 @@ test('a diagnostic hazard course cannot write a best or ghost for the ordinary r
   await bootToTitle(page, `level=generated&seed=${seed}&hazardprobe=30`);
   await page.evaluate(() => window.game.clearRecords());
 
+  // 2026-10-04: records and ghosts are filed under the engine-independent
+  // record key, not the living world's composition-hash plan id, so that key
+  // is the identity this probe course must share with the ordinary route.
   const identity = await page.evaluate(() => ({
-    id: window.game.levelPlan.id,
+    id: window.game.levelPlan.recordWorldId,
     hazards: window.game.levelPlan.hazards?.length ?? 0,
   }));
-  expect(identity.id).toBe(`generated-r6-${seed}`);
+  expect(identity.id).toBe(`generated-r6-${seed}~living-r1`);
   expect(identity.hazards).toBeGreaterThan(0);
 
   await page.evaluate(() => window.game.startTimeTrial());

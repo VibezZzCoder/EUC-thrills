@@ -5,10 +5,11 @@
  *
  * **One preference, two facts.** The options store holds what the player
  * *requested* (`GameOptions.quality`, which may be `ultra`); this file decides
- * what is *effective* for this session and world. A couch session, a
- * `?presentation=` diagnostic override or a refused recipe draws ordinary
- * High without ever overwriting the saved choice, and says why — never an
- * "Ultra active" label over the ordinary path.
+ * what is *effective* for this session and world. A diagnostic override or
+ * refused recipe draws High while retaining the request. The owner changed
+ * multiplayer entry on 2026-10-03: Game saves High before the first split and
+ * never automatically restores Ultra. This pure resolver still protects
+ * against a diagnostic/legacy Ultra request inside multiplayer.
  *
  * The resolution is pure and headless: `app/Game.ts` gathers the session
  * facts, calls `resolveRenderTier`, pushes the ordinary tier to

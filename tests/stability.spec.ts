@@ -150,7 +150,9 @@ test('losing the WebGL context freezes the game and shows the recovery notice', 
     return read;
   });
   expect(flags).toEqual({ pending: [], quality: [], rider: [], world: [] });
-  expect(await page.evaluate(() => window.game.levelPlan.id)).toBe('belvar-r1');
+  // 2026-10-04: BelVar's plan id is now the living-world 'belvar-r1~living-r1';
+  // its engine-independent identity (records, ghosts) stays 'belvar-r1'.
+  expect(await page.evaluate(() => window.game.levelPlan.recordWorldId)).toBe('belvar-r1');
   expect(deadDeletes).toEqual([]);
 });
 

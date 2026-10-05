@@ -454,7 +454,8 @@ test('QA: ?mph=50 is an ordinary diagnostic — it applies, and it files nothing
   expect(done.state).toBe('results');
   expect(done.scores[0]).toBeGreaterThan(0);
   expect(done.wasRecord, 'a diagnostic run filed a best').toBe(false);
-  const stored = await page.evaluate(() => window.game.trickRecords.best(window.game.levelPlan.id));
+  // 2026-10-03 (LC-1): records are filed under the engine-independent record key.
+  const stored = await page.evaluate(() => window.game.trickRecords.best(window.game.levelPlan.recordWorldId!));
   expect(stored, 'a diagnostic run reached the store').toBe(null);
   const notes = await page.locator('[data-menu="results-notes"] li').allTextContents();
   expect(notes.some((note) => note.toLowerCase().includes('no best')), notes.join(' | ')).toBe(true);
@@ -495,7 +496,8 @@ test('QA: a hazard-probe session refuses to file, on the probe predicate alone',
   expect(done.completed).toBe(true);
   expect(done.scores[0], 'the probe run scored nothing to file').toBeGreaterThan(0);
   expect(done.wasRecord, 'a probe session filed a best').toBe(false);
-  expect(await page.evaluate(() => window.game.trickRecords.best(window.game.levelPlan.id)))
+  // 2026-10-03 (LC-1): records are filed under the engine-independent record key.
+  expect(await page.evaluate(() => window.game.trickRecords.best(window.game.levelPlan.recordWorldId!)))
     .toBe(null);
   expect(errors).toEqual([]);
 });

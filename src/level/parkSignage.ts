@@ -1,4 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { contractCue } from './switchbackWayfinding.ts';
 import { MARKINGS, PARK_SIGN_WORDS, SIGNS, markingWidth, type ParkSignWord } from '../data/markings.ts';
 import { PROP_FOOTPRINTS } from '../data/props.ts';
 import { CAMERA, EUC } from '../data/tuning.ts';
@@ -65,7 +66,7 @@ import type { SegmentMarking, SegmentProp, SurfaceBand } from './segments.ts';
  * across the box's mouth) already says the same thing.
  *
  * Copy is limited to what can be read in motion: at most two words per sign,
- * from the eight in `PARK_SIGN_WORDS`, and nothing longer than six letters.
+ * from the approved `PARK_SIGN_WORDS`, and nothing longer than six letters.
  *
  * ## Why the paint needs ground, and why the ground is planking
  *
@@ -130,6 +131,8 @@ export interface SignLap {
   readonly metres: number;
   /** Every corridor of the lap, in riding order. */
   readonly segments: readonly SignLapSegment[];
+  /** Explicit trail glyphs on compact dirt; omitted keeps wood-pad authoring. */
+  readonly support?: 'compactTrail';
   /**
    * How far a boardwalk patch reaches past the paint it carries, metres.
    *
@@ -262,6 +265,14 @@ export interface SignedFeature {
    * count, is the one that was redundant.
    */
   readonly compact?: true;
+  /** Compress only cue coordinates across a narrow trail. Physical feature,
+   * lead/search distance and post-camera line remain unchanged. */
+  readonly cueLateralScale?: number;
+  /** Post-primary trail instructions: reserve the original clear/read zone,
+   * but let the faces own route choices and contract supporting warning paint.
+   * A `STEP_DOWN_WARNINGS` word is never contracted (see there). */
+  readonly groundCopy?: 'post';
+  readonly groundArrowScale?: number;
   /** Up to two approved words, printed in this order along the trail. */
   readonly words?: readonly ParkSignWord[];
   /** Where the rider lands, if this feature puts them anywhere. */
@@ -616,7 +627,7 @@ const POST_RADIUS = (() => {
 })();
 
 /**
- * The eight words, drawn once each at unit cap height.
+ * The approved words, drawn once each at unit cap height.
  *
  * **Every call below passes a literal**, which is the point: `inkKit.test.ts`
  * scans the whole of `src/` for a printed word and refuses anything not on the
@@ -635,7 +646,22 @@ const UNIT_WORDS: Readonly<Record<ParkSignWord, readonly (readonly (readonly [nu
   STEP: wordStrokes('STEP', 1, { tracking: SIGNS.glyphTracking }),
   STAIRS: wordStrokes('STAIRS', 1, { tracking: SIGNS.glyphTracking }),
   AIR: wordStrokes('AIR', 1, { tracking: SIGNS.glyphTracking }),
+  TECH: wordStrokes('TECH', 1, { tracking: SIGNS.glyphTracking }),
+  SAFE: wordStrokes('SAFE', 1, { tracking: SIGNS.glyphTracking }),
 });
+
+/**
+ * The step-down safety words, which post-primary ground copy never contracts
+ * (VIS-3-R2, 2026-10-04).
+ *
+ * `DOWN` before the skinny, step-up and staircase and `DROP` before the ledge
+ * are the accepted M36 warnings for an edge the rider rolls off. At the 0.65
+ * contraction they were a 2.3 m smear from the chase camera ('DΛWN'); at full
+ * size they keep the Sep 26 cap height (`glyphElongation` 2.4, the road-text
+ * stretch this venue can pay for), the 0.90 m letter and the full 0.30 m stroke.
+ * The pad was always reserved at full size, so no sign moves.
+ */
+const STEP_DOWN_WARNINGS: ReadonlySet<ParkSignWord> = new Set<ParkSignWord>(['DOWN', 'DROP']);
 
 /**
  * Half the across-trail width of a word, metres.
@@ -670,6 +696,7 @@ export function parkSignage(
   features: readonly SignedFeature[],
   lap: SignLap,
 ): ParkSignage {
+  const compactTrail = lap.support === 'compactTrail';
   const padMargin = lap.padMargin ?? SIGNS.padMargin;
   const landingMargin = lap.landingPadMargin ?? SIGNS.landingPadMargin;
   if (!(padMargin > 0) || !(landingMargin > 0)) {
@@ -764,6 +791,7 @@ export function parkSignage(
    * the perimeter of each patch in margin and nothing else.
    */
   const plank = (id: string, runs: readonly SegmentMarking[], margin: number): number => {
+    if (compactTrail) return 0;
     let lowS = Infinity;
     let highS = -Infinity;
     let lowT = Infinity;
@@ -797,6 +825,21 @@ export function parkSignage(
   };
 
   for (const feature of features) {
+    const cueScale = feature.cueLateralScale ?? 1;
+    if (!(cueScale > 0 && cueScale <= 1) || (feature.cueLateralScale !== undefined && !compactTrail)) {
+      throw new Error(`${feature.id} has invalid compact-trail cue scale ${cueScale}`);
+    }
+    const trailGlyph = (marking: SegmentMarking): SegmentMarking => compactTrail ? {
+      ...marking, role: 'glyph', support: 'compactTrail',
+      path: marking.path.map(point => ({ s: point.s, t: point.t * cueScale })),
+    } : marking;
+    const groundArrowScale = feature.groundArrowScale ?? 1;
+    if ((feature.groundCopy !== undefined || feature.groundArrowScale !== undefined) && !compactTrail) {
+      throw new Error(`${feature.id} uses post-primary instructions outside compact trail`);
+    }
+    if (!(groundArrowScale > 0 && groundArrowScale <= 1)) {
+      throw new Error(`${feature.id} has invalid ground arrow scale ${groundArrowScale}`);
+    }
     const words = feature.words ?? [];
     for (const word of words) {
       if (!(PARK_SIGN_WORDS as readonly string[]).includes(word)) {
@@ -904,13 +947,28 @@ export function parkSignage(
     const copyGroups: SegmentMarking[][] = [];
     let cursor = copyPad === null ? placement.s : copyPad.s;
     for (const word of words) {
-      const mark = glyphMarkings(word, cursor + GLYPH_ALONG_SCALE, feature.technicalT);
+      const capS = cursor + GLYPH_ALONG_SCALE;
+      const fullSize = feature.groundCopy === 'post' && STEP_DOWN_WARNINGS.has(word);
+      // A full-size warning keeps the contracted word's inner edge and grows
+      // toward the corridor's edge, so it takes no ground from the centre
+      // that the post-primary design gives the central TECH/SAFE cue.
+      const centreT = fullSize
+        ? feature.technicalT + feature.technicalSide * (1 - groundArrowScale) * wordHalfAcross(word)
+        : feature.technicalT;
+      const mark = glyphMarkings(word, capS, centreT)
+        .map(run => feature.groundCopy === 'post' && !fullSize
+          ? contractCue(run, capS, feature.technicalT, groundArrowScale) : run);
       (copyPad === null ? groups : copyGroups).push(mark);
       cursor += GLYPH_ALONG_SCALE + SIGNS.copyGap;
     }
     const arrowsFrom = padEnd - arrowBlock;
-    groups.push(chevronMarkings(padEnd, feature.technicalT, feature.compact === true));
-    groups.push(bypassMarkings(arrowsFrom, padEnd, feature.bypassFromT ?? 0, feature.bypassT));
+    groups.push(chevronMarkings(padEnd, feature.technicalT, feature.compact === true)
+      .map(run => contractCue(run, padEnd, feature.technicalT, groundArrowScale)));
+    groups.push(bypassMarkings(arrowsFrom, padEnd, feature.bypassFromT ?? 0, feature.bypassT)
+      .map(run => contractCue(run, padEnd, feature.bypassT, groundArrowScale)));
+    for (const list of [...groups, ...copyGroups]) for (let index = 0; index < list.length; index += 1) {
+      list[index] = trailGlyph(list[index]);
+    }
     const authored: SegmentMarking[] = [...groups.flat(), ...copyGroups.flat()];
 
     // -- Where the paint actually reaches, so the boardwalk can carry it ----
@@ -1012,7 +1070,7 @@ export function parkSignage(
           + `${host.halfWidth} m wide either side — it would be clipped rather than painted`,
         );
       }
-      for (const line of landingMarkings(landing)) {
+      for (const line of landingMarkings(landing, compactTrail)) {
         addMarking(landing.segment, line);
         padArea += plank(landing.segment, [line], landingMargin);
       }
@@ -1049,10 +1107,8 @@ export function parkSignage(
       ? Math.abs(feature.technicalT) + cameraGap
       : cameraGap - Math.abs(feature.technicalT);
     const postT = postSide * Math.max(cornerOut, cameraOut);
-    // No `yaw`: the plate is a box 1.05 m by 0.32 m and a half-turn about its
-    // own axis maps it onto itself, so authoring a facing here would be data
-    // that changes a digest and nothing a player can see. It stands square to
-    // the trail, which is where the corridor's own heading puts it.
+    // Keep the physical pole/core yaw exactly as authored. A readable face
+    // carries its own render-only yaw after the builder resolves the pole.
     const post: SegmentProp = { s: placement.s, t: postT, kind: 'signpost' };
     const list = props.get(placement.segment);
     if (list === undefined) props.set(placement.segment, [post]);
@@ -1073,7 +1129,7 @@ export function parkSignage(
       approachMps,
       readMetres: readWindowMetres(
         shape,
-        { segment: placement.segment, s: padEnd, t: feature.technicalT },
+        { segment: placement.segment, s: padEnd, t: feature.technicalT * cueScale },
         lapDistance(placement.segment, padEnd),
         padEnd - placement.s,
       ),
@@ -1091,6 +1147,11 @@ export function parkSignage(
         },
       }),
     });
+
+    const actual = signs[signs.length - 1];
+    if (actual.readMetres < actual.requiredReadMetres - 1e-9) {
+      throw new Error(`${feature.id}'s compact cue lost its required reading window`);
+    }
 
     // **A placed pad is a zone like a feature is.** Two signs sharing ground is
     // one invisible sign: all paint in this project is coplanar and on one
@@ -1318,34 +1379,39 @@ function glyphMarkings(word: ParkSignWord, farS: number, centreT: number): Segme
  * from it so no two runs share ground at the corners, which would be an
  * invisible overlap rather than a visible join.
  */
-function landingMarkings(landing: SignLanding): SegmentMarking[] {
+function landingMarkings(landing: SignLanding, compactTrail = false): SegmentMarking[] {
   const near = landing.fromS;
   const far = landing.toS;
-  const inset = MARKINGS.barWidth;
+  const inset = compactTrail ? MARKINGS.glyphWidth : MARKINGS.barWidth;
+  const edgeWidth = compactTrail ? MARKINGS.glyphWidth : MARKINGS.edgeWidth;
   const left = landing.t + landing.halfLateral;
   const right = landing.t - landing.halfLateral;
   return [
     {
       path: [{ s: near, t: right }, { s: near, t: left }],
-      role: 'bar',
+      role: compactTrail ? 'glyph' : 'bar',
+      ...(compactTrail ? { support: 'compactTrail' as const } : {}),
       paint: 'kerb',
     },
     {
-      path: [{ s: near + inset, t: left }, { s: far - MARKINGS.edgeWidth, t: left }],
-      role: 'edge',
+      path: [{ s: near + inset, t: left }, { s: far - edgeWidth, t: left }],
+      role: compactTrail ? 'glyph' : 'edge',
+      ...(compactTrail ? { support: 'compactTrail' as const } : {}),
       paint: 'road',
     },
     {
-      path: [{ s: near + inset, t: right }, { s: far - MARKINGS.edgeWidth, t: right }],
-      role: 'edge',
+      path: [{ s: near + inset, t: right }, { s: far - edgeWidth, t: right }],
+      role: compactTrail ? 'glyph' : 'edge',
+      ...(compactTrail ? { support: 'compactTrail' as const } : {}),
       paint: 'road',
     },
     {
       path: [
-        { s: far, t: right + MARKINGS.edgeWidth },
-        { s: far, t: left - MARKINGS.edgeWidth },
+        { s: far, t: right + edgeWidth },
+        { s: far, t: left - edgeWidth },
       ],
-      role: 'edge',
+      role: compactTrail ? 'glyph' : 'edge',
+      ...(compactTrail ? { support: 'compactTrail' as const } : {}),
       paint: 'road',
     },
   ];

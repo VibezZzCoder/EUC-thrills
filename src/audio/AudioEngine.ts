@@ -1,5 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { AUDIO } from '../data/tuning.ts';
+import { AUDIO, ENVIRONMENT_AMBIENCE } from '../data/tuning.ts';
 import {
   AudioDirector,
   createRideAudioInput,
@@ -11,6 +11,12 @@ import { WebAudioSink, type CrashVoiceId, type SampleBank } from './sink.ts';
 import { busGain, clamp01, type BusVolumes } from './mix.ts';
 import type { SampleUrls } from './samples.ts';
 import type { SurfaceId } from '../simulation/world.ts';
+import {
+  EnvironmentAmbienceModel,
+  createEnvironmentAmbienceInput,
+  type EnvironmentAmbienceEmitter,
+  type EnvironmentAmbienceFrame,
+} from './environmentAmbience.ts';
 
 /**
  * The audio layer's composition root: context lifecycle, buses, volumes, and
@@ -59,6 +65,8 @@ export interface AudioSnapshot {
   readonly samplesDisabled: boolean;
   /** Permanent graph nodes. Constant once samples load; the leak audit reads it. */
   readonly permanentNodes: number;
+  /** Model intent plus the separately counted fixed environmental graph. */
+  readonly ambience: EnvironmentAmbienceSnapshot;
   /**
    * True once the approved recordings are decoded and installed. Until then
    * every sampled voice plays its synthesized fallback, so this is the flag a
@@ -137,6 +145,15 @@ export interface AudioSnapshot {
   readonly sirenRate: number;
 }
 
+export interface EnvironmentAmbienceSnapshot extends Readonly<EnvironmentAmbienceFrame> {
+  readonly worldId: string | null;
+  readonly listenerSeat: 0;
+  readonly running: boolean;
+  readonly permanentNodes: number;
+  readonly permanentSources: number;
+  readonly bufferBytes: number;
+}
+
 /**
  * `touchend` and `click` are not redundancy. WebKit's user-activation rules
  * for audio are stricter in a home-screen web app (`Add to Home Screen`,
@@ -193,6 +210,11 @@ export class AudioEngine {
   readonly director = new AudioDirector();
   /** Filled in place by the composition root each render frame. */
   readonly input: RideAudioInput = createRideAudioInput();
+  private readonly ambience = new EnvironmentAmbienceModel(ENVIRONMENT_AMBIENCE);
+  private readonly ambienceInput = createEnvironmentAmbienceInput();
+  private ambienceRequestedRunning = false;
+  /** Plain model time on the existing update clock; no timer or callback. */
+  private ambienceWarningSeconds = 0;
 
   private readonly target: Window | null;
   private context: AudioContext | null = null;
@@ -299,6 +321,7 @@ export class AudioEngine {
       this.context = context;
       this.sink = new WebAudioSink(context);
       this.applyVolumes();
+      this.sink.applyAmbienceFrame(this.ambience.frame);
       // **Replayed, not assumed.** The sink does not exist until the first user
       // gesture, so a rider chosen on a menu before the player ever touched the
       // canvas would otherwise be silently dropped — the same reason
@@ -501,6 +524,51 @@ export class AudioEngine {
     this.director.setTuning(tuning);
   }
 
+  /** World-install boundary. Copies/refuses descriptors before replacing. */
+  replaceAmbienceWorld(worldId: string, emitters: readonly EnvironmentAmbienceEmitter[]): void {
+    if (this.disposed) return;
+    this.ambience.replaceWorld(worldId, emitters);
+    this.resetAmbience();
+  }
+
+  /** Presentation supplies the installed moving sources once per shared frame. */
+  updateAmbienceEmitter(id: string, x: number, y: number, z: number, strength: number): boolean {
+    return !this.disposed && this.ambience.updateEmitter(id, x, y, z, strength);
+  }
+
+  /** Abandon the world and its single listener without rebuilding any nodes. */
+  clearAmbienceWorld(): void {
+    if (this.disposed) return;
+    this.ambience.clearWorld();
+    this.resetAmbience();
+  }
+
+  /** Clear old proximity/priority tails while retaining the emitter roster. */
+  resetAmbience(): void {
+    if (this.disposed) return;
+    this.ambienceRequestedRunning = false;
+    this.ambienceInput.running = false;
+    this.ambienceInput.warningPriority = 0;
+    this.ambienceInput.sirenPriority = 0;
+    this.ambienceWarningSeconds = 0;
+    this.ambience.reset();
+    this.sink?.applyAmbienceFrame(this.ambience.frame);
+  }
+
+  /**
+   * The one presented seat-0 listener, supplied just before update(). Shared
+   * couch panes never make more listeners. The existing idle/hidden gates also
+   * apply, even if a caller requests running during a pause.
+   */
+  setAmbienceListener(x: number, y: number, z: number, running: boolean): void {
+    if (this.disposed) return;
+    this.ambienceInput.listenerX = x;
+    this.ambienceInput.listenerY = y;
+    this.ambienceInput.listenerZ = z;
+    this.ambienceRequestedRunning = running;
+    if (!running) this.resetAmbience();
+  }
+
   // -------------------------------------------------------------------------
   // The ride
   // -------------------------------------------------------------------------
@@ -530,10 +598,20 @@ export class AudioEngine {
       const step = Math.min(remaining, AUDIO.modelStepSeconds);
       remaining -= step;
       chunks += 1;
+      this.ambienceWarningSeconds = Math.max(0, this.ambienceWarningSeconds - step);
       this.director.update(step, this.input);
       for (let index = 0; index < this.director.cueCount; index += 1) {
         const cue = this.director.cues[index];
         this.played[cue.kind] += 1;
+        // Priority follows the warnings the director actually emitted. A
+        // silenced ladder never becomes a new sound or an invented warning.
+        if ((cue.kind === 'beep' || cue.kind === 'overspeed') && cue.gain > 0) {
+          const hold = cue.delaySeconds + cue.toneSeconds + ENVIRONMENT_AMBIENCE.warningTailSeconds;
+          if (Number.isFinite(hold)) this.ambienceWarningSeconds = Math.max(
+            this.ambienceWarningSeconds,
+            Math.min(ENVIRONMENT_AMBIENCE.maximumWarningHoldSeconds, Math.max(0, hold)),
+          );
+        }
         // Played at the moment the frame is drawn rather than at the model
         // time it belongs to. Only a batched `advance` can separate the two,
         // and the honest choice there is "now" — scheduling a sound that has
@@ -543,9 +621,20 @@ export class AudioEngine {
       // Drained, so the ring is free for the next sub-step — and, crucially,
       // for the cues the fixed step queues before the next drawn frame.
       this.director.clearCues();
+      this.ambienceInput.running = this.ambienceRequestedRunning && !this.input.idle && !this.wantSuspended;
+      this.ambienceInput.warningPriority = Math.max(
+        this.director.frame.duck, this.ambienceWarningSeconds > 0 ? 1 : 0,
+      );
+      // Recover the equal-power siren envelope from its two existing gains.
+      // Quieter live siren tuning earns proportionately less masking priority.
+      this.ambienceInput.sirenPriority = clamp01(Math.hypot(
+        this.director.frame.sirenFarGain, this.director.frame.sirenCloseGain,
+      ) / AUDIO.sirenLevel);
+      this.ambience.update(step, this.ambienceInput);
     } while (remaining > 1e-9 && chunks < MAX_MODEL_CHUNKS);
 
     this.sink?.applyFrame(this.director.frame);
+    this.sink?.applyAmbienceFrame(this.ambience.frame);
   }
 
   hop(charge: number): void {
@@ -599,6 +688,7 @@ export class AudioEngine {
    */
   resetRider(seat = 0): void {
     this.director.forgetRider(seat);
+    if (seat === 0) this.resetAmbience();
   }
 
   /** The paddle went through the air (M14). A miss is silence after this. */
@@ -652,6 +742,7 @@ export class AudioEngine {
   reset(): void {
     this.director.reset();
     this.sink?.stopAllVoices();
+    this.resetAmbience();
   }
 
   /**
@@ -666,6 +757,7 @@ export class AudioEngine {
     // Recorded before touching the context, so the `statechange` this call
     // provokes finds the flag already set and does not fight the decision.
     this.wantSuspended = suspended;
+    if (suspended) this.resetAmbience();
     const context = this.context;
     if (!context || this.disposed) return;
     if (suspended) {
@@ -717,6 +809,15 @@ export class AudioEngine {
       baseLatency: this.context?.baseLatency ?? null,
       outputLatency: this.context?.outputLatency ?? null,
       permanentNodes: counts?.permanentNodes ?? 0,
+      ambience: {
+        ...this.ambience.frame,
+        worldId: this.ambience.worldId,
+        listenerSeat: 0,
+        running: this.ambienceInput.running,
+        permanentNodes: counts?.ambienceNodes ?? 0,
+        permanentSources: counts?.ambienceSources ?? 0,
+        bufferBytes: counts?.ambienceBufferBytes ?? 0,
+      },
       samplesLoaded: this.sink?.samplesLoaded ?? false,
       samplesDisabled: this.samplesDisabled,
       voices: counts?.voices ?? 0,
@@ -750,6 +851,7 @@ export class AudioEngine {
 
   dispose(): void {
     if (this.disposed) return;
+    this.clearAmbienceWorld();
     this.disposed = true;
     this.stopListeningForGesture();
     this.sink?.dispose();

@@ -717,7 +717,23 @@ test('ordinary createProps is byte-identical to the build before the Ultra hook'
   const track = createTrackLevel();
   assert.equal(sceneDigest(createProps(plan)), 'be2238f4a0243a9d7184df389474d494bcba34935b16f1b5720c83f6833d69f6', 'the baseline slice changed');
   assert.equal(sceneDigest(createProps(plan, ENHANCED_PRESENTATION)), '3160a0169b4b191ef9b2cb1fe837b9241d3eba5f0bd638f0fb1d619a100810ab', 'the enhanced slice changed');
-  assert.equal(sceneDigest(createProps(track, ENHANCED_PRESENTATION)), '59d61dd9f57c9c51e90cbf2dc0e796257299b67ac17bbcd4bd5595f84aa03135', 'the enhanced BelVar changed');
+  // 2026-10-04: BelVar's paddock workshop is now authored `industrial` (the
+  // owner-authorized environment upgrade; `ordinaryParity.test.ts` restores
+  // the same one descriptor). With exactly that descriptor restored the
+  // pre-Ultra digest must still match, so nothing else in the ordinary
+  // BelVar moved; the accepted current build is pinned beside it.
+  let restored = 0;
+  const historicalTrack: LevelPlan = { ...track, props: track.props?.map((prop) => {
+    if (prop.kind !== 'building' || prop.look !== 'industrial'
+      || prop.size?.x !== 10 || prop.size.y !== 5 || prop.size.z !== 15) return prop;
+    restored += 1;
+    const historical = { ...prop };
+    delete historical.look;
+    return historical;
+  }) };
+  assert.equal(restored, 1, 'only the amended paddock workshop is restored');
+  assert.equal(sceneDigest(createProps(historicalTrack, ENHANCED_PRESENTATION)), '59d61dd9f57c9c51e90cbf2dc0e796257299b67ac17bbcd4bd5595f84aa03135', 'the enhanced BelVar changed');
+  assert.equal(sceneDigest(createProps(track, ENHANCED_PRESENTATION)), '98ecd6abbb3f5288359d6fb9baf12bbe64ca85851b78837c596e60d6ae79453f', 'the enhanced BelVar with its industrial workshop changed');
   // And an ordinary view owns no Ultra resource at all.
   for (const ordinary of [view, enhancedView]) {
     assert.equal(ordinary.bytes, 0);

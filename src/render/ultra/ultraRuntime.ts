@@ -1,4 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import type { EnvironmentSupplementPrice } from '../environmentSupplementPrice.ts';
 /**
  * The Ultra runtime — M39 (`docs/M39_ULTRA.md` §3.6, §6.3 W5).
  *
@@ -34,6 +35,7 @@
  * No parameter properties and no enum (`erasableSyntaxOnly`, invariant 13).
  */
 import * as THREE from 'three';
+import { potentialGeometryTriangles } from '../vegetationDistance.ts';
 import { ULTRA } from '../../data/tuning.ts';
 import type { ResolvedVenueLook } from '../../data/venueLook.ts';
 import type { LevelPlan } from '../../level/plan.ts';
@@ -135,6 +137,10 @@ export interface UltraHost {
   judge(plan: LevelPlan, caps: UltraCaps, override: UltraKitOverride | null): UltraJudgement;
   /** The terrain view the scene is drawing, or null between a dispose and a build. */
   installedTerrain(): TerrainView | null;
+  environmentSupplementPrice?(recipe: UltraRecipe): EnvironmentSupplementPrice | null;
+  environmentSupplementBytes?(): number;
+  /** Material overlays whose own teardown releases their complete GPU state. */
+  programOwnerRoots?(): readonly THREE.Object3D[];
   /**
    * Dispose whatever terrain is installed, *then* build and install this one
    * (one world at a time, §3.6 step 5). `context` null is the ordinary call,
@@ -645,9 +651,8 @@ export function measuredPropColourTriangles(root: THREE.Object3D): number {
     const mesh = node as THREE.Mesh;
     if (mesh.isMesh !== true || !mesh.name.startsWith('level-props-')) return;
     const geometry = mesh.geometry;
-    const vertices = geometry.index?.count ?? geometry.getAttribute('position')?.count ?? 0;
     const instanced = mesh as THREE.InstancedMesh;
-    total += (vertices / 3) * (instanced.isInstancedMesh === true ? instanced.count : 1);
+    total += potentialGeometryTriangles(geometry) * (instanced.isInstancedMesh === true ? instanced.count : 1);
   });
   return total;
 }
@@ -697,10 +702,11 @@ export function picksUpEnvironment(material: THREE.Material): boolean {
  * byte-identical. `skip` is the installed world, whose own dispose frees its
  * materials. Returns how many materials were released.
  */
-export function releaseEnvironmentPrograms(root: THREE.Object3D, skip: THREE.Object3D | null): number {
+export function releaseEnvironmentPrograms(root: THREE.Object3D, skip: THREE.Object3D | null,
+  ownerRoots: readonly THREE.Object3D[] = []): number {
   const released = new Set<THREE.Material>();
   const visit = (node: THREE.Object3D): void => {
-    if (node === skip) return;
+    if (node === skip || ownerRoots.includes(node)) return;
     const material = (node as Partial<THREE.Mesh>).material;
     const materials = material === undefined ? [] : Array.isArray(material) ? material : [material];
     for (const entry of materials) {
@@ -839,6 +845,7 @@ export class UltraRuntime {
   /** Whether the *installed* terrain is an Ultra build. */
   private terrainIsUltra = false;
   private shared: UltraShared | null = null;
+  private supplementBuildContext: UltraBuildContext | null = null;
   /** The Ultra near rig while it is written on the sun; null while the ordinary one stands. */
   private rig: ShadowRig | null = null;
   /** The rig the frame hook hands `updateUltraShared` (the Ultra one, or the ordinary one under `-lighting`). */
@@ -1099,6 +1106,11 @@ export class UltraRuntime {
   /** The Ultra rung and its model while it is drawing, for `presentation()`. */
   builtUltra(): { readonly recipe: UltraRecipe; readonly cost: UltraFrameCost | null } | null {
     return this.activeFlag ? this.built : null;
+  }
+
+  /** Borrow the installed world's uniforms; supplementary materials own no maps. */
+  supplementContext(): UltraBuildContext | null {
+    return this.activeFlag ? this.supplementBuildContext : null;
   }
 
   /**
@@ -1594,7 +1606,15 @@ export class UltraRuntime {
           built.recipe,
           { width: frame.drawingBuffer.width, height: frame.drawingBuffer.height },
           this.mapSizes ?? undefined,
+          this.host.installedTerrain()?.sharedEdges?.price ?? null,
+          this.host.environmentSupplementPrice?.(built.recipe) ?? null,
         ),
+      metricFacade: {
+        proxyFlagBytes: this.host.installedTerrain()?.metricSource?.proxyFlagBytes ?? 0,
+        proxyColourPieces: this.host.installedTerrain()?.metricSource?.proxyColourPieces ?? 0,
+        discardedColourTriangles: this.host.installedTerrain()?.metricSource?.proxyColourTriangles ?? 0,
+        commonGeometryBytes: built === null ? 0 : this.host.environmentSupplementPrice?.(built.recipe)?.metricCommonBytes ?? 0,
+      },
       bytes: {
         steady,
         // The steady set plus the two allocations that overlap it during a
@@ -1642,6 +1662,12 @@ export class UltraRuntime {
    * re-written by the ordinary writers (§3.1).
    */
   teardown(mode: TeardownMode = 'exit'): void {
+    // Final disposal releases CPU world caches even if no Ultra resources
+    // were ever engaged. Exit/world rebuild paths retain their live source.
+    if (mode === 'dispose') {
+      this.plan = null; this.selection = null; this.judgement = null;
+      this.overrideId = undefined; this.worldRefusal = null;
+    }
     if (!this.engaged) return;
     const host = this.host;
     this.activeFlag = false;
@@ -1679,7 +1705,8 @@ export class UltraRuntime {
     //     the world (step 7's program count): released before the world is
     //     swapped, so the ordinary world's fresh materials are never touched.
     //     Not on `dispose` — the renderer frees every program itself.
-    if (mode !== 'dispose') releaseEnvironmentPrograms(host.scene, host.installedTerrain()?.group ?? null);
+    if (mode !== 'dispose') releaseEnvironmentPrograms(host.scene, host.installedTerrain()?.group ?? null,
+      host.programOwnerRoots?.());
     //     From here the ordinary light draws them, so the next lit entry
     //     releases their ordinary variants in turn (activation step 4b, N2).
     this.ordinaryVariantsHeld = true;
@@ -1710,6 +1737,7 @@ export class UltraRuntime {
     }
     this.built = null;
     this.shared = null;
+    this.supplementBuildContext = null;
     this.mapSizes = null;
 
     // 6. Pixels: the cap is off with `activeFlag`, then the buffer follows.
@@ -1822,7 +1850,8 @@ export class UltraRuntime {
       tuneUltraShared(shared, this.live);
       this.shared = shared;
       const started = host.now();
-      this.install(plan, recipe, { recipe, shared, maxAnisotropy: host.maxAnisotropy() }, this.plantBuild);
+      this.supplementBuildContext = { recipe, shared, maxAnisotropy: host.maxAnisotropy() };
+      this.install(plan, recipe, this.supplementBuildContext, this.plantBuild);
       this.terrainIsUltra = true;
       this.timings.buildMs = host.now() - started;
 
@@ -1846,7 +1875,8 @@ export class UltraRuntime {
       //     recompile what they already hold. Under `-lighting` they keep
       //     drawing ordinary variants, so nothing is released.
       if (lit && this.ordinaryVariantsHeld) {
-        releaseEnvironmentPrograms(host.scene, host.installedTerrain()?.group ?? null);
+        releaseEnvironmentPrograms(host.scene, host.installedTerrain()?.group ?? null,
+          host.programOwnerRoots?.());
         this.ordinaryVariantsHeld = false;
       } else if (!lit) {
         this.ordinaryVariantsHeld = true;
@@ -2117,7 +2147,21 @@ export class UltraRuntime {
       // only (the model's `sky-background-cube`).
       bytes += this.skyBackground?.bytes ?? 0;
     }
-    if (this.terrainIsUltra) bytes += this.host.installedTerrain()?.ultra?.bytes ?? 0;
+    if (this.terrainIsUltra) {
+      const terrain = this.host.installedTerrain();
+      // Includes the exact metric source-bucket flag bytes once; common
+      // metric polygons belong to environmentSupplementBytes below, not here.
+      bytes += terrain?.ultra?.bytes ?? 0;
+      // The common terrain array is outside Ultra packed attributes and outside
+      // environmentSupplementBytes. Its single terrain owner is charged once.
+      bytes += terrain?.sharedGround?.bytes ?? 0;
+      // Appended packed attributes are already in terrain.ultra.bytes.
+      // Common buffer expansion is separately priced and owned once here.
+      bytes += terrain?.sharedEdges?.price.commonGeometryBytes ?? 0;
+      // Shared band P/N/C + net indices once; its AO is above in terrain.ultra.bytes.
+      bytes += terrain?.featureBlocks?.commonGeometryBytes ?? 0;
+      bytes += this.host.environmentSupplementBytes?.() ?? 0;
+    }
     return bytes;
   }
 

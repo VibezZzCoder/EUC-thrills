@@ -335,6 +335,7 @@ test('the level plan is on the bridge in its shipping shape', async ({ page }) =
 
   const plan = await page.evaluate(() => ({
     id: window.game.levelPlan.id,
+    recordWorldId: window.game.levelPlan.recordWorldId,
     segments: window.game.levelPlan.segments.length,
     checkpoints: window.game.levelPlan.checkpoints.length,
     spawn: window.game.levelPlan.spawn,
@@ -351,7 +352,14 @@ test('the level plan is on the bridge in its shipping shape', async ({ page }) =
   // The shipped level from M7 on. M1's own assertions are about the plan's
   // *shape* on the wire, which is why they survived the world changing under
   // them: nothing here knows what the level looks like.
-  expect(plan.id).toBe('m7-slice');
+  // 2026-10-04: the living world renames a populated plan's `id` to a
+  // composition hash ('composition-r16-…~living-r1'), which is engine-dependent
+  // by design. The engine-independent identity of the shipped M7 slice is now
+  // `recordWorldId` ('m7-slice~living-r1' — the builder id plus the record
+  // revision); `id` stays a non-empty string the snapshot reports verbatim.
+  expect(plan.recordWorldId).toBe('m7-slice~living-r1');
+  expect(typeof plan.id).toBe('string');
+  expect(plan.id.length).toBeGreaterThan(0);
   expect(plan.segments).toBeGreaterThan(1);
   // Checkpoints arrived at M10 and the field's *shape* is what M1 asserts —
   // it was reserved and empty here since M0 precisely so that filling it would

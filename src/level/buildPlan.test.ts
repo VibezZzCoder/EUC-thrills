@@ -237,6 +237,35 @@ test('a plan with no authored paint carries no markings array at all', () => {
   assert.equal(plan.markings, undefined);
 });
 
+test('compact dirt paint requires explicit instructional glyph support', () => {
+  const path = [{ s: 2, t: 0 }, { s: 28, t: 0 }];
+  assert.equal(road({ surface: 'dirt', markings: [{ path, role: 'centre' }] }).markings, undefined);
+  assert.equal(road({ surface: 'dirt', markings: [{ path, role: 'glyph' }] }).markings, undefined);
+  assert.throws(() => road({ surface: 'dirt', markings: [{ path, role: 'centre', support: 'compactTrail' }] }), /only.*glyph/);
+  const glyph = { path, role: 'glyph' as const, paint: 'path' as const, support: 'compactTrail' as const };
+  const plan = road({ surface: 'dirt', markings: [glyph] });
+  assert.equal(plan.markings!.length, 1); assert.equal(plan.markings![0].support, 'compactTrail');
+  for (const surface of ['grass', 'gravel', 'spill'] as const) {
+    assert.equal(road({ surface, markings: [glyph] }).markings, undefined, surface);
+  }
+});
+
+test('compact glyph spans clear thin solids, physical props and hazards between paint samples', () => {
+  const glyph = { path: [{ s: 2, t: 0 }, { s: 28, t: 0 }], role: 'glyph' as const,
+    paint: 'path' as const, support: 'compactTrail' as const };
+  const segment: SegmentSpec = { id: 'road', length: 32, halfWidth: 5, surface: 'dirt', markings: [glyph] };
+  const versions = [
+    buildLevelPlan([{ ...segment, blocks: [{ s: 10, t: 0, halfAlong: 0.02, halfLateral: 1, height: 1, surface: 'wood' }] }], OPTIONS),
+    buildLevelPlan([segment], { ...OPTIONS, props: [{ kind: 'litterBin', x: 0, z: 10, lift: 0, scale: 1, rotationY: 0, onCollider: true }] }),
+    buildLevelPlan([segment], { ...OPTIONS, hazards: [{ id: 'small-hole', segment: 'road', s: 10, t: 0, radius: 0.04, kind: 'potholeShallow' }] }),
+  ];
+  for (const plan of versions) {
+    assert.ok(plan.markings!.length >= 2, 'positive surviving paint either side of the obstruction');
+    for (const span of paintedSpans(plan)) assert.ok(span.to < 10 || span.from > 10,
+      'no full ribbon bridges a thin obstacle between the usual samples');
+  }
+});
+
 test('the same fixture builds the same paint twice', () => {
   assert.deepEqual(road().markings, road().markings);
 });

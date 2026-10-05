@@ -69,7 +69,19 @@ test('no hand-authored world carries a district look, so each draws exactly as b
     ['proving', createProvingGround()],
   ];
   for (const [name, plan] of worlds) {
-    const looked = (plan.props ?? []).filter((prop) => prop.look !== undefined);
+    let looked = (plan.props ?? []).filter((prop) => prop.look !== undefined);
+    if (name === 'belvar') {
+      // 2026-10-04: the owner-authorized environment upgrade authors BelVar's
+      // paddock workshop (trackLevel.ts sheds[0], 10 x 5 x 15 m) as
+      // `industrial`, the anchor of its industrial population bands
+      // (CT-3; `ordinaryParity.test.ts` restores the same one descriptor for
+      // its historical goldens). That single, exact building is the exception;
+      // any other look, or a landmark look, on a hand-authored world still fails.
+      const workshop = looked.filter((prop) => prop.kind === 'building' && prop.look === 'industrial'
+        && prop.size?.x === 10 && prop.size.y === 5 && prop.size.z === 15);
+      assert.equal(workshop.length, 1, 'BelVar no longer carries exactly the one industrial workshop');
+      looked = looked.filter((prop) => !workshop.includes(prop));
+    }
     assert.equal(looked.length, 0, `${name} carries ${looked.length} props with a look`);
   }
 });

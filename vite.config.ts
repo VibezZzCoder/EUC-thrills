@@ -1,5 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { defineConfig } from 'vite';
+import { defineConfig, transformWithEsbuild, type Plugin } from 'vite';
 import { PROVENANCE, provenanceBanner, provenanceHtmlComment } from './src/data/provenance.ts';
 
 /**
@@ -40,11 +40,38 @@ function provenancePlugin() {
   };
 }
 
+/**
+ * Minify the stylesheet the page links for itself.
+ *
+ * `index.html` links `src/ui/game.css` with `media="print"` and swaps it in
+ * when it has loaded, so the stylesheet never blocks the static loading shell
+ * (`docs/LOADING.md`, 2026-10-03). Vite bundles a linked stylesheet only when
+ * the tag has no `media` attribute; with one, it copies the file as a plain
+ * asset, comments and all. That shipped the 213 KB source in place of its
+ * 52 KB minified form and put the Pages package over its 8 MB transfer budget
+ * (`tools/package-github-pages.mjs`). This minifies such assets with the same
+ * esbuild CSS minifier Vite applies to every stylesheet it bundles: same file,
+ * same link, same attributes, same loading — fewer bytes.
+ */
+function minifyLinkedCssPlugin(): Plugin {
+  return {
+    name: 'euc-thrills-minify-linked-css',
+    apply: 'build',
+    async generateBundle(_options, bundle) {
+      for (const file of Object.values(bundle)) {
+        if (file.type !== 'asset' || !file.fileName.endsWith('.css')) continue;
+        const source = typeof file.source === 'string' ? file.source : new TextDecoder().decode(file.source);
+        file.source = (await transformWithEsbuild(source, file.fileName, { minify: true })).code;
+      }
+    },
+  };
+}
+
 export default defineConfig(({ mode }) => {
   const githubPages = mode === 'github-pages';
 
   return {
-    plugins: [provenancePlugin()],
+    plugins: [provenancePlugin(), minifyLinkedCssPlugin()],
     // GitHub Pages serves project sites below /<repository>/. Relative asset
     // URLs keep the generated package independent of the eventual repo name,
     // and of whether it is served from a subpath at all. A default production

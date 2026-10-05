@@ -1,8 +1,11 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { buildAuthoredCanopyAdapter, buildAuthoredCanopyCrownAlias, disposeAuthoredCanopyCrownAlias, type PreparedAuthoredCanopies, type AuthoredCanopyRecord, type AuthoredCanopyBuiltReport } from './authoredCanopyOwner.ts';
+import { assertVegetationPriceEmission, type PreparedVegetationPrice } from './sharedVegetationPricePlan.ts';
+import { assertOriginalCapSlotEmission, type PreparedOriginalCapSlots } from './originalCapSlotPrice.ts';
 import * as THREE from 'three';
+import { routeSignPlateGeometry, routeSignInkGeometry } from './routeSignGeometry.ts';
 import {
   BUILDING_FACADE,
-  BUILDING_TONES,
   GANTRY_WORDMARK,
   PROP_COLOURS,
   PROP_SIZES,
@@ -22,7 +25,10 @@ import {
   type FacadePageId,
 } from './facadeAtlas.ts';
 import { BASELINE_PRESENTATION } from './presentation.ts';
-import { composeBuilding } from '../data/buildingLooks.ts';
+import { buildingSourceRecords } from './buildingSourceRecords.ts';
+import { metricExtractionLedger } from './metricFacadePlan.ts';
+import type { PreparedMetricFacades } from './metricFacadePreparation.ts';
+import { METRIC_PROXY_ATTRIBUTE, metricSourceProxyAttribute, installMetricSourceProxy } from './metricSourceProxy.ts';
 import { ULTRA_BUILDING_BUILDERS, ULTRA_FORM_BUILDERS, isReliefPart, ultraCasts } from './ultra/ultraKit.ts';
 import {
   ULTRA_SLOT_ATTRIBUTE,
@@ -35,6 +41,15 @@ import { ULTRA_STATIC_LAYER, isUltraRecipe } from './ultra/ultraRecipe.ts';
 import { ultraPropMaterial, ultraReliefDepthMaterial } from './ultra/ultraMaterials.ts';
 import { createUltraFacadeMaps } from './ultra/facadeMaterialAtlas.ts';
 import type { BuildRecipe, BuildRecipeId, UltraBuildContext, UltraFacadeMaps } from './ultra/ultraTypes.ts';
+import { ordinaryVegetationBuilders, ultraVegetationBuilders, vegetationVariantAt } from './sharedVegetation.ts';
+import { toneSharedVegetation } from './ultra/ultraFoliage.ts';
+import type { VegetationFamily, VegetationVariant } from './vegetationForms.ts';
+import type { SharedVegetationFamilyReport, SharedVegetationReport } from './sharedVegetationCost.ts';
+import { ENVIRONMENT_VEGETATION } from '../data/tuning.ts';
+import { installConiferDistanceCell, potentialGeometryTriangles, vegetationDistanceRanges,
+  type VegetationDistanceDetail } from './vegetationDistance.ts';
+import { EMPTY_SPATIAL_BATCHING_DELTA, genericPropSpatialKey, isSpatialGenericPart,
+  priceGenericPropSpatialBatching, validateSpatialBatchMetres, type SpatialBatchingDelta } from './spatialBatching.ts';
 
 /**
  * The world's dressing, built from the `LevelPlan` and from nothing else.
@@ -89,7 +104,22 @@ import type { BuildRecipe, BuildRecipeId, UltraBuildContext, UltraFacadeMaps } f
  * anywhere below (`DESIGN.md` §6b).
  */
 
+export interface MetricSourceReport {
+  readonly removedColourPieces: number;
+  readonly proxyColourPieces: number;
+  /** Submitted source colour work discarded by the flag; still charged. */
+  readonly proxyColourTriangles: number;
+  readonly proxyFlagBytes: number;
+  readonly omittedByPart: readonly { readonly part: PartId; readonly instances: number }[];
+  readonly proxyByPart: readonly { readonly part: PartId; readonly instances: number }[];
+}
 export interface PropsView {
+  /** Render-only potential draw overhead; original admission stays unchanged. */
+  readonly spatialBatching: SpatialBatchingDelta;
+  readonly capSlotBytes: number;
+  readonly farCapExtraDraws: number;
+  readonly farCapExtraTriangles: number;
+  readonly metricSource: MetricSourceReport | null;
   readonly group: THREE.Group;
   /** Props in the plan. */
   readonly props: number;
@@ -107,9 +137,8 @@ export interface PropsView {
    * What the shadow pass adds on top, counted separately because
    * `renderer.info` counts both and the two are worth telling apart.
    *
-   * An instanced mesh's bounding sphere spans the world, so the shadow camera
-   * never culls one: a casting part is drawn in full every frame, however far
-   * its instances are from the cascade.
+   * These are potential draws before light-frustum culling. Historical world
+   * batches span the world; opted-in generic cells have local casting bounds.
    */
   readonly shadowDrawCalls: number;
   readonly shadowTriangles: number;
@@ -130,6 +159,7 @@ export interface PropsView {
    * instance) when any cap closes a slot. Always 0 on an ordinary view.
    */
   readonly bytes: number;
+  readonly sharedVegetation: SharedVegetationReport | null;
   dispose(): void;
 }
 
@@ -152,6 +182,9 @@ export type PartId =
   | 'bollardCap'
   | 'signPost'
   | 'signPlate'
+  | 'routeSignPlate'
+  | 'routeSignTech'
+  | 'routeSignAir'
   | 'fenceBay'
   | 'buildingBody'
   | 'buildingLow'
@@ -421,6 +454,22 @@ const PARTS: Readonly<Record<PartId, PartDefinition>> = {
     metalness: 0.15,
     tint: PROP_TINT_JITTER.structure,
     castShadow: false,
+  },
+
+  routeSignPlate: {
+    build: routeSignPlateGeometry,
+    albedo: PROP_COLOURS.routeSignPlate,
+    roughness: 0.72, metalness: 0.04, tint: 0, castShadow: false,
+  },
+  routeSignTech: {
+    build: () => routeSignInkGeometry('TECH'),
+    albedo: PROP_COLOURS.routeSignInk,
+    roughness: 0.82, metalness: 0, tint: 0, castShadow: false,
+  },
+  routeSignAir: {
+    build: () => routeSignInkGeometry('AIR'),
+    albedo: PROP_COLOURS.routeSignInk,
+    roughness: 0.82, metalness: 0, tint: 0, castShadow: false,
   },
 
   fenceBay: {
@@ -1063,10 +1112,16 @@ const hash01 = positionHash01;
 // ---------------------------------------------------------------------------
 
 interface Bucket {
+  readonly part: PartId;
+  readonly variant: VegetationVariant | null;
+  readonly authored: AuthoredCanopyRecord[];
+  readonly adapter: boolean;
   /** Sixteen floats per instance. */
   readonly matrices: number[];
   /** Three linear floats per instance. */
   readonly colours: number[];
+  /** One source-colour proxy flag for every instance in this exact bucket. */
+  readonly metricFlags: boolean[];
 }
 
 /**
@@ -1086,16 +1141,42 @@ export function createProps(
   plan: LevelPlan,
   recipe: BuildRecipe = BASELINE_PRESENTATION,
   context?: UltraBuildContext,
+  composition: { readonly sharedVegetation?: boolean; readonly metricFacades?: PreparedMetricFacades | null;
+    readonly vegetationPrice?: PreparedVegetationPrice | null; readonly authoredCanopies?: PreparedAuthoredCanopies | null; readonly capSlots?: PreparedOriginalCapSlots | null;
+    readonly spatialBatchMetres?: number;
+    /** The owning renderer's colour-distance rules (RL-1); High's when absent. */
+    readonly distanceDetail?: VegetationDistanceDetail } = {},
 ): PropsView {
   const kit = isUltraRecipe(recipe) ? recipe.ultra : null;
   if (kit !== null && context === undefined) {
     throw new Error(`createProps: the Ultra recipe "${recipe.id}" needs an UltraBuildContext`);
   }
+  const spatialMetres = composition.spatialBatchMetres ?? Infinity;
+  validateSpatialBatchMetres(spatialMetres);
+  const spatialPrice = spatialMetres === Infinity ? null : priceGenericPropSpatialBatching(plan, spatialMetres,
+    part => kit === null ? PARTS[part].castShadow : ultraCasts(part, PARTS[part].castShadow, kit), kit?.farShadow === true);
   const group = new THREE.Group();
   group.name = 'level-props';
 
+  const preparedMetric = composition.metricFacades ?? null;
+  if (preparedMetric && (preparedMetric.source !== plan || preparedMetric.disposed))
+    throw new Error('Metric facade extraction needs the prepared original source world');
+  const preparedVegetation = composition.vegetationPrice ?? null, preparedCaps = composition.capSlots ?? null;
+  const preparedAuthored = composition.authoredCanopies === undefined ? preparedVegetation?.authored ?? null : composition.authoredCanopies;
+  if ((preparedAuthored || preparedVegetation?.authored) && preparedVegetation?.authored !== preparedAuthored)
+    throw Error('Authored canopy geometry/projection needs its identical prepared vegetation price owner');
+  for (const owner of [preparedVegetation, preparedCaps, preparedAuthored]) if (owner && (owner.source !== plan || owner.disposed))
+    throw new Error('Source accounting owner belongs to a different or disposed world');
+  const authoredDetail = kit?.forms ? 'ultra' : 'ordinary';
+  const selectedAuthored = composition.sharedVegetation ? preparedAuthored?.qualified(authoredDetail) : undefined;
+  const metricDescriptor = preparedMetric?.descriptors ?? null;
+  const extraction = metricDescriptor ? metricExtractionLedger(metricDescriptor) : null;
+  const metricRoofKeys = new Set(metricDescriptor?.replacements.filter(record => record.replacement === 'residential-roof').map(record => record.key) ?? []);
+  let removedColourPieces = 0, proxyColourPieces = 0, proxyColourTriangles = 0, proxyFlagBytes = 0;
+  const omittedByPart = new Map<PartId, number>(), proxyByPart = new Map<PartId, number>();
+  const observedSourceCounts = new Map<PartId, number>();
   const props = plan.props ?? [];
-  const buckets = new Map<PartId, Bucket>();
+  const buckets = new Map<string, Bucket>();
 
   const base = new THREE.Matrix4();
   const local = new THREE.Matrix4();
@@ -1106,14 +1187,28 @@ export function createProps(
   const scale = new THREE.Vector3();
   const colour = new THREE.Color();
 
-  const emit = (part: PartId, matrix: THREE.Matrix4, linear: THREE.Color): void => {
-    let bucket = buckets.get(part);
+  const emit = (part: PartId, matrix: THREE.Matrix4, linear: THREE.Color, metricProxy = false, authored: AuthoredCanopyRecord | null = null, adapter = false): void => {
+    const family = part === 'crown' || part === 'coniferFoliage' || part === 'shrub';
+    const variant = composition.sharedVegetation && family
+      ? vegetationVariantAt(matrix.elements[12], matrix.elements[14]) : null;
+    const pitch = ENVIRONMENT_VEGETATION.treeBatchMetres;
+    if (authored && (variant === null || part !== 'crown' || !preparedAuthored || selectedAuthored?.get(authored.propIndex) !== authored)) throw Error('Authored square source bucket refused');
+    const cell = `${part}-habit-${variant}-cell-${Math.floor(matrix.elements[12] / pitch)}-${Math.floor(matrix.elements[14] / pitch)}`;
+    // Generic cells follow the original prop pivot, independently priced from
+    // source data. Full emitted matrices still define each cell's bounds.
+    const genericCell = genericPropSpatialKey(part, base.elements[12], base.elements[14], spatialMetres);
+    const key = adapter && authored ? `${part}-habit-${variant}-adapter-${authored.key}` : authored ? `${cell}-square`
+      : variant === null ? genericCell ?? part : cell;
+    let bucket = buckets.get(key);
     if (bucket === undefined) {
-      bucket = { matrices: [], colours: [] };
-      buckets.set(part, bucket);
+      bucket = { part, variant, authored: [], adapter, matrices: [], colours: [], metricFlags: [] };
+      buckets.set(key, bucket);
     }
+    if (bucket.adapter !== adapter) throw Error('Square source bucket role changed');
+    if (authored) bucket.authored.push(authored);
     for (const element of matrix.elements) bucket.matrices.push(element);
     bucket.colours.push(linear.r, linear.g, linear.b);
+    bucket.metricFlags.push(metricProxy);
   };
 
   /** The part's albedo, jittered per instance. Linear throughout. */
@@ -1123,108 +1218,103 @@ export function createProps(
     // would land the value at about a seventh of its authored reflectance —
     // `DESIGN.md` §6b, the trap that has caught this project four times.
     colour.setHex(definition.albedo);
-    if (definition.tint > 0) {
-      const jitter = 1 + (hash01(prop.position.x, prop.position.z, salt) * 2 - 1) * definition.tint;
+    const tint = part === 'crown' && preparedVegetation ? PROP_TINT_JITTER.structure : definition.tint;
+    if (tint > 0) {
+      const jitter = 1 + (hash01(prop.position.x, prop.position.z, salt) * 2 - 1) * tint;
       colour.multiplyScalar(jitter);
     }
     return colour;
   };
 
-  for (const prop of props) {
+  const routeSigns = new Map<number, NonNullable<LevelPlan['routeSigns']>[number]>();
+  for (const sign of plan.routeSigns ?? []) {
+    if (!Number.isInteger(sign.propIndex) || props[sign.propIndex]?.kind !== 'signpost'
+      || routeSigns.has(sign.propIndex) || !Number.isFinite(sign.rotationY)
+      || (sign.upper.word !== 'TECH' && sign.upper.word !== 'AIR')
+      || sign.upper.side !== -1 || sign.lower.word !== 'SAFE' || sign.lower.side !== 1) {
+      throw new Error('route sign requires one original pole and a supported face');
+    }
+    routeSigns.set(sign.propIndex, sign);
+  }
+  for (const [propIndex, prop] of props.entries()) {
     position.set(prop.position.x, prop.position.y, prop.position.z);
     quaternion.setFromAxisAngle(up, prop.rotationY);
     scale.setScalar(prop.scale);
     base.compose(position, quaternion, scale);
 
-    const simple = SIMPLE_PARTS[prop.kind];
-    if (simple !== undefined) {
-      for (const part of simple) emit(part, base, tintOf(part, prop, 11));
+    const sign = routeSigns.get(propIndex);
+    if (sign !== undefined) {
+      emit('signPost', base, tintOf('signPost', prop, 11));
+      local.makeRotationY(sign.rotationY - prop.rotationY);
+      composed.multiplyMatrices(base, local);
+      emit('routeSignPlate', composed, tintOf('routeSignPlate', prop, 11));
+      const ink = sign.upper.word === 'AIR' ? 'routeSignAir' : 'routeSignTech';
+      emit(ink, composed, tintOf(ink, prop, 11));
       continue;
     }
 
-    // M39 Phase 2: a building with a district look or a landmark is the
-    // pieces `data/buildingLooks.ts` composes, one instance each. Untagged
-    // buildings never reach this branch and draw exactly as before.
-    if (prop.kind === 'building' && prop.look !== undefined) {
-      const look = prop.look;
-      for (const piece of composeBuilding({ position: prop.position, size: prop.size, look })) {
-        quaternion.setFromAxisAngle(up, piece.yaw);
-        position.set(piece.x, piece.y, piece.z);
-        scale.set(piece.sx, piece.sy, piece.sz);
-        local.compose(position, quaternion, scale);
-        colour.setHex(piece.tone).multiplyScalar(piece.jitter);
-        emit(piece.part, composed.multiplyMatrices(base, local), colour);
+    const simple = SIMPLE_PARTS[prop.kind];
+    if (simple !== undefined) {
+      for (const part of simple) {
+        const authored = part === 'crown' && prop.kind === 'treeCanopy' ? selectedAuthored?.get(propIndex) ?? null : null;
+        emit(part, base, tintOf(part, prop, 11), false, authored);
+        if (authored) emit(part, base, tintOf(part, prop, 11), false, authored, true);
       }
       continue;
     }
 
-    // The one computed kind. Its body, parapet, and optional setback tower are
-    // three instances of two parts at three metric scales, rather than three
-    // authored geometries — a skyline is only interesting because no two of its
-    // blocks are the same shape.
-    const size = prop.size ?? { x: 12, y: 18, z: 12 };
-    const shape = PROP_SIZES.building;
-    /** Which facade a box of this height wears. See `buildingTall`. */
-    const facade = (height: number): PartId => {
-      if (height >= BUILDING_FACADE.highRiseHeight) return 'buildingTall';
-      return height >= BUILDING_FACADE.lowRiseHeight ? 'buildingBody' : 'buildingLow';
-    };
-    // A setback tower keeps the original two, and stays suppressed when
-    // neither fits it. That suppression is a statement about roof features
-    // rather than about band heights, so giving short towers the low-rise
-    // facade would restyle every skyline in the city to fix a paddock.
-    const towerFacade = (height: number): PartId => (
-      height >= BUILDING_FACADE.highRiseHeight ? 'buildingTall' : 'buildingBody'
-    );
-
-    colour.setHex(BUILDING_TONES[
-      Math.floor(hash01(prop.position.x, prop.position.z, 3) * BUILDING_TONES.length)
-      % BUILDING_TONES.length
-    ]);
-    colour.multiplyScalar(
-      1 + (hash01(prop.position.x, prop.position.z, 5) * 2 - 1) * PROP_TINT_JITTER.building,
-    );
-    const tone = colour.clone();
-
-    emit(
-      facade(size.y),
-      composed.multiplyMatrices(base, local.makeScale(size.x, size.y, size.z)),
-      tone,
-    );
-
-    local.makeScale(size.x + shape.capOversail, shape.capHeight, size.z + shape.capOversail);
-    local.setPosition(0, size.y, 0);
-    emit('buildingCap', composed.multiplyMatrices(base, local), tintOf('buildingCap', prop, 7));
-
-    if (hash01(prop.position.x, prop.position.z, 9) > 0.55) {
-      const towerHeight = size.y * shape.towerHeightFraction;
-      const towerPart = towerFacade(towerHeight);
-      const towerFloors = towerPart === 'buildingTall'
-        ? BUILDING_FACADE.highFloors
-        : BUILDING_FACADE.lowFloors;
-      // A short setback box is a roof feature, not a miniature four-storey
-      // building. Suppress it when the shared facade would turn its bands into
-      // sub-human stripes; the body and parapet still supply the roofline.
-      if (towerHeight / towerFloors < BUILDING_FACADE.minFloorHeight) continue;
-      local.makeScale(
-        size.x * shape.towerWidthFraction,
-        towerHeight,
-        size.z * shape.towerWidthFraction,
-      );
-      local.setPosition(0, size.y + shape.capHeight, 0);
-      emit(towerPart, composed.multiplyMatrices(base, local), tone);
+    // Original source records are generated by the actual emitting owner,
+    // independently of the metric replacement ledger and descriptor builder.
+    for (const [pieceIndex, piece] of buildingSourceRecords(prop).entries()) {
+      observedSourceCounts.set(piece.part, (observedSourceCounts.get(piece.part) ?? 0) + 1);
+      const replaced = extraction?.consume(propIndex, pieceIndex, piece) ?? false;
+      // Selected roofs leave both original colour and shadow submissions.
+      // Their exact metric hull now casts; original selected wall proxies stay.
+      if (replaced && (kit === null || metricRoofKeys.has(`${propIndex}/${pieceIndex}`))) {
+        removedColourPieces++;
+        omittedByPart.set(piece.part, (omittedByPart.get(piece.part) ?? 0) + 1);
+        continue;
+      }
+      if (replaced) {
+        proxyColourPieces++;
+        proxyByPart.set(piece.part, (proxyByPart.get(piece.part) ?? 0) + 1);
+      }
+      quaternion.setFromAxisAngle(up, piece.yaw);
+      position.set(piece.x, piece.y, piece.z);
+      scale.set(piece.sx, piece.sy, piece.sz);
+      local.compose(position, quaternion, scale);
+      colour.setHex(piece.tone).multiplyScalar(piece.jitter);
+      emit(piece.part, composed.multiplyMatrices(base, local), colour, replaced);
     }
   }
+  extraction?.assertComplete();
+  if (preparedMetric && (observedSourceCounts.size !== preparedMetric.sourceCounts.size
+    || [...observedSourceCounts].some(([part, count]) => preparedMetric.sourceCounts.get(part) !== count)))
+    throw new Error('Metric prepared counts differ from actual original source emission');
+  const replacedCounts = new Map(omittedByPart);
+  for (const [part, count] of proxyByPart) replacedCounts.set(part, (replacedCounts.get(part) ?? 0) + count);
+  if (preparedMetric && (replacedCounts.size !== preparedMetric.removedCounts.size
+    || [...replacedCounts].some(([part, count]) => preparedMetric.removedCounts.get(part) !== count)))
+    throw new Error('Metric prepared omission differs from actual original source extraction');
 
-  // -- One InstancedMesh per part -----------------------------------------
+  if (preparedVegetation) assertVegetationPriceEmission(preparedVegetation, buckets.values(), authoredDetail);
+  if (preparedCaps) {
+    const capMatrices = buckets.get('buildingCap')?.matrices ?? [];
+    // Before allocation: actual independently emitted original matrices.
+    assertOriginalCapSlotEmission(preparedCaps, capMatrices, null, false);
+  }
+
+  // -- One InstancedMesh per part or opted-in spatial cell -----------------
   const geometries: THREE.BufferGeometry[] = [];
   const materials: THREE.Material[] = [];
   const meshes: THREE.InstancedMesh[] = [];
+  const releaseDistanceCells: (() => void)[] = [];
   let instances = 0;
   let triangles = 0;
   let drawCalls = 0;
   let shadowTriangles = 0;
   let shadowDrawCalls = 0;
+  let genericColourDraws = 0, genericShadowDraws = 0, genericInstances = 0;
 
   const matrix = new THREE.Matrix4();
   let atlas: THREE.DataTexture | null = null;
@@ -1236,23 +1326,65 @@ export function createProps(
   // the bytes of its per-instance attribute (Ultra-owned, in the ledger).
   let slotDepth: THREE.MeshDepthMaterial | null = null;
   let slotFarDepth: THREE.MeshDepthMaterial | null = null;
-  let slotBytes = 0;
-  for (const [part, bucket] of buckets) {
+  let slotBytes = 0, farCapExtraDraws = 0, farCapExtraTriangles = 0;
+  const sharedFamilies = new Map<VegetationFamily, SharedVegetationFamilyReport>();
+  const authoredBuilt: AuthoredCanopyBuiltReport[] = [];
+  const authoredAliases = new Map<VegetationVariant, THREE.BufferGeometry>();
+  // Spatial batches share their habit's immutable geometry and material.
+  // Only their instance buffers and local bounds belong to each mesh.
+  const sharedResources = new Map<string, { geometry: THREE.BufferGeometry; material: THREE.Material }>();
+  const proxyParts = new Set([...buckets.values()].filter(bucket => bucket.metricFlags.some(Boolean)).map(bucket => bucket.part));
+  const proxyMaterials = new Set<THREE.MeshStandardMaterial>();
+  let disposed = false;
+  const releaseResources = (): void => {
+    if (disposed) return;
+    disposed = true;
+    group.clear(); group.removeFromParent(); // Retire every drawable before disposal callbacks.
+    for (const release of releaseDistanceCells) release();
+    releaseDistanceCells.length = 0;
+    // InstancedMesh owns its instance buffers; geometry owns source proxy bytes.
+    for (const mesh of meshes) mesh.dispose();
+    const aliases = new Set(authoredAliases.values());
+    for (const geometry of aliases) disposeAuthoredCanopyCrownAlias(geometry, 'final-owner'); // All drawables retired; any uploaded alias releases shared VBOs.
+    for (const geometry of geometries) if (!aliases.has(geometry)) geometry.dispose();
+    for (const material of materials) material.dispose();
+    atlas?.dispose(); atlas = null;
+    maps?.dispose(); maps = null;
+    reliefDepth?.dispose(); reliefDepth = null;
+    slotDepth?.dispose(); slotDepth = null;
+    slotFarDepth?.dispose(); slotFarDepth = null;
+    meshes.length = 0; geometries.length = 0; materials.length = 0;
+    sharedResources.clear(); authoredAliases.clear(); proxyMaterials.clear();
+  };
+  try {
+  for (const [key, bucket] of buckets) {
+    const { part, variant } = bucket;
     const definition = PARTS[part];
     const count = bucket.colours.length / 3;
     if (count === 0) continue;
 
-    const build = (kit?.forms ? ULTRA_FORM_BUILDERS[part] : undefined)
+    const forms = variant === null ? null : kit?.forms
+      ? ultraVegetationBuilders(toneSharedVegetation, variant, true) : ordinaryVegetationBuilders(variant, true);
+    const build = (forms?.[part as VegetationFamily]) ?? (kit?.forms ? ULTRA_FORM_BUILDERS[part] : undefined)
       ?? (kit?.buildings ? ULTRA_BUILDING_BUILDERS[part] : undefined)
       ?? (recipe.foliage ? ENHANCED_BUILDERS[part] : undefined)
       ?? definition.build;
-    const geometry = withInstanceColour(build());
+    const sharedGeneric = spatialMetres !== Infinity && isSpatialGenericPart(part);
+    const sharesResource = variant !== null || sharedGeneric;
+    const resourceKey = `${part}-habit-${variant}`, known = sharesResource ? sharedResources.get(resourceKey) : undefined;
+    // Replacements only admit original body/roof parts, which have one unique
+    // source geometry per bucket. Never attach bucket-local flags to a shared
+    // foliage geometry, or price a silent clone as if it remained shared.
+    if (proxyParts.has(part) && (variant !== null || known)) throw new Error('Metric proxy requires unique original building buckets');
+    let geometry = known?.geometry ?? withInstanceColour(build());
+    const canonicalGeometry = geometry;
+    if (!known) geometries.push(geometry);
     if (kit !== null && kit.facadeMaps && definition.atlas === true) {
       // Ultra samples its own albedo copy (same texels, anisotropy set) with
       // the normal and ORM pages, so the ordinary atlas is never uploaded.
       if (maps === null) maps = createUltraFacadeMaps(context!.maxAnisotropy);
     } else if (definition.atlas === true && atlas === null) atlas = createFacadeTexture();
-    const material = kit === null
+    const material = known?.material ?? (kit === null
       ? new THREE.MeshStandardMaterial({
         color: 0xffffff,
         roughness: definition.roughness,
@@ -1263,13 +1395,43 @@ export function createProps(
         map: definition.atlas === true ? atlas : null,
       })
       : ultraPropMaterial(part, {
+        vegetationWood: geometry.hasAttribute('vegetationWood'),
         roughness: definition.roughness,
         metalness: definition.metalness,
         map: definition.atlas === true ? (maps?.albedo ?? atlas) : null,
-      }, context!, definition.atlas === true ? maps : null);
+      }, context!, definition.atlas === true ? maps : null));
+    if (!known) {
+      materials.push(material);
+      if (sharesResource) sharedResources.set(resourceKey, { geometry, material });
+    }
 
+    let allocatedAuthoredBytes = 0;
+    if (bucket.authored.length) {
+      if (!preparedAuthored || variant === null) throw Error('Authored square has no prepared finite owner');
+      if (bucket.adapter) {
+        const built = buildAuthoredCanopyAdapter(preparedAuthored, bucket.authored[0], authoredDetail, canonicalGeometry);
+        geometry = built.geometry; geometries.push(geometry); authoredBuilt.push(built.report); allocatedAuthoredBytes = built.report.geometryBytes;
+      } else {
+        const removed = preparedAuthored.profile(bucket.authored[0], authoredDetail).removedRootTriangles;
+        if (bucket.authored.some(record => preparedAuthored.profile(record, authoredDetail).removedRootTriangles !== removed)) throw Error('Square shared leader prefix changed');
+        const alias = authoredAliases.get(variant);
+        if (alias) geometry = alias;
+        else { geometry = buildAuthoredCanopyCrownAlias(canonicalGeometry, authoredDetail, removed); geometries.push(geometry);
+          authoredAliases.set(variant, geometry); allocatedAuthoredBytes = geometry.index!.array.byteLength; }
+      }
+    }
+
+    if (proxyParts.has(part)) {
+      if (!(material instanceof THREE.MeshStandardMaterial)) throw new Error('Metric proxy requires the original standard colour material');
+      const flags = metricSourceProxyAttribute(bucket.metricFlags);
+      if (flags.count !== count) throw new Error('Metric proxy instance/flag count mismatch');
+      geometry.setAttribute(METRIC_PROXY_ATTRIBUTE, flags);
+      proxyFlagBytes += flags.array.byteLength;
+      if (!proxyMaterials.has(material)) { installMetricSourceProxy(material); proxyMaterials.add(material); }
+    }
     const mesh = new THREE.InstancedMesh(geometry, material, count);
-    mesh.name = `level-props-${part}`;
+    meshes.push(mesh);
+    mesh.name = `level-props-${key}`;
     mesh.castShadow = definition.castShadow;
     mesh.receiveShadow = false;
     if (kit !== null) {
@@ -1282,6 +1444,7 @@ export function createProps(
       // per instance, read by the cap's own near depth material
       // (`ultraSlotDepth`) and by its far-map draw (`ultraSlotFarDepth`).
       const slots = kit.buildings && part === 'buildingCap' ? ultraSlotClosing(bucket.matrices, count) : null;
+      if (preparedCaps && part === 'buildingCap') assertOriginalCapSlotEmission(preparedCaps, bucket.matrices, slots, kit.buildings);
       if (slots !== null) {
         geometry.setAttribute(ULTRA_SLOT_ATTRIBUTE, new THREE.InstancedBufferAttribute(slots, 4, true));
         slotBytes += slots.byteLength;
@@ -1313,12 +1476,16 @@ export function createProps(
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
     mesh.computeBoundingSphere();
+    const distanceRanges = vegetationDistanceRanges(geometry);
+    if (distanceRanges) releaseDistanceCells.push(installConiferDistanceCell(mesh, composition.distanceDetail));
 
     group.add(mesh);
-    meshes.push(mesh);
-    geometries.push(geometry);
-    materials.push(material);
-    const partTriangles = (geometry.getAttribute('position').count / 3) * count;
+    // Packed distance alternatives allocate all buffers but submit one range.
+    // The potential-work ledger keeps the complete accepted near draw.
+    const sourceTriangles = potentialGeometryTriangles(geometry);
+    const partTriangles = sourceTriangles * count;
+    if (part === 'buildingCap' && slotBytes && kit?.farShadow) { farCapExtraDraws++; farCapExtraTriangles += partTriangles; }
+    proxyColourTriangles += sourceTriangles * bucket.metricFlags.filter(Boolean).length;
     instances += count;
     triangles += partTriangles;
     drawCalls += 1;
@@ -1326,9 +1493,59 @@ export function createProps(
       shadowDrawCalls += 1;
       shadowTriangles += partTriangles;
     }
+    if (sharedGeneric) {
+      genericColourDraws++; genericInstances += count;
+      if (mesh.castShadow) genericShadowDraws++;
+    }
+    if (variant !== null) {
+      const family = part as VegetationFamily, old = sharedFamilies.get(family);
+      const instanceBytes = mesh.instanceMatrix.array.byteLength + (mesh.instanceColor?.array.byteLength ?? 0);
+      sharedFamilies.set(family, { part: family, instances: (old?.instances ?? 0) + count,
+        sourceInstances: (old?.sourceInstances ?? 0) + (bucket.adapter ? 0 : count),
+        variants: (old?.variants ?? 0) + Number(!known), drawCalls: (old?.drawCalls ?? 0) + 1,
+        shadowDrawCalls: (old?.shadowDrawCalls ?? 0) + Number(mesh.castShadow),
+        colourTriangles: (old?.colourTriangles ?? 0) + partTriangles,
+        shadowTriangles: (old?.shadowTriangles ?? 0) + (mesh.castShadow ? partTriangles : 0),
+        geometryBytes: (old?.geometryBytes ?? 0)
+          + (known ? 0 : Object.values(canonicalGeometry.attributes).reduce((sum, a) => sum + a.array.byteLength, 0) + (canonicalGeometry.index?.array.byteLength ?? 0))
+          + allocatedAuthoredBytes,
+        instanceBytes: (old?.instanceBytes ?? 0) + instanceBytes,
+        distance: old?.distance,
+        ...(!bucket.authored.length && distanceRanges ? { distance: {
+          nearTriangles: distanceRanges.near.triangles,
+          middleTriangles: distanceRanges.middle.triangles,
+          farTriangles: distanceRanges.far.triangles,
+          shadowDetail: 'near' as const,
+        } } : {}) });
+    }
   }
 
+  // Every mesh receiving an affected program must carry its complete attribute,
+  // including any material alias that shares the same shader program key.
+  const proxyPrograms = new Set([...proxyMaterials].map(material => material.customProgramCacheKey()));
+  for (const mesh of meshes) if (proxyPrograms.has((mesh.material as THREE.Material).customProgramCacheKey())
+    && !mesh.geometry.hasAttribute(METRIC_PROXY_ATTRIBUTE)) throw new Error('Metric proxy program has a missing source attribute');
+  // Independently counted source instances still prove attribute capacity.
+  // Omitted residential roofs allocate no flags; retained body proxies need
+  // one byte for EVERY surviving instance in their original source bucket.
+  const expectedProxyBytes = kit === null || !preparedMetric ? 0 : [...preparedMetric.removedCounts]
+    .reduce((sum, [part, removed]) => {
+      const original = preparedMetric.sourceCounts.get(part) ?? 0;
+      const omitted = omittedByPart.get(part) ?? 0, retained = proxyByPart.get(part) ?? 0;
+      if (omitted > removed || omitted > original || retained !== removed - omitted)
+        throw new Error('Metric retained proxy/omitted source partition differs from actual extraction');
+      return sum + (retained > 0 ? original - omitted : 0);
+    }, 0);
+  if (proxyFlagBytes !== expectedProxyBytes) throw new Error('Metric allocated source proxy bytes differ from actual emission price');
+  if (spatialPrice && (genericColourDraws !== spatialPrice.colourDraws || genericShadowDraws !== spatialPrice.shadowDraws
+    || genericInstances !== spatialPrice.instances)) throw new Error('Generic spatial prop emission differs from source price');
+  } catch (error) { releaseResources(); throw error; }
   return {
+    spatialBatching: spatialPrice ?? EMPTY_SPATIAL_BATCHING_DELTA,
+    capSlotBytes: slotBytes, farCapExtraDraws, farCapExtraTriangles,
+    metricSource: metricDescriptor ? { removedColourPieces, proxyColourPieces, proxyColourTriangles, proxyFlagBytes,
+      omittedByPart: [...omittedByPart].map(([part, instances]) => ({ part, instances })),
+      proxyByPart: [...proxyByPart].map(([part, instances]) => ({ part, instances })) } : null,
     group,
     props: props.length,
     instances,
@@ -1338,35 +1555,24 @@ export function createProps(
     shadowTriangles,
     recipe: recipe.id,
     textures: (atlas === null ? 0 : 1) + (maps === null ? 0 : 3),
-    bytes: (maps === null ? 0 : maps.bytes) + slotBytes,
-
-    dispose(): void {
-      // InstancedMesh owns the GPU buffers behind instanceMatrix and
-      // instanceColor. Disposing only its geometry/material leaves both alive
-      // across a level rebuild even though renderer.info.memory appears flat.
-      for (const mesh of meshes) mesh.dispose();
-      for (const geometry of geometries) geometry.dispose();
-      for (const material of materials) material.dispose();
-      // A texture is disposed apart from the materials that sample it: a
-      // material's dispose() never releases its map (three's cleanup guide).
-      atlas?.dispose();
-      atlas = null;
-      // M39 Ultra: the facade maps, the shared relief depth material and the
-      // caps' two slot depth materials are the view's too, and go with it
-      // (invariant 10). The slot attribute goes with the cap's geometry.
-      maps?.dispose();
-      maps = null;
-      reliefDepth?.dispose();
-      reliefDepth = null;
-      slotDepth?.dispose();
-      slotDepth = null;
-      slotFarDepth?.dispose();
-      slotFarDepth = null;
-      meshes.length = 0;
-      geometries.length = 0;
-      materials.length = 0;
-      group.clear();
-      group.removeFromParent();
+    bytes: (maps === null ? 0 : maps.bytes) + slotBytes + proxyFlagBytes,
+    sharedVegetation: !composition.sharedVegetation ? null : {
+      recipe, detail: kit?.forms ? 'ultra' : 'ordinary', families: [...sharedFamilies.values()],
+      geometryOwners: [...sharedFamilies.values()].reduce((sum, family) => sum + family.variants, 0) + authoredAliases.size + authoredBuilt.length,
+      materialOwners: [...sharedFamilies.values()].reduce((sum, family) => sum + family.variants, 0),
+      geometryBytes: [...sharedFamilies.values()].reduce((sum, family) => sum + family.geometryBytes, 0),
+      instanceBytes: [...sharedFamilies.values()].reduce((sum, family) => sum + family.instanceBytes, 0), textures: 0,
+      authoredSupports: authoredBuilt, authoredAliasOwners: authoredAliases.size,
+      authoredAliases: [...authoredAliases].map(([variant, geometry]) => { const ranges = vegetationDistanceRanges(geometry)!;
+        return { variant, nearTriangles: ranges.near.triangles, middleTriangles: ranges.middle.triangles, farTriangles: ranges.far.triangles, indexBytes: geometry.index!.array.byteLength }; }),
+      ordinaryAuthoredTriangleDelta: preparedAuthored ? [...preparedAuthored.qualified('ordinary').values()].reduce((sum, record) => {
+        const profile = preparedAuthored.profile(record, 'ordinary'); return sum + profile.adapterTriangles - profile.removedRootTriangles;
+      }, 0) : 0,
+      ordinaryBatchDrawDelta: preparedVegetation?.familiesFor('ordinary').reduce((sum, family) => sum + family.buckets.length * 2 - 2, 0),
+      authoredSupportRefusals: preparedAuthored?.refusals ?? [],
+      authoredUnselectedCanopies: props.filter(prop => prop.kind === 'treeCanopy').length - authoredBuilt.length,
     },
+
+    dispose: releaseResources,
   };
 }

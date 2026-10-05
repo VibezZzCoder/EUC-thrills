@@ -10,13 +10,17 @@ take the alley when you think you can hold it.
 >
 > **Source:** [github.com/VibezZzCoder/EUC-thrills](https://github.com/VibezZzCoder/EUC-thrills) — an original work by [VibezZzCoder](https://github.com/VibezZzCoder)
 
-![EUC Thrills in Ultra graphics — a Police chase on the town's brick plaza: Cool Rider rides toward the camera while Officer Dorkins, paddle out, closes in a few metres behind; the screen reads "He is right behind you" and SURVIVE 4:56, with houses, a road, and the brick water tower behind](https://vibezzzcoder.github.io/EUC-thrills/media/euc-thrills-gameplay.png)
+![EUC Thrills in Ultra graphics — Cool Rider carves along the town's park road at 23 mph, with another wheel rider just ahead, people walking by on both verges and a jogger further on; trees and shrubs cast long shadows across the grass, and the town's towers stand on the skyline](https://vibezzzcoder.github.io/EUC-thrills/media/euc-thrills-gameplay.jpg)
 
 **This is a work in progress.** The riding is the part that is meant to be
 right; everything around it is still growing, and later builds will look,
 sound, and handle differently. Saved times are kept against the exact course
 they were set on, and a course or save-format change retires the old ones
-rather than quietly converting them. If the ride feels wrong somewhere — a
+rather than quietly converting them. **This build is one of those changes:**
+the people and traffic now on the roads change the courses, so earlier times
+and ghosts in the town, on every Fresh route, in the Original city and at
+Switchback Park start fresh — only BelVar Circuit keeps its records. If the
+ride feels wrong somewhere — a
 control that fights you, a line that should work and doesn't — the repository
 above is the place to say so.
 
@@ -34,16 +38,27 @@ beside the plaza, a church steeple at the fork, a clock tower at the park gate,
 a fire lookout at the trailhead, and a water tower and a pair of boiler-house
 chimneys in the yard.
 
+The town is lived in. People walk the pavements, a pair stops to talk,
+joggers and other wheel riders use the park paths, a couple of vans circle
+the side streets, and a worker and a van keep the industrial yard busy.
+Downtown has a coffee bar, a grocer and a repair shop you can see into, with
+people inside, and you can hear the café, the workshop and the yard as you
+ride past. Garden shrubs, trees and fences line the houses and the park, and
+the shop forecourts and the yard driveway are paved.
+
 That town is generated rather than built by hand: it is the route named `euc`.
 **Fresh route** builds a new town from the same pieces, a different shape every
-time.
+time, and usually with its own shops, people and traffic.
 
 Beside the towns there are three places built by hand, and they stay exactly
 where they are: the **Original city**, the hand-built loop the game used to
 open on — a plaza, a boulevard, a park and a river ford, a gravel trail, and an
 alley shortcut — and still the route everything else is measured against;
 **BelVar Circuit**, a kart-scale lap (see **Track Day**); and **Switchback
-Park**.
+Park**. They have people of their own, kept off the riding line where there
+is one: walkers on the Original city's plaza and riverside with joggers and
+wheel riders along the river, visitors, a worker and a van in BelVar's
+paddock, and a jogger up by Switchback's summit.
 
 **Switchback Park** is a jump lap — about 950 metres of forested hillside with
 some fourteen metres of height in it, ridden as a loop: you come down through
@@ -52,10 +67,13 @@ drop, a gap, a skinny plank, a step-up, a short flight of stairs taken
 downward, three rock terraces in a rhythm, a kicker onto a level table, a shelf
 to spin off, and a crest partway up the fire road. **Every one of them is
 optional.** Each takes one half of the trail and leaves the other half as a
-bypass that never asks you to leave the ground, and the trail is marked before
-each one: chevrons counting you in, an arrow pointing at the easy line, a word
-where a word helps (**DOWN** at the stairs, **180 TAP** at the spin shelf), and
-a painted landing box at the kicker and at the shelf. **Track Day** offers it
+bypass that never asks you to leave the ground, and every one is signed before
+you reach it: a board on a post points **TECH** (**AIR** at the kicker) one way
+and **SAFE** the other, the same pair is painted on the trail further back,
+chevrons and an arrow mark the two lines, a word goes where a word helps
+(**DROP** at the ledge, **DOWN** at the stairs, **AIR** at the kicker, **180
+TAP** at the spin shelf), and a painted landing box marks the kicker and the
+shelf. **Track Day** offers it
 directly; **Trick Run** scores ninety seconds on it; **Fresh route** loads it to
 ride freely, and a couch room can race three laps of it.
 
@@ -90,6 +108,10 @@ it surprises you:
   kerbs, landings, pedal strikes, and the carve you are enjoying never start
   the weave. (The Drunkard weaves on his own with your hands off the stick, and
   that is the character, not the wheel — see **Riders**.)
+- **People and vans are solid.** Ride into one at more than about 8 mph and
+  you go over the front; slower, you scrub or slide off them as you would off a
+  wall. People step out of your way when they see you coming, a bumped one
+  flinches and nobody falls over, and the traffic waits for you.
 
 Crashes are non-graphic but not stiff: the rider tumbles, catches the ground
 with their limbs, and settles into a comic rest while the wheel can bounce and
@@ -115,7 +137,8 @@ with three the spare quadrant becomes the room's scoreboard. Any player can
 pause for everybody, and each of you beeps, crashes, and recovers on your own.
 Riders are solid to each other: ride into a friend and you both get shoved
 apart, however fast you met, and an ordinary bump never knocks anybody down.
-Nothing a couch session does is saved. The mode is desktop-only: it needs a
+Nothing a couch session does is saved, except that opening it with Ultra
+graphics on switches your saved quality to High. The mode is desktop-only: it needs a
 window at least 1000 pixels wide to keep the panes readable, so a phone never
 sees the button.
 
@@ -192,7 +215,9 @@ time — top speed and landing quality are shown for interest and count for
 nothing. Beat your best and the next attempt adds a translucent replay rider,
 so you can see *where* the time changed. Where a route offers a way round — the
 alley, a side street — both lines cross the same checkpoints, so every line
-stays comparable.
+stays comparable. The people and traffic start from the same places
+at every start — here and in Trick Run, Track Day and the couch race — so an
+attempt never depends on where they had wandered to.
 
 **Trick Run** — ninety seconds at Switchback Park, and points for what you
 land. The button takes you straight to the park and starts the clock on the
@@ -255,7 +280,8 @@ the button opens the route generator.
 
 - The cops ride the same terrain, grip, hazards, kerbs, crashes, and recovery
   you do — they are CPU riders, not obstacles on a rail. They pursue in either
-  direction and cut across the field when you leave the road.
+  direction, cut across the field when you leave the road, and ride round
+  people rather than through them.
 - On a clear straight they ride right up near the wheel's top speed, so
   pinning the throttle will not lose them. Corners, hazards, rough ground, and
   a cleaner line are where the gap comes from.
@@ -269,7 +295,8 @@ the button opens the route generator.
   is close rides round it to reach you, and stopping altogether invites a
   strike.
 - Only the cops carry paddles. A strike costs speed and adds a wobble; crashing
-  with any cop close is the bust.
+  with any cop close is the bust, whatever you crashed into — a pedestrian or
+  a van included.
 - Hands off the law: riding into any cop is an instant bust. Contact only
   counts when you are the one closing — a cop running you down scores nothing.
 - The route is the arena. Going far into the surround puts a warning and a
@@ -277,8 +304,8 @@ the button opens the route generator.
   are part of the route. Camping just off the road is not a loophole — they
   follow.
 
-**Fresh route** — generate a new place to ride. **Surprise me** makes one
-instantly; typing a route name (old hands call it the seed) rebuilds the same
+**Fresh route** — generate a new place to ride. **Surprise me** builds one in
+a few seconds, behind a loading screen; typing a route name (old hands call it the seed) rebuilds the same
 place every time, which is how you send one to a friend — the town the game
 opens on is `euc`. A rare name may not produce a valid route, and the game says
 so and asks for another rather than quietly building something else. The name
@@ -302,7 +329,9 @@ Records are kept per course and per mode: time trial, best lap, Knockabout,
 Trick Run score and chase survival never overwrite each other, and switching
 riders changes nothing about any of them. Each venue is its own course, so a
 best lap at BelVar Circuit and a best lap at Switchback Park keep their own
-times and their own ghosts.
+times and their own ghosts. (Times set before the living-world update are
+kept in your browser but no longer shown, except at BelVar Circuit, whose
+records carry over.)
 
 ## Riders
 
@@ -519,7 +548,9 @@ at the same records.
 Quality (Low, Medium, High, or Ultra — below), field of view, and speed units;
 master, ride, and warning volumes on separate faders, so the wheel can still
 warn you with everything else turned down; full key rebinding; gamepad toggle
-and dead zone; on-screen controls, handedness, and size.
+and dead zone; on-screen controls, handedness, and size. A phone or tablet
+starts on Medium the first time it plays and a desktop on High; whatever you
+choose after that is kept.
 
 The ride itself is **identical at every setting** — nothing you can change
 alters how the wheel behaves, so a time set on Low compares with one set on
@@ -534,12 +565,13 @@ its own sky, gives buildings, trees and riders crisp shadows that carry on into
 the distance, grounds the riders with soft contact shade, and adds detail to
 facades, trees, road edges and the sky. It asks a lot of the graphics chip —
 the title button says *Higher GPU demand*, and Settings says smoothness and
-battery use vary by device. Switching takes a few seconds, and the button says
-**Loading Ultra graphics…** (or **Turning Ultra off…**) until it is done;
-further presses are ignored until then. Loading a new place also takes a
-moment longer with Ultra on. If your device cannot start it, the game says so
-and draws High instead. A couch session always draws High, and your Ultra comes
-back when you ride alone again.
+battery use vary by device. Switching takes a few seconds behind a loading
+screen that says **Loading Ultra graphics…** (or **Turning Ultra off…**), and
+presses are ignored until it is done. Loading a new place also takes a moment
+longer with Ultra on. If your device cannot start it, the game says so and
+draws High instead. Ultra is for riding alone: opening **2–4 Players** with it
+on switches you to High, and it stays High afterwards — turn Ultra back on when
+you ride alone again.
 
 Your settings and best times are saved **in your own browser** and go nowhere
 else. There is no account, no server, and no analytics; the game makes no
@@ -556,7 +588,9 @@ survive the tab closing.
 A current browser with WebGL2 — Chrome, Edge, Firefox, or Safari, on a desktop,
 laptop, phone, or tablet. Hardware acceleration should be on; if the browser
 cannot give the game a graphics context it says so on the loading screen rather
-than sitting blank.
+than sitting blank. The first load takes several seconds while the town and its
+street life are built — the loading screen counts the steps — and if a download
+fails it offers **Retry loading**.
 
 On a phone the game is doing the same work it does on a desktop, so an older
 handset will run it slower. **Quality** in Settings is the first thing to turn
@@ -619,6 +653,15 @@ list.
 
 ### Recently landed
 
+- **A living world** (2026-10-05). The towns have people walking the
+  pavements, joggers and other wheel riders in the parks, and slow traffic on
+  the side streets; downtown has a coffee bar, a grocer and a repair shop with
+  people inside, and quiet street sounds to go with them. Gardens, park
+  planting, fuller trees and paved forecourts in every quality level, a few
+  people at the hand-built places, signed TECH and SAFE lines at Switchback
+  Park, a proper loading screen, and phones starting on Medium. People and
+  vans are solid, step aside for you, and never fall over; times on the
+  changed courses start fresh.
 - **A police chase with a pack, and a couch chase** (2026-09-25). Riding
   alone, it is you against Officer Dorkins and two patrols, and the cops got
   much harder to shake: they ride round buildings to reach a rider hiding
@@ -630,7 +673,7 @@ list.
   alone, on desktop and phone: sky lighting, long crisp shadows that include the
   buildings, contact shade under the riders, and richer trees, facades, road
   edges and skies — with a loading notice while it switches. The ride is
-  identical, and Low, Medium and High draw exactly as they did.
+  identical at every quality level.
 - **A town to ride round** (2026-09-22). The game now opens on a generated
   town: one ring of streets out of the plaza and back — boulevard, kerb run,
   fork and alley, park, river ford, gravel trail, berm, kicker and the climb
@@ -720,8 +763,8 @@ list.
   downhill, delivery and crash-count ideas all belong here; none has a settled
   ruleset yet. Scoring now exists for one run at one park (**Trick Run**);
   progression, upgrades and unlockables are deliberately not part of it.
-- **A course that is alive.** Moving traffic or animals on a route of their own,
-  which could also be the natural home for a different time of day.
+- **A course that is even more alive.** Animals, more kinds of traffic, and a
+  different time of day.
 - **More racing.** Preset skill-level and developer ghosts, AI riders sharing a
   course, and more venues to lap. Track Day and the couch race, now at two
   venues, are the first of this; a race against something other than a friend on
@@ -765,7 +808,8 @@ rider's short stumble sound; the fourth and fifth riders' crashes are
 and with no copyright over them claimed by this project; and the ninth rider's
 crash is this project's own render of the author's recording with **one
 public-domain seal bark mixed into it**, which is claimed by nobody, this
-project included. Cool Rider is an
+project included. The street sounds that came with the living world are generated
+in code as the game runs, and add no sound files. Cool Rider is an
 original fictional character whose clothes and style draw on what the project
 owner wears, and The Drunkard is an original fictional character based on
 nobody; Red Rider, Adonisb2, Maribel Vargas, Wheel in Motion, FloWithZo and

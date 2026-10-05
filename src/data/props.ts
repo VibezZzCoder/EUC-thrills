@@ -124,6 +124,10 @@ export const PROP_COLOURS = deepFreeze({
   /** linear (0.10, 0.14, 0.22) — signage blue-grey. The only cool hue in the
    *  kit, which is what makes a signpost read as information at speed. */
   signPlate: 0x596880,
+  /** linear (0.617, 0.533, 0.342): warm matte route board, luminance 0.537. */
+  routeSignPlate: 0xcec19e,
+  /** linear (0.063, 0.082, 0.100): charcoal route strokes, luminance 0.079. */
+  routeSignInk: 0x475159,
   //
   // **All four lifted about 55% at M7.5 stage 5, and the reason is arithmetic
   // rather than taste.** A block's shaded face is lit by the hemisphere alone,

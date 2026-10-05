@@ -42,6 +42,10 @@ export const ULTRA_PART_COSTS: Readonly<Record<PropPartId, PartCost>> = Object.f
   bollardCap: { triangles: 20, castsShadow: false },
   signPost: { triangles: 30, castsShadow: true },
   signPlate: { triangles: 32, castsShadow: false },
+  // Shared instruction templates retain the same topology in Ultra.
+  routeSignPlate: { triangles: 24, castsShadow: false },
+  routeSignTech: { triangles: 90, castsShadow: false },
+  routeSignAir: { triangles: 76, castsShadow: false },
   fenceBay: { triangles: 54, castsShadow: true },
   buildingBody: { triangles: 68, castsShadow: true },
   buildingLow: { triangles: 36, castsShadow: true },

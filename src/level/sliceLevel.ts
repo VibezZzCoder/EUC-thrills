@@ -4,6 +4,7 @@ import type { PropKind } from '../data/props.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 import type { LevelPlan } from './plan.ts';
 import { buildLevelPlan, type CheckpointSpec } from './buildPlan.ts';
+import type { PopulationPathRequest } from './populationPlan.ts';
 import {
   facingRoute,
   placeGraph,
@@ -2082,6 +2083,46 @@ export const SLICE_CHECKPOINTS: readonly CheckpointSpec[] = [
  */
 const SPAWN = { position: { x: 0, y: 0, z: 0 }, headingY: 0 };
 
+/**
+ * Explicit movement bands on the finished, maintained surfaces.
+ *
+ * The plaza band stays between the furniture rows and south of the fountain;
+ * the riverside bands deliberately stop before the ford rather than treating
+ * its deck and rails as a continuation of a pedestrian or rider lane.
+ */
+export const SLICE_POPULATION_PATH_REQUESTS: readonly PopulationPathRequest[] = [
+  {
+    id: 'slice-plaza-pedestrian',
+    role: 'pedestrian',
+    district: 'commercial',
+    steps: [{ segmentId: 'plaza', lateralMetres: 7.5, halfWidthMetres: 1.2, fromS: 25, toS: 40 }],
+  },
+  {
+    id: 'slice-riverside-pedestrian',
+    role: 'pedestrian',
+    district: 'park',
+    steps: [{ segmentId: 'riverside', lateralMetres: -1.5, halfWidthMetres: 1.2, fromS: 12, toS: 66 }],
+  },
+  {
+    id: 'slice-riverside-rider',
+    role: 'rider',
+    district: 'park',
+    steps: [{ segmentId: 'riverside', lateralMetres: 1.5, halfWidthMetres: 1.2, fromS: 12, toS: 66 }],
+  },
+  {
+    id: 'slice-riverside-lower-pedestrian',
+    role: 'pedestrian',
+    district: 'park',
+    steps: [{ segmentId: 'riverside-lower', lateralMetres: -1.5, halfWidthMetres: 1.2, fromS: 10, toS: 46 }],
+  },
+  {
+    id: 'slice-riverside-lower-rider',
+    role: 'rider',
+    district: 'park',
+    steps: [{ segmentId: 'riverside-lower', lateralMetres: 1.5, halfWidthMetres: 1.2, fromS: 10, toS: 46 }],
+  },
+];
+
 /** Build the vertical-slice level. */
 export function createSliceLevel(
   hazardProbeMetres?: number,
@@ -2105,6 +2146,7 @@ export function createSliceLevel(
     // else hangs off the segment it decorates.
     props: [...meadowScatter(placed), ...skyline()],
     checkpoints: SLICE_CHECKPOINTS,
+    populationPathRequests: SLICE_POPULATION_PATH_REQUESTS,
     // **On here, where `settleProps` is deliberately off, and the difference is
     // the point.** Settling a *prop* second-guesses where somebody put it, and
     // this level's dressing was placed by somebody looking at it. Footing a

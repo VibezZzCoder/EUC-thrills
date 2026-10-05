@@ -816,7 +816,10 @@ test('a race is a grid, held, and GO releases the whole room at once', async ({ 
       state: game.snapshot().app.state,
       phase: game.snapshot().race.phase,
       seats: game.seatCount,
-      level: game.levelPlan.id,
+      // 2026-10-04: the venue's identity is `recordWorldId`. BelVar's
+      // installed plan id is now the living-world composition
+      // ('belvar-r1~living-r1'); the builder's id is what names the circuit.
+      level: game.levelPlan.recordWorldId,
       line: { x: line.centre.x, z: line.centre.z, headingY: line.headingY },
       placed: [where(0), where(1)],
     };
@@ -1829,6 +1832,12 @@ async function startPanelRace(
   await page.locator('.euc-menu--couch [data-menu="couch-mode"][data-couch-mode="race"]').click();
   await page.locator('.euc-menu--couch [data-menu="couch-start"]').click();
   await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
+  // 2026-10-04: the panel's Race is a native entrance, so it swaps to BelVar
+  // behind the loading cover, and the state reads `trackDay` while the cover
+  // still warms the new world's programs and settles. Keys and pads are
+  // refused under a cover by design, so a spec pressing Escape the moment the
+  // state changed could lose the press; wait for the cover to lift first.
+  await page.waitForFunction(() => !window.game.snapshot().route.pending);
 }
 
 /*

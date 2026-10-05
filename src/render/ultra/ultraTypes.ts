@@ -166,6 +166,7 @@ export interface UltraReport {
   readonly refusal: UltraRefusal | null;
   readonly cost: UltraFrameCost | null;
   readonly targets: readonly TargetReport[];
+  readonly metricFacade?: { readonly proxyFlagBytes: number; readonly proxyColourPieces: number; readonly discardedColourTriangles: number; readonly commonGeometryBytes: number };
   readonly bytes: { readonly steady: number; readonly peakSwitch: number };
   readonly shadow: (ShadowRig & { readonly mapSizeReadBack: number }) | null;
   readonly farShadow: { readonly mapSize: number; readonly texelMetres: number; readonly builtAtMs: number } | null;

@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "origin": "before-district-helper-extraction",
+  "records": {
+    "euc": {
+      "id": "generated-r6-euc",
+      "plan": "feea8db4a40f262b6d56be1774feaa079575aae3af25a163499d2a854d0728c8",
+      "commercial": "a933bf080f378cc78dc44c6f3aa8a618eb4f614e7ac90c451b8aa04807119772",
+      "commercialGround": "055f9b3b571b0a7823fa4baf6195d10371a7ab263695973cff325b8715f4e646",
+      "industrial": "27afbf6ea47ca0740c3d11b297d91ade8943a429bc61c88cfd3ad51735d56680",
+      "industrialGround": "55ecaff39939378ced627af6041c17047eafe4479664d8efc045f956cadda0a5"
+    },
+    "corner": {
+      "id": "generated-r6-corner",
+      "plan": "edf249c40932c1d1c8494083df1ef68665967e391f2fd750a32beb5e9ca810e1",
+      "commercial": "3d909c08275a6e1e008f8139bf895ea1cf8c38c1f9f6717b185dae330fabad89",
+      "commercialGround": "d1f0cc1529e476348f4c2f3d841bc39052920677145620b02b6c53004485c76b",
+      "industrial": "0574b01506dbc302ff5f2571f3eabfcb7831d639b55ca19d052e754956222f50",
+      "industrialGround": "51d667c6fc219d4ee7ee22db251e1c8666de90f380494c1bd2021ba0f0e17108"
+    },
+    "city": {
+      "id": "generated-r6-city",
+      "plan": "4f597283c5f6e96162770073799cb927ce06cdcb1b82519eea86c2e16a5a4ee4",
+      "commercial": "79a4c5c1fd684d7de47f14f80d51b989f93657972452af340fb597c4c316b510",
+      "commercialGround": "e58cafa74d9abd997ef8a6ae3c951f5944756d0e4f33f88e0de52928f1dc93b6",
+      "industrial": "3a041d21ec614f859ba19fe457fa9d7df2c570390c33b56cd54e7bfab58c81fa",
+      "industrialGround": "b10a6749d8504d9f9cff25b174a3850661cc2e7e98cd3cbe041fb499dcd829f4"
+    },
+    "rider": {
+      "id": "generated-r6-rider",
+      "plan": "ab9656928749dee0c434fad557a29310d595099474ef5639d5cc89390992a7cc",
+      "commercial": "a508dc0afd711400b93a0a8800cbdeba04e8e4474cd8c8c67b4a4dbe4645a9ed",
+      "commercialGround": "bf9a2554868e302331d42f3bed278160b00a3d76ec84829abf3425c561596fb1",
+      "industrial": "ce951c24b0de6464e8598645538590cf948784c01cbd9fbab2cd24229944ec13",
+      "industrialGround": "644c70accb4b20bbb9a08bba5853bbda8fb9ff17947ac63bc363bcfb9f547057"
+    }
+  }
+}

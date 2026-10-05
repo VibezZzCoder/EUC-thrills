@@ -2530,6 +2530,15 @@ export class Menus {
    * put the select back on the tier being loaded.
    */
   private qualityBusy: QualityBusy | null = null;
+  private loadingBusy = false;
+
+  /** Refuse all controls while the shared full-screen load owns input. */
+  setLoadingBusy(busy: boolean): void {
+    this.loadingBusy = busy;
+    for (const menu of [this.title, this.tracks, this.pause, this.settings, this.results, this.routes, this.riders, this.couch]) {
+      menu.inert = busy;
+    }
+  }
 
   constructor(initial: GameOptions, config: MenuOptions) {
     this.callbacks = config.callbacks;
@@ -2631,6 +2640,28 @@ export class Menus {
     }
 
     this.focusFirst(this.panelFor(screen));
+  }
+
+  /**
+   * Focus the shown panel after a shared loading cover. The cover makes every
+   * panel inert, so a panel `show` opened underneath it could not take focus,
+   * and Enter or pad A then pressed nothing until a direction was used.
+   */
+  recoverFocusAfterLoad(): void {
+    if (this.screen === 'none' || this.loadingBusy) return;
+    const panel = this.panelFor(this.screen);
+    const active = document.activeElement;
+    if (panel === null || (active instanceof HTMLElement && panel.contains(active) && active.offsetParent !== null)) return;
+    if (this.screen === 'riders') {
+      const selected = [...this.riders.querySelectorAll<HTMLElement>('[data-rider]')]
+        .find((card) => card.dataset.rider === this.options.character);
+      if (selected !== undefined) {
+        selected.focus();
+        this.setPadCursor(this.padDriving ? selected : null);
+        return;
+      }
+    }
+    this.focusFirst(panel);
   }
 
   /** All three Back inputs return focus to the button that opened the chooser. */
@@ -3672,6 +3703,7 @@ export class Menus {
   }
 
   private readonly onClick = (event: MouseEvent): void => {
+    if (this.loadingBusy) return;
     // **`detail > 0` is what makes this a *pointer* click.** `confirm()` calls
     // `.click()` on the pad's behalf and a keyboard Enter on a focused button
     // produces one too; both arrive here with `detail === 0`. Clearing on
@@ -3828,6 +3860,7 @@ export class Menus {
    * value is decided.
    */
   private readonly onInput = (event: Event): void => {
+    if (this.loadingBusy) { this.sync(this.options); return; }
     const target = event.target;
     if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLSelectElement)) return;
     const option = target.dataset.option;
@@ -3869,6 +3902,11 @@ export class Menus {
    * this screen" wherever you are; then the focus trap.
    */
   private readonly onKeyDown = (event: KeyboardEvent): void => {
+    if (this.loadingBusy) {
+      // The same browser keys the cover leaves alone (F5, F11, Alt+Left).
+      if (!event.altKey && !/^F([1-9]|1[0-2])$/.test(event.code)) event.preventDefault();
+      return;
+    }
     if (this.listening !== null) {
       event.preventDefault();
       event.stopPropagation();
@@ -4019,6 +4057,7 @@ export class Menus {
    *     control, exactly as before.
    */
   navigate(action: 'up' | 'down' | 'left' | 'right'): void {
+    if (this.loadingBusy) return;
     // Reachable from the gamepad and nothing else: the keyboard walks menus by
     // native Tab, which the browser rings for us.
     this.padDriving = true;
@@ -4073,6 +4112,7 @@ export class Menus {
    * not be the second file that knows what the seed field is.
    */
   confirm(): void {
+    if (this.loadingBusy) return;
     // Same door as `navigate`, and it matters for the panel this press opens:
     // `focusFirst` reads `padDriving` to decide whether the new panel arrives
     // with a cursor on it.

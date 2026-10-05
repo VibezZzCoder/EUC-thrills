@@ -258,7 +258,7 @@ export function markingWidth(role: MarkingRole): number {
  * It is also the extension `render/inkKit.test.ts`'s scan was built to take.
  * That scan refuses any word printed anywhere in `src/` that is not on an
  * approved list, and until M36 the list was two entries long — a rider's
- * surname and a venue's name. Adding eight at once is exactly the "deliberate"
+ * surname and a venue's name. The original eight-word addition is exactly the "deliberate"
  * the guard asks for: they are written down here, in the data table, rather
  * than spelled inline at eight call sites, so the set can be read in one place
  * and so the scan can derive its allowance from the same constant the signage
@@ -286,9 +286,13 @@ export const PARK_SIGN_WORDS = deepFreeze([
   'STAIRS',
   /** The kicker: the only feature on the venue that puts a rider in the air. */
   'AIR',
+  /** Owned left technical route category, shared with physical post labels. */
+  'TECH',
+  /** Owned right rolling bypass category, given equal ground-letter priority. */
+  'SAFE',
 ] as const);
 
-/** One of the eight words above, and the type a sign's copy has to be. */
+/** One of the approved words above, and the type a sign's copy has to be. */
 export type ParkSignWord = (typeof PARK_SIGN_WORDS)[number];
 
 /**

@@ -38,6 +38,24 @@ import { DUEL_LATERAL_METRES, SLOT_LATERAL_METRES } from '../src/simulation/spaw
  * 2's gate). Nothing here reads a frame interval (`AGENTS.md`).
  */
 
+/**
+ * The time budget for the long scripted fights below — 2026-10-04.
+ *
+ * Each of them boots a populated world (route-41's duel world, or the curated
+ * launch) and then steps it one `advance(1)` at a time — every call steps the
+ * simulation and draws a frame — with several snapshots a step. The living
+ * world made both halves dearer on purpose: a generated boot is ~6.7 s on an
+ * idle machine against Sep 26's 1.5 s (CHANGELOG 2026-10-04), and one two-seat
+ * Knockabout `advance(1)` on route-41 measured 8.5 ms against the Sep 26
+ * build's 1.8 ms on a quiet machine (20.2 against 3.9 ms on a loaded one).
+ * The slowest, "the seat you sit in does not change the fight", took 2.3 min
+ * on a quiet machine; under load every one of these timed out mid-fight at
+ * least once with no assertion reached, and given more time every one passed
+ * (1.4–4.1 min at load averages of 30–85). So they get Playwright's slow
+ * budget (3×); no assertion is loosened.
+ */
+const LIVING_WORLD_FIGHT = 'populated-world boots and scripted steps cost more since the environment upgrade (2026-10-04)';
+
 /** Somewhere well inside the contact radius, for the merged-pair cases. */
 const MERGED_METRES = CONTACT.radiusMetres * 0.4;
 
@@ -939,6 +957,7 @@ test('a pair that stops being resolved forgets its edge', async ({ page }) => {
 // ---------------------------------------------------------------------------
 
 test('the live tuning store moves a bump, so the ride gate can tune it', async ({ page }) => {
+  test.slow(true, LIVING_WORLD_FIGHT);
   /*
    * **The one failure this phase was warned about** (§26.6, Phase 0's record).
    * `ContactPair.step(dt, a, b)` compiles, passes every other test in this
@@ -1813,6 +1832,7 @@ async function duel(
 }
 
 test('a standing tap puts the rider beside you down, and so does a swing carried in', async ({ page }) => {
+  test.slow(true, LIVING_WORLD_FIGHT);
   /*
    * **The owner's 2026-08-27 ride turned this test around**, and his words are
    * the argument: *"realize hitting and not dropping is not fun. even at slow
@@ -1869,6 +1889,7 @@ test('a standing tap puts the rider beside you down, and so does a swing carried
 });
 
 test('the seat you sit in does not change the fight', async ({ page }) => {
+  test.slow(true, LIVING_WORLD_FIGHT);
   /*
    * **The seats step in order, and a swing must not be judged against the
    * loop's own progress.** Seat 0's paddle would otherwise sweep at a seat 1
@@ -2066,6 +2087,7 @@ test('nobody swings at a rider who is already on the ground', async ({ page }) =
 });
 
 test('the cop swings the same weapon, and one threshold moves it for both', async ({ page }) => {
+  test.slow(true, LIVING_WORLD_FIGHT);
   /*
    * q75, reaffirmed with the facts in front of him: **everyone gets the hard
    * knock, cop included** — one weapon, one rule, and deliberately no `CHASE`
@@ -2091,7 +2113,7 @@ test('the cop swings the same weapon, and one threshold moves it for both', asyn
       window.game.startChase();
     });
     await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
-    return page.evaluate(({ reach, threshold }) => {
+    return page.evaluate(({ reach, limit, cone, threshold }) => {
       const game = window.game;
       const internal = game as unknown as {
         readonly copCurrent: { x: number; y: number; z: number; headingY: number };
@@ -2102,12 +2124,34 @@ test('the cop swings the same weapon, and one threshold moves it for both', asyn
 
       // m18's own placement: stood off the cop's shoulder at the paddle's
       // reach, where his production brain will choose to swing.
+      //
+      // 2026-10-04: the first spot the living world accepts, searched inside
+      // his reach and his swing cone. m18's spot (45° off his left shoulder
+      // at `PADDLE.reach`) now overlaps his own occupancy hull, and a parked
+      // car stands beside his post on route-41, and a placement refuses an
+      // occupied spot by design ('Rider placement is occupied by the living
+      // world'). Every candidate stays inside `reachAgainst(riderHitRadius)`,
+      // so the rider is still one his paddle can reach without moving.
       const cop = internal.copCurrent;
-      const bearing = cop.headingY + Math.PI / 4;
-      const x = cop.x + Math.sin(bearing) * reach;
-      const z = cop.z + Math.cos(bearing) * reach;
-      const ground = game.sampleGround(x, z);
-      game.placeRider({ x, y: ground.height, z }, cop.headingY);
+      let placed: { turn: number; distance: number } | null = null;
+      search: for (const turn of [Math.PI / 4, -Math.PI / 4, Math.PI / 6, -Math.PI / 6]) {
+        if (Math.abs(turn) > cone) continue;
+        for (let distance = reach; distance <= limit; distance += 0.1) {
+          const bearing = cop.headingY + turn;
+          const x = cop.x + Math.sin(bearing) * distance;
+          const z = cop.z + Math.cos(bearing) * distance;
+          const ground = game.sampleGround(x, z);
+          try {
+            game.placeRider({ x, y: ground.height, z }, cop.headingY);
+          } catch (error) {
+            if (String(error).includes('occupied by the living world')) continue;
+            throw error;
+          }
+          placed = { turn, distance };
+          break search;
+        }
+      }
+      if (placed === null) throw new Error('no free spot inside the cop\'s reach and swing cone');
       game.clearActions();
 
       const startHits = game.snapshot().audio.played.hit;
@@ -2124,12 +2168,19 @@ test('the cop swings the same weapon, and one threshold moves it for both', asyn
         if (game.snapshot().app.state !== 'chase') break;
       }
       return {
+        placed,
         crashes,
         cause,
         hits: game.snapshot().audio.played.hit - startHits,
         swings: internal.copPaddle.swingCount - startSwings,
       };
-    }, { reach: PADDLE.reach, threshold: share });
+    }, {
+      reach: PADDLE.reach,
+      // A whisker inside the farthest a parked paddle reaches a rider.
+      limit: new Paddle().reachAgainst(CHASE.riderHitRadius) - 0.1,
+      cone: CHASE.swingConeRadians,
+      threshold: share,
+    });
   };
 
   const soft = await beside(3);
@@ -2369,6 +2420,7 @@ async function fight(
 }
 
 test('a match is first to N knockdowns, and the last one ends it', async ({ page }) => {
+  test.slow(true, LIVING_WORLD_FIGHT);
   const errors = collectErrors(page);
   await bootDuel(page);
 
@@ -2554,6 +2606,7 @@ test('discs credit the seat that knocked them, and a fallen disc is gone for bot
 });
 
 test('a finished match does not follow the player into the next run', async ({ page }) => {
+  test.slow(true, LIVING_WORLD_FIGHT);
   /*
    * `clearLastResults`'s whole reason, one mode later. `buildResultsView` is a
    * tagged union with no tag — it picks whichever of five nullable records is
@@ -2629,6 +2682,7 @@ async function tableWords(page: import('@playwright/test').Page): Promise<{
 }
 
 test('the results table is headed in the mode’s own words, not the time trial’s', async ({ page }) => {
+  test.slow(true, LIVING_WORLD_FIGHT);
   /*
    * **Phase 6's QA finding, and the reason it survived five modes.** The
    * caption and the three column headers were markup: "Splits", "Checkpoint",
@@ -2878,6 +2932,7 @@ test('the mode choice never reaches the saved options record', async ({ page }) 
 });
 
 test('both halves of a match show both scores, each seat’s own first', async ({ page }) => {
+  test.slow(true, LIVING_WORLD_FIGHT);
   /*
    * q80, and the phrasing is the answer: *each half reads its own tally and the
    * other's, so neither player looks across the divider*. The two halves
@@ -2982,6 +3037,7 @@ test('a couch Knockabout on a world with no discs keeps the guest while a route 
 // ---------------------------------------------------------------------------
 
 test('both buttons under a finished match start another match', async ({ page }) => {
+  test.slow(true, LIVING_WORLD_FIGHT);
   /*
    * **`clearLastResults` made the writing of the results union one place and
    * left the reading of it in three.** Phase 4 added the fifth record and only
@@ -3817,6 +3873,7 @@ test('the opening swing of a match reaches nobody, and used to reach the guest',
 });
 
 test('the corner counts the discs under the score, in both halves', async ({ page }) => {
+  test.slow(true, LIVING_WORLD_FIGHT);
   /*
    * The owner's second item: *"No feedback on Targets Struck. The only screen
    * that shows targets struck in 2p mode knockabout is the final screen after
@@ -3974,6 +4031,7 @@ test('a finished match becomes a free ride without going back to the title', asy
 });
 
 test('pressing the mode a finished match was already in rides another one', async ({ page }) => {
+  test.slow(true, LIVING_WORLD_FIGHT);
   /*
    * **"Carry on" means something different on each card, and the door is what
    * knows which.** From a pause it is Resume; from a results screen the ride is

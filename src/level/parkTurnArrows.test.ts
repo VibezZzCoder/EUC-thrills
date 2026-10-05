@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { markingWidth } from '../data/markings.ts';
+import { ROUTE_ADVANCE } from '../data/routeAdvance.ts';
+import { ROUTE_SIGN_FACE } from '../data/routeSigns.ts';
 import {
   TURN_ARROW,
   turnArrowAcross,
@@ -11,11 +13,17 @@ import {
   turnArrowPad,
   turnArrowsBySegment,
 } from './parkTurnArrows.ts';
+import { markingsOf, placeChain, placedRunCount, type SegmentMarking } from './segments.ts';
+import { lineSeparation } from './switchbackAdvanceCues.ts';
 import {
+  SWITCHBACK_ADVANCE_CUES,
   SWITCHBACK_FEATURES,
   SWITCHBACK_GEOMETRY,
+  SWITCHBACK_GRAPH,
+  SWITCHBACK_LAP_CUES,
   SWITCHBACK_SIGN_PAD_MARGIN,
   SWITCHBACK_SIGNAGE,
+  SWITCHBACK_SPAWN,
   SWITCHBACK_TURN_ARROWS,
   createSwitchbackLevel,
 } from './switchbackLevel.ts';
@@ -116,9 +124,78 @@ test('every park arrow lies on its approach, on its own pad, clear of the featur
   // signage's own — none clipped, none split.
   const authored = [...turnArrowsBySegment(SWITCHBACK_TURN_ARROWS).values()].flat().length;
   assert.equal(authored, SWITCHBACK_TURN_ARROWS.length * 2);
+  // 2026-10-04: since switchback-r5 (CHANGELOG 2026-10-01/02) the arrows ship
+  // as contracted lap cues plus one after-bend confirmation per bend, and the
+  // TECH/AIR/SAFE advance cues join the field. The legacy pads above are
+  // diagnostics only: the venue installs no pad (signage bands are empty).
+  const lapRuns = [...SWITCHBACK_LAP_CUES.markings.values()].flat().length;
+  assert.equal(lapRuns, authored + SWITCHBACK_LAP_CUES.turns.length, 'every arrow run ships, plus one confirmation per bend');
+  assert.equal(SWITCHBACK_SIGNAGE.bands.size, 0, 'a sign pad is installed again; check it against the arrows');
   const plan = createSwitchbackLevel();
-  const signage = [...SWITCHBACK_SIGNAGE.markings.values()].flat().length;
-  assert.equal((plan.markings ?? []).length, signage + authored);
+  // 2026-10-04 (VIS-3-R2): a compact-trail glyph ships one placed run per leg.
+  const placedRuns = (runs: Iterable<readonly SegmentMarking[]>) => [...runs].flat()
+    .reduce((sum, run) => sum + placedRunCount(run), 0);
+  assert.equal((plan.markings ?? []).length, placedRuns(SWITCHBACK_SIGNAGE.markings.values())
+    + placedRuns(SWITCHBACK_LAP_CUES.markings.values()) + placedRuns(SWITCHBACK_ADVANCE_CUES.markings.values()));
+});
+
+test('on the finished field no advance cue, sign word or route board meets a bend arrow or its confirmation', () => {
+  // 2026-10-04: the arrow checks above use the authored frame. This one reads
+  // the built plan in world space, across every corridor (the lap folds), so
+  // the r5 advance cues and route boards are judged where the rider sees them.
+  const plan = createSwitchbackLevel();
+  const placed = placeChain(SWITCHBACK_GRAPH, SWITCHBACK_SPAWN);
+  type Run = { readonly points: readonly { readonly x: number; readonly z: number }[]; readonly width: number };
+  const lap: Run[] = [];
+  const others: Run[] = [];
+  let index = 0;
+  for (const host of placed) {
+    const id = host.spec.id;
+    // 2026-10-04 (VIS-3-R2): placed runs, one per leg of a compact-trail glyph.
+    const count = (runs: readonly SegmentMarking[] | undefined) => (runs ?? [])
+      .reduce((sum, run) => sum + placedRunCount(run), 0);
+    const signage = count(SWITCHBACK_SIGNAGE.markings.get(id));
+    const cues = count(SWITCHBACK_LAP_CUES.markings.get(id));
+    const advance = count(SWITCHBACK_ADVANCE_CUES.markings.get(id));
+    const runs = markingsOf(host);
+    assert.equal(runs.length, signage + cues + advance, `${id}: paint is not signage, lap cues, then advance cues`);
+    for (const [at, run] of runs.entries()) {
+      // The finished field carries the same run, point for point, in this order.
+      const built = plan.markings![index++]!;
+      assert.equal(built.points.length, run.points.length, `${id}: run ${at} was clipped or split`);
+      built.points.forEach((point, k) => assert.ok(Math.hypot(point.x - run.points[k]!.x, point.z - run.points[k]!.z) < 1e-9));
+      (at >= signage && at < signage + cues ? lap : others).push(run);
+    }
+  }
+  assert.equal(index, plan.markings!.length);
+  assert.equal(lap.length, [...SWITCHBACK_LAP_CUES.markings.values()].flat()
+    .reduce((sum, run) => sum + placedRunCount(run), 0));
+
+  let nearest = Infinity;
+  for (const cue of lap) {
+    for (const other of others) {
+      for (let i = 1; i < cue.points.length; i += 1) {
+        for (let j = 1; j < other.points.length; j += 1) {
+          const gap = lineSeparation(cue.points[i - 1]!, cue.points[i]!, other.points[j - 1]!, other.points[j]!)
+            - cue.width / 2 - other.width / 2;
+          nearest = Math.min(nearest, gap);
+        }
+      }
+    }
+  }
+  assert.ok(nearest >= ROUTE_ADVANCE.paintGap, `a bend cue touches other instruction paint (${nearest.toFixed(3)} m clear)`);
+
+  // A route board hangs from its original pole; none may stand over a cue.
+  assert.equal(plan.routeSigns?.length, 9);
+  for (const sign of plan.routeSigns ?? []) {
+    const pole = plan.props![sign.propIndex]!;
+    for (const cue of lap) {
+      for (const point of cue.points) {
+        assert.ok(Math.hypot(point.x - pole.position.x, point.z - pole.position.z) > ROUTE_SIGN_FACE.upperWidth + cue.width,
+          `${sign.feature}'s route board stands over a bend cue`);
+      }
+    }
+  }
 });
 
 test("the clearing hairpin — the owner's note — gets two arrows, and every other hairpin but the stairs' gets its own", () => {

@@ -11,6 +11,7 @@ import { positionHash01 } from '../shared/maths.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 import type { LevelPlan } from './plan.ts';
 import { PROP_CORRIDOR_CLEARANCE, buildLevelPlan, type CheckpointSpec } from './buildPlan.ts';
+import type { PopulationPathRequest } from './populationPlan.ts';
 import type {
   PlacedProp,
   SegmentBlock,
@@ -1100,7 +1101,7 @@ function paddockProps(): SegmentProp[] {
   // `render/props.test.ts` measures every instance and refuses.
   const sheds: SegmentProp[] = [
     // The workshop, long side to the apron.
-    { s: 15, t: -(edge + 5), kind: 'building', size: { x: 10, y: 5.0, z: 15 } },
+    { s: 15, t: -(edge + 5), kind: 'building', look: 'industrial', size: { x: 10, y: 5.0, z: 15 } },
     // The clubhouse, opposite it.
     { s: 12, t: edge + 4, kind: 'building', size: { x: 8, y: 4.2, z: 11 } },
     // A lock-up at the head of the apron.
@@ -1478,6 +1479,33 @@ export const TRACK_SITE_PROPS: readonly PlacedProp[] = siteProps();
  */
 export const TRACK_PALETTE = Object.freeze({ grass: 0x557130 });
 
+/**
+ * The paddock's actual hardstanding bands. The visitor band stays by the
+ * existing bench; industrial bands retain the original workshop as their
+ * worker/service anchor without inventing a second building or moving one.
+ */
+export const BELVAR_POPULATION_PATH_REQUESTS: readonly PopulationPathRequest[] = [
+  {
+    id: 'belvar-paddock-visitors',
+    role: 'pedestrian',
+    district: 'commercial',
+    steps: [{ segmentId: 'paddock', lateralMetres: 10.5, halfWidthMetres: 1.2, fromS: 10, toS: 32 }],
+  },
+  {
+    id: 'belvar-paddock-workshop',
+    role: 'pedestrian',
+    district: 'industrial',
+    steps: [{ segmentId: 'paddock', lateralMetres: -10.5, halfWidthMetres: 1.2, fromS: 7, toS: 24 }],
+  },
+  {
+    id: 'belvar-paddock-service',
+    role: 'service',
+    district: 'industrial',
+    serviceShuttle: true,
+    steps: [{ segmentId: 'paddock', lateralMetres: -6, halfWidthMetres: 2.8, fromS: 12, toS: 26 }],
+  },
+];
+
 export function createTrackLevel(
   hazardProbeMetres?: number,
   targetProbeMetres?: number,
@@ -1495,6 +1523,7 @@ export function createTrackLevel(
     surround: { height: 0, surface: 'grass' },
     palette: TRACK_PALETTE,
     checkpoints: TRACK_CHECKPOINTS,
+    populationPathRequests: BELVAR_POPULATION_PATH_REQUESTS,
     // The site fence and its planting: level dressing rather than any one
     // corridor's, so it keeps the property's rectangle instead of snaking
     // around every corner of the circuit.

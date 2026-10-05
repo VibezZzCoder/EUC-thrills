@@ -122,6 +122,24 @@ export const SLOT_STEP_TOLERANCE_METRES = TERRAIN.curbThreshold;
  */
 export const SLOT_MIN_SEPARATION_METRES = 1;
 
+/**
+ * How many ranks further out `spawnSlot` looks when its `acceptsPlacement`
+ * veto (an NPC or a CPU cop on the slot) refused a candidate the ground
+ * accepted — MI-1 (2026-10-03). They are the ranks just beyond
+ * `SLOT_SEAT_RANKS`, and every one of those candidates still has to pass the
+ * same ground test as the first rank.
+ */
+export const SLOT_FALLBACK_RANKS = 2;
+
+/**
+ * The ranks a full couch's own seats stand on: seats 1 and 2 on the first,
+ * seat 3 on the second (`COUCH_SEATS` is four; `couch.test.ts` pins the pair).
+ * The veto search starts beyond them, so a rider moved off a blocked slot
+ * never takes a seat's own slot — seats no longer veto seats, so a later
+ * join there would stack on them (2026-10-03 review).
+ */
+export const SLOT_SEAT_RANKS = 2;
+
 /** One candidate, in the start pose's own frame: sideways, then backwards. */
 interface Candidate {
   readonly lateral: number;
@@ -171,6 +189,7 @@ export function spawnSlot(
   index: number,
   terrain: TerrainSampler,
   lateral: number = SLOT_LATERAL_METRES,
+  acceptsPlacement?: (spawn: Spawn) => boolean,
 ): Spawn {
   if (index <= 0) return base;
 
@@ -189,14 +208,32 @@ export function spawnSlot(
   const forwardZ = Math.cos(base.headingY);
 
   const probe = createGroundSample();
-  for (const strict of [true, false]) {
-    for (const candidate of candidatesFor(index, lateral)) {
-      const x = base.position.x + leftX * candidate.lateral - forwardX * candidate.back;
-      const z = base.position.z + leftZ * candidate.lateral - forwardZ * candidate.back;
-      if (!slotIsGround(terrain, probe, x, z, origin, strict)) continue;
-      terrain.sampleGround(x, z, probe);
-      return { position: { x, y: probe.height, z }, headingY: base.headingY };
+  let vetoed = false;
+  const search = (rankIndex: number): Spawn | null => {
+    for (const strict of [true, false]) {
+      for (const candidate of candidatesFor(rankIndex, lateral)) {
+        const x = base.position.x + leftX * candidate.lateral - forwardX * candidate.back;
+        const z = base.position.z + leftZ * candidate.lateral - forwardZ * candidate.back;
+        if (!slotIsGround(terrain, probe, x, z, origin, strict)) continue;
+        terrain.sampleGround(x, z, probe);
+        const spawn = { position: { x, y: probe.height, z }, headingY: base.headingY };
+        if (acceptsPlacement && !acceptsPlacement(spawn)) { vetoed = true; continue; }
+        return spawn;
+      }
     }
+    return null;
+  };
+  const slot = search(index);
+  if (slot !== null) return slot;
+  // **Further out, and only when something standing there refused a slot**
+  // (MI-1, 2026-10-03). Ground that refuses every one of the seat's own
+  // slots keeps the answer below exactly as it was; a person or a parked
+  // van on the slot moves the rider out on the same side (odd indices
+  // right, even left), past every seat's own rank, instead of onto `base`,
+  // where the rider ahead is standing.
+  for (let further = 1; vetoed && further <= SLOT_FALLBACK_RANKS; further += 1) {
+    const outer = search(2 * (SLOT_SEAT_RANKS + further) - (index % 2));
+    if (outer !== null) return outer;
   }
 
   // **The plan's own spawn, and only when the world left nothing else.** A

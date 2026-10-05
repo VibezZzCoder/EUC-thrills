@@ -736,6 +736,95 @@ export const RIDER_BLOCKOUT = {
 } as const;
 
 /**
+ * Common physical occupancy of the ten native rider/machine rigs, metres.
+ *
+ * These are component bounds, not a wheel-centred rider radius. The evidence
+ * probe's shipped/90 mph scripts found a 0.539 m stationary human half-width,
+ * 0.749 m same-pose bank half-width and a fallen human centre over 32 m behind
+ * its wheel. Each component therefore follows its own transformed centre.
+ * Source frames/skin allowances below are conservative common coefficients;
+ * render/riderPopulationEnvelope.test.ts checks their actual posed vertices.
+ * They remain a sampled containment contract, not an exhaustive pose proof.
+ */
+export const RIDER_OCCUPANCY = {
+  hipHeight: RIDER.hipHeight,
+  pedalHeight: WHEEL.pedalHeight,
+  stance: RIDER_BLOCKOUT,
+  /** Machine bounds include the widest pedals and largest native trim. */
+  wheelBody: { minX: -0.27, maxX: 0.27, minY: 0.13, maxY: 0.67, minZ: -0.31, maxZ: 0.32 },
+  /** Rotationally complete tyre/tread envelope, separate from suspension. */
+  wheelTyre: { minX: -0.06, maxX: 0.06, minY: -0.02, maxY: 0.52, minZ: -0.27, maxZ: 0.27 },
+  /** Pelvis-local garment, head and hair envelope, without the arm chains. */
+  torso: { minX: -0.37, maxX: 0.37, minY: -0.27, maxY: 1.18, minZ: -0.46, maxZ: 0.46 },
+  /** Additional head/hair reach as its ragdoll loll leaves the mounted frame. */
+  headLollExpansion: 0.30,
+  /** Common arm carriage range: narrowest sober through the widest native rig. */
+  carriage: { minSplay: -0.01, maxSplay: 0.16, minRise: -0.01, maxRise: 0.12 },
+  /** Maximum skin/guard distance from the solved leg/arm bone centre lines. */
+  legRadius: 0.13,
+  armRadius: 0.10,
+  /** Includes the largest carried hand prop, which remains physical. */
+  handRadius: 0.15,
+  /**
+   * The carried can along the solved lower-arm axis, relative to its distal
+   * endpoint. Its authored Y span -0.220..-0.055 and the hand's +0.012 m
+   * inset give 0.043..0.208 m. Radial reach includes the 8 mm carry offset,
+   * 18 mm depth offset and 45 mm barrel radius. Kept axial rather than
+   * enlarging every hand/torso axis: the 90 mph fallen-hand replay needs it.
+   */
+  handCarry: { axialFrom: 0.043, axialTo: 0.208, radial: Math.hypot(0.008 + 0.045, 0.018 + 0.045) },
+  boot: { minX: -0.10, maxX: 0.10, minY: -0.075, maxY: 0.04, minZ: -0.15, maxZ: 0.15 },
+  /** Common style interval: sober through the shipped loose/staggered stance. */
+  motion: { overLean: 0.25, swayPelvisRoll: 0.12, staggerHips: 0.6,
+    staggerArms: 0.8, swayArmSplay: 0.07, swayArmSwing: 0.04 },
+  /** Metres per recommended articulated sweep sample; caller may refine it. */
+  trajectoryPointStep: 0.06,
+} as const;
+
+/**
+ * The mounted body the living world meets (VIS-CRASH-1, R2C-4, R2C-5;
+ * 2026-10-04): `RIDER_OCCUPANCY`'s skeleton and solve with a contact core in
+ * place of its roster-wide garment envelope. People, cars and the population's
+ * certificates, actor yields and placements answer to this; nothing else does,
+ * and `RIDER_OCCUPANCY` stays the containment proof for every rendered vertex.
+ *
+ * The envelope box held the tallest hair, the widest hand carriage and the
+ * Drunkard's can for every rider, as one box pitched with the torso. Under
+ * full throttle its front edge stood 1.5 m ahead of the wheel when the face is
+ * 0.9 m ahead, and 0.7 m to each side when the hands are 0.4 m out, so a rider
+ * crashed into people they visibly passed and stopped a metre and a half short
+ * of a walker. Here the torso box stops at the shoulders, the head is a sphere,
+ * elbows and knees take their exact lens (`tightLimbs`), and hands are gloves.
+ *
+ * **The tolerance, measured** (`render/riderContactCore.test.ts`, every look
+ * cruising, at full throttle, carving, braking and in a held one-foot hop): in
+ * plan no rendered vertex lies more than `RIDER_CONTACT_OVERHANG_METRES` outside
+ * this body (0.144 m, Trollina's wide carriage and hair; every other look is
+ * within 0.12 m), never a limb or a head; above its head sphere only tall hair
+ * and a hat stand (0.33 m). A person's square hull stands about that far outside
+ * their own rendered sides, so a rider may brush that hull, rarely them; a car's
+ * hull is its body, so a hem or a hand may graze its paint for the frames before
+ * a crash. The contact sweep's own resolution (`sweepResolutionMetres`) adds at
+ * most 2.5 cm to that brush; a body is never passed through.
+ */
+export const RIDER_CONTACT = {
+  ...RIDER_OCCUPANCY,
+  /** Pelvis to shoulders; the head is its own sphere. */
+  torso: { minX: -0.24, maxX: 0.24, minY: -0.27, maxY: 0.56, minZ: -0.22, maxZ: 0.22 },
+  head: { y: 0.72, z: 0.02, radius: 0.17 },
+  tightLimbs: true,
+  /** The narrow and median carriages; the widest rig's hands may overhang. */
+  carriage: { minSplay: -0.01, maxSplay: 0.02, minRise: -0.01, maxRise: 0.12 },
+  legRadius: 0.09,
+  armRadius: 0.06,
+  /** A glove; the carried can is not a contact part. */
+  handRadius: 0.06,
+  handCarry: { axialFrom: 0, axialTo: 0, radial: 0 },
+} as const;
+/** Measured worst rendered overhang past `RIDER_CONTACT`, metres (see there). */
+export const RIDER_CONTACT_OVERHANG_METRES = 0.15;
+
+/**
  * Gravity, and nothing else.
  *
  * Its own group because it is not the EUC's property: the hop impulse (M5),
@@ -5187,6 +5276,58 @@ export interface TyreVoice {
 }
 
 /**
+ * Quiet district texture before the existing SFX/master buses.
+ *
+ * Five broad noise bands share one fixed graph. World descriptors are capped
+ * at twelve, and coincident emitters cannot exceed the 0.025 aggregate linear
+ * gain. These levels are technical bounds; owner listening remains a gate.
+ */
+export const ENVIRONMENT_AMBIENCE = {
+  /** Twelve established premises plus sixteen selected outdoor activity sources.
+   * The five fixed graph branches and maximumTotalGain remain unchanged. */
+  maximumEmitters: 28,
+  maximumTotalGain: 0.025,
+  /** Distance envelope and priority responses, seconds. */
+  proximityResponseSeconds: 0.35,
+  duckAttackSeconds: 0.035,
+  duckReleaseSeconds: 0.65,
+  /** Retained fraction at full warning/siren priority. */
+  warningFloor: 0.20,
+  sirenFloor: 0.45,
+  /** Gain glide on the existing audio clock, seconds. */
+  parameterGlideSeconds: 0.018,
+  /** Actual warning cues retain priority through this additional decay, s. */
+  warningTailSeconds: 0.08,
+  /** Bound even a malformed or unusually delayed warning cue, seconds. */
+  maximumWarningHoldSeconds: 0.5,
+  /** Independent deterministic noise stream; never advances a world stream. */
+  noiseSeed: 0x7a11bc41,
+  /** Peak linear gains, distances in metres, filter frequencies in hertz. */
+  voices: {
+    cafe: { peakGain: 0.011, nearMetres: 3, farMetres: 22, filterType: 'bandpass', filterHz: 480, filterQ: 0.55 },
+    workshop: { peakGain: 0.009, nearMetres: 3, farMetres: 20, filterType: 'bandpass', filterHz: 210, filterQ: 0.65 },
+    park: { peakGain: 0.006, nearMetres: 8, farMetres: 32, filterType: 'lowpass', filterHz: 800, filterQ: 0.5 },
+    home: { peakGain: 0.004, nearMetres: 3, farMetres: 14, filterType: 'bandpass', filterHz: 320, filterQ: 0.45 },
+    industrial: { peakGain: 0.010, nearMetres: 5, farMetres: 30, filterType: 'bandpass', filterHz: 135, filterQ: 0.65 },
+  },
+} as const;
+
+/** Quiet outdoor beds on the existing ambience graph; no extra AudioNodes. */
+export const POPULATION_AMBIENCE = Object.freeze({
+  maximumEmitters: 16,
+  /** Source origin above physical foot/tyre ground, metres. */
+  sourceHeightMetres: 0.85,
+  /** Vehicle bed reaches its full authored strength at this speed, m/s. */
+  vehicleFullSpeedMetresPerSecond: 5,
+  vehicleIdleStrength: 0.08,
+  vehicleMovingStrength: 0.40,
+  humanStandingStrength: 0.12,
+  humanMovingStrength: 0.22,
+  workerStrength: 0.30,
+  socialStrength: 0.30,
+});
+
+/**
  * Audio (M8).
  *
  * **Hybrid since the third pass (2026-08-04): recorded loops for texture,
@@ -6262,6 +6403,241 @@ export const RENDER = {
    */
   maxPixelRatio: 2,
 } as const;
+
+/** Fill-only ground-boundary constants. ULTRA.ground.edge aliases this unchanged table. */
+export const GROUND_BOUNDARY = {
+  /**
+   * The most a filled point may sit from the outranking surface, in cells.
+   * §6's rule is ½ cell; the exact straight line needs `n/(n+1)` for a 1:n
+   * staircase — 0.667 at 1:2 and 0.75 at 1:3 — so the cap is 0.75, the
+   * ceiling the brief allows for a shallow diagonal. At ½ a 1:2 line would
+   * zig-zag between 45° and 18° segments with a half-cell amplitude.
+   */
+  capCells: 0.75,
+  /**
+   * …and never more than this many metres, whatever the spacing: the
+   * visual boundary is a gameplay honesty, and Switchback's 1.5 m cells
+   * would otherwise let turf cover 1.1 m of the riding trail.
+   */
+  capMetres: 0.75,
+  /**
+   * The cap into a **drivable** cell, in cells (coordinator amendment
+   * A12; Wave 3, R-G): the rank-1 road (pavement, rough pavement) and the
+   * dirt the riding trails are laid in. The visual edge of what is ridden
+   * never moves more than half a cell from the ridden grid, so the ridden
+   * width reads true; `capCells` (¾) stays between non-drivable surfaces —
+   * and on the gravel verges, where a ½ cap drew the grass edge back into
+   * a visible sawtooth at the steeple (measured, `M39_ULTRA.md` §U2). A
+   * 1:1 boundary is still exact at ½ (it needs n/(n+1) = ½); a shallower
+   * one becomes a kneed ramp with a bump of at most ½ − ½/n.
+   */
+  drivableCapCells: 0.5,
+  /**
+   * The rounded knee on a drivable edge, in cells (coordinator amendment
+   * A18; Wave 4, R-G; round-2 item 8): at the ½ cap a 1:2 or 1:3 boundary
+   * is a kneed ramp, and its knee — where the ramp meets the cap — is
+   * drawn as the smooth maximum of the two lines' signed distances over
+   * this width, a tangent-continuous turn instead of a kink.
+   */
+  kneeRoundCells: 0.5,
+  /**
+   * …and the knee's gate is lifted by this share of that width before the
+   * boundary is pulled taut, because the rounding dips under the corner by
+   * about a quarter of it: the rounded knee keeps to the ½ cap.
+   */
+  kneeLiftShare: 0.28,
+  /** A filled cell keeps at least this share of its area uncovered. */
+  minKeptArea: 0.1,
+  /** `ultraEdge` for "no line here", in cells: far outside every cell. */
+  sentinel: -4,
+} as const;
+
+/** Ground cover at real source height; near corridors receive the bounded
+ * population first rather than spending most instances in unseen far fields. */
+/** Render-only static terrain/furniture partitions. 64 m created excess
+ * submissions in the installed R32 world; broad cells retain native frustum
+ * rejection without multiplying cheap scenery draws. Trees keep their own
+ * existing distance cells. Units: world metres. */
+export const ENVIRONMENT_BATCHING = Object.freeze({ spatialBatchMetres: 256,
+  /** RL-4: metric facades split polygons at the accepted 32 m and draw one
+   * batch per finish, 256 m batch cell and caster role (owner, 2026-10-04).
+   * The same polygons and triangles cut the city spawn's facade calls from
+   * 96 to 16; moved batch origins flip isolated edge pixels through Float32
+   * rounding, a trade the owner accepted. */
+  metricFacadeBatchMetres: 256, metricFacadeChunkMetres: 32 });
+
+export const ENVIRONMENT_VEGETATION = Object.freeze({
+  /** Local tree/shrub instance bounds allow colour and shadow frustum culling. */
+  treeBatchMetres: 64,
+  /** Lower-detail colour only, beyond the nearest point of a conservative
+   * cell sphere. Shadows always keep the accepted near silhouette. */
+  treeDetailStartMetres: 64,
+  treeFarStartMetres: 150,
+  /** Narrower camera lenses retain detail farther out; wider panes never
+   * pull the near-detail boundary toward the player. Degrees. */
+  treeDetailReferenceFovDegrees: 55,
+  latticeMetres: 1.0, jitterShare: 0.88, broadClusterCells: 9, fineClusterCells: 3,
+  minimumDensity: 0.12, broadDensity: 0.52, fineDensity: 0.24,
+  ordinaryClumpLimit: 12288, ultraClumpLimit: 24576, maximumCandidateChecks: 98304,
+  ordinaryPopulationShare: 0.68, ordinaryBlades: 9, enrichmentBlades: 4,
+  corridorCoverReachMetres: 6, corridorCandidateShare: 0.88,
+  minimumHeight: 0.08, maximumHeight: 0.18, footprintRadius: 0.50,
+  maximumSupportError: 0.012, rootLift: 0.001, minimumUpNormal: 0.82,
+  routeSampleMetres: 0.5, routeMargin: 0.30, exclusionBucketMetres: 16,
+  maximumSpatialBatches: 96, minimumBatchMetres: 24,
+  windMetres: 0.018, windPeriodSeconds: 512,
+  windCycles: Object.freeze([59, 95, 50, 84] as const), fadeStartMetres: 60, fadeEndMetres: 100,
+  roughness: 0.88, rootColour: 0x56623d, tipColour: 0x839258,
+});
+
+/** Colour-distance boundaries per ordinary tier (RL-1, 2026-10-03). High, and
+ * Ultra drawn over it, keeps ENVIRONMENT_VEGETATION's accepted values exactly.
+ * Low and Medium move the same per-camera boundaries nearer: tree, crown and
+ * shrub cells reach their middle and far ranges sooner and ground cover fades
+ * sooner. Render-only: generation, collision, population and the shadow
+ * silhouette are untouched. Metres. */
+export const VEGETATION_TIER_DETAIL = Object.freeze({
+  high: Object.freeze({ treeDetailStartMetres: ENVIRONMENT_VEGETATION.treeDetailStartMetres,
+    treeFarStartMetres: ENVIRONMENT_VEGETATION.treeFarStartMetres,
+    grassFadeStartMetres: ENVIRONMENT_VEGETATION.fadeStartMetres, grassFadeEndMetres: ENVIRONMENT_VEGETATION.fadeEndMetres }),
+  // TIER-LOW-1 (2026-10-04): the middle tree form is open enough to read as a
+  // see-through lattice against a bright sky from 24 m (Low) or 40 m
+  // (Medium) — the trees beside Switchback's trail — so it starts at 40 m and
+  // 56 m; the far boundaries and the grass fades keep their savings.
+  medium: Object.freeze({ treeDetailStartMetres: 56, treeFarStartMetres: 100, grassFadeStartMetres: 40, grassFadeEndMetres: 64 }),
+  low: Object.freeze({ treeDetailStartMetres: 40, treeFarStartMetres: 60, grassFadeStartMetres: 24, grassFadeEndMetres: 40 }),
+});
+
+/** Couch detail (PERF-R2-1, 2026-10-04). From three panes on, every pane is
+ * a quarter of the canvas, so a tree or tuft d metres away covers the pixels
+ * it would at d / paneScale alone. Such panes use their tier's boundaries
+ * scaled by paneScale, and each tier keeps its own way of judging a tree
+ * cell (High the cell sphere), so every form switches at the on-screen size
+ * solo play at that tier does. One and two panes, and Ultra (always one),
+ * keep their tier's rules exactly. Render-only, like VEGETATION_TIER_DETAIL. */
+export const VEGETATION_COUCH_DETAIL = (() => {
+  const minimumPanes = 3, paneScale = 0.5;
+  const scaled = (rules: (typeof VEGETATION_TIER_DETAIL)[keyof typeof VEGETATION_TIER_DETAIL]) => Object.freeze({
+    treeDetailStartMetres: rules.treeDetailStartMetres * paneScale, treeFarStartMetres: rules.treeFarStartMetres * paneScale,
+    grassFadeStartMetres: rules.grassFadeStartMetres * paneScale, grassFadeEndMetres: rules.grassFadeEndMetres * paneScale });
+  return Object.freeze({ minimumPanes, paneScale, high: scaled(VEGETATION_TIER_DETAIL.high),
+    medium: scaled(VEGETATION_TIER_DETAIL.medium), low: scaled(VEGETATION_TIER_DETAIL.low) });
+})();
+
+/** Living-world authoring clearances, dimensions and density. All lengths in metres, speeds in metres per second. */
+export const POPULATION_AUTHORING = Object.freeze({
+  revision: 'living-r1' as const,
+  traceSpacingMetres: 0.5,
+  groundProbeSpacingMetres: 0.25,
+  joinToleranceMetres: 0.02,
+  joinHeadingToleranceRadians: 0.03,
+  maximumSourceSpacingMetres: 1,
+  maximumPeople: 20,
+  /** Hashed into new purposeful-walk physical identity; old prepared plans keep their prior actor policy. */
+  activityWalkPolicyRevision: 'district-walk-r15e' as const,
+  /** Power-of-two fallback lattice: 63 interior stations plus two authored endpoints, only after legacy primary choices fail. */
+  activityFallbackStationDivisions: 64,
+  maximumRiders: 4,
+  maximumParkedVehicles: 3,
+  maximumServiceVehicles: 1,
+  maximumTrafficVehicles: 2,
+  /** Rectangular actor half-extents; authoring clears their diagonal, not one side. */
+  pedestrianRadiusMetres: 0.42,
+  riderRadiusMetres: 0.65,
+  vehicleHalfWidthMetres: 1.02,
+  vehicleHalfLengthMetres: 2.4,
+  vehicleHeightMetres: 2.8,
+  actorHeightMetres: 1.9,
+  staticClearanceMetres: 0.12,
+  spawnClearanceMetres: 9,
+  checkpointClearanceMetres: 4,
+  featureClearanceMetres: 3,
+  hazardClearanceMetres: 1.25,
+  targetClearanceMetres: 2,
+  lapClearanceMetres: 2,
+  maximumGroundGrade: 0.12,
+  maximumCrossGrade: 0.12,
+  maximumStepMetres: 0.12,
+  /** A source corridor frame cannot silently become a roof/solid-top route. */
+  maximumGroundReferenceDifferenceMetres: 0.5,
+  minimumWalkMetres: 8,
+  minimumRideMetres: 20,
+  minimumTrafficMetres: 45,
+  maximumServiceShuttleMetres: 16,
+  minimumVehicleTurnRadiusMetres: 7,
+  actorSpacingMetres: 10,
+  socialSpacingMetres: 1.4,
+  anchorMaximumPropDistanceMetres: 14,
+  walkSpeedMetresPerSecond: 1.1,
+  jogSpeedMetresPerSecond: 2.6,
+  eucSpeedMetresPerSecond: 3.8,
+  serviceSpeedMetresPerSecond: 1,
+  trafficSpeedMetresPerSecond: 5.5,
+  idleSeconds: 3,
+  epsilon: 1e-8,
+});
+
+
+/** Shared material detail; lengths in metres, amplitudes in linear space.
+ * No displacement or changes to physical terrain normals. */
+export const DISTRICT_EXTERIOR = Object.freeze({
+  masonry: { roughness: 0.91, metalness: 0 },
+  frame: { roughness: 0.74, metalness: 0.05 },
+  roofEdge: { roughness: 0.63, metalness: 0.08 },
+  planting: { roughness: 0.91, metalness: 0 },
+  entry: { roughness: 0.72, metalness: 0.08 },
+  glazing: { roughness: 0.28, metalness: 0.12 },
+  entryColour: 0x49646b,
+  entryColours: [0x49646b, 0x605048, 0x484f41] as const,
+  glazingColour: 0x334951,
+  wallTone: 1.10,
+  frameTone: 0.72,
+  roofTone: 0.85,
+  plantingTone: 1.04,
+} as const);
+
+export const SHARED_GROUND = Object.freeze({
+  textureSize: 256,
+  /** Albedo shoulder wholly inside the unchanged source ground region. */
+  shoulderMetres: 0.55,
+  pavedShoulderShare: 0.45,
+  cellWeight: 0,
+  midWeight: 0.44,
+  coarseWeight: 0.42,
+  fieldMidMetres: 5.7,
+  fieldCoarseMetres: 27,
+  grass: { metres: 2.8, contrast: 0.48, macroContrast: 0.38, reliefMetres: 0.024, roughnessVariation: 0.08 },
+  dirt: { metres: 3.1, contrast: 0.42, macroContrast: 0.30, reliefMetres: 0.018, roughnessVariation: 0.10 },
+  gravel: { metres: 1.65, contrast: 0.44, macroContrast: 0.18, reliefMetres: 0.028, roughnessVariation: 0.10 },
+  pavement: { metres: 2.4, contrast: 0.18, macroContrast: 0.20, reliefMetres: 0.003, roughnessVariation: 0.06 },
+  roughPavement: { metres: 2.4, contrast: 0.26, macroContrast: 0.24, reliefMetres: 0.006, roughnessVariation: 0.08 },
+  concrete: { metres: 2.0, contrast: 0.095, macroContrast: 0.10, reliefMetres: 0.002, roughnessVariation: 0.05 },
+  wood: { metres: 2.4, contrast: 0.18, macroContrast: 0.08, reliefMetres: 0.003, roughnessVariation: 0.08 },
+  /** Shared low riding blocks: compacted earth / weathered timber tops
+   * separate from their exposed sides. Linear reflectance multipliers,
+   * height is exposed above real source support, never the buried base.
+   * The takeoff band partitions the original top plane without changing grip,
+   * source hull, hazard colour, material response or light/exposure. */
+  feature: { maximumHeightMetres: 1.4, minimumShortSideMetres: 0.7, minimumLongSideMetres: 2,
+    minimumTakeoffDropMetres: 0.30, takeoffBandWidthMetres: 0.14,
+    takeoffBandRelativeReflectance: 0.62,
+    earthTop: 1.42, timberTop: 1.30, sideFoot: 0.76, sideLip: 0.96 },
+} as const);
+
+/** Shared brick paving: albedo detail within the original material region. */
+export const GROUND_PAVING = Object.freeze({
+  /** Running-bond paver dimensions, in metres. */
+  lengthMetres: 0.42,
+  widthMetres: 0.21,
+  /** Mortar seam width, in metres; it is filtered over the pixel footprint. */
+  jointMetres: 0.018,
+  /** Linear albedo reduction at a fully resolved seam, and per-paver variation. */
+  jointDarken: 0.24,
+  toneVariation: 0.045,
+  /** Fade subpixel detail over this world-space footprint interval, in metres. */
+  fadeStartMetres: 0.055,
+  fadeEndMetres: 0.16,
+} as const);
 
 /**
  * The optional Ultra graphics recipe — M39 (`docs/PLANS.md` §39.6,
@@ -7418,52 +7794,7 @@ export const ULTRA = {
      * that, and one near-straight line through an irregular digital staircase
      * (see `groundContact.ts`, `edgeFillFor`).
      */
-    edge: {
-      /**
-       * The most a filled point may sit from the outranking surface, in cells.
-       * §6's rule is ½ cell; the exact straight line needs `n/(n+1)` for a 1:n
-       * staircase — 0.667 at 1:2 and 0.75 at 1:3 — so the cap is 0.75, the
-       * ceiling the brief allows for a shallow diagonal. At ½ a 1:2 line would
-       * zig-zag between 45° and 18° segments with a half-cell amplitude.
-       */
-      capCells: 0.75,
-      /**
-       * …and never more than this many metres, whatever the spacing: the
-       * visual boundary is a gameplay honesty, and Switchback's 1.5 m cells
-       * would otherwise let turf cover 1.1 m of the riding trail.
-       */
-      capMetres: 0.75,
-      /**
-       * The cap into a **drivable** cell, in cells (coordinator amendment
-       * A12; Wave 3, R-G): the rank-1 road (pavement, rough pavement) and the
-       * dirt the riding trails are laid in. The visual edge of what is ridden
-       * never moves more than half a cell from the ridden grid, so the ridden
-       * width reads true; `capCells` (¾) stays between non-drivable surfaces —
-       * and on the gravel verges, where a ½ cap drew the grass edge back into
-       * a visible sawtooth at the steeple (measured, `M39_ULTRA.md` §U2). A
-       * 1:1 boundary is still exact at ½ (it needs n/(n+1) = ½); a shallower
-       * one becomes a kneed ramp with a bump of at most ½ − ½/n.
-       */
-      drivableCapCells: 0.5,
-      /**
-       * The rounded knee on a drivable edge, in cells (coordinator amendment
-       * A18; Wave 4, R-G; round-2 item 8): at the ½ cap a 1:2 or 1:3 boundary
-       * is a kneed ramp, and its knee — where the ramp meets the cap — is
-       * drawn as the smooth maximum of the two lines' signed distances over
-       * this width, a tangent-continuous turn instead of a kink.
-       */
-      kneeRoundCells: 0.5,
-      /**
-       * …and the knee's gate is lifted by this share of that width before the
-       * boundary is pulled taut, because the rounding dips under the corner by
-       * about a quarter of it: the rounded knee keeps to the ½ cap.
-       */
-      kneeLiftShare: 0.28,
-      /** A filled cell keeps at least this share of its area uncovered. */
-      minKeptArea: 0.1,
-      /** `ultraEdge` for "no line here", in cells: far outside every cell. */
-      sentinel: -4,
-    },
+    edge: GROUND_BOUNDARY,
 
     /** The painted detail maps and the per-surface detail they feed. */
     detail: {
@@ -9563,6 +9894,36 @@ export const DRUNK = {
   stumbleYaw: 0.07,
 } as const;
 
+/** Render-owned activity inside original protecting building bodies only.
+ * This table supplies the one shared world-clock pose; it reaches no rider
+ * controller, referee, source level or player option. Distances are metres,
+ * angles radians, times seconds, and shares/cycle counts dimensionless. */
+export const PROTECTED_ACTIVITY = {
+  travelMetres: 0.6,
+  walkSeconds: 2.6,
+  turnSeconds: 0.6,
+  idleSeconds: 1.4,
+  strideCyclesPerLeg: 2,
+  workerWidthShare: -0.205,
+  workerDepthMetres: -3.195,
+  armRestRadians: 0.18,
+  armStrideRadians: 0.06,
+  armServicePitchRadians: -1.20,
+  shoeWidthMetres: 0.16,
+  shoeHeightMetres: 0.10,
+  shoeDepthMetres: 0.28,
+  shoeCenterYMetres: 0.112,
+  ankleYMetres: 0.162,
+  hipYMetres: 0.94,
+  footStrideMetres: 0.08,
+  footLiftMetres: 0.022,
+  /** Slow protected ventilation; its fixed guard stands in front of the rotor. */
+  fanPeriodSeconds: 12,
+  fanWidthShare: -0.36,
+  fanHeightMetres: 2.60,
+  fanFrontInsetMetres: 1.40,
+} as const;
+
 /**
  * The one frozen tuning root (AGENTS.md invariant 4).
  *
@@ -9579,6 +9940,7 @@ export const TUNING = deepFreeze({
   WHEEL,
   RIDER,
   RIDER_BLOCKOUT,
+  RIDER_OCCUPANCY,
   PHYSICS,
   EUC,
   TERRAIN,
@@ -9598,9 +9960,17 @@ export const TUNING = deepFreeze({
   DRUNK,
   FX,
   AUDIO,
+  ENVIRONMENT_AMBIENCE,
+  PROTECTED_ACTIVITY,
   CHALLENGE,
   SIMULATION,
   RENDER,
+  GROUND_BOUNDARY,
+  GROUND_PAVING,
+  SHARED_GROUND,
+  DISTRICT_EXTERIOR,
+  ENVIRONMENT_VEGETATION,
+  POPULATION_AUTHORING,
   // M39: addressed by path (`ULTRA.nearBias`, `ULTRA.shade.lift` …) for the fifteen live values.
   ULTRA,
   INPUT,
@@ -12398,3 +12768,132 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
       + 'never closes, or closes too fast.',
   },
 ]);
+
+
+/** Shared living-world simulation tuning. Units are metres, seconds, metres/second and radians. */
+/** Whole-source ground observation caps, counts per query. Exceeding one returns
+ * UNKNOWN/overflow; no checked prefix is ever called a complete certificate.
+ * These are work bounds, not terrain tolerances or new physical admission limits. */
+export const GROUND_CERTIFICATE = Object.freeze({
+  maximumFieldCells: 256,
+  maximumGridCells: 64,
+  maximumColliderReferences: 512,
+  maximumHazardReferences: 128,
+});
+
+export const POPULATION = Object.freeze({
+  maximumStepSeconds: 0.25,
+  humanAccelerationMetresPerSecondSquared: 2.2,
+  humanBrakingMetresPerSecondSquared: 3.4,
+  vehicleAccelerationMetresPerSecondSquared: 0.9,
+  vehicleBrakingMetresPerSecondSquared: 2.5,
+  humanLookAheadSeconds: 0.8,
+  vehicleLookAheadSeconds: 1.8,
+  humanWaitingGapMetres: 0.25,
+  vehicleWaitingGapMetres: 0.65,
+  /** Behavioral compact-body forecast uncertainty, metres; never collision skin. */
+  compactAnticipationUncertaintyMetres: 0.25,
+  /** At most this many detached wheel/human rows; overflow waits every moving vehicle. */
+  compactAnticipationMaximumComponents: 64,
+  /** Per moving vehicle, original source spans visited in one behavior forecast. */
+  compactAnticipationMaximumSpans: 64,
+  /** Per moving vehicle, bounded span/blocker tests; overflow is a stop request. */
+  compactAnticipationMaximumBlockerTests: 8192,
+  endpointTurnRadiansPerSecond: 2.2,
+  endpointTurnToleranceRadians: 0.005,
+  workerExcursionMetres: 2.5,
+  contactCooldownSeconds: 0.7,
+  impactPauseSeconds: 1.2,
+  separationMetresPerSecond: 1.8,
+  recoveryMarginMetres: 0.35,
+  /** A committed placement reserves its destination through the next NPC look-ahead. */
+  placementReservationSeconds: 1.8,
+  /** CPU reaction allowance and nearest living-body scan floor, seconds/metres. */
+  copReactionSeconds: 0.35,
+  copMinimumLookAheadMetres: 6,
+  contactSkinMetres: 0.001,
+  /** Extra endpoint reserve for a native fall/air side contact projection, metres:
+   * the sealed retry's, and since 2026-10-03 (CP-1) any unheld one that must move
+   * the body anyway, so it never rests a skin apart and costs thousands of proof
+   * evaluations. Nonlinear body support can protrude between skin-clear endpoints. This
+   * constructs a different native candidate; unchanged continuous admission,
+   * static/uphill guards and original dt still decide whether it may commit. */
+  nativePhaseRetryReserveMetres: 0.025,
+  closedPositionToleranceMetres: 0.02,
+  closedHeadingToleranceRadians: 0.03,
+  sweepAngularToleranceRadians: 0.0001,
+  sweepMaximumSubdivisionDepth: 18,
+  /** Work bounds, not tolerances (CP-1, 2026-10-03). Fresh compiled enclosure
+   * evaluations one owner may spend per fixed step, and search nodes (remembered
+   * evaluations included) per owner per contact batch, before its earliest
+   * unproved contact time counts as contact: a refusal, never an admission. An
+   * evaluation costs ~0.02 ms for the wheel, ~0.16 ms for a mounted human and
+   * ~0.21 ms for a ragdoll (M1, unloaded). An ordinary step needs 1-33; a rag
+   * falling within ~2.5 m of a person needs up to ~130 in a step or two, which
+   * the held identical retry finishes over the next steps from the kept table.
+   * The late-reaction bounds are per admission, across every blocker and part
+   * (a crashed body's smaller: its evaluations are dearer), and within a fixed
+   * step they share what the whole-step proof left of `stepRefinementBudget`. */
+  sweepRefinementBudget: 48,
+  sweepRefinementNodeBudget: 1024,
+  stepRefinementBudget: 64,
+  /** The same work bound for one whole fixed step across EVERY owner and late
+   * reaction (R2C-6, 2026-10-04): seats beside one actor share it rather than
+   * each spending a full owner budget in the same step. ~5 ms of mounted
+   * enclosures at worst; a proof it cuts short waits as a held, resumed proof. */
+  stepTotalRefinementBudget: 32,
+  /** Below this enclosure residual an interval is decided by its own linear
+   * sweep, not bisected to the skin (R2C-6, 2026-10-04): a body may brush an
+   * actor's hull by at most this, never pass through it, and a legal pass a
+   * centimetre clear no longer costs a whole step's budget and a held step. */
+  sweepResolutionMetres: 0.025,
+  reactionClearanceNodeBudget: 48,
+  ragReactionClearanceNodeBudget: 24,
+  /** How far a crashed body's contact shape can reach beyond its particles' own
+   * box, metres: the garment/head envelope around the spine and the limb chains
+   * (R2C-1, 2026-10-04). A crashed owner is admitted against an actor only
+   * within this of its actual particles, never by a frame-gain bound. */
+  ragAdmissionReachMetres: 1.2,
+  epsilon: 1e-9,
+});
+
+/**
+ * How a rider answers a refused whole step against the living world, and how a
+ * crash recovers beside it (CP-1..CP-4, POP-3/POP-4, 2026-10-03). Seconds and
+ * metres. None of these is a collision margin: admission still decides every
+ * physical pose, and every recovery candidate passes the same placement check.
+ */
+export const POPULATION_CONTACT = Object.freeze({
+  /** Held time in the last half second (60 fixed steps, counted over a sliding
+   * window so alternating hold/advance cannot run in slow motion, R2C-6) after
+   * which a rider stops waiting for an unfinished proof (a held identical retry
+   * resumes it) and takes the contact response, and an airborne rider held by a
+   * contact bails out (R2C-2). A crashed body is never held (2026-10-04). */
+  holdWatchdogSeconds: 0.25,
+  /** A recovery refused this long tries the older safe trail, then short sideways
+   * offsets. Never the spawn: only a mode's own reset may void a lap (Track Day). */
+  recoveryFallbackSeconds: 0.5,
+  /** Older validated safe points kept for that fallback, and their minimum spacing. */
+  recoveryRingPoints: 8,
+  recoveryRingSpacingMetres: 1,
+  /** Sideways offsets tried from the newest safe point, along its own lateral axis. */
+  recoveryLateralMetres: Object.freeze([1.2, -1.2, 2.4, -2.4]),
+  /** A rider sliding along a person or car eases this much further off them each step,
+   * so a lean that grows toward them keeps the slide going; the second is tried
+   * when the first is refused (2026-10-04). */
+  slideStandoffMetres: Object.freeze([0.004, 0.03]),
+  /** Less sideways travel than this in one step, or than this share of the step's
+   * travel (about 14 degrees off straight in), is head-on: no slide, the scrub in
+   * place answers it, as a wall's face does (2026-10-04). */
+  slideMinimumMetres: 0.001,
+  slideHeadOnShare: 0.25,
+  /** A pinned rider's refused pivot first eases this far back along the contact normal. */
+  pivotBackOffMetres: 0.02,
+});
+
+
+/** Conservative live rider/wheel interaction prism, metres. Independent of quality.
+ * Verify emitted posed-rig bounds before final population acceptance. */
+export const POPULATION_OCCUPANT = Object.freeze({
+  halfWidthMetres: 0.65, halfLengthMetres: 0.70, heightMetres: 2.10,
+});

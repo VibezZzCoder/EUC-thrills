@@ -398,7 +398,8 @@ test('a personal best set under ?mph= is refused, on the card and in the store',
   // And the store never saw it: no best for this world, no ghost, nothing to
   // race next time.
   const after = await page.evaluate(() => ({
-    best: window.game.records.best(window.game.levelPlan.id),
+    // 2026-10-03 (LC-1): records are filed under the engine-independent record key.
+    best: window.game.records.best(window.game.levelPlan.recordWorldId!),
     record: window.game.snapshot().record,
     persistent: window.game.records.persistent,
   }));
@@ -507,7 +508,8 @@ test('a default boot rides the shipped wheel with nothing in the store, and its 
   await expect(page.locator('[data-menu="results-panel"]')).toHaveAttribute('data-record', 'true');
   await expect(page.locator('[data-menu="results-heading"]')).toHaveText('New record');
   await expect(page.locator('[data-menu="results-notes"]')).not.toContainText('Diagnostic run');
-  const saved = await page.evaluate(() => window.game.records.best(window.game.levelPlan.id));
+  // 2026-10-03 (LC-1): records are filed under the engine-independent record key.
+  const saved = await page.evaluate(() => window.game.records.best(window.game.levelPlan.recordWorldId!));
   expect(saved).not.toBeNull();
 
   // And a world swap from here writes no `mph` into the address.

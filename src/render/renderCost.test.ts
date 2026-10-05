@@ -686,12 +686,13 @@ test('the three frame ceilings retain their distinct pass counts', () => {
   // of each is pinned by the test below this one. QA r2 (2026-09-24): every
   // reserve +2 calls for the two particle fields measured live, so by the
   // same rule 212 → 214, 512 → 516 and 1,400 → 1,408.
-  assert.equal(RENDER_BUDGET.maxDrawCalls, 214);
+  assert.equal(RENDER_BUDGET.maxDrawCalls, 217);
   // M39 r6 (2026-09-22): triangles raised on the owner's authorization for the
   // town ring's larger ground; draw calls unchanged.
   assert.equal(RENDER_BUDGET.maxTriangles, 643_618);
-  assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls, 516);
+  assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls, 522);
   assert.equal(RENDER_BUDGET_SPLIT.maxTriangles, 1_374_264);
+  assert.equal(RENDER_BUDGET_QUAD.maxDrawCalls, 1_420);
   assert.ok(RENDER_BUDGET_QUAD.maxDrawCalls > RENDER_BUDGET_SPLIT.maxDrawCalls);
   assert.ok(RENDER_BUDGET_QUAD.maxTriangles > RENDER_BUDGET_SPLIT.maxTriangles);
   // And it is not four halves: the level is drawn four times but the world —
@@ -700,7 +701,10 @@ test('the three frame ceilings retain their distinct pass counts', () => {
   assert.ok(RENDER_BUDGET_QUAD.maxDrawCalls < RENDER_BUDGET_SPLIT.maxDrawCalls * 4);
 });
 
-test('Part P moved every ceiling with its reserve: the level keeps the share it had', () => {
+test('measured reserves and explicit route-face library expansion retain synchronized level shares', () => {
+  // Owner-authorized environment R15 adds three non-casting kit templates:
+  // +3 calls per view, without changing the measured non-level reserves.
+  // The historical Part P reserve-only amendment is recorded below.
   // **The library-plus-reserve lines** — M39 Part P (q209, q219; R-5). The
   // ceilings moved by `passes × reserve growth` and nothing else, so what a
   // level may spend under each contract is exactly what it was the day before
@@ -709,11 +713,11 @@ test('Part P moved every ceiling with its reserve: the level keeps the share it 
   // numbers `level/renderBudget.ts` and `render/presentation.ts` judge worlds
   // against, and a change here moves generated worlds — which Part P promised
   // it would not.
-  assert.equal(RENDER_BUDGET.maxDrawCalls - NON_LEVEL_RESERVE.drawCalls, 70, 'the solo level share (calls)');
+  assert.equal(RENDER_BUDGET.maxDrawCalls - NON_LEVEL_RESERVE.drawCalls, 73, 'the solo level share (calls)');
   assert.equal(RENDER_BUDGET.maxTriangles - NON_LEVEL_RESERVE.triangles, 513_382, 'the solo level share (triangles)');
-  assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls / SPLIT_PASSES - SPLIT_NON_LEVEL_RESERVE.drawCalls, 80);
+  assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls / SPLIT_PASSES - SPLIT_NON_LEVEL_RESERVE.drawCalls, 83);
   assert.equal(RENDER_BUDGET_SPLIT.maxTriangles / SPLIT_PASSES - SPLIT_NON_LEVEL_RESERVE.triangles, 507_774);
-  assert.equal(RENDER_BUDGET_QUAD.maxDrawCalls / QUAD_PASSES - QUAD_NON_LEVEL_RESERVE.drawCalls, 80);
+  assert.equal(RENDER_BUDGET_QUAD.maxDrawCalls / QUAD_PASSES - QUAD_NON_LEVEL_RESERVE.drawCalls, 83);
   assert.equal(RENDER_BUDGET_QUAD.maxTriangles / QUAD_PASSES - QUAD_NON_LEVEL_RESERVE.triangles, 503_844);
   // Contract 1 is still exactly the set-union bound, as it has been since the
   // library bound was derived: the library at its largest plus the reserve.
@@ -750,7 +754,7 @@ test('the split frame is judged against its own larger ceiling', () => {
   // Distinct frame budgets still apply after the owner-authorized upgrade.
   assert.ok(RENDER_BUDGET_SPLIT.maxDrawCalls > RENDER_BUDGET.maxDrawCalls);
   assert.ok(RENDER_BUDGET_SPLIT.maxTriangles > RENDER_BUDGET.maxTriangles);
-  assert.equal(RENDER_BUDGET.maxDrawCalls, 214, 'Contract 1 moved');
+  assert.equal(RENDER_BUDGET.maxDrawCalls, 217, 'Contract 1 moved');
   assert.equal(RENDER_BUDGET.maxTriangles, 643_618, 'Contract 1 moved');
   // And a single-player verdict is still judged against Contract 1: a plan
   // that fits the split ceiling but not the phone one must still be refused.

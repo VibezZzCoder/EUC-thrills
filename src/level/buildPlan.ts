@@ -14,6 +14,7 @@ import {
 import type { PropKind } from '../data/props.ts';
 import type { MaterialId } from '../data/surfaces.ts';
 import type { VenueLook } from '../data/venueLook.ts';
+import { emitPopulationPaths, type PopulationPathRequest } from './populationPlan.ts';
 import type {
   BoxCollider,
   Checkpoint,
@@ -41,6 +42,7 @@ import {
   placeGraph,
   propsOf,
   querySegment,
+  gripAtLateral,
   surfaceAtLateral,
   type PlacedMarking,
   type PlacedProp,
@@ -67,6 +69,8 @@ import {
  */
 
 export interface BuildOptions {
+  /** Explicit pedestrian, rider or vehicle bands. Omitted on legacy fixtures. */
+  readonly populationPathRequests?: readonly PopulationPathRequest[];
   readonly id: string;
   readonly spawn: { position: Vec3; headingY: number };
   readonly surround: Surround;
@@ -647,14 +651,21 @@ export function buildLevelPlan(
   const cellColumns = columns - 1;
   const cellRows = rows - 1;
   const surfaces = new Array<SurfaceId>(cellColumns * cellRows);
+  // Grip-only cells, resolved at the same cell centre (`SegmentSpec.gripBands`).
+  const grip = new Map<number, SurfaceId>();
   for (let row = 0; row < cellRows; row += 1) {
     const z = originZ + (row + 0.5) * spacing;
     for (let column = 0; column < cellColumns; column += 1) {
       const x = originX + (column + 0.5) * spacing;
       const best = bestSegmentAt(placed, x, z);
-      surfaces[row * cellColumns + column] = best !== null && best.outside === 0
+      const cell = row * cellColumns + column;
+      surfaces[cell] = best !== null && best.outside === 0
         ? surfaceAtLateral(best.segment.spec, best.t, best.s)
         : options.surround.surface;
+      if (best !== null && best.outside === 0 && best.segment.spec.gripBands !== undefined) {
+        const ridden = gripAtLateral(best.segment.spec, best.t, best.s);
+        if (ridden !== undefined && ridden !== surfaces[cell]) grip.set(cell, ridden);
+      }
     }
   }
 
@@ -747,6 +758,14 @@ export function buildLevelPlan(
     }
   }
 
+  // A spill painted over a grip cell is the spill, whole.
+  const traction: Record<number, SurfaceId> = {};
+  let gripCells = 0;
+  for (const [cell, ridden] of grip) {
+    if (surfaces[cell] === 'spill') continue;
+    traction[cell] = ridden;
+    gripCells += 1;
+  }
   const heightfield: Heightfield = {
     originX,
     originZ,
@@ -755,6 +774,7 @@ export function buildLevelPlan(
     rows,
     heights,
     surfaces,
+    ...(gripCells === 0 ? {} : { traction }),
   };
 
   const segments: Segment[] = placed.map((segment) => ({
@@ -870,13 +890,24 @@ export function buildLevelPlan(
     else solids.push(solid);
   }
 
+  // -- Hazards ------------------------------------------------------------
+  // Resolved before compact-trail paint and for the same reason a gate is: a
+  // hazard sits on the *finished* ground, which is the ground the contact patch
+  // is tested against. The spills among them painted their cells before the
+  // heightfield was assembled, because a surface has to exist before the field
+  // is frozen; what this adds is the record `render/` draws pothole rims from
+  // and `EucController.updateSafePosition` reads for every kind (`plan.ts`).
+  const hazards = resolveHazards(placed, heightfield, options.surround, hazardSpecs);
+
   // -- Markings -----------------------------------------------------------
   // Resolved last for the same reason props are, and clipped against the
   // assembled level rather than against the segment that authored them.
   const markings: Marking[] = [];
+  const trailSolids = [...colliders, ...solids];
   for (const segment of placed) {
     for (const authored of markingsOf(segment)) {
-      markings.push(...clipMarking(placed, colliders, heightfield, options.surround, authored));
+      markings.push(...clipMarking(placed, authored.support === 'compactTrail' ? trailSolids : colliders,
+        heightfield, options.surround, authored, hazards));
     }
   }
 
@@ -888,15 +919,6 @@ export function buildLevelPlan(
   // `plan.ts` states why: a gate the rider passes under, built as a collider,
   // reads as ground three metres up.
   const checkpoints = resolveCheckpoints(placed, heightfield, options.surround, options.checkpoints);
-
-  // -- Hazards ------------------------------------------------------------
-  // Resolved last for the fourth time and for the same reason a gate is: a
-  // hazard sits on the *finished* ground, which is the ground the contact patch
-  // is tested against. The spills among them painted their cells before the
-  // heightfield was assembled, because a surface has to exist before the field
-  // is frozen; what this adds is the record `render/` draws pothole rims from
-  // and `EucController.updateSafePosition` reads for every kind (`plan.ts`).
-  const hazards = resolveHazards(placed, heightfield, options.surround, hazardSpecs);
 
   // -- Targets --------------------------------------------------------------
   // Resolved last for the fifth time and for the fifth identical reason: a
@@ -918,6 +940,7 @@ export function buildLevelPlan(
   // because the emitted `Segment` keeps only its two sockets — the arc between
   // them, which is the whole shape of a corner, exists only here.
   const lap = lapCourse(mainChain, options.checkpoints);
+  const populationPaths = emitPopulationPaths(placed, options.populationPathRequests ?? []);
 
   return {
     id: options.id,
@@ -925,6 +948,7 @@ export function buildLevelPlan(
     surround: { ...options.surround },
     heightfield,
     segments,
+    ...(populationPaths.length === 0 ? {} : { populationPaths }),
     checkpoints,
     ...(hazards.length === 0 ? {} : { hazards }),
     // Absent, never empty — `LevelPlan.targets` states the contract and this is
@@ -1644,6 +1668,7 @@ function clipMarking(
   field: Heightfield,
   surround: Surround,
   marking: PlacedMarking,
+  hazards: readonly Hazard[],
 ): Marking[] {
   const runs: Marking[] = [];
   let current: Vec3[] = [];
@@ -1659,6 +1684,7 @@ function clipMarking(
         dash: marking.dash,
         gap: marking.gap,
         paint: marking.paint,
+        ...(marking.support === undefined ? {} : { support: marking.support }),
       });
     }
     current = [];
@@ -1681,8 +1707,12 @@ function clipMarking(
       surround,
       point.x + normalX * offset,
       point.z + normalZ * offset,
+      marking.support,
+      hazards,
     ));
-    if (!ribbonIsPaintable) {
+    const spanIsClear = marking.support !== 'compactTrail' || index === 0
+      || compactTrailSpanClear(marking.points[index - 1], point, halfWidth, colliders, hazards);
+    if (!ribbonIsPaintable || !spanIsClear) {
       flush();
       continue;
     }
@@ -1705,6 +1735,8 @@ function paintable(
   surround: Surround,
   x: number,
   z: number,
+  support: PlacedMarking['support'],
+  hazards: readonly Hazard[],
 ): boolean {
   let onCorridor = false;
   for (const segment of placed) {
@@ -1713,10 +1745,41 @@ function paintable(
   }
   if (!onCorridor) return false;
 
-  if (!PAINTABLE_SURFACES.includes(surfaceAt(field, surround, x, z))) return false;
+  const surface = surfaceAt(field, surround, x, z);
+  if (!PAINTABLE_SURFACES.includes(surface) && !(support === 'compactTrail' && surface === 'dirt')) return false;
+  if (support === 'compactTrail' && hazards.some(hazard =>
+    Math.hypot(x - hazard.centre.x, z - hazard.centre.z) <= hazard.radius + MARKINGS.colliderClearance)) return false;
 
   for (const collider of colliders) {
     if (withinCollider(collider, x, z, MARKINGS.colliderClearance)) return false;
+  }
+  return true;
+}
+
+/** Continuous swept clearance for explicit trail glyphs, including thin objects
+ * between the normal paint samples. Ordinary road clipping remains unchanged. */
+function compactTrailSpanClear(from: { x: number; z: number }, to: { x: number; z: number },
+  halfWidth: number, solids: readonly BoxCollider[], hazards: readonly Hazard[]): boolean {
+  const margin = halfWidth + MARKINGS.colliderClearance;
+  const dx = to.x - from.x, dz = to.z - from.z, length2 = dx * dx + dz * dz;
+  for (const hazard of hazards) {
+    const u = length2 > 0 ? Math.max(0, Math.min(1,
+      ((hazard.centre.x - from.x) * dx + (hazard.centre.z - from.z) * dz) / length2)) : 0;
+    if (Math.hypot(from.x + dx * u - hazard.centre.x, from.z + dz * u - hazard.centre.z)
+      <= hazard.radius + margin) return false;
+  }
+  for (const solid of solids) {
+    const c = Math.cos(solid.rotationY), s = Math.sin(solid.rotationY);
+    const x = (from.x - solid.centre.x) * c - (from.z - solid.centre.z) * s;
+    const z = (from.x - solid.centre.x) * s + (from.z - solid.centre.z) * c;
+    const vx = dx * c - dz * s, vz = dx * s + dz * c;
+    let low = 0, high = 1;
+    for (const [p, v, extent] of [[x, vx, solid.halfExtents.x + margin], [z, vz, solid.halfExtents.z + margin]]) {
+      if (Math.abs(v) < 1e-12) { if (Math.abs(p) > extent) { high = -1; break; } }
+      else { const a = (-extent - p) / v, b = (extent - p) / v;
+        low = Math.max(low, Math.min(a, b)); high = Math.min(high, Math.max(a, b)); }
+    }
+    if (low <= high) return false;
   }
   return true;
 }

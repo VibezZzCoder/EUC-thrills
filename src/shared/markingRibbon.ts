@@ -166,6 +166,51 @@ export function ribbonQuads(
   return quads;
 }
 
+/** Exact vertex count for the same emission as `appendMarking`.
+ * Each dash span owns two vertices at every row; spans never share a seam. */
+export function ribbonVertices(
+  points: readonly RibbonPoint[],
+  dash: number,
+  gap: number,
+): number {
+  if (points.length < 2) return 0;
+  const lengths = arcLengths(points);
+  const total = lengths[lengths.length - 1];
+  if (total <= 0) return 0;
+  return dashSpans(total, dash, gap).reduce((sum, span) => sum + ribbonRows(span.to - span.from) * 2, 0);
+}
+
+/** Source-only counts for the single merged markings geometry. */
+export interface MarkingGeometryInput {
+  readonly points: readonly RibbonPoint[];
+  readonly dash: number;
+  readonly gap: number;
+}
+
+export interface MarkingGeometryCount {
+  readonly vertices: number;
+  readonly indices: number;
+  readonly triangles: number;
+}
+
+export function markingGeometry(markings: readonly MarkingGeometryInput[]): MarkingGeometryCount {
+  let vertices = 0, triangles = 0;
+  for (const marking of markings) {
+    vertices += ribbonVertices(marking.points, marking.dash, marking.gap);
+    triangles += ribbonQuads(marking.points, marking.dash, marking.gap) * 2;
+  }
+  return { vertices, indices: triangles * 3, triangles };
+}
+
+/** Exact BufferGeometry.setIndex(number[]) choice in this Three revision.
+ * Index 65535 is primitive restart, so it already promotes the whole buffer. */
+export function markingIndexBytes(vertices: number, indices: number): number {
+  if (!Number.isSafeInteger(vertices) || vertices < 0 || !Number.isSafeInteger(indices) || indices < 0) {
+    throw new Error('Marking index counts must be finite safe nonnegative integers');
+  }
+  return indices * (vertices - 1 >= 65535 ? 4 : 2);
+}
+
 /**
  * The point at `distance` along the polyline, written into `out`.
  *

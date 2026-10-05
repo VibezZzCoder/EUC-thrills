@@ -1,7 +1,8 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import * as THREE from 'three';
 import { ULTRA } from '../../data/tuning.ts';
@@ -65,7 +66,7 @@ const GROUND_DETAIL = createUltraGroundDetail(1);
  *    here in milliseconds.
  */
 
-const THREE_ROOT = join(import.meta.dirname, '..', '..', '..', 'node_modules', 'three');
+const THREE_ROOT = join(dirname(fileURLToPath(import.meta.resolve('three'))), '..');
 const SHADERS = join(THREE_ROOT, 'src', 'renderers', 'shaders');
 
 function pinnedText(source: string): string {
@@ -167,6 +168,7 @@ function everyMaterial(): { label: string; material: THREE.Material; instanced: 
         material: ultraPropMaterial(part, { roughness: 0.9, metalness: part === 'lampPost' ? 0.6 : 0, map }, context, atlas ? fakeMaps() : null),
         instanced: true,
       });
+      if (part === 'crown' || part === 'shrub') out.push({ label: `${name}/${part}/wood`, material: ultraPropMaterial(part, { roughness: 1, metalness: 0, map: null, vegetationWood: true }, context, null), instanced: true });
       if (atlas) {
         out.push({
           label: `${name}/${part}/no-maps`,
@@ -780,14 +782,14 @@ test('pre-R1 lighting: shade fill is desaturated toward the haze, rough reflecti
   assert.ok(maps > 0 && hue > maps, 'the haze hue is not after the environment');
   assert.ok(trunk.includes('float ultraKeep = mix( 1.0, mix( ultraFillSaturation, ultraFillSunSaturation, ultraSunShare ), ultraSkyShare );'));
   assert.ok(trunk.includes('radiance = mix( radiance, dot( radiance, ultraLuma ) * ultraSurfaceHue, ultraRough );'));
-  assert.ok(!trunk.includes('iblIrradiance *= ultraFoliageSkyFill;'), 'a trunk is not a canopy');
+  assert.ok(!trunk.includes('iblIrradiance *= mix(1.0, ultraFoliageSkyFill, ultraLeafResponse());'), 'a trunk is not a canopy');
   assert.ok(!/ULTRA_CAVITY|iblIrradiance = getIBLIrradiance/.test(trunk.replace(/#if[^\n]*ULTRA_CAVITY[^\n]*/g, '')));
   // Four bilinear compare fetches on the far map, skipped inside the near box.
   assert.equal((trunk.match(/textureLod\( ultraFarMap,/g) ?? []).length, 4);
 
   // Foliage takes the canopy's sky light, on the fill only.
   const crown = lit(ultraPropMaterial('crown', { roughness: 0.9, metalness: 0, map: null }, context, null), { ULTRA_FOLIAGE: '' });
-  assert.ok(crown.indexOf('iblIrradiance *= ultraFoliageSkyFill;') > crown.indexOf('iblIrradiance = mix( dot( iblIrradiance, ultraLuma ) * ultraHue, iblIrradiance, ultraKeep );'));
+  assert.ok(crown.indexOf('iblIrradiance *= mix(1.0, ultraFoliageSkyFill, ultraLeafResponse());') > crown.indexOf('iblIrradiance = mix( dot( iblIrradiance, ultraLuma ) * ultraHue, iblIrradiance, ultraKeep );'));
   assert.ok(crown.includes('pow( saturate( dot( geometryViewDir, - directLight.direction ) ), ultraFoliageTransmissionPower )'));
 
   // Pothole ground: the bowl's fill is the up-facing face's, and its sheen is
@@ -806,7 +808,7 @@ test('Wave 3 (R-L): foliage filters its own shade — a fixed tent and a receive
   const defines = { ...threeDefines({ instanced: true, shadows: true, maps: false }), STANDARD: '', USE_FOG: '' };
   const lit = (material: THREE.Material, extra: Record<string, string>): string =>
     preprocess(resolveIncludes(compile(material).fragmentShader), { ...defines, ...extra });
-  const call = 'if ( frustumTest ) shadow = ultraFoliageShadow( shadowMap, vec3( shadowCoord.xy, shadowCoord.z - ultraFoliageReceiveBias ), shadowMapSize );';
+  const call = 'if ( frustumTest && ultraLeafResponse() > 0.5 ) shadow = ultraFoliageShadow( shadowMap, vec3( shadowCoord.xy, shadowCoord.z - ultraFoliageReceiveBias ), shadowMapSize );';
 
   const conifer = lit(ultraPropMaterial('coniferFoliage', { roughness: 1, metalness: 0, map: null }, context, null), { ULTRA_FOLIAGE: '', ULTRA_FAR: '' });
   // Inside the PCF getShadow, after three's own taps and before the near fade reads `shadow`.
@@ -1922,7 +1924,7 @@ test('water follows the scene environment itself, at environmentIntensity × wat
 test('the attribute names are the published contract', () => {
   // The ground's edge attributes are the ground patch's own
   // (ultraGroundDetail.test.ts pins them); this patch declares these.
-  assert.deepEqual({ ...ULTRA_ATTRIBUTES }, { ao: 'ultraAo', relief: 'ultraRelief' });
+  assert.deepEqual({ ...ULTRA_ATTRIBUTES }, { ao: 'ultraAo', relief: 'ultraRelief', wood: 'vegetationWood' });
   // Each attribute appears in the vertex patch under a define.
   const vertex = patchUltraVertex(THREE.ShaderLib.standard.vertexShader);
   for (const name of Object.values(ULTRA_ATTRIBUTES)) {

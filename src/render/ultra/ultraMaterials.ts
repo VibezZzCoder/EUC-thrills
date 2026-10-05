@@ -206,6 +206,7 @@ function inlineChunk(
 export const ULTRA_ATTRIBUTES = Object.freeze({
   ao: 'ultraAo',
   relief: 'ultraRelief',
+  wood: 'vegetationWood',
 } as const);
 
 // ---------------------------------------------------------------------------
@@ -216,6 +217,10 @@ export const ULTRA_ATTRIBUTES = Object.freeze({
 const VERTEX_DECLARATIONS = /* glsl */ `
 // ---- M39 Ultra (render/ultra/ultraMaterials.ts) ----
 varying vec3 vUltraWorld;
+#ifdef ULTRA_VEGETATION_WOOD
+  attribute float vegetationWood;
+  varying float vUltraVegetationWood;
+#endif
 #ifdef ULTRA_AO
 	attribute float ultraAo;
 	varying float vUltraAo;
@@ -265,6 +270,9 @@ const PROJECT_VERTEX = /* glsl */ `
 #else
 	vUltraWorld = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
 #endif
+#ifdef ULTRA_VEGETATION_WOOD
+  vUltraVegetationWood = vegetationWood;
+#endif
 #ifdef ULTRA_AO
 	vUltraAo = ultraAo;
 #endif
@@ -285,6 +293,9 @@ const PROJECT_VERTEX = /* glsl */ `
  */
 const FOLIAGE_SHADOW_NORMAL = /* glsl */ `
 #ifdef ULTRA_FOLIAGE
+  #ifdef ULTRA_VEGETATION_WOOD
+    if (vegetationWood < 0.5)
+  #endif
 	shadowWorldNormal *= dot( shadowWorldNormal, ultraSunDirection ) < 0.0 ? - 1.0 : 1.0;
 #endif
 #ifdef ULTRA_FACADE_RECEIVE
@@ -570,6 +581,16 @@ uniform float ultraFillSaturation;
 uniform float ultraFillSunSaturation;
 uniform float ultraFillHazeTint;
 varying vec3 vUltraWorld;
+#ifdef ULTRA_VEGETATION_WOOD
+  varying float vUltraVegetationWood;
+#endif
+float ultraLeafResponse() {
+  #ifdef ULTRA_VEGETATION_WOOD
+    return 1.0 - vUltraVegetationWood;
+  #else
+    return 1.0;
+  #endif
+}
 
 // 1 inside the unit box, easing to 0 across the outer \`band\` (UV units).
 float ultraEdgeCoverage( const in vec2 coord, const in float band ) {
@@ -758,7 +779,7 @@ uniform float ultraEnvResponse;
  * three's taps.
  */
 const NEAR_FADE_RETURN = /* glsl */ `#if defined( ULTRA_FOLIAGE )
-				if ( frustumTest ) shadow = ultraFoliageShadow( shadowMap, vec3( shadowCoord.xy, shadowCoord.z - ultraFoliageReceiveBias ), shadowMapSize );
+				if ( frustumTest && ultraLeafResponse() > 0.5 ) shadow = ultraFoliageShadow( shadowMap, vec3( shadowCoord.xy, shadowCoord.z - ultraFoliageReceiveBias ), shadowMapSize );
 			#elif defined( ULTRA_GROUND ) || defined( ULTRA_GROUND_SHADOW )
 				if ( frustumTest ) shadow = ultraGroundShadow( shadowMap, shadowCoord.xyz, shadowMapSize, shadowRadius );
 			#elif defined( ULTRA_FACADE_RECEIVE )
@@ -794,8 +815,8 @@ const NEAR_FADE_RETURN = /* glsl */ `#if defined( ULTRA_FOLIAGE )
 const FOLIAGE_DIRECT = /* glsl */ `
 #ifdef ULTRA_FOLIAGE
 	float ultraWrapNL = saturate( ( dot( geometryNormal, directLight.direction ) + ultraFoliageWrap ) / ( 1.0 + ultraFoliageWrap ) );
-	reflectedLight.directDiffuse += ultraWrapNL * directLight.color * BRDF_Lambert( material.diffuseContribution );
-	reflectedLight.directDiffuse += ultraFoliageTransmission * directLight.color
+	reflectedLight.directDiffuse += mix( saturate(dot(geometryNormal, directLight.direction)), ultraWrapNL, ultraLeafResponse() ) * directLight.color * BRDF_Lambert( material.diffuseContribution );
+	reflectedLight.directDiffuse += ultraLeafResponse() * ultraFoliageTransmission * directLight.color
 		* pow( saturate( dot( geometryViewDir, - directLight.direction ) ), ultraFoliageTransmissionPower ) * material.diffuseContribution;
 #else
 	${A.directDiffuse}
@@ -807,6 +828,9 @@ const FOLIAGE_DIRECT = /* glsl */ `
  * `diffuseColor` is final and both normals exist.
  */
 const ALBEDO_EDITS = /* glsl */ `
+#ifdef ULTRA_VEGETATION_WOOD
+  roughnessFactor = mix(roughnessFactor, 0.95, vUltraVegetationWood);
+#endif
 #ifdef ULTRA_BRICK
 	{
 		// Running bond on the 2.8 m module, in world XZ: the lattice
@@ -868,7 +892,7 @@ const ROUGHNESS_FLOORS = /* glsl */ `
 const SHADE_NORMAL = /* glsl */ `
 ultraShadeNormal = transformNormalByInverseViewMatrix( nonPerturbedNormal, viewMatrix );
 #ifdef ULTRA_FOLIAGE
-	ultraShadeNormal *= dot( ultraShadeNormal, ultraSunDirection ) < 0.0 ? - 1.0 : 1.0;
+	if (ultraLeafResponse() > 0.5) ultraShadeNormal *= dot( ultraShadeNormal, ultraSunDirection ) < 0.0 ? - 1.0 : 1.0;
 #endif
 `;
 
@@ -1033,7 +1057,7 @@ const FILL_CHROMA = /* glsl */ `
 		radiance = mix( radiance, dot( radiance, ultraLuma ) * ultraSurfaceHue, ultraRough );
 	#endif
 	#ifdef ULTRA_FOLIAGE
-		iblIrradiance *= ultraFoliageSkyFill;
+		iblIrradiance *= mix(1.0, ultraFoliageSkyFill, ultraLeafResponse());
 	#endif
 	#if defined( ULTRA_GLASS ) && defined( USE_ROUGHNESSMAP ) && defined( RE_IndirectSpecular )
 		// Street-level glazing looks down: its reflection ray points below the
@@ -1459,7 +1483,7 @@ export type UltraFamily =
  * filter again, unless a material carries `ULTRA_GROUND_SCREEN_KERNEL`.
  * The ground, paint and block patches chain onto these families' keys.
  */
-const PATCH_VERSION = 8;
+const PATCH_VERSION = 9;
 
 /** The program cache key a family's materials share. */
 export function ultraProgramKey(family: UltraFamily | 'relief-depth'): string {
@@ -1513,6 +1537,36 @@ function installUltraPatch(
   };
   const key = ultraProgramKey(family);
   material.customProgramCacheKey = (): string => key;
+  return material;
+}
+
+/**
+ * Shared display additions take the world's established fill/chroma response.
+ * Paving also takes its stone static-shade lift and ground shadow filter, but
+ * has no terrain AO/edge attributes or extra detail maps. Preserve its owned
+ * metre-scale pattern hook. The caller restores the original material on
+ * ordinary tiers and disposes this clone; textures/uniforms remain borrowed.
+ */
+export function ultraSupplementMaterial(base: THREE.MeshStandardMaterial,
+  context: UltraBuildContext, paving: boolean): THREE.MeshStandardMaterial {
+  const material = base.clone();
+  const prior = base.onBeforeCompile, priorKey = base.customProgramCacheKey();
+  const defines = farDefines(context.recipe.ultra);
+  if (paving && context.recipe.ultra.lighting) defines.push('ULTRA_GROUND');
+  installUltraPatch(material, paving ? 'ground' : 'furniture', defines, context,
+    roughnessFloorFor(base.metalness));
+  if (paving) installUltraGroundPatch(material, {
+    kind: groundDetailKind('stone'), edge: false, detail: null,
+    shadeLift: context.recipe.ultra.lighting,
+    dynamicContact: context.recipe.ultra.ground,
+  });
+  const compiled = material.onBeforeCompile;
+  const key = material.customProgramCacheKey();
+  material.onBeforeCompile = (shader, renderer) => {
+    prior.call(material, shader, renderer);
+    compiled.call(material, shader, renderer);
+  };
+  material.customProgramCacheKey = () => `${key}/supplement/${priorKey}`;
   return material;
 }
 
@@ -1578,7 +1632,7 @@ export function ultraPropFamily(part: PartId): UltraFamily {
  */
 export function ultraPropMaterial(
   part: PartId,
-  base: { roughness: number; metalness: number; map: THREE.Texture | null },
+  base: { roughness: number; metalness: number; map: THREE.Texture | null; vegetationWood?: boolean },
   context: UltraBuildContext,
   maps: UltraFacadeMaps | null,
 ): THREE.MeshStandardMaterial {
@@ -1601,6 +1655,7 @@ export function ultraPropMaterial(
 
   const defines = farDefines(kit);
   if (family === 'foliage' && kit.lighting) defines.push('ULTRA_FOLIAGE');
+  if (base.vegetationWood && family === 'foliage' && kit.lighting) defines.push('ULTRA_VEGETATION_WOOD');
   if ((family === 'facade' || family === 'relief') && kit.buildings) defines.push('ULTRA_RELIEF');
   if (family === 'facade') defines.push('ULTRA_BASE_AO');
   if (family === 'facade' && withMaps && kit.lighting) defines.push('ULTRA_GLASS');

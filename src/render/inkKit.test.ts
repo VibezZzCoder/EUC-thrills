@@ -1,9 +1,12 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { ROUTE_SIGN_WORDS } from '../data/routeSigns.ts';
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { PARK_SIGN_WORDS } from '../data/markings.ts';
+import { STREET_SHOP_WORDS } from '../data/streetLife.ts';
+import { ENVIRONMENT_SIGN_WORDS } from '../data/environment.ts';
 import {
   LETTER_ASPECT,
   inkDisc,
@@ -246,6 +249,9 @@ test('nothing in this project prints a word it does not own', () => {
     "'VARGAS'",
     'GANTRY_WORDMARK',
     ...PARK_SIGN_WORDS.map((word) => `'${word}'`),
+    ...ROUTE_SIGN_WORDS.map((word) => `'${word}'`),
+    ...STREET_SHOP_WORDS.map((word) => `'${word}'`),
+    ...ENVIRONMENT_SIGN_WORDS.map((word) => `'${word}'`),
   ]);
   const offenders: string[] = [];
   let scanned = 0;
@@ -282,5 +288,6 @@ test('nothing in this project prints a word it does not own', () => {
       `${refused} is not on the approved list and the scan would let it through`,
     );
   }
-  assert.equal(allowed.size, PARK_SIGN_WORDS.length + 2, 'a word entered the allowance sideways');
+  assert.equal(allowed.size, new Set([...PARK_SIGN_WORDS, ...ROUTE_SIGN_WORDS, ...STREET_SHOP_WORDS, ...ENVIRONMENT_SIGN_WORDS]).size + 2,
+    'a word entered the allowance sideways');
 });

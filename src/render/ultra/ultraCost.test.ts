@@ -1,4 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { prepareOriginalCapSlots, priceOriginalCapSlots } from '../originalCapSlotPrice.ts';
 import { strict as assert } from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -228,7 +229,6 @@ test('every shipped world and 24 generated seeds land on the full rung, inside t
   let worst = { name: '', drawCalls: 0, triangles: 0 };
   const refused: string[] = [];
   const demoted: string[] = [];
-  const capTriangles = ULTRA_PART_COSTS.buildingCap.triangles;
   for (const [name, plan] of corpus) {
     const verdict = judgeUltra(plan, HEADLESS_CAPS);
     if (verdict.recipe === null) {
@@ -242,17 +242,11 @@ test('every shipped world and 24 generated seeds land on the full rung, inside t
     // change that pushes one of them down a rung has outgrown the settle:
     // re-measure and re-settle in §5, never loosen by hand.
     if (verdict.recipe !== ULTRA_FULL) demoted.push(`${name}: ${verdict.recipe.id}`);
-    // The far depth render as drawn: the model's layer-5 set plus, where a
-    // cap closes a slot (A16), the cap bucket once more. The lid is bounded
-    // here without building anything — one call, every cap's triangles —
-    // and measured exactly on the six worlds by the test below.
+    // The model now includes the exact conditional whole-cap repeat.
     const far = verdict.cost!.passes.find((pass) => pass.name === 'far-shadow-build');
     if (far !== undefined) {
-      const caps = planRenderCost(plan).partInstances.get('buildingCap') ?? 0;
-      const lid = caps > 1 ? { drawCalls: 1, triangles: caps * capTriangles } : { drawCalls: 0, triangles: 0 };
-      assert.ok(far.drawCalls + lid.drawCalls <= ULTRA_ENVELOPE.farDepthDraws, `${name}: far depth ${far.drawCalls} + ${lid.drawCalls} calls`);
-      assert.ok(far.triangles + lid.triangles <= ULTRA_ENVELOPE.farDepthTriangles,
-        `${name}: far depth ${far.triangles} + ${lid.triangles} triangles`);
+      assert.ok(far.drawCalls <= ULTRA_ENVELOPE.farDepthDraws, `${name}: far depth ${far.drawCalls} calls`);
+      assert.ok(far.triangles <= ULTRA_ENVELOPE.farDepthTriangles, `${name}: far depth ${far.triangles} triangles`);
     }
     if (verdict.cost!.solo.triangles > worst.triangles) {
       worst = { name, ...verdict.cost!.solo };
@@ -263,10 +257,8 @@ test('every shipped world and 24 generated seeds land on the full rung, inside t
 });
 
 test('A16\'s far-map slot lid is one draw of the cap bucket, exactly where a cap closes a slot', () => {
-  // The model's far pass is the layer-5 set (`ultraCost.ts`); the lid is the
-  // one draw it leaves out. Measured on the built worlds: the bucket that
-  // carries the slot attribute is the cap bucket, it is the only one, and
-  // it is what the corpus test above charges for it.
+  // The model includes the exact original cap owner; compare that conditional
+  // repeat against the independently built source bucket, without adding it twice.
   const expected: Record<string, number> = {
     'the slice': 1, 'BelVar Circuit': 0, 'Switchback Park': 0, 'the proving ground': 0,
     'the euc town': 1, 'the heavy seed (route-41 at 65 mph)': 1,
@@ -289,8 +281,11 @@ test('A16\'s far-map slot lid is one draw of the cap bucket, exactly where a cap
         assert.equal(perInstance, ULTRA_PART_COSTS.buildingCap.triangles, `${name}: the lid draws the cap geometry`);
         lidTriangles += perInstance * mesh.count;
       }
-      assert.ok(far.drawCalls + lids.length <= ULTRA_ENVELOPE.farDepthDraws, `${name}: far depth as drawn, calls`);
-      assert.ok(far.triangles + lidTriangles <= ULTRA_ENVELOPE.farDepthTriangles, `${name}: far depth as drawn, triangles`);
+      const near = ultraCost(plan, ULTRA_FULL).passes.find((pass) => pass.name === 'near-shadow')!;
+      assert.equal(far.drawCalls, near.drawCalls + lids.length, `${name}: actual source repeat calls`);
+      assert.equal(far.triangles, near.triangles + lidTriangles, `${name}: actual source repeat triangles`);
+      assert.ok(far.drawCalls <= ULTRA_ENVELOPE.farDepthDraws, `${name}: far depth as drawn, calls`);
+      assert.ok(far.triangles <= ULTRA_ENVELOPE.farDepthTriangles, `${name}: far depth as drawn, triangles`);
       if (name === 'the euc town') assert.equal(lidTriangles, 5_016, 'the euc town: 114 caps × 44');
     } finally {
       view.dispose();
@@ -322,8 +317,11 @@ test('the pass list: two every-frame scene renders, activation-only extras, no p
       if (far !== undefined) {
         const near = everyFrame[0];
         assert.equal(far.when, 'activation');
-        assert.equal(far.drawCalls, near.drawCalls, 'the layer-5 set is the level shadow set');
-        assert.equal(far.triangles, near.triangles);
+        const caps = prepareOriginalCapSlots(plan);
+        try { const repeat = priceOriginalCapSlots(caps, rung.ultra.buildings, rung.ultra.farShadow, ultraPartTriangles('buildingCap', rung));
+          assert.equal(far.drawCalls, near.drawCalls + repeat.farExtraDraws);
+          assert.equal(far.triangles, near.triangles + repeat.farExtraTriangles);
+        } finally { caps.dispose(); }
         assert.ok(far.drawCalls <= ULTRA_ENVELOPE.farDepthDraws, `${name}: far depth ${far.drawCalls} calls`);
         assert.ok(far.triangles <= ULTRA_ENVELOPE.farDepthTriangles, `${name}: far depth ${far.triangles} triangles`);
       }
@@ -603,7 +601,9 @@ test('the envelope is §5\'s table, and it bounds the configuration it judges', 
       // §5 amendment (stabilizer, 2026-09-23): far map 3072 + ground detail;
       // re-settled by A22 (final wave, P-TL) with the sky's background cube.
       bytes: 244 * MIB,
-      programs: 36,
+      // Environment R22: fixed Full material/cache owners enumerate 76 slots.
+      // Historical standalone GPU observations remain preserved.
+      programs: 76,
       shadowMap: 4096,
       farShadowMap: 3072,
       farDepthDraws: 24,
@@ -703,7 +703,10 @@ test('a rung is judged on its own cost and bytes, never on an ordinary contract'
   const verdict = judgeUltra(town, HEADLESS_CAPS);
   for (const rung of verdict.rungs) {
     assert.deepEqual(rung.cost, ultraCost(town, rung.recipe), rung.id);
-    assert.equal(rung.bytes, ultraBytes(rung.recipe).steady, rung.id);
+    const caps = prepareOriginalCapSlots(town);
+    try { const price = priceOriginalCapSlots(caps, rung.recipe.ultra.buildings, rung.recipe.ultra.farShadow, ultraPartTriangles('buildingCap', rung.recipe));
+      assert.equal(rung.bytes, ultraBytes(rung.recipe, ULTRA_JUDGE_BUFFER, null, null, price.flagBytes).steady, rung.id);
+    } finally { caps.dispose(); }
     assert.equal(rung.textureEdge, rung.recipe.ultra.lighting ? ULTRA.near.mapSize : rung.textureEdge);
   }
 });

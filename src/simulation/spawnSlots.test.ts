@@ -12,6 +12,7 @@ import {
   DUEL_LATERAL_METRES,
   SLOT_LATERAL_METRES,
   SLOT_MIN_SEPARATION_METRES,
+  SLOT_SEAT_RANKS,
   SLOT_STAGGER_METRES,
   SLOT_STEP_TOLERANCE_METRES,
   raceGridSlot,
@@ -19,6 +20,48 @@ import {
 } from './spawnSlots.ts';
 import type { SurfaceId } from './world.ts';
 import { createGroundSample } from './world.ts';
+
+test('dynamic placement refusal searches the remaining statically legal spawn slots', () => {
+  const plan = fixture(flatField(12)), terrain = new PlanTerrainSampler(plan);
+  const ordinary = spawnSlot(plan.spawn, 1, terrain);
+  const offered: Array<{ x: number; z: number }> = [];
+  const clear = spawnSlot(plan.spawn, 1, terrain, SLOT_LATERAL_METRES, spawn => {
+    offered.push({ x: spawn.position.x, z: spawn.position.z });
+    return Math.hypot(spawn.position.x - plan.spawn.position.x,
+      spawn.position.z - plan.spawn.position.z) > 2;
+  });
+  assert.ok(offered.length > 1, 'the blocked first choice must not terminate the search');
+  assert.notDeepEqual(clear, ordinary);
+  assert.ok(Math.hypot(clear.position.x - plan.spawn.position.x,
+    clear.position.z - plan.spawn.position.z) > 2);
+  assert.deepEqual(spawnSlot(plan.spawn, 1, terrain, SLOT_LATERAL_METRES, () => true), ordinary,
+    'the added physical gate must not change a clear world');
+});
+
+test('a veto on every rank-one slot moves the rider out on its own side, onto no seat\'s slot — MI-1', () => {
+  // 2026-10-03: an NPC (or a CPU cop) covering every first-rank candidate used
+  // to hand back `base`, stacking the second rider on the first. The review
+  // then caught the first repair handing seat 1 seat 3's own slot, where a
+  // later join would stack now that seats no longer veto seats.
+  const plan = fixture(flatField(12)), terrain = new PlanTerrainSampler(plan);
+  const at = (spawn: { position: { x: number; z: number } }) =>
+    ({ x: spawn.position.x - plan.spawn.position.x, z: spawn.position.z - plan.spawn.position.z });
+  // Exactly the five rank-one candidates (beside, staggered, behind).
+  const rankOne = (spawn: { position: { x: number; z: number } }) => {
+    const { x, z } = at(spawn); return Math.abs(x) < SLOT_LATERAL_METRES + 1e-6 && Math.hypot(x, z) < 3.7;
+  };
+  const slot = spawnSlot(plan.spawn, 1, terrain, SLOT_LATERAL_METRES, spawn => !rankOne(spawn));
+  assert.notEqual(slot, plan.spawn, 'the veto must not fall back onto the leading rider');
+  for (const seat of [2, 3]) {
+    const own = at(spawnSlot(plan.spawn, seat, terrain, SLOT_LATERAL_METRES));
+    assert.ok(Math.hypot(at(slot).x - own.x, at(slot).z - own.z) >= SLOT_MIN_SEPARATION_METRES,
+      `seat 1 moved onto seat ${seat}'s own slot (${own.x}, ${own.z})`);
+  }
+  assert.ok(Math.abs(at(slot).x + (SLOT_SEAT_RANKS + 1) * SLOT_LATERAL_METRES) < 1e-9 && Math.abs(at(slot).z) < 1e-9,
+    `expected the first rank past the seats' own, on seat 1's side, got (${at(slot).x}, ${at(slot).z})`);
+  assert.equal(spawnSlot(plan.spawn, 1, terrain, SLOT_LATERAL_METRES, () => false), plan.spawn,
+    'a world refusing every rank still hands back the spawn rather than throwing');
+});
 
 /**
  * The second rider's spawn, as a contract rather than a phrase — M25 Phase 2

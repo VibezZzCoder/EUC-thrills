@@ -1,6 +1,17 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { PART_COSTS } from '../data/renderCost.ts';
+import { ultraCasts } from './ultra/ultraKit.ts';
+import { priceFeatureBlockBuild } from './featureBlockBuildPrice.ts';
+import { authoredCanopyRequestFromSearch } from './authoredCanopyOwner.ts';
+import { beginConstructionScope, withConstructionScope } from './constructionScope.ts';
+import { scopedEnvironmentSites, scopedResidentialSites, scopedStreetFronts } from './scopedSiteQueries.ts';
+import { prepareEnvironmentSupplements, priceEnvironmentSupplements, priceEnvironmentSpatialBatching,
+  withSpatialBatchingSupplementPrice, type PreparedEnvironmentSupplements } from './environmentSupplementPrice.ts';
+import { admitSharedGroundEdges, type GroundEdgeRefusal } from './sharedGroundEdgeAdmission.ts';
+import type { PreparedGroundEdges } from './sharedGroundEdgePlan.ts';
 import * as THREE from 'three';
-import { CAMERA, CHASE, EUC, FX, LIGHTING, RENDER } from '../data/tuning.ts';
+import { CAMERA, CHASE, EUC, FX, LIGHTING, RENDER, VEGETATION_COUCH_DETAIL } from '../data/tuning.ts';
+import { vegetationDetailFor, type VegetationDistanceDetail } from './vegetationDistance.ts';
 import {
   materialAppearance,
   surfaceProperties,
@@ -10,8 +21,26 @@ import type { SurfaceId } from '../simulation/world.ts';
 import type { GhostSample } from '../simulation/ghost.ts';
 import { createPose, type EucPose } from '../simulation/EucController.ts';
 import type { LevelPlan } from '../level/plan.ts';
+import type { PopulationPlan } from '../level/populationPlan.ts';
+import { createPopulationView, type PopulationView, type PopulationViewReport,
+  type PopulationPainter, type PopulationRenderSnapshot } from './populationView.ts';
 import { createCheckpointGates, type CheckpointGates } from './checkpointGates.ts';
 import { createTargets, type TargetFamily } from './targets.ts';
+import { createStreetLife, streetFronts, EMPTY_STREET_LIFE_REPORT, type StreetLife, type StreetLifeReport } from './streetLife.ts';
+import { createEnvironmentDecor, EMPTY_ENVIRONMENT_DECOR_REPORT,
+  type EnvironmentDecor, type EnvironmentDecorReport } from './environmentDecor.ts';
+import { environmentSites } from '../level/environmentSites.ts';
+import { residentialSites, parkCaseSites } from '../level/districtSites.ts';
+import { createDistrictDecor, EMPTY_DISTRICT_DECOR_REPORT,
+  type DistrictDecor, type DistrictDecorReport } from './districtDecor.ts';
+import { installStreetFacadeOpenings } from './streetFacadeOpenings.ts';
+import { createDistrictExterior, type DistrictExterior, type DistrictExteriorReport } from './districtExterior.ts';
+import { createDistrictExteriorAppearance } from './districtExteriorAppearance.ts';
+import { createMetricFacade, type MetricFacade, type MetricFacadeReport } from './metricFacade.ts';
+import { metricFacadeRequestFromSearch } from './metricFacadePreparation.ts';
+import { UltraSupplements } from './ultra/ultraSupplements.ts';
+import { createEnvironmentVegetation, type EnvironmentVegetation, type EnvironmentVegetationReport } from './environmentVegetation.ts';
+import { type SharedVegetationReport } from './sharedVegetationCost.ts';
 import { createGhostRider, type GhostRider } from './ghostRider.ts';
 import { createCopRider, type CopRider } from './copRider.ts';
 import { machineForCharacter } from '../data/machines.ts';
@@ -28,17 +57,19 @@ import {
   type ResolvedVenueLook,
   type VenueLook,
 } from '../data/venueLook.ts';
-import { createTerrain, type TerrainView } from './terrain.ts';
+import { createTerrain, type TerrainView, type OrdinaryBoundaryReport } from './terrain.ts';
+import { freezeStaticTransforms } from './staticTransforms.ts';
+import { DEFAULT_SPATIAL_BATCH_METRES, sumSpatialBatchingDeltas, withSpatialBatchingCost,
+  type SpatialBatchingDelta } from './spatialBatching.ts';
 import { releaseForLostContext } from './contextLoss.ts';
 import {
   presentationRecipe,
-  selectPresentation,
   type PresentationRecipeId,
   type PresentationSelection,
   type PresentationVerdict,
 } from './presentation.ts';
 import { paneBounds, paneGridFor, type PaneRect } from '../shared/paneGrid.ts';
-import { judgeUltra, type UltraCaps } from './ultra/ultraCost.ts';
+import { judgeUltra, ultraPartTriangles, type UltraCaps } from './ultra/ultraCost.ts';
 import { buildUltraEnvironment } from './ultra/ultraEnvironment.ts';
 import { ultraSkyOptions } from './ultra/ultraLighting.ts';
 import { ultraFramebufferStatus } from './ultra/ultraRendererState.ts';
@@ -639,9 +670,10 @@ export function forcedPresentation(
   recipe: PresentationRecipeId,
 ): PresentationSelection {
   const verdict = selected.verdicts.find((candidate) => candidate.recipe === recipe);
+  if (!verdict) throw new Error('Forced presentation has no priced recipe verdict');
   return {
     recipe: presentationRecipe(recipe),
-    cost: verdict?.cost ?? selected.cost,
+    cost: verdict.cost,
     verdicts: selected.verdicts,
   };
 }
@@ -663,6 +695,25 @@ export interface RendererPresentation {
   };
   /** `ultraReport()`, once Ultra has been asked for this session; null before. */
   readonly ultra: UltraReport | null;
+  /** Installed owner reports; supplements are inclusively priced before selection. */
+  readonly streetLife: StreetLifeReport;
+  readonly environmentDecor: EnvironmentDecorReport;
+  readonly districtDecor: DistrictDecorReport;
+  readonly districtExterior: DistrictExteriorReport | null;
+  readonly metricFacade: MetricFacadeReport | null;
+  readonly districtExteriorMaterialOwners: number;
+  readonly ordinaryBoundary: OrdinaryBoundaryReport | null;
+  readonly sharedGround: import('./sharedGroundSurface.ts').SharedGroundReport | null;
+  readonly sharedEdges: import('./sharedGroundEdgeMesh.ts').SharedGroundEdgeMeshReport | null;
+  readonly featureBlocks: import('./featureBlockPlan.ts').FeatureBlockPrice | null;
+  readonly groundEdgeRefusal: GroundEdgeRefusal | null;
+  readonly sharedVegetation: SharedVegetationReport | null;
+  readonly vegetation: EnvironmentVegetationReport | null;
+  readonly population: PopulationViewReport | null;
+  readonly supplementMaterialOwners: number;
+  /** Installed cullable partitions; source admission/recipe verdicts stay historical. */
+  readonly spatialBatching: SpatialBatchingDelta;
+  readonly spatialGeometry: import('./terrain.ts').TerrainSpatialGeometryReport | null;
 }
 
 /** A failed program's logs, for the Ultra shader-error hook (three's own report is silenced by a hook). */
@@ -753,12 +804,25 @@ export class GameRenderer {
 
   /** The world, built from a `LevelPlan`. Disposed and rebuilt with the level. */
   private terrain: TerrainView | null = null;
+  private streetLife: StreetLife | null = null;
+  private environmentDecor: EnvironmentDecor | null = null;
+  private districtExterior: DistrictExterior | null = null;
+  private metricFacade: MetricFacade | null = null;
+  private districtExteriorAppearance: ReturnType<typeof createDistrictExteriorAppearance> | null = null;
+  private districtDecor: DistrictDecor | null = null;
+  private vegetation: EnvironmentVegetation | null = null;
+  /** One physical world's view, retained through pane/tier/context changes. */
+  private population: PopulationView | null = null;
+  private readonly supplements = new UltraSupplements();
   /**
    * Which presentation recipe the installed world was built with, and what
    * the selector priced it at. Chosen once in `setLevel`, after the plan is
    * immutable, and kept while seats join and leave (`render/presentation.ts`).
    */
   private presentationSelection: PresentationSelection | null = null;
+  private preparedEnvironmentSupplements: PreparedEnvironmentSupplements | null = null;
+  private preparedGroundEdges: PreparedGroundEdges | null = null;
+  private groundEdgeRefusal: GroundEdgeRefusal | null = null;
   /**
    * What the current level repainted, held for anything that must match the
    * ground rather than the table. See `LevelPlan.palette`.
@@ -899,6 +963,22 @@ export class GameRenderer {
    * High's, so High is the answer until the app says otherwise.
    */
   private ordinaryQuality: 'low' | 'medium' | 'high' = 'high';
+
+  /**
+   * This renderer's colour-distance rules (RL-1), read by every vegetation
+   * cell at draw time. Low and Medium move the existing near → middle → far
+   * and grass-fade boundaries nearer; High, and Ultra drawn over it, keep the
+   * accepted ones exactly. Per renderer, never module state. Three or more
+   * panes (and the armed quad probe, which draws four) take the tier's couch
+   * rules, whose quarter panes switch forms at the on-screen size solo play
+   * at that tier does (PERF-R2-1); the rules are frozen objects, so the grass
+   * program re-keys only when the pane count crosses that line.
+   */
+  private readonly vegetationDetail: VegetationDistanceDetail = () => vegetationDetailFor(this.ordinaryQuality,
+    this.vegetationWarmPanes ?? (this.perfProbe !== null ? 4 : this.viewCameras.length), this.ultra.active);
+
+  /** Set only inside `warmPrograms`, to link the other pane count's grass program. */
+  private vegetationWarmPanes: number | null = null;
 
   /**
    * The Ultra runtime — M39 (`render/ultra/ultraRuntime.ts`). Every Ultra
@@ -1348,14 +1428,69 @@ export class GameRenderer {
    * while Ultra is wanted is itself the refusal (`presentation-override`), so
    * a forced recipe can never be described as active Ultra.
    */
-  setLevel(plan: LevelPlan, recipe?: PresentationRecipeId): TerrainView {
+  setLevel(plan: LevelPlan, recipe?: PresentationRecipeId, populationPlan: PopulationPlan | null = null): TerrainView {
+    const steps = this.levelBuildSteps(plan, recipe, populationPlan);
+    let step = steps.next();
+    while (!step.done) step = steps.next();
+    return step.value;
+  }
+
+  /** Boot yields between real construction phases, without a second world
+   * builder or a change to Ultra's ordered activation/GL-error sequence. */
+  async setLevelAsync(plan: LevelPlan, recipe: PresentationRecipeId | undefined,
+    populationPlan: PopulationPlan, onStage: (label: string) => Promise<void>): Promise<TerrainView> {
+    const steps = this.levelBuildSteps(plan, recipe, populationPlan);
+    let step = steps.next();
+    while (!step.done) {
+      await onStage(step.value);
+      step = steps.next();
+    }
+    return step.value;
+  }
+
+  private *levelBuildSteps(plan: LevelPlan, recipe?: PresentationRecipeId,
+    populationPlan: PopulationPlan | null = null): Generator<string, TerrainView> {
+    yield 'Building streets and buildings';
+    const oldPreparedSupplements = this.preparedEnvironmentSupplements;
+    this.population?.dispose();
+    this.population = null;
+    this.vegetation?.dispose();
+    this.vegetation = null;
+    this.preparedEnvironmentSupplements = null;
+    this.preparedGroundEdges = null;
+    this.groundEdgeRefusal = null;
+    this.supplements.dispose();
+    this.metricFacade?.dispose();
+    this.metricFacade = null;
+    this.districtExterior?.dispose();
+    this.districtExterior = null;
+    this.districtExteriorAppearance?.dispose();
+    this.districtExteriorAppearance = null;
+    this.streetLife?.dispose();
+    this.streetLife = null;
+    this.environmentDecor?.dispose();
+    this.environmentDecor = null;
+    this.districtDecor?.dispose();
+    this.districtDecor = null;
     this.terrain?.dispose();
     this.terrain = null;
+    oldPreparedSupplements?.dispose();
     this.palette = plan.palette;
     // Presentation is a question asked of an immutable plan, never of the
     // generator: the richer topology is built only where every frame contract
     // still fits, and the plan is never trimmed to make it fit.
-    const selected = selectPresentation(plan);
+    // Pricing, admission and the terrain build ask the same pure questions of
+    // this plan (site lists, vegetation form recipes) many times; one
+    // construction scope answers each once (`render/constructionScope.ts`).
+    let supplements: PreparedEnvironmentSupplements, terrain: TerrainView;
+    const endConstruction = beginConstructionScope();
+    try {
+    supplements = prepareEnvironmentSupplements(plan, populationPlan, metricFacadeRequestFromSearch(window.location.search), authoredCanopyRequestFromSearch(window.location.search));
+    this.preparedEnvironmentSupplements = supplements;
+    const edgeAdmission = admitSharedGroundEdges(plan, recipe, supplements);
+    this.preparedGroundEdges = edgeAdmission.prepared;
+    this.groundEdgeRefusal = edgeAdmission.refusal;
+    const selected = edgeAdmission.selection;
     const selection = recipe === undefined || recipe === selected.recipe.id
       ? selected
       : forcedPresentation(selected, recipe);
@@ -1372,7 +1507,37 @@ export class GameRenderer {
     // painted once; on an ordinary session that is `apply(plan.look,
     // 'ordinary')` followed by `createTerrain(plan, selection.recipe)`, the
     // two calls this method always made, installed the way it always was.
-    const terrain = this.ultra.installWorld(plan, selection, recipe);
+    // Roof casters must exist before Ultra bakes its once-per-world far map.
+    // Their owner and borrowed appearance survive the tier rebuild, so this
+    // installs them once rather than adding a second shadow pass later.
+    this.districtExteriorAppearance = createDistrictExteriorAppearance();
+    const metricDescriptor = supplements.metric.descriptors;
+    this.metricFacade = metricDescriptor ? createMetricFacade(plan, metricDescriptor, this.districtExteriorAppearance) : null;
+    if (this.metricFacade) this.scene.add(this.metricFacade.group);
+    if (this.metricFacade) freezeStaticTransforms(this.metricFacade.group);
+    terrain = this.ultra.installWorld(plan, selection, recipe);
+    } finally { endConstruction(); }
+    yield 'Finishing streets and storefronts';
+    this.streetLife = createStreetLife(plan, supplements.street);
+    this.environmentDecor = createEnvironmentDecor(plan, supplements.environment);
+    this.districtDecor = createDistrictDecor(plan, supplements.district);
+    this.districtExterior = createDistrictExterior(plan, { ...this.districtExteriorAppearance,
+      spatialBatchMetres: DEFAULT_SPATIAL_BATCH_METRES,
+      protectedOpenings: [...streetFronts(plan), ...environmentSites(plan), ...residentialSites(plan), ...parkCaseSites(plan)] }, supplements.exterior);
+    this.districtExterior.setDetail(this.effectiveTier() === 'ultra');
+    yield 'Planting trees and grass';
+    this.vegetation = createEnvironmentVegetation(plan, supplements.grass, this.vegetationDetail);
+    this.vegetation.setDetail(this.effectiveTier() === 'ultra');
+    this.scene.add(this.streetLife.group);
+    this.scene.add(this.environmentDecor.group);
+    this.scene.add(this.districtDecor.group);
+    this.scene.add(this.districtExterior.group);
+    this.scene.add(this.vegetation.group);
+    freezeStaticTransforms(this.districtExterior.group);
+    freezeStaticTransforms(this.vegetation.group);
+    this.supplements.setRoots([this.streetLife.group, this.environmentDecor.group, this.districtDecor.group, this.districtExterior.group,
+      ...(this.metricFacade ? [this.metricFacade.group] : [])]);
+    this.supplements.sync(this.ultra.supplementContext());
 
     // The gates are part of the level and are rebuilt with it. `plan.checkpoints`
     // is an empty array on the proving ground and on every test fixture, and
@@ -1467,6 +1632,35 @@ export class GameRenderer {
     this.targets?.step(stepSeconds);
   }
 
+  /** One shared presentation clock, before any pane draws; no actor physics. */
+  updateStreetLife(seconds: number, reducedMotion: boolean): void {
+    this.supplements.sync(this.ultra.supplementContext());
+    this.streetLife?.update(seconds, reducedMotion);
+    this.environmentDecor?.update(seconds, reducedMotion);
+    this.vegetation?.setDetail(this.effectiveTier() === 'ultra');
+    this.districtExterior?.setDetail(this.effectiveTier() === 'ultra');
+    this.vegetation?.update(seconds, reducedMotion);
+  }
+
+  /** Install after setLevel. This owns GPU presentation only; Game owns the
+   * fixed-step population and supplies the same roster for every mode/tier. */
+  setPopulation(plan: PopulationPlan | null, painter?: PopulationPainter): void {
+    if (plan !== (this.preparedEnvironmentSupplements?.populationPlan ?? null)) {
+      throw new Error('Population roster must be supplied to setLevel before render admission');
+    }
+    this.population?.dispose();
+    this.population = null;
+    if (plan === null) return;
+    const population = createPopulationView(plan, painter);
+    this.population = population;
+    this.scene.add(population.group);
+  }
+
+  /** Once before the pane loop. Repeating this call never advances a clock. */
+  updatePopulation(previous: PopulationRenderSnapshot, current: PopulationRenderSnapshot, alpha: number): void {
+    this.population?.update(previous, current, alpha);
+  }
+
   /**
    * Advance the gate flares on the simulation clock. Called from the fixed
    * step, alongside `stepParticles`, so `advance(n)` reaches the same frame
@@ -1551,6 +1745,12 @@ export class GameRenderer {
     else if (this.secondRider === 'cop') this.setSecondRider('none');
   }
 
+  /** A refused initial world placement must leave its private scratch rig hidden. */
+  setPackmateVisible(index: number, visible: boolean): void {
+    const cop = this.cops[index];
+    if (cop) cop.setVisible(this.secondRider === 'cop' && visible);
+  }
+
   /**
    * Pose the cop from a controller pose and aim his paddle — M18.
    *
@@ -1609,16 +1809,46 @@ export class GameRenderer {
     const ultra = this.ultra.requested || this.ultra.active ? this.ultraReport() : null;
     const built = this.ultra.builtUltra();
     const terrain = this.terrain;
-    if (built === null || terrain === null) return { ...selection, tier, ultra };
+    const streetLife = this.streetLife?.report() ?? EMPTY_STREET_LIFE_REPORT;
+    const environmentDecor = this.environmentDecor?.report() ?? EMPTY_ENVIRONMENT_DECOR_REPORT;
+    const districtDecor = this.districtDecor?.report() ?? EMPTY_DISTRICT_DECOR_REPORT;
+    const districtExterior = this.districtExterior?.report() ?? null;
+    const metricFacade = this.metricFacade?.report() ?? null;
+    const districtExteriorMaterialOwners = this.districtExteriorAppearance?.materialOwners ?? 0;
+    const vegetation = this.vegetation?.report() ?? null;
+    const population = this.population?.report() ?? null;
+    const spatialBatching = sumSpatialBatchingDeltas(terrain?.spatialBatching, districtExterior?.spatialBatching);
+    const spatialGeometry = terrain?.spatialGeometry ?? null;
+    if (built === null || terrain === null) return {
+      ...selection,
+      cost: withSpatialBatchingCost(selection.cost, spatialBatching),
+      tier, ultra, streetLife, environmentDecor, districtDecor, ordinaryBoundary: terrain?.ordinaryBoundary ?? null,
+      sharedGround: terrain?.sharedGround ?? null,
+      sharedEdges: terrain?.sharedEdges ?? null, groundEdgeRefusal: this.groundEdgeRefusal,
+      featureBlocks: terrain?.featureBlocks ?? null,
+      sharedVegetation: terrain?.sharedVegetation ?? null,
+      vegetation, population, districtExterior, metricFacade, districtExteriorMaterialOwners,
+      supplementMaterialOwners: this.supplements.materialOwners(),
+      spatialBatching, spatialGeometry,
+    };
     return {
       recipe: built.recipe,
-      cost: ultraPresentationCost(selection.cost, built.recipe, built.cost, {
-        propColourTriangles: measuredPropColourTriangles(terrain.group),
-        blockColourTriangles: terrain.blockTriangles,
-      }),
+      cost: withSpatialBatchingCost(ultraPresentationCost(selection.cost, built.recipe, built.cost, {
+        propColourTriangles: measuredPropColourTriangles(terrain.group), blockColourTriangles: terrain.blockTriangles }), spatialBatching),
       verdicts: selection.verdicts,
       tier,
       ultra,
+      streetLife,
+      environmentDecor,
+      districtDecor,
+      ordinaryBoundary: terrain.ordinaryBoundary,
+      sharedGround: terrain.sharedGround,
+      sharedEdges: terrain.sharedEdges, groundEdgeRefusal: this.groundEdgeRefusal,
+      featureBlocks: terrain.featureBlocks ?? null,
+      sharedVegetation: terrain.sharedVegetation,
+      vegetation, population, districtExterior, metricFacade, districtExteriorMaterialOwners,
+      supplementMaterialOwners: this.supplements.materialOwners(),
+      spatialBatching, spatialGeometry,
     };
   }
 
@@ -1660,7 +1890,7 @@ export class GameRenderer {
    * `currentTerrain()`, so it never holds a disposed one).
    */
   reconcileUltra(): UltraTierResult {
-    return this.ultra.reconcile();
+    return withConstructionScope(() => this.ultra.reconcile());
   }
 
   /** The tier the frame is drawn at: `'ultra'` only while an Ultra rung is built and drawing. */
@@ -1726,6 +1956,20 @@ export class GameRenderer {
    * it. Each member is the few lines only a live renderer can run; the
    * runtime's state machine is tested headlessly against a fake of this.
    */
+  private environmentSupplementBytes(): number {
+    let bytes = 0;
+    const prepared = this.preparedEnvironmentSupplements;
+    // The primitive collectors expose exact texture mip bytes while existing
+    // reports retain their historical ceil(4/3) diagnostic allowance.
+    if (this.streetLife && prepared) bytes += this.streetLife.report().geometryBytes + prepared.street.price.textureBytes; // street report already includes instances
+    if (this.environmentDecor && prepared) { const report = this.environmentDecor.report(); bytes += report.geometryBytes + report.instanceBytes + prepared.environment.price.textureBytes; }
+    if (this.districtDecor && prepared) { const report = this.districtDecor.report(); bytes += report.geometryBytes + report.instanceBytes + prepared.district.price.textureBytes; }
+    for (const report of [this.terrain?.sharedVegetation, this.vegetation?.report(), this.districtExterior?.report(), this.metricFacade?.report(), this.population?.report()]) {
+      if (report) bytes += report.geometryBytes + report.instanceBytes;
+    }
+    return bytes;
+  }
+
   private createUltraHost(): UltraHost {
     return {
       scene: this.scene,
@@ -1736,8 +1980,21 @@ export class GameRenderer {
       viewCount: () => (this.perfProbe !== null ? 4 : this.viewCameras.length),
       probeCaps: () => this.probeUltraCaps(),
       maxAnisotropy: () => this.renderer.capabilities.getMaxAnisotropy(),
-      judge: (plan, caps, override) => judgeUltra(plan, caps, override),
+      judge: (plan, caps, override) => judgeUltra(plan, caps, override, this.preparedGroundEdges?.price ?? null, this.preparedEnvironmentSupplements),
       installedTerrain: () => this.terrain,
+      environmentSupplementPrice: (recipe) => {
+        const prepared = this.preparedEnvironmentSupplements;
+        if (!prepared) return null;
+        const policy = { nearCasts: (part: import('../data/renderCost.ts').PropPartId) => ultraCasts(part, PART_COSTS[part].castsShadow, recipe.ultra),
+          buildings: recipe.ultra.buildings, farShadow: recipe.ultra.farShadow };
+        const price = priceEnvironmentSupplements(prepared, recipe.ultra.forms ? 'ultra' : 'ordinary', true,
+          part => ultraPartTriangles(part, recipe), policy, priceFeatureBlockBuild(prepared.featureBlocks, recipe));
+        return withSpatialBatchingSupplementPrice(price, sumSpatialBatchingDeltas(this.terrain?.terrainSpatialBatching,
+          priceEnvironmentSpatialBatching(prepared, DEFAULT_SPATIAL_BATCH_METRES, true, policy)));
+      },
+      environmentSupplementBytes: () => this.environmentSupplementBytes(),
+      programOwnerRoots: () => [...this.supplements.programOwnerRoots(),
+        ...(this.population ? [this.population.group] : [])],
       installTerrain: (plan, recipe, context, beforeBuild) => this.installTerrain(plan, recipe, context, beforeBuild),
       // I1: painted once per sky, `createSky(look, options)` on a miss.
       paintUltraSky: (look, cloudSeed) =>
@@ -1775,7 +2032,7 @@ export class GameRenderer {
   /**
    * One world at a time (§3.6 step 5): whatever is installed is disposed
    * *before* the next view is built. `context` null is the ordinary call,
-   * `createTerrain(plan, recipe)` exactly, with the ordinary defaults.
+   * the ordinary call with the explicit environment ground composition.
    */
   private installTerrain(
     plan: LevelPlan,
@@ -1788,11 +2045,34 @@ export class GameRenderer {
     // The planted `?ultrafault=build` (Fable F1): here, with the old world
     // already gone, exactly where a real builder exception would land.
     beforeBuild?.();
-    const terrain = context === null
-      ? createTerrain(plan, recipe)
-      : createTerrain(plan, recipe, context);
+    const terrain = withConstructionScope(() => createTerrain(plan, recipe, context ?? undefined,
+      { ordinaryBoundary: context === null, sharedSurface: true, sharedEdges: this.preparedGroundEdges,
+        environmentSupplements: this.preparedEnvironmentSupplements, spatialBatchMetres: DEFAULT_SPATIAL_BATCH_METRES,
+        distanceDetail: this.vegetationDetail }));
+    // The selected display bays augment composition after the unchanged
+    // terrain builder. Its atlas/shadow owners remain the same; shared edge
+    // triangles are already emitted and inclusively priced before this step.
+    const fronts = [...scopedStreetFronts(plan), ...scopedEnvironmentSites(plan), ...scopedResidentialSites(plan)];
+    // The original clock-tower shaft uses the cap bucket. It receives only
+    // localized closed park cases; body materials receive no park descriptor.
+    const parkFronts = parkCaseSites(plan);
+    const hookedMaterials = new Set<THREE.MeshStandardMaterial>();
+    if (fronts.length || parkFronts.length) terrain.group.traverse((object) => {
+      if (!(object instanceof THREE.Mesh) || !(object.material instanceof THREE.MeshStandardMaterial)
+        || hookedMaterials.has(object.material)) return;
+      const openings = /^level-props-building(?:Body|Low|Tall)$/.test(object.name)
+        ? fronts : object.name === 'level-props-buildingCap' ? parkFronts : [];
+      if (openings.length === 0) return;
+      hookedMaterials.add(object.material);
+      // One installation preserves the material's existing compile/key chain.
+      installStreetFacadeOpenings(object.material, openings);
+    });
     this.terrain = terrain;
     this.scene.add(terrain.group);
+    freezeStaticTransforms(terrain.group, object => object.name === 'level-surround');
+    // Install the supplemental response before the Ultra activation's first
+    // frame; an ordinary rebuild restores its original materials immediately.
+    this.supplements.sync(context);
     return terrain;
   }
 
@@ -2394,6 +2674,7 @@ export class GameRenderer {
    * the device-pixel ratio itself.
    */
   renderView(view: number): void {
+    this.supplements.sync(this.ultra.supplementContext());
     // The armed quad probe takes over the frame — M27 Phase 0. `Game` still
     // believes the session is single-view (one seat, one camera, unsplit HUD,
     // ungained FOV — `splitFieldOfView` sees one view camera and stays out)
@@ -2438,6 +2719,87 @@ export class GameRenderer {
   render(): void {
     this.beginFrame();
     for (let view = 0; view < this.viewCameras.length; view += 1) this.renderView(view);
+  }
+
+  /** Longest `warmPrograms` waits for parallel links before drawing anyway. */
+  private static readonly warmCompileLimitMs = 10_000;
+
+  /**
+   * Link every program the installed world can draw, and upload its buffers,
+   * while a loading cover still hides the canvas (RP-8). Call it after the
+   * cover's first drawn frame at the current tier: boot's first frame, a world
+   * swap, a quality switch and a multiplayer split.
+   *
+   * 1. `compile` walks the whole graph, hidden owners included (the ghost,
+   *    the pack, Ultra-cached grass), with this frame's lights, fog and the
+   *    default framebuffer's tone mapping, so each colour program is the one
+   *    a later frame asks for. Distance and LOD ranges share their owner's
+   *    program; the grass fade is keyed per tier and is current. Parallel
+   *    links are awaited as `compileAsync` would, but bounded, because a lost
+   *    context never reports a program ready.
+   * 2. One draw with frustum culling off submits every visible owner to the
+   *    shadow and colour passes: depth programs link and lazy geometry and
+   *    instance buffers upload. A zero-area scissor keeps every canvas pixel;
+   *    each pane redraws its own shadow map on its next frame.
+   *
+   * Nothing is created, hidden, shown or moved, and no cost is priced. A world
+   * swap, disposal or context loss during the wait skips the draw: that
+   * world's own cover warms it.
+   */
+  async warmPrograms(): Promise<{ readonly programs: number; readonly milliseconds: number; readonly drawn: boolean }> {
+    const started = performance.now();
+    const camera = this.cameraFor(0), world = this.terrain, gl = this.renderer.getContext();
+    const report = (drawn: boolean) => ({ programs: this.renderer.info.programs?.length ?? 0,
+      milliseconds: performance.now() - started, drawn });
+    if (world === null || gl.isContextLost()) return report(false);
+    this.supplements.sync(this.ultra.supplementContext());
+    this.renderer.setRenderTarget(null);
+    const linked = async (pending: Set<THREE.Material>): Promise<void> => {
+      while (pending.size > 0 && performance.now() - started < GameRenderer.warmCompileLimitMs && !gl.isContextLost()) {
+        for (const material of pending) {
+          const program = (this.renderer.properties.get(material) as { currentProgram?: { isReady(): boolean } }).currentProgram;
+          if (program === undefined || program.isReady()) pending.delete(material);
+        }
+        if (pending.size > 0) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+    // The grass fade re-keys at its next draw; key it now, so the compile
+    // links the variant this tier and pane count draw.
+    this.vegetation?.syncDetail();
+    await linked(this.renderer.compile(this.scene, camera));
+    // The grass program is keyed by its fade, which the couch rules move from
+    // the third pane on (PERF-R2-1). Link the other pane count's variant too,
+    // so a player sitting down never waits on a link; three keeps both.
+    const vegetation = this.vegetation;
+    if (!this.ultra.active && vegetation !== null && this.terrain === world && !gl.isContextLost()) {
+      const panes = this.perfProbe !== null ? 4 : this.viewCameras.length;
+      try {
+        this.vegetationWarmPanes = panes >= VEGETATION_COUCH_DETAIL.minimumPanes ? 1 : VEGETATION_COUCH_DETAIL.minimumPanes;
+        vegetation.syncDetail();
+        // Only the grass owner, lit and fogged as the scene draws it.
+        const pending = this.renderer.compile(vegetation.group, camera, this.scene);
+        this.vegetationWarmPanes = null;
+        await linked(pending);
+      } finally { this.vegetationWarmPanes = null; vegetation.syncDetail(); }
+    }
+    if (this.terrain !== world || gl.isContextLost()) return report(false);
+    const culled: THREE.Object3D[] = [];
+    this.scene.traverseVisible((object) => {
+      if (object.frustumCulled) { object.frustumCulled = false; culled.push(object); }
+    });
+    try {
+      this.renderer.setRenderTarget(null);
+      this.renderer.setScissorTest(true);
+      this.renderer.setScissor(0, 0, 0, 0);
+      if (this.ultra.active && this.viewCameras.length === 1) this.ultra.beforeSoloRender(camera);
+      this.renderer.render(this.scene, camera);
+    } finally {
+      for (const object of culled) object.frustumCulled = true;
+      this.renderer.setScissorTest(false);
+      this.renderer.setScissor(0, 0, this.lastWidth, this.lastHeight);
+      this.renderer.setViewport(0, 0, this.lastWidth, this.lastHeight);
+    }
+    return report(true);
   }
 
   // -------------------------------------------------------------------------
@@ -2613,6 +2975,16 @@ export class GameRenderer {
   }
 
   dispose(): void {
+    const oldPreparedSupplements = this.preparedEnvironmentSupplements;
+    this.preparedGroundEdges = null;
+    this.groundEdgeRefusal = null;
+    this.preparedEnvironmentSupplements = null;
+    this.presentationSelection = null;
+    this.population?.dispose();
+    this.population = null;
+    this.vegetation?.dispose();
+    this.vegetation = null;
+    this.supplements.dispose();
     // M39: every Ultra-owned resource first, through the one teardown — minus
     // re-hanging an ordinary light and rebuilding a world nobody will see.
     this.ultra.teardown('dispose');
@@ -2622,6 +2994,19 @@ export class GameRenderer {
     canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
     this.terrain?.dispose();
     this.terrain = null;
+    this.streetLife?.dispose();
+    this.streetLife = null;
+    this.environmentDecor?.dispose();
+    this.environmentDecor = null;
+    this.districtDecor?.dispose();
+    this.districtDecor = null;
+    this.districtExterior?.dispose();
+    this.districtExterior = null;
+    this.metricFacade?.dispose();
+    this.metricFacade = null;
+    this.districtExteriorAppearance?.dispose();
+    this.districtExteriorAppearance = null;
+    oldPreparedSupplements?.dispose();
     this.gates?.dispose();
     this.gates = null;
     this.targets?.dispose();

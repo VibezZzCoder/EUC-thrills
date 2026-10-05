@@ -1,4 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { priceEnvironmentSupplements, withEnvironmentSupplementCost, type PreparedEnvironmentSupplements } from './environmentSupplementPrice.ts';
+import { priceFeatureBlockBuild } from './featureBlockBuildPrice.ts';
+import { ENVIRONMENT_ENVELOPE } from './environmentEnvelope.ts';
 /**
  * Presentation recipes — richer environment art chosen *after* generation.
  *
@@ -55,6 +58,7 @@ import { colliderMaterial, planRenderCost, type RenderCost } from '../level/rend
 import type { LevelPlan } from '../level/plan.ts';
 import { ENHANCED_PART_COSTS } from './enhancedCatalog.ts';
 import { colliderTriangles } from './wallCourses.ts';
+import { withGroundEdgePrice, type GroundEdgePrice } from '../shared/groundEdgePrice.ts';
 
 export type PresentationRecipeId = 'baseline' | 'enhanced';
 
@@ -125,8 +129,10 @@ export interface PresentationCost {
  * `render/presentation.test.ts` pins the restatement to `frameRenderCost` and
  * the two split verdicts.
  */
-export function presentationCost(plan: LevelPlan, recipe: PresentationRecipe): PresentationCost {
+export function presentationCost(plan: LevelPlan, recipe: PresentationRecipe, edges: GroundEdgePrice | null = null, supplements: PreparedEnvironmentSupplements | null = null): PresentationCost {
+  if (supplements && supplements.source !== plan) throw new Error('Supplement price source world mismatch');
   const base = planRenderCost(plan);
+  const featurePrice = supplements ? priceFeatureBlockBuild(supplements.featureBlocks, recipe) : null;
 
   let propDrawCalls = 0;
   let propColour = 0;
@@ -152,6 +158,9 @@ export function presentationCost(plan: LevelPlan, recipe: PresentationRecipe): P
     }
   }
 
+  // Source-qualified top partitions are shared in every ordinary rung.
+  blocks += featurePrice?.colourTriangles ?? 0;
+
   // Everything the recipe does not touch is the model's own figure; the
   // deltas ride on top. Blocks cast, so a coursed wall is charged twice.
   const baselinePropColour = propColourOf(base.partInstances);
@@ -164,7 +173,7 @@ export function presentationCost(plan: LevelPlan, recipe: PresentationRecipe): P
   const triangles = colourTriangles + shadowTriangles;
   const drawCalls = base.drawCalls;
 
-  return {
+  return withEnvironmentSupplementCost(withGroundEdgePrice({
     recipe: recipe.id,
     drawCalls,
     triangles,
@@ -188,7 +197,8 @@ export function presentationCost(plan: LevelPlan, recipe: PresentationRecipe): P
         triangles: (triangles + QUAD_NON_LEVEL_RESERVE.triangles) * QUAD_PASSES,
       },
     },
-  };
+  }, edges), supplements ? priceEnvironmentSupplements(supplements, 'ordinary', false, part =>
+    (recipe.foliage ? ENHANCED_PART_COSTS[part]?.triangles : undefined) ?? PART_COSTS[part].triangles, undefined, featurePrice) : null);
 }
 
 function propColourOf(instances: ReadonlyMap<PropPartId, number>): number {
@@ -220,20 +230,22 @@ export interface PresentationVerdict {
  * `withinRenderBudget`'s reasons: a person reading them decides whether a
  * world fell back because of its trees or because of its walls.
  */
-export function judgePresentation(plan: LevelPlan, recipe: PresentationRecipe): PresentationVerdict {
-  const cost = presentationCost(plan, recipe);
+export function judgePresentation(plan: LevelPlan, recipe: PresentationRecipe, edges: GroundEdgePrice | null = null, supplements: PreparedEnvironmentSupplements | null = null): PresentationVerdict {
+  const cost = presentationCost(plan, recipe, edges, supplements);
   const breaches: string[] = [];
   const over = (what: string, value: number, ceiling: number): void => {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Invalid presentation cost for ${what}: ${value}`);
     if (value > ceiling) breaches.push(`${value} ${what} against a ceiling of ${ceiling}`);
   };
-  over('prop draw calls', cost.propDrawCalls, PROP_BUDGET.maxDrawCalls);
-  over('prop triangles (shadows included)', cost.propTriangles, PROP_BUDGET.maxTriangles);
-  over('solo draw calls', cost.frame.solo.drawCalls, RENDER_BUDGET.maxDrawCalls);
-  over('solo triangles', cost.frame.solo.triangles, RENDER_BUDGET.maxTriangles);
-  over('split draw calls', cost.frame.split.drawCalls, RENDER_BUDGET_SPLIT.maxDrawCalls);
-  over('split triangles', cost.frame.split.triangles, RENDER_BUDGET_SPLIT.maxTriangles);
-  over('quad draw calls', cost.frame.quad.drawCalls, RENDER_BUDGET_QUAD.maxDrawCalls);
-  over('quad triangles', cost.frame.quad.triangles, RENDER_BUDGET_QUAD.maxTriangles);
+  const environment = supplements ? ENVIRONMENT_ENVELOPE.ordinary : null;
+  over('prop draw calls', cost.propDrawCalls, environment?.propDraws ?? PROP_BUDGET.maxDrawCalls);
+  over('prop triangles (shadows included)', cost.propTriangles, environment?.propTriangles ?? PROP_BUDGET.maxTriangles);
+  over('solo draw calls', cost.frame.solo.drawCalls, environment ? environment.paneDraws * 1 : RENDER_BUDGET.maxDrawCalls);
+  over('solo triangles', cost.frame.solo.triangles, environment ? environment.paneTriangles * 1 : RENDER_BUDGET.maxTriangles);
+  over('split draw calls', cost.frame.split.drawCalls, environment ? environment.paneDraws * 2 : RENDER_BUDGET_SPLIT.maxDrawCalls);
+  over('split triangles', cost.frame.split.triangles, environment ? environment.paneTriangles * 2 : RENDER_BUDGET_SPLIT.maxTriangles);
+  over('quad draw calls', cost.frame.quad.drawCalls, environment ? environment.paneDraws * 4 : RENDER_BUDGET_QUAD.maxDrawCalls);
+  over('quad triangles', cost.frame.quad.triangles, environment ? environment.paneTriangles * 4 : RENDER_BUDGET_QUAD.maxTriangles);
   return { recipe: recipe.id, cost, breaches };
 }
 
@@ -251,8 +263,8 @@ export interface PresentationSelection {
  * baseline rung is taken whatever its verdict says: it is the representation
  * the plan was admitted with, and a world is never trimmed to fit its art.
  */
-export function selectPresentation(plan: LevelPlan): PresentationSelection {
-  const verdicts = PRESENTATION_LADDER.map((recipe) => judgePresentation(plan, recipe));
+export function selectPresentation(plan: LevelPlan, edges: GroundEdgePrice | null = null, supplements: PreparedEnvironmentSupplements | null = null): PresentationSelection {
+  const verdicts = PRESENTATION_LADDER.map((recipe) => judgePresentation(plan, recipe, edges, supplements));
   for (let index = 0; index < verdicts.length; index += 1) {
     const recipe = PRESENTATION_LADDER[index];
     const verdict = verdicts[index];

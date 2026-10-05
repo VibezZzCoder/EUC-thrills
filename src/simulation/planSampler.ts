@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import type { BoxCollider, Heightfield, LevelPlan, Surround } from '../level/plan.ts';
-import type { GroundSample, ObstacleHit, SurfaceId, TerrainSampler, Vec3 } from './world.ts';
+import type { GroundSample, GroundSupportWindow, GroundSupportWindowResult, ObstacleHit, SurfaceId, TerrainSampler, Vec3 } from './world.ts';
+import { GROUND_CERTIFICATE as CERT } from '../data/tuning.ts';
 
 /**
  * A `TerrainSampler` built from a `LevelPlan`.
@@ -41,6 +42,13 @@ interface PreparedCollider {
   readonly maxZ: number;
   /** Does a chase camera behind this lose the rider? See `BoxCollider`. */
   readonly occludes: boolean;
+}
+
+/** Exact fragments are indexed by source cell, never walked world-wide. */
+interface PreparedGroundTriangle {
+  readonly surface: SurfaceId;
+  readonly sourceSurface?: SurfaceId;
+  readonly vertices: readonly [Vec3, Vec3, Vec3];
 }
 
 /**
@@ -102,6 +110,14 @@ export class PlanTerrainSampler implements TerrainSampler {
   private readonly colliders: readonly PreparedCollider[];
   private readonly field: Heightfield;
   private readonly surround: Surround;
+  private readonly groundPatches: ReadonlyMap<number, readonly PreparedGroundTriangle[]> | undefined;
+  /** Detached geometry of ALL authored hazards, including painted spills.
+   * X-sorted prefix bounds permit a complete local query with a finite visit cap.
+   * No certificate cache or actor identity is retained. World replacement drops
+   * these two sampler-owned arrays with the existing collider/field owner. */
+  private readonly supportHazards: readonly GroundSupportWindow[];
+  private readonly supportHazardPrefixMaxX: readonly number[];
+  private readonly supportHazardsValid: boolean;
 
   /** Precomputed field extent, so the bounds test is two comparisons. */
   private readonly maxX: number;
@@ -167,6 +183,16 @@ export class PlanTerrainSampler implements TerrainSampler {
     this.surround = plan.surround;
     this.maxX = this.field.originX + (this.field.columns - 1) * this.field.spacing;
     this.maxZ = this.field.originZ + (this.field.rows - 1) * this.field.spacing;
+    this.groundPatches = undefined;
+    if (plan.groundSurfacePatches?.length) {
+      const patches = new Map<number, PreparedGroundTriangle[]>();
+      for (const patch of plan.groundSurfacePatches) for (const triangle of patch.triangles) {
+        let cell = patches.get(triangle.cell);
+        if (cell === undefined) { cell = []; patches.set(triangle.cell, cell); }
+        cell.push({ surface: patch.surface, sourceSurface: patch.sourceSurface, vertices: triangle.vertices });
+      }
+      this.groundPatches = patches;
+    }
 
     // -- Bucket every collider, once ----------------------------------------
     let minX = Infinity;
@@ -222,11 +248,108 @@ export class PlanTerrainSampler implements TerrainSampler {
       });
     }
     this.stamps = new Int32Array(this.colliders.length);
+    this.supportHazardsValid = (plan.hazards ?? []).every(hazard =>
+      [hazard.centre.x, hazard.centre.z, hazard.radius].every(Number.isFinite) && hazard.radius >= 0);
+    this.supportHazards = Object.freeze((plan.hazards ?? []).map(hazard => Object.freeze({
+      minX: hazard.centre.x - hazard.radius, maxX: hazard.centre.x + hazard.radius,
+      minZ: hazard.centre.z - hazard.radius, maxZ: hazard.centre.z + hazard.radius,
+    })).sort((a, b) => a.minX - b.minX));
+    let prefixMaxX = -Infinity;
+    this.supportHazardPrefixMaxX = Object.freeze(this.supportHazards.map(hazard => {
+      prefixMaxX = Math.max(prefixMaxX, hazard.maxX); return prefixMaxX;
+    }));
   }
 
   /** How many colliders back this sampler. For diagnostics and tests. */
   get colliderCount(): number {
     return this.colliders.length;
+  }
+
+  /** Whole CLOSED rectangle, never endpoint samples. Requiring both complete
+   * native triangles of every touched cell to be identical is conservative;
+   * this first capability deliberately refuses partial triangles/raised roofs,
+   * surround and mixed grades rather than approximating them. Field equality
+   * is exact: there is no new height, normal, grip or collision tolerance.
+   * Ground surface patches change labels only (see sampleField); their geometry
+   * cannot affect this support-only result. Any touched authored hazard refuses.
+   * Each call owns bounded ephemeral Sets/results; no memoized mutable source. */
+  certifyFlatSupportWindow(input: GroundSupportWindow): GroundSupportWindowResult {
+    const bounds = Object.freeze({ ...input });
+    let fieldCells = 0, gridCells = 0, colliderReferences = 0, hazardReferences = 0;
+    // The same keys in the same order, without a spread of a temporary per call.
+    const result = (status: GroundSupportWindowResult['status'], reason: string, height?: number): GroundSupportWindowResult =>
+      height === undefined ? Object.freeze({ status, reason, bounds, fieldCells, gridCells, colliderReferences, hazardReferences })
+        : Object.freeze({ status, reason, bounds, height, fieldCells, gridCells, colliderReferences, hazardReferences });
+    if (!(Number.isFinite(bounds.minX) && Number.isFinite(bounds.maxX) && Number.isFinite(bounds.minZ) && Number.isFinite(bounds.maxZ))
+      || bounds.minX > bounds.maxX || bounds.minZ > bounds.maxZ)
+      return result('unsupported', 'invalid-window');
+    const field = this.field;
+    if (!(Number.isFinite(field.originX) && Number.isFinite(field.originZ) && Number.isFinite(field.spacing)) || !(field.spacing > 0)
+      || !Number.isInteger(field.columns) || !Number.isInteger(field.rows) || field.columns < 2 || field.rows < 2
+      || bounds.minX < field.originX || bounds.maxX > this.maxX
+      || bounds.minZ < field.originZ || bounds.maxZ > this.maxZ)
+      return result('unsupported', 'surround-or-invalid-field');
+    if (!this.supportHazardsValid) return result('unsupported', 'invalid-source-hazard');
+    // Include BOTH owners at an exact grid edge; also include the cell selected
+    // by native floor/clamp at the outer boundary. A closed proof cannot omit it.
+    // Scalars, not pairs: this runs per source span of every anticipation scan.
+    const lower = (minimum: number, origin: number, count: number) => {
+      const first = (minimum - origin) / field.spacing;
+      return Math.max(0, Math.min(count - 2, Math.floor(first) - (Number.isInteger(first) ? 1 : 0)));
+    };
+    const upper = (maximum: number, origin: number, count: number) =>
+      Math.max(0, Math.min(count - 2, Math.floor((maximum - origin) / field.spacing)));
+    const fc = lower(bounds.minX, field.originX, field.columns), tc = upper(bounds.maxX, field.originX, field.columns);
+    const fr = lower(bounds.minZ, field.originZ, field.rows), tr = upper(bounds.maxZ, field.originZ, field.rows);
+    if ((tc - fc + 1) * (tr - fr + 1) > CERT.maximumFieldCells)
+      return result('overflow', 'field-cell-cap');
+    let height: number | undefined;
+    for (let row = fr; row <= tr; row++) for (let column = fc; column <= tc; column++) {
+      fieldCells++;
+      const base = row * field.columns + column;
+      // The cell's four corners in the original order, indexed (no array).
+      for (let corner = 0; corner < 4; corner++) {
+        const index = corner === 0 ? base : corner === 1 ? base + 1 : corner === 2 ? base + field.columns : base + field.columns + 1;
+        const value = field.heights[index];
+        if (!Number.isFinite(value)) return result('unsupported', 'invalid-source-height');
+        if (height === undefined) height = value;
+        if (value !== height) return result('unsupported', 'nonflat-source-triangle');
+      }
+    }
+    const fromColumn = this.columnAt(bounds.minX), toColumn = this.columnAt(bounds.maxX);
+    const fromRow = this.rowAt(bounds.minZ), toRow = this.rowAt(bounds.maxZ);
+    if ((toColumn - fromColumn + 1) * (toRow - fromRow + 1) > CERT.maximumGridCells)
+      return result('overflow', 'collider-grid-cap');
+    const visited = new Set<number>();
+    const touches = (other: GroundSupportWindow) => other.maxX >= bounds.minX && other.minX <= bounds.maxX
+      && other.maxZ >= bounds.minZ && other.minZ <= bounds.maxZ;
+    for (let row = fromRow; row <= toRow; row++) for (let column = fromColumn; column <= toColumn; column++) {
+      gridCells++;
+      const cell = row * this.gridColumns + column;
+      for (let slot = this.gridStarts[cell]; slot < this.gridStarts[cell + 1]; slot++) {
+        if (colliderReferences >= CERT.maximumColliderReferences) return result('overflow', 'collider-reference-cap');
+        colliderReferences++;
+        const index = this.gridItems[slot];
+        if (visited.has(index)) continue;
+        visited.add(index);
+        const box = this.colliders[index], top = box.collider.centre.y + box.collider.halfExtents.y;
+        if (!Number.isFinite(top)) return result('unsupported', 'invalid-source-top');
+        // AABB may include a rotated box's empty corners: false refusal is safe.
+        if (top > height! && touches(box)) return result('unsupported', 'higher-solid-top');
+      }
+    }
+    let low = 0, high = this.supportHazards.length;
+    while (low < high) { const middle = (low + high) >>> 1;
+      if (this.supportHazardPrefixMaxX[middle] < bounds.minX) low = middle + 1; else high = middle; }
+    for (let index = low; index < this.supportHazards.length && this.supportHazards[index].minX <= bounds.maxX; index++) {
+      if (hazardReferences >= CERT.maximumHazardReferences) return result('overflow', 'hazard-reference-cap');
+      hazardReferences++;
+      const hazard = this.supportHazards[index];
+      if (!(Number.isFinite(hazard.minX) && Number.isFinite(hazard.maxX) && Number.isFinite(hazard.minZ) && Number.isFinite(hazard.maxZ)))
+        return result('unsupported', 'invalid-source-hazard');
+      if (touches(hazard)) return result('unsupported', 'authored-hazard');
+    }
+    return result('flat', 'complete-native-flat-window', height);
   }
 
   sampleGround(x: number, z: number, out: GroundSample): GroundSample {
@@ -258,6 +381,7 @@ export class PlanTerrainSampler implements TerrainSampler {
 
       out.height = top;
       out.surface = collider.surface;
+      out.traction = undefined;
       out.normal.x = 0;
       out.normal.y = 1;
       out.normal.z = 0;
@@ -496,6 +620,7 @@ export class PlanTerrainSampler implements TerrainSampler {
     if (x < field.originX || x > this.maxX || z < field.originZ || z > this.maxZ) {
       out.height = this.surround.height;
       out.surface = this.surround.surface;
+      out.traction = undefined;
       out.normal.x = 0;
       out.normal.y = 1;
       out.normal.z = 0;
@@ -550,7 +675,35 @@ export class PlanTerrainSampler implements TerrainSampler {
     out.normal.y = inverse;
     out.normal.z = gz === 0 ? 0 : gz * inverse;
     out.surface = field.surfaces[row * (field.columns - 1) + column];
+    // Paving replaces the field's surface only. sampleGround applies higher
+    // box tops afterwards, so a narrow apron never paints a building roof.
+    if (this.groundPatches) {
+      const cell = row * (field.columns - 1) + column;
+      const sourceSurface = out.surface;
+      this.applyGroundPatches(cell, x, z, sourceSurface, out);
+      // The sampler assigns a grid edge to its +X/+Z cell. A paving fragment
+      // ending exactly on that edge can belong only to the other cell, so
+      // visit its touching neighbour as well at that boundary.
+      if (u < 1e-9 && column > 0) this.applyGroundPatches(cell - 1, x, z, sourceSurface, out);
+      if (v < 1e-9 && row > 0) this.applyGroundPatches(cell - (field.columns - 1), x, z, sourceSurface, out);
+      if (u < 1e-9 && v < 1e-9 && column > 0 && row > 0) this.applyGroundPatches(cell - field.columns, x, z, sourceSurface, out);
+    }
+    // A grip-only cell rides as its own surface unless paving replaced the
+    // ground it lies under.
+    const gripCell = row * (field.columns - 1) + column;
+    const ridden = field.traction?.[gripCell];
+    out.traction = ridden !== undefined && out.surface === field.surfaces[gripCell] ? ridden : undefined;
     out.offCourse = false;
+  }
+
+  private applyGroundPatches(cell: number, x: number, z: number, sourceSurface: SurfaceId, out: GroundSample): void {
+    const patches = this.groundPatches!.get(cell);
+    if (patches) for (const patch of patches) {
+      // A touching fragment from the other cell may cover this exact edge,
+      // but must not replace this cell's distinct original road semantics.
+      if (patch.sourceSurface !== undefined && patch.sourceSurface !== sourceSurface) continue;
+      if (containsGroundTriangle(patch.vertices, x, z)) out.surface = patch.surface;
+    }
   }
 
   /** Terrain height alone. The marcher's inner loop; no normal, no surface. */
@@ -610,6 +763,17 @@ export class PlanTerrainSampler implements TerrainSampler {
       previous = capped;
     }
   }
+}
+
+function containsGroundTriangle(vertices: readonly [Vec3, Vec3, Vec3], x: number, z: number): boolean {
+  let positive = false, negative = false;
+  for (let index = 0; index < 3; index++) {
+    const a = vertices[index], b = vertices[(index + 1) % 3];
+    const cross = (b.x - a.x) * (z - a.z) - (b.z - a.z) * (x - a.x);
+    if (cross > 1e-9) positive = true;
+    if (cross < -1e-9) negative = true;
+  }
+  return !(positive && negative);
 }
 
 function intersectBox(
@@ -675,7 +839,9 @@ function intersectBox(
   return enter;
 }
 
-/** Every surface the plan's heightfield actually paints. For tests and QA. */
+/** Every base-ground surface, including exact sub-cell paving. For tests and QA. */
 export function paintedSurfaces(plan: LevelPlan): Set<SurfaceId> {
-  return new Set(plan.heightfield.surfaces);
+  const surfaces = new Set(plan.heightfield.surfaces);
+  for (const patch of plan.groundSurfacePatches ?? []) surfaces.add(patch.surface);
+  return surfaces;
 }

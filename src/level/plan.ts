@@ -1,10 +1,16 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import type { RouteSign } from '../data/routeSigns.ts';
 import type { MarkingPaint } from '../data/markings.ts';
 import type { BuildingLook, PropKind } from '../data/props.ts';
 import type { MaterialId } from '../data/surfaces.ts';
 import type { VenueLook } from '../data/venueLook.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 import type { TrickZone } from './trickZones.ts';
+import type { DistrictCompositionReport } from './districtComposition.ts';
+import type { DistrictActivityReport } from './districtActivity.ts';
+import type { DistrictAdjacencyReport } from './districtAdjacency.ts';
+import type { AuthoredPopulationPath, PopulationGroundSource, AuthoredParkingBay,
+  PopulationCrossing, LivingWorldGroundReport, FinishedFootpathRequest, AuthoredDistrictActivitySite, AuthoredDistrictActivityWalk } from './populationPlan.ts';
 
 /**
  * LevelPlan — the plain, serializable description of a level.
@@ -102,6 +108,43 @@ export interface Heightfield {
   heights: readonly number[];
   /** Row-major cell surfaces, length `(columns - 1) * (rows - 1)`. */
   surfaces: readonly SurfaceId[];
+  /**
+   * Grip-only cells (`SegmentSpec.gripBands`): cell index → the surface the
+   * wheel rides on where it differs from `surfaces`. Simulation reads it for
+   * grip, rolling resistance and roughness; nothing drawn or heard does.
+   * Absent on every world without grip bands.
+   */
+  traction?: Readonly<Record<number, SurfaceId>>;
+}
+
+/** A surface-only fragment of an existing heightfield triangle. */
+export interface GroundSurfaceTriangle {
+  /** Original row-major heightfield cell; sampling can find fragments locally. */
+  readonly cell: number;
+  /** Upward winding. Heights lie on the source triangle's unchanged plane. */
+  readonly vertices: readonly [Vec3, Vec3, Vec3];
+}
+
+/**
+ * Exact sub-cell surface coverage shared by drawing and ground sampling.
+ * These replace surface semantics only: never ground height or solid tops.
+ */
+export interface GroundSurfacePatch {
+  readonly id: string;
+  readonly surface: SurfaceId;
+  readonly triangles: readonly GroundSurfaceTriangle[];
+  /** Original cell surface, when one coherent footprint has several semantics. */
+  readonly sourceSurface?: SurfaceId;
+  /** Shared layout frame for an exact, bounded commercial paving footprint. */
+  readonly footprint?: {
+    readonly id: string;
+    readonly origin: Vec3;
+    readonly yaw: number;
+    readonly width: number;
+    /** Local +Z extents, metres; heights still belong to each exact triangle. */
+    readonly near: number;
+    readonly far: number;
+  };
 }
 
 /**
@@ -251,6 +294,8 @@ export interface Marking {
   dash: number;
   gap: number;
   paint: MarkingPaint;
+  /** Explicit instructional glyph support on compact dirt, never a surface. */
+  support?: 'compactTrail';
 }
 
 /**
@@ -449,7 +494,36 @@ export interface LevelPlan {
   spawn: { position: Vec3; headingY: number };
   surround: Surround;
   heightfield: Heightfield;
+  /** Optional precise paving; absent on worlds with no suitable frontages. */
+  groundSurfacePatches?: readonly GroundSurfacePatch[];
+  /** Physical frontage/public-space revision, installed after accepted traffic. */
+  districtAdjacency?: DistrictAdjacencyReport;
+  districtActivity?: DistrictActivityReport;
+  districtComposition?: DistrictCompositionReport;
+  populationActivitySites?: readonly AuthoredDistrictActivitySite[];
+  /** Whole-source walking activity; rejected/fragmented traces claim no coverage. */
+  populationActivityWalks?: readonly AuthoredDistrictActivityWalk[];
+  /** Preserve accepted roster choice hashes when an activity revision changes records identity. */
+  populationActivityChoiceWorldId?: string;
+  /** Finished physical identity before the app installs its populated record
+   * key. Explicit metadata avoids guessing whether an authored id's suffix
+   * happens to resemble a population revision on repeated preparation. */
+  populationSourceWorldId?: string;
+  /** Engine-independent records/ghost key installed by world preparation: the
+   * builder's id, plus a fixed living revision when preparation added physical
+   * content. Never a float hash (`app/populationWorld.ts`). */
+  recordWorldId?: string;
   segments: Segment[];
+  /** Exact authored movement bands, emitted before SegmentSpec is discarded.
+   * Presence authorizes no physical actor until the shared population owner
+   * validates the finished plan and installs its revised world identity. */
+  populationPaths?: readonly AuthoredPopulationPath[];
+  /** Explicit finished-ground additions; no changes to the riding graph. */
+  populationGroundSources?: readonly PopulationGroundSource[];
+  populationParkingBays?: readonly AuthoredParkingBay[];
+  populationCrossings?: readonly PopulationCrossing[];
+  populationGroundReport?: LivingWorldGroundReport;
+  populationFootpathRequests?: readonly FinishedFootpathRequest[];
   checkpoints: Checkpoint[];
   /**
    * In-road hazards. Absent on a plan that carries none — M13.
@@ -490,6 +564,8 @@ export interface LevelPlan {
    * plan without props from a plan with none, which is the correct reading.
    */
   props?: Prop[];
+  /** Readable faces on existing poles. Presentation only; solidity keeps Prop.rotationY. */
+  routeSigns?: readonly RouteSign[];
   /**
    * Albedo this level paints an existing material with. Absent on most plans.
    *

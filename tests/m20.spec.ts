@@ -30,12 +30,33 @@ import { CHASE } from '../src/data/tuning.ts';
 /** A seed the pinned census says is dense, so the cop has a real route. */
 const SEED = 'route-41';
 
-async function bootChase(page: import('@playwright/test').Page): Promise<void> {
+/**
+ * 2026-10-04: `frozen` stops the loop in the task that enters the chase
+ * (entering a mode re-runs `updateRunning`, so a freeze in a later round trip
+ * lets the chase, the cop and the living world's traffic run on for however
+ * long the machine took to get there). The stray fixtures below steer a
+ * measured line between the town's furniture, so they start it from GO.
+ */
+async function bootChase(page: import('@playwright/test').Page, { frozen = false } = {}): Promise<void> {
   await bootToTitle(page, `level=generated&seed=${SEED}`);
-  await page.evaluate(() => {
+  await page.evaluate((freeze) => {
     window.game.startChase();
-  });
+    if (freeze) window.game.loop.setRunning(false);
+  }, frozen);
   await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
+}
+
+/** Why the stray fixture went down, in the game's own words, for a failure message. */
+async function crashReport(page: import('@playwright/test').Page): Promise<string> {
+  return page.evaluate(() => {
+    const game = window.game;
+    const euc = game.snapshot().euc;
+    const contacts = game.populationState().contacts
+      .filter((contact) => contact.occupantId === 'human-0' || contact.occupantId.startsWith('human-0/'))
+      .map((contact) => `${contact.actorKind} ${contact.actorId}`);
+    return `${euc.crashCause}/${euc.crashMotion} at (${euc.position.x.toFixed(1)}, ${euc.position.z.toFixed(1)})`
+      + (contacts.length > 0 ? `, living-world contact: ${contacts.join(', ')}` : ', no living-world contact');
+  });
 }
 
 async function expectInsideViewport(
@@ -76,12 +97,21 @@ async function expectInsideViewport(
  * the limit is 30). Six tenths crosses the corridor just as surely, at
  * 16–17 m/s, and arrives *upright* — which is the state the banner is about.
  * The three fixtures assert that they did not crash rather than assuming it.
+ *
+ * **2026-10-04: 0.31 to the right, not six tenths to the left.** M39's town
+ * ring and districts (2026-09-22 onward) stood a 12 m building 16 m off
+ * route-41's spawn on the left, and the six-tenths circle now ends in its wall
+ * before the 30 m limit (measured: `obstacle` at 15.9 m off route, identically
+ * on the published Sep 26 build). Measured to the right: 0.30–0.33 cross the
+ * open side, arrive upright at about 17.7 m/s and coast the whole grace
+ * without touching anything; 0.27 and 0.35–0.5 meet furniture on the way out
+ * or on the coast. 0.31 is that window's centre — the same premise, re-aimed.
  */
-const STRAY_STEER = 0.6;
+const STRAY_STEER = -0.31;
 
 test('leaving the route raises a banner with a way home and a visible countdown', async ({ page }) => {
   const errors = collectErrors(page);
-  await bootChase(page);
+  await bootChase(page, { frozen: true });
 
   // **Freeze before riding**, the way `m9.spec.ts` does for every HUD reading.
   //
@@ -98,6 +128,8 @@ test('leaving the route raises a banner with a way home and a visible countdown'
   // subject is a countdown.
   //
   // Frozen, the only simulation that happens is the steps this test asks for.
+  // 2026-10-04: frozen at the entrance itself (`bootChase`); this second
+  // freeze is kept as the statement of the rule.
   await page.evaluate(() => window.qa.freeze());
 
   const banner = page.locator('[data-hud="stray"]');
@@ -121,8 +153,8 @@ test('leaving the route raises a banner with a way home and a visible countdown'
     crashed: window.game.snapshot().euc.crashed,
   }));
   expect(strayed.straying).toBe(true);
-  expect(strayed.crashed, 'the fixture crashed on its way out, and a crash takes the banner down')
-    .toBe(false);
+  expect(strayed.crashed, 'the fixture crashed on its way out, and a crash takes the banner down: '
+    + (strayed.crashed ? await crashReport(page) : '')).toBe(false);
   await expect(banner).toBeVisible();
   await expect(page.locator('[data-hud="stray-label"]')).toHaveText('Back to the route');
 
@@ -161,7 +193,8 @@ test('leaving the route raises a banner with a way home and a visible countdown'
   // Both of these are the banner's own preconditions, and naming them is the
   // difference between a failure that reads "8 is not less than 8" and one
   // that says what actually happened to the rider.
-  expect(counted.crashed, 'the rider crashed while the clock ran, which hides the banner').toBe(false);
+  expect(counted.crashed, 'the rider crashed while the clock ran, which hides the banner: '
+    + (counted.crashed ? await crashReport(page) : '')).toBe(false);
   expect(counted.straying, 'the rider returned to the route, which resets the clock').toBe(true);
   expect(Number(counted.text)).toBeLessThan(Number(first));
 
@@ -178,7 +211,7 @@ test('leaving the route raises a banner with a way home and a visible countdown'
 
 test('the route warning stays on-screen with touch controls in both phone orientations', async ({ page }) => {
   const errors = collectErrors(page);
-  await bootChase(page);
+  await bootChase(page, { frozen: true });
   // Frozen and stopped for the reason the countdown test above is: a rider
   // left at full throttle keeps riding while Node does its round trips, and
   // the crash that eventually ends that ride hides the very banner this test
@@ -211,7 +244,9 @@ test('the route warning stays on-screen with touch controls in both phone orient
 
 test('the banner turns urgent before the run ends, and the end is no longer a surprise', async ({ page }) => {
   const errors = collectErrors(page);
-  await bootChase(page);
+  // 2026-10-04: frozen at the entrance, so the stray line starts from GO and
+  // only the steps asked for below are simulated.
+  await bootChase(page, { frozen: true });
 
   await page.evaluate(async (steer) => {
     const game = window.game;
@@ -427,9 +462,14 @@ test('one press from a paused chase swaps the world and puts the player back in 
   // delegated handler resolved the wrong hook and dropped the press on the
   // floor. This pin makes the worst landing spot the tested one.
   await page.locator('.euc-menu--pause [data-note="new-route"]').click();
+  // 2026-10-04: the new route builds behind the loading cover and the chase is
+  // entered inside that covered work; the player is back in it when the cover
+  // lifts, which is when `pending` clears and the loop steps the cop again.
   await page.waitForFunction(() => window.game.snapshot().app.state === 'chase', undefined, {
-    timeout: 20_000,
+    timeout: 90_000,
   });
+  await expect.poll(async () => page.evaluate(() => window.game.snapshot().route.pending), { timeout: 90_000 })
+    .toBe(false);
 
   const after = await page.evaluate(() => window.game.snapshot());
   expect(after.world.seed).not.toBe(before);
@@ -461,8 +501,9 @@ test('and from the results card, which is where a busted player already is', asy
   expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('results');
 
   await page.locator('.euc-menu--results [data-menu="new-route"]').click();
+  // 2026-10-04: the new route builds behind the loading cover first.
   await page.waitForFunction(() => window.game.snapshot().app.state === 'chase', undefined, {
-    timeout: 20_000,
+    timeout: 90_000,
   });
 
   const after = await page.evaluate(() => window.game.snapshot());
@@ -504,8 +545,9 @@ test('a completed chase cannot relabel a later time trial or its new-route desti
   expect(await page.locator('[data-menu="results-rows"] tr').count()).toBeGreaterThan(0);
 
   await page.locator('.euc-menu--results [data-menu="new-route"]').click();
+  // 2026-10-04: the new route builds behind the loading cover first.
   await page.waitForFunction(() => window.game.snapshot().app.state === 'challenge', undefined, {
-    timeout: 20_000,
+    timeout: 90_000,
   });
   expect((await page.evaluate(() => window.game.snapshot().challenge.phase)))
     .toMatch(/armed|running/);
@@ -524,8 +566,9 @@ test('a new route from free ride stays free ride, and works on the hand-built ci
   });
 
   await page.locator('.euc-menu--pause [data-menu="new-route"]').click();
+  // 2026-10-04: the new route builds behind the loading cover first.
   await page.waitForFunction(() => window.game.snapshot().app.state === 'freeRide', undefined, {
-    timeout: 20_000,
+    timeout: 90_000,
   });
 
   const after = await page.evaluate(() => window.game.snapshot());

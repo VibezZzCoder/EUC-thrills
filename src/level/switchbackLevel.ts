@@ -1,4 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { switchbackAdvanceCues } from './switchbackAdvanceCues.ts';
+import { switchbackLapCues, switchbackRouteSigns } from './switchbackWayfinding.ts';
 import type { ParkSignWord } from '../data/markings.ts';
 import { CHALLENGE, EUC, PHYSICS, TRACK_DAY } from '../data/tuning.ts';
 import type { MaterialId } from '../data/surfaces.ts';
@@ -16,8 +18,8 @@ import {
   type SunBearing,
 } from './parkDressing.ts';
 import { innerFences, type FencedBend, type InnerFence } from './parkFencing.ts';
-import { MPS_PER_MPH, parkSignage, type ParkSignage, type SignedFeature } from './parkSignage.ts';
-import { turnArrowPadsBySegment, turnArrowsBySegment, type TurnArrow } from './parkTurnArrows.ts';
+import { MPS_PER_MPH, parkSignage, type ParkSignage, type SignedFeature, type SignLap } from './parkSignage.ts';
+import { turnArrowPadsBySegment, type TurnArrow } from './parkTurnArrows.ts';
 import {
   deck,
   lip,
@@ -1173,6 +1175,8 @@ interface SwitchbackSignPlan {
   readonly words?: readonly ParkSignWord[];
   /** Shorten the sign, for a corridor with no room for a full one. */
   readonly compact?: true;
+  /** Paint-only lateral compression; never moves the ridden feature line. */
+  readonly cueLateralScale?: number;
   /** Where the rider comes down, in the host corridor's own frame. */
   readonly landing: {
     readonly segment: string;
@@ -1307,6 +1311,9 @@ const SWITCHBACK_SIGN_PLAN: Readonly<Record<string, SwitchbackSignPlan>> = Objec
   },
   crest: {
     commit: 'leave',
+    // Fire-road dirt ends at |t| = 4. Keep both complete cue ribbons inside
+    // the finished dirt cells instead of covering its gravel with boardwalk.
+    cueLateralScale: 0.5,
     approachMph: 35,
     technicalT: PARK.crestT,
     bypassT: -3.5,
@@ -1360,6 +1367,7 @@ export const SWITCHBACK_SIGNED_FEATURES: readonly SignedFeature[] = (() => {
         bypassFromT: plan.bypassT + PARK.bypassArrowAcross,
         ...(plan.words === undefined ? {} : { words: plan.words }),
         ...(plan.compact === undefined ? {} : { compact: plan.compact }),
+        ...(plan.cueLateralScale === undefined ? {} : { cueLateralScale: plan.cueLateralScale }),
         landing: plan.landing,
         blocks: feature.report.blocks.map((block) => ({
           s: block.s,
@@ -1382,7 +1390,7 @@ export const SWITCHBACK_SIGNED_FEATURES: readonly SignedFeature[] = (() => {
  * `SIGNS.readSeconds × v + v²/(2a)` before the point its feature can no longer
  * be refused, at the speed the measurement pass says the rider arrives.
  */
-export const SWITCHBACK_SIGNAGE: ParkSignage = parkSignage(SWITCHBACK_SIGNED_FEATURES, {
+const SWITCHBACK_SIGN_LAP: SignLap = {
   metres: SWITCHBACK_LAP_METRES,
   segments: SWITCHBACK_GEOMETRY.map((segment) => ({
     id: segment.id,
@@ -1404,7 +1412,24 @@ export const SWITCHBACK_SIGNAGE: ParkSignage = parkSignage(SWITCHBACK_SIGNED_FEA
   padMargin: SWITCHBACK_SIGN_PAD_MARGIN,
   landingPadMargin: SWITCHBACK_SIGN_PAD_MARGIN,
   maxLead: SWITCHBACK_SIGN_MAX_LEAD,
-});
+};
+
+export const SWITCHBACK_SIGNAGE: ParkSignage = parkSignage(SWITCHBACK_SIGNED_FEATURES.map(feature => ({
+  ...feature, groundCopy: 'post' as const, groundArrowScale: 0.65,
+})), { ...SWITCHBACK_SIGN_LAP, support: 'compactTrail' });
+
+/**
+ * r4's boardwalk pads under the same signs, kept as grip only (owner,
+ * 2026-10-04). r5 drew the cues straight on dirt and the dirt took the pads'
+ * wood grip with it, so the signed 50 mph big jump graded heavy. The very
+ * signage r4 authored — full-size cues, no compact trail — is rebuilt here for
+ * its bands alone and handed to the graph as `gripBands`: the rider gets r4's
+ * roll-out and landings, and the ground still shows (and sounds like) dirt.
+ */
+const SWITCHBACK_CUE_GRIP = parkSignage(
+  SWITCHBACK_SIGNED_FEATURES.map(({ cueLateralScale: _paintOnly, ...feature }) => feature),
+  SWITCHBACK_SIGN_LAP,
+).bands;
 
 // ---------------------------------------------------------------------------
 // The dressing — M36 Phase 4
@@ -1784,8 +1809,23 @@ export const SWITCHBACK_TURN_ARROWS: readonly TurnArrow[] = Object.freeze([
   { segment: 'shelf-in', s: 9, t: -4.5, turn: 'left', across: 2.0 },
 ]);
 
-const SWITCHBACK_TURN_ARROW_RUNS = turnArrowsBySegment(SWITCHBACK_TURN_ARROWS);
-/** Wood under every arrow, for the same reason every sign has it: dirt takes no paint. */
+export const SWITCHBACK_LAP_CUES = switchbackLapCues(SWITCHBACK_TURN_ARROWS,
+  placeChain(SWITCHBACK_GEOMETRY.map(segment => ({ ...segment,
+    shoulder: PARK.shoulder })), { position: { x: 0, y: 0, z: 0 }, headingY: 0 }));
+const SWITCHBACK_TURN_ARROW_RUNS = SWITCHBACK_LAP_CUES.markings;
+
+/** Central source-ground route categories for the arriving, uncommitted rider.
+ * Existing warning strokes and feature/forest blocks are immutable constraints.
+ * Neighbouring same-choice features share a cue only inside all their windows. */
+export const SWITCHBACK_ADVANCE_CUES = switchbackAdvanceCues(placeChain(
+  SWITCHBACK_GEOMETRY.map(segment => ({ ...segment, shoulder: PARK.shoulder,
+    blocks: [...(FEATURE_BLOCKS.get(segment.id) ?? []),
+      ...(SWITCHBACK_HILLSIDE_BLOCKS.get(segment.id) ?? [])],
+    markings: [...(SWITCHBACK_SIGNAGE.markings.get(segment.id) ?? []),
+      ...(SWITCHBACK_TURN_ARROW_RUNS.get(segment.id) ?? [])],
+  })), { position: { x: 0, y: 0, z: 0 }, headingY: 0 }),
+  SWITCHBACK_SIGNAGE, SWITCHBACK_SIGNED_FEATURES, SWITCHBACK_SIGN_MAX_LEAD);
+/** r4's arrow pads: grip only since r5 (`gripBands`); none is drawn. */
 export const SWITCHBACK_TURN_ARROW_PADS = turnArrowPadsBySegment(SWITCHBACK_TURN_ARROWS, SWITCHBACK_SIGN_PAD_MARGIN);
 
 export const SWITCHBACK_GRAPH: readonly SegmentSpec[] = SWITCHBACK_GEOMETRY.map((segment) => {
@@ -1796,22 +1836,22 @@ export const SWITCHBACK_GRAPH: readonly SegmentSpec[] = SWITCHBACK_GEOMETRY.map(
   const blocks = feature === undefined && hillside === undefined
     ? undefined
     : [...(feature ?? []), ...(hillside ?? [])];
-  // **The boardwalk patches come first, and the order is the point.**
-  // `surfaceAtLateral` takes the first band whose span contains the query, and
-  // the fire road already carries gravel margins from t = ±4 out. The crest's
-  // chevrons reach t = 4.6, so a signage band listed after the gravel would
-  // lose a wing of every chevron to it — measured, before this line was
-  // written: three runs, one point each, gone whatever the margin.
-  const signage = SWITCHBACK_SIGNAGE.bands.get(segment.id);
-  const arrowPads = SWITCHBACK_TURN_ARROW_PADS.get(segment.id);
-  const bands = signage === undefined && arrowPads === undefined
-    ? segment.bands
-    : [...(arrowPads ?? []), ...(signage ?? []), ...(segment.bands ?? [])];
+  // Signage is a thin authored glyph on compact dirt. Preserve every genuine
+  // feature deck and original gravel band; instruction paint owns no look.
+  // Grip is r4's: arrow pads first, then the sign pads, as r4 listed them
+  // ahead of the gravel margins (`SWITCHBACK_CUE_GRIP`).
+  const bands = segment.bands;
+  const cueGrip = SWITCHBACK_CUE_GRIP.get(segment.id);
+  const arrowGrip = SWITCHBACK_TURN_ARROW_PADS.get(segment.id);
+  const gripBands = cueGrip === undefined && arrowGrip === undefined
+    ? undefined
+    : [...(arrowGrip ?? []), ...(cueGrip ?? [])];
   const signageRuns = SWITCHBACK_SIGNAGE.markings.get(segment.id);
   const arrowRuns = SWITCHBACK_TURN_ARROW_RUNS.get(segment.id);
-  const markings = signageRuns === undefined && arrowRuns === undefined
+  const advanceRuns = SWITCHBACK_ADVANCE_CUES.markings.get(segment.id);
+  const markings = signageRuns === undefined && arrowRuns === undefined && advanceRuns === undefined
     ? undefined
-    : [...(signageRuns ?? []), ...(arrowRuns ?? [])];
+    : [...(signageRuns ?? []), ...(arrowRuns ?? []), ...(advanceRuns ?? [])];
   const signs = SWITCHBACK_SIGNAGE.props.get(segment.id);
   const landmarks = SWITCHBACK_LANDMARKS.get(segment.id);
   // Signs before landmarks, which is also the order `resolveStructuralConflicts`
@@ -1831,6 +1871,7 @@ export const SWITCHBACK_GRAPH: readonly SegmentSpec[] = SWITCHBACK_GEOMETRY.map(
     ...(segment.climb === 0 ? {} : { climb: segment.climb }),
     ...(segment.linearClimb ? { linearClimb: true } : {}),
     ...(bands === undefined ? {} : { bands }),
+    ...(gripBands === undefined ? {} : { gripBands }),
     ...(blocks === undefined ? {} : { blocks }),
     ...(markings === undefined ? {} : { markings: [...markings] }),
     ...(props === undefined ? {} : { props }),
@@ -1863,6 +1904,19 @@ export const SWITCHBACK_SPAWN: { position: Vec3; headingY: number } = {
 
 /** The lap, placed once, so everything below measures the same geometry. */
 const PLACED: readonly PlacedSegment[] = placeChain(SWITCHBACK_GRAPH, SWITCHBACK_SPAWN);
+
+/**
+ * Factual summit-apron source for a future supplemental path author.
+ *
+ * Every Switchback corridor, including this apron, is inside the lap envelope,
+ * so this venue deliberately emits no population request from it. A completed
+ * plan may provide an off-lap route without manufacturing one from this apron.
+ */
+export const SWITCHBACK_SUMMIT_APRON_REFERENCE: PlacedSegment = (() => {
+  const apron = PLACED.find((segment) => segment.spec.id === 'apron');
+  if (apron === undefined) throw new Error('Switchback summit apron missing from placed chain');
+  return apron;
+})();
 
 // ---------------------------------------------------------------------------
 // The trick zones — M38, docs/PLANS.md §38.10 q189
@@ -2333,7 +2387,7 @@ export function createSwitchbackLevel(
   // touched, so the world, its colliders and its render bill are the plan the
   // builder returned (`switchbackLevel.test.ts`).
   const plan = buildLevelPlan(SWITCHBACK_GRAPH, {
-    id: 'switchback-r4',
+    id: 'switchback-r5',
     spawn: SWITCHBACK_SPAWN,
     surround: { ...SWITCHBACK_SURROUND },
     spacing: SWITCHBACK_FIELD_SPACING,
@@ -2361,5 +2415,11 @@ export function createSwitchbackLevel(
     ...(hazardProbeMetres === undefined ? {} : { hazardProbeMetres }),
     ...(targetProbeMetres === undefined ? {} : { targetProbeMetres }),
   });
-  return { ...plan, trickZones: SWITCHBACK_TRICK_ZONES };
+  return { ...plan, trickZones: SWITCHBACK_TRICK_ZONES,
+    routeSigns: switchbackRouteSigns(plan, PLACED, SWITCHBACK_SIGNAGE, SWITCHBACK_SIGNED_FEATURES),
+    // The original sampler's rail-side plateau is clear from s23.5..44.5
+    // at t=-11.65. This inner range stays between benches s22/s46 and clears
+    // the actual swept pedestrian prism, not merely its centre, outside the lap.
+    populationFootpathRequests: [{ id: 'switchback-summit-spectator', hostSegmentId: 'apron',
+      district: 'park', fromS: 25, toS: 41, lateralMetres: -11.65, halfWidthMetres: 0.9 }] };
 }

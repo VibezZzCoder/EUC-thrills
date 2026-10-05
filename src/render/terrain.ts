@@ -1,6 +1,12 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { sharedGroundArrayPrice } from './sharedGroundArrayPrice.ts';
+import type { PreparedEnvironmentSupplements } from './environmentSupplementPrice.ts';
 import * as THREE from 'three';
-import { TERRAIN } from '../data/tuning.ts';
+import { featureBlockTone } from './featureBlockTone.ts';
+import { prepareFeatureBlocks, type FeatureBlockPlan, type FeatureBlockPrice, type FeatureBlockBucketPrice } from './featureBlockPlan.ts';
+import { priceFeatureBlockBuild } from './featureBlockBuildPrice.ts';
+import { groundEdgeIndexBytes } from '../shared/groundEdgePrice.ts';
+import { TERRAIN, SHARED_GROUND } from '../data/tuning.ts';
 import {
   SURFACES,
   materialAppearance,
@@ -13,8 +19,21 @@ import type { SurfaceId } from '../simulation/world.ts';
 import { createHazards, type HazardsView } from './hazards.ts';
 import { createMarkings, type MarkingsView } from './markings.ts';
 import { createProps } from './props.ts';
-import { BASELINE_PRESENTATION } from './presentation.ts';
+import type { VegetationDistanceDetail } from './vegetationDistance.ts';
 import { isCoursed, stoneTone, wallFaceGrid } from './wallCourses.ts';
+import { GROUND_CRISP_MATERIALS } from './groundBoundaryPolicy.ts';
+import { installOrdinaryGroundBoundary, ordinaryBoundaryAttributes } from './ordinaryGroundBoundary.ts';
+import { createSharedGroundSurface, type SharedGroundReport } from './sharedGroundSurface.ts';
+import { createSharedBoundaryTint } from './sharedBoundaryTint.ts';
+import { sharedGroundCode } from './sharedGroundCodes.ts';
+import { withSharedGroundContours } from './sharedGroundContours.ts';
+import type { PreparedGroundEdges } from './sharedGroundEdgePlan.ts';
+import { BASELINE_PRESENTATION, judgePresentation, type PresentationRecipe } from './presentation.ts';
+import { emitSharedGroundEdges, type SharedGroundEdgeMeshReport } from './sharedGroundEdgeMesh.ts';
+import { partitionIndexedGeometry } from './spatialGeometry.ts';
+import { EMPTY_SPATIAL_BATCHING_DELTA, sumSpatialBatchingDeltas, validateSpatialBatchMetres,
+  type SpatialBatchingDelta } from './spatialBatching.ts';
+import { ULTRA_ENVELOPE } from './ultra/ultraEnvelope.ts';
 import {
   contactOcclusion,
   edgeFillFor,
@@ -70,7 +89,10 @@ import {
  *      drawing terrain coplanar with it would z-fight across every square metre
  *      of field. Skipping them also drops the mesh from roughly seventy-five
  *      thousand cells to the thirteen thousand the course actually occupies.
- *   3. **One geometry, one material group per surface.** Seven draw calls for
+ *   3. **One geometry, batched material groups.** The source begins with one
+ *      group per surface. Admitted shared edge construction reuses the first
+ *      existing appearance owner or adds one nonempty group per new material.
+ *      Seven draw calls for
  *      the whole ground rather than seven meshes, and the vertex colours that
  *      carry surface mottle live on the single shared attribute. M13's spill is
  *      an eighth surface and costs exactly one more group on a level that
@@ -105,9 +127,44 @@ export interface TerrainView {
   readonly textures: number;
   /** What an Ultra build added (M39), or `null` on an ordinary world. */
   readonly ultra: UltraTerrainReport | null;
+  /** Explicit ordinary composition update; no new draw, texture or shadow. */
+  readonly ordinaryBoundary: OrdinaryBoundaryReport | null;
+  /** Shared material foundation, priced separately from legacy recipe geometry. */
+  readonly sharedGround: SharedGroundReport | null;
+  /** Actual batched replacement output, included before ordinary/Ultra admission. */
+  readonly sharedEdges: SharedGroundEdgeMeshReport | null;
+  readonly sharedVegetation: import('./sharedVegetationCost.ts').SharedVegetationReport | null;
+  readonly metricSource?: import('./props.ts').MetricSourceReport | null;
+  /** Actual top emission checked against preselection price; no new draw. */
+  readonly featureBlocks?: FeatureBlockPrice | null;
+  /** Installed potential draw overhead, separate from source/admission prices. */
+  readonly spatialBatching: SpatialBatchingDelta;
+  /** Static ground/block overhead alone, for independent activation pricing. */
+  readonly terrainSpatialBatching: SpatialBatchingDelta;
+  /** Static geometry's unique buffer allocations; null in historical factories. */
+  readonly spatialGeometry: TerrainSpatialGeometryReport | null;
   /** Re-centre the surround plane on the rider. Called once per frame. */
   setSurroundCentre(x: number, z: number): void;
   dispose(): void;
+}
+
+export interface TerrainSpatialGeometryReport {
+  readonly metres: number;
+  readonly sourceMeshes: number;
+  readonly meshes: number;
+  readonly sourceDrawGroups: number;
+  readonly drawGroups: number;
+  readonly triangles: number;
+  /** Shared attributes counted once per source, including packed ground data. */
+  readonly attributeBytes: number;
+  /** Exact sum of chunk indices, preserving each source index's width. */
+  readonly indexBytes: number;
+}
+
+export interface OrdinaryBoundaryReport {
+  readonly bytes: number;
+  readonly filledCells: number;
+  readonly fillLines: number;
 }
 
 /**
@@ -131,6 +188,10 @@ export interface UltraTerrainReport {
   readonly attributeBytes: number;
   /** The ground detail maps' bytes (pre-R1 ground pass), 0 without them. */
   readonly detailBytes: number;
+  readonly metricProxyBytes?: number;
+  readonly capSlotBytes?: number;
+  readonly farCapExtraDraws?: number;
+  readonly farCapExtraTriangles?: number;
   /** Heightfield cells the edge field paints, and the lines it draws them with. */
   readonly filledCells: number;
   readonly fillLines: number;
@@ -227,10 +288,10 @@ function standardMaterial(appearance: MaterialAppearance, vertexColors: boolean)
  * The Ultra kit a build runs under, or `null` for an ordinary one — M39.
  *
  * **Every Ultra branch in this file sits behind this value being non-null**,
- * so a Low/Medium/High world builds exactly the geometry, materials and flags
- * it built before Ultra existed — the ordinary arm of each branch is the old
- * statement, unchanged (`docs/M39_ULTRA.md` §7.1 invariant 1, pinned by the
- * ordinary-parity goldens and the u0 captures). An Ultra recipe without its
+ * so ordinary factories keep the ordinary material/attribute branch. The
+ * owner-authorized shared upgrade intentionally corrects the source diagonal
+ * in every factory; historical index parity is a named test-only projection,
+ * never a runtime exception. An Ultra recipe without its
  * build context is refused rather than half-built: the materials need the
  * context's shared uniforms, and a world drawn with ordinary materials over
  * Ultra attributes would be an "Ultra" label on an ordinary frame. The
@@ -258,13 +319,76 @@ export function createTerrain(
   plan: LevelPlan,
   recipe: BuildRecipe = BASELINE_PRESENTATION,
   context?: UltraBuildContext,
+  /** All factories use authoritative source triangles. Renderer explicitly
+   * supplies admitted shared construction; historical defaults add no bands.
+   * The intentional diagonal delta is reconciled by test-only old-index
+   * projection, never by retaining wrong runtime triangles. */
+  composition: { readonly ordinaryBoundary?: boolean; readonly sharedSurface?: boolean;
+    readonly sharedEdges?: PreparedGroundEdges | null; readonly environmentSupplements?: PreparedEnvironmentSupplements | null;
+    readonly spatialBatchMetres?: number; readonly distanceDetail?: VegetationDistanceDetail } = {},
 ): TerrainView {
+  const spatialBatchMetres = composition.spatialBatchMetres ?? Infinity;
+  validateSpatialBatchMetres(spatialBatchMetres);
   const kit = ultraKitOf(recipe, context);
+  const ordinaryBoundary = kit === null && composition.ordinaryBoundary === true;
+  const sharedSurface = composition.sharedSurface === true;
+  const preparedEdges = sharedSurface
+    ? composition.sharedEdges ?? null
+    : null;
+  if (preparedEdges && preparedEdges.source !== plan) throw new Error('Shared edges belong to a different source world');
+  if (preparedEdges && (preparedEdges.joinFailures.length
+    || judgePresentation(plan, BASELINE_PRESENTATION, preparedEdges.price, composition.environmentSupplements ?? null).breaches.length
+    || (kit === null && judgePresentation(plan, recipe as PresentationRecipe, preparedEdges.price, composition.environmentSupplements ?? null).breaches.length))) {
+    throw new Error('Shared edge construction was not admitted under its joins and ordinary contracts');
+  }
+  const borrowedFeatureBlocks = composition.environmentSupplements?.featureBlocks ?? null;
+  if (borrowedFeatureBlocks && (borrowedFeatureBlocks.source !== plan || borrowedFeatureBlocks.disposed))
+    throw new Error('Feature blocks belong to a different or disposed source world');
+  const privateFeatureBlocks = sharedSurface && !borrowedFeatureBlocks ? prepareFeatureBlocks(plan) : null;
+  const preparedFeatureBlocks = sharedSurface ? borrowedFeatureBlocks ?? privateFeatureBlocks : null;
+  try {
+  const featurePrice = preparedFeatureBlocks ? priceFeatureBlockBuild(preparedFeatureBlocks, recipe) : null;
+  const sharedGround = sharedSurface ? createSharedGroundSurface(context?.maxAnisotropy ?? 8, plan) : null;
+  const sharedProfile = { ...COURSE_MOTTLE, cellWeight: SHARED_GROUND.cellWeight,
+    midWeight: SHARED_GROUND.midWeight, coarseWeight: SHARED_GROUND.coarseWeight };
   const group = new THREE.Group();
   group.name = 'level-terrain';
 
   const geometries: THREE.BufferGeometry[] = [];
   const materials: THREE.Material[] = [];
+  const spatialBatching = { ...EMPTY_SPATIAL_BATCHING_DELTA };
+  const spatialGeometry = { metres: spatialBatchMetres, sourceMeshes: 0, meshes: 0,
+    sourceDrawGroups: 0, drawGroups: 0, triangles: 0, attributeBytes: 0, indexBytes: 0 };
+  const addStaticMesh = (mesh: THREE.Mesh): void => {
+    if (spatialBatchMetres === Infinity) {
+      group.add(mesh); geometries.push(mesh.geometry);
+      return;
+    }
+    const source = mesh.geometry;
+    const partition = partitionIndexedGeometry(source, spatialBatchMetres);
+    const report = partition.report;
+    const drawDelta = report.drawGroups - report.sourceDrawGroups;
+    spatialBatching.colourDrawDelta += drawDelta;
+    if (mesh.castShadow) {
+      spatialBatching.shadowDrawDelta += drawDelta;
+      if (kit?.farShadow && mesh.layers.isEnabled(ULTRA_STATIC_LAYER)) spatialBatching.farShadowDrawDelta += drawDelta;
+    }
+    spatialGeometry.sourceMeshes++;
+    spatialGeometry.meshes += report.chunks;
+    spatialGeometry.sourceDrawGroups += report.sourceDrawGroups;
+    spatialGeometry.drawGroups += report.drawGroups;
+    spatialGeometry.triangles += report.triangles;
+    spatialGeometry.attributeBytes += report.attributeBytes;
+    spatialGeometry.indexBytes += report.indexBytes;
+    for (const geometry of partition.geometries) {
+      const chunk = geometry === source ? mesh : mesh.clone(false);
+      chunk.geometry = geometry;
+      group.add(chunk); geometries.push(geometry);
+    }
+    // The whole-world source was never uploaded; only the tiles enter the
+    // scene. Retire its wrapper/index while shared attribute owners live on.
+    if (!partition.geometries.includes(source)) source.dispose();
+  };
 
   const field = plan.heightfield;
   const surroundAppearance = paintedAppearance(SURFACES[plan.surround.surface].material, plan.palette);
@@ -294,6 +418,7 @@ export function createTerrain(
     TERRAIN.surroundBackstopHalfExtent * 2,
   );
   const backstopMaterial = standardMaterial(surroundAppearance, false);
+  sharedGround?.install(backstopMaterial, surroundAppearance.id, 'none', true);
   backstopMaterial.polygonOffset = true;
   backstopMaterial.polygonOffsetFactor = 2;
   backstopMaterial.polygonOffsetUnits = 2;
@@ -337,9 +462,9 @@ export function createTerrain(
     surroundAppearance,
     coverage,
     kit === null ? undefined : (appearance) => ultraGroundMaterial(appearance, 'field', context!, groundDetail),
+    sharedSurface,
   );
-  group.add(fieldMesh.mesh);
-  geometries.push(fieldMesh.geometry);
+  sharedGround?.install(fieldMesh.material as THREE.MeshStandardMaterial, surroundAppearance.id, 'none', true);
   materials.push(fieldMesh.material);
 
   // -- Ultra: contact AO on the field (M39 T5) ---------------------------
@@ -366,6 +491,7 @@ export function createTerrain(
     fieldMesh.geometry.setAttribute(ULTRA_GROUND_ATTRIBUTES.ao, new THREE.Uint8BufferAttribute(ao, 1, true));
     ultraAttributeBytes += ao.byteLength;
   }
+  addStaticMesh(fieldMesh.mesh);
 
   // -- The heightfield ----------------------------------------------------
   const cellColumns = field.columns - 1;
@@ -443,7 +569,10 @@ export function createTerrain(
     // were left as a stair-stepped, feathered band inside the road and the
     // trail ("grass reads onto the trail", the smeared steeple edge). The
     // field now draws the neighbour's colour, crisply and within half a cell.
-    const holdBlend = kit !== null && kit.ground && kit.edgeFill && ULTRA_CRISP_MATERIALS.has(appearance.id);
+    // Fragment-scale shared shoulders replace the old whole-cell tint, which
+    // made otherwise identical grass/dirt corners form visible rectangles.
+    const holdBlend = sharedSurface || (kit !== null && kit.ground && kit.edgeFill && ULTRA_CRISP_MATERIALS.has(appearance.id))
+      || (ordinaryBoundary && GROUND_CRISP_MATERIALS.has(appearance.id));
     for (const cell of cells) {
       const row = Math.floor(cell / cellColumns);
       const column = cell - row * cellColumns;
@@ -502,26 +631,41 @@ export function createTerrain(
       // toward its neighbour has to carry the ratio between the two.
       if (weight > 0) rebaseTint(tint, effective, base);
 
-      if (appearance.paving !== undefined) {
+      if (appearance.paving !== undefined && !sharedSurface) {
         const paving = pavingShade(worldX, worldZ, appearance.paving);
         tint.r *= paving; tint.g *= paving; tint.b *= paving;
       }
 
-      const a = pushCorner(column, row, tint);
-      const b = pushCorner(column + 1, row, tint);
-      const c = pushCorner(column, row + 1, tint);
-      const d = pushCorner(column + 1, row + 1, tint);
+      // Continuous broad tint across shared-material cells. Material-scale
+      // texture and natural grass now provide the near speed cues; a cell
+      // no longer takes a flat square tone. Keep its topology and height.
+      const corner = (cx: number, cz: number): number => {
+        if (sharedSurface) {
+          groundTint(cx, cz, field.originX + cx * field.spacing, field.originZ + cz * field.spacing,
+            appearance.mottle, effective, sharedProfile, tint);
+          if (weight > 0) rebaseTint(tint, effective, base);
+        }
+        return pushCorner(cx, cz, tint);
+      };
+      const a = corner(column, row);
+      const b = corner(column + 1, row);
+      const c = corner(column, row + 1);
+      const d = corner(column + 1, row + 1);
 
       // Split along the (column, row) - (column+1, row+1) diagonal, which is
       // the diagonal `simulation/planSampler.ts` interpolates within. Wound
       // counter-clockwise seen from above: +X is to the left of +Z here, so
       // the front face is the one the sun lights.
-      indices.push(a, c, b, b, c, d);
+      // Every factory follows planSampler/streetFronts h00--h11 support.
+      // Historical h10--h01 evidence is preserved, not retained as a mismatch.
+      indices.push(a, d, b, a, c, d);
     }
 
-    terrainMaterials.push(
-      kit === null ? standardMaterial(appearance, true) : ultraGroundMaterial(appearance, appearance.id, context!, groundDetail),
-    );
+    const material = kit === null ? standardMaterial(appearance, true)
+      : ultraGroundMaterial(appearance, appearance.id, context!, groundDetail);
+    if (ordinaryBoundary) installOrdinaryGroundBoundary(material, !sharedSurface, sharedSurface);
+    sharedGround?.install(material, appearance.id, ordinaryBoundary ? 'ordinary' : kit?.ground && kit.edgeFill ? 'ultra' : 'none', true);
+    terrainMaterials.push(material);
   }
 
   // -- Ultra: smooth-shaded slopes (M39 pre-R1 ground pass, optional) -------
@@ -529,7 +673,7 @@ export function createTerrain(
   // Gaussian-smoothed field of the same samples, eased in from the road, so
   // a bank reads as a slope instead of as facets. Positions, triangles and
   // the sampler's own plane normals are untouched.
-  const smoothedNormals = kit?.ground === true && ULTRA_GROUND.smoothNormals.enabled
+  const smoothedNormals = (sharedSurface || kit?.ground === true) && ULTRA_GROUND.smoothNormals.enabled
     ? smoothHeightfieldNormals(field, cellsBySurface, normals)
     : 0;
 
@@ -552,26 +696,68 @@ export function createTerrain(
   terrainGeometry.computeBoundingSphere();
 
   // -- Ultra: contact AO and the edge fill on the heightfield (M39 T5, T6) --
-  // Attributes only: no position, normal, colour, index or group above moves,
-  // so the ridden surface and the ordinary tints are the ones just built. The
+  // This stage adds only attributes. The admitted shared assembly below then
+  // partitions authoritative triangles and weights these source attributes;
+  // band edge attrs are neutral so a shader cannot double-paint the assembly. The
   // fill is part of the ground treatment (`kit.ground`), with `edgeFill` its
   // kill flag — the same pair the ground patch declares the attributes under.
   let fillLines = 0;
   let filledCells = 0;
   if (kit !== null && contact !== null) {
-    const ultraGround = heightfieldAttributes(plan, cellsBySurface, colors, contact, kit.edgeFill);
+    const ultraGround = heightfieldAttributes(plan, cellsBySurface, colors, contact, kit.edgeFill, sharedSurface);
     for (const [name, attribute] of ultraGround.attributes) terrainGeometry.setAttribute(name, attribute);
     ultraAttributeBytes += ultraGround.bytes;
     fillLines = ultraGround.fillLines;
     filledCells = ultraGround.filledCells;
   }
 
+  let ordinaryBoundaryReport: OrdinaryBoundaryReport | null = null;
+  if (ordinaryBoundary) {
+    const boundary = ordinaryBoundaryAttributes(plan, cellsBySurface, colors, sharedSurface);
+    for (const [name, attribute] of boundary.attributes) terrainGeometry.setAttribute(name, attribute);
+    ordinaryBoundaryReport = { bytes: boundary.bytes,
+      filledCells: boundary.filledCells, fillLines: boundary.fillLines };
+  }
+
+  let sharedEdges: SharedGroundEdgeMeshReport | null = null;
+  if (preparedEdges) {
+    const makeEdgeMaterial = (id: MaterialId): THREE.Material => {
+      const appearance = paintedAppearance(id, plan.palette);
+      const material = kit === null ? standardMaterial(appearance, true)
+        : ultraGroundMaterial(appearance, id, context!, groundDetail);
+      if (ordinaryBoundary) installOrdinaryGroundBoundary(material, !sharedSurface, sharedSurface);
+      sharedGround?.install(material, id, ordinaryBoundary ? 'ordinary' : kit?.ground && kit.edgeFill ? 'ultra' : 'none', true);
+      return material;
+    };
+    const bandTint = (id: MaterialId, vertex: import('./sharedGroundEdgeAssembly.ts').EdgeAssemblyVertex): readonly [number, number, number] => {
+      const appearance = paintedAppearance(id, plan.palette), base = { r: 1, g: 1, b: 1 }, tint = { r: 1, g: 1, b: 1 };
+      linearFromSrgbHex(appearance.albedo, base);
+      const column = Math.floor((vertex.x - field.originX) / field.spacing), row = Math.floor((vertex.z - field.originZ) / field.spacing);
+      groundTint(column, row, vertex.x, vertex.z, appearance.mottle, base, sharedProfile, tint);
+      return [tint.r, tint.g, tint.b];
+    };
+    try {
+      sharedEdges = emitSharedGroundEdges(terrainGeometry, terrainMaterials, cellsBySurface, preparedEdges, makeEdgeMaterial, bandTint);
+      ultraAttributeBytes += sharedEdges.ultraAttributeBytes;
+      if (ordinaryBoundaryReport) ordinaryBoundaryReport = { ...ordinaryBoundaryReport,
+        bytes: ordinaryBoundaryReport.bytes + sharedEdges.ordinaryAttributeBytes };
+      // The reserved Ultra attribute row is a limit, not permission for
+      // newly appended packed attributes to exceed the existing 8 MiB.
+      if (kit !== null && ultraAttributeBytes > ULTRA_ENVELOPE.attributeBytes) throw new Error('Shared edge terrain attributes exceed Ultra reservation');
+    } catch (error) {
+      terrainGeometry.dispose();
+      for (const geometry of geometries) geometry.dispose();
+      for (const material of [...materials, ...terrainMaterials]) material.dispose();
+      groundDetail?.dispose(); sharedGround?.dispose(); group.clear();
+      throw error;
+    }
+  }
+
   const terrain = new THREE.Mesh(terrainGeometry, terrainMaterials);
   terrain.receiveShadow = true;
   terrain.castShadow = false;
   terrain.name = 'level-heightfield';
-  group.add(terrain);
-  geometries.push(terrainGeometry);
+  addStaticMesh(terrain);
   materials.push(...terrainMaterials);
 
   // -- Kerbs, walls, bollards ---------------------------------------------
@@ -588,6 +774,14 @@ export function createTerrain(
   }
 
   let colliderTriangles = 0;
+  let emittedFeatureBands = 0, emittedFeatureCommonBytes = 0, emittedFeatureAoBytes = 0;
+  const emittedFeatureBuckets: FeatureBlockBucketPrice[] = [];
+  const rejectFeatureEmission = (reason: string): never => {
+    for (const geometry of geometries) geometry.dispose();
+    for (const material of materials) material.dispose();
+    groundDetail?.dispose(); sharedGround?.dispose(); group.clear();
+    throw new Error(`Feature block emission/price mismatch: ${reason}`);
+  };
   for (const [id, colliders] of byMaterial) {
     const appearance = paintedAppearance(id, plan.palette);
     const boxPositions: number[] = [];
@@ -597,8 +791,9 @@ export function createTerrain(
     // M39 T9: the Ultra blocks' base AO, one value per vertex pushed.
     const boxAo: number[] | null = kit?.blocks === true ? [] : null;
 
+    let bucketBands = 0;
     for (const collider of colliders) {
-      appendBox(
+      bucketBands += appendBox(
         collider,
         boxPositions,
         boxNormals,
@@ -606,8 +801,14 @@ export function createTerrain(
         boxIndices,
         recipe.walls && isCoursed(collider, id),
         boxAo === null ? undefined : { material: id, ao: boxAo },
+        preparedFeatureBlocks?.blocks.get(collider) ?? null,
       );
     }
+    const bucketPrice = featurePrice?.buckets.find(bucket => bucket.material === id);
+    if (bucketBands !== (bucketPrice?.bands ?? 0)) rejectFeatureEmission(`${id} band count`);
+    if (bucketPrice && (boxPositions.length / 3 !== bucketPrice.vertices || boxNormals.length !== boxPositions.length
+      || boxColours.length !== boxPositions.length || boxIndices.length !== bucketPrice.indices
+      || (boxAo !== null && boxAo.length !== bucketPrice.vertices))) rejectFeatureEmission(`${id} emitted arrays`);
 
     // The colour attribute is present in every recipe — white where a face
     // is plain, the running bond's flat tones where a wall is coursed — so a
@@ -623,8 +824,23 @@ export function createTerrain(
     }
     geometry.setIndex(boxIndices);
     geometry.computeBoundingSphere();
+    if (bucketPrice) {
+      // Read independently emitted buffer sizes, including setIndex's actual
+      // whole-bucket width. The source count is the existing topology callback.
+      const common = (geometry.getAttribute('position') as THREE.BufferAttribute).array.byteLength + (geometry.getAttribute('normal') as THREE.BufferAttribute).array.byteLength
+        + (geometry.getAttribute('color') as THREE.BufferAttribute).array.byteLength - bucketPrice.sourceVertices * 36
+        + geometry.index!.array.byteLength - groundEdgeIndexBytes(bucketPrice.sourceVertices, bucketPrice.sourceIndices);
+      const ao = boxAo === null ? 0 : (geometry.getAttribute(ULTRA_GROUND_ATTRIBUTES.ao) as THREE.BufferAttribute).array.byteLength - bucketPrice.sourceVertices;
+      if (common !== bucketPrice.commonGeometryBytes || ao !== (boxAo === null ? 0 : bucketBands * 4)) {
+        geometry.dispose(); rejectFeatureEmission(`${id} actual common/AO bytes`);
+      }
+      emittedFeatureBands += bucketBands; emittedFeatureCommonBytes += common; emittedFeatureAoBytes += ao;
+      emittedFeatureBuckets.push({ ...bucketPrice, vertices: geometry.getAttribute('position').count,
+        indices: geometry.index!.count, bands: bucketBands, commonGeometryBytes: common });
+    }
 
     const material = kit === null ? standardMaterial(appearance, true) : ultraBlockMaterial(appearance, id, context!);
+    sharedGround?.install(material, id);
     const mesh = new THREE.Mesh(geometry, material);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
@@ -632,10 +848,24 @@ export function createTerrain(
     // Every block casts, so on an Ultra world every block joins the static
     // far-shadow layer (§3.4); the ordinary world has no far shadow to join.
     if (kit !== null) mesh.layers.enable(ULTRA_STATIC_LAYER);
-    group.add(mesh);
-    geometries.push(geometry);
+    addStaticMesh(mesh);
     materials.push(material);
     colliderTriangles += boxIndices.length / 3;
+  }
+
+  if (featurePrice && (emittedFeatureBands !== featurePrice.bands || emittedFeatureCommonBytes !== featurePrice.commonGeometryBytes
+    || emittedFeatureAoBytes !== featurePrice.ultraAoBytes)) rejectFeatureEmission('complete totals');
+  const featureReport: FeatureBlockPrice | null = featurePrice ? { ...featurePrice, bands: emittedFeatureBands,
+    addedVertices: emittedFeatureBands * 4, addedIndices: emittedFeatureBands * 6,
+    colourTriangles: emittedFeatureBands * 2, nearShadowTriangles: emittedFeatureBands * 2,
+    staticFarTriangles: kit?.farShadow ? emittedFeatureBands * 2 : 0,
+    commonGeometryBytes: emittedFeatureCommonBytes, ultraAoBytes: emittedFeatureAoBytes, buckets: emittedFeatureBuckets } : null;
+
+  if (kit !== null && ultraAttributeBytes > ULTRA_ENVELOPE.attributeBytes) {
+    for (const geometry of geometries) geometry.dispose();
+    for (const material of materials) material.dispose();
+    groundDetail?.dispose(); sharedGround?.dispose(); group.clear();
+    throw new Error('Shared terrain/block attributes exceed Ultra reservation');
   }
 
   // M7.5's dressing. This renderer reads only `plan.props`; M8.6's separately
@@ -643,14 +873,19 @@ export function createTerrain(
   // proxy boxes over the prop meshes. Props are built and freed with the level
   // because one outliving the terrain it was placed against is a leak with no
   // symptom until the GPU object count stops plateauing.
-  const props = createProps(plan, recipe, context);
+  const props = createProps(plan, recipe, context, { sharedVegetation: sharedSurface,
+    metricFacades: composition.environmentSupplements?.metric ?? null,
+    vegetationPrice: composition.environmentSupplements?.vegetationPrice ?? null,
+    authoredCanopies: composition.environmentSupplements?.authoredCanopies ?? null,
+    capSlots: composition.environmentSupplements?.capSlots ?? null,
+    spatialBatchMetres, distanceDetail: composition.distanceDetail });
   group.add(props.group);
 
   // M7.5 stage 4's paint. Render-only on exactly the same terms as the props
   // above, built and freed with the terrain for exactly the same reason, and
   // needing no second world description from this file: the renderer samples
   // each finished ribbon edge from the plan's own heightfield.
-  const markings = createMarkings(plan, context);
+  const markings = createMarkings(plan, context, composition.environmentSupplements?.wayfinding.runs ?? []);
   group.add(markings.group);
 
   // M13 Phase 2's potholes, on exactly the terms the paint above is held to and
@@ -665,17 +900,38 @@ export function createTerrain(
   // The props view reports its own Ultra bytes (the facade maps) when it has
   // any; read defensively so this file does not depend on that field's shape.
   const propsUltraBytes = 'bytes' in props && typeof props.bytes === 'number' ? props.bytes : 0;
+  if (sharedGround && sharedGround.report().bytes !== sharedGroundArrayPrice(plan)) {
+    props.dispose(); markings.dispose(); hazards.dispose();
+    for (const geometry of geometries) geometry.dispose();
+    for (const material of materials) material.dispose();
+    groundDetail?.dispose(); sharedGround.dispose(); group.clear(); group.removeFromParent();
+    throw new Error('Actual shared ground array allocation differs from source price');
+  }
+
+  // The staging arrays above were copied into typed attributes. The view's
+  // closures below share this scope, so without this a living-world city kept
+  // ~30 MB of JavaScript doubles alive for the world's lifetime (2026-10-05).
+  positions.length = 0; normals.length = 0; colors.length = 0; indices.length = 0;
 
   return {
     group,
     cellsDrawn,
     markings,
     hazards,
-    triangles: indices.length / 3 + colliderTriangles + fieldMesh.triangles + 2
+    triangles: terrainGeometry.index!.count / 3 + colliderTriangles + fieldMesh.triangles + 2
       + props.triangles + markings.triangles + hazards.triangles,
     recipe: recipe.id,
     blockTriangles: colliderTriangles,
-    textures: props.textures + (groundDetail?.textures ?? 0),
+    textures: props.textures + (groundDetail?.textures ?? 0) + (sharedGround?.report().textures ?? 0),
+    ordinaryBoundary: ordinaryBoundaryReport,
+    sharedGround: sharedGround?.report() ?? null,
+    sharedEdges,
+    sharedVegetation: props.sharedVegetation,
+    metricSource: props.metricSource,
+    featureBlocks: featureReport,
+    spatialBatching: sumSpatialBatchingDeltas(spatialBatching, props.spatialBatching),
+    terrainSpatialBatching: spatialBatching,
+    spatialGeometry: spatialBatchMetres === Infinity ? null : spatialGeometry,
     ultra: kit === null
       ? null
       : {
@@ -683,6 +939,10 @@ export function createTerrain(
         textures: props.textures + (groundDetail?.textures ?? 0),
         attributeBytes: ultraAttributeBytes,
         detailBytes: groundDetail?.bytes ?? 0,
+        metricProxyBytes: props.metricSource?.proxyFlagBytes ?? 0,
+        capSlotBytes: props.capSlotBytes,
+        farCapExtraDraws: props.farCapExtraDraws,
+        farCapExtraTriangles: props.farCapExtraTriangles,
         filledCells,
         fillLines,
         smoothedNormals,
@@ -702,11 +962,14 @@ export function createTerrain(
       for (const geometry of geometries) geometry.dispose();
       for (const material of materials) material.dispose();
       groundDetail?.dispose();
+      sharedGround?.dispose();
+      privateFeatureBlocks?.dispose();
       geometries.length = 0;
       materials.length = 0;
       group.removeFromParent();
     },
   };
+  } catch (error) { privateFeatureBlocks?.dispose(); throw error; }
 }
 
 /**
@@ -728,6 +991,7 @@ function createSurroundField(
   coverage: FieldCoverage,
   /** M39: the Ultra ground material, when the world is Ultra. Absent, the ordinary one. */
   ultraMaterial?: (appearance: MaterialAppearance) => THREE.MeshStandardMaterial,
+  sharedSurface = false,
 ): {
   mesh: THREE.Mesh;
   geometry: THREE.BufferGeometry;
@@ -744,6 +1008,8 @@ function createSurroundField(
 
   const tint: GroundTint = { r: 1, g: 1, b: 1 };
   const albedo: GroundTint = { r: 1, g: 1, b: 1 };
+  const continuousProfile = { ...COURSE_MOTTLE, cellWeight: SHARED_GROUND.cellWeight,
+    midWeight: SHARED_GROUND.midWeight, coarseWeight: SHARED_GROUND.coarseWeight };
   linearFromSrgbHex(appearance.albedo, albedo);
 
   for (let row = 0; row < rows; row += 1) {
@@ -770,6 +1036,8 @@ function createSurroundField(
       const first = positions.length / 3;
 
       for (const [dx, dz] of [[0, 0], [1, 0], [0, 1], [1, 1]] as const) {
+        if (sharedSurface) groundTint(column, row, x0 + dx * cell, z0 + dz * cell,
+          appearance.mottle, albedo, continuousProfile, tint);
         positions.push(x0 + dx * cell, y, z0 + dz * cell);
         normals.push(0, 1, 0);
         colors.push(tint.r, tint.g, tint.b);
@@ -833,6 +1101,7 @@ function heightfieldAttributes(
   colors: readonly number[],
   contact: ContactField,
   edgeFill: boolean,
+  sharedSurface = false,
 ): {
   attributes: [string, THREE.BufferAttribute][];
   bytes: number;
@@ -877,7 +1146,8 @@ function heightfieldAttributes(
   let fillLines = 0;
   let filledCells = 0;
   if (edgeFill) {
-    const fill = edgeFillFor(plan, cellsBySurface);
+    const original = edgeFillFor(plan, cellsBySurface);
+    const fill = sharedSurface ? withSharedGroundContours(plan, cellsBySurface, original) : original;
     fillLines = fill.lines;
     filledCells = fill.cells.size;
 
@@ -910,6 +1180,7 @@ function heightfieldAttributes(
     const tone = new Uint16Array(vertexCount * 3).fill(THREE.DataUtils.toHalfFloat(1));
     const kind = new Uint8Array(vertexCount);
     const tint = { r: 1, g: 1, b: 1 };
+    const sharedTint = sharedSurface ? createSharedBoundaryTint(plan) : null;
     const sourceTone = { r: 1, g: 1, b: 1 };
     const ownTone = { r: 1, g: 1, b: 1 };
     for (const [cell, filled] of fill.cells) {
@@ -932,18 +1203,26 @@ function heightfieldAttributes(
       // (intersection), bit 4 a drivable chain's rounded knee (A18).
       const kindByte = groundDetailKind(SURFACES[filled.towards].material)
         + (filled.mode === 'intersection' && filled.lines.length > 1 ? 8 : 0)
-        + (filled.round === true ? 16 : 0);
+        + (filled.round === true ? 16 : 0)
+        + (sharedSurface ? sharedGroundCode(SURFACES[filled.towards].material) * 32 : 0);
       // a (0,0), b (1,0), c (0,1), d (1,1) — `pushCorner`'s order.
       for (let corner = 0; corner < 4; corner += 1) {
         const at = first + corner;
         const gx = column + (corner & 1);
         const gz = row + (corner >> 1);
         for (let index = 0; index < filled.lines.length && index < 2; index += 1) {
-          edge[at * 2 + index] = THREE.DataUtils.toHalfFloat(edgeSignedDistance(filled.lines[index], gx, gz));
+          edge[at * 2 + index] = THREE.DataUtils.toHalfFloat(edgeSignedDistance(filled.lines[index], gx, gz) * (filled.distanceScale ?? 1));
         }
-        tone[at * 3] = r;
-        tone[at * 3 + 1] = g;
-        tone[at * 3 + 2] = b;
+        if (sharedSurface) {
+          sharedTint!(field.surfaces[cell], filled.towards, gx, gz, tint);
+          tone[at * 3] = THREE.DataUtils.toHalfFloat(tint.r);
+          tone[at * 3 + 1] = THREE.DataUtils.toHalfFloat(tint.g);
+          tone[at * 3 + 2] = THREE.DataUtils.toHalfFloat(tint.b);
+        } else {
+          tone[at * 3] = r;
+          tone[at * 3 + 1] = g;
+          tone[at * 3 + 2] = b;
+        }
         kind[at] = kindByte;
       }
     }
@@ -1085,7 +1364,9 @@ function appendBox(
   indices: number[],
   coursed: boolean,
   ultra?: UltraBoxOptions,
-): void {
+  feature: FeatureBlockPlan | null = null,
+): number {
+  let emittedBands = 0;
   const { centre, halfExtents } = collider;
   const cos = Math.cos(collider.rotationY);
   const sin = Math.sin(collider.rotationY);
@@ -1115,7 +1396,7 @@ function appendBox(
     // Every vertical face lists its corners as [origin, origin+up,
     // origin+up+along, origin+along], so a sub-quad at fractions (s0..s1) of
     // the run and (t0..t1) of the height keeps exactly the face's winding.
-    const emit = (s0: number, s1: number, t0: number, t1: number, tone: number): void => {
+    const emit = (s0: number, s1: number, t0: number, t1: number, tone: number, topBand = false): void => {
       const base = positions.length / 3;
       const [c0, c1, , c3] = face.corners;
       const along = [c3[0] - c0[0], c3[1] - c0[1], c3[2] - c0[2]];
@@ -1125,10 +1406,12 @@ function appendBox(
         (c0[1] + along[1] * s + up[1] * t) * halfExtents.y,
         (c0[2] + along[2] * s + up[2] * t) * halfExtents.z,
       );
-      for (const [wx, wy, wz] of [at(s0, t0), at(s0, t1), at(s1, t1), at(s1, t0)]) {
+      const vertices = [at(s0, t0), at(s0, t1), at(s1, t1), at(s1, t0)];
+      for (const [corner, [wx, wy, wz]] of vertices.entries()) {
         positions.push(wx, wy, wz);
         normals.push(worldNormalX, ny, worldNormalZ);
-        colours.push(tone, tone, tone);
+        const finish = tone * featureBlockTone(feature, ny, corner === 0 || corner === 3 ? t0 : t1, topBand);
+        colours.push(finish, finish, finish);
       }
       indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
       if (ultra !== undefined) {
@@ -1140,6 +1423,16 @@ function appendBox(
         ultra.ao.push(foot, head, head, foot);
       }
     };
+
+    if (ny > 0 && feature) {
+      // Replace the old top once. These are fractions of its exact four
+      // source corners: same plane, normal, winding, silhouette and material.
+      for (const quad of feature.topQuads) {
+        emit(quad.s0, quad.s1, quad.t0, quad.t1, 1, quad.band);
+        if (quad.band) emittedBands++;
+      }
+      continue;
+    }
 
     if (ultra !== undefined && ny === 0) {
       const division = ultraFaceDivision(
@@ -1200,4 +1493,5 @@ function appendBox(
       }
     }
   }
+  return emittedBands;
 }

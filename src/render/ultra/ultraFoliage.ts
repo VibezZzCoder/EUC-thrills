@@ -60,6 +60,32 @@ import {
   type Lobe,
 } from '../foliageKit.ts';
 import { formBuilder, lathe, type FormBuilder, type Tone, type Vec3 } from './ultraFurniture.ts';
+import type { VegetationPaintContext, VegetationRootJoin } from '../vegetationForms.ts';
+import { finishVegetationWood } from '../vegetationWoodFinish.ts';
+
+/** The shared closed templates use the existing Ultra foliage palette. Colour
+ * is normalized per channel so template choice cannot re-author the albedo. */
+export function toneSharedVegetation(geometry: THREE.BufferGeometry, context: VegetationPaintContext): void {
+  const normal = geometry.getAttribute('normal'), count = normal.count;
+  const conifer = context.family === 'coniferFoliage';
+  const hollow = conifer ? ULTRA.forms.conifer.skirtTone : ULTRA.forms.crown.hollowTone;
+  const tip = conifer ? ULTRA.forms.conifer.tipTone : ULTRA.forms.crown.tipTone;
+  const colours = new Float32Array(count * 3);
+  for (let index = 0; index < count; index++) {
+    const t = 0.5 + 0.3 * normal.getY(index) + 0.9 * context.reach[index]
+      + (context.height[index] - 0.5) * 0.15;
+    const tone = mixTone(hollow, tip, t);
+    for (let channel = 0; channel < 3; channel++) colours[index * 3 + channel] = tone[channel];
+  }
+  for (let channel = 0; channel < 3; channel++) {
+    let sum = 0;
+    for (let index = 0; index < count; index++) sum += colours[index * 3 + channel];
+    const mean = sum / count;
+    for (let index = 0; index < count; index++) colours[index * 3 + channel] /= mean;
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(colours, 3));
+  finishVegetationWood(geometry, context, context.family === 'crown' ? originalUpperBoleTone() : [1, 1, 1]);
+}
 
 /**
  * The Ultra foliage salts, all from `ULTRA.forms.salts` (§4: 3, 5, 7, 9 and
@@ -546,6 +572,32 @@ const TRUNK = Object.freeze({
   /** Half-thickness of a stub where it leaves the bole, metres. */
   stubRadius: 0.075,
 });
+
+let upperBoleTone: readonly number[] | null = null;
+/** Copy the existing lathe's normalized upper-side finish once, release its
+ * temporary geometry immediately, and retain only three deterministic scalars. */
+function originalUpperBoleTone(): readonly number[] {
+  if (upperBoleTone) return upperBoleTone;
+  const geometry = ultraTrunk();
+  try {
+    const position = geometry.getAttribute('position'), normal = geometry.getAttribute('normal'), colour = geometry.getAttribute('color');
+    for (let vertex = 0; vertex < position.count; vertex++)
+      if (position.getY(vertex) > PROP_SIZES.broadleafTree.trunkHeight - 1e-6 && Math.abs(normal.getY(vertex)) < 0.5) {
+        upperBoleTone = Object.freeze([colour.getX(vertex), colour.getY(vertex), colour.getZ(vertex)]);
+        return upperBoleTone;
+      }
+    throw new Error('Original Ultra upper bole finish missing');
+  } finally { geometry.dispose(); }
+}
+
+/** Actual rendered upper bole metadata for the crown join. The physical
+ * footprint and original trunk builder stay unchanged. Render consumers must
+ * not substitute the ordinary CylinderGeometry profile for this native lathe. */
+export function ultraTrunkRootJoin(): VegetationRootJoin {
+  return Object.freeze({ radiusTop: TRUNK.top, radiusBase: TRUNK.bole,
+    baseY: TRUNK.flareTop, sides: ULTRA.forms.trunk.sides,
+    phase: formHash01(1, 1, ULTRA_FOLIAGE_SALTS.trunk) * Math.PI, style: 'lathe-smooth' });
+}
 
 /** A closed four-faced spike, every face wound away from its own centroid. */
 function spike(builder: FormBuilder, base: readonly Vec3[], tip: Vec3): void {

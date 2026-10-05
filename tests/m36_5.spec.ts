@@ -2,6 +2,7 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { bootToTitle, collectErrors } from './harness.ts';
+import { CONTACT } from '../src/data/tuning.ts';
 
 /**
  * M36 Phase 5 — the venue chooser, and every mode entrance walked from the park.
@@ -30,10 +31,18 @@ import { bootToTitle, collectErrors } from './harness.ts';
 const PARK = 'level=switchback';
 const BELVAR = 'level=track';
 
-/** The two plan ids a record can be filed under from the chooser's lap venues. */
-const PARK_PLAN = 'switchback-r4';
+/**
+ * The two plan ids a record can be filed under from the chooser's lap venues.
+ *
+ * 2026-10-04: `levelPlan.id` is now the living world's engine-dependent
+ * composition hash, so the world a press installed is identified by
+ * `levelPlan.recordWorldId` — the key records and ghosts are filed under: the
+ * builder's id, plus `~living-r1` where the population added physical content
+ * (the park and the city; BelVar is left physically untouched).
+ */
+const PARK_PLAN = 'switchback-r5~living-r1';
 const BELVAR_PLAN = 'belvar-r1';
-const CITY_PLAN = 'm7-slice';
+const CITY_PLAN = 'm7-slice~living-r1';
 
 /**
  * Where the frames land. **An environment variable with a repo-relative
@@ -69,13 +78,26 @@ async function openRoutes(page: Page, query = ''): Promise<void> {
   await page.waitForFunction(() => window.game.snapshot().app.state === 'routes');
 }
 
+/**
+ * Wait for a native world swap's loading cover to lift.
+ *
+ * 2026-10-04: a venue press now queues the swap behind the shared cover, which
+ * refuses menu and pad input until the new world is drawn and settled
+ * (`docs/LOADING.md`); `route.pending` stays true until the cover lifts. The
+ * next press a test makes has to wait for the player's turn, as a player does.
+ */
+async function coverLifted(page: Page): Promise<void> {
+  await page.waitForFunction(() => !window.game.snapshot().route.pending, undefined, { timeout: 60_000 });
+}
+
 /** Press a venue and wait for the world the press asked for. */
 async function pickVenue(page: Page, panel: string, venue: string, planId: string): Promise<void> {
   await page.locator(venueButton(panel, venue)).click();
-  await page.waitForFunction((id) => window.game.levelPlan.id === id, planId);
+  await page.waitForFunction((id) => window.game.levelPlan.recordWorldId === id, planId, { timeout: 60_000 });
+  await coverLifted(page);
 }
 
-const planId = (page: Page): Promise<string> => page.evaluate(() => window.game.levelPlan.id);
+const planId = (page: Page): Promise<string> => page.evaluate(() => window.game.levelPlan.recordWorldId!);
 const appState = (page: Page): Promise<string> => page.evaluate(
   () => window.game.snapshot().app.state,
 );
@@ -342,13 +364,13 @@ test('a venue press swaps the world behind the open panel and never navigates', 
       '.euc-menu--routes [data-menu="venue"][data-venue="track"]',
     );
     if (button === null) return { before: '', after: '' };
-    const before = window.game.levelPlan.id;
+    const before = window.game.levelPlan.recordWorldId;
     for (const forged of ['proving', 'toString', 'generated', 'constructor']) {
       button.dataset.venue = forged;
       button.click();
       await new Promise<void>((resolve) => { requestAnimationFrame(() => resolve()); });
     }
-    return { before, after: window.game.levelPlan.id };
+    return { before, after: window.game.levelPlan.recordWorldId };
   });
   expect(hostile.after, 'a forged data-venue built a world nobody offered')
     .toBe(hostile.before);
@@ -409,7 +431,7 @@ test('the ?level=switchback link still round-trips through the chooser', async (
   const errors = collectErrors(page);
   await bootToTitle(page, PARK);
   const arrived = await page.evaluate(() => ({
-    planId: window.game.levelPlan.id,
+    planId: window.game.levelPlan.recordWorldId,
     link: window.game.snapshot().world.link,
   }));
   expect(arrived.planId).toBe(PARK_PLAN);
@@ -474,6 +496,11 @@ test('Track Day offers both tracks, preserves the world on Back, and fits short 
   await claimWithPad(page, 0);
   await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
   expect(await planId(page)).toBe(PARK_PLAN);
+  // 2026-10-04: the Track Day entrance swaps the world behind the loading
+  // cover, which refuses input until it lifts; an Escape pressed before then
+  // never reaches the pause card (seen in a rerun: the out lap running with no
+  // pause menu). The player's turn starts when the cover lifts.
+  await coverLifted(page);
   await page.keyboard.press('Escape');
   await page.locator('.euc-menu--pause [data-menu="quit"]').click();
   await entry.click();
@@ -559,6 +586,9 @@ test('the park keeps its own best and its own ghost, and BelVar keeps theirs', a
     await page.locator(`.euc-menu--tracks [data-venue="${venue}"]`).click();
     await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
     expect(await planId(page)).toBe(plan);
+    // 2026-10-04: scripted riding and the Escape below wait for the swap's
+    // cover to lift, which releases input and would drop a script begun under it.
+    await coverLifted(page);
 
     const all = await raceLines(page);
     await crossLine(page, all[0], 30);
@@ -658,7 +688,7 @@ for (const seats of [2, 3, 4]) {
     // the guests used to go home (M27's own defect), and a venue chosen on the
     // way in is one more chance for the exit to fire.
     const armed = await page.evaluate(() => ({
-      planId: window.game.levelPlan.id,
+      planId: window.game.levelPlan.recordWorldId,
       seats: window.game.seatCount,
       views: window.game.renderer.viewCount,
       riders: window.game.snapshot().race.riders.length,
@@ -776,7 +806,7 @@ for (const seats of [2, 3, 4]) {
     await page.locator('.euc-menu--results [data-menu="retry"]').click();
     await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
     expect(await page.evaluate(() => ({
-      planId: window.game.levelPlan.id,
+      planId: window.game.levelPlan.recordWorldId,
       phase: window.game.snapshot().race.phase,
       seats: window.game.seatCount,
       riders: window.game.snapshot().race.riders.length,
@@ -892,7 +922,7 @@ test('two riders who cross the park’s line together draw, and the card says wh
   await page.locator('[data-menu="results-couch"] [data-couch-mode="freeRide"]').click();
   await page.waitForFunction(() => window.game.snapshot().app.state === 'freeRide');
   expect(await page.evaluate(() => ({
-    planId: window.game.levelPlan.id,
+    planId: window.game.levelPlan.recordWorldId,
     ride: window.game.snapshot().couch.ride,
     seats: window.game.seatCount,
     race: window.game.snapshot().race.phase,
@@ -948,6 +978,53 @@ test('two riders in the same place on the park are pushed apart, not put down', 
   expect(errors).toEqual([]);
 });
 
+/*
+ * 2026-10-04: the merged pair above was not the park's alone. The living
+ * world's reaction admission (`populationPhysicalReactionAdmission.ts`) held a
+ * coincident couch pair together at every heading except exactly 0, on the
+ * slice and BelVar as well as the park, and stalled nearly merged pairs at
+ * wheel-touching distance (0.54–0.63 m), inside the contact radius. The Sep 26
+ * build eased every one of them clear. The same claim on each venue, at five
+ * headings, coincident and 5 cm apart, through the game's own contact step.
+ */
+for (const [venue, query] of [['the city slice', 'level=slice'], ['BelVar', BELVAR], ['the park', PARK]] as const) {
+  test(`merged riders on ${venue} are eased clear of the contact radius at every heading`, async ({ page }) => {
+    test.slow();
+    const errors = collectErrors(page);
+    await bootToTitle(page, query);
+
+    const rows = await page.evaluate((radius) => {
+      const game = window.game;
+      game.loop.setRunning(false);
+      game.clearActions();
+      while (game.seatCount < 2) game.spawnRider();
+      const spawn = game.levelPlan.spawn.position;
+      const at = (seat: number) => game.snapshotFor(seat).euc;
+      const out: { heading: number; offset: number; gap: number; crashed: boolean }[] = [];
+      for (const heading of [0, Math.PI / 4, Math.PI / 2, -Math.PI / 2, Math.PI]) {
+        for (const offset of [0, 0.05]) {
+          for (const [seat, dx] of [[0, 0], [1, offset]] as const) {
+            const x = spawn.x + dx;
+            game.placeRider({ x, y: game.sampleGround(x, spawn.z).height, z: spawn.z }, heading, seat);
+            game.setActionsFor(seat, { throttle: 0, steer: 0 });
+          }
+          game.advance(120);
+          out.push({ heading, offset,
+            gap: Math.hypot(at(0).position.x - at(1).position.x, at(0).position.z - at(1).position.z),
+            crashed: at(0).crashed || at(1).crashed });
+        }
+      }
+      return out.map((row) => ({ ...row, clear: row.gap >= radius }));
+    }, CONTACT.radiusMetres);
+
+    console.log(`[m36_5 merged pair, ${venue}] ${rows.map((row) =>
+      `h=${row.heading.toFixed(2)} off=${row.offset}: ${row.gap.toFixed(3)} m`).join('; ')}`);
+    expect(rows.filter((row) => !row.clear), 'a merged pair stayed inside the contact radius').toEqual([]);
+    expect(rows.filter((row) => row.crashed), 'easing a merged pair apart put somebody down').toEqual([]);
+    expect(errors).toEqual([]);
+  });
+}
+
 test('a device can leave a seat on the park’s join panel and take it back', async ({ page }) => {
   // The claim window is open for as long as the panel is, so a pad that is put
   // down mid-decision has to be able to pick the same seat up again — and a
@@ -977,7 +1054,7 @@ test('a device can leave a seat on the park’s join panel and take it back', as
   await page.locator(`${COUCH} [data-menu="couch-start"]`).click();
   await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
   expect(await page.evaluate(() => ({
-    planId: window.game.levelPlan.id,
+    planId: window.game.levelPlan.recordWorldId,
     seats: window.game.seatCount,
     riders: window.game.snapshot().race.riders.length,
   }))).toEqual({ planId: PARK_PLAN, seats: 3, riders: 3 });
@@ -1013,7 +1090,7 @@ test('pause, mode switch, results and retry all come back to the park', async ({
   await page.locator('[data-menu="pause-couch"] [data-couch-mode="race"]').click();
   await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
   const again = await page.evaluate(() => ({
-    planId: window.game.levelPlan.id,
+    planId: window.game.levelPlan.recordWorldId,
     phase: window.game.snapshot().race.phase,
     seats: window.game.seatCount,
   }));
@@ -1037,6 +1114,7 @@ test('a solo park session retries onto the park, and Back leaves it where it was
   await page.locator('.euc-menu--title [data-menu="track-day"]').click();
   await page.locator('.euc-menu--tracks [data-venue="switchback"]').click();
   await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
+  await coverLifted(page); // 2026-10-04: input is the player's once any swap cover lifts.
 
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => window.game.snapshot().app.state === 'paused');
@@ -1047,7 +1125,7 @@ test('a solo park session retries onto the park, and Back leaves it where it was
   await page.locator('.euc-menu--results [data-menu="retry"]').click();
   await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');
   const retried = await page.evaluate(() => ({
-    planId: window.game.levelPlan.id,
+    planId: window.game.levelPlan.recordWorldId,
     phase: window.game.snapshot().trackDay.phase,
     lap: window.game.snapshot().trackDay.lap,
   }));
@@ -1230,7 +1308,8 @@ test.describe('the chooser on a phone-shaped touchscreen', () => {
     // A tap on one is a world swap and nothing else: still the panel, still
     // one seat, still no couch.
     await page.locator(venueButton(ROUTES, 'track')).tap();
-    await page.waitForFunction((id) => window.game.levelPlan.id === id, BELVAR_PLAN);
+    await page.waitForFunction((id) => window.game.levelPlan.recordWorldId === id, BELVAR_PLAN);
+    await coverLifted(page);
     expect(await appState(page)).toBe('routes');
     expect(await page.evaluate(() => ({
       seats: window.game.seatCount,

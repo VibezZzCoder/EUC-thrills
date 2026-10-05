@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import {
   COUCH_MIN_WIDTH_PX,
   COUCH_RIDES,
+  COUCH_SEATS,
   COUCH_RIDE_LABELS,
   DEFAULT_COUCH_RIDE,
   couchEligible,
@@ -18,6 +19,7 @@ import {
 } from './couch.ts';
 import { nextSpectateTarget, seatRole, type SpectateTarget } from './seats.ts';
 import { CHARACTER_IDS, DEFAULT_CHARACTER, type CharacterId } from '../data/riders.ts';
+import { SLOT_SEAT_RANKS } from '../simulation/spawnSlots.ts';
 
 const DESKTOP = { viewportWidth: 1280, finePointer: true, padSeen: false };
 
@@ -368,8 +370,12 @@ test('QA r2: a pane glued to the cop being returned is not asked about his retur
   assert.ok(post.includes('this.refreshPane(pursuer.index);'), 'the post return is judged by his own watcher\'s pane');
   // And the watcher is snapped onto the new pose after the placement — never
   // before it (a refused return must not touch his pane).
+  // 2026-10-04: `EucController.reset` now answers whether the destination was
+  // admitted (dynamic placement clearance, CHANGELOG 2026-10-01 "refused
+  // recoveries do not publish placement"), and `placePursuer` returns false
+  // on a refusal before the snap below — so the pin names that guarded reset.
   const place = methodBody('private placePursuer(');
-  const reset = place.indexOf('pursuer.controller.reset(spawn, speed);');
+  const reset = place.indexOf('if (!pursuer.controller.reset(spawn, speed)) return false;');
   const copied = place.indexOf('copyPose(pursuer.current, pursuer.render);');
   const snap = place.indexOf('this.watch(seat, target);');
   assert.ok(reset >= 0 && copied > reset && snap > copied, 'a watcher of a placed cop is not snapped after the placement');
@@ -452,4 +458,11 @@ test('QA r3: every record site asks the one couch predicate, the Trick Run\'s fi
     assert.ok(methodBody(site).includes('this.couchSession'), `${site.slice(8, -1)} no longer asks couchSession`);
   }
   assert.match(methodBody('private fileTrickRun('), /if \(this\.couchSession \|\| result\.seats !== 1\) return;/);
+});
+
+test('spawnSlot\'s veto search starts past every rank a full couch\'s seats stand on — 2026-10-03', () => {
+  // Seat `index` stands on rank ceil(index / 2). A rider moved off a slot an
+  // NPC or a CPU cop blocks must land on no seat's own slot, since seats no
+  // longer veto seats and a later join there would stack on them.
+  assert.equal(SLOT_SEAT_RANKS, Math.ceil((COUCH_SEATS - 1) / 2));
 });

@@ -242,7 +242,7 @@ export function encroachAt(
   salt: number,
 ): number {
   if (strength <= 0) return 0;
-  const patch = fbm(worldX, worldZ, EDGE_ENCROACH.patchMetres, 0x3d17, 0.83) * 0.5 + 0.5;
+  const patch = fbm(worldX, worldZ, EDGE_ENCROACH.patchMetres, 0x3d17, ENCROACH_ROTATION) * 0.5 + 0.5;
   const grain = hash(cellX, cellZ, salt);
   return strength * EDGE_ENCROACH.maxBlend * patch * (0.35 + 0.65 * grain);
 }
@@ -375,10 +375,9 @@ function valueNoise(
   z: number,
   metres: number,
   seed: number,
-  angle: number,
+  cos: number,
+  sin: number,
 ): number {
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
   const u = (x * cos - z * sin) / metres;
   const v = (x * sin + z * cos) / metres;
 
@@ -408,10 +407,34 @@ function valueNoise(
  * as its own layer. The weights sum to one, so the result is still bounded and
  * `maxLuminanceGain` stays a real bound.
  */
-function fbm(x: number, z: number, metres: number, seed: number, angle: number): number {
-  return valueNoise(x, z, metres, seed, angle) * 0.68
-    + valueNoise(x, z, metres * 0.37, seed ^ 0x9e37, angle + 1.1) * 0.32;
+function fbm(x: number, z: number, metres: number, seed: number, rotation: FbmRotation): number {
+  return valueNoise(x, z, metres, seed, rotation.cos, rotation.sin) * 0.68
+    + valueNoise(x, z, metres * 0.37, seed ^ 0x9e37, rotation.octaveCos, rotation.octaveSin) * 0.32;
 }
+
+/**
+ * The lattice rotation of one `fbm` layer and of its second octave
+ * (`angle + 1.1`). Every layer's angle is a fixed constant, so its cosine and
+ * sine are taken once here rather than eight times per ground cell; the values
+ * are the same `Math.cos`/`Math.sin` results the per-call form produced.
+ */
+interface FbmRotation {
+  readonly cos: number;
+  readonly sin: number;
+  readonly octaveCos: number;
+  readonly octaveSin: number;
+}
+
+function fbmRotation(angle: number): FbmRotation {
+  const octave = angle + 1.1;
+  return Object.freeze({ cos: Math.cos(angle), sin: Math.sin(angle), octaveCos: Math.cos(octave), octaveSin: Math.sin(octave) });
+}
+
+const ENCROACH_ROTATION = fbmRotation(0.83);
+const MID_ROTATION = fbmRotation(0.61);
+const COARSE_ROTATION = fbmRotation(2.19);
+const HUE_ROTATION = fbmRotation(1.37);
+const SATURATION_ROTATION = fbmRotation(2.83);
 
 /** Rec. 709 luminance of a linear colour. */
 function luminance(r: number, g: number, b: number): number {
@@ -459,8 +482,8 @@ export function groundTint(
   const cell = white * Math.abs(white);
 
   // 2 and 3. The patches that stop the grid being the only feature.
-  const mid = fbm(worldX, worldZ, profile.midMetres, 0x2f9e, 0.61);
-  const coarse = fbm(worldX, worldZ, profile.coarseMetres, 0x7b3d, 2.19);
+  const mid = fbm(worldX, worldZ, profile.midMetres, 0x2f9e, MID_ROTATION);
+  const coarse = fbm(worldX, worldZ, profile.coarseMetres, 0x7b3d, COARSE_ROTATION);
 
   const shade = 1 + mottle * (
     cell * profile.cellWeight
@@ -474,12 +497,12 @@ export function groundTint(
   //    a surface between dry-yellow and damp-blue rather than between two
   //    arbitrary colours — the same direction for turf, dirt, brick, and
   //    weathered pavement alike.
-  const warm = fbm(worldX, worldZ, profile.hueMetres, 0x1c47, 1.37)
+  const warm = fbm(worldX, worldZ, profile.hueMetres, 0x1c47, HUE_ROTATION)
     * mottle * profile.hueWeight;
 
   // 5. Saturation, toward and away from this material's own grey.
   const grey = luminance(base.r, base.g, base.b);
-  const saturation = 1 + fbm(worldX, worldZ, profile.satMetres, 0x6ae1, 2.83)
+  const saturation = 1 + fbm(worldX, worldZ, profile.satMetres, 0x6ae1, SATURATION_ROTATION)
     * mottle * profile.satWeight;
 
   out.r = channel(base.r, grey, saturation) * shade * (1 + warm);

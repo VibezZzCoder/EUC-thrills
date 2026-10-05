@@ -45,6 +45,9 @@ test('M39 curated launch, original city and typed/shared seed retain their ident
   expect(side.render.triangles).toBeGreaterThan(0);
   await page.locator('.euc-menu--title [data-menu="routes"]').click();
   await page.locator('.euc-menu--routes [data-venue="slice"]').click();
+  // 2026-10-04: a venue press swaps the world behind the loading cover; the
+  // swap has landed when `pending` clears.
+  await expect.poll(() => page.evaluate(() => window.game.snapshot().route.pending), { timeout: 90_000 }).toBe(false);
   const original = await page.evaluate(() => window.game.snapshot().world);
   expect(original.levelId).toBe('slice');
   expect(new URL(original.link).searchParams.get('level')).toBe('slice');
@@ -54,10 +57,16 @@ test('M39 curated launch, original city and typed/shared seed retain their ident
   await page.locator('.euc-menu--title [data-menu="routes"]').click();
   await page.locator('#euc-seed').fill('sweep-15');
   await page.locator('.euc-menu--routes [data-menu="ride-route"]').click();
-  await expect.poll(() => page.evaluate(() => window.game.snapshot().levelPlanId)).toBe('generated-r6-sweep-15');
+  // 2026-10-04: the typed seed builds behind the loading cover, and a living
+  // world's identity is its record key (`levelPlan.recordWorldId`); its plan id
+  // is a composition hash.
+  await expect.poll(() => page.evaluate(() => window.game.snapshot().route.pending), { timeout: 90_000 }).toBe(false);
+  await expect.poll(() => page.evaluate(() => window.game.levelPlan.recordWorldId))
+    .toBe('generated-r6-sweep-15~living-r1');
   const shared = await page.evaluate(() => window.game.snapshot().world.link);
   await page.goto(shared);
-  await page.waitForFunction(() => window.game?.snapshot().levelPlanId === 'generated-r6-sweep-15');
+  await page.waitForFunction(() => window.game?.levelPlan?.recordWorldId === 'generated-r6-sweep-15~living-r1',
+    undefined, { timeout: 90_000 });
   expect(errors).toEqual([]);
 });
 

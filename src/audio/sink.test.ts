@@ -3,6 +3,8 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { WebAudioSink, type SampleBank } from './sink.ts';
 import type { TransientCue } from './director.ts';
+import { ENVIRONMENT_AMBIENCE } from '../data/tuning.ts';
+import { EnvironmentAmbienceModel, createEnvironmentAmbienceInput } from './environmentAmbience.ts';
 
 /**
  * The sink's *choice* of what to play, asserted with no browser — M29 Phase 4.
@@ -12,10 +14,9 @@ import type { TransientCue } from './director.ts';
  * where a real context exists. What the stumble cue adds is a decision the
  * browser specs can only witness through a counter — recording or stand-in,
  * and which buffer — and a decision is checkable against a fake. The fake
- * below is deliberately dumb: every node is a bag of parameters that accept
- * any write, every method is a no-op, and the only things it records are
- * *which* sources were created and what buffer each was handed. That is the
- * whole surface the tests below read.
+ * below is deliberately dumb: nodes accept parameter writes and record source
+ * choices, connections and teardown. This can prove routing and ownership;
+ * it cannot stand in for the browser's actual rendered signal.
  *
  * `outputLevel`, `spectrum` and the loops' timing are not covered here and
  * cannot be: they are the graph, and the graph is the browser's.
@@ -23,14 +24,15 @@ import type { TransientCue } from './director.ts';
 
 /** An `AudioParam` that takes every write and remembers only its value. */
 function fakeParam(initial: number): Record<string, unknown> {
-  return {
+  const param = {
     value: initial,
     setValueAtTime(): void {},
     linearRampToValueAtTime(): void {},
     exponentialRampToValueAtTime(): void {},
-    setTargetAtTime(): void {},
+    setTargetAtTime(value: number): void { param.value = value; },
     cancelScheduledValues(): void {},
   };
+  return param;
 }
 
 const NODE_METHODS = new Set([
@@ -41,9 +43,18 @@ const NODE_METHODS = new Set([
  * A node whose unknown properties are parameters. `playbackRate` starts at 1
  * as the real one does, so a test can tell "never touched" from "set to 1".
  */
-function fakeNode(kind: string): Record<string, unknown> {
-  const own: Record<string, unknown> = { kind };
-  return new Proxy(own, {
+function fakeNode(kind: string, teardown?: Record<string, unknown>[]): Record<string, unknown> {
+  const connections: Record<string, unknown>[] = [];
+  const own: Record<string, unknown> = { kind, connections, disconnects: 0, starts: 0, stops: 0 };
+  let node: Record<string, unknown>;
+  own.connect = (target: Record<string, unknown>): void => { connections.push(target); };
+  own.disconnect = (): void => {
+    own.disconnects = Number(own.disconnects) + 1;
+    teardown?.push(node);
+  };
+  own.start = (): void => { own.starts = Number(own.starts) + 1; };
+  own.stop = (): void => { own.stops = Number(own.stops) + 1; };
+  node = new Proxy(own, {
     get(target, key) {
       if (typeof key !== 'string') return undefined;
       if (key in target) return target[key];
@@ -57,6 +68,7 @@ function fakeNode(kind: string): Record<string, unknown> {
       return true;
     },
   });
+  return node;
 }
 
 interface FakeBuffer {
@@ -84,10 +96,19 @@ interface FakeContext {
   context: AudioContext;
   /** Every source node created, in order, so a test can see what was launched. */
   sources: Record<string, unknown>[];
+  nodes: Record<string, unknown>[];
+  teardown: Record<string, unknown>[];
 }
 
 function fakeContext(): FakeContext {
   const sources: Record<string, unknown>[] = [];
+  const nodes: Record<string, unknown>[] = [];
+  const teardown: Record<string, unknown>[] = [];
+  const makeNode = (kind: string): Record<string, unknown> => {
+    const node = fakeNode(kind, teardown);
+    nodes.push(node);
+    return node;
+  };
   // A low rate keeps the sink's two three-second noise buffers small; nothing
   // here reads a frequency, so the number is arbitrary.
   const context = {
@@ -96,22 +117,22 @@ function fakeContext(): FakeContext {
     state: 'running',
     destination: fakeNode('destination'),
     createBuffer: (channels: number, length: number, rate: number) => fakeBuffer(channels, length, rate),
-    createGain: () => fakeNode('gain'),
-    createBiquadFilter: () => fakeNode('filter'),
-    createDynamicsCompressor: () => fakeNode('compressor'),
-    createAnalyser: () => fakeNode('analyser'),
+    createGain: () => makeNode('gain'),
+    createBiquadFilter: () => makeNode('filter'),
+    createDynamicsCompressor: () => makeNode('compressor'),
+    createAnalyser: () => makeNode('analyser'),
     createOscillator: () => {
-      const node = fakeNode('oscillator');
+      const node = makeNode('oscillator');
       sources.push(node);
       return node;
     },
     createBufferSource: () => {
-      const node = fakeNode('bufferSource');
+      const node = makeNode('bufferSource');
       sources.push(node);
       return node;
     },
   };
-  return { context: context as unknown as AudioContext, sources };
+  return { context: context as unknown as AudioContext, sources, nodes, teardown };
 }
 
 /** A bank of distinct buffers, 128-frame aligned so `alignLoop` returns them as they are. */
@@ -275,4 +296,63 @@ test('a crash in Seal on a Wheel\'s voice reaches his buffer and reports his nam
   assert.equal(sink.counts.crashSamplePlays, 1);
   assert.equal(sink.counts.stumbleSamplePlays, 0);
   sink.dispose();
+});
+
+test('the fixed ambience graph connects through SFX/master, consumes no transient voices and tears down first', () => {
+  const { context, nodes, sources, teardown } = fakeContext();
+  const sink = new WebAudioSink(context);
+  const graph = nodes.slice(-12);
+  const connections = (node: Record<string, unknown>): Record<string, unknown>[] =>
+    node.connections as Record<string, unknown>[];
+  const sfx = connections(graph[0])[0];
+  const master = connections(sfx)[0];
+  const limiter = connections(master)[0];
+  assert.equal(graph.length, 12);
+  assert.equal(graph[0].kind, 'gain');
+  assert.equal(sfx.kind, 'gain');
+  assert.equal(limiter.kind, 'compressor');
+  assert.equal(connections(limiter)[0], context.destination);
+  const buses = nodes.filter(node => connections(node)[0] === master);
+  assert.equal(buses.length, 3, 'ambience may not create another volume/master path');
+  assert.equal(buses[0], sfx, 'ambience bypassed the existing SFX bus');
+  sink.setBusGains(0, 0.4, 0.7);
+  assert.equal((sfx.gain as { value: number }).value, 0, 'SFX/master zero must silence ambience');
+  assert.equal((buses[1].gain as { value: number }).value, 0.4);
+  assert.equal((buses[2].gain as { value: number }).value, 0.7);
+  assert.equal(sink.counts.ambienceNodes, 12);
+  assert.equal(sink.counts.ambienceSources, 1);
+  assert.ok(sink.counts.ambienceBufferBytes > 0);
+  assert.equal(sink.counts.permanentNodes, nodes.length);
+  const source = graph.find(node => node.kind === 'bufferSource');
+  assert.ok(source);
+  assert.equal(source.starts, 1);
+  assert.equal(source.loop, true);
+  assert.equal(connections(source).length, 5);
+  const model = new EnvironmentAmbienceModel(ENVIRONMENT_AMBIENCE);
+  model.replaceWorld('world', [{ id: 'cafe', kind: 'cafe', x: 0, y: 0, z: 0 }]);
+  const input = createEnvironmentAmbienceInput();
+  input.running = true;
+  const nodeCount = nodes.length;
+  const sourceCount = sources.length;
+  for (let i = 0; i < 600; i += 1) sink.applyAmbienceFrame(model.update(1 / 60, input));
+  assert.equal(nodes.length, nodeCount, 'frame updates created nodes');
+  assert.equal(sources.length, sourceCount, 'frame updates created sources');
+  assert.equal(sink.counts.voices, 0, 'ambience consumed the warning/transient budget');
+  assert.equal(sink.counts.droppedVoices, 0);
+  input.running = false;
+  sink.applyAmbienceFrame(model.update(0, input));
+  for (const node of graph.filter(node => node.kind === 'gain').slice(1)) {
+    assert.equal((node.gain as { value: number }).value, 0, 'pause failed to request silence');
+  }
+  sink.dispose();
+  sink.dispose();
+  assert.deepEqual(teardown.slice(0, 12), graph, 'host buses were disposed before ambience');
+  for (const node of graph) assert.equal(node.disconnects, 1);
+  assert.equal(source.stops, 1);
+  assert.equal(source.buffer, null);
+  assert.equal(source.onended, null);
+  assert.equal(sink.counts.permanentNodes, 0);
+  assert.equal(sink.counts.ambienceNodes, 0);
+  assert.equal(sink.counts.ambienceSources, 0);
+  assert.equal(sink.counts.ambienceBufferBytes, 0);
 });

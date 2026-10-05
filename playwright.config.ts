@@ -31,9 +31,11 @@ import { defineConfig, devices } from '@playwright/test';
  * Set `EUC_SOFTWARE_GL=1` to pin the software rasteriser deliberately, for
  * reproducing a software-only bug or checking the fallback still works.
  */
-const GL_ARGS = process.env.EUC_SOFTWARE_GL === '1'
+const GL_ARGS = [...(process.env.EUC_SOFTWARE_GL === '1'
   ? ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']
-  : ['--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader'];
+  : ['--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader']),
+  // Diagnostic only: extra Chromium switches for one run, space-separated.
+  ...(process.env.EUC_EXTRA_CHROME_ARGS?.split(' ').filter(Boolean) ?? [])];
 
 const PERFORMANCE_ONLY = process.env.EUC_PERFORMANCE === '1';
 

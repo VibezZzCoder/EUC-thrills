@@ -44,8 +44,6 @@
       runnable under Node's own test runner with no build step (master §19.1),
       and a stray CSS import is the one thing that would quietly end that.
     -->
-    <link rel="stylesheet" href="/src/ui/game.css" />
-
     <style>
       :root {
         --ink: #eef2f7;
@@ -82,16 +80,27 @@
         display: grid;
         place-content: center;
         justify-items: center;
-        gap: 1.5rem;
-        padding: 2rem;
+        gap: 1.2rem;
+        z-index: 10000;
+        overflow: auto;
+        padding: max(1.5rem, env(safe-area-inset-top)) max(1.5rem, env(safe-area-inset-right))
+          max(1.5rem, env(safe-area-inset-bottom)) max(1.5rem, env(safe-area-inset-left));
         text-align: center;
         background:
           radial-gradient(120% 90% at 50% 0%, #16202c 0%, var(--backdrop) 70%);
-        transition: opacity 320ms ease;
+        transition: opacity 160ms ease;
       }
 
       #boot[hidden] { display: none; }
       #boot.is-dismissed { opacity: 0; pointer-events: none; }
+
+      #boot .boot-wheel {
+        width: 4rem; height: 4rem; border: 3px solid #2c3d52;
+        border-top-color: var(--accent); border-radius: 50%;
+        box-shadow: inset 0 0 0 0.65rem var(--backdrop), inset 0 0 0 0.8rem #2c3d52;
+        animation: boot-turn 1.6s linear infinite;
+      }
+      @keyframes boot-turn { to { transform: rotate(360deg); } }
 
       #boot h1 {
         margin: 0;
@@ -109,6 +118,21 @@
         color: var(--ink-dim);
         font-size: clamp(0.9rem, 2.6vw, 1.05rem);
         line-height: 1.5;
+      }
+
+      #boot #boot-heading { color: var(--ink); font-weight: 650; font-size: 1.1rem; }
+      #boot #boot-count { font-size: 0.75rem; }
+      #boot-retry {
+        min-height: 2.75rem; padding: 0.65rem 1.4rem; border: 1px solid #4c91f4;
+        border-radius: 0.5rem; background: var(--accent); color: #fff;
+        font: inherit; font-weight: 650; cursor: pointer;
+      }
+      #boot-retry:focus-visible { outline: 2px solid var(--ink); outline-offset: 4px; }
+      #boot-retry[hidden] { display: none; }
+      @media (max-height: 28rem) {
+        #boot { gap: 0.65rem; padding: 1rem; }
+        #boot .boot-wheel { width: 2.25rem; height: 2.25rem; }
+        #boot h1 { font-size: 2rem; }
       }
 
       #boot-track {
@@ -134,6 +158,7 @@
 
       /* Respect the OS setting even before the in-game option exists. */
       @media (prefers-reduced-motion: reduce) {
+        #boot .boot-wheel { animation: none; }
         #boot-bar { animation: none; width: 100%; opacity: 0.55; }
         #boot { transition: none; }
       }
@@ -160,21 +185,58 @@
 
       #boot-error[hidden] { display: none; }
     </style>
+    <!-- Nonblocking until the tiny boot entry confirms this required sheet. -->
+    <link id="game-styles" rel="stylesheet" href="/src/ui/game.css" media="print"
+      onload="this.dataset.loaded='true'" onerror="this.dataset.failed='true'" />
   </head>
 
   <body>
     <canvas id="viewport"></canvas>
 
-    <div id="boot">
+    <div id="boot" data-kind="boot" aria-busy="true" aria-label="Game loading">
+      <div class="boot-wheel" aria-hidden="true"></div>
       <h1>EUC&nbsp;<span class="accent">THRILLS</span></h1>
-      <p>One wheel. Total freedom. Ride anywhere.</p>
+      <p id="boot-heading">Your next ride awaits</p>
+      <p id="boot-detail">One wheel. Total freedom. Ride anywhere.</p>
       <div id="boot-track"><div id="boot-bar"></div></div>
-      <p id="boot-status">Starting up</p>
+      <p id="boot-status" role="status" aria-live="polite">Loading the game</p>
+      <p id="boot-count">Preparing your ride</p>
       <!-- role="alert" makes a fatal boot failure announce itself to
            assistive tech instead of leaving a silent stuck loading screen. -->
-      <pre id="boot-error" role="alert" hidden></pre>
+      <p id="boot-error" role="alert" hidden></p>
+      <button id="boot-retry" type="button" hidden>Retry loading</button>
     </div>
 
-    <script type="module" src="/src/app/main.ts"></script>
+    <script>
+      // If even the tiny entry cannot download, the static shell still offers
+      // recovery. Its owner hands off and removes this listener on boot.
+      (() => {
+        const remove = () => {
+          window.removeEventListener('error', failed, true);
+          window.removeEventListener('pagehide', remove);
+          document.removeEventListener('euc-loader-ready', remove);
+        };
+        const failed = event => {
+          if (!(event.target instanceof HTMLScriptElement) || event.target.type !== 'module') return;
+          const error = document.getElementById('boot-error');
+          const retry = document.getElementById('boot-retry');
+          error.textContent = 'The game could not download. Check your connection and try again.';
+          error.hidden = false;
+          retry.hidden = false;
+          retry.onclick = () => window.location.reload();
+          document.getElementById('boot-track').hidden = true;
+          document.getElementById('boot-status').textContent = 'Could not finish loading';
+          document.getElementById('boot-count').textContent = '';
+          document.getElementById('boot').setAttribute('aria-busy', 'false');
+          retry.focus();
+          console.error('Required game entry failed:', event.target.src);
+          remove();
+        };
+        window.addEventListener('error', failed, true);
+        window.addEventListener('pagehide', remove, { once: true });
+        document.addEventListener('euc-loader-ready', remove, { once: true });
+      })();
+    </script>
+    <script type="module" src="/src/app/boot.ts"></script>
   </body>
 </html>

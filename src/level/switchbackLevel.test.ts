@@ -39,6 +39,7 @@ import {
   leftOf,
   markingsOf,
   placeChain,
+  placedRunCount,
   querySegment,
   type PlacedProp,
   type PlacedSegment,
@@ -95,11 +96,10 @@ import {
   SWITCHBACK_PALETTE,
   SWITCHBACK_SUN,
   SWITCHBACK_PROGRAM,
-  SWITCHBACK_SIGNAGE,
+  SWITCHBACK_ADVANCE_CUES, SWITCHBACK_SIGNAGE,
   SWITCHBACK_TURN_ARROWS,
   SWITCHBACK_TECHNICAL_CORRIDORS,
   SWITCHBACK_SIGNED_FEATURES,
-  SWITCHBACK_SIGN_PAD_MARGIN,
   SEPARATION_CLEAR_METRES,
   SEPARATION_LAP_GAP_METRES,
   SWITCHBACK_SPAWN,
@@ -1404,23 +1404,27 @@ test('the park is dressed with exactly the six things Phase 4 authored', () => {
   // the geometry it was set on.
   assert.equal(plan.hazards, undefined);
   assert.equal(plan.targets, undefined);
-  assert.equal(plan.id, 'switchback-r4');
+  assert.equal(plan.id, 'switchback-r5');
 
-  // The signage, exactly as Phase 2 left it.
+  // Original poles and reserved areas, with contracted supporting paint.
   const authoredSigns = [...SWITCHBACK_SIGNAGE.props.values()].flat();
   const authoredRuns = [...SWITCHBACK_SIGNAGE.markings.values()].flat();
   assert.equal(authoredSigns.length, Object.keys(SWITCHBACK_FEATURES).length);
   assert.ok(authoredSigns.every((prop) => prop.kind === 'signpost'));
-  // Sixty-six at Phase 2; the owner's two words (DROP on the ledge, AIR on the
-  // kicker) are fourteen strokes, and the ledge's compact stack is one chevron
-  // fewer.
-  assert.equal(authoredRuns.length, 79, `the signage authored ${authoredRuns.length} runs`);
-  // Plus the bent turn arrows ahead of the hairpins (ride round 1): seven
-  // arrows, a shaft and a head each — `parkTurnArrows.test.ts` pins them.
-  assert.equal((plan.markings ?? []).length, 79 + SWITCHBACK_TURN_ARROWS.length * 2, `${(plan.markings ?? []).length} runs survived`);
+  // Preserve the original warning/arrow vocabulary at its smaller size.
+  const instructionRuns = 79;
+  assert.equal(authoredRuns.length, instructionRuns, `the signage authored ${authoredRuns.length} runs`);
+  // Seven contracted bent arrows and four small forward lap confirmations.
+  const lapConfirmationRuns = new Set(SWITCHBACK_TURN_ARROWS.map(arrow => arrow.segment)).size;
+  const sourceRuns = SWITCHBACK_GRAPH.flatMap(segment => segment.markings ?? []);
+  assert.equal(sourceRuns.length, instructionRuns + SWITCHBACK_TURN_ARROWS.length * 2
+    + lapConfirmationRuns + SWITCHBACK_ADVANCE_CUES.runCount);
+  // 2026-10-04 (VIS-3-R2): every one survives, one placed run per glyph leg.
+  assert.equal((plan.markings ?? []).length, sourceRuns.reduce((sum, run) => sum + placedRunCount(run), 0),
+    `${(plan.markings ?? []).length} runs survived`);
   const red = authoredRuns.filter((run) => run.paint === 'kerb');
   assert.equal(red.length, 2, `${red.length} red lines on the venue`);
-  assert.ok(red.every((run) => run.role === 'bar'));
+  assert.ok(red.every((run) => run.role === 'glyph' && run.support === 'compactTrail'));
 
   // Six kinds of prop, and every one of them is a kind the library already
   // draws — §36.7's "trees as existing instanced parts", which is what keeps
@@ -2144,9 +2148,10 @@ test('every sign is on the screen for the whole of the time it takes to read it'
     // The last chevron's tip, on the technical line: the far edge of the paint
     // and the point every lead on this venue is measured from.
     const feature = SWITCHBACK_SIGNED_FEATURES.find((entry) => entry.id === sign.feature)!;
+    const cueT = feature.technicalT * (feature.cueLateralScale ?? 1);
     const mark = {
-      x: spine.x + Math.cos(heading) * feature.technicalT,
-      z: spine.z - Math.sin(heading) * feature.technicalT,
+      x: spine.x + Math.cos(heading) * cueT,
+      z: spine.z - Math.sin(heading) * cueT,
     };
     const far = SWITCHBACK_ENTRY_DISTANCE.get(sign.segment)! + sign.toS;
 
@@ -2274,7 +2279,7 @@ test('the ledge\'s DROP and the kicker\'s AIR were placed without moving any oth
   assert.ok(kicker.lead >= kicker.requiredLead && kicker.lead <= 90, `the kicker's lead is ${kicker.lead.toFixed(1)} m`);
 });
 
-test('every authored mark and post survives the build, on boardwalk of its own', () => {
+test('every authored mark and post survives the build on compact dirt', () => {
   // **The test the others are a proxy for, and both clippers are silent.**
   // Paint on an unpaintable cell is deleted with no message and a prop standing
   // in a corridor is filtered out with none either, so the only way to know the
@@ -2300,22 +2305,22 @@ test('every authored mark and post survives the build, on boardwalk of its own',
       );
     }
   }
-  assert.ok(authored > 300, `only ${authored.toFixed(1)} m of paint was authored`);
+  assert.ok(authored > 0 && Number.isFinite(authored), 'the bounded instruction paths are empty');
   assert.ok(
     survived >= authored - 1e-6,
     `${authored.toFixed(1)} m of paint was authored and ${survived.toFixed(1)} m survived — `
-    + `the boardwalk margin of ${SWITCHBACK_SIGN_PAD_MARGIN.toFixed(4)} m is too small for a `
-    + `${plan.heightfield.spacing} m grid`,
+    + `the compact trail glyph must clear the finished ${plan.heightfield.spacing} m grid`,
   );
 
-  // Every surviving point stands on planking, which is the patches doing their
-  // job: the trail itself is dirt and `data/markings.ts` refuses to paint it.
+  // Explicit instructional glyphs sit on compact dirt; generic road paint
+  // still refuses it. Every authored cue must survive this permission intact.
   const columns = plan.heightfield.columns - 1;
   for (const run of plan.markings ?? []) {
     for (const point of run.points) {
       const column = Math.floor((point.x - plan.heightfield.originX) / plan.heightfield.spacing);
       const row = Math.floor((point.z - plan.heightfield.originZ) / plan.heightfield.spacing);
-      assert.equal(plan.heightfield.surfaces[row * columns + column], 'wood', 'paint off the boardwalk');
+      assert.equal(run.support, 'compactTrail');
+      assert.equal(plan.heightfield.surfaces[row * columns + column], 'dirt', 'instruction left compact trail');
     }
   }
   const authoredProps = [...SWITCHBACK_SIGNAGE.props.values()].flat().length
@@ -2328,33 +2333,18 @@ test('every authored mark and post survives the build, on boardwalk of its own',
   );
 });
 
-test('the boardwalk hugs its paint and never spans the trail', () => {
+test('instruction paint installs no artificial traction bands and preserves genuine decks', () => {
   // **A sign is a surface change on the riding line, so its size is a number
   // the venue owes.** One patch per mark rather than one per sign: the middle
   // of a corridor between a chevron stack and a bypass arrow stays trail, and
   // the inside of a landing box stays the ground the measurement pass rode.
-  let area = 0;
-  for (const [id, bands] of SWITCHBACK_SIGNAGE.bands) {
-    const segment = SWITCHBACK_GEOMETRY.find((entry) => entry.id === id)!;
-    for (const band of bands) {
-      assert.ok(band.fromS !== undefined && band.toS !== undefined, 'an unranged signage band');
-      assert.equal(band.surface, 'wood');
-      assert.ok(
-        Math.min(band.from, band.to) > 0 || Math.max(band.from, band.to) < 0,
-        `a patch on ${id} runs t ${band.from.toFixed(2)}..${band.to.toFixed(2)} across the centreline`,
-      );
-      assert.ok(
-        Math.max(Math.abs(band.from), Math.abs(band.to)) <= segment.halfWidth,
-        `a patch on ${id} reaches past the corridor edge`,
-      );
-      area += (band.to - band.from) * (band.toS! - band.fromS!);
-    }
+  assert.equal(SWITCHBACK_SIGNAGE.bands.size, 0);
+  assert.equal(SWITCHBACK_SIGNAGE.boardwalkArea, 0);
+  for (const segment of SWITCHBACK_GRAPH) {
+    assert.deepEqual(segment.bands, SWITCHBACK_GEOMETRY.find(entry => entry.id === segment.id)!.bands);
   }
-  assert.ok(Math.abs(area - SWITCHBACK_SIGNAGE.boardwalkArea) < 1e-6);
-  assert.ok(
-    SWITCHBACK_SIGNAGE.boardwalkArea < 1000,
-    `the signage planked ${SWITCHBACK_SIGNAGE.boardwalkArea.toFixed(0)} m² of the lap`,
-  );
+  assert.equal(plan.heightfield.surfaces.filter(surface => surface === 'wood').length, 0);
+  assert.ok(plan.segments.some(segment => segment.colliders.some(collider => collider.surface === 'wood')));
 });
 
 test('no signpost stands in the trail, or in the chase camera’s sweep of it', () => {
@@ -3208,4 +3198,34 @@ test('the trick zones cost the world nothing', () => {
   const { trickZones: second, ...rebuilt } = createSwitchbackLevel();
   assert.deepEqual(without, rebuilt, 'something else moved with them');
   assert.deepEqual(second, trickZones);
+});
+
+test('trail cues are drawn on dirt but ride on r4 wood grip (owner, 2026-10-04)', () => {
+  // r5 drew the cues straight on the trail; the owner kept r4's boardwalk grip
+  // under them. The grip is simulation-only: every grip cell still draws and
+  // sounds as its trail surface, and only the controller's response reads wood.
+  const traction = plan.heightfield.traction;
+  assert.ok(traction !== undefined);
+  const cells = Object.entries(traction);
+  assert.equal(cells.length, 582, 'r4 planked 582 cells under its cues');
+  const columns = plan.heightfield.columns - 1;
+  const sample = createGroundSample();
+  let checked = 0;
+  for (const [key, ridden] of cells) {
+    const cell = Number(key);
+    assert.equal(ridden, 'wood');
+    const drawn = plan.heightfield.surfaces[cell];
+    assert.ok(drawn === 'dirt' || drawn === 'gravel', `cell ${cell} draws ${drawn}`);
+    const x = plan.heightfield.originX + (cell % columns + 0.5) * plan.heightfield.spacing;
+    const z = plan.heightfield.originZ + (Math.floor(cell / columns) + 0.5) * plan.heightfield.spacing;
+    sampler.sampleGround(x, z, sample);
+    // A box top standing on the cell is that box's surface, grip included.
+    if (sample.surface !== drawn) continue;
+    checked += 1;
+    assert.equal(sample.traction, 'wood', `cell ${cell} rides on ${sample.traction}`);
+  }
+  assert.ok(checked > 500, `only ${checked} grip cells were open ground`);
+  // Away from every cue the trail rides as itself.
+  sampler.sampleGround(plan.spawn.position.x, plan.spawn.position.z, sample);
+  assert.equal(sample.traction, undefined);
 });

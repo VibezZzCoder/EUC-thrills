@@ -168,6 +168,11 @@ export interface SegmentMarking {
   readonly broken?: boolean;
   /** Road paint or the park's duller paint. Road by default. */
   readonly paint?: MarkingPaint;
+  /** Explicit compact-earth trail instructions; only glyphs may opt in. */
+  readonly support?: 'compactTrail';
+  /** Authored compact glyph contraction. Scale its offcut cutoff with the
+   * complete lettering, so a whole smaller letter bar is not discarded. */
+  readonly glyphScale?: number;
 }
 
 /**
@@ -185,6 +190,8 @@ export interface PlacedMarking {
   readonly dash: number;
   readonly gap: number;
   readonly paint: MarkingPaint;
+  /** Authored glyph-only trail permission; absent preserves road policy. */
+  readonly support?: 'compactTrail';
   /**
    * The shortest surviving run the clipper will ship, metres.
    *
@@ -196,6 +203,12 @@ export interface PlacedMarking {
    * value the clipper used before this field existed.
    */
   readonly minRun: number;
+  /**
+   * A bevel closing the outside of a compact-trail glyph's corner
+   * (`markingsOf`). It lies inside its two legs' round-ended footprint, so a
+   * clearance rule measures the legs and may skip it.
+   */
+  readonly join?: true;
 }
 
 /**
@@ -296,6 +309,16 @@ export interface SegmentSpec {
   /** The surface of the corridor outside any band. */
   surface: SurfaceId;
   bands?: readonly SurfaceBand[];
+  /**
+   * Grip-only patches: what the wheel rides on, not what the ground shows.
+   *
+   * The first band containing a point replaces that cell's surface for grip,
+   * rolling resistance, roughness and wobble only; the drawn ground, the tyre
+   * voice and the particles keep `bands`/`surface`. Switchback keeps r4's
+   * boardwalk grip under its trail cues this way after r5 drew them straight
+   * on dirt (owner, 2026-10-04). Absent everywhere else.
+   */
+  gripBands?: readonly SurfaceBand[];
   blocks?: readonly SegmentBlock[];
   /** Dressing input. Solid kinds derive separate `LevelPlan.solids` after placement. */
   props?: readonly SegmentProp[];
@@ -752,7 +775,15 @@ export function querySegment(placed: PlacedSegment, x: number, z: number): Segme
  * two want and the reason no existing world's surfaces move.
  */
 export function surfaceAtLateral(spec: SegmentSpec, t: number, s?: number): SurfaceId {
-  const bands = spec.bands;
+  return firstBandSurface(spec.bands, t, s) ?? spec.surface;
+}
+
+/** The grip-only surface at a lateral offset, or undefined (see `gripBands`). */
+export function gripAtLateral(spec: SegmentSpec, t: number, s?: number): SurfaceId | undefined {
+  return firstBandSurface(spec.gripBands, t, s);
+}
+
+function firstBandSurface(bands: readonly SurfaceBand[] | undefined, t: number, s?: number): SurfaceId | undefined {
   if (bands !== undefined) {
     for (const band of bands) {
       const low = Math.min(band.from, band.to);
@@ -765,7 +796,7 @@ export function surfaceAtLateral(spec: SegmentSpec, t: number, s?: number): Surf
       return band.surface;
     }
   }
-  return spec.surface;
+  return undefined;
 }
 
 /**
@@ -807,6 +838,9 @@ export function propsOf(placed: PlacedSegment): PlacedProp[] {
   return out;
 }
 
+/** Narrowest contracted letter stroke, metres. Full glyphs keep `glyphWidth`. */
+export const MIN_CONTRACTED_GLYPH_WIDTH = 0.18;
+
 /**
  * Turn a segment's markings into world-space polylines.
  *
@@ -837,31 +871,131 @@ export function markingsOf(
   };
 
   for (const marking of markings) {
-    if (marking.path.length < 2) continue;
-    const points: { x: number; z: number }[] = [toWorld(marking.path[0].s, marking.path[0].t)];
-
-    for (let leg = 1; leg < marking.path.length; leg += 1) {
-      const from = marking.path[leg - 1];
-      const to = marking.path[leg];
-      const span = Math.hypot(to.s - from.s, to.t - from.t);
-      const divisions = Math.max(1, Math.ceil(span / step));
-      for (let index = 1; index <= divisions; index += 1) {
-        const u = index / divisions;
-        points.push(toWorld(from.s + (to.s - from.s) * u, from.t + (to.t - from.t) * u));
-      }
+    if (marking.support === 'compactTrail' && marking.role !== 'glyph') {
+      throw new Error('compactTrail support belongs only to instructional glyphs');
     }
-
-    out.push({
-      points,
-      width: markingWidth(marking.role),
+    const glyphScale = marking.glyphScale ?? 1;
+    if (marking.glyphScale !== undefined && (marking.role !== 'glyph'
+      || marking.support !== 'compactTrail' || !Number.isFinite(glyphScale)
+      || !(glyphScale > 0 && glyphScale <= 1))) {
+      throw new Error('glyph scale belongs only to intentionally contracted compact-trail instructions');
+    }
+    if (marking.path.length < 2) continue;
+    // A contracted glyph shrinks its tracking with `glyphScale`, so its
+    // stroke must shrink too or neighbouring letters merge ('DOWN' read as
+    // a scrawl at 0.65). The floor keeps a stroke a legible few pixels wide.
+    const width = marking.role === 'glyph'
+      ? Math.max(MARKINGS.glyphWidth * glyphScale, MIN_CONTRACTED_GLYPH_WIDTH)
+      : markingWidth(marking.role);
+    const minRun = marking.role === 'glyph' ? MARKINGS.minGlyphRunLength * glyphScale : MARKINGS.minRunLength;
+    const run = (path: readonly { readonly s: number; readonly t: number }[]): { x: number; z: number }[] => {
+      const points: { x: number; z: number }[] = [toWorld(path[0].s, path[0].t)];
+      for (let leg = 1; leg < path.length; leg += 1) {
+        const from = path[leg - 1];
+        const to = path[leg];
+        const span = Math.hypot(to.s - from.s, to.t - from.t);
+        const divisions = Math.max(1, Math.ceil(span / step));
+        for (let index = 1; index <= divisions; index += 1) {
+          const u = index / divisions;
+          points.push(toWorld(from.s + (to.s - from.s) * u, from.t + (to.t - from.t) * u));
+        }
+      }
+      return points;
+    };
+    const base = {
+      width,
       dash: marking.broken === true ? MARKINGS.dashLength : 0,
       gap: marking.broken === true ? MARKINGS.dashGap : 0,
       paint: marking.paint ?? 'road',
-      minRun: marking.role === 'glyph' ? MARKINGS.minGlyphRunLength : MARKINGS.minRunLength,
-    });
+      ...(marking.support === undefined ? {} : { support: marking.support }),
+    };
+
+    if (placedRunCount(marking) === 1) {
+      out.push({ points: run(marking.path), ...base, minRun });
+      continue;
+    }
+    // One placed run per authored leg of a compact-trail letter or arrow
+    // (VIS-3-R2, 2026-10-04). `shared/markingRibbon` puts a ribbon row every
+    // ~1.25 m of a run's whole arc length and none at its corners: right for a
+    // lane line, wrong for a letter. SAFE's S (eleven legs, 3.7 m) was drawn as
+    // three chords ('<' and a slash), an arrowhead [wing, tip, wing] as one bar
+    // across its shaft ('+', '×'), and a contracted chevron without its tip. A
+    // straight leg is drawn exactly and a turned corner closed by `bevelJoin`;
+    // a leg is part of a complete letter, never an offcut, so its own length
+    // is its cutoff.
+    const legs: { x: number; z: number }[][] = [];
+    for (let leg = 1; leg < marking.path.length; leg += 1) legs.push(run([marking.path[leg - 1], marking.path[leg]]));
+    for (const [index, points] of legs.entries()) {
+      out.push({ points, ...base, minRun: Math.min(minRun, polylineXZ(points) * (1 - 1e-9)) });
+      if (index + 1 < legs.length && glyphJoins(marking.path, index + 1)) {
+        out.push(bevelJoin(points, legs[index + 1]!, width, base));
+      }
+    }
   }
 
   return out;
+}
+
+/** How many placed runs `markingsOf` makes of one authored marking: one per
+ * leg of a compact-trail glyph plus one per bevelled corner (see there),
+ * otherwise one. */
+export function placedRunCount(marking: SegmentMarking): number {
+  if (marking.path.length < 2) return 0;
+  if (marking.role !== 'glyph' || marking.support !== 'compactTrail') return 1;
+  let joins = 0;
+  for (let corner = 1; corner < marking.path.length - 1; corner += 1) {
+    if (glyphJoins(marking.path, corner)) joins += 1;
+  }
+  return marking.path.length - 1 + joins;
+}
+
+/** The turn a glyph corner fills, radians, judged in the authored `(s, t)`
+ * frame so `placedRunCount` can count it without a placed host. Under 0.1 rad
+ * the open wedge is under 1.5 cm across a full stroke; near a hairpin it is
+ * under 1 cm deep. Neither is worth a run. */
+const GLYPH_JOIN_TURN = { min: 0.1, max: Math.PI - 0.1 };
+
+function glyphJoins(path: readonly { readonly s: number; readonly t: number }[], corner: number): boolean {
+  const a = path[corner - 1]!, b = path[corner]!, c = path[corner + 1]!;
+  const inS = b.s - a.s, inT = b.t - a.t, outS = c.s - b.s, outT = c.t - b.t;
+  if (Math.hypot(inS, inT) < 1e-9 || Math.hypot(outS, outT) < 1e-9) return false;
+  const turn = Math.abs(Math.atan2(inS * outT - inT * outS, inS * outS + inT * outT));
+  return turn > GLYPH_JOIN_TURN.min && turn < GLYPH_JOIN_TURN.max;
+}
+
+/**
+ * The bevel that closes the wedge two butt-ended legs leave open on the
+ * outside of a corner (VIS-3-R2 follow-up, 2026-10-04), so an S, C or O reads
+ * as one stroke rather than a chain of tiles. A short run from the corner out
+ * along the bisector, exactly as wide as the chord between the two legs' outer
+ * edge ends: the triangle it fills lies inside the stroke's own round join, the
+ * footprint every clearance rule already measures with `lineSeparation`, so it
+ * moves no paint (`join`). A mitre reaches past that footprint; rejected.
+ */
+function bevelJoin(
+  incoming: readonly { readonly x: number; readonly z: number }[],
+  outgoing: readonly { readonly x: number; readonly z: number }[],
+  width: number,
+  base: Omit<PlacedMarking, 'points' | 'width' | 'minRun'>,
+): PlacedMarking {
+  const corner = incoming.at(-1)!, before = incoming.at(-2)!, after = outgoing[1]!;
+  const inLength = Math.hypot(corner.x - before.x, corner.z - before.z);
+  const outLength = Math.hypot(after.x - corner.x, after.z - corner.z);
+  // In minus out points out of the turn, and its length is 2 sin(turn / 2).
+  const kx = (corner.x - before.x) / inLength - (after.x - corner.x) / outLength;
+  const kz = (corner.z - before.z) / inLength - (after.z - corner.z) / outLength;
+  const k = Math.hypot(kx, kz);
+  const reach = width / 2 * Math.sqrt(Math.max(0, 1 - k * k / 4));
+  const points = [{ x: corner.x, z: corner.z }, { x: corner.x + kx / k * reach, z: corner.z + kz / k * reach }];
+  return { points, ...base, width: width * k / 2, minRun: polylineXZ(points) * (1 - 1e-9), join: true };
+}
+
+function polylineXZ(points: readonly { readonly x: number; readonly z: number }[]): number {
+  let length = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    length += Math.hypot(points[index]!.x - points[index - 1]!.x, points[index]!.z - points[index - 1]!.z);
+  }
+  return length;
 }
 
 /** Turn a segment's blocks into world-space colliders. */

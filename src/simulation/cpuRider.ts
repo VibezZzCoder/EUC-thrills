@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { StreetLoops } from './streetLoops.ts';
-import { CHASE, EUC, PADDLE, PHYSICS } from '../data/tuning.ts';
+import { populationYieldBody, populationYieldSpeed } from './populationYield.ts';
+import { CHASE, EUC, PADDLE, PHYSICS, POPULATION_OCCUPANT } from '../data/tuning.ts';
 import type { ActionSnapshot } from '../input/actions.ts';
 import type { LevelPlan } from '../level/plan.ts';
 import { lateralCeilingG, type LateralCeilingTuning } from './lateralCeiling.ts';
@@ -15,6 +16,7 @@ import {
   type SpineSample,
 } from './routeSpine.ts';
 import type { TerrainSampler } from './world.ts';
+import type { PopulationFootprint } from './population.ts';
 
 /**
  * The cop's brain — M18 Phase 1.
@@ -149,6 +151,8 @@ export interface CpuQuarry {
  * why: nothing in this file knows which cop is which or what a pack is for.
  */
 export interface CpuPackInput {
+  /** Separate physical NPC list; never discarded by static walls-only fallbacks. */
+  readonly livingBodies?: readonly import('./population.ts').PopulationFootprint[];
   /**
    * The other standing cops as moving blockers, in this brain's canonical
    * frame (seam-shifted by the builder on a closed spine). Filed into the
@@ -189,6 +193,25 @@ function clamp(value: number, low: number, high: number): number {
   return value < low ? low : value > high ? high : value;
 }
 
+/** Whether the segment from the origin to (`along`, `across`) enters the open box [a0, a1] × [c0, c1]. */
+function segmentMeetsBox(along: number, across: number, a0: number, a1: number, c0: number, c1: number): boolean {
+  let enter = 0;
+  let leave = 1;
+  if (Math.abs(along) < 1e-9) {
+    if (a0 >= 0 || a1 <= 0) return false;
+  } else {
+    enter = Math.max(enter, Math.min(a0 / along, a1 / along));
+    leave = Math.min(leave, Math.max(a0 / along, a1 / along));
+  }
+  if (Math.abs(across) < 1e-9) {
+    if (c0 >= 0 || c1 <= 0) return false;
+  } else {
+    enter = Math.max(enter, Math.min(c0 / across, c1 / across));
+    leave = Math.min(leave, Math.max(c0 / across, c1 / across));
+  }
+  return enter < leave;
+}
+
 /**
  * A repeatable pseudo-noise in -1..1 from a distance along the route.
  *
@@ -221,7 +244,7 @@ export type CapReason =
   | 'packmate'
   // The close-quarters search decided it (the brutal pass): a corner of the
   // path round what stands between them, or the pass through a strike.
-  | 'nav' | 'attack';
+  | 'nav' | 'attack' | 'population';
 
 /**
  * The ride-tuning fields the cop's *wheel* takes on top of the player's —
@@ -239,6 +262,8 @@ export const COP_WHEEL_TUNING: Readonly<{ cutoutSpeedShare: number }> = Object.f
 
 /** The pack input's "no packmates": one frozen empty list, so no step allocates. */
 const NO_BANDS: readonly RouteBlocker[] = Object.freeze([]);
+/** No living bodies: an actor-free world steps exactly as before the population. */
+const NO_BODIES: readonly PopulationFootprint[] = Object.freeze([]);
 
 
 export class CpuRider {
@@ -433,6 +458,33 @@ export class CpuRider {
   private lastQuarryRange = Infinity;
   /** How long the wheel has been going nowhere while asking to. */
   private stuckSeconds = 0;
+  /** How long he has stood still yielding to a living body (POP-1); bounded by `POPULATION_HOLD_SECONDS`. */
+  private populationHoldSeconds = 0;
+  /** Seconds left of backing straight out from a living body he waited on too long. */
+  private populationBackoffSeconds = 0;
+  /** A back-out has ended and he may still be rolling back; see the step. */
+  private populationSettling = false;
+  /** Back-outs begun within `WEDGE_SAME_SPOT_METRES` of the last one, and where that one began. */
+  private populationBackouts = 0;
+  private populationBackoutX = Infinity;
+  private populationBackoutZ = Infinity;
+  /** This step's living bodies as posts on the line, from a reused pool; see `livingBands`. */
+  private readonly livingPool: { from: number; to: number; left: number; right: number; safeSpeed: number; facing: 0 }[] = [];
+  private readonly livingOut: RouteBlocker[] = [];
+  private readonly livingAt: SpineLocation = createSpineLocation();
+  private readonly livingSample: SpineSample = createSpineSample();
+  /** The side a direct chase last went round a living body: +1 his left. */
+  private livingSide: 1 | -1 = 1;
+  private readonly livingAim = { x: 0, z: 0 };
+  /** The sideways a direct detour still owes, and the metres left to owe it in; see `livingDetour`. */
+  private livingOwed = 0;
+  private livingOwedIn = 0;
+  /** The direct detour's bodies as grown footprints in the way's frame, four numbers each. Reused. */
+  private readonly livingRects: number[] = [];
+  /** Which of those the cluster being gone round holds. Reused. */
+  private readonly livingMembers: boolean[] = [];
+  /** Whether each of `gaps`' low/high pairs is a living body's band, per entry. Reused. */
+  private readonly gapLiving: boolean[] = [];
   /**
    * Whether he is working his way *around* something rather than chasing.
    *
@@ -811,6 +863,12 @@ export class CpuRider {
     this.swingSide = 'right';
     this.lastQuarryRange = Infinity;
     this.stuckSeconds = 0;
+    this.populationHoldSeconds = 0;
+    this.populationBackoffSeconds = 0;
+    this.populationSettling = false;
+    this.populationBackouts = 0;
+    this.populationBackoutX = Infinity;
+    this.populationBackoutZ = Infinity;
     this.pursuitDirection = 1;
     this.fieldPursuit = false;
     this.noProgressSeconds = 0;
@@ -860,6 +918,10 @@ export class CpuRider {
     if (view.crashed) {
       this.lastHeading = view.headingY;
       this.stuckSeconds = 0;
+      this.populationHoldSeconds = 0;
+      this.populationBackoffSeconds = 0;
+      this.populationSettling = false;
+      this.populationBackouts = 0;
       this.lastQuarryRange = Infinity;
       this.spinTapPending = false;
       this.spinRideOutSeconds = 0;
@@ -1433,12 +1495,56 @@ export class CpuRider {
         blocking = band;
       }
     }
+    // **A living body he is not waiting for is a post he rides round**
+    // (POP-1). Standing, sitting, parked or walking along his line, it is
+    // filed in the field's own vocabulary — a band with a face both ways, at
+    // `safeSpeed` 0 standing or its pace walking, as a packmate's — so the gap
+    // search, the swerve law and the end-around take him past it the way they
+    // take him past a bollard. A body crossing his line is not filed: where it
+    // will be is the speed cap's question below.
+    const living = direct ? NO_BANDS
+      : this.livingBands(view, pack?.livingBodies ?? NO_BODIES, near, direction);
+    // Unlike a post's, its band holds until it is behind his wheel, not
+    // level with it: a body is passed beside, not run into from the side.
+    // And it is in his way only where his own wheel would touch its band,
+    // not within the furniture's clearance: a person a metre and a half off
+    // his line, or a car in the next lane, is passed at pace, as it was
+    // before bodies were filed at all (the QA's pace finding).
+    const wheel = POPULATION_OCCUPANT.halfWidthMetres;
+    for (const band of living) {
+      const ahead = direction > 0 ? band.from - this.cursor : this.cursor - band.to;
+      const past = direction > 0 ? band.to - this.cursor : this.cursor - band.from;
+      if (past < -POPULATION_OCCUPANT.halfLengthMetres || ahead > near) continue;
+      // Going his way at his pace or faster, as a packmate is: never met.
+      if (band.safeSpeed > 0 && band.safeSpeed >= view.speed) continue;
+      if (band.right - wheel > lineHigh || band.left + wheel < lineLow) {
+        const course = courseLateral(Math.max(0, ahead));
+        if (course <= band.right - wheel || course >= band.left + wheel) continue;
+      }
+      if (blocking !== null
+        && ahead >= (direction > 0 ? blocking.from - this.cursor : this.cursor - blocking.to)) continue;
+      blocking = band;
+    }
     /** Whether the gate he is threading is a packmate's rather than the road's. */
     const packmateGate = blocking !== null && bands.length > 0 && bands.indexOf(blocking) >= 0;
+    /** Whether it is a living body's (POP-1). */
+    const livingGate = blocking !== null && living.length > 0 && living.indexOf(blocking) >= 0;
+    /**
+     * And whether he is still in line with it: then the swerve is priced over
+     * the metres his wheel actually has left and floored at a creep, so he
+     * never cuts the corner of a person at the road floor's pace, and he aims
+     * out at their near corner with the furniture's room (the gap search).
+     * Already beside it, the gate is any gate's.
+     */
+    const livingInLine = livingGate && blocking !== null
+      && selfLateral > blocking.right - TIGHT_ROOM && selfLateral < blocking.left + TIGHT_ROOM;
 
     let avoidAt = Infinity;
     /** The width of the opening he is threading at the nearest gate; -1 for none. */
     let gapWidth = -1;
+    /** That opening's edges, lateral metres. */
+    let gapLow = 0;
+    let gapHigh = 0;
     if (blocking !== null) {
       avoidAt = direction > 0 ? blocking.from - this.cursor : this.cursor - blocking.to;
       // Everything in the same gate: what a rider sees as one thing to get
@@ -1458,6 +1564,12 @@ export class CpuRider {
         if (band.to < gateLow || band.from > gateHigh) continue;
         if (band.safeSpeed >= view.speed) continue;
         if (band.facing !== 0 && band.facing !== direction) continue;
+        this.conflicts.push(band);
+      }
+      // And the living bodies in it, as the posts they are.
+      for (const band of living) {
+        if (band.to < gateLow || band.from > gateHigh) continue;
+        if (band.safeSpeed > 0 && band.safeSpeed >= view.speed) continue;
         this.conflicts.push(band);
       }
 
@@ -1483,8 +1595,9 @@ export class CpuRider {
         tier: 0 | 1 | 2,
         reach = limit,
         reachable: ((line: number) => boolean) | null = null,
-      ): { low: number; high: number; width: number; line: number } => {
+      ): { low: number; high: number; width: number; line: number; lowRoom: number; highRoom: number } => {
         this.gaps.length = 0;
+        this.gapLiving.length = 0;
         for (const blocker of this.conflicts) {
           if (tier === 1 && blocker.safeSpeed === Infinity) continue;
           if (tier === 2 && blocker.safeSpeed > 0) continue;
@@ -1493,20 +1606,34 @@ export class CpuRider {
           // decides whether any line exists does not count a parked one.
           if (tier === 2 && bands.length > 0 && bands.indexOf(blocker) >= 0) continue;
           this.gaps.push(blocker.right - TIGHT_ROOM, blocker.left + TIGHT_ROOM);
+          const body = living.length > 0 && living.indexOf(blocker) >= 0;
+          this.gapLiving.push(body, body);
         }
 
         let bestLow = 0;
         let bestHigh = 0;
         let bestWidth = -1;
+        // **A body's edge keeps a body's room, not the furniture's** (POP-1,
+        // the QA's pace finding). Its band is already its hull and personal
+        // space and `TIGHT_ROOM` already his wheel; the clearance kept from
+        // a bollard on top of that sent him two and a half metres wide of a
+        // person once beside them. While still in line he aims out with the
+        // furniture's room — the bolder line turns him out sooner, and what
+        // he is charged for is only the move into the opening (below).
+        let bestLowRoom = 0;
+        let bestHighRoom = 0;
         let cursorEdge = -reach;
+        let cursorLiving = false;
         // The blocked bands, in order, with the free stretch before each one.
         const order: number[] = [];
         for (let i = 0; i < this.gaps.length; i += 2) order.push(i);
         order.sort((a, b) => this.gaps[a] - this.gaps[b]);
         let bestScore = Infinity;
-        const takeGap = (low: number, high: number): void => {
+        const takeGap = (low: number, high: number, lowLiving: boolean, highLiving: boolean): void => {
           const width = high - low;
           if (width < MIN_GAP_METRES) return;
+          const lowRoom = Math.min(lowLiving && !livingInLine ? LIVING_GAP_ROOM : room, width / 2);
+          const highRoom = Math.min(highLiving && !livingInLine ? LIVING_GAP_ROOM : room, width / 2);
           // **Scored by how far he would have to move from where he actually
           // is, and that is hysteresis rather than an optimisation.** Scoring
           // against the *wanted* line instead put the two gaps either side of a
@@ -1515,7 +1642,7 @@ export class CpuRider {
           // swerved left, then right, then arrived at the bollard dead centre
           // and hit it at full speed. Measuring from his own line makes the gap
           // he is already entering win every subsequent step by construction.
-          const target = clamp(offset, low + Math.min(room, width / 2), high - Math.min(room, width / 2));
+          const target = clamp(offset, low + lowRoom, high - highRoom);
           // Nearest, less a credit for width. A plaza's bollards stand in rows
           // with metre-and-a-half slots between them and five metres of clear
           // brick beside them, and a purely nearest rule threads the slot —
@@ -1528,20 +1655,28 @@ export class CpuRider {
           bestWidth = width;
           bestLow = low;
           bestHigh = high;
+          bestLowRoom = lowRoom;
+          bestHighRoom = highRoom;
         };
         for (const index of order) {
           const low = this.gaps[index];
           const high = this.gaps[index + 1];
-          if (low > cursorEdge) takeGap(cursorEdge, low);
+          if (low > cursorEdge) takeGap(cursorEdge, low, cursorLiving, this.gapLiving[index]);
+          if (high > cursorEdge) cursorLiving = this.gapLiving[index];
           cursorEdge = Math.max(cursorEdge, high);
         }
-        if (cursorEdge < reach) takeGap(cursorEdge, reach);
-        const margin = Math.min(room, bestWidth / 2);
+        if (cursorEdge < reach) takeGap(cursorEdge, reach, cursorLiving, false);
+        if (bestWidth < 0) {
+          bestLowRoom = Math.min(room, bestWidth / 2);
+          bestHighRoom = bestLowRoom;
+        }
         return {
           low: bestLow,
           high: bestHigh,
           width: bestWidth,
-          line: clamp(offset, bestLow + margin, bestHigh - margin),
+          line: clamp(offset, bestLow + bestLowRoom, bestHigh - bestHighRoom),
+          lowRoom: bestLowRoom,
+          highRoom: bestHighRoom,
         };
       };
 
@@ -1690,13 +1825,14 @@ export class CpuRider {
       const bestHigh = chosen.high;
       const bestWidth = chosen.width;
       gapWidth = bestWidth;
+      gapLow = bestLow;
+      gapHigh = bestHigh;
 
       if (bestWidth >= 0) {
         // Inside the gap by as much as it can spare, up to the clearance he
         // would have taken anyway. A wide opening therefore costs him nothing
         // and a tight one puts him exactly down the middle.
-        const margin = Math.min(room, bestWidth / 2);
-        offset = clamp(offset, bestLow + margin, bestHigh - margin);
+        offset = clamp(offset, bestLow + chosen.lowRoom, bestHigh - chosen.highRoom);
         if (slowThrough < Infinity) {
           // Behind a packmate he matches the packmate's pace at him — and no
           // lower than a cop needs to turn to face his quarry: a cap derived
@@ -1763,9 +1899,12 @@ export class CpuRider {
       // three metres away. Pulling the aim in to the obstacle is what turns the
       // same offset into a real swerve, and it is why this is a lookahead in
       // metres here and a lookahead in seconds everywhere else.
+      // In line with a body close up, at its near corner: from a stand behind
+      // a person, a point four metres up the road is too shallow a bearing to
+      // clear them in the metres there are (POP-1).
       if (avoidAt < lookahead) {
         this.spine.sample(
-          this.cursor + direction * Math.max(MIN_AIM_METRES, avoidAt),
+          this.cursor + direction * Math.max(livingInLine ? LIVING_MIN_AIM_METRES : MIN_AIM_METRES, avoidAt),
           this.aim,
         );
       }
@@ -1996,8 +2135,16 @@ export class CpuRider {
       if (endAround) {
         sideways = Math.abs(clamped - selfLateral);
       } else if (gapWidth >= 0) {
-        sideways = Math.abs(clamped - selfLateral);
-        aimAt = Math.max(MIN_AIM_METRES, avoidAt);
+        // At a body's gate he owes only the move into the opening (POP-1):
+        // the opening's edges already keep his wheel off the body, and the
+        // rest of the way to its middle is comfort, not a debt to brake for.
+        const owed = (lateral: number): number => (livingGate
+          ? Math.max(0, gapLow - lateral, lateral - gapHigh)
+          : Math.abs(clamped - lateral));
+        sideways = owed(selfLateral);
+        aimAt = livingInLine
+          ? Math.max(0, avoidAt - POPULATION_OCCUPANT.halfLengthMetres)
+          : Math.max(MIN_AIM_METRES, avoidAt);
         atGate = true;
         // **And from his course when his course is what meets it** (`sweep-39`,
         // above): crossing his line on the way to the far side of it, he owes
@@ -2006,11 +2153,12 @@ export class CpuRider {
         // gate that would put him down — on an open gate the ordinary tracking
         // error is the corner profile's business, as it always was.
         if (blocking !== null && this.conflicts.some(onCourse)) {
-          sideways = Math.max(sideways, Math.abs(clamped - courseLateral(Math.max(0, avoidAt))));
+          sideways = Math.max(sideways, owed(courseLateral(Math.max(0, avoidAt))));
         }
       }
       if (atGate && sideways > 0.05) {
-        cap = bind(Math.max(SWERVE_SPEED_FLOOR, swerveSpeed(sideways, aimAt)), packmateGate ? 'packmate' : 'swerve');
+        cap = bind(Math.max(livingInLine ? LIVING_CREEP_SPEED : SWERVE_SPEED_FLOOR, swerveSpeed(sideways, aimAt)),
+          packmateGate ? 'packmate' : 'swerve');
       } else if (sideways > 0.05) {
         // Optimism rather than `reaction` itself: the same knob seen a second
         // time, normalised so a full-skill cop swerves at exactly the physics
@@ -2123,6 +2271,22 @@ export class CpuRider {
         }
       }
     }
+    // **A direct chase goes round living bodies too** (POP-1). Riding at the
+    // rider, a search corner or a street's centre, he reads none of the
+    // line's bands above, so bodies standing on the way he is aiming take the
+    // aim round them as one, clear of the road's walls and the grid's.
+    const livingDetoured = (direct || closePursuit)
+      && this.livingDetour(view, aimX, aimZ, pack?.livingBodies ?? NO_BODIES, near, lookahead);
+    if (livingDetoured) {
+      aimX = this.livingAim.x;
+      aimZ = this.livingAim.z;
+      // Priced as a body's gate is above: the sideways he owes before he
+      // reaches them, floored at a creep. The yield cap below sweeps the
+      // aim, which now points past them, so this is what brakes him.
+      if (this.livingOwed > 0.05) {
+        cap = bind(Math.max(LIVING_CREEP_SPEED, swerveSpeed(this.livingOwed, this.livingOwedIn)), 'swerve');
+      }
+    }
     this.lastOffset = offset;
     this.lastAimX = aimX;
     this.lastAimZ = aimZ;
@@ -2141,6 +2305,10 @@ export class CpuRider {
     // expression the controller uses, so it moves with the ride rather than
     // being a number that has to be remembered.
     cap = Math.min(cap, this.cutoutSpeed());
+    const livingCap = populationYieldSpeed(populationYieldBody(view), view.speed,
+      Math.atan2(aimX - view.x, aimZ - view.z), pack?.livingBodies ?? [], this.brakeDeceleration);
+    const yieldingPopulation = livingCap !== null && livingCap < cap;
+    if (yieldingPopulation) { cap = livingCap; capReason = 'population'; }
     this.capReasonValue = capReason;
     this.capSpeedValue = cap;
     // **Feedforward for the cost of holding speed** — the second half of the
@@ -2195,7 +2363,45 @@ export class CpuRider {
     const holdingQuarry = quarry !== null && quarryRange <= strikeStandOff;
     // Frozen from the last step before the escape arms; see `wedgeHeading`.
     if (this.stuckSeconds <= STUCK_SECONDS) this.wedgeHeading = view.headingY;
-    if (holdingQuarry) this.stuckSeconds = 0;
+    // **Yielding to a living body is a wait, and a wait is bounded** (POP-1).
+    // Standing for someone crossing is purposeful; standing for someone who
+    // is waiting on him — the walker he rolled up behind, the traffic car
+    // stopped for him — never ends. Past `POPULATION_HOLD_SECONDS` stood still
+    // he backs straight out at a creep until his way past the body is clear
+    // (the bands and the direct aim above then take him round it), for at
+    // most `POPULATION_BACKOFF_SECONDS`. A back-out that is itself going
+    // nowhere is the stuck ladder's, exactly as against any other face.
+    // **And the wait escalates** (the QA's social pair): the second back-out
+    // at one spot sends a direct chase round the other side, and past
+    // `POPULATION_BACKOUT_CYCLES` there the wait is the stuck ladder's too.
+    if (this.populationBackoffSeconds > 0) {
+      this.populationBackoffSeconds = livingCap === null ? 0 : Math.max(0, this.populationBackoffSeconds - dt);
+      this.populationHoldSeconds = 0;
+      // Still rolling back when it ends, his forward steer would yaw the
+      // wrong way (reverse steers travel-relative): straight until stopped.
+      if (this.populationBackoffSeconds === 0) this.populationSettling = true;
+    } else if (yieldingPopulation && Math.abs(view.speed) < STUCK_SPEED) {
+      this.populationHoldSeconds += dt;
+      if (this.populationHoldSeconds > POPULATION_HOLD_SECONDS) {
+        const moved = Math.hypot(view.x - this.populationBackoutX, view.z - this.populationBackoutZ);
+        this.populationBackouts = moved > WEDGE_SAME_SPOT_METRES ? 1 : this.populationBackouts + 1;
+        this.populationBackoutX = view.x;
+        this.populationBackoutZ = view.z;
+        if (this.populationBackouts === 2) this.livingSide = this.livingSide === 1 ? -1 : 1;
+        if (this.populationBackouts <= POPULATION_BACKOUT_CYCLES) {
+          this.populationBackoffSeconds = POPULATION_BACKOFF_SECONDS;
+        }
+        this.populationHoldSeconds = 0;
+      }
+    } else {
+      this.populationHoldSeconds = 0;
+    }
+    const backingOff = this.populationBackoffSeconds > 0;
+    const besieged = this.populationBackouts > POPULATION_BACKOUT_CYCLES
+      && Math.hypot(view.x - this.populationBackoutX, view.z - this.populationBackoutZ) <= WEDGE_SAME_SPOT_METRES;
+    if (holdingQuarry || (yieldingPopulation && !backingOff && !besieged && this.stuckSeconds <= STUCK_SECONDS)) {
+      this.stuckSeconds = 0;
+    }
     // Not conditioned on `grounded`: a wheel pressed on a wall micro-bounces
     // its suspension, and gating on ground contact made the timer accrue at a
     // seventh of real time — a 1.4 s threshold that took ten seconds to arm,
@@ -2338,7 +2544,10 @@ export class CpuRider {
       if (view.grounded) {
         actions.throttle = 1;
       }
-    } else if (this.stuckSeconds > STUCK_SECONDS && spinEscapeReady && view.grounded) {
+    } else if (this.stuckSeconds > STUCK_SECONDS && spinEscapeReady && view.grounded
+      // Never thrown at a person he is working round (POP-1): the ladder may
+      // back him out of their way, not launch him at them.
+      && !livingInLine && !livingDetoured) {
       actions.hop = true;
       actions.throttle = 0;
       actions.steer = 0;
@@ -2398,6 +2607,31 @@ export class CpuRider {
       }
     }
 
+    // The bounded wait's back-out: straight back along the way he was going
+    // — the line, or the aim off it — so the room he makes is behind the
+    // body, not beside it. Reversing, steer is travel-relative: a positive
+    // request yaws the nose left. A crawl the ladder armed keeps its own.
+    if (backingOff && this.stuckSeconds <= STUCK_SECONDS) {
+      this.spine.sample(this.cursor, this.livingSample);
+      const along = direct || closePursuit
+        ? Math.atan2(aimX - view.x, aimZ - view.z)
+        : this.livingSample.headingY + (direction < 0 ? Math.PI : 0);
+      actions.throttle = clamp((-POPULATION_BACKOFF_SPEED - view.speed) * this.throttleGain, -1, 1);
+      actions.steer = clamp(-wrapAngle(view.headingY - along) * POPULATION_BACKOFF_STEER_GAIN, -1, 1);
+    } else if (this.populationSettling) {
+      if (view.speed < 0) actions.steer = 0;
+      else this.populationSettling = false;
+    }
+    // Waiting for a living crossing is purposeful. An old wedge/spin state
+    // must never replace its braking request with full throttle or a hop.
+    if (yieldingPopulation || backingOff) {
+      if (yieldingPopulation && !backingOff && this.stuckSeconds <= STUCK_SECONDS) {
+        actions.throttle = clamp(feedforward + error * this.throttleGain, -1, 1);
+      }
+      actions.hop = false;
+      this.spinTapPending = false; this.spinRideOutSeconds = 0;
+      this.noProgressSeconds = 0;
+    }
     return actions;
   }
 
@@ -2563,6 +2797,201 @@ export class CpuRider {
       }
     }
     return true;
+  }
+
+  /**
+   * The living bodies near his line as posts in the line's own frame (POP-1):
+   * each a band across its hull's true extent plus `LIVING_BAND_MARGIN`, with
+   * a face both ways, from a pool reused every step. A body at another level,
+   * out of reach of the window, or moving across the line faster than
+   * `LIVING_CROSSING_SPEED` files nothing. One moving along the line is a
+   * packmate in the band's own sense: its pace his way is its `safeSpeed`,
+   * and it is filed where he will meet it rather than where it stands.
+   */
+  private livingBands(
+    view: CpuView,
+    bodies: readonly PopulationFootprint[],
+    near: number,
+    direction: 1 | -1,
+  ): readonly RouteBlocker[] {
+    if (bodies.length === 0) return NO_BANDS;
+    const out = this.livingOut;
+    const whole = this.spine.length;
+    let count = 0;
+    for (const body of bodies) {
+      if (body.maxY <= view.y || body.minY >= view.y + POPULATION_OCCUPANT.heightMetres) continue;
+      const reach = near + Math.hypot(body.halfWidthMetres, body.halfLengthMetres) + TIGHT_ROOM;
+      if (Math.abs(body.x - view.x) > reach || Math.abs(body.z - view.z) > reach) continue;
+      this.spine.locate(body.x, body.z, this.cursor, this.livingAt);
+      this.acrossSeam(body.x, body.z, this.livingAt);
+      this.spine.sample(this.livingAt.distance, this.livingSample);
+      const heading = this.livingSample.headingY;
+      const cos = Math.cos(heading);
+      const sin = Math.sin(heading);
+      // Left of the line is (cos h, −sin h), ahead (sin h, cos h): the file's one convention.
+      if (Math.abs(body.velocityX * cos - body.velocityZ * sin) > LIVING_CROSSING_SPEED) continue;
+      const pace = (body.velocityX * sin + body.velocityZ * cos) * direction;
+      const lateral = (body.x - this.livingSample.x) * cos - (body.z - this.livingSample.z) * sin;
+      const turnCos = Math.abs(Math.cos(body.headingY - heading));
+      const turnSin = Math.abs(Math.sin(body.headingY - heading));
+      const along = body.halfLengthMetres * turnCos + body.halfWidthMetres * turnSin;
+      const across = body.halfWidthMetres * turnCos + body.halfLengthMetres * turnSin + LIVING_BAND_MARGIN;
+      let centre = this.livingAt.distance;
+      // The short way round a closed ring, as a packmate's band is shifted.
+      if (this.spine.closed && centre - this.cursor > whole / 2) centre -= whole;
+      else if (this.spine.closed && centre - this.cursor < -whole / 2) centre += whole;
+      // **Met where it will be, not where it stands** (the QA's pace
+      // finding): an oncoming body is met nearer, one going his way further
+      // on, by the travel it makes while he closes — as far as the window.
+      const ahead = (centre - this.cursor) * direction;
+      if (pace !== 0 && ahead > 0) {
+        const closing = Math.max(view.speed, TURN_TO_FACE_SPEED) - pace;
+        centre += direction * (closing > 0 ? clamp((pace * ahead) / closing, -ahead, near) : near);
+      }
+      let band = this.livingPool[count];
+      if (band === undefined) {
+        band = { from: 0, to: 0, left: 0, right: 0, safeSpeed: 0, facing: 0 };
+        this.livingPool[count] = band;
+      }
+      band.from = centre - along;
+      band.to = centre + along;
+      band.left = lateral + across;
+      band.right = lateral - across;
+      band.safeSpeed = Math.max(0, pace);
+      out[count] = band;
+      count += 1;
+    }
+    out.length = count;
+    return out;
+  }
+
+  /**
+   * Where a direct chase aims to go round the living bodies standing on its
+   * way to (`aimX`, `aimZ`), left in `livingAim` (POP-1), with the sideways
+   * that still owes and the metres left to owe it in (`livingOwed`,
+   * `livingOwedIn`) for the swerve law.
+   *
+   * Every body is a box in the way's frame grown by his wheel's half-extent
+   * and `LIVING_PASS_MARGIN` — where his wheel's centre must not go. The
+   * nearest box the straight way runs into seeds a cluster, and every box
+   * touching the cluster joins it: a gap his wheel cannot take is no gap. A
+   * detour from the nearest body alone aimed him into the second of a pair
+   * standing 1.4 m apart (the QA's social pair). The cluster is gone round as
+   * one thing — out to its edge while it is ahead, past its far face once he
+   * is beside it — on a side whose leg the road's walls, the grid and every
+   * other body leave clear. The side nearer his way is preferred, the last
+   * side while that is a toss-up, and from the second back-out at one spot
+   * the other side is held. False when nothing stands on the way, what does
+   * is crossing it (the speed cap's), or neither side is clear (the cap and
+   * the bounded wait answer it).
+   */
+  private livingDetour(
+    view: CpuView,
+    aimX: number,
+    aimZ: number,
+    bodies: readonly PopulationFootprint[],
+    near: number,
+    lookahead: number,
+  ): boolean {
+    if (bodies.length === 0) return false;
+    const range = Math.hypot(aimX - view.x, aimZ - view.z);
+    if (range < 1e-3) return false;
+    const ux = (aimX - view.x) / range;
+    const uz = (aimZ - view.z) / range;
+    // Left of the way is (cos h, −sin h) for the way's heading h.
+    const lx = uz;
+    const lz = -ux;
+    const heading = Math.atan2(ux, uz);
+    const look = Math.min(range, near);
+    const growAlong = POPULATION_OCCUPANT.halfLengthMetres + LIVING_PASS_MARGIN;
+    const growAcross = POPULATION_OCCUPANT.halfWidthMetres + LIVING_PASS_MARGIN;
+    const rects = this.livingRects;
+    const members = this.livingMembers;
+    rects.length = 0;
+    members.length = 0;
+    let seed = -1;
+    let seedFace = Infinity;
+    for (const body of bodies) {
+      if (body.maxY <= view.y || body.minY >= view.y + POPULATION_OCCUPANT.heightMetres) continue;
+      const along = (body.x - view.x) * ux + (body.z - view.z) * uz;
+      const across = (body.x - view.x) * lx + (body.z - view.z) * lz;
+      const turnCos = Math.abs(Math.cos(body.headingY - heading));
+      const turnSin = Math.abs(Math.sin(body.headingY - heading));
+      const hullAlong = body.halfLengthMetres * turnCos + body.halfWidthMetres * turnSin;
+      const halfAlong = hullAlong + growAlong;
+      const halfAcross = body.halfWidthMetres * turnCos + body.halfLengthMetres * turnSin + growAcross;
+      if (along + halfAlong <= 0 || along - halfAlong > look + LIVING_CLUSTER_REACH_METRES
+        || Math.abs(across) - halfAcross > LIVING_CLUSTER_REACH_METRES) continue;
+      if (Math.abs(body.velocityX * lx + body.velocityZ * lz) > LIVING_CROSSING_SPEED) continue;
+      const index = members.length;
+      rects.push(along - halfAlong, along + halfAlong, across - halfAcross, across + halfAcross);
+      members.push(false);
+      // On the way: his straight line runs into the box short of the target,
+      // and the body itself stands short of it — one behind the rider he is
+      // closing on is not between them.
+      if (across - halfAcross < 0 && across + halfAcross > 0 && along - hullAlong < look
+        && along - halfAlong < seedFace) {
+        seed = index;
+        seedFace = along - halfAlong;
+      }
+    }
+    if (seed < 0) return false;
+    members[seed] = true;
+    let a0 = rects[4 * seed];
+    let a1 = rects[4 * seed + 1];
+    let c0 = rects[4 * seed + 2];
+    let c1 = rects[4 * seed + 3];
+    for (let grown = true; grown;) {
+      grown = false;
+      for (let index = 0; index < members.length; index += 1) {
+        const k = 4 * index;
+        if (members[index] || rects[k] >= a1 || rects[k + 1] <= a0 || rects[k + 2] >= c1 || rects[k + 3] <= c0) continue;
+        members[index] = true;
+        a0 = Math.min(a0, rects[k]);
+        a1 = Math.max(a1, rects[k + 1]);
+        c0 = Math.min(c0, rects[k + 2]);
+        c1 = Math.max(c1, rects[k + 3]);
+        grown = true;
+      }
+    }
+    const held = this.populationBackouts >= 2
+      && Math.hypot(view.x - this.populationBackoutX, view.z - this.populationBackoutZ) <= WEDGE_SAME_SPOT_METRES;
+    // The left edge is `c1`, the right `c0`: nearer his way is the smaller swerve.
+    let side: 1 | -1 = held || Math.abs(c1 + c0) < 2 * LIVING_SIDE_DEADBAND_METRES
+      ? this.livingSide
+      : c1 + c0 > 0 ? -1 : 1;
+    // Out to the cluster's edge while it is ahead — no further up the way
+    // than his lookahead, so the move is made early, as a line's offset is —
+    // then past its far face once he is beside it.
+    const legAlong = a0 > 0 ? Math.min(a0, lookahead) : a1 + LIVING_PASS_LEAD_METRES;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const edge = side === 1 ? c1 : c0;
+      let open = true;
+      for (let index = 0; index < members.length && open; index += 1) {
+        const k = 4 * index;
+        if (!members[index] && segmentMeetsBox(legAlong, edge, rects[k], rects[k + 1], rects[k + 2], rects[k + 3])) {
+          open = false;
+        }
+      }
+      const x = view.x + ux * legAlong + lx * edge;
+      const z = view.z + uz * legAlong + lz * edge;
+      if (open && this.lineClear(view.x, view.z, x, z)
+        && (this.navGrid === null || navLineClear(this.navGrid, view.x, view.z, x, z, NAV_LOS_SKIP_METRES))) {
+        this.livingSide = side;
+        this.livingAim.x = x;
+        this.livingAim.z = z;
+        // What he owes is measured from where his present course meets the
+        // near face, as a gate's is from his course: across the way by
+        // `tan` of his heading off it. Pointed well off the way, from where he is.
+        const off = wrapAngle(view.headingY - heading);
+        const course = Math.cos(off) > LIVING_COURSE_COS ? Math.max(0, a0) * Math.tan(off) : 0;
+        this.livingOwed = side === 1 ? Math.max(0, edge - course) : Math.max(0, course - edge);
+        this.livingOwedIn = Math.max(0, a0);
+        return true;
+      }
+      side = side === 1 ? -1 : 1;
+    }
+    return false;
   }
 
   private beginDetour(quarry: CpuQuarry | null, range: number, view?: CpuView, selfLateral = 0): void {
@@ -3183,6 +3612,51 @@ const STUCK_SECONDS = 1.4;
 /** How long it backs out for, seconds. */
 const STUCK_REVERSE_SECONDS = 1.0;
 /**
+ * How long he may stand still yielding to a living body before he backs out
+ * to go round it, seconds (POP-1). Waiting for someone crossing is
+ * purposeful; waiting on someone who is also waiting on him is a deadlock.
+ */
+const POPULATION_HOLD_SECONDS = 1.5;
+/** The longest he backs straight out from that body looking for a way round, seconds. */
+const POPULATION_BACKOFF_SECONDS = 3;
+/** ...at a creep, m/s: room to turn, not a retreat, and quick to leave. */
+const POPULATION_BACKOFF_SPEED = 1;
+/** Steer per radian the back-out uses to straighten his nose on the way he was going. */
+const POPULATION_BACKOFF_STEER_GAIN = 2;
+/** A living body moving across his line faster than this is the speed cap's, not a post to ride round, m/s. */
+const LIVING_CROSSING_SPEED = 0.5;
+/** Personal space a living body's band keeps beyond its hull, each side, metres. */
+const LIVING_BAND_MARGIN = 0.3;
+/**
+ * The most a line through an opening beside a living body keeps inside the
+ * opening's edge, metres: the furniture's `hazardClearanceMetres` in a body's
+ * terms (its band and `TIGHT_ROOM` are already its hull, its space and his wheel).
+ */
+const LIVING_GAP_ROOM = 0.25;
+/** Room kept between his wheel and a living body he passes in a direct chase, metres. */
+const LIVING_PASS_MARGIN = 0.4;
+/** How far past a living body a direct chase aims while going round it, metres. */
+const LIVING_PASS_LEAD_METRES = 2;
+/** Within this of his line a body's side is not a preference; the last side holds, metres. */
+const LIVING_SIDE_DEADBAND_METRES = 0.25;
+/** The nearest aim a route line takes in line with a living body close ahead: its near corner, no nearer than this, metres. */
+const LIVING_MIN_AIM_METRES = 1.5;
+/**
+ * The pace a swerve round a living body he is still in line with is floored
+ * at, m/s: slow enough that his wheel's corners clear a person's while it
+ * pivots out from close behind them, and never a stand.
+ */
+const LIVING_CREEP_SPEED = 1;
+/** A direct detour reads his course off his heading only while he points within this cosine of his way. */
+const LIVING_COURSE_COS = 0.2;
+/** How far beyond his window and either side of his way a direct detour gathers bodies for a cluster, metres. */
+const LIVING_CLUSTER_REACH_METRES = 6;
+/**
+ * Back-outs from a living body at one spot before the wait is handed to the
+ * stuck ladder: the first, then one on the other side (`livingDetour`).
+ */
+const POPULATION_BACKOUT_CYCLES = 2;
+/**
  * How long a spin escape's launch may wait to leave the ground before the
  * pending air-tap is dropped, seconds — M24. Longer than the hop compression,
  * far shorter than anything that could re-arm by accident.
@@ -3252,4 +3726,3 @@ const FIELD_ENTER_MARGIN = 2.0;
 const FIELD_EXIT_MARGIN = 0.75;
 /** The range hysteresis: engaged at the tunable range, dropped at this share over. */
 const FIELD_RANGE_EXIT_SHARE = 1.3;
-

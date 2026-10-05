@@ -108,6 +108,20 @@ function freeze(page: Page): Promise<number> {
   });
 }
 
+/**
+ * Wait for a covered world swap to hand the player back their game.
+ *
+ * 2026-10-04: an entrance that has to bring the park (the city's title entry)
+ * now swaps the world behind the shared loading cover: the state turns while
+ * the cover's warm-up and settle frames are still to run, and lifting the
+ * cover resumes the loop and clears held input (`docs/LOADING.md`). A freeze
+ * made before that is undone by it, so the run is frozen only once the cover
+ * has lifted; `route.pending` is true until then.
+ */
+async function coverLifted(page: Page): Promise<void> {
+  await page.waitForFunction(() => !window.game.snapshot().route.pending, undefined, { timeout: 60_000 });
+}
+
 /** Run the clock out without trying to earn anything. */
 async function finish(page: Page): Promise<void> {
   await page.evaluate(() => {
@@ -131,6 +145,8 @@ test('the title entry brings the park, runs a fixed clock and lands on a card', 
   await page.evaluate(() => window.game.clearRecords());
 
   await page.locator(TITLE_ENTRY).click();
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'trickRun', undefined, { timeout: 60_000 });
+  await coverLifted(page);
   const spent = await freeze(page);
   const armed = await runState(page);
   expect(armed.state, 'the title entry did not reach the mode').toBe('trickRun');
@@ -350,7 +366,8 @@ async function scoreAndFinishPartially(page: Page): Promise<void> {
 function storedBest(page: Page): Promise<number | null> {
   return page.evaluate(() => {
     const game = window.game;
-    return game.trickRecords.best(game.levelPlan.id)?.score ?? null;
+    // 2026-10-03 (LC-1): bests are filed under the engine-independent record key.
+    return game.trickRecords.best(game.levelPlan.recordWorldId!)?.score ?? null;
   });
 }
 
@@ -676,9 +693,13 @@ test('the same input script rides identically with scoring absent and present', 
       return samples;
     };
 
-    // Pass one: free ride, no scoring anywhere.
+    // Pass one: free ride, no scoring anywhere. 2026-10-05: both passes meet
+    // the same living world. A brush with the park's jogger, wherever the
+    // title had left him, bent the line by centimetres on a loaded machine;
+    // that measured the jogger, not scoring.
     game.setAppState('title');
     game.setAppState('freeRide');
+    game.restartLivingWorld();
     game.placeRider(game.levelPlan.spawn.position, game.levelPlan.spawn.headingY);
     game.advance(2);
     const absent = ride();
@@ -687,6 +708,7 @@ test('the same input script rides identically with scoring absent and present', 
     // Pass two: the same script inside a Trick Run.
     game.setAppState('title');
     game.startTrickRun();
+    game.restartLivingWorld();
     game.placeRider(game.levelPlan.spawn.position, game.levelPlan.spawn.headingY);
     game.advance(2);
     const present = ride();
@@ -1046,6 +1068,10 @@ for (const seats of [2, 3, 4]) {
       .toContainText('Switchback Park');
 
     await page.locator(COUCH_START).click();
+    // 2026-10-04: Start brings the park behind the shared cover; the room is
+    // the players' (and the clock can reach its card) once the cover lifts.
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'trickRun', undefined, { timeout: 60_000 });
+    await coverLifted(page);
     const armed = await page.evaluate(() => {
       const snap = window.game.snapshot();
       return {
@@ -1151,6 +1177,9 @@ for (const seats of [2, 3, 4] as const) {
     await page.locator(`${COUCH_MODE}[data-couch-mode="trickRun"]`).click();
     await page.locator(COUCH_START).click();
     await page.waitForFunction(() => window.game.snapshot().app.state === 'trickRun');
+    // 2026-10-04: the park arrives behind the shared cover; the deadline can
+    // only reach the card once the cover has lifted (see `coverLifted`).
+    await coverLifted(page);
     await finish(page);
     await page.waitForFunction(() => window.game.snapshot().app.state === 'results');
 

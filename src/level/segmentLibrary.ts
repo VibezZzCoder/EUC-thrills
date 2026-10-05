@@ -1,5 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import type { SurfaceId } from '../simulation/world.ts';
+import { roadConnectorMarkings } from './roadConnectorMarkings.ts';
 import type { SegmentBranch, SegmentGraph, SegmentSpec } from './segments.ts';
 import { gradientAt, placeGraph } from './segments.ts';
 import { ALLEY_ROUTE, SLICE_BEATS, SLICE_GRAPH } from './sliceLevel.ts';
@@ -102,9 +103,11 @@ export type LibraryRole =
    *
    * The one category of content M12 authors rather than inherits, and
    * `docs/PLANS.md` §10 names it as in scope ("the M7 beats plus the neutral
-   * connectors stitching requires"). A connector carries no blocks, no dressing
-   * and no paint of its own, because a connector that carried a feature would
-   * *be* a new set piece — and new set pieces are the owner's to open.
+   * connectors stitching requires"). A connector carries no blocks or dressing
+   * of its own. Owner amendment (2026-10-01, full environment overhaul): the
+   * explicit wide road family carries ordinary centre/edge traffic paint.
+   * This is road grammar, not a new set piece; path/trail/gravel/rough joins
+   * remain unmarked. Finished-ground clipping retains the original policy.
    *
    * **Hazards are exempt from that clause, by owner decision** (2026-08-09,
    * `docs/PLANS.md` §13 q10, felt on the M13 exit ride). A spill or pothole is
@@ -194,11 +197,11 @@ const MEASURED_COST: Readonly<Record<string, SegmentCost>> = {
   'alley-ledge': { cells: 256, colliders: 1, props: 3, markingQuads: 0, triangles: 832 },
   'drain-run': { cells: 1545, colliders: 0, props: 36, markingQuads: 0, triangles: 5490 },
   'terrace': { cells: 1792, colliders: 6, props: 25, markingQuads: 0, triangles: 5836 },
-  'link-road-straight': { cells: 1728, colliders: 0, props: 0, markingQuads: 0, triangles: 3456 },
-  'link-road-bend-left': { cells: 1968, colliders: 0, props: 0, markingQuads: 0, triangles: 3936 },
-  'link-road-bend-right': { cells: 1904, colliders: 0, props: 0, markingQuads: 0, triangles: 3808 },
-  'link-road-rise': { cells: 2016, colliders: 0, props: 0, markingQuads: 0, triangles: 4032 },
-  'link-road-fall': { cells: 2016, colliders: 0, props: 0, markingQuads: 0, triangles: 4032 },
+  'link-road-straight': { cells: 1728, colliders: 0, props: 0, markingQuads: 82, triangles: 3620 },
+  'link-road-bend-left': { cells: 1968, colliders: 0, props: 0, markingQuads: 79, triangles: 4094 },
+  'link-road-bend-right': { cells: 1904, colliders: 0, props: 0, markingQuads: 79, triangles: 3966 },
+  'link-road-rise': { cells: 2016, colliders: 0, props: 0, markingQuads: 82, triangles: 4196 },
+  'link-road-fall': { cells: 2016, colliders: 0, props: 0, markingQuads: 82, triangles: 4196 },
   'link-path-straight': { cells: 1152, colliders: 0, props: 0, markingQuads: 0, triangles: 2304 },
   'link-path-bend-left': { cells: 1088, colliders: 0, props: 0, markingQuads: 0, triangles: 2176 },
   'link-path-bend-right': { cells: 960, colliders: 0, props: 0, markingQuads: 0, triangles: 1920 },
@@ -259,15 +262,17 @@ function link(
   length: number,
   extra: Partial<SegmentSpec> = {},
 ): SegmentSpec {
-  return { id, length, ...CONNECTOR_FAMILIES[family], ...extra };
+  return { id, length, ...CONNECTOR_FAMILIES[family],
+    ...(family === 'road' ? { markings: roadConnectorMarkings(length, CONNECTOR_FAMILIES.road.halfWidth) } : {}),
+    ...extra };
 }
 
 /**
  * Neutral joins, and nothing else.
  *
- * No blocks, no dressing, no markings. A connector exists so the generator can
- * change heading or elevation between two beats without inventing a set piece,
- * and the moment one carries a feature it *is* a set piece. Elevation is eased
+ * No blocks or dressing. The wide road family continues existing traffic
+ * paint; other families remain unmarked. A connector changes heading or
+ * elevation between beats without inventing a set piece. Elevation is eased
  * rather than linear, so both sockets stay flat and a connector composes with
  * anything of its own family.
  */

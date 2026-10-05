@@ -64,6 +64,13 @@ export interface GroundSample {
   normal: Vec3;
   surface: SurfaceId;
   /**
+   * What the wheel rides on when it differs from `surface` (a grip-only cell,
+   * `Heightfield.traction`); undefined everywhere else. Grip, rolling
+   * resistance and roughness read `traction ?? surface`; what is drawn, heard
+   * and thrown up stays `surface`.
+   */
+  traction?: SurfaceId | undefined;
+  /**
    * True when the point is off the authored heightfield, on the surround.
    *
    * Not an error and not a fallback: the surround is real ground with a real
@@ -88,6 +95,7 @@ export function createGroundSample(): GroundSample {
     height: 0,
     normal: { x: 0, y: 1, z: 0 },
     surface: 'pavement',
+    traction: undefined,
     offCourse: false,
   };
 }
@@ -99,6 +107,7 @@ export function copyGroundSample(from: GroundSample, to: GroundSample): void {
   to.normal.y = from.normal.y;
   to.normal.z = from.normal.z;
   to.surface = from.surface;
+  to.traction = from.traction;
   to.offCourse = from.offCourse;
 }
 
@@ -110,6 +119,25 @@ export function copyGroundSample(from: GroundSample, to: GroundSample): void {
  * it is also how the chase camera's obstruction pull-in was proven at M3
  * before any level had geometry to fire it.
  */
+/** A closed XZ window, metres. Certifying it covers its ENTIRE interior/boundary. */
+export interface GroundSupportWindow {
+  readonly minX: number; readonly maxX: number;
+  readonly minZ: number; readonly maxZ: number;
+}
+/** Geometry only: surface labels/grip and discrete hazard reactions are unchanged.
+ * A flat result proves every native height/normal winner throughout the window
+ * is this same horizontal plane, with no touching authored hazard. */
+export interface GroundSupportWindowResult {
+  readonly status: 'flat' | 'unsupported' | 'overflow';
+  readonly reason: string;
+  readonly height?: number;
+  readonly bounds: GroundSupportWindow;
+  readonly fieldCells: number;
+  readonly gridCells: number;
+  readonly colliderReferences: number;
+  readonly hazardReferences: number;
+}
+
 export interface TerrainSampler {
   /**
    * Ground directly below a world position, written into `out`.
@@ -118,6 +146,10 @@ export interface TerrainSampler {
    * caller's and is reused; nothing may hold on to it across a step.
    */
   sampleGround(x: number, z: number, out: GroundSample): GroundSample;
+  /** Optional, sampler-owned whole-source proof; absence is UNKNOWN, not flat.
+   * Returns detached immutable plain data, never a mutable probe/closure.
+   * This is an observer capability, not a replacement for native point queries. */
+  certifyFlatSupportWindow?(window: GroundSupportWindow): GroundSupportWindowResult;
   /**
    * Distance along a ray until it meets solid geometry, or null if it does not
    * within `maxDistance`. Used by the kerb feeler and by camera obstruction.

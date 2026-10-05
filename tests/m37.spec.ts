@@ -1451,8 +1451,10 @@ test('the room a solo rider is in still has nobody to hit', async ({ page }) => 
  */
 const RECORDS_KEY = `${STORAGE_PREFIX}${KNOCKABOUT_RECORDS_KEY}`;
 
-/** What `level=generated&seed=route-41` builds, asserted rather than assumed. */
-const BRAWL_LEVEL_ID = `generated-r6-${BRAWL_SEED}`;
+/** What `level=generated&seed=route-41` builds, asserted rather than assumed.
+ * 2026-10-03 (LC-1): bests are filed under the engine-independent record key,
+ * the builder's id plus the record revision once the town is populated. */
+const BRAWL_LEVEL_ID = `generated-r6-${BRAWL_SEED}~living-r1`;
 
 /** A solo personal best that is already on the machine when the room boots. */
 const PRELOADED_BEST = {
@@ -1568,7 +1570,7 @@ for (const seats of [2, 3, 4] as const) {
       game.advance(2);
       const snapshot = game.snapshot();
       return {
-        levelId: game.levelPlan.id,
+        levelId: game.levelPlan.recordWorldId,
         struck: snapshot.targets.struck,
         total: snapshot.targets.total,
         best: snapshot.targets.best,
@@ -2165,6 +2167,11 @@ for (const seats of [2, 3, 4]) {
       await page.waitForFunction(() => window.game.snapshot().app.state === 'paused');
       await page.locator('[data-menu="pause-couch"] [data-couch-mode="knockabout"]').click();
       await page.waitForFunction(() => window.game.snapshot().app.state === 'knockabout');
+      // 2026-10-04: a fresh course is built behind the shared loading cover,
+      // and the state turns before the cover's warm-up and settle frames have
+      // run; freezing the loop then would keep the cover up and refuse every
+      // seat's input (the pause below never lands). Wait for the player's turn.
+      await page.waitForFunction(() => !window.game.snapshot().route.pending, undefined, { timeout: 60_000 });
       const started = await page.evaluate(() => {
         const game = window.game;
         game.loop.setRunning(false);
@@ -5125,13 +5132,21 @@ for (const seats of [3, 4] as const) {
   });
 }
 
-// Automatic mode-course requests must remain transactional and cancellable.
+// Automatic mode-course requests must remain transactional.
+//
+// 2026-10-04: a mode course is now built behind the shared loading cover
+// (`docs/LOADING.md`), which owns input until the new world is drawn — the
+// contract `tests/m12.spec.ts` re-pinned for a route asked for behind the
+// cover. The same-turn exit press that used to cancel the request no longer
+// reaches the pause card: it is refused rather than half-applied, another
+// device still cannot replace the pending choice, and the requested course
+// lands for the whole room. The transactional claim is what is kept.
 for (const exit of ['resume', 'settings', 'quit'] as const) {
-  test(`leaving via ${exit} cancels a pending mode course`, async ({ page }) => {
+  test(`a ${exit} press behind the cover neither cancels nor half-applies a pending mode course`, async ({ page }) => {
     const errors = collectErrors(page);
     // The hand-authored city by name (M39 QA): these were written when a bare
     // boot opened it. It has nothing to knock down, so Knockabout requests a
-    // mode course, and cancelling one on the city leaves the status idle.
+    // mode course.
     await sitDown(page, 4, 'level=slice');
     await page.locator(COUCH_START).click();
     await page.keyboard.press('Escape');
@@ -5145,18 +5160,30 @@ for (const exit of ['resume', 'settings', 'quit'] as const) {
       game.switchCouchRide('race'); // another device cannot replace the pending choice
       const stillPaused = game.snapshot().app.state;
       document.querySelector<HTMLButtonElement>(`.euc-menu--pause [data-menu="${action}"]`)!.click();
-      return { before, requested, stillPaused, pending: game.snapshot().route.pending, status: game.snapshot().route.status };
+      return { before, requested, stillPaused, afterExit: game.snapshot().app.state,
+        pending: game.snapshot().route.pending };
     }, exit);
     expect(during.requested).toBe(true);
     expect(during.stillPaused).toBe('paused');
-    expect(during.pending).toBe(false);
-    expect(during.status).toBe('idle');
-    await page.evaluate(async () => {
-      for (let i = 0; i < 4; i += 1) await new Promise(requestAnimationFrame);
+    // Refused behind the cover, not half-applied: still paused, still pending.
+    expect(during.afterExit).toBe('paused');
+    expect(during.pending).toBe(true);
+    // ...and the refusal is the cover's: it is on screen while it refuses and
+    // gone once the course lands, as tests/m12.spec.ts pins. A pause card that
+    // ignored the press with no cover up would fail here (review g3).
+    await expect(page.locator('#boot')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.game.snapshot().route.pending), { timeout: 90_000 })
+      .toBe(false);
+    await expect(page.locator('#boot')).toBeHidden();
+    const landed = await page.evaluate(() => {
+      const snap = window.game.snapshot();
+      return { state: snap.app.state, world: snap.world, ride: snap.couch.ride,
+        seats: window.game.seatCount, devices: snap.input.devices.filter((device) => device !== null).length };
     });
-    expect(await page.evaluate(() => window.game.snapshot().world)).toEqual(during.before);
-    expect(await page.evaluate(() => window.game.snapshot().app.state))
-      .toBe(exit === 'resume' ? 'freeRide' : exit === 'quit' ? 'title' : 'settings');
+    // The whole room arrives on the course it asked for, and nobody went home.
+    expect(landed).toMatchObject({ state: 'knockabout', ride: 'knockabout', seats: 4, devices: 4 });
+    expect(landed.world).toMatchObject({ levelId: 'generated', generated: true });
+    expect(landed.world).not.toEqual(during.before);
     expect(errors).toEqual([]);
   });
 }
@@ -5190,6 +5217,23 @@ test('a mode course that cannot fit the room leaves it intact and can be retried
   expect(errors).toEqual([]);
 });
 
+/**
+ * 2026-10-04: wait for a covered world swap to hand the room back, and hold
+ * the clock on that first frame. A fresh course and the way back to a venue
+ * are now built behind the shared loading cover (`docs/LOADING.md`); lifting
+ * it resumes the loop, so a count that starts with the new world would run on
+ * live while the next read crossed the protocol. The predicate runs on every
+ * animation frame and freezes the frame the cover lifts on, which is the
+ * moment the old synchronous swap used to hand back.
+ */
+async function frozenWhenCoverLifts(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
+    if (window.game.snapshot().route.pending) return false;
+    window.game.loop.setRunning(false);
+    return true;
+  }, undefined, { timeout: 60_000 });
+}
+
 for (const venue of ['track', 'switchback']) {
   test(`four-player ${venue} race results can start Knockabout and return to race`, async ({ page }) => {
     const errors = collectErrors(page);
@@ -5215,12 +5259,18 @@ for (const venue of ['track', 'switchback']) {
     await page.waitForFunction(() => window.game.snapshot().app.state === 'results');
     await page.locator('[data-menu="results-couch"] [data-couch-mode="knockabout"]').click();
     await page.waitForFunction(() => window.game.snapshot().app.state === 'knockabout');
+    // 2026-10-04: the fresh course and the way back to the venue are both built
+    // behind the shared loading cover; each press is the room's again only once
+    // its cover has lifted (a pause made under it is undone when it lifts).
+    await frozenWhenCoverLifts(page);
     const fight = await page.evaluate(() => ({ world: window.game.snapshot().world.levelId,
       race: window.game.snapshot().race.phase, devices: window.game.snapshot().input.devices,
       match: window.game.snapshot().match.phase }));
     expect(fight).toEqual({ world: 'generated', race: 'idle', devices, match: 'countdown' });
     await pauseFromSeat(page, 2);
     await page.locator('[data-menu="pause-couch"] [data-couch-mode="race"]').click();
+    await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay', undefined, { timeout: 60_000 });
+    await frozenWhenCoverLifts(page);
     expect(await page.evaluate(() => ({ state: window.game.snapshot().app.state,
       race: window.game.snapshot().race.phase, match: window.game.snapshot().match.phase,
       seats: window.game.seatCount, lap: window.game.levelPlan.lap !== undefined })))

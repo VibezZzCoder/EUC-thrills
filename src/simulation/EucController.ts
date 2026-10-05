@@ -1,9 +1,12 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { EUC, PHYSICS, SIMULATION, TERRAIN, WHEEL } from '../data/tuning.ts';
+import { proposeRiderPhaseSideProjection, proposeWheelClearOfBodies, proposeWheelSideProjection, type FullRagSideProjection } from '../shared/riderSideContact.ts';
+import type { PopulationFootprint } from './population.ts';
+import { EUC, PHYSICS, SIMULATION, TERRAIN, WHEEL, POPULATION, POPULATION_CONTACT, RIDER_CONTACT } from '../data/tuning.ts';
 import { SURFACES, SURFACE_IDS } from '../data/surfaces.ts';
 import { SOBER_STYLE, type RideStyle } from '../data/rideStyles.ts';
 import type { ActionSnapshot } from '../input/actions.ts';
 import { approach, clamp, clamp01, lerp } from '../shared/maths.ts';
+import type { RiderOccupancyPose } from '../shared/riderOccupancy.ts';
 import { roughnessAt } from './roughness.ts';
 import { HazardField, NO_HAZARDS } from './hazards.ts';
 import { CrashRagdoll, RAGDOLL_FLOATS } from './ragdoll.ts';
@@ -222,6 +225,290 @@ export interface SurfaceResponse {
 }
 
 export type SurfaceResponses = Record<SurfaceId, SurfaceResponse>;
+
+/** Plain physical prism supplied to a dynamic-world query, never a render rig. */
+export interface EucDynamicBody {
+  readonly x: number;
+  readonly z: number;
+  readonly headingY: number;
+  readonly minY: number;
+  readonly maxY: number;
+  readonly halfWidthMetres: number;
+  readonly halfLengthMetres: number;
+  readonly velocityX: number;
+  readonly velocityZ: number;
+}
+
+/** One statically legal movement candidate, queried before its commit. */
+export interface EucDynamicMotionRequest {
+  readonly kind: 'move' | 'standoff';
+  readonly dt: number;
+  readonly previous: EucDynamicBody;
+  readonly proposed: EucDynamicBody;
+  readonly airborne: boolean;
+  readonly crashing: boolean;
+}
+
+export interface EucDynamicMotionResult {
+  /** Prefix of the requested sweep which is physically clear, in [0, 1]. */
+  readonly allowedMoveFraction: number;
+  /** Unit outward normal from the obstacle toward this rider. */
+  readonly normalX: number;
+  readonly normalZ: number;
+  readonly closingSpeedMetresPerSecond: number;
+  /** Pair history may suppress punishment while preserving physical blocking. */
+  readonly chargeImpact?: boolean;
+}
+
+export interface EucPlacementRequest {
+  readonly reason: 'construct' | 'reset' | 'recover';
+  readonly body: EucDynamicBody;
+  /** Detached exact mounted geometry at the prospective/accepted destination. */
+  readonly occupancyPose: RiderOccupancyPose;
+  readonly initialSpeedMetresPerSecond: number;
+  /** The identity this placement will have if accepted, or has after commit. */
+  readonly discontinuitySerial: number;
+}
+
+/** One exact native late reaction, privately evaluated before any live mutation. */
+export interface EucPhysicalReactionRequest {
+  readonly kind: 'separate' | 'bump' | 'softKnock' | 'hardKnock' | 'contactYield' | 'contactInput' | 'contactSettle' | 'contactClock';
+  readonly previous: RiderOccupancyPose;
+  readonly proposed: RiderOccupancyPose;
+}
+
+/**
+ * Why a sealed whole step was refused, with the earliest refusing contact when
+ * one was found (2026-10-03). The normal follows `EucDynamicMotionResult`
+ * (from the actor toward this rider), and is zero when none was found.
+ */
+export interface EucHeldPhysicalContact {
+  readonly reason: 'contact' | 'conditioning' | 'placement';
+  readonly occupantKind: 'human' | 'cop';
+  readonly normalX: number;
+  readonly normalZ: number;
+  /** The refinement work bound stopped the proof: nothing was proved touching (CP-1). */
+  readonly pending: boolean;
+  /** A proved meeting this rider's own travel reached, published to the actor (POP-3). */
+  readonly met: boolean;
+  /** The separating face's normal at the meeting, actor toward rider (2026-10-04):
+   * what a slide keeps to, as admission judges it. Defaults to the normal. */
+  readonly faceX?: number;
+  readonly faceZ?: number;
+}
+
+/** The historic response: a zero-speed yield with no contact evidence. */
+const HELD_CONTACT_YIELD: EucHeldPhysicalContact = Object.freeze({ reason: 'contact', occupantKind: 'cop',
+  normalX: 0, normalZ: 0, pending: false, met: false });
+
+/** Caller-owned physical world; no options, mode, renderer or terrain mutation. */
+export interface EucDynamicWorld {
+  readonly ragObstacles?: readonly PopulationFootprint[];
+  /** Read the actual currently sealed NPC epoch for late native contact. */
+  readonly ragObstacleBodies?: () => readonly PopulationFootprint[];
+  readonly hull: {
+    readonly halfWidthMetres: number;
+    readonly halfLengthMetres: number;
+    readonly heightMetres: number;
+  };
+  /** Pure preview. The shared population consumes its contact edges separately. */
+  readonly resolveMotion?: (request: EucDynamicMotionRequest) => EucDynamicMotionResult | null;
+  /** False refuses a placement atomically; automatic recovery retries next step. */
+  readonly canPlace?: (request: EucPlacementRequest) => boolean;
+  /** Pure compact occupancy admission for late physical reactions; false keeps the exact start. */
+  readonly canReact?: (request: EucPhysicalReactionRequest) => boolean;
+  /** Called only after successful placement; reservation writes belong here. */
+  readonly didPlace?: (request: EucPlacementRequest) => void;
+  /** Whose body this is: a human rider flown into a person or car at
+   * obstacle speed crashes there, as at a wall (review r3); a cop, or a
+   * caller that does not say, keeps the side stop. */
+  readonly occupantKind?: 'human' | 'cop';
+}
+
+/**
+ * One captured fixed step. Requests are detached, frozen physical candidates;
+ * this token never exposes the working controller or a live mutable body.
+ * Resolve may be repeated while a batch settles. Only a resolved token commits.
+ */
+export interface EucPreparedStep {
+  readonly motionRequests: readonly EucDynamicMotionRequest[];
+  readonly placementRequests: readonly EucPlacementRequest[];
+  readonly resolvedMotionRequests: readonly EucDynamicMotionRequest[];
+  readonly resolvedPlacementRequests: readonly EucPlacementRequest[];
+  readonly dynamicMotionIntent: EucDynamicMotionRequest | null;
+  readonly placementBlocked: boolean;
+  readonly discontinuitySerial: number;
+  readonly ready: boolean;
+  /** This token refused its whole fixed step and retains the untouched start geometry. */
+  readonly held: boolean;
+}
+
+interface PreparedControllerStep {
+  owner: EucController;
+  token: EucPreparedStep;
+  revision: number;
+  dt: number;
+  actions: ActionSnapshot;
+  motionRequests: readonly EucDynamicMotionRequest[];
+  placementRequests: readonly EucPlacementRequest[];
+  resolvedMotionRequests: readonly EucDynamicMotionRequest[];
+  resolvedPlacementRequests: readonly EucPlacementRequest[];
+  intent: EucDynamicMotionRequest | null;
+  placementBlocked: boolean;
+  discontinuitySerial: number;
+  ready: boolean;
+  held: boolean;
+  committed: boolean;
+  published: boolean;
+  contactResponded: boolean;
+  notifications: EucPlacementRequest[];
+  didPlace: EucDynamicWorld['didPlace'];
+}
+
+const PREPARED_CONTROLLER_STEPS = new WeakMap<EucPreparedStep, PreparedControllerStep>();
+
+// These references have explicit copy/share rules below. Everything else is a
+// primitive state field, discovered once, so a new clock/latch cannot silently
+// disappear from the transaction. An unclassified mutable reference refuses.
+const STEP_REFERENCE_FIELDS = new Set([
+  'tuning', 'surfaces', 'sampler', 'spawn', 'dynamicWorld', 'dynamicPrevious',
+  'dynamicIntent', 'style', 'ground', 'probe', 'obstacleHit', 'standoffOrigin',
+  'standoffRay', 'hazards', 'softBodies', 'ragdoll', 'workingController',
+  'activePreparedStep', 'stateRevision', 'collectingNeutralStep', 'reactionController', 'safeRing',
+]);
+let stepPrimitiveFields: readonly string[] | undefined;
+
+/** Native snapped tilt target shared by destination requests and actual integration. */
+function groundTiltTarget(normal: Vec3, headingY: number, t: EucTuning): { pitch: number; roll: number } {
+  const cos = Math.cos(headingY);
+  const sin = Math.sin(headingY);
+
+  // The normal in the heading's own frame. A yaw of -heading, applied to the
+  // world normal.
+  const localX = cos * normal.x - sin * normal.z;
+  const localZ = sin * normal.x + cos * normal.z;
+
+  // Solving `Rz(roll) * Rx(pitch) * up = n` gives these two directly, which
+  // is why the pose carries rig rotations rather than a slope angle: the sign
+  // is derived once, here, instead of being guessed at the renderer.
+  //
+  // The follow fractions then decide how much of the surface's tilt the rig
+  // actually adopts — near zero, after the owner's M4 ride. An EUC is not a
+  // skateboard: the firmware holds the pedals level with *gravity*, so on a
+  // hill the machine stays plumb and the rider leans into the slope
+  // (`slopeLean`, above) instead of the whole rig lying back with the
+  // ground. The full derivation is kept because the fractions are live on F4
+  // and because a fraction of a correctly-signed angle is still correctly
+  // signed.
+  const targetPitch = clamp(
+    Math.asin(clamp(localZ, -1, 1)),
+    -t.maxGroundTilt,
+    t.maxGroundTilt,
+  ) * t.groundTiltPitchFollow;
+  const targetRoll = clamp(
+    Math.atan2(-localX, Math.max(1e-4, normal.y)),
+    -t.maxGroundTilt,
+    t.maxGroundTilt,
+  ) * t.groundTiltRollFollow;
+
+  return { pitch: targetPitch, roll: targetRoll };
+}
+
+/**
+ * Travel too nearly into a contact to slide along it (2026-10-04): under a
+ * millimetre sideways, or within `slideHeadOnShare` of straight in. Wedged
+ * between someone and a wall, a sliver of sideways travel let the standoff
+ * rock the rider back and forth in place.
+ */
+function headOnTravel(tangent: number, length: number): boolean {
+  return tangent < Math.max(POPULATION_CONTACT.slideMinimumMetres, POPULATION_CONTACT.slideHeadOnShare * length);
+}
+
+/** Set bits of a 30-bit hold-window mask. */
+function heldStepCount(mask: number): number {
+  let count = 0;
+  for (let value = mask; value !== 0; value &= value - 1) count += 1;
+  return count;
+}
+
+function detachedMotion(request: EucDynamicMotionRequest): EucDynamicMotionRequest {
+  return Object.freeze({ ...request, previous: Object.freeze({ ...request.previous }),
+    proposed: Object.freeze({ ...request.proposed }) });
+}
+
+/** Plain owned occupancy values, including a frozen independent particle block. */
+function detachedOccupancyPose(pose: RiderOccupancyPose): RiderOccupancyPose {
+  return Object.freeze({
+    x: pose.x, y: pose.y, z: pose.z,
+    headingY: pose.headingY, groundPitch: pose.groundPitch, groundRoll: pose.groundRoll,
+    wheelPitch: pose.wheelPitch, rollAngle: pose.rollAngle, riderRoll: pose.riderRoll,
+    riderPitch: pose.riderPitch, riderTurnTwist: pose.riderTurnTwist, technicalTurn: pose.technicalTurn,
+    suspensionOffset: pose.suspensionOffset, restFactor: pose.restFactor, reverseBlend: pose.reverseBlend,
+    crouch: pose.crouch, tuck: pose.tuck, attack: pose.attack,
+    carveStance: pose.carveStance, airBlend: pose.airBlend, airHeight: pose.airHeight,
+    wobbleYaw: pose.wobbleYaw, wobbleRoll: pose.wobbleRoll, wobbleFight: pose.wobbleFight,
+    wobbleFootCorrection: pose.wobbleFootCorrection, wobbleSway: pose.wobbleSway, pedalStrike: pose.pedalStrike,
+    styleYaw: pose.styleYaw, styleRoll: pose.styleRoll, styleSway: pose.styleSway,
+    crashBlend: pose.crashBlend, crashLateral: pose.crashLateral, crashForward: pose.crashForward,
+    crashDrop: pose.crashDrop, crashTumble: pose.crashTumble, crashRoll: pose.crashRoll,
+    wheelCrashSpin: pose.wheelCrashSpin, wheelCrashLean: pose.wheelCrashLean, wheelCrashPop: pose.wheelCrashPop,
+    ragdollBlend: pose.ragdollBlend,
+    ragdoll: Object.freeze(Array.from(pose.ragdoll)),
+  });
+}
+
+function detachedPlacement(request: EucPlacementRequest): EucPlacementRequest {
+  return Object.freeze({ ...request, body: Object.freeze({ ...request.body }),
+    occupancyPose: detachedOccupancyPose(request.occupancyPose) });
+}
+
+function sameFlatRecord(a: object, b: object): boolean {
+  const left = a as Record<string, unknown>, right = b as Record<string, unknown>;
+  const keys = Object.keys(left), other = Object.keys(right);
+  if (keys.length !== other.length) return false;
+  // The usual case, the same keys in the same order: Object.values lists the
+  // same properties in that order, which reads ~200 values without a keyed
+  // lookup each (PERF-R2-1, 2026-10-04). Any other order compares by key.
+  let same = 0;
+  while (same < keys.length && keys[same] === other[same]) same += 1;
+  if (same === keys.length) {
+    const values = Object.values(left), others = Object.values(right);
+    for (let index = 0; index < values.length; index += 1) if (!Object.is(values[index], others[index])) return false;
+    return true;
+  }
+  // A plain loop, not every(): no per-call closure on this per-transaction check.
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (!Object.hasOwn(right, key) || !Object.is(left[key], right[key])) return false;
+  }
+  return true;
+}
+
+function copyFlatRecord(from: object, to: object): void {
+  const target = to as Record<string, unknown>;
+  for (const key of Object.keys(target)) if (!Object.hasOwn(from, key)) delete target[key];
+  Object.assign(to, from);
+}
+
+/**
+ * `setTuning`, `setSurfaceResponse` and `setRideStyle` each advance this epoch
+ * (PERF-R2-1, 2026-10-04). One epoch for every controller, so a record shared
+ * by two controllers cannot go stale unseen. A scratch controller records the
+ * source and epoch its configuration last matched. Within that epoch its copy
+ * only reads (a third of the writes' cost), which still finds a direct field
+ * write made between steps, and the candidate's birth check trusts the epoch.
+ * Commit and the reaction and settlement guards compare every field.
+ */
+let configurationEpoch = 0;
+const CONFIGURATION_COPIES = new WeakMap<EucController, { source: EucController; epoch: number }>();
+
+interface EucDynamicMove {
+  deltaX: number;
+  deltaZ: number;
+  excess: number;
+  fraction: number;
+  blocked: boolean;
+}
 
 export function defaultSurfaceResponses(): SurfaceResponses {
   const table = {} as SurfaceResponses;
@@ -1535,8 +1822,25 @@ export class EucController {
   readonly tuning: EucTuning;
   readonly surfaces: SurfaceResponses;
 
+  private workingController: EucController | null = null;
+  /** Separate scratch never overwrites a still-live prepared-step candidate. */
+  private reactionController: EucController | null = null;
+  private activePreparedStep: PreparedControllerStep | null = null;
+  private stateRevision = 0;
+  private collectingNeutralStep = false;
+
   private readonly sampler: TerrainSampler;
   private spawn: Spawn;
+  private dynamicWorld: EucDynamicWorld | undefined;
+  private dynamicPrevious: EucDynamicBody | null = null;
+  private dynamicIntent: EucDynamicMotionRequest | null = null;
+  private dynamicImpactSpeed = 0;
+  private dynamicImpactNormalX = 0;
+  private dynamicImpactNormalZ = 0;
+  private dynamicSpinApplied = 0;
+  private dynamicStyleHeadingPrevious = 0;
+  private placementSerial = 0;
+  private dynamicPlacementBlocked = false;
   /** M29 — the seat's ride style. `SOBER_STYLE` until the composition root says otherwise. */
   private style: RideStyle = SOBER_STYLE;
 
@@ -1594,6 +1898,8 @@ export class EucController {
   private reversing = false;
   /** Seconds of held lean-back at a near standstill. Arms `reversing`. */
   private reverseHold = 0;
+  /** Explicit native stopped-contact policy; only load tilt/look-behind updates are held. */
+  private contactBrakingConstraint = false;
   /**
    * The backwards-riding stance blend, 0..1. Presentation only: the shoulder
    * check during the dwell and the held look-behind while reversing. See
@@ -1608,6 +1914,8 @@ export class EucController {
 
   private grounded = true;
   private surface: SurfaceId = 'pavement';
+  /** What grip, rolling resistance and roughness answer to (`GroundSample.traction`). */
+  private traction: SurfaceId = 'pavement';
   private state: EucState = 'mounted';
 
   /**
@@ -1924,6 +2232,25 @@ export class EucController {
   private safeZ = 0;
   private safeHeading = 0;
   private safeHold = 0;
+  /**
+   * Older validated safe points, at least `recoveryRingSpacingMetres` apart,
+   * as x/z/heading triples (CP-3, 2026-10-03). A recovery the living world
+   * refuses at the newest point falls back through these, newest first.
+   */
+  private readonly safeRing = new Float64Array(3 * POPULATION_CONTACT.recoveryRingPoints);
+  private safeRingCount = 0;
+  private safeRingNext = 0;
+  /** Seconds this crash's automatic recovery has been refused by placement. */
+  private recoveryRefusedSeconds = 0;
+  /**
+   * The held-contact watchdog (CP-1/CP-2, 2026-10-03; R2C-6, 2026-10-04): which
+   * of the last 60 fixed steps (half a second) this rider spent held without
+   * progress, as two 30-bit masks, newest in bit 0. A sliding window rather
+   * than a run that any progress clears, so alternating hold/advance cannot
+   * play a fall or a ride in slow motion. A crashed body is never held.
+   */
+  private contactHoldMask = 0;
+  private contactHoldMaskOlder = 0;
 
   constructor(
     sampler: TerrainSampler,
@@ -1960,6 +2287,8 @@ export class EucController {
        * over, and the default keeps every headless world foliage-free.
        */
       softBodies?: SoftBodyField;
+      /** One shared physical population, provided by the composition root. */
+      dynamicWorld?: EucDynamicWorld;
     } = {},
   ) {
     this.sampler = sampler;
@@ -1968,7 +2297,329 @@ export class EucController {
     this.spawn = options.spawn ?? { position: { x: 0, y: 0, z: 0 }, headingY: 0 };
     this.hazards = options.hazards ?? NO_HAZARDS;
     this.softBodies = options.softBodies ?? NO_SOFT_BODIES;
-    this.reset();
+    this.setDynamicWorld(options.dynamicWorld);
+    if (!this.reset()) throw new Error('EUC initial placement is blocked by the dynamic world');
+  }
+
+  /**
+   * Run a neutral, statically legal candidate on bounded private storage. The
+   * world's query data is shared; controller state and ragdoll arrays are not.
+   * No caller query or placement notification runs during this preparation.
+   */
+  prepareStep(dt: number, actions: ActionSnapshot): EucPreparedStep {
+    if (!Number.isFinite(dt) || dt < 0) throw new RangeError('EUC prepared step needs a finite nonnegative dt');
+    this.invalidatePreparedStep();
+    let working = this.workingController;
+    if (!working) {
+      working = new EucController(this.sampler, { hazards: this.hazards, softBodies: this.softBodies });
+      working.style = { ...this.style };
+      this.workingController = working;
+    }
+    working.copyStepConfigurationFrom(this);
+    working.copyMutableStateFrom(this);
+    const record: PreparedControllerStep = {
+      owner: this, token: undefined as unknown as EucPreparedStep,
+      revision: this.stateRevision, dt, actions: Object.freeze({ ...actions }),
+      motionRequests: [], placementRequests: [], resolvedMotionRequests: [], resolvedPlacementRequests: [],
+      intent: null, placementBlocked: false, discontinuitySerial: this.placementSerial,
+      ready: false, held: false, committed: false, published: false, contactResponded: false, notifications: [], didPlace: undefined,
+    };
+    const token: EucPreparedStep = Object.freeze({
+      get motionRequests() { return record.motionRequests; },
+      get placementRequests() { return record.placementRequests; },
+      get resolvedMotionRequests() { return record.resolvedMotionRequests; },
+      get resolvedPlacementRequests() { return record.resolvedPlacementRequests; },
+      get dynamicMotionIntent() { return record.intent; },
+      get placementBlocked() { return record.placementBlocked; },
+      get discontinuitySerial() { return record.discontinuitySerial; },
+      get ready() { return record.ready; },
+      get held() { return record.held; },
+    });
+    record.token = token;
+    PREPARED_CONTROLLER_STEPS.set(token, record);
+    this.activePreparedStep = record;
+    const motions: EucDynamicMotionRequest[] = [], placements: EucPlacementRequest[] = [];
+    working.dynamicWorld = this.dynamicWorld ? {
+      hull: { ...this.dynamicWorld.hull },
+      resolveMotion: (request) => { motions.push(detachedMotion(request)); return null; },
+      canPlace: (request) => { placements.push(detachedPlacement(request)); return true; },
+    } : undefined;
+    working.collectingNeutralStep = true;
+    try {
+      working.step(dt, record.actions);
+      this.requirePreparedStep(token, 'epoch');
+      record.motionRequests = Object.freeze(motions);
+      record.placementRequests = Object.freeze(placements);
+      this.capturePreparedFacts(record, working);
+    } catch (error) {
+      this.activePreparedStep = null;
+      throw error;
+    } finally {
+      working.collectingNeutralStep = false;
+    }
+    return token;
+  }
+
+  /** Restore the untouched start and replay the existing funnel with final contacts. */
+  resolvePreparedStep(token: EucPreparedStep, world: EucDynamicWorld | undefined = this.dynamicWorld): void {
+    const record = this.requirePreparedStep(token);
+    if (record.held) throw new Error('EUC held prepared step cannot resume within its fixed tick');
+    record.ready = false;
+    this.validateDynamicWorld(world);
+    const working = this.workingController!;
+    working.copyMutableStateFrom(this);
+    record.notifications.length = 0;
+    record.didPlace = world?.didPlace;
+    const motions: EucDynamicMotionRequest[] = [], placements: EucPlacementRequest[] = [];
+    working.dynamicWorld = world ? {
+      hull: { ...world.hull }, ragObstacles: world.ragObstacles, ragObstacleBodies: world.ragObstacleBodies, occupantKind: world.occupantKind,
+      resolveMotion: world.resolveMotion ? (request) => {
+        const detached = detachedMotion(request);
+        motions.push(detached);
+        const result = world.resolveMotion!(detached);
+        // Standoff follows the final held population. It is a correction phase,
+        // and cannot mint a second impact charge for the main movement.
+        return result && request.kind === 'standoff' ? { ...result, chargeImpact: false } : result;
+      } : undefined,
+      canPlace: world.canPlace ? (request) => {
+        const detached = detachedPlacement(request);
+        placements.push(detached);
+        return world.canPlace!(detached);
+      } : undefined,
+      didPlace: (request) => {
+        const detached = detachedPlacement(request);
+        if (!world.canPlace) placements.push(detached);
+        record.notifications.push(detached);
+      },
+    } : undefined;
+    working.step(record.dt, record.actions);
+    this.requirePreparedStep(token);
+    record.resolvedMotionRequests = Object.freeze(motions);
+    record.resolvedPlacementRequests = Object.freeze(placements);
+    this.capturePreparedFacts(record, working);
+    record.ready = true;
+  }
+
+  /**
+   * Refuse the whole candidate inside the existing private transaction.
+   * Restore the exact start geometry, clocks and rag Verlet history; integrate
+   * no part of this tick and publish no discarded query/placement journal.
+   * Per-tick events are cleared so an old accepted edge cannot fire twice.
+   * A batch's refused-owner set is monotone: a held token cannot replay again.
+   */
+  holdPreparedStep(token: EucPreparedStep): void {
+    const record = this.requirePreparedStep(token);
+    record.ready = false;
+    const working = this.workingController!;
+    working.copyMutableStateFrom(this);
+    working.dynamicWorld = this.dynamicWorld;
+    working.dynamicPrevious = null;
+    working.dynamicIntent = null;
+    working.dynamicImpactSpeed = 0;
+    working.dynamicImpactNormalX = 0;
+    working.dynamicImpactNormalZ = 0;
+    working.dynamicSpinApplied = 0;
+    working.justTookOff = false;
+    working.justTouchedDown = false;
+    working.justHopped = false;
+    working.collisionImpact = 0;
+    record.notifications.length = 0;
+    record.didPlace = undefined;
+    record.resolvedMotionRequests = Object.freeze([]);
+    record.resolvedPlacementRequests = Object.freeze([]);
+    this.capturePreparedFacts(record, working);
+    record.held = true;
+    record.ready = true;
+  }
+
+  /** Copy the provisional/final pose without exposing mutable working state. */
+  writePreparedPose(token: EucPreparedStep, target: EucPose): void {
+    this.requirePreparedStep(token);
+    this.workingController!.writePose(target);
+  }
+
+  /**
+   * Publish an already-resolved state without integrating again. A batch can
+   * pass false, commit every controller, then publish its placement journals.
+   */
+  commitPreparedStep(token: EucPreparedStep, publishPlacements = true): void {
+    const record = this.requirePreparedStep(token, true);
+    if (!record.ready) throw new Error('EUC prepared step must resolve before commit');
+    this.copyMutableStateFrom(this.workingController!);
+    record.committed = true;
+    record.ready = false;
+    this.activePreparedStep = null;
+    this.stateRevision += 1;
+    if (publishPlacements) this.publishPreparedPlacements(token);
+  }
+
+  /** Drain successful placements once, after every physical state in the batch exists. */
+  publishPreparedPlacements(token: EucPreparedStep): void {
+    const record = PREPARED_CONTROLLER_STEPS.get(token);
+    if (!record || record.owner !== this || !record.committed || record.published) {
+      throw new Error('EUC placement journal is uncommitted, foreign or already published');
+    }
+    record.published = true;
+    for (const placement of record.notifications) record.didPlace?.(placement);
+  }
+
+  private invalidatePreparedStep(): void {
+    this.stateRevision += 1;
+    if (this.activePreparedStep) this.activePreparedStep.ready = false;
+    this.activePreparedStep = null;
+  }
+
+  /**
+   * Token, owner and revision guard every call. The configuration (tuning,
+   * surfaces, style, spawn) is checked where a candidate is born and at the
+   * point of no return. Birth reads the configuration epoch; commit compares
+   * all two hundred fields, which still refuses a direct mutation before
+   * anything commits.
+   */
+  private requirePreparedStep(token: EucPreparedStep, configuration: boolean | 'epoch' = false): PreparedControllerStep {
+    const record = PREPARED_CONTROLLER_STEPS.get(token);
+    if (!record || record.owner !== this || record.committed || this.activePreparedStep !== record
+      || record.revision !== this.stateRevision
+      || (configuration && !this.sameStepConfiguration(this.workingController!, configuration === 'epoch'))) {
+      throw new Error('EUC prepared step is stale, foreign or already committed');
+    }
+    return record;
+  }
+
+  private capturePreparedFacts(record: PreparedControllerStep, working: EucController): void {
+    record.intent = working.dynamicIntent ? detachedMotion(working.dynamicIntent) : null;
+    record.placementBlocked = working.dynamicPlacementBlocked;
+    record.discontinuitySerial = working.placementSerial;
+  }
+
+  private copyStepConfigurationFrom(source: EucController): void {
+    // Within the epoch only a direct field write can differ, so the copy is a
+    // compare and any difference copies everything, as it always did. The
+    // spawn is replaced by reference (`reset`), not through a setter, so it is
+    // copied every time; it is four numbers.
+    const copied = CONFIGURATION_COPIES.get(this);
+    if (copied === undefined || copied.source !== source || copied.epoch !== configurationEpoch
+      || !source.sameConfigurationFields(this)) {
+      copyFlatRecord(source.tuning, this.tuning);
+      for (const id of SURFACE_IDS) copyFlatRecord(source.surfaces[id], this.surfaces[id]);
+      copyFlatRecord(source.style, this.style);
+      CONFIGURATION_COPIES.set(this, { source, epoch: configurationEpoch });
+    }
+    this.spawn = { ...source.spawn, position: { ...source.spawn.position } };
+  }
+
+  /** Tuning, style and every surface, field by field. */
+  private sameConfigurationFields(other: EucController): boolean {
+    if (!sameFlatRecord(this.tuning, other.tuning) || !sameFlatRecord(this.style, other.style)) return false;
+    for (const id of SURFACE_IDS) if (!sameFlatRecord(this.surfaces[id], other.surfaces[id])) return false;
+    return true;
+  }
+
+  /** `epoch` trusts a current configuration epoch instead of reading every field; only a candidate's birth passes it. */
+  private sameStepConfiguration(other: EucController, epoch = false): boolean {
+    const copied = epoch ? CONFIGURATION_COPIES.get(other) : undefined;
+    return (copied !== undefined && copied.source === this && copied.epoch === configurationEpoch
+      || this.sameConfigurationFields(other))
+      && this.spawn.headingY === other.spawn.headingY && sameFlatRecord(this.spawn.position, other.spawn.position);
+  }
+
+  /**
+   * Every primitive plus an explicit deep copy of the small mutable references.
+   * Public for one more caller: the composition root's exact start checkpoint
+   * around a native step it may still have to hand to the transaction.
+   */
+  copyMutableStateFrom(source: EucController): void {
+    const from = source as unknown as Record<string, unknown>;
+    const to = this as unknown as Record<string, unknown>;
+    if (!stepPrimitiveFields) {
+      stepPrimitiveFields = Object.freeze(Object.keys(from).filter((key) => {
+        if (STEP_REFERENCE_FIELDS.has(key)) return false;
+        if (typeof from[key] === 'object' || typeof from[key] === 'function') {
+          throw new Error(`EUC transaction needs an explicit state copy for ${key}`);
+        }
+        return true;
+      }));
+    }
+    for (const key of stepPrimitiveFields) to[key] = from[key];
+    copyGroundSample(source.ground, this.ground);
+    copyGroundSample(source.probe, this.probe);
+    Object.assign(this.obstacleHit, source.obstacleHit);
+    Object.assign(this.standoffOrigin, source.standoffOrigin);
+    Object.assign(this.standoffRay, source.standoffRay);
+    this.dynamicPrevious = source.dynamicPrevious ? { ...source.dynamicPrevious } : null;
+    this.dynamicIntent = source.dynamicIntent ? { ...source.dynamicIntent,
+      previous: { ...source.dynamicIntent.previous }, proposed: { ...source.dynamicIntent.proposed } } : null;
+    this.ragdoll.copyStateFrom(source.ragdoll);
+    this.safeRing.set(source.safeRing);
+  }
+
+  private validateDynamicWorld(world?: EucDynamicWorld): void {
+    if (world && (![world.hull.halfWidthMetres, world.hull.halfLengthMetres, world.hull.heightMetres]
+      .every(Number.isFinite) || world.hull.halfWidthMetres <= 0
+      || world.hull.halfLengthMetres <= 0 || world.hull.heightMetres <= 0)) {
+      throw new RangeError('EUC dynamic hull must have finite positive dimensions');
+    }
+  }
+
+  /**
+   * Evaluate the existing native method on owned scratch, then admit its exact
+   * physical pose path. Rejection changes no live state, token or journal.
+   * Nested native calls see no world port, so one reaction is one atomic query.
+   */
+  private admitPhysicalReaction<T>(kind: EucPhysicalReactionRequest['kind'],
+    reaction: (working: EucController) => T, rejected: T, acceptResult?: (result: T) => boolean): T {
+    const canReact = this.dynamicWorld!.canReact!;
+    let working = this.reactionController;
+    if (!working) {
+      working = new EucController(this.sampler, { hazards: this.hazards, softBodies: this.softBodies });
+      working.style = { ...this.style }; this.reactionController = working;
+    }
+    working.copyStepConfigurationFrom(this); working.copyMutableStateFrom(this);
+    working.dynamicWorld = undefined;
+    const previous = createPose(); this.writePose(previous);
+    const revision = this.stateRevision, workingRevision = working.stateRevision;
+    const result = reaction(working), proposed = createPose(); working.writePose(proposed);
+    if (acceptResult && !acceptResult(result)) return rejected;
+    const accepted = canReact(Object.freeze({ kind, previous: detachedOccupancyPose(previous),
+      proposed: detachedOccupancyPose(proposed) }));
+    if (this.stateRevision !== revision || !this.sameStepConfiguration(working)) {
+      throw new Error('EUC physical reaction query must not mutate its controller');
+    }
+    if (!accepted) return rejected;
+    // Match the native method's invalidation count, including nested softKnock
+    // and shedSpeed, while invalidating the live token only after acceptance.
+    const advance = working.stateRevision - workingRevision;
+    if (advance > 0) { this.invalidatePreparedStep(); this.stateRevision += advance - 1; }
+    this.copyMutableStateFrom(working);
+    return result;
+  }
+
+  /** Install plain world queries without moving or resetting this rider. */
+  setDynamicWorld(world?: EucDynamicWorld): void {
+    this.validateDynamicWorld(world);
+    this.invalidatePreparedStep();
+    this.dynamicWorld = world ? { ...world, hull: { ...world.hull } } : undefined;
+    this.dynamicPrevious = null; this.dynamicIntent = null; this.dynamicImpactSpeed = 0;
+    this.dynamicPlacementBlocked = false;
+  }
+
+  /** Exact successful placement identity, including a reset to the same point. */
+  get discontinuitySerial(): number { return this.placementSerial; }
+
+  /** Read-only exact mounted destination query for composition-root spawn selection. */
+  placementOccupancyPose(spawn: Spawn): RiderOccupancyPose {
+    const ground = createGroundSample();
+    this.sampler.sampleGround(spawn.position.x, spawn.position.z, ground);
+    return this.proposedPlacementOccupancyPose(spawn.position.x, spawn.position.z, spawn.headingY, ground);
+  }
+
+  /** A blocked reset/recovery has kept its old physical state and will need space. */
+  get placementBlocked(): boolean { return this.dynamicPlacementBlocked; }
+
+  /** The final statically accepted main intent, before dynamic clipping. */
+  get dynamicMotionIntent(): EucDynamicMotionRequest | null {
+    return this.dynamicIntent ? { ...this.dynamicIntent,
+      previous: { ...this.dynamicIntent.previous }, proposed: { ...this.dynamicIntent.proposed } } : null;
   }
 
   /**
@@ -1980,6 +2631,8 @@ export class EucController {
    * controller from M2. They stay two mechanisms on purpose.
    */
   setTuning(values: Partial<EucTuning>): void {
+    this.invalidatePreparedStep();
+    configurationEpoch += 1;
     Object.assign(this.tuning, values);
   }
 
@@ -2014,6 +2667,8 @@ export class EucController {
    * change) keeps its continuity, because a slider is not a new rider.
    */
   setRideStyle(style: RideStyle): void {
+    this.invalidatePreparedStep();
+    configurationEpoch += 1;
     const wasStyled = isStyled(this.style);
     this.style = style;
     if (isStyled(style) !== wasStyled) {
@@ -2034,6 +2689,8 @@ export class EucController {
   setSurfaceResponse(id: SurfaceId, values: Partial<SurfaceResponse>): void {
     const surface = this.surfaces[id];
     if (surface === undefined) return;
+    this.invalidatePreparedStep();
+    configurationEpoch += 1;
     Object.assign(surface, values);
   }
 
@@ -2046,7 +2703,12 @@ export class EucController {
    * re-outrun before he finished accelerating and the regroup would have
    * bought nothing. Every player-facing reset leaves it at its default.
    */
-  reset(spawn?: Spawn, initialSpeed = 0): void {
+  reset(spawn?: Spawn, initialSpeed = 0): boolean {
+    this.invalidatePreparedStep();
+    const destination = spawn ?? this.spawn;
+    const placementReason = this.placementSerial === 0 ? 'construct' : 'reset';
+    if (!this.dynamicPlacementClear(destination.position.x, destination.position.z,
+      destination.headingY, initialSpeed, placementReason)) return false;
     if (spawn) this.spawn = spawn;
 
     this.x = this.spawn.position.x;
@@ -2149,11 +2811,16 @@ export class EucController {
     this.safeZ = this.z;
     this.safeHeading = this.headingY;
     this.safeHold = 0;
+    // A fresh run's recovery trail starts here; nothing earlier is reused.
+    this.safeRingCount = 0;
+    this.safeRingNext = 0;
+    this.clearContactRecovery();
 
     this.sampler.sampleGround(this.x, this.z, this.ground);
     this.y = this.ground.height;
     this.groundY = this.ground.height;
     this.surface = this.ground.surface;
+    this.traction = this.ground.traction ?? this.ground.surface;
     this.offCourse = this.ground.offCourse;
     this.grounded = true;
     this.pedalClearance = Math.atan2(this.tuning.pedalHeight, this.tuning.pedalHalfSpan);
@@ -2179,12 +2846,44 @@ export class EucController {
       response.roughnessAmplitude,
       response.roughnessWavelength,
     );
+    this.placementSerial += 1;
+    this.dynamicPlacementBlocked = false;
+    this.dynamicPrevious = null; this.dynamicIntent = null;
+    this.notifyDynamicPlacement(placementReason, initialSpeed);
+    return true;
   }
 
-  /** One fixed simulation step. */
+  private airPhaseContactUpdate = false;
+
+  /** Full native flight dt first; explicit side constraint preserves vertical
+   * gravity/landing. The complete private body proposal still needs admission.
+   * A crash begun in the air has its own wheel and particle constraints
+   * (`stepCrash`): moved as one piece, its first step lost all its momentum. */
   step(dt: number, actions: ActionSnapshot): void {
+    const bodies = this.airborne && !this.crashing ? (this.dynamicWorld?.ragObstacleBodies?.() ?? this.dynamicWorld?.ragObstacles ?? []) : [];
+    const before = bodies.length && dt > 0 ? createPose() : null, serial = this.placementSerial;
+    if (before) this.writePose(before);
+    this.airPhaseContactUpdate = before !== null;
+    try { this.stepNative(dt, actions); } finally { this.airPhaseContactUpdate = false; }
+    if (before && this.placementSerial === serial) {
+      this.constrainNativePhaseSideContact(before, bodies, this.dynamicWorld?.occupantKind === 'human');
+      if (!this.crashing) this.updateSafePosition(dt);
+    }
+  }
+
+  /** The original native fixed-step equations consume dt exactly once. */
+  private stepNative(dt: number, actions: ActionSnapshot): void {
     if (dt <= 0) return;
+    this.invalidatePreparedStep();
+    this.recordContactHold(false);
     const t = this.tuning;
+    this.dynamicIntent = null;
+    this.dynamicSpinApplied = 0;
+    this.dynamicStyleHeadingPrevious = this.styleHeading;
+    this.dynamicPrevious = this.dynamicWorld?.resolveMotion
+      ? this.dynamicBody(this.x, this.z, this.y, this.headingY,
+        this.speed * (this.airborne ? this.airDirX : Math.sin(this.headingY + this.wobbleYaw + this.styleYaw)),
+        this.speed * (this.airborne ? this.airDirZ : Math.cos(this.headingY + this.wobbleYaw + this.styleYaw))) : null;
 
     const throttle = clamp(safeAxis(actions.throttle), -1, 1);
     const steer = clamp(safeAxis(actions.steer), -1, 1);
@@ -2506,6 +3205,7 @@ export class EucController {
     // landing fold in `land()` charges the difference.
     if (airborne && this.spinRemaining > 0) {
       const sweep = Math.min(this.spinRemaining, t.spinYawRate * dt);
+      if (this.dynamicPrevious) this.dynamicSpinApplied = sweep;
       this.headingY += sweep * this.spinDirection;
       this.spinRemaining -= sweep;
       // **Completion is recorded here and nowhere else** (M36). The last step
@@ -2679,7 +3379,7 @@ export class EucController {
       -t.maxRiderPitch,
       t.maxRiderPitch,
     );
-    this.riderPitch = approach(
+    if (!this.contactBrakingConstraint) this.riderPitch = approach(
       this.riderPitch,
       riderPitchTarget,
       t.riderPitchResponseSeconds,
@@ -2747,7 +3447,7 @@ export class EucController {
       ? 1
       : t.reverseGlanceFactor
         * clamp01(this.reverseHold / Math.max(1e-6, t.reverseEngageSeconds));
-    this.reverseBlend = approach(
+    if (!this.contactBrakingConstraint) this.reverseBlend = approach(
       this.reverseBlend,
       reverseTarget,
       t.reversePoseSeconds,
@@ -2789,6 +3489,7 @@ export class EucController {
     this.collisionImpact = moved.impactSpeed;
 
     this.surface = this.ground.surface;
+    this.traction = this.ground.traction ?? this.ground.surface;
     this.offCourse = this.ground.offCourse;
     this.groundY = this.ground.height;
 
@@ -2952,7 +3653,11 @@ export class EucController {
     } else if (hazardCrash) {
       this.beginCrash('hazard', speed);
     } else if (this.collisionImpact >= t.obstacleCrashSpeed) {
-      this.beginCrash('obstacle', speed);
+      const dynamicSide = this.dynamicImpactSpeed >= t.obstacleCrashSpeed
+        && this.dynamicImpactSpeed >= this.collisionImpact
+        ? Math.sign(this.dynamicImpactNormalX * Math.cos(this.headingY)
+          - this.dynamicImpactNormalZ * Math.sin(this.headingY)) : 0;
+      this.beginCrash('obstacle', speed, dynamicSide);
     } else if (this.wobbleEnergy >= t.wobbleCrashEnergy) {
       // Attributed to the scrape if a pedal is on the ground at the moment the
       // oscillation runs away, because that is a different motion: the wheel
@@ -3041,7 +3746,7 @@ export class EucController {
     );
 
     // -- 11. Remember somewhere safe to come back to (M6) -------------------
-    this.updateSafePosition(dt);
+    if (!this.airPhaseContactUpdate) this.updateSafePosition(dt);
   }
 
   /**
@@ -3099,6 +3804,21 @@ export class EucController {
     this.safeX = this.x;
     this.safeZ = this.z;
     this.safeHeading = this.headingY;
+    this.rememberSafePoint();
+  }
+
+  /** Keep the validated trail as a short ring for a refused recovery (CP-3). */
+  private rememberSafePoint(): void {
+    const ring = this.safeRing, size = POPULATION_CONTACT.recoveryRingPoints;
+    if (this.safeRingCount > 0) {
+      const newest = ((this.safeRingNext + size - 1) % size) * 3;
+      if (Math.hypot(this.safeX - ring[newest], this.safeZ - ring[newest + 1])
+        < POPULATION_CONTACT.recoveryRingSpacingMetres) return;
+    }
+    const slot = this.safeRingNext * 3;
+    ring[slot] = this.safeX; ring[slot + 1] = this.safeZ; ring[slot + 2] = this.safeHeading;
+    this.safeRingNext = (this.safeRingNext + 1) % size;
+    this.safeRingCount = Math.min(this.safeRingCount + 1, size);
   }
 
   /**
@@ -3642,7 +4362,7 @@ export class EucController {
    * also falls sideways so the recovery pose never carries the rider through
    * the collider that stopped the wheel.
    */
-  private beginCrash(cause: CrashCause, speed: number, side = 0): void {
+  private beginCrash(cause: CrashCause, speed: number, side = 0, motion?: Exclude<CrashMotion, 'none'>, glance = 0, bodyY = this.groundY): void {
     const t = this.tuning;
 
     this.crashing = true;
@@ -3663,7 +4383,8 @@ export class EucController {
     // their own wheel rather than left behind it. A paddle at chest height
     // takes the body sideways at a crawl exactly as it does at speed, so this
     // one is a side fall at any speed too (§26.4).
-    this.crashMotion = cause === 'cutout'
+    // A contact crash names its own motion (`crashFromPhysicalContact`).
+    this.crashMotion = motion ?? (cause === 'cutout'
       ? 'faceplant'
       : cause === 'pedalStrike'
           || cause === 'obstacle'
@@ -3672,12 +4393,11 @@ export class EucController {
         ? 'sideFall'
         : this.crashSpeed > t.crashStepOffSpeed
           ? 'runOut'
-          : 'stepOff';
+          : 'stepOff');
 
-    // Which side they go down. **A caller that knows better wins**, which today
-    // is the hard knock and only the hard knock: a rider struck from their right
-    // falls to their left, and deriving that from the lean they happened to be
-    // carrying would put them down *into* the paddle about half the time. It is
+    // Which side they go down. A hard knock supplies its travel side and a
+    // dynamic obstacle supplies its outward normal: deriving either from the
+    // lean they happened to carry could put them down into the contact. It is
     // invisible in a test that only asks whether they crashed and unmistakable
     // on screen, which is why the side travels with the cause (§26.4).
     //
@@ -3703,7 +4423,7 @@ export class EucController {
     if (this.ragdolling) {
       this.ragdoll.seed({
         x: this.x,
-        y: this.groundY,
+        y: bodyY,
         z: this.z,
         headingY: this.headingY,
         rollAngle: this.rollAngle,
@@ -3711,8 +4431,9 @@ export class EucController {
         hipDrop: this.crouch * 0.2,
         speed,
         cause: this.crashMotion,
-        intoSolid: cause === 'obstacle',
+        intoSolid: cause === 'obstacle' && motion === undefined,
         side: this.crashSide,
+        glance,
       }, t, 1 / SIMULATION.hz);
     }
 
@@ -3797,6 +4518,9 @@ export class EucController {
    */
   private stepCrash(dt: number, throttle: number, steer: number, crouch: boolean): void {
     const t = this.tuning;
+    const contactBodies = this.dynamicWorld?.ragObstacleBodies?.() ?? this.dynamicWorld?.ragObstacles ?? [];
+    const contactBefore = contactBodies.length ? createPose() : null;
+    if (contactBefore) this.writePose(contactBefore);
     this.crashTime += dt;
 
     const response = this.surfaceResponse();
@@ -3820,10 +4544,14 @@ export class EucController {
     const intended = speed * dt;
     const moved = this.advance(forwardX * intended, forwardZ * intended, dt, speed, false);
     speed = moved.speed;
+    // A rolling crash wheel remains physically blocked, while a new dynamic
+    // contact can still be reported without starting or attributing a crash.
+    this.collisionImpact = this.dynamicImpactSpeed;
 
     this.speed = speed;
     this.longitudinalAccel = 0;
     this.surface = this.ground.surface;
+    this.traction = this.ground.traction ?? this.ground.surface;
     this.offCourse = this.ground.offCourse;
     this.groundY = this.ground.height;
     this.y = this.groundY;
@@ -3845,9 +4573,12 @@ export class EucController {
     );
 
     // The particle body tumbles through the same ground and solids the wheel
-    // answers, plus whatever foliage it lands in (M15).
+    // answers, plus whatever foliage it lands in (M15). People and cars are
+    // solids to every particle from the first step of the fall, exactly as a
+    // wall is (2026-10-04): a body that hits someone stops at them and crumples
+    // or glances off, and none of it is held or passes through them.
     if (this.ragdolling) {
-      this.ragdoll.step(dt, this.crashTime, this.x, this.z, this.sampler, this.softBodies, t);
+      this.ragdoll.step(dt, this.crashTime, this.x, this.z, this.sampler, this.softBodies, t, contactBodies);
     }
 
     // The wheel's flourish (M15): a ballistic bounce with a couple of damped
@@ -3941,9 +4672,101 @@ export class EucController {
     this.landingTimer = 0;
     this.state = 'crashing';
 
+    // The riderless wheel meets people and cars as its own body: it stops or
+    // slides at them, while the particles above answer for the rider. The
+    // whole-body envelope is not moved as one piece any more (2026-10-04): it
+    // held a crash that met someone a metre short of them (VIS-CRASH-1).
+    if (contactBefore) this.constrainCrashWheelSideContact(contactBefore, contactBodies);
     const asked = Math.abs(throttle) > 0.01 || Math.abs(steer) > 0.01 || crouch;
     const ready = this.crashTime >= t.crashRecoverEarliestSeconds;
     if ((ready && asked) || this.crashTime >= t.crashRecoverAutoSeconds) this.respawn();
+  }
+
+  /** The crash wheel's own side constraint against the living world's bodies. */
+  private constrainCrashWheelSideContact(before: EucPose, bodies: readonly PopulationFootprint[]): boolean {
+    const proposed = createPose(); this.writePose(proposed);
+    const skin = proposeWheelSideProjection(before, proposed, bodies, RIDER_CONTACT, POPULATION.contactSkinMetres);
+    const contact = skin && (skin.x !== 0 || skin.z !== 0)
+      ? proposeWheelSideProjection(before, proposed, bodies, RIDER_CONTACT, POPULATION.contactSkinMetres + POPULATION.nativePhaseRetryReserveMetres) : skin;
+    if (!contact) return false;
+    if (contact.x === 0 && contact.z === 0) return true;
+    return this.projectCrashWheelSideContact(before, contact, true);
+  }
+
+  private constrainNativePhaseSideContact(before: EucPose, bodies: readonly PopulationFootprint[], crashes = false): boolean {
+    const proposed = createPose(); this.writePose(proposed);
+    // The sealed retry always keeps its reserve. An unheld step that the skin
+    // projection must move anyway is moved that reserve clear too (CP-1,
+    // 2026-10-03): resting a skin apart made every later proof bisect to the
+    // millimetre (hundreds to thousands of evaluations), where 25 mm of room
+    // proves in a handful. A clear endpoint keeps its exact native pose.
+    // Admission still decides; the projection is never clearance authority.
+    const retry = this.nativePhaseRetryReserveMetres > 0;
+    const skin = retry ? null : proposeRiderPhaseSideProjection(before, proposed, bodies, RIDER_CONTACT, POPULATION.contactSkinMetres);
+    const contact = retry || (skin && (skin.x !== 0 || skin.z !== 0))
+      ? proposeRiderPhaseSideProjection(before, proposed, bodies, RIDER_CONTACT, POPULATION.contactSkinMetres + POPULATION.nativePhaseRetryReserveMetres) : skin;
+    if (!contact) return false;
+    if (contact.x === 0 && contact.z === 0) return true;
+    // Both native static guards precede physical mutation. Partial rag uses
+    // the ORIGINAL sampler; no partial NPC-cast expansion is reintroduced.
+    if (this.ragdolling && !this.ragdoll.canProjectSideContact(contact.x, contact.z, this.sampler)) return false;
+    // The flight's closing speed on the face it met, before the stop takes it.
+    let closing = 0, normalX = 0, normalZ = 0;
+    const speed = this.speed, forwardX = this.airborne ? this.airDirX : Math.sin(this.headingY), forwardZ = this.airborne ? this.airDirZ : Math.cos(this.headingY);
+    for (const normal of contact.normals) {
+      const into = -speed * (forwardX * normal.x + forwardZ * normal.z);
+      if (into > closing) { closing = into; normalX = normal.x; normalZ = normal.z; }
+    }
+    if (!this.projectCrashWheelSideContact(before, contact)) return false;
+    if (this.ragdolling) return this.ragdoll.projectSideContact(contact.x, contact.z, contact.normals, this.sampler);
+    // A human flown into a person or car at obstacle speed: the contact
+    // crash, begun in the air where they met, with the flight's momentum.
+    if (crashes && !this.crashing && this.airborne && this.invulnerableTimer <= 0 && closing >= this.tuning.obstacleCrashSpeed) {
+      this.collisionImpact = closing;
+      this.crashInAir(normalX, normalZ, 'faceplant', this.tuning.ragdollLaunchSide, speed);
+    }
+    return true;
+  }
+
+  /** Native crash-wheel side constraint, independent of world rag particles.
+   * Flat/equal-ground support only: a changed terrain frame is declined rather
+   * than replaying gravity/suspension, faking a landing or changing vertical Y.
+   * Static solids use the existing native wheel cast. Full-body NPC admission
+   * separately certifies the actual resulting wheel and human pose path. */
+  private projectCrashWheelSideContact(before: EucPose, projection: FullRagSideProjection, followGround = false): boolean {
+    const { x: dx, z: dz } = projection;
+    this.sampler.sampleGround(this.x + dx, this.z + dz, this.probe);
+    // The lying crash wheel alone follows the ground it is pushed onto, as its
+    // own roll does (2026-10-04); a step it could not climb still refuses.
+    const lying = followGround && this.crashing && !this.airborne;
+    if ((lying ? Math.abs(this.probe.height - this.ground.height) > this.tuning.maxStepUp
+      : this.probe.height !== this.ground.height || this.probe.normal.x !== this.ground.normal.x
+      || this.probe.normal.y !== this.ground.normal.y || this.probe.normal.z !== this.ground.normal.z
+      || this.probe.surface !== this.ground.surface || this.probe.traction !== this.ground.traction)
+      || this.probe.offCourse !== this.ground.offCourse
+      || this.obstacleWithinWheelRadius(dx, dz)) return false;
+    const oldX = this.x, oldZ = this.z, forwardX = this.airborne ? this.airDirX : Math.sin(this.headingY), forwardZ = this.airborne ? this.airDirZ : Math.cos(this.headingY);
+    this.commit(dx, dz, true);
+    if (lying) { this.groundY = this.ground.height; this.y = this.groundY; }
+    // Contact displacement has the same wheel-distance/spin accounting as the
+    // native advance. It is no second dt or force update and changes no Y.
+    this.wheelSpin += (dx * forwardX + dz * forwardZ) / this.tuning.wheelRadius;
+    this.distanceTravelled += Math.hypot(this.x - before.x, this.z - before.z) - Math.hypot(oldX - before.x, oldZ - before.z);
+    let velocityX = this.speed * forwardX, velocityZ = this.speed * forwardZ;
+    for (const normal of projection.normals) {
+      const incoming = velocityX * normal.x + velocityZ * normal.z;
+      if (incoming < 0) { velocityX -= incoming * normal.x; velocityZ -= incoming * normal.z; }
+    }
+    // Native crash-wheel momentum is a scalar along its heading. Retain its
+    // representable outgoing/tangential share; never inject reverse velocity
+    // merely because an expanding envelope needed outward contact displacement.
+    if (this.airborne) {
+      const magnitude = Math.hypot(velocityX, velocityZ), sign = this.speed < 0 ? -1 : 1;
+      this.speed = magnitude * sign;
+      if (magnitude > 0) { this.airDirX = velocityX / this.speed; this.airDirZ = velocityZ / this.speed; }
+    } else this.speed = velocityX * forwardX + velocityZ * forwardZ;
+    this.blocked = true;
+    return true;
   }
 
   /**
@@ -3959,14 +4782,25 @@ export class EucController {
    * decision worth the owner's eye and is on F4 as `crashRecoverSpeedFactor`:
    * a recovery that always stood the rider still would answer "do I immediately
    * want another go?" with two seconds of re-acceleration every single time.
+   *
+   * **And not only the newest point once the living world has refused it**
+   * (CP-3, 2026-10-03). The safe point is wherever the rider last rode cleanly,
+   * so it sits right beside whoever they just passed, and a seated group never
+   * moves. After `recoveryFallbackSeconds` of refusal the older validated trail
+   * and then short sideways offsets are tried, each through the same placement
+   * check. Never the spawn: a mode's referee sees a recovery, not its reset, so
+   * a Track Day lap would stay open on the start line's run-up. Returns whether
+   * the rider was placed.
    */
-  private respawn(): void {
+  private respawn(): boolean {
     const t = this.tuning;
     const restored = this.crashSpeed * t.crashRecoverSpeedFactor;
+    const target = this.recoveryTarget(restored);
+    if (!target) return false;
 
-    this.x = this.safeX;
-    this.z = this.safeZ;
-    this.headingY = this.safeHeading;
+    this.x = target.x;
+    this.z = target.z;
+    this.headingY = target.headingY;
     this.speed = restored;
 
     this.leanPitch = 0;
@@ -4040,6 +4874,7 @@ export class EucController {
     this.y = this.ground.height;
     this.groundY = this.ground.height;
     this.surface = this.ground.surface;
+    this.traction = this.ground.traction ?? this.ground.surface;
     this.offCourse = this.ground.offCourse;
     this.grounded = true;
 
@@ -4059,6 +4894,65 @@ export class EucController {
       response.roughnessAmplitude,
       response.roughnessWavelength,
     );
+    this.placementSerial += 1;
+    this.dynamicPlacementBlocked = false;
+    this.dynamicPrevious = null; this.dynamicIntent = null;
+    this.clearContactRecovery();
+    this.notifyDynamicPlacement('recover', restored);
+    return true;
+  }
+
+  /** The held-contact and refused-recovery bookkeeping ends with the crash. */
+  private clearContactRecovery(): void {
+    this.recoveryRefusedSeconds = 0;
+    this.contactHoldMask = 0;
+    this.contactHoldMaskOlder = 0;
+  }
+
+  /**
+   * The first recovery destination the dynamic world accepts: the newest safe
+   * point, then (once refused long enough) the older trail newest first and
+   * short sideways offsets that the static world also allows.
+   */
+  private recoveryTarget(restored: number): { x: number; z: number; headingY: number } | null {
+    if (this.dynamicPlacementClear(this.safeX, this.safeZ, this.safeHeading, restored, 'recover')) {
+      return { x: this.safeX, z: this.safeZ, headingY: this.safeHeading };
+    }
+    if (this.recoveryRefusedSeconds < POPULATION_CONTACT.recoveryFallbackSeconds) return null;
+    const ring = this.safeRing, size = POPULATION_CONTACT.recoveryRingPoints;
+    for (let age = 0; age < this.safeRingCount; age += 1) {
+      const slot = ((this.safeRingNext + size - 1 - age) % size) * 3;
+      const x = ring[slot], z = ring[slot + 1], headingY = ring[slot + 2];
+      if (x === this.safeX && z === this.safeZ) continue;
+      if (this.dynamicPlacementClear(x, z, headingY, restored, 'recover')) return { x, z, headingY };
+    }
+    const lateralX = Math.cos(this.safeHeading), lateralZ = -Math.sin(this.safeHeading);
+    for (const offset of POPULATION_CONTACT.recoveryLateralMetres) {
+      const x = this.safeX + lateralX * offset, z = this.safeZ + lateralZ * offset;
+      if (this.recoveryOffsetStaticallyClear(x, z)
+        && this.dynamicPlacementClear(x, z, this.safeHeading, restored, 'recover')) return { x, z, headingY: this.safeHeading };
+    }
+    // Every candidate's refusal left the blocked flag set; the next step asks again.
+    return null;
+  }
+
+  /**
+   * A sideways offset was never ridden, so the static world must allow it as
+   * the riding path would: rideable ground within one step of the safe point
+   * and no authored solid between the two (the wheel's own swept cast).
+   */
+  private recoveryOffsetStaticallyClear(x: number, z: number): boolean {
+    const t = this.tuning, ground = createGroundSample();
+    this.sampler.sampleGround(this.safeX, this.safeZ, ground);
+    const height = ground.height;
+    this.sampler.sampleGround(x, z, ground);
+    if (ground.offCourse || ground.surface === 'spill' || Math.abs(ground.height - height) > t.maxStepUp) return false;
+    const raycastObstacle = this.sampler.raycastObstacle;
+    if (raycastObstacle === undefined) return true;
+    const dx = x - this.safeX, dz = z - this.safeZ, length = Math.hypot(dx, dz);
+    return raycastObstacle.call(this.sampler, { x: this.safeX, y: height + t.maxStepUp + 1e-6, z: this.safeZ },
+      { x: dx, y: 0, z: dz }, length + t.pedalHalfSpan, t.wheelRadius,
+      { x: Math.sin(this.safeHeading), y: 0, z: Math.cos(this.safeHeading) }) === null;
   }
 
   /**
@@ -4112,6 +5006,116 @@ export class EucController {
     this.wheelCrashPopVelocity = 0;
   }
 
+  private dynamicBody(x: number, z: number, y: number, headingY: number,
+    velocityX: number, velocityZ: number): EucDynamicBody {
+    const hull = this.dynamicWorld!.hull;
+    return { x, z, headingY, minY: y, maxY: y + hull.heightMetres,
+      halfWidthMetres: hull.halfWidthMetres, halfLengthMetres: hull.halfLengthMetres,
+      velocityX, velocityZ };
+  }
+
+  /** Both native placement paths clear all mounted channels, then snap to this destination ground. */
+  private proposedPlacementOccupancyPose(x: number, z: number, headingY: number,
+    ground: GroundSample): RiderOccupancyPose {
+    const pose = createPose();
+    pose.x = x; pose.y = ground.height; pose.z = z; pose.headingY = headingY;
+    const tilt = groundTiltTarget(ground.normal, headingY, this.tuning);
+    pose.groundPitch = tilt.pitch; pose.groundRoll = tilt.roll;
+    const response = this.surfaces[ground.traction ?? ground.surface] ?? this.surfaces.pavement;
+    pose.suspensionOffset = roughnessAt(x, z, response.roughnessAmplitude, response.roughnessWavelength);
+    return detachedOccupancyPose(pose);
+  }
+
+  private dynamicPlacementClear(x: number, z: number, headingY: number, speed: number,
+    reason: EucPlacementRequest['reason']): boolean {
+    const canPlace = this.dynamicWorld?.canPlace;
+    if (!canPlace) return true;
+    this.sampler.sampleGround(x, z, this.probe);
+    const clear = canPlace({ reason, initialSpeedMetresPerSecond: speed,
+      discontinuitySerial: this.placementSerial + 1,
+      occupancyPose: this.proposedPlacementOccupancyPose(x, z, headingY, this.probe),
+      body: this.dynamicBody(x, z, this.probe.height, headingY,
+        Math.sin(headingY) * speed, Math.cos(headingY) * speed) });
+    this.dynamicPlacementBlocked = !clear;
+    return clear;
+  }
+
+  private notifyDynamicPlacement(reason: EucPlacementRequest['reason'], speed: number): void {
+    const didPlace = this.dynamicWorld?.didPlace;
+    if (!didPlace) return;
+    const pose = createPose(); this.writePose(pose);
+    didPlace({ reason, initialSpeedMetresPerSecond: speed, discontinuitySerial: this.placementSerial,
+      occupancyPose: detachedOccupancyPose(pose),
+      body: this.dynamicBody(this.x, this.z, this.y, this.headingY,
+        Math.sin(this.headingY) * speed, Math.cos(this.headingY) * speed) });
+  }
+
+  /**
+   * Shorten a statically legal candidate, then prove the shortened prefix is
+   * legal too. No post-step rewind can do this without corrupting its ground,
+   * travel, safe-point, hazard and landing bookkeeping. The null path leaves
+   * the existing move and its already-owned probe exactly as they were.
+   */
+  private resolveDynamicCandidate(deltaX: number, deltaZ: number, dt: number,
+    airborne: boolean, excess: number, kind: EucDynamicMotionRequest['kind'] = 'move'): EucDynamicMove {
+    const resolver = this.dynamicWorld?.resolveMotion;
+    if (!resolver) return { deltaX, deltaZ, excess, fraction: 1, blocked: false };
+    const previous = kind === 'move' && this.dynamicPrevious ? { ...this.dynamicPrevious }
+      : this.dynamicBody(this.x, this.z, airborne ? this.y : this.ground.height, this.headingY, 0, 0);
+    const request: EucDynamicMotionRequest = { kind, dt, previous,
+      proposed: this.dynamicBody(this.x + deltaX, this.z + deltaZ,
+        airborne ? this.y : this.probe.height, this.headingY,
+        kind === 'move' ? deltaX / dt : 0, kind === 'move' ? deltaZ / dt : 0),
+      airborne, crashing: this.crashing };
+    const result = resolver(request);
+    if (kind === 'move') this.dynamicIntent = { ...request,
+      previous: { ...request.previous }, proposed: { ...request.proposed } };
+    if (result === null) return { deltaX, deltaZ, excess, fraction: 1, blocked: false };
+    if (![result.allowedMoveFraction, result.normalX, result.normalZ,
+      result.closingSpeedMetresPerSecond].every(Number.isFinite)
+      || result.closingSpeedMetresPerSecond < 0) {
+      throw new RangeError('EUC dynamic motion result must contain finite physical numbers');
+    }
+    const fraction = clamp01(result.allowedMoveFraction);
+    const keptX = deltaX * fraction, keptZ = deltaZ * fraction;
+    let clippedExcess = excess;
+    if (fraction < 1 && (deltaX !== 0 || deltaZ !== 0)) {
+      clippedExcess = this.excessAt(keptX, keptZ, airborne);
+      const ceiling = airborne ? 0 : this.tuning.maxStepUp;
+      if (clippedExcess > ceiling
+        || (kind === 'standoff' && Math.abs(this.probe.height - this.ground.height) > this.tuning.maxStepUp)
+        || this.obstacleWithinWheelRadius(keptX, keptZ, deltaX, deltaZ)) {
+        // The dynamic collider did not make an intermediate terrain/solid
+        // position legal. The unreachable population hit must not be charged.
+        this.sampler.sampleGround(this.x, this.z, this.probe);
+        if (kind === 'move') this.dynamicIntent = null;
+        this.clipDynamicHeading(kind, 0);
+        return { deltaX: 0, deltaZ: 0, excess: 0, fraction: 0, blocked: true };
+      }
+    }
+    if (result.chargeImpact !== false) {
+      if (result.closingSpeedMetresPerSecond > this.dynamicImpactSpeed) {
+        this.dynamicImpactSpeed = result.closingSpeedMetresPerSecond;
+        this.dynamicImpactNormalX = result.normalX; this.dynamicImpactNormalZ = result.normalZ;
+      }
+    }
+    this.clipDynamicHeading(kind, fraction);
+    return { deltaX: keptX, deltaZ: keptZ, excess: clippedExcess, fraction, blocked: true };
+  }
+
+  /** A prism stopped partway through a turn must also stop its physical yaw. */
+  private clipDynamicHeading(kind: EucDynamicMotionRequest['kind'], fraction: number): void {
+    if (kind !== 'move' || fraction >= 1 || !this.dynamicPrevious) return;
+    this.headingY = lerp(this.dynamicPrevious.headingY, this.headingY, fraction);
+    this.yawRate *= fraction;
+    this.lateralAccel *= fraction;
+    this.styleHeading = lerp(this.dynamicStyleHeadingPrevious, this.styleHeading, fraction);
+    if (this.dynamicSpinApplied > 0) {
+      this.spinRemaining += this.dynamicSpinApplied * (1 - fraction);
+      if (this.spinRemaining > 0) this.spinSwept = false;
+    }
+  }
+
   /**
    * Apply one step's displacement, letting the ground refuse part of it.
    *
@@ -4161,16 +5165,23 @@ export class EucController {
     const t = this.tuning;
     this.blocked = false;
     this.lastStepUp = 0;
+    this.dynamicImpactSpeed = 0;
+    this.dynamicImpactNormalX = 0; this.dynamicImpactNormalZ = 0;
 
     const ceiling = airborne ? 0 : t.maxStepUp;
 
     if (deltaX === 0 && deltaZ === 0) {
       // Still re-sample: the wheel may be standing where the ground changed.
       this.sampler.sampleGround(this.x, this.z, this.ground);
+      if (this.dynamicWorld?.resolveMotion) {
+        copyGroundSample(this.ground, this.probe);
+        const dynamic = this.resolveDynamicCandidate(0, 0, dt, airborne, 0);
+        if (dynamic.blocked) this.blocked = true;
+      }
       // And a wheel that is not moving is exactly the case a reset beside a
       // wall produces, so the standoff belongs on this path too.
       this.applyWallStandoff(dt, airborne);
-      return { speed, distance: 0, excess: 0, keptX: 0, keptZ: 0, impactSpeed: 0 };
+      return { speed, distance: 0, excess: 0, keptX: 0, keptZ: 0, impactSpeed: this.dynamicImpactSpeed };
     }
 
     const full = this.excessAt(deltaX, deltaZ, airborne);
@@ -4183,25 +5194,32 @@ export class EucController {
     const fullObstacleNarrow = this.lastObstacleNarrow;
     if (full <= ceiling && fullHasClearance) {
       this.obstacleEscapeArmed = false;
+      const dynamic = this.resolveDynamicCandidate(deltaX, deltaZ, dt, airborne, full);
+      if (dynamic.blocked) { this.blocked = true; this.obstacleEscapeArmed = true; }
       // `excessAt` has just sampled exactly where the wheel is going, so the
       // common path takes that answer instead of asking the level twice.
-      this.commit(deltaX, deltaZ, true);
+      this.commit(dynamic.deltaX, dynamic.deltaZ, true);
       this.applyWallStandoff(dt, airborne);
       let next = speed;
-      if (!airborne && full > t.curbThreshold) {
+      if (!airborne && dynamic.excess > t.curbThreshold) {
         // Mounting a kerb costs speed and nothing else at M4. The wobble
         // injection `docs/PLANS.md` §6 beat 3 also asks for is M6's.
-        this.lastStepUp = full;
-        const cost = full * t.curbImpactPerMetre;
+        this.lastStepUp = dynamic.excess;
+        const cost = dynamic.excess * t.curbImpactPerMetre;
         next = speed > 0 ? Math.max(0, speed - cost) : Math.min(0, speed + cost);
+      }
+      if (dynamic.blocked) {
+        const intoObstacle = 1 - dynamic.fraction;
+        const scrub = t.wallScrubDecel * intoObstacle * intoObstacle * dt;
+        next = next > 0 ? Math.max(0, next - scrub) : Math.min(0, next + scrub);
       }
       return {
         speed: next,
-        distance: Math.hypot(deltaX, deltaZ),
-        excess: full,
-        keptX: deltaX,
-        keptZ: deltaZ,
-        impactSpeed: 0,
+        distance: Math.hypot(dynamic.deltaX, dynamic.deltaZ),
+        excess: dynamic.excess,
+        keptX: dynamic.deltaX,
+        keptZ: dynamic.deltaZ,
+        impactSpeed: this.dynamicImpactSpeed,
       };
     }
 
@@ -4229,6 +5247,14 @@ export class EucController {
     } else if (clearAlongZ) {
       slideZ = deltaZ;
       slideExcess = excessAlongZ;
+    }
+    if (this.dynamicWorld?.resolveMotion) {
+      // Axis tests share this.probe. Re-select the accepted candidate's own
+      // ground before handing its physical prism to the pure world resolver.
+      if (slideX === 0 && slideZ === 0) this.sampler.sampleGround(this.x, this.z, this.probe);
+      else slideExcess = this.excessAt(slideX, slideZ, airborne);
+      const dynamic = this.resolveDynamicCandidate(slideX, slideZ, dt, airborne, slideExcess);
+      slideX = dynamic.deltaX; slideZ = dynamic.deltaZ; slideExcess = dynamic.excess;
     }
 
     // Re-sampled rather than copied: `this.probe` currently holds whichever
@@ -4264,7 +5290,7 @@ export class EucController {
       // A terrain-only airborne refusal is contact the landing scorer owns.
       // An authored solid is different: it is a wall/tree/post impact even in
       // flight, and must enter the same speed-gated crash funnel as on ground.
-      impactSpeed: airborne && fullHasClearance ? 0 : Math.abs(speed) * intoWall,
+      impactSpeed: Math.max(airborne && fullHasClearance ? 0 : Math.abs(speed) * intoWall, this.dynamicImpactSpeed),
     };
   }
 
@@ -4297,6 +5323,7 @@ export class EucController {
    * away is dropped — nobody gets nudged off a ledge to keep a pedal clean.
    */
   private applyWallStandoff(dt: number, airborne: boolean): void {
+    if (this.collectingNeutralStep) return;
     const t = this.tuning;
     const standoff = t.wallStandoff;
     const raycastObstacle = this.sampler.raycastObstacle;
@@ -4347,8 +5374,13 @@ export class EucController {
     // A push is a correction, never a climb and never a drop. Anything beyond
     // the step the wheel could mount is somewhere it did not ask to be.
     if (Math.abs(this.probe.height - this.ground.height) > t.maxStepUp) return;
-    this.x = nextX;
-    this.z = nextZ;
+    if (this.dynamicWorld?.resolveMotion) {
+      const dynamic = this.resolveDynamicCandidate(leftX * push, leftZ * push, dt, false,
+        this.probe.height - this.ground.height, 'standoff');
+      if (dynamic.blocked) this.blocked = true;
+      if (dynamic.deltaX === 0 && dynamic.deltaZ === 0) return;
+      this.x += dynamic.deltaX; this.z += dynamic.deltaZ;
+    } else { this.x = nextX; this.z = nextZ; }
     copyGroundSample(this.probe, this.ground);
     // Being held off a wall by the pedal *is* contact, and saying so keeps two
     // things right. A shallow scrape used to alternate between refused and
@@ -4471,37 +5503,7 @@ export class EucController {
    */
   private writeGroundTilt(dt: number): void {
     const t = this.tuning;
-    const normal = this.ground.normal;
-    const cos = Math.cos(this.headingY);
-    const sin = Math.sin(this.headingY);
-
-    // The normal in the heading's own frame. A yaw of -heading, applied to the
-    // world normal.
-    const localX = cos * normal.x - sin * normal.z;
-    const localZ = sin * normal.x + cos * normal.z;
-
-    // Solving `Rz(roll) * Rx(pitch) * up = n` gives these two directly, which
-    // is why the pose carries rig rotations rather than a slope angle: the sign
-    // is derived once, here, instead of being guessed at the renderer.
-    //
-    // The follow fractions then decide how much of the surface's tilt the rig
-    // actually adopts — near zero, after the owner's M4 ride. An EUC is not a
-    // skateboard: the firmware holds the pedals level with *gravity*, so on a
-    // hill the machine stays plumb and the rider leans into the slope
-    // (`slopeLean`, above) instead of the whole rig lying back with the
-    // ground. The full derivation is kept because the fractions are live on F4
-    // and because a fraction of a correctly-signed angle is still correctly
-    // signed.
-    const targetPitch = clamp(
-      Math.asin(clamp(localZ, -1, 1)),
-      -t.maxGroundTilt,
-      t.maxGroundTilt,
-    ) * t.groundTiltPitchFollow;
-    const targetRoll = clamp(
-      Math.atan2(-localX, Math.max(1e-4, normal.y)),
-      -t.maxGroundTilt,
-      t.maxGroundTilt,
-    ) * t.groundTiltRollFollow;
+    const { pitch: targetPitch, roll: targetRoll } = groundTiltTarget(this.ground.normal, this.headingY, t);
 
     if (dt >= 1) {
       this.groundPitch = targetPitch;
@@ -5010,7 +6012,7 @@ export class EucController {
   }
 
   private surfaceResponse(): SurfaceResponse {
-    return this.surfaces[this.surface] ?? this.surfaces.pavement;
+    return this.surfaces[this.traction] ?? this.surfaces.pavement;
   }
 
   // -- Single-step events, for the composition root -------------------------
@@ -5117,6 +6119,9 @@ export class EucController {
   }
 
   /** True while the rider is off the wheel. `app/Game.ts` frames the camera. */
+  /** The authoritative snapshot field without allocating diagnostic state. */
+  get isGrounded(): boolean { return this.grounded; }
+
   get crashed(): boolean {
     return this.crashing;
   }
@@ -5339,6 +6344,7 @@ export class EucController {
    */
   jolt(velocity: number): void {
     if (!Number.isFinite(velocity)) return;
+    this.invalidatePreparedStep();
     this.suspensionVelocity += velocity;
   }
 
@@ -5352,6 +6358,7 @@ export class EucController {
    */
   shedSpeed(metresPerSecond: number): void {
     if (!Number.isFinite(metresPerSecond) || metresPerSecond <= 0) return;
+    this.invalidatePreparedStep();
     this.speed = this.speed >= 0
       ? Math.max(0, this.speed - metresPerSecond)
       : Math.min(0, this.speed + metresPerSecond);
@@ -5371,6 +6378,8 @@ export class EucController {
    */
   bump(pushX: number, pushZ: number, speedCost: number): void {
     if (this.crashing || this.invulnerableTimer > 0) return;
+    if (this.dynamicWorld?.canReact) return this.admitPhysicalReaction('bump', working => working.bump(pushX, pushZ, speedCost), undefined);
+    this.invalidatePreparedStep();
 
     // **A shove does not re-aim the rider, and the first version did.** It
     // summed the push into the velocity and took `atan2` of the result, which
@@ -5421,6 +6430,8 @@ export class EucController {
   separate(deltaX: number, deltaZ: number): void {
     if (this.crashing) return;
     if (deltaX === 0 && deltaZ === 0) return;
+    if (this.dynamicWorld?.canReact) return this.admitPhysicalReaction('separate', working => working.separate(deltaX, deltaZ), undefined);
+    this.invalidatePreparedStep();
     const nextX = this.x + deltaX;
     const nextZ = this.z + deltaZ;
     this.sampler.sampleGround(nextX, nextZ, this.probe);
@@ -5444,6 +6455,8 @@ export class EucController {
    */
   softKnock(speedCost: number): void {
     if (this.crashed) return;
+    if (this.dynamicWorld?.canReact) return this.admitPhysicalReaction('softKnock', working => working.softKnock(speedCost), undefined);
+    this.invalidatePreparedStep();
     this.injectWobble(this.tuning.softBodyWobbleEnergy);
     this.shedSpeed(speedCost);
   }
@@ -5474,12 +6487,470 @@ export class EucController {
    */
   hardKnock(travelX: number, travelZ: number): boolean {
     if (this.crashing || this.invulnerableTimer > 0) return false;
+    if (this.dynamicWorld?.canReact) return this.admitPhysicalReaction('hardKnock', working => working.hardKnock(travelX, travelZ), false);
+    this.invalidatePreparedStep();
     const lateral = travelX * Math.cos(this.headingY) - travelZ * Math.sin(this.headingY);
     // A strike with no lateral travel at all — a head coming straight at the
     // rider's chest — has no side to offer, so `beginCrash` falls back to the
     // lean it was already going to use. Zero rather than a guess.
     const side = lateral > 0 ? 1 : lateral < 0 ? -1 : 0;
     this.beginCrash('struck', this.speed, side);
+    return true;
+  }
+
+  /**
+   * Respond once to an already-sealed whole-step contact refusal. The untouched
+   * native start has not integrated its dt. Yield is an admitted zero-time stop;
+   * braking then gets one full native dt on private scratch. Steering is deferred
+   * only for this explicit contact release, so yaw cannot sweep further into the
+   * actor before the native reverse-hold timer has made backward travel possible.
+   * A second compact-body admission certifies that complete proposed response.
+   * No discarded motion/impact or placement journal is replayed.
+   *
+   * **A human rider meets people and cars the way they meet walls** (POP-3,
+   * CP-4, POP-4; 2026-10-03; R2C-3..R2C-5, 2026-10-04). A proved meeting whose
+   * closing speed along the contact normal reaches `obstacleCrashSpeed` is the
+   * native obstacle crash, its side taken from the normal. Below it the native
+   * step keeps its travel along the actor with the into-actor share taken out
+   * and speed scrubbed by that share squared, as a wall's slide does, and travel
+   * directly away from the actor is kept whole; only if neither is admitted
+   * does the rider scrub in place, and a pinned rider who steers may then pivot
+   * away. Cops keep the zero-speed yield unless they are leaving the actor, so
+   * chase pace is unchanged. A refusal the work bound left unproved first waits
+   * for its proof (CP-1), at most `holdWatchdogSeconds` in the sliding window.
+   * A crashed body is never held, and an airborne one held too long bails out.
+   * `held` defaults to the historic contact yield.
+   */
+  respondToHeldPhysicalContact(token: EucPreparedStep, held: EucHeldPhysicalContact = HELD_CONTACT_YIELD): { admitted: boolean; inputAdvanced: boolean } {
+    if (held.reason === 'placement') return this.respondToRefusedRecovery(token);
+    if (this.crashing) return this.respondToHeldPhysicalSettlement(token, held);
+    if (held.pending && this.awaitContactProof(token)) return { admitted: true, inputAdvanced: false };
+    if (this.airborne) return this.respondToHeldPhysicalSettlement(token, held);
+    const record = PREPARED_CONTROLLER_STEPS.get(token);
+    if (!record || record.owner !== this || !record.committed || !record.held || record.published || record.contactResponded) {
+      throw new Error('EUC contact response needs its unpublished committed held token exactly once');
+    }
+    record.contactResponded = true;
+    const response = this.respondToGroundedContact(record, held);
+    // A response that integrated no native step is still one step of the window.
+    if (!response.inputAdvanced) this.recordContactHold(false);
+    return response;
+  }
+
+  private respondToGroundedContact(record: PreparedControllerStep, held: EucHeldPhysicalContact): { admitted: boolean; inputAdvanced: boolean } {
+    const braking = record.actions.throttle < -0.01 && !record.actions.hop && !this.crashing && !this.airborne;
+    const actions = Object.freeze({ ...record.actions, steer: 0 });
+    const integrate = (working: EucController): boolean => working.stepContactBrakingRelease(record.dt, actions);
+    const advanceInput = () => this.dynamicWorld?.canReact
+      ? this.admitPhysicalReaction('contactInput', integrate, false, result => result) : integrate(this);
+    const rider = held.occupantKind === 'human';
+    // A hard hit is a crash whatever the input, exactly as a wall's funnel is.
+    if (rider && held.met && this.contactClosingSpeed(held) >= this.tuning.obstacleCrashSpeed
+      && this.crashFromPhysicalContact(held)) return { admitted: true, inputAdvanced: false };
+    // Preserve an already outgoing native reverse velocity ONLY when its
+    // complete proposed body path is admitted. A rejected private attempt
+    // changes no state or clock, then the native zero-speed yield may retry.
+    if (braking && this.reversing && this.speed < 0 && advanceInput()) return { admitted: true, inputAdvanced: true };
+    // The wall's slide for a rider; travel leaving the actor for anyone. A lean
+    // that grows toward the actor gets one wider standoff before the scrub.
+    // Along the response normal (a person's is the line between the two
+    // bodies, so an offset meeting glances round them), and if admission
+    // refuses that, along the face that separated them, as admission judges a
+    // slide (2026-10-04). Travel head-on to the first is a stop, never the
+    // face's: alternating the two rocked a pinned rider back and forth.
+    const move = record.motionRequests.find(request => request.kind === 'move');
+    const moveX = move ? move.proposed.x - move.previous.x : 0, moveZ = move ? move.proposed.z - move.previous.z : 0;
+    const into = moveX * held.normalX + moveZ * held.normalZ;
+    const headOn = into < 0 && headOnTravel(Math.hypot(moveX - into * held.normalX, moveZ - into * held.normalZ), Math.hypot(moveX, moveZ));
+    const normals = [{ x: held.normalX, z: held.normalZ }, ...(headOn ? [] : [{ x: held.faceX ?? held.normalX, z: held.faceZ ?? held.normalZ }])]
+      .filter((normal, index, all) => (normal.x !== 0 || normal.z !== 0) && (index === 0 || normal.x !== all[0].x || normal.z !== all[0].z));
+    for (const normal of normals) for (const standoff of rider ? POPULATION_CONTACT.slideStandoffMetres : [0]) {
+      const slide = (working: EucController): boolean => working.stepContactSlide(record.dt, record.actions, normal.x, normal.z, rider, standoff);
+      if (this.dynamicWorld?.canReact ? this.admitPhysicalReaction('contactInput', slide, false, result => result) : slide(this)) {
+        return { admitted: true, inputAdvanced: true };
+      }
+    }
+    const admitted = rider && !braking ? this.scrubPhysicalContact(held, record.dt) : this.yieldPhysicalContact();
+    if (!admitted) return { admitted, inputAdvanced: false };
+    if (braking) return { admitted, inputAdvanced: advanceInput() };
+    // Pinned and steering: one native dt with no drive and the real steer. Nose
+    // to nose a box cannot yaw without its corner digging in, so a refused
+    // pivot first eases straight back off the actor, then tries once more.
+    const pivot = Object.freeze({ ...record.actions, throttle: 0, hop: false });
+    const turn = (working: EucController): boolean => working.stepContactPivot(record.dt, pivot);
+    const tryTurn = () => this.dynamicWorld?.canReact ? this.admitPhysicalReaction('contactInput', turn, false, result => result) : turn(this);
+    const backX = held.normalX * POPULATION_CONTACT.pivotBackOffMetres, backZ = held.normalZ * POPULATION_CONTACT.pivotBackOffMetres;
+    const back = (working: EucController): boolean => working.stepContactBackOff(backX, backZ);
+    const tryBack = () => (backX !== 0 || backZ !== 0)
+      && (this.dynamicWorld?.canReact ? this.admitPhysicalReaction('contactInput', back, false, result => result) : back(this));
+    const turned = rider && this.speed === 0 && Math.abs(record.actions.steer) > 0.01 && (tryTurn() || (tryBack() && tryTurn()));
+    return { admitted, inputAdvanced: turned };
+  }
+
+  /**
+   * Whether a refused grounded step could really have reached `fraction` of
+   * its own native travel, read-only: ground within one step and no authored
+   * solid on the way, as the wheel's own cast asks. A long step can carry its
+   * endpoint past a kerb it would never ride over; that meeting is not real.
+   */
+  physicalContactReachable(token: EucPreparedStep, fraction: number): boolean {
+    const record = PREPARED_CONTROLLER_STEPS.get(token), move = record?.motionRequests.find(request => request.kind === 'move');
+    if (!record || record.owner !== this || !move || this.crashing || this.airborne) return true;
+    const t = this.tuning, deltaX = (move.proposed.x - move.previous.x) * fraction, deltaZ = (move.proposed.z - move.previous.z) * fraction;
+    const ground = createGroundSample(), length = Math.hypot(deltaX, deltaZ);
+    // Every 5 cm of the way, not just the end: the wheel meets a kerb first.
+    for (let i = 1, samples = Math.min(64, Math.ceil(length / 0.05)); i <= samples; i += 1) {
+      this.sampler.sampleGround(this.x + deltaX * i / samples, this.z + deltaZ * i / samples, ground);
+      if (ground.height - this.ground.height > t.maxStepUp) return false;
+    }
+    const raycastObstacle = this.sampler.raycastObstacle;
+    if (length === 0 || raycastObstacle === undefined) return true;
+    return raycastObstacle.call(this.sampler, { x: this.x, y: this.y + t.maxStepUp + 1e-6, z: this.z },
+      { x: deltaX, y: 0, z: deltaZ }, length, t.pedalHalfSpan) === null;
+  }
+
+  /** Ease a pinned rider straight back along the contact normal: ground and solids permitting. */
+  private stepContactBackOff(deltaX: number, deltaZ: number): boolean {
+    if (this.crashing || this.airborne) return false;
+    this.invalidatePreparedStep();
+    this.sampler.sampleGround(this.x + deltaX, this.z + deltaZ, this.probe);
+    if (Math.abs(this.probe.height - this.ground.height) > this.tuning.maxStepUp || this.probe.offCourse
+      || this.obstacleWithinWheelRadius(deltaX, deltaZ)) return false;
+    this.x += deltaX; this.z += deltaZ;
+    copyGroundSample(this.probe, this.ground);
+    return true;
+  }
+
+  /**
+   * This rider's own closing speed along the contact normal (R2C-4,
+   * 2026-10-04): what decides a crash, as the speed into a face does. An actor
+   * walking into a standing rider is not the rider's impact. The wall's
+   * measure (speed times the share not kept as slide) made a forty-five degree
+   * clip at 12 m/s a dead stop with no crash.
+   */
+  private contactClosingSpeed(held: EucHeldPhysicalContact): number {
+    const into = -Math.sign(this.speed) * (Math.sin(this.headingY) * held.normalX + Math.cos(this.headingY) * held.normalZ);
+    return into > 0 ? Math.abs(this.speed) * into : 0;
+  }
+
+  /**
+   * A proved actor contact at obstacle speed: the native obstacle crash
+   * (POP-3; VIS-CRASH-1, 2026-10-04). The body keeps all of its momentum and
+   * pitches on forward, and the riderless wheel rolls on: its particles and
+   * the wheel then meet the person or car as they would a wall, crumple and
+   * glance off them. The fall visibly reaches who it hit, and is never held or
+   * thrown back the way it came (the old rebound flipped riders backwards).
+   */
+  private crashFromPhysicalContact(held: EucHeldPhysicalContact): boolean {
+    if (this.crashing || this.airborne || this.invulnerableTimer > 0) return false;
+    if (this.dynamicWorld?.canReact) return this.admitPhysicalReaction('contactYield', working => working.crashFromPhysicalContact(held), false);
+    this.invalidatePreparedStep();
+    // The obstacle funnel's side rule, from the normal toward this rider.
+    const side = Math.sign(held.normalX * Math.cos(this.headingY) - held.normalZ * Math.sin(this.headingY));
+    this.collisionImpact = this.contactClosingSpeed(held);
+    this.blocked = true;
+    // The cutout's pitch-forward-and-plow, not the wall's flip: a person or
+    // car stops the upper body while the feet carry on under it, so the rider
+    // crumples into them instead of vaulting into a headstand, and the side
+    // fall's own shove glances the body off them to the side it hit them on.
+    this.beginCrash('obstacle', this.speed, side, 'faceplant', this.tuning.ragdollLaunchSide);
+    return true;
+  }
+
+  /** Neither slide nor departure admitted: the head-on wall scrub in place. */
+  private scrubPhysicalContact(held: EucHeldPhysicalContact, dt: number): boolean {
+    if (this.crashing || this.airborne) return false;
+    if (this.dynamicWorld?.canReact) return this.admitPhysicalReaction('contactYield', working => working.scrubPhysicalContact(held, dt), false);
+    this.invalidatePreparedStep();
+    // Travel away from the actor (it walked into this rider) keeps its speed.
+    const impact = this.contactClosingSpeed(held);
+    if (impact > 0 || !held.met) this.shedSpeed(this.tuning.wallScrubDecel * dt);
+    this.blocked = true;
+    this.obstacleEscapeArmed = true;
+    this.collisionImpact = held.met ? impact : 0;
+    return true;
+  }
+
+  /**
+   * The native grounded step with the into-actor share of its travel taken
+   * back out along the contact normal (R2C-4/R2C-5, 2026-10-04): a rider keeps
+   * the tangential slide a wall's axis slide keeps, and pays the same squared
+   * scrub; travel already leaving the actor is the native step itself. A cop
+   * (`slide` false) keeps only a departure. Admission certifies the result.
+   */
+  private stepContactSlide(dt: number, actions: ActionSnapshot, normalX: number, normalZ: number, slide: boolean, standoff: number): boolean {
+    if (this.crashing || this.airborne) return false;
+    const x = this.x, z = this.z;
+    this.step(dt, actions);
+    if (this.crashing || this.airborne) return false;
+    const deltaX = this.x - x, deltaZ = this.z - z, length = Math.hypot(deltaX, deltaZ), along = deltaX * normalX + deltaZ * normalZ;
+    if (length === 0) return false;
+    if (along >= 0) return true;
+    if (!slide) return false;
+    // Head-on there is nothing to slide along; the standoff would only bounce
+    // the rider off the actor every step instead of letting the scrub stop it.
+    const tangent = Math.hypot(deltaX - along * normalX, deltaZ - along * normalZ);
+    if (headOnTravel(tangent, length)) return false;
+    // Out by the into share and a few millimetres more, as the wall standoff
+    // eases a wheel off its face: a lean that grows into the actor keeps room.
+    // A kerb or a solid on the far side refuses the room, not the slide: the
+    // into share alone is then taken out (R2C-4, 2026-10-04).
+    const height = this.ground.height;
+    const blockedOut = (deltaX: number, deltaZ: number): boolean => {
+      this.sampler.sampleGround(this.x + deltaX, this.z + deltaZ, this.probe);
+      return Math.abs(this.probe.height - height) > this.tuning.maxStepUp || this.probe.offCourse !== this.ground.offCourse
+        || this.obstacleWithinWheelRadius(deltaX, deltaZ);
+    };
+    let out = standoff - along;
+    if (blockedOut(out * normalX, out * normalZ)) { out = -along; if (blockedOut(out * normalX, out * normalZ)) return false; }
+    const backX = out * normalX, backZ = out * normalZ;
+    this.sampler.sampleGround(this.x + backX, this.z + backZ, this.probe);
+    this.commit(backX, backZ, true);
+    this.y += this.ground.height - height; this.groundY = this.ground.height;
+    const forwardX = Math.sin(this.headingY), forwardZ = Math.cos(this.headingY);
+    this.wheelSpin += (backX * forwardX + backZ * forwardZ) / this.tuning.wheelRadius;
+    this.distanceTravelled += Math.hypot(this.x - x, this.z - z) - length;
+    // The wall's measure: one minus the share of the travel kept as slide, squared.
+    const into = Math.max(0, 1 - tangent / length);
+    const scrub = this.tuning.wallScrubDecel * into * into * dt;
+    this.speed = this.speed > 0 ? Math.max(0, this.speed - scrub) : Math.min(0, this.speed + scrub);
+    this.blocked = true;
+    this.obstacleEscapeArmed = true;
+    return this.x !== x || this.z !== z;
+  }
+
+  /**
+   * A refusal the refinement work bound stopped proved nothing (CP-1). Keep
+   * the restored start untouched, so the next step prepares the bit-identical
+   * candidate and resumes its kept proof, until the watchdog in the sliding
+   * window: then the ordinary response takes over.
+   */
+  private awaitContactProof(token: EucPreparedStep): boolean {
+    const record = PREPARED_CONTROLLER_STEPS.get(token);
+    if (!record || record.owner !== this || !record.committed || !record.held || record.published || record.contactResponded) {
+      throw new Error('EUC contact response needs its unpublished committed held token exactly once');
+    }
+    if (this.contactHeldSeconds(record.dt) + record.dt > POPULATION_CONTACT.holdWatchdogSeconds + 1e-9) return false;
+    record.contactResponded = true;
+    this.invalidatePreparedStep();
+    this.recordContactHold(true);
+    return true;
+  }
+
+  /** One fixed step into the hold window; `held` when it made no progress waiting. */
+  private recordContactHold(held: boolean): void {
+    this.contactHoldMaskOlder = ((this.contactHoldMaskOlder << 1) | (this.contactHoldMask >>> 29)) & 0x3fffffff;
+    this.contactHoldMask = ((this.contactHoldMask << 1) | (held ? 1 : 0)) & 0x3fffffff;
+  }
+
+  /** Held seconds in the last half second (60 fixed steps of `dt`). */
+  private contactHeldSeconds(dt: number): number {
+    return (heldStepCount(this.contactHoldMask) + heldStepCount(this.contactHoldMaskOlder)) * dt;
+  }
+
+  /** Native turn-away for a pinned rider; refuses anything but a grounded pivot. */
+  private stepContactPivot(dt: number, actions: ActionSnapshot): boolean {
+    if (this.crashing || this.airborne || this.speed !== 0) return false;
+    const headingY = this.headingY;
+    this.step(dt, actions);
+    return !this.crashing && !this.airborne && this.headingY !== headingY;
+  }
+
+  /**
+   * Native constraint for the explicit grounded contact-release phase. Keep
+   * the two held stance channels at their actual current state while the SAME
+   * full integrator advances force lean, reverse dwell, clocks and travel.
+   * Those presentation-only updates are skipped at their native update sites;
+   * no pose is replayed or overwritten after integration. The final physical
+   * pose is still independently admitted before any live state is committed.
+   */
+  private stepContactBrakingRelease(dt: number, actions: ActionSnapshot): boolean {
+    if (this.crashing || this.airborne || this.speed > 0 || (this.speed < 0 && !this.reversing)) return false;
+    this.contactBrakingConstraint = true;
+    try { this.step(dt, actions); }
+    finally { this.contactBrakingConstraint = false; }
+    // This bounded mounted policy cannot silently promote an air/crash result.
+    return !this.crashing && !this.airborne;
+  }
+
+  settlePhysicalContact(): boolean {
+    if (!this.crashing && !this.airborne) return false;
+    if (this.dynamicWorld?.canReact) return this.admitPhysicalReaction('contactSettle', working => working.settlePhysicalContact(), false);
+    this.invalidatePreparedStep();
+    this.speed = 0;
+    // A side stop owns horizontal momentum only. Actual native gravity and
+    // vertical Verlet velocity remain live; no crash mode or landing is minted.
+    this.wheelCrashSpinRate = 0;
+    if (this.ragdolling) this.ragdoll.constrainHorizontalContactVelocity();
+    this.blocked = true;
+    this.collisionImpact = 0;
+    return true;
+  }
+
+  /**
+   * A crashed or airborne body's refused step (2026-10-04). **A crash is
+   * never held** (R2C-1/R2C-3): its actual native fall, which meets people and
+   * cars with its own particles and wheel, commits whatever the compact
+   * certificate says, so its tumble and its recovery clock always run. An
+   * airborne rider keeps the native flight if it is admitted; flown into the
+   * actor at obstacle speed, it is the obstacle crash there and then (review
+   * r3: the stop had been an invisible wall in mid-air); else drops its
+   * horizontal momentum; else also lets go of throttle and steer, whose lean
+   * swung the body into the actor (R2C-2). Held past the watchdog in the
+   * sliding window, it comes off the wheel there, and that fall is never held.
+   */
+  private respondToHeldPhysicalSettlement(token: EucPreparedStep, held: EucHeldPhysicalContact): { admitted: boolean; inputAdvanced: boolean } {
+    const record = PREPARED_CONTROLLER_STEPS.get(token);
+    if (!record || record.owner !== this || !record.committed || !record.held || record.published || record.contactResponded) {
+      throw new Error('EUC settlement response needs its unpublished committed held token exactly once');
+    }
+    record.contactResponded = true;
+    if (this.crashing) return { admitted: true, inputAdvanced: this.advanceNativeContactFall(record) || this.advanceNativeContactFall(record, undefined, false) };
+    // Preserve actual native outgoing/tangential/vertical motion only after
+    // its full proposed compact body path is admitted. A refused scratch fall
+    // changes no live clock, serial or Verlet history before the stop/retry.
+    if (this.advanceNativeContactFall(record)) return { admitted: true, inputAdvanced: true };
+    if (held.reason === 'contact' && !held.pending && held.occupantKind === 'human'
+      && this.contactClosingSpeed(held) >= this.tuning.obstacleCrashSpeed && this.crashFromAirContact(held)) {
+      return { admitted: true, inputAdvanced: false };
+    }
+    const admitted = this.settlePhysicalContact();
+    if (admitted && this.advanceNativeContactFall(record)) return { admitted, inputAdvanced: true };
+    const neutral = Object.freeze({ ...record.actions, throttle: 0, steer: 0 });
+    if (admitted && this.advanceNativeContactFall(record, working => { working.step(record.dt, neutral); return true; })) {
+      return { admitted, inputAdvanced: true };
+    }
+    this.invalidatePreparedStep();
+    this.recordContactHold(true);
+    if (this.contactHeldSeconds(record.dt) >= POPULATION_CONTACT.holdWatchdogSeconds - 1e-9) this.bailFromHeldAir(held);
+    return { admitted, inputAdvanced: false };
+  }
+
+  /** The airborne watchdog: off the wheel where the actor holds them (R2C-2). */
+  private bailFromHeldAir(held: EucHeldPhysicalContact): void {
+    this.invalidatePreparedStep();
+    this.collisionImpact = 0;
+    this.blocked = true;
+    // A side fall, so the body goes down beside the actor rather than into it.
+    // Held still, the wheel starts from rest.
+    this.crashInAir(held.normalX, held.normalZ, 'sideFall', 0);
+    this.wheelCrashPopVelocity = 0;
+  }
+
+  /**
+   * Flown into a person or car at obstacle speed (review r3, 2026-10-04): the
+   * grounded contact crash's faceplant, begun in the air where the meeting is.
+   */
+  private crashFromAirContact(held: EucHeldPhysicalContact): boolean {
+    if (this.crashing || !this.airborne || this.invulnerableTimer > 0) return false;
+    if (this.dynamicWorld?.canReact) return this.admitPhysicalReaction('contactYield', working => working.crashFromAirContact(held), false);
+    this.invalidatePreparedStep();
+    this.collisionImpact = this.contactClosingSpeed(held);
+    this.blocked = true;
+    this.crashInAir(held.normalX, held.normalZ, 'faceplant', this.tuning.ragdollLaunchSide);
+    return true;
+  }
+
+  /**
+   * Off the wheel where they are in the air, not on the ground below
+   * (2026-10-04): the body starts at its height and the riderless wheel falls
+   * from its own on the crash wheel's ballistic pop, instead of a metre-high
+   * snap. The root goes down to the ground in this same step (the crash
+   * step's own rule), so root plus pop is where the wheel was.
+   */
+  private crashInAir(normalX: number, normalZ: number, motion: 'sideFall' | 'faceplant', glance: number, speed = this.speed): void {
+    const side = Math.sign(normalX * Math.cos(this.headingY) - normalZ * Math.sin(this.headingY));
+    const height = Math.max(0, this.y - this.ground.height);
+    const bodies = this.dynamicWorld?.ragObstacleBodies?.() ?? this.dynamicWorld?.ragObstacles ?? [];
+    const hung = bodies.length ? createPose() : null;
+    if (hung) this.writePose(hung);
+    this.beginCrash('obstacle', speed, side, motion, glance, this.ground.height + height);
+    this.groundY = this.ground.height; this.y = this.groundY;
+    this.wheelCrashPop = height;
+    // Let go above someone, the wheel drops beside them, never through them
+    // (review r3: off a bay edge over a worker it fell 2 m into his hull).
+    const clear = hung && proposeWheelClearOfBodies(hung, bodies, RIDER_CONTACT, POPULATION.contactSkinMetres + POPULATION.nativePhaseRetryReserveMetres);
+    if (hung && clear && (clear.x !== 0 || clear.z !== 0)) this.projectCrashWheelSideContact(hung, clear);
+  }
+
+  /**
+   * Respond once to a whole step refused because its recovery placement was
+   * not clear (CP-3). After `recoveryFallbackSeconds` the fallback targets are
+   * tried live, each through the real placement port; a placement is published
+   * with the token's journal exactly as a native recovery is.
+   */
+  private respondToRefusedRecovery(token: EucPreparedStep): { admitted: boolean; inputAdvanced: boolean } {
+    const record = PREPARED_CONTROLLER_STEPS.get(token);
+    if (!record || record.owner !== this || !record.committed || !record.held || record.published || record.contactResponded) {
+      throw new Error('EUC recovery response needs its unpublished committed held token exactly once');
+    }
+    record.contactResponded = true;
+    this.recordContactHold(false);
+    // Only a crash's own automatic/asked recovery; a refused quick reset is the player's to retry.
+    if (!this.crashing || !record.placementRequests.some(request => request.reason === 'recover')) return { admitted: false, inputAdvanced: false };
+    this.invalidatePreparedStep();
+    this.recoveryRefusedSeconds += record.dt;
+    if (this.recoveryRefusedSeconds < POPULATION_CONTACT.recoveryFallbackSeconds) return { admitted: true, inputAdvanced: false };
+    return { admitted: true, inputAdvanced: this.advanceNativeContactFall(record, working => working.respawn()) };
+  }
+
+  /** Private scratch integration context; cleared before every accepted live copy. */
+  private nativePhaseRetryReserveMetres = 0;
+
+  /** `admit` false: a crashed body's native fall commits without the compact admission (2026-10-04). */
+  private advanceNativeContactFall(record: PreparedControllerStep,
+    integrate: (working: EucController) => boolean = working => { working.step(record.dt, record.actions); return true; }, admit = true): boolean {
+    let working = this.reactionController;
+    if (!working) {
+      working = new EucController(this.sampler, { hazards: this.hazards, softBodies: this.softBodies });
+      working.style = { ...this.style }; this.reactionController = working;
+    }
+    working.copyStepConfigurationFrom(this); working.copyMutableStateFrom(this);
+    const world = this.dynamicWorld, placements: EucPlacementRequest[] = [], notifications: EucPlacementRequest[] = [];
+    let placementDenied = false;
+    working.dynamicWorld = world ? {
+      hull: { ...world.hull }, ragObstacles: world.ragObstacles, ragObstacleBodies: world.ragObstacleBodies, occupantKind: world.occupantKind, resolveMotion: () => null,
+      // A recovery may try several targets (CP-3); its accepted one is the last asked.
+      canPlace: request => { const detached = detachedPlacement(request); placements.push(detached);
+        const clear = world.canPlace?.(detached) ?? false; placementDenied = !clear; return clear; },
+      didPlace: request => notifications.push(detachedPlacement(request)),
+    } : undefined;
+    const before = createPose(); this.writePose(before);
+    const revision = this.stateRevision, serial = this.placementSerial;
+    // Try the actual full native fall and its update-site side constraint.
+    // The complete compact pose trajectory is independently admitted below.
+    // The sealed contact retry always reserves room for the changing human
+    // frame; an unheld native proposal only when its skin projection must move
+    // it anyway. No projection is itself clearance authority.
+    working.nativePhaseRetryReserveMetres = POPULATION.nativePhaseRetryReserveMetres;
+    let progressed: boolean;
+    try { progressed = integrate(working); }
+    finally { working.nativePhaseRetryReserveMetres = 0; }
+    if (!progressed) return false;
+    const proposed = createPose(); working.writePose(proposed);
+    const discontinuous = working.placementSerial !== serial;
+    // A native recovery placement is checked at its actual endpoint. It is
+    // not an interpolated body path from the old crash to the safe position.
+    const inputAdvanced = discontinuous
+      ? (!world || (placements.length > 0 && !placementDenied && notifications.length > 0))
+      : !admit || (world?.canReact?.(Object.freeze({ kind: 'contactClock', previous: detachedOccupancyPose(before), proposed: detachedOccupancyPose(proposed) })) ?? true);
+    if (this.stateRevision !== revision || !this.sameStepConfiguration(working)) throw new Error('Settlement query mutated its controller');
+    if (!inputAdvanced) return false;
+    this.invalidatePreparedStep(); this.copyMutableStateFrom(working);
+    record.notifications.push(...notifications); record.didPlace = world?.didPlace;
+    record.resolvedPlacementRequests = Object.freeze([...record.resolvedPlacementRequests, ...placements]);
+    record.discontinuitySerial = this.placementSerial; record.placementBlocked = this.dynamicPlacementBlocked;
+    return true;
+  }
+
+  /** Conservative native speed/context yield; its exact physical result is admitted. */
+  yieldPhysicalContact(): boolean {
+    if (this.crashing || this.airborne) return false;
+    if (this.dynamicWorld?.canReact) return this.admitPhysicalReaction('contactYield', working => working.yieldPhysicalContact(), false);
+    this.invalidatePreparedStep();
+    this.shedSpeed(Math.abs(this.speed));
+    this.blocked = true;
+    this.obstacleEscapeArmed = true;
     return true;
   }
 

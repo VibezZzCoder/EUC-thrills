@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { EUC, PHYSICS, RIDER, RIDER_BLOCKOUT, WHEEL } from '../data/tuning.ts';
 import type { GroundSample, TerrainSampler, Vec3 } from './world.ts';
-import { createGroundSample } from './world.ts';
+import { copyGroundSample, createGroundSample } from './world.ts';
 import type { SoftBodyField } from './softBodies.ts';
 
 /**
@@ -142,6 +142,27 @@ const CONSTRAINTS: readonly RagdollConstraint[] = [
   { a: RD_FOOT_L, b: RD_FOOT_R, length: 0.12, kind: 2, stiffness: 0.8 },
 ];
 
+/**
+ * A living body as the rag meets it: an upright oriented prism, heading zero
+ * along +Z (a person's or a car's population hull). Structural, so this file
+ * imports nothing from the population.
+ */
+export interface RagContactBody {
+  readonly x: number;
+  readonly z: number;
+  readonly headingY: number;
+  readonly halfWidthMetres: number;
+  readonly halfLengthMetres: number;
+  readonly minY: number;
+  readonly maxY: number;
+}
+/** A person's hull is a square stand-in for a round body, no wider than this (as the population tells them apart). */
+const PERSON_HALF_METRES = 0.8;
+/** How fast a body come down on someone's head slides off them, m/s. */
+const PERSON_SLIDE_METRES_PER_SECOND = 3;
+const personSized = (body: RagContactBody): boolean => Math.abs(body.halfWidthMetres - body.halfLengthMetres) <= 1e-6
+  && body.halfWidthMetres <= PERSON_HALF_METRES;
+
 /** The tuning slice the ragdoll reads. A subset of `EucTuning`. */
 export interface RagdollTuning {
   gravity: number;
@@ -179,15 +200,74 @@ export interface RagdollSeed {
   intoSolid: boolean;
   /** Which side the rider goes down, +1 rider-left (+X). */
   side: number;
+  /** A sideways throw toward `side`, m/s, on top of the cause's own (a body
+   * glancing off the person or car it hit, 2026-10-04). Absent: none. */
+  glance?: number;
 }
 
 export class CrashRagdoll {
   /** World-space particle positions, x/y/z interleaved. Read by `writePose`. */
   readonly positions = new Float64Array(RAGDOLL_FLOATS);
   private readonly previous = new Float64Array(RAGDOLL_FLOATS);
+  /** Where each particle began the current step: which living-body face it crossed. Scratch. */
+  private readonly stepStart = new Float64Array(RAGDOLL_FLOATS);
   private readonly ground: GroundSample = createGroundSample();
   private readonly castOrigin: Vec3 = { x: 0, y: 0, z: 0 };
   private readonly castDirection: Vec3 = { x: 0, y: 0, z: 0 };
+
+  /** Copy positions AND Verlet history into existing storage, without allocation. */
+  copyStateFrom(source: CrashRagdoll): void {
+    this.positions.set(source.positions);
+    this.previous.set(source.previous);
+    copyGroundSample(source.ground, this.ground);
+    Object.assign(this.castOrigin, source.castOrigin);
+    Object.assign(this.castDirection, source.castDirection);
+  }
+
+  /** Native contact stop: remove latent Verlet motion without moving a particle. */
+  constrainContactVelocity(): void { this.previous.set(this.positions); }
+
+  /** A horizontal contact stop retains the real vertical Verlet fall. */
+  constrainHorizontalContactVelocity(): void {
+    for (let index = 0; index < RAGDOLL_PARTICLES; index += 1) { const base = index * 3;
+      this.previous[base] = this.positions[base]; this.previous[base + 2] = this.positions[base + 2]; }
+  }
+
+  /** Native full-body side constraint. Every world-space particle and its
+   * history moves together; vertical and outward/tangential velocity survive.
+   * Refuse a proposal across authored solids or uphill ground before mutation. */
+  canProjectSideContact(x: number, z: number, sampler: TerrainSampler): boolean {
+    const travel = Math.hypot(x, z); if (travel === 0) return true;
+    if (!Number.isFinite(travel)) throw new RangeError('Non-finite native rag contact projection');
+    for (let index = 0; index < RAGDOLL_PARTICLES; index += 1) {
+      const base = index * 3, px = this.positions[base], py = this.positions[base + 1], pz = this.positions[base + 2];
+      sampler.sampleGround(px, pz, this.ground); const beforeHeight = this.ground.height;
+      sampler.sampleGround(px + x, pz + z, this.ground);
+      if (this.ground.height > beforeHeight) return false;
+      if (sampler.raycastObstacle) {
+        this.castOrigin.x = px; this.castOrigin.y = py; this.castOrigin.z = pz;
+        this.castDirection.x = x / travel; this.castDirection.y = 0; this.castDirection.z = z / travel;
+        const hit = sampler.raycastObstacle(this.castOrigin, this.castDirection, travel + RADIUS[index], RADIUS[index]);
+        if (hit !== null && hit <= travel + RADIUS[index]) return false;
+      }
+    }
+    return true;
+  }
+
+  projectSideContact(x: number, z: number, normals: readonly { x: number; z: number }[], sampler: TerrainSampler): boolean {
+    if (!this.canProjectSideContact(x, z, sampler)) return false;
+    for (let index = 0; index < RAGDOLL_PARTICLES; index += 1) {
+      const base = index * 3;
+      let vx = this.positions[base] - this.previous[base], vz = this.positions[base + 2] - this.previous[base + 2];
+      for (const normal of normals) {
+        const inward = vx * normal.x + vz * normal.z;
+        if (inward < 0) { vx -= inward * normal.x; vz -= inward * normal.z; }
+      }
+      this.positions[base] += x; this.positions[base + 2] += z;
+      this.previous[base] = this.positions[base] - vx; this.previous[base + 2] = this.positions[base + 2] - vz;
+    }
+    return true;
+  }
 
   /**
    * Place the skeleton in the riding pose and hand it the crash's momentum.
@@ -313,6 +393,8 @@ export class CrashRagdoll {
         vForward = speed * direction * 0.9;
       }
 
+      if (input.glance) vSide += input.side * input.glance * launch * (upper ? 1 : 0.5);
+
       const base = index * 3;
       this.previous[base] = pos[base] - (forwardX * vForward + leftX * vSide) * dt;
       this.previous[base + 1] = pos[base + 1] - vUp * dt;
@@ -333,9 +415,11 @@ export class CrashRagdoll {
     sampler: TerrainSampler,
     soft: SoftBodyField,
     t: RagdollTuning,
+    bodies: readonly RagContactBody[] = [],
   ): void {
     const pos = this.positions;
     const prev = this.previous;
+    if (bodies.length) this.stepStart.set(pos);
 
     // -- Integrate -----------------------------------------------------------
     // **The settle-and-hold.** From 1.4 s the damping ramps up hard and the
@@ -520,6 +604,68 @@ export class CrashRagdoll {
         pos[base + 2] = this.castOrigin.z + this.castDirection.z * allowed;
         prev[base] = pos[base] + this.castDirection.x * move * t.ragdollRestitution;
         prev[base + 2] = pos[base + 2] + this.castDirection.z * move * t.ragdollRestitution;
+      }
+    }
+
+    if (bodies.length) this.meetBodies(bodies, dt, t);
+  }
+
+  /**
+   * People and cars (2026-10-04). Every particle that moved into a living
+   * body's prism this step is put back on the face it crossed, its speed into
+   * that face given back as the ground's small bounce and its slide along the
+   * face kept, less the ground's friction; one that came down onto the top
+   * lands on it. So a body that hits someone stops at them and slides or
+   * glances off rather than being reflected back the way it came, and none of
+   * it passes through them. A particle already inside a body (it came down
+   * onto it) is free to leave: only entering is a face.
+   */
+  private meetBodies(bodies: readonly RagContactBody[], dt: number, t: RagdollTuning): void {
+    const pos = this.positions, prev = this.previous, start = this.stepStart, keep = 1 - Math.min(1, t.ragdollFriction * dt);
+    for (let index = 0; index < RAGDOLL_PARTICLES; index += 1) {
+      const base = index * 3, radius = RADIUS[index];
+      for (const body of bodies) {
+        const y = pos[base + 1], top = body.maxY + radius;
+        if (y >= top || y + radius < body.minY) continue;
+        const sin = Math.sin(body.headingY), cos = Math.cos(body.headingY);
+        const halfX = body.halfWidthMetres + radius, halfZ = body.halfLengthMetres + radius;
+        const lx = (pos[base] - body.x) * cos - (pos[base + 2] - body.z) * sin;
+        const lz = (pos[base] - body.x) * sin + (pos[base + 2] - body.z) * cos;
+        if (Math.abs(lx) >= halfX || Math.abs(lz) >= halfZ) continue;
+        // From where it began this step: friction and bounces move `prev`.
+        const px = (start[base] - body.x) * cos - (start[base + 2] - body.z) * sin;
+        const pz = (start[base] - body.x) * sin + (start[base + 2] - body.z) * cos, py = start[base + 1];
+        if (Math.abs(px) < halfX && Math.abs(pz) < halfZ && py < top) continue;
+        // The face crossed last on the way in: the slab entry times.
+        const enter = (from: number, to: number, half: number): number => Math.abs(from) < half || from === to ? -Infinity
+          : (Math.sign(from) * half - from) / (to - from);
+        const tx = enter(px, lx, halfX), tz = enter(pz, lz, halfZ), ty = py >= top && y < py ? (top - py) / (y - py) : -Infinity;
+        let vx = pos[base] - prev[base], vy = pos[base + 1] - prev[base + 1], vz = pos[base + 2] - prev[base + 2];
+        if (ty >= tx && ty >= tz) {
+          // Down onto the top: the ground's own landing, on the roof.
+          pos[base + 1] = top;
+          prev[base + 1] = top + vy * t.ragdollRestitution;
+          if (!personSized(body)) { prev[base] += vx * (1 - keep); prev[base + 2] += vz * (1 - keep); continue; }
+          // A person's head and shoulders are no roof (review r3: a bail over
+          // a worker lay on him for half a second): it slides off by the
+          // nearer side at no less than a slide's pace, never thrown.
+          const alongX = halfX - Math.abs(lx) <= halfZ - Math.abs(lz), sign = (alongX ? Math.sign(lx) : Math.sign(lz)) || 1;
+          const normalX = alongX ? cos * sign : sin * sign, normalZ = alongX ? -sin * sign : cos * sign;
+          const out = vx * normalX + vz * normalZ, least = PERSON_SLIDE_METRES_PER_SECOND * dt;
+          if (out < least) { vx += (least - out) * normalX; vz += (least - out) * normalZ; }
+          prev[base] = pos[base] - vx; prev[base + 2] = pos[base + 2] - vz;
+          continue;
+        }
+        // The crossed side's outward normal, in world axes.
+        const alongX = tx >= tz, sign = alongX ? Math.sign(px) : Math.sign(pz);
+        const normalX = alongX ? cos * sign : sin * sign, normalZ = alongX ? -sin * sign : cos * sign;
+        const depth = alongX ? halfX - Math.abs(lx) : halfZ - Math.abs(lz);
+        pos[base] += normalX * (depth + 1e-4); pos[base + 2] += normalZ * (depth + 1e-4);
+        const into = vx * normalX + vz * normalZ;
+        if (into < 0) { vx -= into * (1 + t.ragdollRestitution) * normalX; vz -= into * (1 + t.ragdollRestitution) * normalZ; }
+        const tangentX = vx - (vx * normalX + vz * normalZ) * normalX, tangentZ = vz - (vx * normalX + vz * normalZ) * normalZ;
+        vx -= tangentX * (1 - keep); vz -= tangentZ * (1 - keep);
+        prev[base] = pos[base] - vx; prev[base + 2] = pos[base + 2] - vz;
       }
     }
   }

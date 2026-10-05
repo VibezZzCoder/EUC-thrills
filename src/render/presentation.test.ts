@@ -348,21 +348,39 @@ test('`setLevel`\u2019s recipe override builds the named rung and reports that r
   // enhanced 177,704, and **33 draw calls either way** —
   // §36.7's "zero new call buckets", which is what makes the two rungs a
   // topology choice and not a budget one.
+  //
+  // 2026-10-04: re-measured on `switchback-r5` (CHANGELOG 2026-10-01/02: the
+  // trail glyphs sit on dirt with no wood pads; route faces on the nine
+  // existing poles; contracted bend arrows, four after-bend confirmations and
+  // 134 advance-cue strokes). Every term is the plan's, none the recipe's:
+  //   paint 399 -> 518 ribbon quads           +119 x 2 =   +238
+  //   9 signPlate (24) -> 9 routeSignPlate (24)
+  //     + 8 routeSignTech (90) + 1 routeSignAir (76)    =   +796
+  //   161,856 + 1,034 = 162,890; 177,704 + 1,034 = 178,738.
+  // Draw calls 33 -> 34: the wood surface call goes with the pads (-1), the
+  // TECH and AIR face templates are two new non-casting buckets (+2). Both
+  // rungs still share every call, and the enhanced delta is unchanged.
+  // 2026-10-04 (VIS-3-R2): full-size DOWN/DROP and one ribbon per glyph leg,
+  //   paint 518 -> 701 ribbon quads           +183 x 2 =   +366, same calls;
+  //   then a bevel quad at 249 turned glyph corners (review follow-up),
+  //   paint 701 -> 950 ribbon quads           +249 x 2 =   +498, same calls.
   const selected = selectPresentation(switchback);
   assert.equal(selected.recipe.id, 'enhanced', 'the park is no longer the enhanced fixture this needs');
 
   const baseline = forcedPresentation(selected, 'baseline');
   assert.equal(baseline.recipe.id, 'baseline');
-  assert.equal(baseline.cost.triangles, 161_856);
+  assert.equal(baseline.cost.triangles, 161_856 + 238 + 796 + 366 + 498);
   assert.equal(baseline.cost.recipe, 'baseline', 'the reported cost named the other rung');
 
   const enhanced = forcedPresentation(selected, 'enhanced');
   assert.equal(enhanced.recipe.id, 'enhanced');
-  assert.equal(enhanced.cost.triangles, 177_704);
+  assert.equal(enhanced.cost.triangles, 177_704 + 238 + 796 + 366 + 498);
   assert.equal(enhanced.cost.recipe, 'enhanced');
+  assert.equal(enhanced.cost.triangles - baseline.cost.triangles, 177_704 - 161_856,
+    'the recipe delta moved; only the plan was meant to');
 
   assert.equal(baseline.cost.drawCalls, enhanced.cost.drawCalls, 'a recipe added a draw call');
-  assert.equal(baseline.cost.drawCalls, 33);
+  assert.equal(baseline.cost.drawCalls, 34);
 
   // **The cost reported is the cost of the topology actually built.** The
   // override swaps which verdict is reported and nothing else, so each rung's

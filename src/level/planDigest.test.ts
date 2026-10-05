@@ -247,11 +247,18 @@ const SLICE_PLAN_DIGEST_2026_08_10_SHRUB_COLLISION = '088e4522385ab4837297325789
  */
 const SLICE_PLAN_DIGEST_2026_08_11_SOFT_FOLIAGE = '76a2d24495a2a0e333497b2111b1a6af';
 
-test('the slice emits the intentionally revised soft-foliage plan', () => {
+test('the slice preserves its historical riding plan while explicitly adding living authoring', () => {
+  const current = createSliceLevel(), historical = { ...current };
+  // The owner reopened physical population in the environment overhaul.
+  // Its explicit new metadata changes the full canonical digest, while this
+  // archived reference continues pinning every original riding field.
+  assert.ok((current.populationPaths?.length ?? 0) > 0);
+  delete historical.populationPaths;
+  assert.notEqual(planDigest(current), planDigest(historical));
   assert.equal(
-    planDigest(createSliceLevel()),
+    planDigest(historical),
     SLICE_PLAN_DIGEST_2026_08_11_SOFT_FOLIAGE,
-    'the hand-authored slice changed. docs/PLANS.md M12: stop and tell the '
+    'the historical riding fields changed. docs/PLANS.md M12: stop and tell the '
       + 'owner — the slice is the reference this milestone is judged against '
       + 'and it stays in the build permanently.',
   );

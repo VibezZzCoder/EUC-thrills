@@ -13,6 +13,7 @@ import {
   TOUCH_SCALE_MAX,
   TOUCH_SCALE_MIN,
   coerceOptions,
+  deviceDefaults,
   sameOptions,
   type GameOptions,
 } from './options.ts';
@@ -342,4 +343,24 @@ test('reset takes a saved Ultra back to High', () => {
   store.reset();
   assert.equal(store.current.quality, 'high');
   assert.equal(new OptionsStore(new SafeStorage(backing)).current.quality, 'high');
+});
+
+test('a phone or tablet starts on Medium; a saved choice and a fine pointer keep theirs (2026-10-04)', () => {
+  // Owner decision: the living world made High several times the Sep 26
+  // frame, and no handset has measured it, so a finger-first device starts
+  // one step down. Desktops and touchscreen laptops are untouched.
+  assert.deepEqual(deviceDefaults(false), {});
+  assert.equal(new OptionsStore(new SafeStorage(new MemoryStore()), deviceDefaults(false)).current.quality, 'high');
+  assert.equal(new OptionsStore(new SafeStorage(new MemoryStore()), deviceDefaults(true)).current.quality, 'medium');
+
+  // A phone player who already chose High (or anything else) keeps it.
+  const backing = new MemoryStore();
+  new OptionsStore(new SafeStorage(backing), deviceDefaults(true)).set({ quality: 'high' });
+  assert.equal(new OptionsStore(new SafeStorage(backing), deviceDefaults(true)).current.quality, 'high');
+
+  // Reset on a phone returns to the phone default, never to Ultra.
+  const store = new OptionsStore(new SafeStorage(new MemoryStore()), deviceDefaults(true));
+  store.set({ quality: 'ultra' });
+  store.reset();
+  assert.equal(store.current.quality, 'medium');
 });

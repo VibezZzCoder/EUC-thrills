@@ -1,5 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
+import { potentialGeometryTriangles } from './vegetationDistance.ts';
 import type { LevelPlan, Prop } from '../level/plan.ts';
 import { PROP_KINDS, type PropKind } from '../data/props.ts';
 import { CHASE, FX, LIGHTING } from '../data/tuning.ts';
@@ -142,11 +143,9 @@ export function measureObject(root: THREE.Object3D): SceneCost {
       for (const group of geometry.groups) triangles += group.count / 3;
     } else {
       calls = 1;
-      const index = geometry.getIndex();
-      const vertices = index !== null
-        ? index.count
-        : (geometry.getAttribute('position')?.count ?? 0);
-      triangles = vertices / 3;
+      // A conifer may allocate three mutually exclusive distance ranges.
+      // Budget potential near work independently of the last drawn camera.
+      triangles = potentialGeometryTriangles(geometry);
     }
 
     meshes.push({
@@ -873,7 +872,18 @@ export function measurePartTriangles(
     size: { x: 10, y: 7, z: 12 },
     look: 'residential',
   });
-  const view = createProps(propOnlyPlan(props), recipe, measureContext(recipe));
+  // Route faces retain the generic signpost probe and exercise both real
+  // annotated templates through the same renderer-owned bucket path.
+  const routeSigns: NonNullable<LevelPlan['routeSigns']>[number][] = [];
+  for (const [index, word] of (['TECH', 'AIR'] as const).entries()) {
+    const propIndex = props.length;
+    props.push(probeProp('signpost', -320 - index * 40, 0));
+    routeSigns.push({ feature: `cost-${word}`, propIndex, rotationY: 0,
+      upper: { word, side: -1 }, lower: { word: 'SAFE', side: 1 },
+      approach: { x: -320 - index * 40, z: 12, headingY: Math.PI },
+      approachDistance: 0, commitDistance: 12, technicalT: 1, safeT: -1 });
+  }
+  const view = createProps({ ...propOnlyPlan(props), routeSigns }, recipe, measureContext(recipe));
   try {
     const out = new Map<string, { triangles: number; castsShadow: boolean }>();
     for (const mesh of measureObject(view.group).meshes) {

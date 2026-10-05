@@ -1,7 +1,8 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { AUDIO } from '../data/tuning.ts';
+import { AUDIO, ENVIRONMENT_AMBIENCE } from '../data/tuning.ts';
 import type { AudioFrame, CrashVoiceId, TransientCue } from './director.ts';
 import { NOISE_SECONDS, alignLoopToQuantum, fillNoise } from './noise.ts';
+import { EnvironmentAmbienceGraph, type EnvironmentAmbienceFrame } from './environmentAmbience.ts';
 
 /**
  * The Web Audio graph. **This file makes no decisions.**
@@ -13,17 +14,19 @@ import { NOISE_SECONDS, alignLoopToQuantum, fillNoise } from './noise.ts';
  * decisions stay testable and the platform layer stays small enough to read
  * in one sitting.
  *
- * **Two graphs, not one.** The ride bed — motor, wind, tyre, and scrape —
+ * **Permanent and transient branches.** The ride bed — motor, wind, tyre, and scrape —
  * is permanent: its nodes are built once at arm time and live until disposal,
  * because they are always sounding and starting an oscillator is not free.
  * One-shots are built per cue and torn down on `ended`, because there is no
  * such thing as a landing that is always happening. Transients deliberately
  * bypass the bed's duck gain, so an impact is not attenuated by the duck it
  * itself asked for.
+ * The optional district texture has its own fixed graph into SFX; its model
+ * supplies priority ducking without changing the ride bed or transient mix.
  *
  * Disposal is explicit and complete (AGENTS.md invariant 10): every node this
- * file creates is either held in `permanent` or registered in `voices`, and
- * `dispose` empties both before closing the context.
+ * file creates is held in `permanent`, registered in `voices`, or owned by
+ * `ambience`. Disposal reaches the ambience graph before disconnecting buses.
  */
 
 /**
@@ -49,6 +52,10 @@ const SILENT = 0.0001;
 export interface SinkCounts {
   /** Permanent graph nodes. Constant after arming — the leak audit reads it. */
   readonly permanentNodes: number;
+  /** Fixed ambience graph, included in permanentNodes and never in voices. */
+  readonly ambienceNodes: number;
+  readonly ambienceSources: number;
+  readonly ambienceBufferBytes: number;
   /** One-shots currently sounding. */
   readonly voices: number;
   /** One-shots refused because the voice cap was already full. */
@@ -315,6 +322,8 @@ export class WebAudioSink {
    * wire, not two and a promise.
    */
   private readonly musicBus: GainNode;
+  /** One optional fixed graph, owned and disposed before its host SFX bus. */
+  private ambience: EnvironmentAmbienceGraph | null = null;
   /** The ride bed, after ducking. Transients deliberately do not pass through. */
   private readonly bed: GainNode;
   private readonly transientTrim: GainNode;
@@ -520,11 +529,21 @@ export class WebAudioSink {
     this.sirenCloseGain = this.keep(context.createGain());
     this.sirenCloseGain.gain.value = 0;
     this.sirenCloseGain.connect(this.bed);
+    // Optional environmental audio must not take the existing ride graph down
+    // if its allocation fails. Zero resource counts expose that refusal to QA.
+    try {
+      this.ambience = new EnvironmentAmbienceGraph(context, this.sfxBus, ENVIRONMENT_AMBIENCE);
+    } catch {
+      this.ambience = null;
+    }
   }
 
   get counts(): SinkCounts {
     return {
-      permanentNodes: this.permanent.length,
+      permanentNodes: this.permanent.length + (this.ambience?.permanentNodes ?? 0),
+      ambienceNodes: this.ambience?.permanentNodes ?? 0,
+      ambienceSources: this.ambience?.permanentSources ?? 0,
+      ambienceBufferBytes: this.ambience?.bufferBytes ?? 0,
       voices: this.voices.size,
       droppedVoices: this.droppedVoices,
       crashSamplePlays: this.crashSamplePlays,
@@ -607,6 +626,11 @@ export class WebAudioSink {
     this.glide(this.sfxBus.gain, sfx, now);
     this.glide(this.uiBus.gain, ui, now);
     this.glide(this.musicBus.gain, music, now);
+  }
+
+  /** Already bounded/ducked by the model; the graph owns its audio ramps. */
+  applyAmbienceFrame(frame: EnvironmentAmbienceFrame): void {
+    if (!this.disposed) this.ambience?.applyFrame(frame);
   }
 
   /**
@@ -826,6 +850,8 @@ export class WebAudioSink {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.ambience?.dispose();
+    this.ambience = null;
     this.stopAllVoices();
     this.voices.clear();
     for (const source of this.permanentSources) {

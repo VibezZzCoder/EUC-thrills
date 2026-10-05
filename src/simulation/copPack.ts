@@ -668,6 +668,7 @@ export function chooseIntercept(
     readonly streetMargin: number;
     readonly holdSlope?: number;
   },
+  canStand: ((post: PatrolPost) => boolean) | null = null,
 ): PatrolPost | null {
   const located = createSpineLocation();
   const here = createSpineSample();
@@ -736,7 +737,11 @@ export function chooseIntercept(
     if (taken) continue;
     if (framed !== null && framed(x, z)) continue;
     if (judge !== null && judge(distance, facing) === null) continue;
-    return { index: -1, x, y: underfoot.height, z, headingY, distance, ringDistance: distance, side };
+    const candidate: PatrolPost = { index: -1, x, y: underfoot.height, z, headingY, distance, ringDistance: distance, side };
+    // Dynamic occupancy is another refused rung, so search onward rather
+    // than repeatedly selecting a temporarily occupied first answer.
+    if (canStand !== null && !canStand(candidate)) continue;
+    return candidate;
   }
   return null;
 }

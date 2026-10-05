@@ -1,5 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import type { PropKind } from '../data/props.ts';
+import { roadConnectorMarkings } from './roadConnectorMarkings.ts';
 import type { SurfaceId } from '../simulation/world.ts';
 import type { LevelPlan } from './plan.ts';
 import type { RandomStream } from './seedStreams.ts';
@@ -306,9 +307,19 @@ function familiesBetween(before: Socket, after: Socket): JoinFamily[] {
     && widthOk(family.template.halfWidth, after.halfWidth));
 }
 
+/** Geometry candidates remain paint-free. Paint is authored only after the
+ * steering/closure choice passes, using that choice's actual length. */
 function joinSpec(family: JoinFamily, id: string, length: number, curvature: number): SegmentSpec {
   const { props: _props, bands: _bands, markings: _markings, ...rest } = family.template;
   return { ...rest, id, length, curvature, climb: 0 };
+}
+
+/** Explicit family purpose, including closing roads whose ids are `close-*`.
+ * Thousands of rejected search candidates never allocate paint paths. */
+function paintAcceptedRoadJoin(family: JoinFamily, specs: SegmentSpec[]): SegmentSpec[] {
+  return family.name !== 'link-road' ? specs : specs.map(spec => ({
+    ...spec, markings: roadConnectorMarkings(spec.length, spec.halfWidth),
+  }));
 }
 
 interface Pose { x: number; z: number; h: number }
@@ -856,6 +867,7 @@ export function layTownRing(route: RandomStream, dressing: RandomStream, options
     }
     joinCount += 1;
     if (chosen === null) return { ring: null, reason: `every join into ${stationName(chunk.station)} crosses the town` };
+    chosen = { ...chosen, joins: paintAcceptedRoadJoin(family, chosen.joins) };
     backward.unshift(chosen);
     home = startFor(entry, relativeOf(chosen.joins, [], chosen.joins[chosen.joins.length - 1].id));
     remaining += chunkLen + chosen.joins.reduce((sum, spec) => sum + spec.length, 0);
@@ -928,6 +940,7 @@ export function layTownRing(route: RandomStream, dressing: RandomStream, options
       }
       joinCount += 1;
       if (chosen === null) return { ring: null, reason: `every join into ${stationName(chunk.station)} crosses the town` };
+      chosen = { ...chosen, joins: paintAcceptedRoadJoin(family, chosen.joins) };
     }
     forward.push(chosen);
     const length = chosen.joins.reduce((sum, spec) => sum + spec.length, 0) + chunkLength(chunk);
@@ -985,7 +998,7 @@ export function layTownRing(route: RandomStream, dressing: RandomStream, options
     const fresh = placed.filter((segment) => ids.has(segment.spec.id));
     const others = placed.filter((segment) => !ids.has(segment.spec.id));
     if (!acceptable(fresh, others, whole.links)) continue;
-    closure = specs;
+    closure = paintAcceptedRoadJoin(closeFamily, specs);
     break;
   }
   if (closure === null) {

@@ -917,12 +917,17 @@ const ADVERSARIAL_2026_08_09 = [
   // Re-recorded for M39 Part P QA r2 (2026-09-24): +2 calls uniformly — the
   // reserve counts the spark and dust fields live (PLANS §21.11); triangles,
   // hazards, targets and the level half unchanged.
-  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 195, triangles: 529994, hazards: 16, targets: 38, fallback: false },
-  { seed: 'route-278', axis: 'second densest', drawCalls: 195, triangles: 539936, hazards: 16, targets: 36, fallback: false },
-  { seed: 'sweep-89', axis: 'third densest', drawCalls: 195, triangles: 553636, hazards: 18, targets: 48, fallback: false },
-  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 195, triangles: 547412, hazards: 18, targets: 39, fallback: false },
-  { seed: 'euc-180', axis: 'longest required route', drawCalls: 195, triangles: 579370, hazards: 22, targets: 42, fallback: false },
-  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 195, triangles: 548576, hazards: 18, targets: 33, fallback: false },
+  // 2026-10-04: every triangle record below grew only by the purposeful road
+  // paint (CHANGELOG 2026-10-02, "Road paint follows accepted wide-road purpose"):
+  // 7–26 added `road` markings per seed, none removed; calls, hazards and targets
+  // unchanged. Was route-41 529,994, route-278 539,936, sweep-89 553,636,
+  // x67 547,412, euc-180 579,370, euc-35 548,576.
+  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 195, triangles: 530388, hazards: 16, targets: 38, fallback: false },
+  { seed: 'route-278', axis: 'second densest', drawCalls: 195, triangles: 540752, hazards: 16, targets: 36, fallback: false },
+  { seed: 'sweep-89', axis: 'third densest', drawCalls: 195, triangles: 555062, hazards: 18, targets: 48, fallback: false },
+  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 195, triangles: 548824, hazards: 18, targets: 39, fallback: false },
+  { seed: 'euc-180', axis: 'longest required route', drawCalls: 195, triangles: 580508, hazards: 22, targets: 42, fallback: false },
+  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 195, triangles: 548798, hazards: 18, targets: 33, fallback: false },
 ] as const;
 
 

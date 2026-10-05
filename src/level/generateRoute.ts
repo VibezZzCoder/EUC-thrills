@@ -1,6 +1,8 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { CITY_ROUTE_FLOOR_METRES, layTownRing, quarterFrontage, type RingQuarter } from './cityRing.ts';
 import { townDressing } from './townDressing.ts';
+import { generatedPopulationRequests } from './generatedPopulationRequests.ts';
+import { generatedTrafficLoopCandidates, validateGeneratedTrafficLoops } from './generatedTrafficLoops.ts';
 import type { PropKind } from '../data/props.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 import {
@@ -1489,6 +1491,15 @@ export interface GenerationReport {
    * were caught doing nothing.
    */
   readonly draws: Readonly<Record<SeedDomain, number>>;
+  /** Supplemental factual traces; never part of route admission or source identity. */
+  readonly populationAuthoring?: {
+    readonly requestedPaths: number;
+    readonly trafficCandidates: number;
+    readonly acceptedTrafficLoops: number;
+    readonly missingDistrictLoops: readonly ('commercial' | 'residential')[];
+    readonly rejectedTraffic: readonly { readonly id: string; readonly reason: string }[];
+    readonly missingParkingTopology: true;
+  };
 }
 
 export interface GeneratedLevel {
@@ -1656,6 +1667,7 @@ export function generateLevel(
       continue;
     }
 
+    const populationRequests = generatedPopulationRequests(laid.placed, laid.quarterOf);
     const builtPlan = buildLevelPlan(laid.graph, {
       id: `${GENERATED_LEVEL_PREFIX}${label}`,
       spawn: SPAWN,
@@ -1666,6 +1678,7 @@ export function generateLevel(
       props: withTownDressing(laid, worldDressing(laid.placed, () => streams.dressing.next())
         .map((prop) => ({ ...prop })), () => streams.dressing.next()),
       checkpoints: laid.checkpoints,
+      populationPathRequests: populationRequests,
       // What the generator put in the road — M13 Phase 3. Placed on the laid
       // route above, where every rule about them can still be evaluated against
       // the corridor they sit in; resolved to world footprints here, on the
@@ -1762,9 +1775,19 @@ export function generateLevel(
     }
 
     const cost = withinBudgetNumbers(layout);
+    // Population never retries/re-prices/re-draws the accepted source route.
+    // Vehicle joins are optional plain traces, validated against the actual
+    // finished target/hazard/lap/solid footprint after admission. A failed loop
+    // stays absent whole; it cannot become a reversing street shuttle.
+    const trafficCandidates = generatedTrafficLoopCandidates(laid.placed, laid.quarterOf);
+    const traffic = validateGeneratedTrafficLoops(planWithTargets, trafficCandidates);
+    const populationPaths = [...(planWithTargets.populationPaths ?? []), ...traffic.authored];
+    const authoredPlan: LevelPlan = populationPaths.length > 0
+      ? { ...planWithTargets, populationPaths } : planWithTargets;
+    const authoredLayout: RouteLayout = { ...layout, plan: authoredPlan };
     return {
-      plan: planWithTargets,
-      layout,
+      plan: authoredPlan,
+      layout: authoredLayout,
       report: {
         seed: label,
         draws: drawCounts(streams),
@@ -1777,6 +1800,11 @@ export function generateLevel(
         optionalSegments: laid.optionalIds.length,
         drawCallsPredicted: cost.drawCalls,
         trianglesPredicted: cost.triangles,
+        populationAuthoring: {
+          requestedPaths: populationRequests.length, trafficCandidates: trafficCandidates.length,
+          acceptedTrafficLoops: traffic.authored.length, missingDistrictLoops: traffic.missingDistrictLoops,
+          rejectedTraffic: traffic.rejected, missingParkingTopology: true,
+        },
       },
     };
   }

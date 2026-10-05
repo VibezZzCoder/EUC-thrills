@@ -75,6 +75,42 @@ async function beat(
   }, [id, along, lateral] as const);
 }
 
+/**
+ * The whole heightfield as the scene holds it: every spatial tile named
+ * `level-heightfield`, not only the first (2026-10-04, see the spec below).
+ */
+async function heightfieldTiles(page: Page): Promise<{
+  tiles: number; sharedMaterials: boolean; materials: number; materialIndices: number[];
+  triangles: number; colours: string[];
+}> {
+  return page.evaluate(() => {
+    type Tile = {
+      geometry: { groups: { materialIndex?: number }[]; index: { count: number } | null };
+      material: { color: { getHexString(): string } }[];
+    };
+    const tiles: Tile[] = [];
+    window.game.renderer.scene.traverse((object) => {
+      if (object.name === 'level-heightfield') tiles.push(object as unknown as Tile);
+    });
+    const first = tiles[0]?.material ?? [];
+    const indices = new Set<number>();
+    let triangles = 0;
+    for (const tile of tiles) {
+      for (const group of tile.geometry.groups) indices.add(group.materialIndex ?? 0);
+      triangles += (tile.geometry.index?.count ?? 0) / 3;
+    }
+    return {
+      tiles: tiles.length,
+      sharedMaterials: tiles.every((tile) => tile.material.length === first.length
+        && tile.material.every((material, at) => material === first[at])),
+      materials: first.length,
+      materialIndices: [...indices].sort((a, b) => a - b),
+      triangles,
+      colours: first.map((material) => material.color.getHexString()),
+    };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // One plan, two consumers
 // ---------------------------------------------------------------------------
@@ -93,20 +129,46 @@ test('the renderer builds its ground from the plan, and its own copy is gone', a
 
   expect(scene.heightfieldPresent).toBe(true);
   expect(scene.surroundPresent).toBe(true);
-  // One geometry, one material group per surface actually painted.
-  expect(scene.heightfieldGroups).toBe(snapshot.level.surfaces.length);
-  expect(scene.heightfieldTriangles).toBe(snapshot.level.cellsDrawn * 2);
+  const presentation = await page.evaluate(() => window.game.renderer.presentation());
+  expect(presentation).not.toBeNull();
+  // 2026-10-04: the one heightfield geometry is now built whole and then
+  // partitioned into 256 m spatial tiles (`render/spatialGeometry.ts`), every
+  // tile a `level-heightfield` mesh sharing the source's materials, and the
+  // shared ground-edge assembly (`render/sharedGroundEdgeMesh.ts`) re-splits
+  // edge cells and may append band materials after the per-surface ones.
+  // `terrainScene()` reads only the first tile, so the counts are summed over
+  // every tile here and the edge assembly's own report is the triangle total.
+  const field = await heightfieldTiles(page);
+  expect(field.tiles).toBeGreaterThan(0);
+  // Still one set of materials: every tile draws with the same owners.
+  expect(field.sharedMaterials).toBe(true);
+  // One material group per surface actually painted, plus only the band
+  // owners the edge assembly reports it added.
+  const added = presentation!.sharedEdges?.addedMaterialOwners ?? 0;
+  expect(field.materials).toBe(snapshot.level.surfaces.length + added);
+  expect(field.materialIndices).toEqual([...Array(field.materials).keys()]);
+  if (presentation!.sharedEdges === null) {
+    expect(field.triangles).toBe(snapshot.level.cellsDrawn * 2);
+  } else {
+    // Tiling loses nothing the assembly built...
+    expect(field.triangles).toBe(presentation!.sharedEdges.triangles);
+    // ...and the assembly starts from the plan's cells (two triangles, six
+    // indices a cell) and adds exactly the triangles its plan-prepared price
+    // states, so the drawn ground is still counted from the plan.
+    expect(presentation!.sharedEdges.price.sourceIndices).toBe(snapshot.level.cellsDrawn * 6);
+    expect(field.triangles)
+      .toBe(snapshot.level.cellsDrawn * 2 + presentation!.sharedEdges.price.addedColourTriangles);
+  }
   // Every surface the plan paints has a distinct albedo on screen. A palette
   // that collapses is a level the player cannot read.
-  expect(scene.heightfieldColours.length).toBe(scene.heightfieldGroups);
+  expect(new Set(field.colours.slice(0, snapshot.level.surfaces.length)).size)
+    .toBe(snapshot.level.surfaces.length);
 
   // The blocks are merged per material rather than drawn one at a time. Twelve
   // triangles a collider is the baseline rung; the enhanced recipe courses the
   // stone walls, so the drawn count is held to the recipe the world was built
   // with (`render/presentation.ts`), and the baseline rung to the old rule.
   expect(scene.blockMeshes.length).toBeGreaterThan(2);
-  const presentation = await page.evaluate(() => window.game.renderer.presentation());
-  expect(presentation).not.toBeNull();
   expect(scene.blockTriangles).toBe(presentation!.cost.blockColourTriangles);
   const baseline = presentation!.verdicts.find((verdict) => verdict.recipe === 'baseline')!;
   expect(baseline.cost.blockColourTriangles).toBe(snapshot.level.colliders * 12);

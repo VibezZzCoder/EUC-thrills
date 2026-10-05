@@ -103,12 +103,21 @@ test.describe('M8 — audio', () => {
       // range instead of near the top of it. The claim is that the graph makes
       // a sound at riding speed, and this is what riding speed is now.
       window.qa.audioTrace({ throttle: 1 }, 720, 60);
-      const riding = await window.qa.audioOutput(260);
+      // 2026-10-04: the loudest ~43 ms analyser block across 1.6 s rather than
+      // one block. Six seconds of throttle ends on pavement, whose tyre is a
+      // sparse per-revolution tap (see the grass spec below), and the bed has
+      // quiet stretches up to ~0.5 s long: 24 single blocks of this exact
+      // frozen state read 0.0057–0.028 with 10–20 % under 0.01, and even the
+      // loudest of 4 blocks over 0.48 s fell under 0.01 in 1–2 of 12 trials —
+      // identically on the Oct 3 build, so this was never a level change.
+      // The silence claims below are unchanged: one settled block, as before.
+      const riding = await window.qa.audioOutputMax(1600, 16);
 
       window.game.setMuted(true);
       const muted = await window.qa.audioOutput(320);
       window.game.setMuted(false);
-      const unmuted = await window.qa.audioOutput(320);
+      await window.qa.audioOutput(160);
+      const unmuted = await window.qa.audioOutputMax(1600, 16);
 
       window.game.setVolumes({ master: 0 });
       const silentMaster = await window.qa.audioOutput(320);
@@ -706,13 +715,20 @@ test.describe('M8 — audio', () => {
     const errors = collectErrors(page);
     await boot(page);
     await page.keyboard.press('KeyW');
+    // 2026-10-04: wait for the graph as the signal test above does. Under a
+    // loaded machine the first read came back exactly 0 — the ride bed was
+    // not playing yet, not quiet — and the riding/resumed claims now read the
+    // loudest analyser block over 1.6 s for the same reason as that test:
+    // pavement's tyre is a sparse tap with quiet stretches (the Sep 26 build
+    // has them too). The paused claim stays one settled block.
+    await page.waitForFunction(() => window.game.audioSnapshot().samplesLoaded);
 
     const riding = await page.evaluate(async () => {
       window.qa.freeze();
       window.qa.resetRide();
       window.qa.audioTrace({ throttle: 1 }, 420, 120);
       window.game.clearActions();
-      return window.qa.audioOutput(220);
+      return window.qa.audioOutputMax(1600, 16);
     });
     expect(riding).toBeGreaterThan(0.01);
 
@@ -741,7 +757,7 @@ test.describe('M8 — audio', () => {
       // *by design* — the claim under test is that resume restores the audio
       // path, so ride far enough that the restored path has something to say.
       await new Promise((resolve) => window.setTimeout(resolve, 2500));
-      const level = await window.qa.audioOutput(220);
+      const level = await window.qa.audioOutputMax(1600, 16);
       window.game.clearActions();
       return level;
     });

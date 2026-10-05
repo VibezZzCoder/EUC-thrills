@@ -665,6 +665,11 @@ test('brutal pass: a roadblock refuses what every return refuses — framed, occ
     'a roadblock was stood on top of another cop');
   // A judge that refuses every spot: none.
   assert.equal(chooseIntercept(spine, blockers, ground, rider, 300, [], null, () => null, INTERCEPT_TUNING), null);
+  const dynamicallyClear = chooseIntercept(spine, blockers, ground, rider, 300, [], null, judge,
+    INTERCEPT_TUNING, candidate => Math.hypot(candidate.x - free.x, candidate.z - free.z) > 4);
+  assert.ok(dynamicallyClear !== null && Math.hypot(dynamicallyClear.x - free.x, dynamicallyClear.z - free.z) > 4,
+    'an occupied dynamic hull must advance the search to a clear candidate');
+  assert.equal(chooseIntercept(spine, blockers, ground, rider, 300, [], null, judge, INTERCEPT_TUNING, () => false), null);
 });
 
 test('brutal pass: packmate positions are the other standing cops, and reuse their objects', () => {

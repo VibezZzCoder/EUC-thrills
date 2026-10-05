@@ -136,7 +136,8 @@ test('M38 review: a guest pauses every airborne seat through Settings', async ({
     game.loop.setRunning(false);
     game.advance(180);
     return { paused, before, after, clock, afterClock,
-      books: game.trickRun.state.books, stored: game.trickRecords.best(game.levelPlan.id) };
+      // 2026-10-03 (LC-1): records are filed under the engine-independent record key.
+      books: game.trickRun.state.books, stored: game.trickRecords.best(game.levelPlan.recordWorldId!) };
   });
   expect(evidence.paused).toBe('paused');
   expect(evidence.before.every((rider) => !rider.grounded)).toBe(true);
@@ -173,7 +174,8 @@ test('M38 review: q191 is a continuous eligible ride from the normal start', asy
     const snap = game.snapshot();
     return { state: snap.app.state, run: snap.trickRun,
       distance: snap.euc.distanceTravelled,
-      stored: game.trickRecords.best(game.levelPlan.id)?.score };
+      // 2026-10-03 (LC-1): records are filed under the engine-independent record key.
+      stored: game.trickRecords.best(game.levelPlan.recordWorldId!)?.score };
   }, trace.actions);
   expect(result.state).toBe('results');
   expect(result.run.eligible).toBe(true);
@@ -186,6 +188,7 @@ test('M38 review: q191 is a continuous eligible ride from the normal start', asy
   // for balance. The route includes the 29-second approach and every turn.
   expect(expected.scores[0]).toBe(1782);
   await bootReview(page);
-  expect(await page.evaluate(() => window.game.trickRecords.best(window.game.levelPlan.id)?.score)).toBe(1782);
+  // 2026-10-03 (LC-1): records are filed under the engine-independent record key.
+  expect(await page.evaluate(() => window.game.trickRecords.best(window.game.levelPlan.recordWorldId!)?.score)).toBe(1782);
   expect(errors).toEqual([]);
 });

@@ -31,11 +31,20 @@ import { AUDIO, CHASE, PADDLE } from '../src/data/tuning.ts';
 const SEED = 'route-41';
 
 /** Boot straight onto a generated route and start a chase through the bridge. */
-async function bootChase(page: import('@playwright/test').Page): Promise<void> {
+/**
+ * 2026-10-04: `frozen` stops the loop in the task that enters the chase
+ * (entering a mode re-runs `updateRunning`, so an earlier freeze does not
+ * hold). Left live, the pursuit runs on wall-clock time between this and the
+ * test's first read — on the environment upgrade's heavier frames on a loaded
+ * machine, long enough for the tail to close before a "he starts back there"
+ * read.
+ */
+async function bootChase(page: import('@playwright/test').Page, { frozen = false } = {}): Promise<void> {
   await bootToTitle(page, `level=generated&seed=${SEED}`);
-  await page.evaluate(() => {
+  await page.evaluate((freeze) => {
     window.game.startChase();
-  });
+    if (freeze) window.game.loop.setRunning(false);
+  }, frozen);
   await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
   await page.waitForFunction(() => window.game.snapshot().hud.chase !== '');
 }
@@ -93,7 +102,9 @@ test('a cold-start Police Chase choice survives Surprise me and starts the mode'
 
 test('a generated route hosts a chase, and the cop rides it', async ({ page }) => {
   const errors = collectErrors(page);
-  await bootChase(page);
+  // 2026-10-04: frozen at the entrance — the start gap is read at GO, not
+  // after however much wall-clock time the machine took to reach the read.
+  await bootChase(page, { frozen: true });
 
   const ridden = await page.evaluate(() => {
     const game = window.game;
@@ -385,21 +396,55 @@ test('the cop mirrors his swing when the rider is beside his left shoulder', asy
   // the spec. TypeScript private is deliberately only compile-time here; these
   // two live objects are read as diagnostics and never mutated.
   const errors = collectErrors(page);
-  await bootChase(page);
+  // 2026-10-04: frozen from the chase's first step, so the cop's pose when the
+  // rider is stood beside him is the same every run. Left live, the wall-clock
+  // gap between the entrance and this fixture moved him along a street that a
+  // living-world service vehicle now works, and the run read whichever pose
+  // the machine's load happened to leave him in.
+  await bootToTitle(page, `level=generated&seed=${SEED}`);
+  await page.evaluate(() => {
+    // Entering the chase re-runs `updateRunning`, so the freeze follows it in
+    // the same task.
+    window.game.startChase();
+    window.game.loop.setRunning(false);
+  });
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
 
-  const struck = await page.evaluate(({ reach }) => {
+  const struck = await page.evaluate(({ reach, swingRange }) => {
     const game = window.game;
     const internal = game as unknown as {
       readonly copCurrent: { x: number; y: number; z: number; headingY: number };
       readonly copPaddle: { readonly swingSide: 'right' | 'left' };
     };
     game.advance(1);
-    const cop = internal.copCurrent;
-    const targetBearing = cop.headingY + Math.PI / 4;
-    const x = cop.x + Math.sin(targetBearing) * reach;
-    const z = cop.z + Math.cos(targetBearing) * reach;
-    const ground = game.sampleGround(x, z);
-    game.placeRider({ x, y: ground.height, z }, cop.headingY);
+    // 2026-10-04: a seat placement is now refused where it would overlap a CPU
+    // cop's or an NPC's occupancy prism (MI-1; `Game.placeRider` throws
+    // "occupied by the living world"). Exactly `PADDLE.reach` off his left
+    // shoulder overlaps the cop himself, and a living-world service vehicle
+    // works the street beside route-41's cop post (measured blocking 2–3 m
+    // out). Stand the rider at the first clear spot on the same bearing, at
+    // most 0.6 m beyond the paddle's reach and well inside swing range,
+    // stepping the chase on a few frames if the vehicle is in the way.
+    let placedAt: number | null = null;
+    for (let attempt = 0; attempt < 8 && placedAt === null; attempt += 1) {
+      const cop = internal.copCurrent;
+      const targetBearing = cop.headingY + Math.PI / 4;
+      for (let distance = reach; distance <= reach + 0.6 + 1e-9 && placedAt === null; distance += 0.05) {
+        const x = cop.x + Math.sin(targetBearing) * distance;
+        const z = cop.z + Math.cos(targetBearing) * distance;
+        const ground = game.sampleGround(x, z);
+        try {
+          game.placeRider({ x, y: ground.height, z }, cop.headingY);
+          placedAt = distance;
+        } catch (error) {
+          if (!String(error).includes('occupied by the living world')) throw error;
+        }
+      }
+      if (placedAt === null) game.advance(15);
+    }
+    if (placedAt === null || placedAt >= swingRange) {
+      throw new Error(`no clear spot beside the cop's left shoulder within ${reach + 0.6} m`);
+    }
     game.clearActions();
 
     const before = game.snapshot().audio.played.hit;
@@ -408,16 +453,17 @@ test('the cop mirrors his swing when the rider is beside his left shoulder', asy
       game.advance(1);
       sawLeftSwing ||= internal.copPaddle.swingSide === 'left';
       const hits = game.snapshot().audio.played.hit - before;
-      if (hits > 0) return { hits, sawLeftSwing, gap: game.snapshot().chase.copGap };
+      if (hits > 0) return { hits, sawLeftSwing, gap: game.snapshot().chase.copGap, placedAt };
     }
     return {
       hits: game.snapshot().audio.played.hit - before,
       sawLeftSwing,
       gap: game.snapshot().chase.copGap,
+      placedAt,
     };
-  }, { reach: PADDLE.reach });
+  }, { reach: PADDLE.reach, swingRange: CHASE.swingRangeMetres });
 
-  expect(struck.sawLeftSwing).toBe(true);
+  expect(struck.sawLeftSwing, `rider stood ${struck.placedAt} m off his left shoulder`).toBe(true);
   expect(struck.hits).toBeGreaterThan(0);
   expect(struck.gap).toBeLessThan(CHASE.swingRangeMetres);
   expect(errors).toEqual([]);
@@ -587,10 +633,27 @@ test('the siren follows the cop, and only while the pursuit is live', async ({ p
   // owning a microphone. What only a browser can prove is the *wiring*: that
   // `Game.updateAudio` actually hands the chase's range to the director.
   const errors = collectErrors(page);
-  await bootChase(page);
+  // 2026-10-04: frozen in the task that enters the chase (entering a mode
+  // re-runs `updateRunning`, so the freeze follows it), so no wall-clock time
+  // passes between the start and the first sample below.
+  await bootToTitle(page, `level=generated&seed=${SEED}`);
+  await page.evaluate(() => {
+    window.game.startChase();
+    window.game.loop.setRunning(false);
+  });
+  await page.waitForFunction(() => window.game.snapshot().app.state === 'chase');
+  await page.waitForFunction(() => window.game.snapshot().hud.chase !== '');
 
   const watched = await page.evaluate(() => {
     const game = window.game;
+    // 2026-10-04: frozen at the entrance (above) and sampled every 60 steps
+    // rather than every 300. Left live, the chase ran on by wall-clock time
+    // between the entrance and this call — on the environment upgrade's
+    // heavier frames on a loaded machine, far enough that the tail reached the
+    // standing rider inside the first 300-step block: the run had ended before
+    // any sample was taken and the closest gap read Infinity. The minute
+    // watched is the same; only the reading is finer.
+    game.loop.setRunning(false);
     game.clearActions();
     const atStart = game.snapshot().audio.sirenGain;
 
@@ -601,8 +664,8 @@ test('the siren follows the cop, and only while the pursuit is live', async ({ p
     let peakRate = 1;
     let closestGap = Infinity;
     let sirenWhileFar = 0;
-    for (let round = 0; round < 12; round += 1) {
-      game.advance(300);
+    for (let round = 0; round < 60; round += 1) {
+      game.advance(60);
       const snap = game.snapshot();
       if (snap.chase.phase !== 'running') break;
       if (snap.audio.sirenGain > peak) {
@@ -891,7 +954,8 @@ test('?cops=1 is the one-cop chase, and it files no record', async ({ page }) =>
       game.advance(30);
       if (game.snapshot().app.state === 'results') break;
     }
-    const id = game.levelPlan.id;
+    // 2026-10-03 (LC-1): bests are filed under the engine-independent record key.
+    const id = game.levelPlan.recordWorldId!;
     return {
       trims,
       start,
@@ -922,7 +986,8 @@ test('the shipped chase files against three cops, and a one-cop best is named on
   const run = await page.evaluate(() => {
     const game = window.game;
     game.clearRecords();
-    const id = game.levelPlan.id;
+    // 2026-10-03 (LC-1): bests are filed under the engine-independent record key.
+    const id = game.levelPlan.recordWorldId!;
     // An old row: no `force`, which reads as one cop (R-8).
     game.chaseRecords.submit({ levelId: id, seconds: 300, escaped: true, setAt: new Date().toISOString() });
     game.tuning.set('CHASE.escapeSeconds', 30);

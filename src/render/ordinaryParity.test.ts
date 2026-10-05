@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
 import { createHash, type Hash } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { test } from 'node:test';
 import * as THREE from 'three';
 import { generateLevel } from '../level/generateRoute.ts';
@@ -9,18 +9,19 @@ import type { LevelPlan } from '../level/plan.ts';
 import { planDigest } from '../level/planDigest.ts';
 import { createProvingGround } from '../level/provingGround.ts';
 import { createSliceLevel } from '../level/sliceLevel.ts';
-import { createSwitchbackLevel } from '../level/switchbackLevel.ts';
+import { placedRunCount } from '../level/segments.ts';
+import { createSwitchbackLevel, SWITCHBACK_ADVANCE_CUES, SWITCHBACK_GRAPH } from '../level/switchbackLevel.ts';
 import { createTrackLevel } from '../level/trackLevel.ts';
 import { BASELINE_PRESENTATION, ENHANCED_PRESENTATION, type PresentationRecipe } from './presentation.ts';
-import { createTerrain } from './terrain.ts';
+import { createTerrain as correctedTerrain } from './terrain.ts';
 
 /**
  * Ordinary-path parity, byte for byte, against the tree before Ultra existed —
  * M39 (`docs/M39_ULTRA.md` §6.3 W7, invariant 1).
  *
- * **The claim.** Low, Medium and High are byte-identical after Ultra lands:
+ * **The historical claim.** The compatibility factory is byte-identical after Ultra lands:
  * every Ultra branch is guarded by `isUltraRecipe`/active, ordinary
- * statements are untouched, and `createTerrain`/`createProps` with no
+ * factory defaults are untouched, and `createTerrain`/`createProps` with no
  * context build exactly what they built. The U0 captures prove it for ten
  * frames (`ultra-compare --expect-same`); this file proves it for every
  * vertex of six whole worlds, headlessly, in a few seconds, after every wave.
@@ -57,10 +58,42 @@ import { createTerrain } from './terrain.ts';
  * tree**; a genuine ordinary change is a coordinator decision, recorded in
  * `docs/M39_ULTRA.md`, and the goldens then come from a named source again.
  *
+ * The owner-authorized 2026-10-01 ordinary ground update is an explicit fourth
+ * argument used by Renderer, outside these historical defaults. Its current
+ * geometry/resource/shader checks live in ordinaryGroundBoundary.test.ts;
+ * these goldens do not claim unchanged current runtime pixels. The authorized
+ * road-paint additions and Switchback r5 input repair are also outside these
+ * old inputs. ordinaryParityInputs.test-fixture.json carries only their input
+ * deltas, extracted from the named pre-Ultra archive, never new render goldens.
+ * The current road/compact-trail contracts independently check those changes.
+ * The 2026-10-02 all-factory physical diagonal repair deliberately changes only
+ * heightfield indices. The named test-only projection below reconstructs the old
+ * indices after asserting the corrected runtime topology, keeping these same
+ * archived goldens. Actual sampler agreement is tested independently.
+ *
  * The digest is a regression guard, not a security primitive, and typed
  * arrays are hashed as the machine's own bytes (little-endian on every
  * machine this project runs on).
  */
+
+/** Test-only projection of the intentional 2026-10-02 physical diagonal repair.
+ * Require actual corrected topology first, then restore only historical indices
+ * for the untouched pre-Ultra goldens. Runtime never uses this projection;
+ * terrainGroundDiagonal.test.ts separately pins both real factories to ground. */
+function createTerrain(plan: LevelPlan, recipe?: PresentationRecipe) {
+  const view = correctedTerrain(plan, recipe);
+  const mesh = view.group.getObjectByName('level-heightfield') as THREE.Mesh | undefined;
+  if (!mesh) return view;
+  const geometry = mesh.geometry, index = geometry.index!;
+  assert.equal(index.count, geometry.getAttribute('position').count / 4 * 6);
+  for (let at = 0, first = 0; at < index.count; at += 6, first += 4) {
+    assert.deepEqual([0, 1, 2, 3, 4, 5].map(offset => index.getX(at + offset)),
+      [first, first + 3, first + 1, first, first + 2, first + 3]);
+    [first, first + 2, first + 1, first + 1, first + 2, first + 3]
+      .forEach((value, offset) => index.setX(at + offset, value));
+  }
+  return view;
+}
 
 // ---------------------------------------------------------------------------
 // The hasher
@@ -392,7 +425,83 @@ const computed = new Map<string, { plan: LevelPlan; digest: string }>();
 function planFor(name: string, build: () => LevelPlan): { plan: LevelPlan; digest: string } {
   let entry = computed.get(name);
   if (entry === undefined) {
-    const plan = build();
+    const current = build();
+    // This suite retains the pre-Ultra inputs and numeric goldens. Living
+    // authoring is tested on the current plan in its own contracts; metadata
+    // did not exist in these historical scenes and must not re-price them.
+    const plan = { ...current };
+    delete plan.populationPaths; delete plan.populationFootpathRequests;
+    delete plan.populationGroundSources; delete plan.populationParkingBays;
+    delete plan.populationCrossings; delete plan.populationGroundReport;
+    if (name === 'belvar') {
+      // Owner-authorized current workshop classification changes its facade.
+      // Restore this one archived descriptor for historical factory parity;
+      // current runtime/visual acceptance uses the industrial workshop.
+      let restored = 0;
+      plan.props = current.props?.map(prop => {
+        if (prop.kind !== 'building' || prop.look !== 'industrial'
+          || prop.size?.x !== 10 || prop.size.y !== 5 || prop.size.z !== 15) return prop;
+        restored++; const historical = { ...prop }; delete historical.look; return historical;
+      });
+      assert.equal(restored, 1, 'only the explicitly amended paddock workshop is restored');
+    }
+    if (['switchback', 'euc', 'heavy'].includes(name) && planDigest(plan) !== GOLDENS[name].plan) {
+      // Recover these explicitly changed historical INPUT fields, preserving
+      // every original geometry/material/texture golden and every other field
+      // of today's source plan. A missing/modified original road line fails.
+      const archive = JSON.parse(readFileSync(new URL('./ordinaryParityInputs.test-fixture.json', import.meta.url), 'utf8')) as {
+        archive: string; archiveSha256: string;
+        fixtures: Record<string, { oldId: string; originalMarkings: NonNullable<LevelPlan['markings']> | string[];
+          originalSurfaces: [number, string][] }>;
+      };
+      assert.equal(archive.archive, 'pre-ultra-source-2026-09-22.tgz');
+      const fixture = archive.fixtures[name];
+      assert.ok(current.markings);
+      if (name === 'switchback') {
+        assert.equal(current.id, 'switchback-r5');
+        // The separate current-cue contract pins all 134 added runs and the
+        // 97 retained strokes. Restore historical input only; no golden moves.
+        assert.equal(SWITCHBACK_ADVANCE_CUES.runCount, 134);
+        const sourceRuns = SWITCHBACK_GRAPH.flatMap(segment => segment.markings ?? []);
+        assert.equal(sourceRuns.length, fixture.originalMarkings.length + 4 + SWITCHBACK_ADVANCE_CUES.runCount,
+          'only the documented after-bend confirmations and advance cues were added');
+        // 2026-10-04 (VIS-3-R2): a compact-trail glyph ships one placed run per leg.
+        assert.equal(current.markings.length, sourceRuns.reduce((sum, run) => sum + placedRunCount(run), 0));
+        assert.equal(current.routeSigns?.length, 9, 'the same nine original poles carry the new route faces');
+        // The archived pre-Ultra plan has no face annotations. Restoring that
+        // one amended input preserves all original scene and numeric goldens.
+        delete plan.routeSigns;
+        assert.equal(fixture.originalSurfaces.length, 582);
+        const surfaces = [...current.heightfield.surfaces];
+        for (const [index, surface] of fixture.originalSurfaces) {
+          assert.equal(surface, 'wood');
+          assert.ok(surfaces[index] === 'dirt' || surfaces[index] === 'gravel',
+            'the removed instruction deck exposes only the authored dirt/gravel trail');
+          surfaces[index] = 'wood';
+        }
+        // 2026-10-04, owner decision: the removed deck keeps its wood grip as
+        // grip only, on exactly the historical wood cells and nothing else.
+        const { traction, ...field } = current.heightfield;
+        const byCell = (a: readonly [number, string], b: readonly [number, string]): number => a[0] - b[0];
+        assert.deepEqual(Object.entries(traction ?? {}).map(([index, surface]): [number, string] => [Number(index), surface])
+          .sort(byCell), [...fixture.originalSurfaces].sort(byCell));
+        plan.id = fixture.oldId;
+        plan.heightfield = { ...field, surfaces };
+        plan.markings = fixture.originalMarkings as LevelPlan['markings'];
+      } else {
+        const fingerprint = (mark: NonNullable<LevelPlan['markings']>[number]): string =>
+          createHash('sha256').update(JSON.stringify(mark)).digest('hex');
+        const originals = fixture.originalMarkings as string[];
+        assert.equal(current.markings.length - originals.length, name === 'euc' ? 12 : 9,
+          'only the recorded road-purpose additions leave this historical input');
+        const byHash = new Map(current.markings.map(mark => [fingerprint(mark), mark]));
+        plan.markings = originals.map(hash => {
+          const mark = byHash.get(hash);
+          assert.ok(mark, 'an original line changed or disappeared; added paint cannot conceal it');
+          return mark;
+        });
+      }
+    }
     entry = { plan, digest: planDigest(plan) };
     computed.set(name, entry);
   }
@@ -416,14 +525,14 @@ if (printing !== undefined && printing !== '') {
   });
 } else {
   for (const [name, build] of WORLDS) {
-    test(`${name}: the plan is the plan the goldens were taken on`, () => {
+    test(`${name}: the historical input is the plan the goldens were taken on`, () => {
       const golden = GOLDENS[name];
       assert.ok(golden !== undefined, `no golden for ${name}`);
       assert.equal(planFor(name, build).digest, golden.plan,
         'the plan itself moved, so the scene digests below cannot be compared — that is a level change, not a render one');
     });
     for (const recipe of RECIPES) {
-      test(`${name}, ${recipe.id}: the ordinary world is byte-identical to the pre-Ultra tree`, () => {
+      test(`${name}, ${recipe.id}: test-only historical index projection matches untouched pre-Ultra bytes`, () => {
         const golden = GOLDENS[name];
         assert.ok(golden !== undefined, `no golden for ${name}`);
         const { plan } = planFor(name, build);
@@ -437,7 +546,7 @@ if (printing !== undefined && printing !== '') {
     }
   }
 
-  test('the defaults build the baseline world, with no context', () => {
+  test('corrected defaults share the historical baseline after named test-only index projection', () => {
     // `createTerrain(plan)` with no recipe and no context is the call every
     // pre-M32 caller makes; it must stay the baseline world exactly.
     const { plan } = planFor('slice', WORLDS[0][1]);

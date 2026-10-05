@@ -138,12 +138,12 @@ function installLoadingProbe(): void {
       busy: toggle?.getAttribute('aria-busy') ?? null,
       state: toggle?.querySelector('[data-ultra-text]')?.textContent?.trim() ?? null,
       notice: line?.textContent?.trim() ?? '',
-      noticeShown: shown(line),
+      noticeShown: shown(document.getElementById('boot-heading')) && document.getElementById('boot')?.dataset.kind === 'quality',
       status: status?.textContent?.trim() ?? '',
       selectValue: select?.value ?? null,
       selectBusy: select?.getAttribute('aria-busy') ?? null,
       readout: readout?.textContent?.trim() ?? '',
-      readoutShown: shown(readout),
+      readoutShown: shown(document.getElementById('boot-heading')) && document.getElementById('boot')?.dataset.kind === 'quality',
     };
   };
 
@@ -242,6 +242,7 @@ async function waitUntilSettled(page: Page, pressed: 'true' | 'false'): Promise<
     pressed,
     notice: '',
   });
+  await expect(page.locator('#boot')).toBeHidden();
   return facts(page);
 }
 
@@ -301,8 +302,8 @@ test('the title toggle shows "Loading Ultra graphics…" before the work, ignore
   // And back off: the same notice discipline, in the leaving words.
   await toggle.focus();
   await holdFrames(page);
-  await toggle.click({ force: true });
-  await toggle.click({ force: true });
+  await toggle.click();
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('.euc-menu--title [data-menu="ultra"]')!.click());
   const leaving = await facts(page);
   expect(leaving).toMatchObject({ switches: 1, quality: 'ultra', busy: 'true', notice: LEAVING, noticeShown: true, status: LEAVING });
   await releaseFrames(page);
@@ -377,7 +378,7 @@ test('a pending Ultra choice cannot survive an options reset or enter Ultra afte
 test.describe('at phone width', () => {
   test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
 
-  test('the notice fits inside the toggle and beside the select at 375 px and the other tight sizes, with no overflow', async ({ page }, testInfo) => {
+  test('the shared loading notice fits mobile, landscape and desktop, with no overflow', async ({ page }, testInfo) => {
     const errors = collectErrors(page);
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await bootAtTier(page, 'level=slice', 'high', { ride: false });
@@ -388,9 +389,9 @@ test.describe('at phone width', () => {
     expect(await page.locator('.euc-menu--title .euc-busy-sweep__bar').evaluate(node => Number.parseFloat(getComputedStyle(node).animationDuration))).toBeLessThanOrEqual(0.00001);
 
     const measure = () => page.evaluate(() => {
-      const root = document.querySelector<HTMLElement>('.euc-menu--title')!;
-      const toggle = root.querySelector<HTMLElement>('[data-menu="ultra"]')!;
-      const line = toggle.querySelector<HTMLElement>('[data-ultra-busy-text]');
+      const root = document.getElementById('boot')!;
+      const toggle = root;
+      const line = document.getElementById('boot-heading');
       const edges = (node: Element) => {
         const box = node.getBoundingClientRect();
         return { left: box.left, top: box.top, right: box.right, bottom: box.bottom };
@@ -439,7 +440,7 @@ test.describe('at phone width', () => {
     await holdFrames(page);
     await page.locator(QUALITY).selectOption('high');
     const settings = await page.evaluate(() => {
-      const readout = document.querySelector<HTMLElement>('[data-readout="quality-state"]')!;
+      const readout = document.getElementById('boot-heading')!;
       const box = readout.getBoundingClientRect();
       return {
         right: box.right,

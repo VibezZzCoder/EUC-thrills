@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { MARKINGS, MARKING_PAINTS } from '../data/markings.ts';
 import { fieldHeightAt } from '../level/buildPlan.ts';
-import type { LevelPlan } from '../level/plan.ts';
+import type { LevelPlan, Marking } from '../level/plan.ts';
 import { appendMarking, createRibbonTarget } from '../shared/markingRibbon.ts';
 import { ultraMarkingMaterial } from './ultra/ultraMaterials.ts';
 import type { UltraBuildContext } from './ultra/ultraTypes.ts';
@@ -53,11 +53,13 @@ export interface MarkingsView {
   dispose(): void;
 }
 
-export function createMarkings(plan: LevelPlan, context?: UltraBuildContext): MarkingsView {
+export function createMarkings(plan: LevelPlan, context?: UltraBuildContext, supplemental: readonly Marking[] = []): MarkingsView {
   const group = new THREE.Group();
   group.name = 'level-markings';
 
-  const markings = plan.markings ?? [];
+  // The descriptor is prepared from the final physical plan and population, but
+  // remains render-only. Every run still shares this one geometry/material owner.
+  const markings = [...(plan.markings ?? []), ...supplemental];
   const target = createRibbonTarget();
   const colour = new THREE.Color();
   let triangles = 0;
@@ -103,6 +105,8 @@ export function createMarkings(plan: LevelPlan, context?: UltraBuildContext): Ma
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(target.positions, 3));
   geometry.setAttribute('normal', new THREE.Float32BufferAttribute(target.normals, 3));
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(target.colors, 3));
+  // Preserve Three's existing exact array-based Uint16/Uint32 choice. The
+  // supplement price mirrors this whole merged buffer, including promotion.
   geometry.setIndex(target.indices);
   geometry.computeBoundingSphere();
 

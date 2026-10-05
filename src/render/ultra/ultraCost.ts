@@ -1,4 +1,8 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { prepareOriginalCapSlots, priceOriginalCapSlots } from '../originalCapSlotPrice.ts';
+import { priceEnvironmentSupplements, type PreparedEnvironmentSupplements, type EnvironmentSupplementPrice } from '../environmentSupplementPrice.ts';
+import { priceFeatureBlockBuild } from '../featureBlockBuildPrice.ts';
+import { ENVIRONMENT_ENVELOPE } from '../environmentEnvelope.ts';
 /**
  * The Ultra cost model and admission — M39 (`docs/M39_ULTRA.md` §5, package
  * W7).
@@ -48,6 +52,7 @@ import {
   type PropPartId,
 } from '../../data/renderCost.ts';
 import { ULTRA } from '../../data/tuning.ts';
+import { assertGroundEdgePrice, type GroundEdgePrice } from '../../shared/groundEdgePrice.ts';
 import type { LevelPlan } from '../../level/plan.ts';
 import { colliderMaterial, planRenderCost } from '../../level/renderBudget.ts';
 import { ENHANCED_PART_COSTS } from '../enhancedCatalog.ts';
@@ -154,6 +159,14 @@ export function ultraPartTriangles(part: PropPartId, recipe: UltraRecipe): numbe
   }
 }
 
+/** Standalone legacy diagnostics still emit original caps. Price their exact
+ * conditional slots/repeat even without shared supplement preparation. */
+function standaloneCapPrice(plan: LevelPlan, recipe: UltraRecipe) {
+  const owner = prepareOriginalCapSlots(plan);
+  try { return priceOriginalCapSlots(owner, recipe.ultra.buildings, recipe.ultra.farShadow, ultraPartTriangles('buildingCap', recipe)); }
+  finally { owner.dispose(); }
+}
+
 // ---------------------------------------------------------------------------
 // Passes
 // ---------------------------------------------------------------------------
@@ -241,7 +254,14 @@ export interface UltraCostBreakdown {
  * Price a plan under an Ultra rung, with the working shown. See the file
  * comment for what moves and what cannot.
  */
-export function ultraCostBreakdown(plan: LevelPlan, recipe: UltraRecipe): UltraCostBreakdown {
+export function ultraCostBreakdown(plan: LevelPlan, recipe: UltraRecipe, edges: GroundEdgePrice | null = null, supplements: PreparedEnvironmentSupplements | null = null): UltraCostBreakdown {
+  if (supplements && supplements.source !== plan) throw new Error('Ultra supplement source world mismatch');
+  const featurePrice = supplements ? priceFeatureBlockBuild(supplements.featureBlocks, recipe) : null;
+  const supplement = supplements ? priceEnvironmentSupplements(supplements, recipe.ultra.forms ? 'ultra' : 'ordinary', true, part => ultraPartTriangles(part, recipe),
+    { nearCasts: part => ultraCasts(part, PART_COSTS[part].castsShadow, recipe.ultra), buildings: recipe.ultra.buildings, farShadow: recipe.ultra.farShadow }, featurePrice) : null;
+  const capPrice = supplement ? { farExtraDraws: supplement.capFarExtraDraws, farExtraTriangles: supplement.capFarExtraTriangles }
+    : standaloneCapPrice(plan, recipe);
+  if (edges) assertGroundEdgePrice(edges);
   const base = planRenderCost(plan);
   const kit = recipe.ultra;
 
@@ -278,43 +298,42 @@ export function ultraCostBreakdown(plan: LevelPlan, recipe: UltraRecipe): UltraC
     }
   }
 
+  blocks += featurePrice?.colourTriangles ?? 0;
+
   // Everything a rung does not touch is the ordinary model's own figure; the
   // deltas ride on top of it.
-  const colourDrawCalls = base.colourDrawCalls;
-  const shadowDrawCalls = base.shadowDrawCalls + shadowCallDelta;
+  propDrawCalls += supplement?.propDrawDelta ?? 0;
+  propColour += supplement?.propColourDelta ?? 0;
+  propShadow += supplement?.propShadowDelta ?? 0;
+  const colourDrawCalls = base.colourDrawCalls + (edges?.addedColourDraws ?? 0) + (supplement?.colourDraws ?? 0);
+  const shadowDrawCalls = base.shadowDrawCalls + shadowCallDelta + (supplement?.shadowDraws ?? 0);
   const colourTriangles = base.colourTriangles
     + (propColour - baselinePropColour)
-    + (blocks - baselineBlocks);
+    + (blocks - baselineBlocks) + (edges?.addedColourTriangles ?? 0)
+    + (supplement ? supplement.colourTriangles - supplement.propColourDelta : 0);
   const shadowTriangles = base.shadowTriangles
     + (propShadow - baselinePropShadow)
-    + (blocks - baselineBlocks);
+    + (blocks - baselineBlocks)
+    + (supplement ? supplement.shadowTriangles - supplement.propShadowDelta : 0);
 
   // The pass list (§2.3). The two every-frame passes carry the *level's*
   // share, so `solo` is exactly those two plus the full non-level reserve —
   // the reserve is not split by pass because `NON_LEVEL_RESERVE` is one
   // measured total (rider, ghost or cop, gates, particles, background).
   //
-  // The far depth render draws exactly the layer-5 set (§3.4): every mesh
-  // that casts under the rung — the casting props and the blocks — and
-  // nothing else, because the heightfield, markings and hazards never cast
-  // and the rider, cop, ghost and particles never join the layer. That set is
-  // the level's own shadow pass, so its price is that pass's price.
-  //
-  // One addition this pass does not count (Wave 4, A16): on a world where a
-  // cap closes a slot, the cap bucket's `onBeforeRender` draws it once more
-  // into the far map with the slot push (`ultraBuildings.ultraSlotFarDepth`)
-  // — one activation-only call, the cap bucket's triangles again (+1 /
-  // +5,016 on the euc town). Which worlds have a slot is a fact about the
-  // built cap matrices, not the plan's part counts, so the model leaves it
-  // out and the far envelope is settled on the drawn figure instead;
-  // `ultraCost.test.ts` bounds this pass plus the lid on the whole corpus and
-  // measures the lid on the six worlds.
+  // Original static source casters remain in the base near price. Replace
+  // supplement near work with its explicit static-far work: population casts
+  // near only; packed foliage casts near topology in both paths. All original
+  // cap instances repeat once when any cap closes a slot, priced from the same
+  // independent original source matrices that createProps verifies.
   const passes: UltraPassReport[] = [
     { name: 'near-shadow', when: 'every-frame', drawCalls: shadowDrawCalls, triangles: shadowTriangles },
     { name: 'colour', when: 'every-frame', drawCalls: colourDrawCalls, triangles: colourTriangles },
   ];
   if (kit.farShadow) {
-    passes.push({ name: 'far-shadow-build', when: 'activation', drawCalls: shadowDrawCalls, triangles: shadowTriangles });
+    passes.push({ name: 'far-shadow-build', when: 'activation',
+      drawCalls: shadowDrawCalls - (supplement?.shadowDraws ?? 0) + (supplement?.farShadowDraws ?? 0) + capPrice.farExtraDraws,
+      triangles: shadowTriangles - (supplement?.shadowTriangles ?? 0) + (supplement?.farShadowTriangles ?? 0) + capPrice.farExtraTriangles });
   }
   if (kit.lighting) {
     const pmrem = pmremBuildPass(ULTRA.env.width);
@@ -344,8 +363,8 @@ export function ultraCostBreakdown(plan: LevelPlan, recipe: UltraRecipe): UltraC
 }
 
 /** The Ultra frame model for a plan under a rung (§6.2). */
-export function ultraCost(plan: LevelPlan, recipe: UltraRecipe): UltraFrameCost {
-  return ultraCostBreakdown(plan, recipe).frame;
+export function ultraCost(plan: LevelPlan, recipe: UltraRecipe, edges: GroundEdgePrice | null = null, supplements: PreparedEnvironmentSupplements | null = null): UltraFrameCost {
+  return ultraCostBreakdown(plan, recipe, edges, supplements).frame;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +440,10 @@ export function cubeTargetBytes(target: {
  * - `ground-block-attributes (budget)` (ground, edgeFill or blocks): the
  *   whole §5 attribute budget, because the packing is W6's and the true
  *   figure only exists once a world is built (`TerrainView.ultra.bytes`).
+ *   This is a reservation, not a claim of exact resident equality. Source
+ *   cap-slot and metric-proxy flags have separate exact rows below; reconcile
+ *   the reservation against actual packed ground/block bytes when comparing
+ *   the native owner ledger with this conservative admission total.
  * - `ground-detail` (ground, while `ULTRA.ground.detail.enabled`): the pre-R1
  *   ground pass's painted RGBA8 maps that the ground GLSL samples
  *   (`ultraDetailMapsSampled`) — broad at 256 always, grass, stone and soil
@@ -450,7 +473,12 @@ export function ultraTargetBytes(
   recipe: UltraRecipe,
   buffer: { width: number; height: number },
   held?: UltraShadowMapSizes,
+  edges: GroundEdgePrice | null = null,
+  supplement: EnvironmentSupplementPrice | null = null,
+  /** Exact original source row for standalone diagnostics without supplements. */
+  originalCapSlotBytes = 0,
 ): readonly TargetReport[] {
+  if (edges) assertGroundEdgePrice(edges);
   if (!(buffer.width > 0 && buffer.height > 0)) {
     throw new Error(`ultraTargetBytes: a ${buffer.width}×${buffer.height} drawing buffer is not a buffer`);
   }
@@ -521,6 +549,26 @@ export function ultraTargetBytes(
       bytes: ULTRA_ENVELOPE.attributeBytes,
     });
   }
+  if (supplement?.sharedGroundArrayBytes) out.push({ name: 'shared-ground-material-array',
+    width: 0, height: 0, format: 'RGBA8 array ×7 + exact mips (terrain owned)', samples: 0, bytes: supplement.sharedGroundArrayBytes });
+  const capSlotBytes = supplement?.capSlotBytes ?? originalCapSlotBytes;
+  if (capSlotBytes) out.push({ name: 'original-cap-slot-flags',
+    width: 0, height: 0, format: 'one normalized U8x4 per original cap instance', samples: 0, bytes: capSlotBytes });
+  // Common replacement positions/normals/colours and the NET index change
+  // are beyond the old 8 MiB packed-attribute allowance. Charge exactly once;
+  // appended Ultra packed attributes remain inside that existing bound.
+  if (edges && edges.commonGeometryBytes) out.push({ name: 'shared-ground-edge-common',
+    width: 0, height: 0, format: 'position/normal/colour + net indices', samples: 0, bytes: edges.commonGeometryBytes });
+  if (supplement?.featureCommonBytes) out.push({ name: 'shared-feature-block-common',
+    width: 0, height: 0, format: 'position/normal/colour + net merged indices', samples: 0, bytes: supplement.featureCommonBytes });
+  if (supplement?.metricProxyBytes) out.push({ name: 'metric-source-proxy-flags',
+    width: 0, height: 0, format: 'one normalized U8 per original affected source-bucket instance', samples: 0, bytes: supplement.metricProxyBytes });
+  if (supplement?.metricCommonBytes) out.push({ name: 'metric-shared-facade-common',
+    width: 0, height: 0, format: 'merged position/normal/colour polygons, no instances or textures', samples: 0, bytes: supplement.metricCommonBytes });
+  const otherSupplementBytes = (supplement?.resourceBytes ?? 0) - (supplement?.metricCommonBytes ?? 0);
+  if (otherSupplementBytes < 0) throw new Error('Metric common bytes exceed complete supplement resource price');
+  if (otherSupplementBytes) out.push({ name: 'shared-environment-supplements',
+    width: 0, height: 0, format: 'geometry + instances + exact texture mip chains', samples: 0, bytes: otherSupplementBytes });
   return out;
 }
 
@@ -536,9 +584,12 @@ export function ultraTargetBytes(
 export function ultraBytes(
   recipe: UltraRecipe,
   buffer: { width: number; height: number } = ULTRA_JUDGE_BUFFER,
+  edges: GroundEdgePrice | null = null,
+  supplement: EnvironmentSupplementPrice | null = null,
+  originalCapSlotBytes = 0,
 ): { steady: number; peakSwitch: number } {
   let steady = 0;
-  for (const target of ultraTargetBytes(recipe, buffer)) steady += target.bytes;
+  for (const target of ultraTargetBytes(recipe, buffer, undefined, edges, supplement, originalCapSlotBytes)) steady += target.bytes;
   let transient = 0;
   if (recipe.ultra.lighting) {
     transient += pmremTarget(pmremCubeSize(ULTRA.env.width)).bytes;
@@ -587,9 +638,12 @@ export interface UltraJudgement {
  * allocates — 0 when the rung does not own one (a `-lighting` diagnostic
  * draws with High's ordinary rig, which is not Ultra's to judge).
  */
-export function judgeUltraRung(plan: LevelPlan, recipe: UltraRecipe): UltraRungVerdict {
-  const cost = ultraCost(plan, recipe);
-  const targets = ultraTargetBytes(recipe, ULTRA_JUDGE_BUFFER);
+export function judgeUltraRung(plan: LevelPlan, recipe: UltraRecipe, edges: GroundEdgePrice | null = null, supplements: PreparedEnvironmentSupplements | null = null): UltraRungVerdict {
+  const cost = ultraCost(plan, recipe, edges, supplements);
+  const featurePrice = supplements ? priceFeatureBlockBuild(supplements.featureBlocks, recipe) : null;
+  const supplement = supplements ? priceEnvironmentSupplements(supplements, recipe.ultra.forms ? 'ultra' : 'ordinary', true, part => ultraPartTriangles(part, recipe),
+    { nearCasts: part => ultraCasts(part, PART_COSTS[part].castsShadow, recipe.ultra), buildings: recipe.ultra.buildings, farShadow: recipe.ultra.farShadow }, featurePrice) : null;
+  const targets = ultraTargetBytes(recipe, ULTRA_JUDGE_BUFFER, undefined, edges, supplement, supplement ? 0 : standaloneCapPrice(plan, recipe).flagBytes);
   let bytes = 0;
   let textureEdge = 0;
   let shadowMap = 0;
@@ -610,7 +664,10 @@ export function judgeUltraRung(plan: LevelPlan, recipe: UltraRecipe): UltraRungV
   const breaches: UltraBreach[] = [];
   for (const axis of ULTRA_ENVELOPE_AXES) {
     const value = values[axis];
-    const ceiling = ULTRA_ENVELOPE[axis];
+    const amendment = supplements ? ENVIRONMENT_ENVELOPE.ultra : null;
+    const ceiling = amendment && (axis === 'soloDraws' || axis === 'soloTriangles' || axis === 'propDraws' || axis === 'propTriangles' || axis === 'bytes')
+      ? amendment[axis] : ULTRA_ENVELOPE[axis];
+    if (value !== null && (!Number.isSafeInteger(value) || value < 0)) throw new Error(`Invalid Ultra cost for ${axis}: ${value}`);
     if (value !== null && value > ceiling) breaches.push({ axis, value, ceiling });
   }
   return { id: recipe.id, recipe, cost, breaches, bytes, textureEdge };
@@ -657,8 +714,10 @@ export function judgeUltra(
   plan: LevelPlan,
   caps: UltraCaps,
   override?: UltraKitOverride | null,
+  edges: GroundEdgePrice | null = null,
+  supplements: PreparedEnvironmentSupplements | null = null,
 ): UltraJudgement {
-  const rungs = ULTRA_LADDER.map((rung) => judgeUltraRung(plan, applyKitOverride(rung, override ?? null)));
+  const rungs = ULTRA_LADDER.map((rung) => judgeUltraRung(plan, applyKitOverride(rung, override ?? null), edges, supplements));
   const refuse = (refusal: UltraRefusal): UltraJudgement => ({ recipe: null, cost: null, refusal, rungs });
 
   if (!caps.webgl2) return refuse({ kind: 'capability', missing: 'webgl2' });

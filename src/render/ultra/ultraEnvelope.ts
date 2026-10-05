@@ -33,7 +33,7 @@
  * `soloDraws`, `soloTriangles`, `propDraws`, `propTriangles`, `bytes` (the
  * ledger arithmetic of `ultraTargetBytes`) and `shadowMap`. `programs` is a
  * fact about the compiled scene and only exists after the first Ultra frame,
- * so it is held live by the spec (`renderer.ultraReport().programs ≤ 36`),
+ * so it is held live by the spec (`renderer.ultraReport().programs ≤ 76`),
  * never guessed at admission.
  */
 import type { UltraEnvelopeAxis } from './ultraTypes.ts';
@@ -80,8 +80,12 @@ export const ULTRA_ENVELOPE = Object.freeze({
    * maps and ≈ 122.3 MiB (A22, F5).
    */
   bytes: 244 * MIB,
-  /** Live programs (High: 12). Judged live by the spec, never at admission (see the file comment). */
-  programs: 36,
+  /** Fixed shipped Full paths and retained High↔Full caches: 76 enumerated
+   * source slots (environment R22, 2026-10-03). Includes all existing riders,
+   * wheels, shadow/background internals. Runtime-only; admission remains null.
+   * Derivation: docs/ENVIRONMENT_UPGRADE.md and frozen R21 program ledger.
+   * Arbitrary diagnostic compile histories and activation peaks are separate. */
+  programs: 76,
   /** Near shadow map edge, read back after the first frame. */
   shadowMap: 4096,
 

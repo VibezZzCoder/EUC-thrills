@@ -1,9 +1,23 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { preparePopulationWorld, recordWorldIdOf } from './populationWorld.ts';
+import type { LoadingScreen } from '../ui/loadingScreen.ts';
+import type { PopulationPlan } from '../level/populationPlan.ts';
+import { POPULATION, POPULATION_OCCUPANT, RIDER_CONTACT } from '../data/tuning.ts';
+import type { RiderOccupancyPose } from '../shared/riderOccupancy.ts';
+import { PopulationPhysicalCertificates } from '../simulation/populationPhysicalCertificates.ts';
+import { PopulationCompactAnticipationHistory, type CompactAnticipationOwner, type CompactOwnerComponent } from '../simulation/populationCompactAnticipation.ts';
+import { commitPopulationPhysicalTransaction } from '../simulation/populationPhysicalTransaction.ts';
+import { PopulationOwnerSerialHistory } from '../simulation/populationOwnerSerials.ts';
+import { populationPhysicalReactionAllowed } from '../simulation/populationPhysicalReactionAdmission.ts';
+import { resolvePopulationCompoundMotionBatch } from '../simulation/populationCompound.ts';
+import { PopulationSimulation, createPopulationPresentationSnapshot, type PopulationFootprint, type PopulationOccupant,
+  type PopulationReservation, type PopulationContact } from '../simulation/population.ts';
+import type { EucDynamicWorld, EucPreparedStep } from '../simulation/EucController.ts';
 import { StreetLoops } from '../simulation/streetLoops.ts';
 import * as THREE from 'three';
 import {
   INSPECTION_CAMERA, CAMERA, CHALLENGE, CHASE, CONTACT, EUC, INPUT, KNOCKABOUT, RIDER, TARGET,
-  SIMULATION, TRICK_RUN, WHEEL,
+  RENDER, SIMULATION, TRICK_RUN, WHEEL,
 } from '../data/tuning.ts';
 import { LiveTuning } from '../data/liveTuning.ts';
 import { GameRenderer } from '../render/Renderer.ts';
@@ -99,6 +113,7 @@ import { SoftBodyField } from '../simulation/softBodies.ts';
 import {
   DUEL_LATERAL_METRES,
   SLOT_LATERAL_METRES,
+  SLOT_MIN_SEPARATION_METRES,
   raceGridSlot,
   spawnSlot,
 } from '../simulation/spawnSlots.ts';
@@ -170,8 +185,10 @@ import {
 } from '../simulation/routeSpine.ts';
 import { ChaseRecordsStore, type ChaseRecord } from './chaseRecords.ts';
 import { PlanTerrainSampler, paintedSurfaces } from '../simulation/planSampler.ts';
-import { createGroundSample } from '../simulation/world.ts';
+import { createGroundSample, type SurfaceId } from '../simulation/world.ts';
 import { AudioEngine, type AudioSnapshot, parseLatencyHint } from '../audio/AudioEngine.ts';
+import { environmentAudioEmitters } from './environmentAudio.ts';
+import { populationAudioEmitters, updatePopulationAudio } from './populationAudio.ts';
 import { SAMPLE_URLS } from '../audio/samples.ts';
 import type { BusVolumes } from '../audio/mix.ts';
 import { FixedStepLoop, createBrowserScheduler, type FrameSample, type LoopStats } from './loop.ts';
@@ -182,6 +199,7 @@ import { ScreenNotice } from '../ui/notice.ts';
 import { SafeStorage } from '../platform/storage.ts';
 import {
   OptionsStore,
+  deviceDefaults,
   type GameOptions,
   type OrdinaryQuality,
   type QualityLevel,
@@ -662,6 +680,8 @@ interface Pursuer extends PursuerParts {
   gap: number;
   /** Placed by a start, a return or a post since the last room step: his two-body facts are void once (M23's rule). */
   placed: boolean;
+  /** An actual checked reset installed this controller; construction is private scratch. */
+  worldPlaced: boolean;
   /** A return the referee demanded could not be placed and is owed — F3's `returning`. */
   returning: boolean;
 }
@@ -684,7 +704,7 @@ interface PursuerParts {
   /** The quarry handed to his brain, written in place. `id` is the outlaw index (§21.8). */
   readonly quarry: { x: number; y: number; z: number; speed: number; id: number };
   /** The pack input handed to his brain, written in place. */
-  readonly pack: { bands: readonly RouteBlocker[]; followLine: number | null; mates: readonly { x: number; z: number }[] };
+  readonly pack: { bands: readonly RouteBlocker[]; followLine: number | null; mates: readonly { x: number; z: number }[]; livingBodies?: readonly PopulationFootprint[] };
   /** `packmatePositions`' caller-owned list: the other standing cops, for the close-quarters search. */
   readonly mates: { x: number; z: number }[];
   /** His body as the other brains see it this step (`copPack.PackBody`), snapshotted before anyone steps. */
@@ -1307,7 +1327,147 @@ export interface GameSnapshot {
   };
 }
 
+interface PreparedGameBoot {
+  readonly renderer: GameRenderer;
+  readonly storage: SafeStorage;
+  readonly options: OptionsStore;
+  readonly levelId: LevelId;
+  readonly seed: string;
+  readonly level: LevelPlan;
+  readonly population: PopulationPlan;
+  readonly routeStatus: RouteStatus;
+}
+
+/** The options store with this device's defaults (`deviceDefaults`). */
+/**
+ * The plan's painted surfaces, sorted — read by every `snapshot()`. Scanning a
+ * living-world heightfield (560,070 cells on `euc`) cost ~6 ms a call, which a
+ * spec polling `snapshot()` each frame paid continuously (2026-10-05). Plans
+ * are immutable once built, so one scan per plan object.
+ */
+const PAINTED_BY_PLAN = new WeakMap<LevelPlan, readonly SurfaceId[]>();
+function paintedSurfaceList(plan: LevelPlan): readonly SurfaceId[] {
+  let list = PAINTED_BY_PLAN.get(plan);
+  if (list === undefined) {
+    list = Object.freeze([...paintedSurfaces(plan)].sort());
+    PAINTED_BY_PLAN.set(plan, list);
+  }
+  return list;
+}
+
+function deviceOptions(storage: SafeStorage): OptionsStore {
+  const coarse = typeof window.matchMedia === 'function'
+    && window.matchMedia('(pointer: coarse)').matches;
+  return new OptionsStore(storage, deviceDefaults(coarse));
+}
+
+function bootWorld(levelId: LevelId, seed: string, hazardProbe?: number, targetProbe?: number, topSpeedMph?: number) {
+  const requested = levelId === 'generated' ? requestRoute(seed, hazardProbe, targetProbe, topSpeedMph) : null;
+  const resolvedId = requested?.ok ? 'generated' : levelId === 'generated' ? 'slice' : levelId;
+  return {
+    levelId: resolvedId as LevelId,
+    seed: requested?.ok ? requested.seed : '',
+    level: requested?.ok ? requested.plan : createLevel(resolvedId, seed, hazardProbe, targetProbe, topSpeedMph),
+    routeStatus: (requested !== null && !requested.ok ? { kind: 'no-route', seed: requested.seed } : { kind: 'idle' }) as RouteStatus,
+  };
+}
+
+/** Prediction only (see `populationStepEntry`): exact certificates decide. */
+const NATIVE_STEP_PREDICTION_METRES = 9;
+function populationBodyWithin(body: PopulationFootprint, pose: EucPose, reach: number): boolean {
+  const radius = reach + Math.hypot(body.halfWidthMetres, body.halfLengthMetres);
+  return Math.abs(body.x - pose.x) < radius && Math.abs(body.z - pose.z) < radius;
+}
+/** Every field, the particle block element-wise; Object.is keeps -0 and NaN as read. */
+function samePopulationPose(a: EucPose, b: EucPose): boolean {
+  for (const key in b) {
+    const left = a[key as keyof EucPose], right = b[key as keyof EucPose];
+    if (key === 'ragdoll') {
+      const x = left as Float32Array, y = right as Float32Array;
+      if (x.length !== y.length) return false;
+      for (let index = 0; index < y.length; index += 1) if (!Object.is(x[index], y[index])) return false;
+    } else if (!Object.is(left, right)) return false;
+  }
+  return true;
+}
+/** An exact owned copy of every field, reusing the caller's previous copy. */
+function copyPopulationPose(from: EucPose, into: EucPose = createPose()): EucPose {
+  const target = into as unknown as Record<string, unknown>;
+  for (const key in from) {
+    const value = from[key as keyof EucPose];
+    if (key === 'ragdoll') {
+      const source = value as Float32Array;
+      if (into.ragdoll.length === source.length) into.ragdoll.set(source);
+      else target.ragdoll = Float32Array.from(source);
+    } else target[key] = value;
+  }
+  return into;
+}
+
 export class Game {
+  /** Only the browser boot uses the staged path. Synchronous diagnostics and
+   * later world swaps consume the very same renderer construction sequence. */
+  static async create(canvas: HTMLCanvasElement, levelId: LevelId, seed: string,
+    hazardProbe: number | undefined, targetProbe: number | undefined, chaseProbe: boolean,
+    topSpeedMph: number | undefined, onStage: (label: string, completed: number) => Promise<void>): Promise<Game> {
+    const storage = new SafeStorage();
+    const options = deviceOptions(storage);
+    let renderer: GameRenderer | null = null;
+    try {
+      await onStage('Building your course', 1);
+      const world = bootWorld(levelId, seed, hazardProbe, targetProbe, topSpeedMph);
+      await onStage('Planning street life', 2);
+      const living = preparePopulationWorld(world.level);
+      await onStage('Preparing graphics', 3);
+      renderer = new GameRenderer(canvas);
+      const search = window.location.search;
+      const presentation = presentationOverrideFrom(search);
+      const fault = ultraFaultFrom(search);
+      if (fault !== null) renderer.setUltraFault(fault);
+      const tier = resolveRenderTier({ requested: options.current.quality, multiplayerSession: false,
+        presentationOverride: presentation !== undefined, refused: false });
+      if (tier.wantUltra) {
+        renderer.setQuality('high', RENDER.maxPixelRatio);
+        renderer.setUltraWanted(true, ultraKitOverrideFrom(search));
+      }
+      let completed = 4;
+      await renderer.setLevelAsync(living.level, presentation, living.population,
+        (label) => onStage(label, completed++));
+      await onStage('Preparing riders and controls', 7);
+      return new Game(canvas, levelId, seed, hazardProbe, targetProbe, chaseProbe, topSpeedMph,
+        { ...world, level: living.level, population: living.population, renderer, storage, options });
+    } catch (error) {
+      renderer?.dispose();
+      options.dispose();
+      throw error;
+    }
+  }
+
+  private loadingScreen: LoadingScreen | null = null;
+  private pendingSessionState: AppStateId | null = null;
+  private sessionPaintFrames = 0;
+  private sessionSettleFrames = 0;
+  private executingSessionLoad = false;
+  /**
+   * A native world swap waiting behind the loading cover (2026-10-03). The
+   * living world made preparing a place take long enough that a press which
+   * replaced the world froze the page with the old screen still showing. The
+   * whole entrance is queued, the cover paints, and the unchanged entrance is
+   * re-run with `executingSessionLoad` set — the quality/session pattern.
+   */
+  private pendingWorldSwap: (() => void) | null = null;
+  private worldPaintFrames = 0;
+  private worldSettleFrames = 0;
+  /** The pending Fresh route owns the cover it raised. */
+  private routeCovered = false;
+  /** A world-swap cover is up, from its press until input is released. */
+  private worldCoverUp = false;
+  /** Bridge entrances stay synchronous instruments, like the QA tier setters. */
+  private synchronousWorldSwap = false;
+  /** A cover's program warm-up; `disposed` drops a late completion. */
+  private coverWarm: 'idle' | 'running' | 'disposed' = 'idle';
+  private finishLoadingAfterPoll = false;
+  private qualityResumeRunning: boolean | null = null;
   readonly renderer: GameRenderer;
   readonly loop: FixedStepLoop;
   readonly tuning: LiveTuning;
@@ -2147,7 +2307,374 @@ export class Game {
    */
   private qualitySettleFrames = 0;
 
+  /** Plain live footprints are read from controllers, never their render rigs. */
+  private populationBodies(): readonly { id: string; kind: 'human' | 'cop'; controller: EucController; pose: EucPose; body: PopulationFootprint }[] {
+    const bodies: { id: string; kind: 'human' | 'cop'; controller: EucController; pose: EucPose; body: PopulationFootprint }[] = [];
+    const append = (id: string, kind: 'human' | 'cop', controller: EucController): void => {
+      const pose = createPose(); controller.writePose(pose);
+      bodies.push({ id, kind, controller, pose, body: { x: pose.x, z: pose.z, headingY: pose.headingY,
+        minY: pose.y, maxY: pose.y + POPULATION_OCCUPANT.heightMetres,
+        halfWidthMetres: POPULATION_OCCUPANT.halfWidthMetres,
+        halfLengthMetres: POPULATION_OCCUPANT.halfLengthMetres,
+        velocityX: Math.sin(pose.headingY) * pose.speed, velocityZ: Math.cos(pose.headingY) * pose.speed } });
+    };
+    // The first controller is built before the seat array. Hidden watching
+    // outlaws have no world occupancy; held/parked visible bodies still do.
+    for (const [index, seat] of (this.seats ?? []).entries()) {
+      if (this.chaseIsCouch && this.chaseSeatOut[index]) continue;
+      append(`human-${index}`, 'human', seat.controller);
+    }
+    for (const pursuer of this.pursuers) {
+      // A pack controller is born at a private scratch spawn. It gains world
+      // occupancy only after an actual checked placement installs it.
+      if (this.copRiding && pursuer.worldPlaced) append(`cop-${pursuer.index}`, 'cop', pursuer.controller);
+    }
+    return bodies;
+  }
+
+  private populationOccupants(bodies = this.populationBodies()): readonly PopulationOccupant[] {
+    return bodies.map(value => {
+      const before = this.populationBefore.get(value.id);
+      const teleported = this.populationBoundaryTeleports.has(value.id)
+        || (before !== undefined && before.serial !== value.controller.discontinuitySerial);
+      return { id: value.id, kind: value.kind, previous: before?.body ?? value.body,
+        current: value.body, teleported };
+    });
+  }
+
+  private populationReservationOwner(item: PopulationReservation): string {
+    return item.id.split('/')[0];
+  }
+
+  /** Exact destination pose; the controller owns slope and suspension arithmetic. */
+  private populationAllowsSpawn(id: string, spawn: Spawn): boolean {
+    if (this.populationPlan.actors.length === 0) return true;
+    const controller = this.populationPlacementControllers.get(id) ?? this.populationPlacementProbe;
+    return this.populationPhysicalPlacementClear(id, controller.placementOccupancyPose(spawn));
+  }
+
+  private populationPhysicalPlacementClear(id: string, pose: RiderOccupancyPose): boolean {
+    // **A seat never vetoes a seat** (MI-1/MI-2, 2026-10-03). Seat slots, race
+    // grids and M37 packs are spaced against each other by their producers,
+    // and M26 contact eases apart riders who do touch; counting the other
+    // seats' pre-move bodies and reservations refused the accepted 1.6 m
+    // abreast slots and every group re-placement. NPC actors and CPU cops
+    // still block a seat, and a cop placement still sees every seat.
+    const seat = id.startsWith('human-');
+    const parts = this.populationPhysicalCertificates.components(id, pose, pose, 0, 'placement');
+    const occupants: PopulationOccupant[] = this.populationBodies()
+      .filter(value => value.id !== id && !(seat && value.kind === 'human'))
+      .flatMap(value => this.populationPhysicalCertificates
+        .components(value.id, value.pose, value.pose, 0, 'placement').map(component => {
+          const body = component.at(0); return { id: `${value.id}/${component.componentId}`,
+            kind: value.kind, previous: body, current: body };
+        }));
+    const reservations = this.populationReservations.filter(value => {
+      const owner = this.populationReservationOwner(value);
+      return owner !== id && !(seat && owner.startsWith('human-'));
+    });
+    if (!parts.every(component => this.population.recoveryClearance(component.at(0), occupants, reservations).clear)) return false;
+    // A direct reset inside an open epoch may not install a body across an
+    // NPC's already prepared path. This is placement refusal, never a sweep
+    // from the previous controller position to the requested destination.
+    // A held-step response recovers after actors are sealed: their final
+    // bodies above are then the whole answer (CP-3).
+    return !this.populationPhysicalEpochOpen || this.population.contactsCommitted
+      || resolvePopulationCompoundMotionBatch(this.population.actorMotions(), parts).hits.length === 0;
+  }
+
+  /** One optional physical-world port shared by every active controller. */
+  private populationPort(id: string, kind: 'human' | 'cop'): EucDynamicWorld | undefined {
+    if (this.populationPlan.actors.length === 0) return undefined;
+    return { hull: POPULATION_OCCUPANT, occupantKind: kind,
+      // Native rag/wheel side constraints read the current sealed epoch when
+      // they actually run. A captured installation-time actor array is stale.
+      ragObstacleBodies: () => this.population.actorFootprints(),
+      // Actual contact decisions belong to the complete private transaction.
+      resolveMotion: () => null,
+      canReact: request => populationPhysicalReactionAllowed({ ownerId: id, request,
+        population: this.population, certificates: this.populationPhysicalCertificates,
+        occupants: this.populationBodies().map(value => ({ id: value.id, pose: value.pose })),
+        reservations: this.populationReservations }),
+      canPlace: request => {
+        // Private scratch construction is not a world placement. Its spawn
+        // is deliberately the player's origin, already reserved by human-0.
+        // Every actual CPU reset/recovery still checks all occupants/NPCs.
+        // A seat's constructor is not a checked placement either (MI-1,
+        // 2026-10-03): it runs inside `installLevel`, `openCouch` and
+        // `growCouch`, where a throw leaves a world half-installed. The check
+        // is the slot search before it (`spawnForSeat`) or the `resetSeats`
+        // after it; old-world controllers never obstruct a new-world one.
+        if (request.reason === 'construct') return true;
+        return this.populationPhysicalPlacementClear(id, request.occupancyPose);
+      },
+      didPlace: request => {
+        // A scratch CPU construction is never installed in the shared world.
+        // Only committed player placements and actual CPU resets reserve space.
+        if (kind === 'cop' && request.reason === 'construct') return;
+        if (kind === 'cop') {
+          const pursuer = this.pursuers.find(value => `cop-${value.index}` === id);
+          if (pursuer) pursuer.worldPlaced = true;
+          if (!this.copRiding && !this.placingPack) return;
+        }
+        this.populationReservations = this.populationReservations.filter(value => this.populationReservationOwner(value) !== id);
+        for (const component of this.populationPhysicalCertificates.components(id,
+          request.occupancyPose, request.occupancyPose, 0, 'placement')) {
+          this.populationReservations.push({ id: `${id}/${component.componentId}`, footprint: component.at(0),
+            expiresAtClockSeconds: this.population.clockSeconds + POPULATION.placementReservationSeconds });
+        }
+      } };
+  }
+
+  /** Read each already-censused native pose once; detach component values before
+   * reusing a certificate slot. No compiled closure survives this method.
+   * The placement footprint is a pure function of the certificate set and the
+   * exact pose, and seal's pose is next begin's, so an unchanged body reuses it. */
+  private populationAnticipationOwners(bodies = this.populationBodies()): readonly CompactAnticipationOwner[] {
+    const certificates = this.populationPhysicalCertificates, cache = this.populationOwnerComponents;
+    const owners = bodies.map(value => {
+      let known = cache.get(value.id);
+      if (known === undefined || known.certificates !== certificates || !samePopulationPose(known.pose, value.pose)) {
+        let complete = true, components: readonly CompactOwnerComponent[];
+        try {
+          components = certificates.components(value.id, value.pose, value.pose, 0, 'placement')
+            .map(part => ({ componentId: part.componentId, footprint: part.at(0) }));
+        } catch {
+          // Unrepresentable present occupancy is explicit behavioral refusal.
+          // The original native transaction still receives the complete roster.
+          complete = false; components = [];
+        }
+        known = { certificates, pose: copyPopulationPose(value.pose, known?.pose), complete, components };
+        cache.set(value.id, known);
+      }
+      return { id: value.id, controller: value.controller, serial: value.controller.discontinuitySerial,
+        complete: known.complete, components: known.components };
+    });
+    if (cache.size > bodies.length) for (const id of cache.keys()) if (!bodies.some(value => value.id === id)) cache.delete(id);
+    return owners;
+  }
+
+  private beginPopulationStep(dt: number): void {
+    this.populationBefore.clear(); this.populationProbed.clear();
+    this.populationStepSeconds = dt; this.populationPhysicalEpochOpen = this.populationPlan.actors.length > 0;
+    this.populationPreparedSteps=[];this.populationTransactionCommitted=false;this.populationPursuersPrepared=false;
+    const bodies = this.populationBodies();
+    this.populationBoundaryTeleports = this.populationSerialHistory.begin(bodies.map(value => ({ id: value.id, serial: value.controller.discontinuitySerial, controller: value.controller })));
+    for (const value of bodies) this.populationBefore.set(value.id,
+      { body: value.body, pose: value.pose, serial: value.controller.discontinuitySerial, controller: value.controller });
+    this.populationReservations = this.populationReservations.filter(value =>
+      value.expiresAtClockSeconds === undefined || value.expiresAtClockSeconds >= this.population.clockSeconds);
+    const movingVehicle = this.populationPlan.actors.some(actor =>
+      (actor.kind === 'trafficVehicle' || actor.kind === 'serviceVehicle') && actor.movement !== 'stationary');
+    const anticipation = movingVehicle
+      ? this.populationAnticipation.begin(this.populationAnticipationOwners(bodies), this.population.tickIndex, dt)
+      : undefined;
+    if (!movingVehicle) { this.populationAnticipation.clear(); this.populationOwnerComponents.clear(); }
+    this.population.step(dt, this.populationOccupants(bodies), this.populationReservations, anticipation);
+  }
+
+  private finishPopulationStep(): void {
+    const bodies = this.populationBodies();
+    this.populationSerialHistory.seal(bodies.map(value => ({ id: value.id, serial: value.controller.discontinuitySerial, controller: value.controller })));
+    if (this.populationAnticipation.pending)
+      this.populationAnticipation.seal(this.populationAnticipationOwners(bodies), this.population.tickIndex);
+    this.populationPhysicalEpochOpen = false;
+    if(this.populationTransactionCommitted)return;
+    const occupants = this.populationOccupants();
+    const intents: PopulationOccupant[] = [];
+    for (const value of this.populationBodies()) {
+      const motion = value.controller.dynamicMotionIntent;
+      if (!this.populationProbed.has(value.id) || !motion) continue;
+      const before = this.populationBefore.get(value.id);
+      if (before && before.serial !== value.controller.discontinuitySerial) continue;
+      intents.push({ id: value.id, kind: value.kind, previous: motion.previous, current: motion.proposed });
+    }
+    this.populationContacts = this.population.queryContacts(occupants, intents);
+  }
+
+  /**
+   * One owner's place in the epoch. An owner that starts grounded and upright
+   * cannot place itself in a step (only a crash respawns) and reads no NPC rag
+   * bodies, so its native step is exactly the candidate the transaction would
+   * resolve; such an owner well clear of every actor is deferred instead of
+   * prepared. The distance is only a prediction: `populationStepNatively`
+   * proves the transaction's own admission false before keeping a native step.
+   */
+  private populationStepEntry(id: string, kind: 'human' | 'cop', controller: EucController, stepSeconds: number,
+    actions: ActionSnapshot, finish: () => void): (typeof this.populationPreparedSteps)[number] {
+    const before = this.populationBefore.get(id);
+    let deferred = !controller.crashed && controller.isGrounded && before !== undefined
+      && before.controller === controller && before.serial === controller.discontinuitySerial;
+    if (deferred) {
+      const reach = NATIVE_STEP_PREDICTION_METRES + Math.abs(before!.pose.speed) * stepSeconds * 2;
+      for (const actor of this.population.actorMotionCensus().actors) {
+        if (populationBodyWithin(actor.previous, before!.pose, reach) || populationBodyWithin(actor.current, before!.pose, reach)) {
+          deferred = false; break;
+        }
+      }
+    }
+    // The intent as prepareStep would capture it: a later native or prepared
+    // step must not see a source that has since been reused.
+    const entry = { id, kind, controller, actions: Object.freeze({ ...actions }), deferred, native: false,
+      finish } as (typeof this.populationPreparedSteps)[number];
+    if (!deferred) this.populationPrepare(entry, stepSeconds);
+    return entry;
+  }
+
+  private populationPrepare(entry: (typeof this.populationPreparedSteps)[number], stepSeconds = this.populationStepSeconds): void {
+    const token = entry.controller.prepareStep(stepSeconds, entry.actions), pose = createPose();
+    entry.controller.writePreparedPose(token, pose);
+    entry.token = token; entry.pose = pose;
+  }
+
+  /** The provisional quarry: a deferred owner is prepared now, from its untouched start. */
+  private populationProvisionalPose(id: string): EucPose | undefined {
+    const entry = this.populationPreparedSteps.find(value => value.id === id);
+    if (entry !== undefined && entry.pose === undefined) this.populationPrepare(entry);
+    return entry?.pose;
+  }
+
+  /**
+   * Step deferred owners natively, at the point the transaction would have
+   * resolved them, so every earlier reader still saw their untouched start.
+   * A native step is kept only when the transaction's own certificates refuse
+   * to admit it, both as the original moving owner and as the parked body the
+   * transaction now sees; otherwise the exact start is restored and the owner
+   * is prepared in its original place. When a crashed or airborne owner makes
+   * the transaction select actor yields from every neutral candidate first,
+   * the neutral candidate must be unadmitted too. If a prepared owner is also
+   * respawning there, its recovery clearance reads every other seat's pose,
+   * so the neutral candidate must be exactly the native end (it skips wall
+   * standoff, so a rider scraping a wall falls back to the transaction).
+   */
+  private populationStepNatively(): void {
+    const entries = this.populationPreparedSteps;
+    if (!entries.some(entry => entry.deferred)) return;
+    const dt = this.populationStepSeconds, certificates = this.populationPhysicalCertificates;
+    const actors = this.population.actorMotionCensus().actors;
+    const neutralSelection = entries.some(entry => entry.controller.crashed || !entry.controller.isGrounded);
+    // The transaction's own `discontinuous` test on every neutral candidate.
+    // A deferred start is grounded and upright, so its candidate keeps its
+    // serial (populationNativeStepPremise.test.ts): only an owner that is
+    // already prepared can make this epoch respawning.
+    const respawning = neutralSelection && entries.some(entry => {
+      const start = this.populationBefore.get(entry.id);
+      return start !== undefined && entry.token !== undefined && start.serial !== entry.token.discontinuitySerial;
+    });
+    // A deferred owner's neutral candidate is prepared up front only when a
+    // respawn needs it to equal the native end, or when its start is not clear
+    // of this census by the deferral reach (PERF-R2-1, 2026-10-04). A start
+    // NATIVE_STEP_PREDICTION_METRES + 2|v|dt beyond every actor footprint is
+    // far past one step's travel plus the coarse boxes, so that candidate
+    // cannot be admitted; its native end is still certified below or falls
+    // back to a real prepare.
+    const clearOfActors = (entry: (typeof entries)[number]) => {
+      const start = this.populationBefore.get(entry.id)!.pose;
+      const reach = NATIVE_STEP_PREDICTION_METRES + Math.abs(start.speed) * dt * 2;
+      return actors.every(actor => !populationBodyWithin(actor.previous, start, reach) && !populationBodyWithin(actor.current, start, reach));
+    };
+    if (neutralSelection) for (const entry of entries) if (entry.deferred && entry.token === undefined
+      && (respawning || !clearOfActors(entry))) this.populationPrepare(entry);
+    for (const entry of entries) {
+      if (!entry.deferred) continue;
+      const before = this.populationBefore.get(entry.id)!;
+      if (neutralSelection && entry.token !== undefined && (entry.token.discontinuitySerial !== before.serial
+        || certificates.owner(entry.id, before.pose, entry.pose!, dt, actors).admitted)) continue;
+      let checkpoint = this.populationCheckpoints.get(entry.controller);
+      if (checkpoint === undefined) this.populationCheckpoints.set(entry.controller, checkpoint = new EucController(this.terrain));
+      checkpoint.copyMutableStateFrom(entry.controller);
+      entry.controller.step(dt, entry.actions);
+      // A fresh pose, as the census and a prepare form one: writePose leaves
+      // the particle block untouched unless the rider is ragdolling.
+      const end = createPose(); entry.controller.writePose(end);
+      if (entry.controller.discontinuitySerial === before.serial
+        && (!respawning || samePopulationPose(entry.pose!, end))
+        && !certificates.owner(entry.id, before.pose, end, dt, actors).admitted
+        && !certificates.owner(entry.id, end, end, 0, actors).admitted) { entry.native = true; continue; }
+      entry.controller.copyMutableStateFrom(checkpoint);
+      this.populationPrepare(entry);
+    }
+  }
+
+  /** A freshly installed cop can enter after the epoch's initial body census. */
+  private populationRememberPreparedStart(id: string, controller: EucController): void {
+    const before = this.populationBefore.get(id);
+    if (before?.controller === controller && before.serial === controller.discontinuitySerial) return;
+    const pose = createPose(); controller.writePose(pose);
+    this.populationBefore.set(id, { body: this.populationBodyFromPose(pose), pose,
+      serial: controller.discontinuitySerial, controller });
+  }
+
+  /** The controller seals an exact whole step or its exact untouched start. */
+  private resolvePopulationPreparedSteps(): void {
+    this.populationStepNatively();
+    const prepared = this.populationPreparedSteps.filter(entry => !entry.native);
+    const result = commitPopulationPhysicalTransaction({ population: this.population,
+      certificates: this.populationPhysicalCertificates, seats: this.populationBodies(),
+      preparedSeats: prepared.map(entry => ({ ...entry, token: entry.token!, pose: entry.pose!,
+        world: this.populationPort(entry.id, entry.kind) })), before: this.populationBefore,
+      dt: this.populationStepSeconds, reservations: this.populationReservations, contactResponse: 'yield',
+      preferActorYieldOwnerIds: prepared.filter(entry => entry.controller.crashed || !entry.controller.isGrounded).map(entry => entry.id),
+      bodyFromPose: pose => this.populationBodyFromPose(pose) });
+    this.populationContacts = result.contacts;
+    this.populationPhysicalEpochOpen = false;
+    this.populationTransactionCommitted = true;
+  }
+
+  private populationBodyFromPose(pose:EucPose):PopulationFootprint{
+    return{x:pose.x,z:pose.z,headingY:pose.headingY,minY:pose.y,
+      maxY:pose.y+POPULATION_OCCUPANT.heightMetres,halfWidthMetres:POPULATION_OCCUPANT.halfWidthMetres,
+      halfLengthMetres:POPULATION_OCCUPANT.halfLengthMetres,
+      velocityX:Math.sin(pose.headingY)*pose.speed,velocityZ:Math.cos(pose.headingY)*pose.speed};
+  }
+
+  /** Durable QA/read-only provenance; no view advances this shared clock. */
+  populationState() {
+    return { sourceWorldId: this.populationPlan.sourceWorldId,
+      installedWorldId: this.populationPlan.installedWorldId, digest: this.populationPlan.contentDigest,
+      report: this.populationPlan.report,
+      paths: this.populationPlan.paths.map(value => ({ id: value.id, role: value.role,
+        district: value.district, lengthMetres: value.lengthMetres, closed: value.closed })),
+      simulation: this.population.snapshot(), contacts: this.populationContacts.map(value => ({ ...value })),
+      reservations: this.populationReservations.map(value => ({ ...value, footprint: { ...value.footprint } })) };
+  }
+
   private terrain: PlanTerrainSampler;
+  private populationPlan: PopulationPlan;
+  private population: PopulationSimulation;
+  private readonly populationPresentationPrevious = createPopulationPresentationSnapshot();
+  private readonly populationPresentationCurrent = createPopulationPresentationSnapshot();
+  private populationPhysicalCertificates = new PopulationPhysicalCertificates(RIDER_CONTACT, createPose());
+  /** Default constructor tuning for a not-yet-created human seat's spawn search. */
+  private populationPlacementProbe: EucController;
+  /** Old-world controllers cannot answer a new world's spawn query. */
+  private readonly populationPlacementControllers = new Map<string, EucController>();
+  private populationStepSeconds = 0;
+  private populationPhysicalEpochOpen = false;
+  private readonly populationSerialHistory = new PopulationOwnerSerialHistory();
+  private readonly populationAnticipation = new PopulationCompactAnticipationHistory();
+  private populationBoundaryTeleports: ReadonlySet<string> = new Set();
+  private readonly populationBefore = new Map<string, { body: PopulationFootprint; pose: EucPose; serial: number; controller: EucController }>();
+  private readonly populationProbed = new Set<string>();
+  private populationReservations: PopulationReservation[] = [];
+  /** Start placements share temporary reservations even before chase enters. */
+  private placingPack = false;
+  private populationContacts: readonly PopulationContact[] = [];
+  /**
+   * This epoch's physical owners in the original prepare order. A deferred
+   * entry (no token yet) may be stepped natively at the transaction point;
+   * `native` marks one that was, and is a parked body to the transaction.
+   */
+  private populationPreparedSteps:{id:string;kind:'human'|'cop';controller:EucController;actions:ActionSnapshot;
+    deferred:boolean;native:boolean;token?:EucPreparedStep;pose?:EucPose;finish:()=>void}[]=[];
+  /** Exact start-state buffers around a native step that may yet transact. */
+  private readonly populationCheckpoints = new WeakMap<EucController, EucController>();
+  /** Last placement components per owner, valid for one certificate set and exact pose. */
+  private readonly populationOwnerComponents = new Map<string, { certificates: PopulationPhysicalCertificates;
+    pose: EucPose; complete: boolean; components: readonly CompactOwnerComponent[] }>();
+  private populationTransactionCommitted=false;
+  private populationPursuersPrepared=false;
+
   /**
    * The terrain view the renderer is drawing — **asked for, never held**
    * (M39 W1).
@@ -2730,6 +3257,7 @@ export class Game {
      * after it.
      */
     topSpeedMph?: number,
+    prepared?: PreparedGameBoot,
   ) {
     this.hazardProbe = hazardProbe;
     this.targetProbe = targetProbe;
@@ -2751,8 +3279,8 @@ export class Game {
     // both stores agree about the answer. A settings screen saying persistence
     // works while the records screen says it does not would be a bug nobody
     // could reproduce without a private window.
-    const storage = new SafeStorage();
-    this.options = new OptionsStore(storage);
+    const storage = prepared?.storage ?? new SafeStorage();
+    this.options = prepared?.options ?? deviceOptions(storage);
     this.records = new RecordsStore(storage);
     // The same `SafeStorage`, a different namespaced slot — M14, §13 q15.
     this.knockaboutRecords = new KnockaboutRecordsStore(storage);
@@ -2761,7 +3289,7 @@ export class Game {
     this.trickRecords = new TrickRecordsStore(storage);
     this.appState = new AppState();
 
-    this.renderer = new GameRenderer(canvas);
+    this.renderer = prepared?.renderer ?? new GameRenderer(canvas);
 
     // One LevelPlan, two consumers that cannot drift (invariant 2). At M4 this
     // is no longer a claim about a future: the sampler builds the controller's
@@ -2780,19 +3308,24 @@ export class Game {
     // §13, under q6) admits no exception — *no silent world swap, ever*. So a
     // failing seed lands on the shipped slice **and says so**, on the title
     // screen, rather than looking like the route the link promised.
-    const boot = levelId === 'generated'
-      ? requestRoute(seed, hazardProbe, targetProbe, topSpeedMph)
-      : null;
-    if (boot !== null && boot.ok) {
-      this.levelId = 'generated';
-      this.seed = boot.seed;
-      this.levelPlan = boot.plan;
-    } else {
-      this.levelId = levelId === 'generated' ? 'slice' : levelId;
-      this.levelPlan = createLevel(this.levelId, seed, hazardProbe, targetProbe, topSpeedMph);
-      if (boot !== null) this.routeStatus = { kind: 'no-route', seed: boot.seed };
-    }
+    const world = prepared ?? bootWorld(levelId, seed, hazardProbe, targetProbe, topSpeedMph);
+    this.levelId = world.levelId;
+    this.seed = world.seed;
+    this.routeStatus = world.routeStatus;
+    const living = prepared === undefined ? preparePopulationWorld(world.level)
+      : { level: prepared.level, population: prepared.population };
+    this.levelPlan = living.level;
+    this.populationPlan = living.population;
     this.terrain = new PlanTerrainSampler(this.levelPlan);
+    this.population = new PopulationSimulation(this.populationPlan, this.terrain);
+    this.populationPlacementProbe = new EucController(this.terrain);
+    this.populationPhysicalCertificates = new PopulationPhysicalCertificates(RIDER_CONTACT, createPose());
+    if (this.populationPlan.actors.length > 0) this.populationPhysicalCertificates.warm();
+    this.populationPhysicalEpochOpen = false;
+    this.populationSerialHistory.clear(); this.populationBoundaryTeleports = new Set();
+    this.populationAnticipation.clear();
+    this.populationOwnerComponents.clear();
+    this.populationPlacementControllers.clear();
     // Both construction sites hand the controller the same three things, and
     // this one exists because the boot path cannot call `installLevel` — it is
     // building the fields `installLevel` replaces. Anything added to one must
@@ -2809,16 +3342,19 @@ export class Game {
     // always ran, in `applyOptions` after the first `applyTuning`.
     if (this.ultraFault !== null) this.renderer.setUltraFault(this.ultraFault);
     this.applyRenderTier('boot');
-    this.renderer.setLevel(this.levelPlan, this.presentationOverride);
+    if (prepared === undefined) this.renderer.setLevel(this.levelPlan, this.presentationOverride, this.populationPlan);
+    this.renderer.setPopulation(this.populationPlan);
     this.hazards = new HazardField(this.levelPlan.hazards ?? []);
     this.softBodies = new SoftBodyField(this.levelPlan.softBodies ?? []);
     // A local rather than a field, because it is about to become seat 0's and
     // the seat cannot be built until the rig below exists — M25 Phase 1.
     const controller = new EucController(this.terrain, {
       spawn: this.levelPlan.spawn,
+      dynamicWorld: this.populationPort('human-0', 'human'),
       hazards: this.hazards,
       softBodies: this.softBodies,
     });
+    this.populationPlacementControllers.set('human-0', controller);
 
     // The referee reads the same plan the sampler and the renderer do, which is
     // invariant 2 arriving at its third consumer: a checkpoint is authored
@@ -2827,13 +3363,13 @@ export class Game {
     // The proving ground carries no checkpoints and `available` is false there,
     // which is what keeps the time trial off a level that is a measuring
     // instrument rather than a place.
-    this.challenge = new ChallengeRun(this.levelPlan.id, this.levelPlan.checkpoints);
+    this.challenge = new ChallengeRun(this.recordWorldId, this.levelPlan.checkpoints);
     // And the lap referee beside it — M23. Same plan, same gates, different
     // question: `ChallengeRun` asks whether a route can start and stop and
     // `TrackDayRun` asks whether it closes on itself, so exactly one of them
     // says yes about any world and neither needs to know which world it is.
     this.trackDay = new TrackDayRun(
-      this.levelPlan.id,
+      this.recordWorldId,
       this.levelPlan.checkpoints,
       this.levelPlan.lap ?? null,
     );
@@ -2924,10 +3460,11 @@ export class Game {
     // already at the right pitch on the step the context comes alive rather
     // than sliding up to it over the following second.
     this.audio = new AudioEngine();
+    this.audio.replaceAmbienceWorld(this.levelPlan.id, [...environmentAudioEmitters(this.levelPlan),
+      ...populationAudioEmitters(this.populationPlan)]);
     // The approved recordings' URLs, handed in here because only the
-    // composition root may know the bundler exists. Fetching starts now;
-    // decoding waits for the arm gesture.
-    this.audio.setSampleUrls(SAMPLE_URLS);
+    // composition root may know the bundler exists. Optional recordings are
+    // requested after the first clean view; decoding still waits for a gesture.
     // Whose crash plays. A plain string across the boundary, never an options
     // record (invariant 5). Set here as well as in `applyOptions` because the
     // engine holds it until a gesture builds the sink.
@@ -2945,6 +3482,7 @@ export class Game {
     // whose arm pulls in against nothing.
     this.wireSeatCameras();
     this.syncPoses();
+    if (this.chaseProbe) this.placePackAtStart();
 
     this.profiler = new FrameProfiler();
     this.overlay = new DebugOverlay();
@@ -3673,15 +4211,22 @@ export class Game {
 
   start(): void {
     this.profiler.begin();
-    // Boot → Loading → Title. The two early states have no duration of their
-    // own in the slice — there is nothing to stream — so the machine walks
-    // through them rather than pretending to load. They exist because
-    // `docs/PLANS.md` §3.2 names them and because M12's generated level will
-    // have something real to put in Loading.
+    // World, required UI and first render are ready before this public handoff.
     this.appState.goTo('loading');
     this.appState.goTo('title');
     this.loop.start();
   }
+
+  setLoadingScreen(screen: LoadingScreen): void { this.loadingScreen = screen; }
+
+  /** Draw the complete requested world/rig before making the title interactive.
+   * The prewarm is outside the loop's profiler/cadence accounting. */
+  prepareFirstFrame(): void {
+    this.renderer.resize();
+    this.render(0);
+  }
+
+  preloadOptionalAudio(): void { this.audio.setSampleUrls(SAMPLE_URLS); }
 
   /** Open the overlay and/or panel from the URL, for QA and for screenshots. */
   applyDebugQuery(search: string): void {
@@ -3784,6 +4329,15 @@ export class Game {
    */
   advance(steps: number): void {
     this.loop.advance(steps);
+  }
+
+  /**
+   * Restart the living world from its first step — the restart every timed
+   * start runs (`restartPopulation`). For the automation wire: a spec that
+   * compares two rides gives both the same world to ride through (2026-10-05).
+   */
+  restartLivingWorld(): void {
+    this.restartPopulation();
   }
 
   /**
@@ -3958,17 +4512,7 @@ export class Game {
     // cop seated here is that card's pick, so the door that re-deals him
     // (`dealRosterFor`) finds him in both.
     if (id === 'cop') this.setGuestCharacter(index, id);
-    const controller = new EucController(this.terrain, {
-      spawn: this.spawnForSeat(index),
-      // **The world's own fields, shared rather than rebuilt.** Both are
-      // immutable spatial indexes — every field on `HazardField` and
-      // `SoftBodyField` is `readonly` — so this is an allocation saved, and
-      // more importantly it is the statement that there is one world: a
-      // second rider given their own copy would still hit the same potholes,
-      // but nothing in the types would say they had to.
-      hazards: this.hazards,
-      softBodies: this.softBodies,
-    });
+    const controller = this.buildSeatController(index);
     // The style is the character's, read off the roster the moment the
     // character is decided — M29 S2. A controller born sober and dressed
     // later would be one frame of the wrong ride, and a seat nobody
@@ -3984,6 +4528,7 @@ export class Game {
     // (it would otherwise have to demote itself, which counts as a fault).
     // A no-op when `openCouch` already did it, and for ordinary tiers.
     this.multiplayerSession = multiplayerAfter(this.multiplayerSession, 'seat-spawn');
+    this.clearUltraForMultiplayer();
     this.applyRenderTier('seat-spawn');
     this.renderer.scene.add(rig.group);
 
@@ -4091,6 +4636,7 @@ export class Game {
       if (other !== index) this.contactPairs.get(contactKey(index, other))?.clear();
     }
     this.seats.length = index;
+    this.populationPlacementControllers.delete(`human-${index}`);
     // The router drops the seat's input *and* any claim that pointed at it: a
     // pad claimed to the rider who just left has no opinion about the rider
     // who stayed, and inheriting one would hand the player's wheel to whoever
@@ -4277,7 +4823,44 @@ export class Game {
     if (placement !== null && index >= 0 && index < placement.spawns.length) {
       return placement.spawns[index];
     }
-    return spawnSlot(this.levelPlan.spawn, index, this.terrain, this.slotSpacing);
+    return spawnSlot(this.levelPlan.spawn, index, this.terrain, this.slotSpacing,
+      index > 0 ? spawn => this.populationAllowsSpawn(`human-${index}`, spawn) : undefined);
+  }
+
+  /**
+   * Seat `index`'s controller in the current world, at its own slot — the one
+   * constructor `installLevel` and `spawnRider` share (MI-1, 2026-10-03).
+   *
+   * The port admits every `'construct'` (`populationPort`), so the dynamic
+   * world cannot refuse this; the catch is the safety net that still keeps a
+   * world swap or a join from being left half-installed if it ever does — the
+   * controller is then built without the port and handed it afterwards, and
+   * the checked placement that follows stands it where it belongs.
+   */
+  private buildSeatController(index: number): EucController {
+    const id = `human-${index}`;
+    const options = {
+      spawn: this.spawnForSeat(index),
+      // **The world's own fields, shared rather than rebuilt.** Both are
+      // immutable spatial indexes — every field on `HazardField` and
+      // `SoftBodyField` is `readonly` — so this is an allocation saved, and
+      // more importantly it is the statement that there is one world: a
+      // second rider given their own copy would still hit the same potholes,
+      // but nothing in the types would say they had to.
+      hazards: this.hazards,
+      softBodies: this.softBodies,
+    };
+    const dynamicWorld = this.populationPort(id, 'human');
+    let controller: EucController;
+    try {
+      controller = new EucController(this.terrain, { ...options, dynamicWorld });
+    } catch (error) {
+      if (dynamicWorld === undefined) throw error;
+      controller = new EucController(this.terrain, options);
+      controller.setDynamicWorld(dynamicWorld);
+    }
+    this.populationPlacementControllers.set(id, controller);
+    return controller;
   }
 
   /**
@@ -4408,7 +4991,8 @@ export class Game {
     // discarded (the pool's `reset`), the clock keeps running, and the card
     // says why no best was saved rather than hiding the run.
     this.trickRunEligible = false;
-    seat.controller.reset({ position, headingY });
+    if (!seat.controller.reset({ position, headingY }))
+      throw new Error('Rider placement is occupied by the living world');
     // A teleport ends the flight, so it ends the pose — M36 §36.5.
     this.clearOneFootPose(seat);
     this.syncSeatPose(seat);
@@ -4444,6 +5028,10 @@ export class Game {
     height: number;
     normal: { x: number; y: number; z: number };
     surface: string;
+    /** The ridden grip where it differs from the drawn surface (Switchback's
+     * trail cues, 2026-10-04); absent elsewhere. Kept in the sample's own key
+     * order so a spec can compare this with a sampler's output verbatim. */
+    traction?: string | undefined;
     offCourse: boolean;
   } {
     const sample = createGroundSample();
@@ -4452,6 +5040,7 @@ export class Game {
       height: sample.height,
       normal: { ...sample.normal },
       surface: sample.surface,
+      traction: sample.traction,
       offCourse: sample.offCourse,
     };
   }
@@ -4574,7 +5163,7 @@ export class Game {
         targets: this.levelPlan.targets?.length ?? 0,
         cellsDrawn: this.terrainView.cellsDrawn,
         triangles: this.terrainView.triangles,
-        surfaces: [...paintedSurfaces(this.levelPlan)].sort(),
+        surfaces: [...paintedSurfaceList(this.levelPlan)],
       },
       layoutChanges: this.layoutChanges,
       paused: this.appState.current === 'paused',
@@ -4701,7 +5290,7 @@ export class Game {
       targets: {
         total: this.targets.count,
         struck: this.targets.struckCount,
-        best: this.probing ? null : this.knockaboutRecords.best(this.levelPlan.id)?.struck ?? null,
+        best: this.probing ? null : this.knockaboutRecords.best(this.recordWorldId)?.struck ?? null,
       },
       // The couch match's referee, whole — M26 Phase 4. Its own state type
       // spread, exactly as the timed run's and the lap's are, so a spec asserts
@@ -4737,7 +5326,7 @@ export class Game {
         const strayedFor = armed ? room.strayClockOf(0) : 0;
         // The force this mode files and reads (q208): the rule's three. A
         // probe reads no record at all.
-        const best = this.probing ? null : this.chaseRecords.best(this.levelPlan.id, SOLO_CHASE_FORCE);
+        const best = this.probing ? null : this.chaseRecords.best(this.recordWorldId, SOLO_CHASE_FORCE);
         // The referee's view of the pack, once per snapshot (its `state`
         // allocates, which a bridge read may).
         const roomPursuers = armed ? room.state.pursuers : null;
@@ -4823,7 +5412,8 @@ export class Game {
       route: {
         status: this.routeStatus.kind,
         seed: 'seed' in this.routeStatus ? this.routeStatus.seed : '',
-        pending: this.pendingRoute !== null,
+        // Until the cover lifts: the new world is not the player's yet.
+        pending: this.pendingRoute !== null || this.worldCoverUp,
       },
     };
   }
@@ -4841,7 +5431,9 @@ export class Game {
    * which is itself worth asserting.
    */
   setAppState(state: AppStateId): boolean {
-    return this.goTo(state);
+    // Diagnostic transitions remain synchronous; native controls use goTo's
+    // painted loading gate. The session policy is enforced at open/spawn too.
+    return this.appState.goTo(state);
   }
 
   /** Change options exactly as the settings screen does. */
@@ -4883,7 +5475,7 @@ export class Game {
    * behaviour and is the whole reason the button is always live.
    */
   startTrackDay(): void {
-    this.enterTrackDay();
+    this.bridgeWorldSwap(() => this.enterTrackDay());
   }
 
   /**
@@ -4910,7 +5502,7 @@ export class Game {
    * green suite describing a door that does not exist.
    */
   startTrickRun(): void {
-    this.enterTrickRun();
+    this.bridgeWorldSwap(() => this.enterTrickRun());
   }
 
   /**
@@ -5018,6 +5610,26 @@ export class Game {
    * — and a personal best measures riding rather than leftover momentum. The
    * plan owns that checkpoint, so a generated course inherits the same rule.
    */
+  /**
+   * The living world from its first step, on the same plan and ground
+   * (2026-10-04). A generated time trial shares its line with traffic, and
+   * where that traffic stood at GO depended on how long the title had run, so
+   * the same seed's ghost-raced attempt differed from attempt to attempt.
+   * Every timed start — time trial, Trick Run, Track Day, couch race — now
+   * meets the same world (2026-10-05), and restarts it *before* placing riders
+   * so the start is checked against the actors the attempt will meet.
+   */
+  private restartPopulation(): void {
+    this.population = new PopulationSimulation(this.populationPlan, this.terrain);
+    this.populationBefore.clear(); this.populationProbed.clear();
+    this.populationReservations = []; this.populationContacts = [];
+    this.populationPhysicalEpochOpen = false;
+    this.populationSerialHistory.clear(); this.populationBoundaryTeleports = new Set();
+    this.populationAnticipation.clear();
+    this.populationOwnerComponents.clear();
+    this.populationPlacementControllers.clear();
+  }
+
   private startChallenge(): void {
     if (!this.challenge.available) return;
 
@@ -5032,6 +5644,7 @@ export class Game {
     // abandon it — but an entrance that stands down four of the five referees
     // is a list waiting to be one short again.
     this.race.abandon();
+    this.restartPopulation();
     this.resetChallengeRider();
     this.loadRecordReference();
     this.challenge.arm();
@@ -5124,6 +5737,7 @@ export class Game {
     if (this.appState.current !== 'title' || this.menus.current !== 'tracks'
       || this.pendingRoute !== null || !isTrackVenueId(venue)) return;
     if (venue !== this.levelId) {
+      if (this.coverWorldSwap('Heading to the track', () => this.chooseTrackDay(venue))) return;
       const plan = createLevel(venue, DEFAULT_SEED, this.hazardProbe, this.targetProbe, this.topSpeedMph);
       if (plan.lap === undefined) return;
       this.installLevel(venue, '', plan);
@@ -5186,6 +5800,7 @@ export class Game {
     // The world this session is already in cannot be lapped, so the mode
     // brings the one that can. A world that *can* is kept, whichever it is.
     if (this.levelPlan.lap === undefined) {
+      if (this.coverWorldSwap('Heading to the track', () => this.enterTrackDay())) return;
       this.installLevel(
         'track',
         '',
@@ -5206,6 +5821,7 @@ export class Game {
     this.abandonMatch();
     this.challenge.abandon();
 
+    this.restartPopulation();
     if (racing) {
       // **A race, decided once, here** — M27 Phase 3, and by seat count and
       // nothing else (§27.1). One rider on this circuit is the Track Day the
@@ -5260,10 +5876,10 @@ export class Game {
     const line = this.startLine();
     if (line === null) return;
     const seats = this.seats.length;
-    for (let index = 0; index < seats; index += 1) {
-      const slot = (index + this.gridRotation) % seats;
-      this.resetRiderTo(raceGridSlot(line, slot, this.terrain), this.seats[index]);
-    }
+    // One batch (`placeSeatGroup`): a seat whose slot another seat is still
+    // standing on is no longer refused, so the rotation actually rotates.
+    this.placeSeatGroup(this.seats.map((seat, index) =>
+      ({ seat, spawn: raceGridSlot(line, (index + this.gridRotation) % seats, this.terrain) })));
     this.gridRotation = (this.gridRotation + 1) % Math.max(1, seats);
   }
 
@@ -5612,9 +6228,9 @@ export class Game {
       return;
     }
 
-    const track = this.ghostRecorder.finish(this.levelPlan.id, seconds);
+    const track = this.ghostRecorder.finish(this.recordWorldId, seconds);
     const candidate: RouteRecord = {
-      levelId: this.levelPlan.id,
+      levelId: this.recordWorldId,
       totalSeconds: seconds,
       splits,
       // The only wall time in this mode, exactly as in the timed run: a label
@@ -5718,6 +6334,7 @@ export class Game {
     if (this.appState.current !== 'trickRun' && !this.appState.canGoTo('trickRun')) return;
 
     if (!offersTrickRun(this.levelId)) {
+      if (this.coverWorldSwap('Heading to the park', () => this.enterTrickRun())) return;
       this.installLevel(
         TRICK_RUN_DESTINATION,
         '',
@@ -5756,10 +6373,11 @@ export class Game {
     this.trackDay.abandon();
     this.race.abandon();
 
+    this.restartPopulation();
     if (couch) this.placeRaceGrid();
     else this.resetChallengeRider();
 
-    this.trickRunLevelId = this.levelPlan.id;
+    this.trickRunLevelId = this.recordWorldId;
     // **The latch, set once and only ever cleared** (§38.5). A run armed with
     // a slider already dragged is disqualified from the first step rather than
     // from the moment somebody touches it again.
@@ -5788,7 +6406,7 @@ export class Game {
   private trickRunReference(couch: boolean): TrickRecord | null {
     if (couch || this.probing) return null;
     return this.trickRecords.comparableBest(
-      this.levelPlan.id,
+      this.recordWorldId,
       this.trickRun.durationSteps,
       this.trickRun.rulesRevision,
     );
@@ -5969,7 +6587,7 @@ export class Game {
     // The world the attempt was armed on. A swap abandons the run outright, so
     // this cannot normally differ; it is here because a record filed under the
     // wrong venue is the one mistake this store cannot be talked out of.
-    if (this.trickRunLevelId !== this.levelPlan.id) return;
+    if (this.trickRunLevelId !== this.recordWorldId) return;
     const book = result.books[0];
     if (book === undefined) return;
 
@@ -6648,7 +7266,7 @@ export class Game {
     // never reaches this, and the rule is stated where the record is written.
     if (!this.probing && !this.couchSession) {
       const candidate: KnockaboutRecord = {
-        levelId: this.levelPlan.id,
+        levelId: this.recordWorldId,
         struck: result.struck,
         total: result.total,
         seconds: result.seconds,
@@ -6840,7 +7458,7 @@ export class Game {
   private buildKnockaboutResults(
     run: { struck: number; total: number; seconds: number },
   ): ResultsView {
-    const best = this.probing ? null : this.knockaboutRecords.best(this.levelPlan.id);
+    const best = this.probing ? null : this.knockaboutRecords.best(this.recordWorldId);
     // The score to compare against is the one standing *before* this run. On a
     // record run the store already holds this run, so the comparison has to come
     // off the run itself rather than off the store.
@@ -6997,10 +7615,12 @@ export class Game {
   ): Pursuer {
     const controller = new EucController(this.terrain, {
       spawn: plan.spawn,
+      dynamicWorld: this.populationPort(`cop-${index}`, 'cop'),
       hazards: new HazardField(plan.hazards ?? []),
       softBodies: new SoftBodyField(plan.softBodies ?? []),
       tuning: { ...COP_WHEEL_TUNING },
     });
+    this.populationPlacementControllers.set(`cop-${index}`, controller);
     // Sober by data rather than by default — M29 S3. The roster says so for
     // him as for everyone, and the chase's threat never inherits a style
     // because a default happened to be the right one.
@@ -7021,6 +7641,7 @@ export class Game {
       strikeSwing: -1,
       gap: Infinity,
       placed: false,
+      worldPlaced: false,
       returning: false,
     };
   }
@@ -7238,18 +7859,21 @@ export class Game {
     const spawn = this.levelPlan.spawn;
     const line = { centre: spawn.position, headingY: spawn.headingY };
     const outlaws = this.chaseOutlawSeats.length;
+    // The outlaws are one batch (`placeSeatGroup`, MI-2), then the human cop
+    // behind wherever they actually stand.
+    const grid: { seat: RiderSeat; spawn: Spawn }[] = [];
     for (let k = 0; k < outlaws; k += 1) {
       const rider = this.seats[this.chaseOutlawSeats[k]];
       if (rider === undefined) continue;
-      this.resetRiderTo(
-        outlaws === 1 ? spawn : raceGridSlot(line, (k + this.chaseGridRotation) % outlaws, this.terrain),
-        rider,
-      );
+      grid.push({ seat: rider,
+        spawn: outlaws === 1 ? spawn : raceGridSlot(line, (k + this.chaseGridRotation) % outlaws, this.terrain) });
     }
+    this.placeSeatGroup(grid);
     this.chaseGridRotation = (this.chaseGridRotation + 1) % Math.max(1, outlaws);
     const cop = this.seats[this.chaseCopSeat];
     if (cop !== undefined) {
-      this.resetRiderTo(this.spotBehind(this.rearmostOutlawPose(), this.tuning.get('CHASE.spawnGapMetres')), cop);
+      this.placeSeatGroup([{ seat: cop,
+        spawn: this.spotBehind(this.rearmostOutlawPose(), this.tuning.get('CHASE.spawnGapMetres')) }]);
     }
     // After every outlaw is on his slot: `resetRiderTo` stood the pack behind
     // whoever seat 0 was on the way, and "behind" means the rearmost outlaw.
@@ -7362,6 +7986,8 @@ export class Game {
    */
   private placePackAtStart(): void {
     if (this.pursuers.length === 0) return;
+    this.placingPack = true;
+    try {
     // The rider they are behind: seat 0's — the solo face's one outlaw — or
     // a couch room's rearmost.
     const rider = this.rearmostOutlawPose();
@@ -7370,20 +7996,26 @@ export class Game {
     for (const pursuer of this.pursuers) {
       const post = pursuer.post;
       if (post !== null) {
-        this.placePursuer(
+        const placed = this.placePursuer(
           pursuer,
           { position: { x: post.x, y: post.y, z: post.z }, headingY: post.headingY },
           0,
           post.distance,
         );
+        if (!placed) continue;
         pursuer.parked = true;
       } else {
-        this.placePursuer(pursuer, this.spotBehind(rider, gap + pursuer.index * spacing), 0, -1);
+        if (!this.placePursuer(pursuer, this.spotBehind(rider, gap + pursuer.index * spacing), 0, -1)) continue;
         pursuer.parked = false;
       }
       pursuer.returning = false;
     }
     this.refreshCopGap();
+    } finally {
+      this.placingPack = false;
+      if (!this.copRiding) this.populationReservations = this.populationReservations
+        .filter(value => !value.id.startsWith('cop-'));
+    }
   }
 
   /** `metres` behind a pose along its own heading, on the ground there — `placeCopBehindRider`'s spot. */
@@ -7408,8 +8040,8 @@ export class Game {
    * `placed` voids his two-body facts for the referee's next step (M23's rule:
    * a placement is never a bust or a touch).
    */
-  private placePursuer(pursuer: Pursuer, spawn: Spawn, speed: number, near: number): void {
-    pursuer.controller.reset(spawn, speed);
+  private placePursuer(pursuer: Pursuer, spawn: Spawn, speed: number, near: number): boolean {
+    if (!pursuer.controller.reset(spawn, speed)) return false;
     pursuer.controller.writePose(pursuer.current);
     copyPose(pursuer.current, pursuer.previous);
     copyPose(pursuer.current, pursuer.render);
@@ -7427,7 +8059,9 @@ export class Game {
     pursuer.brain.place(pursuer.view, near);
     pursuer.paddle.cancel();
     pursuer.placed = true;
+    pursuer.worldPlaced = true;
     pursuer.gap = this.gapFor(pursuer.current);
+    return true;
   }
 
   /**
@@ -7533,6 +8167,16 @@ export class Game {
     this.refreshPane(pursuer.index);
     this.regroupRefusals.spacingMetres = this.tuning.get('CHASE.packSpacingMetres');
     const brain = pursuer.brain;
+    const returnLine = ring >= 0 && this.streetLoops !== null ? this.streetLoops.ring(ring) : spine;
+    const returnSample = createSpineSample();
+    const livingJudge = (distance: number, direction: 1 | -1): number | null => {
+      returnLine.sample(distance, returnSample);
+      if (!this.populationAllowsSpawn(`cop-${pursuer.index}`, {
+        position: { x: returnSample.x, y: returnSample.y, z: returnSample.z },
+        headingY: returnSample.headingY + (direction < 0 ? Math.PI : 0),
+      })) return null;
+      return ring >= 0 ? brain.landingAllowanceOnStreet(ring, distance, direction) : pursuer.landing(distance, direction);
+    };
     const candidate = ring >= 0 && this.streetLoops !== null
       ? planRegroup(
         this.streetLoops.ring(ring),
@@ -7540,7 +8184,7 @@ export class Game {
         back,
         regroupFloor(back, this.chaseRoom.bustRadiusMetres),
         { at: this.spineAt, sample: this.spineSample },
-        (distance, direction) => brain.landingAllowanceOnStreet(ring, distance, direction),
+        livingJudge,
         -1,
         this.regroupRefusals,
       )
@@ -7550,7 +8194,7 @@ export class Game {
         back,
         regroupFloor(back, this.chaseRoom.bustRadiusMetres),
         { at: this.spineAt, sample: this.spineSample },
-        pursuer.landing,
+        livingJudge,
         pursuer.brain.quarryDistance,
         this.regroupRefusals,
       );
@@ -7560,7 +8204,7 @@ export class Game {
     // the spot cannot carry: the rider's speed (or his own, if he had more),
     // capped by what the landing allows. Told where he was put: a folded
     // route's global search can answer the other arm.
-    this.placePursuer(
+    return this.placePursuer(
       pursuer,
       {
         position: { x: candidate.x, y: candidate.y, z: candidate.z },
@@ -7574,7 +8218,6 @@ export class Game {
       // brain finds itself globally there.
       ring >= 0 ? -1 : candidate.distance,
     );
-    return true;
   }
 
   /**
@@ -7619,14 +8262,16 @@ export class Game {
         streetMargin: CHASE.streetMargin,
         holdSlope: postHoldSlope(this.tuning.get('TERRAIN.rollingResistanceScale')),
       },
+      candidate => this.populationAllowsSpawn(`cop-${pursuer.index}`, {
+        position: { x: candidate.x, y: candidate.y, z: candidate.z }, headingY: candidate.headingY }),
     );
     if (spot === null) return this.returnToPost(pursuer, outlaw);
-    this.placePursuer(
+    if (!this.placePursuer(
       pursuer,
       { position: { x: spot.x, y: spot.y, z: spot.z }, headingY: spot.headingY },
       0,
       spot.distance,
-    );
+    )) return false;
     // A roadblock is for a rider on the move. One standing still (a hider:
     // `CHASE.navSlowQuarrySpeed`, the search's own line) would never reach
     // it, so the patrol put out of view near him rides in to find him.
@@ -7661,7 +8306,9 @@ export class Game {
     if (posts === null || quarry === undefined || pursuer.controller.crashed) return false;
     this.fillOtherCops(pursuer.index);
     this.refreshPane(pursuer.index);
-    const post = choosePostReturn(posts.posts, quarry.currentPose, this.otherCops, this.panes, {
+    const availablePosts = posts.posts.filter(candidate => candidate === null || this.populationAllowsSpawn(`cop-${pursuer.index}`, {
+      position: { x: candidate.x, y: candidate.y, z: candidate.z }, headingY: candidate.headingY }));
+    const post = choosePostReturn(availablePosts, quarry.currentPose, this.otherCops, this.panes, {
       trackerGapMetres: this.chaseRoom.trackerGapMetres,
       patrolReturnMetres: this.tuning.get('CHASE.patrolReturnMetres'),
       returnConeRadians: this.returnCone(),
@@ -7669,12 +8316,12 @@ export class Game {
       nearMetres: this.chaseRoom.bustRadiusMetres + 1,
     });
     if (post === null) return false;
-    this.placePursuer(
+    if (!this.placePursuer(
       pursuer,
       { position: { x: post.x, y: post.y, z: post.z }, headingY: post.headingY },
       0,
       post.distance,
-    );
+    )) return false;
     pursuer.parked = true;
     return true;
   }
@@ -7684,7 +8331,7 @@ export class Game {
     const others = this.otherCops;
     others.length = 0;
     for (const pursuer of this.pursuers) {
-      if (pursuer.index === except) continue;
+      if (pursuer.index === except || !pursuer.worldPlaced) continue;
       const spot = this.otherCopSpots[others.length];
       spot.x = pursuer.current.x;
       spot.z = pursuer.current.z;
@@ -7847,7 +8494,7 @@ export class Game {
   private refreshCopGap(): void {
     let nearest = Infinity;
     for (const pursuer of this.pursuers) {
-      if (pursuer.controller.crashed) continue;
+      if (!pursuer.worldPlaced || pursuer.controller.crashed) continue;
       if (pursuer.gap < nearest) nearest = pursuer.gap;
     }
     this.copGap = nearest;
@@ -7889,7 +8536,7 @@ export class Game {
    * neutral. **No cop-to-cop physics**: cops pass through each other as they
    * always could, and the bands are what keep that from being visible.
    */
-  private stepPursuers(stepSeconds: number): void {
+  private stepPursuers(stepSeconds: number,prepareOnly=false): void {
     if (!this.copRiding) return;
     const spine = this.spine;
     if (spine === null) return;
@@ -7922,33 +8569,17 @@ export class Game {
       body.distance = pursuer.brain.routeDistance;
       body.lateral = pursuer.brain.lineLateral;
       body.speed = Math.abs(pursuer.current.speed);
-      body.standing = !pursuer.controller.crashed;
+      body.standing = pursuer.worldPlaced && !pursuer.controller.crashed;
       body.x = pursuer.current.x;
       body.z = pursuer.current.z;
     }
 
-    // **The strike's target.** The rider is a one-entry `HittableSet` and each
-    // paddle is M14's same generic weapon — the swept segment, the teleport
-    // guard and the sort are the same code that knocks targets down. Placed
-    // once for the whole pack, at this step's rider, which is the tick's world
-    // every paddle is judged against. A couch room places every standing
-    // outlaw instead, each with his own seat's id, so a hit names its victim.
-    let targets: HittableSet = this.riderTarget;
-    if (couch) {
-      targets = this.aimAtOutlaws(hitRadius);
-    } else {
-      this.riderTarget.place(
-        seat.currentPose.x,
-        seat.currentPose.y,
-        seat.currentPose.z,
-        hitRadius,
-        chasing,
-      );
-    }
-
+    // One shared list for the whole pack, independent of which pane is drawn.
+    const livingBodies = this.population.actorFootprints();
     // 2. Per pursuer: brain → controller → paddle.
     for (const pursuer of this.pursuers) {
-      const { brain, controller, paddle } = pursuer;
+      const { brain, controller } = pursuer;
+      if (!pursuer.worldPlaced) continue;
       copyPose(pursuer.current, pursuer.previous);
       this.writePursuerView(pursuer);
 
@@ -7964,7 +8595,10 @@ export class Game {
           : chasing ? room.quarryOf(pursuer.index) : -1;
         const quarry = outlaw >= 0 ? pursuer.quarry : null;
         if (quarry !== null) {
-          const pose = couch ? this.seats[this.chaseOutlawSeats[outlaw]].currentPose : seat.currentPose;
+          const quarrySeat=couch?this.chaseOutlawSeats[outlaw]:0;
+          const pose=prepareOnly
+            ?this.populationProvisionalPose(`human-${quarrySeat}`)??this.seats[quarrySeat].currentPose
+            :this.seats[quarrySeat].currentPose;
           quarry.x = pose.x;
           quarry.y = pose.y;
           quarry.z = pose.z;
@@ -7984,73 +8618,93 @@ export class Game {
         // the swing would advance a state machine that is only allowed to
         // advance once per fixed step, which is the shape of bug `advance(n)`
         // cannot reproduce.
+        pursuer.pack.livingBodies = livingBodies;
         intent = brain.step(stepSeconds, pursuer.view, quarry, pursuer.pack);
       }
       const wantsSwing = intent.swing;
       const swingSide = brain.swingSide;
+      if(prepareOnly){
+        this.populationRememberPreparedStart(`cop-${pursuer.index}`, controller);
+        this.populationPreparedSteps.push(this.populationStepEntry(`cop-${pursuer.index}`,'cop',controller,stepSeconds,intent,
+          ()=>{controller.writePose(pursuer.current);this.finishPursuerStep(pursuer,stepSeconds,wantsSwing,swingSide,couch);}));
+        continue;
+      }
       controller.step(stepSeconds, intent);
       controller.writePose(pursuer.current);
 
-      pursuer.gap = this.gapFor(pursuer.current);
-      // A return he was owed is spent once he is back inside the tracker line
-      // by his own riding: F3's `returning` names a cop still out of it.
-      if (pursuer.returning && pursuer.gap <= room.trackerGapMetres) pursuer.returning = false;
+      this.finishPursuerStep(pursuer,stepSeconds,wantsSwing,swingSide,couch);
 
-      // What a hit *means* is this method's answer, and it is the M14 body
-      // knock: one soft-body wobble and a shove through
-      // `EucController.softKnock`, the fourth and last sanctioned wobble
-      // caller. Nothing here reaches `injectWobble`, and a strike never ends a
-      // run on its own (§13 q25) — the crash that follows it is the bust.
-      const hits = paddle.step(
-        stepSeconds,
-        {
-          x: pursuer.current.x,
-          y: pursuer.current.y,
-          z: pursuer.current.z,
-          // The clean heading, never `headingY + wobbleYaw` — M13's visual
-          // ownership rule, and the same argument `stepPaddle` states at length.
-          headingY: pursuer.current.headingY,
-        },
-        pursuer.view.crashed ? false : wantsSwing,
-        targets,
-        swingSide,
-      );
-
-      for (const hit of hits) {
-        // The solo quarry wears the bare `rider`; a couch outlaw his seat's
-        // `rider-<seat>` (`SEAT_VOLUME_IDS`), which is how the hit names him.
-        const victimSeat = couch ? riderVolumeSeat(hit.id) : -1;
-        if (couch ? victimSeat < 0 : hit.id !== RIDER_VOLUME_ID) continue;
-        // **One swing, one strike** — per cop since Part P, each with his own
-        // latch. The cop has swept the rider volume since M18 and spent every
-        // step of it, so a swing that stayed in reach delivered two or three
-        // body knocks and could pile a parked rider past `wobbleCrashEnergy` on
-        // its own; three paddles alongside land more knocks, which is the
-        // intended outcome of a mode ruled hard three times (§13 q27, q83,
-        // q207), never one knock counted thrice.
-        if (pursuer.strikeSwing === paddle.swingCount) continue;
-        pursuer.strikeSwing = paddle.swingCount;
-        const victim = couch ? this.seats[victimSeat] : seat;
-        // Handed to the referee before its step, like `KnockaboutMatch.knockdown`:
-        // the crash that follows names this cop (A-7).
-        room.recordStrike(pursuer.index, couch ? this.chaseSeatOutlaw[victimSeat] : 0);
-        this.audio.hit();
-        // **The hard knock, and the cop gets it because the paddle does not know
-        // who is holding it** — M26 Phase 3, q75. One weapon, one rule, and
-        // deliberately no `CHASE` override on the threshold: the owner has twice
-        // ruled that the chase is meant to be hard (§13 q27, q83), and q212
-        // keeps the ruling with three paddles — the first landed strike still
-        // ends the run.
-        if (
-          paddle.committed
-          && victim.controller.hardKnock(paddle.headTravelX, paddle.headTravelZ)
-        ) {
-          continue;
-        }
-        victim.controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
-      }
     }
-    this.refreshCopGap();
+    if(!prepareOnly)this.refreshCopGap();
+  }
+
+  private finishPursuerStep(pursuer:Pursuer,stepSeconds:number,wantsSwing:boolean,
+    swingSide:Pursuer['brain']['swingSide'],couch:boolean):void {
+    const {paddle}=pursuer,seat=this.seats[0],room=this.chaseRoom;
+    // The paddle sees finalized physical targets, never provisional quarry poses.
+    const hitRadius=this.tuning.get('CHASE.riderHitRadius');
+    let targets:HittableSet=this.riderTarget;
+    if(couch)targets=this.aimAtOutlaws(hitRadius);
+    else this.riderTarget.place(seat.currentPose.x,seat.currentPose.y,seat.currentPose.z,
+      hitRadius,this.appState.current==='chase'&&!seat.controller.crashed);
+    pursuer.gap = this.gapFor(pursuer.current);
+    // A return he was owed is spent once he is back inside the tracker line
+    // by his own riding: F3's `returning` names a cop still out of it.
+    if (pursuer.returning && pursuer.gap <= room.trackerGapMetres) pursuer.returning = false;
+
+    // What a hit *means* is this method's answer, and it is the M14 body
+    // knock: one soft-body wobble and a shove through
+    // `EucController.softKnock`, the fourth and last sanctioned wobble
+    // caller. Nothing here reaches `injectWobble`, and a strike never ends a
+    // run on its own (§13 q25) — the crash that follows it is the bust.
+    const hits = paddle.step(
+      stepSeconds,
+      {
+        x: pursuer.current.x,
+        y: pursuer.current.y,
+        z: pursuer.current.z,
+        // The clean heading, never `headingY + wobbleYaw` — M13's visual
+        // ownership rule, and the same argument `stepPaddle` states at length.
+        headingY: pursuer.current.headingY,
+      },
+      pursuer.view.crashed ? false : wantsSwing,
+      targets,
+      swingSide,
+    );
+
+    for (const hit of hits) {
+      // The solo quarry wears the bare `rider`; a couch outlaw his seat's
+      // `rider-<seat>` (`SEAT_VOLUME_IDS`), which is how the hit names him.
+      const victimSeat = couch ? riderVolumeSeat(hit.id) : -1;
+      if (couch ? victimSeat < 0 : hit.id !== RIDER_VOLUME_ID) continue;
+      // **One swing, one strike** — per cop since Part P, each with his own
+      // latch. The cop has swept the rider volume since M18 and spent every
+      // step of it, so a swing that stayed in reach delivered two or three
+      // body knocks and could pile a parked rider past `wobbleCrashEnergy` on
+      // its own; three paddles alongside land more knocks, which is the
+      // intended outcome of a mode ruled hard three times (§13 q27, q83,
+      // q207), never one knock counted thrice.
+      if (pursuer.strikeSwing === paddle.swingCount) continue;
+      pursuer.strikeSwing = paddle.swingCount;
+      const victim = couch ? this.seats[victimSeat] : seat;
+      // Handed to the referee before its step, like `KnockaboutMatch.knockdown`:
+      // the crash that follows names this cop (A-7).
+      room.recordStrike(pursuer.index, couch ? this.chaseSeatOutlaw[victimSeat] : 0);
+      this.audio.hit();
+      // **The hard knock, and the cop gets it because the paddle does not know
+      // who is holding it** — M26 Phase 3, q75. One weapon, one rule, and
+      // deliberately no `CHASE` override on the threshold: the owner has twice
+      // ruled that the chase is meant to be hard (§13 q27, q83), and q212
+      // keeps the ruling with three paddles — the first landed strike still
+      // ends the run.
+      if (
+        paddle.committed
+        && victim.controller.hardKnock(paddle.headTravelX, paddle.headTravelZ)
+      ) {
+        continue;
+      }
+      victim.controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
+    }
   }
 
   /**
@@ -8160,7 +8814,7 @@ export class Game {
     for (const pursuer of this.pursuers) {
       const facts = pursuer.facts;
       const cop = pursuer.current;
-      facts.crashed = pursuer.controller.crashed;
+      facts.crashed = !pursuer.worldPlaced || pursuer.controller.crashed;
       facts.parked = pursuer.parked;
       facts.speed = Math.abs(cop.speed);
       facts.teleported = pursuer.placed || movedByReset(pursuer.previous, cop, stepSeconds);
@@ -8234,7 +8888,7 @@ export class Game {
     for (const pursuer of this.pursuers) {
       const facts = pursuer.facts;
       const cop = pursuer.current;
-      facts.crashed = pursuer.controller.crashed;
+      facts.crashed = !pursuer.worldPlaced || pursuer.controller.crashed;
       facts.parked = pursuer.parked;
       facts.speed = Math.abs(cop.speed);
       facts.teleported = pursuer.placed || movedByReset(pursuer.previous, cop, stepSeconds);
@@ -8559,12 +9213,13 @@ export class Game {
    * pack), which belong to a respawn and not to a man getting up. His two-body
    * facts are void for the referee's next step (`chaseSeatPlaced`).
    */
-  private rightInPlace(seat: RiderSeat, index: number): void {
-    this.standStill(seat, index);
+  private rightInPlace(seat: RiderSeat, index: number): boolean {
+    if (!this.standStill(seat, index)) return false;
     seat.paddle.cancel();
     this.syncCamera(seat);
     seat.hudModel.reset();
     this.chaseSeatPlaced[index] = true;
+    return true;
   }
 
   /**
@@ -8576,11 +9231,11 @@ export class Game {
    * every chase entrance re-stands each seat on an explicit grid spawn
    * (`placeChaseGrid`).
    */
-  private standStill(seat: RiderSeat, index: number): void {
+  private standStill(seat: RiderSeat, index: number): boolean {
     const pose = seat.currentPose;
     const ground = createGroundSample();
     this.terrain.sampleGround(pose.x, pose.z, ground);
-    seat.controller.reset({ position: { x: pose.x, y: ground.height, z: pose.z }, headingY: pose.headingY });
+    if (!seat.controller.reset({ position: { x: pose.x, y: ground.height, z: pose.z }, headingY: pose.headingY })) return false;
     this.clearOneFootPose(seat);
     this.syncSeatPose(seat);
     seat.lastThrottle = 0;
@@ -8588,6 +9243,7 @@ export class Game {
     seat.wasCrashed = false;
     seat.lastStumbles = 0;
     this.audio.resetRider(index);
+    return true;
   }
 
   /**
@@ -8811,7 +9467,7 @@ export class Game {
     // written rather than inferred from a branch.
     if (!this.probing && !this.couchSession) {
       const candidate: ChaseRecord = {
-        levelId: this.levelPlan.id,
+        levelId: this.recordWorldId,
         seconds: survived,
         escaped: outcome === 'escaped',
         setAt: new Date().toISOString(),
@@ -8886,7 +9542,7 @@ export class Game {
    * (q208). Formatting is upstream, like every number that reaches this screen.
    */
   private buildChaseResults(run: { survived: number; escaped: boolean; outcome: string }): ResultsView {
-    const best = this.probing ? null : this.chaseRecords.best(this.levelPlan.id, SOLO_CHASE_FORCE);
+    const best = this.probing ? null : this.chaseRecords.best(this.recordWorldId, SOLO_CHASE_FORCE);
     // The score to beat is the one standing *before* this run, so on a record
     // run the comparison comes off the run rather than off the store.
     const previous = this.lastChaseWasRecord ? null : best;
@@ -8900,7 +9556,7 @@ export class Game {
     // line says it is there, and nothing else does. A probe reads no record.
     // The words are `ui/chaseRoomCard.ts`'s (`oneCopBestNote`), after the
     // diagnostic and persistence notes and before the outcome's.
-    const oneCop = oneCopBestNote(this.probing ? null : this.chaseRecords.best(this.levelPlan.id, 1));
+    const oneCop = oneCopBestNote(this.probing ? null : this.chaseRecords.best(this.recordWorldId, 1));
     if (oneCop !== null) notes.push(oneCop);
     if (run.outcome === 'strayed') notes.push('You left the route and the clock ran out on it');
     // An officer, not a name: with three identical rigs on the road (q211) the
@@ -9057,7 +9713,13 @@ export class Game {
    * than letting one id silently name two timed courses.
    */
   private recordForCurrentWorld(): RouteRecord | null {
-    return this.probing ? null : this.records.best(this.levelPlan.id);
+    return this.probing ? null : this.records.best(this.recordWorldId);
+  }
+
+  /** The engine-independent key every record, ghost and run id uses. Not
+   * `levelPlan.id`, whose prepared form hashes floats (`populationWorld.ts`). */
+  private get recordWorldId(): string {
+    return recordWorldIdOf(this.levelPlan);
   }
 
   /**
@@ -9900,9 +10562,9 @@ export class Game {
       return;
     }
 
-    const track = this.ghostRecorder.finish(this.levelPlan.id, result.totalSeconds);
+    const track = this.ghostRecorder.finish(this.recordWorldId, result.totalSeconds);
     const candidate: RouteRecord = {
-      levelId: this.levelPlan.id,
+      levelId: this.recordWorldId,
       totalSeconds: result.totalSeconds,
       splits: result.splits,
       // Wall time, and the only wall time in the whole feature. It is a label
@@ -10114,6 +10776,7 @@ export class Game {
     if (this.pendingRoute !== null) {
       this.pendingRoute = null;
       this.pendingRouteFrames = 0;
+      this.dropRouteCover();
       // Cancelling a proposed replacement restores the truth about the world
       // already behind the panel. A generated world is still ready to ride;
       // the city has no seed to report.
@@ -10323,6 +10986,7 @@ export class Game {
     if (this.pendingRoute !== null) return;
     if (!isVenueId(venue)) return;
     if (venue === this.levelId) return;
+    if (this.coverWorldSwap('Heading somewhere new', () => this.pickVenue(venue))) return;
     this.installLevel(
       venue,
       '',
@@ -10376,6 +11040,13 @@ export class Game {
     // message reached the screen.
     this.pendingRouteFrames = 1;
     this.setRouteStatus(status);
+    // Building and preparing a living-world route takes long enough to need the
+    // shared cover; the bridge's synchronous instruments keep the bare line.
+    if (this.loadingScreen !== null && !this.synchronousWorldSwap && !this.loadingScreen.busy) {
+      this.routeCovered = true;
+      this.pendingRouteFrames = ULTRA_SWITCH_PAINT_FRAMES;
+      this.raiseWorldCover('Building a fresh route');
+    }
   }
 
   /**
@@ -10387,6 +11058,19 @@ export class Game {
    * throws the generator's slice fallback away before it can get this far.
    */
   private resolveFreshRoute(): void {
+    if (!this.routeCovered) { this.resolveFreshRouteWork(); return; }
+    this.routeCovered = false;
+    this.executingSessionLoad = true;
+    try {
+      this.resolveFreshRouteWork();
+      this.warmThenSettle(() => { this.worldSettleFrames = ULTRA_SWITCH_SETTLE_FRAMES; });
+      this.loadingScreen?.stage('Preparing the first view', 2, 3);
+    } catch (error) {
+      this.loadingScreen?.fail('The new place could not be prepared. Please reload and try again.', error);
+    } finally { this.executingSessionLoad = false; }
+  }
+
+  private resolveFreshRouteWork(): void {
     const work = this.pendingRoute;
     this.pendingRoute = null;
     if (work === null) return;
@@ -10492,13 +11176,15 @@ export class Game {
    * the developer panel has overridden — live in `LiveTuning`, not in the
    * controller. Skipping it would make a world swap silently reset the ride.
    *
-   * A generated plan's id is `generated-r6-<seed>`, personal bests are filed
-   * under `levelPlan.id`, and a stored ghost refuses to load against a
-   * different id (`app/records.ts:coerceGhost`). `recordForCurrentWorld` closes
+   * A generated plan's record key is `generated-r6-<seed>~living-r1`, bests
+   * are filed under `recordWorldIdOf(plan)`, and a stored ghost refuses to load
+   * against a different id (`app/records.ts:coerceGhost`). `recordForCurrentWorld` closes
    * the diagnostic exception: `?hazardprobe=` changes the course without
    * changing that id, so a probe session neither loads nor saves a record.
    */
   private installLevel(levelId: LevelId, seed: string, plan: LevelPlan): void {
+    const living = preparePopulationWorld(plan);
+    plan = living.level;
     // A timed run belongs to the world that is leaving. Ending it here rather
     // than letting `enterState` notice keeps the abandonment attached to the
     // cause, and means the ghost recorder is never carrying samples taken on
@@ -10534,14 +11220,27 @@ export class Game {
     this.levelId = levelId;
     this.seed = seed;
     this.levelPlan = plan;
+    this.populationPlan = living.population;
+    this.populationBefore.clear(); this.populationProbed.clear();
+    this.populationReservations = []; this.populationContacts = [];
     // M39 W1: the tier's intent only, because the `setLevel` below builds
     // whatever it says — and afterwards the words, because an envelope
     // refusal is a fact about *this* world and a new world can earn or lose
     // Ultra on its own. Both do nothing for a player who never asked for it.
     this.applyRenderTier('world');
-    this.renderer.setLevel(plan, this.presentationOverride);
+    this.renderer.setLevel(plan, this.presentationOverride, this.populationPlan);
+    this.renderer.setPopulation(this.populationPlan);
     if (this.appliedUltraWanted) this.publishQualityState();
     this.terrain = new PlanTerrainSampler(plan);
+    this.population = new PopulationSimulation(this.populationPlan, this.terrain);
+    this.populationPlacementProbe = new EucController(this.terrain);
+    this.populationPhysicalCertificates = new PopulationPhysicalCertificates(RIDER_CONTACT, createPose());
+    if (this.populationPlan.actors.length > 0) this.populationPhysicalCertificates.warm();
+    this.populationPhysicalEpochOpen = false;
+    this.populationSerialHistory.clear(); this.populationBoundaryTeleports = new Set();
+    this.populationAnticipation.clear();
+    this.populationOwnerComponents.clear();
+    this.populationPlacementControllers.clear();
     // Rebuilt with the world, like the sampler and the referee above them, and
     // for the same reason: a hazard field outliving its plan would put the last
     // route's potholes in this one's road — or its bushes in this one's plaza.
@@ -10562,11 +11261,7 @@ export class Game {
     // plan's spawn: seats stacked on one point is what a naive loop would
     // produce, and `resetSeats` below is what actually stands them there.
     for (let index = 0; index < this.seats.length; index += 1) {
-      this.seats[index].controller = new EucController(this.terrain, {
-        spawn: this.spawnForSeat(index),
-        hazards: this.hazards,
-        softBodies: this.softBodies,
-      });
+      this.seats[index].controller = this.buildSeatController(index);
       // A fresh controller is born sober; the seat's character is not — M29
       // S2 / S4. The style is re-read off the roster for whoever is still
       // sitting here, so a *Fresh route* neither sobers a drunk seat nor
@@ -10578,8 +11273,8 @@ export class Game {
       // this is the stated rule rather than the only defence.)
       this.seats[index].lastStumbles = 0;
     }
-    this.challenge = new ChallengeRun(plan.id, plan.checkpoints);
-    this.trackDay = new TrackDayRun(plan.id, plan.checkpoints, plan.lap ?? null);
+    this.challenge = new ChallengeRun(recordWorldIdOf(plan), plan.checkpoints);
+    this.trackDay = new TrackDayRun(recordWorldIdOf(plan), plan.checkpoints, plan.lap ?? null);
     // **The race's referee is rebuilt with the world too** — M27 Phase 3, on
     // the line above's exact argument: a referee holding the last circuit's
     // envelope would judge this one's laps against a ring that is not here.
@@ -10616,6 +11311,8 @@ export class Game {
     // that is gone. `New route` from the pause card comes through here, so
     // this is what keeps a couch session together across a world swap.
     this.resetSeats();
+    this.audio.replaceAmbienceWorld(plan.id, [...environmentAudioEmitters(plan),
+      ...populationAudioEmitters(this.populationPlan)]);
     this.publishWorld();
     this.syncWorldUrl();
   }
@@ -10920,6 +11617,13 @@ export class Game {
   }
 
   dispose(): void {
+    this.pendingSessionState = null;
+    this.pendingWorldSwap = null;
+    this.coverWarm = 'disposed';
+    // The tiny boot entry owns the shared screen until pagehide, including
+    // errors after a partially prepared Game has already been disposed.
+    this.populationAnticipation.clear();
+    this.populationOwnerComponents.clear();
     this.loop.dispose();
     this.keyboard.dispose();
     // **Before the pad layer, and it has to be** — M25 Phase 4. Disposing the
@@ -10989,7 +11693,12 @@ export class Game {
     // busy state is still up when this frame's poll reads a pad button held
     // through the switch's freeze, so that press is refused, not queued.
     if (this.pendingQuality !== null || this.qualitySettleFrames > 0) this.stepQualitySwitch();
+    if (this.pendingSessionState !== null || this.sessionSettleFrames > 0) this.stepSessionLoad();
+    if (this.pendingWorldSwap !== null || this.worldSettleFrames > 0) this.stepWorldSwap();
     this.gamepad.poll(this.simTimeSeconds, nowMs / 1000);
+    // The final poll is still gated, so a button held through a load cannot
+    // activate the newly shown menu. Release only after it has been consumed.
+    if (this.finishLoadingAfterPoll) this.finishLoading();
 
     // A route the player asked for on the previous frame (M12 Phase 4). Here
     // rather than in `step`, because it must run whether or not the loop is
@@ -10997,8 +11706,9 @@ export class Game {
     // world inside the fixed step would charge a second of generation to the
     // simulation clock and be replayed as dropped steps.
     if (this.pendingRoute !== null) {
-      if (this.pendingRouteFrames > 0) this.pendingRouteFrames -= 1;
-      else this.resolveFreshRoute();
+      if (this.pendingRouteFrames > 0) {
+        if (--this.pendingRouteFrames === 0 && this.routeCovered) this.loadingScreen?.stage('Building the place', 1, 3);
+      } else this.resolveFreshRoute();
     }
 
     // Cheap and idempotent; see GameRenderer.resize. Polling here is what makes
@@ -11076,6 +11786,7 @@ export class Game {
     // seat's reset does not: it is one rider respawning, and stopping the cop,
     // the referees and the camera because somebody else pressed `R` would make
     // the second player able to stall the first player's world.
+    this.beginPopulationStep(stepSeconds);
     let worldReset = false;
     // **And whether *any* seat respawned, which is a different question** — M26
     // Phase 1's QA repair. `worldReset` is seat 0's alone by design, because a
@@ -11118,6 +11829,13 @@ export class Game {
       if (wasReset) this.strikeResetThisStep[index] = true;
       if (wasReset) seatReset = true;
       if (wasReset && index === 0) worldReset = true;
+    }
+    if(this.populationPlan.actors.length>0){
+      // Brains see the statically legal provisional quarry once; physical
+      // controllers, contacts and effects are committed as one shared epoch.
+      if(!worldReset){this.stepPursuers(stepSeconds,true);this.populationPursuersPrepared=true;}
+      this.resolvePopulationPreparedSteps();
+      for(const prepared of this.populationPreparedSteps)if(prepared.kind==='human')prepared.finish();
     }
     // **Any seat, once** — M25 Phase 4. Before the `worldReset` return rather
     // than after it, which is what keeps the single-seat semantics byte for
@@ -11204,6 +11922,9 @@ export class Game {
     // ageing `knockaboutSeconds` or the results delay on it would be this
     // method's own rule read backwards.
     if (worldReset) {
+      // A rider's R does not rewind shared people/traffic or discard the
+      // destination reservation just committed by its placement callback.
+      this.finishPopulationStep();
       this.decideMatchAfterStrikes();
       return;
     }
@@ -11239,7 +11960,11 @@ export class Game {
     // ride before the referee looks, so the gaps the busts are judged on are
     // this step's gaps rather than the last one's. Below seat 0's `worldReset`
     // return, as the cop always was: a reset step integrates nothing.
-    this.stepPursuers(stepSeconds);
+    if(this.populationPursuersPrepared){
+      for(const prepared of this.populationPreparedSteps)if(prepared.kind==='cop')prepared.finish();
+      this.refreshCopGap();
+    }else this.stepPursuers(stepSeconds);
+    this.finishPopulationStep();
 
     // The Knockabout run — M14, stepped beside the timed one and never inside
     // it: the two are alternatives, and a mode that had to check whether the
@@ -11435,8 +12160,7 @@ export class Game {
       if (action === 'reset' && this.couchChaseLive) {
         if (index === this.chaseCopSeat) {
           if (seat.controller.crashed) {
-            this.rightInPlace(seat, index);
-            didReset = true;
+            didReset = this.rightInPlace(seat, index);
           }
         } else if ((this.chaseSeatOutlaw[index] ?? -1) >= 0) {
           this.chaseGiveUp[index] = true;
@@ -11456,8 +12180,8 @@ export class Game {
         // below is not (a couch session runs no referee at all).
         const timed = this.challenge.state.phase !== 'idle'
           || this.trackDay.state.phase !== 'idle';
-        if (timed) this.resetChallengeRider(seat);
-        else this.resetRider(seat);
+        const placed = timed ? this.resetChallengeRider(seat) : this.resetRider(seat);
+        if (!placed) continue;
         // **During a timed run, `R` restarts the run rather than merely moving
         // the rider.** It is also the anti-exploit: the slice's route is a loop
         // that closes back into the plaza, so any teleport near the finish
@@ -11596,9 +12320,23 @@ export class Game {
     seat.lastSteer = actions.steer;
 
     copyPose(seat.currentPose, seat.previousPose);
+    if(this.populationPlan.actors.length>0){
+      this.populationRememberPreparedStart(`human-${index}`, seat.controller);
+      this.populationPreparedSteps.push(this.populationStepEntry(`human-${index}`,'human',seat.controller,stepSeconds,actions,
+        ()=>{seat.controller.writePose(seat.currentPose);
+          this.finishSeatStep(seat,index,stepSeconds,actions,swingForPaddle);}));
+      return false;
+    }
     seat.controller.step(stepSeconds, actions);
     seat.controller.writePose(seat.currentPose);
 
+    this.finishSeatStep(seat,index,stepSeconds,actions,swingForPaddle);
+    return false;
+  }
+
+  /** Presentation, trick and paddle effects read only finalized physics. */
+  private finishSeatStep(seat:RiderSeat,index:number,stepSeconds:number,
+    actions:ActionSnapshot,swingForPaddle:boolean):void {
     // -- M36's one-foot air pose, stepped beside the physics and never inside it
     //
     // Straight after the step, from the *presented* snapshot's held level —
@@ -11835,7 +12573,6 @@ export class Game {
     // rate, so a hit is reproducible under `advance(n)`.
     this.stepPaddle(seat, index, stepSeconds, swingForPaddle);
 
-    return false;
   }
 
   /**
@@ -12223,6 +12960,8 @@ export class Game {
   }
 
   private readonly render = (alpha: number): void => {
+    // The cover hides the canvas while a new view's programs link.
+    if (this.coverWarm === 'running') return;
     // **Every seat: interpolate it and draw it** — M25 Phase 2. `renderSeat`
     // was already seat-pure at Phase 1 (its only two reaches outside the seat
     // are the mode's paddle flag and the simulation clock, both read-only and
@@ -12250,6 +12989,8 @@ export class Game {
     if (this.copRiding) {
       this.renderer.setCopVisible(true, this.pursuers.length);
       for (const pursuer of this.pursuers) {
+        this.renderer.setPackmateVisible(pursuer.index, pursuer.worldPlaced);
+        if (!pursuer.worldPlaced) continue;
         lerpPose(pursuer.previous, pursuer.current, alpha, pursuer.render);
         pursuer.paddle.writeHeadFor(pursuer.render, pursuer.head);
         this.renderer.applyPackmate(
@@ -12306,6 +13047,11 @@ export class Game {
     // The order inside is load-bearing: the shadow map is re-rendered inside
     // `renderView`, so the focus has to move *before* the pass rather than
     // after it, or each half would be lit for the rider drawn before it.
+    this.renderer.updateStreetLife(this.simTimeSeconds, this.reducedMotion?.matches ?? false);
+    const populationPrevious = this.populationPresentationPrevious, populationCurrent = this.populationPresentationCurrent;
+    this.population.writePresentationEndpoints(populationPrevious, populationCurrent);
+    this.renderer.updatePopulation(populationPrevious, populationCurrent, alpha);
+    updatePopulationAudio(this.audio, populationPrevious, populationCurrent, alpha);
     this.renderer.beginFrame();
     // **One pass per *view*, not per seat.** The two are the same number from
     // the first frame anybody is riding; on the join panel the split follows
@@ -12797,6 +13543,10 @@ export class Game {
     // loop the QA bridge froze in order to *listen* to something.
     input.idle = halted;
 
+    // One presented listener for the shared world, before any pane draws.
+    // A QA-frozen ride holds its sound; menus, lost contexts and hidden tabs
+    // use the same quiet gates as the existing audio lifecycle.
+    this.audio.setAmbienceListener(pose.x, pose.y, pose.z, !halted && !this.pageHidden);
     this.audio.update(dt);
     this.audioStepSeconds = 0;
   }
@@ -12954,13 +13704,51 @@ export class Game {
    * `resetRiderTo` is what is genuinely the *world's*: the particle field, the
    * mix, and where the cop stands.
    */
-  private resetRider(seat: RiderSeat = this.seats[0]): void {
-    this.resetRiderTo(this.spawnForSeat(this.seats.indexOf(seat)), seat);
+  private resetRider(seat: RiderSeat = this.seats[0]): boolean {
+    return this.resetRiderTo(this.spawnForSeat(this.seats.indexOf(seat)), seat);
   }
 
   /** Stand every rider at their own slot — a world swap, not a respawn. */
   private resetSeats(): void {
-    for (const seat of this.seats) this.resetRider(seat);
+    this.placeSeatGroup(this.seats.map((seat, index) => ({ seat, spawn: this.spawnForSeat(index) })));
+  }
+
+  /**
+   * Stand a group of seats on destinations its producer already spaced — one
+   * batch, MI-2 (2026-10-03).
+   *
+   * Seats never veto seats (`populationPhysicalPlacementClear`), so a refusal
+   * here is an NPC or a CPU cop really standing on the slot. The refusal is
+   * honoured rather than dropped: that rider takes the nearest free place
+   * beside or behind the slot (`spawnSlot`'s veto search), no nearer the rest
+   * of the group than the room's spacing, and failing even that is stood up
+   * and stopped where they are, so a mode is not armed with them still
+   * moving or down. Only an actor touching them there as well leaves them as
+   * they were — that last reset is checked like every other.
+   *
+   * A destination an earlier seat of the batch already took (two vetoed slot
+   * searches can meet) moves the later seat the same way; when nothing near
+   * is free it still goes there, as `spawnSlot`'s own last resort would.
+   */
+  private placeSeatGroup(entries: readonly { readonly seat: RiderSeat; readonly spawn: Spawn }[]): void {
+    const destinations = entries.map(entry => entry.spawn);
+    entries.forEach((entry, k) => {
+      const taken = destinations.slice(0, k).some(spawn => Math.hypot(spawn.position.x - entry.spawn.position.x,
+        spawn.position.z - entry.spawn.position.z) < SLOT_MIN_SEPARATION_METRES);
+      if (!taken && this.resetRiderTo(entry.spawn, entry.seat)) return;
+      const id = `human-${this.seats.indexOf(entry.seat)}`;
+      const others = [...destinations.filter((_, j) => j !== k).map(spawn => spawn.position),
+        ...this.seats.filter(seat => !entries.some(value => value.seat === seat)).map(seat => seat.currentPose)];
+      const spacing = this.slotSpacing;
+      const near = spawnSlot(entry.spawn, 1, this.terrain, spacing, candidate =>
+        others.every(other => Math.hypot(candidate.position.x - other.x, candidate.position.z - other.z) >= spacing - 1e-6)
+        && this.populationAllowsSpawn(id, candidate));
+      if (near !== entry.spawn && this.resetRiderTo(near, entry.seat)) { destinations[k] = near; return; }
+      if (taken && this.resetRiderTo(entry.spawn, entry.seat)) return;
+      const here = entry.seat.currentPose;
+      destinations[k] = { position: { x: here.x, y: here.y, z: here.z }, headingY: here.headingY };
+      this.resetRiderTo(destinations[k], entry.seat);
+    });
   }
 
   /**
@@ -12981,11 +13769,10 @@ export class Game {
    * to prevent. Seat 0's slot is the derived pose unchanged, so a
    * single-player retry lands exactly where it always has.
    */
-  private resetChallengeRider(seat: RiderSeat = this.seats[0]): void {
+  private resetChallengeRider(seat: RiderSeat = this.seats[0]): boolean {
     const start = this.levelPlan.checkpoints.find((checkpoint) => checkpoint.kind === 'start');
     if (start === undefined) {
-      this.resetRider(seat);
-      return;
+      return this.resetRider(seat);
     }
 
     const x = start.centre.x - Math.sin(start.headingY) * CHALLENGE.startRunupMetres;
@@ -12993,7 +13780,7 @@ export class Game {
     const ground = createGroundSample();
     this.terrain.sampleGround(x, z, ground);
     const runup = { position: { x, y: ground.height, z }, headingY: start.headingY };
-    this.resetRiderTo(
+    return this.resetRiderTo(
       spawnSlot(runup, this.seats.indexOf(seat), this.terrain, this.slotSpacing),
       seat,
     );
@@ -13009,8 +13796,8 @@ export class Game {
    * early return is genuinely the **world's** — one particle field, one mix,
    * one cop — and runs only for the seat the world is following.
    */
-  private resetRiderTo(spawn: LevelPlan['spawn'], seat: RiderSeat = this.seats[0]): void {
-    seat.controller.reset(spawn);
+  private resetRiderTo(spawn: LevelPlan['spawn'], seat: RiderSeat = this.seats[0]): boolean {
+    if (!seat.controller.reset(spawn)) return false;
     // Feet first, then the pose sync that writes the rig — M36 §36.5. A rider
     // put back at a spawn is not mid-gesture, and `controller.reset` has just
     // ended whatever flight the latch remembered.
@@ -13059,7 +13846,7 @@ export class Game {
     this.audio.resetRider(this.seats.indexOf(seat));
 
     // -- The world's half, and only for the seat the world is following ------
-    if (seat !== this.seats[0]) return;
+    if (seat !== this.seats[0]) return true;
 
     // Sparks and dust are consequences of a ride that no longer happened.
     // Leaving them would hang a burst of them in the air at a place the rider
@@ -13077,6 +13864,7 @@ export class Game {
     // `syncPoses`, because it reads the rider's freshly written pose to decide
     // where "behind" is.
     this.placePackAtStart();
+    return true;
   }
 
   /** Eight-way HUD bearing, derived from the active plan checkpoint. */
@@ -13232,7 +14020,134 @@ export class Game {
 
   /** Ask for a transition. Refused moves are ignored, as `AppState` documents. */
   private goTo(state: AppStateId): boolean {
+    if (!this.executingSessionLoad && this.loadingScreen !== null) {
+      if (this.loadingScreen.busy) return false;
+      if (state === 'couchJoin' || (state === 'title' && this.multiplayerSession)) {
+        this.pendingSessionState = state;
+        this.sessionPaintFrames = ULTRA_SWITCH_PAINT_FRAMES;
+        const entering = state === 'couchJoin';
+        this.menus.setLoadingBusy(true);
+        this.loadingScreen.begin('multiplayer', entering ? 'Getting the crew together' : 'Back to your solo ride',
+          entering && this.options.current.quality === 'ultra'
+            ? 'Ultra will turn off. You can enable it again in single player.'
+            : entering ? 'Preparing local multiplayer.' : 'Restoring the single player view.');
+        this.loadingScreen.stage(entering ? 'Preparing multiplayer' : 'Preparing single player', 0, 3);
+        this.updateRunning();
+        return true;
+      }
+    }
     return this.appState.goTo(state);
+  }
+
+  private stepSessionLoad(): void {
+    if (this.pendingSessionState !== null) {
+      if (this.sessionPaintFrames > 0) { this.sessionPaintFrames -= 1; return; }
+      const state = this.pendingSessionState;
+      this.pendingSessionState = null;
+      this.executingSessionLoad = true;
+      try {
+        this.loadingScreen?.stage('Preparing riders and views', 1, 3);
+        this.appState.goTo(state);
+        this.warmThenSettle(() => { this.sessionSettleFrames = ULTRA_SWITCH_SETTLE_FRAMES; });
+        this.loadingScreen?.stage('Preparing the first view', 2, 3);
+      } catch (error) {
+        this.loadingScreen?.fail('Multiplayer could not be prepared. Please reload and try again.', error);
+      } finally { this.executingSessionLoad = false; }
+      return;
+    }
+    if (this.sessionSettleFrames > 0 && --this.sessionSettleFrames === 0) this.finishLoadingAfterPoll = true;
+  }
+
+  /**
+   * Queue a native entrance that is about to replace the world, behind the
+   * shared loading cover. True means it was queued (or refused because another
+   * load owns the screen) and the caller must return; it is re-run unchanged,
+   * with every refusal asked again, once the cover has painted. False means
+   * run now: the deferred re-run itself, a bridge call, or no cover at all.
+   */
+  private coverWorldSwap(heading: string, action: () => void): boolean {
+    if (this.executingSessionLoad || this.synchronousWorldSwap || this.loadingScreen === null) return false;
+    if (this.loadingScreen.busy || this.pendingWorldSwap !== null) return true;
+    this.pendingWorldSwap = action;
+    this.worldPaintFrames = ULTRA_SWITCH_PAINT_FRAMES;
+    this.raiseWorldCover(heading);
+    return true;
+  }
+
+  private raiseWorldCover(heading: string): void {
+    this.worldCoverUp = true;
+    this.menus.setLoadingBusy(true);
+    this.loadingScreen?.begin('world', heading, 'Your ride will continue when the new place is ready.');
+    this.loadingScreen?.stage('Preparing the new place', 0, 3);
+    this.updateRunning();
+  }
+
+  private stepWorldSwap(): void {
+    const action = this.pendingWorldSwap;
+    if (action !== null) {
+      // The last paint frame shows the step the coming freeze belongs to.
+      if (this.worldPaintFrames > 0) {
+        if (--this.worldPaintFrames === 0) this.loadingScreen?.stage('Building the place', 1, 3);
+        return;
+      }
+      this.pendingWorldSwap = null;
+      this.executingSessionLoad = true;
+      try {
+        action();
+        this.warmThenSettle(() => { this.worldSettleFrames = ULTRA_SWITCH_SETTLE_FRAMES; });
+        this.loadingScreen?.stage('Preparing the first view', 2, 3);
+      } catch (error) {
+        this.loadingScreen?.fail('The new place could not be prepared. Please reload and try again.', error);
+      } finally { this.executingSessionLoad = false; }
+      return;
+    }
+    if (this.worldSettleFrames > 0 && --this.worldSettleFrames === 0) this.finishLoadingAfterPoll = true;
+  }
+
+  /**
+   * A cover's work has built the new view: link its programs and upload its
+   * buffers before the first drawn frame, then run the settle frames (RP-8).
+   * Frames are not drawn while the parallel compile runs (`render`), because a
+   * draw would block on each link in turn. `warmPrograms` bounds its own wait.
+   */
+  private warmThenSettle(settle: () => void): void {
+    this.coverWarm = 'running';
+    void this.renderer.warmPrograms().catch(() => undefined).then(() => {
+      if (this.coverWarm !== 'running') return;
+      this.coverWarm = 'idle';
+      settle();
+    });
+  }
+
+  /** A covered Fresh route was dropped before it ran: release its cover. */
+  private dropRouteCover(): void {
+    if (!this.routeCovered) return;
+    this.routeCovered = false;
+    this.finishLoading();
+  }
+
+  /** Run a bridge entrance with the synchronous swap it has always had. */
+  private bridgeWorldSwap(action: () => void): void {
+    const previous = this.synchronousWorldSwap;
+    this.synchronousWorldSwap = true;
+    try { action(); } finally { this.synchronousWorldSwap = previous; }
+  }
+
+  private finishLoading(): void {
+    this.finishLoadingAfterPoll = false;
+    this.worldCoverUp = false;
+    this.menus.setLoadingBusy(false);
+    this.menus.setQualityBusy(null);
+    this.keyboard.reset();
+    this.router.clearAll();
+    this.touchControls.reset();
+    this.loop.resetTime();
+    this.loadingScreen?.stage('Ready to ride', 3, 3);
+    this.loadingScreen?.complete();
+    this.menus.recoverFocusAfterLoad();
+    this.updateRunning();
+    if (this.qualityResumeRunning === false) this.loop.setRunning(false);
+    this.qualityResumeRunning = null;
   }
 
   /**
@@ -13250,6 +14165,7 @@ export class Game {
     if (state !== from && this.pendingRoute !== null) {
       this.pendingRoute = null;
       this.pendingRouteFrames = 0;
+      this.dropRouteCover();
       this.menus.setNewRouteStage('idle');
       this.setRouteStatus(this.levelId === 'generated'
         ? { kind: 'ready', seed: this.seed } : { kind: 'idle' });
@@ -13592,6 +14508,7 @@ export class Game {
     action: 'up' | 'down' | 'left' | 'right' | 'confirm' | 'back',
     device: DeviceId,
   ): void {
+    if (this.loadingScreen?.busy) return;
     if (!this.appState.showsMenu) return;
 
     // **A claim press is not also a button press** — M25 Phase 5, and the pad's
@@ -13854,10 +14771,11 @@ export class Game {
     // **High before anything else happens** — M39 W1 (PLANS §39.6). With a
     // saved Ultra, "entering a couch/multiplayer session uses ordinary High
     // before its first frame", so the session flag rises on the first line,
-    // ahead of the guest's rig and the split below; the saved preference is
-    // untouched and comes back when the session ends. Low, Medium and High
+    // ahead of the guest's rig and the split below; the owner now asks this
+    // visit to save High and leave Ultra off after the session ends. Low, Medium and High
     // pass straight through: their ordinary tier does not change here.
     this.multiplayerSession = multiplayerAfter(this.multiplayerSession, 'couch-open');
+    this.clearUltraForMultiplayer();
     this.applyRenderTier('couch-open');
     // **Contact goes back on, every time, and that is a decision rather than a
     // consequence** — q81, M26 Phase 2. The owner asked for it about the
@@ -13949,8 +14867,8 @@ export class Game {
     // and no guest card keeps Officer Dorkins into the next session.
     this.dealRosterFor(DEFAULT_COUCH_RIDE);
     // **The session ends here, after the last guest has gone** — M39 W1. Not
-    // before: the frame must be back to one view before a saved Ultra is
-    // rebuilt over it, and the loop above is what takes it there.
+    // before: the frame must be back to one view before ending the session,
+    // and the loop above is what takes it there. High stays saved on return.
     this.multiplayerSession = multiplayerAfter(this.multiplayerSession, 'couch-close');
     this.applyRenderTier('couch-close');
     this.updateCouchPanel();
@@ -14281,6 +15199,7 @@ export class Game {
    * wiring and once in the router — is how the two come to disagree.
    */
   private claimSeatFor(device: DeviceId): void {
+    if (this.loadingScreen?.busy) return;
     const claimed = this.router.claimPress(device);
     // **Only on the panel, and only after a claim that landed.** A pad
     // rejoining mid-ride comes through here too (§25.5 Phase 4), and a couch
@@ -14428,7 +15347,7 @@ export class Game {
    * replayed as simulation time.
    */
   private updateRunning(): void {
-    this.loop.setRunning(this.appState.simulates && !this.contextLost && !this.pageHidden);
+    this.loop.setRunning(this.appState.simulates && !this.contextLost && !this.pageHidden && !this.loadingScreen?.busy);
   }
 
   /**
@@ -15143,12 +16062,18 @@ export class Game {
     }
     this.pendingQuality = { from, to };
     this.pendingQualityFrames = ULTRA_SWITCH_PAINT_FRAMES;
+    this.qualityResumeRunning = this.loop.isRunning();
     this.menus.setQualityBusy({ direction, from, to });
+    this.menus.setLoadingBusy(true);
+    this.loadingScreen?.begin('quality', direction === 'entering' ? 'Loading Ultra graphics…' : 'Turning Ultra off…',
+      'Your ride will continue when the new view is ready.');
+    this.loadingScreen?.stage('Preparing the graphics change', 0, 3);
+    this.updateRunning();
   }
 
   /** A switch is waiting to run, or has run and its busy state has not cleared. */
   private qualitySwitchBusy(): boolean {
-    return this.pendingQuality !== null || this.qualitySettleFrames > 0;
+    return this.pendingQuality !== null || this.qualitySettleFrames > 0 || Boolean(this.loadingScreen?.busy);
   }
 
   /**
@@ -15169,15 +16094,21 @@ export class Game {
         return;
       }
       this.pendingQuality = null;
-      if (this.options.current.quality === work.from && !(work.to === 'ultra' && this.multiplayerSession)) {
-        this.options.set({ quality: work.to });
+      try {
+        this.loadingScreen?.stage('Building the new graphics', 1, 3);
+        if (this.options.current.quality === work.from && !(work.to === 'ultra' && this.multiplayerSession)) {
+          this.options.set({ quality: work.to });
+        }
+        this.warmThenSettle(() => { this.qualitySettleFrames = ULTRA_SWITCH_SETTLE_FRAMES; });
+        this.loadingScreen?.stage('Preparing the first view', 2, 3);
+      } catch (error) {
+        this.loadingScreen?.fail('The graphics change could not finish. Please reload and try again.', error);
       }
-      this.qualitySettleFrames = ULTRA_SWITCH_SETTLE_FRAMES;
       return;
     }
     if (this.qualitySettleFrames === 0) return;
     this.qualitySettleFrames -= 1;
-    if (this.qualitySettleFrames === 0) this.menus.setQualityBusy(null);
+    if (this.qualitySettleFrames === 0) this.finishLoadingAfterPoll = true;
   }
 
   /** Drop a switch that has not run yet, and its notice. */
@@ -15186,7 +16117,19 @@ export class Game {
     this.pendingQuality = null;
     this.pendingQualityFrames = 0;
     this.qualitySettleFrames = 0;
+    this.menus.setLoadingBusy(false);
     this.menus.setQualityBusy(null);
+    this.loadingScreen?.complete();
+    this.menus.recoverFocusAfterLoad();
+    this.updateRunning();
+    if (this.qualityResumeRunning === false) this.loop.setRunning(false);
+    this.qualityResumeRunning = null;
+  }
+
+  /** Owner policy, 2026-10-03: a multiplayer visit saves High and leaves Ultra
+   * off on return. Enforced at both entrances, including direct QA seat adds. */
+  private clearUltraForMultiplayer(): void {
+    if (this.options.current.quality === 'ultra') this.options.set({ quality: 'high' });
   }
 
   /**

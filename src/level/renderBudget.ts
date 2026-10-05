@@ -132,7 +132,14 @@ export function planRenderCost(plan: LevelPlan): LevelRenderCost {
   // data: `render/props.ts` draws the prop mesh and never a collider proxy, so
   // a solid costs nothing to draw beyond the prop that justified it.
   const partInstances = new Map<PropPartId, number>();
-  for (const prop of plan.props ?? []) propPartCounts(prop, partInstances);
+  const routeSigns = new Map((plan.routeSigns ?? []).map(sign => [sign.propIndex, sign]));
+  for (const [index, prop] of (plan.props ?? []).entries()) {
+    const upper = routeSigns.get(index)?.upper.word;
+    if (upper !== undefined && upper !== 'TECH' && upper !== 'AIR') {
+      throw new Error('route sign has no priced upper template');
+    }
+    propPartCounts(prop, partInstances, upper);
+  }
   for (const [part, instances] of partInstances) {
     const cost = PART_COSTS[part];
     const triangles = cost.triangles * instances;

@@ -56,7 +56,12 @@ const LETTERS: Readonly<Record<string, readonly (readonly LetterPoint[])[]>> = {
     [[0.08, 0.5], [0.78, 0.5]],
     [[0.08, 0.98], [0.92, 0.98]],
   ],
+  // The cafe's COFFEE fascia uses E's stem and upper arms.
+  F: [[[0.08, 0.98], [0.08, 0.02], [0.92, 0.02]], [[0.08, 0.5], [0.78, 0.5]]],
   L: [[[0.10, 0], [0.10, 0.98], [0.90, 0.98]]],
+  // TECH route labels: E's stem and crossbar mirrored into two uprights.
+  H: [[[0.08, 0.02], [0.08, 0.98]], [[0.92, 0.02], [0.92, 0.98]],
+    [[0.08, 0.5], [0.92, 0.5]]],
   A: [[[0.02, 1], [0.5, 0], [0.98, 1]], [[0.2, 0.62], [0.8, 0.62]]],
   R: [
     [[0.06, 0], [0.06, 1]],
