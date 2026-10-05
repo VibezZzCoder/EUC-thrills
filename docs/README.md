@@ -10,7 +10,7 @@ take the alley when you think you can hold it.
 >
 > **Source:** [github.com/VibezZzCoder/EUC-thrills](https://github.com/VibezZzCoder/EUC-thrills) — an original work by [VibezZzCoder](https://github.com/VibezZzCoder)
 
-![EUC Thrills in Ultra graphics — Cool Rider carves along the town's park road at 23 mph, with another wheel rider just ahead, people walking by on both verges and a jogger further on; trees and shrubs cast long shadows across the grass, and the town's towers stand on the skyline](https://vibezzzcoder.github.io/EUC-thrills/media/euc-thrills-gameplay.jpg)
+![EUC Thrills in Ultra graphics — a Police chase across the town's brick plaza: Cool Rider rides toward the camera while Officer Dorkins, paddle out, closes in a few metres behind; the screen reads "He is right behind you" and SURVIVE 4:56, and behind them stand warehouses, a green apartment block, the brick water tower and two parked vans, with bollards and trees on the plaza and the rider's long shadow on the brick](https://vibezzzcoder.github.io/EUC-thrills/media/euc-thrills-gameplay.jpg)
 
 **This is a work in progress.** The riding is the part that is meant to be
 right; everything around it is still growing, and later builds will look,
