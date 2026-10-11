@@ -78,8 +78,15 @@ function boxExclusion(box: BoxCollider): Exclusion {
   } };
 }
 
+/**
+ * A render-only disc no grass root may stand in, world metres (M42: a launch
+ * pad's footprint plus a margin, because a 0.08–0.18 m clump stands through a
+ * 6 cm pad). Removes clumps only; it never moves one or adds one.
+ */
+export interface VegetationExclusionDisc { readonly x: number; readonly z: number; readonly radius: number }
+
 /** Spatial admission index; its borrowed source entries never become meshes. */
-function exclusionIndex(plan: LevelPlan): (x: number, z: number) => boolean {
+function exclusionIndex(plan: LevelPlan, discs: readonly VegetationExclusionDisc[] = []): (x: number, z: number) => boolean {
   const buckets = new Map<string, Exclusion[]>(), pitch = RULES.exclusionBucketMetres;
   const add = (entry: Exclusion) => {
     const b = entry.bounds, r = RULES.footprintRadius;
@@ -114,6 +121,12 @@ function exclusionIndex(plan: LevelPlan): (x: number, z: number) => boolean {
       minZ: hazard.centre.z - radius, maxZ: hazard.centre.z + radius },
     contains: (x, z, margin) => Math.hypot(x - hazard.centre.x, z - hazard.centre.z) <= radius + margin });
   }
+  // M42: the launch pads' discs, through the same path as a hazard's.
+  for (const disc of discs) {
+    if (![disc.x, disc.z, disc.radius].every(Number.isFinite) || disc.radius <= 0) throw new Error('Invalid vegetation exclusion disc');
+    add({ bounds: { minX: disc.x - disc.radius, maxX: disc.x + disc.radius, minZ: disc.z - disc.radius, maxZ: disc.z + disc.radius },
+      contains: (x, z, margin) => Math.hypot(x - disc.x, z - disc.z) <= disc.radius + margin });
+  }
   // Even a grass-surfaced authored corridor stays clear. The short original
   // socket-arc chords gain a conservative margin; these are no new routes.
   for (const segment of plan.segments) {
@@ -143,14 +156,14 @@ function exclusionIndex(plan: LevelPlan): (x: number, z: number) => boolean {
 /** Closed leaf volumes with a curved, tapered spine. Short splayed leaves
  * form a turf clump rather than a handful of upright needles. */
 
-export function prepareEnvironmentVegetation(plan: LevelPlan) {
+export function prepareEnvironmentVegetation(plan: LevelPlan, exclusionDiscs: readonly VegetationExclusionDisc[] = []) {
   const field = plan.heightfield;
   if (![field.originX, field.originZ, field.spacing].every(Number.isFinite) || field.spacing <= 0
     || !Number.isSafeInteger(field.columns) || !Number.isSafeInteger(field.rows) || field.columns < 2 || field.rows < 2
     || field.heights.length !== field.columns * field.rows
     || field.surfaces.length !== (field.columns - 1) * (field.rows - 1)
     || field.heights.some(height => !Number.isFinite(height))) throw new Error('Invalid vegetation heightfield');
-  const blocked = exclusionIndex(plan), sampler = new PlanTerrainSampler(plan), sample = createGroundSample();
+  const blocked = exclusionIndex(plan, exclusionDiscs), sampler = new PlanTerrainSampler(plan), sample = createGroundSample();
   const maximumX = field.originX + (field.columns - 1) * field.spacing;
   const maximumZ = field.originZ + (field.rows - 1) * field.spacing;
   const minX = Math.ceil(field.originX / RULES.latticeMetres), maxX = Math.floor(maximumX / RULES.latticeMetres);

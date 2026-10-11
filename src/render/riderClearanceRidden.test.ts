@@ -31,6 +31,7 @@ import {
 import { machineLook } from './machineLook.ts';
 import { createRidingRig, type RidingRig } from './ridingRig.ts';
 import type { LoftProfile } from './blockoutKit.ts';
+import { WYLDIST_LOOK } from './wyldistLook.ts';
 
 /**
  * **The can's 40 mm floor, held as ridden** — M30 Phase 3's QA repair, and the
@@ -312,6 +313,28 @@ interface Leg {
   crouch?: boolean;
   hop?: boolean;
   throttle?: number;
+  /** Ride at this speed, m/s, on a governed throttle well under the attack's. */
+  hold?: number;
+}
+
+/**
+ * **The eased band** (owner, 2026-10-10, round 2): the arms relax below
+ * `armEaseGoneAbove`, so the can arm has a pose family at cruising speeds that
+ * the flat-out legs below only pass through. Held at each speed — straight,
+ * the snap, the flick — on the shipped wheel, where it is ridden once: the
+ * presets differ in what they reach, not in how a wheel at 8 m/s is ridden.
+ * Appended after the flat-out legs, never before them: ridden first it moved
+ * their start and their sway phase, and the shipped minimum with it (41.7 →
+ * 44.1 mm) — a contract quietly measuring a different ride.
+ */
+const EASED_HOLDS = [4, 6, 8, 10, 12, 14, 16] as const;
+const EASED_STEERS = [0.25, 0.6, 1] as const;
+function easedBand(): Leg[] {
+  return EASED_HOLDS.flatMap((hold) => EASED_STEERS.flatMap((steer) => [1, -1].flatMap((sign): Leg[] => [
+    { steps: 360, steer: 0, hold },
+    { steps: 240, steer: sign * steer, hold },
+    { steps: 240, steer: (i: number) => (Math.floor(i / 10) % 2 === 0 ? sign * steer : -sign * steer), hold },
+  ])));
 }
 
 /** One corner, entered seven ways. */
@@ -424,17 +447,22 @@ test('the can never comes within 40 mm of his thigh on any ride the machine can 
         let worstPad = Infinity;
         let where = '';
         let wherePad = '';
+        let easedThigh = Infinity;
 
         const legs: Leg[] = [{ steps: 4200, steer: 0 }];
         for (const steer of STEERS) for (const sign of [1, -1]) legs.push(...entries(sign * steer));
         for (const steer of PHASE_STEERS) legs.push(...phaseLadder(steer));
+        // Last, so every leg above rides exactly the trajectory it always has.
+        if (mph === null && share === SHARES[0]) legs.push(...easedBand());
 
         for (const leg of legs) {
           for (let i = 0; i < leg.steps; i += 1) {
             actions.steer = typeof leg.steer === 'function' ? leg.steer(i) : leg.steer;
             actions.crouch = leg.crouch === true;
             actions.hop = leg.hop === true;
-            actions.throttle = leg.throttle ?? (euc.overspeed > 0.8 ? 0 : 1);
+            actions.throttle = leg.hold !== undefined
+              ? (pose.speed < leg.hold - 0.6 ? 1 : Math.max(-1, Math.min(0.5, 0.12 + (leg.hold - pose.speed) * 0.8)))
+              : leg.throttle ?? (euc.overspeed > 0.8 ? 0 : 1);
             euc.step(STEP, actions);
             euc.writePose(pose);
             // A crash is its own contract (`crash, settled` in the stance file)
@@ -475,12 +503,14 @@ test('the can never comes within 40 mm of his thigh on any ride the machine can 
               if (thighGap < worstThigh) { worstThigh = thighGap; where = at; }
               if (padGap < worstPad) { worstPad = padGap; wherePad = at; }
             }
+            if (leg.hold !== undefined) easedThigh = Math.min(easedThigh, thighGap);
           }
         }
 
         worst.push({ label, thigh: worstThigh, pad: worstPad, where });
     console.log(
-      `  ${label}: thigh ${(worstThigh * 1000).toFixed(1)} mm, pads ${(worstPad * 1000).toFixed(1)} mm`,
+      `  ${label}: thigh ${(worstThigh * 1000).toFixed(1)} mm, pads ${(worstPad * 1000).toFixed(1)} mm`
+        + `${Number.isFinite(easedThigh) ? `; eased band (held 4–16 m/s) thigh ${(easedThigh * 1000).toFixed(1)} mm` : ''}`,
     );
         assert.ok(
           worstThigh >= 0.040,
@@ -603,7 +633,7 @@ function rigFor(look: RiderLook): RidingRig {
 const TROLLINA_BODICE = 0.166;
 
 /** The looks whose thighs end in a hip dome over the joint (the stance file's list). */
-const DOME_LOOKS: readonly RiderLook[] = [DRUNKARD_LOOK, WHEEL_IN_MOTION_LOOK, FLO_WITH_ZO_LOOK, SEAL_ON_A_WHEEL_LOOK];
+const DOME_LOOKS: readonly RiderLook[] = [DRUNKARD_LOOK, WHEEL_IN_MOTION_LOOK, FLO_WITH_ZO_LOOK, SEAL_ON_A_WHEEL_LOOK, WYLDIST_LOOK];
 
 /** The stance file's pinned per-look gesture cost, metres (negative = nearer). */
 const GESTURE_COST: ReadonlyMap<string, number> = new Map([
@@ -616,6 +646,7 @@ const GESTURE_COST: ReadonlyMap<string, number> = new Map([
   ['drunkard', -0.025],
   ['flo-with-zo', -0.100],
   ['seal-on-a-wheel', -0.110],
+  ['wyldist', -0.081],
   ['cop', -0.080],
 ]);
 
@@ -1224,4 +1255,249 @@ test('the one-foot air gesture is ridden on every look and the cop, and every fl
   assert.equal(records.length, RIDER_LOOKS.length, 'a look went unridden');
   assert.ok(counts.sampled > 60_000, `only ${counts.sampled} steps were posed and measured`);
   assert.ok(counts.gestured > 3_000, `only ${counts.gestured} steps carried the gesture`);
+});
+
+/**
+ * **Wyldist's gloves stay outside his cargos** — the overnight clip fix,
+ * 2026-10-10 (the Wyldist lane's clip-fix report).
+ *
+ * Tonight's arms lane and its integrity critic found it, and it predates
+ * tonight: reversing flat out, crouched, with the lock thrown from one side to
+ * the other, his right glove sank into his right thigh and cargo pocket. The
+ * critic read 8.8 mm into the cloth and 10.6 mm into the pocket by nearest
+ * surface. The arms lane's `depthInside` read −11.2 mm at one transient and
+ * "2 mm clear" everywhere else. Both understate it: that metric is this
+ * file's, and it reads the thigh **loft**. Wyldist's cargo is wider than its
+ * loft — the leg's outboard bias (8 mm at mid-thigh, 12 mm at the knee) and the
+ * bellows pocket standing 18–21.5 mm off it.
+ *
+ * Measured against the meshes as drawn, the glove was up to **32 mm** inside
+ * the pocket. The thumb did that: it stood straight out sideways, 7 cm from
+ * the hand's axis. The knuckle ridge and the index finger's base followed, at
+ * 19 and 15 mm. The same measure found his left fingertips **13 mm** into the
+ * left pocket in the slow full-lock turn going forwards (3.5 m/s, roll 0.82).
+ *
+ * The repair is his own geometry (`wyldistLook.ts`), and it is four changes:
+ *   - the pocket sits 5 cm higher, at C2's height, with the flap at the
+ *     hanging fingertips;
+ *   - the thumb lies along the index finger on the palm side;
+ *   - the wrist's outboard turn goes from 0.08 to 0.18;
+ *   - the knuckle ridge is 3 mm instead of 4.
+ *
+ * **The measure.** Each glove vertex is taken into the hip's frame. A
+ * horizontal ray runs from the thigh loft's centre at that height through the
+ * vertex. The farthest crossing of that ray with the thigh mesh or the pocket
+ * is the clothed surface there, and the vertex is inside by however much
+ * nearer it lies. The thigh is re-read every pose, because the knee weld
+ * (`riderJointSurface.ts`) rewrites its lower rings. A cheap analytic screen
+ * first skips every vertex more than 60 mm outside the bare loft, where the
+ * cargo can never reach. The shin is not measured: it hangs on the knee, and
+ * every contact in these rides was on the hip's two meshes.
+ *
+ * **The rides** — the ones that found it, on his own wheel:
+ *   - the critic's reversing swap and its mirror: reverse flat out, lock, then
+ *     crouch and throw the lock across and back while the crouch holds;
+ *   - the same swap at full and half lock, both ways, with the crouch let go
+ *     as the lock crosses, then flicked crouched and standing, then rolled to
+ *     a stop on the lock, crouched;
+ *   - the arms lane's low band, held at 2.5, 3.5 and 5 m/s, steer 0.4, 0.6 and
+ *     1 both ways: into a corner, flicked, braked inside it until the wheel
+ *     reverses, then crouched. At full lock this band is also the slow
+ *     full-lock turn forwards.
+ * The floor is the definition of not clipping: no glove vertex inside.
+ * Measured on the repaired build (2026-10-10, 58,624 posed steps): left glove
+ * 8.8 mm outside, right glove 1.8 mm, both printed by the test. On the build
+ * before it the same rides read the right glove 31.9 mm inside and the left
+ * 12.8 mm inside.
+ *
+ * **Not ridden here, and why.** The shared reverse carriage (`render/rider.ts`)
+ * still brings most riders' right hands down onto the right knee in two rides.
+ * The first is a crouch that starts or ends while a reversing full lock holds
+ * roll +0.64. The second is reversing slowly at full lock, the technical turn
+ * backwards, at roll about 0.8. In the first, eight of ten looks clip, by 2 to
+ * 19 mm by nearest surface (Maribel 18.6, FloWithZo 14.0, Seal 11.3; Trollina
+ * and the Drunkard clear). Cool Rider reads 20.8 mm in the second. Wyldist
+ * reads 25 to 49 mm across the two after this repair, and 52 to 59 mm before
+ * it. No look can carry that: the remedy is the reverse stance's right-arm
+ * target. When it lands, those rides belong here.
+ */
+test("Wyldist's gloves stay outside his cargos on the rides that found them inside", () => {
+  const rig = createRidingRig(WYLDIST_LOOK, machineLook(machineForCharacter('wyldist')));
+  try {
+    const thighProfile = WYLDIST_LOOK.profiles.thigh;
+    /** Every triangle of a mesh hung on the hip, in the hip's frame. */
+    const hipTriangles = (mesh: THREE.Mesh): Float64Array => {
+      mesh.updateMatrix();
+      const position = mesh.geometry.getAttribute('position');
+      const index = mesh.geometry.getIndex();
+      const count = index ? index.count : position.count;
+      const out = new Float64Array(count * 3);
+      const corner = new THREE.Vector3();
+      for (let i = 0; i < count; i += 1) {
+        corner.fromBufferAttribute(position, index ? index.getX(i) : i).applyMatrix4(mesh.matrix);
+        out[i * 3] = corner.x; out[i * 3 + 1] = corner.y; out[i * 3 + 2] = corner.z;
+      }
+      return out;
+    };
+    /** The farthest crossing of a horizontal ray (Möller–Trumbore, both faces) with a triangle list, or −∞. */
+    const farthest = (ox: number, oy: number, oz: number, dx: number, dz: number, tris: Float64Array): number => {
+      let best = -Infinity;
+      for (let i = 0; i < tris.length; i += 9) {
+        const ay = tris[i + 1]!, by = tris[i + 4]!, cy = tris[i + 7]!;
+        if ((ay < oy && by < oy && cy < oy) || (ay > oy && by > oy && cy > oy)) continue;
+        const ax = tris[i]!, az = tris[i + 2]!;
+        const e1x = tris[i + 3]! - ax, e1y = by - ay, e1z = tris[i + 5]! - az;
+        const e2x = tris[i + 6]! - ax, e2y = cy - ay, e2z = tris[i + 8]! - az;
+        const px = -dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y;
+        const det = e1x * px + e1y * py + e1z * pz;
+        if (Math.abs(det) < 1e-12) continue;
+        const inv = 1 / det, tx = ox - ax, ty = oy - ay, tz = oz - az;
+        const u = (tx * px + ty * py + tz * pz) * inv;
+        if (u < 0 || u > 1) continue;
+        const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+        const v = (dx * qx + dz * qz) * inv;
+        if (v < 0 || u + v > 1) continue;
+        best = Math.max(best, (e2x * qx + e2y * qy + e2z * qz) * inv);
+      }
+      return best;
+    };
+    /** How far inside the clothed leg a hip-frame point lies (negative = outside). */
+    const underCloth = (point: THREE.Vector3, layers: readonly Float64Array[]): number => {
+      const ring = ringAtHeight(thighProfile, point.y);
+      const dx = point.x - ring.x, dz = point.z - ring.z, radial = Math.hypot(dx, dz);
+      if (radial < 1e-6) return Math.min(ring.halfWidth, ring.halfDepth);
+      let surface = -Infinity;
+      for (const tris of layers) surface = Math.max(surface, farthest(ring.x, point.y, ring.z, dx / radial, dz / radial, tris));
+      return surface - radial;
+    };
+
+    const sides = (['left', 'right'] as const).map((name) => {
+      const hand = rig.rider.root.getObjectByName(`rider-hand-${name}`) as THREE.Mesh;
+      const hip = rig.rider.root.getObjectByName(`rider-hip-${name}`)!;
+      const thigh = hip.children.find(
+        (child) => (child as THREE.Mesh).isMesh === true && child.name === '',
+      ) as THREE.Mesh;
+      const pocket = rig.rider.root.getObjectByName(`rider-thigh-pad-${name}`) as THREE.Mesh;
+      assert.ok(hand && thigh && pocket, `the ${name} glove, thigh or cargo pocket is missing`);
+      assert.ok(thigh.parent === hip && pocket.parent === hip, `the ${name} thigh and pocket do not hang on the hip`);
+      return { name, hand, hip, thigh, pocketTris: hipTriangles(pocket), worst: -Infinity, where: '' };
+    });
+
+    // The measure checks itself before it is trusted: the bone is deep inside
+    // the cloth, and a point a hand's width past the pocket is outside it.
+    {
+      rig.apply(createPose());
+      rig.group.updateMatrixWorld(true);
+      const layers = [hipTriangles(sides[1]!.thigh), sides[1]!.pocketTris];
+      const ring = ringAtHeight(thighProfile, -0.2);
+      assert.ok(underCloth(new THREE.Vector3(ring.x - 0.01, -0.2, ring.z), layers) > 0.07, 'the measure does not find the bone inside the cloth');
+      assert.ok(underCloth(new THREE.Vector3(ring.x - 0.2, -0.2, ring.z), layers) < -0.05, 'the measure finds a point outside the pocket inside it');
+    }
+
+    const flick = (a: number) => (i: number): number => (Math.floor(i / 10) % 2 === 0 ? a : -a);
+    const rides: Array<{ label: string; legs: Leg[] }> = [];
+    // The critic's swap as he rode it, and its mirror: crouched, the lock
+    // thrown across and back while the crouch holds.
+    for (const lock of [1, -1]) {
+      rides.push({ label: `reversing swap, lock ${lock}`, legs: [
+        { steps: 180, steer: 0, throttle: -1 },
+        { steps: 120, steer: lock, throttle: -1 },
+        { steps: 120, steer: -lock, throttle: -1, crouch: true },
+        { steps: 160, steer: lock, throttle: -1, crouch: true },
+        { steps: 160, steer: -lock, throttle: -1, crouch: true },
+      ] });
+    }
+    // The same swap at full and half lock with the crouch let go as the lock
+    // crosses, then flicked crouched and standing, then rolled to a stop on
+    // the lock crouched.
+    for (const lock of [1, -1, 0.5, -0.5]) {
+      rides.push({ label: `reversing swap and flick, lock ${lock}`, legs: [
+        { steps: 180, steer: 0, throttle: -1 },
+        { steps: 120, steer: lock, throttle: -1 },
+        { steps: 120, steer: -lock, throttle: -1, crouch: true },
+        { steps: 160, steer: lock, throttle: -1, crouch: true },
+        { steps: 120, steer: -lock, throttle: -1 },
+        { steps: 240, steer: flick(lock), throttle: -1, crouch: true },
+        { steps: 240, steer: flick(lock), throttle: -1 },
+        { steps: 200, steer: lock, throttle: 0, crouch: true },
+      ] });
+    }
+    for (const hold of [2.5, 3.5, 5]) for (const magnitude of [0.4, 0.6, 1]) for (const sign of [1, -1]) {
+      const steer = sign * magnitude;
+      rides.push({ label: `low band, held ${hold} m/s, steer ${steer}`, legs: [
+        { steps: 1640, steer: 0, hold },
+        { steps: 300, steer, hold },
+        { steps: 120, steer: 0, hold },
+        { steps: 48, steer: (i: number) => (steer * (i + 1)) / 48, hold },
+        { steps: 200, steer, hold },
+        { steps: 240, steer: flick(steer), hold },
+        { steps: 120, steer, throttle: -1 },
+        { steps: 200, steer, crouch: true, hold },
+      ] });
+    }
+
+    const pose = createPose();
+    const toHip = new THREE.Matrix4();
+    const point = new THREE.Vector3();
+    let sampled = 0;
+    let measured = 0;
+    let reversedCrouched = 0;
+    for (const ride of rides) {
+      const euc = new EucController(new PlanTerrainSampler(PLAN), { spawn: PLAN.spawn });
+      const actions = { ...NEUTRAL_ACTIONS } as { -readonly [K in keyof ActionSnapshot]: ActionSnapshot[K] };
+      Object.assign(pose, createPose());
+      let step = 0;
+      for (const leg of ride.legs) {
+        for (let i = 0; i < leg.steps; i += 1) {
+          actions.steer = typeof leg.steer === 'function' ? leg.steer(i) : leg.steer;
+          actions.crouch = leg.crouch === true;
+          actions.throttle = leg.hold !== undefined
+            ? (pose.speed < leg.hold - 0.6 ? 1 : Math.max(-1, Math.min(0.5, 0.12 + (leg.hold - pose.speed) * 0.8)))
+            : leg.throttle ?? 0;
+          euc.step(STEP, actions);
+          euc.writePose(pose);
+          step += 1;
+          if (pose.crashBlend > 0) continue;
+          rig.apply(pose);
+          rig.group.updateMatrixWorld(true);
+          sampled += 1;
+          if (pose.reverseBlend > 0.9 && pose.crouch > 0.4) reversedCrouched += 1;
+          for (const side of sides) {
+            const positions = side.hand.geometry.getAttribute('position');
+            toHip.copy(side.hip.matrixWorld).invert().multiply(side.hand.matrixWorld);
+            let layers: Float64Array[] | null = null;
+            let deepest = -Infinity;
+            for (let v = 0; v < positions.count; v += 1) {
+              point.fromBufferAttribute(positions, v).applyMatrix4(toHip);
+              if (point.y > 0.02 || point.y < -RIDER_BLOCKOUT.thighLength - 0.03) continue;
+              if (-depthInside(thighProfile, point) > 0.06) continue;
+              // Read once per pose, and only when a vertex is near enough to need it.
+              layers ??= [hipTriangles(side.thigh), side.pocketTris];
+              deepest = Math.max(deepest, underCloth(point, layers));
+            }
+            if (layers) measured += 1;
+            if (deepest > side.worst) {
+              side.worst = deepest;
+              side.where = `${ride.label}, step ${step}: speed ${pose.speed.toFixed(2)} m/s, roll ${pose.rollAngle.toFixed(3)}, `
+                + `crouch ${pose.crouch.toFixed(2)}, reverse ${pose.reverseBlend.toFixed(2)}, technical ${pose.technicalTurn.toFixed(2)}`;
+            }
+          }
+        }
+      }
+    }
+
+    const mm = (m: number): string => `${(m * 1000).toFixed(1)} mm`;
+    for (const side of sides) {
+      console.log(`  Wyldist's ${side.name} glove: ${side.worst > 0 ? `${mm(side.worst)} inside` : `${mm(-side.worst)} outside`} his cargos at its nearest — ${side.where}`);
+    }
+    console.log(`  ${sampled.toLocaleString('en-GB')} posed steps, ${measured.toLocaleString('en-GB')} glove-poses near enough to measure exactly`);
+    for (const side of sides) {
+      assert.ok(side.worst <= 0, `Wyldist's ${side.name} glove is ${mm(side.worst)} inside his cargos — ${side.where}`);
+    }
+    assert.ok(sampled > 50_000, `only ${sampled} steps were posed and measured`);
+    assert.ok(measured > 1_000, `the gloves came near the cargos in only ${measured} poses — the rides no longer reach them`);
+    assert.ok(reversedCrouched > 1_000, `only ${reversedCrouched} steps were ridden backwards crouched`);
+  } finally {
+    rig.dispose();
+  }
 });

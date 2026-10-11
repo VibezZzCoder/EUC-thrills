@@ -42,6 +42,10 @@ export const GROUPS = Object.freeze({
     'src/level/generatedLevel.test.ts', 'src/level/topSpeedRoutes.test.ts',
     'src/render/renderCost.test.ts', 'tools/render-cost.test.mjs',
     'src/app/districtCorridorSeeds.test.ts', 'src/app/populationCensus.test.ts',
+    // M42: 20 simulated minutes of the euc population driving the bark model (~70 s).
+    'src/app/barkRate.test.ts',
+    // M42 pads: prepared-corpus finder rules, the natural-line rides and the real-site landing sweep.
+    'src/bench/launchPadSites.test.ts', 'src/bench/launchPadLine.test.ts', 'src/bench/launchPadSiteSweep.test.ts',
   ) },
 });
 

@@ -65,6 +65,17 @@ import { crashFor, type CrashVoiceId, type SampleBank } from './sink.ts';
  * ceiling the last test in this file exists because of. Both are at the bottom,
  * with the chunk-grammar assertion the download's 36 KB of `iXML`/`_PMX`
  * metadata made necessary.
+ *
+ * M41 added the tenth, and it is the one that ends an interim parked on
+ * **Cool Rider's** file rather than Red Rider's: Wyldist rode on `'cool-rider'`
+ * by the owner's q230 decision until his own arrived. His is the Adonisb2 path —
+ * a recording of his own fall, cut from footage he supplied — with Maribel's
+ * problem inside it: a voice recorded inches from the phone (the companion
+ * filming, going "ooh, ooh, ooh"). So his section proves three things no
+ * byte-level rule here can: that the file is not the owner's re-levelled (the
+ * interim actually ended), that the crash and not the voice is the loudest
+ * thing in it, and that the voice is still there — plus the voice-band ceiling
+ * and the chunk grammar, for the reasons Maribel's and Seal on a Wheel's carry.
  */
 
 const AUDIO = join(import.meta.dirname, '..', '..', 'assets', 'live', 'audio');
@@ -97,6 +108,7 @@ const wheelInMotion = readWav('crash_wheel_in_motion.wav');
 const drunkard = readWav('crash_drunkard.wav');
 const floWithZo = readWav('crash_flo_with_zo.wav');
 const sealOnAWheel = readWav('crash_seal_on_a_wheel.wav');
+const wyldist = readWav('crash_wyldist.wav');
 const stumble = readWav('stumble_drunkard.wav');
 
 test('every rider\'s crash is exactly as long as Cool Rider\'s', () => {
@@ -134,9 +146,13 @@ test('every rider\'s crash is exactly as long as Cool Rider\'s', () => {
   // added would lengthen the file and nothing else in this spec would notice
   // (M35).
   assert.equal(sealOnAWheel.length, coolRider.length);
+  // And his is cut onto a length *read* from Cool Rider's file, Adonisb2's
+  // rule — his recording is 5.87 s and the whole event in it is 3.37 s, so it
+  // fits with nothing taken out of the fall itself (M41).
+  assert.equal(wyldist.length, coolRider.length);
 });
 
-test('the nine crashes are nine different recordings', () => {
+test('the ten crashes are ten different recordings', () => {
   // Cheap, and it closes the gap every other test in this file leaves open: a
   // build where one crash was copied over another passes the length rule, the
   // loudness rule, and `crashFor`'s four-buffer check, and ships a rider
@@ -151,10 +167,10 @@ test('the nine crashes are nine different recordings', () => {
     ['cool-rider', coolRider], ['trollina', trollina],
     ['red-rider', redRider], ['adonisb2', adonisb2], ['maribel', maribel],
     ['wheel-in-motion', wheelInMotion], ['drunkard', drunkard],
-    ['flo-with-zo', floWithZo], ['seal-on-a-wheel', sealOnAWheel],
+    ['flo-with-zo', floWithZo], ['seal-on-a-wheel', sealOnAWheel], ['wyldist', wyldist],
   ];
-  // Thirty-six pairs at nine; the loop is what grows, not a list of names.
-  assert.equal((files.length * (files.length - 1)) / 2, 36);
+  // Forty-five pairs at ten; the loop is what grows, not a list of names.
+  assert.equal((files.length * (files.length - 1)) / 2, 45);
   for (let i = 0; i < files.length; i += 1) {
     for (let j = i + 1; j < files.length; j += 1) {
       const [nameA, a] = files[i];
@@ -426,6 +442,13 @@ test('no crash recording is louder than the one it replaces', () => {
     peakBetween(sealOnAWheel, sealFirst, sealLast + 1) <= peakBetween(coolRider),
     'his rewritten window peaks above the loudest sample of the owner\'s recording',
   );
+  // Wyldist's is a whole-file comparison on Adonisb2's terms: his recording
+  // shares no material with the owner's, so no copied-across peak can make this
+  // pass on its own. Worth having here because his source *exceeds* full scale
+  // on its hardest strike (+1.9 dBFS in float after the high-pass) and
+  // only the tool's knee stands between that and the loudest crash in the game.
+  // Measured: 26,595 against the owner's 26,730.
+  assert.ok(peakBetween(wyldist) <= peakBetween(coolRider), 'his crash peaks above the owner\'s');
 });
 
 test('Adonisb2\'s crash hits inside the first second', () => {
@@ -807,7 +830,7 @@ test('his crash has the seal in it, it is not too loud in that band, and the fil
   );
 });
 
-test('the nine voices reach nine different buffers', () => {
+test('the ten voices reach ten different buffers', () => {
   // §19.8's headless evidence, grown by one in §22.8, again in §29.12 and
   // again in §34.10. `crashFor` carried a fallback while Red Rider's file was
   // being built, and the failure it could hide — a voice quietly resolving to
@@ -819,6 +842,10 @@ test('the nine voices reach nine different buffers', () => {
   // Rider's file is this same crash from another donor, so the interim
   // surviving would play something that sounds nearly right and has no seal in
   // it at all.
+  //
+  // **Wyldist's (M41) is the first whose interim was Cool Rider's own file**
+  // (q230), so the resolver surviving its removal would play the owner's
+  // wipeout and the owner's voice under the tenth rider's name.
   const bank = {
     tyreOffroad: 'tyre-offroad',
     tyreSolid: 'tyre-solid',
@@ -831,6 +858,7 @@ test('the nine voices reach nine different buffers', () => {
     crashWheelInMotion: 'wheel-in-motion-buffer',
     crashFloWithZo: 'flo-with-zo-buffer',
     crashSealOnAWheel: 'seal-on-a-wheel-buffer',
+    crashWyldist: 'wyldist-buffer',
     crashDrunkard: 'drunkard-buffer',
     stumbleDrunkard: 'stumble-buffer',
     sirenFar: 'siren-far',
@@ -839,7 +867,7 @@ test('the nine voices reach nine different buffers', () => {
 
   const voices: CrashVoiceId[] = [
     'cool-rider', 'trollina', 'red-rider', 'adonisb2', 'maribel', 'wheel-in-motion', 'drunkard',
-    'flo-with-zo', 'seal-on-a-wheel',
+    'flo-with-zo', 'seal-on-a-wheel', 'wyldist',
   ];
   const reached = voices.map((voice) => crashFor(voice, bank));
   assert.deepEqual(
@@ -847,10 +875,10 @@ test('the nine voices reach nine different buffers', () => {
     [
       'cool-rider-buffer', 'trollina-buffer', 'red-rider-buffer',
       'adonisb2-buffer', 'maribel-buffer', 'wheel-in-motion-buffer', 'drunkard-buffer',
-      'flo-with-zo-buffer', 'seal-on-a-wheel-buffer',
+      'flo-with-zo-buffer', 'seal-on-a-wheel-buffer', 'wyldist-buffer',
     ],
   );
-  assert.equal(new Set(reached).size, 9);
+  assert.equal(new Set(reached).size, 10);
 });
 
 // ---------------------------------------------------------------------------
@@ -901,6 +929,8 @@ test('the Drunkard\'s crash is a composition, not a slice of any shipped recordi
     // seal bark — a third source in the comparison and still nothing to do with
     // a composed cartoon wipeout: −0.013 (M35).
     ['Seal on a Wheel', sealOnAWheel],
+    // And the tenth, a street recording of a real fall — measured, 0.010 (M41).
+    ['Wyldist', wyldist],
   ];
   for (const [name, file] of others) {
     const r = correlation(drunkard, file);
@@ -954,4 +984,163 @@ test('the stumble is 0.40 s at −6 dBFS, and its cans are not cut out of the cr
     if (k === window) equalWindows += 1;
   }
   assert.equal(equalWindows, 0, 'the stumble\'s cans are a window cut straight out of the crash');
+});
+
+// ---------------------------------------------------------------------------
+// Wyldist — M41: his own fall, the companion's "ooh"s set under it, and the
+// interim on Cool Rider's file actually over
+// ---------------------------------------------------------------------------
+
+/**
+ * Where things are in the installed cut — option a of
+ * `tools/make-crash-wyldist.mjs`, his recording's 0.800-4.200 s.
+ *
+ * Declared rather than detected, the way Maribel's voice window is: the tool
+ * measured the source and states its map in its header, and this re-measures
+ * the shipped file at those places independently. If the owner's ride picks
+ * option b or c instead, the tool's `--report` prints the windows for that cut
+ * and these are the lines to move; the burst assertion below is the one that
+ * says *which* of a and c is installed, and c would fail it on purpose.
+ */
+const WYLDIST_OOHS: readonly (readonly [number, number])[] = [[0.190, 0.365], [0.450, 0.645], [0.700, 0.885]];
+const WYLDIST_WHEEL: readonly (readonly [number, number])[] = [
+  [0.890, 1.000], [1.280, 1.375], [1.650, 1.710], [1.890, 1.985], [2.755, 2.830], [3.020, 3.075],
+];
+const WYLDIST_BURSTS: readonly (readonly [number, number])[] = [
+  [2.045, 2.115], [2.165, 2.230], [2.305, 2.375], [2.435, 2.515], [2.610, 2.665],
+];
+
+const rmsDbBetween = (samples: Int16Array, from: number, to: number): number => {
+  let sum = 0;
+  for (let i = from; i < to; i += 1) sum += (samples[i] / 32768) ** 2;
+  return 20 * Math.log10(Math.sqrt(sum / Math.max(1, to - from)) + 1e-18);
+};
+/** The loudest 50 ms inside a stretch (seconds), hopped at 10 ms. */
+const loudest50 = (samples: Int16Array, fromSeconds: number, toSeconds: number): number => {
+  const block = Math.round(0.050 * RATE);
+  let worst = -Infinity;
+  for (let at = Math.round(fromSeconds * RATE); at + block <= Math.round(toSeconds * RATE); at += Math.round(0.010 * RATE)) {
+    worst = Math.max(worst, rmsDbBetween(samples, at, at + block));
+  }
+  return worst;
+};
+
+test('Wyldist\'s crash is his own recording, not Cool Rider\'s re-levelled — the q230 interim is over', () => {
+  // **The failure his interim makes possible and every other assertion here
+  // misses.** He rode on `'cool-rider'` by a declared temporary value, so the
+  // likeliest wrong build is not a missing file but the owner's crash copied
+  // under his name with the gain changed — which passes the length rule and,
+  // after one sample of rescaling, the pairwise rule too. A copy at any gain
+  // correlates near 1 at lag zero; his street recording against the owner's
+  // garage correlates near 0. Measured 2026-10-09: 0.013 against Cool Rider's
+  // and no more than 0.017 in magnitude against any shipped crash.
+  for (const [name, file] of [
+    ['Cool Rider', coolRider], ['Trollina', trollina], ['Red Rider', redRider], ['Adonisb2', adonisb2],
+    ['Maribel', maribel], ['Wheel in Motion', wheelInMotion], ['the Drunkard', drunkard],
+    ['FloWithZo', floWithZo], ['Seal on a Wheel', sealOnAWheel],
+  ] as const) {
+    const r = correlation(wyldist, file);
+    assert.ok(Math.abs(r) < 0.05, `Wyldist's crash correlates ${r.toFixed(4)} with ${name}'s — it is a copy of it`);
+  }
+});
+
+test('his crash: the wheel is the loudest thing in it, the "ooh"s are still there, the bursts are down', () => {
+  // **The owner's instruction, as three measurements on the shipped bytes.**
+  // "Keep the cameraman's voice but lower it a bit" — it is loud because it
+  // was close to the phone. Maribel's first cut is the precedent for what goes
+  // wrong: every level rule passed and her shout still led her own drop. So:
+  //
+  // *The crash leads.* The loudest 50 ms in the file is a strike of his wheel
+  // and not a voice, and the loudest strike clears the loudest "ooh" by at
+  // least 3 dB. Measured: the hardest strike at 3.02 s, -14.0 dB, against the
+  // loudest "ooh" at -19.2 — 5.2 dB (before the trim, on the same microphone,
+  // the two were level).
+  const block = Math.round(0.050 * RATE);
+  let loudest = { at: 0, db: -Infinity };
+  for (let at = 0; at + block <= wyldist.length; at += Math.round(0.010 * RATE)) {
+    const level = rmsDbBetween(wyldist, at, at + block);
+    if (level > loudest.db) loudest = { at, db: level };
+  }
+  const centre = (loudest.at + block / 2) / RATE;
+  assert.ok(
+    WYLDIST_WHEEL.some(([from, to]) => centre >= from - 0.025 && centre <= to + 0.025),
+    `the loudest 50 ms of his crash is at ${centre.toFixed(3)} s, which is not one of the wheel's strikes`,
+  );
+  const ooh = WYLDIST_OOHS.map(([from, to]) => loudest50(wyldist, from, to));
+  const strike = Math.max(...WYLDIST_WHEEL.map(([from, to]) => loudest50(wyldist, from, to)));
+  assert.ok(
+    strike - Math.max(...ooh) >= 3,
+    `the loudest strike (${strike.toFixed(1)} dB) leads the loudest "ooh" (${Math.max(...ooh).toFixed(1)}) by `
+    + `${(strike - Math.max(...ooh)).toFixed(1)} dB — the voice is not under the crash`,
+  );
+
+  // *The voice is still there.* Every "ooh" stands at least 12 dB over the
+  // quietest 200 ms of the file — clearly in it, the way Trollina's reaction
+  // is, rather than trimmed into the street. Measured: 24.7 dB at the least.
+  let floor = Infinity;
+  const window = Math.round(0.200 * RATE);
+  for (let at = Math.round(0.012 * RATE); at + window <= wyldist.length - Math.round(0.250 * RATE); at += Math.round(0.010 * RATE)) {
+    floor = Math.min(floor, rmsDbBetween(wyldist, at, at + window));
+  }
+  for (const [index, level] of ooh.entries()) {
+    assert.ok(
+      level - floor >= 12,
+      `"ooh" ${index + 1} stands only ${(level - floor).toFixed(1)} dB over the floor — the cameraman is gone`,
+    );
+  }
+
+  // *The bursts in the air are down* — the five short high bursts while the
+  // wheel is airborne, whose owner is unproven (the tool's header says why).
+  // Option a ducks them 12 dB; option c keeps them at the "ooh"s' trim and
+  // fails this on purpose, so the assertion records which one is installed.
+  // Measured: the loudest at -35.1 dB, 15.2 dB under the quietest "ooh".
+  const burst = Math.max(...WYLDIST_BURSTS.map(([from, to]) => loudest50(wyldist, from, to)));
+  assert.ok(
+    Math.min(...ooh) - burst >= 10,
+    `the loudest burst in the air (${burst.toFixed(1)} dB) is only ${(Math.min(...ooh) - burst).toFixed(1)} dB `
+    + 'under the quietest "ooh" — this is not option a',
+  );
+
+  // *And the wheel arrives where the cut says.* The first strike on the road
+  // is a rise of at least 10 dB starting between 1.20 and 1.40 s. Measured:
+  // 14.9 dB at 1.28. (The onset rule the tools share is met earlier, by an
+  // "ooh" — the event's own order — so this is the one about the wheel.)
+  let rise = -Infinity;
+  for (let at = Math.round(1.20 * RATE); at <= Math.round(1.40 * RATE); at += Math.round(0.010 * RATE)) {
+    rise = Math.max(rise, rmsDbBetween(wyldist, at, at + block)
+      - rmsDbBetween(wyldist, at - Math.round(0.100 * RATE), at));
+  }
+  assert.ok(rise >= 10, `nothing strikes between 1.20 and 1.40 s — the sharpest rise there is ${rise.toFixed(1)} dB`);
+});
+
+test('his crash is audio only, and under the band ceiling the owner\'s ear set', () => {
+  // *The chunk grammar*, Seal on a Wheel's assertion: his source was a phone
+  // video with container metadata, and the tool writes a bare 44-byte header,
+  // so a hand-copied export of the clip's audio is the one way anything else
+  // reaches the shipped file.
+  const buffer = readFileSync(join(AUDIO, 'crash_wyldist.wav'));
+  const chunks: string[] = [];
+  let offset = 12;
+  while (offset + 8 <= buffer.length) {
+    chunks.push(buffer.toString('ascii', offset, offset + 4));
+    offset += 8 + buffer.readUInt32LE(offset + 4) + (buffer.readUInt32LE(offset + 4) % 2);
+  }
+  assert.deepEqual(chunks, ['fmt ', 'data'], 'his crash carries a chunk that is not audio');
+
+  // *The band.* A voice inches from a microphone packs its energy into
+  // 800 Hz-1.3 kHz, where the ride bed masks nothing — the reason the owner
+  // heard Maribel's matched cut as "a bit too loud". His file is held to her
+  // ceiling by the same function. Measured: -33.23 dB against -27.95.
+  const ceiling = Math.max(
+    voiceBandPeak(coolRider),
+    voiceBandPeak(trollina),
+    voiceBandPeak(redRider),
+    voiceBandPeak(adonisb2),
+  );
+  const his = voiceBandPeak(wyldist);
+  assert.ok(
+    his <= ceiling,
+    `his crash reaches ${his.toFixed(2)} dB between 800 Hz and 1.3 kHz, over the ${ceiling.toFixed(2)} dB `
+    + 'that is the loudest any accepted crash reaches there — the "ooh"s will read louder than the crash',
+  );
 });

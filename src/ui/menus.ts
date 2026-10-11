@@ -1663,6 +1663,41 @@ const RIDER_CARDS: Readonly<Record<PlayableCharacterId, { blurb: string; portrai
         <rect x="35.4" y="85.8" width="25.2" height="5" rx="1.8" fill="#e23086"/>
       </svg>`,
   },
+  /**
+   * Wyldist — M41. The shirt leads: a turquoise tropical field around a bare
+   * chest V, under a red full-face lid. A few broad red flowers and pale wave
+   * shapes survive the compact portrait; the small charcoal/red wheel is the
+   * third read. The rear-only 50 decal is not invented on the front helmet,
+   * and SMLS stays off the chooser. No embedded image or sponsor lettering.
+   */
+  wyldist: {
+    blurb: 'Turquoise Hawaiian shirt open at the chest, a red 50 helmet and black cargos, '
+      + 'on a charcoal wheel with red accents. A real rider, in by permission.',
+    portrait: `
+      <svg viewBox="0 0 96 96" class="euc-rider-card__art" aria-hidden="true" focusable="false">
+        <path d="M38 45h20v13H38z" fill="#d9a17b"/>
+        <path d="M27 62l-6 20q-2 6 3 7t7-5l7-18zM69 62l6 20q2 6-3 7t-7-5l-7-18z"
+              fill="#d9a17b"/>
+        <path d="M37 53l-12 8-4 13 13 4 3-7-2 19h26l-2-19 3 7 13-4-4-13-12-8-11 17z"
+              fill="#079bc0"/>
+        <path d="M40 53h16l-8 17z" fill="#d9a17b"/>
+        <path d="M35 87h26l2 9H33z" fill="#42464c"/>
+        <path d="M28 17c3-8 11-12 20-12s17 4 20 12l3 16-5 19-9 8H39l-9-8-5-19z"
+              fill="#da3035"/>
+        <path d="M29 28q19-10 38 0l-3 13H32z" fill="#252b30"/>
+        <path d="M34 31q14-7 28 0l-3 10H37z" fill="#d9a17b"/>
+        <path d="M33 42l8 6h14l8-6-3 12H36z" fill="#252b30"/>
+        <path d="M30 25q18-9 36 0l1 4q-19-8-38 0z" fill="#252b30"/>
+        <path d="M24 63q7-4 12 0M55 82q8-5 13-1M31 81q5-4 10-1"
+              fill="none" stroke="#e9ece4" stroke-width="3"/>
+        <path d="M29 59l2 4 5-1-2 4 3 4-5-1-2 4-1-5-5-1 4-3zM59 65l2 4 5-1-2 4 3 4-5-1-2 4-1-5-5-1 4-3z"
+              fill="#da3035"/>
+        <path d="M38 74l2 4 5-1-2 4 2 4-4-1-2 3-1-4-4-1 3-3z" fill="#da3035"/>
+        <circle cx="48" cy="90" r="10" fill="#252b30"/>
+        <path d="M40 79h16l5 6-2 10H37l-2-10z" fill="#414448"/>
+        <path d="M38 82l6 2-3 9-4-2zM58 82l-6 2 3 9 4-2z" fill="#c02d32"/>
+      </svg>`,
+  },
 };
 
 /**
@@ -2690,6 +2725,7 @@ export class Menus {
     // rather than snapping back to the saved tier for a frame or two.
     this.setSelect('quality', this.qualityBusy?.to ?? options.quality);
     this.setSelect('speedUnit', options.speedUnit);
+    this.setChecked('showFps', options.showFps);
 
     this.setValue('volumeMaster', Math.round(options.volumeMaster * 100));
     this.setText('volumeMaster-value', `${Math.round(options.volumeMaster * 100)}%`);
@@ -4356,6 +4392,13 @@ export class Menus {
         <label class="euc-field__label" for="euc-opt-units">Speed units</label>
         <select id="euc-opt-units" data-option="speedUnit">${unitOptions}</select>
         <span class="euc-field__value"></span>
+      </div>
+
+      <div class="euc-field">
+        <label class="euc-field__label" for="euc-opt-fps">Frame rate counter</label>
+        <input id="euc-opt-fps" type="checkbox" data-option="showFps" />
+        <span class="euc-field__value"></span>
+        <p class="euc-field__note">A small frames-per-second readout next to the speed readout. Off by default.</p>
       </div>
     </fieldset>
 

@@ -16,7 +16,7 @@ import type { PopulationCompoundActorMotion, PopulationCompoundMotionBatch,
 
 import { compactAnticipationBlocker, type PopulationCompactAnticipation } from './populationCompactAnticipation.ts';
 import { routeAnticipation, routeBrakingSpeedCap, type RouteAnticipationResult } from './populationRouteAnticipation.ts';
-import { POPULATION } from '../data/tuning.ts';
+import { POPULATION, POPULATION_REACTION } from '../data/tuning.ts';
 export { POPULATION } from '../data/tuning.ts';
 const R = POPULATION;
 /**
@@ -139,6 +139,14 @@ export interface PopulationActorPose {
   /** Render alignment from the same sampler, never a render-side ground query. */
   readonly groundPitch: number;
   readonly groundRoll: number;
+  /**
+   * M42: present only while a knock-down plays (activity `'impacted'`), never
+   * as an undefined key: every stagger row, and so every digest, is unchanged.
+   */
+  readonly impactReaction?: 'knockdown';
+  /** With `impactReaction`: the fall direction, radians from this actor's own
+   * heading (same sense), away from the rider who crashed into them. */
+  readonly impactFallYaw?: number;
 }
 
 export interface PopulationSnapshot {
@@ -155,6 +163,9 @@ export type PopulationPresentationPose = { -readonly [K in 'id' | 'kind' | 'x' |
   footSupports?: [MutablePopulationGroundSupport, MutablePopulationGroundSupport];
   tyreSupports?: [MutablePopulationGroundSupport, MutablePopulationGroundSupport,
     MutablePopulationGroundSupport, MutablePopulationGroundSupport];
+  /** Copied while the source row carries them, deleted otherwise (the storage is reused). */
+  impactReaction?: 'knockdown';
+  impactFallYaw?: number;
 };
 type MutablePopulationGroundSupport = { -readonly [K in keyof PopulationGroundSupport]: PopulationGroundSupport[K] };
 export interface PopulationPresentationSnapshot {
@@ -298,6 +309,12 @@ interface ActorState {
   workerAnchor: number;
   workerTarget: number;
   impactUntil: number;
+  /** M42: the length of the pause `impactUntil` ends (a stagger's
+   * `impactPauseSeconds`, a knock-down's own), which reaction it is, and a
+   * knock-down's fall direction from the heading, radians. */
+  impactSeconds: number;
+  reaction: 'stagger' | 'knockdown';
+  fallYaw: number;
   waiting: boolean;
   /** Indices of the other actors this step's look-ahead waited on (reused). */
   waitingOn: number[];
@@ -770,6 +787,12 @@ function writePresentationSnapshot(input: PopulationSnapshot, output: Population
     target.groundNormalZ = source.groundNormalZ;
     target.footSupports = writePresentationSupports(source.footSupports, target.footSupports) as PopulationPresentationPose['footSupports'];
     target.tyreSupports = writePresentationSupports(source.tyreSupports, target.tyreSupports) as PopulationPresentationPose['tyreSupports'];
+    // M42: a knock-down's channels exist only while one plays; reused storage drops them after.
+    if (source.impactReaction !== undefined) {
+      target.impactReaction = source.impactReaction; target.impactFallYaw = source.impactFallYaw ?? 0;
+    } else if ('impactReaction' in target || 'impactFallYaw' in target) {
+      delete target.impactReaction; delete target.impactFallYaw;
+    }
   }
 }
 const copyContacts = (contacts: readonly PopulationContact[]): readonly PopulationContact[] => contacts.map(value => ({ ...value,
@@ -790,10 +813,26 @@ function actorActivity(state: ActorState, clock: number, signedSpeed: number): P
   const activityPhase = activity === 'working' || activity === 'waiting'
     ? spec.idleSeconds > 0 ? clamp(1 - state.pause / spec.idleSeconds, 0, 1) : 0
     : activity === 'social' ? fract(clock / Math.max(spec.idleSeconds, R.maximumStepSeconds))
-      : activity === 'impacted' ? clamp(1 - (state.impactUntil - clock) / R.impactPauseSeconds, 0, 1)
+      : activity === 'impacted' ? clamp(1 - (state.impactUntil - clock) / state.impactSeconds, 0, 1)
         : fract(state.gaitDistance);
   return { activity, activityPhase, activityBlend: spec.kind === 'social' || activity === 'working' ? 1
     : spec.speedMetresPerSecond > 0 ? clamp(Math.abs(signedSpeed) / spec.speedMetresPerSecond, 0, 1) : 0 };
+}
+
+/** M42: who can be knocked down — people on foot; NPC wheel riders and vehicles keep the stagger. */
+const knockdownKind = (kind: ActorKind): boolean => kind === 'walker' || kind === 'jogger' || kind === 'worker' || kind === 'social';
+/** M42: a knock-down is playing (it holds the person still for all of it). */
+const knockedDown = (state: ActorState, clock: number): boolean => state.reaction === 'knockdown' && state.impactUntil > clock;
+/**
+ * M42: a row carries the knock-down's channels exactly while one plays and
+ * never otherwise, not even as undefined keys. Without one this returns the
+ * same row, so a stagger's rows are bit-identical to before.
+ */
+function withImpactReaction(pose: PopulationActorPose, state: ActorState, clock: number): PopulationActorPose {
+  if (knockedDown(state, clock)) return { ...pose, impactReaction: 'knockdown', impactFallYaw: state.fallYaw };
+  if (!('impactReaction' in pose) && !('impactFallYaw' in pose)) return pose;
+  const { impactReaction: _reaction, impactFallYaw: _fallYaw, ...rest } = pose;
+  return rest;
 }
 
 /** A crossing's corner extents, fixed once per plan instead of per priority query. */
@@ -928,7 +967,8 @@ export class PopulationSimulation {
           + (!vehicle(spec.kind) && spec.direction === -1 ? Math.PI : 0),
         gaitDistance: 0, wheelTravel: 0, pause: spec.kind === 'worker' ? spec.idleSeconds : 0,
         turning: false, workerLeg: 'work', workerAnchor, workerTarget,
-        impactUntil: 0, waiting: false, waitingOn: [], blockedBy: -1, blockedSeconds: 0, blockedGait: 0, turnedAt: -Infinity,
+        impactUntil: 0, impactSeconds: R.impactPauseSeconds, reaction: 'stagger', fallYaw: 0,
+        waiting: false, waitingOn: [], blockedBy: -1, blockedSeconds: 0, blockedGait: 0, turnedAt: -Infinity,
         aside: 0, asideTarget: 0, stepStartAside: 0, asideStalled: 0, pose: {} as PopulationActorPose,
         previousDistance: spec.initialDistanceMetres, stepTravel: 0, stepGaitStart: 0,
         stepWheelStart: 0, stepStartDirection: spec.direction, stepStartPause: 0,
@@ -1032,7 +1072,8 @@ export class PopulationSimulation {
       ...(footSupports ? { footSupports } : {}), ...(tyreSupports ? { tyreSupports } : {}),
       groundNormalX: normalX, groundNormalY: normalY, groundNormalZ: normalZ,
       groundPitch: Math.atan2(-(normalX * sin + normalZ * cos), normalY),
-      groundRoll: Math.atan2(-(normalX * cos - normalZ * sin), normalY) };
+      groundRoll: Math.atan2(-(normalX * cos - normalZ * sin), normalY),
+      ...(knockedDown(state, this.clock) ? { impactReaction: 'knockdown' as const, impactFallYaw: state.fallYaw } : {}) };
   }
 
   private along(state: ActorState, signedTravel: number): number {
@@ -1192,14 +1233,20 @@ export class PopulationSimulation {
       state.stepWheelStart = state.wheelTravel; state.stepStartDirection = state.direction;
       state.stepStartPause = state.pause; state.stepStartTurning = state.turning;
       // A step aside that something else stops for good is dropped, so the
-      // walker can still turn or walk on (never pinned mid-step).
-      state.asideStalled = state.aside !== state.asideTarget && state.aside === state.stepStartAside ? state.asideStalled + dt : 0;
+      // walker can still turn or walk on (never pinned mid-step). A knock-down
+      // is not something else stopping it (M42): the clock pauses while they
+      // sit, and a step aside begun before the fall goes ahead once they are
+      // up, as a stagger's does after its flinch. Dropped, it left a CPU cop
+      // held against a person who could then only turn round into him.
+      state.asideStalled = knockedDown(state, this.clock) ? state.asideStalled
+        : state.aside !== state.asideTarget && state.aside === state.stepStartAside ? state.asideStalled + dt : 0;
       if (state.asideStalled > SIDESTEP_GIVE_UP_SECONDS) { state.asideTarget = state.aside; state.asideStalled = 0; }
       state.stepStartWorkerLeg = state.workerLeg; state.stepStartAside = state.aside;
       state.waiting = false; state.waitingOn.length = 0;
       const { spec } = state;
       // A pending step aside for a rider goes ahead once the flinch has played.
-      const flinching = state.impactUntil > this.clock && (state.aside === state.asideTarget
+      // A knock-down holds the person where they sat for all of it (M42).
+      const flinching = state.impactUntil > this.clock && (state.reaction === 'knockdown' || state.aside === state.asideTarget
         || state.impactUntil - this.clock > R.impactPauseSeconds - IMPACT_FLINCH_SECONDS);
       if (spec.movement === 'stationary' || flinching) {
         state.speed = 0; this.refreshActorActivity(state, 0); continue;
@@ -1476,6 +1523,9 @@ export class PopulationSimulation {
       turner.pose = { ...turner.pose, direction: turner.direction }; this.refreshActorActivity(turner, 0);
     };
     for (let i = 0; i < states.length; i += 1) {
+      // Knocked down (M42): nothing is decided mid-reaction — no step aside,
+      // no turn round — and the wait counts afresh once they are up.
+      if (knockedDown(states[i], this.clock)) { states[i].blockedSeconds = 0; continue; }
       if (states[i].blockedBy === OCCUPANT_WAIT) {
         // Off the path to let the rider by first; else back the way it came.
         // Only for a rider still against it or across its way: one that has
@@ -1608,10 +1658,10 @@ export class PopulationSimulation {
 
   private refreshActorActivity(state: ActorState, signedSpeed = state.pose.speedMetresPerSecond): void {
     const pose = state.pose;
-    state.pose = { ...pose, ...(signedSpeed === 0 ? { velocityX: 0, velocityZ: 0,
+    state.pose = withImpactReaction({ ...pose, ...(signedSpeed === 0 ? { velocityX: 0, velocityZ: 0,
       speedMetresPerSecond: 0, backing: false,
       footprint: { ...pose.footprint, velocityX: 0, velocityZ: 0 } } : {}),
-      ...actorActivity(state, this.clock, signedSpeed) };
+      ...actorActivity(state, this.clock, signedSpeed) }, state, this.clock);
   }
 
   private stopAtFraction(state: ActorState, fraction: number): void {
@@ -1631,11 +1681,11 @@ export class PopulationSimulation {
     state.turning = state.stepStartTurning; state.workerLeg = state.stepStartWorkerLeg;
     state.aside = state.stepStartAside + (state.aside - state.stepStartAside) * fraction;
     state.stepTravel *= fraction; state.speed = 0;
-    state.pose = { ...held, velocityX: 0, velocityZ: 0, speedMetresPerSecond: 0, backing: false,
+    state.pose = withImpactReaction({ ...held, velocityX: 0, velocityZ: 0, speedMetresPerSecond: 0, backing: false,
       distanceMetres: state.distance, direction: state.direction, gaitDistanceMetres: state.gaitDistance,
       wheelTravelMetres: state.wheelTravel,
       footprint: { ...held.footprint, velocityX: 0, velocityZ: 0 },
-      ...actorActivity(state, this.clock, 0) };
+      ...actorActivity(state, this.clock, 0) }, state, this.clock);
   }
 
   /**
@@ -1904,7 +1954,12 @@ export class PopulationSimulation {
         const overlapping=end!==null&&end.gap<=R.epsilon;
         const charge=!pair.overlapping&&pair.cooldown<=0;
         pair.overlapping=true;
-        if(charge){pair.cooldown=R.contactCooldownSeconds;state.impactUntil=this.clock+R.impactPauseSeconds;
+        // A charge never shortens, lengthens or downgrades a knock-down that
+        // plays (M42): it gets up on its own clock. Otherwise it is the
+        // stagger, and max() is today's value exactly (an older pause always ends sooner).
+        if(charge){pair.cooldown=R.contactCooldownSeconds;
+          if(!knockedDown(state,this.clock)){state.impactSeconds=R.impactPauseSeconds;state.reaction='stagger';
+            state.impactUntil=Math.max(state.impactUntil,this.clock+R.impactPauseSeconds);}
           // A rider's push is a rider in the way: its wait runs through the pause (R2C-5).
           if(state.blockedBy!==OCCUPANT_WAIT){state.blockedBy=OCCUPANT_WAIT;state.blockedSeconds=0;}
           state.blockedGait=state.gaitDistance;}
@@ -1938,6 +1993,31 @@ export class PopulationSimulation {
       this.refreshActorActivity(state);
     this.publish();this.contacts=contacts;this.contactsTick=this.tick;
     return copyContacts(contacts);
+  }
+
+  /**
+   * M42: a human rider crashed into this person in this fixed step — the
+   * physical transaction's upright-to-crashed edge, never a contact's speed —
+   * so they sit down hard and get back up over
+   * `POPULATION_REACTION.knockdownPauseSeconds`, staying put throughout
+   * (still `'impacted'`, so whatever skips an impacted person skips them).
+   * Walkers, joggers, workers and social people only; anyone else, an unknown
+   * id or a second call while one plays is ignored. `normalX/Z` points from the
+   * person toward the rider; they fall the other way. Fixed-step facts only:
+   * the footprint, supports and velocity this step are untouched.
+   */
+  knockDown(actorId: string, normalX: number, normalZ: number): void {
+    const index = this.stateIndex.get(actorId), state = index === undefined ? undefined : this.states[index];
+    if (state === undefined || state.spec.id !== actorId || !knockdownKind(state.spec.kind)
+      || knockedDown(state, this.clock) || !finite(normalX, normalZ) || (normalX === 0 && normalZ === 0)) return;
+    state.reaction = 'knockdown';
+    state.impactSeconds = POPULATION_REACTION.knockdownPauseSeconds;
+    state.impactUntil = this.clock + state.impactSeconds;
+    state.fallYaw = wrapAngle(Math.atan2(-normalX, -normalZ) - state.pose.headingY);
+    // A wait counted before the fall decides nothing after it.
+    state.blockedSeconds = 0; state.blockedGait = state.gaitDistance;
+    this.refreshActorActivity(state);
+    this.publish();
   }
 
   queryContacts(occupants:readonly PopulationOccupant[],

@@ -9,7 +9,7 @@ import { prepareFeatureBlocks, type PreparedFeatureBlocks, type FeatureBlockPric
 import type { LevelPlan } from '../level/plan.ts';
 import type { PopulationPlan } from '../level/populationPlan.ts';
 import { PART_COSTS, type PropPartId } from '../data/renderCost.ts';
-import { ENVIRONMENT_VEGETATION as RULES } from '../data/tuning.ts';
+import { ENVIRONMENT_VEGETATION as RULES, LAUNCH_PAD_LOOK } from '../data/tuning.ts';
 import { districtExteriorSites, type DistrictExteriorSite } from './districtExteriorSites.ts';
 import { scopedEnvironmentSites as environmentSites, scopedParkCaseSites as parkCaseSites,
   scopedResidentialSites as residentialSites, scopedStreetFronts as streetFronts } from './scopedSiteQueries.ts';
@@ -26,6 +26,9 @@ import { prepareMetricFacades, metricSourcePrice, type PreparedMetricFacades, ty
 import { prepareVisualWayfinding, type VisualWayfinding } from './wayfinding.ts';
 import { EMPTY_SPATIAL_BATCHING_DELTA, exteriorSpatialBatchKey, priceGenericPropSpatialBatching,
   sumSpatialBatchingDeltas, validateSpatialBatchMetres, type SpatialBatchingDelta } from './spatialBatching.ts';
+import { cityLaunchPads, type LaunchPadSite } from '../level/launchPadSites.ts';
+import { countLaunchPads } from './launchPadView.ts';
+import { countBirds, prepareBirdFlight, type PreparedBirdFlight } from './birdFlight.ts';
 
 export interface SupplementPassPolicy {
   readonly nearCasts: (part: PropPartId) => boolean;
@@ -75,6 +78,16 @@ export interface PreparedEnvironmentSupplements {
   readonly capSlots: PreparedOriginalCapSlots;
   /** Final-plan visual runs merged into the pre-existing markings owner. */
   readonly wayfinding: VisualWayfinding;
+  /** M42: the free-ride pads (`cityLaunchPads`, memoised per plan). Priced in every mode, shown or not. */
+  readonly launchPads: readonly LaunchPadSite[];
+  /**
+   * M42 q237/R14: price the pads with their hovering marker. Unset (always,
+   * in the game) is `LAUNCH_PAD_LOOK.markerShown`, which is what the renderer
+   * builds; a test sets it to price the owner's switch either way.
+   */
+  readonly launchPadMarker?: boolean;
+  /** M42: the render-only flock's skyline and eligibility. */
+  readonly birds: PreparedBirdFlight;
   readonly disposed: boolean;
   dispose(): void;
 }
@@ -85,12 +98,16 @@ export function prepareEnvironmentSupplements(plan: LevelPlan, population: Popul
   let disposed = false;
   let featureBlocks: PreparedFeatureBlocks | null = null;
   try { featureBlocks = prepareFeatureBlocks(plan); const ownedFeatureBlocks = featureBlocks;
+    // M42: no grass root stands through a pad, in any mode (the pads are installed in every mode).
+    const launchPads = cityLaunchPads(plan, population);
+    const padDiscs = launchPads.map((site) => ({ x: site.x, z: site.z, radius: site.footprintRadius + LAUNCH_PAD_LOOK.grassClearMetres }));
     return { source: plan, populationPlan: population, metric, vegetationPrice, authoredCanopies, capSlots, featureBlocks: ownedFeatureBlocks,
-    wayfinding: prepareVisualWayfinding(plan, population), grass: prepareEnvironmentVegetation(plan),
+    wayfinding: prepareVisualWayfinding(plan, population), grass: prepareEnvironmentVegetation(plan, padDiscs),
     exterior: districtExteriorSites(plan, [...streetFronts(plan), ...environmentSites(plan), ...residentialSites(plan), ...parkCaseSites(plan)],
       new Set(metric.selectedPropIndices)),
     street: collectStreetLifePieces(plan), environment: collectEnvironmentDecorPieces(plan),
     district: collectDistrictDecorPieces(plan), population: countPopulation(population),
+    launchPads, birds: prepareBirdFlight(plan),
     get disposed() { return disposed; }, dispose() { if (disposed) return; disposed = true;
       metric.dispose(); vegetationPrice.dispose(); authoredCanopies.dispose(); capSlots.dispose(); ownedFeatureBlocks.dispose(); } }; }
   catch (error) { metric.dispose(); vegetationPrice.dispose(); authoredCanopies.dispose(); capSlots.dispose(); featureBlocks?.dispose(); throw error; }
@@ -169,7 +186,9 @@ export function priceEnvironmentSupplements(prepared: PreparedEnvironmentSupplem
   const counts = [metricCount, countStreetLifeDecor(prepared.source, prepared.street),
     countEnvironmentDecor(prepared.source, prepared.environment), countDistrictDecor(prepared.source, prepared.district),
     grassCount(prepared.grass, rich, rich || policy.grassUltraCached === true), exteriorCount(prepared.exterior, rich),
-    wayfindingCount(prepared.wayfinding), prepared.population];
+    wayfindingCount(prepared.wayfinding), prepared.population,
+    // M42: one draw each, no shadow pass, priced in every frame shape and mode.
+    countLaunchPads(prepared.launchPads, prepared.launchPadMarker ?? LAUNCH_PAD_LOOK.markerShown), countBirds(prepared.birds)];
   const sum = zero() as { -readonly [K in keyof SupplementCount]: SupplementCount[K] };
   for (const count of counts) for (const key of Object.keys(sum) as (keyof SupplementCount)[]) sum[key] += count[key];
   const vegetation = priceVegetation(prepared.vegetationPrice, vegetationDetail, legacyTriangles, policy);

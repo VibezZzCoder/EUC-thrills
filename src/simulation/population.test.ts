@@ -7,6 +7,7 @@ import type { ActorSpec, PopulationPath, PopulationPlan } from '../level/populat
 import { wrapAngle } from '../shared/maths.ts';
 import type { TerrainSampler } from './world.ts';
 import { populationSupportTargets } from '../shared/populationSupport.ts';
+import { POPULATION_REACTION } from '../data/tuning.ts';
 import { physicalPopulationHullFromTransform } from '../shared/populationHull.ts';
 import { POPULATION, PopulationSimulation, createPopulationSimulation, physicalPopulationHull, transformPopulationHull, sweepPopulationHulls,
   createPopulationPresentationSnapshot, type PopulationFootprint, type PopulationOccupant } from './population.ts';
@@ -593,6 +594,102 @@ test('impact activity has a bounded pause instead of extending on every merged s
   assert.notEqual(simulation.snapshot().actors[0].activity, 'impacted');
   const position = simulation.snapshot().actors[0].z;
   simulate(simulation, 40); assert.ok(simulation.snapshot().actors[0].z > position, 'the recoverable actor resumes after departure');
+});
+
+// M42 (PLANS §42.2g): a human rider who crashes into a person knocks them
+// down. The transaction calls knockDown on that edge; here it is called
+// directly, after the tick's contacts, exactly as the transaction does.
+test('a knock-down holds the person where they sat for the whole pause, even with a rider in the way, then they resume', () => {
+  const run = (knock: boolean) => {
+    const simulation = createPopulationSimulation(plan([line()], [actor('walker', 'walk', { initialDistanceMetres: 15 })]), flat);
+    const rider = occupant('human-0', body(0, 1.6));
+    simulation.step(STEP, [rider]); simulation.queryContacts([rider]);
+    const before = simulation.snapshot().actors[0];
+    assert.equal('impactReaction' in before, false, 'no reaction channel on an ordinary row, not even undefined');
+    if (knock) simulation.knockDown('walker', 0, 1);
+    const start = simulation.snapshot().actors[0];
+    const presentation = createPopulationPresentationSnapshot(), previous = createPopulationPresentationSnapshot();
+    const rows: { x: number; z: number; activity: string; reaction?: string; phase: number; presented?: string }[] = [];
+    for (let i = 0; i < 100; i += 1) {
+      simulation.step(STEP, [rider]); simulation.queryContacts([rider]);
+      simulation.writePresentationEndpoints(previous, presentation);
+      const row = simulation.snapshot().actors[0];
+      rows.push({ x: row.x, z: row.z, activity: row.activity, reaction: row.impactReaction, phase: row.activityPhase,
+        presented: presentation.actors[0].impactReaction });
+    }
+    return { before, start, rows };
+  };
+  const { before, start, rows } = run(true);
+  assert.equal(start.activity, 'impacted');
+  assert.equal(start.impactReaction, 'knockdown');
+  // The normal points from the person toward the rider (+Z): they fall the other way, behind them.
+  assert.ok(Math.abs(Math.abs(start.impactFallYaw!) - Math.PI) < 1e-9, `falls away from the rider (${start.impactFallYaw})`);
+  assert.deepEqual(start.footprint, before.footprint, 'the footprint never changes');
+  assert.deepEqual(start.footSupports, before.footSupports, 'nor its supports');
+  const hold = Math.floor(POPULATION_REACTION.knockdownPauseSeconds / STEP) - 1;
+  for (let i = 0; i < hold; i += 1) {
+    const row = rows[i];
+    assert.equal(row.activity, 'impacted', `step ${i}: still down`);
+    assert.equal(row.reaction, 'knockdown'); assert.equal(row.presented, 'knockdown', 'presentation storage carries it');
+    assert.equal(row.x, start.x, `step ${i}: no step aside while down`); assert.equal(row.z, start.z, `step ${i}: stays put`);
+    if (i > 0) assert.ok(row.phase > rows[i - 1].phase, 'one reaction, one rising phase');
+  }
+  const ended = rows.findIndex(row => row.activity !== 'impacted');
+  assert.ok(ended >= hold && ended <= hold + 3, `the knock-down ends on its own clock (step ${ended})`);
+  assert.ok(rows.slice(ended).every(row => row.reaction === undefined && row.presented === undefined), 'and its channels go with it');
+  const moved = rows.findIndex((row, i) => i >= ended && (row.x !== start.x || row.z !== start.z));
+  assert.ok(moved >= ended && (moved - ended) * STEP < 2, `then they resume: stepped round the rider ${((moved - ended) * STEP).toFixed(2)} s later`);
+  // The negative control: the same rider in the way, no knock-down — the walker steps aside within the second.
+  const control = run(false).rows;
+  const sidestep = control.findIndex(row => row.x !== start.x || row.z !== start.z);
+  assert.ok(sidestep >= 0 && sidestep * STEP < 1.2, `without one, the walker leaves at ${(sidestep * STEP).toFixed(2)} s`);
+  assert.ok(control.every(row => row.reaction === undefined), 'a wait is never a knock-down');
+});
+
+test('a charge never shortens, lengthens or downgrades a knock-down that plays, and a later stagger is the plain stagger', () => {
+  const simulation = createPopulationSimulation(plan([line()],
+    [actor('social', 'walk', { kind: 'social', movement: 'stationary', initialDistanceMetres: 15 })]), flat);
+  const away = occupant('human-0', body(4, 0)), against = occupant('human-0', body(0.4, 0));
+  simulation.step(STEP, [away]); simulation.queryContacts([away]);
+  simulation.knockDown('social', 1, 0);
+  simulation.knockDown('social', -1, 0);
+  assert.ok(Math.abs(simulation.snapshot().actors[0].impactFallYaw! + Math.PI / 2) < 1e-9, 'a second call while down is ignored');
+  const phases: number[] = [];
+  let charged = false;
+  for (let i = 0; i < 60; i += 1) {
+    const rider = i >= 20 ? against : away;
+    simulation.step(STEP, [rider]);
+    charged ||= simulation.queryContacts([rider]).some(value => value.charge);
+    const row = simulation.snapshot().actors[0];
+    if (row.activity !== 'impacted') break;
+    assert.equal(row.impactReaction, 'knockdown', `step ${i}: never downgraded to a stagger`);
+    phases.push(row.activityPhase);
+  }
+  assert.ok(charged, 'fixture: the rider charged the person mid-knock-down');
+  const expected = Math.round(POPULATION_REACTION.knockdownPauseSeconds / STEP) - 1;
+  assert.ok(Math.abs(phases.length - expected) <= 1, `the knock-down kept its own length (${phases.length} steps, ${expected} expected)`);
+  for (let i = 1; i < phases.length; i += 1) assert.ok(Math.abs(phases[i] - phases[i - 1] - STEP / POPULATION_REACTION.knockdownPauseSeconds) < 1e-9, 'its phase never jumps');
+  // Up again; a fresh meeting is the ordinary 1.2 s stagger with no reaction channel.
+  simulate(simulation, 30, [away]);
+  simulation.step(STEP, [against]); simulation.queryContacts([against]);
+  const stagger = simulation.snapshot().actors[0];
+  assert.equal(stagger.activity, 'impacted'); assert.equal('impactReaction' in stagger, false);
+  simulate(simulation, 4, [against]);
+  assert.ok(Math.abs(simulation.snapshot().actors[0].activityPhase - 4 * STEP / POPULATION.impactPauseSeconds) < 1e-9, 'on the stagger clock');
+});
+
+test('only people on foot are knocked down; anyone else, or an unknown id, is ignored', () => {
+  const simulation = createPopulationSimulation(plan([line(), line('service', 8, 'service'), line('ride', -8)], [
+    actor('jogger', 'walk', { kind: 'jogger', initialDistanceMetres: 15 }), van(),
+    actor('npc-rider', 'ride', { kind: 'fictionalEuc', initialDistanceMetres: 15, hull: { halfWidthMetres: 0.65, halfLengthMetres: 0.65, heightMetres: 1.9 } }),
+  ]), flat);
+  simulation.step(STEP); simulation.queryContacts([]);
+  const before = simulation.snapshot();
+  simulation.knockDown('van', 1, 0); simulation.knockDown('npc-rider', 1, 0); simulation.knockDown('nobody', 1, 0);
+  simulation.knockDown('jogger', 0, 0);
+  assert.deepEqual(simulation.snapshot(), before, 'nothing changed');
+  simulation.knockDown('jogger', 1, 0);
+  assert.equal(simulation.snapshot().actors.find(row => row.id === 'jogger')!.impactReaction, 'knockdown');
 });
 
 test('two simultaneous contact queries include a human and a cop with stable independent pair identities', () => {

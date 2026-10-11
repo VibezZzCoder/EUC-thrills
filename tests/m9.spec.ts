@@ -370,6 +370,16 @@ test.describe('M9 — HUD, menus, options', () => {
   });
 
   test('options survive a reload, and the panel comes back showing them', async ({ page }) => {
+    // M42: this test turns the frame-rate counter on, and the counter is the
+    // owner's instrument (invariant 11). `screenshot`/`trace` are worker
+    // options a describe cannot turn off, so its ink is painted transparent
+    // instead: no failure screenshot or trace frame can show a figure, and the
+    // node is `aria-hidden`, so no failure's page snapshot carries it.
+    await page.addInitScript(() => {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync('[data-hud="fps"] { color: transparent !important; text-shadow: none !important; }');
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    });
     await boot(page);
     expect(await page.evaluate(() => window.game.optionsPersist())).toBe(true);
 
@@ -379,6 +389,8 @@ test.describe('M9 — HUD, menus, options', () => {
         speedUnit: 'mph',
         volumeMaster: 0.5,
         fieldOfViewTrim: 6,
+        // M42: the frame-rate counter is a saved choice like any other.
+        showFps: true,
       });
     });
 
@@ -389,6 +401,7 @@ test.describe('M9 — HUD, menus, options', () => {
       speedUnit: 'mph',
       volumeMaster: 0.5,
       fieldOfViewTrim: 6,
+      showFps: true,
     });
 
     // The controls show what was restored rather than their defaults, and the

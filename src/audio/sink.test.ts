@@ -150,6 +150,7 @@ function fakeBank(context: AudioContext): SampleBank {
     crashWheelInMotion: buffer(),
     crashFloWithZo: buffer(),
     crashSealOnAWheel: buffer(),
+    crashWyldist: buffer(),
     crashDrunkard: buffer(),
     stumbleDrunkard: buffer(),
     sirenFar: buffer(),
@@ -293,6 +294,29 @@ test('a crash in Seal on a Wheel\'s voice reaches his buffer and reports his nam
   assert.equal(launched[0].buffer, bank.crashSealOnAWheel, 'his crash reached somebody else\'s buffer');
   assert.notEqual(launched[0].buffer, bank.crashRedRider, 'the interim is still in the resolver');
   assert.equal(sink.counts.lastCrashVoice, 'seal-on-a-wheel');
+  assert.equal(sink.counts.crashSamplePlays, 1);
+  assert.equal(sink.counts.stumbleSamplePlays, 0);
+  sink.dispose();
+});
+
+test('a crash in Wyldist\'s voice reaches his buffer, not the Cool Rider interim\'s', () => {
+  // `crashFor`'s tenth arm, seen from the sink (M41). The first walk down this
+  // path whose interim was parked on `'cool-rider'` (q230) — so the silent
+  // failure here is the resolver handing back `bank.crash`, the owner's own
+  // wipeout and voice, while `lastCrashVoice` reports his name.
+  const { context, sources } = fakeContext();
+  const sink = new WebAudioSink(context);
+  const bank = fakeBank(context);
+  sink.setSampleBank(bank);
+  const permanent = sources.length;
+
+  sink.play({ ...stumbleCue(), kind: 'crash', voice: 'wyldist', gain: 0.8 });
+
+  const launched = sources.slice(permanent);
+  assert.equal(launched.length, 1);
+  assert.equal(launched[0].buffer, bank.crashWyldist, 'his crash reached somebody else\'s buffer');
+  assert.notEqual(launched[0].buffer, bank.crash, 'the Cool Rider interim is still in the resolver');
+  assert.equal(sink.counts.lastCrashVoice, 'wyldist');
   assert.equal(sink.counts.crashSamplePlays, 1);
   assert.equal(sink.counts.stumbleSamplePlays, 0);
   sink.dispose();

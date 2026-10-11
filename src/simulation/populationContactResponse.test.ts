@@ -13,6 +13,8 @@ import { EUC, POPULATION, RIDER_CONTACT } from '../data/tuning.ts';
 import { NEUTRAL_ACTIONS, type ActionSnapshot } from '../input/actions.ts';
 import { buildRiderOccupancyEnvelope } from '../shared/riderOccupancy.ts';
 import type { PopulationFootprint } from './population.ts';
+import type { EucPose } from './EucController.ts';
+import type { PopulationCompoundTrajectory } from './populationCompound.ts';
 import type { ActorSpec, PopulationPath } from '../level/populationPlan.ts';
 import { HARNESS_DT as DT, PopulationContactHarness, populationPlanOf, stationaryCar, stationaryPerson } from './populationContactHarness.test-support.ts';
 /** The rag particle radii (ragdoll.ts `RADIUS`), restated so this file also loads on the pre-fix tree. */
@@ -191,6 +193,12 @@ test('POP-3: riding into a person or a car at 12 m/s is the native obstacle cras
     assert.ok(impact >= EUC.obstacleCrashSpeed, `${label}: the existing impact cue reads the contact (${impact.toFixed(2)} m/s)`);
     assert.equal(charged, true, `${label}: the population publishes the charged contact`);
     assert.equal(harness.population.snapshot().actors[0].activity, 'impacted', `${label}: the actor plays the existing impact pause`);
+    // M42: a person the rider crashed into is knocked down, falling the way he rode (+Z); a car only flinches.
+    const row = harness.population.snapshot().actors[0];
+    if (label === 'walker') {
+      assert.equal(row.impactReaction, 'knockdown', 'walker: knocked down');
+      assert.ok(Math.abs(row.impactFallYaw!) < 0.5, `walker: falls away from the rider (${row.impactFallYaw!.toFixed(2)} rad)`);
+    } else assert.equal('impactReaction' in row, false, 'car: no knock-down');
     // Not a statue against the actor: the rag rebounds off them and goes down.
     const { pelvis } = followCrash(`${label} at 12 m/s`, harness, actor);
     assert.ok(pelvis < .5, `${label}: the body actually falls (pelvis ${pelvis.toFixed(2)} m by 1.5 s)`);
@@ -208,6 +216,7 @@ test('POP-3: a slow nudge scrubs speed over several steps like a wall and never 
     if (step.held && firstHeld < 0) firstHeld = i;
     if (firstHeld >= 0 && speeds.length < 12) speeds.push(harness.controller.snapshot().speed);
     assert.ok(clearance(harness, actor) >= 0); assert.equal(harness.controller.crashed, false);
+    assert.equal('impactReaction' in harness.population.snapshot().actors[0], false, 'a nudge is never a knock-down (M42)');
   }
   assert.ok(firstHeld > 0, 'the nudge reaches the person');
   assert.ok(speeds[0] > 1, `the first held step is a scrub, not a dead stop (${speeds[0].toFixed(2)} m/s left)`);
@@ -225,6 +234,11 @@ test('POP-3: a cop keeps the zero-speed yield, so chase pace is unchanged', () =
   }
   assert.ok(held > 0); assert.equal(harness.controller.crashed, false); assert.equal(harness.controller.snapshot().speed, 0);
   assert.deepEqual(harness.contacts, [], 'a cop meeting publishes nothing new');
+  // M42: the CPU cop never crashes, so he never knocks anyone down, held against them for a second.
+  for (let i = 0; i < 120; i += 1) {
+    harness.step(ride(1));
+    assert.equal('impactReaction' in harness.population.snapshot().actors[0], false, 'a cop never knocks a person down');
+  }
 });
 
 test('POP-4: pinned against a person or car with throttle and full steer, the rider turns away within 0.5 s', () => {
@@ -265,6 +279,61 @@ test('CP-1 guard: a legal pass 1 cm clear of a seated person rides through at sp
     assert.ok(harness.controller.snapshot().position.z >= 46, `${speed} m/s: the pass completes`);
     assert.ok(harness.controller.snapshot().speed > speed - .6, `${speed} m/s: no scrub (${harness.controller.snapshot().speed.toFixed(2)} m/s)`);
   }
+});
+
+// M42 (PLANS §42.2g): the held-air crash — a flight the whole-step
+// transaction refuses against a person — knocks them down, the first reaction
+// a person ever had to an airborne rider. On this flat harness every natural
+// head-on hop is instead decided inside the native in-air step, which names no
+// actor: no reaction there (the known gap, measured and logged, never guessed
+// from proximity). The held case is forced as R2C-2 forces its hangs: every
+// airborne candidate past `reach` is refused by the person's own hull.
+function hopAt(harness: PopulationContactHarness, speed: number, front: number, lead: number): void {
+  let charge = 0, launched = false;
+  for (let i = 0; i < 3000 && !(launched && !harness.controller.isGrounded); i += 1) {
+    const now = harness.controller.snapshot();
+    let actions: ActionSnapshot = ride(now.speed < speed - .3 ? 1 : now.speed > speed + .3 ? -0.3 : 0.05);
+    if (now.position.z > front - lead - speed * (EUC.hopChargeSeconds + .1)) {
+      actions = { ...actions, crouch: true }; charge += 1;
+      if (charge > Math.ceil((EUC.hopChargeSeconds + .1) / DT)) { actions = { ...actions, hop: true }; launched = true; }
+    }
+    harness.step(actions);
+  }
+}
+test('an airborne held crash into a person knocks them down (M42)', () => {
+  const natural: string[] = [];
+  let heldAirCrashes = 0;
+  for (const forced of [false, true]) for (const speed of [6, 8, 10]) {
+    const harness = new PopulationContactHarness(populationPlanOf([stationaryPerson('p-0', 0, 42, 'walker')]), { position: { x: 0, y: 0, z: 0 }, headingY: 0 });
+    const actor = harness.population.snapshot().actors[0].footprint, front = actor.z - actor.halfLengthMetres;
+    hopAt(harness, speed, front, 2.5);
+    assert.equal(harness.controller.isGrounded, false, `${speed} m/s: fixture takes off`);
+    if (forced) {
+      const certificates = harness.certificates, owner = certificates.owner.bind(certificates);
+      const wall: PopulationCompoundTrajectory = { ownerId: 'human-0', componentId: 'human', stopGroupId: 'physical', intervalEnvelopeMetres: () => 0.001,
+        at: () => ({ ...actor, sourceHull: undefined, velocityX: 0, velocityZ: 0 }) };
+      certificates.owner = (...args) => {
+        const value = owner(...args), [id, , current] = args as unknown as [string, EucPose, EucPose];
+        return id === 'human-0' && current.y > 0.02 && current.z > front - 1.6
+          ? { ...value, admitted: true, movingComponents: () => [{ ...wall, ownerId: id }] } : value;
+      };
+    }
+    for (let air = 0; air < 240 && !harness.controller.isGrounded && !harness.controller.crashed; air += 1) {
+      const step = harness.step(ride(0.3));
+      if (!harness.controller.crashed) continue;
+      const held = step.commit.contactResponses.some(value => value.ownerId === 'human-0');
+      const row = harness.population.snapshot().actors[0];
+      if (!forced) { natural.push(`${speed} m/s: ${held ? 'held' : 'native'} air crash, impact ${step.impact.toFixed(2)}, ${row.impactReaction ?? 'no reaction'}`); continue; }
+      assert.ok(held, `${speed} m/s: the forced flight is the held air crash`);
+      assert.ok(step.impact >= EUC.obstacleCrashSpeed, `${speed} m/s: at obstacle speed (${step.impact.toFixed(2)})`);
+      assert.equal(row.impactReaction, 'knockdown', `${speed} m/s: the held air crash knocks the person down`);
+      assert.equal(row.activity, 'impacted');
+      assert.ok(Math.abs(row.impactFallYaw!) < 0.5, `${speed} m/s: away from the rider (${row.impactFallYaw!.toFixed(2)} rad)`);
+      heldAirCrashes += 1;
+    }
+  }
+  console.log(JSON.stringify({ naturalHeadOnHops: natural }));
+  assert.equal(heldAirCrashes, 3, 'every forced flight met the person as a held air crash');
 });
 
 // 2026-10-04 (review r3): flown into a person or car at obstacle speed, a

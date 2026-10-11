@@ -16,7 +16,7 @@ import {
 } from '../simulation/ragdoll.ts';
 import { createBlockoutEUC, type BlockoutEUC } from './euc.ts';
 import { STANDARD_MACHINE_LOOK, type MachineLook } from './machineLook.ts';
-import { createPlaceholderRider, createStanceInput, type PlaceholderRider } from './rider.ts';
+import { armEaseForSpeed, createPlaceholderRider, createStanceInput, type PlaceholderRider } from './rider.ts';
 import { COOL_RIDER_LOOK, MOTION_STILL, type RiderLook } from './riderLook.ts';
 import { createPaddle } from './paddle.ts';
 
@@ -216,6 +216,17 @@ export function createRidingRig(
   const swingHeadWorld = new THREE.Vector3();
   let swingHead: THREE.Vector3 | null = null;
   let swingBlend = 0;
+  /**
+   * How far the right hand still holds its paddle carry, 0..1 (round 2,
+   * 2026-10-10) — `StanceInput.carry`. Taken up in the frame the paddle
+   * appears, because the paddle hangs off the forearm and an arm easing into
+   * the carry would sweep a visible shaft in across the legs; put down over
+   * twelve drawn frames (≈ 0.2 s at 60 Hz), so a paddle leaving the hand —
+   * Knockabout ending, a pause — relaxes the arm instead of snapping it 45 mm
+   * and turning the glove 52° in one frame. Render frames, not the sim clock:
+   * `apply` carries no clock, and nothing simulated reads this.
+   */
+  let carry = 0;
   /**
    * The one-foot air pose — M36, §36.5. Two numbers, recorded by
    * `setTrickPose` and spent inside `apply`, held between calls.
@@ -486,6 +497,13 @@ export function createRidingRig(
       // their pedals through this line without a branch.
       stance.oneFoot = trickOneFoot;
       stance.oneFootSide = trickSide;
+      // Arms ease out of the balance carriage when slow (owner, 2026-10-10);
+      // the pose's own speed, so the cop and every ghost relax the same way.
+      stance.armEase = armEaseForSpeed(pose.speed);
+      // The carry from *this* frame's swing state (`applySwing` ran first),
+      // before the solve — the paddle's own visibility is only set below.
+      carry = swingHead !== null ? 1 : Math.max(0, carry - 1 / 12);
+      stance.carry = carry;
       rider.applyStanceReaction(stance);
       // Last, because the paddle aims itself from the grip's world matrix and
       // the line above is what just moved the grip. The ground height is the

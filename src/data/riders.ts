@@ -64,7 +64,7 @@ export type CharacterId = PlayableCharacterId | 'cop';
  */
 export type PlayableCharacterId =
   'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel-vargas' | 'wheel-in-motion'
-  | 'drunkard' | 'flo-with-zo' | 'seal-on-a-wheel';
+  | 'drunkard' | 'flo-with-zo' | 'seal-on-a-wheel' | 'wyldist';
 
 /**
  * Which recorded crash one-shot a rider comes with.
@@ -76,7 +76,7 @@ export type PlayableCharacterId =
  */
 export type CrashVoiceId =
   'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard'
-  | 'flo-with-zo' | 'seal-on-a-wheel';
+  | 'flo-with-zo' | 'seal-on-a-wheel' | 'wyldist';
 
 /**
  * **`'maribel'` arrived with her recording, in the same edit, exactly as
@@ -108,11 +108,20 @@ export type CrashVoiceId =
  * one arm in `crashFor`.
  *
  * **`'seal-on-a-wheel'` is the fifth**, and M35 Phase 3 spent it on
- * 2026-09-11, so **no id in `CHARACTERS` is parked on another rider's voice
- * any more**. Its new fact is that what replaced it is not purely the owner's
+ * 2026-09-11, ending every interim then on the roster. Its new fact is that
+ * what replaced it is not purely the owner's
  * material: a CC0 seal bark is mixed into the rebuilt window on the owner's
  * instruction, so the file that ended the interim is the first on this roster
  * with two provenances (`docs/PLANS.md` §35.6, `NOTICE.md`).
+ *
+ * **`'wyldist'` is the sixth**, parked on `'cool-rider'` rather than
+ * `'red-rider'` as Adonisb2's was (M41, q230). The owner made him
+ * playable on Cool Rider's crash, declared here as temporary, while his own
+ * recording waited for a source and a cut; on 2026-10-09 the owner chose the
+ * clip and delegated the cut, and the interim was spent the usual way — one
+ * line in this file and one arm in `crashFor`. What replaced it is the
+ * Adonisb2 path, not a render: a recording of his own fall, from footage he
+ * supplied (`tools/make-crash-wyldist.mjs`).
  */
 
 export interface CharacterSpec {
@@ -472,6 +481,39 @@ export const CHARACTERS: readonly PlayableCharacterSpec[] = Object.freeze([
     swatch: '#e94689',
     crashVoice: 'seal-on-a-wheel' as CrashVoiceId,
   }),
+  /**
+   * Wyldist — M41, the tenth selectable rider and seventh real person.
+   *
+   * His supplied references and participation remain private. The public
+   * identity is this handle only; the original geometry follows the selected
+   * C2 direction and real photographs, rather than shipping either image.
+   * Append last to preserve every earlier roster position.
+   *
+   * **`crashVoice: 'wyldist'` is his own from 2026-10-09.** It replaced Cool
+   * Rider's crash, which the owner had installed as a declared temporary voice
+   * (q230) — parked here in the data, never as a fallback in `audio/sink.ts`,
+   * so ending it was this line and one arm in `crashFor`. The file is cut from
+   * riding footage Wyldist supplied for this game: his wheel getting away from
+   * him at a curb and striking the road five times, with the companion who was
+   * filming going "ooh, ooh, ooh" close to the phone. **That voice is the
+   * companion's, not his** — he says nothing in the clip. The owner chose the
+   * clip and delegated the cut on 2026-10-09: keep the cameraman, a little
+   * lower; lose other people's yelling where it does not overlap the crash.
+   * `tools/make-crash-wyldist.mjs` takes one continuous 3.4 s slice of one
+   * microphone, high-passes the phone's wind and handling out of it, matches
+   * Cool Rider's level, sets the "ooh"s 5 dB down and ducks a run of high
+   * bursts while the wheel is in the air. Nothing is moved, separated or
+   * generated. The owner's listen on his ride is still the gate (GA); its two
+   * alternates wait in `tools/audio-lab/`.
+   */
+  Object.freeze({
+    id: 'wyldist' as PlayableCharacterId,
+    name: 'Wyldist',
+    blurb: 'Turquoise Hawaiian shirt open at the chest, a red 50 helmet and black cargos, '
+      + 'on a charcoal wheel with red accents. A real rider, in by permission.',
+    swatch: '#28aad8',
+    crashVoice: 'wyldist' as CrashVoiceId,
+  }),
 ]);
 
 /**
@@ -565,6 +607,7 @@ const RIDE_STYLES: Readonly<Record<CharacterId, RideStyle>> = Object.freeze({
   drunkard: DRUNK_STYLE,
   'flo-with-zo': SOBER_STYLE,
   'seal-on-a-wheel': SOBER_STYLE,
+  wyldist: SOBER_STYLE,
   cop: SOBER_STYLE,
 });
 

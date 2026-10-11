@@ -209,6 +209,10 @@ test('cached interpolation matches forced posing across changing presentation ch
     { groundNormalX: 0.08, groundNormalY: 1, groundNormalZ: -0.09 },
     { posture: 'seated', sittingBlend: 0.6, seatHeightMetres: 0.55 },
     { posture: 'standing', sittingBlend: 0, seatHeightMetres: undefined },
+    // M42: the knock-down's channels re-pose through the cache like every other.
+    { activity: 'impacted', impactReaction: 'knockdown', impactFallYaw: 1 },
+    { activity: 'impacted', impactReaction: 'knockdown', impactFallYaw: -2.4, activityPhase: 0.62 },
+    { activity: 'impacted', activityPhase: 0.62 },
   ];
   try {
     for (let index = 0; index < cases.length; index += 1) {
@@ -495,4 +499,315 @@ test('a bumped person flinches: a brief lean back with the hands up, inside thei
       assert.deepEqual(read(0.75), calm, `${kind}: the flinch is over well before the impact pause ends`);
     } finally { view.dispose(); }
   }
+});
+
+// M42 (PLANS §42.3c): the stagger is the flinch plus a comic stumble — the
+// hips shift and twist to one side and that arm windmills — with every
+// assertion above kept: inside the hull, calm by phase 0.75.
+test('a staggered person also shifts and twists at the hips and windmills one arm, inside the hull, calm by 0.75 (M42)', () => {
+  const matrix = new THREE.Matrix4(), point = new THREE.Vector3();
+  for (const [kind, appearance] of [['walker', 0], ['walker', 1], ['jogger', 2], ['worker', 3], ['fictionalEuc', 4]] as const) {
+    const actor = spec(kind, `${kind}-${appearance}`, appearance), view = createPopulationView(plan([actor]));
+    try {
+      const pelvis = view.group.getObjectByName('human-pelvis-cloth') as THREE.InstancedMesh;
+      const upper = view.group.getObjectByName('human-upperArm-cloth') as THREE.InstancedMesh;
+      const forearm = view.group.getObjectByName('human-forearm-skin') as THREE.InstancedMesh;
+      let tick = 0;
+      const read = (phase: number) => {
+        view.apply(snapshot([pose(actor, { activity: 'impacted', activityPhase: phase, activityBlend: 0, speedMetresPerSecond: 0 })], tick += 1));
+        const bounds = meshBounds(view.group), hull = actor.hull;
+        const extent = `x ${bounds.min.x.toFixed(3)}..${bounds.max.x.toFixed(3)}, z ${bounds.min.z.toFixed(3)}..${bounds.max.z.toFixed(3)}`;
+        assert.ok(bounds.min.x >= -hull.halfWidthMetres - 2e-5 && bounds.max.x <= hull.halfWidthMetres + 2e-5, `${kind} @ ${phase}: width (${extent})`);
+        assert.ok(bounds.min.z >= -hull.halfLengthMetres - 2e-5 && bounds.max.z <= hull.halfLengthMetres + 2e-5, `${kind} @ ${phase}: length (${extent})`);
+        assert.ok(bounds.min.y >= -2e-5 && bounds.max.y <= hull.heightMetres + 2e-5, `${kind} @ ${phase}: height`);
+        pelvis.getMatrixAt(0, matrix); const pelvisX = matrix.elements[12]!;
+        const shoulderZ = [0, 1].map(side => { upper.getMatrixAt(side, matrix); return point.set(0, 0, 0).applyMatrix4(matrix).z; });
+        const wristY = [0, 1].map(side => { forearm.getMatrixAt(side, matrix); return point.set(0, 1, 0).applyMatrix4(matrix).y; });
+        return { pelvisX, shoulderTwist: shoulderZ[0]! - shoulderZ[1]!, wristY };
+      };
+      const calm = read(0.9);
+      let shifted = 0, twisted = 0, windmill = 0;
+      for (let phase = 0; phase < 0.7; phase += 1 / 64) {
+        const now = read(phase);
+        shifted = Math.max(shifted, Math.abs(now.pelvisX - calm.pelvisX));
+        twisted = Math.max(twisted, Math.abs(now.shoulderTwist - calm.shoulderTwist));
+        windmill = Math.max(windmill, Math.abs(now.wristY[0]! - now.wristY[1]!));
+      }
+      assert.ok(shifted > 0.03, `${kind}/${appearance}: the hips shift (${shifted.toFixed(3)} m)`);
+      assert.ok(twisted > 0.04, `${kind}/${appearance}: the torso twists (${twisted.toFixed(3)} m between the shoulders)`);
+      assert.ok(windmill > 0.08, `${kind}/${appearance}: one arm windmills (${windmill.toFixed(3)} m between the wrists)`);
+      assert.deepEqual(read(0.75), calm, `${kind}/${appearance}: the stagger is over by phase 0.75`);
+    } finally { view.dispose(); }
+  }
+});
+
+/** The knock-down's sample fall directions: frontal, from behind, both sides and between. */
+const FALL_YAWS = [Math.PI, 0, Math.PI / 2, -Math.PI / 2, 1, -2.3, Math.PI / 4, -0.6, 2.6];
+const KNOCKDOWN_PHASES = [...Array.from({ length: 65 }, (_, i) => i / 64), 0.12, 0.2, 0.235, 0.27, 0.55, 0.85, 0.999];
+
+test('a knocked-down person sits down hard and gets up inside the upright hull, whichever way they were hit (M42)', () => {
+  for (const kind of ['walker', 'jogger', 'worker', 'social'] as const) {
+    const actor = spec(kind), view = createPopulationView(plan([actor]));
+    let widest = 0, tick = 0;
+    try {
+      for (const heading of [0, 0.9]) for (const fallYaw of FALL_YAWS) for (const phase of KNOCKDOWN_PHASES) {
+        view.apply(snapshot([pose(actor, { headingY: heading, activity: 'impacted', impactReaction: 'knockdown',
+          impactFallYaw: fallYaw, activityPhase: phase, activityBlend: 0, speedMetresPerSecond: 0 })], tick += 1));
+        const hull = actor.hull, label = `${kind} heading ${heading} fall ${fallYaw.toFixed(2)} @ ${phase.toFixed(3)}`;
+        // Every vertex inside the person's own heading-frame prism.
+        const vertex = new THREE.Vector3(), matrix = new THREE.Matrix4(), c = Math.cos(heading), s = Math.sin(heading);
+        let minY = Infinity;
+        view.group.traverse(object => {
+          if (!(object instanceof THREE.InstancedMesh)) return;
+          const vertices = object.geometry.getAttribute('position');
+          for (let instance = 0; instance < object.count; instance += 1) {
+            object.getMatrixAt(instance, matrix);
+            for (let index = 0; index < vertices.count; index += 1) {
+              vertex.fromBufferAttribute(vertices, index).applyMatrix4(matrix);
+              const localX = c * vertex.x - s * vertex.z, localZ = s * vertex.x + c * vertex.z;
+              widest = Math.max(widest, Math.abs(localX), Math.abs(localZ));
+              assert.ok(Math.abs(localX) <= hull.halfWidthMetres + 2e-5, `${label}: width ${localX.toFixed(3)} (${object.name})`);
+              assert.ok(Math.abs(localZ) <= hull.halfLengthMetres + 2e-5, `${label}: length ${localZ.toFixed(3)} (${object.name})`);
+              assert.ok(vertex.y <= hull.heightMetres + 2e-5, `${label}: height`);
+              minY = Math.min(minY, vertex.y);
+            }
+          }
+        });
+        assert.ok(minY >= -2e-5, `${label}: nothing below the ground (${minY.toFixed(3)} m)`);
+      }
+      console.log(JSON.stringify({ kind, widestReachMetres: +widest.toFixed(3) }));
+    } finally { view.dispose(); }
+  }
+});
+
+test('the knock-down sits the pelvis low with both feet in front of it along the person\'s own facing, knees up, and starts and ends standing (M42)', () => {
+  const matrix = new THREE.Matrix4(), point = new THREE.Vector3();
+  for (const kind of ['walker', 'social'] as const) {
+    const actor = spec(kind), view = createPopulationView(plan([actor]));
+    try {
+      const pelvis = view.group.getObjectByName('human-pelvis-cloth') as THREE.InstancedMesh;
+      const soles = view.group.getObjectByName('human-sole-rubber') as THREE.InstancedMesh;
+      const thighs = view.group.getObjectByName('human-upperLeg-cloth') as THREE.InstancedMesh;
+      let tick = 0;
+      const knocked = (phase: number, fallYaw: number, heading = 0.4) => pose(actor, { headingY: heading, activity: 'impacted',
+        impactReaction: 'knockdown', impactFallYaw: fallYaw, activityPhase: phase, activityBlend: 0, speedMetresPerSecond: 0 });
+      for (const fallYaw of FALL_YAWS) {
+        // The person never turns (critic repair 2026-10-10), so the feet lead
+        // the pelvis along their own facing whichever way they were hit — and
+        // toward the rider, opposite the fall, when hit from the front.
+        const heading = 0.4, facing = { x: Math.sin(heading), z: Math.cos(heading) };
+        const fall = { x: Math.sin(heading + fallYaw), z: Math.cos(heading + fallYaw) };
+        for (let phase = 0.2; phase <= 0.55 + 1e-9; phase += 1 / 64) {
+          view.apply(snapshot([knocked(phase, fallYaw)], tick += 1));
+          pelvis.getMatrixAt(0, matrix); const seat = point.set(0, 0, 0).applyMatrix4(matrix).clone();
+          assert.ok(seat.y <= 0.3, `${kind} fall ${fallYaw.toFixed(2)} @ ${phase.toFixed(3)}: the pelvis is down (${seat.y.toFixed(3)} m)`);
+          for (let side = 0; side < 2; side += 1) {
+            soles.getMatrixAt(side, matrix); const sole = point.set(0, 0, 0).applyMatrix4(matrix);
+            const along = (sole.x - seat.x) * facing.x + (sole.z - seat.z) * facing.z;
+            assert.ok(along > 0.05, `${kind} fall ${fallYaw.toFixed(2)} @ ${phase.toFixed(3)}: foot ${side} in front of the pelvis (${along.toFixed(3)} m along the facing)`);
+            if (Math.cos(fallYaw) < -0.9) {
+              const alongFall = (sole.x - seat.x) * fall.x + (sole.z - seat.z) * fall.z;
+              assert.ok(alongFall < -0.05, `${kind} fall ${fallYaw.toFixed(2)} @ ${phase.toFixed(3)}: hit from the front, foot ${side} toward the rider (${alongFall.toFixed(3)} m)`);
+            }
+            // Knees up: the thigh's far end (the knee) well above the hip.
+            thighs.getMatrixAt(side, matrix);
+            const hip = point.set(0, 0, 0).applyMatrix4(matrix).y, knee = new THREE.Vector3(0, 1, 0).applyMatrix4(matrix).y;
+            assert.ok(knee > hip + 0.2, `${kind} fall ${fallYaw.toFixed(2)} @ ${phase.toFixed(3)}: knee ${side} up (${(knee - hip).toFixed(3)} m)`);
+          }
+        }
+      }
+      // Mid-sit, the pelvis bottom is on the ground, not hovering.
+      view.apply(snapshot([knocked(0.375, Math.PI)], tick += 1));
+      pelvis.getMatrixAt(0, matrix); assert.ok(matrix.elements[13]! < 0.06, `pelvis bottom ${matrix.elements[13]!.toFixed(3)} m`);
+      // Phase 0 and phase 1 are the standing pose: the reaction starts and ends without a pop.
+      const standing = (heading: number) => { view.apply(snapshot([pose(actor, { headingY: heading, activity: 'waiting',
+        activityPhase: 0, activityBlend: 0, speedMetresPerSecond: 0 })], tick += 1)); return matrices(view.group); };
+      const close = (a: number[][], b: number[][], tolerance: number, label: string) => a.forEach((values, i) =>
+        values.forEach((value, j) => assert.ok(Math.abs(value - b[i]![j]!) <= tolerance, `${label}: ${view.group.children[i]!.name}[${j}] ${value} vs ${b[i]![j]}`)));
+      for (const fallYaw of [0, 1, Math.PI]) {
+        const still = standing(0.4);
+        for (const [phase, tolerance] of [[0, 1e-9], [1, 1e-9], [0.995, 0.02]] as const) {
+          view.apply(snapshot([knocked(phase, fallYaw)], tick += 1));
+          close(matrices(view.group), still, tolerance, `${kind} fall ${fallYaw} @ ${phase}`);
+        }
+      }
+    } finally { view.dispose(); }
+  }
+});
+
+// Critic repair 2026-10-10 (critic-people item 4): a hit from behind spun the
+// person half round to face the rider and back again at the get-up. The body
+// now keeps its own heading through every phase, whichever way it was hit.
+test('a knocked-down person never turns: pelvis, torso and head keep their heading at every phase (M42 critic repair)', () => {
+  const matrix = new THREE.Matrix4();
+  for (const kind of ['walker', 'jogger', 'worker', 'social'] as const) {
+    const actor = spec(kind), view = createPopulationView(plan([actor]));
+    let tick = 0, worst = 0;
+    try {
+      const parts = ['human-pelvis-cloth', 'human-torso-cloth', 'human-head-skin']
+        .map(name => view.group.getObjectByName(name) as THREE.InstancedMesh);
+      for (const heading of [0.4, -2.2]) for (const fallYaw of FALL_YAWS) for (const phase of KNOCKDOWN_PHASES) {
+        view.apply(snapshot([pose(actor, { headingY: heading, activity: 'impacted', impactReaction: 'knockdown',
+          impactFallYaw: fallYaw, activityPhase: phase, activityBlend: 0, speedMetresPerSecond: 0 })], tick += 1));
+        for (const mesh of parts) {
+          mesh.getMatrixAt(0, matrix);
+          // The part's forward axis, flattened: a pitch never moves it, a turn would.
+          const e = matrix.elements, yaw = Math.atan2(e[8]!, e[10]!);
+          const off = Math.abs(Math.atan2(Math.sin(yaw - heading), Math.cos(yaw - heading)));
+          worst = Math.max(worst, off);
+          assert.ok(off < 1e-6, `${kind} heading ${heading} fall ${fallYaw.toFixed(2)} @ ${phase.toFixed(3)}: ${mesh.name} turned ${(off * 180 / Math.PI).toFixed(2)}°`);
+        }
+      }
+    } finally { view.dispose(); }
+    assert.ok(worst < 1e-6);
+  }
+});
+
+// Critic repair 2026-10-10 (critic-people item 5): the crashed rider's body
+// and wheel land against the struck person's hull on the rider's side. In the
+// real game (a builder's probe run, 30 hits: front,
+// behind and side at 6, 9 and 12 m/s into the four kinds) the drawn rider
+// reaches into that hull from about 0.05 s after contact, by 0.06–0.15 m
+// (once 0.18 m), and is out of it by about 1.3 s: phases 0.03–0.55 of the
+// 2.2 s knock-down. Through that window the person keeps every vertex at least
+// this far inside the hull on the rider's side, so neither passes through the
+// other; outside it the hull alone bounds them (the test above).
+const RIDER_SIDE_CLEARANCE_METRES = 0.15;
+const RIDER_SIDE_WINDOW = [0.03, 0.55] as const;
+test('the knock-down stays compact on the rider\'s side of the hull, where the crashed rider and wheel land (M42 critic repair)', () => {
+  const vertex = new THREE.Vector3(), matrix = new THREE.Matrix4();
+  const tightest: Record<string, number> = {};
+  for (const kind of ['walker', 'jogger', 'worker', 'social'] as const) {
+    const actor = spec(kind), view = createPopulationView(plan([actor]));
+    let tick = 0;
+    try {
+      for (const heading of [0, 0.9]) for (const fallYaw of FALL_YAWS) {
+        // Toward the rider, in the person's own frame: opposite the fall.
+        const rx = -Math.sin(fallYaw), rz = -Math.cos(fallYaw);
+        const face = actor.hull.halfWidthMetres * Math.abs(rx) + actor.hull.halfLengthMetres * Math.abs(rz);
+        for (const phase of [...KNOCKDOWN_PHASES, 0.03, 0.035, 0.04, 0.05, 0.06]) {
+          if (phase < RIDER_SIDE_WINDOW[0] || phase > RIDER_SIDE_WINDOW[1]) continue;
+          view.apply(snapshot([pose(actor, { headingY: heading, activity: 'impacted', impactReaction: 'knockdown',
+            impactFallYaw: fallYaw, activityPhase: phase, activityBlend: 0, speedMetresPerSecond: 0 })], tick += 1));
+          const c = Math.cos(heading), s = Math.sin(heading);
+          let reach = -Infinity;
+          view.group.traverse(object => {
+            if (!(object instanceof THREE.InstancedMesh)) return;
+            const vertices = object.geometry.getAttribute('position');
+            for (let instance = 0; instance < object.count; instance += 1) {
+              object.getMatrixAt(instance, matrix);
+              // A hidden part (the clipboard off duty) is a point, not a body.
+              if (Math.abs(matrix.determinant()) < 1e-12) continue;
+              for (let index = 0; index < vertices.count; index += 1) {
+                vertex.fromBufferAttribute(vertices, index).applyMatrix4(matrix);
+                const localX = c * vertex.x - s * vertex.z, localZ = s * vertex.x + c * vertex.z;
+                reach = Math.max(reach, localX * rx + localZ * rz);
+              }
+            }
+          });
+          const clearance = face - reach, key = `${kind} fall ${fallYaw.toFixed(2)}`;
+          tightest[key] = Math.min(tightest[key] ?? Infinity, clearance);
+          assert.ok(clearance >= RIDER_SIDE_CLEARANCE_METRES - 1e-6,
+            `${key} heading ${heading} @ ${phase.toFixed(3)}: ${clearance.toFixed(3)} m clear of the rider's side of the hull`);
+        }
+      }
+    } finally { view.dispose(); }
+  }
+  console.log(JSON.stringify({ riderSideClearanceMetres: Math.min(...Object.values(tightest)).toFixed(3) }));
+});
+
+// Critic repair 2026-10-10 (critic-people item 7): leaning back over the
+// upright pelvis, the pale back seam's foot showed below the shirt over the
+// trousers, and sat with the thighs up a front pocket hung below them as a
+// pale sliver. Round 2: sat back on the hands, the near arm hides the lower
+// shirt in a side view and the seam, a centimetre proud of the back, still read
+// as a stick below it. Down, the seam rolls away and the pockets fold away.
+test('knocked down, no pale trim shows below the shirt: the back seam rolls away, the pockets fold away (M42 critic repair)', () => {
+  const vertex = new THREE.Vector3(), matrix = new THREE.Matrix4();
+  for (const kind of ['walker', 'social'] as const) {
+    const actor = spec(kind), view = createPopulationView(plan([actor]));
+    let tick = 0;
+    try {
+      const pelvis = view.group.getObjectByName('human-pelvis-cloth') as THREE.InstancedMesh;
+      const trim = view.group.getObjectByName('human-box-cloth') as THREE.InstancedMesh;
+      // The box-cloth family in creation order: collar, hem, back seam, left and right pockets.
+      assert.equal(trim.count, 5);
+      const extent = (mesh: THREE.InstancedMesh, instance: number) => {
+        const vertices = mesh.geometry.getAttribute('position'), box = new THREE.Box3();
+        mesh.getMatrixAt(instance, matrix);
+        for (let index = 0; index < vertices.count; index += 1) box.expandByPoint(vertex.fromBufferAttribute(vertices, index).applyMatrix4(matrix));
+        return box;
+      };
+      for (const fallYaw of FALL_YAWS) for (let phase = 0.12; phase <= 0.85 + 1e-9; phase += 1 / 128) {
+        view.apply(snapshot([pose(actor, { headingY: 0.4, activity: 'impacted', impactReaction: 'knockdown',
+          impactFallYaw: fallYaw, activityPhase: phase, activityBlend: 0, speedMetresPerSecond: 0 })], tick += 1));
+        const label = `${kind} fall ${fallYaw.toFixed(2)} @ ${phase.toFixed(3)}`;
+        const seam = extent(trim, 2), hips = extent(pelvis, 0);
+        assert.ok(seam.min.y > hips.max.y + 0.01, `${label}: back seam foot ${seam.min.y.toFixed(3)} m above the pelvis top ${hips.max.y.toFixed(3)} m`);
+        const seamSize = seam.getSize(new THREE.Vector3());
+        assert.ok(Math.max(seamSize.x, seamSize.y, seamSize.z) < 1e-6, `${label}: back seam rolled away (${seamSize.toArray().map(v => v.toFixed(3))})`);
+        if (phase >= 0.2 && phase <= 0.55) for (const pocket of [3, 4]) {
+          const size = extent(trim, pocket).getSize(new THREE.Vector3());
+          assert.ok(Math.max(size.x, size.y, size.z) < 0.01, `${label}: pocket ${pocket} folded away (${size.toArray().map(v => v.toFixed(3))})`);
+        }
+      }
+      // Standing, both are exactly the old trim.
+      view.apply(snapshot([pose(actor, { headingY: 0.4, activity: 'waiting', activityPhase: 0, activityBlend: 0, speedMetresPerSecond: 0 })], tick += 1));
+      const standingSeam = extent(trim, 2), standingPocket = extent(trim, 3).getSize(new THREE.Vector3());
+      assert.ok(standingSeam.max.y - standingSeam.min.y > 0.35 && standingPocket.y > 0.05);
+    } finally { view.dispose(); }
+  }
+});
+
+test('on a slope the knock-down sits on the ground under the person: no hand, seat or sole goes into it, no sole floats (M42 QA round 1)', () => {
+  // The root never tilts, so the planted hands, the slid feet and the seat
+  // follow the ground plane under the person (QA C r1 MINOR 3: at 25 % the
+  // hands went 4.6 cm in; this sweep also found the seat 3.2 cm in on a
+  // diagonal 25 % grade). Flat ground is exactly the flat pose (tests above).
+  const vertex = new THREE.Vector3(), matrix = new THREE.Matrix4();
+  let deepest = -Infinity, highestSole = -Infinity, tick = 0;
+  for (const kind of ['walker', 'social'] as const) {
+    const actor = spec(kind), view = createPopulationView(plan([actor]));
+    try {
+      for (const grade of [0.08, 0.15, 0.25]) for (const [ux, uz] of [[0, 1], [0, -1], [1, 0], [-1, 0], [0.7, 0.7]] as const)
+        for (const fallYaw of [Math.PI, 0, 1]) {
+          const length = Math.hypot(ux * grade, uz * grade, 1), n = { x: ux * grade / length, y: 1 / length, z: uz * grade / length };
+          for (let phase = 0.1; phase <= 0.9 + 1e-9; phase += 1 / 32) {
+            view.apply(snapshot([pose(actor, { headingY: 0.9, activity: 'impacted', impactReaction: 'knockdown', impactFallYaw: fallYaw,
+              activityPhase: phase, activityBlend: 0, speedMetresPerSecond: 0, groundNormalX: n.x, groundNormalY: n.y, groundNormalZ: n.z })], tick += 1));
+            const label = `${kind} grade ${grade} uphill (${ux}, ${uz}) fall ${fallYaw.toFixed(2)} @ ${phase.toFixed(3)}`;
+            view.group.traverse(object => {
+              if (!(object instanceof THREE.InstancedMesh)) return;
+              const vertices = object.geometry.getAttribute('position'), sole = object.name.includes('sole');
+              for (let instance = 0; instance < object.count; instance += 1) {
+                object.getMatrixAt(instance, matrix);
+                let lowest = Infinity;
+                for (let index = 0; index < vertices.count; index += 1) {
+                  vertex.fromBufferAttribute(vertices, index).applyMatrix4(matrix);
+                  const above = vertex.y + (n.x * vertex.x + n.z * vertex.z) / n.y;
+                  lowest = Math.min(lowest, above);
+                  if (!sole) deepest = Math.max(deepest, -above);
+                  assert.ok(above >= -2e-5, `${label}: ${object.name} ${(-above * 100).toFixed(2)} cm into the ground`);
+                }
+                if (sole) {
+                  highestSole = Math.max(highestSole, lowest);
+                  assert.ok(lowest <= 2e-5, `${label}: sole ${instance} floats ${(lowest * 100).toFixed(2)} cm`);
+                }
+              }
+            });
+          }
+        }
+    } finally { view.dispose(); }
+  }
+  console.log(JSON.stringify({ slopeSit: { deepestBelowGroundMetres: +deepest.toFixed(4), soleHighestLowPointMetres: +highestSole.toFixed(5) } }));
+});
+
+test('an NPC wheel rider and a stagger never take the knock-down pose (M42)', () => {
+  const rider = spec('fictionalEuc'), view = createPopulationView(plan([rider]));
+  try {
+    view.apply(snapshot([pose(rider, { activity: 'impacted', activityPhase: 0.4, activityBlend: 0 })]));
+    const stagger = matrices(view.group);
+    view.apply(snapshot([pose(rider, { activity: 'impacted', activityPhase: 0.4, activityBlend: 0, impactReaction: 'knockdown', impactFallYaw: 1 })], 1));
+    assert.deepEqual(matrices(view.group), stagger, 'a rider on a wheel keeps the flinch');
+  } finally { view.dispose(); }
 });

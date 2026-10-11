@@ -10,6 +10,7 @@ import crashMaribelUrl from '../../assets/live/audio/crash_maribel.wav?url';
 import crashWheelInMotionUrl from '../../assets/live/audio/crash_wheel_in_motion.wav?url';
 import crashFloWithZoUrl from '../../assets/live/audio/crash_flo_with_zo.wav?url';
 import crashSealOnAWheelUrl from '../../assets/live/audio/crash_seal_on_a_wheel.wav?url';
+import crashWyldistUrl from '../../assets/live/audio/crash_wyldist.wav?url';
 import crashDrunkardUrl from '../../assets/live/audio/crash_drunkard.wav?url';
 import stumbleDrunkardUrl from '../../assets/live/audio/stumble_drunkard.wav?url';
 import sirenFarUrl from '../../assets/live/audio/siren_far_loop.wav?url';
@@ -196,6 +197,29 @@ export interface SampleUrls {
    */
   readonly crashSealOnAWheel: string;
   /**
+   * Wyldist's (M41) — **the Adonisb2 path again: a recording of the rider's own
+   * fall**, and the first one cut from video rather than sent as audio.
+   *
+   * He supplied riding footage for this game; the owner chose one clip of it on
+   * 2026-10-09 and delegated the cut. In it his wheel gets away from him at a
+   * curb and strikes the road five times, and the companion filming says
+   * "ooh, ooh, ooh" close to the phone — **the voice in this file is that
+   * companion's, not his**, and it is kept at the owner's instruction, a
+   * little lower. `tools/make-crash-wyldist.mjs` takes one continuous 3.4 s
+   * slice of the left microphone (summing the two cancels inside the voice,
+   * and the left one is farther from the mouth), high-passes the phone's wind
+   * and handling at 80 Hz, matches `crash`'s RMS, then sets the "ooh"s 5 dB
+   * down and ducks a run of high bursts while the wheel is in the air 12 dB.
+   * Nothing is moved, separated, substituted or generated. Same length as
+   * `crash` to the sample, for the reason every entry here repeats.
+   *
+   * Standing is Adonisb2's and Maribel's: **a narrow grant from a named
+   * person**, outside the CC BY 4.0 claim and not sublicensable. It replaced
+   * Cool Rider's own crash, which his seat wore as a declared temporary voice
+   * (q230); the owner's listen on his ride is still the gate.
+   */
+  readonly crashWyldist: string;
+  /**
    * The Drunkard's (M29) — Trollina's path, walked a second time.
    *
    * He is a wholly fictional parody rider, so nobody could record his fall:
@@ -266,6 +290,7 @@ export const SAMPLE_URLS: SampleUrls = {
   crashWheelInMotion: crashWheelInMotionUrl,
   crashFloWithZo: crashFloWithZoUrl,
   crashSealOnAWheel: crashSealOnAWheelUrl,
+  crashWyldist: crashWyldistUrl,
   crashDrunkard: crashDrunkardUrl,
   stumbleDrunkard: stumbleDrunkardUrl,
   sirenFar: sirenFarUrl,

@@ -40,6 +40,11 @@ export interface PopulationRenderPose {
   readonly posture?: 'standing' | 'seated';
   readonly sittingBlend?: number;
   readonly seatHeightMetres?: number;
+  /** M42: `'knockdown'` while a person sits down hard and gets back up (activity
+   * `'impacted'`); absent for the stagger. `impactFallYaw` is the fall direction,
+   * radians from `headingY`, away from the rider. Fixed-step facts, never derived here. */
+  readonly impactReaction?: string;
+  readonly impactFallYaw?: number;
 }
 
 export interface PopulationRenderSnapshot {
@@ -161,14 +166,18 @@ interface MutablePose {
   tyreSupports: MutableGroundSupport[];
   posture: 'standing' | 'seated'; sittingBlend: number; seatHeight: number | undefined;
   activity: string; backing: boolean;
+  /** M42 knock-down channels: `'none'` and 0 unless one plays. */
+  reaction: string; fallYaw: number;
 }
 const createMutablePose = (): MutablePose => ({
   x: 0, y: 0, z: 0, headingY: 0, speed: 0, gait: 0, wheelTravel: 0,
   phase: 0, blend: 0, normalX: 0, normalY: 1, normalZ: 0, activity: 'waiting', backing: false,
   footSupports: [], tyreSupports: [], posture: 'standing', sittingBlend: 0, seatHeight: undefined,
+  reaction: 'none', fallYaw: 0,
 });
 const POSE_SCALARS: readonly (keyof MutablePose)[] = ['x', 'y', 'z', 'headingY', 'speed', 'gait', 'wheelTravel',
-  'phase', 'blend', 'normalX', 'normalY', 'normalZ', 'posture', 'sittingBlend', 'seatHeight', 'activity', 'backing'];
+  'phase', 'blend', 'normalX', 'normalY', 'normalZ', 'posture', 'sittingBlend', 'seatHeight', 'activity', 'backing',
+  'reaction', 'fallYaw'];
 function sameSupports(a: readonly PopulationGroundSupport[], b: readonly PopulationGroundSupport[]): boolean {
   if (a.length !== b.length) return false;
   for (let index = 0; index < a.length; index += 1) {
@@ -188,6 +197,119 @@ const clamp = (n: number, low: number, high: number): number => Math.min(high, M
 const fraction = (n: number): number => n - Math.floor(n);
 const angleDelta = (a: number, b: number): number => Math.atan2(Math.sin(b - a), Math.cos(b - a));
 const vehicleKind = (kind: ActorKind): boolean => kind === 'parkedVehicle' || kind === 'serviceVehicle' || kind === 'trafficVehicle';
+const ease = (t: number): number => { const v = clamp(t, 0, 1); return v * v * (3 - 2 * v); };
+const blendTo = (a: number, b: number, t: number): number => a + (b - a) * t;
+
+/**
+ * M42 knock-down keyframes (PLANS §42.3c; DESIGN §6e's comic rules): local
+ * model metres and radians on the reaction's own phase 0..1. The person keeps
+ * their own heading throughout — they never turn (critic repair 2026-10-10:
+ * a half-turn spin read as whirling round) — and the pose follows the fall:
+ * hit from the front, the knees buckle as they lean back and they sit back
+ * leaning on both hands behind them; hit from behind, they stumble forward
+ * with the arms flung out, then plump down sitting up with the hands beside
+ * the hips; hit from the side, they also slide a little away from the rider.
+ * Then they push up and stand, brushing off the seat. Every pose stays
+ * compact on the rider's side, where the crashed rider and wheel land, and
+ * inside the upright hull; never a topple. Pitch about the waist only (one
+ * axis per motion); the `…Forward` values are the hit-from-behind ends, the
+ * plain ones the hit-from-the-front ends, blended by the fall direction.
+ */
+const KNOCKDOWN = Object.freeze({
+  buckleEnd: 0.12, dropEnd: 0.20, sitEnd: 0.55, pushEnd: 0.85,
+  /** Hip joint heights: standing, knees buckled, sat (the pelvis bottom 3 cm up), risen to a crouch. */
+  standHipY: 0.95, buckleHipY: 0.68, sitHipY: 0.15, risenHipY: 0.62,
+  /** The landing's bounce, metres, over this share of the phase. */
+  bounceMetres: 0.035, bounceShare: 0.07,
+  /** Hip travel along the figure (back is negative): the buckle, the sit, over the feet on the rise. */
+  buckleHipZ: -0.12, buckleHipZForward: 0.02, sitHipZ: -0.20, sitHipZForward: -0.05, risenHipZ: -0.12, risenHipZForward: 0,
+  /** Sole origins along the figure: a staggered step back (or a stumble forward) as the knees go, drawn in to stand up. */
+  buckleFootZ: -0.06, buckleFootZForward: 0.07, risenFootZ: -0.06, risenFootZForward: 0.05,
+  /** Knees buckle outward as well as forward when the rider is in front (bend-plane share, 0 = straight ahead). */
+  kneeSplay: 1.0,
+  /** Torso pitch, radians (negative leans back), and the head's protective curl on top of it. */
+  buckleLean: -0.08, buckleLeanForward: 0.24, sitLean: -0.15, sitLeanForward: -0.07, pushLean: 0.30,
+  buckleCurl: -0.18, buckleCurlForward: 0.10, sitCurl: 0.30, risenCurl: -0.10,
+  /** Sole origins in the sit: forward of the stance (tucked in when the rider is in front) and a little wider. */
+  stanceForward: 0.035, stanceOutward: POPULATION_MODEL.footOutward, tuckForward: 0.10, tuckForwardForward: 0.19,
+  tuckOutward: 0.13,
+  /** Wrists planted on the ground behind (or beside) the hips, and brushing the seat on the way up. */
+  plantOutward: 0.22, plantHeight: 0.13, plantBehind: 0.10, plantBehindForward: 0.04,
+  brushOutward: 0.17, brushDrop: 0.10, brushBehind: 0.16, brushPats: 3, brushPatMetres: 0.035,
+  /** The arms flung up as the knees go (the flinch's own reach), farther forward in a stumble, hands in toward the face. */
+  armsUpMetres: 0.30, armsForwardMetres: 0.14, armsForwardForward: 0.20, armsInOutward: 0.17,
+  /** Sideways lurch away from a rider who hit from the side, metres, over this share of the phase. */
+  sideAwayMetres: 0.07, sideAwayShare: 0.06,
+  /** Hand tips never below the ground plane, model metres. */
+  handFloor: 0.02,
+});
+interface KnockdownFrame {
+  hipY: number; hipZ: number; lean: number; curl: number;
+  /** Sole origins along the figure, metres, and the knees' outward bend share. */
+  footZ: number; splay: number;
+  /** Sideways shift of the whole figure away from the rider (model x), metres. */
+  hipX: number;
+  /** Feet from the stance to the sit's (0..1), and the sit's sole origins forward of the stance, metres. */
+  tuck: number; tuckForward: number;
+  /** The planted wrists' model z (behind or beside the sat hips), metres. */
+  arms: number; armsForward: number; plant: number; plantZ: number; brush: number; brushPhase: number;
+}
+/**
+ * The knock-down's channels at `phase` (0 and 1 are the standing pose) for a
+ * fall toward `fallYaw` (radians from the person's own facing: 0 forward, a
+ * hit from behind; ±π back, a hit from the front).
+ */
+function knockdownFrame(phase: number, fallYaw: number, out: KnockdownFrame): KnockdownFrame {
+  const K = KNOCKDOWN, p = clamp(phase, 0, 1);
+  // 0 for a fall straight forward, 1 straight back; the sideways share signed.
+  const back = (1 - Math.cos(fallYaw)) / 2, across = Math.sin(fallYaw);
+  const buckleHipZ = blendTo(K.buckleHipZForward, K.buckleHipZ, back), sitHipZ = blendTo(K.sitHipZForward, K.sitHipZ, back);
+  const risenHipZ = blendTo(K.risenHipZForward, K.risenHipZ, back);
+  const buckleFootZ = blendTo(K.buckleFootZForward, K.buckleFootZ, back), risenFootZ = blendTo(K.risenFootZForward, K.risenFootZ, back);
+  const buckleLean = blendTo(K.buckleLeanForward, K.buckleLean, back), sitLean = blendTo(K.sitLeanForward, K.sitLean, back);
+  const buckleCurl = blendTo(K.buckleCurlForward, K.buckleCurl, back);
+  out.tuckForward = blendTo(K.tuckForwardForward, K.tuckForward, back);
+  out.plantZ = sitHipZ - blendTo(K.plantBehindForward, K.plantBehind, back);
+  out.armsForward = blendTo(K.armsForwardForward, K.armsForwardMetres, back);
+  // A quick lurch away as the knees go (the rider lands then), back as they stand.
+  const away = p < K.sideAwayShare ? ease(p / K.sideAwayShare) : p < K.pushEnd ? 1 : 1 - ease((p - K.pushEnd) / (1 - K.pushEnd));
+  out.hipX = across * K.sideAwayMetres * away;
+  out.arms = 0; out.plant = 0; out.brush = 0; out.brushPhase = 0;
+  if (p < K.buckleEnd) {
+    const t = ease(p / K.buckleEnd);
+    out.hipY = blendTo(K.standHipY, K.buckleHipY, t); out.hipZ = blendTo(0, buckleHipZ, t);
+    out.lean = blendTo(0, buckleLean, t); out.curl = blendTo(0, buckleCurl, t); out.tuck = 0; out.arms = t;
+    out.footZ = blendTo(K.stanceForward, buckleFootZ, t);
+  } else if (p < K.dropEnd) {
+    // The drop accelerates like a fall; everything else eases into the sit,
+    // the feet sliding out in front once the seat is nearly down.
+    const t = (p - K.buckleEnd) / (K.dropEnd - K.buckleEnd), e = ease(t);
+    out.hipY = blendTo(K.buckleHipY, K.sitHipY, t * t); out.hipZ = blendTo(buckleHipZ, sitHipZ, e);
+    out.lean = blendTo(buckleLean, sitLean, e); out.curl = blendTo(buckleCurl, K.sitCurl, e);
+    out.tuck = e; out.arms = 1 - e; out.plant = e; out.footZ = blendTo(buckleFootZ, out.tuckForward, e * e * e);
+  } else if (p < K.sitEnd) {
+    const t = (p - K.dropEnd) / K.bounceShare;
+    out.hipY = K.sitHipY + (t < 1 ? K.bounceMetres * Math.sin(Math.PI * t) : 0);
+    out.hipZ = sitHipZ; out.lean = sitLean; out.curl = K.sitCurl; out.tuck = 1; out.plant = 1; out.footZ = out.tuckForward;
+  } else if (p < K.pushEnd) {
+    const t = ease((p - K.sitEnd) / (K.pushEnd - K.sitEnd)), early = ease((p - K.sitEnd) / ((K.pushEnd - K.sitEnd) * 0.6));
+    out.hipY = blendTo(K.sitHipY, K.risenHipY, t); out.hipZ = blendTo(sitHipZ, risenHipZ, t);
+    out.lean = blendTo(sitLean, K.pushLean, t); out.curl = blendTo(K.sitCurl, K.risenCurl, t);
+    // The feet are drawn in under the hips as they rise.
+    out.tuck = 1; out.plant = 1 - early; out.footZ = blendTo(out.tuckForward, risenFootZ, t);
+  } else {
+    const u = (p - K.pushEnd) / (1 - K.pushEnd), t = ease(u);
+    out.hipY = blendTo(K.risenHipY, K.standHipY, t); out.hipZ = blendTo(risenHipZ, 0, t);
+    out.lean = blendTo(K.pushLean, 0, t); out.curl = blendTo(K.risenCurl, 0, t);
+    // The brush is over before the last fifth, so the reaction ends standing still.
+    out.tuck = 1 - t; out.brush = u < 0.8 ? Math.sin(Math.PI * u / 0.8) : 0; out.brushPhase = u / 0.8;
+    out.footZ = blendTo(risenFootZ, K.stanceForward, t);
+  }
+  // Half down, a folded leg's knee must stand out level from the hip: when
+  // the rider is in front it goes out to the sides as much as forward.
+  out.splay = K.kneeSplay * back * Math.sin(Math.PI * clamp((K.standHipY - out.hipY) / (K.standHipY - K.sitHipY), 0, 1));
+  return out;
+}
 
 /** Closed, capped lofts. No zero-radius pole rows / duplicate pole triangles. */
 function body(rings: readonly LoftRing[], radial = 14): THREE.BufferGeometry {
@@ -524,12 +646,15 @@ export function createPopulationView(
   const shoulder = new THREE.Vector3();
   const elbow = new THREE.Vector3();
   const wrist = new THREE.Vector3();
+  const aim = new THREE.Vector3();
   const orientation = new THREE.Quaternion();
   const footOrientation = new THREE.Quaternion();
   const pitchOrientation = new THREE.Quaternion();
   const localNormal = new THREE.Vector3();
   const previousById = new Map<string, PopulationRenderPose>();
   const currentById = new Map<string, PopulationRenderPose>();
+  const knock: KnockdownFrame = { hipY: 0, hipZ: 0, lean: 0, curl: 0, footZ: 0, splay: 0, hipX: 0, tuck: 0, tuckForward: 0,
+    arms: 0, armsForward: 0, plant: 0, plantZ: 0, brush: 0, brushPhase: 0 };
 
   const write = (part: Slot | undefined, parent: THREE.Matrix4,
     x: number, y: number, z: number, sx = 1, sy = 1, sz = 1,
@@ -555,14 +680,18 @@ export function createPopulationView(
   /** Exact two-bone solve. Flexion is a geometric intersection, never two
    * independent limb rotations which leave disconnected knees/ankles. */
   const joint = (a: THREE.Vector3, b: THREE.Vector3, first: number, second: number,
-    forwardBend: number, out: THREE.Vector3): void => {
+    forwardBend: number, out: THREE.Vector3, upBend = 0, outBend = 0): void => {
     axis.subVectors(b, a);
     const measured = axis.length();
     axis.multiplyScalar(1 / Math.max(measured, 1e-6));
     const span = clamp(measured, Math.abs(first - second) + 1e-5, first + second - 1e-5);
     const along = (first * first - second * second + span * span) / (2 * span);
     const bow = Math.sqrt(Math.max(0, first * first - along * along));
-    bend.set(0, 0, forwardBend).addScaledVector(axis, -axis.z * forwardBend).normalize();
+    // A knock-down's sit lays the hip-ankle line nearly level: the knees then
+    // bend up as well as forward (M42). Upright legs keep the exact old plane.
+    if (upBend !== 0 || outBend !== 0) bend.set(outBend, upBend, forwardBend)
+      .addScaledVector(axis, -(axis.x * outBend + axis.y * upBend + axis.z * forwardBend)).normalize();
+    else bend.set(0, 0, forwardBend).addScaledVector(axis, -axis.z * forwardBend).normalize();
     if (bend.lengthSq() < 0.01) bend.set(1, 0, 0);
     out.copy(a).addScaledVector(axis, along).addScaledVector(bend, bow);
   };
@@ -578,16 +707,42 @@ export function createPopulationView(
     const swing = Math.sin(phase * TAU);
     const reach = s.activity === 'working' ? (0.5 - 0.5 * Math.cos(s.phase * TAU)) * s.blend : 0;
     const talk = s.activity === 'social' ? Math.sin(s.phase * TAU) * s.blend : 0;
+    // M42: knocked down (a human rider crashed into them): they sit down hard
+    // and get back up, inside their hull (KNOCKDOWN). NPC wheel riders never.
+    const knocked = !riding && s.activity === 'impacted' && s.reaction === 'knockdown' && s.phase < 1;
+    const k = knocked ? knockdownFrame(s.phase, s.fallYaw, knock) : null;
+    const hull = visual.spec.hull;
+    // The body keeps its own heading through any reaction: never a spin.
+    const yaw = s.headingY;
+    // The root never tilts, so on a slope the planted hands and their floor
+    // follow the ground plane under the person: its model-frame height is
+    // slopeX·x + slopeZ·z, from the pose normal (scale-corrected as the feet's
+    // are). Exactly 0 on flat ground (M42 QA round 1, MINOR 3).
+    let slopeX = 0, slopeZ = 0;
+    if (k) {
+      localNormal.set(s.normalX, s.normalY, s.normalZ).applyAxisAngle(up, -yaw);
+      localNormal.set(localNormal.x * widthScale / heightScale, localNormal.y,
+        localNormal.z * lengthScale / heightScale).normalize();
+      if (localNormal.y > 0.5) { slopeX = -localNormal.x / localNormal.y; slopeZ = -localNormal.z / localNormal.y; }
+    }
     // A bumped person flinches (VIS-CRASH-1, 2026-10-04): a quick lean and half
     // step back with the hands up, over in well under a second of the impact
     // pause. Feet stay planted; a seated person only leans and lifts the hands.
-    const flinch = s.activity === 'impacted' ? Math.sin(Math.PI * Math.sqrt(clamp(s.phase / 0.7, 0, 1))) : 0;
+    const flinch = s.activity === 'impacted' && !knocked ? Math.sin(Math.PI * Math.sqrt(clamp(s.phase / 0.7, 0, 1))) : 0;
+    // ...and staggers (M42): the hips shift and twist to one side and that arm
+    // windmills, all inside the hull and gone by the same phase. The side is
+    // the person's own, never a new fact from the simulation.
+    const stagger = flinch > 0 && s.phase < 0.7 ? flinch : 0;
+    const staggerSide = Math.abs(visual.spec.appearanceIndex) % 2 === 0 ? 1 : -1;
+    // Knocked down from the side, the whole figure slides away from the rider instead.
+    const shift = k ? k.hipX : stagger > 0 ? 0.05 * stagger * staggerSide : 0;
+    const twist = stagger > 0 ? 0.16 * stagger * staggerSide : 0;
     const bob = targets.bobMetres;
     const pedal = riding ? POPULATION_MODEL.pedalHeight : 0;
     // Relaxed, speed-dependent riding crouch. No view clock or fake controller.
     const rideCrouch = riding ? 0.05 + Math.min(Math.abs(s.speed) / 6, 1) * 0.045 : 0;
     transform.position.set(s.x, s.y + pedal, s.z);
-    transform.rotation.set(0, s.headingY, 0);
+    transform.rotation.set(0, yaw, 0);
     transform.scale.set(widthScale, heightScale, lengthScale);
     transform.updateMatrix(); root.copy(transform.matrix);
     inverseRoot.copy(root).invert();
@@ -600,22 +755,46 @@ export function createPopulationView(
       transform.scale.setScalar(1); transform.updateMatrix(); normalRoot.copy(transform.matrix);
     }
     // Pelvis bottom rests on the explicit cushion; seat height is not hip height.
-    const hipY = 0.95 - bob - rideCrouch + (targets.seatHeightLocalMetres + 0.12 - 0.95) * sitting;
-    const hipZ = (riding ? 0.025 : jogging && moving ? 0.035 : 0) - 0.09 * sitting - 0.10 * flinch * (1 - sitting);
-    write(p.pelvis, root, 0, hipY - 0.12, hipZ);
-    transform.position.set(0, hipY + 0.025, hipZ);
-    transform.rotation.set((jogging && moving ? 0.07 : riding ? 0.055 : sitting * 0.045) - 0.08 * flinch, talk * 0.025, 0);
+    // Knocked down on a slope, the seat rises with the ground under the
+    // pelvis's widest ring (±0.17 × ±0.135 about the hip, its bottom 0.12
+    // under it), only as far as needed: never on flat ground or once risen.
+    const hipY = k ? k.hipY + Math.max(0, slopeX * k.hipX + slopeZ * k.hipZ + Math.abs(slopeX) * 0.17 + Math.abs(slopeZ) * 0.135 - (k.hipY - 0.12))
+      : 0.95 - bob - rideCrouch + (targets.seatHeightLocalMetres + 0.12 - 0.95) * sitting;
+    const hipZ = k ? k.hipZ : (riding ? 0.025 : jogging && moving ? 0.035 : 0) - 0.09 * sitting - 0.10 * flinch * (1 - sitting);
+    // The knock-down leans the whole upper body about the waist (pitch only).
+    const lean = k ? k.lean : 0, leanCos = Math.cos(lean), leanSin = Math.sin(lean);
+    // How far down the hips are, 0 standing .. 1 sat (0 outside a knock-down).
+    const down = k ? clamp((KNOCKDOWN.standHipY - hipY) / (KNOCKDOWN.standHipY - KNOCKDOWN.sitHipY), 0, 1) : 0;
+    write(p.pelvis, root, shift, hipY - 0.12, hipZ, 1, 1, 1, 0, twist * 0.5, 0);
+    transform.position.set(shift, hipY + 0.025, hipZ);
+    transform.rotation.set(k ? lean : (jogging && moving ? 0.07 : riding ? 0.055 : sitting * 0.045) - 0.08 * flinch,
+      talk * 0.025 + twist, 0);
     transform.scale.set(1, 0.53, 1); transform.updateMatrix(); torsoMatrix.multiplyMatrices(root, transform.matrix);
     write(p.torso, torsoMatrix, 0, 0, 0);
     write(p.hem, torsoMatrix, 0, 0.06, 0.122, 0.26, 0.045, 0.014);
     write(p.collar, torsoMatrix, 0, 0.93, 0.098, 0.14, 0.075, 0.017);
-    write(p.backSeam, torsoMatrix, 0, 0.43, -0.123, 0.012, 0.74, 0.012);
+    // The back seam rolls up from the hem to its collar end as the hips go
+    // down, gone by 30 % of the way: sat back on the hands, the near arm hides
+    // the lower shirt in a side view and the straight seam, a centimetre proud
+    // of the back, read as a pale stick below it (critic repair 2026-10-10,
+    // rounds 1 and 2). Exactly the standing seam when `down` is 0.
+    const seamLength = 0.74 * (1 - clamp(down / 0.3, 0, 1)), seamWidth = seamLength > 0 ? 0.012 : 0;
+    write(p.backSeam, torsoMatrix, 0, 0.80 - seamLength / 2, -0.123, seamWidth, seamLength, seamWidth);
     write(p.workBand, torsoMatrix, 0, 0.60, 0.132, 0.32, 0.045, 0.014);
 
     const neckY = hipY + 0.62;
-    write(p.neck, root, 0, neckY - 0.015, hipZ + 0.002 - 0.04 * flinch, 0.059, 0.081, 0.055);
-    transform.position.set(0, hipY + 0.665, hipZ + 0.014 - 0.045 * flinch);
-    transform.rotation.set(-0.025 - 0.18 * flinch, talk * 0.16, 0); transform.scale.setScalar(1);
+    if (k) {
+      // Neck and head ride the lean from the waist; the chin tucks (the protective curl).
+      write(p.neck, root, shift, hipY + 0.025 + 0.58 * leanCos - 0.002 * leanSin, hipZ + 0.58 * leanSin + 0.002 * leanCos,
+        0.059, 0.081, 0.055);
+      transform.position.set(shift, hipY + 0.025 + 0.64 * leanCos - 0.014 * leanSin, hipZ + 0.64 * leanSin + 0.014 * leanCos);
+      transform.rotation.set(-0.025 + lean + k.curl, 0, 0);
+    } else {
+      write(p.neck, root, shift, neckY - 0.015, hipZ + 0.002 - 0.04 * flinch, 0.059, 0.081, 0.055);
+      transform.position.set(shift, hipY + 0.665, hipZ + 0.014 - 0.045 * flinch);
+      transform.rotation.set(-0.025 - 0.18 * flinch, talk * 0.16 + twist * 0.6, 0);
+    }
+    transform.scale.setScalar(1);
     transform.updateMatrix(); headMatrix.multiplyMatrices(root, transform.matrix);
     write(p.head, headMatrix, 0, 0, 0);
     write(p.hair, headMatrix, 0, 0.15, 0, 1, 1, 1);
@@ -627,8 +806,11 @@ export function createPopulationView(
       write(p[`${side}-eye`], headMatrix, sign * 0.041, 0.153, 0.093, 0.011, 0.010, 0.009);
       write(p[`${side}-brow`], headMatrix, sign * 0.041, 0.178, 0.088, 0.045, 0.010, 0.012, 0, 0, sign * -0.04);
       write(p[`${side}-ear`], headMatrix, sign * 0.112, 0.129, -0.006, 0.022, 0.034, 0.023);
-      write(p[`${side}-pocket`], root, sign * 0.136, hipY - 0.03, 0.124 + hipZ,
-        0.056, 0.070, 0.013, 0, 0, sign * 0.05);
+      // Sat with the thighs up, a front pocket would hang below them as a pale
+      // sliver: it folds into the hip crease as the hips go down.
+      const pocket = 1 - down;
+      write(p[`${side}-pocket`], root, sign * 0.136 + shift, hipY - 0.03, 0.124 + hipZ,
+        0.056 * pocket, 0.070 * pocket, 0.013 * pocket, 0, 0, sign * 0.05);
 
       // Terrain samples come from simulation at these exact shared targets.
       // Pedal targets instead come from the existing machine's transformed art.
@@ -636,8 +818,19 @@ export function createPopulationView(
       const support = riding ? null : s.footSupports[index]!;
       foot.set(support?.x ?? target.x, (support?.y ?? target.y) + target.liftMetres,
         support?.z ?? target.z).applyMatrix4(inverseRoot);
+      // Knocked down, the feet keep their planted heights but slide forward of
+      // the sit, in front of the pelvis along the person's own facing
+      // (render-only): a leg folded under the pelvis reads as an injury, not
+      // as comic.
+      if (k) {
+        const fromX = foot.x, fromZ = foot.z;
+        foot.x = sign * blendTo(KNOCKDOWN.stanceOutward, KNOCKDOWN.tuckOutward, k.tuck) + shift;
+        foot.z = k.footZ;
+        // ...along the ground plane under them, so on a slope a sole never sinks or floats.
+        foot.y += slopeX * (foot.x - fromX) + slopeZ * (foot.z - fromZ);
+      }
       localNormal.set(support?.normalX ?? s.normalX, support?.normalY ?? s.normalY,
-        support?.normalZ ?? s.normalZ).applyAxisAngle(up, -s.headingY).normalize();
+        support?.normalZ ?? s.normalZ).applyAxisAngle(up, -yaw).normalize();
       // Correct plane normals for anatomical nonuniform scale.
       localNormal.set(localNormal.x * widthScale / heightScale, localNormal.y,
         localNormal.z * lengthScale / heightScale).normalize();
@@ -649,18 +842,34 @@ export function createPopulationView(
       write(p[`${side}-shoe`], extra, 0, 0, 0);
       write(p[`${side}-sole`], extra, 0, 0, 0);
       ankle.set(0, POPULATION_MODEL.ankleHeight, POPULATION_MODEL.ankleRearward).applyQuaternion(orientation).add(foot);
-      hip.set(sign * 0.123, hipY, hipZ);
-      joint(hip, ankle, 0.465, 0.455, 1, knee);
+      hip.set(sign * 0.123 + shift, hipY, hipZ);
+      // Sat with the hip-ankle line nearly level, the knees come up, not out;
+      // half down with the rider in front, they splay (never toward a rider
+      // who came from that side).
+      const towardRider = k ? -sign * Math.sin(s.fallYaw) : 0;
+      joint(hip, ankle, 0.465, 0.455, 1, knee,
+        down * 1.5, k ? sign * k.splay * (towardRider > 0 ? 1 - Math.abs(Math.sin(s.fallYaw)) : 1) : 0);
       // A compact arcade contact hull is not a licence for knees to escape it.
       // Preserve the connected solve while limiting flexion inside the model.
       knee.z = clamp(knee.z, -visual.spec.hull.halfLengthMetres / lengthScale + 0.082,
         visual.spec.hull.halfLengthMetres / lengthScale - 0.082);
+      if (k) knee.x = clamp(knee.x, -hull.halfWidthMetres / widthScale + 0.082, hull.halfWidthMetres / widthScale - 0.082);
       directed(p[`${side}-thigh`]!, root, hip, knee);
       directed(p[`${side}-shin`]!, root, knee, ankle);
 
-      shoulder.set(sign * 0.221, hipY + 0.48, hipZ + 0.012 - 0.035 * flinch);
+      if (k) {
+        // The shoulder rides the waist's lean.
+        shoulder.set(sign * 0.221 + shift, hipY + 0.025 + 0.455 * leanCos - 0.012 * leanSin, hipZ + 0.455 * leanSin + 0.012 * leanCos);
+      } else {
+        shoulder.set(sign * 0.221, hipY + 0.48, hipZ + 0.012 - 0.035 * flinch);
+        if (twist !== 0) {
+          // Turned with the twisting torso about its own upright axis.
+          const dx = shoulder.x, dz = shoulder.z - hipZ, cos = Math.cos(twist), sin = Math.sin(twist);
+          shoulder.x = dx * cos + dz * sin + shift; shoulder.z = hipZ - dx * sin + dz * cos;
+        }
+      }
       const armSwing = moving ? swing * sign : 0;
-      wrist.set(sign * (riding ? 0.247 : 0.255), hipY + 0.065,
+      wrist.set(sign * (riding ? 0.247 : 0.255) + shift, hipY + 0.065,
         hipZ + 0.07 - armSwing * (jogging ? 0.24 : 0.20));
       if (jogging && moving) wrist.y += 0.16;
       if (s.activity === 'social' && sign > 0) {
@@ -670,19 +879,49 @@ export function createPopulationView(
       if (s.activity === 'working') {
         wrist.set(sign * 0.10, hipY + 0.17 + (sign > 0 ? 0.045 * reach : 0), 0.255 + reach * 0.015);
       }
-      if (sitting > 0) wrist.lerp(foot.set(sign * 0.16, hipY + 0.16 + Math.max(0, talk) * 0.045,
+      if (sitting > 0 && !k) wrist.lerp(foot.set(sign * 0.16, hipY + 0.16 + Math.max(0, talk) * 0.045,
         hipZ + 0.22), sitting);
       if (riding) { wrist.y += 0.075; wrist.z += 0.025; }
       if (flinch > 0) { wrist.y += 0.30 * flinch; wrist.z += 0.14 * flinch; }
+      if (stagger > 0 && sign === staggerSide) {
+        // One arm windmills a turn and a quarter below the raised hand while
+        // the flinch plays: never up level with its shoulder, where the
+        // elbow's bend plane is undefined.
+        const turn = TAU * 1.25 * s.phase / 0.7;
+        wrist.y += 0.12 * stagger * (Math.sin(turn) - 1); wrist.z += 0.12 * stagger * Math.cos(turn);
+      }
+      if (k) {
+        // Flung up (and forward in a stumble) as the knees go, planted on the
+        // ground behind or beside the sit, then brushing off the seat of the
+        // trousers on the way up.
+        const K = KNOCKDOWN;
+        wrist.set(sign * blendTo(0.255, K.armsInOutward, k.arms) + shift, hipY + 0.065 + K.armsUpMetres * k.arms,
+          hipZ + 0.07 + k.armsForward * k.arms);
+        if (k.plant > 0) {
+          const plantX = sign * K.plantOutward + shift, plantZ = k.plantZ;
+          wrist.lerp(aim.set(plantX, K.plantHeight + slopeX * plantX + slopeZ * plantZ, plantZ), k.plant);
+        }
+        if (k.brush > 0) wrist.lerp(aim.set(sign * K.brushOutward + shift,
+          hipY - K.brushDrop + K.brushPatMetres * Math.sin(TAU * K.brushPats * k.brushPhase), hipZ - K.brushBehind), k.brush);
+      }
       // Elbows flex behind the shoulder-wrist chord; knees use the opposite plane.
       joint(shoulder, wrist, 0.295, 0.28, -1, elbow);
       elbow.z = Math.max(elbow.z, -visual.spec.hull.halfLengthMetres / lengthScale + 0.095);
+      if (k) {
+        elbow.z = Math.min(elbow.z, hull.halfLengthMetres / lengthScale - 0.095);
+        elbow.x = clamp(elbow.x, -hull.halfWidthMetres / widthScale + 0.095, hull.halfWidthMetres / widthScale - 0.095);
+      }
       directed(p[`${side}-upper-arm`]!, root, shoulder, elbow);
       directed(p[`${side}-forearm`]!, root, elbow, wrist);
       // Hands point along the forearm without being a detached ball at its end.
       delta.subVectors(wrist, elbow).normalize().multiplyScalar(0.12).add(wrist);
       delta.z = clamp(delta.z, -visual.spec.hull.halfLengthMetres / lengthScale + 0.046,
         visual.spec.hull.halfLengthMetres / lengthScale - 0.046);
+      if (k) {
+        // A planted hand rests on the ground, never through it.
+        delta.x = clamp(delta.x, -hull.halfWidthMetres / widthScale + 0.046, hull.halfWidthMetres / widthScale - 0.046);
+        delta.y = Math.max(delta.y, KNOCKDOWN.handFloor + slopeX * delta.x + slopeZ * delta.z);
+      }
       directed(p[`${side}-hand`]!, root, wrist, delta);
     }
     const clipboardVisible = s.activity === 'working';
@@ -830,11 +1069,14 @@ export function createPopulationView(
       // Activity change is a discrete fixed-step fact. Progress wraps only
       // within one activity; never blend an inspection into an impact state.
       s.activity = b.activity; s.backing = b.backing;
+      // A stagger escalated to a knock-down (M42) is a new reaction: its phase starts afresh.
+      s.reaction = b.impactReaction ?? 'none'; s.fallYaw = b.impactFallYaw ?? 0;
+      const sameActivity = b.activity === a.activity && (a.impactReaction ?? 'none') === s.reaction;
       const phaseDelta = b.activityPhase - a.activityPhase;
-      s.phase = b.activity === a.activity
+      s.phase = sameActivity
         ? fraction(a.activityPhase + (phaseDelta < -0.5 ? phaseDelta + 1 : phaseDelta > 0.5 ? phaseDelta - 1 : phaseDelta) * alpha)
         : b.activityPhase;
-      s.blend = b.activity === a.activity ? mix(a.activityBlend, b.activityBlend) : b.activityBlend;
+      s.blend = sameActivity ? mix(a.activityBlend, b.activityBlend) : b.activityBlend;
       s.posture = b.posture ?? 'standing';
       s.sittingBlend = s.posture === 'seated' ? clamp(mix(a.sittingBlend ?? 1, b.sittingBlend ?? 1), 0, 1) : 0;
       s.seatHeight = b.seatHeightMetres;

@@ -335,14 +335,14 @@ records carry over.)
 
 ## Riders
 
-There are nine, the line under the title screen's buttons says who you are,
-and that line opens the chooser. Eight of them differ only in **looks and
+There are ten, the line under the title screen's buttons says who you are,
+and that line opens the chooser. Nine of them differ only in **looks and
 sound** — each has their own crash sound, none is faster, and the custom wheels
 ride identically to the standard one, down to the last number. The Drunkard
 shares that same speed, grip and braking but rides his own way on purpose: a
 slow weave and the odd stumble that really do move him about the road. See
 The Drunkard below for what that is and is not. (Officer Dorkins is not one of
-the nine: he is the law, and the only way to ride as him is to be the cop in a
+the ten: he is the law, and the only way to ride as him is to be the cop in a
 couch **Police chase**.)
 
 **Cool Rider** wears tailored black moto gear with reflective blue panels,
@@ -427,6 +427,20 @@ where that voice used to be**: a public-domain recording, mixed in as the
 joke his name is, and not a sound of his. He is credited as
 [@seal_on_a_wheel](https://www.instagram.com/seal_on_a_wheel) at the project
 owner's direction.
+
+**Wyldist** is a real rider, here with his participation and permission: he
+worked it out with the author directly, chose his in-game name himself, and
+sent the photos and riding videos he is built from. He rides in his turquoise
+Hawaiian shirt, worn partly open, a red full-face lid with a black **50** in a
+white circle on the back, charcoal cargo trousers and red-and-black gloves, on a
+compact charcoal wheel with a red slash on each calf pad — the game's own
+design, not modelled on his machine. One small print on his shirt is somebody
+else's mark, there because he asked for it; its terms are in
+[`NOTICE.md`](NOTICE.md). **His crash is real too:** he
+sent a clip of his wheel getting away from him at a kerb, and that is the sound
+his character crashes with — the "ooh"s in it are whoever was filming, not him.
+He is credited as [@wyldist](https://www.instagram.com/wyldist/) at the
+project owner's direction.
 
 **The Drunkard** is not a real person, and that is the point of him. People
 kept asking for a rider with a beer; the real riders above are here with their
@@ -653,6 +667,21 @@ list.
 
 ### Recently landed
 
+- **Ramps, birds and chatty pedestrians.** Free ride in the generated towns
+  now has six raised yellow kickers on the lawns off the road, each marked by
+  a floating arrow: ride up one from any direction and launch, and a 180 or a
+  one-foot air works off them. A flock of birds passes over the rooftops now
+  and then. People react when you hit them — a stagger at walking pace,
+  knocked down and back up at speed — and sometimes ask the questions every
+  rider hears ("How fast does it go?", "Can I try?", "Are you from the
+  future?"), an idea from a Facebook commenter. Every rider's arms are
+  relaxed when stopped and at slow speed, and Settings → Display has a
+  frame-rate counter, off by default.
+- **A tenth rider, in a Hawaiian shirt** — Wyldist, a real rider here with his
+  participation and permission: a turquoise shirt worn partly open, a
+  red full-face lid with a black 50 in a white circle on the back and charcoal
+  cargos, on a compact charcoal-and-red wheel. His crash is the clip he sent,
+  of his wheel getting away from him at a kerb.
 - **A living world** (2026-10-05). The towns have people walking the
   pavements, joggers and other wheel riders in the parks, and slow traffic on
   the side streets; downtown has a coffee bar, a grocer and a repair shop with
@@ -793,35 +822,37 @@ to be.
 
 ## Licence
 
-Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the sixteen
+Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the seventeen
 shipped sounds derive from public-domain (CC0) recordings and a fifth carries
 one public-domain layer inside it; five crashes derive from the author's own
 recording — the third, sixth, eighth and ninth riders' are that same wipeout
 with the author's voice removed, rendered four times so that no two of them
-are the same file. Five shipped sounds sit
-outside the CC BY 4.0 claim, and part of a sixth does: two of the nine crashes
+are the same file. Six shipped sounds sit
+outside the CC BY 4.0 claim, and part of a seventh does: two of the ten crashes
 are composed one-shots
 whose voices are machine-generated — the second rider's and the seventh's, the
 two characters who exist nowhere to be recorded — and so is the seventh
-rider's short stumble sound; the fourth and fifth riders' crashes are
-**their own contributed recordings**, used in this game with their permission
-and with no copyright over them claimed by this project; and the ninth rider's
-crash is this project's own render of the author's recording with **one
+rider's short stumble sound; the fourth, fifth and tenth riders' crashes are
+**recordings the riders themselves contributed**, used in this game with
+their permission and with no copyright over them claimed by this project; and
+the ninth rider's crash is this project's own render of the author's recording with **one
 public-domain seal bark mixed into it**, which is claimed by nobody, this
 project included. The street sounds that came with the living world are generated
 in code as the game runs, and add no sound files. Cool Rider is an
 original fictional character whose clothes and style draw on what the project
 owner wears, and The Drunkard is an original fictional character based on
-nobody; Red Rider, Adonisb2, Maribel Vargas, Wheel in Motion, FloWithZo and
-Seal on a Wheel are
+nobody; Red Rider, Adonisb2, Maribel Vargas, Wheel in Motion, FloWithZo,
+Seal on a Wheel and Wyldist are
 real people represented with permission, and no licence in this project covers
-their names, likenesses, personas, or the two riders' own logos. Full terms,
+their names, likenesses, personas, the two riders' own logos, or the mark the
+tenth rider wears on his sleeve at his request. Full terms,
 attribution, and per-file provenance are in [`LICENSE`](LICENSE) and
 [`NOTICE.md`](NOTICE.md).
 
 The wheels in this game are original fictional designs — five are modelled,
 with their riders' permission, on their own customized or raced machines,
 without reproducing any manufacturer's identity or any third-party sticker
-artwork, and the seventh rider's is modelled on nothing at all. This project is
+artwork, the seventh rider's is modelled on nothing at all, and the tenth
+rider's is the game's own design rather than his machine. This project is
 not affiliated with, endorsed by, or associated with any electric unicycle
 manufacturer or retailer.

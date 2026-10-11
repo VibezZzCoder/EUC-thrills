@@ -145,8 +145,13 @@ test('chooser, title and pause fit every supported phone and tablet size with no
     // at 705 go from four rows to five and now need 977 pixels (the limit
     // rounds to 62rem, so the blurbed side is 993), and four columns at 1236
     // go from two rows to three and now need 685 (43rem, so 689). Three
-    // columns at 940 stay three rows and their 47rem limit is untouched.
-    { width: 705, height: 993 }, { width: 940, height: 753 }, { width: 1236, height: 689 },
+    // columns at 940 stayed three rows at nine. M41's tenth creates a fourth,
+    // so its pair follows the new 57rem compact boundary instead of testing
+    // the compact anatomy twice at the old blurbed height. The live DOM probe
+    // puts Done 22.7px clear at 940×913 and 255.2px clear at 940×896; the
+    // blurbed side's 1px scroll-height rounding is inside the existing guard.
+    { width: 705, height: 993 }, { width: 940, height: 913 }, { width: 940, height: 896 },
+    { width: 1236, height: 689 },
     // **And the band the eighth rider opened — M34 Phase 0.** The sideways
     // threshold moved from 92.79rem to 105.69rem to make room for eight
     // full-height cards, so between those two widths the sideways card owns
@@ -178,6 +183,11 @@ test('chooser, title and pause fit every supported phone and tablet size with no
     // with the tallest card at 194 pixels the worst case anywhere in the
     // band; 689 keeps the blurbs (Done 91.6 clear) and 560 goes compact.
     { width: 1826, height: 689 }, { width: 1826, height: 560 },
+    // M41: the ten-card cap opens a further sideways band, 1898–2103 px.
+    // Live DOM: Done 107.7px clear at the blurbed edge, 162.8px at compact;
+    // the upright ten-card row returns at 2104 and clears 178.8px at 900 high.
+    { width: 1898, height: 689 }, { width: 1898, height: 560 },
+    { width: 2104, height: 900 },
   ];
 
   // A layout change is an input-reset moment by contract (master §8.2): the

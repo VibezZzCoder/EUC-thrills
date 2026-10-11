@@ -7,6 +7,8 @@ import { FLO_WITH_ZO_LOOK } from './floWithZoLook.ts';
 export { FLO_WITH_ZO_LOOK } from './floWithZoLook.ts';
 import { SEAL_ON_A_WHEEL_LOOK } from './sealOnAWheelLook.ts';
 export { SEAL_ON_A_WHEEL_LOOK } from './sealOnAWheelLook.ts';
+import { WYLDIST_LOOK } from './wyldistLook.ts';
+export { WYLDIST_LOOK } from './wyldistLook.ts';
 import { BLOCKOUT_COLOURS, RIDER_BLOCKOUT } from '../data/tuning.ts';
 import type { CharacterId } from '../data/riders.ts';
 import {
@@ -53,8 +55,8 @@ import {
  * joint hierarchy, the two-link IK, and the entire stance solve; this file owns
  * the cross-sections, the shades, the materials, and the panels that hang on
  * them. That split is the whole reason a second character was a day's work
- * rather than a rewrite: `applyStanceReaction` never touches a mesh, a
- * material, or a profile, so two looks are two sets of numbers under one
+ * rather than a rewrite: `applyStanceReaction` solves the same joints for every look; optional
+ * render-only seam bands then follow those solved joints, so two looks are two sets of numbers under one
  * unchanged animation path.
  *
  * Four rules bind anything added below, and each one cost something to learn:
@@ -236,7 +238,8 @@ export interface RiderPanelGroup {
   readonly patches: readonly RiderPatch[];
   /** A continuous shaped insert, merged with the ordinary patches on the same joint. */
   readonly build?: (side: number) => THREE.BufferGeometry;
-  readonly art?: string;
+  /** A sheet page; per-side pages keep a printed sleeve on one anatomical arm. */
+  readonly art?: LoftPage;
   readonly role: RiderMaterialRole;
   /** See rule 3 in the file comment. */
   readonly casts: boolean;
@@ -409,6 +412,11 @@ export interface RiderLook {
    * Omitted entirely by every look before hers, and the defaults are the
    * numbers the rig has always used, so nothing else moves.
    */
+  /** Open, matching elbow/knee rings receive a short render-only bend band. */
+  readonly continuousJoints?: boolean;
+  /** Untucked cloth encloses the posed upper trouser volumes. */
+  readonly drapedHem?: boolean;
+
   readonly density?: {
     readonly limb?: number;
     readonly torso?: number;
@@ -8918,6 +8926,7 @@ export const RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   DRUNKARD_LOOK,
   FLO_WITH_ZO_LOOK,
   SEAL_ON_A_WHEEL_LOOK,
+  WYLDIST_LOOK,
   COP_LOOK,
 ]);
 
@@ -8940,6 +8949,7 @@ export const PLAYABLE_RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   DRUNKARD_LOOK,
   FLO_WITH_ZO_LOOK,
   SEAL_ON_A_WHEEL_LOOK,
+  WYLDIST_LOOK,
 ]);
 
 /** Resolve a look, falling back to Cool Rider the way `characterSpec` does. */

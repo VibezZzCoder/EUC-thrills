@@ -110,6 +110,9 @@ import {
 import { clamp, lerp, wrapAngle } from '../shared/maths.ts';
 import { HazardField } from '../simulation/hazards.ts';
 import { SoftBodyField } from '../simulation/softBodies.ts';
+import { LaunchPadField, NO_LAUNCH_PADS } from '../simulation/launchPadField.ts';
+import { cityLaunchPads, launchPadFinderRuns, type LaunchPadSite } from '../level/launchPadSites.ts';
+import { effectiveState as launchPadEffectiveState, launchPadsLive } from './launchPadMode.ts';
 import {
   DUEL_LATERAL_METRES,
   SLOT_LATERAL_METRES,
@@ -270,6 +273,11 @@ import {
   type GhostSample,
 } from '../simulation/ghost.ts';
 import { Hud } from '../ui/hud.ts';
+// M42 (Builder D): the frame-rate counter and the question barks.
+import { FrameRateMeter } from '../ui/frameRateMeter.ts';
+import { BarkModel, BarkRoom, type BarkActor, type BarkFrame } from '../ui/barkModel.ts';
+import { quietNow } from './barkQuiet.ts';
+import { BarkView, bubbleHidden, candidateHidden, ndcToPane } from './barkView.ts';
 import { IdlePane } from '../ui/idlePane.ts';
 import {
   CHASE_TOUCH_NOTE,
@@ -2628,6 +2636,25 @@ export class Game {
       velocityX:Math.sin(pose.headingY)*pose.speed,velocityZ:Math.cos(pose.headingY)*pose.speed};
   }
 
+  /**
+   * The city launch pads, read-only (M42 QA bridge). `visible` is the
+   * renderer's own report — never a flag this file keeps — so a drawn/armed
+   * mismatch cannot hide; `armed` is each human seat's controller; and
+   * `pursuerPads` is each pursuer's pad count, all zeros by construction (the
+   * cop holds the empty field). `finderRuns` counts the finder's memo misses.
+   */
+  launchPadState(): { sites: { id: string; x: number; z: number }[]; visible: boolean; armed: boolean[];
+    pursuerPads: number[]; launches: number; finderRuns: number } {
+    return {
+      sites: this.launchPadSites.map(({ id, x, z }) => ({ id, x, z })),
+      visible: this.renderer.presentation()?.launchPads.visible ?? false,
+      armed: this.seats.map((seat) => seat.controller.launchPadArmed),
+      pursuerPads: this.pursuers.map((pursuer) => pursuer.controller.launchPadCount),
+      launches: this.launchPadLaunches,
+      finderRuns: launchPadFinderRuns(),
+    };
+  }
+
   /** Durable QA/read-only provenance; no view advances this shared clock. */
   populationState() {
     return { sourceWorldId: this.populationPlan.sourceWorldId,
@@ -2637,6 +2664,164 @@ export class Game {
         district: value.district, lengthMetres: value.lengthMetres, closed: value.closed })),
       simulation: this.population.snapshot(), contacts: this.populationContacts.map(value => ({ ...value })),
       reservations: this.populationReservations.map(value => ({ ...value, footprint: { ...value.footprint } })) };
+  }
+
+  /**
+   * M42 (Builder D) QA bridge: each seat's question bubble, read-only. `line`
+   * indexes `BARK_LINES` (−1 for none); `riddenMetres` is the distance the
+   * ridden-first rule has counted since the seat's last placement.
+   */
+  barkState(): { seat: number; visible: boolean; actorId: string | null; line: number; riddenMetres: number }[] {
+    return this.seats.map((_seat, seat) => {
+      const output = this.barkModels[seat].output;
+      return { seat, visible: output.visible, actorId: output.actorId, line: output.lineIndex,
+        riddenMetres: this.barkModels[seat].riddenMetres };
+    });
+  }
+
+  /**
+   * M42 (Builder D) QA bridge: the barks' runtime switch — not an option, not
+   * persisted. `forceChance` makes every roll pass and is a test hook only
+   * (`BARKS` is not a live tunable); capture tools can switch barks off here.
+   */
+  setBarksEnabled(on: boolean, forceChance = false): void {
+    this.barksEnabled = on;
+    this.barkRoom.forceChance = on && forceChance;
+  }
+
+  /**
+   * M42 (Builder D): one drawn frame of every seat's bark model, from `render`
+   * right after the population endpoints are written. `dt` is `render`'s local
+   * `hudSeconds` — the field is already zero by then, and reading it would
+   * freeze every bubble. Presentation only: nothing here reaches the
+   * simulation or a record.
+   *
+   * The mode table (§42.2a): on in free ride (solo and couch), Challenge, and
+   * a chase beyond the quiet line; off everywhere else and whenever ride input
+   * is not accepted (pause included). Never for a seat without a pane, a
+   * spectator, or a chase outlaw who is no longer standing.
+   */
+  private updateBarks(
+    hudSeconds: number,
+    previous: readonly BarkActor[],
+    current: readonly BarkActor[],
+    alpha: number,
+  ): void {
+    const state = this.appState.current;
+    const modeOn = this.barksEnabled && this.appState.acceptsRideInput
+      && (state === 'freeRide' || state === 'challenge' || state === 'chase');
+    const views = this.renderer.viewCount;
+    const room = this.chaseRoom;
+    for (let index = 0; index < this.barkModels.length; index += 1) {
+      const model = this.barkModels[index];
+      const frame = this.barkFrames[index];
+      const seat = this.seats[index];
+      if (seat === undefined) {
+        frame.modeAllows = false;
+        frame.controller = null;
+        frame.world = null;
+        model.update(frame);
+        continue;
+      }
+      const pose = seat.renderPose;
+      const outlaw = this.chaseSeatOutlaw[index] ?? -1;
+      let allows = modeOn && index < views && seat.spectating == null && seat.hud !== null;
+      if (allows && state === 'chase' && outlaw >= 0 && room.phase !== 'idle'
+        && room.statusOf(outlaw) !== 'standing') allows = false;
+      frame.dt = hudSeconds;
+      frame.controller = seat.controller;
+      frame.world = this.population;
+      frame.x = pose.x;
+      frame.z = pose.z;
+      frame.headingY = pose.headingY;
+      frame.speed = pose.speed;
+      frame.crashed = seat.controller.crashed;
+      frame.airborne = !seat.controller.isGrounded;
+      frame.discontinuitySerial = seat.controller.discontinuitySerial;
+      frame.modeAllows = allows;
+      frame.quiet = allows && state === 'chase' && quietNow({
+        state,
+        roomPhase: room.phase,
+        pursuersHeld: room.pursuersHeld,
+        outlaw,
+        nearestCopMetres: outlaw >= 0 ? room.nearestCopMetres(outlaw) : Infinity,
+        sirenRangeMetres: room.sirenRangeMetres,
+        quietLineMetres: this.tuning.get('CHASE.trackerQuietGapMetres'),
+      });
+      frame.previous = previous;
+      frame.current = current;
+      frame.alpha = alpha;
+      model.update(frame);
+      if (!model.output.visible) seat.hud?.clearBark();
+    }
+  }
+
+  /**
+   * M42 (Builder D): after pane `view` is drawn — its camera matrices are
+   * fresh only now — project the seat's bubble into the pane and test its
+   * pending candidate, then hand the verdict back to the model. Costs nothing
+   * on a frame with neither, which is almost every frame.
+   */
+  private presentBarks(view: number): void {
+    const model = this.barkModels[view];
+    const seat = this.seats[view];
+    const hud = seat?.hud;
+    if (model === undefined || seat === undefined || hud == null) return;
+    const output = model.output;
+    if (!output.visible && output.pending === null) return;
+    const camera = this.renderer.cameraFor(view);
+
+    let inBand: boolean | null = null;
+    let askerHidden = false;
+    if (output.visible) {
+      if (output.leaving) {
+        hud.setBarkOpacity(output.opacity);
+      } else {
+        // In the display band, or it fades and ends. The asker's head hidden
+        // behind another body (a partner who stepped between) ends it too,
+        // once it has been read (the model's `minimumReadableSeconds`).
+        inBand = this.barkView.bubbleInBand(camera, output.anchor);
+        askerHidden = inBand && bubbleHidden(camera.position, output.actorId ?? '', output.anchor, this.barkFrames[view]);
+        if (inBand) {
+          const pane = this.renderer.viewBounds(view);
+          ndcToPane(this.barkView.ndc.x, this.barkView.ndc.y, pane, this.barkPixel);
+          inBand = hud.setBark(output.text, this.barkPixel.x, this.barkPixel.y, output.opacity, pane.width, pane.height);
+        }
+      }
+    }
+
+    let qualified: boolean | null = null;
+    let occluded = false;
+    const pending = output.pending;
+    if (pending !== null && !output.visible) {
+      qualified = this.barkView.candidateSeen(camera, pending.anchor, pending.relativeVelocity, seat.renderPose);
+      if (qualified) {
+        // Checked once, at this moment: never a bubble through a wall. The
+        // camera's own occlusion ray (terrain and occluding blocks). A hit
+        // holds the candidate out briefly (`BARKS.occlusionHoldSeconds`), so
+        // a person behind a corner costs one ray per hold, not one per frame.
+        const origin = this.barkRayOrigin;
+        const direction = this.barkRayDirection;
+        origin.x = camera.position.x;
+        origin.y = camera.position.y;
+        origin.z = camera.position.z;
+        direction.x = pending.anchor.x - origin.x;
+        direction.y = pending.anchor.y - origin.y;
+        direction.z = pending.anchor.z - origin.z;
+        const distance = Math.hypot(direction.x, direction.y, direction.z);
+        qualified = distance > 0 && this.terrain.raycast(origin, direction, distance) === null;
+        // And the asker clearly: no other body's hull across the camera's rays
+        // to their head and chest, now or along the prediction — riding up to
+        // one of a facing pair puts the partner's back in front of the asker.
+        if (qualified) {
+          const pose = seat.renderPose;
+          qualified = !candidateHidden(camera.position, pending, this.barkFrames[view],
+            pose.speed * Math.sin(pose.headingY), pose.speed * Math.cos(pose.headingY));
+        }
+        occluded = !qualified;
+      }
+    }
+    model.reportView(qualified, inBand, this.barkRoom, occluded, askerHidden);
   }
 
   private terrain: PlanTerrainSampler;
@@ -2705,6 +2890,22 @@ export class Game {
    */
   private hazards: HazardField;
   private softBodies: SoftBodyField;
+  /**
+   * The city launch pads (M42, `docs/PLANS.md` §42): the derived site list for
+   * the installed world and the trigger field built from it. Rebuilt with
+   * `hazards` at both construction sites; handed to human seats only — never
+   * to a pursuer, the placement probe or the population (§42.2d).
+   */
+  private launchPads: LaunchPadField = NO_LAUNCH_PADS;
+  private launchPadSites: readonly LaunchPadSite[] = [];
+  /** Pad takeoffs since boot, every seat (the QA bridge's `launches`). */
+  private launchPadLaunches = 0;
+  /**
+   * A mode change that arrived while a population physical epoch was open,
+   * applied at the next step boundary so nothing changes a seat's arming
+   * mid-step (§42.3a).
+   */
+  private launchPadModePending = false;
   /** Which world is loaded. See `GameSnapshot.world`. */
   private levelId: LevelId;
   /** Its seed, normalised. Empty unless `levelId` is `generated`. */
@@ -3158,6 +3359,31 @@ export class Game {
   private lastFrameMs = -1;
   private frameSeconds = 0;
   /**
+   * M42 (Builder D). The window's frame-rate counter: fed from `beforeFrame`
+   * (real frames only, never `advance()`) while `showFps` is on, shown in seat
+   * 0's speed lane. **The owner's instrument** — its value never enters the
+   * profiler, F3 or `snapshot()`.
+   */
+  private readonly fpsMeter = new FrameRateMeter();
+  /**
+   * M42 (Builder D). One question-bark model per seat, here rather than on
+   * `RiderSeat` (declared in `seats.ts`); each resets itself when handed a
+   * different controller or world. The room shares the last line.
+   */
+  private readonly barkModels = Array.from({ length: COUCH_SEATS }, (_unused, seat) => new BarkModel(seat));
+  private readonly barkRoom = new BarkRoom();
+  private readonly barkFrames: BarkFrame[] = Array.from({ length: COUCH_SEATS }, () => ({
+    dt: 0, controller: null, world: null, x: 0, z: 0, headingY: 0, speed: 0, crashed: false,
+    airborne: false, discontinuitySerial: 0, modeAllows: false, quiet: false,
+    previous: [], current: [], alpha: 1,
+  }));
+  private readonly barkView = new BarkView();
+  private readonly barkPixel = { x: 0, y: 0 };
+  private readonly barkRayOrigin = { x: 0, y: 0, z: 0 };
+  private readonly barkRayDirection = { x: 0, y: 0, z: 0 };
+  /** The QA bridge's runtime switch (`setBarksEnabled`): not an option, never persisted. */
+  private barksEnabled = true;
+  /**
    * Simulation seconds owed to the HUD, and whether a hop left the ground in
    * them.
    *
@@ -3346,11 +3572,13 @@ export class Game {
     this.renderer.setPopulation(this.populationPlan);
     this.hazards = new HazardField(this.levelPlan.hazards ?? []);
     this.softBodies = new SoftBodyField(this.levelPlan.softBodies ?? []);
+    this.installLaunchPads(this.levelPlan, this.populationPlan);
     // A local rather than a field, because it is about to become seat 0's and
     // the seat cannot be built until the rig below exists — M25 Phase 1.
     const controller = new EucController(this.terrain, {
       spawn: this.levelPlan.spawn,
       dynamicWorld: this.populationPort('human-0', 'human'),
+      launchPads: this.launchPads,
       hazards: this.hazards,
       softBodies: this.softBodies,
     });
@@ -3972,6 +4200,9 @@ export class Game {
       announcesCountdown: index === 0,
     });
     seat.hud.setVisible(this.appState.spec.showsHud);
+    // M42 (Builder D): seat 0 owns the frame clock; a freshly mounted HUD
+    // takes the meter's current text (empty, so hidden, until a window closes).
+    if (index === 0 && this.options.current.showFps) seat.hud.setFrameRate(this.fpsMeter.text);
     this.applySplitLayout();
   }
 
@@ -4828,6 +5059,45 @@ export class Game {
   }
 
   /**
+   * The city launch pads for a freshly installed world (M42, §42.3a): the
+   * derived sites and the trigger field the human seats are built with. The
+   * finder is memoised per plan object, and the renderer asked it first with
+   * these same objects, so this is the free second answer. It never touches
+   * the plan.
+   */
+  private installLaunchPads(plan: LevelPlan, population: PopulationPlan): void {
+    this.launchPadSites = cityLaunchPads(plan, population);
+    this.launchPads = new LaunchPadField(this.launchPadSites);
+  }
+
+  /** The pads' presentation and arming for the state on screen now (`app/launchPadMode.ts`). */
+  private launchPadLive(): { visible: boolean; armed: boolean } {
+    const app = this.appState;
+    return launchPadsLive(launchPadEffectiveState(app.current, app.settingsReturn, app.rideReturn), this.chaseProbe,
+      app.current);
+  }
+
+  /**
+   * Apply the mode table to every human seat and the renderer — from
+   * `enterState`, or at the next step boundary when a population physical
+   * epoch was open (§42.3a): nothing changes a seat's arming mid-step.
+   */
+  private applyLaunchPadMode(): void {
+    if (this.populationPhysicalEpochOpen) {
+      this.launchPadModePending = true;
+      return;
+    }
+    this.launchPadModePending = false;
+    const live = this.launchPadLive();
+    for (const seat of this.seats) {
+      seat.controller.setLaunchPadsArmed(live.armed);
+      // R16: a drawn pad is a dome the seat rides; a hidden one is nothing.
+      seat.controller.setLaunchPadsShown(live.visible);
+    }
+    this.renderer.setLaunchPadsVisible(live.visible);
+  }
+
+  /**
    * Seat `index`'s controller in the current world, at its own slot — the one
    * constructor `installLevel` and `spawnRider` share (MI-1, 2026-10-03).
    *
@@ -4849,6 +5119,7 @@ export class Game {
       // but nothing in the types would say they had to.
       hazards: this.hazards,
       softBodies: this.softBodies,
+      launchPads: this.launchPads,
     };
     const dynamicWorld = this.populationPort(id, 'human');
     let controller: EucController;
@@ -4860,6 +5131,12 @@ export class Game {
       controller.setDynamicWorld(dynamicWorld);
     }
     this.populationPlacementControllers.set(id, controller);
+    // A fresh seat (a couch join, a world swap) takes the room's current pad
+    // arming and Pad lift; `enterState` re-applies both on the next change.
+    const pads = this.launchPadLive();
+    controller.setLaunchPadsArmed(pads.armed);
+    controller.setLaunchPadsShown(pads.visible);
+    controller.setLaunchPadVerticalSpeed(this.tuning.get('LAUNCH_PAD.verticalSpeed'));
     return controller;
   }
 
@@ -4978,6 +5255,8 @@ export class Game {
     position: { x: number; y: number; z: number },
     headingY: number,
     index = 0,
+    /** Arrive riding at this speed, m/s (M42: a spec rides a pad from 15 m out); 0 for every existing caller. */
+    initialSpeed = 0,
   ): void {
     // **Addressed since M25 Phase 5's QA repair**, on `setActionsFor`'s and
     // `snapshotFor`'s pattern and for their reason: a spec that has to stand
@@ -4991,7 +5270,7 @@ export class Game {
     // discarded (the pool's `reset`), the clock keeps running, and the card
     // says why no best was saved rather than hiding the run.
     this.trickRunEligible = false;
-    if (!seat.controller.reset({ position, headingY }))
+    if (!seat.controller.reset({ position, headingY }, initialSpeed))
       throw new Error('Rider placement is occupied by the living world');
     // A teleport ends the flight, so it ends the pose — M36 §36.5.
     this.clearOneFootPose(seat);
@@ -11250,6 +11529,7 @@ export class Game {
     // anyone can write to.
     this.hazards = new HazardField(plan.hazards ?? []);
     this.softBodies = new SoftBodyField(plan.softBodies ?? []);
+    this.installLaunchPads(plan, this.populationPlan);
     // **Every seat's controller, not the player's** — M25 Phase 1 (§25.5).
     // A loop rather than one assignment because the reason above is a reason
     // about worlds, not about who is riding: a second seat left holding the
@@ -11678,6 +11958,12 @@ export class Game {
       ? 0
       : Math.min(0.25, Math.max(0, nowMs - this.lastFrameMs) / 1000);
     this.lastFrameMs = nowMs;
+    // M42 (Builder D): the frame-rate counter, one boolean per frame while off.
+    // Before the resize early return below, so it counts every real frame.
+    if (this.options.current.showFps) {
+      this.fpsMeter.sample(nowMs);
+      this.seats[0]?.hud?.setFrameRate(this.fpsMeter.text);
+    }
 
     // The pad is polled here rather than in `step`, and it has to be: a paused
     // or title-screen loop runs no steps at all, and a pad that only reported
@@ -11786,6 +12072,8 @@ export class Game {
     // seat's reset does not: it is one rider respawning, and stopping the cop,
     // the referees and the camera because somebody else pressed `R` would make
     // the second player able to stall the first player's world.
+    // M42: a pad mode change that arrived mid-epoch lands here, between steps.
+    if (this.launchPadModePending) this.applyLaunchPadMode();
     this.beginPopulationStep(stepSeconds);
     let worldReset = false;
     // **And whether *any* seat respawned, which is a different question** — M26
@@ -12517,10 +12805,16 @@ export class Game {
     // followed the faster rider would chatter every time their speeds crossed
     // (§25.9).
     if (seat.controller.tookOff) {
-      this.audio.hop(seat.controller.lastHopCharge);
+      // A launch-pad takeoff (M42) plays the same cue at charge 0, where the
+      // stale `lastHopCharge` would replay some earlier hop's charge; and it
+      // leaves a new player's hop hint alone — the pad threw them, they did
+      // not hop. No new sound (q235).
+      const padLaunched = seat.controller.padLaunched;
+      if (padLaunched) this.launchPadLaunches += 1;
+      this.audio.hop(padLaunched ? 0 : seat.controller.lastHopCharge);
       // The *prompt* edge is this seat's too, so a guest learning to hop
       // retires their own hint and nobody else's.
-      seat.hoppedSinceHudUpdate = true;
+      if (!padLaunched) seat.hoppedSinceHudUpdate = true;
     }
     const collision = seat.controller.obstacleImpact;
     // **A rider on the ground does not report kerb strikes**, and that rule is
@@ -13052,6 +13346,8 @@ export class Game {
     this.population.writePresentationEndpoints(populationPrevious, populationCurrent);
     this.renderer.updatePopulation(populationPrevious, populationCurrent, alpha);
     updatePopulationAudio(this.audio, populationPrevious, populationCurrent, alpha);
+    // M42 (Builder D): the question barks, on this frame's own `hudSeconds`.
+    this.updateBarks(hudSeconds, populationPrevious.actors, populationCurrent.actors, alpha);
     this.renderer.beginFrame();
     // **One pass per *view*, not per seat.** The two are the same number from
     // the first frame anybody is riding; on the join panel the split follows
@@ -13069,6 +13365,9 @@ export class Game {
       this.terrainView.setSurroundCentre(at.x, at.z);
       this.placeCamera(drawn, view, alpha);
       this.renderer.renderView(view);
+      // M42 (Builder D): project this pane's bubble and candidate now that its
+      // camera matrices are fresh.
+      this.presentBarks(view);
     }
   };
 
@@ -14322,6 +14621,11 @@ export class Game {
       || state === 'results'
       || ((state === 'paused' || state === 'settings') && running);
     this.renderer.setCheckpointsVisible(timing);
+    // M42: the launch pads are the free-ride world's own — shown and armed in
+    // free ride, shown but disarmed behind its pause and Settings (no ride
+    // input), shown on the title, hidden and disarmed in every other mode
+    // (`app/launchPadMode.ts`).
+    this.applyLaunchPadMode();
     if (!timing) this.renderer.setGhostVisible(false);
 
     // The pit-in control exists only while there is a session to pit out of.
@@ -15327,6 +15631,10 @@ export class Game {
     // visibility handler has already cleared held input by the time this runs.
     this.pageHidden = hidden;
     this.updateRunning();
+    // M42 (Builder D): a returning tab starts the frame-rate counter's window
+    // afresh but keeps its readout up (a full `reset()` blinked it out, and
+    // moved the touch pill, on every return; the option toggle still resets).
+    this.fpsMeter.restartWindow();
   };
 
   private handleContextRestored(): void {
@@ -15648,6 +15956,8 @@ export class Game {
     // singleton after claiming this method looped (§25.5).
     for (const seat of this.seats) {
       seat.controller.setTuning(controllerTuning);
+      // F4's "Pad lift" (M42): human seats only — the cop holds no pads.
+      seat.controller.setLaunchPadVerticalSpeed(this.tuning.get('LAUNCH_PAD.verticalSpeed'));
     }
     // **Except his cutout edge** (2026-09-22). The owner tightened the
     // player's cutout and in the same breath called the chase too easy, so the
@@ -16264,6 +16574,13 @@ export class Game {
     }
     if (previous === null || options.character !== previous.character) {
       this.audio.setCrashVoice(crashVoiceFor(options.character));
+    }
+    // M42 (Builder D): the frame-rate counter. A fresh window either way; off
+    // empties and hides seat 0's readout, on shows it once the first window
+    // closes (`beforeFrame`).
+    if (previous === null || options.showFps !== previous.showFps) {
+      this.fpsMeter.reset();
+      this.seats[0]?.hud?.setFrameRate('');
     }
 
     // The settings screen is always resynced: it diffs every write against

@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { proposeRiderPhaseSideProjection, proposeWheelClearOfBodies, proposeWheelSideProjection, type FullRagSideProjection } from '../shared/riderSideContact.ts';
 import type { PopulationFootprint } from './population.ts';
-import { EUC, PHYSICS, SIMULATION, TERRAIN, WHEEL, POPULATION, POPULATION_CONTACT, RIDER_CONTACT } from '../data/tuning.ts';
+import { EUC, PHYSICS, SIMULATION, TERRAIN, WHEEL, POPULATION, POPULATION_CONTACT, RIDER_CONTACT, LAUNCH_PAD } from '../data/tuning.ts';
 import { SURFACES, SURFACE_IDS } from '../data/surfaces.ts';
 import { SOBER_STYLE, type RideStyle } from '../data/rideStyles.ts';
 import type { ActionSnapshot } from '../input/actions.ts';
@@ -11,6 +11,7 @@ import { roughnessAt } from './roughness.ts';
 import { HazardField, NO_HAZARDS } from './hazards.ts';
 import { CrashRagdoll, RAGDOLL_FLOATS } from './ragdoll.ts';
 import { NO_SOFT_BODIES, SoftBodyField } from './softBodies.ts';
+import { LaunchPadField, NO_LAUNCH_PADS } from './launchPadField.ts';
 import { lateralCeilingG } from './lateralCeiling.ts';
 import { riderRollFor, settleStep } from './riderLean.ts';
 import {
@@ -373,7 +374,7 @@ const PREPARED_CONTROLLER_STEPS = new WeakMap<EucPreparedStep, PreparedControlle
 const STEP_REFERENCE_FIELDS = new Set([
   'tuning', 'surfaces', 'sampler', 'spawn', 'dynamicWorld', 'dynamicPrevious',
   'dynamicIntent', 'style', 'ground', 'probe', 'obstacleHit', 'standoffOrigin',
-  'standoffRay', 'hazards', 'softBodies', 'ragdoll', 'workingController',
+  'standoffRay', 'hazards', 'softBodies', 'launchPads', 'ragdoll', 'workingController',
   'activePreparedStep', 'stateRevision', 'collectingNeutralStep', 'reactionController', 'safeRing',
 ]);
 let stepPrimitiveFields: readonly string[] | undefined;
@@ -1991,6 +1992,67 @@ export class EucController {
    */
   private inSoftBody = false;
 
+  // -- City launch pads (M42) -------------------------------------------------
+
+  /**
+   * The world's launch pads. Empty unless the composition root handed some
+   * over, and it only ever hands them to a human seat — the cop, the
+   * population probe and every bench keep the empty field, so they cannot
+   * launch whatever the arming says (`docs/PLANS.md` §42.2d).
+   */
+  private readonly launchPads: LaunchPadField;
+  /**
+   * Whether this seat's pads fire at all — the mode table's answer, set by
+   * `setLaunchPadsArmed`. Disarmed, the field still latches (so a visit decided
+   * while disarmed stays decided) but never launches and never moves a safe
+   * point.
+   */
+  private launchPadsArmed = false;
+  /**
+   * This pad visit is decided. Set by a launch and by **any** grounded step
+   * inside a trigger that did not launch (too slow, disarmed, crashing, not
+   * yet re-armed), held through the whole flight, and cleared only by a
+   * grounded step outside every footprint. So a slow entry, a stop and a
+   * re-acceleration inside never launch, and a short flight that lands back
+   * on the same pad never relaunches (the hazard latch's reset-while-airborne
+   * would loop here). A primitive on purpose: the transaction copy refuses an
+   * object, `null` included.
+   */
+  private launchPadLatch = false;
+  /**
+   * Grounded metres still to ride outside every footprint before this seat's
+   * pads can fire after a `reset()` or `respawn()`. Stops a crash recovery —
+   * 0.35 × the crash speed at a safe point just outside a pad, aimed at it —
+   * from relaunching the rider unasked.
+   */
+  private launchPadRearmMetres = 0;
+  /**
+   * After a crash recovery the re-arm counts only ground the rider *rides* —
+   * a step with throttle or steer input — never ground the restored speed
+   * coasts. A recovery near top speed returns to a safe point stored before
+   * tilt-back engaged, which can be tens of metres back on the line to the
+   * pad; a hands-off coast from there must not be thrown again (§42.5 (i)).
+   * Cleared by `reset()`, whose re-arm counts any grounded distance.
+   */
+  private launchPadRearmRidden = false;
+  /** Takeoff vertical speed before the per-pad flight cap, m/s: F4's "Pad lift". */
+  private launchPadVerticalSpeed: number = LAUNCH_PAD.verticalSpeed;
+  /** True on exactly the step a launch pad threw the wheel. See `padLaunched`. */
+  private justPadLaunched = false;
+  /**
+   * Whether this seat's pads are drawn — the mode table's `visible`, set by
+   * `setLaunchPadsShown`. A drawn pad is a dome the wheel rides (R16); a
+   * hidden one is nothing at all. Arming alone also raises the domes: the
+   * mode table never arms a hidden pad, so armed ⇒ drawn.
+   */
+  private launchPadsShown = false;
+  /**
+   * The dome's height over the lawn baked into `groundY` (and so into `y` on
+   * the ground) at the wheel's grounded position, m; 0 off every dome. The
+   * slope and kerb physics subtract it, so the dome is ridden, never a kerb.
+   */
+  private launchPadRise = 0;
+
   // -- Hop, air, landing, pedal strike (M5) -----------------------------------
 
   private airborne = false;
@@ -2287,6 +2349,17 @@ export class EucController {
        * over, and the default keeps every headless world foliage-free.
        */
       softBodies?: SoftBodyField;
+      /**
+       * The city's launch pads — M42, by the same door for the same reason.
+       * A pad is an authored trigger volume, not a property of a point of
+       * ground: the sampler never sees one. A drawn pad is a dome (R16) that
+       * this seat alone rides, through the field's `riseAt` added to its ride
+       * height and kept out of its slope and kerb physics. The
+       * composition root hands the field to human seats only; the default
+       * keeps every other controller — the cop, the benches, the whole
+       * headless suite — in a world where nothing can launch.
+       */
+      launchPads?: LaunchPadField;
       /** One shared physical population, provided by the composition root. */
       dynamicWorld?: EucDynamicWorld;
     } = {},
@@ -2297,6 +2370,7 @@ export class EucController {
     this.spawn = options.spawn ?? { position: { x: 0, y: 0, z: 0 }, headingY: 0 };
     this.hazards = options.hazards ?? NO_HAZARDS;
     this.softBodies = options.softBodies ?? NO_SOFT_BODIES;
+    this.launchPads = options.launchPads ?? NO_LAUNCH_PADS;
     this.setDynamicWorld(options.dynamicWorld);
     if (!this.reset()) throw new Error('EUC initial placement is blocked by the dynamic world');
   }
@@ -2311,7 +2385,9 @@ export class EucController {
     this.invalidatePreparedStep();
     let working = this.workingController;
     if (!working) {
-      working = new EucController(this.sampler, { hazards: this.hazards, softBodies: this.softBodies });
+      working = new EucController(this.sampler, {
+        hazards: this.hazards, softBodies: this.softBodies, launchPads: this.launchPads,
+      });
       working.style = { ...this.style };
       this.workingController = working;
     }
@@ -2422,6 +2498,7 @@ export class EucController {
     working.justTookOff = false;
     working.justTouchedDown = false;
     working.justHopped = false;
+    working.justPadLaunched = false;
     working.collisionImpact = 0;
     record.notifications.length = 0;
     record.didPlace = undefined;
@@ -2571,7 +2648,9 @@ export class EucController {
     const canReact = this.dynamicWorld!.canReact!;
     let working = this.reactionController;
     if (!working) {
-      working = new EucController(this.sampler, { hazards: this.hazards, softBodies: this.softBodies });
+      working = new EucController(this.sampler, {
+        hazards: this.hazards, softBodies: this.softBodies, launchPads: this.launchPads,
+      });
       working.style = { ...this.style }; this.reactionController = working;
     }
     working.copyStepConfigurationFrom(this); working.copyMutableStateFrom(this);
@@ -2602,6 +2681,73 @@ export class EucController {
     this.dynamicPrevious = null; this.dynamicIntent = null; this.dynamicImpactSpeed = 0;
     this.dynamicPlacementBlocked = false;
   }
+
+  /**
+   * Arm or disarm this seat's launch pads — M42, the mode table's answer
+   * (`app/launchPadMode.ts`), applied by the composition root at a step
+   * boundary. A no-op when unchanged, so re-applying a mode never disturbs a
+   * prepared step. Arming latches from position: a seat armed while standing
+   * on a pad has already decided that visit and must roll out before the pad
+   * can throw it. A change invalidates any open prepared step, so a step is
+   * never replayed under a different rule than it was prepared with.
+   */
+  setLaunchPadsArmed(on: boolean): void {
+    if (on === this.launchPadsArmed) return;
+    this.invalidatePreparedStep();
+    this.launchPadsArmed = on;
+    if (on) this.launchPadLatch = this.launchPads.inFootprint(this.x, this.z);
+  }
+
+  /**
+   * Show or hide this seat's pads as ride surfaces — M42 R16, the mode table's
+   * `visible`, applied beside `setLaunchPadsArmed`. A no-op when unchanged;
+   * otherwise it invalidates any open prepared step. The wheel's height follows
+   * on its next grounded step (`groundY` is re-read every step).
+   */
+  setLaunchPadsShown(on: boolean): void {
+    if (on === this.launchPadsShown) return;
+    this.invalidatePreparedStep();
+    this.launchPadsShown = on;
+  }
+
+  /** Whether this seat's pads stand as domes: drawn, or armed (armed ⇒ drawn). */
+  get launchPadShown(): boolean { return this.launchPadsShown || this.launchPadsArmed; }
+
+  /** The dome's height over the lawn at (x, z) while this seat's pads stand, else 0. */
+  private launchPadRiseAt(x: number, z: number): number {
+    return this.launchPadsShown || this.launchPadsArmed ? this.launchPads.riseAt(x, z) : 0;
+  }
+
+  /**
+   * Stand `groundY` on the ride surface at the wheel's position: the sampled
+   * lawn plus a standing dome (M42 R16), recording the rise it baked in. Exact
+   * (no addition) where there is no dome, so every pad-free ride is bit-for-bit.
+   */
+  private settleGroundY(): void {
+    const rise = this.launchPadRiseAt(this.x, this.z);
+    this.launchPadRise = rise;
+    this.groundY = rise === 0 ? this.ground.height : this.ground.height + rise;
+  }
+
+  /**
+   * F4's "Pad lift" (`LAUNCH_PAD.verticalSpeed`), pushed by the composition
+   * root to human seats only. Developer tuning, not a player option. A no-op
+   * when unchanged; otherwise it invalidates any open prepared step.
+   */
+  setLaunchPadVerticalSpeed(metresPerSecond: number): void {
+    if (!Number.isFinite(metresPerSecond) || metresPerSecond <= 0) {
+      throw new RangeError('launch pad vertical speed must be finite and positive');
+    }
+    if (metresPerSecond === this.launchPadVerticalSpeed) return;
+    this.invalidatePreparedStep();
+    this.launchPadVerticalSpeed = metresPerSecond;
+  }
+
+  /** Whether this seat's launch pads are armed (the QA bridge reads it). */
+  get launchPadArmed(): boolean { return this.launchPadsArmed; }
+
+  /** How many launch pads this controller holds: 0 for the cop by construction. */
+  get launchPadCount(): number { return this.launchPads.count; }
 
   /** Exact successful placement identity, including a reset to the same point. */
   get discontinuitySerial(): number { return this.placementSerial; }
@@ -2754,6 +2900,12 @@ export class EucController {
     // invulnerability lapses they are genuinely in it.
     this.inHazard = false;
     this.inSoftBody = false;
+    // A placement on a pad has already decided that visit, and the seat's pads
+    // stay inert until it has ridden clear of every footprint (M42).
+    this.launchPadLatch = this.launchPads.inFootprint(this.x, this.z);
+    this.launchPadRearmMetres = LAUNCH_PAD.rearmMetres;
+    this.launchPadRearmRidden = false;
+    this.justPadLaunched = false;
 
     // A reset lands the rider on the ground, upright, with nothing in flight.
     // Quick reset is also M6's crash recovery and M10's checkpoint respawn, and
@@ -2817,8 +2969,8 @@ export class EucController {
     this.clearContactRecovery();
 
     this.sampler.sampleGround(this.x, this.z, this.ground);
-    this.y = this.ground.height;
-    this.groundY = this.ground.height;
+    this.settleGroundY();
+    this.y = this.groundY;
     this.surface = this.ground.surface;
     this.traction = this.ground.traction ?? this.ground.surface;
     this.offCourse = this.ground.offCourse;
@@ -2891,6 +3043,7 @@ export class EucController {
     this.justTookOff = false;
     this.justTouchedDown = false;
     this.justHopped = false;
+    this.justPadLaunched = false;
     this.collisionImpact = 0;
 
     // -- 0a. A crash owns the whole step (M6) -------------------------------
@@ -3491,7 +3644,9 @@ export class EucController {
     this.surface = this.ground.surface;
     this.traction = this.ground.traction ?? this.ground.surface;
     this.offCourse = this.ground.offCourse;
-    this.groundY = this.ground.height;
+    // The ride surface: the lawn, plus a standing launch pad's dome (M42 R16),
+    // so the wheel rides up a pad and a flight lands on it.
+    this.settleGroundY();
 
     // **The kerb costs speed, and only speed** (M13). M6 added the wobble half
     // that `docs/PLANS.md` §6 beat 3 had asked for since the plan was approved
@@ -3522,6 +3677,10 @@ export class EucController {
       this.leaveGround(previousY, speed * Math.sin(this.slope), travelX, travelZ);
     } else {
       this.y = this.groundY;
+      // **The city launch pad** (M42): the one new way a flight begins, and it
+      // begins through the same `leaveGround` — so the flight, the judged
+      // landing, the 180, the one-foot and the trick facts are M36's, unchanged.
+      this.stepLaunchPad(speed, travelX, travelZ, dt, throttle !== 0 || steer !== 0);
     }
     this.grounded = !this.airborne;
 
@@ -3788,6 +3947,14 @@ export class EucController {
       // A rider ploughing through a hedge is not somewhere to restore to,
       // for the pothole's own reason (M15).
       && !this.inSoftBody
+      // Never on an armed launch pad (M42): a recovery restores speed, and a
+      // safe point on the pad would throw the rider straight back off it.
+      // Nor on a drawn one (R16): a respawn is never set down on a dome — whose
+      // foot reaches beyond the footprint (critic repair r4), so its rise counts too.
+      // **Gated on the pad standing**: city lawns store safe points today, so a
+      // hidden, disarmed pad in Chase, Challenge or Knockabout must not move a respawn.
+      && !((this.launchPadsArmed || this.launchPadsShown)
+        && (this.launchPads.inFootprint(this.x, this.z) || this.launchPads.riseAt(this.x, this.z) > 0))
       && this.surface !== 'spill'
       && this.wobbleEnergy < t.crashSafeWobbleCeiling
       && this.tiltBack < 1e-6
@@ -4553,7 +4720,7 @@ export class EucController {
     this.surface = this.ground.surface;
     this.traction = this.ground.traction ?? this.ground.surface;
     this.offCourse = this.ground.offCourse;
-    this.groundY = this.ground.height;
+    this.settleGroundY();
     this.y = this.groundY;
     this.grounded = true;
     this.wheelSpin += (moved.keptX * forwardX + moved.keptZ * forwardZ) / t.wheelRadius;
@@ -4747,7 +4914,7 @@ export class EucController {
       || this.obstacleWithinWheelRadius(dx, dz)) return false;
     const oldX = this.x, oldZ = this.z, forwardX = this.airborne ? this.airDirX : Math.sin(this.headingY), forwardZ = this.airborne ? this.airDirZ : Math.cos(this.headingY);
     this.commit(dx, dz, true);
-    if (lying) { this.groundY = this.ground.height; this.y = this.groundY; }
+    if (lying) { this.settleGroundY(); this.y = this.groundY; }
     // Contact displacement has the same wheel-distance/spin accounting as the
     // native advance. It is no second dt or force update and changes no Y.
     this.wheelSpin += (dx * forwardX + dz * forwardZ) / this.tuning.wheelRadius;
@@ -4828,6 +4995,12 @@ export class EucController {
     this.collisionImpact = 0;
     this.inHazard = false;
     this.inSoftBody = false;
+    // The recovery's restored speed, aimed back along the safe line, must not
+    // carry the rider straight into the pad that threw them (M42).
+    this.launchPadLatch = this.launchPads.inFootprint(this.x, this.z);
+    this.launchPadRearmMetres = LAUNCH_PAD.rearmMetres;
+    this.launchPadRearmRidden = true;
+    this.justPadLaunched = false;
     this.lastStepUp = 0;
     this.curbAhead = 0;
     this.slope = 0;
@@ -4871,8 +5044,8 @@ export class EucController {
     // started the spring at zero on rough ground would bounce for a second,
     // which reads as the rider dropping in from a height they never had.
     this.sampler.sampleGround(this.x, this.z, this.ground);
-    this.y = this.ground.height;
-    this.groundY = this.ground.height;
+    this.settleGroundY();
+    this.y = this.groundY;
     this.surface = this.ground.surface;
     this.traction = this.ground.traction ?? this.ground.surface;
     this.offCourse = this.ground.offCourse;
@@ -5475,7 +5648,10 @@ export class EucController {
     const predicted = normal.y > 1e-4
       ? -(normal.x * deltaX + normal.z * deltaZ) / normal.y
       : 0;
-    return this.probe.height - this.y - predicted;
+    // On the ground the wheel stands a launch pad's dome above the lawn
+    // (`launchPadRise`, 0 elsewhere): the step is judged lawn to lawn, so the
+    // dome is ridden, never a kerb, a refusal or a ledge (M42 R16).
+    return this.probe.height - (this.y - this.launchPadRise) - predicted;
   }
 
   /**
@@ -5696,6 +5872,69 @@ export class EucController {
     // The preload the compression put into the spring comes back out.
     // "Suspension rebounds, tire leaves ground" (motion reference §12.2).
     this.suspensionVelocity += launch * t.hopSuspensionRebound;
+  }
+
+  /**
+   * The city launch pad's one grounded decision — M42 (`docs/PLANS.md` §42.2e).
+   *
+   * Called only from §8b's grounded branch, after the wheel has been put on the
+   * ground for this step. Inside a pad's trigger circle the visit is decided
+   * exactly once: an armed, re-armed, unlatched seat moving at
+   * `LAUNCH_PAD.minimumLaunchSpeed` or more leaves the ground through
+   * `leaveGround`, from any heading; anything else inside the trigger (too
+   * slow, disarmed, not yet re-armed) latches without launching, so rolling in
+   * slowly, stopping and accelerating away never fires. Outside every
+   * footprint, on the ground, the latch clears and the re-arm distance runs
+   * down — after a crash recovery, only while the rider is giving input. Nothing here runs in the air, which is what keeps a
+   * short flight that lands back on its own pad from relaunching.
+   *
+   * No wobble, no energy, no speed change: the M13 census of `injectWobble`
+   * callers is untouched, and the pad is a launch, not a hazard.
+   */
+  private stepLaunchPad(speed: number, travelX: number, travelZ: number, dt: number, riding: boolean): void {
+    const pads = this.launchPads;
+    if (pads.count === 0) return;
+    const index = pads.at(this.x, this.z);
+    if (index >= 0) {
+      if (this.launchPadsArmed && !this.launchPadLatch && this.launchPadRearmMetres <= 0
+        && !this.crashing && Math.abs(speed) >= LAUNCH_PAD.minimumLaunchSpeed) {
+        // From the top of the dome (`groundY` carries its rise), so the cap's
+        // Δh is the site's drop plus that rise: still ≤ R over the lowest lawn.
+        this.leaveGround(this.groundY, this.launchPadTakeoffSpeed(speed, pads.dropAt(index) + this.launchPadRise),
+          travelX, travelZ);
+        this.justPadLaunched = true;
+      }
+      this.launchPadLatch = true;
+      return;
+    }
+    if (!pads.inFootprint(this.x, this.z)) {
+      this.launchPadLatch = false;
+      if (riding || !this.launchPadRearmRidden) {
+        this.launchPadRearmMetres = Math.max(0, this.launchPadRearmMetres - Math.abs(speed) * dt);
+      }
+    }
+  }
+
+  /**
+   * The pad's takeoff vertical speed under the per-site flight cap, m/s.
+   *
+   * vz = min(Pad lift, g·R/(2|v|) − Δh·|v|/R), R = `maximumFlightMetres`,
+   * Δh = the site's drop below its centre within R + the trigger radius (the
+   * ground a flight can reach). Solving
+   * vz·τ − g·τ²/2 = −Δh at τ = R/|v| gives the largest vz whose ballistic
+   * flight has reached that disc's lowest ground by the time it has covered R
+   * horizontally; air drag only shortens it. So the flight meets the ground
+   * within R of the takeoff at any speed, the `?mph=90` cutout edge
+   * included — and so never over ground lower than Δh. **No floor**: the old 3.0 m/s floor let a fast flight outrun the
+   * disc. A level site keeps the full Pad lift up to ≈ 23 m/s.
+   */
+  private launchPadTakeoffSpeed(speed: number, dropMetres: number): number {
+    const reach = LAUNCH_PAD.maximumFlightMetres;
+    // The ε of the formula: a launch already needs |v| ≥ the minimum launch
+    // speed, so this guard never changes a real takeoff; it only keeps the
+    // division honest for a caller that forgot the gate.
+    const v = Math.max(Math.abs(speed), LAUNCH_PAD.minimumLaunchSpeed);
+    return Math.min(this.launchPadVerticalSpeed, (this.tuning.gravity * reach) / (2 * v) - (dropMetres * v) / reach);
   }
 
   /**
@@ -6047,6 +6286,19 @@ export class EucController {
    */
   get hopped(): boolean {
     return this.justHopped;
+  }
+
+  /**
+   * True on exactly the step a **city launch pad** threw the wheel — M42.
+   *
+   * Always alongside `tookOff`, never alongside `hopped`: a pad flight is a
+   * flight (the 180 and the one-foot work on it) but not a hop the rider made,
+   * so no charged-hop credit. The composition root reads it to play the hop
+   * cue at charge 0 rather than the stale `lastHopCharge`, and to leave a new
+   * player's hop hint unretired.
+   */
+  get padLaunched(): boolean {
+    return this.justPadLaunched;
   }
 
   /**
@@ -6865,7 +7117,7 @@ export class EucController {
     const hung = bodies.length ? createPose() : null;
     if (hung) this.writePose(hung);
     this.beginCrash('obstacle', speed, side, motion, glance, this.ground.height + height);
-    this.groundY = this.ground.height; this.y = this.groundY;
+    this.settleGroundY(); this.y = this.groundY;
     this.wheelCrashPop = height;
     // Let go above someone, the wheel drops beside them, never through them
     // (review r3: off a bay edge over a worker it fell 2 m into his hull).
@@ -6902,7 +7154,9 @@ export class EucController {
     integrate: (working: EucController) => boolean = working => { working.step(record.dt, record.actions); return true; }, admit = true): boolean {
     let working = this.reactionController;
     if (!working) {
-      working = new EucController(this.sampler, { hazards: this.hazards, softBodies: this.softBodies });
+      working = new EucController(this.sampler, {
+        hazards: this.hazards, softBodies: this.softBodies, launchPads: this.launchPads,
+      });
       working.style = { ...this.style }; this.reactionController = working;
     }
     working.copyStepConfigurationFrom(this); working.copyMutableStateFrom(this);

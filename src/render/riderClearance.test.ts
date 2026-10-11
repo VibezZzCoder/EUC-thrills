@@ -44,6 +44,7 @@ import {
   SEAL_SEAT,
 } from './sealOnAWheelLook.ts';
 import { loftGeometry, type LoftProfile } from './blockoutKit.ts';
+import { WYLDIST_HIP_DOME_APEX, WYLDIST_LOOK } from './wyldistLook.ts';
 
 /**
  * The skirt clears the legs, measured — M14.5 second look pass.
@@ -2628,6 +2629,19 @@ function drunkardHeldStances(
       stances.push({ label: `wobble ${wobbleFight}, phase ${wobbleSway}`, wobbleFight, wobbleSway, torsoPitch: torsoPitchFor(0) });
     }
   }
+  // The eased carriage (owner, 2026-10-10): every low-speed stance and the
+  // stagger again with the arms eased, as a rider at walking pace holds them
+  // (`armEaseForSpeed`). The rest stance above is eased by its own blend; the
+  // presentation folds, the air and a crash take the ease back in the rig.
+  // Round 2 carried the ease to 16 m/s, into the share band's bottom; a full
+  // share is only reached past 22 m/s, where it is gone, so pairing it with
+  // the ease here would assert a pose no ride holds — the eased band is
+  // ridden instead (`riderClearanceRidden.test.ts`, `EASED_HOLDS`).
+  for (const stance of stances.slice()) {
+    if (stance.label.endsWith(', slow') || stance.label.startsWith('wobble ')) {
+      stances.push({ ...stance, label: `${stance.label}, eased`, armEase: 1 });
+    }
+  }
   // The one-foot air pose (M36 §36.5), at the shipped released side and with
   // his weave composed onto it. The can hangs off a fist beside a thigh, and
   // the gesture's whole job is to move a thigh — which is why the *side* it
@@ -3246,6 +3260,7 @@ const HIP_DOME_RIDERS: ReadonlyArray<{
   // sway — his is a sober seat — so the plain counter-roll, as Wheel in
   // Motion's and FloWithZo's.
   { name: 'Seal on a Wheel', look: SEAL_ON_A_WHEEL_LOOK, apexY: SEAL_HIP_DOME_APEX, sways: [0], pelvisRoll: pelvisCounterRoll },
+  { name: 'Wyldist', look: WYLDIST_LOOK, apexY: WYLDIST_HIP_DOME_APEX, sways: [0], pelvisRoll: pelvisCounterRoll },
 ];
 
 for (const { name, look, apexY, sways, pelvisRoll } of HIP_DOME_RIDERS) test(`${name}'s thighs end in a hip dome that stays inside his seat through every held corner`, () => {
@@ -3555,6 +3570,10 @@ test('the one-foot air gesture is measured on both sides, on every look and the 
     ['drunkard', -0.025],
     ['flo-with-zo', -0.100],
     ['seal-on-a-wheel', -0.110],
+    // M41 candidate r3: reshaped seat reads -131.6 mm on both sides; rounded
+    // away to 5 mm. This is the new look's measurement, not a garment floor:
+    // held/ridden hip-dome floors above and in the ridden sweep still hold.
+    ['wyldist', -0.135],
     ['cop', -0.080],
   ]);
   for (const [id, result] of worstPerSide) {

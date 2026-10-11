@@ -7,6 +7,8 @@ import { ATLAS_REGIONS, createMaribelAtlas, type AtlasRegionName } from './marib
 import type { PatchSpan } from './wimAtlas.ts';
 import { createWimMachineAtlas, wimMachineRegion, type WimMachineLayout } from './wimMachineAtlas.ts';
 import { createDrunkardMachineAtlas, drunkardMachineRegion, type DrunkardMachineLayout } from './drunkardMachineAtlas.ts';
+import { WYLDIST_MACHINE_LOOK } from './wyldistMachineLook.ts';
+export { WYLDIST_MACHINE_LOOK } from './wyldistMachineLook.ts';
 
 /**
  * What a machine *looks like* — M19 Phase 2's axis.
@@ -3920,6 +3922,7 @@ const MACHINE_LOOKS: readonly MachineLook[] = Object.freeze([
   DRUNKARD_MACHINE_LOOK,
   FLO_WITH_ZO_MACHINE_LOOK,
   SEAL_ON_A_WHEEL_MACHINE_LOOK,
+  WYLDIST_MACHINE_LOOK,
 ]);
 
 /**

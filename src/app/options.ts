@@ -149,6 +149,14 @@ export interface GameOptions {
    */
   readonly fieldOfViewTrim: number;
   readonly speedUnit: SpeedUnit;
+  /**
+   * Whether seat 0's speed lane shows a small `NN FPS` frame-rate readout (M42,
+   * the owner's ask, off by default). Presentation only: it reads the window's
+   * real frame clock in `Game.beforeFrame` and nothing under `simulation/`
+   * sees it. The counter is the owner's instrument — agents build and verify
+   * it structurally and never read its value (AGENTS invariant 11).
+   */
+  readonly showFps: boolean;
 
   // -- Audio ----------------------------------------------------------------
   readonly volumeMaster: number;
@@ -228,6 +236,7 @@ export const DEFAULT_OPTIONS: GameOptions = Object.freeze({
   quality: 'high' as QualityLevel,
   fieldOfViewTrim: 0,
   speedUnit: 'kph' as SpeedUnit,
+  showFps: false,
 
   // Unity across the board, because the owner accepted the M8 mix at exactly
   // these levels on 2026-08-05. A default that trimmed anything would silently
@@ -314,6 +323,7 @@ export function coerceOptions(raw: unknown, base: GameOptions = DEFAULT_OPTIONS)
     speedUnit: SPEED_UNITS.includes(record.speedUnit as SpeedUnit)
       ? (record.speedUnit as SpeedUnit)
       : base.speedUnit,
+    showFps: typeof record.showFps === 'boolean' ? record.showFps : base.showFps,
 
     volumeMaster: typeof record.volumeMaster === 'number'
       ? clamp01(record.volumeMaster)
@@ -492,6 +502,7 @@ export function sameOptions(a: GameOptions, b: GameOptions): boolean {
     || a.quality !== b.quality
     || a.fieldOfViewTrim !== b.fieldOfViewTrim
     || a.speedUnit !== b.speedUnit
+    || a.showFps !== b.showFps
     || a.volumeMaster !== b.volumeMaster
     || a.volumeSfx !== b.volumeSfx
     || a.volumeUi !== b.volumeUi

@@ -258,6 +258,10 @@ test('VIS-CRASH-1: riding into a person, the body pitches on into them and down 
     for (let i = 0; i < 1500 && !crashPose; i += 1) { harness.step(ride(harness.controller.snapshot().speed < speed ? 1 : 0.05)); if (harness.controller.crashed) crashPose = harness.pose(); }
     assert.ok(crashPose, `${speed} m/s: the rider crashes on the person`);
     assert.equal(harness.population.snapshot().actors[0].activity, 'impacted', `${speed} m/s: the person reacts`);
+    // M42: a crash into them is a knock-down, away from the rider (who rode +Z into them).
+    const struck = harness.population.snapshot().actors[0];
+    assert.equal(struck.impactReaction, 'knockdown', `${speed} m/s: the person is knocked down`);
+    assert.ok(Math.abs(struck.impactFallYaw!) < 0.5, `${speed} m/s: and falls away from the rider (${struck.impactFallYaw!.toFixed(2)} rad)`);
     const { nearest, wheel, backward, pelvis } = followFall(`person ${speed} m/s`, harness, actor, crashPose);
     assert.ok(nearest < .12, `${speed} m/s: the body reaches the person (${nearest.toFixed(2)} m)`);
     assert.ok(wheel < .12, `${speed} m/s: the riderless wheel rolls on to the person (${wheel.toFixed(2)} m)`);
@@ -379,6 +383,7 @@ test('R2C-5: a rider holding the throttle into a walker, from behind at his shut
       if (stop >= 0 && Math.abs(now.position.z - stopZ) > 1) { pinned = Math.max(pinned, (i - stop) * DT); stop = -1; }
       if (met >= 0 && now.position.z > actor.footprint.z + 1.5) passed = i;
       flinches += Number(impacted && !wasImpacted); wasImpacted = impacted;
+      assert.equal('impactReaction' in actor, false, `${label}: a push at walking pace is never a knock-down (M42, tick ${i})`);
       assert.equal(harness.controller.crashed, false, `${label}: a push at walking pace is no crash`);
       assert.ok(mountedGap(harness.pose(), actor.footprint) >= -SWEEP_RESOLUTION, `${label}: never into the walker (tick ${i})`);
     }

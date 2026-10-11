@@ -205,6 +205,19 @@ export interface SampleBank {
    */
   readonly crashSealOnAWheel: AudioBuffer;
   /**
+   * Wyldist's (M41) — the Adonisb2 path: a recording of his own fall, cut from
+   * riding footage he supplied by `tools/make-crash-wyldist.mjs`, with the
+   * voice of the companion filming in it (`docs/PLANS.md` §41).
+   *
+   * **Required, and this is the one interim that parked on Cool Rider's file
+   * rather than Red Rider's** (q230). His seat carried `'cool-rider'` as a
+   * declared temporary voice in `data/riders.ts`, never as a fallback here, so
+   * the one way it could survive its own removal is a bank that quietly lacks
+   * this buffer while `lastCrashVoice` reports `wyldist` — and he would crash
+   * to the owner's own voice. Required means the compiler notices first.
+   */
+  readonly crashWyldist: AudioBuffer;
+  /**
    * The Drunkard's (M29) — composed on Trollina's mechanism from a generated
    * take, by `tools/make-crash-drunkard.mjs` (`docs/PLANS.md` §29.12).
    *
@@ -271,7 +284,8 @@ export type { CrashVoiceId } from './director.ts';
  * M35 each walked that same path — a seat parked on `'red-rider'` in the data,
  * spent later for a file of its own — which is why the eighth and ninth arms
  * below cost one line in `data/riders.ts` and one `case` here apiece
- * (`docs/PLANS.md` §34.10, §35.6).
+ * (`docs/PLANS.md` §34.10, §35.6). M41's tenth arm cost the same, though its
+ * seat was parked on `'cool-rider'` rather than `'red-rider'` (q230).
  */
 export function crashFor(voice: CrashVoiceId, bank: SampleBank): AudioBuffer {
   switch (voice) {
@@ -291,6 +305,8 @@ export function crashFor(voice: CrashVoiceId, bank: SampleBank): AudioBuffer {
       return bank.crashFloWithZo;
     case 'seal-on-a-wheel':
       return bank.crashSealOnAWheel;
+    case 'wyldist':
+      return bank.crashWyldist;
     case 'cool-rider':
       return bank.crash;
   }

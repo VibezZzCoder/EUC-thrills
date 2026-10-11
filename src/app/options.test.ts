@@ -49,6 +49,11 @@ test('the defaults reproduce the accepted M8 mix and camera FOV trim', () => {
   assert.equal(DEFAULT_OPTIONS.volumeMusic, 1);
   assert.equal(DEFAULT_OPTIONS.muted, false);
   assert.equal(DEFAULT_OPTIONS.fieldOfViewTrim, 0);
+  // M42: the frame-rate counter is the owner's opt-in instrument, off for
+  // everybody until they tick it, on every device.
+  assert.equal(DEFAULT_OPTIONS.showFps, false);
+  assert.equal('showFps' in deviceDefaults(true), false, 'the counter is not device-dependent');
+  assert.equal('showFps' in deviceDefaults(false), false, 'the counter is not device-dependent');
 });
 
 test('every field is clamped or rejected rather than trusted', () => {
@@ -82,6 +87,11 @@ test('every field is clamped or rejected rather than trusted', () => {
   assert.equal('somethingFromANewerBuild' in options, false, 'unknown fields are dropped');
 
   assert.equal(coerceOptions({ fieldOfViewTrim: -999 }).fieldOfViewTrim, FOV_TRIM_MIN);
+
+  // M42: a string is not a Boolean, so a hand-edited "true" falls back to off.
+  assert.equal(coerceOptions({ showFps: 'true' }).showFps, false);
+  assert.equal(coerceOptions({ showFps: 1 }).showFps, false);
+  assert.equal(coerceOptions({ showFps: true }).showFps, true);
 });
 
 test('the touch settings are clamped and rejected like everything else', () => {
@@ -120,6 +130,8 @@ test('a touch setting changing is a real change, and an equal one is not', () =>
     // M14.5. A rider that did not compare here would be a rider the game
     // forgot on every reload, with no error and nothing to report.
     { character: 'trollina' as const },
+    // M42. Without it the counter neither saves nor reaches `applyOptions`.
+    { showFps: true },
   ]) {
     assert.equal(
       sameOptions(DEFAULT_OPTIONS, coerceOptions({ ...DEFAULT_OPTIONS, ...patch })),
@@ -167,6 +179,20 @@ test('the store loads what it saved, across a fresh construction', () => {
   assert.equal(reloaded.current.fieldOfViewTrim, 6);
   assert.equal(reloaded.current.quality, 'low');
   assert.equal(reloaded.current.muted, true);
+});
+
+test('the frame-rate counter survives a reload and a reset clears it (M42)', () => {
+  const backing = new MemoryStore();
+  const store = new OptionsStore(new SafeStorage(backing));
+  store.set({ showFps: true });
+  assert.equal(store.current.showFps, true);
+
+  const reloaded = new OptionsStore(new SafeStorage(backing));
+  assert.equal(reloaded.current.showFps, true, 'the counter did not persist');
+
+  reloaded.reset();
+  assert.equal(reloaded.current.showFps, false, 'reset left the counter on');
+  assert.equal(new OptionsStore(new SafeStorage(backing)).current.showFps, false);
 });
 
 test('a corrupt saved record does not stop the game starting', () => {

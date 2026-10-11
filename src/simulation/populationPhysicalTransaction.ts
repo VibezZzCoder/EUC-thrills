@@ -1,5 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 /** Controller-owned whole fixed-step refusal; publication happens after the final batch. */
+import { EUC } from '../data/tuning.ts';
 import type { EucDynamicWorld, EucHeldPhysicalContact, EucPose, EucPreparedStep } from './EucController.ts';
 import type { PopulationSimulation, PopulationContact, PopulationFootprint, PopulationOccupant, PopulationReservation, PopulationPhysicalFinalByOwner } from './population.ts';
 import { adoptPopulationEnvelopeProof, type PopulationCompoundActorMotion, type PopulationCompoundHit, type PopulationCompoundMotionBatch, type PopulationCompoundTrajectory, type RefinementWork } from './populationCompound.ts';
@@ -11,6 +12,8 @@ export interface PopulationPhysicalController {
   readonly discontinuitySerial: number;
   /** Live (start-of-step) crash state; prepared candidates stay private until commit. */
   readonly crashed?: boolean;
+  /** Normal closing speed of this step's solid or contact crash, m/s; 0 for none and for a held-air bail (M42). */
+  readonly obstacleImpact?: number;
   respondToHeldPhysicalContact(token: EucPreparedStep, held?: EucHeldPhysicalContact): { admitted: boolean; inputAdvanced: boolean };
   /** Whether a refused step's own travel could reach this fraction of the step (ground and solids). */
   physicalContactReachable?(token: EucPreparedStep, fraction: number): boolean;
@@ -184,6 +187,9 @@ export function commitPopulationPhysicalTransaction(input: PopulationPhysicalTra
   // A walker turning round at its shuttle end into a stopped rider's body
   // refused the rider's every input, braking and reversing included.
   const eligible = new Set(input.preparedSeats.map(seat => seat.id));
+  // M42: who was already down at the start of the step, before any replay, so
+  // a knock-down answers only an upright-to-crashed edge, never a falling owner.
+  const wasCrashed = new Map(input.preparedSeats.map(seat => [seat.id, seat.controller.crashed === true]));
   let owners: PopulationPhysicalOwner[] = [], resolution: PopulationWholeStepResolution & { readonly yieldedActorIds?: readonly string[] }, motionReproofPasses = 0;
   const yielded = new Set<string>();
   if (preferred.size) {
@@ -283,6 +289,14 @@ export function commitPopulationPhysicalTransaction(input: PopulationPhysicalTra
       heldContact(seat.kind, reason, hit, met.has(seat.id), normal));
     const out = seat.pose; seat.controller.writePose(out);
     contactResponses.push({ ownerId: seat.id, ...response });
+    // M42: a human rider (a couch cop seat included) who crashed on this
+    // person in this response knocks them down: upright at the step's start,
+    // crashed now, with an obstacle impact — grounded or held in the air. A
+    // held-air bail has no impact; a CPU cop never crashes on a person.
+    if (seat.kind === 'human' && reason === 'contact' && hit && normal && wasCrashed.get(seat.id) === false
+      && seat.controller.crashed === true && (seat.controller.obstacleImpact ?? 0) >= EUC.obstacleCrashSpeed) {
+      population.knockDown(hit.actorId, normal.x, normal.z);
+    }
   }
   for (const seat of input.preparedSeats) seat.controller.publishPreparedPlacements(seat.token);
   // Only the last two distinct candidates (a selection and its replay) can recur.

@@ -40,6 +40,8 @@ import { createMetricFacade, type MetricFacade, type MetricFacadeReport } from '
 import { metricFacadeRequestFromSearch } from './metricFacadePreparation.ts';
 import { UltraSupplements } from './ultra/ultraSupplements.ts';
 import { createEnvironmentVegetation, type EnvironmentVegetation, type EnvironmentVegetationReport } from './environmentVegetation.ts';
+import { createLaunchPadView, EMPTY_LAUNCH_PAD_REPORT, type LaunchPadView, type LaunchPadViewReport } from './launchPadView.ts';
+import { createBirds, EMPTY_BIRDS_REPORT, type Birds, type BirdsReport } from './birds.ts';
 import { type SharedVegetationReport } from './sharedVegetationCost.ts';
 import { createGhostRider, type GhostRider } from './ghostRider.ts';
 import { createCopRider, type CopRider } from './copRider.ts';
@@ -679,6 +681,24 @@ export function forcedPresentation(
 }
 
 /**
+ * M42 (docs/PLANS.md §42): the free-ride launch pads, as `presentation()`
+ * reports them (`render/launchPadView.ts`). `ids` and `visible` are what the
+ * QA bridge and the parity spec read, and `visible` is the renderer's own
+ * state (the pad group's), never a flag `Game` stores. Priced whether shown
+ * or not: `drawCalls`/`colourTriangles`/bytes describe what is installed.
+ */
+export type LaunchPadPresentationReport = LaunchPadViewReport;
+
+/**
+ * M42: the render-only bird flock, as `presentation()` reports it
+ * (`render/birds.ts`). `drawn` is set by the flock mesh's `onBeforeRender` in
+ * the last rendered frame; `nextPass` and `clockSeconds` are world-clock
+ * seconds (the simulation clock since the world's first drawn frame); both
+ * are null/zero for a world with no flock.
+ */
+export type BirdPresentationReport = BirdsReport;
+
+/**
  * `GameRenderer.presentation()` from M39: the ordinary `PresentationSelection`
  * fields, unchanged in name and meaning — they describe what was **actually
  * built**, which on an Ultra world is the Ultra rung — plus the tier the frame
@@ -714,6 +734,10 @@ export interface RendererPresentation {
   /** Installed cullable partitions; source admission/recipe verdicts stay historical. */
   readonly spatialBatching: SpatialBatchingDelta;
   readonly spatialGeometry: import('./terrain.ts').TerrainSpatialGeometryReport | null;
+  /** M42: the free-ride launch pads (zeros until Builder B's view is installed). */
+  readonly launchPads: LaunchPadPresentationReport;
+  /** M42: the bird flock (zeros until Builder B's flock is installed). */
+  readonly birds: BirdPresentationReport;
 }
 
 /** A failed program's logs, for the Ultra shader-error hook (three's own report is silenced by a hook). */
@@ -811,6 +835,22 @@ export class GameRenderer {
   private districtExteriorAppearance: ReturnType<typeof createDistrictExteriorAppearance> | null = null;
   private districtDecor: DistrictDecor | null = null;
   private vegetation: EnvironmentVegetation | null = null;
+  /** M42: the world's launch pads (one instanced mesh; priced shown or hidden). */
+  private launchPadView: LaunchPadView | null = null;
+  /**
+   * M42: whether the mode shows the pads — the app's call, held here for the
+   * reason `checkpointsVisible` is: a rebuild re-applies it, so a world swap
+   * can never bring the pads back in the wrong state.
+   */
+  private launchPadsVisible = false;
+  /**
+   * M42: how many `warmPrograms` calls are in flight, each holding the pads
+   * shown for upload. A count, not a flag, so overlapping warms never hide
+   * the next world's pads between its compile and its zero-area draw.
+   */
+  private padWarms = 0;
+  /** M42: the render-only flock; parked, never hidden, between passes. */
+  private birds: Birds | null = null;
   /** One physical world's view, retained through pane/tier/context changes. */
   private population: PopulationView | null = null;
   private readonly supplements = new UltraSupplements();
@@ -1460,6 +1500,11 @@ export class GameRenderer {
     this.preparedGroundEdges = null;
     this.groundEdgeRefusal = null;
     this.supplements.dispose();
+    // M42: after the Ultra overlay has handed the pads their own material back.
+    this.launchPadView?.dispose();
+    this.launchPadView = null;
+    this.birds?.dispose();
+    this.birds = null;
     this.metricFacade?.dispose();
     this.metricFacade = null;
     this.districtExterior?.dispose();
@@ -1535,8 +1580,17 @@ export class GameRenderer {
     this.scene.add(this.vegetation.group);
     freezeStaticTransforms(this.districtExterior.group);
     freezeStaticTransforms(this.vegetation.group);
+    // M42: the pads (the memoised finder's sites, priced in every mode) and the
+    // flock. The pads re-apply the mode's flag and join the Ultra roots; the
+    // flock moves by its own matrix, so it is neither a root nor frozen.
+    this.launchPadView = createLaunchPadView(plan, supplements.launchPads);
+    this.launchPadView.setVisible(this.launchPadsVisible || this.padWarms > 0);
+    this.scene.add(this.launchPadView.group);
+    freezeStaticTransforms(this.launchPadView.group);
+    this.birds = createBirds(supplements.birds);
+    this.scene.add(this.birds.group);
     this.supplements.setRoots([this.streetLife.group, this.environmentDecor.group, this.districtDecor.group, this.districtExterior.group,
-      ...(this.metricFacade ? [this.metricFacade.group] : [])]);
+      ...(this.metricFacade ? [this.metricFacade.group] : []), this.launchPadView.group]);
     this.supplements.sync(this.ultra.supplementContext());
 
     // The gates are part of the level and are rebuilt with it. `plan.checkpoints`
@@ -1587,6 +1641,14 @@ export class GameRenderer {
   setCheckpointsVisible(visible: boolean): void {
     this.checkpointsVisible = visible;
     this.gates?.setVisible(visible);
+  }
+
+  /** M42: free-ride pads. Hidden costs zero draws; the pads stay priced either way. */
+  setLaunchPadsVisible(visible: boolean): void {
+    // Stored, so every rebuild re-applies it (`levelBuildSteps`). While the
+    // warm pass holds the pads shown for upload, the last warm's `finally` applies it.
+    this.launchPadsVisible = visible;
+    if (this.padWarms === 0) this.launchPadView?.setVisible(visible);
   }
 
   /**
@@ -1640,6 +1702,12 @@ export class GameRenderer {
     this.vegetation?.setDetail(this.effectiveTier() === 'ultra');
     this.districtExterior?.setDetail(this.effectiveTier() === 'ultra');
     this.vegetation?.update(seconds, reducedMotion);
+    // M42: the flock's world clock; the cameras still hold last frame's poses,
+    // which is all the pass-start/end guard and a pass's aim (laid across one
+    // view's heading, out of everyone's sight) ask of them.
+    this.birds?.update(seconds, reducedMotion, this.viewCameras);
+    // M42 R14: the pads' hovering marker turns slowly (nothing while hidden).
+    this.launchPadView?.update(seconds, reducedMotion);
   }
 
   /** Install after setLevel. This owns GPU presentation only; Game owns the
@@ -1819,6 +1887,10 @@ export class GameRenderer {
     const population = this.population?.report() ?? null;
     const spatialBatching = sumSpatialBatchingDeltas(terrain?.spatialBatching, districtExterior?.spatialBatching);
     const spatialGeometry = terrain?.spatialGeometry ?? null;
+    // M42: the installed pads and flock (zeros before a world is built).
+    const launchPads: LaunchPadPresentationReport = this.launchPadView?.report()
+      ?? { ...EMPTY_LAUNCH_PAD_REPORT, visible: this.launchPadsVisible };
+    const birds: BirdPresentationReport = this.birds?.report() ?? EMPTY_BIRDS_REPORT;
     if (built === null || terrain === null) return {
       ...selection,
       cost: withSpatialBatchingCost(selection.cost, spatialBatching),
@@ -1829,7 +1901,7 @@ export class GameRenderer {
       sharedVegetation: terrain?.sharedVegetation ?? null,
       vegetation, population, districtExterior, metricFacade, districtExteriorMaterialOwners,
       supplementMaterialOwners: this.supplements.materialOwners(),
-      spatialBatching, spatialGeometry,
+      spatialBatching, spatialGeometry, launchPads, birds,
     };
     return {
       recipe: built.recipe,
@@ -1848,7 +1920,7 @@ export class GameRenderer {
       sharedVegetation: terrain.sharedVegetation,
       vegetation, population, districtExterior, metricFacade, districtExteriorMaterialOwners,
       supplementMaterialOwners: this.supplements.materialOwners(),
-      spatialBatching, spatialGeometry,
+      spatialBatching, spatialGeometry, launchPads, birds,
     };
   }
 
@@ -1964,7 +2036,9 @@ export class GameRenderer {
     if (this.streetLife && prepared) bytes += this.streetLife.report().geometryBytes + prepared.street.price.textureBytes; // street report already includes instances
     if (this.environmentDecor && prepared) { const report = this.environmentDecor.report(); bytes += report.geometryBytes + report.instanceBytes + prepared.environment.price.textureBytes; }
     if (this.districtDecor && prepared) { const report = this.districtDecor.report(); bytes += report.geometryBytes + report.instanceBytes + prepared.district.price.textureBytes; }
-    for (const report of [this.terrain?.sharedVegetation, this.vegetation?.report(), this.districtExterior?.report(), this.metricFacade?.report(), this.population?.report()]) {
+    // M42: the pads and the flock, whose model rows are `countLaunchPads` and `countBirds`.
+    for (const report of [this.terrain?.sharedVegetation, this.vegetation?.report(), this.districtExterior?.report(), this.metricFacade?.report(), this.population?.report(),
+      this.launchPadView?.report(), this.birds?.report()]) {
       if (report) bytes += report.geometryBytes + report.instanceBytes;
     }
     return bytes;
@@ -2742,11 +2816,40 @@ export class GameRenderer {
    *    instance buffers upload. A zero-area scissor keeps every canvas pixel;
    *    each pane redraws its own shadow map on its next frame.
    *
-   * Nothing is created, hidden, shown or moved, and no cost is priced. A world
-   * swap, disposal or context loss during the wait skips the draw: that
-   * world's own cover warms it.
+   * Nothing is created, hidden or moved, and no cost is priced. A world swap,
+   * disposal or context loss during the wait skips the draw: that world's own
+   * cover warms it.
+   *
+   * **M42: the pads are the one thing shown.** A mode that hides them (Chase,
+   * Knockabout, Challenge) would otherwise leave their program and buffers to
+   * upload the moment free ride shows them, mid-session — a plateau failure.
+   * So the pad group is made visible *before* `compile` (and the zero-area
+   * draw uploads it), and the mode's flag is restored in a `finally` spanning
+   * the whole warm body — by the last of any overlapping warms (a count, not
+   * a flag); a `setLaunchPadsVisible` meanwhile is stored and applied there.
+   * The flock needs nothing: it is parked, never hidden.
    */
   async warmPrograms(): Promise<{ readonly programs: number; readonly milliseconds: number; readonly drawn: boolean }> {
+    const pads = this.launchPadView;
+    this.padWarms += 1;
+    pads?.setVisible(true);
+    try {
+      return await this.warmVisiblePrograms();
+    } finally {
+      this.padWarms -= 1;
+      // Only the last warm out restores the mode's flag: a warm that overlaps
+      // this one (a world swapped in during its wait) still holds the current
+      // pads shown through its own compile and zero-area draw (QA-B r1 m2).
+      if (this.padWarms === 0) {
+        pads?.setVisible(this.launchPadsVisible);
+        // A world swapped in during the wait applied the flag at its build.
+        this.launchPadView?.setVisible(this.launchPadsVisible);
+      }
+    }
+  }
+
+  /** `warmPrograms`' body: compile, then one zero-area draw of every visible owner. */
+  private async warmVisiblePrograms(): Promise<{ readonly programs: number; readonly milliseconds: number; readonly drawn: boolean }> {
     const started = performance.now();
     const camera = this.cameraFor(0), world = this.terrain, gl = this.renderer.getContext();
     const report = (drawn: boolean) => ({ programs: this.renderer.info.programs?.length ?? 0,
@@ -3004,6 +3107,10 @@ export class GameRenderer {
     this.districtExterior = null;
     this.metricFacade?.dispose();
     this.metricFacade = null;
+    this.launchPadView?.dispose();
+    this.launchPadView = null;
+    this.birds?.dispose();
+    this.birds = null;
     this.districtExteriorAppearance?.dispose();
     this.districtExteriorAppearance = null;
     oldPreparedSupplements?.dispose();

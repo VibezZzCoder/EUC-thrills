@@ -332,6 +332,38 @@ export const RIDER_BLOCKOUT = {
   armHangFraction: 0.93,
   /** Hands slightly forward of the shoulder, elbows slightly behind. */
   handForward: 0.12,
+  /**
+   * The eased carriage at a standstill and at walking pace (owner, 2026-10-10:
+   * "the way he holds out his arms is so stiff looking"). **Render-only**:
+   * the occupancy, contact core and ragdoll read the five numbers above and
+   * none of these. The carriage above sits at 98 % of reach on the left and
+   * past full reach on the right, so the elbows lock and, seen from the front,
+   * a backward bend projects onto a straight line. Eased, each hand comes
+   * `armEaseIn` closer and `armEaseForward` further forward and rises only as
+   * far as it must (capped at `armEaseRiseMax`) to leave the elbow at
+   * `armEaseElbow` interior; the elbow bows `armEaseElbowOut` outward as well
+   * as back, and the hand turns `armEaseHandRoll` from knuckles-forward toward
+   * palm-to-thigh. The right elbow eases `armEaseElbowRightBend` further, so
+   * the pair never settles into a mirror (critic round 1: both at one angle),
+   * and bows only `armEaseElbowOutRight` out, so the deeper bend points back
+   * rather than flaring wider than the left from the front.
+   * Full below `armEaseFullBelow` m/s, gone by `armEaseGoneAbove` — round 2
+   * moved it from 2 → 7 to 4 → 16 because plain cruising at 16–45 km/h still
+   * locked the old A-frame (half eased at 36 km/h now; attack starts at 7 and
+   * the carve stance at 8, so the held stances take it back on their own).
+   * The balance carriage owns the fast riding where the can's 40 mm ridden
+   * floor binds; ridden eased at 3–18 m/s, the can keeps ≥ 91 mm.
+   */
+  armEaseElbow: 2.42,
+  armEaseElbowRightBend: 0.15,
+  armEaseIn: 0.02,
+  armEaseForward: 0.02,
+  armEaseRiseMax: 0.07,
+  armEaseElbowOut: 0.6,
+  armEaseElbowOutRight: 0.45,
+  armEaseHandRoll: 0.9,
+  armEaseFullBelow: 4.0,
+  armEaseGoneAbove: 16.0,
 
   neckLength: 0.09,
   /** Helmet is a sphere of this radius; a bare head would read as smaller. */
@@ -4990,6 +5022,27 @@ export const BLOCKOUT_COLOURS = {
   machineSealPad: 0x37bde6,
   machineSealPink: 0xe23086,
   machineSealTrim: 0xe4e6ea,
+
+  /**
+   * Wyldist — M41. Two distinct pale printing grounds let the Hawaiian cloth
+   * and red helmet carry their own deterministic atlas pages. Skin is warm
+   * tan, the cargo/shoe field retains relief above near-black, and red and
+   * dark ink are restrained details rather than additional materials.
+   * Machine colours belong to the original C2 shell/pad/trim relationship;
+   * its lenses never replace the shared warning or headlight semantics.
+   */
+  wyldistPrint: 0xfbf9f4,
+  wyldistHelmetGround: 0xf8f6f2,
+  wyldistSkin: 0xd9a17b,
+  wyldistGear: 0x3b3b3c,
+  /** C4: the cargos' own matte charcoal, neutral (no brown or blue cast). */
+  wyldistCargo: 0x3a3a3a,
+  wyldistRed: 0xda3035,
+  wyldistInk: 0x252b30,
+  machineWyldistShell: 0x51565d,
+  machineWyldistPad: 0xc02d32,
+  machineWyldistTrim: 0x505459,
+  machineWyldistLens: 0xe1e4e4,
 
   /**
    * The ghost, and the checkpoint gates (M10).
@@ -9925,6 +9978,172 @@ export const PROTECTED_ACTIVITY = {
 } as const;
 
 /**
+ * M42 — the city launch pads (docs/PLANS.md §42). Omnidirectional lawn pads
+ * in the generated town, derived from the prepared plan and never written into
+ * it, armed in free ride only. Distances are metres, speeds metres/second,
+ * angles radians, times milliseconds and counts dimensionless.
+ *
+ * **Declared directly above the `TUNING` root on purpose:** the root names it
+ * (the F4 "Pad lift" slider addresses `LAUNCH_PAD.verticalSpeed` by path), and
+ * a `const` declared below the root is in the temporal dead zone when the root
+ * is built. Pre-staged by the M42 coordinator; Builder A owns the inside of
+ * this block and may add documented placement constants here.
+ *
+ * Derived, never typed: the clear radius = `maximumFlightMetres` +
+ * `triggerRadiusMetres` + `clearanceMarginMetres` (22.4 m); the missed-corner
+ * ray = `roadReachMetres` + `footprintRadiusMetres` (42 m); the missed-corner
+ * bend threshold = `missedCornerBendFactor` × v²/(g × `lateralCeilingG(v, …)`)
+ * at the shipped top speed (≈ 120 m).
+ */
+export const LAUNCH_PAD = Object.freeze({
+  // ── Launch ──
+  /** Trigger circle radius, m. Every heading alike; the kicker's light top has
+   * its faces on this circle (R16), so what looks launchable launches (was
+   * 1.1: only 30 % of the drawn pad fired). */
+  triggerRadiusMetres: 1.4,
+  /** The pad's latch disc, m: the boundary a fired or slow-entered pad
+   * re-arms outside, the finder's flat, grass and corridor radius, and (with
+   * the dome beyond it) the ground no safe point is stored on while the pad
+   * stands. */
+  footprintRadiusMetres: 2.0,
+  /** The pad's decor-free radius, m (nothing is drawn there since critic
+   * repair r4 removed the apron; never a trigger). The finder keeps
+   * render-only decor at least this + 0.5 m away. */
+  apronRadiusMetres: 3.5,
+  /** The ride surface (R16, 2026-10-10: an obvious ramp, never a hole; critic
+   * repair r4: a kicker's silhouette). A raised octagonal kicker: a concave
+   * skirt (`domeKnees`) rises from the foot octagon (corners on
+   * `domeFootRadiusMetres`) to a top octagon whose faces touch the trigger
+   * circle, so a wheel inside the trigger is always on the top and every
+   * launch leaves the lip. The lip's height over the lawn, m (0.30 read as a
+   * 5–7 px mat from the road at 720p; 0.60 measured 10–13 px of yellow at the
+   * critic's six road sightings, 34–43 m, short of their 12). Human seats ride it through the pad
+   * field only (`riseAt`, the drawn profile rolled by the wheel; never the
+   * shared sampler or the plan), and only while the pad is drawn; the view
+   * draws exactly this profile. */
+  domeHeightMetres: 0.75,
+  /** The light top's gentle crown at its centre over its edge, m. */
+  domeCrownMetres: 0.04,
+  /** The skirt's foot octagon's corner radius, m (6 m across its corners;
+   * critic repair r4): wider than the 2 m footprint so a tall lip still rises
+   * out of a ridable, concave run — and still within the finder's checked
+   * grass (footprint + `grassCheckMarginMetres`) and inside the decor-free
+   * `apronRadiusMetres`. The footprint stays the latch disc and the finder's. */
+  domeFootRadiusMetres: 3.0,
+  /** The skirt's two knees from the lip outward, each [share of the run from the
+   * top's edge, share of `domeHeightMetres`]: a concave kicker transition —
+   * a steep lip (≈ 51°), a middle (≈ 30°) and a shallow foot (≈ 13°). */
+  domeKnees: Object.freeze([
+    Object.freeze([0.2, 0.555] as const),
+    Object.freeze([0.555, 0.185] as const),
+  ] as const),
+  /** Slowest |speed| that launches, m/s (≈ 9 mph): walking pace does nothing. */
+  minimumLaunchSpeed: 4.0,
+  /** Takeoff vertical speed before the flight cap, m/s, off the kicker's top.
+   * Live on F4 ("Pad lift", 2.4–5.5). Critic repair r4: 4.2 → 2.85 with the
+   * lip 0.3 → 0.75 m, so the flight's apex over the lawn (≈ 1.17 m) and its
+   * landing stay R16's: the 180 and pavement land clean (0.98), air ≈ 0.78 s
+   * (R16 0.92, the flat pad 0.85). It starts 0.75 m up, so it still out-flies
+   * a charged hop (3.55 from the ground). On a pad's own lawn (grass
+   * roughness adds to the landing score) every slider value lands heavy below
+   * the cap speed (≈ 4 % speed at 2.85, never a crash; pinned by the pad
+   * bench) — a clean lawn landing now needs ≤ 1.3, a hop off the lip.
+   * The controller holds it as a primitive set by `setLaunchPadVerticalSpeed`. */
+  verticalSpeed: 2.85,
+  /** The per-pad flight cap R, m: vz = min(verticalSpeed, g·R/(2·max(|speed|, ε))
+   * − Δh·|speed|/R), Δh = the site's `dropMetres`, no floor. Keeps the
+   * horizontal flight ≤ R at every speed, `?mph=90` included. */
+  maximumFlightMetres: 20,
+  /** After `reset()`/`respawn()`, grounded distance outside every footprint
+   * before a seat's pads can fire again, m. After a crash recovery only
+   * distance ridden with throttle or steer input counts: near top speed the
+   * safe point predates tilt-back and can lie far back on the line to the
+   * pad, and a hands-off recovery coast must never be thrown again. */
+  rearmMetres: 8,
+  // ── Placement (the finder, `src/level/launchPadSites.ts`) ──
+  /** Candidate lattice pitch, m, anchored on the heightfield origin (integer keys). */
+  siteLatticeMetres: 2,
+  /** Gap from any non-grass heightfield cell, m, added to the footprint radius. */
+  corridorGapMetres: 8,
+  /** Findable: the farthest a site may sit from a road, m. */
+  roadReachMetres: 40,
+  /** Sightline (critic repair, 2026-10-10): a site counts only if, from some
+   * sample of a ridden line, a chase-camera point sees its centre unobstructed
+   * (`PlanTerrainSampler.raycast`, the camera's own occlusion ray, and no
+   * solid such as a trunk across it) and the wheel can ride straight from that
+   * sample to it. The camera point stands this far above the ridden surface
+   * at the sample, m. */
+  sightCameraHeightMetres: 2,
+  /** …and this far behind the sample along the travel heading, m. */
+  sightCameraBackMetres: 5,
+  /** The farthest camera-to-pad distance a sighting counts at, m. */
+  sightRoadMetres: 60,
+  /** Fewest sightings a site needs, count of (line sample, travel direction)
+   * pairs, samples ≈ 3.5 m apart: a pad glimpsed from one point of road at
+   * the edge of range is not a pad a rider finds. */
+  sightMinimumSightings: 3,
+  /** Half-angle of the travel cone the pad must lie in, seen from the camera
+   * point, rad (±40°; the chase view is ≈ ±48° at 16:9). */
+  sightConeRadians: 0.698,
+  /** The sighted point (the pad centre) stands this far above the ground
+   * there, m. */
+  sightTargetLiftMetres: 0.05,
+  /** A ray stopping this short of the sighted point still sees it (a grazing
+   * ray meeting the lawn at the pad's edge), m. */
+  sightHitToleranceMetres: 0.3,
+  /** Spacing of the straight wheel line from the sighting sample to the
+   * centre, m: each step must rise no more than the wheel's step-up and its
+   * pedal-wide obstacle cast must meet no solid (a fenced path is no access). */
+  sightAccessStepMetres: 0.25,
+  /** Added to flight cap + trigger radius for the clear radius, m. */
+  clearanceMarginMetres: 1,
+  /** Ridden surface must be grass within footprint + this, m. */
+  grassCheckMarginMetres: 1,
+  /** Corner-cut hull capsules join centreline samples this far apart, m [min, max]. */
+  cornerCutSampleMetres: Object.freeze([12, 60] as const),
+  /** Corner-cut capsule radius beyond the road half-width, m. */
+  cornerCutMarginMetres: 6,
+  /** Missed-corner bend threshold as a multiple of the grip-limit radius at the
+   * shipped top speed, dimensionless. */
+  missedCornerBendFactor: 1.5,
+  /** Missed-corner ray clearance beyond the ray, m. */
+  missedCornerMarginMetres: 6,
+  /** How far beyond the through route's half-width the generator places a
+   * hazard or a Knockabout target stand (`TARGET_RULES.vergeStandoff` × 1.6 =
+   * 0.88 m, rounded up), m. A site keeps the clear radius from that band, so
+   * no `?hazardprobe=`/`?targetprobe=` placement can land in a flight's path
+   * — without the finder ever reading hazards or targets. */
+  routeBandMarginMetres: 1,
+  /** Minimum distance from the spawn, m. */
+  spawnClearMetres: 40,
+  /** Half-angle of the spawn's forward cone for the first pick, rad (±35°). */
+  spawnConeRadians: 0.61,
+  /** Distance band of the spawn's forward cone, m [near, far]. */
+  spawnConeMetres: Object.freeze([40, 120] as const),
+  /** Largest ground height range inside the footprint, m. */
+  footprintFlatnessMetres: 0.08,
+  /** Largest ground height range inside the clear disc, m. */
+  clearFlatnessMetres: 0.6,
+  /** Added to the measured lowest ground a flight can reach (within flight cap
+   * + trigger, 21.4 m: every heightfield vertex inside, the rim every 0.1 m)
+   * for ground between rim samples, m — exact inside, ≤ 0.05 m on the rim up
+   * to a 1:1 slope. The site's `dropMetres` is centre − lowest + this, ≥ 0. */
+  dropSampleMarginMetres: 0.05,
+  /** Render-only decor (props without a solid, the four dressed site lists)
+   * keeps `apronRadiusMetres` + this from a pad centre, m (4.0 m in all). */
+  decorMarginMetres: 0.5,
+  /** Minimum distance between two picked sites, m. */
+  spacingMetres: 70,
+  /** Fewest pads a pad city may have (fewer is a stop-and-report, Ruling R1). */
+  minimumPads: 4,
+  /** Most pads per city. */
+  maximumPads: 6,
+  /** Finder time on `euc` above which the builder stops and reports, ms. Never
+   * asserted in a test. */
+  finderCeilingMs: 100,
+});
+
+/**
  * The one frozen tuning root (AGENTS.md invariant 4).
  *
  * The named exports above stay, because a controller reading `WHEEL.tyreWidth`
@@ -9958,6 +10177,8 @@ export const TUNING = deepFreeze({
   CONTACT,
   CHASE,
   DRUNK,
+  // M42: addressed by path (`LAUNCH_PAD.verticalSpeed`) for the F4 "Pad lift" slider.
+  LAUNCH_PAD,
   FX,
   AUDIO,
   ENVIRONMENT_AMBIENCE,
@@ -12767,6 +12988,22 @@ export const LIVE_TUNABLES: readonly TunableSpec[] = deepFreeze([
       + 'off and the 20 m spawn gap is the head start; try 5 s if a human cop '
       + 'never closes, or closes too fast.',
   },
+  {
+    path: 'LAUNCH_PAD.verticalSpeed',
+    group: 'Ride — launch pads',
+    label: 'Pad lift',
+    unit: 'm/s',
+    min: 2.4,
+    max: 5.5,
+    step: 0.05,
+    note: 'How hard a city launch pad throws the wheel up off the top of its '
+      + '0.75 m ramp. Every pad stands on a lawn, and grass judges a landing '
+      + 'harder: every value here lands heavy there (a little speed lost, '
+      + 'never a crash). The shipped 2.85 gives the 180 its air and lands it '
+      + 'clean on pavement; higher flies longer and lands harder. The 20 m '
+      + 'flight cap still holds at any value: a fast wheel gets less lift, '
+      + 'never a longer flight.',
+  },
 ]);
 
 
@@ -12896,4 +13133,475 @@ export const POPULATION_CONTACT = Object.freeze({
  * Verify emitted posed-rig bounds before final population acceptance. */
 export const POPULATION_OCCUPANT = Object.freeze({
   halfWidthMetres: 0.65, halfLengthMetres: 0.70, heightMetres: 2.10,
+});
+
+/**
+ * How a city launch pad is drawn (M42, `docs/PLANS.md` §42.3a; `render/launchPadView.ts`).
+ *
+ * Render only: one instanced raised octagonal kicker per world (R16: an
+ * obvious ramp, never a hole; critic repair r4: a tall lip over a concave run,
+ * no apron), hidden or shown per mode, and priced either way. **Its radii and
+ * heights are `LAUNCH_PAD`'s and are read from there, never copied here**,
+ * because the top and skirt are the surface a human seat rides: the light
+ * top's faces touch `triggerRadiusMetres` at `domeHeightMetres` (crowned by
+ * `domeCrownMetres`), the skirt's knees are `domeKnees` and its foot is the
+ * octagon with corners on `domeFootRadiusMetres`. Heights are metres above the
+ * ground plane fitted under the foot.
+ *
+ * Colours are sRGB hex with their linear decode beside them (`DESIGN.md` §2),
+ * every one inside the 0.03–0.6 linear-luminance band. Derived, never typed:
+ * every per-pad vertex, triangle and byte count (`render/launchPadView.ts`
+ * `launchPadTemplateCounts`).
+ */
+export const LAUNCH_PAD_LOOK = Object.freeze({
+  // ── Template ──
+  /** Sides of the octagon: the top, the coping and the skirt's sides. */
+  octagonSides: 8,
+  /**
+   * The skirt's foot above the fitted ground plane, m: the z-fighting margin
+   * (≤ 1 cm by contract; the ridden dome starts at the lawn, so the wheel
+   * meets the skirt's foot within this).
+   */
+  baseLiftMetres: 0.01,
+  // ── The kicker's lip (critic repair r4): a light coping and a bold hazard band ──
+  /** The coping: the lip facet's top band, this far down the slope from the top's edge, m (≈ 5 cm tall). */
+  copingSlopeMetres: 0.07,
+  /** Bold dark diagonal stripes on each face's lip facet, between the coping and the lip's knee. */
+  hazardStripes: 2,
+  /** A stripe's width along the lip, m. */
+  hazardStripeWidthMetres: 0.24,
+  /** Stripe to stripe along the lip, m (the pattern is centred on each face). */
+  hazardStripePitchMetres: 0.5,
+  /** How far a stripe's top end leans along the lip from its foot, m (the diagonal). */
+  hazardStripeLeanMetres: 0.22,
+  /** Decals (the stripes) stand this far off the face they are painted on, m (never a step). */
+  decalLiftMetres: 0.006,
+  /** The skirt's paint, shaded by ring from the lip down (linear multipliers of
+   * `rimColour`): [the coping's foot, the lip's knee, the middle knee, the foot].
+   * A darker foot reads as the ramp's contact with the lawn at small sizes. */
+  skirtShades: Object.freeze([1, 1, 0.82, 0.62] as const),
+  // ── Hovering waypoint marker (q237, ruling R14: ON by default) ──
+  /**
+   * A render-only downward arrow hovering over the pad's centre, so a pad
+   * reads from the road: the critics measured the flat 7 m apron at 2–8 px
+   * tall from every road (720p); a flat disc's height on screen is bounded by
+   * geometry, not paint. A signal-yellow square arrowhead under a dark square
+   * shaft (the pad's own palette), turning slowly about its upright. It is
+   * part of the pad's own instanced mesh (one draw still: no collider, no
+   * shadow, never in the sampler or the plan, hidden exactly where pads are
+   * hidden, priced with it: +16 triangles and 1,392 B per world template).
+   * The owner's switch: `false` drops it everywhere.
+   */
+  markerShown: true,
+  /** The arrow's tip above the pad's top (the dome apex), m. R14: ≥ 4.2 — over the highest rider (apex at F4's 5.5 m/s ≈ 1.54 m + rider ≈ 1.9 m) with margin. */
+  markerClearanceMetres: 4.5,
+  /** The arrowhead (a square pyramid, point down): height, m… */
+  markerHeadMetres: 1.6,
+  /** …and half its width across a face, m (1.8 m across). */
+  markerHeadHalfWidthMetres: 0.9,
+  /** The shaft above it (a square prism): height, m (head + shaft ≈ 23 px tall at 65 m on a 720p chase view)… */
+  markerShaftMetres: 1.8,
+  /** …and half its width across a face, m. */
+  markerShaftHalfWidthMetres: 0.35,
+  /** One slow turn about its upright takes this long, s (on the simulation clock; still under reduced motion). */
+  markerTurnSeconds: 12,
+  // ── Paint ──
+  /** linear (0.578, 0.402, 0.030), luminance 0.41 — signal yellow, under road paint's 0.43: the skirt (the kicker's rim) and the marker's arrowhead. */
+  rimColour: 0xc8aa30,
+  /** linear (0.491, 0.474, 0.423), luminance 0.47 — the light top: pale concrete, lighter than the yellow, never a dark centre (R16). */
+  topColour: 0xbab7ae,
+  /** linear (0.034, 0.038, 0.044), luminance 0.038 — the marker's dark shaft (the pad itself has no dark part but its ink). */
+  shaftColour: 0x34373b,
+  /** linear (0.048, 0.044, 0.038), luminance 0.044 — M36's direction ink (`MARKING_PAINTS.ink`): the lip's hazard stripes. */
+  inkColour: 0x3e3b37,
+  /** linear (0.565, 0.584, 0.604), luminance 0.58 — the coping: a light steel band along the lip, the kicker's edge (critic repair r4). */
+  copingColour: 0xc6c9cc,
+  /** Painted rubber and concrete. */
+  roughness: 0.8,
+  // ── Lawn ──
+  /** Render-only grass roots stay this far outside the footprint, m, in every
+   * mode: a 0.08–0.18 m clump would stand through the pad's low skirt foot
+   * (measured: 27 clumps under the 48 corpus pads before the exclusion, when
+   * the pad was 6 cm high). Critic repair r4: the skirt's foot reaches
+   * `domeFootRadiusMetres` (1.0 m beyond the footprint), so 0.3 m beyond that. */
+  grassClearMetres: 1.3,
+});
+
+/**
+ * The render-only flock (M42, `docs/PLANS.md` §42.2j/§42.3b; `render/birdFlight.ts`,
+ * `render/birds.ts`): a few birds flying high that never land and touch nothing.
+ *
+ * One flock per world whose plan has a building or tree prop, flying rare
+ * "passes" on the simulation clock, parked far below the world between them.
+ * Each pass is born out of everyone's sight beside one view's rider in turn,
+ * steers while far to intercept a point in front of where he will be
+ * (`cross…`; M42 R13 and the birds critic: the flock must really be seen),
+ * flies straight once near and retires out of sight; with no view to aim at
+ * it follows a meandering field chord. R17 (the owner never saw one): a
+ * readable pass every minute or two of ordinary riding, lower, a few more and
+ * bigger birds, still absent most of the time. Owner round 2 ("half it"):
+ * twice as often, the first about twice as early — shorter quiets, and the
+ * unseen far approach flown faster (`farRate`). Every gameplay surface is
+ * untouched: no collider, no sound, no score, no seed stream. Derived, never
+ * typed: a steered pass is born `CAMERA.far` + `entryMarginMetres` (540 m)
+ * from every camera at the flock centre (a field chord adds the meander);
+ * the flock's bounding radius comes from the formation, wander, bob and
+ * wingspan below. No `LIVE_TUNABLES` entry.
+ */
+export const BIRDS = Object.freeze({
+  // ── Flock ──
+  /** Birds per flock ("a few"; R17: a few more); each is two mirrored half-bird instances. */
+  count: 9,
+  /** Tip to tip, m. Arcade, not a pigeon (0.65 m): ≈ 12 px at 200 m on 1080p (R17: slightly bigger than 2.4). */
+  wingspanMetres: 2.8,
+  /** Ground speed along the pass chord, m/s. */
+  speed: 14,
+  /** Owner round 2 (twice as often, the first one about twice as early): beyond `farRateFromMetres` of every view camera a steered flock's own clock runs this many times faster — the same path, turns and climbs, flown sooner where the haze hides it (≥ 90 % fogged, a few px; 540 → 330 m in ≈ 3 s, was ≈ 10 s)… */
+  farRate: 8,
+  farRateFromMetres: 400,
+  /** …easing (a smoothstep on the nearest camera's range) to its own `speed` by this, m (beyond `framedMetres`: wherever a pane can frame it, it flies at `speed` and nothing steps). */
+  farRateToMetres: 330,
+  // ── Schedule (world clock: seconds since the world's first drawn frame) ──
+  /** No pass before this, s (owner round 2: the first readable flock ≈ 20 s in, was ≈ 40; the flock is still ≥ 540 m out when it starts; 12 before owner round 2, 20 before the birds critic r4). */
+  quietStartSeconds: 3,
+  /** Gap between one pass's end and the next one's start, s [min, max], hashed per pass (owner round 2: a readable pass about every 30–35 s of riding, twice as often; [8, 20] before; the next flock is still ≥ 540 m out when it starts). */
+  gapSeconds: Object.freeze([1, 4] as const),
+  /** …after an aimed pass no pane framed (the rider turned away), s [min, max]: another comes soon ([6, 12] before owner round 2). */
+  unseenGapSeconds: Object.freeze([1, 3] as const),
+  /** A pane that draws the flying flock within this range of its camera framed it, m (≈ where the haze leaves 40 % of its contrast). */
+  framedMetres: 320,
+  // ── Altitude: follows the local skyline (R17: just above the roofline) ──
+  /** Above the tallest roof or crown within `skylineRadiusMetres`, m (15 before R17; 8 in R17; birds critic r4: its lowest bird ≥ 5 m clear, a margin over the eased climb's arrival). */
+  clearanceMetres: 9.5,
+  /** Above the highest ground within `skylineRadiusMetres`, m (30 before R17, 20 in R17). */
+  terrainFloorMetres: 15,
+  /** Horizontal reach of the skyline and terrain look-up around the flock centre, m (≥ the formation's 13.4 m half-width with the wings; 40 before R17, 18 in R17). */
+  skylineRadiusMetres: 15,
+  /** With no view to aim at (a field chord): the steepest climb or descent along the pass, m per m. */
+  climbSlope: 0.3,
+  /** A steered flock climbs at most this fast, m/s (birds critic r3, 2c: ≤ ~3.5, about 14° at 14 m/s)… */
+  climbMetresPerSecond: 3.5,
+  /** …or this fast while below its floor (a turn that met a block late), m/s… */
+  climbEmergencyMetresPerSecond: 5,
+  /** …descends at most this fast, m/s (birds critic r4: it settles back right after a block; 3.5 before)… */
+  descentMetresPerSecond: 4.5,
+  /** …its vertical speed changing at most this fast, m/s² (2c: ≤ ~2)… */
+  verticalAccelerationMetresPerSecondSquared: 2,
+  /** …and it closes on the altitude it wants over about this long, s. */
+  altitudeSettleSeconds: 1.5,
+  /** Its pitch follows that vertical speed (atan(v / speed)), capped at this, rad (≈ 15°)… */
+  pitchLimitRadians: 0.26,
+  /** …and moving at most this fast, rad/s: a pitch never steps. */
+  pitchSlewRadiansPerSecond: 0.5,
+  /** While it still pursues it also looks ahead along its heading ± each of these, rad (birds critic r4: no ±0.8 fan; a turn it cannot climb for waits)… */
+  fanRadians: Object.freeze([0.4] as const),
+  /** …this far, m. */
+  fanMetres: 160,
+  /** Skyline grid cell, m (built once per world, GPU-free; 16 before the birds critic r4, whose cells reached far past the formation). */
+  skylineCellMetres: 4,
+  /** Altitude profile sample spacing along the pass, m. */
+  altitudeSampleMetres: 8,
+  // ── Path ──
+  /** Added to `CAMERA.far`: entry and exit stand this far beyond the far plane from every camera (or, with no view to aim at, from the field), m (≥ the flock radius). */
+  entryMarginMetres: 40,
+  /** Lateral meander about the chord, m. */
+  meanderAmplitude: 35,
+  /** Meander wavelength along the chord, m. */
+  meanderWavelength: 500,
+  /** With no view to aim at: the chord crosses the field centre ± this share of each extent, hashed per pass. */
+  centreJitterShare: 0.25,
+  // ── Crossing (birds critic 2026-10-10: each pass crosses one rider's view, readable) ──
+  /** The flock heads for this far in front of where its rider will be, m [min, max], hashed per pass (R17: nearer, 85–125 before)… */
+  crossDepthMetres: Object.freeze([55, 85] as const),
+  /** …further when it flies high (depth ≥ its height over the camera / tan(`crossTopRadians`) ≈ 23°, so it stays well inside the frame's ≈ 28–34° top), up to this, m. */
+  crossDepthMaxMetres: 160,
+  crossTopRadians: 0.4,
+  /** Born this far off its rider's travel, rad [min, max] (ahead of his shoulder, 11–40°; R17: 50–90° before let his bends leave it behind him), on a hashed side. */
+  birthBearingRadians: Object.freeze([0.2, 0.7] as const),
+  /** "Where he will be": an intercept, his road walked ahead at his speed for this share of the flock's own time to that point (R17: 1, was 0.5, which chased him from behind)… */
+  leadShare: 1,
+  /** …but never more than this, s… */
+  leadMaxSeconds: 40,
+  /** …re-solved this many times from where he is now (a fixed-point intercept). */
+  interceptIterations: 2,
+  /** His travel is his ground velocity smoothed over this long, s (a bend's wiggle is not his way). */
+  travelSmoothSeconds: 4,
+  /** While far it turns towards that point at most this fast, rad/s (bank ≈ 0.33 rad at 14 m/s). */
+  steerRadiansPerSecond: 0.24,
+  /** …commanded in proportion to its heading error, per s (it settles on its aim instead of chattering round it)… */
+  steerGainPerSecond: 0.8,
+  /** …on the error beyond this deadband, rad (≈ 2°; none inside it)… */
+  steerDeadbandRadians: 0.035,
+  /** …and a turn the other way from its last one only past this error, rad (≈ 6°): a jittery aim never rocks the flock. */
+  steerReverseRadians: 0.1,
+  /** …or this (≈ 34°; 17° before the birds critic r4 let it re-aim on screen past 150 m) within `framedMetres` of its rider, where it is watched: only a real miss turns it back. */
+  steerReverseWatchedRadians: 0.6,
+  /** …as it is anywhere within this of his camera's forward, rad (≈ 57°, a chase pane's half-width and a little more). */
+  watchedConeRadians: 1.0,
+  /** The point it steers for is smoothed over this long, s: his road walk snapping to another segment never jerks the flock (1 before the birds critic r4: it rocked on screen in his bends). */
+  aimSmoothSeconds: 3,
+  /** The turn rate moves towards the command at most this fast, rad/s² (none to full in ≈ 1 s): never a step (birds critic r2). */
+  turnSlewRadiansPerSecondSquared: 0.25,
+  /** The bank moves at most this fast, rad/s: a full reversal takes ≥ 1.4 s, so the flock never blinks between silhouettes. */
+  bankSlewRadiansPerSecond: 0.5,
+  /** Within this of its rider and in front of his view (`watchedConeRadians`) it flies straight on, m: seen, it never turns to meet him (birds critic r2)… */
+  commitMetres: 170,
+  /** …as it does within this of him wherever it is, m (R17: out of his view it may still swing round in front of him until here)… */
+  commitNearMetres: 100,
+  /** …and within this of its crossing point, m (≈ 7 s out): it never circles a point it cannot turn tight enough to reach… */
+  commitAimMetres: 100,
+  /** …once he is within this, m (R17: a crossing reached while he is far off is not his pass). */
+  commitAimRangeMetres: 200,
+  /** …and after this long it banks away out of his view, s: a flock that happens to fly along with him never lingers on screen. */
+  lingerSeconds: 10,
+  /** Flown straight this long, s, it retires as soon as no pane can show it… */
+  retireCommittedSeconds: 2,
+  /** …for this long without a break, s… */
+  unseenRetireSeconds: 1,
+  /** …"no pane": outside every view camera's frustum widened by this, rad (its own angular radius allowed for; 0.35 before the birds critic r4 kept a flock leaving a couch pane in the air for half a minute). */
+  viewMarginRadians: 0.12,
+  /** A pass that never comes near (a rider faster than the flock) retires after this long, once beyond every far plane, s. */
+  approachSeconds: 150,
+  // ── Seen by the pane it was aimed at (birds critic r4: every aimed pass readable in that pane) ──
+  /** In his pane's own width and this near it flies straight on whatever its crossing, m… */
+  commitInViewMetres: 150,
+  /** …and beyond it (to `commitMetres`) only while its crossing lies within this of his forward, rad (≈ 35°, a couch pane's half-width). */
+  crossOffRadians: 0.61,
+  /** A pane has seen the flock once it is in its frame, its wingspan at least this share of the pane's height (≈ 40 px for the nine at 720p, the critic's "readable"), with a clear line… */
+  seenSpanShare: 0.011,
+  /** …for this long, s (the skyline cells round the camera and the flock, this far, m, are not counted as in the way: the grid is coarse). */
+  seenSeconds: 0.5,
+  seenNearSkipMetres: 24,
+  /** A pass its rider has not seen, closing on him slower than this, m/s (trailing him)… */
+  relayClosingMetresPerSecond: 8,
+  /** …for this long (its closing speed smoothed over the same), s, or one that would retire, is born again ahead of his shoulder, out of sight… */
+  relaySeconds: 3,
+  /** …at most this many times a pass, after a moment parked, s. */
+  relayMax: 2,
+  relayHoldSeconds: 0.5,
+  /** A new pass goes to the pane that has waited longest for a flock; the pane the last one was aimed at counts this much less, s (couch seats take turns). */
+  turnAboutSeconds: 30,
+  /** A pane that has gone this long without seeing a flock is waiting, s: the pass it waits for comes after the short quiet, and the flock in the air banks away as soon as its own rider has seen it. */
+  starvedSeconds: 45,
+  /** Closing on its rider, it banks away within this of him (after `lingerMinSeconds`), m: it crosses his view instead of coming over him… */
+  bankAwayNearMetres: 120,
+  lingerMinSeconds: 3,
+  /** …and banks away again if it is still on screen this long after (he turned after it), s. */
+  awayAgainSeconds: 8,
+  // ── Just above the roofline, never into a block (birds critic r4) ──
+  /** Each building piece stands its own turned footprint plus this, m. */
+  eaveMetres: 1.5,
+  /** The way it will fly is looked along as a corridor this far either side, m (a path that skims a block's edge is a path into it). */
+  pathMarginMetres: 6,
+  /** A fan ray (a turn it has not made yet) climbs at this share of its climb rate: rate in hand. */
+  fanSlopeShare: 0.75,
+  /** It climbs at the emergency rate while more than this below what it wants, m. */
+  rampSlackMetres: 2,
+  /** A turn (after its aim, or a bank-away) waits until the way round asks no more than this above where it flies, m. */
+  turnHeadroomMetres: 1,
+  /** The steering is integrated in steps of this, s, on the world clock (the same at any frame rate). */
+  steerStepSeconds: 0.1,
+  /** Bank = clamp(lateral acceleration / g, ±this), rad. */
+  bankLimitRadians: 0.35,
+  // ── Formation, in the flock's heading frame ──
+  /** Each bird's hashed offset: forward ±, m (8 for seven birds). */
+  formationForwardMetres: 9,
+  /** Lateral ±, m (9 for seven birds). */
+  formationLateralMetres: 10.5,
+  /** Vertical ±, m. */
+  formationVerticalMetres: 2.5,
+  /** Slow per-axis wander about the offset, ±m. */
+  wanderMetres: 1.5,
+  /** Wander frequency, Hz [min, max], hashed per bird and axis. */
+  wanderHz: Object.freeze([0.08, 0.15] as const),
+  /** Body bob with the wingbeat, m. */
+  bobMetres: 0.08,
+  // ── Wings ──
+  /** Wingbeat while flapping, Hz. */
+  flapHz: 4.5,
+  /** Wingbeat amplitude about the dihedral, rad. */
+  flapRadians: 0.6,
+  /** Flapping spell, s; each bird's cycle is phase-shifted. */
+  flapSeconds: 1.6,
+  /** Gliding spell between flaps, s. */
+  glideSeconds: 2.2,
+  /** Ease into and out of a flapping spell, s. */
+  flapBlendSeconds: 0.25,
+  /** Wings held this far up while gliding, rad. */
+  glideDihedral: 0.15,
+  // ── Look and parking ──
+  /** Unlit silhouette, linear luminance (above the 0.03 floor; fades with the scene's own haze). */
+  colourLinear: 0.045,
+  /** Slate tint on that luminance, linear RGB ratios (normalised to the luminance in code). */
+  slateTint: Object.freeze([0.93, 1.0, 1.15] as const),
+  /** Between passes the flock waits here, m: beyond every far plane, culled in every pane, never hidden. */
+  parkY: -10_000,
+});
+
+/**
+ * How a person reacts to being hit (M42, PLANS §42.2g). Seconds. A brush, or
+ * any meeting that is not a crash, is the existing `POPULATION.impactPauseSeconds`
+ * stagger, unchanged; a human rider who actually crashes into a walker, jogger,
+ * worker or social person (upright to crashed in that step, at or above
+ * `EUC.obstacleCrashSpeed` of his own closing speed) knocks them down. They sit
+ * down hard inside their own upright hull, stay put and get back up, and the
+ * footprint never changes. No score, reward, sound or bark attaches to either.
+ */
+export const POPULATION_REACTION = Object.freeze({
+  /** The whole knock-down, from the knees buckling to standing again, seconds.
+   * It ends 0.3 s before `EUC.crashRecoverEarliestSeconds` (2.5 s), so the
+   * person is up before the rider who hit them can recover, but **up is not
+   * out of the way**: a person struck mid-step stands where they sat, on the
+   * rider's recovery spot, so his recovery can wait up to
+   * `POPULATION_CONTACT.recoveryFallbackSeconds` (≈ 0.5 s) longer than after
+   * a stagger, the cost a standing person already has. Accepted as is by
+   * ruling R10 (option (a) of Q-C1, 2026-10-10): the cost is bounded at
+   * ≤ one `recoveryFallbackSeconds`, not removed, and the bound is pinned in
+   * `populationKnockdownChase.test.ts`. */
+  knockdownPauseSeconds: 2.2,
+});
+
+/**
+ * Pedestrian question barks (M42, `docs/PLANS.md` §42.2h): rare, silent text
+ * bubbles over a person a rider passes slowly or stops beside. A public
+ * promise, credited only as "a Facebook commenter". Presentation only: read by
+ * `ui/barkModel.ts`, `app/barkView.ts` and the HUD, never by `simulation/`,
+ * never a record, never a live tunable (the QA bridge's `setBarksEnabled` is
+ * the only switch). Distances in metres, speeds in m/s, times in seconds;
+ * the NDC bands are the pane camera's normalised device coordinates (−1..1,
+ * +y up). **A bark has to be seen to count**: a candidate is rolled only once
+ * the pane's camera shows it inside the start band, now and along its
+ * predicted path, and a bubble whose anchor leaves the display band fades and
+ * ends for good.
+ */
+export const BARKS = Object.freeze({
+  // -- Pass by ---------------------------------------------------------------
+  /** A passed person stands this far ahead along the rider's heading, [min, max], m. Owner round 2 (2026-10-10, "easier to trigger"): met from 28 m, so a bubble starts far enough out to stay on screen ≥ 2.5 s at the pass cap; nearer than 8 m it is already leaving the frame (the chase camera sits 4.2–6.0 m behind). */
+  passAheadMetres: Object.freeze([8, 28] as const),
+  /** …and at most this far to the side of the heading line, m. */
+  passLateralMetres: 9,
+  /** A pass barks only at or below this rider speed, m/s (≈ 20 mph): never at a sprint. */
+  passMaximumSpeed: 9,
+  /** Chance a qualifying (seen) pass encounter barks. 1.0 since owner round 2 (2026-10-10, "it doesn't really trigger much"): the seat cooldown and each person's memory are what keep it from nagging. The rate is pinned on the continuous ride in `app/barkRate.test.ts`. */
+  passChance: 1,
+
+  // -- Stop near -------------------------------------------------------------
+  /** A stopped rider within this distance of a person, m. */
+  stopRadiusMetres: 6,
+  /** "Stopped" is below this speed, m/s… */
+  stopMaximumSpeed: 0.8,
+  /** …held this long, s. */
+  stopDwellSeconds: 0.5,
+  /** Chance a qualifying stop encounter barks: a stop beside people always asks (owner round 2). */
+  stopChance: 1,
+  /** Once a stop has barked, the next stop bark waits until the rider has moved this far, m… */
+  stopRearmMetres: 8,
+  /** …or gone faster than this, m/s. */
+  stopRearmSpeed: 2,
+
+  // -- Encounters ------------------------------------------------------------
+  /** A person becomes a new encounter after being ineligible this long, s. */
+  encounterGapSeconds: 1,
+  /** …or after leaving the pass box or stop radius by this margin, m. */
+  encounterExitMarginMetres: 2,
+  /** A failed roll is remembered this long per person, s, so a parked rider cannot fish. */
+  declineMemorySeconds: 30,
+
+  // -- Facing ----------------------------------------------------------------
+  /** The person faces the rider: dot(person heading, unit vector to the rider) above this. −0.6 since owner round 2 ("you have to come up at somebody at the right angle"): side-on counts, only somebody clearly walking away (> ≈ 127° off) is skipped. */
+  facingDot: -0.6,
+
+  // -- Cooldowns -------------------------------------------------------------
+  /** Per seat, from the start of a bubble, s (15 since owner round 2, 2026-10-10: "it should be easier to trigger"). */
+  seatCooldownSeconds: 15,
+  /** Per person and seat, from the start of a bubble, s. */
+  personMemorySeconds: 60,
+  /** A person this seat struck stays silent this long after the contact, s. */
+  hitMemorySeconds: 10,
+  /**
+   * A seat never repeats any of its last this-many lines (and never the
+   * room's last), so any four bubbles in a row from one seat differ and the
+   * five lines come round evenly — the same person met again does not
+   * alternate two lines.
+   */
+  seatRecentLines: 3,
+  /**
+   * Added to the contact distance when deciding which seat struck a person, m.
+   * The contact distance itself is derived in `ui/barkModel.ts` from
+   * `POPULATION_OCCUPANT` (the rider's prism) and the pedestrian radius,
+   * because a corner touch puts the two centres ≈ 1.55 m apart.
+   */
+  hitMarginMetres: 0.25,
+
+  // -- Ridden first ----------------------------------------------------------
+  /** A seat barks only after riding this far (integrated |speed|·dt) since its last placement or world install, m. Keeps a just-placed rider — and every capture tool — unbarked. */
+  minimumRiddenMetres: 20,
+  /** No bark this long after a crash ends, s. */
+  recoveryQuietSeconds: 3,
+
+  // -- The bubble ------------------------------------------------------------
+  /** Full-opacity life of a bubble, s (3.2 since owner round 2: "I could barely read it"). */
+  lifetimeSeconds: 3.2,
+  /**
+   * A shown bubble stays at full opacity at least this long, s, before its
+   * asker turning away or walking off may end it (owner round 2: "he just
+   * disappeared too fast"). Only the rider crashing, the mode turning barks
+   * off, the siren, a knock-down, or the anchor leaving the display band end
+   * it sooner.
+   */
+  minimumReadableSeconds: 2.5,
+  /** Fade at the end of its life, or after its anchor leaves the display band, s. */
+  fadeSeconds: 0.3,
+  /** The anchor sits this far above the person's head (`POPULATION_AUTHORING.actorHeightMetres`), m. */
+  anchorLiftMetres: 0.3,
+  /** A bubble that ends having been shown less than this refunds the seat cooldown and leaves the last line unchanged, s. */
+  minimumShownSeconds: 0.8,
+  /** If keeping the bubble clear of the HUD lanes would move it more than this share of the pane height from its anchor, it ends instead. */
+  clampAwayMaxShare: 0.15,
+  /** The bubble keeps this gap from the pane edges and the lane floor and ceiling, CSS px. */
+  paneMarginPixels: 6,
+
+  // -- Start band: where a candidate must be to qualify ----------------------
+  /** |NDC x| at most this, now and along the prediction. */
+  startNdcMaxX: 0.6,
+  /** NDC y at least this… */
+  startNdcMinY: -0.2,
+  /** …and at most this. */
+  startNdcMaxY: 0.6,
+  /** The prediction: the anchor moved by (v_person − v_rider)·t for each t here, s, against the current camera. */
+  predictSeconds: Object.freeze([0.75, 1.5] as const),
+  /** The anchor must be at least this much deeper than the rider along the camera's view, m — never on top of the rider. */
+  depthBeyondRiderMetres: 0.5,
+  /** A candidate in the start band whose camera ray hit a wall is not tested again for this long, s — one occlusion ray per hold, not one per frame. */
+  occlusionHoldSeconds: 0.25,
+  /**
+   * The asker must be seen, not just their bubble: camera rays to these
+   * heights above the asker's feet (head, chest), m, must miss every other
+   * population body — now and along the prediction — or the candidate is
+   * held out like one behind a wall. A shown bubble whose head ray is then
+   * blocked fades and ends once it has been read (`minimumReadableSeconds`,
+   * owner round 2), so somebody walking through the line of sight no longer
+   * snatches it away mid-sentence. (A social
+   * pair faces each other, so riding up to one face-on puts the other's back
+   * between camera and asker.) Vehicles block as their hull, which the van
+   * fills; people as the body drawn (below).
+   */
+  sightHeadMetres: 1.6,
+  sightChestMetres: 1.25,
+  /**
+   * A person as a sight blocker: an upright cylinder this wide, m — the drawn
+   * shoulders (joints at ± 0.221 m) plus the arms. A face-centre ray clear of
+   * it leaves the face behind well over half visible; the hull's clearance
+   * square (± `POPULATION_AUTHORING.pedestrianRadiusMetres`) would hide askers
+   * nobody hides.
+   */
+  sightPersonRadiusMetres: 0.3,
+
+  // -- Display band: where a shown bubble may stay ---------------------------
+  /** |NDC x| at most this while shown. */
+  ndcMaxX: 0.85,
+  /** NDC y at least this… */
+  ndcMinY: -0.35,
+  /** …and at most this. */
+  ndcMaxY: 0.8,
 });

@@ -256,3 +256,36 @@ test('the gesture adds no geometry: the same parts, the same triangles', () => {
     rig.dispose();
   }
 });
+
+test('a paddle is carried from the frame it appears and put down over frames, not one', () => {
+  // The eased carriage, round 2 (2026-10-10). The carry used to be read from
+  // the paddle's own visibility, which `paddle.aim` sets *after* the stance
+  // solve: the first armed frame drew the paddle off the eased grip (0.44 m
+  // out at a metre down the shaft) and the first empty one snapped the arm
+  // 45 mm and the glove 52°. The carry is now this frame's swing state.
+  const rig = createRidingRig();
+  try {
+    const pose = createPose(); // stopped: the arms fully eased
+    const head = new THREE.Vector3(-1, 1.3, 0.3);
+    const draw = (holding: boolean): THREE.Vector3 => {
+      rig.applySwing(holding ? head : null, 0, 0);
+      rig.apply(pose);
+      rig.group.updateMatrixWorld(true);
+      return rig.rider.grip.getWorldPosition(new THREE.Vector3());
+    };
+    const eased = draw(false);
+    const first = draw(true);
+    const steady = draw(true);
+    assert.ok(steady.distanceTo(eased) > 0.03, 'the carry does not move the hand — this proves nothing');
+    assert.ok(first.distanceTo(steady) < 1e-9, `the first armed frame is ${first.distanceTo(steady)} m off the carry`);
+    let last = steady;
+    for (let frame = 0; frame < 12; frame += 1) {
+      const next = draw(false);
+      assert.ok(next.distanceTo(last) < 0.012, `putting the paddle down moved the grip ${next.distanceTo(last)} m in one frame`);
+      last = next;
+    }
+    assert.ok(last.distanceTo(eased) < 1e-9, 'the arm never finished easing after the paddle went');
+  } finally {
+    rig.dispose();
+  }
+});

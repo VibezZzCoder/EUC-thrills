@@ -1,5 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
+import { joinRiderSurface } from './riderJointSurface.ts';
+import { drapeRiderHem } from './riderClothDrape.ts';
 import { EUC, RIDER, RIDER_BLOCKOUT, WHEEL } from '../data/tuning.ts';
 import { clamp, clamp01, lerp } from '../shared/maths.ts';
 import {
@@ -56,8 +58,8 @@ import {
  * and `createPlaceholderRider(look)` builds whichever it is handed. Nothing
  * about the rig moved and nothing about the stance solve changed — that is the
  * point of the split, and it is what made a second character a look rather than
- * a rewrite. `applyStanceReaction` below touches joints only: it never names a
- * mesh, a material, or a profile, so it cannot know which rider it is posing.
+ * a rewrite. `applyStanceReaction` solves joints without naming a rider. Optional surface
+ * bands follow the solved joints afterward; they never feed back into IK.
  */
 
 /**
@@ -253,6 +255,34 @@ export interface StanceInput {
    * sweep can measure the choice rather than assume it.
    */
   oneFootSide: number;
+  /**
+   * How far the arms ease out of the balance carriage, 0..1 (owner,
+   * 2026-10-10) — `armEaseForSpeed` of the wheel's speed, filled by
+   * `ridingRig.ts`. The rest blend eases them on its own, so a constructed
+   * rest stance is measured in the pose a stopped rider actually holds; zero
+   * leaves every riding pose exactly as it was. Render-only: no occupancy,
+   * contact or ragdoll number reads it.
+   */
+  armEase: number;
+  /**
+   * How far the right hand is holding something on its grip, 0..1 — the M14
+   * paddle (round 2, 2026-10-10). That carry continues the forearm, so the
+   * arm keeps the carriage it was authored against by this share. Decided by
+   * `ridingRig.ts` from the same frame's swing state *before* this solve; the
+   * grip's own visibility is set after it, which left the arm a frame late.
+   */
+  carry: number;
+}
+
+/**
+ * The arms' ease at a given wheel speed, m/s, either sign: 1 at a standstill
+ * and up to cruising pace, a smoothstep down to 0 by `armEaseGoneAbove`. One curve,
+ * owned here, so the player's rig, the cop and every ghost relax alike.
+ */
+export function armEaseForSpeed(speed: number): number {
+  const t = clamp01((Math.abs(speed) - RIDER_BLOCKOUT.armEaseFullBelow)
+    / (RIDER_BLOCKOUT.armEaseGoneAbove - RIDER_BLOCKOUT.armEaseFullBelow));
+  return 1 - t * t * (3 - 2 * t);
 }
 
 export function createStanceInput(): StanceInput {
@@ -291,6 +321,8 @@ export function createStanceInput(): StanceInput {
     styleSway: 0,
     oneFoot: 0,
     oneFootSide: 0,
+    armEase: 0,
+    carry: 0,
   };
 }
 
@@ -390,11 +422,46 @@ interface ArticulatedArm {
   /** How far outboard the relaxed hand sits from the centreline, metres. */
   readonly baseSplay: number;
   readonly bendToward: THREE.Vector3;
+  /**
+   * The eased carriage's hand (owner, 2026-10-10): `baseTarget` moved in,
+   * forward and up just far enough for a soft elbow (`easedHandTarget`).
+   * `easedSplay` is its outboard distance, so the reactions still offset it.
+   */
+  readonly easedTarget: THREE.Vector3;
+  readonly easedSplay: number;
+  /** Scratch elbow direction for an eased frame; `bendToward` is never written. */
+  readonly easedBend: THREE.Vector3;
+  /** The hand mesh, turned toward palm-to-thigh as the arm eases. */
+  readonly hand: THREE.Object3D;
   lastSplay: number;
   lastForward: number;
   lastRise: number;
   /** How committed this arm was to a swing last frame (M14). Right arm only. */
   lastSwing: number;
+  lastEase: number;
+}
+
+/**
+ * The eased hand for a carriage, in the pelvis frame: `armEaseIn` closer to
+ * the body, `armEaseForward` further forward, and raised only as far as the
+ * shoulder-to-hand distance needs to leave the elbow at `armEaseElbow`
+ * interior — never lowered, never past `armEaseRiseMax`. A carriage already
+ * bent that far (Trollina's high doodle arms) keeps its height, so every look
+ * eases to about the same elbow instead of the same offset. The right elbow
+ * (`side < 0`) settles `armEaseElbowRightBend` deeper, so the pair is never a
+ * mirror.
+ */
+function easedHandTarget(shoulder: THREE.Vector3, base: THREE.Vector3, side: number): THREE.Vector3 {
+  const upper = RIDER_BLOCKOUT.upperArmLength;
+  const lower = RIDER_BLOCKOUT.forearmLength;
+  const out = Math.abs(base.x - shoulder.x) - RIDER_BLOCKOUT.armEaseIn;
+  const forward = base.z - shoulder.z + RIDER_BLOCKOUT.armEaseForward;
+  const drop = base.y - shoulder.y;
+  const elbow = RIDER_BLOCKOUT.armEaseElbow - (side < 0 ? RIDER_BLOCKOUT.armEaseElbowRightBend : 0);
+  const reach = upper * upper + lower * lower - 2 * upper * lower * Math.cos(elbow);
+  const bent = -Math.sqrt(Math.max(0, reach - out * out - forward * forward));
+  const y = shoulder.y + Math.min(drop + RIDER_BLOCKOUT.armEaseRiseMax, Math.max(drop, bent));
+  return new THREE.Vector3(shoulder.x + Math.sign(side) * out, y, shoulder.z + forward);
 }
 
 /**
@@ -633,6 +700,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // in a mapped material has to be folded onto its page — Wheel in Motion's
   // sleeves are printed on the arm lofts themselves — and whether that happens
   // is a question about the role's material, asked of the atlas.
+  const surfaceUpdates: (() => void)[] = [];
   const limb = (
     profile: LoftProfile,
     role: RiderMaterialRole,
@@ -640,9 +708,12 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     paintwork?: (geometry: THREE.BufferGeometry, side: number) => void,
     side = 1,
     page?: LoftPage,
+    openEnd?: 'top' | 'bottom',
   ): THREE.Mesh => {
     const geometry = track(paged(
-      loftGeometry(profile, { radialSegments: density.limb, shade, splitSeam: mapsRole(role) }),
+      loftGeometry(profile, { radialSegments: density.limb, shade, splitSeam: mapsRole(role),
+        capTop: !(look.continuousJoints && openEnd === 'top'),
+        capBottom: !(look.continuousJoints && openEnd === 'bottom') }),
       role,
       typeof page === 'function' ? page(side) : page,
     ));
@@ -748,7 +819,8 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     }
     if (group.build) {
       for (const pairSide of side === null ? [-1, 1] : [side]) {
-        parts.push(paged(group.build(pairSide), group.role, group.art));
+        const page = typeof group.art === 'function' ? group.art(pairSide) : group.art;
+        parts.push(paged(group.build(pairSide), group.role, page));
       }
     }
     const mesh = new THREE.Mesh(track(mergeGeometries(parts)), materialFor(group.role));
@@ -790,7 +862,8 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       bendToward: FORWARD,
     }, solvedUpper, solvedLower);
     hip.quaternion.copy(solvedUpper);
-    hip.add(limb(profiles.thigh, look.parts.legs, shades.legs, look.paint?.thigh, side, atlas?.lofts?.thigh));
+    const thighMesh = limb(profiles.thigh, look.parts.legs, shades.legs, look.paint?.thigh, side, atlas?.lofts?.thigh, 'bottom');
+    hip.add(thighMesh);
 
     // The half of a knee guard that lives above the knee, on the bone it is
     // strapped to. See `RiderLook.panels.thighPad`: this is one joint further
@@ -803,7 +876,10 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     knee.name = `rider-knee-${sideName}`;
     knee.position.y = -RIDER_BLOCKOUT.thighLength;
     knee.quaternion.copy(solvedLower);
-    knee.add(limb(profiles.shin, look.parts.legs, shades.legs, look.paint?.shin, side, atlas?.lofts?.shin));
+    const shinMesh = limb(profiles.shin, look.parts.legs, shades.legs, look.paint?.shin, side, atlas?.lofts?.shin, 'top');
+    knee.add(shinMesh);
+    if (look.continuousJoints) surfaceUpdates.push(joinRiderSurface(
+      thighMesh.geometry, shinMesh.geometry, knee, RIDER_BLOCKOUT.thighLength, .09));
     hip.add(knee);
 
     const ankle = new THREE.Group();
@@ -870,7 +946,8 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   // instead of reversing inside the last facet (`RiderAtlas.lofts`).
   const lofts = atlas?.lofts;
   const torsoParts = [paged(
-    loftGeometry(profiles.torso, { radialSegments: density.torso, splitSeam: mapsRole('body') }),
+    loftGeometry(profiles.torso, { radialSegments: density.torso, splitSeam: mapsRole('body'),
+      capBottom: !look.drapedHem }),
     'body',
     lofts?.torso,
   )];
@@ -901,6 +978,8 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   look.paint?.torso?.(torsoGeometry);
   const torso = shadowed(new THREE.Mesh(torsoGeometry, bodyMaterial));
   pelvis.add(torso);
+  if (look.drapedHem) surfaceUpdates.push(drapeRiderHem(
+    torsoGeometry, pelvis, legs.map(leg => leg.hip), density.torso));
   if (look.parts.seat !== 'body') {
     const seat = new THREE.Mesh(
       track(paged(
@@ -989,6 +1068,8 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     );
     // Elbows behind, so the arms read as hanging rather than as reaching.
     const bendToward = new THREE.Vector3(0, 0, -1);
+    // Where the same hand settles at a standstill (`easedHandTarget`).
+    const easedTarget = easedHandTarget(shoulder.position, baseTarget, side);
 
     solveChain({
       origin: shoulder.position,
@@ -1002,7 +1083,8 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     // livery reaches the arms: a panel group here is built per side but names
     // one material for both, so it can hold one colour and Maribel wears two
     // (`RiderLook.paint.upperArm`).
-    shoulder.add(limb(profiles.upperArm, 'limbs', 1, look.paint?.upperArm, side, atlas?.lofts?.upperArm));
+    const upperMesh = limb(profiles.upperArm, 'limbs', 1, look.paint?.upperArm, side, atlas?.lofts?.upperArm, 'bottom');
+    shoulder.add(upperMesh);
 
     // The accent runs down the *outer* sleeve, not around the whole arm.
     //
@@ -1030,7 +1112,10 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     elbow.name = `rider-elbow-${sideName}`;
     elbow.position.y = -RIDER_BLOCKOUT.upperArmLength;
     elbow.quaternion.copy(solvedLower);
-    elbow.add(limb(profiles.forearm, 'limbs', 1, look.paint?.forearm, side, atlas?.lofts?.forearm));
+    const forearmMesh = limb(profiles.forearm, 'limbs', 1, look.paint?.forearm, side, atlas?.lofts?.forearm, 'top');
+    elbow.add(forearmMesh);
+    if (look.continuousJoints) surfaceUpdates.push(joinRiderSurface(
+      upperMesh.geometry, forearmMesh.geometry, elbow, RIDER_BLOCKOUT.upperArmLength, .055));
     // Elbow armour, on the side the elbow actually points: the chains bend
     // backward, so this is the face a rider lands on.
     if (panels.elbowPad) {
@@ -1080,10 +1165,15 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       target: baseTarget.clone(),
       baseSplay,
       bendToward,
+      easedTarget,
+      easedSplay: Math.abs(easedTarget.x),
+      easedBend: new THREE.Vector3(),
+      hand,
       lastSplay: 0,
       lastForward: 0,
       lastRise: 0,
       lastSwing: 0,
+      lastEase: 0,
     });
   }
 
@@ -1213,6 +1303,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
 
   if (rightGrip === null) throw new Error('the rider was built without a right grip');
   const grip = rightGrip;
+  for (const updateSurface of surfaceUpdates) updateSurface();
 
   return {
     root,
@@ -1600,6 +1691,27 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       // one reaction here that is deliberately symmetric, because it is the
       // one situation where nothing is asymmetric about what the rider is
       // doing; the static right-arm offset still keeps them from mirroring.
+      //
+      // **The ease (owner, 2026-10-10: "so stiff looking").** Stopped or near
+      // it, the carriage itself relaxes: soft elbows bowed out and back, hands
+      // in, forward and turned toward the thighs (`easedHandTarget`). Every
+      // reaction below still offsets it. Speed fades it (`armEaseForSpeed`),
+      // and the air, a crash, the ragdoll, the three held stances and riding
+      // backwards take it straight back, so each of those poses is the one it
+      // always was. (Backwards is the counterweight stance; eased, round 1 put
+      // Wyldist's turned glove 10 mm into his thigh in a reversing full-lock
+      // crouch — 2 mm clear before. Gone by half the reverse blend, because
+      // that blend lags the wheel by a tenth of a second and the remainder
+      // still cost him 2 mm.)
+      // A hand carrying something on its grip (the M14 paddle) keeps the
+      // carriage its carry was authored against by `stance.carry`: that shaft
+      // continues the forearm, so an eased forearm would swing it in across
+      // the legs. A channel, not the grip's visibility — the paddle is shown
+      // after this solve, so reading it here posed the arm a frame late.
+      const ease = Math.max(clamp01(stance.armEase), rest)
+        * (1 - air) * (1 - crashing) * (1 - rag) * (1 - tuck) * (1 - attack) * (1 - carving)
+        * (1 - Math.min(1, 2 * reverse));
+      const carry = clamp01(stance.carry);
       for (const arm of arms) {
         const inside = insideSide !== 0 && Math.sign(arm.side) === insideSide;
         const splay = (driving + bracing) * RIDER_BLOCKOUT.armLoadSplay
@@ -1660,6 +1772,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
         // because most frames move none of them; a swing moves nothing *but*
         // this, so an unguarded swing is an arm that never leaves its carriage.
         const swinging = arm.side < 0 ? clamp(stance.swingBlend, 0, 1) : 0;
+        const eased = arm.side < 0 ? ease * (1 - carry) : ease;
 
         if (
           !ragActive
@@ -1668,17 +1781,35 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
           && Math.abs(splay - arm.lastSplay) < 1e-6
           && Math.abs(forward - arm.lastForward) < 1e-6
           && Math.abs(rise - arm.lastRise) < 1e-6
+          && Math.abs(eased - arm.lastEase) < 1e-6
         ) continue;
 
         arm.lastSplay = splay;
         arm.lastForward = forward;
         arm.lastRise = rise;
         arm.lastSwing = swinging;
+        arm.lastEase = eased;
+        // At zero ease each lerp returns its first argument exactly, so a
+        // riding pose solves bit for bit as it did before the ease existed.
+        // The inward draw stays out of a corner (`1 - amount`): there the hips
+        // drop and swing under the hands and the carve reaction owns the width
+        // — round 2 measured Wyldist's eased glove 4 mm into his thigh in a
+        // full-lock technical turn (19 mm clear before; 22 mm with this).
         arm.target.set(
-          Math.sign(arm.side) * (arm.baseSplay + splay),
-          arm.baseTarget.y + rise,
-          arm.baseTarget.z + forward,
+          Math.sign(arm.side) * (lerp(arm.baseSplay, arm.easedSplay, eased * (1 - amount)) + splay),
+          lerp(arm.baseTarget.y, arm.easedTarget.y, eased) + rise,
+          lerp(arm.baseTarget.z, arm.easedTarget.z, eased) + forward,
         );
+        // The bow and the hand's turn hand back to the swing as it commits,
+        // so the M14 arm still goes out along its paddle exactly as before.
+        const settle = eased * (1 - swinging);
+        arm.hand.rotation.y = settle > 0 ? Math.sign(arm.side) * RIDER_BLOCKOUT.armEaseHandRoll * settle : 0;
+        // The deeper right elbow points further back, so its bow seen from the
+        // front matches the left's instead of flaring wider (round 2).
+        const bowOut = arm.side < 0 ? RIDER_BLOCKOUT.armEaseElbowOutRight : RIDER_BLOCKOUT.armEaseElbowOut;
+        const bend = settle > 0
+          ? arm.easedBend.set(Math.sign(arm.side) * bowOut * settle, 0, -1).normalize()
+          : arm.bendToward;
         if (swinging > 0) {
           // Out along the swing, at very nearly full extension.
           //
@@ -1713,7 +1844,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
           target: arm.target,
           upperLength: RIDER_BLOCKOUT.upperArmLength,
           lowerLength: RIDER_BLOCKOUT.forearmLength,
-          bendToward: arm.bendToward,
+          bendToward: bend,
         }, reactionUpper, reactionLower);
         arm.shoulder.quaternion.copy(reactionUpper);
         arm.elbow.quaternion.copy(reactionLower);
@@ -1877,8 +2008,10 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
         neck.rotation.z = -sway * motion.swayHeadTilt
           - wobble * footPhase * motion.staggerHeadLoll;
       }
+      for (const updateSurface of surfaceUpdates) updateSurface();
     },
     dispose(): void {
+      surfaceUpdates.length = 0;
       for (const geometry of geometries) geometry.dispose();
       for (const material of materials) material.dispose();
       // The look's printed sheet, if it had one. A texture is a GPU resource

@@ -45,7 +45,7 @@ import type { CharacterId } from './riders.ts';
 /** Every machine the renderer can build. */
 export type MachineId =
   'standard' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard'
-  | 'flo-with-zo' | 'seal-on-a-wheel';
+  | 'flo-with-zo' | 'seal-on-a-wheel' | 'wyldist';
 
 export interface MachineSpec {
   readonly id: MachineId;
@@ -205,6 +205,17 @@ export const MACHINES: readonly MachineSpec[] = Object.freeze([
     blurb: 'A bright cyan body in stacked slabs with dark windows cut through '
       + 'the flanks, hot pink bars and corner wedges, black pedals.',
   }),
+  /**
+   * Wyldist's C2 wheel — M41. An original compact charcoal EUC with angled
+   * red side accents, not a manufacturer's shell or a motorcycle from the
+   * garment references. The shared physical machine contract stays intact.
+   */
+  Object.freeze({
+    id: 'wyldist' as MachineId,
+    name: "Wyldist's wheel",
+    blurb: 'Compact charcoal bodywork with chamfered shoulders, angular red '
+      + 'side pads, a dark road tyre and black pedals.',
+  }),
 ]);
 
 export const MACHINE_IDS: readonly MachineId[] =
@@ -289,6 +300,8 @@ export function machineForCharacter(character: CharacterId): MachineId {
   // line — a decision stated rather than a fallback nobody chose
   // (`docs/PLANS.md` §35.10).
   if (character === 'seal-on-a-wheel') return 'seal-on-a-wheel';
+  // M41: the approved C2 machine, its specification and its look join together.
+  if (character === 'wyldist') return 'wyldist';
   return DEFAULT_MACHINE;
 }
 

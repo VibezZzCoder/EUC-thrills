@@ -1,4 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { BARKS } from '../data/tuning.ts';
 import type { HudView } from './hudModel.ts';
 
 /**
@@ -18,7 +19,10 @@ import type { HudView } from './hudModel.ts';
  *     run — the clock change often, the other nine things almost never.
  *   - **Nothing here reads the DOM.** A layout read in the frame loop is the
  *     classic way a UI layer starts costing milliseconds it does not look like
- *     it should cost.
+ *     it should cost. **One exception since M42:** the question bubble
+ *     (`setBark`) measures itself and the lanes it must clear — on a text,
+ *     layout or lane change only, never per frame — and moves by a pixel
+ *     transform from custom properties (`DESIGN.md` §9r).
  *
  * The warning line is `polite` rather than `assertive` on purpose: a
  * screen-reader user riding a hill should hear "ease off" at the next natural
@@ -103,7 +107,10 @@ const TEMPLATE = `
   <span class="euc-hud__speed-value" data-hud="speed">0</span>
   <span class="euc-hud__speed-unit" data-hud="unit">km/h</span>
   <span class="euc-hud__reverse" data-hud="reverse" hidden>Reverse</span>
+  <span class="euc-hud__fps" data-hud="fps" aria-hidden="true" hidden></span>
 </div>
+
+<div class="euc-hud__bark" data-bark aria-hidden="true" hidden><span class="euc-hud__bark-text" data-bark-text></span></div>
 
 <div class="euc-hud__cues">
   <div class="euc-hud__warning" data-hud="warning" role="status" aria-live="polite" hidden></div>
@@ -191,6 +198,38 @@ export class Hud {
   /** The template ships the figure visible, so the diff starts from that. */
   private lastValueHidden = false;
   private lastAnnounce = '';
+  /** The frame-rate readout's last text — M42. Seat 0 only; `''` is hidden. */
+  private lastFps = '';
+
+  // -- The question bubble (M42, `DESIGN.md` §9r) ----------------------------
+  /**
+   * The one world-anchored element, and the one place this file measures.
+   * Not a lane and not `data-hud` (the pane-containment specs walk every
+   * `[data-hud]` node): a rare, small, transient bubble over a pedestrian,
+   * moved by a pixel transform from custom properties. The lanes it must stay
+   * clear of are measured on a text, layout or lane-state change only — never
+   * per frame — and every per-frame call is arithmetic on those cached numbers.
+   */
+  private readonly bark: HTMLElement;
+  private readonly barkText: HTMLElement;
+  private lastBarkText = '';
+  private lastBarkShown = false;
+  private lastBarkX = '';
+  private lastBarkY = '';
+  private lastBarkOpacity = '';
+  /** A position has been written for the current text, so a fade can stay put. */
+  private barkPlaced = false;
+  /** The cached lanes are stale: re-measure on the next `setBark`. */
+  private barkLanesDirty = true;
+  /** Cached in pane CSS px: the lane floor, the lane ceiling, the bubble's box, the pane. */
+  private barkFloor = 0;
+  private barkCeiling = 0;
+  private barkWidth = 0;
+  private barkHeight = 0;
+  private barkPaneWidth = -1;
+  private barkPaneHeight = -1;
+  /** The lane state the cache was measured against, compared only while a bubble shows. */
+  private barkLaneKey = '';
 
   constructor(options: HudOptions = {}) {
     this.options = options;
@@ -204,6 +243,8 @@ export class Hud {
       const name = node.dataset.hud;
       if (name !== undefined) this.nodes[name] = node;
     }
+    this.bark = root.querySelector<HTMLElement>('[data-bark]')!;
+    this.barkText = root.querySelector<HTMLElement>('[data-bark-text]')!;
 
     this.nodes['prompt-dismiss']?.addEventListener('click', this.onDismiss);
 
@@ -242,6 +283,7 @@ export class Hud {
     const value = active ? 'true' : 'false';
     if (this.root.dataset.touch === value) return;
     this.root.dataset.touch = value;
+    this.barkLanesDirty = true;
   }
 
   /**
@@ -278,6 +320,7 @@ export class Hud {
     if (this.root.dataset.split === value && this.root.dataset.row === rowValue) return;
     this.root.dataset.split = value;
     this.root.dataset.row = rowValue;
+    this.barkLanesDirty = true;
     const container = this.root.parentElement;
     if (container === null) return;
     container.dataset.split = side === null ? 'false' : 'true';
@@ -290,7 +333,9 @@ export class Hud {
     // every element this layer hides, because the UA rule loses to any
     // `display` a class sets — the trap `ui/notice.ts` records having cost a
     // Playwright run.
+    if (this.root.hidden === !visible) return;
     this.root.hidden = !visible;
+    this.barkLanesDirty = true;
   }
 
   /**
@@ -397,6 +442,189 @@ export class Hud {
     this.writeStray(view.stray);
     this.writeOverspeed(view.overspeed);
     this.writeChallenge(view.challenge);
+    // A lane that appeared, vanished or rewrapped while a bubble is up moves
+    // the floor or ceiling the bubble was clamped against. Compared only while
+    // one shows (rare, under three seconds at a time), so every other frame
+    // pays one boolean here.
+    if (this.lastBarkShown) {
+      const key = this.barkLaneState();
+      if (key !== this.barkLaneKey) this.barkLanesDirty = true;
+    }
+  }
+
+  /**
+   * The frame-rate readout in the speed lane — M42. Seat 0's HUD only, written
+   * by the composition root from `ui/frameRateMeter.ts`. Diffed, and hidden
+   * while empty, so the lane's geometry is untouched while the counter is off.
+   * **The owner's instrument**: nothing reads this node's text back. It is
+   * `aria-hidden` — a visual instrument, not a live region — so no
+   * accessibility snapshot (a failed spec's `error-context.md`) carries it.
+   */
+  setFrameRate(text: string): void {
+    if (text === this.lastFps) return;
+    const node = this.nodes.fps;
+    node.textContent = text;
+    // Only appearing or vanishing can move a lane edge; new digits cannot.
+    if (this.lastBarkShown && (text === '') !== (this.lastFps === '')) this.barkLanesDirty = true;
+    node.hidden = text === '';
+    this.lastFps = text;
+  }
+
+  /**
+   * Show the question bubble with its tail at (`px`, `py`), pane CSS pixels
+   * measured from the pane's top-left, at `opacity` (0..1). `paneWidth` and
+   * `paneHeight` are the pane's own size from `Renderer.viewBounds`, so a
+   * resize invalidates the cache without a listener.
+   *
+   * The bubble is clamped inside the pane, its top below the top lanes and
+   * its bottom above the bottom lanes (and, on touch, above the thumbs).
+   * Returns **false** when that clamp would carry it more than
+   * `clampAwayMaxShare` of the pane away from its anchor, or there is no room
+   * at all: the caller then treats the anchor as out of band and the bubble
+   * fades where it last stood — or, if it never stood anywhere, stays hidden.
+   */
+  setBark(
+    text: string,
+    px: number,
+    py: number,
+    opacity: number,
+    paneWidth: number,
+    paneHeight: number,
+  ): boolean {
+    const margin = BARKS.paneMarginPixels;
+    if (text !== this.lastBarkText) {
+      this.barkText.textContent = text;
+      this.lastBarkText = text;
+      this.barkPlaced = false;
+      this.barkLanesDirty = true;
+    }
+    if (Math.abs(paneWidth - this.barkPaneWidth) > 0.5 || Math.abs(paneHeight - this.barkPaneHeight) > 0.5) {
+      this.barkPaneWidth = paneWidth;
+      this.barkPaneHeight = paneHeight;
+      this.barkLanesDirty = true;
+    }
+    if (this.barkLanesDirty) this.measureBarkLanes();
+
+    const halfWidth = this.barkWidth / 2;
+    const left = margin + halfWidth;
+    const right = paneWidth - margin - halfWidth;
+    const x = left > right ? paneWidth / 2 : Math.min(right, Math.max(left, px));
+    const top = this.barkFloor + margin + this.barkHeight;
+    const bottom = this.barkCeiling - margin;
+    const fits = top <= bottom
+      && Math.hypot(x - px, Math.min(bottom, Math.max(top, py)) - py) <= BARKS.clampAwayMaxShare * paneHeight;
+    if (!fits) {
+      if (!this.barkPlaced) this.writeBarkShown(false);
+      return false;
+    }
+    const y = Math.min(bottom, Math.max(top, py));
+    const xText = `${Math.round(x)}`;
+    const yText = `${Math.round(y)}`;
+    if (xText !== this.lastBarkX) {
+      this.bark.style.setProperty('--bark-x', xText);
+      this.lastBarkX = xText;
+    }
+    if (yText !== this.lastBarkY) {
+      this.bark.style.setProperty('--bark-y', yText);
+      this.lastBarkY = yText;
+    }
+    this.barkPlaced = true;
+    this.setBarkOpacity(opacity);
+    this.writeBarkShown(true);
+    return true;
+  }
+
+  /** Fade the bubble where it last stood (its anchor has left the band). */
+  setBarkOpacity(opacity: number): void {
+    if (!this.barkPlaced) return;
+    // Twentieths: a fade of 0.3 s is a handful of steps, and an unchanged
+    // string writes nothing.
+    const clamped = opacity <= 0 ? 0 : opacity >= 1 ? 1 : opacity;
+    const value = `${Math.round(clamped * 20) / 20}`;
+    if (value === this.lastBarkOpacity) return;
+    this.bark.style.setProperty('--bark-opacity', value);
+    this.lastBarkOpacity = value;
+  }
+
+  /** No bubble on this pane. */
+  clearBark(): void {
+    this.writeBarkShown(false);
+    this.barkPlaced = false;
+    if (this.lastBarkText !== '') {
+      this.barkText.textContent = '';
+      this.lastBarkText = '';
+    }
+  }
+
+  /** Whether a bubble is on screen in this pane — for the QA bridge. */
+  get barkShown(): boolean {
+    return this.lastBarkShown;
+  }
+
+  private writeBarkShown(shown: boolean): void {
+    if (shown === this.lastBarkShown) return;
+    this.bark.hidden = !shown;
+    this.lastBarkShown = shown;
+  }
+
+  /** Every lane fact that can move the floor or the ceiling, as one string. */
+  private barkLaneState(): string {
+    return `${this.lastChallengeVisible}|${this.lastScoreHidden}|${this.lastObjective}|${this.lastWarningLabel}`
+      + `|${this.lastPrompt}|${this.lastStrayVisible}|${this.lastOverspeedLabel}|${this.lastOffRoute}`
+      + `|${this.lastCountdown}|${this.lastLapLabel}|${this.lastSplitLabel}|${this.lastBestLabel}`
+      + `|${this.lastTrickVisible}|${this.lastTrickPending}|${this.lastTrickAwardLabel}|${this.lastModeSubLabel}`
+      + `|${this.lastTally}|${this.lastTallyField}|${this.lastReverse}|${this.lastFps === ''}`;
+  }
+
+  /**
+   * Measure the bubble and the lanes it must clear — the one layout read in
+   * this file, and it runs only when the text, the layout or a lane changed.
+   *
+   * Every rendered `[data-hud]` box in the pane is a lane: one whose centre is
+   * above the pane's middle raises the floor to its bottom edge, one below
+   * lowers the ceiling to its top edge. On touch the thumb controls, which
+   * live outside the HUD, lower the ceiling too. A countdown in the middle
+   * lands on one side or the other and leaves the bubble no room, which is
+   * the right answer for a countdown.
+   */
+  private measureBarkLanes(): void {
+    this.barkLanesDirty = false;
+    this.barkLaneKey = this.barkLaneState();
+    const shownBefore = this.lastBarkShown;
+    // The bubble has to be rendered to have a size; nothing paints between
+    // here and the position write that follows in the same task.
+    if (!shownBefore) this.bark.hidden = false;
+    const pane = this.root.getBoundingClientRect();
+    const box = this.bark.getBoundingClientRect();
+    this.barkWidth = box.width;
+    this.barkHeight = box.height;
+    if (!shownBefore) this.bark.hidden = true;
+
+    const height = this.barkPaneHeight > 0 ? this.barkPaneHeight : pane.height;
+    const middle = pane.top + pane.height / 2;
+    let floor = pane.top;
+    let ceiling = pane.top + height;
+    const consider = (rect: DOMRect): void => {
+      if (rect.width <= 0 || rect.height <= 0) return;
+      if (rect.bottom <= pane.top || rect.top >= pane.top + height) return;
+      if (rect.right <= pane.left || rect.left >= pane.right) return;
+      if (rect.top + rect.height / 2 < middle) floor = Math.max(floor, rect.bottom);
+      else ceiling = Math.min(ceiling, rect.top);
+    };
+    for (const node of this.root.querySelectorAll<HTMLElement>('[data-hud]')) {
+      // The match status is a screen-reader line clipped to nothing.
+      if (node.dataset.hud === 'match-status') continue;
+      consider(node.getBoundingClientRect());
+    }
+    if (this.root.dataset.touch === 'true') {
+      for (const node of document.querySelectorAll<HTMLElement>(
+        '.euc-touch__stick, .euc-touch__actions, .euc-touch__system',
+      )) {
+        consider(node.getBoundingClientRect());
+      }
+    }
+    this.barkFloor = floor - pane.top;
+    this.barkCeiling = ceiling - pane.top;
   }
 
   /**
