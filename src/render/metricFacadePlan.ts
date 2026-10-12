@@ -9,6 +9,7 @@ import type { Vec3 } from '../simulation/world.ts';
 import { exactBuildingBody } from '../level/protectedSiteEligibility.ts';
 import { exteriorComposition } from './districtExteriorSites.ts';
 import type { FacadeOpening } from './streetFacadeOpenings.ts';
+import { groundOwnsFlushFloor } from './coplanarGround.ts';
 
 export type MetricFinish = 'masonry' | 'frame' | 'roofEdge' | 'entry' | 'glazing';
 export type MetricSurfaceKind = 'wall' | 'reveal' | 'closed-pane' | 'pane-frame'
@@ -291,6 +292,20 @@ export function buildMetricFacadePlan(plan: LevelPlan, selection: MetricFacadeSe
   const emit = (propIndex: number, pieceKey: string, kind: MetricSurfaceKind, finish: MetricFinish,
     vertices: readonly Vec3[]): void => {
     const normal = normalOf(vertices);
+    // Preserve the accepted masonry landing inside the original protecting
+    // body, but give a flush architectural floor 2 cm of construction height.
+    // Removing it exposed lawn; a duplicate plane flickered. This is the
+    // existing inaccessible room floor, never a new ground patch or doormat.
+    if ((kind === 'structural-return' || kind === 'reveal') && normal.y > 1 - EPS
+      && groundOwnsFlushFloor(plan, vertices)) {
+      const raised = vertices.map(v => ({ ...v, y: v.y + 0.02 }));
+      // Close the outer landing's 2 cm edge. A raised sheet with no riser
+      // exposed a grass-coloured slit beneath it. Inner reveals meet this
+      // same floor height and need no second edge face.
+      if (kind === 'structural-return') emit(propIndex, pieceKey, kind, finish,
+        [vertices[0], vertices[1], raised[1], raised[0]]);
+      vertices = raised;
+    }
     const roofCaster = roofKeys.has(pieceKey);
     let polygons: readonly (readonly Vec3[])[] = [vertices];
     for (const planes of openingPlanes) polygons = polygons.flatMap(poly => subtractOpeningPlanes(poly, planes));

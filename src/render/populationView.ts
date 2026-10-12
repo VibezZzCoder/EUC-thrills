@@ -11,6 +11,7 @@ import { createBlockoutEUC, type BlockoutEUC } from './euc.ts';
 import { STANDARD_MACHINE_LOOK } from './machineLook.ts';
 import { ULTRA_STATIC_LAYER } from './ultra/ultraRecipe.ts';
 import { POPULATION_MODEL, populationSupportTargets, type PopulationGroundSupport } from '../shared/populationSupport.ts';
+import { compactVisibleInstances } from './instanceVisibility.ts';
 
 /** Structurally compatible with simulation/population.ts. Values are fixed-step
  * facts; the renderer owns only their interpolation and anatomical expression. */
@@ -133,6 +134,9 @@ export interface PopulationView {
   update(previous: PopulationRenderSnapshot, current: PopulationRenderSnapshot, alpha: number): void;
   /** An already interpolated snapshot has exactly the same presentation path. */
   apply(snapshot: PopulationRenderSnapshot): void;
+  /** Colour plus shadow frusta: an off-camera actor can still cast into view. */
+  prepareView(camera: THREE.Camera, shadowCamera?: THREE.Camera): void;
+  restoreView(): void;
   report(): PopulationViewReport;
   dispose(): void;
 }
@@ -143,19 +147,22 @@ interface Batch {
   readonly material: THREE.Material | THREE.Material[];
   readonly casts: boolean;
   readonly colours: number[];
+  readonly slots: Slot[];
   mesh: THREE.InstancedMesh | null;
   dirty: boolean;
 }
-interface Slot { readonly batch: Batch; readonly index: number }
+interface Slot { readonly batch: Batch; index: number; visibleForView: boolean }
 interface MachinePart { readonly slot: Slot; readonly matrix: THREE.Matrix4; readonly tyre: boolean }
 interface Visual {
   readonly spec: ActorSpec;
   readonly parts: Record<string, Slot>;
   readonly machine: MachinePart[];
+  readonly slots: Slot[];
   readonly passenger: boolean;
   pose: MutablePose;
   pendingPose: MutablePose;
   visible: boolean;
+  readonly bounds: THREE.Sphere;
 }
 type MutableGroundSupport = { -readonly [K in keyof PopulationGroundSupport]: PopulationGroundSupport[K] };
 interface MutablePose {
@@ -341,8 +348,10 @@ const cabinWindow = (u0: number, u1: number): THREE.BufferGeometry => patchGeome
  * not physics constants. A 1.9 m authored human hull sets the overall height. */
 const HUMAN_GEOMETRY: Readonly<Record<string, () => THREE.BufferGeometry>> = {
   torso: () => body([
-    { y: 0, halfWidth: 0.155, halfDepth: 0.107, square: 3.0 },
-    { y: 0.06, halfWidth: 0.169, halfDepth: 0.118, square: 3.2 },
+    // The shirt's lower rim clears the pelvis instead of intersecting its
+    // facets at a grazing angle (the old sawtooth waist).
+    { y: 0, halfWidth: 0.176, halfDepth: 0.141, square: 3.0 },
+    { y: 0.06, halfWidth: 0.176, halfDepth: 0.141, square: 3.2 },
     { y: 0.42, halfWidth: 0.153, halfDepth: 0.115, square: 3.2 },
     { y: 0.77, halfWidth: 0.213, halfDepth: 0.129, z: 0.006, square: 3.0 },
     { y: 0.90, halfWidth: 0.226, halfDepth: 0.126, z: 0.004, square: 2.8 },
@@ -373,10 +382,12 @@ const HUMAN_GEOMETRY: Readonly<Record<string, () => THREE.BufferGeometry>> = {
     { y: 0.27, halfWidth: 0.043, halfDepth: 0.042, square: 2.0 },
   ], 18),
   hair: () => body([
-    { y: 0, halfWidth: 0.112, halfDepth: 0.096, z: -0.007, square: 2.3 },
-    { y: 0.045, halfWidth: 0.117, halfDepth: 0.099, z: -0.006, square: 2.2 },
-    { y: 0.100, halfWidth: 0.093, halfDepth: 0.083, z: -0.006, square: 2.0 },
-    { y: 0.13, halfWidth: 0.025, halfDepth: 0.023, square: 2.0 },
+    // Keep the hairline above the brows, and enclose the *faceted* skull
+    // through its crown. The old rear offset exposed skin through the front.
+    { y: 0, halfWidth: 0.120, halfDepth: 0.108, square: 2.2 },
+    { y: 0.030, halfWidth: 0.114, halfDepth: 0.103, square: 2.1 },
+    { y: 0.065, halfWidth: 0.095, halfDepth: 0.087, square: 2.0 },
+    { y: 0.095, halfWidth: 0.032, halfDepth: 0.029, square: 2.0 },
   ], 18),
   shoe: () => body([
     { y: 0, halfWidth: 0.086, halfDepth: 0.143, z: 0.018, square: 4.0 },
@@ -474,7 +485,8 @@ export function createPopulationView(
     if (!batch) {
       const geometry = create();
       ownedGeometry.add(geometry);
-      batch = { id, geometry, material: material(finish), casts, colours: [], mesh: null, dirty: false };
+      geometry.computeBoundingSphere();
+      batch = { id, geometry, material: material(finish), casts, colours: [], slots: [], mesh: null, dirty: false };
       batches.set(id, batch);
     }
     return batch;
@@ -482,7 +494,9 @@ export function createPopulationView(
   const slot = (batch: Batch, colour: number): Slot => {
     const index = batch.colours.length;
     batch.colours.push(colour);
-    return { batch, index };
+    const entry = { batch, index, visibleForView: true };
+    batch.slots.push(entry);
+    return entry;
   };
   const humanPart = (geometry: string, finish: PopulationFinish, colour: number, casts = false): Slot =>
     slot(family(`human-${geometry}-${finish}`, HUMAN_GEOMETRY[geometry]!, finish, casts), colour);
@@ -512,7 +526,8 @@ export function createPopulationView(
       if (!batch) {
         // These resources belong exclusively to machineTemplate.dispose().
         batch = { id, geometry: part.mesh.geometry, material: part.mesh.material,
-          casts: part.mesh.name === 'euc-tyre' || part.mesh.name === 'euc-shell', colours: [], mesh: null, dirty: false };
+          casts: part.mesh.name === 'euc-tyre' || part.mesh.name === 'euc-shell', colours: [], slots: [], mesh: null, dirty: false };
+        part.mesh.geometry.computeBoundingSphere();
         batches.set(id, batch);
       }
       visual.machine.push({ slot: slot(batch, 0xffffff), matrix: part.matrix.clone(), tyre: part.tyre });
@@ -531,9 +546,9 @@ export function createPopulationView(
       }
       ids.add(spec.id);
       const paint = painter.actor(spec);
-      const visual: Visual = { spec, parts: {}, machine: [],
+      const visual: Visual = { spec, parts: {}, machine: [], slots: [],
         passenger: spec.kind === 'trafficVehicle' || (spec.kind === 'parkedVehicle' && spec.appearanceIndex % 2 !== 0),
-        pose: createMutablePose(), pendingPose: createMutablePose(), visible: false };
+        pose: createMutablePose(), pendingPose: createMutablePose(), visible: false, bounds: new THREE.Sphere() };
       visuals.push(visual);
       const p = visual.parts;
       if (vehicleKind(spec.kind)) {
@@ -569,10 +584,7 @@ export function createPopulationView(
         p.hair = humanPart('hair', 'hair', spec.kind === 'worker' || spec.kind === 'fictionalEuc' ? paint.trim : paint.hair);
         p.nose = humanPart('nose', 'skin', paint.skin);
         p.neck = humanPart('round', 'skin', paint.skin);
-        p.mouth = humanPart('box', 'skin', 0x855f56);
-        p.collar = humanPart('box', 'cloth', paint.trim);
-        p.hem = humanPart('box', 'cloth', paint.trim);
-        p.backSeam = humanPart('box', 'cloth', paint.trim);
+        p.mouth = humanPart('box', 'skin', 0x513f37);
         for (const side of ['l', 'r']) {
           p[`${side}-thigh`] = humanPart('upperLeg', 'cloth', paint.trousers, true);
           p[`${side}-shin`] = humanPart('lowerLeg', 'cloth', paint.trousers, true);
@@ -584,7 +596,6 @@ export function createPopulationView(
           p[`${side}-ear`] = humanPart('round', 'skin', paint.skin);
           p[`${side}-eye`] = humanPart('round', 'glass', 0x505b65);
           p[`${side}-brow`] = humanPart('box', 'hair', paint.hair);
-          p[`${side}-pocket`] = humanPart('box', 'cloth', paint.trim);
         }
         if (spec.kind === 'worker') {
           p.brim = humanPart('sole', 'paint', paint.trim);
@@ -595,6 +606,7 @@ export function createPopulationView(
         if (spec.kind === 'fictionalEuc') addMachine(visual);
       }
     }
+    for (const visual of visuals) visual.slots.push(...Object.values(visual.parts), ...visual.machine.map(part => part.slot));
     const colour = new THREE.Color();
     const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
     for (const batch of batches.values()) {
@@ -612,6 +624,7 @@ export function createPopulationView(
       // physics-adjacent culling trap. Full-world topology is priced honestly.
       mesh.frustumCulled = false;
       batch.colours.forEach((hex, index) => { mesh.setColorAt(index, colour.setHex(hex)); mesh.setMatrixAt(index, hidden); });
+      mesh.instanceColor?.setUsage(THREE.DynamicDrawUsage);
       group.add(mesh);
     }
   } catch (error) {
@@ -632,6 +645,18 @@ export function createPopulationView(
   const matrix = new THREE.Matrix4();
   const extra = new THREE.Matrix4();
   const headMatrix = new THREE.Matrix4();
+  const partBounds = new THREE.Sphere();
+  const worldBounds = new THREE.Sphere();
+  const viewFrustum = new THREE.Frustum(), shadowFrustum = new THREE.Frustum();
+  const projection = new THREE.Matrix4();
+  const updateBounds = (visual: Visual): void => {
+    visual.bounds.makeEmpty();
+    for (const slot of visual.slots) {
+      slot.batch.mesh!.getMatrixAt(slot.index, matrix);
+      partBounds.copy(slot.batch.geometry.boundingSphere!).applyMatrix4(matrix);
+      visual.bounds.union(partBounds);
+    }
+  };
   const torsoMatrix = new THREE.Matrix4();
   const normal = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);
@@ -763,7 +788,7 @@ export function createPopulationView(
     const hipZ = k ? k.hipZ : (riding ? 0.025 : jogging && moving ? 0.035 : 0) - 0.09 * sitting - 0.10 * flinch * (1 - sitting);
     // The knock-down leans the whole upper body about the waist (pitch only).
     const lean = k ? k.lean : 0, leanCos = Math.cos(lean), leanSin = Math.sin(lean);
-    // How far down the hips are, 0 standing .. 1 sat (0 outside a knock-down).
+    // Knockdown leg bend still follows the hips' descent, independent of clothing.
     const down = k ? clamp((KNOCKDOWN.standHipY - hipY) / (KNOCKDOWN.standHipY - KNOCKDOWN.sitHipY), 0, 1) : 0;
     write(p.pelvis, root, shift, hipY - 0.12, hipZ, 1, 1, 1, 0, twist * 0.5, 0);
     transform.position.set(shift, hipY + 0.025, hipZ);
@@ -771,47 +796,34 @@ export function createPopulationView(
       talk * 0.025 + twist, 0);
     transform.scale.set(1, 0.53, 1); transform.updateMatrix(); torsoMatrix.multiplyMatrices(root, transform.matrix);
     write(p.torso, torsoMatrix, 0, 0, 0);
-    write(p.hem, torsoMatrix, 0, 0.06, 0.122, 0.26, 0.045, 0.014);
-    write(p.collar, torsoMatrix, 0, 0.93, 0.098, 0.14, 0.075, 0.017);
-    // The back seam rolls up from the hem to its collar end as the hips go
-    // down, gone by 30 % of the way: sat back on the hands, the near arm hides
-    // the lower shirt in a side view and the straight seam, a centimetre proud
-    // of the back, read as a pale stick below it (critic repair 2026-10-10,
-    // rounds 1 and 2). Exactly the standing seam when `down` is 0.
-    const seamLength = 0.74 * (1 - clamp(down / 0.3, 0, 1)), seamWidth = seamLength > 0 ? 0.012 : 0;
-    write(p.backSeam, torsoMatrix, 0, 0.80 - seamLength / 2, -0.123, seamWidth, seamLength, seamWidth);
     write(p.workBand, torsoMatrix, 0, 0.60, 0.132, 0.32, 0.045, 0.014);
 
-    const neckY = hipY + 0.62;
+    const neckY = hipY + 0.594;
     if (k) {
       // Neck and head ride the lean from the waist; the chin tucks (the protective curl).
-      write(p.neck, root, shift, hipY + 0.025 + 0.58 * leanCos - 0.002 * leanSin, hipZ + 0.58 * leanSin + 0.002 * leanCos,
-        0.059, 0.081, 0.055);
-      transform.position.set(shift, hipY + 0.025 + 0.64 * leanCos - 0.014 * leanSin, hipZ + 0.64 * leanSin + 0.014 * leanCos);
+      write(p.neck, root, shift, hipY + 0.025 + 0.554 * leanCos - 0.002 * leanSin, hipZ + 0.554 * leanSin + 0.002 * leanCos,
+        0.059, 0.060, 0.055);
+      transform.position.set(shift, hipY + 0.025 + 0.585 * leanCos - 0.014 * leanSin, hipZ + 0.585 * leanSin + 0.014 * leanCos);
       transform.rotation.set(-0.025 + lean + k.curl, 0, 0);
     } else {
-      write(p.neck, root, shift, neckY - 0.015, hipZ + 0.002 - 0.04 * flinch, 0.059, 0.081, 0.055);
-      transform.position.set(shift, hipY + 0.665, hipZ + 0.014 - 0.045 * flinch);
+      write(p.neck, root, shift, neckY - 0.015, hipZ + 0.002 - 0.04 * flinch, 0.059, 0.060, 0.055);
+      transform.position.set(shift, hipY + 0.610, hipZ + 0.014 - 0.045 * flinch);
       transform.rotation.set(-0.025 - 0.18 * flinch, talk * 0.16 + twist * 0.6, 0);
     }
     transform.scale.setScalar(1);
     transform.updateMatrix(); headMatrix.multiplyMatrices(root, transform.matrix);
     write(p.head, headMatrix, 0, 0, 0);
-    write(p.hair, headMatrix, 0, 0.15, 0, 1, 1, 1);
-    write(p.brim, headMatrix, 0, 0.152, 0.019, 1.63, 0.25, 1.0);
+    write(p.hair, headMatrix, 0, 0.19, 0, 1, 1, 1);
+    write(p.brim, headMatrix, 0, 0.192, 0.019, 1.63, 0.25, 1.0);
     write(p.nose, headMatrix, 0, 0.095, 0.095);
-    write(p.mouth, headMatrix, 0, 0.061, 0.086, 0.059, 0.008, 0.012);
+    // The previous line's front was inside the jaw. Retain the same box and
+    // batch, placing its dark front just outside the actual faceted face.
+    write(p.mouth, headMatrix, 0, 0.061, 0.098, 0.059, 0.008, 0.012);
     for (const sign of [1, -1]) {
       const side = sign > 0 ? 'l' : 'r';
       write(p[`${side}-eye`], headMatrix, sign * 0.041, 0.153, 0.093, 0.011, 0.010, 0.009);
       write(p[`${side}-brow`], headMatrix, sign * 0.041, 0.178, 0.088, 0.045, 0.010, 0.012, 0, 0, sign * -0.04);
       write(p[`${side}-ear`], headMatrix, sign * 0.112, 0.129, -0.006, 0.022, 0.034, 0.023);
-      // Sat with the thighs up, a front pocket would hang below them as a pale
-      // sliver: it folds into the hip crease as the hips go down.
-      const pocket = 1 - down;
-      write(p[`${side}-pocket`], root, sign * 0.136 + shift, hipY - 0.03, 0.124 + hipZ,
-        0.056 * pocket, 0.070 * pocket, 0.013 * pocket, 0, 0, sign * 0.05);
-
       // Terrain samples come from simulation at these exact shared targets.
       // Pedal targets instead come from the existing machine's transformed art.
       const index = sign > 0 ? 0 : 1, target = targets.feet![index]!;
@@ -1109,6 +1121,7 @@ export function createPopulationView(
       if (visual.visible && samePose(visual.pose, s)) continue;
       visual.pendingPose = visual.pose; visual.pose = s; visual.visible = true;
       if (vehicleKind(visual.spec.kind)) poseVehicle(visual); else poseHuman(visual);
+      updateBounds(visual);
     }
     for (const batch of batches.values()) if (batch.dirty) {
       batch.mesh!.instanceMatrix.needsUpdate = true; batch.dirty = false;
@@ -1149,6 +1162,25 @@ export function createPopulationView(
     group,
     update,
     apply(snapshot) { update(snapshot, snapshot, 1); },
+    prepareView(camera, shadowCamera) {
+      if (disposed) return;
+      group.updateMatrixWorld(true); camera.updateMatrixWorld(true);
+      projection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      viewFrustum.setFromProjectionMatrix(projection, camera.coordinateSystem, camera.reversedDepth);
+      if (shadowCamera) {
+        shadowCamera.updateMatrixWorld(true);
+        projection.multiplyMatrices(shadowCamera.projectionMatrix, shadowCamera.matrixWorldInverse);
+        shadowFrustum.setFromProjectionMatrix(projection, shadowCamera.coordinateSystem, shadowCamera.reversedDepth);
+      }
+      for (const visual of visuals) {
+        worldBounds.copy(visual.bounds).applyMatrix4(group.matrixWorld);
+        const visible = visual.visible && (viewFrustum.intersectsSphere(worldBounds)
+          || !!shadowCamera && shadowFrustum.intersectsSphere(worldBounds));
+        for (const part of visual.slots) part.visibleForView = visible;
+      }
+      for (const batch of batches.values()) compactVisibleInstances(batch.mesh!, batch.slots);
+    },
+    restoreView() { for (const batch of batches.values()) batch.mesh!.count = batch.slots.length; },
     report() { return { provenance: 'derived-from-built-topology', ...counts,
       ...(disposed ? { drawCalls: 0, colourTriangles: 0, shadowDrawCalls: 0, shadowTriangles: 0,
         geometryBytes: 0, instanceBytes: 0, textureBytes: 0 as const, geometryOwners: 0, materialOwners: 0, batches: 0 } : cost),

@@ -89,7 +89,7 @@ export function countPopulation(plan: PopulationPlan | null): SupplementCount {
     } else {
       human('torso', 'cloth', 1, true); human('pelvis', 'cloth'); human('head', 'skin', 1, true);
       human('hair', 'hair'); human('nose', 'skin'); human('round', 'skin', 3);
-      human('box', 'skin'); human('box', 'cloth', 5);
+      human('box', 'skin');
       human('upperLeg', 'cloth', 2, true); human('lowerLeg', 'cloth', 2, true);
       human('upperArm', 'cloth', 2); human('forearm', 'skin', 2); human('hand', 'skin', 2);
       human('shoe', 'rubber', 2); human('sole', 'rubber', 2); human('round', 'glass', 2); human('box', 'hair', 2);

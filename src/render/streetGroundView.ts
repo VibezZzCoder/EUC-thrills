@@ -5,6 +5,8 @@ import { materialAppearance } from '../data/surfaces.ts';
 import { COURSE_MOTTLE, groundTint, linearFromSrgbHex } from './groundNoise.ts';
 import { assertStreetPavingLocal, createStreetPavingMaterial } from './streetPavingMaterial.ts';
 import { exactPavingDrawsPatch, livingPavingPatch } from './exactPavingOwnership.ts';
+import { exclusivePavingTriangle } from './exclusivePaving.ts';
+import type { Vec3 } from '../simulation/world.ts';
 
 export interface StreetPavingPieces {
   readonly positions: readonly number[];
@@ -26,7 +28,14 @@ export function collectStreetPavingPieces(plan: LevelPlan): StreetPavingPieces |
   const base = linearFromSrgbHex(appearance.albedo, { r: 1, g: 1, b: 1 });
   const tint = { r: 1, g: 1, b: 1 };
   const field = plan.heightfield, columns = field.columns - 1;
-  for (const patch of patches) for (const triangle of patch.triangles) {
+  const covered = new Map<number, (readonly Vec3[])[]>();
+  const entries = patches.flatMap(patch => patch.triangles.map(source => ({ patch, source })));
+  const visible: ReturnType<typeof exclusivePavingTriangle>[] = new Array(entries.length);
+  // Last-written surface wins in PlanTerrainSampler. Preserve that owner, then
+  // emit in the original order so unchanged, disjoint fragments keep their bytes.
+  for (let index = entries.length - 1; index >= 0; index--) visible[index] = exclusivePavingTriangle(entries[index].source, covered);
+  for (let index = 0; index < entries.length; index++) for (const triangle of visible[index]) {
+    const { patch } = entries[index];
     // The admitted industrial service footprint and the living-world warehouse
     // bay use a plain concrete finish; surface, height and normal remain the
     // shared plan fragments.

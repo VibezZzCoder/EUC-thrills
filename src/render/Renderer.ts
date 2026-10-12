@@ -2779,7 +2779,16 @@ export class GameRenderer {
       this.renderer.setScissor(pane.x, pane.y, pane.width, pane.height);
       this.renderer.setScissorTest(true);
     }
-    this.renderer.render(this.scene, camera);
+    // Select separately for every pane, retaining actors in the actual shadow
+    // volume as well as those in the eye's frustum. Warm-up still draws all.
+    this.sun.updateMatrixWorld(true); this.sun.target.updateMatrixWorld(true);
+    this.sun.shadow.updateMatrices(this.sun);
+    this.population?.prepareView(camera, this.sun.castShadow ? this.sun.shadow.camera : undefined);
+    try {
+      this.renderer.render(this.scene, camera);
+    } finally {
+      this.population?.restoreView();
+    }
   }
 
   /**

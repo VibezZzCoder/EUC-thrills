@@ -10,6 +10,7 @@ import { populationSupportTargets, POPULATION_MODEL } from '../shared/population
 import { staticCasterBounds } from './ultra/ultraFarShadow.ts';
 import { WHEEL, RIDER_BLOCKOUT } from '../data/tuning.ts';
 import { collectLostContextHoldings } from './contextLoss.ts';
+import { countPopulation } from './populationPrice.ts';
 
 function spec(kind: ActorKind, id: string = kind, appearanceIndex = 0): ActorSpec {
   const vehicle = kind.endsWith('Vehicle');
@@ -52,6 +53,80 @@ function snapshot(actors: PopulationRenderPose[], tick = 0): PopulationRenderSna
 function matrices(group: THREE.Group): number[][] {
   return group.children.map(object => Array.from((object as THREE.InstancedMesh).instanceMatrix.array));
 }
+
+test('the hair owns the visible crown from all azimuths instead of exposing skull facets', () => {
+  const actor = spec('walker'), view = createPopulationView(plan([actor]));
+  try {
+    view.apply(snapshot([pose(actor, { speedMetresPerSecond: 0, activity: 'waiting' })]));
+    const head = view.group.getObjectByName('human-head-skin') as THREE.InstancedMesh;
+    const hair = view.group.getObjectByName('human-hair-hair') as THREE.InstancedMesh;
+    const matrix = new THREE.Matrix4(); head.getMatrixAt(0, matrix);
+    const ray = new THREE.Raycaster();
+    for (const y of [0.205, 0.235, 0.255, 0.268]) for (let angle = 0; angle < 36; angle++) {
+      const u = angle * Math.PI / 18, target = new THREE.Vector3(0, y, 0).applyMatrix4(matrix);
+      const origin = new THREE.Vector3(Math.cos(u), y, Math.sin(u)).applyMatrix4(matrix);
+      ray.set(origin, target.sub(origin).normalize());
+      const hits = ray.intersectObjects([head, hair]);
+      assert.ok(hits.length > 0); assert.strictEqual(hits[0].object, hair, `exposed scalp at ${y}/${angle}`);
+    }
+  } finally { view.dispose(); }
+});
+
+test('pane selection retains off-camera shadow casters, restores full counts, and follows moved actors', () => {
+  const actors = [spec('walker', 'near', 0), spec('walker', 'shadow', 1), spec('walker', 'away', 2)];
+  const view = createPopulationView(plan(actors));
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 30);
+  camera.position.set(0, 1, 5); camera.lookAt(0, 1, 0); camera.updateMatrixWorld();
+  const shadow = new THREE.OrthographicCamera(-5, 5, 5, -5, 0.1, 30);
+  shadow.position.set(100, 5, 5); shadow.lookAt(100, 1, 0); shadow.updateMatrixWorld();
+  const values = () => actors.map((a, i) => pose(a, { x: i * 100 }));
+  try {
+    view.apply(snapshot(values()));
+    const head = view.group.getObjectByName('human-head-skin') as THREE.InstancedMesh;
+    view.prepareView(camera); assert.equal(head.count, 1); view.restoreView(); assert.equal(head.count, 3);
+    view.prepareView(camera, shadow); assert.equal(head.count, 2, 'shadow actor remains despite being off-camera');
+    view.restoreView(); assert.equal(head.count, 3);
+    const moved = values(); moved[2] = pose(actors[2], { x: 1 });
+    view.apply(snapshot(moved, 1)); view.prepareView(camera); assert.equal(head.count, 2);
+    const m = new THREE.Matrix4(), xs: number[] = [];
+    for (let i = 0; i < head.count; i++) { head.getMatrixAt(i, m); xs.push(m.elements[12]); }
+    assert.deepEqual(xs.sort(), [0, 1], 'writers followed their slots after previous pane swaps');
+    view.restoreView();
+  } finally { view.dispose(); }
+});
+
+test('the basic mouth line is outside the jaw through head poses, with the buried old placement as control', () => {
+  for (const kind of ['walker', 'jogger', 'social', 'worker', 'fictionalEuc'] as const) {
+    const actor = spec(kind), roster = plan([actor]), view = createPopulationView(roster);
+    try {
+      const actual = view.report(), priced = countPopulation(roster);
+      assert.equal(actual.colourTriangles, priced.colourTriangles);
+      assert.equal(actual.drawCalls, priced.colourDraws);
+      assert.equal(actual.instanceBytes, priced.instanceBytes);
+      const head = view.group.getObjectByName('human-head-skin') as THREE.InstancedMesh;
+      const mouth = view.group.getObjectByName('human-box-skin') as THREE.InstancedMesh;
+      const headMatrix = new THREE.Matrix4(), mouthMatrix = new THREE.Matrix4(), ray = new THREE.Raycaster();
+      for (const phase of [0.1, 0.4, 0.7]) {
+        view.apply(snapshot([pose(actor, { activityPhase: phase })]));
+        head.getMatrixAt(0, headMatrix);
+        for (const x of [-0.020, 0, 0.020]) {
+          const origin = new THREE.Vector3(x, 0.061, 1).applyMatrix4(headMatrix);
+          const target = new THREE.Vector3(x, 0.061, 0).applyMatrix4(headMatrix);
+          ray.set(origin, target.sub(origin).normalize());
+          assert.strictEqual(ray.intersectObjects([head, mouth])[0]?.object, mouth, `${kind}/${phase}/${x}: visible lip`);
+        }
+      }
+      mouth.getMatrixAt(0, mouthMatrix);
+      const old = new THREE.Matrix4().copy(headMatrix).multiply(new THREE.Matrix4()
+        .compose(new THREE.Vector3(0, 0.061, 0.086), new THREE.Quaternion(), new THREE.Vector3(0.059, 0.008, 0.012)));
+      mouth.setMatrixAt(0, old); mouth.boundingSphere = null;
+      const origin = new THREE.Vector3(0, 0.061, 1).applyMatrix4(headMatrix);
+      ray.set(origin, new THREE.Vector3(0, 0.061, 0).applyMatrix4(headMatrix).sub(origin).normalize());
+      assert.strictEqual(ray.intersectObjects([head, mouth])[0]?.object, head, 'old buried line is visibly rejected');
+      mouth.setMatrixAt(0, mouthMatrix);
+    } finally { view.dispose(); }
+  }
+});
 function meshBounds(group: THREE.Group): THREE.Box3 {
   const box = new THREE.Box3();
   const point = new THREE.Vector3();
@@ -716,45 +791,21 @@ test('the knock-down stays compact on the rider\'s side of the hull, where the c
   console.log(JSON.stringify({ riderSideClearanceMetres: Math.min(...Object.values(tightest)).toFixed(3) }));
 });
 
-// Critic repair 2026-10-10 (critic-people item 7): leaning back over the
-// upright pelvis, the pale back seam's foot showed below the shirt over the
-// trousers, and sat with the thighs up a front pocket hung below them as a
-// pale sliver. Round 2: sat back on the hands, the near arm hides the lower
-// shirt in a side view and the seam, a centimetre proud of the back, still read
-// as a stick below it. Down, the seam rolls away and the pockets fold away.
-test('knocked down, no pale trim shows below the shirt: the back seam rolls away, the pockets fold away (M42 critic repair)', () => {
-  const vertex = new THREE.Vector3(), matrix = new THREE.Matrix4();
-  for (const kind of ['walker', 'social'] as const) {
+// Owner follow-up 2026-10-12: the generic rectangular clothing accents are
+// removed entirely, including their hidden back seam. A worker retains one
+// purposeful reflective work band, not generic chest/waist/pocket tabs.
+test('generic clothing has no trim-box allocation in standing or knockdown poses', () => {
+  for (const kind of ['walker', 'jogger', 'social', 'fictionalEuc', 'worker'] as const) {
     const actor = spec(kind), view = createPopulationView(plan([actor]));
-    let tick = 0;
     try {
-      const pelvis = view.group.getObjectByName('human-pelvis-cloth') as THREE.InstancedMesh;
-      const trim = view.group.getObjectByName('human-box-cloth') as THREE.InstancedMesh;
-      // The box-cloth family in creation order: collar, hem, back seam, left and right pockets.
-      assert.equal(trim.count, 5);
-      const extent = (mesh: THREE.InstancedMesh, instance: number) => {
-        const vertices = mesh.geometry.getAttribute('position'), box = new THREE.Box3();
-        mesh.getMatrixAt(instance, matrix);
-        for (let index = 0; index < vertices.count; index += 1) box.expandByPoint(vertex.fromBufferAttribute(vertices, index).applyMatrix4(matrix));
-        return box;
-      };
-      for (const fallYaw of FALL_YAWS) for (let phase = 0.12; phase <= 0.85 + 1e-9; phase += 1 / 128) {
-        view.apply(snapshot([pose(actor, { headingY: 0.4, activity: 'impacted', impactReaction: 'knockdown',
-          impactFallYaw: fallYaw, activityPhase: phase, activityBlend: 0, speedMetresPerSecond: 0 })], tick += 1));
-        const label = `${kind} fall ${fallYaw.toFixed(2)} @ ${phase.toFixed(3)}`;
-        const seam = extent(trim, 2), hips = extent(pelvis, 0);
-        assert.ok(seam.min.y > hips.max.y + 0.01, `${label}: back seam foot ${seam.min.y.toFixed(3)} m above the pelvis top ${hips.max.y.toFixed(3)} m`);
-        const seamSize = seam.getSize(new THREE.Vector3());
-        assert.ok(Math.max(seamSize.x, seamSize.y, seamSize.z) < 1e-6, `${label}: back seam rolled away (${seamSize.toArray().map(v => v.toFixed(3))})`);
-        if (phase >= 0.2 && phase <= 0.55) for (const pocket of [3, 4]) {
-          const size = extent(trim, pocket).getSize(new THREE.Vector3());
-          assert.ok(Math.max(size.x, size.y, size.z) < 0.01, `${label}: pocket ${pocket} folded away (${size.toArray().map(v => v.toFixed(3))})`);
-        }
+      for (const phase of [0, 0.2, 0.5, 0.85]) {
+        view.apply(snapshot([pose(actor, phase === 0 ? { activity: 'waiting' } : {
+          activity: 'impacted', impactReaction: 'knockdown', activityPhase: phase, speedMetresPerSecond: 0,
+        })]));
+        const trim = view.group.getObjectByName('human-box-cloth') as THREE.InstancedMesh | undefined;
+        if (kind === 'worker') assert.equal(trim!.count, 1, 'the work band alone');
+        else assert.equal(trim, undefined, `${kind}: no chest, hem, back or pocket boxes`);
       }
-      // Standing, both are exactly the old trim.
-      view.apply(snapshot([pose(actor, { headingY: 0.4, activity: 'waiting', activityPhase: 0, activityBlend: 0, speedMetresPerSecond: 0 })], tick += 1));
-      const standingSeam = extent(trim, 2), standingPocket = extent(trim, 3).getSize(new THREE.Vector3());
-      assert.ok(standingSeam.max.y - standingSeam.min.y > 0.35 && standingPocket.y > 0.05);
     } finally { view.dispose(); }
   }
 });

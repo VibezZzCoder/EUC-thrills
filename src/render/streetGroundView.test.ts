@@ -66,6 +66,23 @@ const cellTriangle = (cell: number) => {
   return { cell, vertices: [{ x, y: 1, z }, { x: x + 1, y: 1, z: z + 1 }, { x: x + 1, y: 1, z }] as const };
 };
 
+test('overlap retirement keeps the last patch finish, including aliased triangle objects', () => {
+  const plan = livingFixture(), shared = cellTriangle(0);
+  const street = { id: 'street-priority-grass', surface: 'pavement' as const, sourceSurface: 'grass' as const,
+    triangles: [shared], footprint: { id: 'street-priority', origin: { x: 0, y: 1, z: 0 }, yaw: 0,
+      width: 4, near: 0, far: 4 } };
+  const service = { id: 'living-ground/warehouse-1/bay-4.5-0/grass', surface: 'pavement' as const,
+    sourceSurface: 'grass' as const, triangles: [shared] };
+  plan.groundSurfacePatches = [street, service];
+  const laterService = collectStreetPavingPieces(plan)!;
+  assert.equal(laterService.colourTriangles, 1);
+  assert.deepEqual(laterService.pavingService, [1, 1, 1]);
+  plan.groundSurfacePatches = [service, street];
+  const laterStreet = collectStreetPavingPieces(plan)!;
+  assert.equal(laterStreet.colourTriangles, 1);
+  assert.deepEqual(laterStreet.pavingService, [0, 0, 0], 'last owner, not first owner, supplies the visible finish');
+});
+
 test('the warehouse bay and driveway draw paved with the plain service finish; turn courts keep the coarse cell', () => {
   const plan = livingFixture();
   plan.groundSurfacePatches = [
@@ -124,5 +141,6 @@ test('the prepared euc world draws its warehouse bay and driveway as paving wher
   assert.ok(courts.some(patch => patch.sourceSurface === 'grass') && courts.some(patch => patch.sourceSurface === 'brick'),
     'control: euc turn courts cross both lawn and brick sidewalk');
   const street = count(patches.filter(patch => patch.id.startsWith('street-')));
-  assert.equal(pieces.colourTriangles, street + count(bayPatches), 'the bay and its driveway are drawn; no turn court is');
+  assert.ok(pieces.colourTriangles < street + count(bayPatches),
+    'the bay and driveway union is drawn once; overlapping raw fragments are retired');
 });
