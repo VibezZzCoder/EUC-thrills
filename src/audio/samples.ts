@@ -10,6 +10,7 @@ import crashMaribelUrl from '../../assets/live/audio/crash_maribel.wav?url';
 import crashWheelInMotionUrl from '../../assets/live/audio/crash_wheel_in_motion.wav?url';
 import crashFloWithZoUrl from '../../assets/live/audio/crash_flo_with_zo.wav?url';
 import crashSealOnAWheelUrl from '../../assets/live/audio/crash_seal_on_a_wheel.wav?url';
+import crashGnarwheelUrl from '../../assets/live/audio/crash_gnarwheel.wav?url';
 import crashWyldistUrl from '../../assets/live/audio/crash_wyldist.wav?url';
 import crashDrunkardUrl from '../../assets/live/audio/crash_drunkard.wav?url';
 import stumbleDrunkardUrl from '../../assets/live/audio/stumble_drunkard.wav?url';
@@ -219,6 +220,8 @@ export interface SampleUrls {
    * (q230); the owner's listen on his ride is still the gate.
    */
   readonly crashWyldist: string;
+  /** Exact owner-approved recording, with a separately synthesized alarm. See NOTICE.md. */
+  readonly crashGnarwheel: string;
   /**
    * The Drunkard's (M29) — Trollina's path, walked a second time.
    *
@@ -291,6 +294,7 @@ export const SAMPLE_URLS: SampleUrls = {
   crashFloWithZo: crashFloWithZoUrl,
   crashSealOnAWheel: crashSealOnAWheelUrl,
   crashWyldist: crashWyldistUrl,
+  crashGnarwheel: crashGnarwheelUrl,
   crashDrunkard: crashDrunkardUrl,
   stumbleDrunkard: stumbleDrunkardUrl,
   sirenFar: sirenFarUrl,

@@ -335,14 +335,14 @@ records carry over.)
 
 ## Riders
 
-There are ten, the line under the title screen's buttons says who you are,
+There are eleven, the line under the title screen's buttons says who you are,
 and that line opens the chooser. Nine of them differ only in **looks and
 sound** — each has their own crash sound, none is faster, and the custom wheels
 ride identically to the standard one, down to the last number. The Drunkard
 shares that same speed, grip and braking but rides his own way on purpose: a
 slow weave and the odd stumble that really do move him about the road. See
 The Drunkard below for what that is and is not. (Officer Dorkins is not one of
-the ten: he is the law, and the only way to ride as him is to be the cop in a
+the eleven: he is the law, and the only way to ride as him is to be the cop in a
 couch **Police chase**.)
 
 **Cool Rider** wears tailored black moto gear with reflective blue panels,
@@ -441,6 +441,16 @@ sent a clip of his wheel getting away from him at a kerb, and that is the sound
 his character crashes with — the "ooh"s in it are whoever was filming, not him.
 He is credited as [@wyldist](https://www.instagram.com/wyldist/) at the
 project owner's direction.
+
+**Gnarwheel** wears black: a soft hoodie with his supplied white brush logo on the
+chest, back and sleeves, a dark full-face helmet with a chin-mounted action
+camera, black protection and purple/navy patterned gloves. His tall fictional
+wheel has a cyan seat and pads, a lime rim and a small red rear lamp. His crash
+uses the recordings he contributed, with a synthesized alarm, in the exact
+cut approved for the game. His public credit is
+[@\_gnarwheel\_](https://www.instagram.com/_gnarwheel_/). His identity, logo and
+recordings are used with permission for this game and are outside the project's
+licences; the alarm's separate provenance is in `NOTICE.md`.
 
 **The Drunkard** is not a real person, and that is the point of him. People
 kept asking for a rider with a beer; the real riders above are here with their
@@ -822,19 +832,21 @@ to be.
 
 ## Licence
 
-Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the seventeen
+Code is **MIT**. Original game assets are **CC BY 4.0**. Four of the eighteen
 shipped sounds derive from public-domain (CC0) recordings and a fifth carries
 one public-domain layer inside it; five crashes derive from the author's own
 recording — the third, sixth, eighth and ninth riders' are that same wipeout
 with the author's voice removed, rendered four times so that no two of them
 are the same file. Six shipped sounds sit
-outside the CC BY 4.0 claim, and part of a seventh does: two of the ten crashes
+outside the CC BY 4.0 claim, and parts of two more do: two of the eleven crashes
 are composed one-shots
 whose voices are machine-generated — the second rider's and the seventh's, the
 two characters who exist nowhere to be recorded — and so is the seventh
 rider's short stumble sound; the fourth, fifth and tenth riders' crashes are
 **recordings the riders themselves contributed**, used in this game with
-their permission and with no copyright over them claimed by this project; and
+their permission and with no copyright over them claimed by this project; the
+eleventh rider contributes crash and spoken recordings on the same terms,
+combined with an original synthesized alarm; and
 the ninth rider's crash is this project's own render of the author's recording with **one
 public-domain seal bark mixed into it**, which is claimed by nobody, this
 project included. The street sounds that came with the living world are generated
@@ -842,9 +854,9 @@ in code as the game runs, and add no sound files. Cool Rider is an
 original fictional character whose clothes and style draw on what the project
 owner wears, and The Drunkard is an original fictional character based on
 nobody; Red Rider, Adonisb2, Maribel Vargas, Wheel in Motion, FloWithZo,
-Seal on a Wheel and Wyldist are
+Seal on a Wheel, Wyldist and Gnarwheel are
 real people represented with permission, and no licence in this project covers
-their names, likenesses, personas, the two riders' own logos, or the mark the
+their names, likenesses, personas, the three riders' own logos, or the mark the
 tenth rider wears on his sleeve at his request. Full terms,
 attribution, and per-file provenance are in [`LICENSE`](LICENSE) and
 [`NOTICE.md`](NOTICE.md).

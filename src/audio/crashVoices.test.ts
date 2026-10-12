@@ -81,17 +81,19 @@ import { crashFor, type CrashVoiceId, type SampleBank } from './sink.ts';
 const AUDIO = join(import.meta.dirname, '..', '..', 'assets', 'live', 'audio');
 const RATE = 44100;
 
-/** The samples of a mono 16-bit PCM WAV, with the chunk walk the format needs. */
+/** First-channel PCM16 samples for analysis only; runtime files are untouched. */
 function readWav(name: string): Int16Array {
   const buffer = readFileSync(join(AUDIO, name));
   let offset = 12;
+  let channels = 1;
   while (offset + 8 <= buffer.length) {
     const id = buffer.toString('ascii', offset, offset + 4);
     const size = buffer.readUInt32LE(offset + 4);
     const body = offset + 8;
+    if (id === 'fmt ') channels = buffer.readUInt16LE(body + 2);
     if (id === 'data') {
-      const samples = new Int16Array(Math.floor(size / 2));
-      for (let i = 0; i < samples.length; i += 1) samples[i] = buffer.readInt16LE(body + i * 2);
+      const samples = new Int16Array(Math.floor(size / (2 * channels)));
+      for (let i = 0; i < samples.length; i += 1) samples[i] = buffer.readInt16LE(body + i * 2 * channels);
       return samples;
     }
     offset = body + size + (size % 2);
@@ -109,6 +111,7 @@ const drunkard = readWav('crash_drunkard.wav');
 const floWithZo = readWav('crash_flo_with_zo.wav');
 const sealOnAWheel = readWav('crash_seal_on_a_wheel.wav');
 const wyldist = readWav('crash_wyldist.wav');
+const gnarwheel = readWav('crash_gnarwheel.wav');
 const stumble = readWav('stumble_drunkard.wav');
 
 test('every rider\'s crash is exactly as long as Cool Rider\'s', () => {
@@ -150,9 +153,10 @@ test('every rider\'s crash is exactly as long as Cool Rider\'s', () => {
   // rule — his recording is 5.87 s and the whole event in it is 3.37 s, so it
   // fits with nothing taken out of the fall itself (M41).
   assert.equal(wyldist.length, coolRider.length);
+  assert.equal(gnarwheel.length, coolRider.length);
 });
 
-test('the ten crashes are ten different recordings', () => {
+test('the eleven crashes are eleven different recordings', () => {
   // Cheap, and it closes the gap every other test in this file leaves open: a
   // build where one crash was copied over another passes the length rule, the
   // loudness rule, and `crashFor`'s four-buffer check, and ships a rider
@@ -167,10 +171,10 @@ test('the ten crashes are ten different recordings', () => {
     ['cool-rider', coolRider], ['trollina', trollina],
     ['red-rider', redRider], ['adonisb2', adonisb2], ['maribel', maribel],
     ['wheel-in-motion', wheelInMotion], ['drunkard', drunkard],
-    ['flo-with-zo', floWithZo], ['seal-on-a-wheel', sealOnAWheel], ['wyldist', wyldist],
+    ['flo-with-zo', floWithZo], ['seal-on-a-wheel', sealOnAWheel], ['wyldist', wyldist], ['gnarwheel', gnarwheel],
   ];
-  // Forty-five pairs at ten; the loop is what grows, not a list of names.
-  assert.equal((files.length * (files.length - 1)) / 2, 45);
+  // Eleven voices require all fifty-five comparisons.
+  assert.equal((files.length * (files.length - 1)) / 2, 55);
   for (let i = 0; i < files.length; i += 1) {
     for (let j = i + 1; j < files.length; j += 1) {
       const [nameA, a] = files[i];
@@ -830,7 +834,7 @@ test('his crash has the seal in it, it is not too loud in that band, and the fil
   );
 });
 
-test('the ten voices reach ten different buffers', () => {
+test('the eleven voices reach eleven different buffers', () => {
   // §19.8's headless evidence, grown by one in §22.8, again in §29.12 and
   // again in §34.10. `crashFor` carried a fallback while Red Rider's file was
   // being built, and the failure it could hide — a voice quietly resolving to
@@ -859,6 +863,7 @@ test('the ten voices reach ten different buffers', () => {
     crashFloWithZo: 'flo-with-zo-buffer',
     crashSealOnAWheel: 'seal-on-a-wheel-buffer',
     crashWyldist: 'wyldist-buffer',
+    crashGnarwheel: 'gnarwheel-buffer',
     crashDrunkard: 'drunkard-buffer',
     stumbleDrunkard: 'stumble-buffer',
     sirenFar: 'siren-far',
@@ -867,7 +872,7 @@ test('the ten voices reach ten different buffers', () => {
 
   const voices: CrashVoiceId[] = [
     'cool-rider', 'trollina', 'red-rider', 'adonisb2', 'maribel', 'wheel-in-motion', 'drunkard',
-    'flo-with-zo', 'seal-on-a-wheel', 'wyldist',
+    'flo-with-zo', 'seal-on-a-wheel', 'wyldist', 'gnarwheel',
   ];
   const reached = voices.map((voice) => crashFor(voice, bank));
   assert.deepEqual(
@@ -875,10 +880,10 @@ test('the ten voices reach ten different buffers', () => {
     [
       'cool-rider-buffer', 'trollina-buffer', 'red-rider-buffer',
       'adonisb2-buffer', 'maribel-buffer', 'wheel-in-motion-buffer', 'drunkard-buffer',
-      'flo-with-zo-buffer', 'seal-on-a-wheel-buffer', 'wyldist-buffer',
+      'flo-with-zo-buffer', 'seal-on-a-wheel-buffer', 'wyldist-buffer', 'gnarwheel-buffer',
     ],
   );
-  assert.equal(new Set(reached).size, 10);
+  assert.equal(new Set(reached).size, 11);
 });
 
 // ---------------------------------------------------------------------------

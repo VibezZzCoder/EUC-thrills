@@ -150,7 +150,7 @@ test('chooser, title and pause fit every supported phone and tablet size with no
     // the compact anatomy twice at the old blurbed height. The live DOM probe
     // puts Done 22.7px clear at 940×913 and 255.2px clear at 940×896; the
     // blurbed side's 1px scroll-height rounding is inside the existing guard.
-    { width: 705, height: 993 }, { width: 940, height: 913 }, { width: 940, height: 896 },
+    { width: 705, height: 993 }, { width: 705, height: 1121 }, { width: 940, height: 913 }, { width: 940, height: 896 },
     { width: 1236, height: 689 },
     // **And the band the eighth rider opened — M34 Phase 0.** The sideways
     // threshold moved from 92.79rem to 105.69rem to make room for eight

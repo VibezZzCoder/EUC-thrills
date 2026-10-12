@@ -1,4 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { GNARWHEEL_LOGO_PNG_BASE64, GNARWHEEL_LOGO_ASPECT } from '../data/gnarwheelLogoAsset.ts';
 import {
   CHARACTERS,
   COP_CHARACTER,
@@ -1696,6 +1697,28 @@ const RIDER_CARDS: Readonly<Record<PlayableCharacterId, { blurb: string; portrai
         <circle cx="48" cy="90" r="10" fill="#252b30"/>
         <path d="M40 79h16l5 6-2 10H37l-2-10z" fill="#414448"/>
         <path d="M38 82l6 2-3 9-4-2zM58 82l-6 2 3 9 4-2z" fill="#c02d32"/>
+      </svg>`,
+  },
+  gnarwheel: {
+    blurb: 'Black hoodie and full-face lid, chin camera and white brush logo, on a cyan-and-black wheel with a lime rim.',
+    portrait: `
+      <svg viewBox="0 0 96 96" class="euc-rider-card__art" aria-hidden="true" focusable="false">
+        <path d="M32 48q-10 4-13 17l-6 20 8 4 12-21-2 28h34l-2-28 12 21 8-4-6-20q-3-13-13-17z" fill="#35363b"/>
+        <path d="M31 48q17-8 34 0l-5 12H36z" fill="#262930"/>
+        <path d="M28 17q4-13 20-13t20 13l3 18-7 18-10 6H42l-10-6-7-18z" fill="#3f434b"/>
+        <path d="M28 27q20-7 40 0l-3 17q-17 5-34 0z" fill="#101721"/>
+        <path d="M31 30l7-2v11l-7-1z" fill="#5b6471"/>
+        <path d="M38 49h20l-5 10H43z" fill="#2a3039"/>
+        <path d="M46 54h4v9h-4z" fill="#181d25"/>
+        <rect x="39" y="48" width="18" height="12" rx="2" fill="#bec5cc"/>
+        <rect x="41" y="50" width="14" height="8" rx="1" fill="#37414d"/>
+        <circle cx="45" cy="54" r="3.2" fill="#111924"/>
+        <image href="data:image/png;base64,${GNARWHEEL_LOGO_PNG_BASE64}" x="33" y="67" width="30" height="${30 / GNARWHEEL_LOGO_ASPECT}"/>
+        <path d="M16 83l-3 6 5 5 7-8zM80 83l3 6-5 5-7-8z" fill="#4a405d"/>
+        <circle cx="48" cy="92" r="10" fill="#222832"/>
+        <circle cx="48" cy="92" r="7" fill="none" stroke="#9fce24" stroke-width="1.5"/>
+        <path d="M40 81h16l2 3-1 12H39l-1-12z" fill="#30363e"/>
+        <path d="M38 84h6v10h-6zM52 84h6v10h-6zM39 79h18l2 5H37z" fill="#079fda"/>
       </svg>`,
   },
 };

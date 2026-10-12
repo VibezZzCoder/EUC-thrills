@@ -45,6 +45,7 @@ import {
 } from './sealOnAWheelLook.ts';
 import { loftGeometry, type LoftProfile } from './blockoutKit.ts';
 import { WYLDIST_HIP_DOME_APEX, WYLDIST_LOOK } from './wyldistLook.ts';
+import { GNARWHEEL_LOOK } from './gnarwheelLook.ts';
 
 /**
  * The skirt clears the legs, measured — M14.5 second look pass.
@@ -3261,6 +3262,7 @@ const HIP_DOME_RIDERS: ReadonlyArray<{
   // Motion's and FloWithZo's.
   { name: 'Seal on a Wheel', look: SEAL_ON_A_WHEEL_LOOK, apexY: SEAL_HIP_DOME_APEX, sways: [0], pelvisRoll: pelvisCounterRoll },
   { name: 'Wyldist', look: WYLDIST_LOOK, apexY: WYLDIST_HIP_DOME_APEX, sways: [0], pelvisRoll: pelvisCounterRoll },
+  { name: 'Gnarwheel', look: GNARWHEEL_LOOK, apexY: SEAL_HIP_DOME_APEX, sways: [0], pelvisRoll: pelvisCounterRoll },
 ];
 
 for (const { name, look, apexY, sways, pelvisRoll } of HIP_DOME_RIDERS) test(`${name}'s thighs end in a hip dome that stays inside his seat through every held corner`, () => {
@@ -3574,6 +3576,8 @@ test('the one-foot air gesture is measured on both sides, on every look and the 
     // away to 5 mm. This is the new look's measurement, not a garment floor:
     // held/ridden hip-dome floors above and in the ridden sweep still hold.
     ['wyldist', -0.135],
+    // M43: measured -99.3 mm on each side; rounded away to 5 mm. A cost, not a clearance margin.
+    ['gnarwheel', -0.100],
     ['cop', -0.080],
   ]);
   for (const [id, result] of worstPerSide) {

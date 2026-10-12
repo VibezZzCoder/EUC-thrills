@@ -45,7 +45,7 @@ import type { CharacterId } from './riders.ts';
 /** Every machine the renderer can build. */
 export type MachineId =
   'standard' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard'
-  | 'flo-with-zo' | 'seal-on-a-wheel' | 'wyldist';
+  | 'flo-with-zo' | 'seal-on-a-wheel' | 'wyldist' | 'gnarwheel';
 
 export interface MachineSpec {
   readonly id: MachineId;
@@ -216,6 +216,11 @@ export const MACHINES: readonly MachineSpec[] = Object.freeze([
     blurb: 'Compact charcoal bodywork with chamfered shoulders, angular red '
       + 'side pads, a dark road tyre and black pedals.',
   }),
+  Object.freeze({
+    id: 'gnarwheel' as MachineId,
+    name: "Gnarwheel's wheel",
+    blurb: 'Tall black performance body, cyan seat and pads, circular tyre and lime rim accent.',
+  }),
 ]);
 
 export const MACHINE_IDS: readonly MachineId[] =
@@ -302,6 +307,7 @@ export function machineForCharacter(character: CharacterId): MachineId {
   if (character === 'seal-on-a-wheel') return 'seal-on-a-wheel';
   // M41: the approved C2 machine, its specification and its look join together.
   if (character === 'wyldist') return 'wyldist';
+  if (character === 'gnarwheel') return 'gnarwheel';
   return DEFAULT_MACHINE;
 }
 

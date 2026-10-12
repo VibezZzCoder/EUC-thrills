@@ -151,6 +151,7 @@ function fakeBank(context: AudioContext): SampleBank {
     crashFloWithZo: buffer(),
     crashSealOnAWheel: buffer(),
     crashWyldist: buffer(),
+    crashGnarwheel: buffer(),
     crashDrunkard: buffer(),
     stumbleDrunkard: buffer(),
     sirenFar: buffer(),

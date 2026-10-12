@@ -4543,7 +4543,7 @@
  * These are observed bounds, not a reason to weaken the phone's 16px bar.
  */
 @media (max-width: 44rem), (max-height: 30rem),
-  ((max-width: 58.6rem) and (max-height: 62rem)),
+  ((max-width: 58.6rem) and (max-height: 70rem)),
   ((max-width: 77rem) and (max-height: 57rem)),
   ((max-width: 131.49rem) and (max-height: 43rem)) {
   .euc-rider-card__blurb { display: none; }
@@ -5360,4 +5360,17 @@
     padding: 0.9rem 0.5rem;
     margin: -0.9rem -0.5rem;
   }
+}
+
+/* M43: black remains the identity swatch; a neutral edge makes its state visible. */
+.euc-rider-card[data-rider="gnarwheel"] { border-color: #68717e; }
+.euc-rider-card[data-rider="gnarwheel"]:hover { border-color: #b8c0cc; }
+.euc-rider-card[data-rider="gnarwheel"][aria-pressed="true"] { border-color: #ecf0f4; }
+[data-rider-dot="gnarwheel"] { box-shadow: 0 0 0 1px #9ba4b0; }
+
+/* Eleven riders add a sixth two-column row. At 705x1121 the blurbed
+ * layout is clear; below 70rem use the existing compact anatomy. */
+.euc-rider-card[data-rider="gnarwheel"] .euc-rider-card__state {
+  color: #edf0f4;
+  box-shadow: inset 0 0 0 1px #68717e;
 }

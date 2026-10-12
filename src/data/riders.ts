@@ -64,7 +64,7 @@ export type CharacterId = PlayableCharacterId | 'cop';
  */
 export type PlayableCharacterId =
   'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel-vargas' | 'wheel-in-motion'
-  | 'drunkard' | 'flo-with-zo' | 'seal-on-a-wheel' | 'wyldist';
+  | 'drunkard' | 'flo-with-zo' | 'seal-on-a-wheel' | 'wyldist' | 'gnarwheel';
 
 /**
  * Which recorded crash one-shot a rider comes with.
@@ -76,7 +76,7 @@ export type PlayableCharacterId =
  */
 export type CrashVoiceId =
   'cool-rider' | 'trollina' | 'red-rider' | 'adonisb2' | 'maribel' | 'wheel-in-motion' | 'drunkard'
-  | 'flo-with-zo' | 'seal-on-a-wheel' | 'wyldist';
+  | 'flo-with-zo' | 'seal-on-a-wheel' | 'wyldist' | 'gnarwheel';
 
 /**
  * **`'maribel'` arrived with her recording, in the same edit, exactly as
@@ -514,6 +514,13 @@ export const CHARACTERS: readonly PlayableCharacterSpec[] = Object.freeze([
     swatch: '#28aad8',
     crashVoice: 'wyldist' as CrashVoiceId,
   }),
+  Object.freeze({
+    id: 'gnarwheel' as PlayableCharacterId,
+    name: 'Gnarwheel',
+    blurb: 'Black hoodie and full-face lid, chin camera and white brush logo, on a cyan-and-black wheel with a lime rim.',
+    swatch: '#121418',
+    crashVoice: 'gnarwheel' as CrashVoiceId,
+  }),
 ]);
 
 /**
@@ -608,6 +615,7 @@ const RIDE_STYLES: Readonly<Record<CharacterId, RideStyle>> = Object.freeze({
   'flo-with-zo': SOBER_STYLE,
   'seal-on-a-wheel': SOBER_STYLE,
   wyldist: SOBER_STYLE,
+  gnarwheel: SOBER_STYLE,
   cop: SOBER_STYLE,
 });
 

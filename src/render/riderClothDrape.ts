@@ -7,8 +7,11 @@ import * as THREE from 'three';
  * leg can reach its far end and stretch the shirt into a long ribbon. */
 export function drapeRiderHem(
   geometry: THREE.BufferGeometry, pelvis: THREE.Object3D,
-  hips: readonly THREE.Object3D[], radial: number,
+  hips: readonly THREE.Object3D[],
+  layout: { readonly radial: number; readonly rings: number; readonly splitSeam: boolean;
+    readonly envelope?: { readonly x: number; readonly z: number; readonly cap: number } },
 ): () => void {
+  const { radial, rings: rows, splitSeam } = layout;
   const positions = geometry.getAttribute('position') as THREE.BufferAttribute;
   positions.setUsage(THREE.DynamicDrawUsage);
   (geometry.getAttribute('normal') as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
@@ -21,7 +24,8 @@ export function drapeRiderHem(
   // hip's frame: the hip dome's sphere over the joint and the thigh's barrel
   // down to 0.25 m (M41 C4: loose cargos narrow at the hip, half-width .078
   // to .098 down to the pocket, so the trousers sit inside the hem).
-  const rx = .102, rz = .094, cap = .080, top = 0, bottom = -.25;
+  const rx = layout.envelope?.x ?? .102, rz = layout.envelope?.z ?? .094;
+  const cap = layout.envelope?.cap ?? .080, top = 0, bottom = -.25;
   const probe = new THREE.Vector3();
   const inside = (at: THREE.Vector3): boolean => {
     for (let h = 0; h < hips.length; h++) {
@@ -36,7 +40,9 @@ export function drapeRiderHem(
   // tip slid the lower panel up over the chest V as a second layer). Per-vertex
   // projection let a raised thigh shove neighbouring rows past each other —
   // a hanging ribbon, a crumpled front, a row of spikes along the hem.
-  const columns = radial + 1, rows = Math.floor(positions.count / columns);
+  // The first loft is the garment. Caps, a merged rigid seat and collar
+  // pieces are not cloth rows. Unmapped lofts also have no duplicate seam.
+  const columns = radial + (splitSeam ? 1 : 0);
   const lift = (geometry.getAttribute('normal') as THREE.BufferAttribute).array.slice();
   for (let i = 0; i < positions.count; i++) {
     normal.fromArray(lift, i * 3); normal.y += .45; normal.normalize().toArray(lift, i * 3);
@@ -76,7 +82,7 @@ export function drapeRiderHem(
       const before = travel[(c + radial - 1) % radial]!, after = travel[(c + 1) % radial]!;
       widened[c] = Math.max(travel[c]!, (before + 2 * travel[c]! + after) / 4);
     }
-    widened[radial] = widened[0]!;
+    if (splitSeam) widened[radial] = widened[0]!;
     for (let i = 0; i < positions.count; i++) {
       original.fromArray(rest, i * 3);
       // A cloth fold is local: at most 90 mm, and nothing above the waist.
@@ -86,7 +92,7 @@ export function drapeRiderHem(
     }
     positions.needsUpdate = true; geometry.computeVertexNormals();
     const normals = geometry.getAttribute('normal');
-    for (let r = 0; r < Math.floor(positions.count / (radial + 1)); r++) {
+    for (let r = 0; splitSeam && r < rows; r++) {
       const a = r * (radial + 1), b = a + radial;
       normal.set(normals.getX(a) + normals.getX(b), normals.getY(a) + normals.getY(b), normals.getZ(a) + normals.getZ(b)).normalize();
       normals.setXYZ(a, normal.x, normal.y, normal.z); normals.setXYZ(b, normal.x, normal.y, normal.z);

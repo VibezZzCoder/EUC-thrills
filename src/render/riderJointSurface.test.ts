@@ -4,6 +4,8 @@ import { test } from 'node:test';
 import * as THREE from 'three';
 import { createPlaceholderRider, createStanceInput } from './rider.ts';
 import { WYLDIST_LOOK } from './wyldistLook.ts';
+import { GNARWHEEL_LOOK } from './gnarwheelLook.ts';
+import { loftGeometry } from './blockoutKit.ts';
 
 function seamError(root: THREE.Object3D): number {
   root.updateMatrixWorld(true);
@@ -104,4 +106,36 @@ test('shirt folds remain local through composed poses and cannot stretch towards
     positions.setY(0, rest.getY(0) - .15);
     assert.ok(displacement() > .149, 'the guard missed a shirt stretched towards the knee');
   } finally { rider.dispose(); reference.dispose(); }
+});
+
+test('Gnarwheel cloth drape leaves merged trouser-seat vertices rigid through tight turns', () => {
+  const look = GNARWHEEL_LOOK, radial = look.density!.torso!;
+  const shirt = loftGeometry(look.profiles.torso, { radialSegments: radial, capBottom: false });
+  const seat = loftGeometry(look.profiles.seat, { radialSegments: radial });
+  const rider = createPlaceholderRider(look);
+  try {
+    const shirtCount = shirt.getAttribute('position').count;
+    const expected = seat.getAttribute('position');
+    const torso = rider.pelvis.children.find(child => (child as THREE.Mesh).isMesh
+      && (child as THREE.Mesh).castShadow) as THREE.Mesh;
+    const actual = torso.geometry.getAttribute('position');
+    assert.equal(actual.count, shirtCount + expected.count, 'the fixture must contain the merged rigid seat');
+    let checked = 0;
+    for (const roll of [-.83, -.65, 0, .65, .83]) for (const technical of [-1, 0, 1])
+    for (const crouch of [0, .4, .9]) for (const reverse of [0, 1]) {
+      const stance = { ...createStanceInput(), rollAngle: roll, riderRoll: roll,
+        technicalTurn: technical, crouch, reverse, torsoPitch: -.4 };
+      rider.pelvis.rotation.z = -roll * .66;
+      rider.applyStanceReaction(stance);
+      for (let i = 0; i < expected.count; i++) for (const axis of ['X', 'Y', 'Z'] as const) {
+        assert.ok(Math.abs(actual[`get${axis}`](shirtCount + i) - expected[`get${axis}`](i)) < 1e-7,
+          `cloth drape displaced rigid seat ${i}/${axis} at ${roll}/${technical}/${crouch}/${reverse}`);
+      }
+      checked++;
+    }
+    assert.equal(checked, 90);
+    // Known-bad control: the predicate must catch the rigid-seat deformation.
+    actual.setZ(shirtCount, expected.getZ(0) + .02);
+    assert.ok(Math.abs(actual.getZ(shirtCount) - expected.getZ(0)) > .0199);
+  } finally { rider.dispose(); shirt.dispose(); seat.dispose(); }
 });

@@ -23,7 +23,7 @@ The same origin is carried inside the build itself — as a banner at the top of
 
 The two licences are stated separately on purpose: MIT is a software licence and does not read sensibly when applied to models, textures, and sound. If you reuse one but not the other, the terms are unambiguous.
 
-**One limit belongs here rather than in a footnote.** A CC BY 4.0 grant conveys this project's own rights in the assets this project authored. It does not convey — and cannot convey — rights in a real person's name, likeness, or persona. **Seven of the ten riders are real people appearing with their permission** — Red Rider, Adonisb2, Maribel Vargas, Wheel in Motion, FloWithZo, Seal on a Wheel and Wyldist — and the licence above does not extend to any of those identities. Three of them also contributed a recording and two of them a logo, and one wears, at his own request, a mark that belongs to somebody else; the licence covers none of these. See *Reference material* below.
+**One limit belongs here rather than in a footnote.** A CC BY 4.0 grant conveys this project's own rights in the assets this project authored. It does not convey — and cannot convey — rights in a real person's name, likeness, or persona. **Eight of the eleven riders are real people appearing with their permission** — Red Rider, Adonisb2, Maribel Vargas, Wheel in Motion, FloWithZo, Seal on a Wheel, Wyldist and Gnarwheel — and the licence above does not extend to any of those identities. Four of them also contributed recordings and three of them a logo, and one wears, at his own request, a mark that belongs to somebody else; the licence covers none of these. See *Reference material* below.
 
 ## Third-party software
 
@@ -74,6 +74,8 @@ She recorded it at the owner's request and gave permission for it to be in this 
 What ships is 3.4 s of that clip, taken as one continuous slice from the wheel meeting the kerb to its settling. It is **one of the phone's two microphones** rather than a mono sum, because summing the two cancels 9.7 dB at 4 kHz in the middle of the voice; it is high-passed at 80 Hz to remove wind and handling noise from the phone, level-matched to `crash_wipeout`, faded at both ends, and held under a soft peak limit that bends five samples, all on the tips of the strikes. Two stretches are set lower rather than cut out: the companion's exclamations by 5 dB, and five short high-pitched bursts while the wheel is in the air — whose source the recording does not establish — by 12 dB. Nothing is moved, separated, substituted, modelled, or generated, and **no sound is in the file that was not in his clip**.
 
 He supplied it for this game and gave permission for it to be here, and that is the whole of what is claimed. It is **not** covered by the CC BY 4.0 claim above, no copyright over it is claimed by this project, and no licence in this repository conveys any right to it beyond redistribution with the game. A reuser who wants that recording for anything else should ask him. His original video is held privately under `references/` and is not redistributed.
+
+`crash_gnarwheel` (the eleventh rider's crash) combines crash and spoken recordings contributed by Gnarwheel for this game with a separately synthesized alarm. The contributed recordings remain his material, used with permission and outside the project's CC BY 4.0 grant; no broader reuse or sublicensing permission is conveyed. The alarm is original project synthesis, covered by CC BY 4.0: a 2845 Hz tone whose envelope was measured from an existing alarm, without copying any recorded voice or background audio. The final 3.4-second stereo cut was approved by the project owner's listening review and is installed unchanged, including its original timing, pitch-preserved speech treatment and beep.
 
 ## Generated audio
 
@@ -226,6 +228,14 @@ The fifth rider is **not** an original creation, the same narrow terms apply, an
 **No broader right is claimed or granted.** Wyldist is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place his name, likeness, or persona under any licence, and no licence in this file conveys them. His supplied recording and the sleeve mark are not under that grant either — each is stated separately above. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs his agreement, which is not the project's to give.
 
 **"Wyldist" — with the public Instagram account credited above — is the only identity published.** He chose that name *to be published*. No legal name and no other account of his is disclosed anywhere in this project or its distributions; this project names nobody else from that conversation or that clip; and the conversation that granted the permission is internal evidence rather than a public-facing asset.
+
+### Gnarwheel — a real person, represented with permission
+
+**Gnarwheel appears with his participation and permission.** His public identity and credit are [@\_gnarwheel\_](https://www.instagram.com/_gnarwheel_/). His black hoodie, trousers, full-face helmet, chin-mounted camera and patterned gloves are interpreted in original game geometry. The cyan-and-black performance wheel with a lime rim is a fictional design; no equipment manufacturer's identity is reproduced.
+
+**His supplied white Gnarwheel artwork remains © Gnarwheel, all rights reserved.** The exact ink is embedded as PNG pixels and used on the chest, back, sleeves and chooser portrait. Preparation removes the square background and crops unused space; the brush strokes, spacing, negative space and source ink colours are preserved. The mark is outside the project's asset licence. Permission to show it in this game conveys no right to reuse it elsewhere.
+
+His contributed crash and spoken recordings are used in `crash_gnarwheel` under the same narrow permission, with the original synthesized alarm identified separately above. No licence in this project covers his name, likeness, persona, logo or contributed recordings. A reuser needs his agreement. Private photographs and permission exchanges are not redistributed, and no private real name is published.
 
 ## Attribution
 

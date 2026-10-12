@@ -11,6 +11,7 @@ import {
   mergeGeometries,
   patchGeometry,
   shaded,
+  tintOver,
   vAtHeight,
   type LoftRing,
 } from './blockoutKit.ts';
@@ -528,6 +529,16 @@ export function createBlockoutEUC(look: MachineLook = STANDARD_MACHINE_LOOK): Bl
   // `loftPoint`'s convention one file over. A block is pushed out along +X at
   // its own tread radius and then swung round by −θ, which leaves the axle
   // untouched and puts the block's third dimension on the tangent.
+  const ring = look.tyre?.rimAccent;
+  if (ring) {
+    const tint = tintOver(look.tyre?.colour ?? BLOCKOUT_COLOURS.tyre, ring.colour);
+    for (const side of [-1, 1]) {
+      const geometry = shaded(new THREE.RingGeometry(ring.radius-ring.width/2, ring.radius+ring.width/2, 48));
+      const colour = geometry.getAttribute('color');
+      for (let i = 0; i < colour.count; i += 1) colour.setXYZ(i, ...tint);
+      tyreParts.push(geometry.rotateX(side * Math.PI/2).translate(0, -side*(TYRE_HALF_WIDTH+.001), 0));
+    }
+  }
   const lugs = look.tyre?.lugs;
   if (lugs) {
     const [arc, high, long] = lugs.size;

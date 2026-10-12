@@ -217,6 +217,7 @@ export interface SampleBank {
    * to the owner's own voice. Required means the compiler notices first.
    */
   readonly crashWyldist: AudioBuffer;
+  readonly crashGnarwheel: AudioBuffer;
   /**
    * The Drunkard's (M29) — composed on Trollina's mechanism from a generated
    * take, by `tools/make-crash-drunkard.mjs` (`docs/PLANS.md` §29.12).
@@ -305,6 +306,8 @@ export function crashFor(voice: CrashVoiceId, bank: SampleBank): AudioBuffer {
       return bank.crashFloWithZo;
     case 'seal-on-a-wheel':
       return bank.crashSealOnAWheel;
+    case 'gnarwheel':
+      return bank.crashGnarwheel;
     case 'wyldist':
       return bank.crashWyldist;
     case 'cool-rider':

@@ -979,7 +979,10 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   const torso = shadowed(new THREE.Mesh(torsoGeometry, bodyMaterial));
   pelvis.add(torso);
   if (look.drapedHem) surfaceUpdates.push(drapeRiderHem(
-    torsoGeometry, pelvis, legs.map(leg => leg.hip), density.torso));
+    torsoGeometry, pelvis, legs.map(leg => leg.hip), {
+      radial: density.torso, rings: profiles.torso.length, splitSeam: mapsRole('body'),
+      envelope: look.hemDrapeEnvelope,
+    }));
   if (look.parts.seat !== 'body') {
     const seat = new THREE.Mesh(
       track(paged(

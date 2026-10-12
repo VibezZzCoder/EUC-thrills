@@ -32,6 +32,7 @@ import { machineLook } from './machineLook.ts';
 import { createRidingRig, type RidingRig } from './ridingRig.ts';
 import type { LoftProfile } from './blockoutKit.ts';
 import { WYLDIST_LOOK } from './wyldistLook.ts';
+import { GNARWHEEL_LOOK } from './gnarwheelLook.ts';
 
 /**
  * **The can's 40 mm floor, held as ridden** — M30 Phase 3's QA repair, and the
@@ -633,7 +634,7 @@ function rigFor(look: RiderLook): RidingRig {
 const TROLLINA_BODICE = 0.166;
 
 /** The looks whose thighs end in a hip dome over the joint (the stance file's list). */
-const DOME_LOOKS: readonly RiderLook[] = [DRUNKARD_LOOK, WHEEL_IN_MOTION_LOOK, FLO_WITH_ZO_LOOK, SEAL_ON_A_WHEEL_LOOK, WYLDIST_LOOK];
+const DOME_LOOKS: readonly RiderLook[] = [DRUNKARD_LOOK, WHEEL_IN_MOTION_LOOK, FLO_WITH_ZO_LOOK, SEAL_ON_A_WHEEL_LOOK, WYLDIST_LOOK, GNARWHEEL_LOOK];
 
 /** The stance file's pinned per-look gesture cost, metres (negative = nearer). */
 const GESTURE_COST: ReadonlyMap<string, number> = new Map([
@@ -647,6 +648,7 @@ const GESTURE_COST: ReadonlyMap<string, number> = new Map([
   ['flo-with-zo', -0.100],
   ['seal-on-a-wheel', -0.110],
   ['wyldist', -0.081],
+  ['gnarwheel', -0.100],
   ['cop', -0.080],
 ]);
 
@@ -1321,10 +1323,10 @@ test('the one-foot air gesture is ridden on every look and the cop, and every fl
  * it. No look can carry that: the remedy is the reverse stance's right-arm
  * target. When it lands, those rides belong here.
  */
-test("Wyldist's gloves stay outside his cargos on the rides that found them inside", () => {
-  const rig = createRidingRig(WYLDIST_LOOK, machineLook(machineForCharacter('wyldist')));
+for (const look of [WYLDIST_LOOK, GNARWHEEL_LOOK]) test(`${look.id} gloves stay outside their clothed thighs during reversal and low-speed folds`, () => {
+  const rig = createRidingRig(look, machineLook(machineForCharacter(look.id)));
   try {
-    const thighProfile = WYLDIST_LOOK.profiles.thigh;
+    const thighProfile = look.profiles.thigh;
     /** Every triangle of a mesh hung on the hip, in the hip's frame. */
     const hipTriangles = (mesh: THREE.Mesh): Float64Array => {
       mesh.updateMatrix();
@@ -1390,7 +1392,7 @@ test("Wyldist's gloves stay outside his cargos on the rides that found them insi
       rig.group.updateMatrixWorld(true);
       const layers = [hipTriangles(sides[1]!.thigh), sides[1]!.pocketTris];
       const ring = ringAtHeight(thighProfile, -0.2);
-      assert.ok(underCloth(new THREE.Vector3(ring.x - 0.01, -0.2, ring.z), layers) > 0.07, 'the measure does not find the bone inside the cloth');
+      assert.ok(underCloth(new THREE.Vector3(ring.x, -0.2, ring.z), layers) > 0.07, 'the measure does not find the bone inside the cloth');
       assert.ok(underCloth(new THREE.Vector3(ring.x - 0.2, -0.2, ring.z), layers) < -0.05, 'the measure finds a point outside the pocket inside it');
     }
 
@@ -1488,14 +1490,14 @@ test("Wyldist's gloves stay outside his cargos on the rides that found them insi
 
     const mm = (m: number): string => `${(m * 1000).toFixed(1)} mm`;
     for (const side of sides) {
-      console.log(`  Wyldist's ${side.name} glove: ${side.worst > 0 ? `${mm(side.worst)} inside` : `${mm(-side.worst)} outside`} his cargos at its nearest — ${side.where}`);
+      console.log(`  ${look.id}'s ${side.name} glove: ${side.worst > 0 ? `${mm(side.worst)} inside` : `${mm(-side.worst)} outside`} his trousers at its nearest — ${side.where}`);
     }
     console.log(`  ${sampled.toLocaleString('en-GB')} posed steps, ${measured.toLocaleString('en-GB')} glove-poses near enough to measure exactly`);
     for (const side of sides) {
-      assert.ok(side.worst <= 0, `Wyldist's ${side.name} glove is ${mm(side.worst)} inside his cargos — ${side.where}`);
+      assert.ok(side.worst <= 0, `${look.id}'s ${side.name} glove is ${mm(side.worst)} inside his trousers — ${side.where}`);
     }
     assert.ok(sampled > 50_000, `only ${sampled} steps were posed and measured`);
-    assert.ok(measured > 1_000, `the gloves came near the cargos in only ${measured} poses — the rides no longer reach them`);
+    assert.ok(measured > 1_000, `the gloves came near the trousers in only ${measured} poses — the rides no longer reach them`);
     assert.ok(reversedCrouched > 1_000, `only ${reversedCrouched} steps were ridden backwards crouched`);
   } finally {
     rig.dispose();

@@ -7,6 +7,8 @@ import { ATLAS_REGIONS, createMaribelAtlas, type AtlasRegionName } from './marib
 import type { PatchSpan } from './wimAtlas.ts';
 import { createWimMachineAtlas, wimMachineRegion, type WimMachineLayout } from './wimMachineAtlas.ts';
 import { createDrunkardMachineAtlas, drunkardMachineRegion, type DrunkardMachineLayout } from './drunkardMachineAtlas.ts';
+import { GNARWHEEL_MACHINE_LOOK } from './gnarwheelMachineLook.ts';
+export { GNARWHEEL_MACHINE_LOOK } from './gnarwheelMachineLook.ts';
 import { WYLDIST_MACHINE_LOOK } from './wyldistMachineLook.ts';
 export { WYLDIST_MACHINE_LOOK } from './wyldistMachineLook.ts';
 
@@ -323,6 +325,8 @@ export interface MachineLook {
    * §22.7's delivery records the measurement that changed the answer.
    */
   readonly tyre?: {
+    /** Cosmetic circular rim ring, merged into the existing tyre mesh. */
+    readonly rimAccent?: { readonly colour: number; readonly radius: number; readonly width: number };
     readonly colour?: number;
     readonly roughness?: number;
     readonly lugs?: {
@@ -3923,6 +3927,7 @@ const MACHINE_LOOKS: readonly MachineLook[] = Object.freeze([
   FLO_WITH_ZO_MACHINE_LOOK,
   SEAL_ON_A_WHEEL_MACHINE_LOOK,
   WYLDIST_MACHINE_LOOK,
+  GNARWHEEL_MACHINE_LOOK,
 ]);
 
 /**

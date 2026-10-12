@@ -5031,6 +5031,20 @@ export const BLOCKOUT_COLOURS = {
    * Machine colours belong to the original C2 shell/pad/trim relationship;
    * its lenses never replace the shared warning or headlight semantics.
    */
+  // M43: separate near-black surfaces preserve form under the shared light.
+  gnarwheelCloth: 0x41434a,
+  gnarwheelTrouser: 0x383a40,
+  gnarwheelHelmet: 0x4b4f56,
+  gnarwheelVisor: 0x171c24,
+  gnarwheelGuard: 0x40444b,
+  gnarwheelPrint: 0xf4f4f4,
+  gnarwheelGlove: 0x323047,
+  gnarwheelGlovePattern: 0x71667d,
+  gnarwheelCamera: 0x767d86,
+  gnarwheelCameraRim: 0xc0c5c9,
+  gnarwheelMachine: 0x34373c,
+  gnarwheelCyan: 0x079fda,
+  gnarwheelLime: 0x9fce24,
   wyldistPrint: 0xfbf9f4,
   wyldistHelmetGround: 0xf8f6f2,
   wyldistSkin: 0xd9a17b,

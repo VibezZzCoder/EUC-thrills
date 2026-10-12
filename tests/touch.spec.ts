@@ -2814,3 +2814,21 @@ async function compactWarningFacts(page: Page) {
     };
   });
 }
+
+
+/** M43: press the exact-raster SVG child, exercising real touch delegation. */
+test('the Gnarwheel source-logo portrait accepts a real touch press', async ({ page }, testInfo) => {
+  const errors = collectErrors(page);
+  await bootToTitle(page);
+  await page.locator('.euc-rider-chip').tap();
+  const card = page.locator('.euc-menu--riders [data-rider="gnarwheel"]');
+  await card.locator('image').tap();
+  await expect(card).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => window.game.snapshot().rider.installed)).toBe('gnarwheel');
+  const directory = `${process.env.M43_SHOTS ?? 'test-results/m43'}/${testInfo.project.name}`;
+  mkdirSync(directory, { recursive: true });
+  const image = await page.screenshot({ animations: 'disabled' });
+  writeFileSync(`${directory}/gnarwheel-touch-chooser.png`, image);
+  await testInfo.attach('gnarwheel-touch-chooser', { body: image, contentType: 'image/png' });
+  expect(errors).toEqual([]);
+});

@@ -7,6 +7,8 @@ import { FLO_WITH_ZO_LOOK } from './floWithZoLook.ts';
 export { FLO_WITH_ZO_LOOK } from './floWithZoLook.ts';
 import { SEAL_ON_A_WHEEL_LOOK } from './sealOnAWheelLook.ts';
 export { SEAL_ON_A_WHEEL_LOOK } from './sealOnAWheelLook.ts';
+import { GNARWHEEL_LOOK } from './gnarwheelLook.ts';
+export { GNARWHEEL_LOOK } from './gnarwheelLook.ts';
 import { WYLDIST_LOOK } from './wyldistLook.ts';
 export { WYLDIST_LOOK } from './wyldistLook.ts';
 import { BLOCKOUT_COLOURS, RIDER_BLOCKOUT } from '../data/tuning.ts';
@@ -416,6 +418,8 @@ export interface RiderLook {
   readonly continuousJoints?: boolean;
   /** Untucked cloth encloses the posed upper trouser volumes. */
   readonly drapedHem?: boolean;
+  /** Conservative clothed upper-thigh envelope, metres; omitted keeps the original loose-cargo envelope. */
+  readonly hemDrapeEnvelope?: { readonly x: number; readonly z: number; readonly cap: number };
 
   readonly density?: {
     readonly limb?: number;
@@ -8927,6 +8931,7 @@ export const RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   FLO_WITH_ZO_LOOK,
   SEAL_ON_A_WHEEL_LOOK,
   WYLDIST_LOOK,
+  GNARWHEEL_LOOK,
   COP_LOOK,
 ]);
 
@@ -8950,6 +8955,7 @@ export const PLAYABLE_RIDER_LOOKS: readonly RiderLook[] = Object.freeze([
   FLO_WITH_ZO_LOOK,
   SEAL_ON_A_WHEEL_LOOK,
   WYLDIST_LOOK,
+  GNARWHEEL_LOOK,
 ]);
 
 /** Resolve a look, falling back to Cool Rider the way `characterSpec` does. */
