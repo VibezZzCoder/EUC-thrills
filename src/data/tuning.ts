@@ -13619,3 +13619,39 @@ export const BARKS = Object.freeze({
   /** …and at most this. */
   ndcMaxY: 0.8,
 });
+
+/** Cosmetic squirrels: no values from this table reach rider physics. */
+export const WILDLIFE = deepFreeze({
+  maximumSquirrels: 8,
+  treeSpacingMetres: 45,
+  /** Route-facing grass reach; shorter admitted corridors are tried if blocked. */
+  forageRadiusMetres: 6,
+  minimumForageRadiusMetres: 2.2,
+  encounterVergeMetres: 8,
+  earlyEncounterMetres: 65,
+  minimumEarlyEncounterMetres: 35,
+  followingEncounterMetres: 130,
+  /** Gentle grass gets cached ground alignment; steep verges remain refused. */
+  maximumGroundSlopeRadians: 2 * Math.PI / 180,
+  dodgeMetres: 0.38,
+  groundContactToleranceMetres: 0.004,
+  routeSampleMetres: 3.5,
+  groundMarginMetres: 1.0,
+  pathSamples: 24,
+  /** Only a closing swept wheel path wakes an animal, within this time. */
+  escapeLeadSeconds: 0.4,
+  maximumAlertMetres: 6,
+  collisionPathMetres: 0.85,
+  minimumApproachMetresPerSecond: 0.15,
+  safetyMetres: 0.65,
+  verticalClearanceMetres: 1.5,
+  returnClearMetres: 4,
+  hideSeconds: 5,
+  refugeSeconds: 3,
+  runMetresPerSecond: 12,
+  climbMetresPerSecond: 5,
+  climbMetres: 2.4,
+  viewMetres: 65,
+  sharedViewMetres: 40,
+  animationHz: 30,
+});

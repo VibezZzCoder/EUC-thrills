@@ -1,4 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { createSquirrels, countSquirrels, withSquirrelCost, type Squirrels, type SquirrelsReport } from './squirrels.ts';
+import type { WildlifeRider } from './wildlifePlan.ts';
 import { PART_COSTS } from '../data/renderCost.ts';
 import { ultraCasts } from './ultra/ultraKit.ts';
 import { priceFeatureBlockBuild } from './featureBlockBuildPrice.ts';
@@ -738,6 +740,7 @@ export interface RendererPresentation {
   readonly launchPads: LaunchPadPresentationReport;
   /** M42: the bird flock (zeros until Builder B's flock is installed). */
   readonly birds: BirdPresentationReport;
+  readonly squirrels: SquirrelsReport | null;
 }
 
 /** A failed program's logs, for the Ultra shader-error hook (three's own report is silenced by a hook). */
@@ -851,6 +854,7 @@ export class GameRenderer {
   private padWarms = 0;
   /** M42: the render-only flock; parked, never hidden, between passes. */
   private birds: Birds | null = null;
+  private squirrels: Squirrels | null = null;
   /** One physical world's view, retained through pane/tier/context changes. */
   private population: PopulationView | null = null;
   private readonly supplements = new UltraSupplements();
@@ -1503,6 +1507,8 @@ export class GameRenderer {
     // M42: after the Ultra overlay has handed the pads their own material back.
     this.launchPadView?.dispose();
     this.launchPadView = null;
+    this.squirrels?.dispose();
+    this.squirrels = null;
     this.birds?.dispose();
     this.birds = null;
     this.metricFacade?.dispose();
@@ -1589,6 +1595,8 @@ export class GameRenderer {
     freezeStaticTransforms(this.launchPadView.group);
     this.birds = createBirds(supplements.birds);
     this.scene.add(this.birds.group);
+    this.squirrels = createSquirrels(supplements.squirrels);
+    this.scene.add(this.squirrels.group);
     this.supplements.setRoots([this.streetLife.group, this.environmentDecor.group, this.districtDecor.group, this.districtExterior.group,
       ...(this.metricFacade ? [this.metricFacade.group] : []), this.launchPadView.group]);
     this.supplements.sync(this.ultra.supplementContext());
@@ -1695,7 +1703,8 @@ export class GameRenderer {
   }
 
   /** One shared presentation clock, before any pane draws; no actor physics. */
-  updateStreetLife(seconds: number, reducedMotion: boolean): void {
+  updateStreetLife(seconds: number, reducedMotion: boolean, riders: readonly WildlifeRider[] = []): void {
+    this.squirrels?.update(seconds, reducedMotion, riders);
     this.supplements.sync(this.ultra.supplementContext());
     this.streetLife?.update(seconds, reducedMotion);
     this.environmentDecor?.update(seconds, reducedMotion);
@@ -1893,7 +1902,7 @@ export class GameRenderer {
     const birds: BirdPresentationReport = this.birds?.report() ?? EMPTY_BIRDS_REPORT;
     if (built === null || terrain === null) return {
       ...selection,
-      cost: withSpatialBatchingCost(selection.cost, spatialBatching),
+      cost: withSquirrelCost(withSpatialBatchingCost(selection.cost, spatialBatching), this.preparedEnvironmentSupplements?.squirrels ?? []),
       tier, ultra, streetLife, environmentDecor, districtDecor, ordinaryBoundary: terrain?.ordinaryBoundary ?? null,
       sharedGround: terrain?.sharedGround ?? null,
       sharedEdges: terrain?.sharedEdges ?? null, groundEdgeRefusal: this.groundEdgeRefusal,
@@ -1901,12 +1910,12 @@ export class GameRenderer {
       sharedVegetation: terrain?.sharedVegetation ?? null,
       vegetation, population, districtExterior, metricFacade, districtExteriorMaterialOwners,
       supplementMaterialOwners: this.supplements.materialOwners(),
-      spatialBatching, spatialGeometry, launchPads, birds,
+      spatialBatching, spatialGeometry, launchPads, birds, squirrels: this.squirrels?.report() ?? null,
     };
     return {
       recipe: built.recipe,
-      cost: withSpatialBatchingCost(ultraPresentationCost(selection.cost, built.recipe, built.cost, {
-        propColourTriangles: measuredPropColourTriangles(terrain.group), blockColourTriangles: terrain.blockTriangles }), spatialBatching),
+      cost: withSquirrelCost(withSpatialBatchingCost(ultraPresentationCost(selection.cost, built.recipe, built.cost, {
+        propColourTriangles: measuredPropColourTriangles(terrain.group), blockColourTriangles: terrain.blockTriangles }), spatialBatching), this.preparedEnvironmentSupplements?.squirrels ?? []),
       verdicts: selection.verdicts,
       tier,
       ultra,
@@ -1920,7 +1929,7 @@ export class GameRenderer {
       sharedVegetation: terrain.sharedVegetation,
       vegetation, population, districtExterior, metricFacade, districtExteriorMaterialOwners,
       supplementMaterialOwners: this.supplements.materialOwners(),
-      spatialBatching, spatialGeometry, launchPads, birds,
+      spatialBatching, spatialGeometry, launchPads, birds, squirrels: this.squirrels?.report() ?? null,
     };
   }
 
@@ -2038,7 +2047,7 @@ export class GameRenderer {
     if (this.districtDecor && prepared) { const report = this.districtDecor.report(); bytes += report.geometryBytes + report.instanceBytes + prepared.district.price.textureBytes; }
     // M42: the pads and the flock, whose model rows are `countLaunchPads` and `countBirds`.
     for (const report of [this.terrain?.sharedVegetation, this.vegetation?.report(), this.districtExterior?.report(), this.metricFacade?.report(), this.population?.report(),
-      this.launchPadView?.report(), this.birds?.report()]) {
+      this.launchPadView?.report(), this.birds?.report(), this.squirrels?.report()]) {
       if (report) bytes += report.geometryBytes + report.instanceBytes;
     }
     return bytes;
@@ -2063,7 +2072,13 @@ export class GameRenderer {
           buildings: recipe.ultra.buildings, farShadow: recipe.ultra.farShadow };
         const price = priceEnvironmentSupplements(prepared, recipe.ultra.forms ? 'ultra' : 'ordinary', true,
           part => ultraPartTriangles(part, recipe), policy, priceFeatureBlockBuild(prepared.featureBlocks, recipe));
-        return withSpatialBatchingSupplementPrice(price, sumSpatialBatchingDeltas(this.terrain?.terrainSpatialBatching,
+        const wildlife = countSquirrels(prepared.squirrels);
+        const installedPrice = { ...price, colourDraws: price.colourDraws + wildlife.colourDraws,
+          colourTriangles: price.colourTriangles + wildlife.colourTriangles,
+          geometryBytes: price.geometryBytes + wildlife.geometryBytes,
+          instanceBytes: price.instanceBytes + wildlife.instanceBytes,
+          resourceBytes: price.resourceBytes + wildlife.geometryBytes + wildlife.instanceBytes };
+        return withSpatialBatchingSupplementPrice(installedPrice, sumSpatialBatchingDeltas(this.terrain?.terrainSpatialBatching,
           priceEnvironmentSpatialBatching(prepared, DEFAULT_SPATIAL_BATCH_METRES, true, policy)));
       },
       environmentSupplementBytes: () => this.environmentSupplementBytes(),
@@ -2783,11 +2798,13 @@ export class GameRenderer {
     // volume as well as those in the eye's frustum. Warm-up still draws all.
     this.sun.updateMatrixWorld(true); this.sun.target.updateMatrixWorld(true);
     this.sun.shadow.updateMatrices(this.sun);
+    this.squirrels?.prepareView(camera, this.viewCameras.length);
     this.population?.prepareView(camera, this.sun.castShadow ? this.sun.shadow.camera : undefined);
     try {
       this.renderer.render(this.scene, camera);
     } finally {
       this.population?.restoreView();
+      this.squirrels?.restoreView();
     }
   }
 
@@ -3118,6 +3135,8 @@ export class GameRenderer {
     this.metricFacade = null;
     this.launchPadView?.dispose();
     this.launchPadView = null;
+    this.squirrels?.dispose();
+    this.squirrels = null;
     this.birds?.dispose();
     this.birds = null;
     this.districtExteriorAppearance?.dispose();

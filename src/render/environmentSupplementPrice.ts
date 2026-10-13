@@ -1,4 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { squirrelSites, type SquirrelSite } from './wildlifePlan.ts';
 /** Complete render-owned supplements prepared before presentation selection.
  * No geometry, material, texture or actor allocation, and no source-world write.
  * Submission prices use the full installed near template (culling ignored).
@@ -88,6 +89,7 @@ export interface PreparedEnvironmentSupplements {
   readonly launchPadMarker?: boolean;
   /** M42: the render-only flock's skyline and eligibility. */
   readonly birds: PreparedBirdFlight;
+  readonly squirrels: readonly SquirrelSite[];
   readonly disposed: boolean;
   dispose(): void;
 }
@@ -107,7 +109,7 @@ export function prepareEnvironmentSupplements(plan: LevelPlan, population: Popul
       new Set(metric.selectedPropIndices)),
     street: collectStreetLifePieces(plan), environment: collectEnvironmentDecorPieces(plan),
     district: collectDistrictDecorPieces(plan), population: countPopulation(population),
-    launchPads, birds: prepareBirdFlight(plan),
+    launchPads, birds: prepareBirdFlight(plan), squirrels: squirrelSites(plan, padDiscs),
     get disposed() { return disposed; }, dispose() { if (disposed) return; disposed = true;
       metric.dispose(); vegetationPrice.dispose(); authoredCanopies.dispose(); capSlots.dispose(); ownedFeatureBlocks.dispose(); } }; }
   catch (error) { metric.dispose(); vegetationPrice.dispose(); authoredCanopies.dispose(); capSlots.dispose(); featureBlocks?.dispose(); throw error; }

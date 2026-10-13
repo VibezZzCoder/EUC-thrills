@@ -517,7 +517,7 @@ export const CHARACTERS: readonly PlayableCharacterSpec[] = Object.freeze([
   Object.freeze({
     id: 'gnarwheel' as PlayableCharacterId,
     name: 'Gnarwheel',
-    blurb: 'Black hoodie and full-face lid, chin camera and white brush logo, on a cyan-and-black wheel with a lime rim.',
+    blurb: 'Black hoodie and full-face lid, chin camera and white brush logo, on a cyan-and-black wheel with a lime rim. A real rider, in by permission.',
     swatch: '#121418',
     crashVoice: 'gnarwheel' as CrashVoiceId,
   }),

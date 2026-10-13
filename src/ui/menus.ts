@@ -1700,7 +1700,7 @@ const RIDER_CARDS: Readonly<Record<PlayableCharacterId, { blurb: string; portrai
       </svg>`,
   },
   gnarwheel: {
-    blurb: 'Black hoodie and full-face lid, chin camera and white brush logo, on a cyan-and-black wheel with a lime rim.',
+    blurb: 'Black hoodie and full-face lid, chin camera and white brush logo, on a cyan-and-black wheel with a lime rim. A real rider, in by permission.',
     portrait: `
       <svg viewBox="0 0 96 96" class="euc-rider-card__art" aria-hidden="true" focusable="false">
         <path d="M32 48q-10 4-13 17l-6 20 8 4 12-21-2 28h34l-2-28 12 21 8-4-6-20q-3-13-13-17z" fill="#35363b"/>

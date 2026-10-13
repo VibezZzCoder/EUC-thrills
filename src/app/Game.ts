@@ -2978,6 +2978,9 @@ export class Game {
    * says which.
    */
   private readonly seats: RiderSeat[];
+  /** Reused render-only observations; never handed back to a controller. */
+  private readonly wildlifeRiders: { x:number;y:number;z:number;velocityX:number;velocityZ:number }[] = [];
+  private readonly wildlifeRiderPool: typeof this.wildlifeRiders = [];
   /**
    * Which device drives which seat, and every seat's concrete input object —
    * M25 Phase 4 (docs/PLANS.md §25.5).
@@ -13253,6 +13256,18 @@ export class Game {
     return input;
   }
 
+  private observeWildlifeRider(previous:EucPose,current:EucPose,presented:EucPose):void {
+    const index=this.wildlifeRiders.length;
+    const observation=this.wildlifeRiderPool[index]??(this.wildlifeRiderPool[index]={x:0,y:0,z:0,velocityX:0,velocityZ:0});
+    observation.x=presented.x;observation.y=presented.y;observation.z=presented.z;
+    // Endpoint travel includes actual wobble, aerial direction and contact;
+    // a reset/placement never invents a very fast approach. No frame history.
+    const dt=this.loop.stepSeconds,continuous=!movedByReset(previous,current,dt);
+    observation.velocityX=continuous?(current.x-previous.x)/dt:0;
+    observation.velocityZ=continuous?(current.z-previous.z)/dt:0;
+    this.wildlifeRiders.push(observation);
+  }
+
   private readonly render = (alpha: number): void => {
     // The cover hides the canvas while a new view's programs link.
     if (this.coverWarm === 'running') return;
@@ -13341,7 +13356,12 @@ export class Game {
     // The order inside is load-bearing: the shadow map is re-rendered inside
     // `renderView`, so the focus has to move *before* the pass rather than
     // after it, or each half would be lit for the rider drawn before it.
-    this.renderer.updateStreetLife(this.simTimeSeconds, this.reducedMotion?.matches ?? false);
+    this.wildlifeRiders.length = 0;
+    for (const rider of this.seats) this.observeWildlifeRider(rider.previousPose,rider.currentPose,rider.renderPose);
+    if (this.copRiding) for (const pursuer of this.pursuers) {
+      if (pursuer.worldPlaced) this.observeWildlifeRider(pursuer.previous,pursuer.current,pursuer.render);
+    }
+    this.renderer.updateStreetLife(this.simTimeSeconds, this.reducedMotion?.matches ?? false, this.wildlifeRiders);
     const populationPrevious = this.populationPresentationPrevious, populationCurrent = this.populationPresentationCurrent;
     this.population.writePresentationEndpoints(populationPrevious, populationCurrent);
     this.renderer.updatePopulation(populationPrevious, populationCurrent, alpha);
