@@ -3,6 +3,7 @@
 import type { RiderOccupancyIntervalInput } from './riderOccupancy.ts';
 import type { Range, Scalar } from './occupancyExpressions.ts';
 import { boundRagFrameRanges, mountedQuaternionRanges, poseRange } from './ragFrameRanges.ts';
+import { ragdollInterpolationBlock } from './ragdollInterpolation.ts';
 
 type V = readonly [number, number, number];
 type Q = readonly [number, number, number, number];
@@ -102,10 +103,12 @@ export class RagQuaternionFields {
   }
   private point(time: number): { frame: QR; root: QR } {
     const first = this.input.previous, last = this.input.current;
+    const firstRag = ragdollInterpolationBlock(first.ragdollBlend, last.ragdollBlend, first.ragdoll, last.ragdoll, 0);
+    const lastRag = ragdollInterpolationBlock(first.ragdollBlend, last.ragdollBlend, first.ragdoll, last.ragdoll, 1);
     const scalar = (key: keyof typeof first): number => (first[key] as number) + ((last[key] as number) - (first[key] as number)) * time;
     const ground = mulQ(euler(scalar('groundPitch'), 0, scalar('groundRoll')), euler(scalar('wheelPitch'), 0, -scalar('rollAngle')));
     const headingInverse = euler(0, -scalar('headingY'), 0), origin: V = [scalar('x'), scalar('y'), scalar('z')];
-    const particle = (index: number): V => rotate(headingInverse, sub([0, 1, 2].map(axis => first.ragdoll[index * 3 + axis] + (last.ragdoll[index * 3 + axis] - first.ragdoll[index * 3 + axis]) * time) as unknown as V, origin));
+    const particle = (index: number): V => rotate(headingInverse, sub([0, 1, 2].map(axis => firstRag[index * 3 + axis] + (lastRag[index * 3 + axis] - firstRag[index * 3 + axis]) * time) as unknown as V, origin));
     const up = normal(sub(particle(1), particle(0)), rotate(ground, [0, 1, 0]));
     const forward = normal(cross(sub(particle(3), particle(4)), up), rotate(ground, [0, 0, 1]));
     const lateral = normal(cross(up, forward), rotate(ground, [1, 0, 0])), frame = basis(lateral, up, forward);

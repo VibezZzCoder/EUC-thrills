@@ -4,7 +4,7 @@ import { EucController, createPose, type EucPose } from './EucController.ts';
 import { PopulationSimulation, type PopulationFootprint, type PopulationOccupant } from './population.ts';
 import { NEUTRAL_ACTIONS } from '../input/actions.ts';
 import { POPULATION_AUTHORING as A, POPULATION_OCCUPANT as H, RIDER_OCCUPANCY } from '../data/tuning.ts';
-import { buildRiderOccupancyEnvelope, type RiderOccupancyPrism } from '../shared/riderOccupancy.ts';
+import { buildRiderOccupancyEnvelope, type RiderOccupancyCoefficients, type RiderOccupancyPrism } from '../shared/riderOccupancy.ts';
 import type { PopulationPlan } from '../level/populationPlan.ts';
 import type { TerrainSampler } from './world.ts';
 /** The rag particle radii (ragdoll.ts `RADIUS`), restated so this file also loads on the pre-fix tree. */
@@ -19,6 +19,9 @@ export function incomingCoarse(pose: EucPose): PopulationFootprint { return { x:
   velocityX: Math.sin(pose.headingY) * pose.speed, velocityZ: Math.cos(pose.headingY) * pose.speed }; }
 export function incomingPart(part: RiderOccupancyPrism): PopulationFootprint { return { x: part.x, z: part.z, headingY: part.headingY,
   minY: part.baseY, maxY: part.topY, halfWidthMetres: part.halfWidth, halfLengthMetres: part.halfLength, velocityX: 0, velocityZ: 0 }; }
+/** World-X support, including the actual native prism's rotation. */
+export function incomingRightSupport(part: RiderOccupancyPrism): number { return part.x
+  + Math.abs(Math.cos(part.headingY)) * part.halfWidth + Math.abs(Math.sin(part.headingY)) * part.halfLength; }
 export function incomingSignedGap(a: PopulationFootprint, b: PopulationFootprint): number {
   const axes = (h: number) => [{ x: Math.cos(h), z: -Math.sin(h) }, { x: Math.sin(h), z: Math.cos(h) }];
   const support = (p: PopulationFootprint, n: { x: number; z: number }) => { const [x, z] = axes(p.headingY);
@@ -60,21 +63,30 @@ export function warmIncoming(population: PopulationSimulation): void {
   for (let tick = 0; tick < INCOMING_WARM_TICKS; tick += 1) { population.step(INCOMING_DT); population.queryContacts([]); }
 }
 export function incomingCrash(value = new EucController(incomingFlat)): EucController {
-  if (!value.reset(undefined, 12) || !value.hardKnock(3, 0)) throw new Error('Native crash reset/knock refused');
+  // The repaired rigid trunk removes the heading-0 lateral frame enlargement.
+  // This bounded native probe pin grows actual world-X support by forward
+  // travel plus the same side fall, beyond the coarse planner hull. Keep the
+  // .1-second partial start and every original collision margin unchanged.
+  const headingY = Math.PI / 8;
+  if (!value.reset({ position: { x: 0, y: 0, z: 0 }, headingY }, 12)
+    || !value.hardKnock(3 * Math.cos(headingY), -3 * Math.sin(headingY))) throw new Error('Native crash reset/knock refused');
   for (let tick = 0; tick < 12; tick += 1) value.step(INCOMING_DT, NEUTRAL_ACTIONS);
   return value;
 }
-export function incomingNativeFixture() {
+export function incomingNativeFixture(coefficients: RiderOccupancyCoefficients = RIDER_OCCUPANCY, actorOffset = .4) {
   const value = incomingCrash(), before = incomingPose(value), token = value.prepareStep(INCOMING_DT, NEUTRAL_ACTIONS), neutral = createPose();
   value.writePreparedPose(token, neutral);
   if (!(before.ragdollBlend > .8 && before.ragdollBlend < 1)) throw new Error('Mandatory .1 start must remain partial rag');
-  const first = buildRiderOccupancyEnvelope(before, RIDER_OCCUPANCY).human, next = buildRiderOccupancyEnvelope(neutral, RIDER_OCCUPANCY).human;
-  const front = first.x + first.halfWidth, growth = next.x + next.halfWidth - front;
+  const first = buildRiderOccupancyEnvelope(before, coefficients).human, next = buildRiderOccupancyEnvelope(neutral, coefficients).human;
+  const front = incomingRightSupport(first), growth = incomingRightSupport(next) - front;
   if (!(growth > .05)) throw new Error('Actual native partial fall needs exposed right-support growth');
-  const reference = new PopulationSimulation(incomingPlan(100, first.z), incomingFlat); warmIncoming(reference);
+  // Offset the real actor lane beyond the coarse forecast, where the actual
+  // articulated body protrudes. The NPC planner still runs, unmodified.
+  const actorZ = first.z + actorOffset;
+  const reference = new PopulationSimulation(incomingPlan(100, actorZ), incomingFlat); warmIncoming(reference);
   const warm = reference.snapshot().actors[0], desiredFace = front + growth + warm.speedMetresPerSecond * INCOMING_DT / 2;
-  const plan = incomingPlan(desiredFace + warm.hull.halfLengthMetres + warm.distanceMetres, first.z), population = new PopulationSimulation(plan, incomingFlat);
+  const plan = incomingPlan(desiredFace + warm.hull.halfLengthMetres + warm.distanceMetres, actorZ), population = new PopulationSimulation(plan, incomingFlat);
   warmIncoming(population);
   const occupants: PopulationOccupant[] = [{ id: 'owner', kind: 'human', previous: incomingCoarse(before), current: incomingCoarse(before) }];
-  return { value, before, token, neutral, population, occupants, plan, growth };
+  return { value, before, token, neutral, population, occupants, plan, growth, actorZ };
 }

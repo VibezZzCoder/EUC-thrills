@@ -320,6 +320,82 @@ export const RIDER_BLOCKOUT = {
   shoulderHalfWidth: 0.175,
   upperArmLength: 0.28,
   forearmLength: 0.26,
+  /** Pre-contact crash pose preference as a fraction of the two bones. */
+  ragdollArmMinReach: 0.42,
+  /** m: approximately149degrees of contact flex; only physical contacts may spend it. */
+  ragdollArmContactMinReach: 0.145,
+  ragdollElbowRadius: 0.075,
+  /** m: guide the closest feasible elbow arc before visible contact. */
+  ragdollArmGroundLead: 0.10,
+  ragdollArmPoleSpeed: 12,
+  ragdollWheelClearance: 0.42,
+  ragdollWheelTop: 0.9,
+  ragdollLegMinReach: 0.50,
+  /** Raised-leg airborne arcade carriage: forward/backward pitch and splay,
+   * radians about the coherent trunk. Contacts retain final authority; these
+   * targets are not universal anatomical limits. */
+  ragdollHipFlexMax: 2.05,
+  ragdollHipBackMax: 0.55,
+  ragdollHipSplayMax: 0.70,
+  /** Reciprocal share of both hip angular corrections, before world contact. */
+  ragdollHipTrunkShare: 0.30,
+  /** A released chain keeps a little flex at maximum extension. */
+  ragdollMaxReach: 0.995,
+  /** Released soles stay gravity-biased while following the trunk, radians. */
+  ragdollBootPitchMax: 0.65,
+  ragdollBootRollMax: 0.35,
+  ragdollBootYawMax: 0.35,
+  /** Horizontal toe-yaw softening near a foot directly beneath its hip, metres. */
+  ragdollBootYawSoftness: 0.12,
+  /** Upward knee projection below this sine uses a stable forward chart. */
+  ragdollKneeVerticalBand: 0.025,
+  /** Canonical knee-pole guidance budget, radians per physical second. */
+  ragdollLegPoleSpeed: 8,
+  /** Grounded knee contact core radius, metres. */
+  ragdollKneeRadius: 0.09,
+  /** m: numerical allowance for the single ankle support recomputation. */
+  ragdollBootSupportSlack: 0.003,
+  /** Fixed crash-only finite-solid work limits; overflow is an explicit failed proposal. */
+  ragdollContactBoxCapacity: 16,
+  ragdollContactActiveBoxes: 2,
+  ragdollContactFaceTrials: 12,
+  /** Fixed sphere-arc candidates approaching residual oriented support. */
+  ragdollContactSupportRefinements: 4,
+  /** m: existing shallow roof-versus-ground distinction and static skin slack. */
+  ragdollGroundShallowDepth: 0.35,
+  ragdollStaticSlack: 0.01,
+  /** m: cached plane agreement before the actual discontinuity-joint sample. */
+  ragdollGroundPlaneTolerance: 0.001,
+  /** m: one contact-derived coherent response, before the final four limb solves. */
+  ragdollContactResponseMax: 0.20,
+  /** Common core/panel contact support about the coherent spine, metres.
+   * The torso bridge fills the gap between the existing pelvis/chest cores;
+   * distinct lateral/depth/end supports avoid a pooled head or garment sphere. */
+  ragdollTorsoContactLateral: 0.20,
+  ragdollTorsoContactDepth: 0.18,
+  ragdollTorsoContactEnd: 0.10,
+  /** Localized lower-pelvis shell, metres in the coherent body frame.
+   * Encloses the native lower garment without pooling a whole hairstyle. */
+  ragdollPelvisContactLateral: 0.20,
+  ragdollPelvisContactLower: 0.20,
+  ragdollPelvisContactUpper: 0.16,
+  ragdollPelvisContactBack: 0.20,
+  ragdollPelvisContactFront: 0.17,
+  /** Normal-directed actual support-point resamples after the first sample. */
+  ragdollCoreGroundRefinements: 2,
+  /** Body-relative protective carriage, metres from the shoulder/hip. */
+  ragdollHandOut: 0.06,
+  /** m: shoulders meet a solid before fingers; seed their hands behind it. */
+  ragdollSolidHandSetback: 0.10,
+  ragdollHandRise: 0.14,
+  ragdollHandFront: 0.28,
+  ragdollFootOut: 0.10,
+  ragdollFootDrop: 0.56,
+  ragdollFootFront: 0.20,
+  /** Crash-particle speed ceiling, m/s; launch scales as a whole to retain its rotation. */
+  ragdollMaxSpeed: 15,
+  /** Maximum trunk turn per second, rad/s: loss of support is a weighted fall. */
+  ragdollMaxAngularSpeed: 3.5,
   armThickness: 0.085,
   /**
    * How far out from the shoulder the hands sit, and how far down the arm
@@ -765,6 +841,22 @@ export const RIDER_BLOCKOUT = {
    * height two metres from the wheel.
    */
   crashFootOutboard: 0.24,
+} as const;
+
+/** Common native boot vertices with 0.1 mm numerical slack, ankle-local metres. */
+/** Existing eleven crash-particle contact cores, metres; pose layout order. */
+export const RAGDOLL_PARTICLE_RADII = [0.14,0.14,0.12,0.10,0.10,0.10,0.10,0.05,0.05,0.07,0.07] as const;
+/** Existing coherent-trunk relative weights in its seven-site order.
+ * Ground impulses use the same distribution as the pose fit. */
+export const RAGDOLL_TRUNK_WEIGHTS=[4,4,2,2.5,2.5,2.5,2.5] as const;
+
+/** Forearm/hand/merged carry bounds relative to the physical wrist, metres. */
+export const RAGDOLL_HAND_GROUND_BOX = {
+  minX: -.0641, maxX: .0641, minY: -.2081, maxY: .0281, minZ: -.0401, maxZ: .0671,
+} as const;
+
+export const RAGDOLL_BOOT_GROUND_BOX = {
+  minX: -0.0731, maxX: 0.0731, minY: -0.0601, maxY: 0.1141, minZ: -0.1121, maxZ: 0.1461,
 } as const;
 
 /**
@@ -2509,15 +2601,15 @@ export const EUC = {
    * opens (2.5 s) is what keeps the tumble funny rather than harrowing.
    */
   ragdollDamping: 1.6,
-  /** Constraint relaxation passes per step. 3 at 120 Hz holds the body stiff. */
+  /** Legacy distance-solver pass count, retained for tuning snapshots. Frame/endpoints solve once. */
   ragdollIterations: 3,
   /** Tangential velocity shed per second of ground contact — skid vs slide. */
   ragdollFriction: 9.0,
   /** Fraction of impact velocity returned by ground and wall contacts. */
   ragdollRestitution: 0.3,
-  /** Pull of the hands toward the head, 1/s² — §16's "arms protect body". */
+  /** Pull of each hand toward its own protective carriage, 1/s². */
   ragdollCurlGain: 26,
-  /** Gentler pull of the feet toward the pelvis, 1/s² — the tuck half. */
+  /** Gentler pull of each foot below its own hip, 1/s² — the tuck half. */
   ragdollTuckGain: 9,
   /** Upward launch as a fraction of crash speed, and its ceiling, m/s. */
   ragdollLaunchPop: 0.28,
@@ -10173,6 +10265,10 @@ export const TUNING = deepFreeze({
   WHEEL,
   RIDER,
   RIDER_BLOCKOUT,
+  RAGDOLL_PARTICLE_RADII,
+  RAGDOLL_TRUNK_WEIGHTS,
+  RAGDOLL_BOOT_GROUND_BOX,
+  RAGDOLL_HAND_GROUND_BOX,
   RIDER_OCCUPANCY,
   PHYSICS,
   EUC,

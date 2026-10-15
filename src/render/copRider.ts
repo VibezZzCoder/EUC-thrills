@@ -143,6 +143,7 @@ export interface CopRider {
   setVisible(visible: boolean): void;
   /** Pose him from a controller pose, exactly as the player's rig is posed. */
   apply(pose: EucPose): void;
+  resetCrashPose(): void;
   /** Pose his paddle — M14's `applySwing`, forwarded unchanged. */
   applySwing(headWorld: THREE.Vector3 | null, angle: number, blend: number): void;
   dispose(): void;
@@ -281,6 +282,7 @@ export function createCopRider(options: CopRiderOptions = {}): CopRider {
     apply(pose: EucPose): void {
       rig.apply(pose);
     },
+    resetCrashPose(): void { rig.resetCrashPose(); },
 
     applySwing(headWorld: THREE.Vector3 | null, angle: number, blend: number): void {
       rig.applySwing(headWorld, angle, blend);

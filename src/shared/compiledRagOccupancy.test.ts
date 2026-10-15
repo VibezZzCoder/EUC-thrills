@@ -3,9 +3,11 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { createPose } from '../simulation/EucController.ts';
 import { RIDER_OCCUPANCY } from '../data/tuning.ts';
-import { createRiderOccupancyTrajectory, type RiderOccupancyPrism } from './riderOccupancy.ts';
+import { createRiderOccupancyTrajectory, type RiderOccupancyCoefficients, type RiderOccupancyPrism } from './riderOccupancy.ts';
 import { compileTightRagHumanTemplate } from './compiledOccupancy.ts';
 import { boundRagFrameRanges } from './ragFrameRanges.ts';
+import { buildRagHumanTemplateDAG } from './ragHumanTemplate.ts';
+import { ragdollLegReachMinimum } from './ragdollBoot.ts';
 /** Exact preserved native controller frame; no mesh/test module import. */
 type TestPose = Omit<ReturnType<typeof createPose>, 'ragdoll'> & { ragdoll: Float32Array | Float64Array };
 export function recordedDrunkard90CrashPose(): TestPose {
@@ -39,6 +41,21 @@ export function collapsedRecordedCrashPose() {
 }
 
 const KEYS = ['minX', 'maxX', 'minY', 'maxY', 'minZ', 'maxZ', 'x', 'y', 'z', 'headingY', 'halfWidth', 'halfHeight', 'halfLength', 'baseY', 'topY'] as const;
+test('whole-interval minimum-sphere pruning retains deliberately non-dominating coefficients',()=>{
+  const p=collapsedRecordedCrashPose(),k=RIDER_OCCUPANCY,a=k.stance,minimum=ragdollLegReachMinimum(a.thighLength,a.shinLength);
+  p.ragdoll[27]=p.ragdoll[0]+a.torsoWidth*.26;p.ragdoll[30]=p.ragdoll[0]-a.torsoWidth*.26;
+  const graph=(coefficients:RiderOccupancyCoefficients)=>buildRagHumanTemplateDAG({previous:p,current:p,coefficients});
+  const native=graph(k),largeBoot={...k,boot:{...k.boot,minY:-Math.sqrt(1-k.boot.maxX**2-k.boot.maxZ**2)}};
+  assert.equal(graph(largeBoot).foldedChains.length,native.foldedChains.length+96,'every supported/released style/side/role/strike boot gate must survive when origin-sphere domination fails');
+  const slot=compileTightRagHumanTemplate(largeBoot,p).createSlot();slot.load(p,p);
+  assert.ok(slot.at(.5).minY<=p.ragdoll[1]-minimum-1+1e-6,'removing this non-dominated sphere would lose the shifted minimum ankle plus its full boot radius');
+  const smallArm={...k,armRadius:.001,handCarry:{axialFrom:0,axialTo:0,radial:0}};
+  const wideArm={...smallArm,handRadius:.1};
+  // .2268+.06>.28+.001 already needs the arm gate; making the upper sphere
+  // dominate it removes every style/side/role/carriage emission.
+  const dominated={...wideArm,armRadius:.1};
+  assert.equal(graph(wideArm).foldedChains.length,graph(dominated).foldedChains.length+48);
+});
 function excess(actual: RiderOccupancyPrism, first: RiderOccupancyPrism, last: RiderOccupancyPrism, amount: number) {
   const mix = (a: number, b: number) => a + (b - a) * amount, h = mix(first.headingY, last.headingY), ch = Math.cos(h), sh = Math.sin(h), ca = Math.cos(actual.headingY), sa = Math.sin(actual.headingY);
   let result = Math.max(mix(first.baseY, last.baseY) - actual.baseY, actual.topY - mix(first.topY, last.topY));
@@ -99,7 +116,9 @@ test('true interior normalization collapse is bounded without treating a native 
   const pads = [.01, .001, .0001].map(width => slot.intervalEnvelopeMetres(.4, .4 + width)); assert.ok(pads[0] > pads[1] && pads[1] > pads[2]);
 });
 test('compiled rag retains strict zero-bound nonlinear-root negative control', () => {
-  const before: TestPose = createPose(), after: TestPose = createPose(); before.ragdollBlend = 0; after.ragdollBlend = 1; before.ragdoll = new Float64Array(33); after.ragdoll = new Float64Array(33);
+  // Both blocks are active: entry/recovery deliberately discard an inactive
+  // block, so its old translation is no longer a nonlinear-root control.
+  const before: TestPose = createPose(), after: TestPose = createPose(); before.ragdollBlend = .1; after.ragdollBlend = 1; before.ragdoll = new Float64Array(33); after.ragdoll = new Float64Array(33);
   for (let i = 0; i < 11; i += 1) before.ragdoll[i * 3] = 2;
   const zeroBox = { minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 }, stance = Object.fromEntries(Object.keys(RIDER_OCCUPANCY.stance).map(key => [key, 0])); stance.carveReactionFullRoll = stance.loadReactionFullPitch = 1;
   const k = { ...RIDER_OCCUPANCY, hipHeight: 0, pedalHeight: 0, stance, torso: zeroBox, boot: zeroBox, headLollExpansion: 0,

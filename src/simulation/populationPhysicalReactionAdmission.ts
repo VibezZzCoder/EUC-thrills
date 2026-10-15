@@ -47,11 +47,20 @@ function riderTouching(first: PopulationFootprint, second: PopulationFootprint):
   const axis = contactAxis(first, second); return axis !== null && axis.gap <= POPULATION.epsilon;
 }
 /** All local shape fields are constant; the compiled body undergoes one rigid translation. */
+function samePhysicalField(previous: RiderOccupancyPose, proposed: RiderOccupancyPose, key: keyof RiderOccupancyPose): boolean {
+  if (key === 'ragdoll' || key === 'ragdollJointPoles') {
+    const first = previous[key], last = proposed[key];
+    if (first === undefined || last === undefined) return first === last;
+    if (first.length !== last.length) return false;
+    for (let index = 0; index < first.length; index++) if (first[index] !== last[index]) return false;
+    return true;
+  }
+  return previous[key] === proposed[key];
+}
 function rigidTranslation(request: EucPhysicalReactionRequest): boolean {
   if (request.previous.ragdollBlend !== 0 || request.proposed.ragdollBlend !== 0) return false;
-  return Object.keys(request.previous).every(key => key === 'x' || key === 'z' || (key === 'ragdoll'
-    ? Array.from(request.previous.ragdoll).every((value, index) => value === request.proposed.ragdoll[index])
-    : request.previous[key as Exclude<keyof RiderOccupancyPose, 'ragdoll'>] === request.proposed[key as Exclude<keyof RiderOccupancyPose, 'ragdoll'>]));
+  return Object.keys(request.previous).every(key => key === 'x' || key === 'z'
+    || samePhysicalField(request.previous, request.proposed, key as keyof RiderOccupancyPose));
 }
 /** The initial least-penetration SAT axis has fixed supports and a nondecreasing absolute projection throughout t in [0,1]. */
 function nonWorseningTranslation(first: PopulationFootprint, blocker: PopulationFootprint, request: EucPhysicalReactionRequest): boolean {
@@ -77,9 +86,8 @@ export function populationPhysicalReactionAllowed(input: PopulationPhysicalReact
   // An identical physical pose is a proved zero-motion response even when a
   // held NPC touches it. The logical speed/context change cannot create a new
   // overlap. Compare only the owned physical request fields and particle block.
-  if ((input.request.kind === 'contactYield' || input.request.kind === 'contactInput' || input.request.kind === 'contactSettle' || input.request.kind === 'contactClock') && Object.keys(input.request.previous).every(key => key === 'ragdoll'
-    ? Array.from(input.request.previous.ragdoll).every((value, index) => value === input.request.proposed.ragdoll[index])
-    : input.request.previous[key as Exclude<keyof RiderOccupancyPose, 'ragdoll'>] === input.request.proposed[key as Exclude<keyof RiderOccupancyPose, 'ragdoll'>])) return true;
+  if ((input.request.kind === 'contactYield' || input.request.kind === 'contactInput' || input.request.kind === 'contactSettle' || input.request.kind === 'contactClock') && Object.keys(input.request.previous)
+    .every(key => samePhysicalField(input.request.previous, input.request.proposed, key as keyof RiderOccupancyPose))) return true;
   const snapshot = input.population.snapshot();
   const blockers: Blocker[] = snapshot.actors.map(actor => ({
     role: 'npc', id: `npc:${actor.id}`, ownerId: `npc:${actor.id}`, previous: actor.footprint, current: actor.footprint }));

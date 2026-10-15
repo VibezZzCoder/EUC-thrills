@@ -79,6 +79,10 @@ export interface GroundSample {
    * reports grass.
    */
   offCourse: boolean;
+  /** Optional caller-owned underlying terrain answer, before authored roofs.
+   * A rag limb uses finite boxes for roofs instead of extending their top
+   * plane beneath a wrist that has already left the footprint. */
+  base?: { height: number; normal: Vec3 };
 }
 
 /** Mutable metadata for the authored box an obstacle cast met. */
@@ -87,6 +91,33 @@ export interface ObstacleHit {
   /** Collider half-extents in its own horizontal frame, metres. */
   halfExtentX: number;
   halfExtentZ: number;
+  /** Optional caller-owned outward slab normal; populated only when requested. */
+  normal?: Vec3;
+  /** Requested together: exact raw-box face metadata for an inside-origin bail. */
+  colliderIndex?: number;
+  inside?: boolean;
+  faceOffset?: number;
+}
+
+/** A primary cast's earned inside-origin face, checked again against its box.
+ * Only this collider may be left; every other swept-radius intersection fails. */
+export interface ObstacleInitialExit {
+  colliderIndex: number;
+  normal: Vec3;
+  faceOffset: number;
+  slack: number;
+}
+
+/** Rag-only candidate collection piggybacks the existing endpoint cast. Each
+ * record is box id, centre xyz, half-extents xyz, cosine/sine of yaw. */
+export interface RagdollObstacleQuery {
+  minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number;
+  records: Float64Array;
+  recordOffset: number;
+  capacity: number;
+  count: number;
+  overflow: boolean;
+  fulfilled: boolean;
 }
 
 /** A sample object a caller owns and hands to the sampler to fill. */
@@ -172,5 +203,9 @@ export interface TerrainSampler {
     sweepLateral?: Vec3,
     /** Optional allocation-free metadata output for the nearest hit. */
     out?: ObstacleHit,
+    /** Narrow final-clearance mode; ordinary ray semantics remain unchanged. */
+    initialExit?: ObstacleInitialExit,
+    /** Optional finite boxes for a coherent rag limb, without a second scan. */
+    limb?: RagdollObstacleQuery,
   ): number | null;
 }

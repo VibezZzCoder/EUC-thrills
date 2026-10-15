@@ -20,8 +20,8 @@ const stationaryResidual = (pad: number, pose: RiderOccupancyPose) => {
   assert.ok(pad >= 0 && pad <= tolerance, `stationary projection residual ${pad} > ${tolerance} m`);
 };
 test('minimal physical placement inputs load into a full native prototype template while the extras-dependent control rejects them', () => {
-  const pose = placement(); assert.equal(Object.keys(pose).length, 41); assert.equal('wheelSpin' in pose, false);
-  const knownBadValidate = (input: RiderOccupancyPose) => { for (const key of Object.keys(createPose()).filter(key => key !== 'ragdoll')) { if (!Number.isFinite((input as unknown as Record<string, number>)[key])) throw new Error('Non-finite legacy extra source'); } };
+  const pose = placement(); assert.equal(Object.keys(pose).length, 42); assert.equal('wheelSpin' in pose, false);
+  const knownBadValidate = (input: RiderOccupancyPose) => { for (const key of Object.keys(createPose()).filter(key => key !== 'ragdoll' && key !== 'ragdollJointPoles')) { if (!Number.isFinite((input as unknown as Record<string, number>)[key])) throw new Error('Non-finite legacy extra source'); } };
   assert.throws(() => knownBadValidate(pose), /Non-finite/, 'known-bad extras-dependent validation must reject a correct minimal physical pose');
   for (const kind of ['wheel', 'mounted-human', 'rag-human'] as const) {
     const full = compileRiderOccupancyCertificate(kind, RIDER_OCCUPANCY, createPose()), minimal = compileRiderOccupancyCertificate(kind, RIDER_OCCUPANCY, pose);

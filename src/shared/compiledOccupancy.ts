@@ -6,10 +6,11 @@ import { buildRagHumanTemplateDAG } from './ragHumanTemplate.ts';
 import { buildMountedHumanTemplateDAG } from './mountedHumanTemplate.ts';
 import { buildWheelTemplate } from './wheelTemplate.ts';
 import { RagQuaternionFields, type RagQuaternionLeaf } from './ragQuaternionFields.ts';
+import { ragdollInterpolationBlock } from './ragdollInterpolation.ts';
 
 const OPS = ['constant', 'affine', 'add', 'sub', 'mul', 'min', 'max', 'neg', 'abs', 'sin', 'cos', 'sqrt01', 'clamp01', 'ragQuaternion'] as const;
 export type OccupancyCertificateKind = 'wheel' | 'mounted-human' | 'rag-human';
-type Key = Exclude<keyof RiderOccupancyPose, 'ragdoll'>;
+type Key = Exclude<keyof RiderOccupancyPose, 'ragdoll' | 'ragdollJointPoles'>;
 type SourceKey = Key | `particle:${number}`;
 interface Instruction { readonly op: number; readonly a: number; readonly b: number; readonly literal: number; readonly key: number }
 interface Emission { readonly x: number; readonly y: number; readonly z: number; readonly radius: number; always: boolean }
@@ -176,16 +177,20 @@ class Slot implements CompiledOccupancySlot {
     // re-certifies an unchanged owner pass after pass) keeps them; anything
     // else forgets them before the first value changes.
     let remembered = this.loaded && this.kind !== 'rag-human';
+    const firstRag = this.kind === 'rag-human' ? ragdollInterpolationBlock(previous.ragdollBlend, current.ragdollBlend, previous.ragdoll, current.ragdoll, 0) : previous.ragdoll;
+    const lastRag = this.kind === 'rag-human' ? ragdollInterpolationBlock(previous.ragdollBlend, current.ragdollBlend, previous.ragdoll, current.ragdoll, 1) : current.ragdoll;
     if (!remembered) this.forget();
     for (let index = 0; index < this.keys.length; index += 1) {
       const key = this.keys[index], particle = this.particle[index];
-      const first = particle >= 0 ? previous.ragdoll[particle] : previous[key as Key];
-      const last = particle >= 0 ? current.ragdoll[particle] : current[key as Key];
+      const first = particle >= 0 ? firstRag[particle] : previous[key as Key];
+      const last = particle >= 0 ? lastRag[particle] : current[key as Key];
       if (remembered && (!Object.is(this.first[index], first) || !Object.is(this.last[index], last))) { remembered = false; this.forget(); }
       if (!Number.isFinite(first) || !Number.isFinite(last)) throw new RangeError(`Non-finite compiled rag source ${key}`);
       this.first[index] = first; this.last[index] = last;
     }
-    this.fields = this.kind === 'rag-human' ? new RagQuaternionFields({ previous: { ...previous, ragdoll: Float64Array.from(previous.ragdoll) }, current: { ...current, ragdoll: Float64Array.from(current.ragdoll) }, coefficients: this.coefficients }) : null;
+    this.fields = this.kind === 'rag-human' ? new RagQuaternionFields({
+      previous: { ...previous, ragdoll: Float64Array.from(firstRag), ...(previous.ragdollJointPoles === undefined ? {} : { ragdollJointPoles: Float64Array.from(previous.ragdollJointPoles) }) },
+      current: { ...current, ragdoll: Float64Array.from(lastRag), ...(current.ragdollJointPoles === undefined ? {} : { ragdollJointPoles: Float64Array.from(current.ragdollJointPoles) }) }, coefficients: this.coefficients }) : null;
     this.loaded = true;
     // The whole-interval pass only feeds this diagnostic: at() and the
     // envelope run their own passes. Pure arithmetic, so it is taken on demand.

@@ -1,6 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import type { BoxCollider, Heightfield, LevelPlan, Surround } from '../level/plan.ts';
-import type { GroundSample, GroundSupportWindow, GroundSupportWindowResult, ObstacleHit, SurfaceId, TerrainSampler, Vec3 } from './world.ts';
+import type { GroundSample, GroundSupportWindow, GroundSupportWindowResult, ObstacleHit, ObstacleInitialExit, RagdollObstacleQuery, SurfaceId, TerrainSampler, Vec3 } from './world.ts';
 import { GROUND_CERTIFICATE as CERT } from '../data/tuning.ts';
 
 /**
@@ -107,6 +107,9 @@ const MARCH_REFINEMENTS = 8;
 const MARCH_MAX_STEPS = 512;
 
 export class PlanTerrainSampler implements TerrainSampler {
+  /** Optional obstacle metadata scratch; no allocation on the ray path. */
+  private readonly obstacleNormal: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly obstacleFace: ObstacleHit = { distance: 0, halfExtentX: 0, halfExtentZ: 0, inside: false, faceOffset: 0 };
   private readonly colliders: readonly PreparedCollider[];
   private readonly field: Heightfield;
   private readonly surround: Surround;
@@ -354,6 +357,7 @@ export class PlanTerrainSampler implements TerrainSampler {
 
   sampleGround(x: number, z: number, out: GroundSample): GroundSample {
     this.sampleField(x, z, out);
+    if(out.base!==undefined){out.base.height=out.height;out.base.normal.x=out.normal.x;out.base.normal.y=out.normal.y;out.base.normal.z=out.normal.z;}
 
     // Anything solid standing on the terrain wins if its top face is higher.
     // Every collider is upright, so its top face is level and its normal is up
@@ -490,6 +494,8 @@ export class PlanTerrainSampler implements TerrainSampler {
     sweepHalfWidth = 0,
     sweepLateral?: Vec3,
     out?: ObstacleHit,
+    initialExit?: ObstacleInitialExit,
+    limb?: RagdollObstacleQuery,
   ): number | null {
     const length = Math.hypot(direction.x, direction.y, direction.z);
     if (length === 0 || !(maxDistance > 0) || !Number.isFinite(maxDistance)) return null;
@@ -521,6 +527,8 @@ export class PlanTerrainSampler implements TerrainSampler {
       lateralX,
       lateralZ,
       out,
+      initialExit,
+      limb,
     );
   }
 
@@ -543,16 +551,18 @@ export class PlanTerrainSampler implements TerrainSampler {
     suppliedLateralX?: number,
     suppliedLateralZ?: number,
     out?: ObstacleHit,
+    initialExit?: ObstacleInitialExit,
+    limb?: RagdollObstacleQuery,
   ): number | null {
     const endX = origin.x + dx * maxDistance;
     const endZ = origin.z + dz * maxDistance;
     // The broadphase has to gather boxes touched by the swept width as well as
     // by the centre ray. Expanding by the full half-width is conservative by
     // at most one adjacent cell and cannot change the exact answer below.
-    const fromColumn = this.columnAt(Math.min(origin.x, endX) - sweepHalfWidth);
-    const toColumn = this.columnAt(Math.max(origin.x, endX) + sweepHalfWidth);
-    const fromRow = this.rowAt(Math.min(origin.z, endZ) - sweepHalfWidth);
-    const toRow = this.rowAt(Math.max(origin.z, endZ) + sweepHalfWidth);
+    let minimumX=Math.min(origin.x,endX)-sweepHalfWidth,maximumX=Math.max(origin.x,endX)+sweepHalfWidth;
+    let minimumZ=Math.min(origin.z,endZ)-sweepHalfWidth,maximumZ=Math.max(origin.z,endZ)+sweepHalfWidth;
+    if(limb!==undefined){minimumX=Math.min(minimumX,limb.minX);maximumX=Math.max(maximumX,limb.maxX);minimumZ=Math.min(minimumZ,limb.minZ);maximumZ=Math.max(maximumZ,limb.maxZ);}
+    const fromColumn=this.columnAt(minimumX),toColumn=this.columnAt(maximumX),fromRow=this.rowAt(minimumZ),toRow=this.rowAt(maximumZ);
 
     const horizontal = Math.hypot(dx, dz);
     const lateralX = suppliedLateralX ?? (horizontal > 0 ? -dz / horizontal : 0);
@@ -561,6 +571,12 @@ export class PlanTerrainSampler implements TerrainSampler {
     this.stamp += 1;
     const stamp = this.stamp;
     let nearest: number | null = null;
+    let exitSeen = false;
+    if(limb!==undefined){limb.count=0;limb.overflow=false;limb.fulfilled=true;}
+    if (initialExit !== undefined && (!Number.isInteger(initialExit.colliderIndex)
+      || initialExit.colliderIndex < 0 || initialExit.colliderIndex >= this.colliders.length
+      || !validInitialExit(origin, dx, dy, dz, maxDistance, sweepHalfWidth,
+        this.colliders[initialExit.colliderIndex], initialExit))) return 0;
     for (let row = fromRow; row <= toRow; row += 1) {
       const rowBase = row * this.gridColumns;
       for (let column = fromColumn; column <= toColumn; column += 1) {
@@ -572,6 +588,26 @@ export class PlanTerrainSampler implements TerrainSampler {
           this.stamps[index] = stamp;
           const prepared = this.colliders[index];
           if (occludersOnly && !prepared.occludes) continue;
+          if(limb!==undefined) {
+            const box=prepared.collider;
+            if(prepared.maxX>=limb.minX&&prepared.minX<=limb.maxX
+              &&box.centre.y+box.halfExtents.y>=limb.minY&&box.centre.y-box.halfExtents.y<=limb.maxY
+              &&prepared.maxZ>=limb.minZ&&prepared.minZ<=limb.maxZ) {
+              if(limb.count>=limb.capacity)limb.overflow=true;
+              else {const at=limb.recordOffset+limb.count++*9,records=limb.records;
+                records[at]=index;records[at+1]=box.centre.x;records[at+2]=box.centre.y;records[at+3]=box.centre.z;
+                records[at+4]=box.halfExtents.x;records[at+5]=box.halfExtents.y;records[at+6]=box.halfExtents.z;
+                records[at+7]=prepared.cos;records[at+8]=prepared.sin;}
+            }
+          }
+          if (initialExit !== undefined) {
+            // One traversal checks the entire prefix and suffix. A nearest-hit
+            // reversal would hide another collider behind the initial overlap.
+            if (index === initialExit.colliderIndex) { exitSeen = true; continue; }
+            if (intersectBox(origin, dx, dy, dz, prepared, maxDistance, 0, 0, 0,
+              undefined, undefined, sweepHalfWidth) !== null) return 0;
+            continue;
+          }
           // The widened query exists for pole-like colliders whose entire
           // footprint can hide beside the tyre. Applying it to a long fence or
           // wall changes the established navigation corridor by a pedal width
@@ -592,6 +628,8 @@ export class PlanTerrainSampler implements TerrainSampler {
             lateralX,
             lateralZ,
             effectiveSweep,
+            out?.normal === undefined ? undefined : this.obstacleNormal,
+            out?.inside === undefined ? undefined : this.obstacleFace,
           );
           if (hit !== null && (nearest === null || hit < nearest)) {
             nearest = hit;
@@ -599,12 +637,14 @@ export class PlanTerrainSampler implements TerrainSampler {
               out.distance = hit;
               out.halfExtentX = prepared.collider.halfExtents.x;
               out.halfExtentZ = prepared.collider.halfExtents.z;
+              if (out.normal !== undefined) { out.normal.x = this.obstacleNormal.x; out.normal.y = this.obstacleNormal.y; out.normal.z = this.obstacleNormal.z; }
+              if (out.inside !== undefined) { out.inside = this.obstacleFace.inside; out.colliderIndex = index; out.faceOffset = this.obstacleFace.faceOffset; }
             }
           }
         }
       }
     }
-    return nearest;
+    return initialExit === undefined ? nearest : exitSeen ? null : 0;
   }
 
   /**
@@ -776,6 +816,30 @@ function containsGroundTriangle(vertices: readonly [Vec3, Vec3, Vec3], x: number
   return !(positive && negative);
 }
 
+/** Revalidate the earned raw face and require a full-radius exit through that
+ * side. All other boxes are checked separately in the same grid traversal. */
+function validInitialExit(origin: Vec3,dx: number,dy: number,dz: number,distance: number,radius: number,
+  prepared: PreparedCollider,certificate: ObstacleInitialExit): boolean {
+  const {collider,cos,sin}=prepared,{centre:c,halfExtents:h}=collider,n=certificate.normal;
+  if (!(radius>=0) || !(certificate.slack>=0) || !Number.isFinite(certificate.faceOffset)) return false;
+  const sx=cos*(origin.x-c.x)-sin*(origin.z-c.z),sy=origin.y-c.y,sz=sin*(origin.x-c.x)+cos*(origin.z-c.z);
+  if (!(Math.abs(sx)<h.x&&Math.abs(sy)<h.y&&Math.abs(sz)<h.z)) return false;
+  const nx=cos*n.x-sin*n.z,ny=n.y,nz=sin*n.x+cos*n.z;
+  const axis=Math.abs(nx)>.999999?0:Math.abs(ny)>.999999?1:Math.abs(nz)>.999999?2:-1;
+  if(axis<0 || Math.abs(Math.abs(axis===0?nx:axis===1?ny:nz)-1)>1e-7
+    || (axis!==0&&Math.abs(nx)>1e-7) || (axis!==1&&Math.abs(ny)>1e-7) || (axis!==2&&Math.abs(nz)>1e-7))return false;
+  const offset=n.x*c.x+n.y*c.y+n.z*c.z+(axis===0?h.x:axis===1?h.y:h.z);
+  if(Math.abs(offset-certificate.faceOffset)>1e-7)return false;
+  const progress=n.x*dx+n.y*dy+n.z*dz,start=n.x*origin.x+n.y*origin.y+n.z*origin.z;
+  if(!(progress>0) || start+progress*distance<offset+radius+certificate.slack-1e-7)return false;
+  const exit=(offset+radius-start)/progress;
+  // At the recorded side's expanded face, the other two coordinates must
+  // still lie in their expanded slabs; exiting a different face is refused.
+  const ex=sx+(cos*dx-sin*dz)*exit,ey=sy+dy*exit,ez=sz+(sin*dx+cos*dz)*exit;
+  return exit>=0&&exit<=distance&&Math.abs(ex)<=h.x+radius+1e-7
+    &&Math.abs(ey)<=h.y+radius+1e-7&&Math.abs(ez)<=h.z+radius+1e-7;
+}
+
 function intersectBox(
   origin: Vec3,
   dx: number,
@@ -786,6 +850,9 @@ function intersectBox(
   lateralX = 0,
   lateralZ = 0,
   sweepHalfWidth = 0,
+  normal?: Vec3,
+  face?: ObstacleHit,
+  sphereRadius = 0,
 ): number | null {
   const { collider, cos, sin } = prepared;
   const { centre, halfExtents } = collider;
@@ -801,25 +868,59 @@ function intersectBox(
   const deltaX = cos * dx - sin * dz;
   const deltaZ = sin * dx + cos * dz;
 
+  // Ordinary controller casts ask only for the distance and carry no sphere
+  // radius. Keep that hot path on the exact pre-ragdoll slab arithmetic: face
+  // selection is observable only through the optional outputs below.
+  if (normal === undefined && face === undefined && sphereRadius === 0) {
+    const expandedHalfX = halfExtents.x
+      + sweepHalfWidth * Math.abs(cos * lateralX - sin * lateralZ);
+    const expandedHalfZ = halfExtents.z
+      + sweepHalfWidth * Math.abs(sin * lateralX + cos * lateralZ);
+
+    let enter = 0;
+    let exit = maxDistance;
+    const axes: [number, number, number][] = [
+      [startX, deltaX, expandedHalfX],
+      [startY, dy, halfExtents.y],
+      [startZ, deltaZ, expandedHalfZ],
+    ];
+    for (const [start, delta, halfExtent] of axes) {
+      if (delta === 0) {
+        if (start < -halfExtent || start > halfExtent) return null;
+        continue;
+      }
+      const inverse = 1 / delta;
+      let near = (-halfExtent - start) * inverse;
+      let far = (halfExtent - start) * inverse;
+      if (near > far) [near, far] = [far, near];
+      if (near > enter) enter = near;
+      if (far < exit) exit = far;
+      if (enter > exit) return null;
+    }
+    return enter;
+  }
+
   // A sideways line segment swept along the ray is the Minkowski sum of the
   // box and that segment. Project the segment onto the box's local axes and
   // enlarge only X/Z; its height is still the controller's chosen feeler
   // height, so mountable kerbs remain mountable.
   const expandedHalfX = halfExtents.x
-    + sweepHalfWidth * Math.abs(cos * lateralX - sin * lateralZ);
+    + sweepHalfWidth * Math.abs(cos * lateralX - sin * lateralZ) + sphereRadius;
   const expandedHalfZ = halfExtents.z
-    + sweepHalfWidth * Math.abs(sin * lateralX + cos * lateralZ);
+    + sweepHalfWidth * Math.abs(sin * lateralX + cos * lateralZ) + sphereRadius;
 
   let enter = 0;
   let exit = maxDistance;
+  let enterAxis = -1, enterSign = 0, axis = -1;
 
   const axes: [number, number, number][] = [
     [startX, deltaX, expandedHalfX],
-    [startY, dy, halfExtents.y],
+    [startY, dy, halfExtents.y + sphereRadius],
     [startZ, deltaZ, expandedHalfZ],
   ];
 
   for (const [start, delta, halfExtent] of axes) {
+    axis += 1;
     if (delta === 0) {
       // Parallel to this pair of slabs: either always inside them or never.
       if (start < -halfExtent || start > halfExtent) return null;
@@ -831,9 +932,28 @@ function intersectBox(
     let far = (halfExtent - start) * inverse;
     if (near > far) [near, far] = [far, near];
 
-    if (near > enter) enter = near;
+    if (near > enter) { enter = near; enterAxis = axis; enterSign = delta > 0 ? -1 : 1; }
     if (far < exit) exit = far;
     if (enter > exit) return null;
+  }
+
+  if (normal !== undefined || face !== undefined) {
+    if (enterAxis < 0) {
+      // Inside-origin rays keep their established zero distance. Supply the
+      // nearest outward face, with deterministic X/Y/Z tie order.
+      let nearest = Infinity;
+      for (let index = 0; index < axes.length; index += 1) { const [start, , half] = axes[index], depth = half - Math.abs(start);
+        if (depth < nearest) { nearest = depth; enterAxis = index; enterSign = start < 0 ? -1 : 1; } }
+    }
+    const nx = enterAxis === 0 ? cos * enterSign : enterAxis === 2 ? sin * enterSign : 0;
+    const ny = enterAxis === 1 ? enterSign : 0;
+    const nz = enterAxis === 0 ? -sin * enterSign : enterAxis === 2 ? cos * enterSign : 0;
+    if (normal !== undefined) { normal.x = nx; normal.y = ny; normal.z = nz; }
+    if (face !== undefined) {
+      face.inside = Math.abs(startX) < halfExtents.x && Math.abs(startY) < halfExtents.y && Math.abs(startZ) < halfExtents.z;
+      face.faceOffset = nx * centre.x + ny * centre.y + nz * centre.z
+        + (enterAxis === 0 ? halfExtents.x : enterAxis === 1 ? halfExtents.y : halfExtents.z);
+    }
   }
 
   return enter;

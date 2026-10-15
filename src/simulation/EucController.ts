@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { proposeRiderPhaseSideProjection, proposeWheelClearOfBodies, proposeWheelSideProjection, type FullRagSideProjection } from '../shared/riderSideContact.ts';
 import type { PopulationFootprint } from './population.ts';
-import { EUC, PHYSICS, SIMULATION, TERRAIN, WHEEL, POPULATION, POPULATION_CONTACT, RIDER_CONTACT, LAUNCH_PAD } from '../data/tuning.ts';
+import { EUC, PHYSICS, SIMULATION, TERRAIN, WHEEL, POPULATION, POPULATION_CONTACT, RIDER_CONTACT, RIDER_BLOCKOUT, LAUNCH_PAD } from '../data/tuning.ts';
 import { SURFACES, SURFACE_IDS } from '../data/surfaces.ts';
 import { SOBER_STYLE, type RideStyle } from '../data/rideStyles.ts';
 import type { ActionSnapshot } from '../input/actions.ts';
@@ -10,6 +10,8 @@ import type { RiderOccupancyPose } from '../shared/riderOccupancy.ts';
 import { roughnessAt } from './roughness.ts';
 import { HazardField, NO_HAZARDS } from './hazards.ts';
 import { CrashRagdoll, RAGDOLL_FLOATS } from './ragdoll.ts';
+import { ragdollInterpolationBlock } from '../shared/ragdollInterpolation.ts';
+import { interpolateRagdollJointPoles } from '../shared/ragdollBoot.ts';
 import { NO_SOFT_BODIES, SoftBodyField } from './softBodies.ts';
 import { LaunchPadField, NO_LAUNCH_PADS } from './launchPadField.ts';
 import { lateralCeilingG } from './lateralCeiling.ts';
@@ -455,6 +457,7 @@ function detachedOccupancyPose(pose: RiderOccupancyPose): RiderOccupancyPose {
     wheelCrashSpin: pose.wheelCrashSpin, wheelCrashLean: pose.wheelCrashLean, wheelCrashPop: pose.wheelCrashPop,
     ragdollBlend: pose.ragdollBlend,
     ragdoll: Object.freeze(Array.from(pose.ragdoll)),
+    ragdollJointPoles: Object.freeze(pose.ragdollJointPoles ? Array.from(pose.ragdollJointPoles) : [0,0,0,0,0,0,0,0,0,0,0,0]),
   });
 }
 
@@ -1401,6 +1404,8 @@ export interface EucPose {
    * and the render interpolation handle it as one run of numbers.
    */
   ragdoll: Float32Array;
+  /** Canonical world knee poles, left/right xyz; owned by fixed-step physics. */
+  ragdollJointPoles: Float32Array;
   /**
    * How present the rider is after a recovery, 0..1.
    *
@@ -1489,6 +1494,7 @@ export function createPose(): EucPose {
     wheelCrashPop: 0,
     ragdollBlend: 0,
     ragdoll: new Float32Array(RAGDOLL_FLOATS),
+    ragdollJointPoles: new Float32Array(12),
     recoverBlend: 1,
     tiltBack: 0,
     styleSway: 0,
@@ -1533,6 +1539,7 @@ const POSE_SCALARS: readonly (keyof EucPose)[] = Object.freeze(
  *     every frame but a crash.
  */
 export function lerpPose(from: EucPose, to: EucPose, alpha: number, out: EucPose): void {
+  const fromBlend = from.ragdollBlend, toBlend = to.ragdollBlend;
   for (const key of POSE_SCALARS) {
     const a = from[key] as number;
     const b = to[key] as number;
@@ -1541,11 +1548,19 @@ export function lerpPose(from: EucPose, to: EucPose, alpha: number, out: EucPose
 
   const blend = out.ragdollBlend;
   if (blend > 0) {
+    // An external paddle/contact knock can arm the body after the previous
+    // pose was written. Its inactive particle buffer has no meaning; mixing
+    // those zeros (or a previous crash) drags the new body toward old space.
+    const first = ragdollInterpolationBlock(fromBlend, toBlend, from.ragdoll, to.ragdoll, 0);
+    const last = ragdollInterpolationBlock(fromBlend, toBlend, from.ragdoll, to.ragdoll, 1);
     for (let index = 0; index < out.ragdoll.length; index += 1) {
-      out.ragdoll[index] = from.ragdoll[index]
-        + (to.ragdoll[index] - from.ragdoll[index]) * alpha;
+      out.ragdoll[index] = first[index] + (last[index] - first[index]) * alpha;
     }
-  }
+    const firstPole = ragdollInterpolationBlock(fromBlend, toBlend, from.ragdollJointPoles, to.ragdollJointPoles, 0);
+    const lastPole = ragdollInterpolationBlock(fromBlend, toBlend, from.ragdollJointPoles, to.ragdollJointPoles, 1);
+    interpolateRagdollJointPoles(firstPole, lastPole, alpha, out.ragdoll, out.headingY,
+      RIDER_BLOCKOUT.ragdollKneeVerticalBand, out.ragdollJointPoles);
+  } else out.ragdollJointPoles.fill(0);
 }
 
 export function copyPose(from: EucPose, to: EucPose): void {
@@ -1593,6 +1608,8 @@ export function copyPose(from: EucPose, to: EucPose): void {
   to.wheelCrashPop = from.wheelCrashPop;
   to.ragdollBlend = from.ragdollBlend;
   to.ragdoll.set(from.ragdoll);
+  if (from.ragdollBlend > 0) to.ragdollJointPoles.set(from.ragdollJointPoles);
+  else to.ragdollJointPoles.fill(0);
   to.recoverBlend = from.recoverBlend;
   to.tiltBack = from.tiltBack;
   to.styleSway = from.styleSway;
@@ -2606,6 +2623,7 @@ export class EucController {
    * around a native step it may still have to hand to the transaction.
    */
   copyMutableStateFrom(source: EucController): void {
+    const copyRagdoll = source.ragdolling || this.ragdolling;
     const from = source as unknown as Record<string, unknown>;
     const to = this as unknown as Record<string, unknown>;
     if (!stepPrimitiveFields) {
@@ -2626,7 +2644,9 @@ export class EucController {
     this.dynamicPrevious = source.dynamicPrevious ? { ...source.dynamicPrevious } : null;
     this.dynamicIntent = source.dynamicIntent ? { ...source.dynamicIntent,
       previous: { ...source.dynamicIntent.previous }, proposed: { ...source.dynamicIntent.proposed } } : null;
-    this.ragdoll.copyStateFrom(source.ragdoll);
+    // Both inactive owners are seeded afresh before their next crash. Active
+    // onset (including blend zero), recovery and rollback retain full history.
+    if (copyRagdoll) this.ragdoll.copyStateFrom(source.ragdoll);
     this.safeRing.set(source.safeRing);
   }
 
@@ -4745,7 +4765,7 @@ export class EucController {
     // wall is (2026-10-04): a body that hits someone stops at them and crumples
     // or glances off, and none of it is held or passes through them.
     if (this.ragdolling) {
-      this.ragdoll.step(dt, this.crashTime, this.x, this.z, this.sampler, this.softBodies, t, contactBodies);
+      this.ragdoll.step(dt, this.crashTime, this.x, this.z, this.sampler, this.softBodies, t, contactBodies, this.headingY);
     }
 
     // The wheel's flourish (M15): a ballistic bounce with a couple of damped
@@ -7401,8 +7421,10 @@ export class EucController {
         this.crashTime / Math.max(1e-6, t.ragdollBlendSeconds),
       );
       target.ragdoll.set(this.ragdoll.positions);
+      target.ragdollJointPoles.set(this.ragdoll.jointPoles);
     } else {
       target.ragdollBlend = 0;
+      target.ragdollJointPoles.fill(0);
     }
 
     // **The crash motion, resolved here rather than in the renderer.** Which

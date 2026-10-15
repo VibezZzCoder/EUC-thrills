@@ -27,7 +27,7 @@ function posed(controller: EucController | NativeController) {
 }
 const physicalEqual = (physical: RiderOccupancyPose, pose: RiderOccupancyPose) => {
   for (const key of Object.keys(physical) as (keyof RiderOccupancyPose)[]) {
-    if (key === 'ragdoll') assert.deepEqual(Array.from(physical.ragdoll), Array.from(pose.ragdoll));
+    if (key === 'ragdoll' || key === 'ragdollJointPoles') assert.deepEqual(Array.from(physical[key] ?? []), Array.from(pose[key] ?? []));
     else assert.equal(physical[key], pose[key], key);
   }
 };
@@ -61,6 +61,9 @@ test('refused native reactions keep full state, owned particles, Verlet future, 
     const result = react(guarded, kind); assert.equal(result, kind === 'hardKnock' ? false : undefined);
     assert.equal(requests.length, 1); assert.ok(Object.isFrozen(requests[0]) && Object.isFrozen(requests[0].previous) && Object.isFrozen(requests[0].proposed));
     assert.ok(Object.isFrozen(requests[0].previous.ragdoll) && Object.isFrozen(requests[0].proposed.ragdoll));
+    assert.ok(Object.isFrozen(requests[0].previous.ragdollJointPoles) && Object.isFrozen(requests[0].proposed.ragdollJointPoles));
+    assert.equal(requests[0].previous.ragdollJointPoles?.length, 12); assert.equal(requests[0].proposed.ragdollJointPoles?.length, 12);
+    assert.throws(() => { (requests[0].proposed.ragdollJointPoles as number[])[0] = 99; }, TypeError);
     assert.throws(() => { (requests[0].proposed as unknown as { x: number }).x = 99; }, TypeError);
     assert.deepEqual(poseOf(guarded), before); assert.deepEqual(guarded.snapshot(), state); assert.equal(guarded.discontinuitySerial, serial); assert.equal(notes.length, 0); assert.equal(token.ready, false);
     guarded.resolvePreparedStep(token); guarded.commitPreparedStep(token); untouched.step(DT, NEUTRAL_ACTIONS);

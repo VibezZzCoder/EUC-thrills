@@ -81,8 +81,18 @@ function withParticles(body: PopulationFootprint, pose: RiderOccupancyPose): Pop
   const cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2;
   return { ...body, x: body.x + cx * c + cz * s, z: body.z - cx * s + cz * c, halfWidthMetres: (maxX - minX) / 2, halfLengthMetres: (maxZ - minZ) / 2, minY, maxY };
 }
-const detached = (pose: RiderOccupancyPose): RiderOccupancyPose => ({ ...pose, ragdoll: Float64Array.from(pose.ragdoll) });
-const isSamePose = (a: RiderOccupancyPose, b: RiderOccupancyPose) => Object.keys(a).every(key => key === 'ragdoll' ? Array.from(a.ragdoll).every((v, i) => v === b.ragdoll[i]) : a[key as Exclude<keyof RiderOccupancyPose, 'ragdoll'>] === b[key as Exclude<keyof RiderOccupancyPose, 'ragdoll'>]);
+const detached = (pose: RiderOccupancyPose): RiderOccupancyPose => ({ ...pose, ragdoll: Float64Array.from(pose.ragdoll),
+  ...(pose.ragdollJointPoles === undefined ? {} : { ragdollJointPoles: Float64Array.from(pose.ragdollJointPoles) }) });
+const isSamePose = (a: RiderOccupancyPose, b: RiderOccupancyPose) => Object.keys(a).every(key => {
+  if (key === 'ragdoll' || key === 'ragdollJointPoles') {
+    const first = a[key], last = b[key];
+    if (first === undefined || last === undefined) return first === last;
+    if (first.length !== last.length) return false;
+    for (let index = 0; index < first.length; index++) if (first[index] !== last[index]) return false;
+    return true;
+  }
+  return a[key as Exclude<keyof RiderOccupancyPose, 'ragdoll' | 'ragdollJointPoles'>] === b[key as Exclude<keyof RiderOccupancyPose, 'ragdoll' | 'ragdollJointPoles'>];
+});
 export const footprintFromOccupancy = (p: RiderOccupancyPrism, velocityX = 0, velocityZ = 0): PopulationFootprint => ({ x: p.x, z: p.z, headingY: p.headingY,
   halfWidthMetres: p.halfWidth, halfLengthMetres: p.halfLength, minY: p.baseY, maxY: p.topY, velocityX, velocityZ });
 export class PopulationPhysicalCertificates {

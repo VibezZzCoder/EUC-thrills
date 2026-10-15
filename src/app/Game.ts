@@ -1390,7 +1390,7 @@ function populationBodyWithin(body: PopulationFootprint, pose: EucPose, reach: n
 function samePopulationPose(a: EucPose, b: EucPose): boolean {
   for (const key in b) {
     const left = a[key as keyof EucPose], right = b[key as keyof EucPose];
-    if (key === 'ragdoll') {
+    if (key === 'ragdoll' || key === 'ragdollJointPoles') {
       const x = left as Float32Array, y = right as Float32Array;
       if (x.length !== y.length) return false;
       for (let index = 0; index < y.length; index += 1) if (!Object.is(x[index], y[index])) return false;
@@ -1403,10 +1403,11 @@ function copyPopulationPose(from: EucPose, into: EucPose = createPose()): EucPos
   const target = into as unknown as Record<string, unknown>;
   for (const key in from) {
     const value = from[key as keyof EucPose];
-    if (key === 'ragdoll') {
+    if (key === 'ragdoll' || key === 'ragdollJointPoles') {
       const source = value as Float32Array;
-      if (into.ragdoll.length === source.length) into.ragdoll.set(source);
-      else target.ragdoll = Float32Array.from(source);
+      const existing = into[key];
+      if (existing.length === source.length) existing.set(source);
+      else target[key] = Float32Array.from(source);
     } else target[key] = value;
   }
   return into;
@@ -8324,6 +8325,7 @@ export class Game {
    */
   private placePursuer(pursuer: Pursuer, spawn: Spawn, speed: number, near: number): boolean {
     if (!pursuer.controller.reset(spawn, speed)) return false;
+    this.renderer.resetCopCrashPose(pursuer.index);
     pursuer.controller.writePose(pursuer.current);
     copyPose(pursuer.current, pursuer.previous);
     copyPose(pursuer.current, pursuer.render);
@@ -8922,6 +8924,7 @@ export class Game {
 
   private finishPursuerStep(pursuer:Pursuer,stepSeconds:number,wantsSwing:boolean,
     swingSide:Pursuer['brain']['swingSide'],couch:boolean):void {
+    if (pursuer.controller.crashed !== pursuer.view.crashed) this.renderer.resetCopCrashPose(pursuer.index);
     const {paddle}=pursuer,seat=this.seats[0],room=this.chaseRoom;
     // The paddle sees finalized physical targets, never provisional quarry poses.
     const hitRadius=this.tuning.get('CHASE.riderHitRadius');
@@ -8983,6 +8986,7 @@ export class Game {
         paddle.committed
         && victim.controller.hardKnock(paddle.headTravelX, paddle.headTravelZ)
       ) {
+        this.publishPaddleCrashEntry(victim);
         continue;
       }
       victim.controller.softKnock(this.tuning.get('CHASE.strikeSpeedCost'));
@@ -12828,6 +12832,7 @@ export class Game {
     // it happened, and only their slide afterwards is silent.
     if (collision > 0) this.audio.impact(collision, index);
     if (seat.controller.crashed !== seat.wasCrashed) {
+      seat.rig.resetCrashPose();
       // **Both ends, per seat** — one edge detector rather than one per seat
       // plus a spare in the audio layer. The start is a crash in this rider's
       // own voice (q66), which q68's distinct-characters rule is what makes
@@ -13046,6 +13051,7 @@ export class Game {
       // swung would be a physical quantity nobody chose.
       const direction = outcome.crashDirection;
       const down = direction !== null && victim.controller.hardKnock(direction.x, direction.z);
+      if (down) this.publishPaddleCrashEntry(victim);
       // **The referee is handed the fact and detects nothing** (§26.5). Only a
       // strike that actually put somebody down is a knockdown, and when one
       // did, *every* attacker whose committed paddle was in that batch earns it
@@ -13078,6 +13084,16 @@ export class Game {
         this.audio.hit();
       }
     }
+  }
+
+  /** Paddle strikes happen after the seats wrote their poses for this tick. */
+  private publishPaddleCrashEntry(seat: RiderSeat): void {
+    seat.rig.resetCrashPose();
+    seat.controller.writePose(seat.currentPose);
+    // Keep the previous upright scalar pose for the short handover, but seed
+    // its inactive block now: it must never contain zeros or another crash.
+    seat.previousPose.ragdoll.set(seat.currentPose.ragdoll);
+    seat.previousPose.ragdollJointPoles.set(seat.currentPose.ragdollJointPoles);
   }
 
   private stepContact(stepSeconds: number, seatReset: boolean): void {
@@ -15705,6 +15721,7 @@ export class Game {
    * a frame — a stutter nobody could explain, on a rider who did nothing.
    */
   private syncSeatPose(seat: RiderSeat): void {
+    seat.rig.resetCrashPose();
     seat.controller.writePose(seat.currentPose);
     copyPose(seat.currentPose, seat.previousPose);
     copyPose(seat.currentPose, seat.renderPose);

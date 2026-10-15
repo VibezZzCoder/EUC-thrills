@@ -4,10 +4,13 @@ import type { RiderOccupancyCoefficients, RiderOccupancyIntervalInput } from './
 import { abs, add, affine, c, checkInterval, clamp, clamp01, euler, fixedVec, lerp, max, min, mix, mul, mulQ, neg, oneMinus, poseDAG, rotate, squareLength, sub, sum, vadd, vec, vsub, type Primitive, type Scalar, type Vec, type Q } from './occupancyExpressions.ts';
 import { RagQuaternionFields } from './ragQuaternionFields.ts';
 import type { FoldedChainField, OccupancyTemplateDAG } from './mountedHumanTemplate.ts';
+import { ragdollInterpolationBlock } from './ragdollInterpolation.ts';
+import { ragdollLegReachMinimum } from './ragdollBoot.ts';
 function assertMounted(input: RiderOccupancyIntervalInput): void {
-  for (const p of [input.previous, input.current]) {
-    if (p.ragdoll.length < 33) throw new RangeError('Tight rag interval requires eleven particles');
-    for (let i = 0; i < 33; i += 1) if (!Number.isFinite(p.ragdoll[i])) throw new RangeError('Non-finite tight rag particle');
+  for (const endpoint of [0, 1] as const) {
+    const block = ragdollInterpolationBlock(input.previous.ragdollBlend, input.current.ragdollBlend, input.previous.ragdoll, input.current.ragdoll, endpoint);
+    if (block.length < 33) throw new RangeError('Tight rag interval requires eleven particles');
+    for (let i = 0; i < 33; i += 1) if (!Number.isFinite(block[i])) throw new RangeError('Non-finite tight rag particle');
   }
 }
 
@@ -22,6 +25,8 @@ function assertMounted(input: RiderOccupancyIntervalInput): void {
 export function buildRagHumanTemplateDAG(input: RiderOccupancyIntervalInput, from = 0, to = 1): OccupancyTemplateDAG {
   checkInterval(from, to); assertMounted(input);
   const p = poseDAG(input), k = input.coefficients, a = k.stance;
+  const first = ragdollInterpolationBlock(input.previous.ragdollBlend, input.current.ragdollBlend, input.previous.ragdoll, input.current.ragdoll, 0);
+  const last = ragdollInterpolationBlock(input.previous.ragdollBlend, input.current.ragdollBlend, input.previous.ragdoll, input.current.ragdoll, 1);
   const rag = clamp01(p.ragdollBlend), rest = clamp01(p.restFactor), crash = clamp01(p.crashBlend), active = mul(oneMinus(rest), oneMinus(crash));
   const reverse = mul(clamp01(p.reverseBlend), active), sway = mul(clamp(p.styleSway, -1, 1), active), wobble = mul(clamp01(p.wobbleFight), active);
   const groundLean = mulQ(euler(p.groundPitch, c(0), p.groundRoll), euler(p.wheelPitch, c(0), neg(p.rollAngle)));
@@ -29,9 +34,9 @@ export function buildRagHumanTemplateDAG(input: RiderOccupancyIntervalInput, fro
   const quaternionFields = new RagQuaternionFields(input), frameQ = quaternionFields.leaves('frame'), rootQ = quaternionFields.leaves('root');
   const headingInverse = euler(c(0), neg(p.headingY), c(0));
   const particle = (index: number): Vec => rotate(headingInverse, vec(
-    sub(affine(input.previous.ragdoll[index * 3], input.current.ragdoll[index * 3]), p.x),
-    sub(affine(input.previous.ragdoll[index * 3 + 1], input.current.ragdoll[index * 3 + 1]), p.y),
-    sub(affine(input.previous.ragdoll[index * 3 + 2], input.current.ragdoll[index * 3 + 2]), p.z)));
+    sub(affine(first[index * 3], last[index * 3]), p.x),
+    sub(affine(first[index * 3 + 1], last[index * 3 + 1]), p.y),
+    sub(affine(first[index * 3 + 2], last[index * 3 + 2]), p.z)));
   const mountedRoot = rotate(groundLean, vec(p.crashLateral, sub(p.suspensionOffset, p.crashDrop), p.crashForward));
   const root = mix(mountedRoot, vsub(particle(0), rotate(frameQ, fixedVec(0, k.hipHeight, 0))), rag);
   const inverse = (q: Q): Q => [neg(q[0]), neg(q[1]), neg(q[2]), q[3]];
@@ -44,6 +49,8 @@ export function buildRagHumanTemplateDAG(input: RiderOccupancyIntervalInput, fro
   const shift = sub(mul(driving, c(a.accelHipShiftMax)), mul(bracing, c(a.brakeHipShiftMax)));
   const pedalQ = euler(c(0), add(p.wobbleYaw, p.styleYaw), machineRoll);
   const bootQ = mulQ(rootQ, pedalQ), primitives: Primitive[] = [], foldedChains: FoldedChainField[] = [];
+  const bootRadius = Math.hypot(Math.max(Math.abs(k.boot.minX), Math.abs(k.boot.maxX)),
+    Math.max(Math.abs(k.boot.minY), Math.abs(k.boot.maxY)), Math.max(Math.abs(k.boot.minZ), Math.abs(k.boot.maxZ)));
   const sphere = (centre: Vec, radius: number | Scalar): void => { primitives.push({ component: 'human', kind: 'sphere', centre, radius: typeof radius === 'number' ? c(radius) : radius }); };
   const at = (q: Q, root: Vec, local: Vec): Vec => vadd(root, rotate(q, local));
   const scalar = (value: number | Scalar): Scalar => typeof value === 'number' ? c(value) : value;
@@ -56,6 +63,23 @@ export function buildRagHumanTemplateDAG(input: RiderOccupancyIntervalInput, fro
     const thresholdSquared = (upper - lower) ** 2;
     foldedChains.push({ squaredReach, thresholdSquared, primitiveIndex: primitives.length, strict });
     sphere(at(q, root, origin), radius);
+  };
+  const boot = (origin: Vec, target: Vec): void => {
+    box(k.boot, at(rootQ, root, target), bootQ);
+    foldedChains.push({ squaredReach: oneMinus(rag), thresholdSquared: 1, primitiveIndex: primitives.length, strict: true });
+    // A maximum-reach ankle lies on origin→target. The existing chain
+    // origin sphere (upper bone + skin) is larger than this boot sphere;
+    // their coordinate-wise hull therefore also contains the whole shifted boot.
+    sphere(at(rootQ, root, target), bootRadius);
+    const minimum = ragdollLegReachMinimum(a.thighLength, a.shinLength);
+    // The preceding chain's same-centre upper-bone sphere dominates this
+    // minimum-ankle sphere for the whole interval, not just sampled endpoints.
+    // Custom coefficients that cannot prove domination retain their gate.
+    if (minimum + bootRadius > a.thighLength + k.legRadius) {
+      foldedChains.push({ squaredReach: max(mul(squareLength(vsub(target, origin)), c(1 / minimum ** 2)), oneMinus(rag)), thresholdSquared: 1,
+        primitiveIndex: primitives.length, strict: true });
+      sphere(at(rootQ, root, origin), minimum + bootRadius);
+    }
   };
   const chain = (name: string, origin: Vec, target: Vec, q: Q, root: Vec, upper: number, lower: number,
     radius: number, endpointRadius: number, carry?: RiderOccupancyCoefficients['handCarry']): void => {
@@ -78,9 +102,9 @@ export function buildRagHumanTemplateDAG(input: RiderOccupancyIntervalInput, fro
     const torsoPitch = mul(mountedTorsoPitch, oneMinus(rag));
     const pelvis = vec(mul(mul(c(a.restHipShift), rest), oneMinus(rag)), lerp(lerp(sub(c(k.hipHeight), squat), c(a.restHipHeight), settled), c(k.hipHeight), rag),
       mul(mul(sub(shift, mul(attack, c(a.attackHipShift))), oneMinus(settled)), oneMinus(rag)));
-    const pelvisQ = euler(torsoPitch, add(mul(p.riderTurnTwist, oneMinus(reverse)), mul(reverse, c(a.reverseTorsoTwist))),
-      sub(sub(mul(neg(sub(p.riderRoll, p.rollAngle)), c(1 - style * k.motion.overLean)), mul(reverse, c(a.reverseShoulderRoll))),
-        mul(mul(sway, c(style)), c(k.motion.swayPelvisRoll))));
+    const pelvisQ = euler(torsoPitch, mul(add(mul(p.riderTurnTwist, oneMinus(reverse)), mul(reverse, c(a.reverseTorsoTwist))), oneMinus(rag)),
+      mul(sub(sub(mul(neg(sub(p.riderRoll, p.rollAngle)), c(1 - style * k.motion.overLean)), mul(reverse, c(a.reverseShoulderRoll))),
+        mul(mul(sway, c(style)), c(k.motion.swayPelvisRoll))), oneMinus(rag)));
     const upperQ = mulQ(rootQ, pelvisQ), upperRoot = at(rootQ, root, pelvis);
     const expansion = mul(rag, c(k.headLollExpansion));
     box({ ...k.torso, minX: sub(c(k.torso.minX), expansion), maxX: add(c(k.torso.maxX), expansion),
@@ -102,12 +126,12 @@ export function buildRagHumanTemplateDAG(input: RiderOccupancyIntervalInput, fro
         const foot = mix(footMounted, localParticle(side > 0 ? 9 : 10), rag);
         const footName = `${name}/${outboard}/${struck}`;
         chain(`${footName}/supported`, hip, foot, rootQ, root, a.thighLength, a.shinLength, k.legRadius, k.legRadius);
-        box(k.boot, at(rootQ, root, foot), bootQ);
+        boot(hip, foot);
         // Envelope mode always includes both release signs, even on the ground.
         sphere(at(rootQ, root, hip), mul(c(a.thighLength + k.legRadius), oneMinus(rag)));
         const freed = mix(foot, vec(add(pedal.x, c(side * a.oneFootOutboard)), add(pedal.y, c(a.oneFootRise)), sub(pedal.z, c(a.oneFootTrail))), mul(active, oneMinus(rag)));
         chain(`${footName}/released`, hip, freed, rootQ, root, a.thighLength, a.shinLength, k.legRadius, k.legRadius);
-        box(k.boot, at(rootQ, root, freed), bootQ);
+        boot(hip, freed);
       }
       const splay = sum(mul(add(driving, bracing), c(a.armLoadSplay)), mul(amount, c(inside ? -a.armCarveInsideTuck : a.armCarveOutsideSplay)),
         mul(air, c(a.airArmSplay)), mul(mul(wobble, c(a.wobbleArmSplay)), c(1 + style * k.motion.staggerArms)), mul(crash, c(a.crashArmSplay)),
@@ -127,6 +151,13 @@ export function buildRagHumanTemplateDAG(input: RiderOccupancyIntervalInput, fro
         const hand = mix(handMounted, rotate(inverse(pelvisQ), vsub(localParticle(side > 0 ? 7 : 8), pelvis)), rag);
         const handName = `${name}/${carriage}/${carriageRise}`;
         chain(`${handName}/arm`, shoulder, hand, upperQ, upperRoot, a.upperArmLength, a.forearmLength, k.armRadius, k.handRadius, k.handCarry);
+        const minimum = (a.upperArmLength + a.forearmLength) * a.ragdollArmMinReach;
+        const carryRadius = k.handCarry ? Math.hypot(Math.max(Math.abs(k.handCarry.axialFrom), Math.abs(k.handCarry.axialTo)), k.handCarry.radial) : 0;
+        if (minimum + Math.max(k.handRadius, carryRadius) > a.upperArmLength + k.armRadius) {
+          foldedChains.push({ squaredReach: max(mul(squareLength(vsub(hand, shoulder)), c(1 / minimum ** 2)), oneMinus(rag)), thresholdSquared: 1,
+            primitiveIndex: primitives.length, strict: true });
+          sphere(at(upperQ, upperRoot, shoulder), minimum + Math.max(k.handRadius, carryRadius));
+        }
         sphere(at(upperQ, upperRoot, hand), k.handRadius);
         folded(`${handName}/hand-extra`, shoulder, hand, upperQ, upperRoot, a.upperArmLength, a.forearmLength,
           a.upperArmLength + a.forearmLength + k.handRadius, true);

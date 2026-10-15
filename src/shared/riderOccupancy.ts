@@ -1,4 +1,8 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { ragdollInterpolationBlock } from './ragdollInterpolation.ts';
+import { interpolateRagdollJointPoles, ragdollLegReachMinimum } from './ragdollBoot.ts';
+const INACTIVE_JOINT_POLES: readonly number[] = Object.freeze([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+
 /** Plain physical occupancy. No scene graph, roster identity or player option. */
 export interface RiderOccupancyPose {
   readonly x: number; readonly y: number; readonly z: number; readonly headingY: number;
@@ -15,6 +19,8 @@ export interface RiderOccupancyPose {
   readonly crashDrop: number; readonly crashTumble: number; readonly crashRoll: number;
   readonly wheelCrashSpin: number; readonly wheelCrashLean: number; readonly wheelCrashPop: number;
   readonly ragdollBlend: number; readonly ragdoll: ArrayLike<number>;
+  /** Canonical physical joint directions; historical inputs may omit them. */
+  readonly ragdollJointPoles?: ArrayLike<number>;
 }
 
 export interface RiderOccupancyBounds {
@@ -207,6 +213,8 @@ function prism(component: 'wheel' | 'human', b: Box, pose: RiderOccupancyPose): 
  */
 function buildOccupancy(p: RiderOccupancyPose, k: RiderOccupancyCoefficients, envelope: boolean): RiderOccupancy {
   const a = k.stance, rag = clamp01(p.ragdollBlend), rest = clamp01(p.restFactor), crash = clamp01(p.crashBlend);
+  const bootRadius = rag > 0 ? Math.hypot(Math.max(Math.abs(k.boot.minX), Math.abs(k.boot.maxX)),
+    Math.max(Math.abs(k.boot.minY), Math.abs(k.boot.maxY)), Math.max(Math.abs(k.boot.minZ), Math.abs(k.boot.maxZ))) : 0;
   // Tight limbs are the mounted body's (the rag certificate keeps its spheres).
   const tight = k.tightLimbs === true && rag <= 0;
   const active = (1 - rest) * (1 - crash), reverse = clamp01(p.reverseBlend) * active;
@@ -254,9 +262,9 @@ function buildOccupancy(p: RiderOccupancyPose, k: RiderOccupancyCoefficients, en
     const pelvis: V = [a.restHipShift * rest * (1 - rag),
       lerp(lerp(k.hipHeight - squat, a.restHipHeight, settled), k.hipHeight, rag),
       (shift - attack * a.attackHipShift) * (1 - settled) * (1 - rag)];
-    const pelvisQ = euler(torsoPitch, p.riderTurnTwist * (1 - reverse) + reverse * a.reverseTorsoTwist,
-      -(p.riderRoll - p.rollAngle) * (1 - style * k.motion.overLean)
-      - reverse * a.reverseShoulderRoll - sway * style * k.motion.swayPelvisRoll);
+    const pelvisQ = euler(torsoPitch, (p.riderTurnTwist * (1 - reverse) + reverse * a.reverseTorsoTwist) * (1 - rag),
+      (-(p.riderRoll - p.rollAngle) * (1 - style * k.motion.overLean)
+      - reverse * a.reverseShoulderRoll - sway * style * k.motion.swayPelvisRoll) * (1 - rag));
     const upperQ = mul(rootQ, pelvisQ), upperRoot = add(root, rotate(rootQ, pelvis));
     const expansion = rag * k.headLollExpansion;
     transformedBox(human, { ...k.torso, minX: k.torso.minX - expansion, maxX: k.torso.maxX + expansion,
@@ -285,7 +293,15 @@ function buildOccupancy(p: RiderOccupancyPose, k: RiderOccupancyCoefficients, en
       const ragUp = rotate(inverse(mul(inverse(groundLean), rootQ)), [0, 1, 0]);
       const bend: V = rag > 0 ? normal(add([0, 0, 0.35], scale(ragUp, rag)), [0, 0, 1]) : normal([side * open, 0, 1], [0, 0, 1]);
       const end = chain(human, hip, foot, bend, rootQ, root, a.thighLength, a.shinLength, k.legRadius, k.legRadius, undefined, envelope, tight ? 0 : undefined);
-      transformedBox(human, k.boot, add(root, rotate(rootQ, end)), mul(rootQ, pedalQ));
+      if (rag <= 0) transformedBox(human, k.boot, add(root, rotate(rootQ, end)), mul(rootQ, pedalQ));
+      else {
+        // Released boots follow their shin. The ankle sphere covers every
+        // rotation and the bounded render endpoint lies on this same chord.
+        point(human, add(root, rotate(rootQ, end)), bootRadius);
+        if ((!envelope || ragdollLegReachMinimum(a.thighLength, a.shinLength) + bootRadius > a.thighLength + k.legRadius)
+          && Math.hypot(...sub(foot, hip)) < ragdollLegReachMinimum(a.thighLength, a.shinLength))
+          point(human, add(root, rotate(rootQ, hip)), ragdollLegReachMinimum(a.thighLength, a.shinLength) + bootRadius);
+      }
       // IK's knee can leave the endpoint segment. Its upper-bone sphere
       // contains every continuous released-foot amount, for either side.
       // A tight body leaves the one-foot air pose's released boot out: it may
@@ -295,7 +311,13 @@ function buildOccupancy(p: RiderOccupancyPose, k: RiderOccupancyCoefficients, en
         let freed: V = [pedal[0] + side * a.oneFootOutboard, pedal[1] + a.oneFootRise, pedal[2] - a.oneFootTrail];
         freed = mix(foot, freed, active * (1 - rag));
         const freeEnd = chain(human, hip, freed, bend, rootQ, root, a.thighLength, a.shinLength, k.legRadius, k.legRadius, undefined, envelope);
-        transformedBox(human, k.boot, add(root, rotate(rootQ, freeEnd)), mul(rootQ, pedalQ));
+        if (rag <= 0) transformedBox(human, k.boot, add(root, rotate(rootQ, freeEnd)), mul(rootQ, pedalQ));
+        else {
+          point(human, add(root, rotate(rootQ, freeEnd)), bootRadius);
+          if ((!envelope || ragdollLegReachMinimum(a.thighLength, a.shinLength) + bootRadius > a.thighLength + k.legRadius)
+            && Math.hypot(...sub(freed, hip)) < ragdollLegReachMinimum(a.thighLength, a.shinLength))
+            point(human, add(root, rotate(rootQ, hip)), ragdollLegReachMinimum(a.thighLength, a.shinLength) + bootRadius);
+        }
       }
       }
       }
@@ -331,6 +353,13 @@ function buildOccupancy(p: RiderOccupancyPose, k: RiderOccupancyCoefficients, en
         if (rag > 0) hand = mix(hand, rotate(inverse(pelvisQ), sub(localParticle(side > 0 ? 7 : 8), pelvis)), rag);
         chain(human, shoulder, hand, [0, 0, -1], upperQ, upperRoot,
           a.upperArmLength, a.forearmLength, k.armRadius, k.handRadius, k.handCarry, envelope, armLens);
+        const minimum = (a.upperArmLength + a.forearmLength) * a.ragdollArmMinReach;
+        if (rag > 0) {
+          const carryRadius = k.handCarry ? Math.hypot(Math.max(Math.abs(k.handCarry.axialFrom), Math.abs(k.handCarry.axialTo)), k.handCarry.radial) : 0;
+          if ((!envelope || minimum + Math.max(k.handRadius, carryRadius) > a.upperArmLength + k.armRadius)
+            && Math.hypot(...sub(hand, shoulder)) < minimum)
+            point(human, add(upperRoot, rotate(upperQ, shoulder)), minimum + Math.max(k.handRadius, carryRadius));
+        }
         point(human, add(upperRoot, rotate(upperQ, hand)), k.handRadius);
         if (Math.hypot(...sub(hand, shoulder)) < Math.abs(a.upperArmLength - a.forearmLength))
           point(human, add(upperRoot, rotate(upperQ, shoulder)), a.upperArmLength + a.forearmLength + k.handRadius);
@@ -362,12 +391,21 @@ export function interpolateRiderOccupancyPose(a: RiderOccupancyPose, b: RiderOcc
   t = clamp01(t);
   const result = { ...a } as { -readonly [K in keyof RiderOccupancyPose]: RiderOccupancyPose[K] };
   for (const key of Object.keys(a) as Array<keyof RiderOccupancyPose>) {
-    if (key !== 'ragdoll' && typeof a[key] === 'number' && typeof b[key] === 'number')
+    if (key !== 'ragdoll' && key !== 'ragdollJointPoles' && typeof a[key] === 'number' && typeof b[key] === 'number')
       (result as unknown as Record<string, number>)[key] = lerp(a[key] as number, b[key] as number, t);
   }
-  const ragdoll = new Float64Array(Math.max(a.ragdoll.length, b.ragdoll.length));
-  for (let index = 0; index < ragdoll.length; index += 1) ragdoll[index] = lerp(a.ragdoll[index], b.ragdoll[index], t);
+  const first = ragdollInterpolationBlock(a.ragdollBlend, b.ragdollBlend, a.ragdoll, b.ragdoll, 0);
+  const last = ragdollInterpolationBlock(a.ragdollBlend, b.ragdollBlend, a.ragdoll, b.ragdoll, 1);
+  const ragdoll = new Float64Array(Math.max(first.length, last.length));
+  for (let index = 0; index < ragdoll.length; index += 1) ragdoll[index] = lerp(first[index], last[index], t);
   result.ragdoll = ragdoll;
+  const poles = new Float64Array(12);
+  if (result.ragdollBlend > 0) {
+    const firstPole = ragdollInterpolationBlock(a.ragdollBlend, b.ragdollBlend, a.ragdollJointPoles ?? INACTIVE_JOINT_POLES, b.ragdollJointPoles ?? INACTIVE_JOINT_POLES, 0);
+    const lastPole = ragdollInterpolationBlock(a.ragdollBlend, b.ragdollBlend, a.ragdollJointPoles ?? INACTIVE_JOINT_POLES, b.ragdollJointPoles ?? INACTIVE_JOINT_POLES, 1);
+    interpolateRagdollJointPoles(firstPole, lastPole, t, ragdoll, result.headingY, 0, poles);
+  }
+  result.ragdollJointPoles = poles;
   return result;
 }
 
@@ -403,8 +441,14 @@ function frozenCopy<T>(value: T): T {
 export function createRiderOccupancyTrajectory(previous: RiderOccupancyPose, current: RiderOccupancyPose,
   coefficients: RiderOccupancyCoefficients): RiderOccupancyTrajectory {
   // Detach caller-owned pose arrays. A later writePose may reuse both buffers.
-  const a = frozenCopy({ ...previous, ragdoll: Array.from(previous.ragdoll) });
-  const b = frozenCopy({ ...current, ragdoll: Array.from(current.ragdoll) });
+  const first = ragdollInterpolationBlock(previous.ragdollBlend, current.ragdollBlend, previous.ragdoll, current.ragdoll, 0);
+  const last = ragdollInterpolationBlock(previous.ragdollBlend, current.ragdollBlend, previous.ragdoll, current.ragdoll, 1);
+  const firstPole = ragdollInterpolationBlock(previous.ragdollBlend, current.ragdollBlend,
+    previous.ragdollJointPoles ?? INACTIVE_JOINT_POLES, current.ragdollJointPoles ?? INACTIVE_JOINT_POLES, 0);
+  const lastPole = ragdollInterpolationBlock(previous.ragdollBlend, current.ragdollBlend,
+    previous.ragdollJointPoles ?? INACTIVE_JOINT_POLES, current.ragdollJointPoles ?? INACTIVE_JOINT_POLES, 1);
+  const a = frozenCopy({ ...previous, ragdoll: Array.from(first), ragdollJointPoles: Array.from(firstPole) });
+  const b = frozenCopy({ ...current, ragdoll: Array.from(last), ragdollJointPoles: Array.from(lastPole) });
   coefficients = frozenCopy(coefficients);
   const intervalInput = Object.freeze({ previous: a, current: b, coefficients });
   const from = buildRiderOccupancy(a, coefficients), to = buildRiderOccupancy(b, coefficients);

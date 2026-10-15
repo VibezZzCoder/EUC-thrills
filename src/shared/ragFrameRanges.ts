@@ -2,6 +2,7 @@
 /** Interval bounds for the live helper's possibly nonorthogonal particle frame. */
 import type { RiderOccupancyIntervalInput } from './riderOccupancy.ts';
 import type { Range } from './occupancyExpressions.ts';
+import { ragdollInterpolationBlock } from './ragdollInterpolation.ts';
 
 type RV = readonly [Range, Range, Range];
 const single = (value: number): Range => ({ lo: value, hi: value });
@@ -80,7 +81,7 @@ function quaternionRange(x: RV, y: RV, z: RV): { norm: number; ranges: readonly 
   return { norm: Math.min(2, Math.max(...outcomes.map(q => Math.hypot(...q.map(maximumAbsolute))))), ranges: all as unknown as readonly [Range, Range, Range, Range], branches: outcomes as unknown as readonly QuaternionRanges[] };
 }
 
-export function poseRange(input: RiderOccupancyIntervalInput, key: Exclude<keyof typeof input.previous, 'ragdoll'>, from: number, to: number): Range {
+export function poseRange(input: RiderOccupancyIntervalInput, key: Exclude<keyof typeof input.previous, 'ragdoll' | 'ragdollJointPoles'>, from: number, to: number): Range {
   const first = input.previous[key], slope = input.current[key] - first, a = first + slope * from, b = first + slope * to;
   return { lo: Math.min(a, b), hi: Math.max(a, b) };
 }
@@ -111,19 +112,21 @@ function rotateRange(q: QuaternionRanges, p: RV): RV {
   return addV(p, addV(scaleV(t, q[3]), cross(xyz, t)));
 }
 function groundRanges(input: RiderOccupancyIntervalInput, from: number, to: number): QuaternionRanges {
-  const p = (key: Exclude<keyof typeof input.previous, 'ragdoll'>) => poseRange(input, key, from, to);
+  const p = (key: Exclude<keyof typeof input.previous, 'ragdoll' | 'ragdollJointPoles'>) => poseRange(input, key, from, to);
   return multiplyQ(eulerRanges(p('groundPitch'), single(0), p('groundRoll')), eulerRanges(p('wheelPitch'), single(0), negative(p('rollAngle'))));
 }
 export function mountedQuaternionRanges(input: RiderOccupancyIntervalInput, from: number, to: number): QuaternionRanges {
   return multiplyQ(groundRanges(input, from, to), eulerRanges(poseRange(input, 'crashTumble', from, to), single(0), poseRange(input, 'crashRoll', from, to)));
 }
 export function boundRagFrameRanges(input: RiderOccupancyIntervalInput, from = 0, to = 1): RagFrameRangeBound {
+  const firstRag = ragdollInterpolationBlock(input.previous.ragdollBlend, input.current.ragdollBlend, input.previous.ragdoll, input.current.ragdoll, 0);
+  const lastRag = ragdollInterpolationBlock(input.previous.ragdollBlend, input.current.ragdollBlend, input.previous.ragdoll, input.current.ragdoll, 1);
   const ground = groundRanges(input, from, to), headingInverse = eulerRanges(single(0), negative(poseRange(input, 'headingY', from, to)), single(0));
   // Difference trajectories are affine before rotation. World translation
   // cancels algebraically; equal particle trajectories remain exact zero.
   const difference = (a: number, b: number): RV => [0, 1, 2].map(axis => {
-    const first = input.previous.ragdoll[a * 3 + axis] - input.previous.ragdoll[b * 3 + axis];
-    const last = input.current.ragdoll[a * 3 + axis] - input.current.ragdoll[b * 3 + axis], slope = last - first;
+    const first = firstRag[a * 3 + axis] - firstRag[b * 3 + axis];
+    const last = lastRag[a * 3 + axis] - lastRag[b * 3 + axis], slope = last - first;
     const x = first + slope * from, y = first + slope * to; return { lo: Math.min(x, y), hi: Math.max(x, y) };
   }) as unknown as RV;
   const unit = (axis: number): RV => [0, 1, 2].map(i => single(Number(axis === i))) as unknown as RV;

@@ -60,11 +60,11 @@ export function rotate(q: Q, p: Vec): Vec {
   return vadd(p, vadd(scale(t, q[3]), cross(xyz, t)));
 }
 
-export type PoseDAG = { readonly [K in Exclude<keyof RiderOccupancyPose, 'ragdoll'>]: Scalar };
+export type PoseDAG = { readonly [K in Exclude<keyof RiderOccupancyPose, 'ragdoll' | 'ragdollJointPoles'>]: Scalar };
 export function poseDAG(input: RiderOccupancyIntervalInput): PoseDAG {
   const result: Record<string, Scalar> = {};
   for (const key of Object.keys(input.previous) as Array<keyof RiderOccupancyPose>) {
-    if (key === 'ragdoll') continue;
+    if (key === 'ragdoll' || key === 'ragdollJointPoles') continue;
     const first = input.previous[key], last = input.current[key];
     if (!Number.isFinite(first) || !Number.isFinite(last)) throw new RangeError(`Non-finite occupancy pose ${key}`);
     result[key] = affine(first, last);

@@ -104,6 +104,8 @@ export interface RidingRig {
   readonly euc: BlockoutEUC;
   readonly rider: PlaceholderRider;
   apply(pose: EucPose): void;
+  /** The fixed-step composition root clears crash pose history independently of drawing. */
+  resetCrashPose(): void;
   /**
    * Drive the machine's own status light (M6).
    *
@@ -248,6 +250,10 @@ export function createRidingRig(
   const ragOffset = new THREE.Vector3();
   const ragRootPos = new THREE.Vector3();
   const ragRootInverse = new THREE.Quaternion();
+  const ragWorldRootInverse = new THREE.Quaternion();
+  const ragParentInverse = new THREE.Quaternion();
+  const ragBootQuaternion = new THREE.Quaternion();
+
   /** Read particle `index` from the pose block into lean-pivot-local space. */
   const ragLocal = (pose: EucPose, index: number, out: THREE.Vector3): THREE.Vector3 => {
     const base = index * 3;
@@ -262,6 +268,7 @@ export function createRidingRig(
     leanPivot,
     euc,
     rider,
+    resetCrashPose(): void { rider.resetCrashPose(); },
 
     apply(pose: EucPose): void {
       group.position.set(pose.x, pose.y, pose.z);
@@ -379,10 +386,18 @@ export function createRidingRig(
           .sub(rider.root.position).applyQuaternion(ragRootInverse);
         ragLocal(pose, RD_FOOT_R, stance.ragdollFootR)
           .sub(rider.root.position).applyQuaternion(ragRootInverse);
-        // World up in the root's frame, for the ground-aware knee bend. The
-        // lean pivot's tilt is a few degrees at most during a crash, so its
-        // omission here costs less than the blockout's own tolerance.
-        stance.ragdollUp.set(0, 1, 0).applyQuaternion(ragRootInverse);
+        // Remove heading, ground/wheel tilt AND the blended root before the
+        // rider removes its two shin joints. Neither pedal nor knee pole can
+        // leak into the shared released boot frame.
+        ragWorldRootInverse.copy(ragRootInverse)
+          .multiply(ragParentInverse.setFromRotationMatrix(ragLean));
+        stance.ragdollJointPoles.set(pose.ragdollJointPoles);
+        stance.ragdollHeadingY = pose.headingY;
+        stance.ragdollRootWorldQuaternion.copy(ragWorldRootInverse).invert();
+        stance.ragdollRootWorldPosition.copy(rider.root.position).applyMatrix4(ragStage.copy(ragLean).invert());
+        stance.ragdollForwardWorld.copy(ragForward).applyQuaternion(ragBootQuaternion.copy(ragParentInverse).invert());
+        // Complete world up for the tiny unequal-bone contact fallback.
+        stance.ragdollUp.set(0, 1, 0).applyQuaternion(ragWorldRootInverse);
       }
 
       // The tyre's own axis already lies along X (see euc.ts), so this is a
@@ -431,9 +446,9 @@ export function createRidingRig(
       const styleSway = clamp01(1 - clamp01(pose.restFactor))
         * (1 - clamp01(pose.crashBlend))
         * Math.max(-1, Math.min(1, pose.styleSway));
-      rider.pelvis.rotation.z = -(pose.riderRoll - pose.rollAngle) * (1 - motion.overLean)
+      rider.pelvis.rotation.z = (-(pose.riderRoll - pose.rollAngle) * (1 - motion.overLean)
         - reverseStance * RIDER_BLOCKOUT.reverseShoulderRoll
-        - styleSway * motion.swayPelvisRoll;
+        - styleSway * motion.swayPelvisRoll) * (1 - rag);
       // The rider root rides the sprung mass, the ground does not, so the
       // ground plane sits at minus the suspension offset in the root's frame —
       // which is where the resting boot has to land.

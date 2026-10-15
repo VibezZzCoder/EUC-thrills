@@ -5,7 +5,7 @@ import type { Aabb } from './occupancyExpressions.ts';
 
 const magnitude = (a: number, b: number) => Math.max(Math.abs(a), Math.abs(b));
 const cornerNorm = (b: RiderOccupancyCoefficients['torso']) => Math.hypot(magnitude(b.minX, b.maxX), magnitude(b.minY, b.maxY), magnitude(b.minZ, b.maxZ));
-const poseMagnitude = (input: RiderOccupancyIntervalInput, key: Exclude<keyof RiderOccupancyPose, 'ragdoll'>) => magnitude(input.previous[key], input.current[key]);
+const poseMagnitude = (input: RiderOccupancyIntervalInput, key: Exclude<keyof RiderOccupancyPose, 'ragdoll' | 'ragdollJointPoles'>) => magnitude(input.previous[key], input.current[key]);
 function aroundBase(input: RiderOccupancyIntervalInput, radius: number): Aabb {
   // Each local coordinate of every primitive lies in [-radius,+radius]. The
   // helper's prism corners can combine different primitive extrema. A heading

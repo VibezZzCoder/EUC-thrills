@@ -1838,6 +1838,8 @@ export class GameRenderer {
   applyCop(pose: EucPose, head: THREE.Vector3 | null, angle: number, blend: number): void {
     this.applyPackmate(0, pose, head, angle, blend);
   }
+  /** Fixed-step placement/crash boundaries clear a cop's transported poles before any draw. */
+  resetCopCrashPose(index = 0): void { this.cops[index]?.resetCrashPose(); }
 
   /**
    * Pose one trim of the pack — M39 Part P (§2h). Index 0 is the tail

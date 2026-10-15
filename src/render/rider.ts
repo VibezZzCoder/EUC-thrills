@@ -1,5 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
+import { solveRagdollLeg, solveRagdollLimb } from '../shared/ragdollBoot.ts';
 import { joinRiderSurface } from './riderJointSurface.ts';
 import { drapeRiderHem } from './riderClothDrape.ts';
 import { EUC, RIDER, RIDER_BLOCKOUT, WHEEL } from '../data/tuning.ts';
@@ -180,6 +181,12 @@ export interface StanceInput {
   readonly ragdollHandR: THREE.Vector3;
   readonly ragdollFootL: THREE.Vector3;
   readonly ragdollFootR: THREE.Vector3;
+  /** Published physical knee poles and complete presented root frame. */
+  readonly ragdollJointPoles: Float32Array;
+  readonly ragdollRootWorldPosition: THREE.Vector3;
+  readonly ragdollRootWorldQuaternion: THREE.Quaternion;
+  readonly ragdollForwardWorld: THREE.Vector3;
+  ragdollHeadingY: number;
   /**
    * World up, in the rider root's own frame (M15). The knees bend toward
    * this-plus-forward while the particles own the body, so a rider lying
@@ -314,6 +321,11 @@ export function createStanceInput(): StanceInput {
     ragdollHandR: new THREE.Vector3(),
     ragdollFootL: new THREE.Vector3(),
     ragdollFootR: new THREE.Vector3(),
+    ragdollJointPoles: new Float32Array(12),
+    ragdollRootWorldPosition: new THREE.Vector3(),
+    ragdollRootWorldQuaternion: new THREE.Quaternion(),
+    ragdollForwardWorld: new THREE.Vector3(0,0,1),
+    ragdollHeadingY: 0,
     ragdollUp: new THREE.Vector3(0, 1, 0),
     reverse: 0,
     swingAngle: 0,
@@ -361,6 +373,8 @@ export interface PlaceholderRider {
    * boots planted through a carve, a crouch, and a whole flight.
    */
   applyStanceReaction(stance: StanceInput): void;
+  /** Clear transported crash poles at fixed-step crash/reset/world boundaries. */
+  resetCrashPose(): void;
   dispose(): void;
 }
 
@@ -372,6 +386,7 @@ interface Chain {
   readonly lowerLength: number;
   /** Which way the joint bulges: forward for knees, backward for elbows. */
   readonly bendToward: THREE.Vector3;
+
 }
 
 const DOWN = new THREE.Vector3(0, -1, 0);
@@ -491,7 +506,28 @@ const SOLVE_INVERSE = new THREE.Quaternion();
 // Ragdoll scratch (M15): root-local targets re-expressed per joint frame.
 const RAG_TARGET = new THREE.Vector3();
 const SWING_TARGET = new THREE.Vector3();
-const RAG_INVERSE = new THREE.Quaternion();
+const RAG_ANKLE = new THREE.Quaternion();
+const RAG_LOCAL = new THREE.Quaternion();
+const RAG_LEG_HIP = new THREE.Vector3();
+const RAG_LEG_FOOT = new THREE.Vector3();
+const RAG_ROOT_INVERSE = new THREE.Quaternion();
+const RAG_PELVIS_LOCAL_INVERSE = new THREE.Quaternion();
+const RAG_PELVIS_WORLD = new THREE.Quaternion();
+const RAG_PELVIS_WORLD_INVERSE = new THREE.Quaternion();
+const RAG_PELVIS_POSITION = new THREE.Vector3();
+const RAG_LEG_SOLVE = new Float64Array(36);
+
+function writeRagLegBasis(at: number, q: THREE.Quaternion): void {
+  // The standard rotation-matrix conversion reads the shared orthonormal
+  // columns directly; no temporary Matrix4 or scene joint is mutated.
+  const m11=RAG_LEG_SOLVE[at],m12=RAG_LEG_SOLVE[at+3],m13=RAG_LEG_SOLVE[at+6];
+  const m21=RAG_LEG_SOLVE[at+1],m22=RAG_LEG_SOLVE[at+4],m23=RAG_LEG_SOLVE[at+7];
+  const m31=RAG_LEG_SOLVE[at+2],m32=RAG_LEG_SOLVE[at+5],m33=RAG_LEG_SOLVE[at+8],trace=m11+m22+m33;
+  if(trace>0){const s=.5/Math.sqrt(trace+1);q.set((m32-m23)*s,(m13-m31)*s,(m21-m12)*s,.25/s);}
+  else if(m11>m22&&m11>m33){const s=2*Math.sqrt(1+m11-m22-m33);q.set(.25*s,(m12+m21)/s,(m13+m31)/s,(m32-m23)/s);}
+  else if(m22>m33){const s=2*Math.sqrt(1+m22-m11-m33);q.set((m12+m21)/s,.25*s,(m23+m32)/s,(m13-m31)/s);}
+  else{const s=2*Math.sqrt(1+m33-m11-m22);q.set((m13+m31)/s,(m23+m32)/s,.25*s,(m21-m12)/s);}
+}
 
 function solveChain(
   chain: Chain,
@@ -1304,6 +1340,37 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
   const restAnkleTarget = new THREE.Vector3();
   let lastRest = 0;
 
+  // Full rag replaces the ordinary targets outright. The shared solvers and
+  // final quaternion publication are identical to the partial handover path.
+  function applyRagdollLeg(leg: ArticulatedLeg, stance: StanceInput, rag: number): void {
+    RAG_LEG_HIP.copy(leg.hip.position).applyQuaternion(stance.ragdollRootWorldQuaternion).add(stance.ragdollRootWorldPosition);
+    RAG_LEG_FOOT.copy(restAnkleTarget).applyQuaternion(stance.ragdollRootWorldQuaternion).add(stance.ragdollRootWorldPosition);
+    solveRagdollLeg(RAG_LEG_HIP.x,RAG_LEG_HIP.y,RAG_LEG_HIP.z,RAG_LEG_FOOT.x,RAG_LEG_FOOT.y,RAG_LEG_FOOT.z,
+      stance.ragdollForwardWorld.x,stance.ragdollForwardWorld.z,stance.ragdollHeadingY,RIDER_BLOCKOUT,RAG_LEG_SOLVE,
+      stance.ragdollJointPoles,leg.side>0?0:3);
+    writeRagLegBasis(6,reactionUpper); writeRagLegBasis(15,reactionLower); writeRagLegBasis(24,RAG_ANKLE);
+    leg.hip.quaternion.copy(RAG_LOCAL.copy(RAG_ROOT_INVERSE).multiply(reactionUpper));
+    leg.knee.quaternion.copy(RAG_LOCAL.copy(reactionUpper).invert().multiply(reactionLower));
+    // Both ends of the crossfade are in the same solved shin frame.
+    RAG_ANKLE.premultiply(SOLVE_INVERSE.copy(reactionLower).invert());
+    if (rag === 1) leg.ankle.quaternion.copy(RAG_ANKLE);
+    else leg.ankle.quaternion.copy(RAG_LOCAL.copy(SOLVE_INVERSE).multiply(stance.ragdollRootWorldQuaternion).multiply(pedalReactionQuaternion)
+      .slerp(RAG_ANKLE,rag));
+  }
+  function applyRagdollArm(arm: ArticulatedArm, stance: StanceInput): void {
+    RAG_LEG_HIP.copy(RAG_PELVIS_POSITION);
+    RAG_LEG_FOOT.copy(arm.target).applyQuaternion(RAG_PELVIS_WORLD).add(RAG_LEG_HIP);
+    RAG_LEG_HIP.add(RAG_TARGET.copy(arm.shoulder.position).applyQuaternion(RAG_PELVIS_WORLD));
+    solveRagdollLimb(RAG_LEG_HIP.x,RAG_LEG_HIP.y,RAG_LEG_HIP.z,RAG_LEG_FOOT.x,RAG_LEG_FOOT.y,RAG_LEG_FOOT.z,
+      stance.ragdollForwardWorld.x,stance.ragdollForwardWorld.z,stance.ragdollHeadingY,
+      RIDER_BLOCKOUT.upperArmLength,RIDER_BLOCKOUT.forearmLength,RIDER_BLOCKOUT.ragdollArmContactMinReach,
+      RIDER_BLOCKOUT.upperArmLength+RIDER_BLOCKOUT.forearmLength-1e-6,RIDER_BLOCKOUT.ragdollKneeVerticalBand,
+      RAG_LEG_SOLVE,stance.ragdollJointPoles,arm.side>0?6:9);
+    writeRagLegBasis(6,reactionUpper);writeRagLegBasis(15,reactionLower);
+    arm.shoulder.quaternion.copy(RAG_LOCAL.copy(RAG_PELVIS_WORLD_INVERSE).multiply(reactionUpper));
+    arm.elbow.quaternion.copy(RAG_LOCAL.copy(reactionUpper).invert().multiply(reactionLower));
+  }
+
   if (rightGrip === null) throw new Error('the rider was built without a right grip');
   const grip = rightGrip;
   for (const updateSurface of surfaceUpdates) updateSurface();
@@ -1313,6 +1380,8 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     pelvis,
     neck,
     grip,
+    // Crash poles are now canonical fixed-step pose data, not rig history.
+    resetCrashPose(): void {},
     applyStanceReaction(stance: StanceInput): void {
       const { rollAngle, riderPitch, lookYaw, groundY } = stance;
       const amount = Math.min(1, Math.abs(rollAngle) / RIDER_BLOCKOUT.carveReactionFullRoll);
@@ -1537,9 +1606,22 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       // yaw) while the legs stay square on their pedals — the twist is
       // entirely above the hips, which is what separates a rider turning to
       // look from a statue rotated on its base.
-      pelvis.rotation.y = stance.turnTwist * (1 - reverse)
-        + reverse * RIDER_BLOCKOUT.reverseTorsoTwist;
+      pelvis.rotation.y = (stance.turnTwist * (1 - reverse)
+        + reverse * RIDER_BLOCKOUT.reverseTorsoTwist) * (1 - rag);
+      if (ragActive) {
+        RAG_ROOT_INVERSE.copy(stance.ragdollRootWorldQuaternion).invert();
+        RAG_PELVIS_LOCAL_INVERSE.copy(pelvis.quaternion).invert();
+        RAG_PELVIS_WORLD.copy(stance.ragdollRootWorldQuaternion).multiply(pelvis.quaternion);
+        RAG_PELVIS_WORLD_INVERSE.copy(RAG_PELVIS_WORLD).invert();
+        RAG_PELVIS_POSITION.copy(pelvis.position).applyQuaternion(stance.ragdollRootWorldQuaternion).add(stance.ragdollRootWorldPosition);
+      }
       for (const leg of legs) {
+        if (rag === 1) {
+          leg.lastDrop = NaN; // force one ordinary solve after full-rag exit
+          leg.hip.position.set(leg.side * hipHalfWidth,RIDER.hipHeight,0);
+          restAnkleTarget.copy(leg.side > 0 ? stance.ragdollFootL : stance.ragdollFootR);
+          applyRagdollLeg(leg,stance,rag); continue;
+        }
         const inside = insideSide !== 0 && Math.sign(leg.side) === insideSide;
         const outside = insideSide !== 0 && Math.sign(leg.side) === -insideSide;
         const drop = squat
@@ -1652,25 +1734,23 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
           leg.hip.position.z *= 1 - rag;
           restAnkleTarget.lerp(leg.side > 0 ? stance.ragdollFootL : stance.ragdollFootR, rag);
         }
+        if (ragActive) {
+          applyRagdollLeg(leg,stance,rag);
+          continue;
+        }
         solveChain({
           origin: leg.hip.position,
           target: restAnkleTarget,
           upperLength: RIDER_BLOCKOUT.thighLength,
           lowerLength: RIDER_BLOCKOUT.shinLength,
-          // The inside knee relaxes outward toward the apex; the outside leg
-          // keeps its forward bend, pressed against the wheel. A ragdolled
-          // leg bends toward forward-plus-sky instead — see `ragdollUp`.
-          bendToward: ragActive
-            ? bendScratch.copy(FORWARD).multiplyScalar(0.35)
-              .addScaledVector(stance.ragdollUp, rag).normalize()
-            : open > 0
-              ? bendScratch.set(Math.sign(leg.side) * open, 0, 1).normalize()
-              : FORWARD,
+          bendToward: open > 0 ? bendScratch.set(Math.sign(leg.side) * open, 0, 1).normalize() : FORWARD,
         }, reactionUpper, reactionLower);
         leg.hip.quaternion.copy(reactionUpper);
         leg.knee.quaternion.copy(reactionLower);
-        leg.ankle.quaternion.copy(reactionUpper).multiply(reactionLower).invert()
+        SOLVE_INVERSE.copy(reactionUpper).multiply(reactionLower).invert()
           .multiply(pedalReactionQuaternion);
+        leg.ankle.quaternion.copy(SOLVE_INVERSE);
+
       }
 
       // -- Arms: balance, never steering (motion reference 23) ---------------
@@ -1716,6 +1796,13 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
         * (1 - Math.min(1, 2 * reverse));
       const carry = clamp01(stance.carry);
       for (const arm of arms) {
+        if (rag === 1) {
+          arm.lastSplay = NaN;
+          arm.hand.rotation.y = 0;
+          arm.target.copy(arm.side > 0 ? stance.ragdollHandL : stance.ragdollHandR)
+            .sub(pelvis.position).applyQuaternion(RAG_PELVIS_LOCAL_INVERSE);
+          applyRagdollArm(arm,stance); continue;
+        }
         const inside = insideSide !== 0 && Math.sign(arm.side) === insideSide;
         const splay = (driving + bracing) * RIDER_BLOCKOUT.armLoadSplay
           + amount * (inside
@@ -1836,11 +1923,14 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
         if (ragActive) {
           // The hand particle arrives in the root's frame; the arm chain
           // solves in the pelvis's, so re-express it there before blending.
-          RAG_INVERSE.copy(pelvis.quaternion).invert();
           RAG_TARGET.copy(arm.side > 0 ? stance.ragdollHandL : stance.ragdollHandR)
             .sub(pelvis.position)
-            .applyQuaternion(RAG_INVERSE);
+            .applyQuaternion(RAG_PELVIS_LOCAL_INVERSE);
           arm.target.lerp(RAG_TARGET, rag);
+        }
+        if (ragActive) {
+          applyRagdollArm(arm,stance);
+          continue;
         }
         solveChain({
           origin: arm.shoulder.position,
@@ -1972,11 +2062,11 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
           0,
         );
         HAIR_TARGET.setFromEuler(HAIR_EULER);
-        HAIR_INVERSE.copy(neck.quaternion).invert();
-        hairSway.quaternion.copy(HAIR_INVERSE).multiply(HAIR_TARGET);
+        HAIR_INVERSE.copy(neck.quaternion).invert().multiply(HAIR_TARGET);
         // The ragdoll owns the body outright; the hair goes back to hanging
         // off the joint it is parented to and lets the particles carry it.
-        if (rag > 0) hairSway.quaternion.slerp(HAIR_REST.identity(), rag);
+        if (rag > 0) HAIR_INVERSE.slerp(HAIR_REST.identity(), rag);
+        hairSway.quaternion.copy(HAIR_INVERSE);
         // And a little back off the shoulder blades as it folds: rotation
         // alone pivots about the nape, which clears the tips and not the
         // roots, and the roots are what press into the yoke of the suit.
@@ -1994,10 +2084,9 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       // `neck.rotation.z` has no other owner; it is restored to zero the
       // frame the blend ends, because this branch runs every frame.
       if (ragActive) {
-        RAG_INVERSE.copy(pelvis.quaternion).invert();
         RAG_TARGET.copy(stance.ragdollHead)
           .sub(pelvis.position)
-          .applyQuaternion(RAG_INVERSE);
+          .applyQuaternion(RAG_PELVIS_LOCAL_INVERSE);
         const towardY = Math.max(0.08, RAG_TARGET.y - shoulderY);
         neck.rotation.x = lerp(neck.rotation.x, Math.atan2(RAG_TARGET.z, towardY), rag);
         neck.rotation.y *= 1 - rag;

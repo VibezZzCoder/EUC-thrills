@@ -56,9 +56,9 @@ export interface PopulationPhysicalCommit {
 }
 const belongsTo = (reservation: PopulationReservation, id: string) => reservation.id === id || reservation.id.startsWith(`${id}/`);
 const samePose = (a: EucPose, b: EucPose): boolean => (Object.keys(a) as (keyof EucPose)[])
-  .every(key => key === 'ragdoll' ? a.ragdoll.length === b.ragdoll.length && a.ragdoll.every((value, index) => Object.is(value, b.ragdoll[index]))
+  .every(key => key === 'ragdoll' || key === 'ragdollJointPoles' ? a[key].length === b[key].length && a[key].every((value, index) => Object.is(value, b[key][index]))
     : Object.is(a[key], b[key]));
-const posed = (pose: EucPose): EucPose => ({ ...pose, ragdoll: Float32Array.from(pose.ragdoll) });
+const posed = (pose: EucPose): EucPose => ({ ...pose, ragdoll: Float32Array.from(pose.ragdoll), ragdollJointPoles: Float32Array.from(pose.ragdollJointPoles) });
 
 /**
  * A moving candidate's proof tables, kept per controller into the next fixed

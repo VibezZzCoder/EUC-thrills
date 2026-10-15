@@ -2,10 +2,12 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { EucController, createPose, type EucPose } from './EucController.ts';
-import { CrashRagdoll } from './ragdoll.ts';
+import { CrashRagdoll, RD_HEAD, RD_HAND_R } from './ragdoll.ts';
 import { NEUTRAL_ACTIONS } from '../input/actions.ts';
-import { EUC, POPULATION_OCCUPANT, RIDER_CONTACT } from '../data/tuning.ts';
+import { EUC, POPULATION_OCCUPANT, RAGDOLL_BOOT_GROUND_BOX, RAGDOLL_HAND_GROUND_BOX, RIDER_BLOCKOUT, RIDER_CONTACT, RIDER_OCCUPANCY } from '../data/tuning.ts';
 import { buildRiderOccupancyEnvelope } from '../shared/riderOccupancy.ts';
+import { solveRagdollLeg, solveRagdollLimb } from '../shared/ragdollBoot.ts';
+import { contactCapsuleOverlapsBox, contactOrientedBoxOverlaps } from '../shared/ragdollContact.ts';
 import { ragDynamicObstacleSampler } from './populationRagObstacleSampler.ts';
 import type { TerrainSampler } from './world.ts';
 import type { PopulationFootprint } from './population.ts';
@@ -86,17 +88,58 @@ test('common partial phase correction refuses authored wheel solids and changed 
 test('unheld genuine partial-rag step at actual particle-ray actor proximity retains ORIGINAL native sampler and byte-identical pose/history', () => {
   const candidate = new EucController(flat), native = new EucController(flat);
   for (const value of [candidate, native]) { value.reset(undefined, 12); assert.equal(value.hardKnock(3, 0), true); }
-  const nativeRag = ragOf(native), initial = Float64Array.from(nativeRag.positions); native.step(DT, NEUTRAL_ACTIONS);
+  const nativeRag = ragOf(native), initial = Float64Array.from(nativeRag.positions),
+    firstWheel = buildRiderOccupancyEnvelope(poseOf(native), RIDER_CONTACT).wheel;
+  native.step(DT, NEUTRAL_ACTIONS);
+  const nextWheel = buildRiderOccupancyEnvelope(poseOf(native), RIDER_CONTACT).wheel;
   assert.ok(poseOf(native).ragdollBlend < 1); let index = 0, travel = 0;
-  for (let part = 0; part < 11; part += 1) { const length = Math.hypot(nativeRag.positions[part * 3] - initial[part * 3], nativeRag.positions[part * 3 + 2] - initial[part * 3 + 2]);
+  for (let part = 0; part < 11; part += 1) {
+    // This pin isolates the rag's sampler. A low particle's tiny test actor
+    // also hit the independently constrained wheel after the trunk repair.
+    // The old longest ray selected a wrist whose real forearm now overlaps
+    // this actor. The head ray retains the historical initial-point egress
+    // control and genuinely clears all four finite limb geometries below.
+    if (part !== RD_HEAD) continue;
+    if (Math.min(initial[part * 3 + 1], nativeRag.positions[part * 3 + 1]) - .2
+      <= Math.max(firstWheel.topY, nextWheel.topY)) continue;
+    const length = Math.hypot(nativeRag.positions[part * 3] - initial[part * 3], nativeRag.positions[part * 3 + 2] - initial[part * 3 + 2]);
     if (length > travel) { travel = length; index = part; } }
   assert.ok(travel > .02); const base = index * 3, dx = nativeRag.positions[base] - initial[base], dz = nativeRag.positions[base + 2] - initial[base + 2], actor = {
     x: initial[base] + dx / 2, z: initial[base + 2] + dz / 2, headingY: 0, halfWidthMetres: .025, halfLengthMetres: .025,
     minY: Math.min(initial[base + 1], nativeRag.positions[base + 1]) - .2, maxY: Math.max(initial[base + 1], nativeRag.positions[base + 1]) + .2, velocityX: 0, velocityZ: 0 };
+  assert.ok(actor.minY > Math.max(firstWheel.topY, nextWheel.topY), 'particle-ray control must not touch the independently constrained wheel');
+  const physical=(native as unknown as {ragdoll:CrashRagdoll}).ragdoll,
+    frame=(physical as unknown as {frame:Float64Array}).frame, p=physical.positions,o=new Float64Array(37),
+    records=Float64Array.from([-1,actor.x,(actor.minY+actor.maxY)*.5,actor.z,actor.halfWidthMetres,(actor.maxY-actor.minY)*.5,actor.halfLengthMetres,1,0]),breaks=new Float64Array(8),sat=new Float64Array(12);
+  for(let limb=0;limb<4;limb++) {
+    const h=(3+limb)*3,f=(limb<2?9+limb:5+limb)*3,leg=limb<2;
+    if(leg)solveRagdollLeg(p[h],p[h+1],p[h+2],p[f],p[f+1],p[f+2],frame[6],frame[8],0,RIDER_BLOCKOUT,o,physical.jointPoles,limb*3);
+    else solveRagdollLimb(p[h],p[h+1],p[h+2],p[f],p[f+1],p[f+2],frame[6],frame[8],0,RIDER_BLOCKOUT.upperArmLength,RIDER_BLOCKOUT.forearmLength,RIDER_BLOCKOUT.ragdollArmContactMinReach,RIDER_BLOCKOUT.upperArmLength+RIDER_BLOCKOUT.forearmLength-1e-6,RIDER_BLOCKOUT.ragdollKneeVerticalBand,o,physical.jointPoles,limb*3);
+    const radius=leg?RIDER_OCCUPANCY.legRadius:RIDER_OCCUPANCY.armRadius,box=leg?RAGDOLL_BOOT_GROUND_BOX:RAGDOLL_HAND_GROUND_BOX;
+    assert.equal(contactCapsuleOverlapsBox(p[h],p[h+1],p[h+2],o[0],o[1],o[2],radius,records,0,breaks),false,'clear actor cannot touch an upper bone');
+    assert.equal(contactCapsuleOverlapsBox(o[0],o[1],o[2],o[3],o[4],o[5],radius,records,0,breaks),false,'clear actor cannot touch a lower bone');
+    assert.equal(contactOrientedBoxOverlaps(o[3],o[4],o[5],o,leg?24:15,box.minX,box.maxX,box.minY,box.maxY,box.minZ,box.maxZ,records,0,sat),false,'clear actor cannot touch a terminal/carry');
+  }
   const hit = ragDynamicObstacleSampler(flat, [actor]).raycastObstacle!({ x: initial[base], y: initial[base + 1], z: initial[base + 2] },
     { x: dx / travel, y: 0, z: dz / travel }, travel, .05);
   assert.ok(hit !== null && hit <= travel, 'actual native partial particle cast reaches actor; an unguarded sampler would alter this input');
   const notes: unknown[] = []; candidate.setDynamicWorld({ hull: POPULATION_OCCUPANT, ragObstacleBodies: () => [actor], didPlace: request => notes.push(request) });
   candidate.step(DT, NEUTRAL_ACTIONS); assert.deepEqual(poseOf(candidate), poseOf(native)); assert.deepEqual(candidate.snapshot(), native.snapshot());
   assert.deepEqual(Array.from(ragOf(candidate).positions), Array.from(nativeRag.positions)); assert.deepEqual(Array.from(ragOf(candidate).previous), Array.from(nativeRag.previous)); assert.equal(notes.length, 0);
+});
+
+test('the former longest particle-ray fixture has real forearm contact and retains its finite response',()=>{
+  const candidate=new EucController(flat),native=new EucController(flat),unsafe=new EucController(flat);
+  for(const value of [candidate,native,unsafe]){value.reset(undefined,12);assert.equal(value.hardKnock(3,0),true);}
+  const start=ragOf(native).positions.slice(),b=RD_HAND_R*3;native.step(DT,NEUTRAL_ACTIONS);
+  const p=ragOf(native).positions,actor={x:(start[b]+p[b])*.5,z:(start[b+2]+p[b+2])*.5,headingY:0,halfWidthMetres:.025,halfLengthMetres:.025,minY:Math.min(start[b+1],p[b+1])-.2,maxY:Math.max(start[b+1],p[b+1])+.2,velocityX:0,velocityZ:0},
+    physical=(native as unknown as {ragdoll:CrashRagdoll}).ragdoll,frame=(physical as unknown as {frame:Float64Array}).frame,o=new Float64Array(37),h=6*3,
+    records=Float64Array.from([-1,actor.x,(actor.minY+actor.maxY)*.5,actor.z,.025,(actor.maxY-actor.minY)*.5,.025,1,0]);
+  solveRagdollLimb(p[h],p[h+1],p[h+2],p[b],p[b+1],p[b+2],frame[6],frame[8],0,RIDER_BLOCKOUT.upperArmLength,RIDER_BLOCKOUT.forearmLength,RIDER_BLOCKOUT.ragdollArmContactMinReach,RIDER_BLOCKOUT.upperArmLength+RIDER_BLOCKOUT.forearmLength-1e-6,RIDER_BLOCKOUT.ragdollKneeVerticalBand,o,physical.jointPoles,9);
+  assert.equal(contactCapsuleOverlapsBox(o[0],o[1],o[2],o[3],o[4],o[5],RIDER_OCCUPANCY.armRadius,records,0,new Float64Array(8)),true,'this actor is not a genuinely clear forearm control');
+  candidate.setDynamicWorld({hull:POPULATION_OCCUPANT,ragObstacleBodies:()=>[actor]});candidate.step(DT,NEUTRAL_ACTIONS);
+  assert.ok(Math.hypot(ragOf(candidate).positions[b]-p[b],ragOf(candidate).positions[b+1]-p[b+1],ragOf(candidate).positions[b+2]-p[b+2])>.1,'real finite contact must retain its outward wrist response');
+  (unsafe as unknown as {ragdoll:{airLimbBoxesClear(limb:number):boolean}}).ragdoll.airLimbBoxesClear=()=>true;
+  unsafe.setDynamicWorld({hull:POPULATION_OCCUPANT,ragObstacleBodies:()=>[actor]});unsafe.step(DT,NEUTRAL_ACTIONS);
+  assert.deepEqual(poseOf(unsafe),poseOf(native),'blindly clearing the gathered actor erases its real response');
 });

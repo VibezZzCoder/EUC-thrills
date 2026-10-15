@@ -10,7 +10,7 @@ import { commitPopulationPhysicalTransaction } from './populationPhysicalTransac
 import { populationPhysicalReactionAllowed } from './populationPhysicalReactionAdmission.ts';
 import { resolvePopulationWholeStepRefusal, resolvePopulationWholeStepRefusalPreferActorYield } from './populationWholeStepRefusal.ts';
 import { INCOMING_DT as DT, incomingFlat as flat, incomingPose as poseOf, incomingCoarse as coarse, incomingPart as part,
-  incomingSignedGap as gap, incomingBodyGap as bodyGap, incomingNativeFixture, incomingPlan, warmIncoming } from './populationIncomingActorYieldFixture.ts';
+  incomingSignedGap as gap, incomingBodyGap as bodyGap, incomingRightSupport, incomingNativeFixture, incomingPlan, warmIncoming } from './populationIncomingActorYieldFixture.ts';
 import { PopulationSimulation } from './population.ts';
 function inputFor(f: ReturnType<typeof incomingNativeFixture>, preferred: boolean, notes: unknown[] = [],
   certificates = new PopulationPhysicalCertificates(RIDER_OCCUPANCY, f.before)) {
@@ -128,8 +128,8 @@ test('whole-start actor yield never bypasses prospective placement rejection or 
   const placement = resolvePopulationWholeStepRefusalPreferActorYield(actors, [{ ...owner, placementAllowed: () => { queries += 1; return false; } }]);
   assert.ok(queries > 0); assert.deepEqual(placement.refusedOwnerIds, ['owner']); assert.equal(placement.refusalReasons.owner, 'placement');
   const sourceBefore = buildRiderOccupancyEnvelope(f.before, RIDER_OCCUPANCY), sourceEnd = buildRiderOccupancyEnvelope(f.neutral, RIDER_OCCUPANCY),
-    face = sourceBefore.human.x + sourceBefore.human.halfWidth + f.growth / 2;
-  const authored = incomingPlan(face + actors[0].previous.halfLengthMetres, sourceBefore.human.z),
+    face = incomingRightSupport(sourceBefore.human) + f.growth / 2;
+  const authored = incomingPlan(face + actors[0].previous.halfLengthMetres, f.actorZ),
     stationaryPopulation = new PopulationSimulation({ ...authored, actors: authored.actors.map(actor => ({ ...actor, movement: 'stationary' as const, speedMetresPerSecond: 0 })) }, flat);
   stationaryPopulation.step(DT, f.occupants); const stationary = stationaryPopulation.actorMotions(), stationaryBody = stationary[0].previous;
   const beforeGaps = Object.values(sourceBefore).map(p => gap(part(p), stationaryBody)), afterGaps = Object.values(sourceEnd).map(p => gap(part(p), stationaryBody));

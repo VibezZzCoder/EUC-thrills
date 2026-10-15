@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { WHEEL } from '../data/tuning.ts';
 import { buildLevelPlan } from '../level/buildPlan.ts';
 import type { Heightfield, LevelPlan } from '../level/plan.ts';
-import type { SurfaceId, Vec3 } from './world.ts';
+import type { ObstacleHit, ObstacleInitialExit, SurfaceId, Vec3 } from './world.ts';
 import { createGroundSample } from './world.ts';
 import { PlanTerrainSampler } from './planSampler.ts';
 
@@ -553,6 +553,160 @@ function bruteRayBox(
   }
   return enter;
 }
+
+/** The pre-repair metadata-free slab path, including operation order. */
+function preservedObstacleRay(
+  collider: LevelPlan['segments'][number]['colliders'][number],
+  origin: Vec3,
+  direction: Vec3,
+  maxDistance: number,
+): number | null {
+  const length = Math.hypot(direction.x, direction.y, direction.z);
+  if (length === 0 || !(maxDistance > 0) || !Number.isFinite(maxDistance)) return null;
+  const dx = direction.x / length, dy = direction.y / length, dz = direction.z / length;
+  const cos = Math.cos(collider.rotationY), sin = Math.sin(collider.rotationY);
+  const rx = origin.x - collider.centre.x, rz = origin.z - collider.centre.z;
+  const startX = cos * rx - sin * rz, startY = origin.y - collider.centre.y;
+  const startZ = sin * rx + cos * rz;
+  const deltaX = cos * dx - sin * dz, deltaZ = sin * dx + cos * dz;
+  let enter = 0, exit = maxDistance;
+  const axes: [number, number, number][] = [
+    [startX, deltaX, collider.halfExtents.x],
+    [startY, dy, collider.halfExtents.y],
+    [startZ, deltaZ, collider.halfExtents.z],
+  ];
+  for (const [start, delta, halfExtent] of axes) {
+    if (delta === 0) {
+      if (start < -halfExtent || start > halfExtent) return null;
+      continue;
+    }
+    const inverse = 1 / delta;
+    let near = (-halfExtent - start) * inverse;
+    let far = (halfExtent - start) * inverse;
+    if (near > far) [near, far] = [far, near];
+    if (near > enter) enter = near;
+    if (far < exit) exit = far;
+    if (enter > exit) return null;
+  }
+  return enter;
+}
+
+test('metadata-free obstacle slabs stay bit-exact with the preserved path and detailed distances', () => {
+  const axisBox = {
+    centre: { x: 0, y: 0, z: 0 }, halfExtents: { x: 1, y: 1, z: 1 },
+    rotationY: 0, surface: 'pavement' as const,
+  };
+  const angle = .37, cos = Math.cos(angle), sin = Math.sin(angle);
+  const rotatedBox = { ...axisBox, rotationY: angle };
+  const cases: Array<{
+    label: string;
+    collider: typeof axisBox;
+    origin: Vec3;
+    direction: Vec3;
+    maximum: number;
+  }> = [
+    { label: '+x', collider: axisBox, origin: { x: -2, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, maximum: 5 },
+    { label: '-x', collider: axisBox, origin: { x: 2, y: 0, z: 0 }, direction: { x: -1, y: 0, z: 0 }, maximum: 5 },
+    { label: '+y', collider: axisBox, origin: { x: 0, y: -2, z: 0 }, direction: { x: 0, y: 1, z: 0 }, maximum: 5 },
+    { label: '-y', collider: axisBox, origin: { x: 0, y: 2, z: 0 }, direction: { x: 0, y: -1, z: 0 }, maximum: 5 },
+    { label: '+z', collider: axisBox, origin: { x: 0, y: 0, z: -2 }, direction: { x: 0, y: 0, z: 1 }, maximum: 5 },
+    { label: '-z', collider: axisBox, origin: { x: 0, y: 0, z: 2 }, direction: { x: 0, y: 0, z: -1 }, maximum: 5 },
+    { label: 'inside', collider: axisBox, origin: { x: 0, y: 0, z: 0 }, direction: { x: 1, y: 1, z: 1 }, maximum: 5 },
+    { label: 'on-face-out', collider: axisBox, origin: { x: 1, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, maximum: 5 },
+    { label: 'on-face-in', collider: axisBox, origin: { x: 1, y: 0, z: 0 }, direction: { x: -1, y: 0, z: 0 }, maximum: 5 },
+    { label: 'parallel-miss', collider: axisBox, origin: { x: 1.000001, y: 0, z: -2 }, direction: { x: 0, y: 0, z: 1 }, maximum: 5 },
+    { label: 'parallel-on-face-signed-zero', collider: axisBox, origin: { x: 1, y: 0, z: -2 }, direction: { x: -0, y: 0, z: 1 }, maximum: 5 },
+    { label: 'nearly-parallel-hit', collider: axisBox, origin: { x: .5, y: 0, z: -2 }, direction: { x: 1e-14, y: 0, z: 1 }, maximum: 5 },
+    { label: 'nearly-parallel-miss', collider: axisBox, origin: { x: 1.000001, y: 0, z: -2 }, direction: { x: -1e-14, y: 0, z: 1 }, maximum: 1 },
+    { label: 'tmax-exact', collider: axisBox, origin: { x: -2, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, maximum: 1 },
+    { label: 'tmax-short', collider: axisBox, origin: { x: -2, y: 0, z: 0 }, direction: { x: 1, y: 0, z: 0 }, maximum: 1 - Number.EPSILON },
+    { label: 'rotated+x', collider: rotatedBox, origin: { x: -2 * cos, y: 0, z: 2 * sin }, direction: { x: cos, y: 0, z: -sin }, maximum: 5 },
+    { label: 'rotated-x', collider: rotatedBox, origin: { x: 2 * cos, y: 0, z: -2 * sin }, direction: { x: -cos, y: 0, z: sin }, maximum: 5 },
+  ];
+
+  for (const row of cases) {
+    const sampler = new PlanTerrainSampler(plan({
+      heightfield: field([[0, 0], [0, 0]]), colliders: [row.collider],
+    }));
+    const expected = preservedObstacleRay(row.collider, row.origin, row.direction, row.maximum);
+    const plain = sampler.raycastObstacle(row.origin, row.direction, row.maximum);
+    assert.ok(Object.is(plain, expected), `${row.label}: fast ${String(plain)} / preserved ${String(expected)}`);
+
+    const normalOnly: ObstacleHit = {
+      distance: -1, halfExtentX: 0, halfExtentZ: 0, normal: { x: 9, y: 9, z: 9 },
+    };
+    const faceOnly: ObstacleHit = {
+      distance: -1, halfExtentX: 0, halfExtentZ: 0, inside: false, colliderIndex: -1, faceOffset: NaN,
+    };
+    const distanceAndExtentsOnly: ObstacleHit = {
+      distance: -1, halfExtentX: 0, halfExtentZ: 0,
+    };
+    const normalDistance = sampler.raycastObstacle(row.origin, row.direction, row.maximum, 0, undefined, normalOnly);
+    const faceDistance = sampler.raycastObstacle(row.origin, row.direction, row.maximum, 0, undefined, faceOnly);
+    const partialDistance = sampler.raycastObstacle(
+      row.origin, row.direction, row.maximum, 0, undefined, distanceAndExtentsOnly,
+    );
+    assert.ok(Object.is(normalDistance, plain), `${row.label}: normal-only distance changed`);
+    assert.ok(Object.is(faceDistance, plain), `${row.label}: face-only distance changed`);
+    assert.ok(Object.is(partialDistance, plain), `${row.label}: distance/extent-only output changed`);
+    if (plain !== null) {
+      assert.ok(Object.is(normalOnly.distance, plain), `${row.label}: normal-only output distance`);
+      assert.ok(Object.is(faceOnly.distance, plain), `${row.label}: face-only output distance`);
+      assert.ok(Object.is(distanceAndExtentsOnly.distance, plain), `${row.label}: partial output distance`);
+      assert.equal(distanceAndExtentsOnly.halfExtentX, row.collider.halfExtents.x, `${row.label}: partial half X`);
+      assert.equal(distanceAndExtentsOnly.halfExtentZ, row.collider.halfExtents.z, `${row.label}: partial half Z`);
+      assert.ok(Math.abs(Math.hypot(normalOnly.normal!.x, normalOnly.normal!.y, normalOnly.normal!.z) - 1) < 1e-12,
+        `${row.label}: non-unit normal`);
+      assert.equal(typeof faceOnly.inside, 'boolean', `${row.label}: missing inside flag`);
+      assert.ok(Number.isFinite(faceOnly.faceOffset), `${row.label}: missing face offset`);
+    }
+  }
+});
+
+test('metadata-free camera casts keep occluder filtering and nearest-hit selection', () => {
+  const obstacle = (x: number, occludes?: boolean) => ({
+    centre: { x, y: 0, z: 0 }, halfExtents: { x: .5, y: 1, z: .5 },
+    rotationY: 0, surface: 'pavement' as const,
+    ...(occludes === undefined ? {} : { occludes }),
+  });
+  const sampler = new PlanTerrainSampler(plan({
+    heightfield: field([[0, 0], [0, 0]]),
+    colliders: [obstacle(3, false), obstacle(6), obstacle(4, true)],
+  }));
+  const origin = { x: 0, y: .5, z: 0 }, direction = { x: 1, y: 0, z: 0 };
+  assert.equal(sampler.raycastObstacle(origin, direction, 10), 2.5, 'wheel cast lost the nearest solid');
+  assert.equal(sampler.raycast(origin, direction, 10), 3.5, 'camera did not skip the nearer non-occluder');
+});
+
+test('zero- and nonzero-radius certified exits preserve strict detailed results', () => {
+  const collider = {
+    centre: { x: 0, y: 0, z: 0 }, halfExtents: { x: 1, y: 1, z: 1 },
+    rotationY: 0, surface: 'pavement' as const,
+  };
+  const verticallyClearCandidate = {
+    centre: { x: 0, y: 3, z: 0 }, halfExtents: { x: .25, y: .25, z: .25 },
+    rotationY: 0, surface: 'pavement' as const,
+  };
+  const sampler = new PlanTerrainSampler(plan({
+    heightfield: field([[0, 0], [0, 0]]), colliders: [collider, verticallyClearCandidate],
+  }));
+  const origin = { x: 0, y: 0, z: 0 }, direction = { x: 1, y: 0, z: 0 };
+  const out: ObstacleHit = {
+    distance: -1, halfExtentX: 0, halfExtentZ: 0, normal: { x: 9, y: 9, z: 9 },
+    inside: false, colliderIndex: -1, faceOffset: NaN,
+  };
+  assert.equal(sampler.raycastObstacle(origin, direction, 2, 0, undefined, out), 0);
+  assert.deepEqual(out.normal, { x: 1, y: 0, z: -0 });
+  assert.equal(out.inside, true);
+  assert.equal(out.faceOffset, 1);
+  const certificate: ObstacleInitialExit = {
+    colliderIndex: out.colliderIndex!, normal: { ...out.normal! }, faceOffset: out.faceOffset!, slack: 0,
+  };
+  assert.equal(sampler.raycastObstacle(origin, direction, 1, 0, undefined, undefined, certificate), null);
+  assert.equal(sampler.raycastObstacle(origin, direction, .9999998, 0, undefined, undefined, certificate), 0);
+  assert.equal(sampler.raycastObstacle(origin, direction, 1.25, .25, undefined, undefined, certificate), null);
+  assert.equal(sampler.raycastObstacle(origin, direction, 1.2499998, .25, undefined, undefined, certificate), 0);
+});
 
 test('the grid changes no ground answer, over hundreds of colliders', () => {
   const colliders = scatteredColliders(400);

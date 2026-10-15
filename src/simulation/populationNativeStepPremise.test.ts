@@ -44,8 +44,8 @@ interface Tally {
 
 function samePose(a: EucPose, b: EucPose): boolean {
   for (const key of Object.keys(b) as (keyof EucPose)[]) {
-    if (key === 'ragdoll') {
-      if (a.ragdoll.length !== b.ragdoll.length || a.ragdoll.some((value, index) => !Object.is(value, b.ragdoll[index]))) return false;
+    if (key === 'ragdoll' || key === 'ragdollJointPoles') {
+      if (a[key].length !== b[key].length || a[key].some((value, index) => !Object.is(value, b[key][index]))) return false;
     } else if (!Object.is(a[key], b[key])) return false;
   }
   return true;

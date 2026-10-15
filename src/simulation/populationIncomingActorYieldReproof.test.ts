@@ -18,7 +18,10 @@ import { INCOMING_DT as DT, incomingFlat as flat, incomingPose as poseOf, incomi
  * Production certificate modules and the two authoritative rider parts are
  * never changed. This forcing component exists solely in this test object. */
 function laterYieldStress(reverse: boolean) {
-  const f = incomingNativeFixture(), later = incomingPlan(100, 40),
+  // This stress certifies the narrower production contact core. Derive its
+  // incoming lane from that SAME core rather than the garment envelope used
+  // by the separate containment fixture; its exposed native flank is here.
+  const f = incomingNativeFixture(RIDER_CONTACT, -.4), later = incomingPlan(100, 40),
     laterPath = { ...later.paths[0], id: 'later/path' }, laterSpec = { ...later.actors[0], id: 'later', pathId: laterPath.id };
   f.population = new PopulationSimulation({ ...f.plan, paths: [...f.plan.paths, laterPath], actors: [...f.plan.actors, laterSpec] }, flat); warmIncoming(f.population);
   const copOptions = { spawn: { position: { x: -20, y: 0, z: 0 }, headingY: 0 }, tuning: { crashRecoverEarliestSeconds: .001, crashRecoverAutoSeconds: .002 } };

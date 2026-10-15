@@ -60,14 +60,45 @@ function poseOf(subject: EucController) {
   const pose = createPose(); subject.writePose(pose); return pose;
 }
 
-/** Inspect physical internals too: snapshot omits private history and query scratch. */
+/** Rebuilt during each native rag step, never part of its replay history.
+ * This is an exclusion list: any newly added/unclassified field is compared. */
+const RAG_CONTACT_SCRATCH = new Set([
+  'stepStart', 'stepFrame', 'stepJointPoles', 'legSolve', 'legContactsValid',
+  'trunkGroundHeight', 'terminalCorrected', 'lastTrunkNormalX',
+  'lastTrunkNormalZ', 'trunkCorrected', 'staticCorrected', 'ground',
+  'castOrigin', 'castDirection', 'obstacleHit',
+  'hipProjectionMask',
+  'initialFaces', 'initialFaceMask', 'initialExit', 'candidateSupportedTerminals',
+  'limbBoxes','limbBoxCounts','limbBoxFulfilled','limbPlanes','limbSamplePoints','limbProposals','limbContactGround','limbQuery','airLimbMask',
+  'coreSupportPoint','coreGroundContact','trunkBoxes','trunkBoxCount','trunkContact','trunkBreaks','trunkSAT','trunkReaction','trunkSeparations','trunkSeparationCount','stepTurnLimit',
+]);
+
+/** All current contact-workspace values are rebuilt. Unknown future fields
+ * remain compared, including fields added inside this workspace. */
+const LIMB_CONTACT_SCRATCH=new Set([
+  'pose','initialPose','planes','endPlanes','endOffsets','face','ranks','costs','active','overlaps','sphere','sat','breaks','pole','requestedPole','supportBracket','supportAxes','supportAxisMask','reaction',
+  'trials','narrowphase','released','hx','hy','hz','fx','fy','fz','upper','lower','minimum','maximum','boneRadius','leg','heading','forwardX','forwardZ','planeCount','endCount','staticEndPlanes',
+  'wheelX','wheelZ','wheelTop','records','recordStart','recordCount','endpointGround','endpointAt','jointGround','jointAt',
+]);
+
+/** Inspect controller internals and every persistent rag field/history too.
+ * A committed owner need not inherit the private evaluator's contact scratch. */
 function physicalState(subject: EucController) {
   const record = subject as unknown as Record<string, unknown>;
   const primitives = Object.fromEntries(Object.entries(record).filter(([key, value]) =>
     key !== 'stateRevision' && value !== null && typeof value !== 'object' && typeof value !== 'function'));
   const references = Object.fromEntries([
     'ground', 'probe', 'obstacleHit', 'standoffOrigin', 'standoffRay', 'dynamicPrevious', 'dynamicIntent', 'ragdoll',
-  ].map((key) => [key, structuredClone(record[key])]));
+  ].map((key) => {
+    const value = structuredClone(record[key]);
+    if (key === 'ragdoll') {
+      const rag=value as Record<string,unknown>;
+      for (const scratch of RAG_CONTACT_SCRATCH) delete rag[scratch];
+      const limb=rag.limbContact as Record<string,unknown>;
+      for(const scratch of LIMB_CONTACT_SCRATCH)delete limb[scratch];
+    }
+    return [key, value];
+  }));
   return { primitives, references, snapshot: subject.snapshot(), pose: poseOf(subject) };
 }
 
@@ -116,6 +147,37 @@ test('clear prepare/resolve/commit preserves direct-step pose, all private state
     sawRecovery ||= ordinary.snapshot().invulnerable > 0;
   }
   assert.ok(sawAir && sawCrash && sawRecovery, 'the replay exercises flight, crash and recovery');
+});
+
+test('rag replay compares every persistent field and future unclassified fields, then preserves subsequent native motion', () => {
+  const source=controller(),copy=controller();source.reset(undefined,4);copy.reset(undefined,4);
+  assert.equal(source.hardKnock(1,0),true);source.step(.02,actions());copy.copyMutableStateFrom(source);
+  const expected=physicalState(source);
+  assert.deepEqual(physicalState(copy),expected);
+  const rag=(copy as unknown as {ragdoll:Record<string,number|Float64Array>}).ragdoll;
+  for(const field of ['positions','previous','frame','jointPoles','bootHeading','contactSide','supportedTerminals']) {
+    const value=rag[field];
+    if(value instanceof Float64Array) {
+      const saved=value[0];value[0]+=.125;
+      assert.notDeepEqual(physicalState(copy),expected,`the ${field} history is physical, even if the public pose cannot expose it`);
+      value[0]=saved;
+    } else {
+      rag[field]=value+.125;assert.notDeepEqual(physicalState(copy),expected,`${field} cannot be excluded as contact scratch`);rag[field]=value;
+    }
+  }
+  rag.unclassifiedFutureState=1;
+  assert.notDeepEqual(physicalState(copy),expected,'new fields must be compared until explicitly classified');
+  delete rag.unclassifiedFutureState;
+  const workspace=(rag as unknown as {limbContact:Record<string,unknown>}).limbContact;
+  workspace.unclassifiedFutureState=1;
+  assert.notDeepEqual(physicalState(copy),expected,'new workspace fields remain compared until specifically classified');
+  delete workspace.unclassifiedFutureState;
+  // This is actual stepping after the copy and mutations, not another
+  // structuredClone assertion alone. Missing Verlet/frame/pole history changes it.
+  for(let tick=0;tick<12;tick++) {
+    source.step(.02,actions());copy.step(.02,actions());
+    assert.deepEqual(physicalState(copy),physicalState(source),`future native state at tick${tick}`);
+  }
 });
 
 test('final replay replaces neutral hazard/crash facts and counts only accepted travel and safe points', () => {
@@ -281,17 +343,21 @@ test('ragdoll state copy preserves storage and future Verlet motion; positions a
   source.seed({ x: 0, y: 0, z: 0, headingY: 0.2, rollAngle: 0.1,
     riderPitch: 0.1, hipDrop: 0.05, speed: 5, cause: 'sideFall', intoSolid: false, side: 1 }, t, 0.02);
   source.step(0.02, 0.02, 0, 0, sampler, NO_SOFT_BODIES, t);
-  const positionsStorage = copy.positions;
+  const positionsStorage = copy.positions, polesStorage = copy.jointPoles;
   copy.copyStateFrom(source);
   positionsOnly.positions.set(source.positions);
   assert.equal(copy.positions, positionsStorage);
+  assert.equal(copy.jointPoles, polesStorage);
   assert.notEqual(copy.positions, source.positions);
+  assert.notEqual(copy.jointPoles, source.jointPoles);
+  assert.deepEqual(copy.jointPoles, source.jointPoles);
   for (let tick = 0; tick < 5; tick += 1) {
     const crashTime = (tick + 2) * 0.02;
     source.step(0.02, crashTime, 0, 0, sampler, NO_SOFT_BODIES, t);
     copy.step(0.02, crashTime, 0, 0, sampler, NO_SOFT_BODIES, t);
     positionsOnly.step(0.02, crashTime, 0, 0, sampler, NO_SOFT_BODIES, t);
     assert.deepEqual(copy.positions, source.positions);
+    assert.deepEqual(copy.jointPoles, source.jointPoles, 'private replay retains the canonical pole history as well as Verlet positions');
   }
   assert.notDeepEqual(positionsOnly.positions, source.positions, 'missing previous positions changes the next trajectory');
 });

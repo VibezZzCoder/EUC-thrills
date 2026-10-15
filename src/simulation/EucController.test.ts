@@ -6101,13 +6101,20 @@ function runSoberScenario(
  * And **`reverse` moved**, which it did not for the pose changes: its reverse
  * corner is still below `maxReverseSpeed` and untouched, but the two forward
  * phases either side of it are on the faster wheel.
+ *
+ * Crash re-pinned 2026-10-14 for the owner-accepted ragdoll repair:
+ * `513c3c9ca1a12632` → `b3724762cf90df28`. An isolated frozen-v4 run
+ * reproduced the new digest before the ordinary-query fast path was added.
+ * All five non-crash digests and the crash's steps, finalZ, finalSpeed and
+ * crash count remain unchanged. This records the intentional crash repair,
+ * not a change authorized by the performance follow-up.
  */
 const SOBER_DIGESTS: Readonly<Record<keyof typeof SOBER_SCENARIOS, DigestRun>> = Object.freeze({
   straight: { digest: '09d78d6bdb19a689', steps: 3600, finalZ: 786.3386, finalSpeed: 28.9937, crashes: 0 },
   slalom: { digest: '5b0f0585c09e47a3', steps: 3360, finalZ: 520.1281, finalSpeed: 26.1271, crashes: 0 },
   hop: { digest: '1410d150afe11b32', steps: 1081, finalZ: 171.3648, finalSpeed: 27.8388, crashes: 0 },
   pothole: { digest: 'bca6cc2c8480a832', steps: 1680, finalZ: 306.7907, finalSpeed: 24.455, crashes: 0 },
-  crash: { digest: '513c3c9ca1a12632', steps: 2880, finalZ: 267.8499, finalSpeed: 22.6904, crashes: 1 },
+  crash: { digest: 'b3724762cf90df28', steps: 2880, finalZ: 267.8499, finalSpeed: 22.6904, crashes: 1 },
   reverse: { digest: '7a8c103a5d97ebfc', steps: 2520, finalZ: 44.3278, finalSpeed: 18.9704, crashes: 0 },
 });
 

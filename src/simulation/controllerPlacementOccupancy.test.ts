@@ -33,6 +33,7 @@ const physicalScalars = ['x', 'y', 'z', 'headingY', 'groundPitch', 'groundRoll',
   'crashDrop', 'crashTumble', 'crashRoll', 'wheelCrashSpin', 'wheelCrashLean', 'wheelCrashPop', 'ragdollBlend'] as const;
 function equalPhysical(expected: RiderOccupancyPose, actual: RiderOccupancyPose): void {
   for (const key of physicalScalars) assert.equal(actual[key], expected[key], `physical occupancy channel ${key}`);
+  assert.deepEqual(Array.from(actual.ragdollJointPoles ?? []), Array.from(expected.ragdollJointPoles ?? []), 'canonical physical joint poles');
   assert.deepEqual(buildRiderOccupancy(actual, RIDER_CONTACT), buildRiderOccupancy(expected, RIDER_CONTACT));
   assert.deepEqual(buildRiderOccupancyEnvelope(actual, RIDER_CONTACT), buildRiderOccupancyEnvelope(expected, RIDER_CONTACT));
 }
@@ -172,6 +173,8 @@ test('public prospective occupancy queries preserve live state, serial, active p
   const prospective = euc.placementOccupancyPose(destination);
   assert.equal(prospective.x, destination.position.x); assert.equal(prospective.ragdollBlend, 0);
   assert.ok(Object.isFrozen(prospective) && Object.isFrozen(prospective.ragdoll));
+  assert.ok(Object.isFrozen(prospective.ragdollJointPoles));
+  assert.deepEqual(Array.from(prospective.ragdollJointPoles ?? []), [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'mounted placement has explicit inactive poles');
   assert.deepEqual(euc.snapshot(), before); assert.deepEqual(poseOf(euc), physical);
   assert.equal(euc.discontinuitySerial, serial); assert.equal(queries, 0); assert.equal(notes, 0);
   const candidateAfter = createPose(); euc.writePreparedPose(token, candidateAfter);
