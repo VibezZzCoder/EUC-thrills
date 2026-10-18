@@ -242,7 +242,14 @@ test.describe('matched original depot return diagnosis', () => {
           expect(item.camera).toEqual(frame.framing.camera);
           expect(item.viewArrays).toEqual(baseline.viewArrays); expect(item.portalPoints).toEqual(baseline.portalPoints);
           expect(item.portalBounds).toEqual(baseline.portalBounds); expect(item.viewport).toEqual(baseline.viewport);
-          expect(item.options).toEqual(baseline.options); expect(item.ground).toEqual(baseline.ground);
+          // 2026-10-18: options added after the baseline (M42's `showFps`) must
+          // sit at their shipped default; every baseline option still matches.
+          const added = Object.keys(item.options).filter(key => !(key in baseline.options));
+          expect({ ...item.options, ...Object.fromEntries(added.map(key =>
+            [key, DEFAULT_OPTIONS[key as keyof typeof DEFAULT_OPTIONS]])) }).toEqual(item.options);
+          expect(Object.fromEntries(Object.entries(item.options).filter(([key]) => !added.includes(key))))
+            .toEqual(baseline.options);
+          expect(item.ground).toEqual(baseline.ground);
           expect(item.tick).toBe(baseline.tick); expect(item.simTimeSeconds).toBe(baseline.simTimeSeconds);
         }
         expect(hidden.surfacePatches).toEqual(current.surfacePatches);

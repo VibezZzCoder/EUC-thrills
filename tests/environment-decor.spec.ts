@@ -56,10 +56,12 @@ async function inspect(page: Page, seed: string, label: string) {
     const generatorPath = '/src/level/generateRoute.ts', samplerPath = '/src/simulation/planSampler.ts';
     const worldPath = '/src/simulation/world.ts', builderPath = '/src/level/buildPlan.ts';
     const pavingOwnerPath = '/src/render/exactPavingOwnership.ts', livingPath = '/src/app/populationWorld.ts';
+    const pavingViewPath = '/src/render/streetGroundView.ts';
     const [{ environmentSites, industrialPersonnelDoorOffset }, { industrialGroundPatches, INDUSTRIAL_APPROACH_RULES }, { generateLevel },
-      { PlanTerrainSampler }, { createGroundSample }, { fieldHeightAt }, { exactPavingDrawsPatch }, { preparePopulationWorld }] = await Promise.all([
+      { PlanTerrainSampler }, { createGroundSample }, { fieldHeightAt }, { exactPavingDrawsPatch }, { preparePopulationWorld },
+      { collectStreetPavingPieces }] = await Promise.all([
       import(sitesPath), import(groundPath), import(generatorPath), import(samplerPath), import(worldPath), import(builderPath),
-      import(pavingOwnerPath), import(livingPath),
+      import(pavingOwnerPath), import(livingPath), import(pavingViewPath),
     ]);
     // 2026-10-04: generated worlds are installed through the living-world
     // preparation, which intentionally appends props/solids/ground patches and
@@ -216,7 +218,10 @@ async function inspect(page: Page, seed: string, label: string) {
         pavingTriangles: (paving?.geometry.getAttribute('position').count ?? 0) / 3,
         // 2026-10-03 (VIS-1): the same owner also draws the living-world warehouse bay and driveway.
         allStreetPatchTriangles: installedPatches.filter(exactPavingDrawsPatch)
-          .reduce((sum, patch) => sum + patch.triangles.length, 0) },
+          .reduce((sum, patch) => sum + patch.triangles.length, 0),
+        // 2026-10-12: overlapping bay/driveway fragments are drawn once
+        // (`exclusivePaving.ts`), so the mesh is their exclusive union.
+        exclusivePavingTriangles: collectStreetPavingPieces(plan)?.colourTriangles ?? 0 },
       sampler: { maximumHeightError, samplerHeightError, samplerNormalError, semanticMismatches,
         offCourseMismatches, wrongWinding, grassChanges }, resources: snap.resources,
       views, render: snap.render, predicted, tier: presentation.tier, requestedQuality: snap.options.quality,
@@ -243,7 +248,9 @@ function expectInstalled(evidence: Evidence): void {
   expect(evidence.scene.geometryBytes).toBe(evidence.report.geometryBytes);
   expect(evidence.scene.materialOwners).toBe(evidence.report.materialOwners);
   expect(evidence.scene.textureBytes).toBe(evidence.report.textureBytes);
-  expect(evidence.scene.pavingTriangles).toBe(evidence.scene.allStreetPatchTriangles);
+  expect(evidence.scene.pavingTriangles).toBe(evidence.scene.exclusivePavingTriangles);
+  expect(evidence.scene.pavingTriangles).toBeGreaterThan(0);
+  expect(evidence.scene.pavingTriangles).toBeLessThanOrEqual(evidence.scene.allStreetPatchTriangles);
   expect(evidence.scene.triangles).toBeGreaterThan(2000);
   expect(evidence.scene.triangles).toBeLessThan(10_000);
   expect(evidence.sites).toHaveLength(1);

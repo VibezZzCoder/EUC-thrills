@@ -1296,6 +1296,12 @@ test('the race card speaks the race’s words, and the next card does not', asyn
   });
   await page.locator('.euc-menu--results [data-menu="results-title"]').click();
   await page.waitForFunction(() => window.game.snapshot().app.state === 'title');
+  // 2026-10-18: leaving a couch session for the title runs the "Back to your
+  // solo ride" cover (2026-10-03), which settles on running frames, and a
+  // mode press under a busy cover is refused exactly as a player's would be.
+  // Stopping the loop the moment the title appears froze the cover, so the
+  // track day below never started.
+  await page.waitForFunction(() => document.getElementById('boot')?.getAttribute('aria-busy') !== 'true');
   await page.evaluate(() => {
     const game = window.game;
     game.loop.setRunning(false);
