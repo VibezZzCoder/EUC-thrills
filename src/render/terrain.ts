@@ -18,17 +18,18 @@ import { terrainCells, type FieldCoverage } from '../level/terrainCoverage.ts';
 import type { SurfaceId } from '../simulation/world.ts';
 import { createHazards, type HazardsView } from './hazards.ts';
 import { createMarkings, type MarkingsView } from './markings.ts';
-import { createProps } from './props.ts';
+import { createPropsSteps } from './props.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 import type { VegetationDistanceDetail } from './vegetationDistance.ts';
 import { isCoursed, stoneTone, wallFaceGrid } from './wallCourses.ts';
 import { GROUND_CRISP_MATERIALS } from './groundBoundaryPolicy.ts';
-import { installOrdinaryGroundBoundary, ordinaryBoundaryAttributes } from './ordinaryGroundBoundary.ts';
+import { installOrdinaryGroundBoundary, ordinaryBoundaryAttributesSteps } from './ordinaryGroundBoundary.ts';
 import { createSharedGroundSurface, type SharedGroundReport } from './sharedGroundSurface.ts';
 import { createSharedBoundaryTint } from './sharedBoundaryTint.ts';
 import { sharedGroundCode } from './sharedGroundCodes.ts';
 import { withSharedGroundContours } from './sharedGroundContours.ts';
 import type { PreparedGroundEdges } from './sharedGroundEdgePlan.ts';
-import { BASELINE_PRESENTATION, judgePresentation, type PresentationRecipe } from './presentation.ts';
+import { BASELINE_PRESENTATION, judgePresentationSteps, type PresentationRecipe } from './presentation.ts';
 import { emitSharedGroundEdges, type SharedGroundEdgeMeshReport } from './sharedGroundEdgeMesh.ts';
 import { partitionIndexedGeometry } from './spatialGeometry.ts';
 import { EMPTY_SPATIAL_BATCHING_DELTA, sumSpatialBatchingDeltas, validateSpatialBatchMetres,
@@ -327,6 +328,22 @@ export function createTerrain(
     readonly sharedEdges?: PreparedGroundEdges | null; readonly environmentSupplements?: PreparedEnvironmentSupplements | null;
     readonly spatialBatchMetres?: number; readonly distanceDetail?: VegetationDistanceDetail } = {},
 ): TerrainView {
+  return runSteps(createTerrainSteps(plan, recipe, context, composition));
+}
+/**
+ * `createTerrain` as slices (`shared/preparationSteps.ts`), at its section
+ * boundaries, per surface group and per block material, with the props
+ * delegated. The admission check's short circuit is spelled as statements;
+ * the catch-only release became finally-with-flag.
+ */
+export function* createTerrainSteps(
+  plan: LevelPlan,
+  recipe: BuildRecipe = BASELINE_PRESENTATION,
+  context?: UltraBuildContext,
+  composition: { readonly ordinaryBoundary?: boolean; readonly sharedSurface?: boolean;
+    readonly sharedEdges?: PreparedGroundEdges | null; readonly environmentSupplements?: PreparedEnvironmentSupplements | null;
+    readonly spatialBatchMetres?: number; readonly distanceDetail?: VegetationDistanceDetail } = {},
+): Steps<TerrainView> {
   const spatialBatchMetres = composition.spatialBatchMetres ?? Infinity;
   validateSpatialBatchMetres(spatialBatchMetres);
   const kit = ultraKitOf(recipe, context);
@@ -336,19 +353,25 @@ export function createTerrain(
     ? composition.sharedEdges ?? null
     : null;
   if (preparedEdges && preparedEdges.source !== plan) throw new Error('Shared edges belong to a different source world');
-  if (preparedEdges && (preparedEdges.joinFailures.length
-    || judgePresentation(plan, BASELINE_PRESENTATION, preparedEdges.price, composition.environmentSupplements ?? null).breaches.length
-    || (kit === null && judgePresentation(plan, recipe as PresentationRecipe, preparedEdges.price, composition.environmentSupplements ?? null).breaches.length))) {
-    throw new Error('Shared edge construction was not admitted under its joins and ordinary contracts');
+  if (preparedEdges) {
+    // Was one `||` chain: the same three tests, in order, each only if the previous passed.
+    let refused = preparedEdges.joinFailures.length > 0;
+    if (!refused) refused = (yield* judgePresentationSteps(plan, BASELINE_PRESENTATION, preparedEdges.price, composition.environmentSupplements ?? null)).breaches.length > 0;
+    if (!refused && kit === null) refused = (yield* judgePresentationSteps(plan, recipe as PresentationRecipe, preparedEdges.price, composition.environmentSupplements ?? null)).breaches.length > 0;
+    if (refused) throw new Error('Shared edge construction was not admitted under its joins and ordinary contracts');
   }
   const borrowedFeatureBlocks = composition.environmentSupplements?.featureBlocks ?? null;
   if (borrowedFeatureBlocks && (borrowedFeatureBlocks.source !== plan || borrowedFeatureBlocks.disposed))
     throw new Error('Feature blocks belong to a different or disposed source world');
   const privateFeatureBlocks = sharedSurface && !borrowedFeatureBlocks ? prepareFeatureBlocks(plan) : null;
   const preparedFeatureBlocks = sharedSurface ? borrowedFeatureBlocks ?? privateFeatureBlocks : null;
+  let completed = false;
   try {
+  yield PREPARATION_SLICE;
   const featurePrice = preparedFeatureBlocks ? priceFeatureBlockBuild(preparedFeatureBlocks, recipe) : null;
+  yield PREPARATION_SLICE;
   const sharedGround = sharedSurface ? createSharedGroundSurface(context?.maxAnisotropy ?? 8, plan) : null;
+  yield PREPARATION_SLICE;
   const sharedProfile = { ...COURSE_MOTTLE, cellWeight: SHARED_GROUND.cellWeight,
     midWeight: SHARED_GROUND.midWeight, coarseWeight: SHARED_GROUND.coarseWeight };
   const group = new THREE.Group();
@@ -429,6 +452,7 @@ export function createTerrain(
   group.add(backstop);
   geometries.push(backstopGeometry);
   materials.push(backstopMaterial);
+  yield PREPARATION_SLICE;
 
   // -- The field ----------------------------------------------------------
   // The world outside the course, at the height the sampler answers for it, and
@@ -451,6 +475,7 @@ export function createTerrain(
   // predicts the cost of exactly the mesh this file then builds, rather than of
   // a second description of it (invariant 2).
   const { coverage, bySurface: cellsBySurface, cellsDrawn } = terrainCells(plan);
+  yield PREPARATION_SLICE;
   // -- Ultra: the ground's painted detail maps (M39 pre-R1 ground pass) ----
   // One set per view, shared by every ground material below and freed with
   // the view; the field and every heightfield group sample them in world XZ.
@@ -492,6 +517,7 @@ export function createTerrain(
     ultraAttributeBytes += ao.byteLength;
   }
   addStaticMesh(fieldMesh.mesh);
+  yield PREPARATION_SLICE;
 
   // -- The heightfield ----------------------------------------------------
   const cellColumns = field.columns - 1;
@@ -553,6 +579,7 @@ export function createTerrain(
   const surfaceLook = surfaceLookup(plan.palette);
 
   for (const [surface, cells] of cellsBySurface) {
+    yield PREPARATION_SLICE;
     const appearance = paintedAppearance(
       SURFACES[surface as keyof typeof SURFACES]?.material ?? 'pavement',
       plan.palette,
@@ -673,9 +700,11 @@ export function createTerrain(
   // Gaussian-smoothed field of the same samples, eased in from the road, so
   // a bank reads as a slope instead of as facets. Positions, triangles and
   // the sampler's own plane normals are untouched.
+  yield PREPARATION_SLICE;
   const smoothedNormals = (sharedSurface || kit?.ground === true) && ULTRA_GROUND.smoothNormals.enabled
     ? smoothHeightfieldNormals(field, cellsBySurface, normals)
     : 0;
+  yield PREPARATION_SLICE;
 
   // The groups have to be added after the index array is complete, because a
   // group is a range into it.
@@ -694,6 +723,7 @@ export function createTerrain(
     materialIndex += 1;
   }
   terrainGeometry.computeBoundingSphere();
+  yield PREPARATION_SLICE;
 
   // -- Ultra: contact AO and the edge fill on the heightfield (M39 T5, T6) --
   // This stage adds only attributes. The admitted shared assembly below then
@@ -713,10 +743,12 @@ export function createTerrain(
 
   let ordinaryBoundaryReport: OrdinaryBoundaryReport | null = null;
   if (ordinaryBoundary) {
-    const boundary = ordinaryBoundaryAttributes(plan, cellsBySurface, colors, sharedSurface);
+    yield PREPARATION_SLICE;
+    const boundary = yield* ordinaryBoundaryAttributesSteps(plan, cellsBySurface, colors, sharedSurface, preparedEdges);
     for (const [name, attribute] of boundary.attributes) terrainGeometry.setAttribute(name, attribute);
     ordinaryBoundaryReport = { bytes: boundary.bytes,
       filledCells: boundary.filledCells, fillLines: boundary.fillLines };
+    yield PREPARATION_SLICE;
   }
 
   let sharedEdges: SharedGroundEdgeMeshReport | null = null;
@@ -753,12 +785,14 @@ export function createTerrain(
     }
   }
 
+  yield PREPARATION_SLICE;
   const terrain = new THREE.Mesh(terrainGeometry, terrainMaterials);
   terrain.receiveShadow = true;
   terrain.castShadow = false;
   terrain.name = 'level-heightfield';
   addStaticMesh(terrain);
   materials.push(...terrainMaterials);
+  yield PREPARATION_SLICE;
 
   // -- Kerbs, walls, bollards ---------------------------------------------
   // Merged per material into one geometry each, so the plaza's four bollards
@@ -783,6 +817,7 @@ export function createTerrain(
     throw new Error(`Feature block emission/price mismatch: ${reason}`);
   };
   for (const [id, colliders] of byMaterial) {
+    yield PREPARATION_SLICE;
     const appearance = paintedAppearance(id, plan.palette);
     const boxPositions: number[] = [];
     const boxNormals: number[] = [];
@@ -873,7 +908,8 @@ export function createTerrain(
   // proxy boxes over the prop meshes. Props are built and freed with the level
   // because one outliving the terrain it was placed against is a leak with no
   // symptom until the GPU object count stops plateauing.
-  const props = createProps(plan, recipe, context, { sharedVegetation: sharedSurface,
+  yield PREPARATION_SLICE;
+  const props = yield* createPropsSteps(plan, recipe, context, { sharedVegetation: sharedSurface,
     metricFacades: composition.environmentSupplements?.metric ?? null,
     vegetationPrice: composition.environmentSupplements?.vegetationPrice ?? null,
     authoredCanopies: composition.environmentSupplements?.authoredCanopies ?? null,
@@ -885,8 +921,10 @@ export function createTerrain(
   // above, built and freed with the terrain for exactly the same reason, and
   // needing no second world description from this file: the renderer samples
   // each finished ribbon edge from the plan's own heightfield.
+  yield PREPARATION_SLICE;
   const markings = createMarkings(plan, context, composition.environmentSupplements?.wayfinding.runs ?? []);
   group.add(markings.group);
+  yield PREPARATION_SLICE;
 
   // M13 Phase 2's potholes, on exactly the terms the paint above is held to and
   // for the same reasons: built from `plan.hazards` alone, owning their own
@@ -896,6 +934,7 @@ export function createTerrain(
   // was drawn by the heightfield above.
   const hazards = createHazards(plan, context);
   group.add(hazards.group);
+  yield PREPARATION_SLICE;
 
   // The props view reports its own Ultra bytes (the facade maps) when it has
   // any; read defensively so this file does not depend on that field's shape.
@@ -913,7 +952,7 @@ export function createTerrain(
   // ~30 MB of JavaScript doubles alive for the world's lifetime (2026-10-05).
   positions.length = 0; normals.length = 0; colors.length = 0; indices.length = 0;
 
-  return {
+  const view: TerrainView = {
     group,
     cellsDrawn,
     markings,
@@ -969,7 +1008,9 @@ export function createTerrain(
       group.removeFromParent();
     },
   };
-  } catch (error) { privateFeatureBlocks?.dispose(); throw error; }
+  completed = true;
+  return view;
+  } finally { if (!completed) privateFeatureBlocks?.dispose(); }
 }
 
 /**

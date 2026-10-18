@@ -49,6 +49,7 @@ import type {
 } from '../Renderer.ts';
 import { createSky, cumulusSeedFor, skyParamsFor, type SkyOptions, type SkyTexture } from '../sky.ts';
 import type { TerrainView } from '../terrain.ts';
+import { runSteps, type Steps } from '../../shared/preparationSteps.ts';
 import {
   cubeTargetBytes,
   ultraEnvironmentSourceBytes,
@@ -157,6 +158,18 @@ export interface UltraHost {
     context: UltraBuildContext | null,
     beforeBuild?: () => void,
   ): TerrainView;
+  /**
+   * Optional: `installTerrain` as a step generator (`shared/preparationSteps.ts`),
+   * the same build with label-free slices. Only the ordinary branch of
+   * `installWorldSteps` delegates to it (the boot path); a host without it
+   * builds through `installTerrain`, and every other install is synchronous.
+   */
+  installTerrainSteps?(
+    plan: LevelPlan,
+    recipe: BuildRecipe,
+    context: UltraBuildContext | null,
+    beforeBuild?: () => void,
+  ): Steps<TerrainView>;
   /**
    * The Ultra sky (T8): W4's `createSky(look, ultraSkyOptions(maxAnisotropy,
    * cloudSeed))`, with `cloudSeed` the installed plan's `cumulusSeedFor(plan.id)`.
@@ -1210,6 +1223,22 @@ export class UltraRuntime {
     selection: PresentationSelection,
     overrideId: PresentationRecipeId | undefined,
   ): TerrainView {
+    return runSteps(this.installWorldSteps(plan, selection, overrideId));
+  }
+
+  /**
+   * `installWorld` as a step generator (`shared/preparationSteps.ts`). **Only
+   * the ordinary branch slices** (its terrain build, through
+   * `UltraHost.installTerrainSteps`); the Ultra branch — retire, GL watch,
+   * light, ordered activation, the installed-terrain fallback — is the
+   * synchronous code verbatim with no slice, so M39's ordered activation and
+   * per-stage GL-error reads stay one uninterrupted task.
+   */
+  *installWorldSteps(
+    plan: LevelPlan,
+    selection: PresentationSelection,
+    overrideId: PresentationRecipeId | undefined,
+  ): Steps<TerrainView> {
     this.plan = plan;
     this.selection = selection;
     this.overrideId = overrideId;
@@ -1223,7 +1252,7 @@ export class UltraRuntime {
     if (decision.recipe === null) {
       this.teardown('world');
       lighting.apply(plan.look, 'ordinary');
-      return this.install(plan, selection.recipe, null);
+      return yield* this.installSteps(plan, selection.recipe, null);
     }
 
     // Staying on (or entering) Ultra: only this world's pieces go. The tier's
@@ -2083,6 +2112,20 @@ export class UltraRuntime {
     return beforeBuild === undefined
       ? this.host.installTerrain(plan, recipe, context)
       : this.host.installTerrain(plan, recipe, context, beforeBuild);
+  }
+
+  /** `install` with the host's step build when it has one; the same count, at the same point. */
+  private *installSteps(
+    plan: LevelPlan,
+    recipe: BuildRecipe,
+    context: UltraBuildContext | null,
+    beforeBuild?: () => void,
+  ): Steps<TerrainView> {
+    if (this.host.installTerrainSteps === undefined) return this.install(plan, recipe, context, beforeBuild);
+    this.installs += 1;
+    return beforeBuild === undefined
+      ? yield* this.host.installTerrainSteps(plan, recipe, context)
+      : yield* this.host.installTerrainSteps(plan, recipe, context, beforeBuild);
   }
 
   /**

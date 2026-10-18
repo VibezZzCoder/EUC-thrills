@@ -7,9 +7,10 @@ import { priceFeatureBlockBuild } from './featureBlockBuildPrice.ts';
 import { authoredCanopyRequestFromSearch } from './authoredCanopyOwner.ts';
 import { beginConstructionScope, withConstructionScope } from './constructionScope.ts';
 import { scopedEnvironmentSites, scopedResidentialSites, scopedStreetFronts } from './scopedSiteQueries.ts';
-import { prepareEnvironmentSupplements, priceEnvironmentSupplements, priceEnvironmentSpatialBatching,
+import { prepareEnvironmentSupplementsSteps, priceEnvironmentSupplements, priceEnvironmentSpatialBatching,
   withSpatialBatchingSupplementPrice, type PreparedEnvironmentSupplements } from './environmentSupplementPrice.ts';
-import { admitSharedGroundEdges, type GroundEdgeRefusal } from './sharedGroundEdgeAdmission.ts';
+import { admitSharedGroundEdgesSteps, type GroundEdgeRefusal } from './sharedGroundEdgeAdmission.ts';
+import { driveSteps, PREPARATION_SLICE, runSteps, type PreparationSlice, type Steps } from '../shared/preparationSteps.ts';
 import type { PreparedGroundEdges } from './sharedGroundEdgePlan.ts';
 import * as THREE from 'three';
 import { CAMERA, CHASE, EUC, FX, LIGHTING, RENDER, VEGETATION_COUCH_DETAIL } from '../data/tuning.ts';
@@ -38,7 +39,7 @@ import { createDistrictDecor, EMPTY_DISTRICT_DECOR_REPORT,
 import { installStreetFacadeOpenings } from './streetFacadeOpenings.ts';
 import { createDistrictExterior, type DistrictExterior, type DistrictExteriorReport } from './districtExterior.ts';
 import { createDistrictExteriorAppearance } from './districtExteriorAppearance.ts';
-import { createMetricFacade, type MetricFacade, type MetricFacadeReport } from './metricFacade.ts';
+import { createInstalledMetricFacade, type MetricFacade, type MetricFacadeReport } from './metricFacade.ts';
 import { metricFacadeRequestFromSearch } from './metricFacadePreparation.ts';
 import { UltraSupplements } from './ultra/ultraSupplements.ts';
 import { createEnvironmentVegetation, type EnvironmentVegetation, type EnvironmentVegetationReport } from './environmentVegetation.ts';
@@ -50,6 +51,7 @@ import { createCopRider, type CopRider } from './copRider.ts';
 import { machineForCharacter } from '../data/machines.ts';
 import { machineLook } from './machineLook.ts';
 import { createRidingRig, type RidingRig } from './ridingRig.ts';
+import { createPaneShadowTrim } from './paneShadowTrim.ts';
 import { PLAYABLE_RIDER_LOOKS, riderLook } from './riderLook.ts';
 import { DEFAULT_CHARACTER, type CharacterId } from '../data/riders.ts';
 import { createParticleField, type ParticleField } from './particles.ts';
@@ -61,7 +63,7 @@ import {
   type ResolvedVenueLook,
   type VenueLook,
 } from '../data/venueLook.ts';
-import { createTerrain, type TerrainView, type OrdinaryBoundaryReport } from './terrain.ts';
+import { createTerrainSteps, type TerrainView, type OrdinaryBoundaryReport } from './terrain.ts';
 import { freezeStaticTransforms } from './staticTransforms.ts';
 import { DEFAULT_SPATIAL_BATCH_METRES, sumSpatialBatchingDeltas, withSpatialBatchingCost,
   type SpatialBatchingDelta } from './spatialBatching.ts';
@@ -829,6 +831,24 @@ export class GameRenderer {
    */
   private perfProbe: PerfQuadProbe | null = null;
 
+  /**
+   * The couch's per-pane rider shadow trim — the owner's OD-3, 2026-10-17
+   * (`render/paneShadowTrim.ts`). `app/Game.ts` hands it the seats' rigs
+   * every frame (`syncSeatRigs`) and each pane's subject (`setPaneSubject`);
+   * `renderView` switches every *other* seat rider's limb, boot and hand
+   * shadows off for its own pass and back on in a `finally`. Only a frame of
+   * more than one pane trims: one full-canvas view — solo, or the couch join
+   * panel posing two to four chairs before a second claim splits it — keeps
+   * every rider's whole shadow.
+   */
+  private readonly paneShadowTrim = createPaneShadowTrim();
+  /**
+   * The rig each pane is about, by view: the seat's own, the one a watching
+   * outlaw follows, or null when it follows a CPU cop. Unset (or naming a rig
+   * that is no longer seated) falls back to the seat of the same index.
+   */
+  private readonly paneSubjects: (RidingRig | null | undefined)[] = [];
+
   /** The world, built from a `LevelPlan`. Disposed and rebuilt with the level. */
   private terrain: TerrainView | null = null;
   private streetLife: StreetLife | null = null;
@@ -1480,20 +1500,19 @@ export class GameRenderer {
   }
 
   /** Boot yields between real construction phases, without a second world
-   * builder or a change to Ultra's ordered activation/GL-error sequence. */
+   * builder or a change to Ultra's ordered activation/GL-error sequence.
+   * `onStage` receives only the three labelled stages; `onSlice` is asked at
+   * every label-free `PREPARATION_SLICE` inside them (null = carry on), so
+   * the boot can yield to the browser without a slice ever being a checkpoint.
+   * The Ultra branch of `installWorld` stays one uninterrupted step. */
   async setLevelAsync(plan: LevelPlan, recipe: PresentationRecipeId | undefined,
-    populationPlan: PopulationPlan, onStage: (label: string) => Promise<void>): Promise<TerrainView> {
-    const steps = this.levelBuildSteps(plan, recipe, populationPlan);
-    let step = steps.next();
-    while (!step.done) {
-      await onStage(step.value);
-      step = steps.next();
-    }
-    return step.value;
+    populationPlan: PopulationPlan, onStage: (label: string) => Promise<void>,
+    onSlice: () => Promise<void> | null = () => null): Promise<TerrainView> {
+    return driveSteps(this.levelBuildSteps(plan, recipe, populationPlan), { stage: onStage, slice: onSlice });
   }
 
   private *levelBuildSteps(plan: LevelPlan, recipe?: PresentationRecipeId,
-    populationPlan: PopulationPlan | null = null): Generator<string, TerrainView> {
+    populationPlan: PopulationPlan | null = null): Generator<string | PreparationSlice, TerrainView, void> {
     yield 'Building streets and buildings';
     const oldPreparedSupplements = this.preparedEnvironmentSupplements;
     this.population?.dispose();
@@ -1536,9 +1555,10 @@ export class GameRenderer {
     let supplements: PreparedEnvironmentSupplements, terrain: TerrainView;
     const endConstruction = beginConstructionScope();
     try {
-    supplements = prepareEnvironmentSupplements(plan, populationPlan, metricFacadeRequestFromSearch(window.location.search), authoredCanopyRequestFromSearch(window.location.search));
+    supplements = yield* prepareEnvironmentSupplementsSteps(plan, populationPlan, metricFacadeRequestFromSearch(window.location.search), authoredCanopyRequestFromSearch(window.location.search));
     this.preparedEnvironmentSupplements = supplements;
-    const edgeAdmission = admitSharedGroundEdges(plan, recipe, supplements);
+    yield PREPARATION_SLICE;
+    const edgeAdmission = yield* admitSharedGroundEdgesSteps(plan, recipe, supplements);
     this.preparedGroundEdges = edgeAdmission.prepared;
     this.groundEdgeRefusal = edgeAdmission.refusal;
     const selected = edgeAdmission.selection;
@@ -1562,16 +1582,21 @@ export class GameRenderer {
     // Their owner and borrowed appearance survive the tier rebuild, so this
     // installs them once rather than adding a second shadow pass later.
     this.districtExteriorAppearance = createDistrictExteriorAppearance();
-    const metricDescriptor = supplements.metric.descriptors;
-    this.metricFacade = metricDescriptor ? createMetricFacade(plan, metricDescriptor, this.districtExteriorAppearance) : null;
+    // The view owns the emitted geometry; the prepared owner keeps what terrain
+    // rebuilds and pricing read (`createInstalledMetricFacade`, audit §5).
+    this.metricFacade = createInstalledMetricFacade(plan, supplements.metric, this.districtExteriorAppearance);
     if (this.metricFacade) this.scene.add(this.metricFacade.group);
     if (this.metricFacade) freezeStaticTransforms(this.metricFacade.group);
-    terrain = this.ultra.installWorld(plan, selection, recipe);
+    yield PREPARATION_SLICE;
+    terrain = yield* this.ultra.installWorldSteps(plan, selection, recipe);
     } finally { endConstruction(); }
     yield 'Finishing streets and storefronts';
     this.streetLife = createStreetLife(plan, supplements.street);
+    yield PREPARATION_SLICE;
     this.environmentDecor = createEnvironmentDecor(plan, supplements.environment);
+    yield PREPARATION_SLICE;
     this.districtDecor = createDistrictDecor(plan, supplements.district);
+    yield PREPARATION_SLICE;
     this.districtExterior = createDistrictExterior(plan, { ...this.districtExteriorAppearance,
       spatialBatchMetres: DEFAULT_SPATIAL_BATCH_METRES,
       protectedOpenings: [...streetFronts(plan), ...environmentSites(plan), ...residentialSites(plan), ...parkCaseSites(plan)] }, supplements.exterior);
@@ -1579,6 +1604,7 @@ export class GameRenderer {
     yield 'Planting trees and grass';
     this.vegetation = createEnvironmentVegetation(plan, supplements.grass, this.vegetationDetail);
     this.vegetation.setDetail(this.effectiveTier() === 'ultra');
+    yield PREPARATION_SLICE;
     this.scene.add(this.streetLife.group);
     this.scene.add(this.environmentDecor.group);
     this.scene.add(this.districtDecor.group);
@@ -1856,6 +1882,20 @@ export class GameRenderer {
   }
 
   /**
+   * Is any shown trim of the pack still settling (`RidingRig.settling`)? For
+   * the held paused view (performance pass 2026-10-17): `Game.admitPausedView`
+   * keeps such a frame drawn. A hidden trim is not posed and not drawn, so
+   * its flag is not asked. Allocation-free; at most three trims.
+   */
+  get packSettling(): boolean {
+    for (let index = 0; index < this.cops.length; index += 1) {
+      const cop = this.cops[index];
+      if (cop.visible && cop.settling) return true;
+    }
+    return false;
+  }
+
+  /**
    * Place the ghost from one interpolated sample. Called from the render
    * frame, because the sample the caller holds is already interpolated.
    */
@@ -2087,6 +2127,7 @@ export class GameRenderer {
       programOwnerRoots: () => [...this.supplements.programOwnerRoots(),
         ...(this.population ? [this.population.group] : [])],
       installTerrain: (plan, recipe, context, beforeBuild) => this.installTerrain(plan, recipe, context, beforeBuild),
+      installTerrainSteps: (plan, recipe, context, beforeBuild) => this.installTerrainSteps(plan, recipe, context, beforeBuild),
       // I1: painted once per sky, `createSky(look, options)` on a miss.
       paintUltraSky: (look, cloudSeed) =>
         this.ultraSkies.paint(look, ultraSkyOptions(this.renderer.capabilities.getMaxAnisotropy(), cloudSeed)),
@@ -2131,15 +2172,31 @@ export class GameRenderer {
     context: UltraBuildContext | null,
     beforeBuild?: () => void,
   ): TerrainView {
+    return runSteps(this.installTerrainSteps(plan, recipe, context, beforeBuild));
+  }
+
+  /** `installTerrain` as slices (`shared/preparationSteps.ts`); the boot drives
+   * it through `UltraRuntime.installWorldSteps`' ordinary branch only. The
+   * construction scope spans the slices and closes on every exit. */
+  private *installTerrainSteps(
+    plan: LevelPlan,
+    recipe: BuildRecipe,
+    context: UltraBuildContext | null,
+    beforeBuild?: () => void,
+  ): Steps<TerrainView> {
     this.terrain?.dispose();
     this.terrain = null;
     // The planted `?ultrafault=build` (Fable F1): here, with the old world
     // already gone, exactly where a real builder exception would land.
     beforeBuild?.();
-    const terrain = withConstructionScope(() => createTerrain(plan, recipe, context ?? undefined,
-      { ordinaryBoundary: context === null, sharedSurface: true, sharedEdges: this.preparedGroundEdges,
-        environmentSupplements: this.preparedEnvironmentSupplements, spatialBatchMetres: DEFAULT_SPATIAL_BATCH_METRES,
-        distanceDetail: this.vegetationDetail }));
+    let terrain: TerrainView;
+    const endTerrainConstruction = beginConstructionScope();
+    try {
+      terrain = yield* createTerrainSteps(plan, recipe, context ?? undefined,
+        { ordinaryBoundary: context === null, sharedSurface: true, sharedEdges: this.preparedGroundEdges,
+          environmentSupplements: this.preparedEnvironmentSupplements, spatialBatchMetres: DEFAULT_SPATIAL_BATCH_METRES,
+          distanceDetail: this.vegetationDetail });
+    } finally { endTerrainConstruction(); }
     // The selected display bays augment composition after the unchanged
     // terrain builder. Its atlas/shadow owners remain the same; shared edge
     // triangles are already emitted and inclusively priced before this step.
@@ -2747,6 +2804,51 @@ export class GameRenderer {
   }
 
   /**
+   * The seats' rigs, in seat order — OD-3's other riders (perf item
+   * "riders", 2026-10-17). Read every frame by `Game.render` before its view
+   * loop: allocation-free while the seating is unchanged, so no seat path
+   * (spawn, despawn, a character swap, a boot) has to remember to call it.
+   */
+  syncSeatRigs(seats: readonly { readonly rig: RidingRig }[]): void {
+    this.paneShadowTrim.sync(seats);
+  }
+
+  /** Which rig pane `view` is about (OD-3): its own rider, a followed seat's, or null. */
+  setPaneSubject(view: number, rig: RidingRig | null): void {
+    this.paneSubjects[view] = rig;
+  }
+
+  /** The rig pane `view` keeps whole, resolved against the seats as last synced. */
+  private paneSubject(view: number): RidingRig | null {
+    const rigs = this.paneShadowTrim.rigs;
+    const named = this.paneSubjects[view];
+    if (named === null) return null;
+    if (named !== undefined && rigs.includes(named)) return named;
+    return rigs[view] ?? null;
+  }
+
+  /**
+   * Switch off the limb shadows of every seated rider the pane is not about,
+   * plus — inside the quad probe — every planted rig it is not about. A no-op
+   * with shadows off, and in a frame of one pane (`panes`): OD-3 is a
+   * split-screen trim, so a single full-canvas view — solo, or the join
+   * panel's posed chairs — trims nothing whatever is seated.
+   */
+  private trimOtherRiders(panes: number, subject: RidingRig | null): void {
+    if (panes <= 1 || !this.sun.castShadow) return;
+    const rigs = this.paneShadowTrim.rigs;
+    for (let index = 0; index < rigs.length; index += 1) {
+      if (rigs[index] !== subject) this.paneShadowTrim.trim(rigs[index]);
+    }
+    const probe = this.perfProbe;
+    if (probe === null) return;
+    for (let index = 0; index < probe.rigs.length; index += 1) {
+      const rig = probe.rigs[index].rig;
+      if (rig !== subject) this.paneShadowTrim.trim(rig);
+    }
+  }
+
+  /**
    * Draw one view into its own half of the canvas — M25 Phase 3.
    *
    * The caller sets whatever is per-pass *before* calling: this view's camera
@@ -2803,8 +2905,13 @@ export class GameRenderer {
     this.squirrels?.prepareView(camera, this.viewCameras.length);
     this.population?.prepareView(camera, this.sun.castShadow ? this.sun.shadow.camera : undefined);
     try {
+      // OD-3: in a split frame, this pane's shadow pass carries every other
+      // seat rider's machine, torso and head, never their limbs, boots or
+      // hands; put back below whatever happens, so no flag outlives its pane.
+      this.trimOtherRiders(this.viewCameras.length, this.paneSubject(view));
       this.renderer.render(this.scene, camera);
     } finally {
+      this.paneShadowTrim.restore();
       this.population?.restoreView();
       this.squirrels?.restoreView();
     }
@@ -3101,7 +3208,15 @@ export class GameRenderer {
       this.renderer.setViewport(rect.x, rect.y, rect.width, rect.height);
       this.renderer.setScissor(rect.x, rect.y, rect.width, rect.height);
       this.renderer.setScissorTest(true);
-      this.renderer.render(this.scene, camera);
+      // The probe measures the four-seat frame the game draws, so each pane
+      // trims the riders it is not about exactly as a real seat pass does
+      // (OD-3): pane 0 is the ridden rider's, pane n the n-th planted rig's.
+      try {
+        this.trimOtherRiders(4, pane === 0 ? this.paneSubject(0) : probe.rigs[pane - 1].rig);
+        this.renderer.render(this.scene, camera);
+      } finally {
+        this.paneShadowTrim.restore();
+      }
     }
   }
 

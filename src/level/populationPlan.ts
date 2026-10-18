@@ -16,6 +16,7 @@ import { POPULATION_AUTHORING } from '../data/tuning.ts';
 import type { BoxCollider, Hazard, LevelPlan, Prop, Target } from './plan.ts';
 import { centrelineAt, headingAt, surfaceHeightAt, type PlacedSegment } from './segments.ts';
 import { hash128 } from './planDigest.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 import { physicalPopulationHull, transformPopulationHull, type PopulationHullPrism } from '../shared/populationHull.ts';
 import { PlanTerrainSampler } from '../simulation/planSampler.ts';
 import { exactBuildingBody } from './protectedSiteEligibility.ts';
@@ -1214,6 +1215,18 @@ export function withPopulationAuthoringMemo<T>(run: () => T): T {
   footprintMemo = new WeakMap(); coverageMemo = new WeakMap();
   try { return run(); } finally { footprintMemo = undefined; coverageMemo = undefined; }
 }
+/** The same scope around a step generator (`shared/preparationSteps.ts`).
+ * The memos are module state, so they stay open while the generator is
+ * suspended; the finally drops them on completion, on a throw and on
+ * `return()` (the async driver closes an abandoned generator). Entries are
+ * value-checked, so even an interleaved preparation reads exact answers. */
+export function* withPopulationAuthoringMemoSteps<T>(run: () => Steps<T>): Steps<T> {
+  if (footprintMemo) return yield* run();
+  footprintMemo = new WeakMap(); coverageMemo = new WeakMap();
+  try { return yield* run(); } finally { footprintMemo = undefined; coverageMemo = undefined; }
+}
+/** Test probe: is an authoring memo scope open? */
+export function populationAuthoringMemoOpen(): boolean { return footprintMemo !== undefined; }
 function sameScalars(one: readonly number[], two: readonly number[]): boolean {
   if (one.length !== two.length) return false;
   for (let index = 0; index < one.length; index += 1) if (!Object.is(one[index], two[index])) return false;
@@ -2518,36 +2531,57 @@ export function buildPopulationPlan(
   sampler: TerrainSampler = new PlanTerrainSampler(plan),
   context: PopulationValidationContext = createPopulationValidationContext(plan),
 ): PopulationPlan {
-  return withPopulationAuthoringMemo(() => buildPopulationPlanIn(plan, authoredPaths, sampler, context));
+  return runSteps(buildPopulationPlanSteps(plan, authoredPaths, sampler, context));
 }
-function buildPopulationPlanIn(
+/** `buildPopulationPlan` as slices. A plain function returning the scope
+ * generator, so the defaults are evaluated at the call, before the scope opens. */
+export function buildPopulationPlanSteps(
+  plan: LevelPlan, authoredPaths: readonly AuthoredPopulationPath[] | undefined,
+  sampler: TerrainSampler = new PlanTerrainSampler(plan),
+  context: PopulationValidationContext = createPopulationValidationContext(plan),
+): Steps<PopulationPlan> {
+  return withPopulationAuthoringMemoSteps(() => buildPopulationPlanInSteps(plan, authoredPaths, sampler, context));
+}
+function* buildPopulationPlanInSteps(
   plan: LevelPlan, authoredPaths: readonly AuthoredPopulationPath[] | undefined,
   sampler: TerrainSampler, context: PopulationValidationContext,
-): PopulationPlan {
+): Steps<PopulationPlan> {
   contextFor(plan, context);
+  yield PREPARATION_SLICE;
   const rejected: { pathId: string; reason: RejectionReason }[] = [];
   const activityWalks = (plan.populationActivityWalks ?? []).filter(walk => {
     const reason = districtActivityWalkReason(plan,walk,sampler,context);
     if (reason) { rejected.push({ pathId: walk.id, reason }); return false; }
     return true;
   });
+  yield PREPARATION_SLICE;
   const unique = new Set<string>();
-  const movingPaths = connectedPaths((authoredPaths ?? []).flatMap(source => {
+  // Was a flatMap callback; a loop, so each authored source can end a slice.
+  // Same visiting order, the same one-level flattening, the same in-place sort.
+  const fromSources: PopulationPath[] = [];
+  for (const source of authoredPaths ?? []) {
     if (source.id.startsWith('district-activity/walk/') && !activityWalks.some(walk => walk.pathId === source.id)) {
-      rejected.push({ pathId: source.id, reason: 'invalid-source' }); return [];
+      rejected.push({ pathId: source.id, reason: 'invalid-source' }); continue;
     }
-    if (unique.has(source.id)) { rejected.push({ pathId: source.id, reason: 'invalid-source' }); return []; }
-    unique.add(source.id); return pathsFromSource(plan, source, sampler, rejected, context);
-  }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    if (unique.has(source.id)) { rejected.push({ pathId: source.id, reason: 'invalid-source' }); continue; }
+    unique.add(source.id);
+    for (const path of pathsFromSource(plan, source, sampler, rejected, context)) fromSources.push(path);
+    yield PREPARATION_SLICE;
+  }
+  const movingPaths = connectedPaths(fromSources.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const parking = parkingSupport(plan, sampler, rejected, context);
+  yield PREPARATION_SLICE;
   const social = districtSocialSupport(plan, sampler, rejected, context);
+  yield PREPARATION_SLICE;
   const paths = [...movingPaths, ...parking.paths, ...social.paths];
   const ownedActivityWalks = new Set((plan.populationActivitySites ?? []).map(site => `${site.id}/facade-walk`));
   const ordinaryAnchorPaths = movingPaths.filter(path => ![...ownedActivityWalks].some(id => path.id.startsWith(`${id}/clear-`)));
   const anchors = [...anchorsFromPaths(plan, ordinaryAnchorPaths), ...parking.anchors, ...social.anchors];
   const admittedWalks = activityWalks.filter(walk => paths.some(path =>
     path.id === `${walk.pathId}/clear-0` && path.lengthMetres >= R.minimumWalkMetres));
+  yield PREPARATION_SLICE;
   const actors = actorsFromPaths(plan, paths, anchors, sampler, context, admittedWalks);
+  yield PREPARATION_SLICE;
   const inactiveActivityWalks = plan.districtActivity?.walkRevision === R.activityWalkPolicyRevision
     ? admittedWalks.filter(walk => !actors.some(actor => actor.activityWalkId === walk.id)).map(walk => ({
       walkId: walk.id, pathId: walk.pathId, reason: 'no-initial-actor-admitted' as const })) : [];

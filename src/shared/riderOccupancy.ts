@@ -204,6 +204,19 @@ function prism(component: 'wheel' | 'human', b: Box, pose: RiderOccupancyPose): 
     halfLength: (b.maxZ - b.minZ) / 2, baseY: pose.y + b.minY, topY: pose.y + b.maxY };
 }
 
+/** The wheel's own box: the first statements of `buildOccupancy`, shared verbatim. */
+function wheelOccupancy(p: RiderOccupancyPose, k: RiderOccupancyCoefficients): { groundLean: Q; machineRoll: number; wheel: Box } {
+  const a = k.stance;
+  const groundLean = mul(euler(p.groundPitch, 0, p.groundRoll), euler(p.wheelPitch, 0, -p.rollAngle));
+  const machineRoll = -(p.wobbleRoll + p.styleRoll) + a.restWheelLean * p.restFactor - p.wheelCrashLean;
+  const machine = mul(groundLean, euler(0, p.wobbleYaw + p.styleYaw + p.wheelCrashSpin, machineRoll));
+  const machineOrigin = rotate(groundLean, [0, p.wheelCrashPop, 0]);
+  const wheel = freshBox();
+  transformedBox(wheel, k.wheelTyre, machineOrigin, machine);
+  transformedBox(wheel, k.wheelBody, add(machineOrigin, rotate(machine, [0, p.suspensionOffset, 0])), machine);
+  return { groundLean, machineRoll, wheel };
+}
+
 /**
  * Wheel and human stay separate through every crash/recovery blend. A human
  * prism is the union of its own articulated parts, never of the distant wheel.
@@ -219,13 +232,7 @@ function buildOccupancy(p: RiderOccupancyPose, k: RiderOccupancyCoefficients, en
   const tight = k.tightLimbs === true && rag <= 0;
   const active = (1 - rest) * (1 - crash), reverse = clamp01(p.reverseBlend) * active;
   const sway = clamp(p.styleSway, -1, 1) * active, wobble = clamp01(p.wobbleFight) * active;
-  const groundLean = mul(euler(p.groundPitch, 0, p.groundRoll), euler(p.wheelPitch, 0, -p.rollAngle));
-  const machineRoll = -(p.wobbleRoll + p.styleRoll) + a.restWheelLean * p.restFactor - p.wheelCrashLean;
-  const machine = mul(groundLean, euler(0, p.wobbleYaw + p.styleYaw + p.wheelCrashSpin, machineRoll));
-  const machineOrigin = rotate(groundLean, [0, p.wheelCrashPop, 0]);
-  const wheel = freshBox();
-  transformedBox(wheel, k.wheelTyre, machineOrigin, machine);
-  transformedBox(wheel, k.wheelBody, add(machineOrigin, rotate(machine, [0, p.suspensionOffset, 0])), machine);
+  const { groundLean, machineRoll, wheel } = wheelOccupancy(p, k);
 
   let root = rotate(groundLean, [p.crashLateral, p.suspensionOffset - p.crashDrop, p.crashForward]);
   let rootQ = mul(groundLean, euler(p.crashTumble, 0, p.crashRoll));
@@ -368,6 +375,16 @@ function buildOccupancy(p: RiderOccupancyPose, k: RiderOccupancyCoefficients, en
     }
   }
   return { wheel: prism('wheel', wheel, p), human: prism('human', human, p) };
+}
+
+/**
+ * The wheel prism alone, bit-identical to `buildRiderOccupancy(...).wheel` and
+ * `buildRiderOccupancyEnvelope(...).wheel` (neither role nor envelope reaches the
+ * wheel box). Keeps the only throw the full build can raise for a pose.
+ */
+export function buildRiderWheelOccupancy(pose: RiderOccupancyPose, coefficients: RiderOccupancyCoefficients): RiderOccupancyPrism {
+  if (clamp01(pose.ragdollBlend) > 0 && pose.ragdoll.length < 33) throw new Error('Active rider occupancy requires eleven world-space ragdoll particles');
+  return prism('wheel', wheelOccupancy(pose, coefficients).wheel, pose);
 }
 
 export function buildRiderOccupancy(pose: RiderOccupancyPose, coefficients: RiderOccupancyCoefficients): RiderOccupancy {

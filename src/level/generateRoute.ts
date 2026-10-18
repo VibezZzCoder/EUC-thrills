@@ -2,11 +2,12 @@
 import { CITY_ROUTE_FLOOR_METRES, layTownRing, quarterFrontage, type RingQuarter } from './cityRing.ts';
 import { townDressing } from './townDressing.ts';
 import { generatedPopulationRequests } from './generatedPopulationRequests.ts';
-import { generatedTrafficLoopCandidates, validateGeneratedTrafficLoops } from './generatedTrafficLoops.ts';
+import { generatedTrafficLoopCandidates, validateGeneratedTrafficLoopsSteps } from './generatedTrafficLoops.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 import type { PropKind } from '../data/props.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 import {
-  buildLevelPlan,
+  buildLevelPlanSteps,
   fieldHeightAt,
   resolveTargets,
   type CheckpointSpec,
@@ -1648,6 +1649,20 @@ export function generateLevel(
   targetProbeMetres?: number,
   topSpeedMph?: number,
 ): GeneratedLevel {
+  return runSteps(generateLevelSteps(seed, hazardProbeMetres, targetProbeMetres, topSpeedMph));
+}
+/**
+ * `generateLevel` as slices (`shared/preparationSteps.ts`, 2026-10-17 audit §3):
+ * between attempts, after the layout, inside and after the plan build, after the
+ * targets, the validator and the render budget, and per traffic-loop candidate.
+ * The same statements in the same order; the boot drives it with a time budget.
+ */
+export function* generateLevelSteps(
+  seed: string | SeedSet,
+  hazardProbeMetres?: number,
+  targetProbeMetres?: number,
+  topSpeedMph?: number,
+): Steps<GeneratedLevel> {
   const label = seedLabel(seed);
   const rejections: { attempt: number; reasons: string[]; contracts: string[] }[] = [];
   // One wheel per build, read once: the placement passes and the contracts that
@@ -1659,6 +1674,7 @@ export function generateLevel(
   const targetRules = topSpeedMph === undefined ? TARGET_RULES : targetRulesFor(rideability);
 
   for (let attempt = 0; attempt < GENERATION.maxAttempts; attempt += 1) {
+    if (attempt > 0) yield PREPARATION_SLICE;
     const streams = createSeedStreams(attemptSeed(seed, attempt));
     const attempted = layRoute(streams, hazardRules);
     const laid = attempted.route;
@@ -1666,9 +1682,10 @@ export function generateLevel(
       rejections.push({ attempt, reasons: [attempted.reason], contracts: ['layout'] });
       continue;
     }
+    yield PREPARATION_SLICE;
 
     const populationRequests = generatedPopulationRequests(laid.placed, laid.quarterOf);
-    const builtPlan = buildLevelPlan(laid.graph, {
+    const builtPlan = yield* buildLevelPlanSteps(laid.graph, {
       id: `${GENERATED_LEVEL_PREFIX}${label}`,
       spawn: SPAWN,
       // Grass at the route's own start height, exactly as the slice does it, so
@@ -1719,6 +1736,7 @@ export function generateLevel(
       // loop for the same reason.
       ...(targetProbeMetres === undefined ? {} : { targetProbeMetres }),
     });
+    yield PREPARATION_SLICE;
 
     // -- Targets — M14 ----------------------------------------------------
     //
@@ -1743,6 +1761,7 @@ export function generateLevel(
       ? plan
       // Absent, never empty — `LevelPlan.targets` states the contract.
       : { ...plan, targets: resolvedTargets };
+    yield PREPARATION_SLICE;
 
     const layout: RouteLayout = {
       plan: planWithTargets,
@@ -1773,14 +1792,16 @@ export function generateLevel(
       });
       continue;
     }
+    yield PREPARATION_SLICE;
 
     const cost = withinBudgetNumbers(layout);
+    yield PREPARATION_SLICE;
     // Population never retries/re-prices/re-draws the accepted source route.
     // Vehicle joins are optional plain traces, validated against the actual
     // finished target/hazard/lap/solid footprint after admission. A failed loop
     // stays absent whole; it cannot become a reversing street shuttle.
     const trafficCandidates = generatedTrafficLoopCandidates(laid.placed, laid.quarterOf);
-    const traffic = validateGeneratedTrafficLoops(planWithTargets, trafficCandidates);
+    const traffic = yield* validateGeneratedTrafficLoopsSteps(planWithTargets, trafficCandidates);
     const populationPaths = [...(planWithTargets.populationPaths ?? []), ...traffic.authored];
     const authoredPlan: LevelPlan = populationPaths.length > 0
       ? { ...planWithTargets, populationPaths } : planWithTargets;
@@ -1813,8 +1834,11 @@ export function generateLevel(
   // **The fallback is judged by the wheel that asked for the route too.** It is
   // an emitted world (master §6.4), so a session riding at 65 that falls back to
   // the slice is riding the slice at 65 and the verdict has to say so.
+  yield PREPARATION_SLICE;
   const layout = sliceRouteLayout();
+  yield PREPARATION_SLICE;
   const verdict = validateRoute(layout, rideability);
+  yield PREPARATION_SLICE;
   const cost = withinBudgetNumbers(layout);
   return {
     plan: layout.plan,

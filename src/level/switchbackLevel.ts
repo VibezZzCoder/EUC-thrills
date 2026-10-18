@@ -6,7 +6,8 @@ import { CHALLENGE, EUC, PHYSICS, TRACK_DAY } from '../data/tuning.ts';
 import type { MaterialId } from '../data/surfaces.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 import { resolveVenueLook, type VenueLook } from '../data/venueLook.ts';
-import { buildLevelPlan, type CheckpointSpec } from './buildPlan.ts';
+import { buildLevelPlanSteps, type CheckpointSpec } from './buildPlan.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 import {
   blockExclusions,
   hillsideBlocks,
@@ -2378,6 +2379,14 @@ export function createSwitchbackLevel(
   hazardProbeMetres?: number,
   targetProbeMetres?: number,
 ): LevelPlan {
+  return runSteps(createSwitchbackLevelSteps(hazardProbeMetres, targetProbeMetres));
+}
+/** `createSwitchbackLevel` as slices (`shared/preparationSteps.ts`): the field build is
+ * `buildLevelPlanSteps`; the same statements in the same order. */
+export function* createSwitchbackLevelSteps(
+  hazardProbeMetres?: number,
+  targetProbeMetres?: number,
+): Steps<LevelPlan> {
   // **The zones ride on the finished plan rather than through the builder**,
   // which is the same shape `look` would have taken if it were not shared:
   // `buildLevelPlan` knows nothing about features, the zones are already
@@ -2386,7 +2395,7 @@ export function createSwitchbackLevel(
   // front of every producer that has no use for it. Nothing it emits is
   // touched, so the world, its colliders and its render bill are the plan the
   // builder returned (`switchbackLevel.test.ts`).
-  const plan = buildLevelPlan(SWITCHBACK_GRAPH, {
+  const plan = yield* buildLevelPlanSteps(SWITCHBACK_GRAPH, {
     id: 'switchback-r5',
     spawn: SWITCHBACK_SPAWN,
     surround: { ...SWITCHBACK_SURROUND },
@@ -2415,6 +2424,7 @@ export function createSwitchbackLevel(
     ...(hazardProbeMetres === undefined ? {} : { hazardProbeMetres }),
     ...(targetProbeMetres === undefined ? {} : { targetProbeMetres }),
   });
+  yield PREPARATION_SLICE;
   return { ...plan, trickZones: SWITCHBACK_TRICK_ZONES,
     routeSigns: switchbackRouteSigns(plan, PLACED, SWITCHBACK_SIGNAGE, SWITCHBACK_SIGNED_FEATURES),
     // The original sampler's rail-side plateau is clear from s23.5..44.5

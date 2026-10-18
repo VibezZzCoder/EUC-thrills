@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 /** Original deterministic grass admission and partition, before geometry allocation. */
-import { POTHOLE, ENVIRONMENT_VEGETATION as RULES } from '../data/tuning.ts';
+import { POTHOLE, ENVIRONMENT_VEGETATION as RULES, LOADING } from '../data/tuning.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 import type { BoxCollider, GroundSurfaceTriangle, LevelPlan } from '../level/plan.ts';
 import { PlanTerrainSampler } from '../simulation/planSampler.ts';
 import { createGroundSample } from '../simulation/world.ts';
@@ -156,7 +157,17 @@ function exclusionIndex(plan: LevelPlan, discs: readonly VegetationExclusionDisc
 /** Closed leaf volumes with a curved, tapered spine. Short splayed leaves
  * form a turf clump rather than a handful of upright needles. */
 
-export function prepareEnvironmentVegetation(plan: LevelPlan, exclusionDiscs: readonly VegetationExclusionDisc[] = []) {
+/** The grass preparation (formerly typed as this function's inferred return). */
+export interface PreparedEnvironmentVegetation {
+  source: LevelPlan; clumps: Clump[]; ordinaryClumps: number; corridorClumps: number; populationCapped: boolean;
+  candidateChecks: number; stride: number; batches: Map<string, { clump: Clump; ordinary: boolean }[]>;
+}
+export function prepareEnvironmentVegetation(plan: LevelPlan, exclusionDiscs: readonly VegetationExclusionDisc[] = []): PreparedEnvironmentVegetation {
+  return runSteps(prepareEnvironmentVegetationSteps(plan, exclusionDiscs));
+}
+/** `prepareEnvironmentVegetation` as slices (`shared/preparationSteps.ts`): one
+ * per lattice row and one per `LOADING.vegetationChecksPerSlice` candidate checks. */
+export function* prepareEnvironmentVegetationSteps(plan: LevelPlan, exclusionDiscs: readonly VegetationExclusionDisc[] = []): Steps<PreparedEnvironmentVegetation> {
   const field = plan.heightfield;
   if (![field.originX, field.originZ, field.spacing].every(Number.isFinite) || field.spacing <= 0
     || !Number.isSafeInteger(field.columns) || !Number.isSafeInteger(field.rows) || field.columns < 2 || field.rows < 2
@@ -173,10 +184,13 @@ export function prepareEnvironmentVegetation(plan: LevelPlan, exclusionDiscs: re
   while (Math.ceil(Math.max(0, maxX - minX + 1) / stride) * Math.ceil(Math.max(0, maxZ - minZ + 1) / stride)
     > RULES.maximumCandidateChecks) stride++;
   const clumps: Clump[] = [];
+  yield PREPARATION_SLICE;
   const distances = corridorDistances(plan);
+  yield PREPARATION_SLICE;
   const near: { ix: number; iz: number; rank: number }[] = [], far: typeof near = [];
   const reach = Math.min(254, Math.ceil(RULES.corridorCoverReachMetres / field.spacing));
   for (let iz = minZ; iz <= maxZ; iz++) for (let ix = minX; ix <= maxX; ix++) {
+    if (ix === minX) yield PREPARATION_SLICE;
     const column = Math.floor((ix * RULES.latticeMetres - field.originX) / field.spacing);
     const row = Math.floor((iz * RULES.latticeMetres - field.originZ) / field.spacing);
     if (column < 0 || row < 0 || column >= field.columns - 1 || row >= field.rows - 1) continue;
@@ -187,7 +201,9 @@ export function prepareEnvironmentVegetation(plan: LevelPlan, exclusionDiscs: re
     (corridor ? near : far).push({ ix, iz, rank: positionHash01(ix, iz, 30) });
   }
   const sort = (a: typeof near[number], b: typeof near[number]) => a.rank - b.rank || a.ix - b.ix || a.iz - b.iz;
+  yield PREPARATION_SLICE;
   near.sort(sort); far.sort(sort);
+  yield PREPARATION_SLICE;
   const nearLimit = Math.min(near.length, Math.floor(RULES.maximumCandidateChecks * RULES.corridorCandidateShare));
   const farLimit = Math.min(far.length, RULES.maximumCandidateChecks - nearLimit);
   near.length = Math.min(near.length, RULES.maximumCandidateChecks - farLimit);
@@ -212,6 +228,7 @@ export function prepareEnvironmentVegetation(plan: LevelPlan, exclusionDiscs: re
   for (const [population, corridor] of [[near, true], [far, false]] as const) {
     for (const { ix, iz } of population) {
       candidateChecks++;
+      if (candidateChecks % LOADING.vegetationChecksPerSlice === 0) yield PREPARATION_SLICE;
       const density = RULES.minimumDensity
         + RULES.broadDensity * positionHash01(Math.floor(ix / RULES.broadClusterCells), Math.floor(iz / RULES.broadClusterCells), 21)
         + RULES.fineDensity * positionHash01(Math.floor(ix / RULES.fineClusterCells), Math.floor(iz / RULES.fineClusterCells), 22);
@@ -241,7 +258,9 @@ export function prepareEnvironmentVegetation(plan: LevelPlan, exclusionDiscs: re
         rank: (corridor ? 0 : 2) + positionHash01(ix, iz, 29), corridor });
     }
   }
+  yield PREPARATION_SLICE;
   clumps.sort((a, b) => a.rank - b.rank || a.x - b.x || a.z - b.z);
+  yield PREPARATION_SLICE;
   const populationCapped = clumps.length > RULES.ultraClumpLimit;
   clumps.length = Math.min(clumps.length, RULES.ultraClumpLimit);
   const ordinaryClumps = Math.min(RULES.ordinaryClumpLimit, Math.ceil(clumps.length * RULES.ordinaryPopulationShare));
@@ -262,4 +281,3 @@ export function prepareEnvironmentVegetation(plan: LevelPlan, exclusionDiscs: re
   return { source: plan, clumps, ordinaryClumps, corridorClumps, populationCapped,
     candidateChecks, stride, batches };
 }
-export type PreparedEnvironmentVegetation = ReturnType<typeof prepareEnvironmentVegetation>;

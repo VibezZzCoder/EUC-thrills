@@ -10,6 +10,9 @@ import { groundBoundaryPolicy, groundEdgeCapCells, groundDrivableCapCells,
 import { createSharedBoundaryTint } from './sharedBoundaryTint.ts';
 import { sharedGroundCode } from './sharedGroundCodes.ts';
 import { withSharedGroundContours } from './sharedGroundContours.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
+import { preparedBoundaryFill } from './preparedBoundaryFill.ts';
+import type { PreparedGroundEdges } from './sharedGroundEdgePlan.ts';
 
 export const GROUND_BOUNDARY_ATTRIBUTES = Object.freeze({
   edge: 'groundBoundaryEdge', tint: 'groundBoundaryTint', mode: 'groundBoundaryMode',
@@ -45,15 +48,106 @@ export function ordinaryBoundaryField(plan: LevelPlan,
   return boundaryData(plan, drawn).fill;
 }
 
-/** The ordinary tier's albedo-only edge treatment. No AO, normals, maps or samplers. */
+/**
+ * Value equality for the reuse check, failing closed. The policy it compares is
+ * rebuilt on every call (`groundBoundaryPolicy`), so identity would never reuse;
+ * equal means the same prototype and, recursively, the same own keys in the same
+ * order (plain objects and arrays), the same entries in the same iteration order
+ * (Maps: keys and values; Sets: members), and `Object.is` for everything else.
+ * Any other object kind (typed array, Date, class instance) is equal only to
+ * itself, so a value this cannot see inside never admits a stale fill. Exported
+ * for its negative controls (`preparedBoundaryFill.test.ts`).
+ */
+export function sameValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  const prototype = Object.getPrototypeOf(a);
+  if (prototype !== Object.getPrototypeOf(b)) return false;
+  if (a instanceof Map || a instanceof Set) {
+    const other = b as Map<unknown, unknown> | Set<unknown>;
+    if (a.size !== other.size) return false;
+    const theirs = other.entries();
+    for (const [key, value] of a.entries()) {
+      const next = theirs.next();
+      if (next.done || !sameValue(key, next.value[0]) || !sameValue(value, next.value[1])) return false;
+    }
+    return true;
+  }
+  if (prototype !== Object.prototype && prototype !== Array.prototype && prototype !== null) return false;
+  const keys = Object.keys(a), other = Object.keys(b);
+  if (keys.length !== other.length) return false;
+  for (let index = 0; index < keys.length; index++) {
+    if (keys[index] !== other[index]
+      || !sameValue((a as Record<string, unknown>)[keys[index]], (b as Record<string, unknown>)[keys[index]])) return false;
+  }
+  return true;
+}
+function sameDrawn(a: ReadonlyMap<string, readonly number[]>, b: ReadonlyMap<string, readonly number[]>): boolean {
+  if (a.size !== b.size) return false;
+  const other = b.entries();
+  for (const [surface, cells] of a) {
+    const next = other.next();
+    if (next.done || next.value[0] !== surface || next.value[1].length !== cells.length) return false;
+    const mine = next.value[1];
+    for (let index = 0; index < cells.length; index++) if (!Object.is(cells[index], mine[index])) return false;
+  }
+  return true;
+}
+/**
+ * The preparation's fill and contours when this build asks the identical
+ * question (`preparedBoundaryFill.ts`), else null and the caller computes.
+ * Identical means: the same plan, heightfield, surface array, hazards and patch
+ * lists, grid shape and spacing; an equal drawn census in the same order; an
+ * equal policy; an equal protected mask; and caps at which `boundaryData`
+ * deletes no chamfer, so its fill is `edgeFillForGrid`'s own answer.
+ */
+function preparedFillFor(plan: LevelPlan, drawn: ReadonlyMap<string, readonly number[]>,
+  prepared: PreparedGroundEdges | null): { fill: EdgeFillField; excluded: Uint8Array } | null {
+  if (!prepared || prepared.source !== plan) return null;
+  const handoff = preparedBoundaryFill(prepared), field = plan.heightfield;
+  if (!handoff || handoff.plan !== plan || handoff.heightfield !== field || handoff.surfaces !== field.surfaces
+    || handoff.columns !== field.columns || handoff.rows !== field.rows || !Object.is(handoff.spacing, field.spacing)
+    || handoff.hazards !== plan.hazards || handoff.patches !== plan.groundSurfacePatches) return null;
+  if (!(handoff.original.capCells >= 0.5 && handoff.original.drivableCapCells >= 0.5)) return null;
+  if (!sameDrawn(handoff.drawn, drawn)) return null;
+  const cap = groundEdgeCapCells(field.spacing);
+  if (!sameValue(handoff.policy, groundBoundaryPolicy(cap, Math.min(cap, groundDrivableCapCells(field.spacing))))) return null;
+  const excluded = groundPrecisePatchMask(plan, groundHazardMask(plan));
+  if (excluded.length !== handoff.protectedCells.length) return null;
+  for (let cell = 0; cell < excluded.length; cell++) if (excluded[cell] !== handoff.protectedCells[cell]) return null;
+  return { fill: handoff.contour, excluded };
+}
+
+/** The ordinary tier's albedo-only edge treatment. No AO, normals, maps or samplers.
+ * `prepared` is the admitted shared-edge preparation, if any: inside the same
+ * construction scope its fill and contours are reused when every input matches. */
 export function ordinaryBoundaryAttributes(plan: LevelPlan,
-  drawn: ReadonlyMap<string, readonly number[]>, colors: readonly number[], sharedSurface = false): {
+  drawn: ReadonlyMap<string, readonly number[]>, colors: readonly number[], sharedSurface = false,
+  prepared: PreparedGroundEdges | null = null): {
     attributes: readonly [string, THREE.BufferAttribute][];
     bytes: number; filledCells: number; fillLines: number;
   } {
+  return runSteps(ordinaryBoundaryAttributesSteps(plan, drawn, colors, sharedSurface, prepared));
+}
+/** `ordinaryBoundaryAttributes` as slices (`shared/preparationSteps.ts`). */
+export function* ordinaryBoundaryAttributesSteps(plan: LevelPlan,
+  drawn: ReadonlyMap<string, readonly number[]>, colors: readonly number[], sharedSurface = false,
+  prepared: PreparedGroundEdges | null = null): Steps<{
+    attributes: readonly [string, THREE.BufferAttribute][];
+    bytes: number; filledCells: number; fillLines: number;
+  }> {
   const field = plan.heightfield, columns = field.columns - 1;
-  const { fill: original, excluded } = boundaryData(plan, drawn);
-  const fill = sharedSurface ? withSharedGroundContours(plan, drawn, original) : original;
+  const reused = sharedSurface ? preparedFillFor(plan, drawn, prepared) : null;
+  let fill: EdgeFillField, excluded: Uint8Array;
+  if (reused) {
+    ({ fill, excluded } = reused);
+  } else {
+    const data = boundaryData(plan, drawn);
+    excluded = data.excluded;
+    yield PREPARATION_SLICE;
+    fill = sharedSurface ? withSharedGroundContours(plan, drawn, data.fill) : data.fill;
+  }
+  yield PREPARATION_SLICE;
   const first = new Int32Array(columns * (field.rows - 1)).fill(-1);
   let vertices = 0;
   for (const cells of drawn.values()) for (const cell of cells) { first[cell] = vertices; vertices += 4; }
@@ -62,6 +156,7 @@ export function ordinaryBoundaryAttributes(plan: LevelPlan,
   const mode = new Uint8Array(vertices);
   // The existing byte carries material flags as well as the two boundary bits.
   // Protected cells retain the exact neutral encoding, including brick cells.
+  yield PREPARATION_SLICE;
   for (const cells of drawn.values()) for (const cell of cells) {
     if (!excluded[cell] && SURFACES[field.surfaces[cell]]?.material === 'brick') {
       mode.fill(8, first[cell], first[cell] + 4);
@@ -79,6 +174,7 @@ export function ordinaryBoundaryAttributes(plan: LevelPlan,
   };
   const source = { r: 1, g: 1, b: 1 }, own = { r: 1, g: 1, b: 1 }, tint = { r: 1, g: 1, b: 1 };
   const sharedTint = sharedSurface ? createSharedBoundaryTint(plan) : null;
+  yield PREPARATION_SLICE;
   for (const [cell, filled] of fill.cells) {
     const at = first[cell], from = first[filled.source];
     if (at < 0 || from < 0) throw new Error('Ground boundary references an undrawn tile');

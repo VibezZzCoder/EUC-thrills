@@ -169,7 +169,12 @@ export function createGhostRider(
   // rig's shadow-casting parts, and Red Rider's saddle is merged into the
   // shell — a ghost of him on a saddleless wheel would be a different outline
   // than the rider it replays.
-  const rig: RidingRig = createRidingRig(ghostDensity(look), machine);
+  //
+  // **Unconsolidated** (perf item "riders", 2026-10-17): the ghost is
+  // translucent with `depthWrite` off, so merging two of its parts would move
+  // their blend order wherever they overlap, and the silhouette merge below
+  // reads the rig mesh for mesh. Its 26- and 24-call ceilings are this graph's.
+  const rig: RidingRig = createRidingRig(ghostDensity(look), machine, { consolidate: false });
   group.add(rig.group);
 
   // A bulky non-casting panel still changes the outline. In the ghost every

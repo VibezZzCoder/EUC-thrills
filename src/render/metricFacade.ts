@@ -4,7 +4,9 @@
 import * as THREE from 'three';
 import type { LevelPlan, Prop } from '../level/plan.ts';
 import { ULTRA_STATIC_LAYER } from './ultra/ultraRecipe.ts';
-import { metricFacadeCost, metricFacadeShadowCost, type MetricFacadePlan, type MetricSurface, type MetricFinish } from './metricFacadePlan.ts';
+import { metricFacadeCost, metricFacadeShadowCost, withoutEmittedSurfaces, type MetricFacadePlan, type MetricSurface,
+  type MetricFinish } from './metricFacadePlan.ts';
+import type { PreparedMetricFacades } from './metricFacadePreparation.ts';
 
 export interface MetricFacadeAppearance {
   readonly materials: Readonly<Record<MetricFinish, THREE.Material>>;
@@ -48,6 +50,7 @@ function bytes(geometry: THREE.BufferGeometry): number {
 
 export function createMetricFacade(level: LevelPlan, descriptors: MetricFacadePlan,
   appearance: MetricFacadeAppearance): MetricFacade {
+  if (descriptors.surfacesEmitted) throw new Error('Metric facade surfaces were released after emission');
   const expected = metricFacadeCost(descriptors), expectedShadow = metricFacadeShadowCost(descriptors), group = new THREE.Group();
   group.name = 'environment-metric-facade';
   const geometries: THREE.BufferGeometry[] = [], meshes: THREE.Mesh[] = [];
@@ -123,6 +126,11 @@ export function createMetricFacade(level: LevelPlan, descriptors: MetricFacadePl
       || actualTriangles !== expected.colourTriangles || geometries.length !== expected.geometryOwners)
       throw new Error('Metric facade CPU emission price differs from allocated buffers');
   } catch (error) { release(); disposed = true; throw error; }
+  // Every surface now lives in this view's own vertex buffers; `summary` and
+  // `expected` were taken above. Keep the slim twin (same fields by reference,
+  // no surfaces), so this view never holds the polygon records. No closure in
+  // this function captures `descriptors`, so the full plan is not retained here.
+  ownedDescriptors = withoutEmittedSurfaces(descriptors);
   return { group, get descriptors() {
       if (!ownedDescriptors) throw new Error('Disposed metric facade descriptors');
       return ownedDescriptors;
@@ -136,4 +144,18 @@ export function createMetricFacade(level: LevelPlan, descriptors: MetricFacadePl
         shadowTriangles: disposed ? 0 : expectedShadow.shadowTriangles, disposed };
     }, dispose() { if (disposed) return; disposed = true; release(); },
   };
+}
+
+/** The installed view (`GameRenderer.levelBuildSteps`): builds the view from the
+ * prepared owner's plan, then releases the plan's surface records on both holders
+ * (2026-10-17 audit §5). Nothing reads them after this: prices were taken during
+ * preparation, terrain rebuilds and `metricSourcePrice` read `replacements`, and the
+ * view's report was captured at creation. If the build throws, nothing is released. */
+export function createInstalledMetricFacade(level: LevelPlan, prepared: PreparedMetricFacades,
+  appearance: MetricFacadeAppearance): MetricFacade | null {
+  const descriptors = prepared.descriptors;
+  if (descriptors === null) return null;
+  const view = createMetricFacade(level, descriptors, appearance);
+  prepared.releaseEmittedSurfaces();
+  return view;
 }

@@ -8,6 +8,7 @@ import { createGroundSample } from '../simulation/world.ts';
 import { PROP_SIZES } from '../data/props.ts';
 import { WILDLIFE as W } from '../data/tuning.ts';
 import { positionHash01 } from '../shared/maths.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 import type { VegetationExclusionDisc } from './environmentVegetationPlan.ts';
 import { RouteSpine, createSpineSample } from '../simulation/routeSpine.ts';
 export interface SquirrelSite {
@@ -47,9 +48,137 @@ function corridorTouches(a:Point,b:Point,polygon:readonly Point[],radius:number)
   }
   return polygon.some((p,i)=>segmentDistance(a,b,p,polygon[(i+1)%polygon.length])<=radius);
 }
+/**
+ * An exact prefilter for `grassCorridor`'s scan of every non-grass precise
+ * paving triangle (2026-10-18, boot CPU). It changes which triangles are
+ * *asked*, never what any answer is: the candidates are tested with the same
+ * `corridorTouches`, in their original order, and a triangle is skipped only
+ * when that call provably returns false.
+ *
+ * Proof sketch. A triangle is "regular" when its three vertices are finite,
+ * |x|,|z| <= coordinateLimit, its longest edge L >= minimumEdgeMetres and its
+ * doubled area 2A >= 2·minimumShape·L² (shape ε = minimumShape). Skip it only
+ * when its AABB is disjoint from the corridor's AABB grown by r + guardMetres,
+ * so both corridor ends lie more than D = guardMetres from it, and every edge's
+ * AABB is disjoint from segment ab's AABB by more than r.
+ * - The edge part: segmentDistance's overlap test is exact min/max compares,
+ *   so it is false; every point-segment distance is > r + D, far above the
+ *   ~1e-11 m rounding of hypot at these magnitudes.
+ * - The inside part (the "on the line counts as inside" sign test): the three
+ *   exact crosses sum to 2A, so one is > A >= εL²/2; a point at distance > D
+ *   lies outside the triangle grown by δ = D·r_in/L, so one cross is
+ *   < −ε²·L·D/3. Each computed cross errs by at most ~2·3.3e-16·L·W with
+ *   W = 2√2·coordinateLimit, and ε² = 1e-6 > 6·3.3e-16·W/D ≈ 2.8e-10, so the
+ *   computed signs are mixed and the test says "outside".
+ * Every other triangle (degenerate, collinear, non-finite, huge, malformed)
+ * is always tested, in place — and so is a regular one whose box would be filed
+ * in more than maximumBucketsPerTriangle buckets (one near the coordinate limit
+ * would take ~1.6e8; the widest in a shipped world takes 4). Asking a triangle
+ * that can be skipped never changes an answer, so that cap is exact. Corridor
+ * ends outside the limit, or a patch list of an unexpected shape, use the
+ * original full loop. These numbers decide only how much is skipped, never an
+ * answer, so they are not tuning.
+ */
+const CORRIDOR_INDEX = Object.freeze({ cellMetres: 16, guardMetres: 2, minimumShape: 1e-3,
+  minimumEdgeMetres: 1e-3, coordinateLimit: 1e5, maximumRadiusMetres: 100, maximumBucketsPerTriangle: 64 });
+interface CorridorIndex {
+  readonly polygons: readonly (readonly Point[])[];
+  readonly always: readonly number[];
+  readonly minX: Float64Array; readonly maxX: Float64Array;
+  readonly minZ: Float64Array; readonly maxZ: Float64Array;
+  readonly originX: number; readonly originZ: number;
+  readonly columns: number; readonly rows: number;
+  readonly buckets: ReadonlyMap<number, readonly number[]>;
+  readonly stamp: Int32Array;
+  query: number;
+}
+function finiteWithin(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= CORRIDOR_INDEX.coordinateLimit;
+}
+/** The non-grass patch triangles in `grassCorridor`'s own visit order, or null
+ * when the list is not the plain shape that loop expects (it then runs as is). */
+function corridorIndex(plan: LevelPlan): CorridorIndex | null {
+  const patches = plan.groundSurfacePatches ?? [];
+  if (!Array.isArray(patches)) return null;
+  const polygons: (readonly Point[])[] = [], always: number[] = [], regular: number[] = [];
+  const bounds: number[] = [];
+  for (const patch of patches) {
+    if (patch === null || typeof patch !== 'object') return null;
+    if (patch.surface === 'grass') continue;
+    if (!Array.isArray(patch.triangles)) return null;
+    for (const triangle of patch.triangles) {
+      if (triangle === null || typeof triangle !== 'object') return null;
+      const vertices = triangle.vertices as readonly Point[], index = polygons.length;
+      polygons.push(vertices);
+      const ok = Array.isArray(vertices) && vertices.length === 3
+        && vertices.every(v => v !== null && typeof v === 'object' && finiteWithin(v.x) && finiteWithin(v.z));
+      if (!ok) { always.push(index); continue; }
+      const [p, q, s] = vertices;
+      const longest = Math.max((q.x - p.x) ** 2 + (q.z - p.z) ** 2, (s.x - q.x) ** 2 + (s.z - q.z) ** 2,
+        (p.x - s.x) ** 2 + (p.z - s.z) ** 2);
+      const doubled = Math.abs((q.x - p.x) * (s.z - p.z) - (q.z - p.z) * (s.x - p.x));
+      if (!(Math.sqrt(longest) >= CORRIDOR_INDEX.minimumEdgeMetres
+        && doubled >= 2 * CORRIDOR_INDEX.minimumShape * longest)) { always.push(index); continue; }
+      regular.push(index);
+      bounds.push(Math.min(p.x, q.x, s.x), Math.max(p.x, q.x, s.x), Math.min(p.z, q.z, s.z), Math.max(p.z, q.z, s.z));
+    }
+  }
+  const count = polygons.length;
+  const minX = new Float64Array(count), maxX = new Float64Array(count), minZ = new Float64Array(count), maxZ = new Float64Array(count);
+  let originX = Infinity, originZ = Infinity, farX = -Infinity, farZ = -Infinity;
+  for (let k = 0; k < regular.length; k++) {
+    const i = regular[k];
+    minX[i] = bounds[k * 4]; maxX[i] = bounds[k * 4 + 1]; minZ[i] = bounds[k * 4 + 2]; maxZ[i] = bounds[k * 4 + 3];
+    originX = Math.min(originX, minX[i]); farX = Math.max(farX, maxX[i]);
+    originZ = Math.min(originZ, minZ[i]); farZ = Math.max(farZ, maxZ[i]);
+  }
+  const cell = CORRIDOR_INDEX.cellMetres;
+  const columns = regular.length ? Math.floor((farX - originX) / cell) + 1 : 0;
+  const rows = regular.length ? Math.floor((farZ - originZ) / cell) + 1 : 0;
+  const buckets = new Map<number, number[]>();
+  // Monotone floor((x − origin)/cell): any AABB meeting the query box shares a bucket with it.
+  for (const i of regular) {
+    const c0 = Math.floor((minX[i] - originX) / cell), c1 = Math.floor((maxX[i] - originX) / cell);
+    const r0 = Math.floor((minZ[i] - originZ) / cell), r1 = Math.floor((maxZ[i] - originZ) / cell);
+    // Too wide to file: asked on every query instead (candidates are sorted).
+    if ((c1 - c0 + 1) * (r1 - r0 + 1) > CORRIDOR_INDEX.maximumBucketsPerTriangle) { always.push(i); continue; }
+    for (let row = r0; row <= r1; row++) for (let column = c0; column <= c1; column++) {
+      const key = row * columns + column, list = buckets.get(key);
+      if (list) list.push(i); else buckets.set(key, [i]);
+    }
+  }
+  return { polygons, always, minX, maxX, minZ, maxZ, originX, originZ, columns, rows, buckets,
+    stamp: new Int32Array(count), query: 0 };
+}
+/** Indices `grassCorridor` must ask, ascending (its original order), or null
+ * when the corridor ends fall outside the proof's limits. */
+function corridorCandidates(index: CorridorIndex, a: Point, b: Point, r: number): number[] | null {
+  if (!finiteWithin(a.x) || !finiteWithin(a.z) || !finiteWithin(b.x) || !finiteWithin(b.z)
+    || !(r >= 0 && r <= CORRIDOR_INDEX.maximumRadiusMetres)) return null;
+  const grow = r + CORRIDOR_INDEX.guardMetres;
+  const qx0 = Math.min(a.x, b.x) - grow, qx1 = Math.max(a.x, b.x) + grow;
+  const qz0 = Math.min(a.z, b.z) - grow, qz1 = Math.max(a.z, b.z) + grow;
+  const out = [...index.always];
+  if (index.columns > 0) {
+    const stamp = ++index.query, cell = CORRIDOR_INDEX.cellMetres;
+    const c0 = Math.max(0, Math.floor((qx0 - index.originX) / cell)), c1 = Math.min(index.columns - 1, Math.floor((qx1 - index.originX) / cell));
+    const r0 = Math.max(0, Math.floor((qz0 - index.originZ) / cell)), r1 = Math.min(index.rows - 1, Math.floor((qz1 - index.originZ) / cell));
+    for (let row = r0; row <= r1; row++) for (let column = c0; column <= c1; column++) {
+      const list = index.buckets.get(row * index.columns + column);
+      if (!list) continue;
+      for (const i of list) {
+        if (index.stamp[i] === stamp) continue;
+        index.stamp[i] = stamp;
+        if (index.maxX[i] < qx0 || index.minX[i] > qx1 || index.maxZ[i] < qz0 || index.minZ[i] > qz1) continue;
+        out.push(i);
+      }
+    }
+  }
+  return out.sort((x, y) => x - y);
+}
 /** Closed capsule against every nearby native cell and precise paving triangle;
  * point samples alone can miss a narrow path between two grass probes. */
-function grassCorridor(plan:LevelPlan,a:Point,b:Point):boolean {
+function grassCorridor(plan:LevelPlan,a:Point,b:Point,index:CorridorIndex|null=null):boolean {
   const f=plan.heightfield,r=W.groundMarginMetres;
   const x0=Math.max(0,Math.floor((Math.min(a.x,b.x)-r-f.originX)/f.spacing));
   const x1=Math.min(f.columns-2,Math.floor((Math.max(a.x,b.x)+r-f.originX)/f.spacing));
@@ -60,9 +189,26 @@ function grassCorridor(plan:LevelPlan,a:Point,b:Point):boolean {
     const x=f.originX+ix*f.spacing,z=f.originZ+iz*f.spacing,d=f.spacing;
     if(corridorTouches(a,b,[{x,z},{x:x+d,z},{x:x+d,z:z+d},{x,z:z+d}],r))return false;
   }
+  const candidates=index?corridorCandidates(index,a,b,r):null;
+  if(index&&candidates){
+    for(const i of candidates)if(corridorTouches(a,b,index.polygons[i],r))return false;
+    return true;
+  }
   for(const patch of plan.groundSurfacePatches??[])if(patch.surface!=='grass')for(const triangle of patch.triangles)
     if(corridorTouches(a,b,triangle.vertices,r))return false;
   return true;
+}
+/** Test-only: the exact indexed answer and the full scan, side by side. */
+export function grassCorridorForTest(plan: LevelPlan, a: Point, b: Point, indexed: boolean): boolean {
+  return grassCorridor(plan, a, b, indexed ? corridorIndex(plan) : null);
+}
+/** Test-only: which triangles the index always asks, and how many bucket entries it filed. */
+export function corridorIndexShapeForTest(plan: LevelPlan): { always: readonly number[]; filed: number } | null {
+  const index = corridorIndex(plan);
+  if (index === null) return null;
+  let filed = 0;
+  for (const list of index.buckets.values()) filed += list.length;
+  return { always: [...index.always].sort((x, y) => x - y), filed };
 }
 /** Existing through-line (or exact lap), sampled once during world preparation.
  * No inferred segment ordering, seed consumption or runtime route queries. */
@@ -97,6 +243,10 @@ function cachedGround(heights:readonly number[],normals:readonly Vec3[],progress
   return heights[a]+(heights[b]-heights[a])*t;
 }
 export function squirrelSites(plan: LevelPlan, exclusions: readonly VegetationExclusionDisc[] = []): readonly SquirrelSite[] {
+  return runSteps(squirrelSitesSteps(plan, exclusions));
+}
+/** `squirrelSites` as slices, one per candidate tree (`shared/preparationSteps.ts`). */
+export function* squirrelSitesSteps(plan: LevelPlan, exclusions: readonly VegetationExclusionDisc[] = []): Steps<readonly SquirrelSite[]> {
   const route=encounterRoute(plan),spawn=plan.spawn.position,normalFloor=Math.cos(W.maximumGroundSlopeRadians);
   const trees = (plan.props ?? []).map((p, treeIndex) => ({ p, treeIndex, rank: positionHash01(p.position.x, p.position.z, 9671) }))
     // Conifers have no exposed trunk in this kit; do not pretend they do.
@@ -109,7 +259,10 @@ export function squirrelSites(plan: LevelPlan, exclusions: readonly VegetationEx
     segments: plan.segments.map(segment => ({ ...segment, colliders: [] })) }), sample = createGroundSample();
   const candidates:{site:SquirrelSite;at:ReturnType<typeof routeLocation>;rank:number}[]=[];
   const boxes = [...plan.segments.flatMap(s => s.colliders), ...(plan.solids ?? []), ...(plan.softBodies ?? [])];
+  // Built on the first corridor question; local to this call, so nothing outlives it.
+  let corridors: CorridorIndex | null | undefined;
   for (const { p, treeIndex, at, rank } of trees) {
+    yield PREPARATION_SLICE;
     const nearbyBoxes=boxes.filter(b=>Math.abs(b.centre.x-p.position.x)<W.forageRadiusMetres+W.groundMarginMetres+Math.hypot(b.halfExtents.x,b.halfExtents.z)
       &&Math.abs(b.centre.z-p.position.z)<W.forageRadiusMetres+W.groundMarginMetres+Math.hypot(b.halfExtents.x,b.halfExtents.z));
     // CylinderGeometry's polygon face, not its circumscribed circle. Align
@@ -134,7 +287,8 @@ export function squirrelSites(plan: LevelPlan, exclusions: readonly VegetationEx
       if(best&&homeAt.offset>=best.at.offset)continue;
       // The idle chest faces outward; a climber turns inward with soles on bark.
       const refuge = { x: p.position.x + sx * (radius + 0.29), y: p.position.y, z: p.position.z + sz * (radius + 0.29) };
-      if(!grassCorridor(plan,home,refuge))continue;
+      if(corridors===undefined)corridors=corridorIndex(plan);
+      if(!grassCorridor(plan,home,refuge,corridors))continue;
       if(nearbyBoxes.some(box=>{
         const host=Math.hypot(box.centre.x-p.position.x,box.centre.z-p.position.z)<.05
           &&Math.max(box.halfExtents.x,box.halfExtents.z)<radius+.1;

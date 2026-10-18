@@ -3,9 +3,10 @@
 import { POPULATION_AUTHORING as R } from '../data/tuning.ts';
 import { dubins, threeArcs, type RingQuarter } from './cityRing.ts';
 import type { LevelPlan } from './plan.ts';
-import { buildPopulationPlan, createPopulationValidationContext, emitPopulationPaths, populationSpanFootprints,
-  surfaceFootprintClear, withPopulationAuthoringMemo, type AuthoredPathFrame, type AuthoredPopulationPath, type District,
+import { buildPopulationPlanSteps, createPopulationValidationContext, emitPopulationPaths, populationSpanFootprints,
+  surfaceFootprintClear, withPopulationAuthoringMemoSteps, type AuthoredPathFrame, type AuthoredPopulationPath, type District,
   type PopulationValidationContext } from './populationPlan.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 import { querySegment, type PlacedSegment } from './segments.ts';
 import { PlanTerrainSampler } from '../simulation/planSampler.ts';
 import type { SurfaceId } from '../simulation/world.ts';
@@ -198,11 +199,19 @@ export function generatedTrafficLoopCandidates(
 export function validateGeneratedTrafficLoops(
   plan: LevelPlan, candidates: readonly AuthoredPopulationPath[],
 ): GeneratedTrafficReport {
-  // The footprint preflight and each candidate's population build share the
-  // verified footprint memo for this one synchronous validation.
-  return withPopulationAuthoringMemo(() => validateTrafficLoops(plan, candidates));
+  return runSteps(validateGeneratedTrafficLoopsSteps(plan, candidates));
 }
-function validateTrafficLoops(plan: LevelPlan, candidates: readonly AuthoredPopulationPath[]): GeneratedTrafficReport {
+/** `validateGeneratedTrafficLoops` as slices, one or more per candidate. A plain
+ * function returning the scope generator (`shared/preparationSteps.ts`). */
+export function validateGeneratedTrafficLoopsSteps(
+  plan: LevelPlan, candidates: readonly AuthoredPopulationPath[],
+): Steps<GeneratedTrafficReport> {
+  // The footprint preflight and each candidate's population build share the
+  // verified footprint memo for this one validation; the scope closes on
+  // completion, a throw and an abandoned generator alike.
+  return withPopulationAuthoringMemoSteps(() => validateTrafficLoopsSteps(plan, candidates));
+}
+function* validateTrafficLoopsSteps(plan: LevelPlan, candidates: readonly AuthoredPopulationPath[]): Steps<GeneratedTrafficReport> {
   const authored: AuthoredPopulationPath[] = [];
   const rejected: { id: string; reason: string }[] = [];
   const sampler = new PlanTerrainSampler(plan);
@@ -212,13 +221,15 @@ function validateTrafficLoops(plan: LevelPlan, candidates: readonly AuthoredPopu
   let context: PopulationValidationContext | undefined;
   const prepared = (): PopulationValidationContext => context ??= createPopulationValidationContext(plan);
   for (const candidate of candidates) {
+    yield PREPARATION_SLICE;
     if (authored.some(p => p.district === candidate.district)) continue;
     if (candidate.frames.some((frame, i) => i > 0
       && populationSpanFootprints(plan, sampler, candidate.frames[i - 1], frame, 'traffic')
         .some(footprint => !surfaceFootprintClear(plan, footprint.polygon, roadSurfaces, prepared())))) {
       rejected.push({ id: candidate.id, reason: 'finished road footprint leaves vehicle pavement' }); continue;
     }
-    const result = buildPopulationPlan(plan, [candidate], sampler, prepared());
+    yield PREPARATION_SLICE;
+    const result = yield* buildPopulationPlanSteps(plan, [candidate], sampler, prepared());
     if (result.paths.length !== 1 || !result.paths[0].closed || result.report.rejected.length > 0) {
       rejected.push({ id: candidate.id, reason: result.report.rejected.map(r => r.reason).join(',') || 'not a complete closed route' });
       continue;

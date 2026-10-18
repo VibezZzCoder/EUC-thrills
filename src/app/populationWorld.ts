@@ -1,12 +1,13 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import type { LevelPlan } from '../level/plan.ts';
-import { buildPopulationPlan, withPopulationAuthoringMemo, type PopulationPlan } from '../level/populationPlan.ts';
+import { buildPopulationPlanSteps, withPopulationAuthoringMemoSteps, type PopulationPlan } from '../level/populationPlan.ts';
 import { hash128 } from '../level/planDigest.ts';
 import { withStreetGround } from './streetGround.ts';
-import { prepareLivingWorldGround } from '../level/livingWorldGround.ts';
-import { withDistrictAdjacency, type DistrictAdjacentPlan } from '../level/districtAdjacency.ts';
-import { withDistrictComposition } from '../level/districtComposition.ts';
-import { withDistrictActivity } from '../level/districtActivity.ts';
+import { prepareLivingWorldGroundSteps } from '../level/livingWorldGround.ts';
+import { withDistrictAdjacencySteps, type DistrictAdjacentPlan } from '../level/districtAdjacency.ts';
+import { withDistrictCompositionSteps } from '../level/districtComposition.ts';
+import { withDistrictActivitySteps } from '../level/districtActivity.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 
 export interface PreparedPopulationWorld {
   readonly level: LevelPlan;
@@ -20,22 +21,36 @@ export interface PreparedPopulationWorld {
  * A changed physical plan is validated once more before any consumer installs it.
  */
 export function preparePopulationWorld(source: LevelPlan): PreparedPopulationWorld {
-  // One synchronous preparation shares the verified, value-checked footprint
-  // and coverage memos; they are dropped when it returns.
-  return withPopulationAuthoringMemo(() => preparePopulationWorldIn(source));
+  // One preparation shares the verified, value-checked footprint and coverage
+  // memos; they are dropped when it returns. Drained synchronously here (world
+  // swaps, the QA bridge, tests); only the browser boot drives the slices.
+  return runSteps(preparePopulationWorldSteps(source));
 }
-function preparePopulationWorldIn(source: LevelPlan): PreparedPopulationWorld {
+/** The boot path: the same preparation as slices (`shared/preparationSteps.ts`).
+ * A slice is never a loading checkpoint and changes nothing it computes. */
+export function preparePopulationWorldSteps(source: LevelPlan): Steps<PreparedPopulationWorld> {
+  return withPopulationAuthoringMemoSteps(() => preparePopulationWorldInSteps(source));
+}
+function* preparePopulationWorldInSteps(source: LevelPlan): Steps<PreparedPopulationWorld> {
   const installed = (source as DistrictAdjacentPlan).districtAdjacency;
   // Preparing an installed plan must retain its owned street fragments and
   // canonical pre-population identity rather than strip them or hash twice.
   const physicalWorldId = source.populationSourceWorldId ?? installed?.physicalWorldId;
   const canonical = physicalWorldId ? { ...source, id: physicalWorldId } : source;
   const prepared = physicalWorldId ? { level: canonical,
-    population: buildPopulationPlan(canonical, canonical.populationPaths) }
-    : prepareLivingWorldGround(withStreetGround(source));
-  const finished = withDistrictComposition(withDistrictActivity(withDistrictAdjacency(prepared.level)));
+    population: yield* buildPopulationPlanSteps(canonical, canonical.populationPaths) }
+    : yield* prepareLivingWorldGroundSteps(withStreetGround(source));
+  yield PREPARATION_SLICE;
+  // Was `withDistrictComposition(withDistrictActivity(withDistrictAdjacency(…)))`:
+  // the same calls, innermost first.
+  const adjacent = yield* withDistrictAdjacencySteps(prepared.level);
+  yield PREPARATION_SLICE;
+  const active = yield* withDistrictActivitySteps(adjacent);
+  yield PREPARATION_SLICE;
+  const finished = yield* withDistrictCompositionSteps(active);
+  yield PREPARATION_SLICE;
   const population = finished === prepared.level ? prepared.population
-    : buildPopulationPlan(finished, finished.populationPaths);
+    : yield* buildPopulationPlanSteps(finished, finished.populationPaths);
   const reconciled = finished === prepared.level || !population.report.groundSupplement ? finished
     : { ...finished, populationGroundReport: population.report.groundSupplement };
   const level = population.installedWorldId === reconciled.id ? reconciled

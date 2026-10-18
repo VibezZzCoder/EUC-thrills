@@ -648,10 +648,18 @@ test.describe('M10 — the challenge', () => {
   test('free ride is untouched: no lane, no gates, and the M9 draw call figure', async ({ page }) => {
     await boot(page);
 
+    // 2026-10-18: the world draws one thing on a clock no mode owns — M42's
+    // bird flock, whose first pass starts 3 s into the world clock. The first
+    // sample is taken before it (1.2 s) and the return after it (3.3 s), so the
+    // raw figures differed by exactly its one draw (425 vs 426; 431 vs 432 on
+    // the 2026-10-17 build). Each sample therefore reads the flock's own
+    // last-frame report and compares the world without it: the flock's term is
+    // 1 when a pane submitted it that frame and 0 otherwise, never a tolerance.
     const free = await page.evaluate(() => {
       window.game.advance(120);
       const snap = window.game.snapshot();
-      return { draws: snap.render.drawCalls, phase: snap.challenge.phase };
+      const birds = window.game.renderer.presentation()?.birds;
+      return { draws: snap.render.drawCalls - (birds?.drawn === true ? birds.drawCalls : 0), phase: snap.challenge.phase };
     });
     expect(free.phase, 'free ride runs no clock').toBe('idle');
     await expect(page.locator('[data-hud="challenge"]')).toBeHidden();
@@ -667,16 +675,19 @@ test.describe('M10 — the challenge', () => {
       // point before asking what the gate costs.
       window.game.placeRider(window.game.levelPlan.spawn.position, window.game.levelPlan.spawn.headingY);
       window.game.advance(120);
-      return window.game.snapshot().render.drawCalls;
+      const birds = window.game.renderer.presentation()?.birds;
+      const draws = window.game.snapshot().render.drawCalls;
+      return { draws: draws - (birds?.drawn === true ? birds.drawCalls : 0), raw: draws };
     });
-    expect(timed, 'the gates cost something while they are shown')
+    expect(timed.draws, 'the gates cost something while they are shown')
       .toBeGreaterThanOrEqual(free.draws);
 
     const back = await page.evaluate(() => {
       window.game.setAppState('title');
       window.game.setAppState('freeRide');
       window.game.advance(120);
-      return window.game.snapshot().render.drawCalls;
+      const birds = window.game.renderer.presentation()?.birds;
+      return window.game.snapshot().render.drawCalls - (birds?.drawn === true ? birds.drawCalls : 0);
     });
     expect(back).toBe(free.draws);
 
@@ -684,9 +695,9 @@ test.describe('M10 — the challenge', () => {
     // the M9/M10 150-call frame and the owner has not set new numbers yet.
     // Everything above (no lane, gates cost something, free ride returns to
     // its own figure) still runs; only the old ceiling is parked, last.
-    test.fixme(true, `OWNER DECISION 2026-10-04: M10 150-call frame budget exceeded (timed run ${timed} calls, `
-      + `free ride ${free.draws}) — see docs/ENVIRONMENT_UPGRADE.md`);
-    expect(timed, 'the whole frame stays inside the 150-call budget').toBeLessThanOrEqual(150);
+    test.fixme(true, `OWNER DECISION 2026-10-04: M10 150-call frame budget exceeded (timed run ${timed.raw} calls, `
+      + `free ride ${free.draws} without the flock) — see docs/ENVIRONMENT_UPGRADE.md`);
+    expect(timed.raw, 'the whole frame stays inside the 150-call budget').toBeLessThanOrEqual(150);
   });
 
   test('the challenge lane stays out of the playfield centre', async ({ page }) => {

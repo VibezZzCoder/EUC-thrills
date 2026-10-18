@@ -7,6 +7,7 @@ import type { EdgeFillField } from './groundBoundary.ts';
 import { planSharedGroundEdgeAssembly, edgeAssemblyJoinMismatches,
   SHARED_EDGE_ASSEMBLY, type EdgeAssemblyPlan, type EdgeAssemblyReport, type EdgeAssemblySourceSeam } from './sharedGroundEdgeAssembly.ts';
 import { sharedEdgeSourceComponents, sharedEdgePairId as pairId, type SharedEdgeComponents } from './sharedGroundEdgeComponents.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 
 /** One initial constructor and at most one component-filtered reconstruction.
  * No world-sized retreat loop or enlarged generation/memory budget.
@@ -120,11 +121,17 @@ export function sharedEdgeSourceIntegrityFailures(plan: LevelPlan, assembly: Edg
  * source/role/height failure is interpreted as a harmless unsupported knee. */
 export function planSelectiveSharedGroundEdgeAssembly(plan: LevelPlan, contour: EdgeFillField,
   options: { readonly maximumPasses?: number } = {}): SelectiveEdgeAssemblyPlan {
+  return runSteps(planSelectiveSharedGroundEdgeAssemblySteps(plan, contour, options));
+}
+/** `planSelectiveSharedGroundEdgeAssembly` as slices (`shared/preparationSteps.ts`). */
+export function* planSelectiveSharedGroundEdgeAssemblySteps(plan: LevelPlan, contour: EdgeFillField,
+  options: { readonly maximumPasses?: number } = {}): Steps<SelectiveEdgeAssemblyPlan> {
   const maximumPasses = options.maximumPasses ?? SHARED_EDGE_SELECTION.maximumPasses;
   if (!Number.isSafeInteger(maximumPasses) || maximumPasses < 1 || maximumPasses > SHARED_EDGE_SELECTION.maximumPasses) {
     throw new RangeError('Shared edge selection needs one to two bounded source passes');
   }
   const original = planSharedGroundEdgeAssembly(plan, contour), initialReport = original.report;
+  yield PREPARATION_SLICE;
   let assembly = original;
   const candidates = new Map<string, EdgeAssemblySourceSeam>();
   const active = new Set<string>(), rejected = new Set<string>(), rejectedComponents = new Set<string>();
@@ -136,7 +143,9 @@ export function planSelectiveSharedGroundEdgeAssembly(plan: LevelPlan, contour: 
   const history: SharedEdgeSelectionPass[] = [];
   let joins = edgeAssemblyJoinMismatches(plan.heightfield, assembly, plan);
   const initialJoinFailures = joins.length;
+  yield PREPARATION_SLICE;
   let sourceIntegrityFailures = sharedEdgeSourceIntegrityFailures(plan, assembly);
+  yield PREPARATION_SLICE;
   let components: SharedEdgeComponents | null = null;
   const componentBoundaryFailures: number[] = [];
   let joinRejectedPairs = 0, shortUrbanRuns = 0;
@@ -165,6 +174,7 @@ export function planSelectiveSharedGroundEdgeAssembly(plan: LevelPlan, contour: 
   if (sourceIntegrityFailures.length) { record(1); return finish('source-integrity'); }
   if (!ownsCurrent()) { record(1); return finish('ownership-drift'); }
   components = sharedEdgeSourceComponents(plan.heightfield, original.sourceSeams ?? []);
+  yield PREPARATION_SLICE;
   if (joins.length && maximumPasses === 1) { record(1); return finish('pass-limit'); }
   const unsafeComponents = new Set<string>();
   for (const failure of joins) {
@@ -178,6 +188,7 @@ export function planSelectiveSharedGroundEdgeAssembly(plan: LevelPlan, contour: 
   // A short kerb is cosmetic: a one-pass request keeps its old result.
   const shortRuns = maximumPasses === 1 ? new Set<string>()
     : shortUrbanRunComponents(plan.heightfield, original, components, candidates, unsafeComponents);
+  yield PREPARATION_SLICE;
   if (!unsafeComponents.size && !shortRuns.size) { record(1); return finish(null); }
   // Only join-unsafe rejection may empty the selection into a refusal.
   joinRejectedPairs = components.components.reduce((sum, component) =>
@@ -198,9 +209,13 @@ export function planSelectiveSharedGroundEdgeAssembly(plan: LevelPlan, contour: 
   for (const id of unsafeComponentIds) rejectedComponents.add(id);
   // No surviving owner can lose an originally band-supported neighbor.
   // Re-derive existing safe ends and all prices once from unchanged source.
+  yield PREPARATION_SLICE;
   assembly = planSharedGroundEdgeAssembly(plan, { ...contour, cells });
+  yield PREPARATION_SLICE;
   joins = edgeAssemblyJoinMismatches(plan.heightfield, assembly, plan);
+  yield PREPARATION_SLICE;
   sourceIntegrityFailures = sharedEdgeSourceIntegrityFailures(plan, assembly);
+  yield PREPARATION_SLICE;
   record(2);
   if (sourceIntegrityFailures.length) return finish('source-integrity');
   if (!ownsCurrent()) return finish('ownership-drift');

@@ -103,6 +103,14 @@ export interface PopulationReservation {
   readonly expiresAtClockSeconds?: number;
 }
 
+/**
+ * **Immutable once formed.** Every change makes a new pose: nothing writes a
+ * pose, its footprint, `sourceHull`, hull, `supportHeights` or support records
+ * in place. A fixed step's epoch start shares these objects with the last
+ * published snapshot instead of deep-copying them (PERF-POP), so an in-place
+ * write would silently move the epoch start too. `populationPerfExactness.test.ts`
+ * deep-freezes them while riding to keep it so; public readers still detach.
+ */
 export interface PopulationActorPose {
   readonly id: string;
   readonly kind: ActorKind;
@@ -153,6 +161,15 @@ export interface PopulationSnapshot {
   readonly tick: number;
   readonly clockSeconds: number;
   readonly actors: readonly PopulationActorPose[];
+}
+/**
+ * Each published actor's id and detached physical footprint, in snapshot
+ * order, with the snapshot's clock: exactly `snapshot()`'s `id`/`footprint`
+ * and `clockSeconds`, without copying the rest of every pose (PERF-POP).
+ */
+export interface PopulationActorFootprintRows {
+  readonly clockSeconds: number;
+  readonly actors: readonly { readonly id: string; readonly footprint: PopulationFootprint }[];
 }
 
 /** Caller-owned presentation storage contains no physical hull or live support record. */
@@ -349,6 +366,34 @@ interface BoundedMotion {
   readonly bounds: MotionBounds;
   nativeFraction?: number;
   nativeTo?: PopulationFootprint;
+  /** PERF-POP: mixBody(from, to, 0/1) and mixBody(from, nativeTo, 0/1), formed on a
+   * motion's first sweep. Pure in the immutable endpoints, so later sweeps reuse them;
+   * the native pair records the `nativeTo` it was formed from (`nativeEndpointsOf`). */
+  first?: PopulationFootprint;
+  last?: PopulationFootprint;
+  nativeFirst?: PopulationFootprint;
+  nativeLast?: PopulationFootprint;
+  nativeEndpointsOf?: PopulationFootprint;
+}
+/** The two sweep endpoints of a whole motion, formed once (first, then last: the sweep's own order). */
+function wholeEndpoints(motion: BoundedMotion): void {
+  if (motion.first === undefined) { motion.first = mixBody(motion.from, motion.to, 0); motion.last = mixBody(motion.from, motion.to, 1); }
+}
+/**
+ * The same for a blocker's native prefix (from -> nativeTo). Keyed by the very
+ * `nativeTo` object, so a prefix re-formed at another horizon's fraction (a
+ * reservation swept by a walker and then a vehicle) can never reuse a stale pair.
+ */
+function nativeEndpoints(motion: BoundedMotion): void {
+  if (motion.nativeEndpointsOf !== motion.nativeTo) {
+    motion.nativeFirst = mixBody(motion.from, motion.nativeTo!, 0); motion.nativeLast = mixBody(motion.from, motion.nativeTo!, 1);
+    motion.nativeEndpointsOf = motion.nativeTo;
+  }
+}
+/** A caller-local endpoint pair (one actor iteration's own look or candidate). */
+interface SweepTrack { readonly from: PopulationFootprint; readonly to: PopulationFootprint; first?: PopulationFootprint; last?: PopulationFootprint }
+function trackEndpoints(track: SweepTrack): void {
+  if (track.first === undefined) { track.first = mixBody(track.from, track.to, 0); track.last = mixBody(track.from, track.to, 1); }
 }
 /** Unknown/malformed source frames retain the original narrow-phase behavior.
  * Explicit Number.isFinite chains: these run for every bounded motion per step. */
@@ -370,7 +415,8 @@ function boundableFootprint(body: PopulationFootprint): boolean {
     && margin >= 0 && below >= 0 && above >= 0;
 }
 function motionBounds(from: PopulationFootprint, to: PopulationFootprint): MotionBounds {
-  if (!boundableFootprint(from) || !boundableFootprint(to)) return null;
+  // A stationary motion validates its one body once (a pure predicate).
+  if (!boundableFootprint(from) || (to !== from && !boundableFootprint(to))) return null;
   // The coarse box is freshly owned here; it is padded in place.
   const bounds = coarseActorMotionWorldAabb(from, to) as { -readonly [K in keyof NonNullable<MotionBounds>]: number };
   const padding = R.contactSkinMetres + R.epsilon;
@@ -549,12 +595,18 @@ function linearWindow(a0: PopulationFootprint, a1: PopulationFootprint,
  */
 export function sweepPopulationHulls(a0: PopulationFootprint, a1: PopulationFootprint,
   b0: PopulationFootprint, b1: PopulationFootprint): PopulationHullContact | null {
-  const start = staticContact(a0, b0);
-  const initiallyOverlapping = start !== null && start.gap < -R.epsilon;
   // A recursive child's endpoint is exactly its parent's endpoint or the same
   // original-track midpoint. Carry those values rather than rebuilding hulls.
   const firstA = mixBody(a0, a1, 0), lastA = mixBody(a0, a1, 1);
   const firstB = mixBody(b0, b1, 0), lastB = mixBody(b0, b1, 1);
+  return sweepHullsWithEndpoints(a0, a1, b0, b1, firstA, lastA, firstB, lastB);
+}
+/** sweepPopulationHulls with its four mixBody endpoints supplied by a caller that formed them once. */
+function sweepHullsWithEndpoints(a0: PopulationFootprint, a1: PopulationFootprint,
+  b0: PopulationFootprint, b1: PopulationFootprint, firstA: PopulationFootprint, lastA: PopulationFootprint,
+  firstB: PopulationFootprint, lastB: PopulationFootprint): PopulationHullContact | null {
+  const start = staticContact(a0, b0);
+  const initiallyOverlapping = start !== null && start.gap < -R.epsilon;
   function search(low: number, high: number, depth: number, firstA: PopulationFootprint,
     lastA: PopulationFootprint, firstB: PopulationFootprint, lastB: PopulationFootprint): number | null {
     const angleA = orientationTravel(firstA, lastA), angleB = orientationTravel(firstB, lastB);
@@ -798,18 +850,23 @@ function writePresentationSnapshot(input: PopulationSnapshot, output: Population
 const copyContacts = (contacts: readonly PopulationContact[]): readonly PopulationContact[] => contacts.map(value => ({ ...value,
   ...(value.componentFootprint ? { componentFootprint: detachedFootprint(value.componentFootprint) } : {}) }));
 
-/** Activity is independent of an already sealed physical/support footprint. */
-function actorActivity(state: ActorState, clock: number, signedSpeed: number): Pick<PopulationActorPose,
-  'activity' | 'activityPhase' | 'activityBlend'> {
+/** The activity name alone; `direction` is the frame's own (a forecast's start direction). */
+function activityKind(state: ActorState, clock: number, signedSpeed: number, direction: 1 | -1): PopulationActivity {
   const { spec } = state;
   const impacted = state.impactUntil > clock;
-  const activity: PopulationActivity = impacted ? 'impacted'
+  return impacted ? 'impacted'
     : spec.kind === 'social' ? 'social' : spec.kind === 'parkedVehicle' ? 'parked'
       : spec.kind === 'worker' && state.workerLeg === 'work' ? 'working'
         : state.turning && state.pause <= 0 ? 'turning'
           : state.pause > 0 || state.waiting || Math.abs(signedSpeed) <= R.epsilon ? 'waiting'
             : spec.kind === 'jogger' ? 'jogging' : spec.kind === 'fictionalEuc' ? 'riding'
-              : vehicle(spec.kind) ? state.direction === -1 ? 'reversing' : 'driving' : 'walking';
+              : vehicle(spec.kind) ? direction === -1 ? 'reversing' : 'driving' : 'walking';
+}
+/** Activity is independent of an already sealed physical/support footprint. */
+function actorActivity(state: ActorState, clock: number, signedSpeed: number): Pick<PopulationActorPose,
+  'activity' | 'activityPhase' | 'activityBlend'> {
+  const { spec } = state;
+  const activity = activityKind(state, clock, signedSpeed, state.direction);
   const activityPhase = activity === 'working' || activity === 'waiting'
     ? spec.idleSeconds > 0 ? clamp(1 - state.pause / spec.idleSeconds, 0, 1) : 0
     : activity === 'social' ? fract(clock / Math.max(spec.idleSeconds, R.maximumStepSeconds))
@@ -838,14 +895,10 @@ function withImpactReaction(pose: PopulationActorPose, state: ActorState, clock:
 /** A crossing's corner extents, fixed once per plan instead of per priority query. */
 interface CrossingExtent { readonly minX: number; readonly maxX: number; readonly minZ: number; readonly maxZ: number }
 /** Conservative broad phase is appropriate for yielding, never contact. */
-function touchesCrossing(extent: CrossingExtent, body: PopulationFootprint): boolean {
-  const radius = Math.hypot(body.halfWidthMetres, body.halfLengthMetres);
+function touchesCrossingWithin(extent: CrossingExtent, body: PopulationFootprint, radius: number): boolean {
   return body.x >= extent.minX - radius && body.x <= extent.maxX + radius
     && body.z >= extent.minZ - radius && body.z <= extent.maxZ + radius;
 }
-const startState = (state: ActorState, pose: PopulationActorPose): ActorState => ({ ...state,
-  distance: pose.distanceMetres, direction: pose.direction, heading: pose.headingY,
-  gaitDistance: pose.gaitDistanceMetres, wheelTravel: pose.wheelTravelMetres });
 /**
  * One priority lookahead per actor and epoch. The forecast reads only the
  * epoch's start pose, the clock and these live fields; speed is passed in.
@@ -871,6 +924,8 @@ export class PopulationSimulation {
   private lookaheads: (LookaheadMemo | undefined)[] = [];
   /** Route-scan blocker ids, formed once per world rather than per vehicle per step. */
   private actorBlockerIds: readonly string[] = [];
+  /** One actor iteration's blocker list (PERF-POP); never read after the iteration. */
+  private readonly blockerScratch: BoundedMotion[] = [];
   private readonly lowerCorners: readonly MutablePopulationHullCorner[] = [
     { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }];
   private tick = 0;
@@ -988,6 +1043,11 @@ export class PopulationSimulation {
   actorFootprints(): readonly PopulationFootprint[] {
     return this.current.actors.map(actor => detachedFootprint(actor.footprint));
   }
+  /** `snapshot()` read for its ids, footprints and clock alone (physical reaction admission). */
+  actorFootprintRows(): PopulationActorFootprintRows {
+    return { clockSeconds: this.current.clockSeconds,
+      actors: this.current.actors.map(actor => ({ id: actor.id, footprint: detachedFootprint(actor.footprint) })) };
+  }
   /** Write detached render-only endpoints into storage owned by the caller. */
   writePresentationEndpoints(previous: PopulationPresentationSnapshot, current: PopulationPresentationSnapshot): void {
     if (previous === current || previous.actors === current.actors) throw new RangeError('Population presentation endpoints need distinct caller storage');
@@ -1007,7 +1067,8 @@ export class PopulationSimulation {
   }
 
   private makePose(state: ActorState, velocityX: number, velocityZ: number,
-    signedSpeed: number = state.speed * (vehicle(state.spec.kind) ? state.direction : 1)): PopulationActorPose {
+    signedSpeed: number = state.speed * (vehicle(state.spec.kind) ? state.direction : 1),
+    before?: PopulationActorPose, dt = 0): PopulationActorPose {
     const onPath = pathPoint(state.path.path, state.distance);
     const point = state.aside === 0 ? onPath : { ...onPath, x: onPath.x + Math.cos(onPath.headingY) * state.aside,
       z: onPath.z - Math.sin(onPath.headingY) * state.aside };
@@ -1057,12 +1118,19 @@ export class PopulationSimulation {
       minY = Math.min(minY, tyreSupports[index].y);
       maxY = Math.max(maxY, tyreSupports[index].y + 2 * targets.tyres![index].radiusMetres);
     }
-    footprint = { ...footprint, minY, maxY, sourceHull: { ...footprint.sourceHull!,
+    // PERF-POP: a committed move's velocities are the step's displacement, written
+    // here into the same keys the former outer spreads overwrote (order unchanged).
+    footprint = before === undefined ? { ...footprint, minY, maxY, sourceHull: { ...footprint.sourceHull!,
       verticalPaddingBelowMetres: footprint.minY - minY,
-      verticalPaddingAboveMetres: maxY - footprint.maxY } };
+      verticalPaddingAboveMetres: maxY - footprint.maxY } }
+      : { ...footprint, minY, maxY, velocityX: (footprint.x - before.footprint.x) / dt,
+        velocityZ: (footprint.z - before.footprint.z) / dt, sourceHull: { ...footprint.sourceHull!,
+          verticalPaddingBelowMetres: footprint.minY - minY,
+          verticalPaddingAboveMetres: maxY - footprint.maxY } };
     return { id: spec.id, kind: spec.kind, appearanceIndex: spec.appearanceIndex,
       x: point.x, y, z: point.z, headingY: state.heading,
-      velocityX: velocityX + 0, velocityZ: velocityZ + 0,
+      velocityX: before === undefined ? velocityX + 0 : (point.x - before.x) / dt,
+      velocityZ: before === undefined ? velocityZ + 0 : (point.z - before.z) / dt,
       speedMetresPerSecond: signedSpeed + 0, gaitDistanceMetres: state.gaitDistance,
       wheelTravelMetres: state.wheelTravel,
       activity, activityPhase, activityBlend,
@@ -1077,26 +1145,79 @@ export class PopulationSimulation {
   }
 
   private along(state: ActorState, signedTravel: number): number {
+    return this.alongFrom(state, state.distance, state.direction, signedTravel);
+  }
+  /** `along` from an explicit frame (a forecast's epoch-start distance and direction). */
+  private alongFrom(state: ActorState, from: number, direction: 1 | -1, signedTravel: number): number {
     const length = state.path.path.lengthMetres;
-    if (state.spec.movement === 'loop') return ((state.distance + signedTravel) % length + length) % length;
+    if (state.spec.movement === 'loop') return ((from + signedTravel) % length + length) % length;
     if (state.spec.kind === 'worker') {
       const destination = state.workerLeg === 'outbound' ? state.workerTarget : state.workerAnchor;
-      return state.direction === 1 ? Math.min(state.distance + signedTravel, destination)
-        : Math.max(state.distance + signedTravel, destination);
+      return direction === 1 ? Math.min(from + signedTravel, destination)
+        : Math.max(from + signedTravel, destination);
     }
-    return clamp(state.distance + signedTravel, 0, length);
+    return clamp(from + signedTravel, 0, length);
   }
 
   private prospective(state: ActorState, travel: number): PopulationFootprint {
-    const distance = this.along(state, travel), point = pathPoint(state.path.path, distance);
-    // Forecast and committed poses use the same actual sole/tread targets.
-    // Centre-only grade hulls omit support padding on curved ground.
-    const candidate: ActorState = { ...state, distance,
-      heading: point.headingY + (!vehicle(state.spec.kind) && state.direction === -1 ? Math.PI : 0),
-      gaitDistance: state.gaitDistance + Math.abs(travel),
-      wheelTravel: state.wheelTravel + (vehicle(state.spec.kind) ? travel : Math.abs(travel)) };
-    return this.makePose(candidate, 0, 0, Math.abs(travel) <= R.epsilon ? 0
-      : state.spec.speedMetresPerSecond * (vehicle(state.spec.kind) ? state.direction : 1)).footprint;
+    return this.prospectiveFrom(state, state.distance, state.direction, state.gaitDistance, travel);
+  }
+  /**
+   * PERF-POP: makePose({ ...state, distance, direction, heading, gaitDistance, wheelTravel }).footprint,
+   * built without the candidate state, the pose or its support records. Forecast and
+   * committed poses use the same actual sole/tread targets (centre-only grade hulls
+   * omit support padding on curved ground). The ground is sampled at the same points
+   * in the same order and refused by the same checks; only unread values are not kept.
+   */
+  private prospectiveFrom(state: ActorState, from: number, direction: 1 | -1, gaitFrom: number, travel: number): PopulationFootprint {
+    const distance = this.alongFrom(state, from, direction, travel), onPath = pathPoint(state.path.path, distance);
+    const { spec } = state, isVehicle = vehicle(spec.kind);
+    const heading = onPath.headingY + (!isVehicle && direction === -1 ? Math.PI : 0);
+    const gaitDistance = gaitFrom + Math.abs(travel);
+    const signedSpeed = Math.abs(travel) <= R.epsilon ? 0 : spec.speedMetresPerSecond * (isVehicle ? direction : 1);
+    const pointX = state.aside === 0 ? onPath.x : onPath.x + Math.cos(onPath.headingY) * state.aside;
+    const pointZ = state.aside === 0 ? onPath.z : onPath.z - Math.sin(onPath.headingY) * state.aside;
+    const ground = this.sampler.sampleGround(pointX, pointZ, this.ground);
+    if (!(Number.isFinite(ground.height) && Number.isFinite(ground.normal.x) && Number.isFinite(ground.normal.y)
+      && Number.isFinite(ground.normal.z)) || ground.normal.y <= 0) {
+      throw new Error(`Population actor lost valid finished ground: ${spec.id}`);
+    }
+    const activity = activityKind(state, this.clock, signedSpeed, direction);
+    const normalX = ground.normal.x, normalY = ground.normal.y, normalZ = ground.normal.z;
+    const y = ground.height;
+    const corners = this.lowerCorners;
+    const footprint = physicalPopulationPrism(transformPopulationHullLowerInto(pointX, y, pointZ, heading,
+      normalX, normalY, normalZ, spec.hull, 0, 0, corners));
+    // The corner support samples are refused exactly as makePose refuses them; a
+    // footprint never reads their heights.
+    for (const corner of corners) {
+      const supportGround = this.sampler.sampleGround(corner.x, corner.z, this.ground);
+      if (!Number.isFinite(supportGround.height)) throw new Error(`Invalid population support ground: ${spec.id}`);
+    }
+    const targets = populationSupportTargets({ kind: spec.kind, appearanceIndex: spec.appearanceIndex,
+      x: pointX, y, z: pointZ, headingY: heading, hull: spec.hull,
+      speedMetresPerSecond: signedSpeed, gaitDistanceMetres: gaitDistance, activity,
+      groundNormalX: normalX, groundNormalY: normalY, groundNormalZ: normalZ });
+    let minY = footprint.minY, maxY = footprint.maxY;
+    const feet = targets.feet, tyres = targets.tyres;
+    if (feet) for (let index = 0; index < feet.length; index += 1) minY = Math.min(minY, this.supportHeight(feet[index], spec.id));
+    if (tyres) for (let index = 0; index < tyres.length; index += 1) {
+      const height = this.supportHeight(tyres[index], spec.id);
+      minY = Math.min(minY, height);
+      maxY = Math.max(maxY, height + 2 * tyres[index].radiusMetres);
+    }
+    return { ...footprint, minY, maxY, sourceHull: { ...footprint.sourceHull!,
+      verticalPaddingBelowMetres: footprint.minY - minY,
+      verticalPaddingAboveMetres: maxY - footprint.maxY } };
+  }
+  /** makePose's sampleSupport(target).y, with its refusal. */
+  private supportHeight(target: { x: number; y: number; z: number; contact: 'ground' | 'pedal' }, id: string): number {
+    if (target.contact === 'pedal') return target.y;
+    const sample = this.sampler.sampleGround(target.x, target.z, this.ground);
+    if (!(Number.isFinite(sample.height) && Number.isFinite(sample.normal.x) && Number.isFinite(sample.normal.y)
+      && Number.isFinite(sample.normal.z)) || sample.normal.y <= 0)
+      throw new Error(`Population support lost finished ground: ${id}`);
+    return sample.height;
   }
 
   /** Only authored, accepted crossings grant pedestrians priority. */
@@ -1109,8 +1230,15 @@ export class PopulationSimulation {
     const trafficStart=this.previousActor(traffic.spec.id)??traffic.pose;
     const personFrom=personStart.footprint,personTo=this.lookahead(person,personStart,R.humanLookAheadSeconds);
     const trafficFrom=trafficStart.footprint,trafficTo=this.lookahead(traffic,trafficStart,R.vehicleLookAheadSeconds);
-    for(const crossing of crossings)if((touchesCrossing(crossing,personFrom)||touchesCrossing(crossing,personTo))
-      &&!touchesCrossing(crossing,trafficFrom)&&touchesCrossing(crossing,trafficTo))return true;
+    // PERF-POP: each body's radius once, and the vehicle's entering test first. These
+    // are pure order-free predicates over the same values; the lookaheads above run first, as before.
+    const personFromRadius=Math.hypot(personFrom.halfWidthMetres,personFrom.halfLengthMetres);
+    const personToRadius=Math.hypot(personTo.halfWidthMetres,personTo.halfLengthMetres);
+    const trafficFromRadius=Math.hypot(trafficFrom.halfWidthMetres,trafficFrom.halfLengthMetres);
+    const trafficToRadius=Math.hypot(trafficTo.halfWidthMetres,trafficTo.halfLengthMetres);
+    for(const crossing of crossings)if(touchesCrossingWithin(crossing,trafficTo,trafficToRadius)
+      &&!touchesCrossingWithin(crossing,trafficFrom,trafficFromRadius)
+      &&(touchesCrossingWithin(crossing,personFrom,personFromRadius)||touchesCrossingWithin(crossing,personTo,personToRadius)))return true;
     return false;
   }
 
@@ -1143,7 +1271,9 @@ export class PopulationSimulation {
       && memo.seconds === seconds && memo.direction === state.direction && memo.workerLeg === state.workerLeg
       && Object.is(memo.pause, state.pause) && memo.turning === state.turning && memo.waiting === state.waiting
       && Object.is(memo.impactUntil, state.impactUntil)) return memo.footprint;
-    const footprint = this.prospective(startState(state, start), state.direction * state.spec.speedMetresPerSecond * seconds);
+    // startState(state, start) then prospective: the start frame is passed, not copied.
+    const footprint = this.prospectiveFrom(state, start.distanceMetres, start.direction, start.gaitDistanceMetres,
+      state.direction * state.spec.speedMetresPerSecond * seconds);
     if (index !== undefined && this.states[index] === state) this.lookaheads[index] = { epoch: this.previous, start,
       clock: this.clock, seconds, direction: state.direction, workerLeg: state.workerLeg, pause: state.pause,
       turning: state.turning, waiting: state.waiting, impactUntil: state.impactUntil, footprint };
@@ -1203,8 +1333,21 @@ export class PopulationSimulation {
     const anticipationRows: Array<RouteAnticipationResult & { actorId: string; targetSpeedMetresPerSecond: number; incomplete: boolean }> = [];
     this.anticipationRows = anticipationRows;
     const actorBlockers = this.current.actors.map(actorFootprint);
-    const stationaryActors = actorBlockers.map(body => boundedMotion(body, body));
+    // Formed on first use (a pedestrian-priority pair): one pure object per actor per step, as before.
+    const stationaryActors: (BoundedMotion | undefined)[] = [];
+    const stationaryActor = (other: number): BoundedMotion =>
+      stationaryActors[other] ??= boundedMotion(actorBlockers[other], actorBlockers[other]);
     const reservationBlockers = reserved.map(item => boundedMotion(item.footprint, item.footprint));
+    // PERF-POP: each compact part's padded blocker is a pure function of the part and
+    // the horizon, so it is formed once per step: for walkers at the one human
+    // horizon (indexed by part), for vehicles per forecast horizon.
+    const humanParts: (BoundedMotion | undefined)[] = [];
+    const humanPart = (index: number): BoundedMotion => humanParts[index] ??= (() => {
+      const near = compactAnticipationBlocker(anticipation!.components[index], R.humanLookAheadSeconds);
+      const partFrom = grow(near.from, near.pad), partTo = grow(near.to, near.pad);
+      return { from: partFrom, to: partTo, bounds: motionBounds(partFrom, partTo) };
+    })();
+    const vehicleParts = new Map<number, ReturnType<typeof compactAnticipationBlocker>[]>();
     const forecasts = new Map<number, { people: BoundedMotion[]; actors: BoundedMotion[] }>();
     const forecastFor = (seconds: number) => {
       let forecast = forecasts.get(seconds);
@@ -1215,7 +1358,12 @@ export class PopulationSimulation {
       }
       return forecast;
     };
-    this.previous = copySnapshot(this.current);
+    // PERF-POP: published poses are never written in place (every change forms a
+    // new pose; see PopulationActorPose), so the epoch start shares them rather
+    // than deep-copying all of them. The snapshot record itself is still fresh,
+    // so the lookahead memo's `epoch === this.previous` identity stays unique to
+    // this step exactly as the former copy's was, even after a step that threw.
+    this.previous = { tick: this.current.tick, clockSeconds: this.current.clockSeconds, actors: this.current.actors };
     // An omitted contact query is a discontinuity, not a perpetual old edge.
     if (this.contactsTick !== this.tick) for (const pairs of this.pairs.values()) {
       for (const pair of pairs.values()) pair.overlapping = false;
@@ -1262,10 +1410,7 @@ export class PopulationSimulation {
         const step = clamp(state.asideTarget - state.aside, -SIDESTEP_METRES_PER_SECOND * dt, SIDESTEP_METRES_PER_SECOND * dt);
         state.aside = Math.abs(state.asideTarget - state.aside - step) <= R.epsilon ? state.asideTarget : state.aside + step;
         state.gaitDistance += Math.abs(step); state.speed = Math.abs(step) / dt;
-        const updated = this.makePose(state, 0, 0, state.speed);
-        state.pose = { ...updated, velocityX: (updated.x - before.x) / dt, velocityZ: (updated.z - before.z) / dt,
-          footprint: { ...updated.footprint, velocityX: (updated.footprint.x - before.footprint.x) / dt,
-            velocityZ: (updated.footprint.z - before.footprint.z) / dt } };
+        state.pose = this.makePose(state, 0, 0, state.speed, before, dt);
         continue;
       }
       if (spec.kind === 'worker' && state.workerLeg === 'work') {
@@ -1285,13 +1430,22 @@ export class PopulationSimulation {
       const isVehicle = vehicle(spec.kind);
       const horizon = isVehicle ? R.vehicleLookAheadSeconds : R.humanLookAheadSeconds;
       const gap = isVehicle ? R.vehicleWaitingGapMetres : R.humanWaitingGapMetres;
-      const from = actorFootprint(before);
+      const from = before.footprint;
       const forecast = forecastFor(horizon);
-      const blockers: BoundedMotion[] = [...forecast.people, ...reservationBlockers];
+      const blockers = this.blockerScratch;
+      blockers.length = 0;
+      for (const blocker of forecast.people) blockers.push(blocker);
+      for (const blocker of reservationBlockers) blockers.push(blocker);
+      // A vehicle never has pedestrian priority over anyone, and a pair with no
+      // shared crossing has none either: pedestrianPriority answers both false
+      // before any forecast, so they are not asked (PERF-POP).
+      const crossingsByVehiclePath = isVehicle ? undefined : this.crossingIndex.get(spec.pathId);
       for (let other = 0; other < actorBlockers.length; other += 1) if (other !== index) blockers.push(
         // The waiting vehicle's hypothetical future must not deadlock the
         // pedestrian who has priority. Its actual body still blocks this step.
-        this.pedestrianPriority(state,this.states[other]) ? stationaryActors[other] : forecast.actors[other]);
+        crossingsByVehiclePath !== undefined && vehicle(this.states[other].spec.kind)
+          && crossingsByVehiclePath.has(this.states[other].spec.pathId)
+          && this.pedestrianPriority(state,this.states[other]) ? stationaryActor(other) : forecast.actors[other]);
       const look = isVehicle && anticipation ? null : this.ownLookahead(state, index, horizon);
       const grownFrom = grow(from, gap), grownLook = look === null ? null : grow(look, gap);
       const lookBounds = grownLook === null ? null : motionBounds(grownFrom, grownLook);
@@ -1302,15 +1456,20 @@ export class PopulationSimulation {
       // Actor blockers are recorded for the mutual-wait resolution.
       let needsWait = priorityHold;
       if (grownLook !== null) {
-        const waitsOn = (to: PopulationFootprint, blockerFrom: PopulationFootprint, blockerTo: PopulationFootprint): boolean => {
-          const hit = sweepPopulationHulls(grownFrom, to, blockerFrom, blockerTo);
-          return hit !== null && !(hit.initiallyOverlapping && (staticContact(to, blockerTo)?.gap ?? Infinity)
-            > (staticContact(grownFrom, blockerFrom)?.gap ?? Infinity) + R.epsilon);
+        // The look's sweep is always (grownFrom -> grownLook); its two endpoints,
+        // and each blocker's, are formed once and shared by every sweep (PERF-POP).
+        const lookTrack: SweepTrack = { from: grownFrom, to: grownLook };
+        const waitsOn = (blocker: BoundedMotion): boolean => {
+          trackEndpoints(lookTrack); wholeEndpoints(blocker);
+          const hit = sweepHullsWithEndpoints(grownFrom, grownLook, blocker.from, blocker.to,
+            lookTrack.first!, lookTrack.last!, blocker.first!, blocker.last!);
+          return hit !== null && !(hit.initiallyOverlapping && (staticContact(grownLook, blocker.to)?.gap ?? Infinity)
+            > (staticContact(grownFrom, blocker.from)?.gap ?? Infinity) + R.epsilon);
         };
         const firstActor = forecast.people.length + reservationBlockers.length;
         for (let k = 0; k < blockers.length; k += 1) {
           const blocker = blockers[k];
-          if (!mayMeet(lookBounds, blocker.bounds) || !waitsOn(grownLook, blocker.from, blocker.to)) continue;
+          if (!mayMeet(lookBounds, blocker.bounds) || !waitsOn(blocker)) continue;
           needsWait = true;
           if (k >= firstActor) state.waitingOn.push(k - firstActor < index ? k - firstActor : k - firstActor + 1);
           else if (k < forecast.people.length && !state.waitingOn.includes(OCCUPANT_WAIT)) state.waitingOn.push(OCCUPANT_WAIT);
@@ -1321,10 +1480,10 @@ export class PopulationSimulation {
         // stepped into the side of a passing cop and the two held each other
         // still for good (the chaseprobe pin, 2026-10-03).
         if (!needsWait && !isVehicle && anticipation) {
-          for (const part of anticipation.components) {
-            const near = compactAnticipationBlocker(part, horizon);
-            const partFrom = grow(near.from, near.pad), partTo = grow(near.to, near.pad);
-            if (!mayMeet(lookBounds, motionBounds(partFrom, partTo)) || !waitsOn(grownLook, partFrom, partTo)) continue;
+          for (let partIndex = 0; partIndex < anticipation.components.length; partIndex += 1) {
+            // A non-vehicle's horizon is always the human look-ahead, so the part index alone keys its padded blocker.
+            const part = humanPart(partIndex);
+            if (!mayMeet(lookBounds, part.bounds) || !waitsOn(part)) continue;
             needsWait = true; state.waitingOn.push(OCCUPANT_WAIT);
             break;
           }
@@ -1334,12 +1493,16 @@ export class PopulationSimulation {
         const forecastSeconds = Math.max(horizon, state.speed / R.vehicleBrakingMetresPerSecondSquared + dt);
         const pathTravel = Math.max(spec.speedMetresPerSecond * forecastSeconds,
           state.speed * state.speed / (2 * R.vehicleBrakingMetresPerSecondSquared) + state.speed * dt + gap);
-        const routeBlockers = anticipation.components.map(part => compactAnticipationBlocker(part, forecastSeconds));
+        let parts = vehicleParts.get(forecastSeconds);
+        if (parts === undefined) vehicleParts.set(forecastSeconds, parts = anticipation.components.map(part => compactAnticipationBlocker(part, forecastSeconds)));
+        const routeBlockers = [...parts];
         reserved.forEach(item => routeBlockers.push({ id: `reservation:${item.id}`, from: item.footprint, to: item.footprint, pad: 0 }));
         for (let other = 0; other < actorBlockers.length; other += 1) if (other !== index) {
           const body = actorBlockers[other];
-          routeBlockers.push({ id: this.actorBlockerIds[other],
-            from: body, to: this.pedestrianPriority(state, this.states[other]) ? body : predictBody(body, forecastSeconds), pad: 0 });
+          // pedestrianPriority(vehicle, ...) is false before any forecast: a vehicle never has it (PERF-POP).
+          // At the look-ahead horizon itself the forecast already holds predictBody(body, horizon).
+          routeBlockers.push({ id: this.actorBlockerIds[other], from: body,
+            to: Object.is(forecastSeconds, horizon) ? forecast.actors[other].to : predictBody(body, forecastSeconds), pad: 0 });
         }
         const incomplete = anticipation.incompleteOwnerIds.length > 0 || anticipation.components.length > R.compactAnticipationMaximumComponents;
         const scan: RouteAnticipationResult = incomplete
@@ -1372,13 +1535,16 @@ export class PopulationSimulation {
       const grownProspective = grow(prospective, gap), prospectiveBounds = motionBounds(grownFrom, grownProspective);
       const nativeFraction = Math.min(1, dt / horizon);
       let fraction = 1;
+      const candidateTrack: SweepTrack = { from: grownFrom, to: grownProspective };
       for (const blocker of blockers) {
         if (!mayMeet(prospectiveBounds, blocker.bounds)) continue;
         if (blocker.nativeFraction !== nativeFraction || !blocker.nativeTo) {
           blocker.nativeFraction = nativeFraction; blocker.nativeTo = mixBody(blocker.from, blocker.to, nativeFraction);
         }
         const next = blocker.nativeTo;
-        const hit = sweepPopulationHulls(grownFrom, grownProspective, blocker.from, next);
+        trackEndpoints(candidateTrack); nativeEndpoints(blocker);
+        const hit = sweepHullsWithEndpoints(grownFrom, grownProspective, blocker.from, next,
+          candidateTrack.first!, candidateTrack.last!, blocker.nativeFirst!, blocker.nativeLast!);
         if (hit) {
           // A merged blocker moving away may be allowed to leave, but we do
           // not walk deeper into it while waiting for that to happen.
@@ -1416,18 +1582,15 @@ export class PopulationSimulation {
         state.direction = state.direction === 1 ? -1 : 1;
         state.pause = spec.idleSeconds; state.turning = !isVehicle; state.speed = 0;
       }
-      const updated = this.makePose(state, 0, 0, Math.abs(actualTravel) / dt * (isVehicle ? motionDirection : 1));
-      state.pose = { ...updated, velocityX: (updated.x - before.x) / dt,
-        velocityZ: (updated.z - before.z) / dt,
-        footprint: { ...updated.footprint, velocityX: (updated.footprint.x - before.footprint.x) / dt,
-          velocityZ: (updated.footprint.z - before.footprint.z) / dt } };
+      state.pose = this.makePose(state, 0, 0, Math.abs(actualTravel) / dt * (isVehicle ? motionDirection : 1), before, dt);
     }
     // Resolve actual simultaneous AI trajectories after prediction. Previous
     // velocities alone cannot prevent two newly accelerating actors meeting
     // at a crossing; rotating a stopped actor also has a physical swept hull.
     const fractions = this.states.map(() => 1);
     const actualMotions = this.states.map((state, index) => {
-      const from = actorFootprint(this.previous.actors[index]), to = actorFootprint(state.pose);
+      // The published footprints themselves: never written in place (PERF-POP).
+      const from = this.previous.actors[index].footprint, to = state.pose.footprint;
       // A turn on the spot keeps its own body's clearance: the waiting gap is
       // for walking up to someone, and grown by it a walker stopped in front of
       // a rider could never turn round and leave (R2C-5, 2026-10-04).
@@ -1443,7 +1606,8 @@ export class PopulationSimulation {
     const constrain = (index: number, first: BoundedMotion, second: BoundedMotion, slides = false): void => {
       if (!mayMeet(first.bounds, second.bounds)) return;
       const a0 = first.from, a1 = first.to, b0 = second.from, b1 = second.to;
-      const hit = sweepPopulationHulls(a0, a1, b0, b1);
+      wholeEndpoints(first); wholeEndpoints(second);
+      const hit = sweepHullsWithEndpoints(a0, a1, b0, b1, first.first!, first.last!, second.first!, second.last!);
       if (!hit) return;
       const startGap = staticContact(a0, b0)?.gap ?? Infinity;
       const endGap = staticContact(a1, b1)?.gap ?? Infinity;
@@ -1746,8 +1910,8 @@ export class PopulationSimulation {
   actorMotions(): readonly PopulationActorMotion[] {
     if (this.contactsTick === this.tick) throw new Error('Population actor motion tick is already committed');
     return this.states.map((state, index) => ({ id: state.spec.id,
-      previous: detachedFootprint(actorFootprint(this.previous.actors[index])),
-      current: detachedFootprint(actorFootprint(state.pose)) }));
+      previous: detachedFootprint(this.previous.actors[index].footprint),
+      current: detachedFootprint(state.pose.footprint) }));
   }
 
   /** Keep public actorMotions detached; this explicitly immutable port allows
@@ -1901,7 +2065,7 @@ export class PopulationSimulation {
         throw new RangeError('Actor stop fractions must lie in [0,1]');
       }
       const copy = { ...state }; this.stopAtFraction(copy, fraction);
-      return { id: state.spec.id, previous: detachedFootprint(actorFootprint(this.previous.actors[index])),
+      return { id: state.spec.id, previous: detachedFootprint(this.previous.actors[index].footprint),
         current: detachedFootprint(copy.pose.footprint) };
     });
   }

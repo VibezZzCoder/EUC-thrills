@@ -7,7 +7,8 @@ import { BUILDING_FACADE, BUILDING_TONES, PROP_COLOURS, PROP_SIZES, PROP_TINT_JI
   type BuildingLook } from '../data/props.ts';
 import { buildingTowerPart } from '../data/renderCost.ts';
 import { STREET_LIFE } from '../data/streetLife.ts';
-import { ULTRA } from '../data/tuning.ts';
+import { LOADING, ULTRA } from '../data/tuning.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 import { positionHash01 } from '../shared/maths.ts';
 import type { LevelPlan, Prop, BoxCollider } from '../level/plan.ts';
 import { exactBuildingBody, nearestPavedStreetStation } from '../level/protectedSiteEligibility.ts';
@@ -166,9 +167,16 @@ function parcel(plan: LevelPlan, sampler: PlanTerrainSampler, context: Populatio
 export function districtExteriorSites(plan: LevelPlan,
   protectedOpenings: readonly FacadeOpening[] = [],
   replacedPropIndices: ReadonlySet<number> = new Set()): readonly DistrictExteriorSite[] {
+  return runSteps(districtExteriorSitesSteps(plan, protectedOpenings, replacedPropIndices));
+}
+/** `districtExteriorSites` as slices, one per `LOADING.exteriorPropsPerSlice` props (`shared/preparationSteps.ts`). */
+export function* districtExteriorSitesSteps(plan: LevelPlan,
+  protectedOpenings: readonly FacadeOpening[] = [],
+  replacedPropIndices: ReadonlySet<number> = new Set()): Steps<readonly DistrictExteriorSite[]> {
   const sampler = new PlanTerrainSampler(plan), context = createPopulationValidationContext(plan);
   const sites: DistrictExteriorSite[] = [];
   for (let propIndex = 0; propIndex < (plan.props?.length ?? 0); propIndex += 1) {
+    if (propIndex % LOADING.exteriorPropsPerSlice === 0) yield PREPARATION_SLICE;
     const building = plan.props![propIndex], body = exactBuildingBody(plan, building), size = building.size;
     if (!body || !size) continue;
     const look = building.look, parts: ExteriorPart[] = [], parcels: ExteriorParcel[] = [];

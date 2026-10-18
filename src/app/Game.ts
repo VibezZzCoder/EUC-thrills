@@ -1,5 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { preparePopulationWorld, recordWorldIdOf } from './populationWorld.ts';
+import { preparePopulationWorld, preparePopulationWorldSteps, recordWorldIdOf } from './populationWorld.ts';
+import { driveSteps, runSteps, type Steps } from '../shared/preparationSteps.ts';
+import { createBootSlicer } from './bootSlicer.ts';
 import type { LoadingScreen } from '../ui/loadingScreen.ts';
 import type { PopulationPlan } from '../level/populationPlan.ts';
 import { POPULATION, POPULATION_OCCUPANT, RIDER_CONTACT } from '../data/tuning.ts';
@@ -50,8 +52,10 @@ import {
   MAX_SEED_LENGTH,
   ROUTE_SEED_SPACE,
   createLevel,
+  createLevelSteps,
   normaliseSeed,
   requestRoute,
+  requestRouteSteps,
   routeSeedFrom,
   type LevelId,
 } from '../level/levels.ts';
@@ -501,6 +505,7 @@ const SPLITS_TABLE: ResultsTable = Object.freeze({
   delta: 'vs best',
 });
 import { loudestWarning, nearestCutout, type RiderWarningState } from './riderMix.ts';
+import { PausedViewGate, type PausedViewFrame, type PausedViewStats } from './pausedView.ts';
 import { Onboarding, type PromptDevice } from '../ui/onboarding.ts';
 
 /**
@@ -1369,13 +1374,21 @@ function deviceOptions(storage: SafeStorage): OptionsStore {
   return new OptionsStore(storage, deviceDefaults(coarse));
 }
 
-function bootWorld(levelId: LevelId, seed: string, hazardProbe?: number, targetProbe?: number, topSpeedMph?: number) {
-  const requested = levelId === 'generated' ? requestRoute(seed, hazardProbe, targetProbe, topSpeedMph) : null;
+interface BootWorld { levelId: LevelId; seed: string; level: LevelPlan; routeStatus: RouteStatus }
+function bootWorld(levelId: LevelId, seed: string, hazardProbe?: number, targetProbe?: number, topSpeedMph?: number): BootWorld {
+  return runSteps(bootWorldSteps(levelId, seed, hazardProbe, targetProbe, topSpeedMph));
+}
+/** `bootWorld` as slices (2026-10-17 audit §3, "Building your course"): route
+ * generation and the venue builders yield label-free slices; `Game.create`
+ * alone drives them with the boot's time budget. */
+function* bootWorldSteps(levelId: LevelId, seed: string, hazardProbe?: number, targetProbe?: number,
+  topSpeedMph?: number): Steps<BootWorld> {
+  const requested = levelId === 'generated' ? yield* requestRouteSteps(seed, hazardProbe, targetProbe, topSpeedMph) : null;
   const resolvedId = requested?.ok ? 'generated' : levelId === 'generated' ? 'slice' : levelId;
   return {
     levelId: resolvedId as LevelId,
     seed: requested?.ok ? requested.seed : '',
-    level: requested?.ok ? requested.plan : createLevel(resolvedId, seed, hazardProbe, targetProbe, topSpeedMph),
+    level: requested?.ok ? requested.plan : yield* createLevelSteps(resolvedId, seed, hazardProbe, targetProbe, topSpeedMph),
     routeStatus: (requested !== null && !requested.ok ? { kind: 'no-route', seed: requested.seed } : { kind: 'idle' }) as RouteStatus,
   };
 }
@@ -1422,12 +1435,22 @@ export class Game {
     const storage = new SafeStorage();
     const options = deviceOptions(storage);
     let renderer: GameRenderer | null = null;
+    // 2026-10-17 audit §3: street life and the first construction group are
+    // step generators. Here alone they are driven with a time budget, yielding
+    // to the browser at label-free slices; a slice is never a checkpoint, so
+    // the nine loading steps and their labels are exactly as before. Swaps,
+    // the QA bridge and tests drain the same generators synchronously.
+    const slicer = createBootSlicer();
+    const stage = async (label: string, completed: number): Promise<void> => {
+      await onStage(label, completed);
+      slicer.restart();
+    };
     try {
-      await onStage('Building your course', 1);
-      const world = bootWorld(levelId, seed, hazardProbe, targetProbe, topSpeedMph);
-      await onStage('Planning street life', 2);
-      const living = preparePopulationWorld(world.level);
-      await onStage('Preparing graphics', 3);
+      await stage('Building your course', 1);
+      const world = await driveSteps(bootWorldSteps(levelId, seed, hazardProbe, targetProbe, topSpeedMph), { slice: slicer.slice });
+      await stage('Planning street life', 2);
+      const living = await driveSteps(preparePopulationWorldSteps(world.level), { slice: slicer.slice });
+      await stage('Preparing graphics', 3);
       renderer = new GameRenderer(canvas);
       const search = window.location.search;
       const presentation = presentationOverrideFrom(search);
@@ -1441,8 +1464,8 @@ export class Game {
       }
       let completed = 4;
       await renderer.setLevelAsync(living.level, presentation, living.population,
-        (label) => onStage(label, completed++));
-      await onStage('Preparing riders and controls', 7);
+        (label) => stage(label, completed++), slicer.slice);
+      await stage('Preparing riders and controls', 7);
       return new Game(canvas, levelId, seed, hazardProbe, targetProbe, chaseProbe, topSpeedMph,
         { ...world, level: living.level, population: living.population, renderer, storage, options });
     } catch (error) {
@@ -2686,6 +2709,7 @@ export class Game {
    * (`BARKS` is not a live tunable); capture tools can switch barks off here.
    */
   setBarksEnabled(on: boolean, forceChance = false): void {
+    this.pausedView.invalidate('bridge');
     this.barksEnabled = on;
     this.barkRoom.forceChance = on && forceChance;
   }
@@ -3334,6 +3358,27 @@ export class Game {
    */
   private contextLost = false;
   private readonly contextNotice: ScreenNotice;
+
+  /**
+   * The held paused view — performance pass 2026-10-17 (`app/pausedView.ts`).
+   *
+   * A settled player pause stops submitting to the GPU and the canvas keeps
+   * the picture it last presented; every CPU-side part of `render` still runs.
+   * `admitPausedView` describes each frame to the gate, and every write that
+   * can change the paused picture calls `this.pausedView.invalidate(…)`: the
+   * tuning, options, state, pose, camera, step, visibility, reduced-motion,
+   * context and layout choke points, and every QA-bridge entry that writes
+   * (`pausedViewWiring.test.ts` is the census). The three identities below are
+   * belt and braces for a world, living world or options record replaced
+   * without passing a choke point.
+   */
+  private readonly pausedView = new PausedViewGate(RENDER.pausedViewSettleFrames);
+  private readonly pausedViewFrame: PausedViewFrame = {
+    holdable: false, bufferWidth: 0, bufferHeight: 0, pixelRatio: 0, views: 0, seats: 0,
+  };
+  private pausedViewPlan: LevelPlan | null = null;
+  private pausedViewPopulation: PopulationSimulation | null = null;
+  private pausedViewOptions: GameOptions | null = null;
 
   /**
    * A scripted camera obstruction, or `null` for the level's own geometry.
@@ -4455,16 +4500,18 @@ export class Game {
   setLoadingScreen(screen: LoadingScreen): void { this.loadingScreen = screen; }
 
   /** Draw the complete requested world/rig before making the title interactive.
-   * The prewarm is outside the loop's profiler/cadence accounting. */
+   * The prewarm is outside the loop's profiler/cadence accounting. A forced
+   * draw (`synthetic`): the held paused view never applies to it. */
   prepareFirstFrame(): void {
     this.renderer.resize();
-    this.render(0);
+    this.render(0, true);
   }
 
   preloadOptionalAudio(): void { this.audio.setSampleUrls(SAMPLE_URLS); }
 
   /** Open the overlay and/or panel from the URL, for QA and for screenshots. */
   applyDebugQuery(search: string): void {
+    this.pausedView.invalidate('bridge');
     const params = new URLSearchParams(search);
     if (params.get('debug') === '1') this.overlay.setVisible(true);
     if (params.get('panel') === '1') this.panel.setVisible(true);
@@ -4564,6 +4611,21 @@ export class Game {
    */
   advance(steps: number): void {
     this.loop.advance(steps);
+    // The synthetic draw above always submits; the real frames after it
+    // redraw too (the settle window), exactly as they did before the held
+    // paused view existed. `advance(0)` is therefore the bridge's way to show
+    // a write made straight to `game.renderer` while paused.
+    this.pausedView.invalidate('advance');
+  }
+
+  /**
+   * The held paused view's counters — performance pass 2026-10-17. For
+   * instruments: a held frame submits nothing, and `renderer.info` keeps the
+   * last drawn frame's numbers, so count submissions or read this. Allocates
+   * only when called; not part of `snapshot()`.
+   */
+  pausedViewState(): PausedViewStats {
+    return this.pausedView.stats();
   }
 
   /**
@@ -4572,6 +4634,7 @@ export class Game {
    * compares two rides gives both the same world to ride through (2026-10-05).
    */
   restartLivingWorld(): void {
+    this.pausedView.invalidate('bridge');
     this.restartPopulation();
   }
 
@@ -4708,6 +4771,7 @@ export class Game {
    * is the honest answer rather than a surprising one.
    */
   spawnRider(character?: CharacterId): number {
+    this.pausedView.invalidate('bridge');
     if (this.seats.length >= COUCH_SEATS) {
       throw new Error(`the couch is full (seats: ${this.seats.length} of ${COUCH_SEATS})`);
     }
@@ -4823,6 +4887,7 @@ export class Game {
    * handle, a listener or a timer, so dropping the seat is the whole of it.
    */
   despawnRider(): void {
+    this.pausedView.invalidate('bridge');
     if (this.seats.length < 2) throw new Error('there is no second rider to despawn');
     const index = this.seats.length - 1;
     const seat = this.seats[index];
@@ -4939,10 +5004,12 @@ export class Game {
    * width is `spawnRider`'s to enforce, and it does.
    */
   spawnSecondRider(character?: PlayableCharacterId): number {
+    this.pausedView.invalidate('bridge');
     return this.spawnRider(character);
   }
 
   despawnSecondRider(): void {
+    this.pausedView.invalidate('bridge');
     this.despawnRider();
   }
 
@@ -5207,6 +5274,7 @@ export class Game {
    * in `src/render/chaseCamera.test.ts`.
    */
   setOcclusion(distance: number | null): void {
+    this.pausedView.invalidate('bridge');
     this.scriptedOcclusion = distance;
     // **Every seat**, because this scripts the *world* rather than a rider:
     // "something solid is three metres up the arm" is a statement about the
@@ -5262,6 +5330,7 @@ export class Game {
     /** Arrive riding at this speed, m/s (M42: a spec rides a pad from 15 m out); 0 for every existing caller. */
     initialSpeed = 0,
   ): void {
+    this.pausedView.invalidate('bridge');
     // **Addressed since M25 Phase 5's QA repair**, on `setActionsFor`'s and
     // `snapshotFor`'s pattern and for their reason: a spec that has to stand
     // the *guest* somewhere — in front of the one wall in the world that is
@@ -5714,6 +5783,7 @@ export class Game {
    * which is itself worth asserting.
    */
   setAppState(state: AppStateId): boolean {
+    this.pausedView.invalidate('bridge');
     // Diagnostic transitions remain synchronous; native controls use goTo's
     // painted loading gate. The session policy is enforced at open/spawn too.
     return this.appState.goTo(state);
@@ -5721,6 +5791,7 @@ export class Game {
 
   /** Change options exactly as the settings screen does. */
   setOptions(patch: Partial<GameOptions>): void {
+    this.pausedView.invalidate('bridge');
     this.options.set(patch);
   }
 
@@ -5743,10 +5814,12 @@ export class Game {
    * than a test-only branch.
    */
   startKnockabout(): void {
+    this.pausedView.invalidate('bridge');
     this.enterKnockabout();
   }
 
   startTimeTrial(): void {
+    this.pausedView.invalidate('bridge');
     this.startChallenge();
   }
 
@@ -5758,6 +5831,7 @@ export class Game {
    * behaviour and is the whole reason the button is always live.
    */
   startTrackDay(): void {
+    this.pausedView.invalidate('bridge');
     this.bridgeWorldSwap(() => this.enterTrackDay());
   }
 
@@ -5771,6 +5845,7 @@ export class Game {
    * being reachable.
    */
   endTrackDay(): void {
+    this.pausedView.invalidate('bridge');
     if (this.appState.current === 'trackDay') this.goTo('paused');
     this.endTrackDaySession();
   }
@@ -5785,6 +5860,7 @@ export class Game {
    * green suite describing a door that does not exist.
    */
   startTrickRun(): void {
+    this.pausedView.invalidate('bridge');
     this.bridgeWorldSwap(() => this.enterTrickRun());
   }
 
@@ -5796,6 +5872,7 @@ export class Game {
    * would assert a path nobody can take.
    */
   endTrickRun(): void {
+    this.pausedView.invalidate('bridge');
     if (this.appState.current === 'trickRun') this.goTo('paused');
     this.endTrickRunSession();
   }
@@ -5810,6 +5887,7 @@ export class Game {
    * rather than a test-only branch.
    */
   startChase(): void {
+    this.pausedView.invalidate('bridge');
     this.enterChase();
   }
 
@@ -5824,6 +5902,7 @@ export class Game {
    * and nothing in M10's brief asked for one.
    */
   clearRecords(): void {
+    this.pausedView.invalidate('bridge');
     this.records.clearAll();
     // Both stores — M14. "Clear my records" that left half of them behind
     // would be the kind of half-answer a player only discovers by opening the
@@ -5852,6 +5931,7 @@ export class Game {
    * unseen, and they would never appear again.
    */
   resetOptions(): void {
+    this.pausedView.invalidate('bridge');
     // The toggle's memory is session state about a choice the reset is
     // taking away (M39 W1), so it goes first — a reset from Ultra lands on
     // High, and a later toggle off must not return to a tier from before it.
@@ -7350,6 +7430,7 @@ export class Game {
    * stubbing the answer.
    */
   setGroupSpawnSeparationScale(scale: number): void {
+    this.pausedView.invalidate('bridge');
     if (!Number.isFinite(scale) || scale <= 0) return;
     this.groupSpawnSeparationScale = scale;
     this.packFits = null;
@@ -9452,6 +9533,25 @@ export class Game {
   }
 
   /**
+   * The rig a seat's pane is about — `followedPose`'s body as a rig (OD-3,
+   * perf item "riders" 2026-10-17): the seat's own, another seat's when a
+   * watching outlaw follows it, or null when he follows a CPU cop (who is no
+   * seat rig). Same fallbacks as `followedPose`, so the two cannot disagree.
+   */
+  private followedRig(seat: RiderSeat): RidingRig | null {
+    const target = seat.spectating;
+    if (target !== undefined && target !== null) {
+      if (target.kind === 'seat') {
+        const other = this.seats[target.index];
+        if (other !== undefined) return other.rig;
+      } else if (this.pursuers[target.index] !== undefined) {
+        return null;
+      }
+    }
+    return seat.rig;
+  }
+
+  /**
    * Put every chair back in the world — the round is over or being re-armed.
    * Rigs shown, nobody watching, no beat running, no latch pending. Called at
    * every chase entrance and on the way out of a couch chase (`enterState`),
@@ -10208,6 +10308,7 @@ export class Game {
    * lives beside the list the panel is drawn from.
    */
   setCouchRide(ride: string): void {
+    this.pausedView.invalidate('bridge');
     if (!isCouchRide(ride)) return;
     // Leaving the chase on the join panel re-deals the cop card first (q215):
     // the wheel only offers him on the chase, so no other ride may keep him.
@@ -10255,6 +10356,7 @@ export class Game {
    * a pause resumes, and a finished match rides another one.
    */
   switchCouchRide(ride: string): void {
+    this.pausedView.invalidate('bridge');
     if (!isCouchRide(ride) || this.pendingRoute !== null) return;
     // **Any couch, not a full one** — M27 Phase 1. The test read
     // `!== COUCH_SEATS` while a couch was always exactly two seats, so it was
@@ -10399,6 +10501,7 @@ export class Game {
    * mutation-checked (§26.3's own note on this gate).
    */
   setContactEnabled(enabled: boolean): void {
+    this.pausedView.invalidate('bridge');
     this.contactEnabled = enabled;
     // **The panel is redrawn from the flag, never from its own control** — the
     // rule survives the control that motivated it (M26 Phase 2). Cheap and
@@ -12008,6 +12111,10 @@ export class Game {
     // the first sizing self-healing when boot lands before layout, and it
     // covers container and pixel-ratio changes without a listener for each.
     const change = this.renderer.resize();
+    // A CSS-pixel layout change re-aims every camera (`applyViewAspects`) even
+    // when the drawing buffer keeps its size — a ratio below 1 can floor a
+    // one-pixel change away — so it releases a held paused view by itself.
+    if (change.layoutChanged) this.pausedView.invalidate('layout');
     if (!change.layoutChanged) return;
 
     this.layoutChanges += 1;
@@ -12049,6 +12156,9 @@ export class Game {
   };
 
   private readonly step = (stepSeconds: number): void => {
+    // Any simulation step — the loop's, `advance()`'s, or one run from
+    // outside the loop — can move what a held paused view shows.
+    this.pausedView.invalidate('step');
     // A suspended Trick Run freezes the rider as well as its referee. Settings
     // normally animates the background world; letting that integrate a paused
     // flight loses its touchdown and grants free travel/recovery off the clock.
@@ -13284,7 +13394,7 @@ export class Game {
     this.wildlifeRiders.push(observation);
   }
 
-  private readonly render = (alpha: number): void => {
+  private readonly render = (alpha: number, synthetic = false): void => {
     // The cover hides the canvas while a new view's programs link.
     if (this.coverWarm === 'running') return;
     // **Every seat: interpolate it and draw it** — M25 Phase 2. `renderSeat`
@@ -13384,6 +13494,18 @@ export class Game {
     updatePopulationAudio(this.audio, populationPrevious, populationCurrent, alpha);
     // M42 (Builder D): the question barks, on this frame's own `hudSeconds`.
     this.updateBarks(hudSeconds, populationPrevious.actors, populationCurrent.actors, alpha);
+    // **The held paused view** (performance pass 2026-10-17, `pausedView.ts`).
+    // A settled player pause: the canvas keeps the picture it last presented
+    // (WebGL presents only after a clear/draw or a resize). Everything above
+    // ran; only GPU submission is skipped. Barks are DOM: re-project them as
+    // the pane loop below would, against the cameras the last drawn frame
+    // placed. Anything new that animates the paused canvas must invalidate
+    // the gate or make the frame non-holdable (`admitPausedView`).
+    if (!this.admitPausedView(synthetic)) {
+      const views = this.renderer.viewCount;
+      for (let view = 0; view < views && view < this.seats.length; view += 1) this.presentBarks(view);
+      return;
+    }
     this.renderer.beginFrame();
     // **One pass per *view*, not per seat.** The two are the same number from
     // the first frame anybody is riding; on the join panel the split follows
@@ -13391,6 +13513,10 @@ export class Game {
     // in the world and no window of its own — and asking the renderer for a
     // view it does not have is an exception, not a blank pane.
     const views = this.renderer.viewCount;
+    // OD-3 (perf item "riders", 2026-10-17): the renderer trims every other
+    // seat rider's limb shadows per pane, so it reads who is seated each
+    // frame — allocation-free while nobody sits down or swaps.
+    this.renderer.syncSeatRigs(this.seats);
     for (let view = 0; view < views && view < this.seats.length; view += 1) {
       const drawn = this.seats[view];
       // The pose this pane is looking at: the seat's own rider, or the body a
@@ -13400,12 +13526,79 @@ export class Game {
       this.renderer.setShadowFocus(at.x, at.y, at.z);
       this.terrainView.setSurroundCentre(at.x, at.z);
       this.placeCamera(drawn, view, alpha);
+      // The rider this pane is about keeps its whole shadow (OD-3): its own,
+      // or the body a watching outlaw follows — the one `at` just framed.
+      this.renderer.setPaneSubject(view, this.followedRig(drawn));
       this.renderer.renderView(view);
       // M42 (Builder D): project this pane's bubble and candidate now that its
       // camera matrices are fresh.
       this.presentBarks(view);
     }
   };
+
+  /**
+   * Describe this frame to the held paused view and ask whether to submit it.
+   *
+   * **Holdable** only in the player's `paused` state (the one ride-reachable
+   * state with `simulates: false`), with the loop not running, on a real
+   * frame, with nothing in flight: no lost context or hidden page, no loading
+   * cover, no quality, session or world swap or route pending or settling,
+   * not under Ultra (a shader failure demotes at the next `beginFrame` and
+   * must not wait behind a hold), no armed perf-quad probe, and no rig still
+   * settling (`anyRigSettling`). A QA-frozen ride (`loop.setRunning(false)`
+   * in a riding state) is never holdable: specs depend on it drawing. The
+   * surface fields are attributes, never a layout read.
+   */
+  private admitPausedView(synthetic: boolean): boolean {
+    if (this.levelPlan !== this.pausedViewPlan) {
+      this.pausedViewPlan = this.levelPlan;
+      this.pausedView.invalidate('world');
+    }
+    if (this.population !== this.pausedViewPopulation) {
+      this.pausedViewPopulation = this.population;
+      this.pausedView.invalidate('population');
+    }
+    if (this.options.current !== this.pausedViewOptions) {
+      this.pausedViewOptions = this.options.current;
+      this.pausedView.invalidate('options');
+    }
+    const frame = this.pausedViewFrame;
+    const three = this.renderer.renderer;
+    frame.holdable = !synthetic && this.appState.current === 'paused' && !this.loop.isRunning()
+      && !this.contextLost && !this.pageHidden && this.loadingScreen?.busy !== true
+      && !this.finishLoadingAfterPoll
+      && this.pendingQuality === null && this.qualitySettleFrames === 0
+      && this.pendingSessionState === null && this.sessionSettleFrames === 0
+      && this.pendingWorldSwap === null && this.worldSettleFrames === 0 && this.pendingRoute === null
+      && this.renderer.effectiveTier() !== 'ultra' && !this.renderer.perfQuadArmed
+      && !this.anyRigSettling();
+    frame.bufferWidth = three.domElement.width;
+    frame.bufferHeight = three.domElement.height;
+    frame.pixelRatio = three.getPixelRatio();
+    frame.views = this.renderer.viewCount;
+    frame.seats = this.seats.length;
+    return this.pausedView.admit(frame);
+  }
+
+  /**
+   * Is any rig this frame posed still settling (`RidingRig.settling`)? The
+   * held paused view's one exception to "a paused frame's inputs are frozen"
+   * (performance pass 2026-10-17, review repair): the paddle carry is put
+   * down by 1/12 per `apply` call, not on the simulation clock, and a
+   * Knockabout pause or a couch-chase pause of the cop seat takes the paddle
+   * out of the hand. Holding after the settle frames alone froze the right
+   * arm part-way down (48 mm at the grip when stopped) while every baseline
+   * frame went on to put it down. Every seat's rig — posed in `renderSeat`
+   * before this runs — and every shown trim of the pack, whose head is never
+   * null, so only the falling flag can set theirs. Asked only of a frame that
+   * is otherwise holdable (the `&&` above), and allocation-free.
+   */
+  private anyRigSettling(): boolean {
+    for (let index = 0; index < this.seats.length; index += 1) {
+      if (this.seats[index].rig.settling) return true;
+    }
+    return this.renderer.packSettling;
+  }
 
   /**
    * One drawn frame of one seat — M25 Phase 1 (docs/PLANS.md §25.5).
@@ -14494,6 +14687,10 @@ export class Game {
    * different ways.
    */
   private enterState(state: AppStateId, from: AppStateId = state): void {
+    // Every state transition, including paused → Settings → paused inside
+    // one task with no frame between (the gate would otherwise see two
+    // paused frames in a row).
+    this.pausedView.invalidate('state');
     const spec = this.appState.spec;
     // Leaving the requesting card cancels deferred work. Resume, settings or
     // quit must not be followed by a course swap from a stale mode press.
@@ -15024,12 +15221,14 @@ export class Game {
    * be proven before the screen that uses it is built.
    */
   beginClaiming(): void {
+    this.pausedView.invalidate('bridge');
     this.gamepad.primeAll();
     this.router.openClaims();
   }
 
   /** Shut the claim window. Claims already made stand; they are session-only. */
   endClaiming(): void {
+    this.pausedView.invalidate('bridge');
     this.router.closeClaims();
   }
 
@@ -15040,17 +15239,20 @@ export class Game {
 
   /** Exchange the claimed devices between seats — the panel's Swap. */
   swapSeatDevices(): boolean {
+    this.pausedView.invalidate('bridge');
     return this.router.swap();
   }
 
   /** Release one seat's device — the panel's Unclaim. */
   unclaimSeat(seat: number): boolean {
+    this.pausedView.invalidate('bridge');
     this.requireSeat(seat);
     return this.router.unclaim(seat);
   }
 
   /** Forget every claim. The end of a couch session, and of `dispose`. */
   clearClaims(): void {
+    this.pausedView.invalidate('bridge');
     this.router.clearClaims();
   }
 
@@ -15652,11 +15854,16 @@ export class Game {
    * on its own (`data/tuning.ts`, `TARGET.struckBrightness`).
    */
   private readonly onReducedMotionChange = (): void => {
+    // The target family repaints its materials from the flag.
+    this.pausedView.invalidate('reduced-motion');
     this.renderer.setTargetsReducedMotion(this.reducedMotion?.matches ?? false);
   };
 
   private readonly onVisibilityChange = (): void => {
     const hidden = document.visibilityState === 'hidden';
+    // A returning tab redraws: nothing assumes the compositor kept a held
+    // picture while the page was hidden.
+    if (!hidden) this.pausedView.invalidate('visible');
     this.audio.setSuspended(hidden);
     // **A hidden ride is a frozen ride** (M10 QA, F2). The loop used to keep
     // simulating whichever state was live, which meant a timed run's clock
@@ -15674,6 +15881,8 @@ export class Game {
   };
 
   private handleContextRestored(): void {
+    // A restored context has a fresh, blank drawing buffer.
+    this.pausedView.invalidate('context');
     this.contextLost = false;
     this.contextNotice.hide();
     // Resume is an input-reset moment too, and it also drops any pause press
@@ -15721,6 +15930,8 @@ export class Game {
    * a frame — a stutter nobody could explain, on a rider who did nothing.
    */
   private syncSeatPose(seat: RiderSeat): void {
+    // Every teleport, reset, respawn and re-dress collapses through here.
+    this.pausedView.invalidate('pose');
     seat.rig.resetCrashPose();
     seat.controller.writePose(seat.currentPose);
     copyPose(seat.currentPose, seat.previousPose);
@@ -15792,6 +16003,7 @@ export class Game {
    * did nothing.
    */
   private syncCamera(seat: RiderSeat): void {
+    this.pausedView.invalidate('pose');
     seat.chase.reset(this.readChaseInput(seat, seat.currentPose));
     seat.chase.writeState(seat.currentCamera);
     copyChaseCameraState(seat.currentCamera, seat.previousCamera);
@@ -15835,6 +16047,9 @@ export class Game {
    * frame — the store notifies, so nothing has to ask.
    */
   private applyTuning(): void {
+    // Lighting, camera and Ultra values change the paused picture (F4's
+    // panel, `?wobble=`, the bridge's `tuning.set`): release a held view.
+    this.pausedView.invalidate('tuning');
     this.renderer.applyLighting({
       exposure: this.tuning.get('LIGHTING.exposure'),
       sunIntensity: this.tuning.get('LIGHTING.sunIntensity'),
@@ -16496,6 +16711,9 @@ export class Game {
    * options?" clause.
    */
   private applyOptions(options: GameOptions): void {
+    // Every options change, A → B → A inside one task included (the record
+    // identity check in `admitPausedView` cannot see that one).
+    this.pausedView.invalidate('options');
     const previous = this.appliedOptions;
     // **Every push below is guarded, and that is not an optimization.**
     //

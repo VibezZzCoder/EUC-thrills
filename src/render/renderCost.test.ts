@@ -686,13 +686,23 @@ test('the three frame ceilings retain their distinct pass counts', () => {
   // of each is pinned by the test below this one. QA r2 (2026-09-24): every
   // reserve +2 calls for the two particle fields measured live, so by the
   // same rule 212 → 214, 512 → 516 and 1,400 → 1,408.
+  // Rider consolidation (perf actions, 2026-10-17; owner OD-1/OD-2): the
+  // reserves FELL in calls (144 → 138, 178 → 168, 272 → 252) and R-5 never
+  // lowers a ceiling, so every draw-call ceiling stands.
   assert.equal(RENDER_BUDGET.maxDrawCalls, 217);
   // M39 r6 (2026-09-22): triangles raised on the owner's authorization for the
   // town ring's larger ground; draw calls unchanged.
-  assert.equal(RENDER_BUDGET.maxTriangles, 643_618);
+  // Rider consolidation (2026-10-17): OD-2 merges same-joint panels into their
+  // casting limb, so Cool Rider's panels now cast and the solo reserve grew by
+  // 2,272 triangles (the split reserve by 2,272 a pass, the grid's by 2,792).
+  // R-5 raised each triangle ceiling by passes × that growth — 643,618 →
+  // 645,890, 1,374,264 → 1,378,808 and 2,995,976 → 3,007,144 — so every
+  // level's triangle share is byte-identical (the test below).
+  assert.equal(RENDER_BUDGET.maxTriangles, 645_890);
   assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls, 522);
-  assert.equal(RENDER_BUDGET_SPLIT.maxTriangles, 1_374_264);
+  assert.equal(RENDER_BUDGET_SPLIT.maxTriangles, 1_378_808);
   assert.equal(RENDER_BUDGET_QUAD.maxDrawCalls, 1_420);
+  assert.equal(RENDER_BUDGET_QUAD.maxTriangles, 3_007_144);
   assert.ok(RENDER_BUDGET_QUAD.maxDrawCalls > RENDER_BUDGET_SPLIT.maxDrawCalls);
   assert.ok(RENDER_BUDGET_QUAD.maxTriangles > RENDER_BUDGET_SPLIT.maxTriangles);
   // And it is not four halves: the level is drawn four times but the world —
@@ -713,15 +723,33 @@ test('measured reserves and explicit route-face library expansion retain synchro
   // numbers `level/renderBudget.ts` and `render/presentation.ts` judge worlds
   // against, and a change here moves generated worlds — which Part P promised
   // it would not.
-  assert.equal(RENDER_BUDGET.maxDrawCalls - NON_LEVEL_RESERVE.drawCalls, 73, 'the solo level share (calls)');
+  // **Rider consolidation (perf actions, 2026-10-17).** The rider merges
+  // (exact tier, OD-1, OD-2) lowered the reserves by 6 / 10 / 20 calls. The
+  // OD-3 pane trim is not in them: it acts per pane in `Renderer.renderView`,
+  // so the couch reserves overstate a couch frame's rider shadows, which is the
+  // safe direction. R-5 never lowers a ceiling, so each level's draw-call
+  // share rose by that much: 73 → 79 solo, 83 → 93 a split pass, 83 → 103 a
+  // grid pass. No level can spend it: none draws more than
+  // `LIBRARY_MAX_DRAW_CALLS` (73; "no level built from this library can breach
+  // the draw-call ceiling" below), so no generated world or generator refusal
+  // can move on calls. The triangle shares are byte-identical.
+  assert.equal(RENDER_BUDGET.maxDrawCalls - NON_LEVEL_RESERVE.drawCalls, 79, 'the solo level share (calls)');
   assert.equal(RENDER_BUDGET.maxTriangles - NON_LEVEL_RESERVE.triangles, 513_382, 'the solo level share (triangles)');
-  assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls / SPLIT_PASSES - SPLIT_NON_LEVEL_RESERVE.drawCalls, 83);
+  assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls / SPLIT_PASSES - SPLIT_NON_LEVEL_RESERVE.drawCalls, 93);
   assert.equal(RENDER_BUDGET_SPLIT.maxTriangles / SPLIT_PASSES - SPLIT_NON_LEVEL_RESERVE.triangles, 507_774);
-  assert.equal(RENDER_BUDGET_QUAD.maxDrawCalls / QUAD_PASSES - QUAD_NON_LEVEL_RESERVE.drawCalls, 83);
+  assert.equal(RENDER_BUDGET_QUAD.maxDrawCalls / QUAD_PASSES - QUAD_NON_LEVEL_RESERVE.drawCalls, 103);
   assert.equal(RENDER_BUDGET_QUAD.maxTriangles / QUAD_PASSES - QUAD_NON_LEVEL_RESERVE.triangles, 503_844);
-  // Contract 1 is still exactly the set-union bound, as it has been since the
-  // library bound was derived: the library at its largest plus the reserve.
-  assert.equal(RENDER_BUDGET.maxDrawCalls, LIBRARY_MAX_DRAW_CALLS + NON_LEVEL_RESERVE.drawCalls);
+  // Contract 1 was exactly the set-union bound (the library at its largest
+  // plus the reserve) from the day the library bound was derived until the
+  // rider consolidation of 2026-10-17. It now holds the bound plus the six
+  // calls the riders gave back. The slack is pinned exactly: a new library part
+  // or a reserve change must restate it, as the identity made it do before.
+  assert.ok(LIBRARY_MAX_DRAW_CALLS + NON_LEVEL_RESERVE.drawCalls <= RENDER_BUDGET.maxDrawCalls);
+  assert.equal(
+    RENDER_BUDGET.maxDrawCalls - (LIBRARY_MAX_DRAW_CALLS + NON_LEVEL_RESERVE.drawCalls),
+    6,
+    'Contract 1 against the set-union bound (calls of slack)',
+  );
   // And the q219 bound the owner was shown (~492 of 460) is the bound now
   // under the raised ceiling.
   assert.ok((LIBRARY_MAX_DRAW_CALLS + SPLIT_NON_LEVEL_RESERVE.drawCalls) * SPLIT_PASSES <= RENDER_BUDGET_SPLIT.maxDrawCalls);
@@ -755,7 +783,8 @@ test('the split frame is judged against its own larger ceiling', () => {
   assert.ok(RENDER_BUDGET_SPLIT.maxDrawCalls > RENDER_BUDGET.maxDrawCalls);
   assert.ok(RENDER_BUDGET_SPLIT.maxTriangles > RENDER_BUDGET.maxTriangles);
   assert.equal(RENDER_BUDGET.maxDrawCalls, 217, 'Contract 1 moved');
-  assert.equal(RENDER_BUDGET.maxTriangles, 643_618, 'Contract 1 moved');
+  // 643,618 → 645,890 on 2026-10-17: R-5 after OD-2 (the test above).
+  assert.equal(RENDER_BUDGET.maxTriangles, 645_890, 'Contract 1 moved');
   // And a single-player verdict is still judged against Contract 1: a plan
   // that fits the split ceiling but not the phone one must still be refused.
   const verdict = withinRenderBudget(slice);

@@ -155,9 +155,14 @@ export const ULTRA_ENVELOPE = Object.freeze({
    * owner): +265,916 B (+259.7 KiB) measured, so **286 KiB (292,864 B)**.
    * `tools/ultra-bundle.mjs` builds and measures it; journey 12 of
    * `tests/m39-ultra.spec.ts` holds it.
+   *
+   * `pagesPackageBytes` mirrors the project's Pages transfer budget, which
+   * the owner raised from 8 to 10 MB on 2026-10-05
+   * (`tools/package-github-pages.mjs`, `AGENTS.md`); this mirror kept 8 MiB
+   * until 2026-10-18. It is not an Ultra-owned figure.
    */
   mainChunkGrowthBytes: 286 * 1024,
-  pagesPackageBytes: 8 * MIB,
+  pagesPackageBytes: 10 * MIB,
   /** `safetyDemotions` must read 0 in every spec. */
   safetyDemotions: 0,
 } satisfies Record<UltraEnvelopeAxis, number> & Record<string, number>);

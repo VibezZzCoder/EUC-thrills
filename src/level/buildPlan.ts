@@ -1,7 +1,8 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 import { MARKINGS, PAINTABLE_SURFACES } from '../data/markings.ts';
-import { CHALLENGE, HAZARD, TARGET } from '../data/tuning.ts';
+import { CHALLENGE, HAZARD, LOADING, TARGET } from '../data/tuning.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 import {
   BUILDING_CLEARANCE,
   BUILDING_MAX_JOIN_FRACTION,
@@ -538,6 +539,15 @@ export function buildLevelPlan(
   input: readonly SegmentSpec[] | SegmentGraph,
   options: BuildOptions,
 ): LevelPlan {
+  return runSteps(buildLevelPlanSteps(input, options));
+}
+/** `buildLevelPlan` as slices (`shared/preparationSteps.ts`, 2026-10-17 audit §3):
+ * between its passes, every `LOADING.fieldRowsPerSlice` field rows and per
+ * marking-carrying segment. The same statements in the same order. */
+export function* buildLevelPlanSteps(
+  input: readonly SegmentSpec[] | SegmentGraph,
+  options: BuildOptions,
+): Steps<LevelPlan> {
   const spacing = options.spacing ?? DEFAULT_SPACING;
   const graph = asGraph(input);
   const placed = placeGraph(graph, options.spawn);
@@ -582,6 +592,7 @@ export function buildLevelPlan(
   // -- Sample heights -----------------------------------------------------
   const heights = new Array<number>(columns * rows);
   for (let row = 0; row < rows; row += 1) {
+    if (row > 0 && row % LOADING.fieldRowsPerSlice === 0) yield PREPARATION_SLICE;
     const z = originZ + row * spacing;
     for (let column = 0; column < columns; column += 1) {
       const x = originX + column * spacing;
@@ -642,6 +653,8 @@ export function buildLevelPlan(
     }
   }
 
+  yield PREPARATION_SLICE;
+
   // -- Cell surfaces ------------------------------------------------------
   // Sampled at the cell centre, and crisp rather than blended: a surface is a
   // property of an area, and a pavement-to-grass boundary the player can see is
@@ -654,6 +667,7 @@ export function buildLevelPlan(
   // Grip-only cells, resolved at the same cell centre (`SegmentSpec.gripBands`).
   const grip = new Map<number, SurfaceId>();
   for (let row = 0; row < cellRows; row += 1) {
+    if (row > 0 && row % LOADING.fieldRowsPerSlice === 0) yield PREPARATION_SLICE;
     const z = originZ + (row + 0.5) * spacing;
     for (let column = 0; column < cellColumns; column += 1) {
       const x = originX + (column + 0.5) * spacing;
@@ -701,6 +715,7 @@ export function buildLevelPlan(
   // `PAINTABLE_SURFACES`, so a line crossing a spill is clipped by the same
   // rule that clips one crossing a grass band. Phase 3 owns whether a generator
   // should keep spills off painted lines.
+  yield PREPARATION_SLICE;
   const hazardSpecs = withProbeHazards(
     placed,
     options.hazards,
@@ -758,6 +773,7 @@ export function buildLevelPlan(
     }
   }
 
+  yield PREPARATION_SLICE;
   // A spill painted over a grip cell is the spill, whole.
   const traction: Record<number, SurfaceId> = {};
   let gripCells = 0;
@@ -788,6 +804,8 @@ export function buildLevelPlan(
     ),
   }));
 
+  yield PREPARATION_SLICE;
+
   // -- Props --------------------------------------------------------------
   // Resolved last, because a prop stands on the *finished* ground: a tree on a
   // verge is on the shoulder, which has already eased away from the corridor
@@ -807,6 +825,7 @@ export function buildLevelPlan(
     prop.kind === 'building' ? (options.buildingStandBack ?? PROP_CORRIDOR_CLEARANCE) : undefined,
   ));
 
+  yield PREPARATION_SLICE;
   // A folded route can put one beat's dressing inside another beat's wall.
   // Resolve against the assembled collider set, in three dimensions, after
   // ground height is known. Shrubs around narrow tree trunks are intentional
@@ -814,6 +833,7 @@ export function buildLevelPlan(
   const offSolids = offCorridor.filter((prop) => prop.onCollider === true
     || !standsInCollider(heightfield, options.surround, colliders, prop));
 
+  yield PREPARATION_SLICE;
   // **Buildings first, and against each other.** A block whose centre is buried
   // in another block is one fused shape with a seam through it, and the slice
   // produces them the same way it produced props inside corridors: two
@@ -830,6 +850,7 @@ export function buildLevelPlan(
     buildings.push(prop);
   }
 
+  yield PREPARATION_SLICE;
   // Then nothing grows out of a wall. A building wins over anything else that
   // wants the same ground, because the building cannot move and the tree can.
   const outsideBuildings = offSolids.filter((prop) => prop.kind === 'building'
@@ -856,10 +877,14 @@ export function buildLevelPlan(
     return ground.slope <= PROP_MAX_GROUND_SLOPE;
   });
 
+  yield PREPARATION_SLICE;
   const authored = resolveStructuralConflicts(heightfield, options.surround, onStandableGround);
+  yield PREPARATION_SLICE;
   const props: Prop[] = authored.map(
     (prop) => resolveProp(heightfield, options.surround, prop, settle),
   );
+
+  yield PREPARATION_SLICE;
 
   // -- Solids -------------------------------------------------------------
   // What the dressing contributes to the simulation (M8.6). Derived from the
@@ -899,17 +924,22 @@ export function buildLevelPlan(
   // and `EucController.updateSafePosition` reads for every kind (`plan.ts`).
   const hazards = resolveHazards(placed, heightfield, options.surround, hazardSpecs);
 
+  yield PREPARATION_SLICE;
+
   // -- Markings -----------------------------------------------------------
   // Resolved last for the same reason props are, and clipped against the
   // assembled level rather than against the segment that authored them.
   const markings: Marking[] = [];
   const trailSolids = [...colliders, ...solids];
   for (const segment of placed) {
+    yield PREPARATION_SLICE;
     for (const authored of markingsOf(segment)) {
       markings.push(...clipMarking(placed, authored.support === 'compactTrail' ? trailSolids : colliders,
         heightfield, options.surround, authored, hazards));
     }
   }
+
+  yield PREPARATION_SLICE;
 
   // -- Checkpoints --------------------------------------------------------
   // Resolved last for the third time and for the third version of the same
@@ -919,6 +949,8 @@ export function buildLevelPlan(
   // `plan.ts` states why: a gate the rider passes under, built as a collider,
   // reads as ground three metres up.
   const checkpoints = resolveCheckpoints(placed, heightfield, options.surround, options.checkpoints);
+
+  yield PREPARATION_SLICE;
 
   // -- Targets --------------------------------------------------------------
   // Resolved last for the fifth time and for the fifth identical reason: a
@@ -934,6 +966,8 @@ export function buildLevelPlan(
     withProbeTargets(placed, options.targets, options.targetProbeMetres),
   );
 
+  yield PREPARATION_SLICE;
+
   // -- The lap ------------------------------------------------------------
   // After the gates, because it is the gates' spelling that says whether this
   // route is a lap at all, and from `placed` rather than from `segments`
@@ -941,6 +975,7 @@ export function buildLevelPlan(
   // them, which is the whole shape of a corner, exists only here.
   const lap = lapCourse(mainChain, options.checkpoints);
   const populationPaths = emitPopulationPaths(placed, options.populationPathRequests ?? []);
+  yield PREPARATION_SLICE;
 
   return {
     id: options.id,

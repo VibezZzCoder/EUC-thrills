@@ -922,12 +922,20 @@ const ADVERSARIAL_2026_08_09 = [
   // 7–26 added `road` markings per seed, none removed; calls, hazards and targets
   // unchanged. Was route-41 529,994, route-278 539,936, sweep-89 553,636,
   // x67 547,412, euc-180 579,370, euc-35 548,576.
-  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 195, triangles: 530388, hazards: 16, targets: 38, fallback: false },
-  { seed: 'route-278', axis: 'second densest', drawCalls: 195, triangles: 540752, hazards: 16, targets: 36, fallback: false },
-  { seed: 'sweep-89', axis: 'third densest', drawCalls: 195, triangles: 555062, hazards: 18, targets: 48, fallback: false },
-  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 195, triangles: 548824, hazards: 18, targets: 39, fallback: false },
-  { seed: 'euc-180', axis: 'longest required route', drawCalls: 195, triangles: 580508, hazards: 22, targets: 42, fallback: false },
-  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 195, triangles: 548798, hazards: 18, targets: 33, fallback: false },
+  // Re-recorded for the rider consolidation (perf actions, 2026-10-17; owner
+  // OD-1/OD-2): −6 calls and +2,272 triangles uniformly. That is
+  // NON_LEVEL_RESERVE moving 144 → 138 calls and 130,236 → 132,508 triangles:
+  // the merged pad and pedal pairs and panels, and Cool Rider's OD-2 panels
+  // casting with their limbs. A character change; the level half of every
+  // frame, the refusals, hazards and targets are unchanged. Was 195 calls and
+  // route-41 530,388, route-278 540,752, sweep-89 555,062, x67 548,824,
+  // euc-180 580,508, euc-35 548,798.
+  { seed: 'route-41', axis: 'densest frame and densest dressing', drawCalls: 189, triangles: 532660, hazards: 16, targets: 38, fallback: false },
+  { seed: 'route-278', axis: 'second densest', drawCalls: 189, triangles: 543024, hazards: 16, targets: 36, fallback: false },
+  { seed: 'sweep-89', axis: 'third densest', drawCalls: 189, triangles: 557334, hazards: 18, targets: 48, fallback: false },
+  { seed: 'x67', axis: 'most segments, longest, branchy', drawCalls: 189, triangles: 551096, hazards: 18, targets: 39, fallback: false },
+  { seed: 'euc-180', axis: 'longest required route', drawCalls: 189, triangles: 582780, hazards: 22, targets: 42, fallback: false },
+  { seed: 'euc-35', axis: 'branchiest — fifteen optional segments', drawCalls: 189, triangles: 551070, hazards: 18, targets: 33, fallback: false },
 ] as const;
 
 

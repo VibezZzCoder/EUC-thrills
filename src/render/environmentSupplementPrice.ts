@@ -1,5 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { squirrelSites, type SquirrelSite } from './wildlifePlan.ts';
+import { squirrelSitesSteps, type SquirrelSite } from './wildlifePlan.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 /** Complete render-owned supplements prepared before presentation selection.
  * No geometry, material, texture or actor allocation, and no source-world write.
  * Submission prices use the full installed near template (culling ignored).
@@ -11,10 +12,10 @@ import type { LevelPlan } from '../level/plan.ts';
 import type { PopulationPlan } from '../level/populationPlan.ts';
 import { PART_COSTS, type PropPartId } from '../data/renderCost.ts';
 import { ENVIRONMENT_VEGETATION as RULES, LAUNCH_PAD_LOOK } from '../data/tuning.ts';
-import { districtExteriorSites, type DistrictExteriorSite } from './districtExteriorSites.ts';
+import { districtExteriorSitesSteps, type DistrictExteriorSite } from './districtExteriorSites.ts';
 import { scopedEnvironmentSites as environmentSites, scopedParkCaseSites as parkCaseSites,
   scopedResidentialSites as residentialSites, scopedStreetFronts as streetFronts } from './scopedSiteQueries.ts';
-import { prepareEnvironmentVegetation, type PreparedEnvironmentVegetation } from './environmentVegetationPlan.ts';
+import { prepareEnvironmentVegetationSteps, type PreparedEnvironmentVegetation } from './environmentVegetationPlan.ts';
 import { countPopulation, type SupplementCount } from './populationPrice.ts';
 import { collectStreetLifePieces, countStreetLifeDecor } from './streetLifePieces.ts';
 import { collectEnvironmentDecorPieces, countEnvironmentDecor } from './environmentDecorPieces.ts';
@@ -23,7 +24,7 @@ import { prepareVegetationPrice, priceVegetation, type PreparedVegetationPrice, 
 import { prepareOriginalCapSlots, priceOriginalCapSlots, type PreparedOriginalCapSlots } from './originalCapSlotPrice.ts';
 import { sharedGroundArrayPrice } from './sharedGroundArrayPrice.ts';
 import type { PresentationCost } from './presentation.ts';
-import { prepareMetricFacades, metricSourcePrice, type PreparedMetricFacades, type MetricFacadeRequest } from './metricFacadePreparation.ts';
+import { prepareMetricFacadesSteps, metricSourcePrice, type PreparedMetricFacades, type MetricFacadeRequest } from './metricFacadePreparation.ts';
 import { prepareVisualWayfinding, type VisualWayfinding } from './wayfinding.ts';
 import { EMPTY_SPATIAL_BATCHING_DELTA, exteriorSpatialBatchKey, priceGenericPropSpatialBatching,
   sumSpatialBatchingDeltas, validateSpatialBatchMetres, type SpatialBatchingDelta } from './spatialBatching.ts';
@@ -95,24 +96,54 @@ export interface PreparedEnvironmentSupplements {
 }
 export function prepareEnvironmentSupplements(plan: LevelPlan, population: PopulationPlan | null = null,
   metricRequest: MetricFacadeRequest = {}, authoredRequest: AuthoredCanopyRequest = {}): PreparedEnvironmentSupplements {
+  return runSteps(prepareEnvironmentSupplementsSteps(plan, population, metricRequest, authoredRequest));
+}
+/**
+ * `prepareEnvironmentSupplements` as slices (`shared/preparationSteps.ts`).
+ * The returned literal's calls became ordered consts (same evaluation order,
+ * same key order), and the catch-only cleanup became finally-with-flag, so a
+ * generator abandoned mid-preparation also releases the owners it prepared.
+ */
+export function* prepareEnvironmentSupplementsSteps(plan: LevelPlan, population: PopulationPlan | null = null,
+  metricRequest: MetricFacadeRequest = {}, authoredRequest: AuthoredCanopyRequest = {}): Steps<PreparedEnvironmentSupplements> {
   const authoredCanopies = prepareAuthoredCanopies(plan, authoredRequest);
-  const metric = prepareMetricFacades(plan, metricRequest), vegetationPrice = prepareVegetationPrice(plan, authoredCanopies), capSlots = prepareOriginalCapSlots(plan);
+  yield PREPARATION_SLICE;
+  const metric = yield* prepareMetricFacadesSteps(plan, metricRequest);
+  yield PREPARATION_SLICE;
+  const vegetationPrice = prepareVegetationPrice(plan, authoredCanopies), capSlots = prepareOriginalCapSlots(plan);
   let disposed = false;
   let featureBlocks: PreparedFeatureBlocks | null = null;
+  let completed = false;
   try { featureBlocks = prepareFeatureBlocks(plan); const ownedFeatureBlocks = featureBlocks;
     // M42: no grass root stands through a pad, in any mode (the pads are installed in every mode).
     const launchPads = cityLaunchPads(plan, population);
     const padDiscs = launchPads.map((site) => ({ x: site.x, z: site.z, radius: site.footprintRadius + LAUNCH_PAD_LOOK.grassClearMetres }));
-    return { source: plan, populationPlan: population, metric, vegetationPrice, authoredCanopies, capSlots, featureBlocks: ownedFeatureBlocks,
-    wayfinding: prepareVisualWayfinding(plan, population), grass: prepareEnvironmentVegetation(plan, padDiscs),
-    exterior: districtExteriorSites(plan, [...streetFronts(plan), ...environmentSites(plan), ...residentialSites(plan), ...parkCaseSites(plan)],
-      new Set(metric.selectedPropIndices)),
-    street: collectStreetLifePieces(plan), environment: collectEnvironmentDecorPieces(plan),
-    district: collectDistrictDecorPieces(plan), population: countPopulation(population),
-    launchPads, birds: prepareBirdFlight(plan), squirrels: squirrelSites(plan, padDiscs),
+    yield PREPARATION_SLICE;
+    const wayfinding = prepareVisualWayfinding(plan, population);
+    yield PREPARATION_SLICE;
+    const grass = yield* prepareEnvironmentVegetationSteps(plan, padDiscs);
+    yield PREPARATION_SLICE;
+    const exterior = yield* districtExteriorSitesSteps(plan, [...streetFronts(plan), ...environmentSites(plan), ...residentialSites(plan), ...parkCaseSites(plan)],
+      new Set(metric.selectedPropIndices));
+    yield PREPARATION_SLICE;
+    const street = collectStreetLifePieces(plan), environment = collectEnvironmentDecorPieces(plan);
+    yield PREPARATION_SLICE;
+    const district = collectDistrictDecorPieces(plan), counted = countPopulation(population);
+    yield PREPARATION_SLICE;
+    const birds = prepareBirdFlight(plan);
+    yield PREPARATION_SLICE;
+    const squirrels = yield* squirrelSitesSteps(plan, padDiscs);
+    const prepared: PreparedEnvironmentSupplements = { source: plan, populationPlan: population, metric, vegetationPrice, authoredCanopies, capSlots, featureBlocks: ownedFeatureBlocks,
+    wayfinding, grass,
+    exterior,
+    street, environment,
+    district, population: counted,
+    launchPads, birds, squirrels,
     get disposed() { return disposed; }, dispose() { if (disposed) return; disposed = true;
-      metric.dispose(); vegetationPrice.dispose(); authoredCanopies.dispose(); capSlots.dispose(); ownedFeatureBlocks.dispose(); } }; }
-  catch (error) { metric.dispose(); vegetationPrice.dispose(); authoredCanopies.dispose(); capSlots.dispose(); featureBlocks?.dispose(); throw error; }
+      metric.dispose(); vegetationPrice.dispose(); authoredCanopies.dispose(); capSlots.dispose(); ownedFeatureBlocks.dispose(); } };
+    completed = true;
+    return prepared; }
+  finally { if (!completed) { metric.dispose(); vegetationPrice.dispose(); authoredCanopies.dispose(); capSlots.dispose(); featureBlocks?.dispose(); } }
 }
 const zero = (): SupplementCount => ({ colourDraws: 0, shadowDraws: 0, colourTriangles: 0,
   shadowTriangles: 0, geometryBytes: 0, instanceBytes: 0, textureBytes: 0 });

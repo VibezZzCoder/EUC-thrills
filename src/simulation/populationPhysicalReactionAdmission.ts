@@ -88,7 +88,8 @@ export function populationPhysicalReactionAllowed(input: PopulationPhysicalReact
   // overlap. Compare only the owned physical request fields and particle block.
   if ((input.request.kind === 'contactYield' || input.request.kind === 'contactInput' || input.request.kind === 'contactSettle' || input.request.kind === 'contactClock') && Object.keys(input.request.previous)
     .every(key => samePhysicalField(input.request.previous, input.request.proposed, key as keyof RiderOccupancyPose))) return true;
-  const snapshot = input.population.snapshot();
+  // Ids, footprints and the clock are all this reads: no full pose copies (PERF-POP).
+  const snapshot = input.population.actorFootprintRows();
   const blockers: Blocker[] = snapshot.actors.map(actor => ({
     role: 'npc', id: `npc:${actor.id}`, ownerId: `npc:${actor.id}`, previous: actor.footprint, current: actor.footprint }));
   for (const occupant of input.occupants) if (occupant.id !== input.ownerId) {

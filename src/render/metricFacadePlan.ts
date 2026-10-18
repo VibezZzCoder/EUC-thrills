@@ -10,6 +10,7 @@ import { exactBuildingBody } from '../level/protectedSiteEligibility.ts';
 import { exteriorComposition } from './districtExteriorSites.ts';
 import type { FacadeOpening } from './streetFacadeOpenings.ts';
 import { groundOwnsFlushFloor } from './coplanarGround.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 
 export type MetricFinish = 'masonry' | 'frame' | 'roofEdge' | 'entry' | 'glazing';
 export type MetricSurfaceKind = 'wall' | 'reveal' | 'closed-pane' | 'pane-frame'
@@ -87,6 +88,10 @@ export interface MetricFacadePlan {
   /** Polygon split pitch; each chunk nests in one batch cell. */
   readonly chunkMetres?: number;
   readonly architecture?: readonly MetricArchitectureRecord[];
+  /** Set once an installed view has written every surface into its own
+   * buffers (`withoutEmittedSurfaces`); `surfaces` is then empty and every
+   * surface reader refuses. */
+  readonly surfacesEmitted?: true;
 }
 export interface MetricFacadeSelection {
   /** Mandatory. Start with one complete served frontage, then its immediate neighbour. */
@@ -271,6 +276,10 @@ export function metricPieceIdentity(piece: BuildingPiece): string {
 }
 
 export function buildMetricFacadePlan(plan: LevelPlan, selection: MetricFacadeSelection): MetricFacadePlan {
+  return runSteps(buildMetricFacadePlanSteps(plan, selection));
+}
+/** `buildMetricFacadePlan` as slices, one per selected building (`shared/preparationSteps.ts`). */
+export function* buildMetricFacadePlanSteps(plan: LevelPlan, selection: MetricFacadeSelection): Steps<MetricFacadePlan> {
   const pitch = selection.batchMetres ?? 32, chunk = selection.chunkMetres ?? pitch;
   if (!Number.isFinite(pitch) || pitch <= 0) throw new RangeError('Metric facade requires a finite positive batch pitch');
   if (!Number.isFinite(chunk) || chunk <= 0 || !Number.isInteger(pitch / chunk))
@@ -324,6 +333,7 @@ export function buildMetricFacadePlan(plan: LevelPlan, selection: MetricFacadeSe
   };
 
   for (const propIndex of selection.propIndices) {
+    yield PREPARATION_SLICE;
     if (!Number.isInteger(propIndex) || propIndex < 0) throw new Error('Invalid source prop index');
     const building = plan.props?.[propIndex], body = building && exactBuildingBody(plan, building);
     if (!building || !body || (building.look !== undefined && !NORMAL_LOOKS.has(building.look)))
@@ -567,11 +577,32 @@ export function buildMetricFacadePlan(plan: LevelPlan, selection: MetricFacadeSe
     protectedOpenings: openings, batchMetres: pitch, ...(chunk !== pitch ? { chunkMetres: chunk } : {}), architecture };
 }
 
+/** The surface records are the largest resident holder of a city world (2026-10-17
+ * audit §5: ~28 MB in Chromium) and nothing reads them once the installed view has
+ * written them into its own vertex buffers. The slim twin keeps every other field by
+ * reference; memoised so the prepared owner and the view hold the same object and the
+ * full plan becomes collectable. */
+const EMITTED_SURFACES: readonly MetricSurface[] = Object.freeze([]);
+const EMITTED_PLANS = new WeakMap<MetricFacadePlan, MetricFacadePlan>();
+export function withoutEmittedSurfaces(plan: MetricFacadePlan): MetricFacadePlan {
+  if (plan.surfacesEmitted) return plan;
+  let emitted = EMITTED_PLANS.get(plan);
+  if (emitted === undefined) {
+    emitted = Object.freeze({ ...plan, surfaces: EMITTED_SURFACES, surfacesEmitted: true as const });
+    EMITTED_PLANS.set(plan, emitted);
+  }
+  return emitted;
+}
+function refuseEmittedSurfaces(plan: MetricFacadePlan): void {
+  if (plan.surfacesEmitted) throw new Error('Metric facade surfaces were released after emission');
+}
+
 /** Same final records are consumed by the mesh builder. No independent cost catalogue. */
 export function metricFacadeCost(plan: MetricFacadePlan): {
   drawCalls: number; colourTriangles: number; geometryBytes: number; instanceBytes: 0;
   geometryOwners: number; materialOwners: 0; textureBytes: 0;
 } {
+  refuseEmittedSurfaces(plan);
   const batches = new Set(plan.surfaces.map(surface => surface.batchKey));
   const triangles = plan.surfaces.reduce((sum, surface) => sum + surface.vertices.length - 2, 0);
   return { drawCalls: batches.size, colourTriangles: triangles,
@@ -581,6 +612,7 @@ export function metricFacadeCost(plan: MetricFacadePlan): {
 
 /** Same roof hull polygons, no second depth proxy or hidden source peak. */
 export function metricFacadeShadowCost(plan: MetricFacadePlan): { shadowDrawCalls: number; shadowTriangles: number } {
+  refuseEmittedSurfaces(plan);
   const roofSurfaces = plan.surfaces.filter(surface => surface.roofCaster);
   return { shadowDrawCalls: new Set(roofSurfaces.map(surface => surface.batchKey)).size,
     shadowTriangles: roofSurfaces.reduce((sum, surface) => sum + surface.vertices.length - 2, 0) };

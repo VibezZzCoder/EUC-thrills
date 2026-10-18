@@ -2,6 +2,7 @@
 import { priceEnvironmentSupplements, withEnvironmentSupplementCost, type PreparedEnvironmentSupplements } from './environmentSupplementPrice.ts';
 import { priceFeatureBlockBuild } from './featureBlockBuildPrice.ts';
 import { ENVIRONMENT_ENVELOPE } from './environmentEnvelope.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 /**
  * Presentation recipes — richer environment art chosen *after* generation.
  *
@@ -54,11 +55,12 @@ import {
   type PropPartId,
 } from '../data/renderCost.ts';
 import { PROP_BUDGET } from '../data/props.ts';
-import { colliderMaterial, planRenderCost, type RenderCost } from '../level/renderBudget.ts';
+import { colliderMaterial, type RenderCost } from '../level/renderBudget.ts';
 import type { LevelPlan } from '../level/plan.ts';
 import { ENHANCED_PART_COSTS } from './enhancedCatalog.ts';
 import { colliderTriangles } from './wallCourses.ts';
 import { withGroundEdgePrice, type GroundEdgePrice } from '../shared/groundEdgePrice.ts';
+import { scopedPlanRenderCost } from './scopedRenderCost.ts';
 
 export type PresentationRecipeId = 'baseline' | 'enhanced';
 
@@ -130,8 +132,15 @@ export interface PresentationCost {
  * the two split verdicts.
  */
 export function presentationCost(plan: LevelPlan, recipe: PresentationRecipe, edges: GroundEdgePrice | null = null, supplements: PreparedEnvironmentSupplements | null = null): PresentationCost {
+  return runSteps(presentationCostSteps(plan, recipe, edges, supplements));
+}
+/** `presentationCost` as slices (`shared/preparationSteps.ts`). */
+export function* presentationCostSteps(plan: LevelPlan, recipe: PresentationRecipe, edges: GroundEdgePrice | null = null, supplements: PreparedEnvironmentSupplements | null = null): Steps<PresentationCost> {
   if (supplements && supplements.source !== plan) throw new Error('Supplement price source world mismatch');
-  const base = planRenderCost(plan);
+  // One answer per plan inside a construction scope: every rung, and the
+  // terrain's admission re-check, ask the same pure question (2026-10-18).
+  const base = scopedPlanRenderCost(plan);
+  yield PREPARATION_SLICE;
   const featurePrice = supplements ? priceFeatureBlockBuild(supplements.featureBlocks, recipe) : null;
 
   let propDrawCalls = 0;
@@ -173,7 +182,9 @@ export function presentationCost(plan: LevelPlan, recipe: PresentationRecipe, ed
   const triangles = colourTriangles + shadowTriangles;
   const drawCalls = base.drawCalls;
 
-  return withEnvironmentSupplementCost(withGroundEdgePrice({
+  // Was `withEnvironmentSupplementCost(withGroundEdgePrice({…}, edges), supplements ? priceEnvironmentSupplements(…) : null)`:
+  // the same two argument evaluations, in that order, then the same call.
+  const withEdges = withGroundEdgePrice({
     recipe: recipe.id,
     drawCalls,
     triangles,
@@ -197,8 +208,11 @@ export function presentationCost(plan: LevelPlan, recipe: PresentationRecipe, ed
         triangles: (triangles + QUAD_NON_LEVEL_RESERVE.triangles) * QUAD_PASSES,
       },
     },
-  }, edges), supplements ? priceEnvironmentSupplements(supplements, 'ordinary', false, part =>
-    (recipe.foliage ? ENHANCED_PART_COSTS[part]?.triangles : undefined) ?? PART_COSTS[part].triangles, undefined, featurePrice) : null);
+  }, edges);
+  yield PREPARATION_SLICE;
+  const supplementPrice = supplements ? priceEnvironmentSupplements(supplements, 'ordinary', false, part =>
+    (recipe.foliage ? ENHANCED_PART_COSTS[part]?.triangles : undefined) ?? PART_COSTS[part].triangles, undefined, featurePrice) : null;
+  return withEnvironmentSupplementCost(withEdges, supplementPrice);
 }
 
 function propColourOf(instances: ReadonlyMap<PropPartId, number>): number {
@@ -231,7 +245,11 @@ export interface PresentationVerdict {
  * world fell back because of its trees or because of its walls.
  */
 export function judgePresentation(plan: LevelPlan, recipe: PresentationRecipe, edges: GroundEdgePrice | null = null, supplements: PreparedEnvironmentSupplements | null = null): PresentationVerdict {
-  const cost = presentationCost(plan, recipe, edges, supplements);
+  return runSteps(judgePresentationSteps(plan, recipe, edges, supplements));
+}
+/** `judgePresentation` as slices (`shared/preparationSteps.ts`). */
+export function* judgePresentationSteps(plan: LevelPlan, recipe: PresentationRecipe, edges: GroundEdgePrice | null = null, supplements: PreparedEnvironmentSupplements | null = null): Steps<PresentationVerdict> {
+  const cost = yield* presentationCostSteps(plan, recipe, edges, supplements);
   const breaches: string[] = [];
   const over = (what: string, value: number, ceiling: number): void => {
     if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Invalid presentation cost for ${what}: ${value}`);
@@ -264,7 +282,16 @@ export interface PresentationSelection {
  * the plan was admitted with, and a world is never trimmed to fit its art.
  */
 export function selectPresentation(plan: LevelPlan, edges: GroundEdgePrice | null = null, supplements: PreparedEnvironmentSupplements | null = null): PresentationSelection {
-  const verdicts = PRESENTATION_LADDER.map((recipe) => judgePresentation(plan, recipe, edges, supplements));
+  return runSteps(selectPresentationSteps(plan, edges, supplements));
+}
+/** `selectPresentation` as slices (`shared/preparationSteps.ts`). */
+export function* selectPresentationSteps(plan: LevelPlan, edges: GroundEdgePrice | null = null, supplements: PreparedEnvironmentSupplements | null = null): Steps<PresentationSelection> {
+  // Was `PRESENTATION_LADDER.map(judge)`: the same rungs in the same order.
+  const verdicts: PresentationVerdict[] = [];
+  for (const recipe of PRESENTATION_LADDER) {
+    verdicts.push(yield* judgePresentationSteps(plan, recipe, edges, supplements));
+    yield PREPARATION_SLICE;
+  }
   for (let index = 0; index < verdicts.length; index += 1) {
     const recipe = PRESENTATION_LADDER[index];
     const verdict = verdicts[index];

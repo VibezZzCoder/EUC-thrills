@@ -3,7 +3,8 @@ import type { MarkingPaint } from '../data/markings.ts';
 import type { PropKind } from '../data/props.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 import type { LevelPlan } from './plan.ts';
-import { buildLevelPlan, type CheckpointSpec } from './buildPlan.ts';
+import { buildLevelPlanSteps, type CheckpointSpec } from './buildPlan.ts';
+import { runSteps, type Steps } from '../shared/preparationSteps.ts';
 import type { PopulationPathRequest } from './populationPlan.ts';
 import {
   facingRoute,
@@ -2128,6 +2129,14 @@ export function createSliceLevel(
   hazardProbeMetres?: number,
   targetProbeMetres?: number,
 ): LevelPlan {
+  return runSteps(createSliceLevelSteps(hazardProbeMetres, targetProbeMetres));
+}
+/** `createSliceLevel` as slices (`shared/preparationSteps.ts`): the field build is
+ * `buildLevelPlanSteps`; the same statements in the same order. */
+export function* createSliceLevelSteps(
+  hazardProbeMetres?: number,
+  targetProbeMetres?: number,
+): Steps<LevelPlan> {
   // The graph is placed twice — once here to know where the corridors are, and
   // once inside `buildLevelPlan`. `placeGraph` is pure and cheap (thirty-four
   // segments, no rasterising), and the alternative is teaching the builder what
@@ -2135,7 +2144,7 @@ export function createSliceLevel(
   // generator also calls.
   const placed = placeGraph(GRAPH, SPAWN);
 
-  return buildLevelPlan(GRAPH, {
+  return yield* buildLevelPlanSteps(GRAPH, {
     id: 'm7-slice',
     spawn: SPAWN,
     // Grass, at the city's height. The park sits in a shallow cut below it, so

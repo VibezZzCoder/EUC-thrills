@@ -45,7 +45,8 @@ import { ordinaryVegetationBuilders, ultraVegetationBuilders, vegetationVariantA
 import { toneSharedVegetation } from './ultra/ultraFoliage.ts';
 import type { VegetationFamily, VegetationVariant } from './vegetationForms.ts';
 import type { SharedVegetationFamilyReport, SharedVegetationReport } from './sharedVegetationCost.ts';
-import { ENVIRONMENT_VEGETATION } from '../data/tuning.ts';
+import { ENVIRONMENT_VEGETATION, LOADING } from '../data/tuning.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 import { installConiferDistanceCell, potentialGeometryTriangles, vegetationDistanceRanges,
   type VegetationDistanceDetail } from './vegetationDistance.ts';
 import { EMPTY_SPATIAL_BATCHING_DELTA, genericPropSpatialKey, isSpatialGenericPart,
@@ -1147,6 +1148,24 @@ export function createProps(
     /** The owning renderer's colour-distance rules (RL-1); High's when absent. */
     readonly distanceDetail?: VegetationDistanceDetail } = {},
 ): PropsView {
+  return runSteps(createPropsSteps(plan, recipe, context, composition));
+}
+/**
+ * `createProps` as slices (`shared/preparationSteps.ts`): one per
+ * `LOADING.propsPerSlice` source props and one per instanced bucket. The
+ * bucket loop's catch-only release became finally-with-flag, so a generator
+ * abandoned mid-build also releases what it allocated.
+ */
+export function* createPropsSteps(
+  plan: LevelPlan,
+  recipe: BuildRecipe = BASELINE_PRESENTATION,
+  context?: UltraBuildContext,
+  composition: { readonly sharedVegetation?: boolean; readonly metricFacades?: PreparedMetricFacades | null;
+    readonly vegetationPrice?: PreparedVegetationPrice | null; readonly authoredCanopies?: PreparedAuthoredCanopies | null; readonly capSlots?: PreparedOriginalCapSlots | null;
+    readonly spatialBatchMetres?: number;
+    /** The owning renderer's colour-distance rules (RL-1); High's when absent. */
+    readonly distanceDetail?: VegetationDistanceDetail } = {},
+): Steps<PropsView> {
   const kit = isUltraRecipe(recipe) ? recipe.ultra : null;
   if (kit !== null && context === undefined) {
     throw new Error(`createProps: the Ultra recipe "${recipe.id}" needs an UltraBuildContext`);
@@ -1237,6 +1256,7 @@ export function createProps(
     routeSigns.set(sign.propIndex, sign);
   }
   for (const [propIndex, prop] of props.entries()) {
+    if (propIndex % LOADING.propsPerSlice === 0) yield PREPARATION_SLICE;
     position.set(prop.position.x, prop.position.y, prop.position.z);
     quaternion.setFromAxisAngle(up, prop.rotationY);
     scale.setScalar(prop.scale);
@@ -1287,6 +1307,7 @@ export function createProps(
       emit(piece.part, composed.multiplyMatrices(base, local), colour, replaced);
     }
   }
+  yield PREPARATION_SLICE;
   extraction?.assertComplete();
   if (preparedMetric && (observedSourceCounts.size !== preparedMetric.sourceCounts.size
     || [...observedSourceCounts].some(([part, count]) => preparedMetric.sourceCounts.get(part) !== count)))
@@ -1356,8 +1377,11 @@ export function createProps(
     meshes.length = 0; geometries.length = 0; materials.length = 0;
     sharedResources.clear(); authoredAliases.clear(); proxyMaterials.clear();
   };
+  let built = false;
   try {
+  yield PREPARATION_SLICE;
   for (const [key, bucket] of buckets) {
+    yield PREPARATION_SLICE;
     const { part, variant } = bucket;
     const definition = PARTS[part];
     const count = bucket.colours.length / 3;
@@ -1539,7 +1563,8 @@ export function createProps(
   if (proxyFlagBytes !== expectedProxyBytes) throw new Error('Metric allocated source proxy bytes differ from actual emission price');
   if (spatialPrice && (genericColourDraws !== spatialPrice.colourDraws || genericShadowDraws !== spatialPrice.shadowDraws
     || genericInstances !== spatialPrice.instances)) throw new Error('Generic spatial prop emission differs from source price');
-  } catch (error) { releaseResources(); throw error; }
+  built = true;
+  } finally { if (!built) releaseResources(); }
   return {
     spatialBatching: spatialPrice ?? EMPTY_SPATIAL_BATCHING_DELTA,
     capSlotBytes: slotBytes, farCapExtraDraws, farCapExtraTriangles,

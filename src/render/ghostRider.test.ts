@@ -100,7 +100,9 @@ test('the ghost hides exactly the parts the real rig does not cast from', () => 
   // to cast at chase distance is a part that, in one flat colour, is invisible
   // — every one of them exists to be a *different colour* from the mesh it
   // sits on. Asserted against a real rig so the two cannot drift.
-  const rig = createRidingRig();
+  // The ghost copies the rig *unconsolidated* (`RidingRigOptions.consolidate`,
+  // perf item "riders" 2026-10-17), so that is the rig it is compared with.
+  const rig = createRidingRig(undefined, undefined, { consolidate: false });
   const rigMeshes = meshes(rig.group);
   const casting = rigMeshes.filter((mesh) => mesh.castShadow).length;
   const total = rigMeshes.length;
@@ -126,7 +128,7 @@ test('every rider fits the ghost budget, not just the one the default builds', (
   // having sleeve panels, elbow pads or a casting shoulder panel; this is the
   // assertion that keeps that trade honest rather than accidental.
   for (const look of RIDER_LOOKS) {
-    const rig = createRidingRig(look);
+    const rig = createRidingRig(look, undefined, { consolidate: false });
     const rigMeshes = meshes(rig.group);
     const casting = rigMeshes.filter((mesh) => mesh.castShadow).length;
     const total = rigMeshes.length;

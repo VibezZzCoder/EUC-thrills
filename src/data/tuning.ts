@@ -6554,6 +6554,27 @@ export const SIMULATION = {
   fallbackIntervalMs: 16,
 } as const;
 
+/**
+ * Boot work slicing (2026-10-17 performance audit §3). **Scheduling only: no
+ * value here can change what a world contains.** The long boot preparations
+ * (street life, the renderer's first construction group) are generators that
+ * stop at deterministic slices (`shared/preparationSteps.ts`); only the
+ * browser boot (`Game.create`) yields to the browser at them, and only once
+ * this much uninterrupted work has run. A slice is never a loading checkpoint.
+ */
+export const LOADING = {
+  /** Uninterrupted boot work before the driver yields to the browser, ms. */
+  sliceBudgetMs: 40,
+  /** Structural slice density in `createProps`' per-prop loop, props per slice. */
+  propsPerSlice: 256,
+  /** Structural slice density in `districtExteriorSites`' per-building loop, props per slice. */
+  exteriorPropsPerSlice: 64,
+  /** Structural slice density in the environment grass candidate checks, checks per slice. */
+  vegetationChecksPerSlice: 1024,
+  /** Structural slice density in `buildLevelPlan`'s height and surface sampling, field rows per slice. */
+  fieldRowsPerSlice: 32,
+} as const;
+
 /** Renderer quality ceilings. */
 export const RENDER = {
   /**
@@ -6561,6 +6582,20 @@ export const RENDER = {
    * difference most displays cannot show at gameplay distance.
    */
   maxPixelRatio: 2,
+  /**
+   * Holdable paused frames still drawn after any event, before a settled
+   * player pause stops submitting and the canvas keeps its last picture
+   * (`app/pausedView.ts`; performance pass 2026-10-17). Frames, an integer of
+   * at least 1. Three covers the transition frame (the pause is entered inside
+   * a step; the first paused render hides the ghost and places the camera at
+   * the frozen `alpha`), one frame of the one-frame-lag consumers (the birds
+   * read the cameras the previous frame placed), and one frame of margin. A
+   * longer ease counted in render calls is not this count's job: a rig still
+   * settling (`RidingRig.settling` — the paddle carry's twelve-call put-down)
+   * keeps every frame drawn until it has settled, and these frames follow.
+   * Not live-tunable: it changes no picture, only how soon the GPU rests.
+   */
+  pausedViewSettleFrames: 3,
 } as const;
 
 /** Fill-only ground-boundary constants. ULTRA.ground.edge aliases this unchanged table. */
@@ -10296,6 +10331,7 @@ export const TUNING = deepFreeze({
   CHALLENGE,
   SIMULATION,
   RENDER,
+  LOADING,
   GROUND_BOUNDARY,
   GROUND_PAVING,
   SHARED_GROUND,

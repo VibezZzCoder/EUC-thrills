@@ -16,6 +16,7 @@ import { residentialSites } from './districtSites.ts';
 import { exactBuildingBody } from './protectedSiteEligibility.ts';
 import { fieldHeightAt,PROP_MAX_GROUND_SLOPE } from './buildPlan.ts';
 import { hash128 } from './planDigest.ts';
+import { PREPARATION_SLICE,runSteps,type Steps } from '../shared/preparationSteps.ts';
 import { PlanTerrainSampler } from '../simulation/planSampler.ts';
 import { createGroundSample,type Vec3,type SurfaceId } from '../simulation/world.ts';
 
@@ -505,6 +506,10 @@ function cost(source:LevelPlan,entries:readonly DistrictCompositionEntry[]):Dist
 /** Install once after actual activity authoring. Additive kit instances share
  * the existing renderer owners and physical grid; ground and actor data stay exact. */
 export function withDistrictComposition(source:DistrictCompositionPlan):DistrictCompositionPlan {
+ return runSteps(withDistrictCompositionSteps(source));
+}
+/** The boot path: the same composition as slices (`shared/preparationSteps.ts`). */
+export function* withDistrictCompositionSteps(source:DistrictCompositionPlan):Steps<DistrictCompositionPlan> {
  if(source.districtComposition)return source;
  const rejected:{zoneId:string;reason:string;attempts?:number;attemptReasons?:readonly string[]}[]=[],grounds:DistrictCompositionGround[]=[],entries:DistrictCompositionEntry[]=[];
  const actors=actorReservations(source),routes=routeReservations(source.segments),reservations=actors&&routes?[...actors,...routes]:null;
@@ -523,19 +528,24 @@ export function withDistrictComposition(source:DistrictCompositionPlan):District
  // Round-robin source owners, then independent beds on each selected owner.
  for(let ordinal=0;ordinal<DISTRICT_COMPOSITION.maximumFrontagesPerDistrict;ordinal++)for(const district of ['commercial','industrial','residential','park']as const){
   const front=selected.get(district)?.[ordinal];if(!front)continue;
+  yield PREPARATION_SLICE;
   const beds=frontageProposals(source,front,gardens);if(beds.length)proposals.push(...beds);
   else rejected.push({zoneId:`composition/${front.id}`,reason:'no-bounded-source-garden',attempts:0});
  }
+ yield PREPARATION_SLICE;
  proposals.push(...parkProposals(source),...plazaProposals(source));
+ yield PREPARATION_SLICE;
  let working=source;
  const supportSampler=new PlanTerrainSampler(source);
  let workingContext=createPopulationValidationContext(source);
  const ownerSnapshot=[streetFronts(source),environmentSites(source),residentialSites(source)].map(v=>JSON.stringify(v));
  for(const family of proposals){
+  yield PREPARATION_SLICE;
   const failures:string[]=[];let accepted=false;
   if(!reservations){rejected.push({zoneId:family.id,reason:'unresolved-original-movement',attempts:0});continue;}
   if(!family.alternatives.length){rejected.push({zoneId:family.id,reason:'no-source-valid-subzone',attempts:0});continue;}
   for(const proposal of family.alternatives){
+   yield PREPARATION_SLICE;
    const id=proposal.ground.id;
    if(grounds.length>=DISTRICT_COMPOSITION.maximumZones||entries.length+proposal.props.length>DISTRICT_COMPOSITION.maximumProps
     ||proposal.ground.use==='park-grove'&&grounds.filter(g=>g.use==='park-grove').length>=DISTRICT_COMPOSITION.maximumParkSubzones){failures.push('finite-count-envelope');break;}
@@ -573,6 +583,7 @@ export function withDistrictComposition(source:DistrictCompositionPlan):District
   }
   if(!accepted)rejected.push({zoneId:family.id,reason:failures.at(-1)??'no-source-valid-subzone',attempts:failures.length,attemptReasons:failures});
  }
+ yield PREPARATION_SLICE;
  const protectedContentDigest=hash128(JSON.stringify({props:source.props,solids:source.solids,softBodies:source.softBodies,
   segments:source.segments,groundSurfacePatches:source.groundSurfacePatches,populationPaths:source.populationPaths,
   populationActivitySites:source.populationActivitySites,populationActivityWalks:source.populationActivityWalks,

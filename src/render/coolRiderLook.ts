@@ -358,7 +358,8 @@ function fingers(side:number):THREE.BufferGeometry {
 }
 
 const fabric:RiderMaterialSpec=Object.freeze({colour:C.coolFabric,roughness:.88,metalness:0});
-const sheet:CoolSheetLayout=Object.freeze({jacket:COOL_JACKET,thigh:THIGH,shin:SHIN,sleeve:UPPER_ARM,forearm:FOREARM,seat:SEAT});
+/** The tailoring sheet's lofts (exported for the atlas painter's byte pin). */
+export const COOL_SHEET_LAYOUT:CoolSheetLayout=Object.freeze({jacket:COOL_JACKET,thigh:THIGH,shin:SHIN,sleeve:UPPER_ARM,forearm:FOREARM,seat:SEAT});
 const blue=(patch:Partial<RiderPatch>&Pick<RiderPatch,'anchor'|'u0'|'u1'|'from'|'to'>):RiderPatch=>Object.freeze({
   uSegments:14,vSegments:18,lift:.0035,sink:-.006,art:'blue',...patch,
 });
@@ -418,7 +419,7 @@ export const COOL_RIDER_LOOK:RiderLook=Object.freeze({
   density:Object.freeze({torso:48,limb:32,head:64,boot:32,hand:24,neck:24}),
   shades:Object.freeze({seat:.90,legs:.94,collar:1,sole:1,neck:.6}),
   parts:Object.freeze({hands:'gear',neck:'gear',kneePad:'accent',legs:'limbs',seat:'body'}),
-  atlas:Object.freeze({build:()=>createCoolAtlas(sheet),roles:Object.freeze(['body','limbs','accent'] as const),
+  atlas:Object.freeze({build:()=>createCoolAtlas(COOL_SHEET_LAYOUT),roles:Object.freeze(['body','limbs','accent'] as const),
     region:(art:string|undefined)=>COOL_REGIONS[art as CoolPage]??COOL_REGIONS.blank,
     lofts:Object.freeze({torso:'jacket',seat:'seat',thigh:'thigh',shin:'shin',upperArm:'sleeve',forearm:'forearm'}),
   }),

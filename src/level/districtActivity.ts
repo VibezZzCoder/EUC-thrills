@@ -7,6 +7,7 @@ import { PROP_SOLIDS, PROP_SPREADS, type PropKind } from '../data/props.ts';
 import { PART_COSTS, propPartCounts, type PropPartId } from '../data/renderCost.ts';
 import { POPULATION_AUTHORING as P } from '../data/tuning.ts';
 import { hash128 } from './planDigest.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 import type { LevelPlan, BoxCollider, Prop } from './plan.ts';
 import type { DistrictAdjacentPlan, DistrictFrontage, DistrictPublicGroup } from './districtAdjacency.ts';
 import { alignedPolygonExtent, boundaryOutsideAligned, boxOverlapsPolygon, boxOverlapsPolygonWithin,
@@ -311,7 +312,7 @@ function furnished(plan: DistrictActivityPlan, front: DistrictFrontage, source: 
     propIndex:plan.props?.length??0,solidIndex:plan.solids?.length??0,
     groundPatchIds:source.groundPatchIds,prop,solid} };
 }
-function withDistrictFurnishings(source: DistrictActivityPlan,validation:PopulationValidationScope): DistrictActivityPlan {
+function* withDistrictFurnishingsSteps(source: DistrictActivityPlan,validation:PopulationValidationScope): Steps<DistrictActivityPlan> {
   const report = source.districtActivity!;
   // Only the unchanged incumbent selections are reused. Every proposed solid
   // still invokes all reached authoritative selectors in their original order.
@@ -327,6 +328,7 @@ function withDistrictFurnishings(source: DistrictActivityPlan,validation:Populat
   const rejected: NonNullable<DistrictActivityReport['rejectedFurnishings']>[number][] = [];
   let working = source;
   for (const walk of source.populationActivityWalks ?? []) {
+    yield PREPARATION_SLICE;
     if (walk.owner!=='frontage' || entries.length>=DISTRICT_ACTIVITY.maximumFurnishings) continue;
     const front=source.districtAdjacency?.frontages.find(item=>item.id===walk.frontageId);
     const ground=source.populationGroundSources?.find(item=>item.id===walk.sourceId);
@@ -405,7 +407,7 @@ function frontageWalk(plan: DistrictActivityPlan, front: DistrictFrontage, sampl
 /** Native park paths already carry their source band and full original trace.
  * Only entirely admitted paths become purposeful exercise areas. No bare grass
  * connector, new paving, endpoint wrap, or vehicle route is manufactured. */
-function withDistrictWalks(plan: DistrictActivityPlan, choiceWorldId: string,validation:PopulationValidationScope): DistrictActivityPlan {
+function* withDistrictWalksSteps(plan: DistrictActivityPlan, choiceWorldId: string,validation:PopulationValidationScope): Steps<DistrictActivityPlan> {
   const walks: AuthoredDistrictActivityWalk[] = [], paths: AuthoredPopulationPath[] = [], sources: PopulationGroundSource[] = [];
   const rejectedWalks: { pathId: string; reason: string }[] = [];
   let working = plan;
@@ -415,6 +417,7 @@ function withDistrictWalks(plan: DistrictActivityPlan, choiceWorldId: string,val
     let count = 0;
     for (const front of plan.districtAdjacency?.frontages.filter(item => item.district === district) ?? []) {
       if (walks.length >= DISTRICT_ACTIVITY.maximumWalks || count >= DISTRICT_ACTIVITY.maximumFrontageWalksPerDistrict) break;
+      yield PREPARATION_SLICE;
       const result = frontageWalk(working,front,physicalSampler,validation);
       if (typeof result === 'string') { rejectedWalks.push({ pathId: `district-activity/walk/${front.id}`, reason: result }); continue; }
       walks.push(result.walk); paths.push(result.path); sources.push(result.source); count += 1;
@@ -426,6 +429,7 @@ function withDistrictWalks(plan: DistrictActivityPlan, choiceWorldId: string,val
   for (const original of plan.populationPaths ?? []) {
     if (walks.length >= DISTRICT_ACTIVITY.maximumWalks || parks >= DISTRICT_ACTIVITY.maximumFrontageWalksPerDistrict) break;
     if (original.role !== 'pedestrian' || original.district !== 'park' || original.id.startsWith('district-activity/')) continue;
+    yield PREPARATION_SLICE;
     const sampler=physicalSampler, context=validation(working);
     const ranges: [number,number][]=[];let first=0;
     for(let index=1;index<original.frames.length;index+=1){
@@ -440,6 +444,7 @@ function withDistrictWalks(plan: DistrictActivityPlan, choiceWorldId: string,val
       -(original.frames[a[1]].distanceMetres-original.frames[a[0]].distanceMetres)||a[0]-b[0]);
     let admitted=false;const failures:string[]=[];
     for(const range of ranges){
+      yield PREPARATION_SLICE;
       const start=original.frames[range[0]].distanceMetres;
       if(original.frames[range[1]].distanceMetres-start<P.minimumWalkMetres)continue;
       const entire=range[0]===0&&range[1]===original.frames.length-1&&!original.closed;
@@ -463,7 +468,8 @@ function withDistrictWalks(plan: DistrictActivityPlan, choiceWorldId: string,val
   const old = plan.districtActivity ?? { revision: 'district-life-r1' as const,
     sourceWorldId: choiceWorldId, physicalWorldId: plan.id, acceptedSiteIds: [], rejected: [] };
   const id = walks.length ? `district-life-r1-${hash128(JSON.stringify([plan.id,P.activityWalkPolicyRevision,walks,sources,paths]))}` : plan.id;
-  return withDistrictFurnishings({ ...working,id,populationActivityWalks: walks,populationActivityChoiceWorldId: choiceWorldId,
+  yield PREPARATION_SLICE;
+  return yield* withDistrictFurnishingsSteps({ ...working,id,populationActivityWalks: walks,populationActivityChoiceWorldId: choiceWorldId,
     districtActivity: { ...old,physicalWorldId: id,walkRevision: P.activityWalkPolicyRevision,
       acceptedWalkIds: walks.map(walk => walk.id),rejectedWalks } },validation);
 }
@@ -471,9 +477,14 @@ function withDistrictWalks(plan: DistrictActivityPlan, choiceWorldId: string,val
 /** New physical people receive a new world key; old records/ghosts remain old.
  * Existing actor choices keep their old source hash, and no seed stream moves. */
 export function withDistrictActivity(source: DistrictActivityPlan): DistrictActivityPlan {
+  return runSteps(withDistrictActivitySteps(source));
+}
+/** The boot path: the same finishing as slices (`shared/preparationSteps.ts`).
+ * Bench-adjustment attempts for one adjacency group stay inside one slice. */
+export function* withDistrictActivitySteps(source: DistrictActivityPlan): Steps<DistrictActivityPlan> {
   if (source.districtActivity?.walkRevision) return source;
   const validation=createPopulationValidationScope();
-  if (source.districtActivity) return withDistrictWalks(source,
+  if (source.districtActivity) return yield* withDistrictWalksSteps(source,
     source.populationActivityChoiceWorldId ?? source.districtActivity.sourceWorldId,validation);
   if (!source.districtAdjacency?.frontages.length
     && !source.populationPaths?.some(path=>path.role==='pedestrian' && path.district==='park')) return source;
@@ -482,6 +493,7 @@ export function withDistrictActivity(source: DistrictActivityPlan): DistrictActi
   const relocations: NonNullable<DistrictActivityReport['relocations']>[number][] = [];
   let working = source;
   for (const group of (source.districtAdjacency?.groups ?? []).slice(0, DISTRICT_ACTIVITY.maximumSites)) {
+    yield PREPARATION_SLICE;
     const front = source.districtAdjacency?.frontages.find(item => item.id === group.frontageId);
     let result = front ? candidate(working, group, front,validation) : 'missing-actual-frontage';
     let acceptedAdjustment: ReturnType<typeof adjustedBench> = null;
@@ -497,10 +509,11 @@ export function withDistrictActivity(source: DistrictActivityPlan): DistrictActi
     if (acceptedAdjustment) { working = acceptedAdjustment.plan; relocations.push(acceptedAdjustment.relocation); }
     sites.push(result.site); sources.push(result.source); if (result.walk) paths.push(result.walk);
   }
-  if (!sites.length) return withDistrictWalks({ ...source, districtActivity: { revision: 'district-life-r1',
+  yield PREPARATION_SLICE;
+  if (!sites.length) return yield* withDistrictWalksSteps({ ...source, districtActivity: { revision: 'district-life-r1',
     sourceWorldId: source.id, physicalWorldId: source.id, acceptedSiteIds: [], rejected } },source.id,validation);
   const id = `district-life-r1-${hash128(JSON.stringify([source.id, sites, sources, paths, relocations]))}`;
-  return withDistrictWalks({ ...working, id, populationActivitySites: sites, populationActivityChoiceWorldId: source.id,
+  return yield* withDistrictWalksSteps({ ...working, id, populationActivitySites: sites, populationActivityChoiceWorldId: source.id,
     populationGroundSources: [...(source.populationGroundSources ?? []), ...sources],
     populationPaths: [...(source.populationPaths ?? []), ...paths],
     districtActivity: { revision: 'district-life-r1', sourceWorldId: source.id, physicalWorldId: id,

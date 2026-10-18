@@ -381,7 +381,11 @@ function entries(steer: number): Leg[] {
 }
 
 test('the can never comes within 40 mm of his thigh on any ride the machine can make', () => {
-  const rig = createRidingRig(DRUNKARD_LOOK);
+  // Unconsolidated (perf item "riders", 2026-10-17): this contract reads the
+  // two pads one by one and the bare thigh, and a seat rig bakes the pad pair
+  // into one mesh. Consolidation moves no vertex but the baked pads' float32
+  // rounding (under 26 nm), so the graph `rider.ts` built is the one measured.
+  const rig = createRidingRig(DRUNKARD_LOOK, undefined, { consolidate: false });
   try {
     const hand = rig.rider.root.getObjectByName('rider-hand-left') as THREE.Mesh;
     const hip = rig.rider.root.getObjectByName('rider-hip-left')!;
@@ -625,9 +629,17 @@ test('the can never comes within 40 mm of his thigh on any ride the machine can 
  * posed and gestured steps are pinned above a floor.
  */
 
-/** The ten-rig roster's own machines, so a look rides the wheel it ships on. */
+/**
+ * The ten-rig roster's own machines, so a look rides the wheel it ships on.
+ *
+ * Unconsolidated (perf item "riders", 2026-10-17): `Probes` reads the bare
+ * thigh and shin lofts and the two pads one by one, and a seat rig folds the
+ * thigh and knee panels into those lofts (OD-2) and bakes the pad pair into
+ * one mesh (OD-1). Consolidation moves no vertex but the baked pads' float32
+ * rounding (under 26 nm), so the floors measure exactly what they always did.
+ */
 function rigFor(look: RiderLook): RidingRig {
-  return createRidingRig(look, machineLook(machineForCharacter(look.id)));
+  return createRidingRig(look, machineLook(machineForCharacter(look.id)), { consolidate: false });
 }
 
 /** Trollina's fitted bodice, in the pelvis frame — the stance file's "below the fitted bodice at 0.166". */

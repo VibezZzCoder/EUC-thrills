@@ -9,6 +9,15 @@ import { beginConstructionScope, constructionScopeOpen, withConstructionScope } 
 import { scopedDistrictSites, scopedParkCaseSites, scopedResidentialSites } from './scopedSiteQueries.ts';
 import { buildVegetationForm } from './vegetationForms.ts';
 import { SHARED_VEGETATION_CONTRACTS, ordinaryVegetationPainter } from './sharedVegetation.ts';
+import { createHash } from 'node:crypto';
+import * as THREE_RUNTIME from 'three';
+import { createLevel } from '../level/levels.ts';
+import { driveSteps, PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
+import { prepareEnvironmentSupplementsSteps, type PreparedEnvironmentSupplements } from './environmentSupplementPrice.ts';
+import { admitSharedGroundEdgesSteps } from './sharedGroundEdgeAdmission.ts';
+import { createTerrainSteps, type TerrainView } from './terrain.ts';
+import { DEFAULT_SPATIAL_BATCH_METRES } from './spatialBatching.ts';
+import { vegetationDetailFor } from './vegetationDistance.ts';
 
 /** One residential house (or clock tower) facing one paved street; the same
  * explicit source shape `level/districtSites.test.ts` uses. */
@@ -96,4 +105,81 @@ test('vegetation forms reused inside a scope are byte-identical, fresh and calle
     a.geometry.dispose(); b.geometry.dispose();
   });
   reference.geometry.dispose();
+});
+
+// --- 2026-10-17 audit §3: the boot builds the first group in slices ---------
+/** The renderer's first construction group, as `levelBuildSteps` and
+ * `installTerrainSteps` run it: supplements, admission and the terrain inside
+ * one construction scope (the terrain inside a nested one). */
+function* firstGroup(plan: LevelPlan, owned: PreparedEnvironmentSupplements[]): Steps<TerrainView> {
+  const end = beginConstructionScope();
+  try {
+    const supplements = yield* prepareEnvironmentSupplementsSteps(plan, null, {}, {});
+    owned.push(supplements);
+    yield PREPARATION_SLICE;
+    const admission = yield* admitSharedGroundEdgesSteps(plan, undefined, supplements);
+    const endTerrain = beginConstructionScope();
+    try {
+      return yield* createTerrainSteps(plan, admission.selection.recipe, undefined, { ordinaryBoundary: true, sharedSurface: true,
+        sharedEdges: admission.prepared, environmentSupplements: supplements, spatialBatchMetres: DEFAULT_SPATIAL_BATCH_METRES,
+        distanceDetail: () => vegetationDetailFor('high', 1, false) });
+    } finally { endTerrain(); }
+  } finally { end(); }
+}
+
+/** Every mesh's name, flags, transform, geometry bytes, groups and material state. */
+function sceneDigest(root: THREE.Object3D): { meshes: number; digest: string } {
+  const hash = createHash('sha256');
+  let meshes = 0;
+  root.updateMatrixWorld(true);
+  root.traverse((object) => {
+    hash.update(`${object.type}|${object.name}|${object.visible}|${object.layers.mask}|${object.matrixWorld.elements.join(',')}`);
+    if (!(object instanceof THREE_RUNTIME.Mesh)) return;
+    meshes += 1;
+    const geometry = object.geometry as THREE.BufferGeometry;
+    hash.update(`${object.castShadow}|${object.receiveShadow}|${JSON.stringify(geometry.groups)}|${JSON.stringify(geometry.drawRange)}`);
+    for (const [name, attribute] of Object.entries(geometry.attributes)) {
+      const array = (attribute as THREE.BufferAttribute).array as ArrayLike<number> & ArrayBufferView;
+      hash.update(name); hash.update(Buffer.from(array.buffer, array.byteOffset, array.byteLength));
+    }
+    if (geometry.index) {
+      const array = geometry.index.array as ArrayLike<number> & ArrayBufferView;
+      hash.update(Buffer.from(array.buffer, array.byteOffset, array.byteLength));
+    }
+    if (object instanceof THREE_RUNTIME.InstancedMesh) {
+      const array = object.instanceMatrix.array;
+      hash.update(`${object.count}`); hash.update(Buffer.from(array.buffer, array.byteOffset, array.byteLength));
+    }
+    for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+      const standard = material as THREE.MeshStandardMaterial;
+      hash.update(`${material.type}|${standard.color?.getHexString()}|${standard.roughness}|${standard.metalness}|${material.vertexColors}`
+        + `|${material.polygonOffset}|${material.customProgramCacheKey()}`);
+    }
+  });
+  return { meshes, digest: hash.digest('hex') };
+}
+
+test('a first construction group abandoned at any slice closes its scopes; a fresh build equals an uninterrupted one', async () => {
+  const plan = createLevel('switchback');
+  const owned: PreparedEnvironmentSupplements[] = [];
+  let slices = 0;
+  const reference = await driveSteps(firstGroup(plan, owned), { slice: () => { slices += 1; return null; } });
+  const expected = sceneDigest(reference.group);
+  assert.ok(expected.meshes > 4, 'the venue builds a real world');
+  assert.ok(slices > 20, `the first group is sliced (${slices} slices)`);
+  reference.dispose(); owned.splice(0).forEach(supplements => supplements.dispose());
+  assert.equal(constructionScopeOpen(), false);
+
+  for (const share of [0.15, 0.6, 0.95]) {
+    const stopAt = Math.max(1, Math.floor(slices * share));
+    let seen = 0;
+    await assert.rejects(driveSteps(firstGroup(plan, owned), {
+      slice: () => (++seen === stopAt ? Promise.reject(new Error('boot abandoned')) : null),
+    }), /boot abandoned/);
+    assert.equal(constructionScopeOpen(), false, `abandoned at slice ${stopAt}: every construction scope closed`);
+    owned.splice(0).forEach(supplements => supplements.dispose());
+    const fresh = runSteps(firstGroup(plan, owned));
+    assert.deepStrictEqual(sceneDigest(fresh.group), expected, `a build after abandoning at slice ${stopAt} is the uninterrupted one`);
+    fresh.dispose(); owned.splice(0).forEach(supplements => supplements.dispose());
+  }
 });

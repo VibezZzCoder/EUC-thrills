@@ -8,7 +8,7 @@ import type { Vec3, SurfaceId } from '../simulation/world.ts';
 import { createGroundSample } from '../simulation/world.ts';
 import { PlanTerrainSampler } from '../simulation/planSampler.ts';
 import { dubins, threeArcs } from './cityRing.ts';
-import { emitPopulationPaths, buildPopulationPlan, populationSpanFootprints,
+import { emitPopulationPaths, buildPopulationPlan, buildPopulationPlanSteps, populationSpanFootprints,
   populationPathSpanReason, populationFootprintExclusion, surfaceFootprintClear, parkingBayReason,
   createPopulationValidationContext, type PopulationValidationContext,
   type AuthoredPathFrame, type AuthoredPopulationPath, type PopulationGroundSource,
@@ -18,6 +18,7 @@ import { centrelineAt, headingAt, type PlacedSegment, type SegmentSpec } from '.
 import { clippedFieldTriangles, STREET_PAVING, validField } from './streetFronts.ts';
 import { exactBuildingBody } from './protectedSiteEligibility.ts';
 import { environmentSites } from './environmentSites.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 
 type Pose = { readonly x: number; readonly z: number; readonly h: number };
 type Step = { segmentId: string; lateralMetres: number; halfWidthMetres: number;
@@ -225,9 +226,9 @@ function crossingsFor(source: PopulationGroundSource, path: AuthoredPopulationPa
     pedestrianPathIds: pedestrianPaths.filter(p => p.role === 'pedestrian').map(p => p.id), vehiclePathIds: [path.id] }));
 }
 
-function districtAlternatives(plan: LevelPlan, district: 'commercial' | 'residential',
+function* districtAlternativesSteps(plan: LevelPlan, district: 'commercial' | 'residential',
   rejected: { id: string; reason: string; span?: number; sourceIds?: readonly string[] }[]):
-  { plan: LevelPlan; path: AuthoredPopulationPath; crossings: PopulationCrossing[] } | null {
+  Steps<{ plan: LevelPlan; path: AuthoredPopulationPath; crossings: PopulationCrossing[] } | null> {
   const prefix = `city-${district}`;
   const ids = ['entry', 'exit', 'cross', ...parts.map(p => `main-${p}`), ...parts.map(p => `side-${p}`)];
   const roads = ids.map(id => plan.segments.find(s => s.id === `${prefix}-${id}`)).map(s => s ? originalRoad(s) : null);
@@ -243,6 +244,7 @@ function districtAlternatives(plan: LevelPlan, district: 'commercial' | 'residen
   };
   for (const topology of ['whole-block', 'entry-neighborhood', 'exit-neighborhood'] as const) {
     for (const lane of [1.5, -1.5, 0, 2.8, -2.8]) for (const trim of [0.45, 0.60]) {
+      yield PREPARATION_SLICE;
       const arm = (name: 'main' | 'side', first: number, last: number): Step[] => {
         const result = parts.slice(first, last + 1).map(part => {
           const road = byId.get(`${prefix}-${name}-${part}`)!;
@@ -302,7 +304,7 @@ function districtAlternatives(plan: LevelPlan, district: 'commercial' | 'residen
             sourceIds: [frames[badSpan - 1].sourceSegmentId, frames[badSpan].sourceSegmentId] });
           continue;
         }
-        const validated = buildPopulationPlan(candidate, [path], finished, candidateContext);
+        const validated = yield* buildPopulationPlanSteps(candidate, [path], finished, candidateContext);
         if (validated.paths.length !== 1 || !validated.paths[0].closed || validated.report.rejected.length) continue;
         return { plan: candidate, path, crossings: sources.filter(s => s.purpose === 'driveway')
           .flatMap(s => crossingsFor(s, path, plan.populationPaths ?? [])) };
@@ -315,9 +317,9 @@ function districtAlternatives(plan: LevelPlan, district: 'commercial' | 'residen
 /** One bounded neighbourhood turnaround circuit, used only if the larger
  * district circuits fail. Both travelled lanes are an actual native street;
  * two explicit radius courts supply continuous forward turns at its ends. */
-function localDistrictLoop(plan: LevelPlan, district: 'commercial' | 'residential',
+function* localDistrictLoopSteps(plan: LevelPlan, district: 'commercial' | 'residential',
   rejected: { id: string; reason: string; span?: number; sourceIds?: readonly string[] }[]):
-  { plan: LevelPlan; path: AuthoredPopulationPath; crossings: PopulationCrossing[] } | null {
+  Steps<{ plan: LevelPlan; path: AuthoredPopulationPath; crossings: PopulationCrossing[] } | null> {
   const prefix = `city-${district}`, sampler = new PlanTerrainSampler(plan);
   const context = createPopulationValidationContext(plan);
   const ordered = ['side-street', 'side-street-b', 'main-street', 'main-street-b', 'cross', 'entry', 'exit'];
@@ -326,6 +328,7 @@ function localDistrictLoop(plan: LevelPlan, district: 'commercial' | 'residentia
     const road = segment && originalRoad(segment);
     if (!road || !ROAD.has(road.spec.surface) || Math.abs(road.spec.curvature ?? 0) > R.epsilon) continue;
     for (const length of [24, 14]) for (const share of [0.5, 0.25, 0.75]) {
+      yield PREPARATION_SLICE;
       const middle = road.spec.length * share, fromS = middle - length / 2, toS = middle + length / 2;
       if (fromS < 3 || toS > road.spec.length - 3) continue;
       const traces = emitPopulationPaths([road], [1, -1].map((direction, index) => ({
@@ -356,7 +359,7 @@ function localDistrictLoop(plan: LevelPlan, district: 'commercial' | 'residentia
           failure = populationPathSpanReason(candidate, finished, frames[index - 1], frames[index], path, candidateContext, ROAD);
           if (failure) { badSpan = index; break; }
         }
-        const accepted = failure ? null : buildPopulationPlan(candidate, [path], finished, candidateContext);
+        const accepted = failure ? null : yield* buildPopulationPlanSteps(candidate, [path], finished, candidateContext);
         if (!accepted || accepted.paths.length !== 1 || !accepted.paths[0].closed || accepted.report.rejected.length) {
           if (rejected.length < 120) rejected.push({ id, reason: failure ?? accepted?.report.rejected[0]?.reason ?? 'local loop not accepted',
             ...(badSpan ? { span: badSpan } : {}), sourceIds: [road.spec.id] });
@@ -451,8 +454,8 @@ function warehouseRoads(plan: LevelPlan, building: Vec3):
     || (a.road.spec.id < b.road.spec.id ? -1 : a.road.spec.id > b.road.spec.id ? 1 : 0)).slice(0, 3);
 }
 
-function parking(plan: LevelPlan, paths: readonly PopulationPath[]):
-  { plan: LevelPlan; bay: AuthoredParkingBay; crossing?: PopulationCrossing } | null {
+function* parkingSteps(plan: LevelPlan, paths: readonly PopulationPath[]):
+  Steps<{ plan: LevelPlan; bay: AuthoredParkingBay; crossing?: PopulationCrossing } | null> {
   const sampler = new PlanTerrainSampler(plan);
   const context = createPopulationValidationContext(plan);
   // Precise patches change surfaces only; original support heights, normals,
@@ -481,6 +484,7 @@ function parking(plan: LevelPlan, paths: readonly PopulationPath[]):
     }).filter(face => face.toward > 0).sort((a, b) => b.toward - a.toward);
     for (const face of faces) for (const out of [4.5, 6.5, 8.5, 10.5])
       for (const along of [0, face.width / 2 + 3.5, -face.width / 2 - 3.5, face.width / 2 + 7.5, -face.width / 2 - 7.5]) {
+        yield PREPARATION_SLICE;
         const position = { x: building.position.x + Math.sin(face.yaw) * (face.depth / 2 + out) + Math.cos(face.yaw) * along,
           y: 0, z: building.position.z + Math.cos(face.yaw) * (face.depth / 2 + out) - Math.sin(face.yaw) * along };
         position.y = sampler.sampleGround(position.x, position.z, createGroundSample()).height;
@@ -496,6 +500,7 @@ function parking(plan: LevelPlan, paths: readonly PopulationPath[]):
         const prepared = patchSource(plan, bayId, polygon, [road.spec.id], 'parking-bay', propIndex, undefined, context);
         if (!prepared) continue;
         for (const direction of [1, -1]) for (const setback of [TURN_RADIUS + 2, 3]) for (const alternative of [0, 1]) {
+          yield PREPARATION_SLICE;
           const station = street.station - direction * setback;
           if (station < 0 || station > road.spec.length) continue;
           const start = centrelineAt(road.entry, road.spec, station), h = headingAt(road.entry, road.spec, station)
@@ -539,6 +544,9 @@ function polygonsOverlap(a: readonly { x: number; z: number }[], b: readonly { x
 /** Sole final supplement hook, after street ground and before physical identity.
  * No source draws, replanning, admission changes, or producer-id branches. */
 function authorLivingWorldGround(source: LevelPlan): { level: LevelPlan; population?: PopulationPlan } {
+  return runSteps(authorLivingWorldGroundSteps(source));
+}
+function* authorLivingWorldGroundSteps(source: LevelPlan): Steps<{ level: LevelPlan; population?: PopulationPlan }> {
   if (source.populationGroundReport) return { level: source };
   const supportsTraffic = (['commercial', 'residential'] as const)
     .filter(d => source.segments.some(s => s.id === `city-${d}-cross`));
@@ -549,11 +557,15 @@ function authorLivingWorldGround(source: LevelPlan): { level: LevelPlan; populat
   const rejected: { id: string; reason: string; span?: number; sourceIds?: readonly string[] }[] = [];
   const traffic: string[] = [], missing: District[] = [];
   for (const district of supportsTraffic) {
-    const result = districtAlternatives(plan, district, rejected) ?? localDistrictLoop(plan, district, rejected);
+    yield PREPARATION_SLICE;
+    // Was `districtAlternatives(…) ?? localDistrictLoop(…)`: the same short circuit.
+    let result = yield* districtAlternativesSteps(plan, district, rejected);
+    result ??= yield* localDistrictLoopSteps(plan, district, rejected);
     if (!result) { missing.push(district); continue; }
     plan = result.plan; paths.push(result.path); crossings.push(...result.crossings); traffic.push(result.path.id);
   }
   for (const request of source.populationFootpathRequests ?? []) {
+    yield PREPARATION_SLICE;
     const failure: AuthoringFailure = {}, result = finishedFootpath(plan, request, failure);
     if (!result) { rejected.push({ id: request.id, reason: failure.reason ?? 'no accepted safe finished footpath',
       span: failure.span, sourceIds: [request.hostSegmentId] }); continue; }
@@ -561,8 +573,11 @@ function authorLivingWorldGround(source: LevelPlan): { level: LevelPlan; populat
   }
   // Only accepted, physically supported paths occupy an approach or bay.
   // Drafted rejected full circuits cannot reserve a phantom driving lane.
-  const acceptedMoving = hasWarehouse ? buildPopulationPlan(plan, paths).paths : [];
-  const bay = hasWarehouse ? parking(plan, acceptedMoving) : null;
+  yield PREPARATION_SLICE;
+  const acceptedMoving = hasWarehouse ? (yield* buildPopulationPlanSteps(plan, paths)).paths : [];
+  yield PREPARATION_SLICE;
+  const bay = hasWarehouse ? yield* parkingSteps(plan, acceptedMoving) : null;
+  yield PREPARATION_SLICE;
   const parkingIds: string[] = [];
   if (bay) { plan = bay.plan; parkingIds.push(bay.bay.id); if (bay.crossing) crossings.push(bay.crossing); }
   const report: LivingWorldGroundReport = { acceptedTrafficLoops: traffic, missingTrafficDistricts: missing,
@@ -575,7 +590,7 @@ function authorLivingWorldGround(source: LevelPlan): { level: LevelPlan; populat
     ...(bay ? { populationParkingBays: [...(plan.populationParkingBays ?? []), bay.bay] } : {}), populationGroundReport: report };
   // Reports name the actually accepted final paths/parked occupants, including
   // any changes caused by a later driveway patch or initial hull reservation.
-  const population = buildPopulationPlan(finalPlan, paths);
+  const population = yield* buildPopulationPlanSteps(finalPlan, paths);
   return { level: { ...finalPlan, populationGroundReport: population.report.groundSupplement! }, population };
 }
 
@@ -584,7 +599,11 @@ export function withLivingWorldGround(source: LevelPlan): LevelPlan { return aut
 /** The app consumes the same final validation used to reconcile the source
  * report. This avoids rebuilding every accepted path and sampler at boot. */
 export function prepareLivingWorldGround(source: LevelPlan): { level: LevelPlan; population: PopulationPlan } {
-  const prepared = authorLivingWorldGround(source);
+  return runSteps(prepareLivingWorldGroundSteps(source));
+}
+/** The boot path: the same preparation as slices (`shared/preparationSteps.ts`). */
+export function* prepareLivingWorldGroundSteps(source: LevelPlan): Steps<{ level: LevelPlan; population: PopulationPlan }> {
+  const prepared = yield* authorLivingWorldGroundSteps(source);
   return { level: prepared.level, population: prepared.population
-    ?? buildPopulationPlan(prepared.level, prepared.level.populationPaths) };
+    ?? (yield* buildPopulationPlanSteps(prepared.level, prepared.level.populationPaths)) };
 }

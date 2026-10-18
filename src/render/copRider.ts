@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import type { EucPose } from '../simulation/EucController.ts';
 import { STANDARD_MACHINE_LOOK, type MachineLook } from './machineLook.ts';
 import { COP_LOOK } from './riderLook.ts';
-import { createRidingRig, type RidingRig } from './ridingRig.ts';
+import { createRidingRig, type RidingRig, type RidingRigOptions } from './ridingRig.ts';
 
 /**
  * Officer Dorkins on the road — M18 Phase 2.
@@ -146,6 +146,8 @@ export interface CopRider {
   resetCrashPose(): void;
   /** Pose his paddle — M14's `applySwing`, forwarded unchanged. */
   applySwing(headWorld: THREE.Vector3 | null, angle: number, blend: number): void;
+  /** `RidingRig.settling`, forwarded unchanged (the held paused view, 2026-10-17). */
+  readonly settling: boolean;
   dispose(): void;
 }
 
@@ -191,8 +193,8 @@ function copPrefix(index: number): string {
  * seat rig like any other, which is what the couch's cop seat installs. The
  * render-cost model seats it in the chase rooms (`render/renderCost.ts`).
  */
-export function createCopRidingRig(): RidingRig {
-  return createRidingRig(COP_LOOK, COP_MACHINE_LOOK);
+export function createCopRidingRig(options: RidingRigOptions = {}): RidingRig {
+  return createRidingRig(COP_LOOK, COP_MACHINE_LOOK, options);
 }
 
 export function createCopRider(options: CopRiderOptions = {}): CopRider {
@@ -204,7 +206,12 @@ export function createCopRider(options: CopRiderOptions = {}): CopRider {
   // cost nothing for a rider who is not in them.
   group.visible = false;
 
-  const rig: RidingRig = createCopRidingRig();
+  // **The trim builds unconsolidated** (perf item "riders", 2026-10-17): it
+  // reads `DROPPED_MESHES` by name and every mesh's own triangle count, and a
+  // merged pad pair or a panel folded into its limb would answer both
+  // differently. The full rig is the seated cop's rig and consolidates like
+  // every seat, so `measureCopRig({ full: true })` stays `measureSeatRig('cop')`.
+  const rig: RidingRig = createCopRidingRig({ consolidate: full });
   group.add(rig.group);
 
   // **Every name in the cop's copy of the rig is prefixed**, for the reason
@@ -286,6 +293,10 @@ export function createCopRider(options: CopRiderOptions = {}): CopRider {
 
     applySwing(headWorld: THREE.Vector3 | null, angle: number, blend: number): void {
       rig.applySwing(headWorld, angle, blend);
+    },
+
+    get settling(): boolean {
+      return rig.settling;
     },
 
     dispose(): void {

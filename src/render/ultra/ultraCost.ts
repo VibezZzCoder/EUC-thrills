@@ -54,7 +54,8 @@ import {
 import { ULTRA } from '../../data/tuning.ts';
 import { assertGroundEdgePrice, type GroundEdgePrice } from '../../shared/groundEdgePrice.ts';
 import type { LevelPlan } from '../../level/plan.ts';
-import { colliderMaterial, planRenderCost } from '../../level/renderBudget.ts';
+import { colliderMaterial } from '../../level/renderBudget.ts';
+import { scopedPlanRenderCost } from '../scopedRenderCost.ts';
 import { ENHANCED_PART_COSTS } from '../enhancedCatalog.ts';
 import { FACADE_ATLAS_SIZE } from '../facadeAtlas.ts';
 import { ultraColliderTriangles } from './ultraBlocks.ts';
@@ -262,7 +263,7 @@ export function ultraCostBreakdown(plan: LevelPlan, recipe: UltraRecipe, edges: 
   const capPrice = supplement ? { farExtraDraws: supplement.capFarExtraDraws, farExtraTriangles: supplement.capFarExtraTriangles }
     : standaloneCapPrice(plan, recipe);
   if (edges) assertGroundEdgePrice(edges);
-  const base = planRenderCost(plan);
+  const base = scopedPlanRenderCost(plan);
   const kit = recipe.ultra;
 
   let propDrawCalls = 0;

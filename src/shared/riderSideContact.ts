@@ -2,7 +2,7 @@
 /** Pure proposals for separate native wheel and full-rag human side constraints.
  * This constructs a physical candidate only. The unchanged complete-body
  * interval admission must still certify before any controller may commit it. */
-import { buildRiderOccupancyEnvelope, type RiderOccupancyCoefficients, type RiderOccupancyPose, type RiderOccupancyPrism } from './riderOccupancy.ts';
+import { buildRiderOccupancyEnvelope, buildRiderWheelOccupancy, type RiderOccupancyCoefficients, type RiderOccupancyPose, type RiderOccupancyPrism } from './riderOccupancy.ts';
 /** Pure structural geometry; no simulation/controller/world import. */
 export interface RiderSideContactBlocker {
   readonly x: number; readonly z: number; readonly headingY: number;
@@ -64,8 +64,8 @@ export function proposeFullRagSideProjection(previous: RiderOccupancyPose, propo
 export function proposeFullRagWheelSideProjection(previous: RiderOccupancyPose, proposed: RiderOccupancyPose,
   blockers: readonly RiderSideContactBlocker[], coefficients: RiderOccupancyCoefficients, standoffMetres: number): FullRagSideProjection | null {
   if (previous.ragdollBlend !== 1 || proposed.ragdollBlend !== 1) return null;
-  return proposeSideProjection(buildRiderOccupancyEnvelope(previous, coefficients).wheel,
-    buildRiderOccupancyEnvelope(proposed, coefficients).wheel, blockers, standoffMetres);
+  return proposeSideProjection(buildRiderWheelOccupancy(previous, coefficients),
+    buildRiderWheelOccupancy(proposed, coefficients), blockers, standoffMetres);
 }
 
 /**
@@ -77,7 +77,7 @@ export function proposeFullRagWheelSideProjection(previous: RiderOccupancyPose, 
  */
 export function proposeWheelClearOfBodies(pose: RiderOccupancyPose, blockers: readonly RiderSideContactBlocker[],
   coefficients: RiderOccupancyCoefficients, standoffMetres: number): FullRagSideProjection | null {
-  const wheel = buildRiderOccupancyEnvelope(pose, coefficients).wheel, planes: ContactPlane[] = [];
+  const wheel = buildRiderWheelOccupancy(pose, coefficients), planes: ContactPlane[] = [];
   for (const blocker of blockers) {
     if (blocker.minY > wheel.topY) continue;
     const best = [...axes(wheel.headingY), ...axes(blocker.headingY)].map(axis => ({ axis, gap: axisGap(wheel, blocker, axis) }))
@@ -102,8 +102,8 @@ export function proposeWheelClearOfBodies(pose: RiderOccupancyPose, blockers: re
  * rider themselves (2026-10-04). A native candidate, never admission. */
 export function proposeWheelSideProjection(previous: RiderOccupancyPose, proposed: RiderOccupancyPose,
   blockers: readonly RiderSideContactBlocker[], coefficients: RiderOccupancyCoefficients, standoffMetres: number): FullRagSideProjection | null {
-  return proposeSideProjection(buildRiderOccupancyEnvelope(previous, coefficients).wheel,
-    buildRiderOccupancyEnvelope(proposed, coefficients).wheel, blockers, standoffMetres);
+  return proposeSideProjection(buildRiderWheelOccupancy(previous, coefficients),
+    buildRiderWheelOccupancy(proposed, coefficients), blockers, standoffMetres);
 }
 
 /** One exact common XZ contact displacement for wheel root and active world

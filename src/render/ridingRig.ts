@@ -19,6 +19,7 @@ import { STANDARD_MACHINE_LOOK, type MachineLook } from './machineLook.ts';
 import { armEaseForSpeed, createPlaceholderRider, createStanceInput, type PlaceholderRider } from './rider.ts';
 import { COOL_RIDER_LOOK, MOTION_STILL, type RiderLook } from './riderLook.ts';
 import { createPaddle } from './paddle.ts';
+import { consolidateRig, type RigConsolidation } from './rigConsolidation.ts';
 
 /**
  * Wheel and rider, assembled into one thing that a pose can be applied to.
@@ -129,6 +130,24 @@ export interface RidingRig {
    */
   applySwing(headWorld: THREE.Vector3 | null, angle: number, blend: number): void;
   /**
+   * Would the next `apply`, given exactly the same inputs, still move the
+   * rig? — performance pass 2026-10-17, for the held paused view
+   * (`app/pausedView.ts`).
+   *
+   * Two channels here count `apply` calls rather than the simulation clock,
+   * so they keep moving while every input is frozen: the paddle carry, put
+   * down by 1/12 per call once the paddle leaves the hand (a Knockabout
+   * pause, the couch-chase cop seat's pause, Knockabout ending), and the
+   * falling flag, which compares this call's air height with the last call's.
+   * True after an `apply` that left either one mid-change; false means a
+   * repeat call with the same pose, swing and trick pose is a no-op.
+   * `Game.admitPausedView` keeps a frame drawn while any shown rig says true,
+   * so a held picture can never freeze an arm part-way through its put-down.
+   * A new channel that counts calls must report here
+   * (`app/pausedViewRig.test.ts` is the guard).
+   */
+  readonly settling: boolean;
+  /**
    * The one-foot air pose — M36, `docs/PLANS.md` §36.5.
    *
    * `amount` is 0..1, how far the free foot has left its pedal; `side` is +1
@@ -158,8 +177,41 @@ export interface RidingRig {
    * render frame.
    */
   setTrickPose(amount: number, side: number): void;
+  /**
+   * What the build-time consolidation merged (`render/rigConsolidation.ts`,
+   * perf item "riders" 2026-10-17), or null for a rig built with
+   * `{ consolidate: false }` — the ghost's and the CPU-cop trims'. Read by
+   * tests; nothing at runtime needs it.
+   */
+  readonly consolidation: RigConsolidation | null;
   dispose(): void;
 }
+
+/** Build options for a riding rig — perf item "riders", 2026-10-17. */
+export interface RidingRigOptions {
+  /**
+   * Merge same-joint, same-material sibling meshes at build
+   * (`render/rigConsolidation.ts`): the exact tier, the owner's OD-1 pad and
+   * pedal bake (`BAKED_PAIRS`) and his OD-2 cast union. **On (absent) for
+   * every seat rig.** `false` keeps the graph `rider.ts` and `euc.ts` built,
+   * mesh for mesh — the ghost (translucent: a merge would move its blend
+   * order) and the CPU-cop trims (they rewrite the rig by mesh name and by
+   * per-mesh triangle count) build that way, as does any test that looks up
+   * an absorbed mesh by name.
+   */
+  readonly consolidate?: boolean;
+}
+
+/**
+ * The owner's OD-1 (2026-10-17): the machine's pad pair and pedal pair are
+ * static build-time translations of one parent (`euc.ts`), baked into one
+ * mesh each. Positions change by float32 rounding only (under 26 nm);
+ * normals, uvs and colours are copied bit for bit.
+ */
+export const BAKED_PAIRS: readonly (readonly string[])[] = Object.freeze([
+  Object.freeze(['euc-pad-right', 'euc-pad-left']),
+  Object.freeze(['euc-pedal-right', 'euc-pedal-left']),
+]);
 
 /**
  * Build the rig, optionally wearing a particular rider — and, from M19, a
@@ -176,6 +228,7 @@ export interface RidingRig {
 export function createRidingRig(
   look: RiderLook = COOL_RIDER_LOOK,
   machine: MachineLook = STANDARD_MACHINE_LOOK,
+  options: RidingRigOptions = {},
 ): RidingRig {
   const group = new THREE.Group();
   group.name = 'riding-rig';
@@ -196,6 +249,14 @@ export function createRidingRig(
   const rider = createPlaceholderRider(look);
   leanPivot.add(euc.group);
   leanPivot.add(rider.root);
+  // **Consolidated before the paddle is hung** (perf item "riders",
+  // 2026-10-17): the paddle mesh is shown and hidden at runtime, so it must
+  // never join a merge. Everything below this line that holds a rig part —
+  // the hands, the tyre, the grip, the joints — holds one consolidation does
+  // not touch (`rigConsolidation.ts` says why, structurally).
+  const consolidation: RigConsolidation | null = options.consolidate === false
+    ? null
+    : consolidateRig(group, { bake: BAKED_PAIRS, castUnion: true });
 
   // The paddle hangs off the rider's own grip, so it goes wherever the hand
   // goes — including through the M15 crash ragdoll, which is the owner's
@@ -229,6 +290,12 @@ export function createRidingRig(
    * `apply` carries no clock, and nothing simulated reads this.
    */
   let carry = 0;
+  /**
+   * The last `apply`'s answer to `settling` (performance pass 2026-10-17):
+   * the carry still on its way down, or the falling flag set (a repeat call
+   * at the same air height clears it).
+   */
+  let settlingAfterApply = false;
   /**
    * The one-foot air pose — M36, §36.5. Two numbers, recorded by
    * `setTrickPose` and spent inside `apply`, held between calls.
@@ -268,6 +335,7 @@ export function createRidingRig(
     leanPivot,
     euc,
     rider,
+    consolidation,
     resetCrashPose(): void { rider.resetCrashPose(); },
 
     apply(pose: EucPose): void {
@@ -519,6 +587,10 @@ export function createRidingRig(
       // before the solve — the paddle's own visibility is only set below.
       carry = swingHead !== null ? 1 : Math.max(0, carry - 1 / 12);
       stance.carry = carry;
+      // The two call-counted channels (`settling`): a carry still on its way
+      // down moves again next call, and so does a set falling flag, because a
+      // repeat at the same air height is not falling.
+      settlingAfterApply = (swingHead === null && carry > 0) || stance.falling;
       rider.applyStanceReaction(stance);
       // Last, because the paddle aims itself from the grip's world matrix and
       // the line above is what just moved the grip. The ground height is the
@@ -545,6 +617,10 @@ export function createRidingRig(
       swingHead = swingHeadWorld;
     },
 
+    get settling(): boolean {
+      return settlingAfterApply;
+    },
+
     applyStatus(alert: number, seconds: number, boot = 0): void {
       euc.setStatus(alert, seconds, boot);
     },
@@ -565,6 +641,9 @@ export function createRidingRig(
       paddle.dispose();
       euc.dispose();
       rider.dispose();
+      // The merged buffers are this rig's own; every member's original stays
+      // the factory's and went with the two calls above.
+      consolidation?.dispose();
       group.removeFromParent();
     },
   };

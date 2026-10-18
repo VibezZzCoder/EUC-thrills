@@ -7,6 +7,7 @@ import { SOBER_STYLE, type RideStyle } from '../data/rideStyles.ts';
 import type { ActionSnapshot } from '../input/actions.ts';
 import { approach, clamp, clamp01, lerp } from '../shared/maths.ts';
 import type { RiderOccupancyPose } from '../shared/riderOccupancy.ts';
+import { EUC_STEP_PRIMITIVE_FIELDS, copyEucStepPrimitives, type EucStepPrimitiveState } from './eucStepPrimitives.ts';
 import { roughnessAt } from './roughness.ts';
 import { HazardField, NO_HAZARDS } from './hazards.ts';
 import { CrashRagdoll, RAGDOLL_FLOATS } from './ragdoll.ts';
@@ -373,13 +374,29 @@ const PREPARED_CONTROLLER_STEPS = new WeakMap<EucPreparedStep, PreparedControlle
 // These references have explicit copy/share rules below. Everything else is a
 // primitive state field, discovered once, so a new clock/latch cannot silently
 // disappear from the transaction. An unclassified mutable reference refuses.
-const STEP_REFERENCE_FIELDS = new Set([
+// Exported, with the discovery itself, for `tools/gen-step-primitives.mjs`,
+// which writes `eucStepPrimitives.ts` from this one classification.
+export const EUC_STEP_REFERENCE_FIELDS: readonly string[] = Object.freeze([
   'tuning', 'surfaces', 'sampler', 'spawn', 'dynamicWorld', 'dynamicPrevious',
   'dynamicIntent', 'style', 'ground', 'probe', 'obstacleHit', 'standoffOrigin',
   'standoffRay', 'hazards', 'softBodies', 'launchPads', 'ragdoll', 'workingController',
   'activePreparedStep', 'stateRevision', 'collectingNeutralStep', 'reactionController', 'safeRing',
 ]);
-let stepPrimitiveFields: readonly string[] | undefined;
+const STEP_REFERENCE_FIELDS: ReadonlySet<string> = new Set(EUC_STEP_REFERENCE_FIELDS);
+/** True once this process's controller fields have been proved equal to `EUC_STEP_PRIMITIVE_FIELDS`. */
+let stepPrimitiveListChecked = false;
+
+/** A controller's primitive own fields in declaration order: exactly what a checkpoint copies by value. */
+export function eucStepPrimitiveFieldsOf(controller: EucController): readonly string[] {
+  const from = controller as unknown as Record<string, unknown>;
+  return Object.freeze(Object.keys(from).filter((key) => {
+    if (STEP_REFERENCE_FIELDS.has(key)) return false;
+    if (typeof from[key] === 'object' || typeof from[key] === 'function') {
+      throw new Error(`EUC transaction needs an explicit state copy for ${key}`);
+    }
+    return true;
+  }));
+}
 
 /** Native snapped tilt target shared by destination requests and actual integration. */
 function groundTiltTarget(normal: Vec3, headingY: number, t: EucTuning): { pitch: number; roll: number } {
@@ -2624,18 +2641,19 @@ export class EucController {
    */
   copyMutableStateFrom(source: EucController): void {
     const copyRagdoll = source.ragdolling || this.ragdolling;
-    const from = source as unknown as Record<string, unknown>;
-    const to = this as unknown as Record<string, unknown>;
-    if (!stepPrimitiveFields) {
-      stepPrimitiveFields = Object.freeze(Object.keys(from).filter((key) => {
-        if (STEP_REFERENCE_FIELDS.has(key)) return false;
-        if (typeof from[key] === 'object' || typeof from[key] === 'function') {
-          throw new Error(`EUC transaction needs an explicit state copy for ${key}`);
-        }
-        return true;
-      }));
+    if (!stepPrimitiveListChecked) {
+      // The unrolled copier must name exactly the discovered primitive set.
+      const fields = eucStepPrimitiveFieldsOf(source), listed = new Set<string>(EUC_STEP_PRIMITIVE_FIELDS);
+      const missing = fields.filter((key) => !listed.has(key));
+      const discovered = new Set(fields);
+      const stale = EUC_STEP_PRIMITIVE_FIELDS.filter((key) => !discovered.has(key));
+      if (missing.length || stale.length) {
+        throw new Error(`EUC transaction primitive list is stale: unlisted ${missing.join(', ') || 'none'}; `
+          + `absent ${stale.join(', ') || 'none'}. Regenerate src/simulation/eucStepPrimitives.ts with node tools/gen-step-primitives.mjs`);
+      }
+      stepPrimitiveListChecked = true;
     }
-    for (const key of stepPrimitiveFields) to[key] = from[key];
+    copyEucStepPrimitives(this as unknown as EucStepPrimitiveState, source as unknown as EucStepPrimitiveState);
     copyGroundSample(source.ground, this.ground);
     copyGroundSample(source.probe, this.probe);
     Object.assign(this.obstacleHit, source.obstacleHit);

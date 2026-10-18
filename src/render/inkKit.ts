@@ -498,9 +498,16 @@ export function toSrgbBytes(sheet: InkSheet): Uint8Array {
   };
   const bytes = new Uint8Array(sheet.width * sheet.height * 4);
   for (let i = 0, j = 0; i < sheet.data.length; i += 3, j += 4) {
-    bytes[j] = encode(sheet.data[i]!);
-    bytes[j + 1] = encode(sheet.data[i + 1]!);
-    bytes[j + 2] = encode(sheet.data[i + 2]!);
+    const r = sheet.data[i]!, g = sheet.data[i + 1]!, b = sheet.data[i + 2]!;
+    // A grey pixel encodes one value three times (equal floats encode equally;
+    // ±0 clamp to the same 0 and NaN never compares equal), so encode it once.
+    if (r === g && g === b) {
+      bytes[j] = bytes[j + 1] = bytes[j + 2] = encode(r);
+    } else {
+      bytes[j] = encode(r);
+      bytes[j + 1] = encode(g);
+      bytes[j + 2] = encode(b);
+    }
     bytes[j + 3] = 255;
   }
   return bytes;

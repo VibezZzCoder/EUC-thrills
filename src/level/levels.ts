@@ -1,10 +1,11 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { generateLevel, type GeneratedLevel } from './generateRoute.ts';
+import { generateLevelSteps, type GeneratedLevel } from './generateRoute.ts';
 import type { LevelPlan } from './plan.ts';
 import { createProvingGround } from './provingGround.ts';
-import { createSliceLevel } from './sliceLevel.ts';
-import { createSwitchbackLevel } from './switchbackLevel.ts';
-import { createTrackLevel } from './trackLevel.ts';
+import { createSliceLevelSteps } from './sliceLevel.ts';
+import { createSwitchbackLevelSteps } from './switchbackLevel.ts';
+import { createTrackLevelSteps } from './trackLevel.ts';
+import { runSteps, type Steps } from '../shared/preparationSteps.ts';
 
 /**
  * The levels this build can produce, and the decision behind there being two.
@@ -115,6 +116,11 @@ export const DEFAULT_SEED = 'euc';
  * and the finding is something to tell the owner rather than something to bend
  * a hand-authored world for.
  */
+//
+// Each builder returns the world as slices (`shared/preparationSteps.ts`,
+// 2026-10-17 audit §3); `createLevel` drains them synchronously, so every
+// caller gets exactly the world it always got. The proving ground is a few
+// dozen segments and stays one step.
 const BUILDERS: Readonly<Record<
   LevelId,
   (
@@ -122,20 +128,22 @@ const BUILDERS: Readonly<Record<
     hazardProbeMetres?: number,
     targetProbeMetres?: number,
     topSpeedMph?: number,
-  ) => LevelPlan
+  ) => Steps<LevelPlan>
 >> = {
   slice: (_seed, hazardProbeMetres, targetProbeMetres) =>
-    createSliceLevel(hazardProbeMetres, targetProbeMetres),
-  proving: (_seed, hazardProbeMetres, targetProbeMetres) =>
-    createProvingGround(hazardProbeMetres, targetProbeMetres),
-  generated: (seed, hazardProbeMetres, targetProbeMetres, topSpeedMph) =>
-    generateLevel(seed, hazardProbeMetres, targetProbeMetres, topSpeedMph).plan,
+    createSliceLevelSteps(hazardProbeMetres, targetProbeMetres),
+  proving: function* (_seed, hazardProbeMetres, targetProbeMetres) {
+    return createProvingGround(hazardProbeMetres, targetProbeMetres);
+  },
+  generated: function* (seed, hazardProbeMetres, targetProbeMetres, topSpeedMph) {
+    return (yield* generateLevelSteps(seed, hazardProbeMetres, targetProbeMetres, topSpeedMph)).plan;
+  },
   track: (_seed, hazardProbeMetres, targetProbeMetres) =>
-    createTrackLevel(hazardProbeMetres, targetProbeMetres),
+    createTrackLevelSteps(hazardProbeMetres, targetProbeMetres),
   // Offered by the venue chooser since M36 Phase 5 (`app/venues.ts`);
   // `?level=switchback` survives as the shape of a shareable link.
   switchback: (_seed, hazardProbeMetres, targetProbeMetres) =>
-    createSwitchbackLevel(hazardProbeMetres, targetProbeMetres),
+    createSwitchbackLevelSteps(hazardProbeMetres, targetProbeMetres),
 };
 
 /** Every level id, for tests and diagnostics. */
@@ -162,6 +170,16 @@ export function createLevel(
   targetProbeMetres?: number,
   topSpeedMph?: number,
 ): LevelPlan {
+  return runSteps(createLevelSteps(id, seed, hazardProbeMetres, targetProbeMetres, topSpeedMph));
+}
+/** `createLevel` as slices. A plain function, so the defaults are evaluated at the call. */
+export function createLevelSteps(
+  id: LevelId = DEFAULT_LEVEL,
+  seed: string = DEFAULT_SEED,
+  hazardProbeMetres?: number,
+  targetProbeMetres?: number,
+  topSpeedMph?: number,
+): Steps<LevelPlan> {
   return (BUILDERS[id] ?? BUILDERS[DEFAULT_LEVEL])(
     seed,
     hazardProbeMetres,
@@ -439,12 +457,21 @@ export function requestRoute(
   targetProbeMetres?: number,
   topSpeedMph?: number,
 ): RouteOutcome {
+  return runSteps(requestRouteSteps(rawSeed, hazardProbeMetres, targetProbeMetres, topSpeedMph));
+}
+/** `requestRoute` as slices (`shared/preparationSteps.ts`). */
+export function* requestRouteSteps(
+  rawSeed: string,
+  hazardProbeMetres?: number,
+  targetProbeMetres?: number,
+  topSpeedMph?: number,
+): Steps<RouteOutcome> {
   const seed = normaliseSeed(rawSeed);
   if (seed.length === 0) return { ok: false, seed, refusal: 'blank' };
 
   // The session's wheel, so the route a player asked for is spaced for the
   // wheel they will ride it on — M30 Phase 1, `?mph=` and nothing else.
-  const generated = generateLevel(seed, hazardProbeMetres, targetProbeMetres, topSpeedMph);
+  const generated = yield* generateLevelSteps(seed, hazardProbeMetres, targetProbeMetres, topSpeedMph);
   return routeOutcome(seed, generated);
 }
 

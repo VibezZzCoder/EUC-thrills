@@ -3,13 +3,14 @@
 import type { PropPartId } from '../data/renderCost.ts';
 import { STREET_LIFE } from '../data/streetLife.ts';
 import { ENVIRONMENT_BATCHING } from '../data/tuning.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 import type { LevelPlan, Prop } from '../level/plan.ts';
 import { exactBuildingBody } from '../level/protectedSiteEligibility.ts';
 import { scopedEnvironmentSites as environmentSites, scopedParkCaseSites as parkCaseSites,
   scopedResidentialSites as residentialSites, scopedStreetFronts as streetFronts } from './scopedSiteQueries.ts';
 import { buildingSourceRecords, buildingSourcePartCounts } from './buildingSourceRecords.ts';
-import { buildMetricFacadePlan, metricFacadeCost, metricFacadeShadowCost, metricExtractionLedger,
-  type MetricFacadePlan } from './metricFacadePlan.ts';
+import { buildMetricFacadePlanSteps, metricFacadeCost, metricFacadeShadowCost, metricExtractionLedger,
+  withoutEmittedSurfaces, type MetricFacadePlan } from './metricFacadePlan.ts';
 
 export interface MetricFacadeRequest {
   /** Explicit original source indices, including [] for diagnostic disable. */
@@ -197,16 +198,27 @@ export interface PreparedMetricFacades {
   readonly removedCounts: ReadonlyMap<PropPartId,number>;
   readonly price: (ReturnType<typeof metricFacadeCost> & ReturnType<typeof metricFacadeShadowCost>) | null;
   readonly disposed: boolean;
+  /** The installed view owns the emitted geometry (`createInstalledMetricFacade`);
+   * afterwards `descriptors` carries no `surfaces` (`surfacesEmitted`), while
+   * `price`, `replacements`, `apertures` and `faces` are unchanged. Idempotent. */
+  releaseEmittedSurfaces(): void;
   dispose(): void;
 }
 export function prepareMetricFacades(plan: LevelPlan, request: MetricFacadeRequest = {}): PreparedMetricFacades {
+  return runSteps(prepareMetricFacadesSteps(plan, request));
+}
+/** `prepareMetricFacades` as slices (`shared/preparationSteps.ts`). */
+export function* prepareMetricFacadesSteps(plan: LevelPlan, request: MetricFacadeRequest = {}): Steps<PreparedMetricFacades> {
   const selected=selectMetricFacadeOwners(plan,request);
+  yield PREPARATION_SLICE;
   // RL-4: draw-batch and split pitches come from ENVIRONMENT_BATCHING.
-  let descriptors: MetricFacadePlan|null=selected.length ? buildMetricFacadePlan(plan,{propIndices:selected,protectedOpenings:[
+  let descriptors: MetricFacadePlan|null=selected.length ? yield* buildMetricFacadePlanSteps(plan,{propIndices:selected,protectedOpenings:[
     ...streetFronts(plan),...environmentSites(plan),...residentialSites(plan),...parkCaseSites(plan),
   ].map(front=>({...front,height:('height' in front ? front.height : undefined)??STREET_LIFE.frontageHeight})),
     batchMetres:ENVIRONMENT_BATCHING.metricFacadeBatchMetres,chunkMetres:ENVIRONMENT_BATCHING.metricFacadeChunkMetres}) : null;
+  yield PREPARATION_SLICE;
   let price=descriptors ? {...metricFacadeCost(descriptors),...metricFacadeShadowCost(descriptors)} : null;
+  yield PREPARATION_SLICE;
   const sourceCounts=new Map(buildingSourcePartCounts(plan)), removedCounts=new Map<PropPartId,number>();
   if (descriptors) {
     // Independent actual-emitter records validate every descriptor's omission.
@@ -219,7 +231,9 @@ export function prepareMetricFacades(plan: LevelPlan, request: MetricFacadeReque
   return {source:plan,selectedPropIndices:selected,
     get descriptors(){if(disposed)throw new Error('Disposed metric preparation');return descriptors;},
     sourceCounts,removedCounts,get price(){if(disposed)throw new Error('Disposed metric preparation');return price;},
-    get disposed(){return disposed;},dispose(){if(disposed)return;disposed=true;descriptors=null;price=null;sourceCounts.clear();removedCounts.clear();}};
+    get disposed(){return disposed;},
+    releaseEmittedSurfaces(){if(disposed)throw new Error('Disposed metric preparation');if(descriptors)descriptors=withoutEmittedSurfaces(descriptors);},
+    dispose(){if(disposed)return;disposed=true;descriptors=null;price=null;sourceCounts.clear();removedCounts.clear();}};
 }
 export function metricSourcePrice(prepared: PreparedMetricFacades, ultra: boolean, triangles: (part:PropPartId)=>number,
   nearCasts: (part:PropPartId)=>boolean = () => false): {

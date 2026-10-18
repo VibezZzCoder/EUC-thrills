@@ -18,6 +18,7 @@ import { residentialSites } from './districtSites.ts';
 import { createPopulationValidationScope, populationFootprintExclusion, surfaceFootprintClear,
   type District, type PopulationValidationContext, type PopulationValidationScope } from './populationPlan.ts';
 import { hash128 } from './planDigest.ts';
+import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 
 export const DISTRICT_ADJACENCY = Object.freeze({
@@ -330,6 +331,10 @@ function publicGroup(plan: LevelPlan, site: Site, side: -1 | 1, validation:Popul
 /** Installed once after the final living-ground/traffic supplement, before
  * population rebuild and consumers. It never infers a shop or relocates a prop. */
 export function withDistrictAdjacency(source: DistrictAdjacentPlan): DistrictAdjacentPlan {
+  return runSteps(withDistrictAdjacencySteps(source));
+}
+/** The boot path: the same finishing as slices (`shared/preparationSteps.ts`). */
+export function* withDistrictAdjacencySteps(source: DistrictAdjacentPlan): Steps<DistrictAdjacentPlan> {
   if (source.districtAdjacency) return source;
   if ([...(source.solids ?? []), ...(source.softBodies ?? []), ...source.segments.flatMap(s => s.colliders)].some(box => !finiteBox(box))) return source;
   const retained = new Set<Prop>([...streetFronts(source), ...environmentSites(source), ...residentialSites(source)].map(site => site.building));
@@ -337,10 +342,13 @@ export function withDistrictAdjacency(source: DistrictAdjacentPlan): DistrictAdj
     ? [candidate(source, building, index, retained)].filter((site): site is Site => site !== undefined) : []);
   sites.sort((a, b) => Math.hypot(a.position.x - source.spawn.position.x, a.position.z - source.spawn.position.z)
     - Math.hypot(b.position.x - source.spawn.position.x, b.position.z - source.spawn.position.z) || a.propIndex - b.propIndex);
+  yield PREPARATION_SLICE;
   const validation=createPopulationValidationScope(), { corridors, unchecked } = routeCorridors(source.segments);
+  yield PREPARATION_SLICE;
   let plan: LevelPlan = source;
   const admitted: Site[] = [], addedPatches: GroundSurfacePatch[] = [], rejected: { propIndex: number; reason: string }[] = [];
   for (const site of sites.slice(0, DISTRICT_ADJACENCY.maximumFrontages)) {
+    yield PREPARATION_SLICE;
     if (site.retainedOpening) { admitted.push(site); continue; }
     const base = patches(plan, site, `street-${site.id}-base`, -site.width / 2, site.width / 2, 0, DISTRICT_ADJACENCY.baseWalkDepthMetres, validation, site.body);
     if (!base.length) { rejected.push({ propIndex: site.propIndex, reason: 'base-footprint' }); continue; }
@@ -356,6 +364,7 @@ export function withDistrictAdjacency(source: DistrictAdjacentPlan): DistrictAdj
   const links: string[] = [];
   const along = (a: Site, b: Site) => Math.cos(a.yaw) * (b.position.x - a.position.x) - Math.sin(a.yaw) * (b.position.z - a.position.z);
   for (const a of admitted) {
+    yield PREPARATION_SLICE;
     const following = admitted.filter(b => b !== a && b.streetSegmentId === a.streetSegmentId
       && Math.cos(b.yaw - a.yaw) > 1 - epsilon && along(a, b) > 0).sort((b, c) => along(a, b) - along(a, c));
     const b = following[0]; if (!b) continue;
@@ -377,6 +386,7 @@ export function withDistrictAdjacency(source: DistrictAdjacentPlan): DistrictAdj
   const laneIndex = (): MovementBands => lanes ??= movementBands(plan, P.staticClearanceMetres);
   const districts = new Set<District>();
   for (const site of admitted) {
+    yield PREPARATION_SLICE;
     if (groups.length >= DISTRICT_ADJACENCY.maximumPublicGroups || districts.has(site.district)) continue;
     const group = publicGroup(plan, site, 1, validation, corridors, laneIndex)
       ?? publicGroup(plan, site, -1, validation, corridors, laneIndex);
@@ -388,6 +398,7 @@ export function withDistrictAdjacency(source: DistrictAdjacentPlan): DistrictAdj
     plan = { ...plan, props: [...(plan.props ?? []), ...group.props], solids: [...(plan.solids ?? []), ...group.solids],
       softBodies: [...(plan.softBodies ?? []), ...group.softBodies], groundSurfacePatches: [...(plan.groundSurfacePatches ?? []), ...group.patches] };
   }
+  yield PREPARATION_SLICE;
   if (!addedPatches.length && !newProps.length) return source;
   const frontages = admitted.map(({ body, building, street, contactLeft, contactRight, ...site }) => {
     void body; void building; void street; void contactLeft; void contactRight; return site; });

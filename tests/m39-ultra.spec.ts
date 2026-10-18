@@ -383,7 +383,10 @@ function installUltraProbes(): void {
   const isSharedPatch = (material: Material): boolean => {
     const key = material.customProgramCacheKey();
     if (/ultra/i.test(key)) return false;
-    return key === 'environment-vegetation-v2'
+    // 2026-10-18: the ordinary squirrel shader (2026-10-12, `render/squirrelModel.ts`,
+    // on `world-squirrels-batch`) patches every tier's material, so it is not
+    // an Ultra patch; before this line every ordinary footprint read 1.
+    return key === 'environment-vegetation-v2' || key === 'euc-squirrel-approved-target-v6-contours'
       || /(?:shared-ground-v9|ordinary-ground-boundary-v2|street-bays-v4|street-paving-metres-v2|metric-source-proxy-v1)/.test(key);
   };
 
@@ -783,6 +786,8 @@ function tierFacts(page: Page) {
         solo: { drawCalls: presentation.cost.frame.solo.drawCalls, triangles: presentation.cost.frame.solo.triangles },
         /** The installed 256 m batches' per-frame draws (2026-10-04, see `expectUltraFrame`). */
         batchDraws: presentation.spatialBatching.colourDrawDelta + presentation.spatialBatching.shadowDrawDelta,
+        /** The installed squirrels' solo colour draw and triangles (2026-10-12, see `expectUltraFrame`). */
+        squirrels: { drawCalls: presentation.squirrels?.drawCalls ?? 0, triangles: presentation.squirrels?.colourTriangles ?? 0 },
         tier: presentation.tier.effective,
         refusal: presentation.tier.refusal,
         ultraReported: presentation.ultra !== null,
@@ -1165,10 +1170,21 @@ function expectUltraFrame(measured: Awaited<ReturnType<typeof ultraFrameAt>>, wh
   // 2026-10-04: plus the installed 256 m spatial batches' draws, which the
   // presentation prices on top of the recipe's model ("installed overhead is
   // priced after unchanged source admission/recipe selection", CHANGELOG
-  // 2026-10-03); Ultra's report stays the admission model. Same triangles.
+  // 2026-10-03); Ultra's report stays the admission model.
+  // 2026-10-18: plus the squirrels, priced the same way. `withSquirrelCost`
+  // adds their one colour draw and 1,228 triangles an animal on both the
+  // ordinary and the Ultra presentation, while neither admission prices them
+  // (`ultraCostBreakdown`'s supplement price has no wildlife row; the host
+  // adds wildlife bytes to the memory targets only): "existing scenery
+  // admission does not downgrade to purchase wildlife" (WILDLIFE_CANDIDATE.md).
+  // Pricing them into Ultra's model would let eight squirrels move an Ultra
+  // rung, so the identity carries the term. The town's eight read 1 call /
+  // 9,824 triangles; before this the identity failed by exactly that.
   const solo = facts.report.cost?.solo;
+  const squirrels = facts.presentation?.squirrels ?? { drawCalls: 0, triangles: 0 };
   expect(facts.presentation?.solo).toEqual(solo === undefined ? undefined
-    : { drawCalls: solo.drawCalls + (facts.presentation?.batchDraws ?? 0), triangles: solo.triangles });
+    : { drawCalls: solo.drawCalls + (facts.presentation?.batchDraws ?? 0) + squirrels.drawCalls,
+      triangles: solo.triangles + squirrels.triangles });
   // T0 and §2.2: never more pixels than High would draw, one AA strategy.
   const highRatio = Math.min(gl.dpr, Math.max(0.5, gl.maxPixelRatio));
   expect(facts.report.drawingBuffer.ratio, `${where}: Ultra draws at a higher ratio than High`)
@@ -2828,7 +2844,9 @@ for (const tier of ['high', 'low'] as const) {
  * `ULTRA_ENVELOPE.mainChunkGrowthBytes` (A21, re-settled on the final M39
  * Part P tree: the measured +259.7 KiB + 10 %, 286 KiB; the chunk carries
  * Part P's code as well as Ultra's) and the whole output against
- * `pagesPackageBytes` (8 MiB). This
+ * `pagesPackageBytes` (10 MiB since 2026-10-18: the owner raised the Pages
+ * budget from 8 to 10 MB on 2026-10-05 in `tools/package-github-pages.mjs`,
+ * and Ultra's mirror of it kept 8 MiB until then). This
  * spec already runs inside the validation lock, so the build is one more step
  * of the same heavy job.
  */

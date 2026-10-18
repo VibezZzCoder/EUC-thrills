@@ -10,7 +10,8 @@ import {
 import { positionHash01 } from '../shared/maths.ts';
 import type { SurfaceId, Vec3 } from '../simulation/world.ts';
 import type { LevelPlan } from './plan.ts';
-import { PROP_CORRIDOR_CLEARANCE, buildLevelPlan, type CheckpointSpec } from './buildPlan.ts';
+import { PROP_CORRIDOR_CLEARANCE, buildLevelPlanSteps, type CheckpointSpec } from './buildPlan.ts';
+import { runSteps, type Steps } from '../shared/preparationSteps.ts';
 import type { PopulationPathRequest } from './populationPlan.ts';
 import type {
   PlacedProp,
@@ -1510,7 +1511,15 @@ export function createTrackLevel(
   hazardProbeMetres?: number,
   targetProbeMetres?: number,
 ): LevelPlan {
-  return buildLevelPlan(TRACK_SITE, {
+  return runSteps(createTrackLevelSteps(hazardProbeMetres, targetProbeMetres));
+}
+/** `createTrackLevel` as slices (`shared/preparationSteps.ts`): the field build is
+ * `buildLevelPlanSteps`; the same statements in the same order. */
+export function* createTrackLevelSteps(
+  hazardProbeMetres?: number,
+  targetProbeMetres?: number,
+): Steps<LevelPlan> {
+  return yield* buildLevelPlanSteps(TRACK_SITE, {
     // **`-r1` is room to retire records, not decoration.** A personal best is
     // filed under this string, and a lap time on a layout that has since moved
     // is a lie the store cannot detect. Phase B0 iterates the layout at the
