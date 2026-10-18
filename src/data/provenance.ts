@@ -45,6 +45,20 @@ export interface Provenance {
   readonly licence: string;
   /** SPDX identifier for the original game assets. */
   readonly assetLicence: string;
+  /**
+   * The release number, as players and bug reports name it (M40). The single
+   * source the title stamp, the About screen, the one-file Release's name and
+   * header, and its README read; `package.json`'s required `version` field is
+   * the checked copy (`provenance.test.ts` fails when they differ).
+   */
+  readonly version: string;
+  /**
+   * Where the owner publishes the devlogs (M40, his decision 2026-10-18).
+   * Written only as this exact URL or the exact `@` handle: the private-token
+   * scanner's carve-out matches that form and nothing longer, so any other
+   * spelling of the channel refuses every publication.
+   */
+  readonly devlogUrl: string;
 }
 
 export const PROVENANCE: Provenance = Object.freeze({
@@ -60,7 +74,19 @@ export const PROVENANCE: Provenance = Object.freeze({
   year: '2026',
   licence: 'MIT',
   assetLicence: 'CC-BY-4.0',
+  version: '1.0.0',
+  devlogUrl: 'https://www.youtube.com/@EdwinRodMen',
 });
+
+/** The devlog channel's handle, the only other form the scanner lets through. */
+export function devlogHandle(): string {
+  return PROVENANCE.devlogUrl.slice(PROVENANCE.devlogUrl.lastIndexOf('/') + 1);
+}
+
+/** The build stamp a player reads and a bug report quotes: `v1.0.0`. */
+export function versionStamp(): string {
+  return `v${PROVENANCE.version}`;
+}
 
 /**
  * The one-line origin marker, in the form every embedding uses.

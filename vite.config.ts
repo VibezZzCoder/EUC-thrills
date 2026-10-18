@@ -1,4 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { readFileSync } from 'node:fs';
 import { defineConfig, transformWithEsbuild, type Plugin } from 'vite';
 import { PROVENANCE, provenanceBanner, provenanceHtmlComment } from './src/data/provenance.ts';
 
@@ -11,6 +12,35 @@ import { PROVENANCE, provenanceBanner, provenanceHtmlComment } from './src/data/
  * that fails on the day somebody edits one of the two. The dev server runs the
  * same transform, so what is inspected locally is what ships.
  */
+/**
+ * The licence and the notices, as raw text the page carries (M40).
+ *
+ * Read from the project-root `LICENSE` and `NOTICE.md` on every transform, so
+ * the dev server shows the current files and a build carries the bytes it was
+ * built from. Each goes into a `<script type="text/plain">` block: a browser
+ * neither runs nor renders one, Settings → About and licences reads it through
+ * `textContent`, and it lives outside the JS bundle on purpose — the one-file
+ * Release's packager checks these blocks byte for byte against the payload's
+ * own `LICENSE` and `NOTICE.md`, which only works if nothing escaped, trimmed
+ * or re-encoded them on the way in.
+ *
+ * Raw text has exactly two ways to end early. `</script` closes the element
+ * wherever it appears, and `<!--` switches the parser into the escaped
+ * script-data state, where a later `<script` would swallow the rest of the
+ * page. Either in one of these files is a build error rather than a page that
+ * silently stops at the licence.
+ */
+function rawTextFile(name: 'LICENSE' | 'NOTICE.md'): string {
+  const text = readFileSync(new URL(`./${name}`, import.meta.url), 'utf8');
+  for (const marker of ['</script', '<!--']) {
+    if (text.toLowerCase().includes(marker)) {
+      throw new Error(`${name} contains "${marker}", which would end its raw-text block in index.html early. `
+        + 'Reword that line: the page carries the file verbatim and cannot escape it.');
+    }
+  }
+  return text;
+}
+
 function provenancePlugin() {
   return {
     name: 'euc-thrills-provenance',
@@ -34,6 +64,20 @@ function provenancePlugin() {
           },
           { tag: 'meta', attrs: { property: 'og:title', content: PROVENANCE.title }, injectTo: 'head' as const },
           { tag: 'meta', attrs: { property: 'og:url', content: PROVENANCE.homepageUrl }, injectTo: 'head' as const },
+          // Body end, after everything the page runs: inert text, read only
+          // when the About panel opens. Vite writes a string child verbatim.
+          {
+            tag: 'script',
+            attrs: { type: 'text/plain', id: 'euc-licence-text' },
+            children: rawTextFile('LICENSE'),
+            injectTo: 'body' as const,
+          },
+          {
+            tag: 'script',
+            attrs: { type: 'text/plain', id: 'euc-notice-text' },
+            children: rawTextFile('NOTICE.md'),
+            injectTo: 'body' as const,
+          },
         ],
       };
     },

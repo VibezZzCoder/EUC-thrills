@@ -51,6 +51,7 @@ import {
   type VenueId,
 } from '../app/venues.ts';
 import { rowNeighbour, rowStep, type ControlRect } from './menuRows.ts';
+import { PROVENANCE, devlogHandle, versionStamp } from '../data/provenance.ts';
 
 /**
  * Title, pause, and settings — the menu surfaces M9 owes, and the file that
@@ -101,7 +102,7 @@ import { rowNeighbour, rowStep, type ControlRect } from './menuRows.ts';
  */
 
 export type MenuScreen =
-  | 'none' | 'title' | 'tracks' | 'pause' | 'settings' | 'results' | 'routes' | 'riders' | 'couch';
+  | 'none' | 'title' | 'tracks' | 'pause' | 'settings' | 'about' | 'results' | 'routes' | 'riders' | 'couch';
 
 /**
  * The touch-mode select's words.
@@ -1020,6 +1021,85 @@ const ULTRA_UTILITY = `
  * list above: it is a colophon, not a fifth offer. `focusableSelector()`
  * already walks `[href]`, so keyboard and pad reach it with no new code.
  */
+/**
+ * The title's colophon: the credit link and the build stamp (M40).
+ *
+ * **Read from `PROVENANCE`, never typed.** The link was a hard-coded copy of
+ * the repository URL until M40 (§40.2 Finding 4) — the one origin string on
+ * the page nothing checked against the source of truth.
+ *
+ * **The stamp is text, not a control.** A span with no tabindex and no
+ * `data-menu`, inside the paragraph the credit already occupied, so it adds no
+ * pad stop and no row: the title's fit tiers and `tests/m9.spec.ts`'s walk are
+ * exactly as they were (AGENTS, "A new title button is a fit problem…"). It is
+ * `data-note`, the spelling for a hook that is never an action.
+ */
+export function titleCreditTemplate(): string {
+  return `<p class="euc-credit">An open-source game by
+    <a class="euc-credit__link" href="${PROVENANCE.repositoryUrl}"
+      target="_blank" rel="noopener">${PROVENANCE.author}</a>
+    <span class="euc-credit__stamp" data-note="stamp">${versionStamp()}</span></p>`;
+}
+
+/**
+ * Settings → About and licences (M40, §40.4 q8).
+ *
+ * A Settings subpanel built like Track Day's: opening or closing it never
+ * loads a world, and it is reachable wherever Settings is — the title and the
+ * pause card — with no title button of its own.
+ *
+ * The two long texts are **not** in this template. They arrive in the page as
+ * `<script type="text/plain">` blocks written by `vite.config.ts` from the
+ * project's own `LICENSE` and `NOTICE.md`, and `Menus.openAbout` copies them
+ * in through `textContent` at open time — never `innerHTML`, so nothing in
+ * either file is ever parsed as markup. The stamp is the title's.
+ *
+ * The text region is a stop of its own (`tabindex="0"`) and the panel's first
+ * focus: the safe control to land on by accident is the one that only
+ * scrolls, never an external link. Its hook is `data-about`, not `data-menu`,
+ * because a click anywhere inside it must not resolve to an action.
+ */
+export function aboutTemplate(): string {
+  return `
+<div class="euc-menu__panel" role="dialog" aria-modal="true" aria-labelledby="euc-about-heading">
+  <h2 class="euc-menu__title" id="euc-about-heading">About and licences</h2>
+
+  <div class="euc-about">
+    <p class="euc-about__name">${PROVENANCE.title}
+      <span class="euc-about__stamp" data-note="about-stamp">${versionStamp()}</span></p>
+    <p class="euc-about__origin">An open-source game by
+      <a class="euc-about__link" data-about="author" href="${PROVENANCE.authorUrl}"
+         target="_blank" rel="noopener">${PROVENANCE.author}</a></p>
+    <div class="euc-about__links">
+      <a class="euc-about__link euc-about__link--out" data-about="play" href="${PROVENANCE.homepageUrl}"
+         target="_blank" rel="noopener">Play online</a>
+      <a class="euc-about__link euc-about__link--out" data-about="source" href="${PROVENANCE.repositoryUrl}"
+         target="_blank" rel="noopener">Source</a>
+      <a class="euc-about__link euc-about__link--out" data-about="devlog" href="${PROVENANCE.devlogUrl}"
+         target="_blank" rel="noopener">${devlogHandle()} on YouTube</a>
+    </div>
+
+    <p class="euc-about__guide">Below: the code licence, then the notices and credits for every rider. Scroll to read them all.</p>
+    <div class="euc-about__text" data-about="text" tabindex="0" role="region"
+         aria-label="Licence and notices" data-focus-first>
+      <h3 class="euc-about__heading">Code licence (MIT)</h3>
+      <pre class="euc-about__pre" data-about="licence"></pre>
+      <h3 class="euc-about__heading">Notices and credits</h3>
+      <pre class="euc-about__pre" data-about="notice"></pre>
+      <p class="euc-about__missing" data-about="missing" hidden>
+        The licence (LICENSE) and the notices (NOTICE.md) are not in this copy of
+        the page. Both travel with the game's source.
+      </p>
+    </div>
+
+    <div class="euc-menu__actions">
+      <button type="button" class="euc-button euc-button--primary" data-menu="about-back">Back</button>
+    </div>
+  </div>
+</div>
+`;
+}
+
 const TITLE_TEMPLATE = `
 <div class="euc-menu__panel" role="dialog" aria-modal="true" aria-labelledby="euc-title-heading">
   <h1 class="euc-menu__title" id="euc-title-heading">EUC&nbsp;<span class="accent">THRILLS</span></h1>
@@ -1059,9 +1139,7 @@ const TITLE_TEMPLATE = `
   </div>
   <p class="euc-world" data-menu="world"></p>
   ${riderChipTemplate()}
-  <p class="euc-credit">An open-source game by
-    <a class="euc-credit__link" href="https://github.com/VibezZzCoder/EUC-thrills"
-      target="_blank" rel="noopener">VibezZzCoder</a></p>
+  ${titleCreditTemplate()}
 </div>
 `;
 
@@ -2515,6 +2593,8 @@ export class Menus {
   private readonly routes: HTMLDivElement;
   private readonly riders: HTMLDivElement;
   private readonly couch: HTMLDivElement;
+  /** Settings → About and licences (M40): a Settings subpanel, as `tracks` is the title's. */
+  private readonly about: HTMLDivElement;
   /** The seed field, held because it is read as well as written. */
   private readonly seedField: HTMLInputElement | null;
 
@@ -2593,7 +2673,7 @@ export class Menus {
   /** Refuse all controls while the shared full-screen load owns input. */
   setLoadingBusy(busy: boolean): void {
     this.loadingBusy = busy;
-    for (const menu of [this.title, this.tracks, this.pause, this.settings, this.results, this.routes, this.riders, this.couch]) {
+    for (const menu of [this.title, this.tracks, this.pause, this.settings, this.about, this.results, this.routes, this.riders, this.couch]) {
       menu.inert = busy;
     }
   }
@@ -2611,6 +2691,7 @@ export class Menus {
     this.routes = this.mount('euc-menu--routes', routesTemplate(config.seedMaxLength));
     this.riders = this.mount('euc-menu--riders', ridersTemplate());
     this.couch = this.mount('euc-menu--couch', couchTemplate());
+    this.about = this.mount('euc-menu--about', aboutTemplate());
     this.seedField = this.routes.querySelector<HTMLInputElement>('[data-menu="seed"]');
 
     this.parent.addEventListener('click', this.onClick);
@@ -2678,6 +2759,7 @@ export class Menus {
     this.routes.hidden = screen !== 'routes';
     this.riders.hidden = screen !== 'riders';
     this.couch.hidden = screen !== 'couch';
+    this.about.hidden = screen !== 'about';
     this.screen = screen;
 
     if (screen === 'none') {
@@ -2729,6 +2811,79 @@ export class Menus {
     const button = this.title.querySelector<HTMLElement>('[data-menu="track-day"]');
     button?.focus();
     this.setPadCursor(this.padDriving ? button : null);
+    return true;
+  }
+
+  /**
+   * Open Settings → About and licences (M40). Settings only: the panel is a
+   * subpanel of that screen, and the app state stays `settings` underneath it,
+   * so nothing about the ride, the world or the pad's menu mode moves.
+   *
+   * The texts are copied in on every open, from the page's two raw-text blocks
+   * and through `textContent` alone. A page without them (a test harness, a
+   * hand-edited copy) shows one line naming both files rather than an empty
+   * box or an exception.
+   */
+  openAbout(): boolean {
+    if (this.screen !== 'settings') return false;
+    const licence = document.getElementById('euc-licence-text')?.textContent ?? null;
+    const notice = document.getElementById('euc-notice-text')?.textContent ?? null;
+    const missing = licence === null || notice === null;
+    for (const [hook, text] of [['licence', licence], ['notice', notice]] as const) {
+      const pre = this.about.querySelector<HTMLElement>(`[data-about="${hook}"]`);
+      if (pre === null) continue;
+      pre.textContent = missing ? '' : hook === 'licence' ? reflowParagraphs(text ?? '') : plainNotice(text ?? '');
+      pre.hidden = missing;
+      const heading = pre.previousElementSibling;
+      if (heading instanceof HTMLElement) heading.hidden = missing;
+    }
+    const line = this.about.querySelector<HTMLElement>('[data-about="missing"]');
+    if (line !== null) line.hidden = !missing;
+    this.show('about');
+    const region = this.aboutText();
+    if (region !== null) region.scrollTop = 0;
+    return true;
+  }
+
+  /**
+   * All three Back inputs return to Settings with the cursor on the row that
+   * opened the panel — the mirror of `closeTracks`.
+   */
+  closeAbout(): boolean {
+    if (this.screen !== 'about') return false;
+    this.show('settings');
+    const row = this.settings.querySelector<HTMLElement>('[data-menu="about"]');
+    row?.focus();
+    row?.scrollIntoView({ block: 'nearest' });
+    this.setPadCursor(this.padDriving ? row : null);
+    return true;
+  }
+
+  /** The About panel's scrollable text, when that panel is the one on screen. */
+  private aboutText(): HTMLElement | null {
+    return this.about.querySelector<HTMLElement>('[data-about="text"]');
+  }
+
+  /**
+   * Scroll the About text by one input step, or report that it cannot move
+   * that way (M40). `'up' | 'down'` are the pad's and the arrow keys' step;
+   * the page and end forms are the keyboard's. Instant rather than smooth, so
+   * a held d-pad's repeats and a test's assertion read the same position.
+   */
+  private scrollAboutText(region: HTMLElement, how: 'up' | 'down' | 'pageUp' | 'pageDown' | 'home' | 'end'): boolean {
+    const max = Math.max(0, region.scrollHeight - region.clientHeight);
+    const before = region.scrollTop;
+    const line = aboutScrollStep(region.clientHeight);
+    const page = Math.max(line, Math.round(region.clientHeight * 0.9));
+    const target = how === 'up' ? before - line
+      : how === 'down' ? before + line
+        : how === 'pageUp' ? before - page
+          : how === 'pageDown' ? before + page
+            : how === 'home' ? 0
+              : max;
+    const next = Math.min(max, Math.max(0, target));
+    if (Math.abs(next - before) < 1) return false;
+    region.scrollTop = next;
     return true;
   }
 
@@ -3658,6 +3813,7 @@ export class Menus {
     this.routes.remove();
     this.riders.remove();
     this.couch.remove();
+    this.about.remove();
   }
 
   // -------------------------------------------------------------------------
@@ -3680,6 +3836,7 @@ export class Menus {
     if (screen === 'routes') return this.routes;
     if (screen === 'riders') return this.riders;
     if (screen === 'couch') return this.couch;
+    if (screen === 'about') return this.about;
     return null;
   }
 
@@ -3819,6 +3976,9 @@ export class Menus {
     else if (action === 'resume') this.callbacks.onResume();
     else if (action === 'settings') this.callbacks.onOpenSettings();
     else if (action === 'back') this.callbacks.onCloseSettings();
+    // -- M40 -----------------------------------------------------------------
+    else if (action === 'about') this.openAbout();
+    else if (action === 'about-back') this.closeAbout();
     else if (action === 'quit') this.callbacks.onQuitToTitle();
     else if (action === 'reset') this.callbacks.onResetOptions();
     else if (action === 'retry') this.callbacks.onRetryChallenge();
@@ -4020,6 +4180,9 @@ export class Menus {
       // one keystroke from being retyped; the way out of a screen should not
       // depend on where the caret is.
       if (this.screen === 'tracks') this.closeTracks();
+      // About is a Settings subpanel: Escape steps back to Settings, one
+      // screen at a time, exactly as Track Day's steps back to the title.
+      else if (this.screen === 'about') this.closeAbout();
       else if (this.screen === 'settings') this.callbacks.onCloseSettings();
       else if (this.screen === 'pause') this.callbacks.onResume();
       else if (this.screen === 'routes') this.callbacks.onCloseRoutes();
@@ -4044,6 +4207,20 @@ export class Menus {
       event.preventDefault();
       event.stopImmediatePropagation();
       return;
+    }
+
+    // **The About text scrolls by key because nothing else will promise to.**
+    // A focused scroll region is scrolled by the browser's own arrow and page
+    // keys only while no listener cancels them, and the keyboard rider
+    // (`input/keyboard.ts`) cancels the arrows it binds. So the region's keys
+    // are this panel's, explicitly, the same six on every engine.
+    if (this.screen === 'about' && document.activeElement === this.aboutText()) {
+      const how = ABOUT_SCROLL_KEYS[event.code];
+      if (how !== undefined) {
+        event.preventDefault();
+        this.scrollAboutText(this.aboutText()!, how);
+        return;
+      }
     }
 
     if (event.code !== 'Tab') return;
@@ -4126,6 +4303,17 @@ export class Menus {
     const active = document.activeElement;
     if ((action === 'left' || action === 'right') && active instanceof HTMLElement) {
       if (this.adjustControl(active, action === 'right' ? 1 : -1)) return;
+    }
+    // **The About text is a stop that scrolls** (M40). While the pad stands on
+    // it, up and down read the text a step at a time, and the walk moves on
+    // only from the edge it is travelling towards — up off the top, down off
+    // the bottom — so every line is reachable and so are the links and Back.
+    if ((action === 'up' || action === 'down') && this.screen === 'about'
+      && active instanceof HTMLElement && active === this.aboutText()) {
+      if (this.scrollAboutText(active, action)) {
+        this.setPadCursor(active);
+        return;
+      }
     }
 
     const current = focusable.indexOf(active as HTMLElement);
@@ -4518,6 +4706,14 @@ export class Menus {
         Reset everything to defaults
       </button>
     </div>
+
+    <div class="euc-settings__about">
+      <button type="button" class="euc-button euc-button--quiet" data-menu="about"
+              aria-describedby="euc-settings-about-note">About and licences</button>
+      <p class="euc-field__note" id="euc-settings-about-note">
+        Version, links, and the licence and notices that travel with the game.
+      </p>
+    </div>
   </div>
 </div>
 `;
@@ -4710,6 +4906,80 @@ export function routeStatusLine(status: RouteStatus, laps: boolean): [string, st
 /** A select's options as `stepEnabledOption` reads them: disabled or not, in order. */
 function optionsDisabled(select: HTMLSelectElement): boolean[] {
   return [...select.options].map((option) => option.disabled);
+}
+
+/** The keys that scroll the About text while it has focus (M40). */
+/**
+ * LICENSE is hard-wrapped at about 78 columns, which on a phone-width panel
+ * wraps again and strands single words ("copy") on lines of their own (M40).
+ * For display only, each paragraph's line breaks become spaces; blank lines
+ * stay paragraph breaks and every word stays in order. The page's own
+ * `#euc-licence-text` block keeps the file byte for byte. NOTICE is not
+ * reflowed: it is Markdown with tables and lists, and its paragraphs are
+ * already one line each.
+ */
+export function reflowParagraphs(text: string): string {
+  return text.replace(/\r\n/g, '\n').split(/\n{2,}/)
+    .map((paragraph) => paragraph.split('\n').map((line) => line.trim()).join(' ').trim())
+    .join('\n\n').trimEnd() + '\n';
+}
+
+/**
+ * NOTICE.md is Markdown, and shown raw its tables are rows of pipes and dashes
+ * that break apart at phone width (M40 visual critic, P2). For display only it
+ * becomes plain text: a table row of two cells reads "Label: value", separator
+ * and empty rows go, heading marks, emphasis, quote marks and code ticks go,
+ * `[text](url)` reads "text (url)" and `<url>` reads "url", list bullets read
+ * "•", and the document's own leading `# title` is left to the panel's label. Every letter-and-digit word survives in order (menus.test.ts), and the
+ * page's `#euc-notice-text` block keeps the file byte for byte.
+ */
+export function plainNotice(markdown: string): string {
+  const inline = (text: string): string => text
+    .replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (_, label: string, url: string) => (label === url ? url : `${label} (${url})`))
+    .replace(/<(https?:[^>\s]+)>/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/(^|[^\w*])\*([^*\s][^*]*?)\*(?=[^\w*]|$)/g, '$1$2')
+    .replace(/`([^`]*)`/g, '$1');
+  const lines: string[] = [];
+  // The document's own `# title` repeats the panel's "Notices and credits"
+  // label directly above it (M40 visual critic re-review), so the display
+  // starts at its first section; the raw block keeps it.
+  const source = markdown.replace(/\r\n/g, '\n').replace(/^\s*#\s[^\n]*\n/, '');
+  for (const raw of source.split('\n')) {
+    let line = raw.trimEnd();
+    if (/^\s*\|?(\s*:?-{2,}:?\s*\|)+\s*:?-*:?\s*\|?\s*$/.test(line)) continue;
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      const cells = line.trim().slice(1, -1).split('|').map((cell) => inline(cell.trim())).filter((cell) => cell !== '');
+      if (cells.length === 0) continue;
+      lines.push(cells.length === 2 ? `${cells[0]}: ${cells[1]}` : cells.join(' · '));
+      continue;
+    }
+    const heading = /^\s*#{1,6}\s+(.*)$/.exec(line);
+    if (heading) { lines.push(inline(heading[1]).toUpperCase()); continue; }
+    line = line.replace(/^(\s*)>\s?/, '$1').replace(/^(\s*)[-*]\s+/, '$1• ');
+    lines.push(inline(line));
+  }
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+}
+
+export const ABOUT_SCROLL_KEYS: Readonly<Record<string, 'up' | 'down' | 'pageUp' | 'pageDown' | 'home' | 'end'>> =
+  Object.freeze({
+    ArrowUp: 'up',
+    ArrowDown: 'down',
+    PageUp: 'pageUp',
+    PageDown: 'pageDown',
+    Home: 'home',
+    End: 'end',
+  });
+
+/**
+ * One arrow or d-pad step through the About text, in CSS pixels: about three
+ * lines of its small type, and never more than a third of the box, so a held
+ * d-pad (0.14 s repeats) reads rather than skims and no step can jump a line
+ * out of sight unread.
+ */
+export function aboutScrollStep(clientHeight: number): number {
+  return Math.max(24, Math.min(56, Math.round(clientHeight / 3)));
 }
 
 function focusableSelector(): string {

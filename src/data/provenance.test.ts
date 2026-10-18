@@ -1,8 +1,11 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
+  devlogHandle,
   PROVENANCE,
+  versionStamp,
   provenanceBanner,
   provenanceHtmlComment,
   provenanceLine,
@@ -77,4 +80,21 @@ test('the page comment cannot truncate the document', () => {
   for (const needle of [PROVENANCE.author, PROVENANCE.authorUrl, PROVENANCE.repositoryUrl, PROVENANCE.homepageUrl]) {
     assert.ok(comment.includes(needle), `the page comment omits "${needle}"`);
   }
+});
+
+test('the version has one source and package.json is its checked copy (M40)', () => {
+  // The title stamp, the About screen and the one-file Release's name all read
+  // PROVENANCE.version; npm requires its own copy. Two copies that drift ship a
+  // file named one number that says another on its title.
+  const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+  assert.equal(pkg.version, PROVENANCE.version, 'package.json and PROVENANCE.version must agree');
+  assert.match(PROVENANCE.version, /^\d+\.\d+\.\d+$/, 'a plain semver number');
+  assert.equal(versionStamp(), `v${PROVENANCE.version}`);
+});
+
+test('the devlog link is one exact channel URL with its @ handle (M40)', () => {
+  // The private-token scan (tools/private-tokens.test.mjs, local only) allows
+  // this exact form and nothing longer; this pins the form itself.
+  assert.equal(PROVENANCE.devlogUrl, `https://www.youtube.com/${devlogHandle()}`);
+  assert.match(devlogHandle(), /^@[A-Za-z0-9]+$/, 'the channel URL carries its @ handle and nothing after it');
 });

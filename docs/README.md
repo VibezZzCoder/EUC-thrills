@@ -9,6 +9,10 @@ take the alley when you think you can hold it.
 > **Play:** [https://vibezzzcoder.github.io/EUC-thrills/](https://vibezzzcoder.github.io/EUC-thrills/)
 >
 > **Source:** [github.com/VibezZzCoder/EUC-thrills](https://github.com/VibezZzCoder/EUC-thrills) — an original work by [VibezZzCoder](https://github.com/VibezZzCoder)
+>
+> **Devlogs:** [@EdwinRodMen on YouTube](https://www.youtube.com/@EdwinRodMen)
+>
+> **Play offline:** the whole game as one file you download and double-click, from the [Releases page](https://github.com/VibezZzCoder/EUC-thrills/releases) — for computers; on a phone, play at the link above.
 
 ![EUC Thrills in Ultra graphics — a Police chase across the town's brick plaza: Cool Rider rides toward the camera while Officer Dorkins, paddle out, closes in a few metres behind; the screen reads "He is right behind you" and SURVIVE 4:56, and behind them stand warehouses, a green apartment block, the brick water tower and two parked vans, with bollards and trees on the plaza and the rider's long shadow on the brick](https://vibezzzcoder.github.io/EUC-thrills/media/euc-thrills-gameplay.jpg)
 

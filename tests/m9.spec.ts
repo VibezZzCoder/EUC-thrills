@@ -605,6 +605,26 @@ test.describe('M9 — HUD, menus, options', () => {
     await page.waitForFunction(() => window.game.snapshot().app.state === 'settings');
     await expect(page.locator('[data-option="quality"]')).toBeFocused();
 
+    // **M40 gave Settings a last row, and this walk names it.** Up from the
+    // first row wraps to the last, which is now About and licences rather
+    // than the Back/Reset pair; A opens its subpanel without leaving the
+    // Settings state, B comes back onto the row, and Down wraps home to
+    // Quality. (No Settings walk named its stops before M40 — the silent
+    // third outcome — so this is where the new stop is pinned; the panel's
+    // own walk is `tests/m40.spec.ts`.)
+    await pulse(12);
+    await expect(page.locator('.euc-menu--settings [data-menu="reset"]')).not.toBeFocused();
+    await expect(page.locator('.euc-menu--settings [data-menu="about"]')).toBeFocused();
+    await pulse(0);
+    await page.waitForFunction(() => window.game.snapshot().app.menu === 'about');
+    expect((await app(page)).state).toBe('settings');
+    await expect(page.locator('.euc-menu--about [data-about="text"]')).toBeFocused();
+    await pulse(1);
+    await page.waitForFunction(() => window.game.snapshot().app.menu === 'settings');
+    await expect(page.locator('.euc-menu--settings [data-menu="about"]')).toBeFocused();
+    await pulse(13);
+    await expect(page.locator('[data-option="quality"]')).toBeFocused();
+
     // Left adjusts the focused native select through the same option path as
     // keyboard/mouse input, then B returns to the title.
     await pulse(14);

@@ -196,9 +196,9 @@
       #boot-error[hidden] { display: none; }
     </style>
     <!-- Nonblocking until the tiny boot entry confirms this required sheet. -->
-    <link id="game-styles" rel="stylesheet" href="./assets/game-Bfej3dkl.css" media="print"
+    <link id="game-styles" rel="stylesheet" href="./assets/game-BJbuLFtI.css" media="print"
       onload="this.dataset.loaded='true'" onerror="this.dataset.failed='true'" />
-    <script type="module" crossorigin src="./assets/index-cLsEP5t9.js"></script>
+    <script type="module" crossorigin src="./assets/index-DUMNy5zU.js"></script>
     <meta name="author" content="VibezZzCoder">
     <link rel="author" href="https://github.com/VibezZzCoder">
     <link rel="canonical" href="https://vibezzzcoder.github.io/EUC-thrills/">
@@ -255,5 +255,275 @@
         document.addEventListener('euc-loader-ready', remove, { once: true });
       })();
     </script>
+    <script type="text/plain" id="euc-licence-text">MIT License
+
+Copyright (c) 2026 VibezZzCoder <https://github.com/VibezZzCoder>
+
+EUC Thrills — https://github.com/VibezZzCoder/EUC-thrills
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</script>
+    <script type="text/plain" id="euc-notice-text"># Notices, Licensing, and Disclaimers
+
+## Origin
+
+*EUC Thrills* is an original work by **VibezZzCoder** — <https://github.com/VibezZzCoder>.
+
+| | |
+|---|---|
+| Source | <https://github.com/VibezZzCoder/EUC-thrills> |
+| Play | <https://vibezzzcoder.github.io/EUC-thrills/> |
+| Devlogs | [@EdwinRodMen on YouTube](https://www.youtube.com/@EdwinRodMen) |
+| Copyright | © 2026 VibezZzCoder |
+
+The same origin is carried inside the build itself — as a banner at the top of the bundled script, as `author`, `canonical`, and `code-repository` metadata in the page, and as one line printed to the browser console at startup — so that a copy of the published files still says where it came from.
+
+**Forking is welcome.** That is what the MIT licence is for, and no permission needs to be asked. What the licence does require of every copy, including a fork that renames the game, is that this notice and the copyright line above travel with it. Presenting this work, or a lightly modified version of it, as an original creation is a licence violation regardless of how automated the copying was.
+
+## Licensing
+
+**Source code** in this project is released under the MIT License. See `LICENSE`.
+
+**Original game assets** authored for this project — 3D models, textures, materials, procedurally generated geometry and audio, and UI art — are released under
+[Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/).
+
+The two licences are stated separately on purpose: MIT is a software licence and does not read sensibly when applied to models, textures, and sound. If you reuse one but not the other, the terms are unambiguous.
+
+**One limit belongs here rather than in a footnote.** A CC BY 4.0 grant conveys this project's own rights in the assets this project authored. It does not convey — and cannot convey — rights in a real person's name, likeness, or persona. **Eight of the eleven riders are real people appearing with their permission** — Red Rider, Adonisb2, Maribel Vargas, Wheel in Motion, FloWithZo, Seal on a Wheel, Wyldist and Gnarwheel — and the licence above does not extend to any of those identities. Four of them also contributed recordings and three of them a logo, and one wears, at his own request, a mark that belongs to somebody else; the licence covers none of these. See *Reference material* below.
+
+## Third-party software
+
+| Dependency | Version | Licence |
+|---|---|---|
+| [three.js](https://threejs.org/) | 0.185.1 | MIT |
+
+Development-only tooling (TypeScript, Vite, Playwright, Node type definitions) is not redistributed with the game.
+
+## Third-party audio recordings
+
+Four sound loops in the game, and one layer inside one crash, derive from public-domain recordings. CC0 requires no attribution; these are recorded as provenance, and they are **not** covered by the CC BY 4.0 claim over this project's original assets above.
+
+| Shipped file | Derived from | Licence |
+|---|---|---|
+| `tyre_offroad_loop` (offroad tyre bed) | ["VEHBike-TASCAMX8_bike dirt road" by gadesound](https://freesound.org/people/gadesound/sounds/697049/), Freesound #697049 | CC0 / public domain |
+| `wind_howl_loop` (wind bed) | ["wind_howl2_stereo" by swiftoid](https://freesound.org/people/swiftoid/sounds/117611/), Freesound #117611 | CC0 / public domain |
+| `siren_far_loop` (chase siren, far) | ["Police Siren" by TitanKaempfer](https://freesound.org/people/TitanKaempfer/sounds/746302/), Freesound #746302 | CC0 / public domain |
+| `siren_close_loop` (chase siren, close) | ["police siren.wav" by vlammenos](https://freesound.org/people/vlammenos/sounds/52906/), Freesound #52906 | CC0 / public domain |
+| `crash_seal_on_a_wheel` (the ninth rider's crash — one layer inside it, the seal's bark) | ["Sound of a Seal" by florianreichelt](https://freesound.org/people/florianreichelt/sounds/450751/), Freesound #450751 | CC0 / public domain |
+
+All four loops were trimmed, filtered, loop-processed, and level-matched for the game; the bark layer's own treatment is described with its file below. The per-file processing chain is recorded in the project's development tree, which is not part of this distribution; the summary above is the complete provenance a redistributor needs.
+
+The other two loops are original and are covered by the CC BY 4.0 claim above: `crash_wipeout` is the project owner's own recording — including his own voice, used with his approval — and `tyre_solid_loop` (the tyre rotation) is synthesized from scratch with no external source.
+
+`overspeed_beep` (the max-speed warning) is original and is covered by the CC BY 4.0 claim, and the reason is worth stating because the obvious guess is wrong. The project owner supplied a **public video he did not film** as a reference for what an electric unicycle's over-speed alarm sounds like. **No audio from that video is in this game.** The alarm on it was measured — a 2565 Hz fundamental, a second harmonic 17.4 dB below it, no third harmonic at all, a 10 ms attack — and the shipped file is a tone rebuilt from those measurements by a script in this project's development tree. A two-partial buzzer tone carries no fine structure, so the replica is indistinguishable from the source by ear while being wholly this project's own work; the alternative, redistributing someone else's recording without a licence from them, was not available. The reference video is held privately under `references/` and is not redistributed.
+
+`crash_red_rider` (the third rider's crash) is derived from that same recording and is covered by the CC BY 4.0 claim with it. It is the owner's wipeout with **the owner's voice removed**: for 0.8 s of the 3.4 s tumble, the band that carries speech is replaced with voice-free texture taken from elsewhere in the same take, and every sample outside that window is the original recording unchanged. It contains **no recording of Red Rider's own voice**, and no such recording is used anywhere in this game. Nothing generated, modelled, or third-party enters it, which is why it is not listed under *Generated audio* below.
+
+`crash_adonisb2` (the fourth rider's crash) is **a recording of the rider it belongs to, contributed by him**, and it is one of three shipped audio files in this game whose standing is neither this project's own nor a public-domain download. The rider represented here as Adonisb2 recorded his own fall on an electric unicycle and gave the project owner the file for use in this game. What ships is 3.4 s of *his* recording — cut to the shared crash length, the two near-identical channels summed to mono, and the level matched to `crash_wipeout`. Nothing is removed, substituted, modelled, or generated.
+
+He gave permission for it to be in this game, and that is the whole of what is claimed. It is **not** covered by the CC BY 4.0 claim above, no copyright over it is claimed by this project, and no licence in this repository conveys any right to it beyond redistribution with the game. A reuser who wants that recording for anything else should ask him. He is credited by the name he chose for himself here; no other name of his appears in this project's public files.
+
+`crash_maribel` (the fifth rider's crash) is **a recording made by the rider it belongs to, contributed by her**, on the same footing as `crash_adonisb2` and outside the CC BY 4.0 claim for the same reason. What is different is what it is a recording *of*, and it is stated plainly because the file does not sound like a staged take and nobody should have to guess: **it is not a crash.** The project owner asked Maribel Vargas whether she had a usable crash or rider sound; she recorded one for him. In it she rides one of her older electric unicycles into a lift, presses the wheel's power-off button — it beeps — sets the wheel down hard on the floor, and yells. Nobody fell and nobody was hurt.
+
+What ships is 3.4 s of *her* recording, taken as one continuous slice, level-matched to `crash_wipeout`, with **her own power-off beep from the same recording copied into the tail** where her voice stops — because an electric unicycle lying on its side goes on beeping, and the slice left that gap. Her voice is then set 5 dB below the rest of her own take, because she recorded it close to the microphone in a small hard room and the shout would otherwise be louder than the impact it belongs to. Nothing else is moved, nothing is filtered, nothing is substituted, modelled, or generated, and **no sound is in the file that she did not record**. Two further details are hers rather than choices: it is the right-hand channel of her stereo recording rather than a mono sum, because summing her two microphones cancels 12.6 dB at 630 Hz in the middle of her yell; and it is unfiltered, because the low weight under the impact is the impact.
+
+She recorded it at the owner's request and gave permission for it to be in this game, and that is the whole of what is claimed. It is **not** covered by the CC BY 4.0 claim above, no copyright over it is claimed by this project, and no licence in this repository conveys any right to it beyond redistribution with the game. A reuser who wants that recording for anything else should ask her. Her original video is held privately under `references/` and is not redistributed.
+
+`crash_wheel_in_motion` (the sixth rider's crash) is the sibling of `crash_red_rider`, and it stands exactly where that file stands: **inside the CC BY 4.0 claim**, derived from the project owner's own recording and from nothing else. The sixth rider's crash was to be the same as the third's — the owner's wipeout with the owner's voice removed — and this project's own test suite refuses to ship two crashes that are the same file sample for sample, so it is a second render of the same treatment: the same 0.8 s of the same 3.4 s tumble has the band that carries speech replaced with voice-free texture taken from a *different* stretch of the same take, and every sample outside that window is the original recording unchanged — which makes it identical to `crash_red_rider` everywhere except that 0.8 s. It contains **no recording of Wheel in Motion's own voice**, and no such recording is used anywhere in this game. Nothing generated, modelled, or third-party enters it, which is why it is not listed under *Generated audio* below.
+
+`crash_flo_with_zo` (the eighth rider's crash) is the third render of that same treatment and stands where the other two stand: **inside the CC BY 4.0 claim**, derived from the project owner's own recording and from nothing else. What is different about the third one is worth a sentence, because the obvious guess — that each render simply takes a fresh, unused stretch of the take — stops being possible here. The window that is replaced is 0.8 s of a 3.4 s recording, and the two earlier donors between them cover every stretch the rule leaves legal, so a third render cannot take its voice-free texture from anywhere neither sibling used. It takes it from a stretch that overlaps both, and the suite holds the file to the bar that matters rather than to the method: it is **a different file from `crash_red_rider`, from `crash_wheel_in_motion` and from the owner's own `crash_wipeout`, sample for sample, inside that window**, and identical to all three outside it. It contains **no recording of FloWithZo's own voice**, and no such recording is used anywhere in this game. Nothing generated, modelled, or third-party enters it, which is why it is not listed under *Generated audio* below.
+
+`crash_seal_on_a_wheel` (the ninth rider's crash) is **the first shipped file in this game with two provenances**, and it gets its own paragraph because the three above each say "and from nothing else" and this one cannot. Every sample outside one 0.8 s window is the project owner's own recording, unchanged. Inside that window it is the **fourth render** of the same treatment — the owner's wipeout with the owner's voice removed, the band that carries speech replaced with voice-free texture from elsewhere in the same take — and that part of the file is this project's own work, **inside the CC BY 4.0 claim** with its three siblings, and a different file from each of them and from the owner's own `crash_wipeout` sample for sample inside that window. **Mixed into that window there is also one layer that is not this project's**: a 270 ms slice of a seal's bark, placed where the owner's voice used to be, from the public-domain (CC0) recording credited in the table above. That layer is **not** covered by the CC BY 4.0 claim, because CC0 material is claimed by nobody — this project included — and it is the only third-party layer mixed into a crash this project rendered itself — `crash_adonisb2`, `crash_maribel` and `crash_wyldist` are somebody else's recordings entire, which is a different case and is stated with each of them. It is decoded and re-rendered rather than copied: one channel of the source, resampled to the game's rate, high-passed, faded, level-set and mixed by a script in this project's development tree, and the shipped file carries audio and nothing else. The bark is the persona's own joke and is there at the project owner's instruction; it is **not** a sound of the rider. The file contains **no recording of Seal on a Wheel's own voice**, and no such recording is used anywhere in this game. Nothing generated or modelled enters it, which is why it is not listed under *Generated audio* below.
+
+`crash_wyldist` (the tenth rider's crash) is **a recording supplied by the rider it belongs to, for this purpose**, on the footing of `crash_adonisb2` and `crash_maribel` and outside the CC BY 4.0 claim for the same reason. Wyldist sent a short clip of his own riding as his crash sound, and that clip is what this is: his wheel getting away from him at a kerb and striking the road, filmed on a phone by a companion. **The exclamations in it are the companion's, not his** — short, close to the phone, as the wheel goes — and the companion is not named anywhere in this project.
+
+What ships is 3.4 s of that clip, taken as one continuous slice from the wheel meeting the kerb to its settling. It is **one of the phone's two microphones** rather than a mono sum, because summing the two cancels 9.7 dB at 4 kHz in the middle of the voice; it is high-passed at 80 Hz to remove wind and handling noise from the phone, level-matched to `crash_wipeout`, faded at both ends, and held under a soft peak limit that bends five samples, all on the tips of the strikes. Two stretches are set lower rather than cut out: the companion's exclamations by 5 dB, and five short high-pitched bursts while the wheel is in the air — whose source the recording does not establish — by 12 dB. Nothing is moved, separated, substituted, modelled, or generated, and **no sound is in the file that was not in his clip**.
+
+He supplied it for this game and gave permission for it to be here, and that is the whole of what is claimed. It is **not** covered by the CC BY 4.0 claim above, no copyright over it is claimed by this project, and no licence in this repository conveys any right to it beyond redistribution with the game. A reuser who wants that recording for anything else should ask him. His original video is held privately under `references/` and is not redistributed.
+
+`crash_gnarwheel` (the eleventh rider's crash) combines crash and spoken recordings contributed by Gnarwheel for this game with a separately synthesized alarm. The contributed recordings remain his material, used with permission and outside the project's CC BY 4.0 grant; no broader reuse or sublicensing permission is conveyed. The alarm is original project synthesis, covered by CC BY 4.0: a 2845 Hz tone whose envelope was measured from an existing alarm, without copying any recorded voice or background audio. The final 3.4-second stereo cut was approved by the project owner's listening review and is installed unchanged, including its original timing, pitch-preserved speech treatment and beep.
+
+## Generated audio
+
+Three shipped files are outside the CC BY 4.0 claim above **because part of each is machine-generated**, and are listed separately because that standing differs from everything else in this project. (They are not the only files outside the claim — `crash_adonisb2`, `crash_maribel` and `crash_wyldist` are too, for an unrelated reason the section above gives.)
+
+| Shipped file | What it is | Standing |
+|---|---|---|
+| `crash_trollina` (the second rider's crash) | A composed one-shot. Its slapstick layers — impact, spring, tumble clatter, falling slide and the wheel settling — are synthesized from first principles by a script in this project's development tree and are original work. Its **vocal beats are machine-generated**, produced with a text-to-speech model (OpenAI `gpt-audio`) and then cut, re-timed, pitch-shifted and mixed. | Machine-generated audio has doubtful copyright standing in several jurisdictions, so no copyright is claimed over the vocal layer and it is **excluded from the CC BY 4.0 claim**. It is redistributed with the game on the same terms the rest of the build is redistributed under, and a reuser who needs a clean rights position should replace it. |
+| `crash_drunkard` (the seventh rider's crash) | A composed one-shot on exactly the mechanism of `crash_trollina`, made for a wholly fictional parody rider. Its slapstick layers — the impact, two cans clanking, a fizz as a can lets go, the tumble clatter, the falling slide, the wheel settling and a last slurp through a drinking tube — are synthesized from first principles by a script in this project's development tree and are original work. Its **vocal beats are machine-generated**, produced with a text-to-speech model (OpenAI `gpt-audio`, one directed take of a cheerful, slurred wipeout line) and then cut, re-timed, pitch-shifted and mixed. No real person's voice is in it. | The same standing as `crash_trollina`: no copyright is claimed over the vocal layer and the file is **excluded from the CC BY 4.0 claim**. It is redistributed with the game on the build's terms, and a reuser who needs a clean rights position should replace it. |
+| `stumble_drunkard` (the seventh rider's stumble) | A 0.4 s one-shot that plays when that rider stumbles: the same two synthesized can clanks, over one **machine-generated** *hic* cut from the same take and pitch-shifted. | The same standing as the row above, for the same reason. |
+
+This is the same reasoning the project applies to the AI-generated art-direction references under `references/`, applied to shipped files rather than to working ones. It is recorded here rather than left implicit because a redistributor cannot tell by listening.
+
+Seven shipped files a reader might expect in this table are deliberately absent, and the reason differs. `crash_red_rider`, `crash_wheel_in_motion` and `crash_flo_with_zo` carry no generated layer at all and stay inside the CC BY 4.0 claim. `crash_adonisb2`, `crash_maribel` and `crash_wyldist` carry none either and stay *outside* it, because they are somebody else's recordings rather than this project's. `crash_seal_on_a_wheel` is its own case and is the reason this sentence names files rather than groups: it carries no generated layer either, and it is the one shipped file that is partly inside the claim and partly outside it — this project's own render of the owner's own recording, with one public-domain layer mixed into it that nobody claims. Ten riders crash in this game and two of those ten sounds are machine-made — the two characters who exist nowhere to be recorded; *Third-party audio recordings* above says what the other eight are.
+
+## Fictional designs and real-world brands
+
+Electric unicycles in this game are **original fictional designs**. They are informed by the general characteristics of real-world EUC categories — compact commuters, suspension trail wheels, long-range touring wheels — but they do not copy any specific commercial product's shell geometry, panel design, decals, naming, or protected product identity.
+
+**Five machines are qualified, and in every case the qualification is about a person rather than a manufacturer.**
+
+Red Rider's wheel is modelled on the machine he customized himself, from reference material he supplied, with his permission — including the red livery and the identification plate carrying his own name. It is still no manufacturer's product: it reproduces no commercial shell, no panel design, and no protected product identity, and the commercial gear mark visible in his photograph is deliberately not reproduced. The only branding on him or his wheel is his own name.
+
+Adonisb2's wheel is modelled the same way and on the same footing: a blocky off-road form and the green plate with the stylized eyes that personalize his own machine, from reference material he supplied, with his permission. The plate's artwork is drawn from scratch in this project's own style rather than copied. It reproduces no manufacturer's shell, no panel design and no protected product identity, the third-party sticker artwork visible in his photograph and in the supplied mockup is deliberately not reproduced, and his wheel carries no name or wordmark at all.
+
+Wheel in Motion's wheel is the third, on the same footing: a tall black performance body with bright cyan-blue side structures and orange power pads — the colour relationship of the machine he customized himself — from the photograph he supplied, with his permission, and with his own channel's mark on a plate on both flanks. It is the game's own fictional performance form wearing that personalization: it reproduces no manufacturer's shell, no panel design and no protected product identity; the manufacturer's wordmark on the real wheel's bodywork, the pad maker's marks and the third-party sticker on its flank are deliberately not reproduced; and the only mark on him or his wheel is his own.
+
+FloWithZo's wheel is the fourth, on the same footing: a dark graphite performance body between two large pale side shells, on broad pale pedals, with a low warm band on each flank and one small round badge on the nose — the colour relationship of the machine he races on in the two photographs he supplied, with his permission. It is the game's own fictional performance form wearing that relationship: it reproduces no manufacturer's shell, no panel design and no protected product identity; the manufacturer's bodywork and wordmark on the real wheel, the sticker on its flank and the photographer's watermark on the photographs are deliberately not reproduced; the orange ring the real tyre carries is not on this one, because a near-black rubber cannot be painted up to orange and a ring anywhere else would ride the sprung body while a tyre does not; and there is no mark, name or lettering of any kind on him or on his wheel.
+
+Seal on a Wheel's wheel is the fifth, on the same footing: a tall near-square cyan body trimmed in hot pink — a broad pink plate high on the nose, a low bar and a mid-height bar on each flank, wedges at the lower nose and tail corners and a piece at each rear shoulder, over cyan side pads and dark pedals — the colour relationship of the machine he rides in the reference stills, with his permission. It is the game's own fictional form wearing that relationship: it reproduces no manufacturer's shell, no panel design and no protected product identity; the small white stickers on the real wheel's shell are deliberately not reproduced; the real machine's open frame is a solid body with painted windows here, because an actual void is a greeble at riding distance; and there is no mark, name or lettering of any kind on him or on his wheel.
+
+The Drunkard's wheel needs no such qualification, and one sentence covers it: **it is modelled on nothing.** It is the game's own standard body in a fictional character's colours — a dark brown shell, amber pads, cream trim and an original hop-cone device drawn in code — and it carries no rider's, manufacturer's or brewery's identity.
+
+Wyldist's wheel needs none either, although he is a real rider: **it is not modelled on his machine or on any other.** It is the game's own fictional form — a compact, chamfered charcoal body with angular red side accents, a white front light and a small red rear light — drawn after a machine-generated concept image the project owner selected, which is held privately under `references/` and is not redistributed. It reproduces no manufacturer's shell, no panel design and no protected product identity, and there is no mark, name or lettering of any kind on it.
+
+Maribel Vargas's riding kit follows the same rule, and it needs stating because her reference photographs carry more commercial branding than either of theirs. Her racing suit and helmet in this game keep **colour blocking, panel placement and silhouette** — a black-over-grey one-piece, a matte dark shell, a mirrored blue-cyan visor, and the aqua-and-coral asymmetry that is her own — and reproduce **no manufacturer's mark of any kind**: not the helmet maker's wordmark, not the suit maker's wordmark down the arm and leg, and not its chest device.
+
+**Where those two manufacturer's marks sit on the real kit, this game prints hers.** The chest device is **her own logo**, in her own purple, at the position and roughly the scale the real suit's brand device occupies; the back of the suit carries the same logo alone; and the script down the outside of one thigh reads **VARGAS** — her name, which she publishes and competes under — in lettering drawn as paths by this project rather than set in any typeface. That is a deliberate substitution rather than a coincidence of placement: the project owner asked for the mark that is in the photograph, the mark in the photograph is a manufacturer's trademark, and the resolution was to keep the *place* and use the mark that is hers to grant. The visor's iridescence is a generic blue-cyan gradient with no brand on it. The camera watermark on her supplied video and the application branding on the lap trace she sent do not appear anywhere. The only mark she wears anywhere in this game is her own, and its terms are in her section below.
+
+This project is not affiliated with, endorsed by, sponsored by, approved by, or otherwise associated with Begode/Gotway, InMotion, King Song, Veteran, Extreme Bull, Solowheel/Inventist, Segway-Ninebot, or any other manufacturer, retailer, or rights holder. Any third-party names, trademarks, service marks, product names, or other protected material remain the property of their respective owners, and are referenced only for identification, commentary, or research context. One third-party mark is reproduced rather than referenced: the small SMLS wordmark on Wyldist's left sleeve, there at his request and, as he relayed, with no objection from its owner. Its terms are in his section under *Reference material*. No ownership is claimed over third-party rights.
+
+## Reference material
+
+Private reference material held locally under `references/` — photographs, supplied artwork, and permission evidence alike — is **not** part of this project's licensed content. It is not redistributed, is excluded from every build, and remains the property of its owner. Nothing under `references/` is covered by the licences above, and none of it is a public-facing asset.
+
+The Cool Rider character model and design are original work. **His riding clothes and style are based on what the project owner wears**, and the owner rides and posts publicly on Instagram as [@edwin_rodmen](https://www.instagram.com/edwin_rodmen/); the link is listed here as the style-inspiration credit at his direction. The character does not reproduce the owner's face, and “Cool Rider” is a fictional character name rather than the owner's public name or nickname. The character name is an affectionate nod to a song title; no association with its rights holders is claimed or implied.
+
+The second rider, "Trollina", is also an original creation. She began as a crude joke drawing sent to the project owner, which he owns and kept; the character in the game is original geometry authored from that concept and is covered by the CC BY 4.0 claim above. The original drawing itself is held privately under `references/` and is not redistributed.
+
+The seventh rider, "The Drunkard", is an original creation on the same footing: original geometry authored from a concept image the project owner generated with ChatGPT's image model from his own idea, based on nobody, and covered by the CC BY 4.0 claim above. The concept image itself is held privately under `references/` and is not redistributed; no pixel of it is in the game, and no real person's likeness, voice or name is behind him. He is a parody — a rider who has misunderstood what a hydration system is for — he is fictional and based on nobody, and nothing in this game endorses riding under the influence. No real beer's or brewery's name, logo or trade dress appears on him, his cans, his pack or his wheel: the hop cone he wears is an original shape drawn in code, and he carries no lettering at all. His crash and his stumble are composed sounds with machine-generated vocal beats — see *Generated audio* above — and no recording of any person is in either.
+
+### Red Rider — a real person, represented with permission
+
+The third rider is **not** an original creation, and this entry is written narrowly on purpose.
+
+**Red Rider is represented with permission.** He is a real person. He asked to appear in the game in a public conversation, and the project owner agreed in that same conversation. The character is based on the supplied reference material, and supporting permission evidence is retained with the project — privately, under `references/`, never redistributed and never shown in the game.
+
+**His public presence:** Red Rider rides, photographs, and films as **Red** on Instagram — [@r3d__rider](https://www.instagram.com/r3d__rider/), *"French EUC Rider · Photographer · Filmmaker"*. The link is listed here as credit at the project owner's direction; it is the same public persona that appears in the game, not an additional identity.
+
+**No broader right is claimed or granted.** Red Rider is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place his name, likeness, or persona under any licence, and no licence in this file conveys them. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs his agreement, which is not the project's to give.
+
+**"Red Rider" — with the public Instagram persona credited above — is the only identity published.** No legal name and no private identity is disclosed anywhere in this project or its distributions, and the conversation that granted the permission is internal evidence rather than a public-facing asset.
+
+### Adonisb2 — a real person, represented with permission
+
+The fourth rider is **not** an original creation either, and the same narrow terms apply. What is different about this one is worth stating plainly, because it is the actual shape of the permission: **he initiated it.**
+
+**Adonisb2 is represented with permission, at his own request.** He is a real EUC rider. He contacted the project owner asking to have his avatar added to the game so that he could share it, supplied the reference photograph of himself and his machine, **chose the in-game name himself** when the owner asked what it should be — the spelling here is exactly what he typed — and then **contributed a recording of one of his own falls**, which is the sound his character crashes with. The permission conversation and the photograph are retained with the project privately, under `references/`, never redistributed and never shown in the game.
+
+**His public presence:** Adonisb2 rides and posts on TikTok as [@adonisjg_v11](https://www.tiktok.com/@adonisjg_v11) — the handle he watermarks on his own photographs. The link is listed here as credit at the project owner's direction; it is the same public persona that appears in the game, not an additional identity.
+
+**No broader right is claimed or granted.** Adonisb2 is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place his name, likeness, or persona under any licence, and no licence in this file conveys them. His contributed recording is not under that grant either — *Third-party audio recordings* above says so separately. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs his agreement, which is not the project's to give.
+
+**"Adonisb2" — with the public TikTok persona credited above — is the only identity published.** He chose that name *to be published*. No legal name and no other account of his is disclosed anywhere in this project or its distributions, and the conversation that granted the permission is internal evidence rather than a public-facing asset.
+
+### Maribel Vargas — a real person, under her own name, with her permission
+
+The fifth rider is **not** an original creation, the same narrow terms apply, and two things about this one are different enough to state plainly.
+
+**Maribel Vargas is represented with permission, at her own request, under her real name.** She is a real competitive electric-unicycle racer. She contacted the project owner asking for a woman rider in the game and then to be one — *"I would like to be one of those"* — and supplied the reference photographs and video the character is built from. **The name on her card is her own**, published at the project owner's decision because it is the name she competes and is known under; the two riders above appear under chosen personas, and she does not. The permission conversation and the reference material are retained with the project privately, under `references/`, never redistributed and never shown in the game.
+
+**Her public presence:** Maribel posts as [@baymv_](https://www.instagram.com/baymv_) on Instagram. The link is listed here as credit at the project owner's direction; it is the same public persona that appears in the game, not an additional identity.
+
+**Her logo appears in this game with her permission, and it is her copyrighted work — © Maribel Vargas, all rights reserved — not this project's.** The purple mark she rides under — a grinning devil's head above her initials as lightning: an **M** for Maribel, and a separate **V** for Vargas below it — was identified by her (*"That's my logo"*) when the project owner asked whether it could be used, and she then supplied the complete artwork herself. What ships is **her artwork itself, carried verbatim** — and that changed on 2026-08-20. Until then the mark was drawn from scratch in this project's flat style, redrawn three times against her file, and the project owner's verdict on the third attempt was that it was still butchering her logo. He then supplied `MV_LOGO_ASSET_PACK`, a pack whose own README forbids redrawing, tracing, glyph substitution, procedural approximation, filling the mark's negative space, and stretching it in one axis. So the one file it names as the master, `MV_logo_transparent_CLEAN.png`, is embedded in `src/data/mvLogoAsset.ts` byte for byte, hash-checked against the pack's own manifest on every test run, unpacked at boot by `src/render/pngDecode.ts`, and composited into the rider's texture sheet unchanged. **This is the only piece of her material that is redistributed with the game, and it is redistributed because it is the mark itself, at her grant.** The rest of the pack — the original screenshot, the previews, the source crops — stays under `references/` and is never redistributed. It appears in five places, and nowhere else, and in **her own purple everywhere** — a white colourway shipped until 2026-08-19, when her regenerated reference and the owner's instruction that it *"must look exact to the original"* settled that a logo's colours belong to it: her chest, the back of her suit, both knee guards, the black bodywork between her machine's leg pads — which is where a rider's sticker goes on a real wheel — and her chooser card, which carries only the monogram because the full lockup does not resolve at that size. **The CC BY 4.0 grant above does not cover her mark.** It is hers — the copyright in the mark remains with Maribel Vargas; permission to use it in *this game* is not permission for reuse anywhere else, and a reuser needs her agreement.
+
+**The circuit in this game is named after her, and the venue it takes its inspiration from is not named at all.** She suggested a racing track herself, and agreed in writing that it would be a remixed, original layout rather than a copy — *"more like inspiration unless they give me direct permission to copy it"*, and her reply, *"Yes"* — with one instruction of her own, which is honoured: the lap-timing app she named is not shown anywhere. **BelVar Circuit** takes its name from hers, **Bel** from Mari**bel** and **Var** from **Var**gas, and the tribute is recorded here so the credit is legible rather than private. The real venue's name and city appear nowhere in this game or its distributions.
+
+**She also recorded the sound her character crashes with**, at the project owner's request and after the permission above was already settled — see `crash_maribel` under *Third-party audio recordings*. Like her logo, it is her material appearing here by her grant and not under this project's licence; unlike her logo, it is a performance she staged for the purpose rather than a recording of anything that happened to her.
+
+**Any racing record stated about her is stated in the event's own category wording**, at her reference material's explicit instruction, and is not inflated into a broader claim.
+
+**No broader right is claimed or granted.** Maribel Vargas is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place her name, likeness, persona, or logo under any licence, and no licence in this file conveys them. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs her agreement, which is not the project's to give.
+
+**Her name and the public Instagram persona credited above are the only identity published.** No other account of hers, and nothing about where she lives or works, is disclosed anywhere in this project or its distributions, and the conversation that granted the permission is internal evidence rather than a public-facing asset.
+
+### Wheel in Motion — a real person, represented with permission
+
+**Wheel in Motion is represented with permission, at his own request.** He is a real electric-unicycle rider with a YouTube channel of that name. He asked to appear in the game in a public conversation — in reply to the project owner stating, in that same thread, that a real person is added only when that person asks for themselves — and the project owner verified the request against his channel before agreeing. The character is based on the reference photograph he supplied; the permission conversation and the reference material are retained with the project privately, under `references/`, never redistributed and never shown in the game.
+
+**His public presence:** Wheel in Motion publishes on YouTube as [Wheel In Motion](https://www.youtube.com/@RealWheelInMotion). The link is listed here as credit at the project owner's direction; it is the same public persona that appears in the game, not an additional identity.
+
+**His mark appears in this game with his permission, and it is his channel's mark — © its owner, all rights reserved — not this project's.** The lettering — a blue **W**, a white **i** and an orange **M** — is the avatar of the persona's accounts across his socials, and the master he supplied is embedded in `src/data/wimLogoAsset.ts` as a scripted crop of that file (the mark's own bounding box with a margin, halved in size, no pixel of the mark removed, redrawn or recoloured), unpacked at boot and composited into the character's texture sheets unchanged. It is never redrawn, traced, re-proportioned, recoloured or filled, and it keeps its own aspect on every surface it lands on. It appears in five places, and nowhere else: his chest, the sticker on his backpack, the shell of his right knee guard, a white plate on both flanks of his wheel, and his chooser card. **The CC BY 4.0 grant above does not cover his mark.** Permission to use it in *this game* is not permission for reuse anywhere else, and a reuser needs his agreement.
+
+**His crash is not a recording of him.** No recording of his voice exists in this game; his character crashes to `crash_wheel_in_motion`, the project owner's own wipeout with the owner's voice removed — see *Third-party audio recordings* above. If he supplies a recording of his own, this entry will change to say so.
+
+**No broader right is claimed or granted.** Wheel in Motion is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place his name, likeness, persona, or mark under any licence, and no licence in this file conveys them. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs his agreement, which is not the project's to give.
+
+**"Wheel in Motion" — with the public YouTube channel credited above — is the only identity published.** No legal name and no other account of his is disclosed anywhere in this project or its distributions, and the conversation that granted the permission is internal evidence rather than a public-facing asset.
+
+### FloWithZo — a real person, represented with permission
+
+**FloWithZo is represented with permission, at his own request.** He is a real electric-unicycle racer who rides and publishes under that persona. The ask arrived in a public thread, written in the third person, and the project owner answered there, as he has each time before, that a real person is added to this game only when that person asks for themselves and that direct permission from the rider would be needed. The account the ask came from was the rider's own: he said so in that same thread, supplied the two racing photographs the character is built from, and gave the public account credited below by direct message. The permission exchange and the photographs are retained with the project privately, under `references/`, never redistributed and never shown in the game.
+
+**His public presence:** FloWithZo posts on Instagram as [@flowithzo_euc](https://www.instagram.com/flowithzo_euc). The link is listed here as credit at the project owner's direction; it is the same public persona that appears in the game, not an additional identity.
+
+**No mark, logo or lettering of his appears in this game**, and the commercial marks visible on his real kit and his real machine in the photographs are deliberately not reproduced — see *Fictional designs and real-world brands* above.
+
+**His crash is not a recording of him.** No recording of his voice exists in this game; his character crashes to `crash_flo_with_zo`, the project owner's own wipeout with the owner's voice removed — see *Third-party audio recordings* above. If he supplies a recording of his own, this entry will change to say so.
+
+**No broader right is claimed or granted.** FloWithZo is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place his name, likeness, or persona under any licence, and no licence in this file conveys them. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs his agreement, which is not the project's to give.
+
+**"FloWithZo" — with the public Instagram account credited above — is the only identity published.** No legal name and no other account of his is disclosed anywhere in this project or its distributions, and the conversation that granted the permission is internal evidence rather than a public-facing asset.
+
+### Seal on a Wheel — a real person, represented with permission
+
+**Seal on a Wheel is represented with permission, at his own request.** He is a real electric-unicycle rider who publishes under that persona. The ask arrived on Instagram, **in his own words and from his own account** — under a post of the project owner's about a different project of his — and the owner replied that he would look into it, and then did: he assembled the reference material privately and instructed this character to be built from it. That is the whole of the permission on file, and it is written here as what it is rather than as an agreement reached in the thread; the standing bar this project applies — a real person is added only when that person asks for themselves — is met by the ask itself. The reference material is **frames of his own public riding video** together with the owner's written brief and the request itself; it is retained with the project privately, under `references/`, never redistributed and never shown in the game. Nothing here asserts that he sent those frames, and if he corrects any of this in one sentence, this entry changes to say so.
+
+**His public presence:** Seal on a Wheel posts on Instagram as [@seal_on_a_wheel](https://www.instagram.com/seal_on_a_wheel). The link is listed here as credit at the project owner's direction; it is the same public persona that appears in the game, not an additional identity.
+
+**No mark, logo or lettering of his appears in this game**, and the small printed marks visible on his kit and his wheel in the reference stills are deliberately not reproduced — see *Fictional designs and real-world brands* above.
+
+**His crash is not a recording of him.** No recording of his voice exists in this game; his character crashes to `crash_seal_on_a_wheel`, the project owner's own wipeout with the owner's voice removed and a public-domain seal's bark mixed in where that voice used to be — the persona's own joke, placed there at the project owner's instruction, and not a sound of his — see *Third-party audio recordings* above. If he supplies a recording of his own, this entry will change to say so.
+
+**No broader right is claimed or granted.** Seal on a Wheel is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place his name, likeness, or persona under any licence, and no licence in this file conveys them. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs his agreement, which is not the project's to give.
+
+**"Seal on a Wheel" — with the public Instagram account credited above — is the only identity published.** No legal name and no other account of his is disclosed anywhere in this project or its distributions, and the request that granted the permission is internal evidence rather than a public-facing asset.
+
+### Wyldist — a real person, represented with permission
+
+**Wyldist is represented with his participation and permission.** He is a real electric-unicycle rider who publishes under that persona. The character was arranged with him directly, in a private conversation with the project owner, and that conversation is the permission on file: in it he said he was excited to be part of the project, **chose the in-game name himself** when the owner asked what it should be — the capitalisation here is one of the two he offered — supplied the photographs and riding videos the character is built from, asked for the mark described below, and sent the clip his character crashes with. The conversation and the reference material are retained with the project privately, under `references/`, never redistributed and never shown in the game.
+
+**His public presence:** Wyldist posts on Instagram as [@wyldist](https://www.instagram.com/wyldist/). The link is listed here as credit at the project owner's direction; it is the same public persona that appears in the game, not an additional identity.
+
+**His look is drawn from his own photographs, and his shirt's print is this project's own.** He rides in a turquoise Hawaiian shirt worn partly open, a red full-face helmet with a white circle and a **50** on the back, charcoal cargo trousers and red-and-black gloves — the outfit the project owner chose from the material he supplied. The shirt's tropical print is painted in this project's code — hibiscus, palms, waves and small huts, boats and lighthouses in the colours of the shirt in his photographs — rather than copied or traced from its fabric. No helmet maker's, garment maker's or wheel maker's mark is reproduced anywhere on him, and his wheel is a fictional design — see *Fictional designs and real-world brands* above.
+
+**One mark on him is neither his nor this project's, and it is there at his request.** A single small red **SMLS** wordmark is printed on the outside of his left sleeve, near the hem, on a clear patch of the shirt's turquoise ground — and nowhere else: not on his back, chest, helmet or wheel, not on his chooser card, and not on any other rider. The mark belongs to a third party, who is not named here. Wyldist asked for it on his character; the project owner's practice is to leave such marks out, so Wyldist asked the mark's owner and relayed that its owner did not object. Its size and placement are the project owner's choice. Its letters are drawn as path data in this project's code after the letterforms in the photographs he supplied, and no image of the mark is embedded. **The CC BY 4.0 grant above does not cover it**, and no licence over it is claimed or conveyed by this project. Its presence implies no sponsorship, endorsement or affiliation between this project and the mark's owner, in either direction, and permission to show it in *this game* is not permission for reuse anywhere else; a reuser needs its owner's agreement.
+
+**His crash is a recording he supplied.** His character crashes to `crash_wyldist`, cut from the riding clip he sent as his crash sound — see *Third-party audio recordings* above. The exclamations in it are those of the companion who filmed it, not his. Like the sleeve mark, it appears here by grant and not under this project's licence.
+
+**No broader right is claimed or granted.** Wyldist is **not** public domain, **not** Creative Commons, and **not** otherwise freely licensed. The CC BY 4.0 grant above covers the geometry, materials, and audio this project authored; it does not place his name, likeness, or persona under any licence, and no licence in this file conveys them. His supplied recording and the sleeve mark are not under that grant either — each is stated separately above. Permission to appear in *this game* is not permission for reuse, resale, sublicensing, merchandise, or any other project. A reuser who wants this character needs his agreement, which is not the project's to give.
+
+**"Wyldist" — with the public Instagram account credited above — is the only identity published.** He chose that name *to be published*. No legal name and no other account of his is disclosed anywhere in this project or its distributions; this project names nobody else from that conversation or that clip; and the conversation that granted the permission is internal evidence rather than a public-facing asset.
+
+### Gnarwheel — a real person, represented with permission
+
+**Gnarwheel appears with his participation and permission.** His public identity and credit are [@\_gnarwheel\_](https://www.instagram.com/_gnarwheel_/). His black hoodie, trousers, full-face helmet, chin-mounted camera and patterned gloves are interpreted in original game geometry. The cyan-and-black performance wheel with a lime rim is a fictional design; no equipment manufacturer's identity is reproduced.
+
+**His supplied white Gnarwheel artwork remains © Gnarwheel, all rights reserved.** The exact ink is embedded as PNG pixels and used on the chest, back, sleeves and chooser portrait. Preparation removes the square background and crops unused space; the brush strokes, spacing, negative space and source ink colours are preserved. The mark is outside the project's asset licence. Permission to show it in this game conveys no right to reuse it elsewhere.
+
+His contributed crash and spoken recordings are used in `crash_gnarwheel` under the same narrow permission, with the original synthesized alarm identified separately above. No licence in this project covers his name, likeness, persona, logo or contributed recordings. A reuser needs his agreement. Private photographs and permission exchanges are not redistributed, and no private real name is published.
+
+## Attribution
+
+If you use this project's original assets under CC BY 4.0, attribute as:
+
+> Assets from *EUC Thrills* by VibezZzCoder — CC BY 4.0 — https://github.com/VibezZzCoder/EUC-thrills
+</script>
   </body>
 </html>

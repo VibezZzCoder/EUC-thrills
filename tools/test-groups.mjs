@@ -36,7 +36,7 @@ export const GROUPS = Object.freeze({
     'src/architecture.test.ts', 'src/data/liveTuning.test.ts',
     'src/data/rideStyles.test.ts', 'src/data/provenance.test.ts',
   ) },
-  release: { description: 'Local publication-tool contracts; unavailable in public source snapshots.', match: (f) => /^tools\/(export-source|package-github-pages|private-tokens|public-suite|install-manifest)\.test\.mjs$/.test(f) },
+  release: { description: 'Local publication-tool contracts; unavailable in public source snapshots.', match: (f) => /^tools\/(export-source|package-github-pages|package-one-file|private-tokens|public-suite|install-manifest)\.test\.mjs$/.test(f) },
   slow: { description: 'Known expensive clearance, generation and render-accounting sweeps.', match: named(
     'src/render/riderClearance.test.ts', 'src/render/riderClearanceRidden.test.ts',
     'src/level/generatedLevel.test.ts', 'src/level/topSpeedRoutes.test.ts',

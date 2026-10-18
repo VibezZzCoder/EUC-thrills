@@ -14,7 +14,14 @@ import {
   qualityStateWords,
   routeStatusLine,
   stepEnabledOption,
+  titleCreditTemplate,
+  aboutTemplate,
+  aboutScrollStep,
+  reflowParagraphs,
+  plainNotice,
+  ABOUT_SCROLL_KEYS,
 } from './menus.ts';
+import { PROVENANCE, devlogHandle, versionStamp } from '../data/provenance.ts';
 import { VENUE_IDS } from '../app/venues.ts';
 import {
   COUCH_RIDES,
@@ -400,4 +407,86 @@ test('the seat holding Dorkins says it holds the slot, in fewer words than it re
   assert.ok(COUCH_COP_HINT.length <= COUCH_RIDER_HINT.length);
   // The card draws the cop by his own spec, not the playable roster's first.
   assert.equal(characterSpec('cop').name, 'Officer Dorkins');
+});
+
+
+// -- M40: the title's colophon and About and licences -------------------------
+
+test('the title credit reads PROVENANCE and its stamp is text, not a stop (M40)', () => {
+  const html = titleCreditTemplate();
+  assert.ok(html.includes(`href="${PROVENANCE.repositoryUrl}"`));
+  assert.ok(html.includes(`>${PROVENANCE.author}</a>`));
+  const stamp = /<span class="euc-credit__stamp" data-note="stamp">([^<]*)<\/span>/.exec(html);
+  assert.ok(stamp !== null, 'the stamp span is missing');
+  assert.equal(stamp[1], versionStamp());
+  assert.equal(stamp[1], `v${PROVENANCE.version}`);
+  // One link and nothing else a pad could stop on; no action hook at all.
+  assert.equal((html.match(/<a\b/g) ?? []).length, 1);
+  assert.ok(!/tabindex|<button|data-menu/.test(html));
+});
+
+test('the About template carries the three links, the stamp and no long text of its own (M40)', () => {
+  const html = aboutTemplate();
+  assert.ok(html.includes('About and licences'));
+  assert.ok(html.includes(versionStamp()));
+  for (const [hook, href] of [
+    ['author', PROVENANCE.authorUrl],
+    ['play', PROVENANCE.homepageUrl],
+    ['source', PROVENANCE.repositoryUrl],
+    ['devlog', PROVENANCE.devlogUrl],
+  ] as const) {
+    const link = new RegExp(`<a [^>]*data-about="${hook}" href="([^"]*)"[^>]*target="_blank" rel="noopener">`).exec(html);
+    assert.ok(link !== null, `${hook} link`);
+    assert.equal(link[1], href);
+  }
+  assert.ok(html.includes(`>${devlogHandle()} on YouTube</a>`));
+  // The texts arrive at open time through textContent; the pre blocks are empty.
+  assert.ok(/<pre class="euc-about__pre" data-about="licence"><\/pre>/.test(html));
+  assert.ok(/<pre class="euc-about__pre" data-about="notice"><\/pre>/.test(html));
+  // The region is the safe first focus, and its hook is never an action.
+  assert.ok(/data-about="text" tabindex="0"[^>]*data-focus-first/.test(html));
+  assert.equal((html.match(/data-menu="/g) ?? []).length, 1);
+  assert.ok(html.includes('data-menu="about-back"'));
+});
+
+test('the About text scrolls by six keys and a step that reads rather than skims (M40)', () => {
+  assert.deepEqual(Object.keys(ABOUT_SCROLL_KEYS).sort(),
+    ['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp']);
+  assert.equal(aboutScrollStep(0), 24);
+  assert.equal(aboutScrollStep(120), 40);
+  assert.equal(aboutScrollStep(400), 56);
+  for (const height of [60, 90, 150, 300, 900]) {
+    assert.ok(aboutScrollStep(height) <= Math.max(24, height / 3) + 0.5);
+  }
+});
+
+test('the About panel reflows LICENSE paragraphs for narrow screens without losing a word (M40)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const licence = readFileSync(new URL('../../LICENSE', import.meta.url), 'utf8');
+  const shown = reflowParagraphs(licence);
+  const words = (text: string): string => text.split(/\s+/).filter(Boolean).join(' ');
+  assert.equal(words(shown), words(licence), 'every word, in order');
+  assert.equal(shown.split('\n\n').length, licence.trim().split(/\n{2,}/).length, 'paragraphs kept');
+  assert.ok(!/[^\n]\n[^\n]/.test(shown), 'no hard break inside a paragraph');
+});
+
+test('NOTICE is shown as plain text: no Markdown marks, every word and link kept (M40)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const notice = readFileSync(new URL('../../NOTICE.md', import.meta.url), 'utf8');
+  const shown = plainNotice(notice);
+  // Letters and digits only, lower-cased: headings are upper-cased for display and
+  // NOTICE bolds parts of words ("Mari**bel**"), so word splits differ while
+  // the character stream must not.
+  const letters = (text: string): string => (text.toLowerCase().match(/[a-z0-9]/g) ?? []).join('');
+  const body = notice.replace(/^\s*#\s[^\n]*\n/, '');
+  assert.ok(body.length < notice.length, 'NOTICE.md opens with its own # title');
+  assert.equal(letters(shown), letters(body), 'every letter and digit after the title, in order');
+  for (const line of shown.split('\n')) {
+    assert.ok(!/^[\s|:-]+$/.test(line) || line.trim() === '', `a line of table rules survived: ${line}`);
+    assert.ok(!/^\s*#/.test(line), `a heading mark survived: ${line}`);
+    assert.ok(!line.includes('**') && !line.includes('|'), `markup survived: ${line}`);
+  }
+  for (const url of notice.match(/https?:\/\/[^\s)>|]+/g) ?? []) assert.ok(shown.includes(url), `a link went missing: ${url}`);
+  assert.equal(plainNotice('| Source | <https://x.example/a> |\n|---|---|\n| | |'), 'Source: https://x.example/a\n');
+  assert.equal(plainNotice('*EUC Thrills* is **bold** with [a link](https://x.example/)'), 'EUC Thrills is bold with a link (https://x.example/)\n');
 });

@@ -8,6 +8,7 @@
 |---|---|
 | Source | <https://github.com/VibezZzCoder/EUC-thrills> |
 | Play | <https://vibezzzcoder.github.io/EUC-thrills/> |
+| Devlogs | [@EdwinRodMen on YouTube](https://www.youtube.com/@EdwinRodMen) |
 | Copyright | © 2026 VibezZzCoder |
 
 The same origin is carried inside the build itself — as a banner at the top of the bundled script, as `author`, `canonical`, and `code-repository` metadata in the page, and as one line printed to the browser console at startup — so that a copy of the published files still says where it came from.

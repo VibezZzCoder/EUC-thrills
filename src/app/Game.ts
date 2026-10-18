@@ -507,6 +507,8 @@ const SPLITS_TABLE: ResultsTable = Object.freeze({
 import { loudestWarning, nearestCutout, type RiderWarningState } from './riderMix.ts';
 import { PausedViewGate, type PausedViewFrame, type PausedViewStats } from './pausedView.ts';
 import { Onboarding, type PromptDevice } from '../ui/onboarding.ts';
+import { shareableWorldLink } from './shareLink.ts';
+import { PROVENANCE } from '../data/provenance.ts';
 
 /**
  * The game object, and the QA bridge that hangs off it.
@@ -1319,8 +1321,13 @@ export interface GameSnapshot {
     /** The route's seed. Empty on the slice and on the proving ground. */
     readonly seed: string;
     readonly generated: boolean;
-    /** The address that reproduces this world, and the thing "share" shares. */
+    /** The address that reproduces this world (the page's own, for `history`). */
     readonly link: string;
+    /**
+     * What "Copy link" shares (M40): `link` itself over http(s), the official
+     * build's address with the world's query from a file (`app/shareLink.ts`).
+     */
+    readonly shareLink: string;
   };
   /**
    * What the fresh-route panel is doing, as the panel itself has it.
@@ -5760,6 +5767,7 @@ export class Game {
         seed: this.seed,
         generated: this.levelId === 'generated',
         link: this.worldLink(),
+        shareLink: this.shareLink(),
       },
       route: {
         status: this.routeStatus.kind,
@@ -11405,7 +11413,9 @@ export class Game {
    * which is precisely the case this button exists for.
    */
   private copyWorldLink(): void {
-    const link = this.worldLink();
+    // The *shareable* link (M40): from a file page, `worldLink` is a path on
+    // the player's own disk, and it would be shown in the failure line too.
+    const link = this.shareLink();
     const clipboard = navigator.clipboard;
     if (clipboard === undefined) {
       this.setRouteStatus({ kind: 'copy-failed', link });
@@ -11862,6 +11872,11 @@ export class Game {
   private syncWorldUrl(): void {
     if (typeof window === 'undefined' || !window.history) return;
     window.history.replaceState(null, '', this.worldLink());
+  }
+
+  /** What "Copy link" shares: never a `file:` path (`app/shareLink.ts`). */
+  private shareLink(): string {
+    return shareableWorldLink(this.worldLink(), PROVENANCE.homepageUrl);
   }
 
   /** The address that reproduces the loaded world. */
@@ -15075,6 +15090,9 @@ export class Game {
 
     if (action !== 'back') return;
     if (this.menus.closeTracks()) return;
+    // About and licences is a Settings subpanel (M40): B steps back to
+    // Settings, never out of it, exactly as Escape and its Back button do.
+    if (this.menus.closeAbout()) return;
     if (this.appState.current === 'settings') this.appState.exitSettings();
     // Back leaves the fresh-route panel, exactly as Escape and the Back button
     // do — the pad's third door out, matching the pause menu's.
