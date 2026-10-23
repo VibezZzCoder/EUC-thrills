@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { TRACK_VENUE_IDS, VENUE_IDS, isTrackVenueId, isVenueId, type VenueId } from './venues.ts';
+import { TRACK_VENUE_IDS, VENUE_IDS, isTrackVenueId, isVenueId, offersTrickRun, type VenueId } from './venues.ts';
 import { LEVEL_IDS, createLevel, type LevelId } from '../level/levels.ts';
 
 /**
@@ -15,7 +15,19 @@ import { LEVEL_IDS, createLevel, type LevelId } from '../level/levels.ts';
  */
 
 test('the roster is the hand-built places, in the chooser’s order', () => {
-  assert.deepEqual([...VENUE_IDS], ['slice', 'track', 'switchback']);
+  // M44 put EUClaude Heights on the end: a new place joins after the others,
+  // so nobody's learned position on the row moves (`venues.ts`).
+  assert.deepEqual([...VENUE_IDS], ['slice', 'track', 'switchback', 'euclaude']);
+});
+
+test('the newest place is offered but promises no lap and no Trick Run', () => {
+  // EUClaude Heights is a free-ride city (`docs/PLANS.md` §44, D9): the
+  // chooser offers it, and the two per-mode rosters do not, because it closes
+  // no lap and the Trick Run's referee is the park's alone. A lap that appeared
+  // later would be the plan's fact to state, and this roster's to grow.
+  assert.ok(isVenueId('euclaude'));
+  assert.equal(isTrackVenueId('euclaude'), false);
+  assert.equal(offersTrickRun('euclaude'), false);
 });
 
 test('every Track Day choice builds a lap, and unrelated venue strings are refused', () => {
@@ -24,7 +36,7 @@ test('every Track Day choice builds a lap, and unrelated venue strings are refus
     assert.ok(isTrackVenueId(venue));
     assert.ok(createLevel(venue, '').lap, `${venue} offers a lap it cannot run`);
   }
-  for (const value of ['slice', 'generated', 'proving', 'toString', '', 'Track']) {
+  for (const value of ['slice', 'euclaude', 'generated', 'proving', 'toString', '', 'Track']) {
     assert.equal(isTrackVenueId(value), false);
   }
 });

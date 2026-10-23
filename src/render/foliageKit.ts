@@ -283,6 +283,93 @@ export function toneFoliage(geometry: THREE.BufferGeometry, reach?: Float32Array
   geometry.setAttribute('color', new THREE.BufferAttribute(colours, 3));
 }
 
+/**
+ * Crown light (2026-10-22 second look pass). The full crowns read as the
+ * darkest masses in a bright harbour: a 0.105-linear green whose shaded and
+ * side faces land in ACES's toe at 15–35 / 255, with almost no lift where the
+ * sun reaches. Leaves only (the wood finish keeps the bark the trunk's own);
+ * the shading lean that lets the lower half catch the sun is the forms'
+ * (`render/vegetationForms.ts` CLUMP_SKY), the rest is here:
+ *
+ * - `leafLift`: the shared crown's leaves average this multiple of the
+ *   authored broadleaf albedo (`render/vegetationWoodFinish.ts` normalises
+ *   them to it, per channel). One named number for one family, every tier,
+ *   so it is a stated re-authoring and not the stealth drift §7n forbids;
+ *   the lifted green (luminance about 0.106) still sits under the shrub's
+ *   0.116 by the 5 % `data/props.test.ts` holds the palette to.
+ *
+ * The ordinary tiers' painter (`toneCrownLeaves`) adds the other two; the
+ * Ultra painter keeps its own hollow-to-tip tones:
+ *
+ * - the gradient: tone rises with an up-facing normal, the mass's reach and
+ *   its height in the crown, and falls on undersides. The sun stands 55° up
+ *   and an instance is turned about Y, so "up and out" is the sun-facing side
+ *   that every turn agrees on; a baked azimuth would light a random side.
+ * - the chroma: lit corners lean yellow-green and shaded ones blue-green, by
+ *   the same tilt. Per-channel normalisation keeps every channel's mean at
+ *   the lifted albedo, so the hue a crown averages to is the palette's.
+ */
+export const CROWN_LIGHT = Object.freeze({
+  leafLift: 1.18,
+  /** Tone per unit of up-facing / down-facing normal. */
+  up: 0.26,
+  down: 0.08,
+  /** Tone per unit of reach (mass tone class, relief and dapple). */
+  reach: 0.34,
+  /** Tone per unit of height in the envelope above `heightPivot`, and below
+   * it: the upper crown glows, the lower half (what the chase camera looks up
+   * into) only sits back a little, so the lift is not spent darkening it. */
+  height: 0.34,
+  heightBelow: 0.12,
+  heightPivot: 0.55,
+  /** Hard bounds on one corner's tone before normalisation. */
+  min: 0.62,
+  max: 1.42,
+  /** Tone departure that reaches full chroma tilt, and the r/g/b multipliers there. */
+  span: 0.30,
+  warm: Object.freeze([1.26, 1.06, 0.74] as const),
+  cool: Object.freeze([0.84, 0.96, 1.16] as const),
+});
+
+/** Per-tree hue of a shared broadleaf tree's instance colour (crown and
+ * trunk alike), at full tilt either way: a slight yellow-green or blue-green
+ * lean beside the existing brightness jitter. Salt keyed on the prop's position. */
+export const CROWN_HUE = Object.freeze({ salt: 17, red: 0.09, green: 0.015, blue: -0.13 });
+
+/** A render-only turn of a shared broadleaf tree (crown and trunk together,
+ * so the leader still meets its trunk's hexagon), salt keyed on the prop's
+ * position (2026-10-22 second look pass). Authored rows often share one
+ * `rotationY` (19 of the Quay Quarter's 33 trees stand at 0), and three
+ * habits at one turn and one scale are three trees copied down a street. The
+ * trunk's collider is a circle and the building guard's spread a disc, so a
+ * turn moves nothing any contract reads. */
+export const CROWN_TURN = Object.freeze({ salt: 41 });
+
+/**
+ * The shared crown's leaf tones (`CROWN_LIGHT`), written over every corner's
+ * colour; the wood finish then sets bark corners and normalises the leaves.
+ * `height` is each corner's 0..1 place in the caller's envelope.
+ */
+export function toneCrownLeaves(geometry: THREE.BufferGeometry, reach: ArrayLike<number>,
+  height: ArrayLike<number>): void {
+  const normal = geometry.getAttribute('normal') as THREE.BufferAttribute;
+  const count = normal.count;
+  if (reach.length !== count || height.length !== count) throw new Error('Crown light requires matching semantic vertices');
+  const colours = new Float32Array(count * 3);
+  for (let i = 0; i < count; i += 1) {
+    const ny = normal.getY(i);
+    const lift = CROWN_LIGHT.up * Math.max(0, ny) - CROWN_LIGHT.down * Math.max(0, -ny)
+      + CROWN_LIGHT.reach * reach[i] + (height[i] - CROWN_LIGHT.heightPivot)
+        * (height[i] > CROWN_LIGHT.heightPivot ? CROWN_LIGHT.height : CROWN_LIGHT.heightBelow);
+    const tone = Math.min(CROWN_LIGHT.max, Math.max(CROWN_LIGHT.min, 1 + lift));
+    const tilt = Math.max(-1, Math.min(1, (tone - 1) / CROWN_LIGHT.span));
+    const chroma = tilt >= 0 ? CROWN_LIGHT.warm : CROWN_LIGHT.cool, k = Math.abs(tilt);
+    for (let channel = 0; channel < 3; channel += 1)
+      colours[i * 3 + channel] = tone * (1 + (chroma[channel] - 1) * k);
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(colours, 3));
+}
+
 export function nonIndexed(source: THREE.BufferGeometry): THREE.BufferGeometry {
   const geometry = source.index === null ? source : source.toNonIndexed();
   if (geometry !== source) source.dispose();

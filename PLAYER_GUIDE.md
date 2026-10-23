@@ -26,12 +26,20 @@ each marked by a floating arrow: ride up one from any direction and launch.
 
 That town is generated rather than built by hand: it is the route named
 `euc`. **Fresh route** builds a new town from the same pieces, a different
-shape every time. Beside the towns there are three places built by hand, and
+shape every time. Beside the towns there are four places built by hand, and
 they stay exactly where they are: the **Original city**, the hand-built loop
 everything else is measured against — a plaza, a boulevard, a park and a
 river ford, a gravel trail, and an alley shortcut; **BelVar Circuit**, a
 kart-scale lap with barriers, kerbs, gravel runoff, a start gantry and a
-paddock; and **Switchback Park**.
+paddock; **Switchback Park**; and **Wheelhouse Wharf**.
+
+**Wheelhouse Wharf** is a small river island built to jump. Six riding lines
+start from its streets: warehouse rooftops with real gaps between them, short
+technical steps, launch pads in the park and on the waterfront, a proper stair
+jump down from the market terrace, and a kicker on the ramp back. Every line
+has a run-out, and the main streets and the waterfront are an ordinary ride,
+busy with cafés, market stalls, traffic and people, so you can also just
+cruise it. The title screen's second big card takes you straight there.
 
 **Switchback Park** is a jump lap: about 950 metres of forested hillside
 ridden as a loop, down through the trees and back up a fire road. Nine
@@ -83,10 +91,12 @@ than the whole run.
 
 The title screen offers these, in this order.
 
-**Start ride** — free ride in the world currently loaded, which is the town
-until you choose otherwise. No clock, no objective, nothing to fail, and the
-way to practise the Original city, BelVar Circuit or Switchback Park with
-nothing running.
+**Start ride** — the big lit card at the top: free ride in the world
+currently loaded, which is the town until you choose otherwise, and the card
+names it. No clock, no objective, nothing to fail, and the way to practise the
+Original city, BelVar Circuit or Switchback Park with nothing running. The
+card beside it rides **Wheelhouse Wharf** in one press, and while you are on
+the Wharf it offers the town instead. The modes below are smaller tiles.
 
 **2–4 Players** — see the next section. The button appears only on a window
 at least 1000 pixels wide with a mouse, trackpad or gamepad, so a phone never
@@ -183,12 +193,13 @@ name may not produce a valid route, and the game says so and asks for
 another rather than quietly building something else.
 
 That screen is also where the places built by hand are chosen. A **Where to
-ride** row offers the **Original city**, **BelVar Circuit** and **Switchback
-Park**; pressing one loads it there and then, and **Back** takes you to the
-title, where **Start ride** rides it. With Switchback Park loaded the screen
-also offers **Trick Run** directly. Those places have addresses of their own:
+ride** row offers the **Original city**, **BelVar Circuit**, **Switchback
+Park** and **Wheelhouse Wharf**; pressing one loads it there and then, and
+**Back** takes you to the title, where **Start ride** rides it. With
+Switchback Park loaded the screen also offers **Trick Run** directly. Those
+places have addresses of their own:
 `?level=switchback` opens Switchback Park and `?level=slice` the Original
-city, and `?level=track` BelVar Circuit.
+city, `?level=track` BelVar Circuit, and `?level=euclaude` Wheelhouse Wharf.
 
 **New route**, on the pause menu and the results card, builds a fresh course
 without a visit to that screen. From a Time trial, Knockabout or Police chase

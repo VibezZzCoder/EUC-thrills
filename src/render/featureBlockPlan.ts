@@ -86,6 +86,7 @@ export function planFeatureBlock(plan: LevelPlan, collider: BoxCollider, materia
 export function prepareFeatureBlocks(plan: LevelPlan): PreparedFeatureBlocks {
   const blocks = new Map<BoxCollider, FeatureBlockPlan>();
   for (const segment of plan.segments) for (const collider of segment.colliders) {
+    if (collider.drawn === false) continue;
     const feature = planFeatureBlock(plan, collider, colliderMaterial(collider));
     if (feature) blocks.set(collider, feature);
   }
@@ -125,6 +126,7 @@ export function priceFeatureBlocks(prepared: PreparedFeatureBlocks,
   ultraAo: boolean, staticFar: boolean): FeatureBlockPrice {
   const grouped = new Map<MaterialId, { sourceTriangles: number; bands: number }>();
   for (const segment of prepared.source.segments) for (const collider of segment.colliders) {
+    if (collider.drawn === false) continue;
     const material = colliderMaterial(collider), triangles = sourceTriangles(collider, material);
     if (!Number.isSafeInteger(triangles) || triangles <= 0 || triangles % 2) throw new Error('Feature source box count is not complete quads');
     const bucket = grouped.get(material) ?? { sourceTriangles: 0, bands: 0 };

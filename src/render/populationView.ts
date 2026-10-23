@@ -12,6 +12,8 @@ import { STANDARD_MACHINE_LOOK } from './machineLook.ts';
 import { ULTRA_STATIC_LAYER } from './ultra/ultraRecipe.ts';
 import { POPULATION_MODEL, populationSupportTargets, type PopulationGroundSupport } from '../shared/populationSupport.ts';
 import { compactVisibleInstances } from './instanceVisibility.ts';
+import { assignVehicleBodies, populationHash, vehicleBodyParts, vehiclePaint, VEHICLE_BODY_HEIGHT,
+  type PopulationVehicleBody } from './populationVehicles.ts';
 
 /** Structurally compatible with simulation/population.ts. Values are fixed-step
  * facts; the renderer owns only their interpolation and anatomical expression. */
@@ -63,6 +65,8 @@ export interface PopulationActorPaint {
   readonly shoes: number;
   readonly trim: number;
   readonly vehicle: number;
+  /** A box truck's box panel; falls back to `trim` when a painter omits it. */
+  readonly cargo?: number;
 }
 /** Root-owned look seam. This is a material/colour recipe, never GameOptions.
  * No callback receives a pose, clock, camera, quality or simulation reference. */
@@ -93,6 +97,11 @@ const FINISHES: Readonly<Record<PopulationFinish, { roughness: number; metalness
 export const DEFAULT_POPULATION_PAINTER: PopulationPainter = Object.freeze({
   actor(spec: ActorSpec): PopulationActorPaint {
     const paint = PAINTS[Math.abs(spec.appearanceIndex) % PAINTS.length]!;
+    if (vehicleKind(spec.kind)) {
+      // 2026-10-22: a vehicle's paint follows its own id, so a street is not one copied van.
+      const vehicle = vehiclePaint(spec.id);
+      return { ...paint, vehicle: vehicle.body, trim: vehicle.trim, cargo: vehicle.cargo };
+    }
     return spec.kind === 'worker'
       ? { ...paint, jacket: 0xafa574, trim: 0xc1b99b, trousers: 0x626b71 }
       : spec.kind === 'jogger'
@@ -107,8 +116,11 @@ export interface PopulationViewReport {
   readonly actors: number;
   readonly humans: number;
   readonly fictionalEucs: number;
+  /** Delivery vans (windowless cargo sides). */
   readonly cargoVans: number;
+  /** Minibuses (glazed passenger sides). */
   readonly passengerVans: number;
+  readonly boxTrucks: number;
   /** Full-world submission cost per colour pass. No frustum discount. */
   readonly drawCalls: number;
   readonly colourTriangles: number;
@@ -150,6 +162,9 @@ interface Batch {
   readonly slots: Slot[];
   mesh: THREE.InstancedMesh | null;
   dirty: boolean;
+  /** This pane's instance prefixes: every caster, and the colour pass's share of it (`POPULATION_NEAR_CAMERA`). */
+  shadowCount: number;
+  colourCount: number;
 }
 interface Slot { readonly batch: Batch; index: number; visibleForView: boolean }
 interface MachinePart { readonly slot: Slot; readonly matrix: THREE.Matrix4; readonly tyre: boolean }
@@ -158,7 +173,10 @@ interface Visual {
   readonly parts: Record<string, Slot>;
   readonly machine: MachinePart[];
   readonly slots: Slot[];
-  readonly passenger: boolean;
+  /** The drawn vehicle body inside the shared hull; null for people. */
+  readonly body: PopulationVehicleBody | null;
+  /** Per-person stature (y) and build (x/z) on the modelled 1.845 m adult; 1/1 for wheel riders. */
+  readonly figure: Readonly<{ height: number; build: number }>;
   pose: MutablePose;
   pendingPose: MutablePose;
   visible: boolean;
@@ -205,6 +223,50 @@ const fraction = (n: number): number => n - Math.floor(n);
 const angleDelta = (a: number, b: number): number => Math.atan2(Math.sin(b - a), Math.cos(b - a));
 const vehicleKind = (kind: ActorKind): boolean => kind === 'parkedVehicle' || kind === 'serviceVehicle' || kind === 'trafficVehicle';
 const ease = (t: number): number => { const v = clamp(t, 0, 1); return v * v * (3 - 2 * v); };
+
+/**
+ * Pedestrian stature (2026-10-22). The model below is authored as a 1.845 m
+ * adult on the 1.9 m contact hull, which read a head taller than the riders
+ * and the doors. People are drawn at a natural 1.75 m on average, each a
+ * little taller or shorter (±3.5 %) and a little broader or slighter (±3 %),
+ * from their own id. Presentation only: the hull, the foot targets and every
+ * simulation fact are unchanged, and the whole figure (including every
+ * knock-down and seated pose) scales about the feet, so soles stay on the
+ * sampled ground and a seat stays on its authored cushion.
+ */
+export const PEDESTRIAN_FIGURE = Object.freeze({
+  modelledHeightMetres: 1.845, meanHeightMetres: 1.75, heightSpread: 0.035, buildSpread: 0.03,
+});
+export function pedestrianFigure(spec: Pick<ActorSpec, 'id' | 'kind'>): Readonly<{ height: number; build: number }> {
+  if (spec.kind === 'fictionalEuc' || vehicleKind(spec.kind)) return { height: 1, build: 1 };
+  const hash = populationHash(`${spec.id}#figure`), F = PEDESTRIAN_FIGURE;
+  const unit = (bits: number): number => (bits & 0xffff) / 0xffff * 2 - 1;
+  return { height: F.meanHeightMetres / F.modelledHeightMetres * (1 + F.heightSpread * unit(hash)),
+    build: 1 + F.buildSpread * unit(hash >>> 16) };
+}
+/** A pedestrian's drawn crown above their soles, standing, metres — what the
+ * bark bubble (`app/barkView.ts`) and the camera rule below measure from. */
+export function pedestrianStatureMetres(id: string): number {
+  return PEDESTRIAN_FIGURE.modelledHeightMetres * pedestrianFigure({ id, kind: 'walker' }).height;
+}
+
+/**
+ * The camera looks through what it is about to touch (2026-10-22, the Quay
+ * roof critic: a spectator's head filled a quarter of the chase frame). A
+ * person, or a fictional rider, is left out of a pane's colour pass while that
+ * pane's camera is within `personHideMetres` of their centre line (soles to
+ * crown), and comes back once it is `personShowMetres` away; the gap keeps
+ * someone idling on the boundary from flickering. A vehicle is left out only
+ * while the camera is inside its drawn body or `vehicleHideMetres` from it: a
+ * van seen from close beside is a fair view, and popping its far end out of
+ * the frame would be worse than the panel. Shadows stay (the sun's pass still
+ * draws every one of them, and the Low tier's contact blobs never read this),
+ * so the ground still says somebody is there. Presentation only: it reads the
+ * camera and the drawn pose, and writes nothing a step, digest or seed reads.
+ */
+export const POPULATION_NEAR_CAMERA = Object.freeze({
+  personHideMetres: 1.25, personShowMetres: 1.5, vehicleHideMetres: 0.15, vehicleShowMetres: 0.35,
+});
 const blendTo = (a: number, b: number, t: number): number => a + (b - a) * t;
 
 /**
@@ -332,17 +394,60 @@ function limb(top: number, bottom: number, depth = 0.85): THREE.BufferGeometry {
   ], 12);
 }
 
+/**
+ * The van shell (2026-10-22), in units of the drawn body: x by its half-width,
+ * z by its half-length, y by its drawn height. A high-roof delivery van: slab
+ * sides with a little tumblehome above a 0.5 beltline, a short sloping bonnet,
+ * a raked windscreen to 0.77 and a body-coloured high roof above it; the rear
+ * is upright for twin doors. The box truck's cab is the same shell, shortened.
+ * The cabin sits a few millimetres inside the lower body where they overlap,
+ * so the beltline reads as a crease and no two faces are coplanar.
+ */
+const SHELL_LOWER: readonly LoftRing[] = [
+  { y: 0.115, halfWidth: 0.925, halfDepth: 0.955, square: 6 },
+  { y: 0.150, halfWidth: 0.962, halfDepth: 0.992, square: 8 },
+  { y: 0.330, halfWidth: 0.965, halfDepth: 1.000, square: 9 },
+  { y: 0.420, halfWidth: 0.963, halfDepth: 0.985, z: -0.013, square: 9 },
+  { y: 0.500, halfWidth: 0.958, halfDepth: 0.860, z: -0.140, square: 9 },
+];
 const CABIN = loftProfile([
-  { y: 0.58, halfWidth: 0.90, halfDepth: 0.85, z: -0.10, square: 7 },
-  { y: 0.64, halfWidth: 0.90, halfDepth: 0.82, z: -0.13, square: 7 },
-  { y: 0.90, halfWidth: 0.86, halfDepth: 0.76, z: -0.18, square: 7 },
-  { y: 1.00, halfWidth: 0.83, halfDepth: 0.74, z: -0.20, square: 7 },
+  { y: 0.490, halfWidth: 0.950, halfDepth: 0.8525, z: -0.1425, square: 9 },
+  // The glazed band's rear stands 3 mm inside the hull's length, so rear glass stays inside it.
+  { y: 0.530, halfWidth: 0.946, halfDepth: 0.8465, z: -0.1505, square: 9 },
+  { y: 0.770, halfWidth: 0.905, halfDepth: 0.7485, z: -0.2485, square: 9 },
+  { y: 0.962, halfWidth: 0.895, halfDepth: 0.728, z: -0.267, square: 9 },
+  { y: 1.000, halfWidth: 0.850, halfDepth: 0.690, z: -0.272, square: 9 },
 ]);
-/** Existing kit builds a closed slab buried in its host surface. */
-const cabinWindow = (u0: number, u1: number): THREE.BufferGeometry => patchGeometry(CABIN, {
-  u0, u1, v0: 1.08, v1: 1.91, lift: 0.002, sink: -0.006,
-  uSegments: 12, vSegments: 6, uByArc: true,
+/** Shell side x (units of half-width) of the lower body's slab, and where its arches sit. */
+const SHELL_SIDE = 0.965;
+/**
+ * Vehicle detail proportions (2026-10-22). Shares are of the hull's
+ * half-width / half-length or the drawn height; plain values are metres.
+ * The tread's outer face stands a centimetre or two proud of the body side,
+ * the hub cap 1.5 cm proud of the tread at exactly the hull's width; a wheel
+ * well (a dark disc 1.12 × 1.22 tyre radii, foot on the ground) frames the
+ * tyre. A box truck's cab is the van shell shortened to its front 1.9 m.
+ */
+const VEHICLE_SHAPE = Object.freeze({
+  tyreOuterShare: 0.985, rimWidthShare: 0.025,
+  archProud: 0.010, archDepth: 0.03, archHeight: 1.16, archLength: 1.30, bumperInset: 0.012,
+  mirrorHalfWidth: 0.045, mirrorHalfHeight: 0.075, truckMirrorHalfHeight: 0.15, mirrorHalfDepth: 0.05,
+  truckCabRear: 0.208, truckCabWidth: 0.985, truckCabHeight: 0.82,
+  truckBoxWidth: 0.985, truckBoxFloor: 0.34, truckRailHeight: 0.04, truckBoxRearInset: 0.015, truckCabGap: 0.03,
+  truckPeakLength: 0.45, truckPeakGap: 0.035, truckGuardHeight: 0.225, truckChassisBottom: 0.20,
+  truckUnderrunHeight: 0.165,
 });
+/** Glazing band between the cabin's second and third rings (beltline to windscreen top). */
+const WINDOW_V0 = 1.06, WINDOW_V1 = 1.94;
+/** A closed slab buried in its host surface; one row suffices, the band lies between two rings. */
+const cabinWindow = (u0: number, u1: number, uSegments: number): THREE.BufferGeometry => patchGeometry(CABIN, {
+  u0, u1, v0: WINDOW_V0, v1: WINDOW_V1, lift: 0.002, sink: -0.006,
+  uSegments, vSegments: 1, uByArc: true,
+});
+/** Side-glazing spans (radians from +X toward +Z). Front door: just behind the B-pillar to the A-pillar. */
+const FRONT_DOOR_GLASS = [0.075, 0.50] as const;
+/** Rear side glass: from the D-pillar to the B-pillar (a box truck's short cab makes this its door window). */
+const REAR_SIDE_GLASS = [-0.40, 0.024] as const;
 
 /** Tapered adult proportions; all dimensions below are local modelling metres,
  * not physics constants. A 1.9 m authored human hull sets the overall height. */
@@ -411,22 +516,25 @@ const HUMAN_GEOMETRY: Readonly<Record<string, () => THREE.BufferGeometry>> = {
 };
 
 const VEHICLE_GEOMETRY: Readonly<Record<string, () => THREE.BufferGeometry>> = {
-  hull: () => body([
-    { y: 0.12, halfWidth: 0.85, halfDepth: 0.94, square: 7 },
-    { y: 0.23, halfWidth: 0.94, halfDepth: 0.99, square: 7 },
-    { y: 0.40, halfWidth: 0.98, halfDepth: 1.00, square: 7 },
-    { y: 0.57, halfWidth: 0.94, halfDepth: 0.95, square: 6 },
-    { y: 0.61, halfWidth: 0.90, halfDepth: 0.91, square: 6 },
-  ], 20),
+  hull: () => body(SHELL_LOWER, 20),
   cabin: () => loftGeometry(CABIN, { radialSegments: 20 }),
-  windshield: () => cabinWindow(Math.PI / 2 - 0.31, Math.PI / 2 + 0.31),
-  rearWindow: () => cabinWindow(Math.PI * 1.5 - 0.31, Math.PI * 1.5 + 0.31),
+  windshield: () => cabinWindow(Math.PI / 2 - 0.42, Math.PI / 2 + 0.42, 8),
+  rearWindow: () => cabinWindow(Math.PI * 1.5 - 0.32, Math.PI * 1.5 + 0.32, 6),
   sideWindow: () => mergeGeometries([
-    cabinWindow(0.0007, 0.62), cabinWindow(Math.PI - 0.62, Math.PI - 0.0007),
+    cabinWindow(FRONT_DOOR_GLASS[0], FRONT_DOOR_GLASS[1], 6),
+    cabinWindow(Math.PI - FRONT_DOOR_GLASS[1], Math.PI - FRONT_DOOR_GLASS[0], 6),
   ]),
   sidePassenger: () => mergeGeometries([
-    cabinWindow(-0.62, -0.0001), cabinWindow(Math.PI + 0.0001, Math.PI + 0.62),
+    cabinWindow(REAR_SIDE_GLASS[0], REAR_SIDE_GLASS[1], 8),
+    cabinWindow(Math.PI - REAR_SIDE_GLASS[1], Math.PI - REAR_SIDE_GLASS[0], 8),
   ]),
+  /** The dark wheel well behind each tyre: a thin closed disc on the body side (axis +X). */
+  arch: () => body([
+    { y: -0.5, halfWidth: 1, halfDepth: 1, square: 2.3 },
+    { y: 0.5, halfWidth: 1, halfDepth: 1, square: 2.3 },
+  ], 16).rotateZ(Math.PI / 2),
+  /** A box truck's box and Luton peak: plain panels, shadow casting. */
+  box: () => new THREE.BoxGeometry(1, 1, 1),
   tyre: () => new THREE.CylinderGeometry(1, 1, 1, 20, 1, false).rotateZ(Math.PI / 2),
   rim: () => mergeGeometries([
     body([
@@ -458,6 +566,10 @@ export function createPopulationView(
   let machineParts: { mesh: THREE.Mesh; matrix: THREE.Matrix4; tyre: boolean }[] = [];
   let disposed = false;
   let clockSeconds = 0;
+  /** The prepared pane's camera while it has somebody at its lens, else null (`POPULATION_NEAR_CAMERA`). */
+  let nearCamera: THREE.Camera | null = null;
+  /** Per pane camera: who it is looking through (1) — the hysteresis memory, one byte per actor. */
+  const nearByCamera = new WeakMap<THREE.Camera, Uint8Array>();
   let missingPoseIds: string[] = [];
   let missingGroundNormalIds: string[] = [];
   let missingWheelTravelIds: string[] = [];
@@ -486,7 +598,8 @@ export function createPopulationView(
       const geometry = create();
       ownedGeometry.add(geometry);
       geometry.computeBoundingSphere();
-      batch = { id, geometry, material: material(finish), casts, colours: [], slots: [], mesh: null, dirty: false };
+      batch = { id, geometry, material: material(finish), casts, colours: [], slots: [], mesh: null, dirty: false,
+        shadowCount: 0, colourCount: 0 };
       batches.set(id, batch);
     }
     return batch;
@@ -526,7 +639,8 @@ export function createPopulationView(
       if (!batch) {
         // These resources belong exclusively to machineTemplate.dispose().
         batch = { id, geometry: part.mesh.geometry, material: part.mesh.material,
-          casts: part.mesh.name === 'euc-tyre' || part.mesh.name === 'euc-shell', colours: [], slots: [], mesh: null, dirty: false };
+          casts: part.mesh.name === 'euc-tyre' || part.mesh.name === 'euc-shell', colours: [], slots: [], mesh: null, dirty: false,
+          shadowCount: 0, colourCount: 0 };
         part.mesh.geometry.computeBoundingSphere();
         batches.set(id, batch);
       }
@@ -535,6 +649,7 @@ export function createPopulationView(
   };
 
   const ids = new Set<string>();
+  const bodies = assignVehicleBodies(plan.actors);
   try {
     for (const spec of plan.actors) {
       if (!spec.id || ids.has(spec.id) || ![spec.hull.halfWidthMetres, spec.hull.halfLengthMetres,
@@ -547,36 +662,18 @@ export function createPopulationView(
       ids.add(spec.id);
       const paint = painter.actor(spec);
       const visual: Visual = { spec, parts: {}, machine: [], slots: [],
-        passenger: spec.kind === 'trafficVehicle' || (spec.kind === 'parkedVehicle' && spec.appearanceIndex % 2 !== 0),
+        body: bodies.get(spec.id) ?? null, figure: pedestrianFigure(spec),
         pose: createMutablePose(), pendingPose: createMutablePose(), visible: false, bounds: new THREE.Sphere() };
       visuals.push(visual);
       const p = visual.parts;
       if (vehicleKind(spec.kind)) {
-        p.hull = vanPart('hull', 'paint', paint.vehicle, true);
-        p.cabin = vanPart('cabin', 'paint', paint.vehicle, true);
-        p.windshield = vanPart('windshield', 'glass', 0x536779);
-        p.sideWindows = vanPart('sideWindow', 'glass', 0x536779);
-        if (visual.passenger) p.sidePassenger = vanPart('sidePassenger', 'glass', 0x5c7080);
-        for (const side of ['l', 'r']) {
-          for (const axle of ['front', 'rear']) {
-            p[`${side}-${axle}-tyre`] = vanPart('tyre', 'rubber', 0x50565d, true);
-            p[`${side}-${axle}-rim`] = vanPart('rim', 'metal', 0x919a9f);
-          }
-          p[`${side}-mirror`] = humanPart('box', 'paint', paint.vehicle);
-          p[`${side}-mirror-glass`] = humanPart('box', 'glass', 0x657882);
-          p[`${side}-handle`] = humanPart('box', 'metal', 0x929b9d);
-          p[`${side}-headlamp`] = humanPart('box', 'lens', 0xbfc4b8);
-          p[`${side}-taillamp`] = humanPart('box', 'lens', 0x9c584b);
-          p[`${side}-door-seam`] = humanPart('box', 'rubber', 0x626a70);
-          if (!visual.passenger) p[`${side}-service-band`] = humanPart('box', 'paint', paint.trim);
+        // One shared part list per body (populationVehicles.ts) also prices it.
+        for (const part of vehicleBodyParts(visual.body!)) {
+          const colour = part.colour === 'body' ? paint.vehicle : part.colour === 'trim' ? paint.trim
+            : part.colour === 'cargo' ? paint.cargo ?? paint.trim : part.colour;
+          p[part.key] = part.family === 'vehicle' ? vanPart(part.geometry, part.finish, colour, part.casts)
+            : humanPart(part.geometry, part.finish, colour, part.casts);
         }
-        if (visual.passenger) p.rearWindow = vanPart('rearWindow', 'glass', 0x536779);
-        for (const end of ['front', 'rear']) {
-          p[`${end}-bumper`] = humanPart('box', 'rubber', 0x616970);
-          p[`${end}-plate`] = humanPart('box', 'paint', 0xaeb4ad);
-        }
-        p.grille = humanPart('box', 'rubber', 0x515b64);
-        p.roofRidge = humanPart('box', 'paint', paint.trim);
       } else {
         p.torso = humanPart('torso', 'cloth', paint.jacket, true);
         p.pelvis = humanPart('pelvis', 'cloth', paint.trousers);
@@ -623,6 +720,13 @@ export function createPopulationView(
       // One batch may span the whole town; automatic bounds would be a stale
       // physics-adjacent culling trap. Full-world topology is priced honestly.
       mesh.frustumCulled = false;
+      // While a pane has somebody at its lens, that pane's colour pass draws
+      // only the colour prefix; three renders the sun's shadow map first, from
+      // the whole caster prefix, and the after-hook puts it back for a second
+      // material group or pass. Any other camera (a shadow rig, a far map) and
+      // any pane with nobody near leave the count alone.
+      mesh.onBeforeRender = (_renderer, _scene, drawCamera) => { if (drawCamera === nearCamera) mesh.count = batch.colourCount; };
+      mesh.onAfterRender = (_renderer, _scene, drawCamera) => { if (drawCamera === nearCamera) mesh.count = batch.shadowCount; };
       batch.colours.forEach((hex, index) => { mesh.setColorAt(index, colour.setHex(hex)); mesh.setMatrixAt(index, hidden); });
       mesh.instanceColor?.setUsage(THREE.DynamicDrawUsage);
       group.add(mesh);
@@ -649,6 +753,23 @@ export function createPopulationView(
   const worldBounds = new THREE.Sphere();
   const viewFrustum = new THREE.Frustum(), shadowFrustum = new THREE.Frustum();
   const projection = new THREE.Matrix4();
+  const eye = new THREE.Vector3(), toGroup = new THREE.Matrix4();
+  /** How near the pane camera (`eye`, in the population's frame) is to what is drawn of `visual`, metres. */
+  const lensDistance = (visual: Visual): number => {
+    const s = visual.pose, spec = visual.spec;
+    const dx = eye.x - s.x, dy = eye.y - s.y, dz = eye.z - s.z;
+    if (vehicleKind(spec.kind)) {
+      // The drawn body fills the hull's footprint (heading zero faces +Z) up to its own roof.
+      const sin = Math.sin(s.headingY), cos = Math.cos(s.headingY);
+      const across = Math.max(0, Math.abs(dx * cos - dz * sin) - spec.hull.halfWidthMetres);
+      const along = Math.max(0, Math.abs(dx * sin + dz * cos) - spec.hull.halfLengthMetres);
+      return Math.hypot(across, along, dy < 0 ? -dy : Math.max(0, dy - VEHICLE_BODY_HEIGHT[visual.body!]));
+    }
+    // A person's centre line, soles to crown; a fictional rider stands on the pedals.
+    const crown = spec.kind === 'fictionalEuc' ? WHEEL.pedalHeight + PEDESTRIAN_FIGURE.modelledHeightMetres
+      : PEDESTRIAN_FIGURE.modelledHeightMetres * visual.figure.height;
+    return Math.hypot(dx, dz, dy < 0 ? -dy : Math.max(0, dy - crown));
+  };
   const updateBounds = (visual: Visual): void => {
     visual.bounds.makeEmpty();
     for (const slot of visual.slots) {
@@ -729,6 +850,13 @@ export function createPopulationView(
       groundNormalX: s.normalX, groundNormalY: s.normalY, groundNormalZ: s.normalZ,
       posture: s.posture, sittingBlend: s.sittingBlend, seatHeightMetres: s.seatHeight });
     const { moving, phase, widthScale, heightScale, lengthScale, sittingBlend: sitting } = targets;
+    // The drawn figure's own stature and build on top of the hull's scale
+    // (PEDESTRIAN_FIGURE). Every pose below is authored in the modelled
+    // adult's metres; the in-hull limb clamps keep those authored limits, so a
+    // smaller person is the same accepted pose, smaller, never a looser one.
+    const figure = visual.figure;
+    const scaleX = widthScale * figure.height * figure.build, scaleY = heightScale * figure.height;
+    const scaleZ = lengthScale * figure.height * figure.build;
     const swing = Math.sin(phase * TAU);
     const reach = s.activity === 'working' ? (0.5 - 0.5 * Math.cos(s.phase * TAU)) * s.blend : 0;
     const talk = s.activity === 'social' ? Math.sin(s.phase * TAU) * s.blend : 0;
@@ -746,8 +874,8 @@ export function createPopulationView(
     let slopeX = 0, slopeZ = 0;
     if (k) {
       localNormal.set(s.normalX, s.normalY, s.normalZ).applyAxisAngle(up, -yaw);
-      localNormal.set(localNormal.x * widthScale / heightScale, localNormal.y,
-        localNormal.z * lengthScale / heightScale).normalize();
+      localNormal.set(localNormal.x * scaleX / scaleY, localNormal.y,
+        localNormal.z * scaleZ / scaleY).normalize();
       if (localNormal.y > 0.5) { slopeX = -localNormal.x / localNormal.y; slopeZ = -localNormal.z / localNormal.y; }
     }
     // A bumped person flinches (VIS-CRASH-1, 2026-10-04): a quick lean and half
@@ -768,7 +896,7 @@ export function createPopulationView(
     const rideCrouch = riding ? 0.05 + Math.min(Math.abs(s.speed) / 6, 1) * 0.045 : 0;
     transform.position.set(s.x, s.y + pedal, s.z);
     transform.rotation.set(0, yaw, 0);
-    transform.scale.set(widthScale, heightScale, lengthScale);
+    transform.scale.set(scaleX, scaleY, scaleZ);
     transform.updateMatrix(); root.copy(transform.matrix);
     inverseRoot.copy(root).invert();
     if (riding) {
@@ -784,7 +912,7 @@ export function createPopulationView(
     // pelvis's widest ring (±0.17 × ±0.135 about the hip, its bottom 0.12
     // under it), only as far as needed: never on flat ground or once risen.
     const hipY = k ? k.hipY + Math.max(0, slopeX * k.hipX + slopeZ * k.hipZ + Math.abs(slopeX) * 0.17 + Math.abs(slopeZ) * 0.135 - (k.hipY - 0.12))
-      : 0.95 - bob - rideCrouch + (targets.seatHeightLocalMetres + 0.12 - 0.95) * sitting;
+      : 0.95 - bob - rideCrouch + (targets.seatHeightLocalMetres / figure.height + 0.12 - 0.95) * sitting;
     const hipZ = k ? k.hipZ : (riding ? 0.025 : jogging && moving ? 0.035 : 0) - 0.09 * sitting - 0.10 * flinch * (1 - sitting);
     // The knock-down leans the whole upper body about the waist (pitch only).
     const lean = k ? k.lean : 0, leanCos = Math.cos(lean), leanSin = Math.sin(lean);
@@ -835,17 +963,20 @@ export function createPopulationView(
       // (render-only): a leg folded under the pelvis reads as an injury, not
       // as comic.
       if (k) {
-        const fromX = foot.x, fromZ = foot.z;
-        foot.x = sign * blendTo(KNOCKDOWN.stanceOutward, KNOCKDOWN.tuckOutward, k.tuck) + shift;
-        foot.z = k.footZ;
+        // The sole targets are authored on the sampled stance (hull-scale
+        // metres), so they divide by the figure's own footprint scale: the
+        // reaction starts and ends on the standing feet exactly.
+        const fromX = foot.x, fromZ = foot.z, footprint = figure.height * figure.build;
+        foot.x = sign * blendTo(KNOCKDOWN.stanceOutward, KNOCKDOWN.tuckOutward, k.tuck) / footprint + shift;
+        foot.z = k.footZ / footprint;
         // ...along the ground plane under them, so on a slope a sole never sinks or floats.
         foot.y += slopeX * (foot.x - fromX) + slopeZ * (foot.z - fromZ);
       }
       localNormal.set(support?.normalX ?? s.normalX, support?.normalY ?? s.normalY,
         support?.normalZ ?? s.normalZ).applyAxisAngle(up, -yaw).normalize();
       // Correct plane normals for anatomical nonuniform scale.
-      localNormal.set(localNormal.x * widthScale / heightScale, localNormal.y,
-        localNormal.z * lengthScale / heightScale).normalize();
+      localNormal.set(localNormal.x * scaleX / scaleY, localNormal.y,
+        localNormal.z * scaleZ / scaleY).normalize();
       footOrientation.setFromUnitVectors(up, localNormal);
       pitchOrientation.setFromAxisAngle(sideAxis, target.pitchRadians);
       orientation.copy(footOrientation).multiply(pitchOrientation);
@@ -959,9 +1090,12 @@ export function createPopulationView(
   };
 
   const poseVehicle = (visual: Visual): void => {
-    const s = visual.pose, p = visual.parts;
+    const s = visual.pose, p = visual.parts, bodyType = visual.body!;
     const w = visual.spec.hull.halfWidthMetres, l = visual.spec.hull.halfLengthMetres,
-      h = visual.spec.hull.heightMetres;
+      hullHeight = visual.spec.hull.heightMetres;
+    const truck = bodyType === 'boxTruck';
+    // The drawn roof: the body's own height, never above the hull; a box truck's box fills it.
+    const H = truck ? hullHeight : Math.min(hullHeight, VEHICLE_BODY_HEIGHT[bodyType]);
     const targets = populationSupportTargets({ ...visual.spec, x: s.x, y: s.y, z: s.z, headingY: s.headingY,
       speedMetresPerSecond: s.speed, gaitDistanceMetres: s.gait, activity: s.activity,
       groundNormalX: s.normalX, groundNormalY: s.normalY, groundNormalZ: s.normalZ });
@@ -972,64 +1106,129 @@ export function createPopulationView(
     transform.position.set(s.x, s.y, s.z);
     transform.quaternion.copy(orientation).multiply(pitchOrientation);
     transform.scale.setScalar(1); transform.updateMatrix(); root.copy(transform.matrix);
-    write(p.hull, root, 0, 0, 0, w, h, l);
-    write(p.cabin, root, 0, 0, 0, w, h, l);
-    write(p.windshield, root, 0, 0, 0, w, h, l);
-    write(p.rearWindow, root, 0, 0, 0, w, h, l);
-    write(p.sideWindows, root, 0, 0, 0, w, h, l);
-    write(p.sidePassenger, root, 0, 0, 0, w, h, l);
-    write(p.grille, root, 0, 0.335 * h, 0.995 * l, 0.86 * w, 0.095 * h, 0.008 * l);
-    // Roof reaches the authored height; both bumpers reach the authored length.
-    write(p.roofRidge, root, 0, 0.994 * h, -0.18 * l, 0.055 * w, 0.012 * h, 1.32 * l);
+    // The shell frame: the whole body for a van, the shortened cab for a truck.
+    // Front-end details are authored in that frame's units (SHELL_LOWER/CABIN).
+    const V = VEHICLE_SHAPE;
+    const cabRear = V.truckCabRear * l;
+    const fz = truck ? (l + cabRear) / 2 : 0, fl = truck ? (l - cabRear) / 2 : l;
+    const fw = truck ? V.truckCabWidth * w : w, fh = truck ? V.truckCabHeight * H : H;
+    const Y = (n: number): number => n * fh, Z = (n: number): number => fz + n * fl;
+    const side = SHELL_SIDE * fw;
+    for (const key of ['hull', 'cabin', 'windshield', 'sideWindows', 'sidePassenger', 'rearWindow']) {
+      write(p[key], root, 0, 0, fz, fw, fh, fl);
+    }
+    write(p.grille, root, 0, Y(0.372), Z(0.982), 1.04 * fw, 0.05 * fh, 0.03 * fl);
+    // The bumpers wrap nearly the hull's width; the plates on them reach its length exactly.
+    write(p['front-bumper'], root, 0, Y(0.195), l - V.bumperInset - 0.03, 1.91 * fw, 0.075 * fh, 0.06);
+    write(p['front-plate'], root, 0, Y(0.195), l - V.bumperInset / 2, 0.30 * fw, 0.045 * fh, V.bumperInset);
+    if (!truck) {
+      write(p['rear-bumper'], root, 0, Y(0.195), -l + V.bumperInset + 0.03, 1.91 * fw, 0.075 * fh, 0.06);
+      write(p['rear-plate'], root, 0, Y(0.195), -l + V.bumperInset / 2, 0.30 * fw, 0.045 * fh, V.bumperInset);
+      write(p['rear-seam'], root, 0, Y(0.59), Z(-0.995), 0.010, 0.70 * fh, 0.010 * fl);
+    }
     for (const sign of [1, -1]) {
-      const side = sign > 0 ? 'l' : 'r';
+      const k = sign > 0 ? 'l' : 'r';
       for (const front of [true, false]) {
         const axle = front ? 'front' : 'rear';
         const supportIndex = (sign > 0 ? 0 : 2) + (front ? 0 : 1);
         const target = targets.tyres![supportIndex]!, support = s.tyreSupports[supportIndex]!;
         const z = target.localZ;
         const roll = s.wheelTravel / Math.max(radius, 1e-6);
-        const tyrePart = p[`${side}-${axle}-tyre`]!, rimPart = p[`${side}-${axle}-rim`]!;
+        const tyrePart = p[`${k}-${axle}-tyre`]!, rimPart = p[`${k}-${axle}-rim`]!;
         // Rubber has rotationally uniform art. Its polygon bottom stays planted;
-        // the embossed alloy spokes carry the actual signed wheel rotation.
+        // the embossed alloy spokes carry the actual signed wheel rotation. The
+        // tread stands just proud of the body side, the hub cap just proud of the tread.
         write(tyrePart, root, target.localX, radius, z,
-          POPULATION_MODEL.tyreWidthShare * w, radius, radius);
+          2 * (V.tyreOuterShare * w - Math.abs(target.localX)), radius, radius);
         // Suspension follows the actual sampled tread patch without turning
         // this renderer into another TerrainSampler. Same correction for rim.
         matrix.elements[12]! += support.x - target.x;
         matrix.elements[13]! += support.y - target.y;
         matrix.elements[14]! += support.z - target.z;
         tyrePart.batch.mesh!.setMatrixAt(tyrePart.index, matrix);
-        write(rimPart, root, sign * POPULATION_MODEL.rimOutwardShare * w, radius, z,
-          POPULATION_MODEL.rimWidthShare * w, radius, radius, roll);
+        // Its spokes stand 2 % of the cap's width proud of the cap: they end at the hull's width.
+        write(rimPart, root, sign * (1 - V.rimWidthShare * 0.52) * w, radius, z,
+          V.rimWidthShare * w, radius, radius, roll);
         matrix.elements[12]! += support.x - target.x;
         matrix.elements[13]! += support.y - target.y;
         matrix.elements[14]! += support.z - target.z;
         rimPart.batch.mesh!.setMatrixAt(rimPart.index, matrix);
+        // The wheel well: a dark disc on the body side round the tyre, its foot on the ground.
+        write(p[`${k}-${axle}-arch`], root, sign * (side + V.archProud - V.archDepth / 2), V.archHeight * radius, z,
+          V.archDepth, V.archHeight * radius, V.archLength * radius);
       }
       // Mirror outer faces end exactly at |x| = authored halfWidth.
-      write(p[`${side}-mirror`], root, sign * 0.95 * w, 0.63 * h, 0.54 * l,
-        0.10 * w, 0.055 * h, 0.12 * l);
-      write(p[`${side}-mirror-glass`], root, sign * 0.95 * w, 0.63 * h, 0.483 * l,
-        0.073 * w, 0.037 * h, 0.012);
-      write(p[`${side}-handle`], root, sign * 0.943 * w, 0.56 * h, 0.12 * l,
-        0.036 * w, 0.018 * h, 0.095 * l);
-      write(p[`${side}-headlamp`], root, sign * 0.66 * w, 0.48 * h, 0.94 * l,
-        0.31 * w, 0.055 * h, 0.08 * l);
-      write(p[`${side}-taillamp`], root, sign * 0.69 * w, 0.52 * h, -0.94 * l,
-        0.15 * w, 0.12 * h, 0.04 * l);
-      write(p[`${side}-door-seam`], root, sign * 0.947 * w, 0.47 * h, -0.09 * l,
-        0.012, 0.235 * h, 0.012);
-      write(p[`${side}-service-band`], root, sign * 0.943 * w, 0.52 * h, -0.44 * l,
-        0.014, 0.07 * h, 0.57 * l);
+      const mirrorHalf = truck ? V.truckMirrorHalfHeight : V.mirrorHalfHeight;
+      const mirrorY = Y(truck ? 0.60 : 0.57), mirrorZ = Z(0.585);
+      write(p[`${k}-mirror`], root, sign * (w - V.mirrorHalfWidth), mirrorY, mirrorZ,
+        2 * V.mirrorHalfWidth, 2 * mirrorHalf, 2 * V.mirrorHalfDepth);
+      write(p[`${k}-mirror-glass`], root, sign * (w - V.mirrorHalfWidth), mirrorY, mirrorZ - V.mirrorHalfDepth - 0.003,
+        1.6 * V.mirrorHalfWidth, 1.6 * mirrorHalf, 0.006);
+      write(p[`${k}-headlamp`], root, sign * 0.66 * fw, Y(0.375), Z(0.978), 0.24 * fw, 0.055 * fh, 0.03 * fl);
+      // The door pull sits at the cab door's rear (a truck's door runs back to its cab wall).
+      write(p[`${k}-handle`], root, sign * (side + 0.003), Y(0.445), Z(truck ? -0.70 : 0.27), 0.012, 0.025, 0.11);
+      if (truck) {
+        // The cab door's front shut line, under the pillar between its two panes.
+        write(p[`${k}-cab-seam`], root, sign * (side + 0.004), Y(0.33), Z(0.20), 0.008, 0.34 * fh, 0.010);
+        continue;
+      }
+      // Vans: cab-door and sliding-door shut lines, a sliding-door pull and the rear lamps.
+      write(p[`${k}-door-seam`], root, sign * (side + 0.004), Y(0.33), Z(0.225), 0.008, 0.34 * fh, 0.010);
+      write(p[`${k}-slide-seam`], root, sign * (side + 0.004), Y(0.33), Z(-0.42), 0.008, 0.34 * fh, 0.010);
+      write(p[`${k}-slide-handle`], root, sign * (side + 0.003), Y(0.445), Z(-0.36), 0.012, 0.025, 0.11);
+      write(p[`${k}-taillamp`], root, sign * 0.772 * fw, Y(0.36), Z(-0.975), 0.10 * fw, 0.20 * fh, 0.03 * fl);
+      // A dark rubbing strip along the lower side, between the wheel wells.
+      const rubFrom = targets.tyres![sign > 0 ? 1 : 3]!.localZ + V.archLength * radius + 0.02;
+      const rubTo = targets.tyres![sign > 0 ? 0 : 2]!.localZ - V.archLength * radius - 0.02;
+      write(p[`${k}-side-rub`], root, sign * (side + 0.004), Y(0.205), (rubFrom + rubTo) / 2, 0.008, 0.05 * fh, rubTo - rubFrom);
+      // The delivery van's fleet stripe along the cargo side.
+      write(p[`${k}-livery`], root, sign * (side + 0.003), Y(0.36), Z(-0.38), 0.006, 0.09 * fh, 1.08 * fl);
+      // The minibus: a C-pillar splitting the long glass (leaning with the
+      // tumblehome), roof rails and a contrasting waist stripe.
+      if (p[`${k}-pillar`]) {
+        const v0 = WINDOW_V0 - 1, v1 = WINDOW_V1 - 1, ring1 = CABIN[1]!, ring2 = CABIN[2]!;
+        const x0 = ring1.halfWidth + (ring2.halfWidth - ring1.halfWidth) * v0, x1 = ring1.halfWidth + (ring2.halfWidth - ring1.halfWidth) * v1;
+        const y0 = ring1.y + (ring2.y - ring1.y) * v0, y1 = ring1.y + (ring2.y - ring1.y) * v1;
+        const lean = Math.atan2((x0 - x1) * fw, (y1 - y0) * fh);
+        write(p[`${k}-pillar`], root, sign * (x0 + x1) / 2 * fw, Y((y0 + y1) / 2), Z(-0.36),
+          0.016, (y1 - y0) * fh / Math.cos(lean) + 0.06, 0.08 * fl, 0, 0, sign * lean);
+        write(p[`${k}-roof-rail`], root, sign * 0.60 * fw, fh + 0.016, Z(-0.27), 0.03, 0.032, 1.10 * fl);
+        write(p[`${k}-waist-stripe`], root, sign * (0.9598 * fw + 0.003), Y(0.472), Z(-0.135), 0.006, 0.022 * fh, 1.67 * fl);
+      }
     }
+    if (!truck) return;
+    // The box truck behind its cab: a plain fleet box with a Luton peak over
+    // the cab, framed by rails and corner posts, on an exposed chassis with
+    // mudguards, side guards and an underrun bar; a roller door at the back.
+    const bw = V.truckBoxWidth * w, yb0 = V.truckBoxFloor * H, yb1 = H - V.truckRailHeight / 2;
+    const zb0 = -l + V.truckBoxRearInset, zb1 = cabRear - V.truckCabGap, peakFront = zb1 + V.truckPeakLength * l;
+    const boxHeight = yb1 - yb0, boxLength = zb1 - zb0;
+    write(p.box, root, 0, (yb0 + yb1) / 2, (zb0 + zb1) / 2, 2 * bw, boxHeight, boxLength);
+    const peakBottom = fh + V.truckPeakGap, peakTop = yb1 - 0.005;
+    write(p.peak, root, 0, (peakBottom + peakTop) / 2, (zb1 + peakFront) / 2, 2 * bw - 0.004, peakTop - peakBottom, peakFront - zb1);
+    const rail = V.truckRailHeight, railX = bw - 0.012;
     for (const sign of [1, -1]) {
-      const end = sign > 0 ? 'front' : 'rear';
-      write(p[`${end}-bumper`], root, 0, 0.205 * h, sign * 0.985 * l,
-        1.67 * w, 0.055 * h, 0.03 * l);
-      write(p[`${end}-plate`], root, 0, 0.26 * h, sign * 0.995 * l,
-        0.30 * w, 0.04 * h, 0.009 * l);
+      const k = sign > 0 ? 'l' : 'r';
+      write(p[`${k}-top-rail`], root, sign * railX, yb1, (zb0 + peakFront) / 2, 0.04, rail, peakFront - zb0);
+      write(p[`${k}-sill-rail`], root, sign * railX, yb0 + 0.02, (zb0 + zb1) / 2, 0.04, 0.05, boxLength);
+      write(p[`${k}-rear-post`], root, sign * railX, (yb0 + yb1) / 2, zb0 + 0.012, 0.04, boxHeight, 0.04);
+      write(p[`${k}-front-post`], root, sign * railX, (yb0 + yb1) / 2, zb1 - 0.012, 0.04, boxHeight, 0.04);
+      write(p[`${k}-taillamp`], root, sign * (bw - 0.10), yb0 + 0.16, zb0 - 0.005, 0.10, 0.22, 0.010);
+      const rearAxle = targets.tyres![sign > 0 ? 1 : 3]!.localZ;
+      write(p[`${k}-mudguard`], root, sign * 0.87 * w, 2 * radius + 0.04, rearAxle, 0.25 * w, 0.025, 0.90);
+      const guardFrom = rearAxle + radius + 0.10, guardTo = cabRear - 0.02;
+      write(p[`${k}-side-guard`], root, sign * (bw - 0.02), V.truckGuardHeight * H, (guardFrom + guardTo) / 2, 0.015, 0.05, guardTo - guardFrom);
+      write(p[`${k}-livery`], root, sign * (bw + 0.003), yb0 + 0.56 * boxHeight, (zb0 + zb1) / 2, 0.006, 0.16 * boxHeight, boxLength - 0.5);
     }
+    for (const [index, share] of [0.30, 0.55, 0.80].entries()) {
+      write(p[`door-slat-${index}`], root, 0, yb0 + share * boxHeight, zb0 - 0.003, 1.8 * bw, 0.014, 0.006);
+    }
+    write(p['door-handle'], root, 0, yb0 + 0.16, zb0 - 0.007, 0.22, 0.035, 0.014);
+    const chassisBottom = V.truckChassisBottom * H, chassisFrom = zb0 + 0.30, chassisTo = cabRear + 0.10;
+    write(p.chassis, root, 0, (chassisBottom + yb0) / 2, (chassisFrom + chassisTo) / 2, 0.84 * w, yb0 - chassisBottom, chassisTo - chassisFrom);
+    const underrunY = V.truckUnderrunHeight * H;
+    write(p.underrun, root, 0, underrunY, -l + 0.03, 1.76 * w, 0.10, 0.06);
+    write(p['rear-plate'], root, 0, underrunY + 0.08, -l + 0.012, 0.30 * w, 0.06, 0.012);
   };
 
   const hide = (visual: Visual): void => {
@@ -1155,14 +1354,16 @@ export function createPopulationView(
     actors: visuals.length,
     humans: visuals.filter(visual => !vehicleKind(visual.spec.kind)).length,
     fictionalEucs: visuals.filter(visual => visual.spec.kind === 'fictionalEuc').length,
-    cargoVans: visuals.filter(visual => vehicleKind(visual.spec.kind) && !visual.passenger).length,
-    passengerVans: visuals.filter(visual => vehicleKind(visual.spec.kind) && visual.passenger).length,
+    cargoVans: visuals.filter(visual => visual.body === 'deliveryVan').length,
+    passengerVans: visuals.filter(visual => visual.body === 'minibus').length,
+    boxTrucks: visuals.filter(visual => visual.body === 'boxTruck').length,
   };
   return {
     group,
     update,
     apply(snapshot) { update(snapshot, snapshot, 1); },
     prepareView(camera, shadowCamera) {
+      nearCamera = null;
       if (disposed) return;
       group.updateMatrixWorld(true); camera.updateMatrixWorld(true);
       projection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -1172,15 +1373,45 @@ export function createPopulationView(
         projection.multiplyMatrices(shadowCamera.projectionMatrix, shadowCamera.matrixWorldInverse);
         shadowFrustum.setFromProjectionMatrix(projection, shadowCamera.coordinateSystem, shadowCamera.reversedDepth);
       }
-      for (const visual of visuals) {
+      eye.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(toGroup.copy(group.matrixWorld).invert());
+      let near = nearByCamera.get(camera);
+      if (near === undefined) { near = new Uint8Array(visuals.length); nearByCamera.set(camera, near); }
+      const lens = POPULATION_NEAR_CAMERA;
+      let anyNear = false;
+      for (let index = 0; index < visuals.length; index += 1) {
+        const visual = visuals[index]!;
         worldBounds.copy(visual.bounds).applyMatrix4(group.matrixWorld);
         const visible = visual.visible && (viewFrustum.intersectsSphere(worldBounds)
           || !!shadowCamera && shadowFrustum.intersectsSphere(worldBounds));
         for (const part of visual.slots) part.visibleForView = visible;
+        let close = false;
+        if (visual.visible) {
+          const was = near[index] === 1;
+          close = lensDistance(visual) < (vehicleKind(visual.spec.kind)
+            ? was ? lens.vehicleShowMetres : lens.vehicleHideMetres
+            : was ? lens.personShowMetres : lens.personHideMetres);
+        }
+        near[index] = close ? 1 : 0;
+        if (close && visible) anyNear = true;
       }
       for (const batch of batches.values()) compactVisibleInstances(batch.mesh!, batch.slots);
+      if (!anyNear) return;
+      // Somebody is at the lens: pack them last inside the caster prefix, so
+      // the shadow pass still draws them and this pane's colour pass stops
+      // short of them (the mesh hooks above). Only frames with someone there pay.
+      for (let index = 0; index < visuals.length; index += 1) {
+        if (near[index] === 1) for (const part of visuals[index]!.slots) part.visibleForView = false;
+      }
+      for (const batch of batches.values()) {
+        const mesh = batch.mesh!;
+        batch.shadowCount = mesh.count;
+        compactVisibleInstances(mesh, batch.slots);
+        batch.colourCount = mesh.count;
+        mesh.count = batch.shadowCount;
+      }
+      nearCamera = camera;
     },
-    restoreView() { for (const batch of batches.values()) batch.mesh!.count = batch.slots.length; },
+    restoreView() { nearCamera = null; for (const batch of batches.values()) batch.mesh!.count = batch.slots.length; },
     report() { return { provenance: 'derived-from-built-topology', ...counts,
       ...(disposed ? { drawCalls: 0, colourTriangles: 0, shadowDrawCalls: 0, shadowTriangles: 0,
         geometryBytes: 0, instanceBytes: 0, textureBytes: 0 as const, geometryOwners: 0, materialOwners: 0, batches: 0 } : cost),

@@ -254,9 +254,7 @@ test('the fresh-route panel leads with the control that needs no knowledge', asy
 
   // The entrance says what it gives you.
   await expect(page.locator('.euc-menu--title [data-menu="routes"]'))
-    .toContainText('brand-new place to ride');
-  await expect(page.locator('.euc-menu--title [data-menu="routes"]'))
-    .toContainText('procedurally generate');
+    .toContainText('Generate a brand-new town');
 
   await page.locator('.euc-menu--title [data-menu="routes"]').click();
 

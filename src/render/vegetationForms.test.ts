@@ -5,10 +5,12 @@ import * as THREE from 'three';
 import { SHARED_VEGETATION_CONTRACTS } from './sharedVegetation.ts';
 import {
   buildVegetationForm, buildBroadleafDistanceForms, VEGETATION_FORM_COUNTS, VEGETATION_HEIGHT_SHARES,
-  BROADLEAF_DISTANCE_COUNTS, buildConiferDistanceForms, CONIFER_DISTANCE_COUNTS,
+  BROADLEAF_DISTANCE_COUNTS, buildConiferDistanceForms, CONIFER_DISTANCE_COUNTS, CLUMP_SKY,
   type VegetationContract, type VegetationFamily,
 } from './vegetationForms.ts';
-import { buildVegetationGrowthPlan, vegetationGrowthPrice, assertVegetationGrowthPlan } from './vegetationGrowthPlan.ts';
+import { buildVegetationGrowthPlan, vegetationGrowthPrice, assertVegetationGrowthPlan, clumpTriangles, CROWN_FRAME,
+  CROWN_LAYOUT } from './vegetationGrowthPlan.ts';
+import { CROWN_ENVELOPE } from './foliageKit.ts';
 
 /** Weld exact stored positions, independently of the generator's vertex ids. */
 function components(position: THREE.BufferAttribute): number[][] {
@@ -358,7 +360,8 @@ function growthComponentsOutward(position: THREE.BufferAttribute,
   plan: ReturnType<typeof buildVegetationGrowthPlan>): boolean {
   const counts = [...plan.branches.map(branch => (branch.sectors ?? plan.branchSectors)
     * (branch.sections?.length ?? 2) * 2),
-    ...plan.leaves.map(() => plan.leafSectors * plan.leafSections.length * 2)];
+    ...plan.leaves.map(() => plan.leafSectors * plan.leafSections.length * 2),
+    ...plan.clumps.map(clump => clumpTriangles(clump.subdivisions))];
   let corner = 0;
   for (const triangles of counts) {
     const values = new Float32Array(triangles * 9);
@@ -397,11 +400,32 @@ for (const family of ['crown', 'shrub'] as const) for (const detail of ['ordinar
         assert.equal(form.geometry.groups.length, 0);
         // Hostile records remain individually finite, closed and inside a broad
         // envelope, but cannot represent a rooted plant. A label is insufficient.
-        const leaf = plan.leaves.at(-1)!;
-        const looseLeaf = { ...leaf, root: movedOffAxis(leaf.root, plan.branches[leaf.parent], .05),
-          tip: movedOffAxis(leaf.tip, plan.branches[leaf.parent], .05) };
-        assert.throws(() => assertVegetationGrowthPlan({ ...plan,
-          leaves: [...plan.leaves.slice(0, -1), looseLeaf] }), /Detached vegetation leaf/);
+        // A shrub's foliage is leaves; a crown's (2026-10-22) is leaf masses.
+        if (family === 'shrub') {
+          const leaf = plan.leaves.at(-1)!;
+          const looseLeaf = { ...leaf, root: movedOffAxis(leaf.root, plan.branches[leaf.parent], .05),
+            tip: movedOffAxis(leaf.tip, plan.branches[leaf.parent], .05) };
+          assert.throws(() => assertVegetationGrowthPlan({ ...plan,
+            leaves: [...plan.leaves.slice(0, -1), looseLeaf] }), /Detached vegetation leaf/);
+        } else {
+          assert.equal(plan.leaves.length, 0);
+          const swap = (index: number, clump: typeof plan.clumps[number]) =>
+            ({ ...plan, clumps: plan.clumps.map((other, i) => i === index ? clump : other) });
+          // A mass whose parent's tip no longer lies deep inside it floats.
+          const massIndex = plan.clumps.findIndex(clump => clump.host === -1 && plan.branches[clump.parent].parent === 0);
+          const mass = plan.clumps[massIndex];
+          assert.throws(() => assertVegetationGrowthPlan(swap(massIndex, { ...mass,
+            centre: [mass.centre[0] + mass.radii[0] * 2, mass.centre[1], mass.centre[2]] })), /Detached vegetation mass/);
+          // A tuft pushed out of its host, or hosted by a later mass or another tuft, floats too.
+          const tuftIndex = plan.clumps.findIndex(clump => clump.host >= 0), tuft = plan.clumps[tuftIndex];
+          const host = plan.clumps[tuft.host];
+          assert.throws(() => assertVegetationGrowthPlan(swap(tuftIndex, { ...tuft,
+            centre: [host.centre[0] + host.radii[0] * .95, host.centre[1], host.centre[2]] })), /Detached vegetation mass/);
+          assert.throws(() => assertVegetationGrowthPlan(swap(tuftIndex, { ...tuft, host: tuftIndex })), /Detached vegetation mass/);
+          const otherTuft = plan.clumps.findIndex((clump, i) => clump.host >= 0 && i > tuftIndex);
+          assert.throws(() => assertVegetationGrowthPlan(swap(otherTuft, { ...plan.clumps[otherTuft], host: tuftIndex })), /Detached vegetation mass/);
+          assert.throws(() => assertVegetationGrowthPlan(swap(massIndex, { ...mass, levels: 6 })), /Detached vegetation mass/);
+        }
         const branch = plan.branches.at(-1)!;
         const looseBranch = { ...branch, from: movedOffAxis(branch.from, plan.branches[branch.parent], .10),
           to: movedOffAxis(branch.to, plan.branches[branch.parent], .10) };
@@ -415,8 +439,9 @@ for (const family of ['crown', 'shrub'] as const) for (const detail of ['ordinar
         const p = form.geometry.getAttribute('position') as THREE.BufferAttribute;
         const firstLeafTriangle = plan.branches.reduce((sum, branch) => sum + (branch.sectors ?? plan.branchSectors)
           * (branch.sections?.length ?? 2) * 2, 0);
+        const firstFoliage = plan.leaves.length ? plan.leafSectors * plan.leafSections.length * 2 : clumpTriangles(plan.clumps[0].subdivisions);
         const inverted = p.clone();
-        for (let triangle = firstLeafTriangle; triangle < firstLeafTriangle + plan.leafSectors * plan.leafSections.length * 2; triangle++) {
+        for (let triangle = firstLeafTriangle; triangle < firstLeafTriangle + firstFoliage; triangle++) {
           for (let axis = 0; axis < 3; axis++) {
             const a = triangle * 9 + 3 + axis, b = triangle * 9 + 6 + axis;
             const value = inverted.array[a]; inverted.array[a] = inverted.array[b]; inverted.array[b] = value;
@@ -448,6 +473,10 @@ for (const family of ['crown', 'shrub'] as const) for (const detail of ['ordinar
         for (const leaf of plan.leaves) {
           const count = plan.leafSectors * plan.leafSections.length * 2 * 3;
           spans.push({ start: sourceCorner, count, levels: leaf.levels }); sourceCorner += count;
+        }
+        for (const clump of plan.clumps) {
+          const count = clumpTriangles(clump.subdivisions) * 3;
+          spans.push({ start: sourceCorner, count, levels: clump.levels }); sourceCorner += count;
         }
         for (const level of ['near', 'middle', 'far'] as const) {
           const p = forms[level].getAttribute('position') as THREE.BufferAttribute;
@@ -713,6 +742,126 @@ test('crown leader continues the unchanged trunk cap in every habit and tier', (
       }
       assert.equal(coversOriginalCap(narrowed), false,
         'A closed narrower pole mounted on the cap must fail the same source dimensions');
+    } finally { form.geometry.dispose(); }
+  }
+});
+
+test('the crown plan frame restates the envelope the mesh owner fits it into', () => {
+  assert.equal(CROWN_FRAME.halfX, Math.min(-CROWN_ENVELOPE.min[0], CROWN_ENVELOPE.max[0]));
+  assert.ok(Math.abs(CROWN_FRAME.halfZ - Math.min(-CROWN_ENVELOPE.min[2], CROWN_ENVELOPE.max[2])) < 1e-12);
+  assert.equal(CROWN_FRAME.base, CROWN_ENVELOPE.min[1]);
+  assert.ok(Math.abs(CROWN_FRAME.base + CROWN_FRAME.span - CROWN_ENVELOPE.max[1]) < 1e-12);
+});
+
+/**
+ * The 2026-10-22 full-crown contract (the owner's ride: "a few separate blobs
+ * with see-through gaps"): seen level from any side, the inner core of the
+ * crown's silhouette is closed foliage at every distance level. A ray grid
+ * over the middle of the silhouette (its outer fifth either side and its top
+ * fifth and bottom quarter are the lumpy edge, where sky may show) must meet a
+ * leaf triangle almost everywhere. Controls: the bough masses alone (a few
+ * separate blobs), and the woody scaffold alone, open real gaps and fail.
+ */
+test('full crowns: every habit closes its silhouette from every side, near to far, and blobs with gaps fail', () => {
+  const contract = SHARED_VEGETATION_CONTRACTS.crown;
+  type Triangle = [THREE.Vector3, THREE.Vector3, THREE.Vector3];
+  const trianglesOf = (position: THREE.BufferAttribute, leaf: (corner: number) => boolean): Triangle[] => {
+    const triangles: Triangle[] = [];
+    for (let t = 0; t < position.count / 3; t++) if (leaf(t * 3)) triangles.push([0, 1, 2].map(k =>
+      new THREE.Vector3().fromBufferAttribute(position, t * 3 + k)) as Triangle);
+    return triangles;
+  };
+  /** Hits on `triangles` over the middle of `silhouette`'s outline (the whole crown's foliage). */
+  const coverage = (triangles: readonly Triangle[], silhouette: readonly Triangle[] = triangles): number => {
+    let rays = 0, hits = 0;
+    const hit = new THREE.Vector3();
+    for (let side = 0; side < 8; side++) {
+      const theta = side / 8 * Math.PI * 2 + .2;
+      const view = new THREE.Vector3(Math.cos(theta), 0, Math.sin(theta)), across = new THREE.Vector3(-view.z, 0, view.x);
+      let low = Infinity, high = -Infinity, bottom = Infinity, top = -Infinity;
+      for (const triangle of silhouette) for (const p of triangle) {
+        low = Math.min(low, p.dot(across)); high = Math.max(high, p.dot(across));
+        bottom = Math.min(bottom, p.y); top = Math.max(top, p.y);
+      }
+      const width = high - low, height = top - bottom;
+      for (let i = 0; i < 9; i++) for (let j = 0; j < 8; j++) {
+        const u = low + width * (.2 + .6 * i / 8), y = bottom + height * (.25 + .55 * j / 7);
+        const origin = across.clone().multiplyScalar(u).addScaledVector(view, -20).setY(y);
+        const ray = new THREE.Ray(origin, view);
+        rays++;
+        if (triangles.some(([a, b, c]) => ray.intersectTriangle(a, b, c, false, hit) !== null)) hits++;
+      }
+    }
+    return hits / rays;
+  };
+  for (const variant of [0, 1, 2] as const) {
+    const plan = buildVegetationGrowthPlan('crown', 'ordinary', variant);
+    const forms = buildBroadleafDistanceForms('crown', 'ordinary', variant, contract);
+    const near = buildVegetationForm('crown', 'ordinary', variant, contract);
+    const row: Record<string, number> = {};
+    try {
+      for (const level of ['near', 'middle', 'far'] as const) {
+        const position = forms[level].getAttribute('position') as THREE.BufferAttribute;
+        // Wood triangles come first in every level; foliage is everything after them.
+        const wood = plan.branches.reduce((sum, branch) => sum + (branch.sectors ?? plan.branchSectors) * (branch.sections?.length ?? 2) * 2, 0) * 3;
+        const covered = coverage(trianglesOf(position, corner => corner >= wood));
+        assert.ok(covered >= .97, `habit ${variant} ${level}: ${(covered * 100).toFixed(1)} % of the crown's middle is foliage`);
+        row[level] = +covered.toFixed(3);
+      }
+      // Control 1: "a few separate blobs" — the seven bough masses alone (the old crown's
+      // bough-end clusters), without the inner body, the crest and the outer ring.
+      const foliageStart = plan.branches.reduce((sum, branch) => sum + (branch.sectors ?? plan.branchSectors) * (branch.sections?.length ?? 2) * 2, 0) * 3;
+      const boughEnd = foliageStart + plan.clumps.slice(0, CROWN_LAYOUT.boughs).reduce((sum, clump) => sum + clumpTriangles(clump.subdivisions) * 3, 0);
+      const nearPosition = near.geometry.getAttribute('position') as THREE.BufferAttribute;
+      const crown = trianglesOf(nearPosition, k => k >= foliageStart);
+      const blobs = coverage(trianglesOf(nearPosition, k => k >= foliageStart && k < boughEnd), crown);
+      assert.ok(blobs < .9, `habit ${variant}: a few separate bough blobs must leave gaps (${(blobs * 100).toFixed(1)} %)`);
+      // Control 2: the woody scaffold alone is nearly all sky.
+      const scaffold = coverage(trianglesOf(nearPosition, k => k < foliageStart), crown);
+      assert.ok(scaffold < .3, `habit ${variant}: the scaffold alone (${(scaffold * 100).toFixed(1)} %)`);
+      console.log(JSON.stringify({ crownCoverage: variant, ...row, boughBlobsOnly: +blobs.toFixed(3), scaffoldOnly: +scaffold.toFixed(3) }));
+    } finally { near.geometry.dispose(); forms.near.dispose(); forms.middle.dispose(); forms.far.dispose(); }
+  }
+});
+
+test('crown leaf masses: one topology for all three habits, tufts near only, under masses dropped far', () => {
+  for (const detail of ['ordinary', 'ultra'] as const) {
+    const plans = [0, 1, 2].map(variant => buildVegetationGrowthPlan('crown', detail, variant as 0 | 1 | 2));
+    const shape = (plan: typeof plans[number]) => plan.clumps.map(clump => `${clump.levels}/${clump.subdivisions}/${clump.host >= 0}`).join();
+    assert.equal(new Set(plans.map(shape)).size, 1, 'every habit prices the same masses');
+    for (const plan of plans) {
+      assert.equal(plan.clumps.length, 1 + 1 + CROWN_LAYOUT.outer + CROWN_LAYOUT.under + CROWN_LAYOUT.tufts);
+      assert.equal(plan.clumps.filter(clump => clump.host >= 0).length, CROWN_LAYOUT.tufts);
+      assert.ok(plan.clumps.every(clump => clump.host < 0 || clump.levels === 1), 'tufts are near-range detail');
+      assert.equal(plan.clumps.filter(clump => clump.levels === 3).length, CROWN_LAYOUT.under);
+      assert.equal(plan.branches.filter(branch => branch.parent === 0).length, CROWN_LAYOUT.boughs, 'seven primary boughs off the leader');
+    }
+  }
+});
+
+/**
+ * 2026-10-22 second look pass: the chase camera looks up into a crown, so a
+ * leaf mass's shading normal leans up (`CLUMP_SKY`) against its true face —
+ * the lower half on the sun's side catches a 55° sun — while the crown's true
+ * undersides still face down and keep their shade. Shading only: the faces
+ * (positions) are the habit's own.
+ */
+test('crown leaf masses lean their shading up and keep real undersides, in every habit and tier', () => {
+  assert.ok(CLUMP_SKY > 0.3 && CLUMP_SKY < 0.8);
+  for (const detail of ['ordinary', 'ultra'] as const) for (const variant of [0, 1, 2] as const) {
+    const form = buildVegetationForm('crown', detail, variant, SHARED_VEGETATION_CONTRACTS.crown);
+    try {
+      const p = form.geometry.getAttribute('position'), n = form.geometry.getAttribute('normal');
+      let lean = 0, corners = 0, under = 0;
+      for (let t = 0; t < p.count / 3; t++) {
+        const i = t * 3; if (!form.context.leaf[i]) continue;
+        const a = new THREE.Vector3().fromBufferAttribute(p, i);
+        const face = new THREE.Vector3().fromBufferAttribute(p, i + 1).sub(a)
+          .cross(new THREE.Vector3().fromBufferAttribute(p, i + 2).sub(a)).normalize();
+        for (let k = 0; k < 3; k++) { lean += n.getY(i + k) - face.y; corners++; if (n.getY(i + k) < -0.5) under++; }
+      }
+      assert.ok(lean / corners > 0.3, `${detail} ${variant}: shading leans ${(lean / corners).toFixed(3)} up from the faces`);
+      assert.ok(under / corners > 0.03, `${detail} ${variant}: ${(under / corners * 100).toFixed(1)} % of leaf corners still face down`);
     } finally { form.geometry.dispose(); }
   }
 });

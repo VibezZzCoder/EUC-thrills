@@ -22,22 +22,23 @@ export const EUC_STEP_PRIMITIVE_FIELDS = Object.freeze([
   'lastStepUp', 'blocked', 'obstacleEscapeArmed', 'collisionImpact', 'offCourse', 'inHazard',
   'inSoftBody', 'launchPadsArmed', 'launchPadLatch', 'launchPadRearmMetres', 'launchPadRearmRidden', 'launchPadVerticalSpeed',
   'justPadLaunched', 'launchPadsShown', 'launchPadRise', 'airborne', 'verticalVelocity', 'airDirX',
-  'airDirZ', 'groundY', 'airTime', 'airApex', 'compressTimer', 'compressing',
-  'crouchHold', 'hopCharge', 'hopWasHeld', 'hops', 'spinRemaining', 'spinDirection',
-  'spinArmed', 'spinsCount', 'crouch', 'tuck', 'attackHold', 'attack',
-  'carveStance', 'absorb', 'airBlend', 'airPitch', 'landingTimer', 'landingQuality',
-  'landingImpact', 'landingMisalignment', 'landingScore', 'landingSpeedLoss', 'landings', 'pedalStrike',
-  'pedalClearance', 'justTookOff', 'justTouchedDown', 'justHopped', 'spinSwept', 'flights',
-  'stylePhaseA', 'stylePhaseB', 'styleGate', 'styleSway', 'styleHeading', 'styleWeaveRate',
-  'styleMetres', 'stumbleTime', 'stumbleLength', 'stumbles', 'styleYaw', 'styleRoll',
-  'styleStumble', 'wobbleEnergy', 'wobblePhase', 'wobbleYaw', 'wobbleRoll', 'wobbleSway',
-  'wobbleRate', 'wobbleProbeDistance', 'wobbleSmoothness', 'wobbleFootCorrection', 'steerSign', 'steerHold',
-  'loadFactor', 'powerStage', 'landingLoad', 'tiltBack', 'tiltBackLatched', 'overspeedFactor',
-  'overspeedHold', 'crashing', 'crashCause', 'crashMotion', 'crashTime', 'crashes',
-  'crashSpeed', 'crashSide', 'crashBlend', 'wheelCrashLean', 'recoverTimer', 'invulnerableTimer',
-  'ragdolling', 'wheelCrashSpin', 'wheelCrashSpinRate', 'wheelCrashPop', 'wheelCrashPopVelocity', 'safeX',
-  'safeZ', 'safeHeading', 'safeHold', 'safeRingCount', 'safeRingNext', 'recoveryRefusedSeconds',
-  'contactHoldMask', 'contactHoldMaskOlder', 'airPhaseContactUpdate', 'nativePhaseRetryReserveMetres',
+  'airDirZ', 'crashTravelX', 'crashTravelZ', 'groundY', 'airTime', 'airApex',
+  'compressTimer', 'compressing', 'crouchHold', 'hopCharge', 'hopWasHeld', 'hops',
+  'spinRemaining', 'spinDirection', 'spinArmed', 'spinsCount', 'crouch', 'tuck',
+  'attackHold', 'attack', 'carveStance', 'absorb', 'airBlend', 'airPitch',
+  'landingTimer', 'landingQuality', 'landingImpact', 'landingMisalignment', 'landingScore', 'landingSpeedLoss',
+  'landings', 'pedalStrike', 'pedalClearance', 'justTookOff', 'justTouchedDown', 'justHopped',
+  'spinSwept', 'flights', 'stylePhaseA', 'stylePhaseB', 'styleGate', 'styleSway',
+  'styleHeading', 'styleWeaveRate', 'styleMetres', 'stumbleTime', 'stumbleLength', 'stumbles',
+  'styleYaw', 'styleRoll', 'styleStumble', 'wobbleEnergy', 'wobblePhase', 'wobbleYaw',
+  'wobbleRoll', 'wobbleSway', 'wobbleRate', 'wobbleProbeDistance', 'wobbleSmoothness', 'wobbleFootCorrection',
+  'steerSign', 'steerHold', 'loadFactor', 'powerStage', 'landingLoad', 'tiltBack',
+  'tiltBackLatched', 'overspeedFactor', 'overspeedHold', 'crashing', 'crashCause', 'crashMotion',
+  'crashTime', 'crashes', 'crashSpeed', 'crashSide', 'crashBlend', 'wheelCrashLean',
+  'recoverTimer', 'invulnerableTimer', 'crashFalling', 'crashFallSeconds', 'ragdolling', 'wheelCrashSpin',
+  'wheelCrashSpinRate', 'wheelCrashPop', 'wheelCrashPopVelocity', 'safeX', 'safeZ', 'safeHeading',
+  'safeHold', 'safeRingCount', 'safeRingNext', 'recoveryRefusedSeconds', 'contactHoldMask', 'contactHoldMaskOlder',
+  'airPhaseContactUpdate', 'nativePhaseRetryReserveMetres',
 ] as const);
 export type EucStepPrimitiveField = typeof EUC_STEP_PRIMITIVE_FIELDS[number];
 export type EucStepPrimitiveState = { -readonly [K in EucStepPrimitiveField]: unknown };
@@ -111,6 +112,8 @@ export function copyEucStepPrimitives(to: EucStepPrimitiveState, from: EucStepPr
   to.verticalVelocity = from.verticalVelocity;
   to.airDirX = from.airDirX;
   to.airDirZ = from.airDirZ;
+  to.crashTravelX = from.crashTravelX;
+  to.crashTravelZ = from.crashTravelZ;
   to.groundY = from.groundY;
   to.airTime = from.airTime;
   to.airApex = from.airApex;
@@ -188,6 +191,8 @@ export function copyEucStepPrimitives(to: EucStepPrimitiveState, from: EucStepPr
   to.wheelCrashLean = from.wheelCrashLean;
   to.recoverTimer = from.recoverTimer;
   to.invulnerableTimer = from.invulnerableTimer;
+  to.crashFalling = from.crashFalling;
+  to.crashFallSeconds = from.crashFallSeconds;
   to.ragdolling = from.ragdolling;
   to.wheelCrashSpin = from.wheelCrashSpin;
   to.wheelCrashSpinRate = from.wheelCrashSpinRate;

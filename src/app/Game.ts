@@ -2812,7 +2812,7 @@ export class Game {
         // In the display band, or it fades and ends. The asker's head hidden
         // behind another body (a partner who stepped between) ends it too,
         // once it has been read (the model's `minimumReadableSeconds`).
-        inBand = this.barkView.bubbleInBand(camera, output.anchor);
+        inBand = this.barkView.bubbleInBand(camera, output.anchor, output.actorId ?? undefined);
         askerHidden = inBand && bubbleHidden(camera.position, output.actorId ?? '', output.anchor, this.barkFrames[view]);
         if (inBand) {
           const pane = this.renderer.viewBounds(view);
@@ -2826,7 +2826,7 @@ export class Game {
     let occluded = false;
     const pending = output.pending;
     if (pending !== null && !output.visible) {
-      qualified = this.barkView.candidateSeen(camera, pending.anchor, pending.relativeVelocity, seat.renderPose);
+      qualified = this.barkView.candidateSeen(camera, pending.anchor, pending.relativeVelocity, seat.renderPose, pending.actorId);
       if (qualified) {
         // Checked once, at this moment: never a bubble through a wall. The
         // camera's own occlusion ray (terrain and occluding blocks). A hit
@@ -3784,6 +3784,7 @@ export class Game {
     this.menus = new Menus(this.options.current, {
       callbacks: {
         onStartRide: () => this.goTo('freeRide'),
+        onStartPlace: (place) => this.startPlaceRide(place),
         // **Not `goTo('freeRide')`.** From M10 there are two rides and Resume
         // has to return to the one that was paused; sending every resume to
         // free ride would silently end a timed run the player had two minutes
@@ -11379,6 +11380,32 @@ export class Game {
    * `enterTrackDay` replays them — a diagnostic session asking for a venue
    * must get the venue it has been riding, not a different build of it.
    */
+  /**
+   * The title's second start card (2026-10-22): ride Wheelhouse Wharf, or the
+   * town the game opens on, in one press. The place is installed first if it
+   * is not the one loaded — behind the world cover, as `chooseTrackDay` does —
+   * and then this is exactly Start ride.
+   */
+  private startPlaceRide(place: string): void {
+    if (this.appState.current !== 'title' || this.pendingRoute !== null) return;
+    if (place !== 'euclaude' && place !== 'town') return;
+    const loaded = place === 'euclaude' ? this.levelId === 'euclaude'
+      : this.levelId === DEFAULT_LEVEL && this.seed === DEFAULT_SEED;
+    if (!loaded) {
+      if (this.coverWorldSwap('Heading somewhere new', () => this.startPlaceRide(place))) return;
+      if (place === 'euclaude') {
+        this.installLevel('euclaude', '',
+          createLevel('euclaude', DEFAULT_SEED, this.hazardProbe, this.targetProbe, this.topSpeedMph));
+      } else {
+        const outcome = requestRoute(DEFAULT_SEED, this.hazardProbe, this.targetProbe, this.topSpeedMph);
+        if (!outcome.ok) return;
+        this.installLevel('generated', outcome.seed, outcome.plan);
+        this.menus.setSeed(outcome.seed);
+      }
+    }
+    this.goTo('freeRide');
+  }
+
   private pickVenue(venue: string): void {
     if (this.pendingRoute !== null) return;
     if (!isVenueId(venue)) return;
@@ -11844,6 +11871,7 @@ export class Game {
     this.menus.setWorld({
       world: this.levelId,
       seed: this.seed,
+      home: this.levelId === DEFAULT_LEVEL && this.seed === DEFAULT_SEED,
       // **The plan's own fact, not a list of which venues lap** — M36 Phase 5.
       // Two sentences on the menus name a venue, and both are naming where the
       // Track Day button would take you, which is `enterTrackDay`'s question
@@ -13507,6 +13535,12 @@ export class Game {
     this.population.writePresentationEndpoints(populationPrevious, populationCurrent);
     this.renderer.updatePopulation(populationPrevious, populationCurrent, alpha);
     updatePopulationAudio(this.audio, populationPrevious, populationCurrent, alpha);
+    // Traffic horns (2026-10-21): read-only presented rows and the presented
+    // riders above (seats first, then placed cops). The seat count is load-
+    // bearing: seats are the ears and the only riders honked at; a placed CPU
+    // cop is waited for in silence (2026-10-22).
+    this.audio.updateTrafficHorns(populationCurrent.clockSeconds, populationCurrent.actors,
+      this.wildlifeRiders, this.seats.length, this.seats[0].renderPose.headingY);
     // M42 (Builder D): the question barks, on this frame's own `hudSeconds`.
     this.updateBarks(hudSeconds, populationPrevious.actors, populationCurrent.actors, alpha);
     // **The held paused view** (performance pass 2026-10-17, `pausedView.ts`).

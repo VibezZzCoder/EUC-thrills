@@ -1,5 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import type { RouteSign } from '../data/routeSigns.ts';
+import type { QuayScenerySpec } from './quayScenery.ts';
 import type { MarkingPaint } from '../data/markings.ts';
 import type { BuildingLook, PropKind } from '../data/props.ts';
 import type { MaterialId } from '../data/surfaces.ts';
@@ -9,7 +10,7 @@ import type { TrickZone } from './trickZones.ts';
 import type { DistrictCompositionReport } from './districtComposition.ts';
 import type { DistrictActivityReport } from './districtActivity.ts';
 import type { DistrictAdjacencyReport } from './districtAdjacency.ts';
-import type { AuthoredPopulationPath, PopulationGroundSource, AuthoredParkingBay,
+import type { PopulationActivity, AuthoredPopulationPath, PopulationGroundSource, AuthoredParkingBay,
   PopulationCrossing, LivingWorldGroundReport, FinishedFootpathRequest, AuthoredDistrictActivitySite, AuthoredDistrictActivityWalk } from './populationPlan.ts';
 
 /**
@@ -75,6 +76,17 @@ export interface BoxCollider {
    * as solid as any other.
    */
   occludes?: boolean;
+  /**
+   * Does `render/terrain.ts` draw this box? Default true (2026-10-22).
+   *
+   * **False only where a venue's own dressing draws what the box is**: Quay
+   * Quarter's see-through railings stand on its island-edge and roof-deck
+   * boxes (`level/quayScenery.ts`). Nothing in `simulation/` reads it, so the
+   * box stops a wheel, meets the camera ray and blocks navigation exactly as a
+   * drawn one; only the block meshes and every block price skip it. Absent,
+   * never a present `true`, so a plan that does not use it digests as before.
+   */
+  drawn?: false;
 }
 
 /**
@@ -257,6 +269,13 @@ export interface Prop {
    * on every hand-authored world, whose buildings draw exactly as before.
    */
   look?: BuildingLook;
+  /**
+   * A venue-authored body and roof colour for a building, sRGB hex, in place of
+   * the district palette's pick (Quay Quarter, 2026-10-21). Render composition
+   * only, exactly as `look` is; absent, a building draws as it always has.
+   */
+  tone?: number;
+  roofTone?: number;
 }
 
 /**
@@ -296,6 +315,8 @@ export interface Marking {
   paint: MarkingPaint;
   /** Explicit instructional glyph support on compact dirt, never a surface. */
   support?: 'compactTrail';
+  /** Raised slab paint keeps its authored elevation; absent means fitted heightfield. */
+  elevation?: 'authored';
 }
 
 /**
@@ -485,6 +506,40 @@ export interface Target {
   base: Vec3;
 }
 
+/**
+ * One authored launch pad — M44 (`LevelPlan.launchPads`).
+ *
+ * Plain data a hand-built producer writes: where the pad stands and what it
+ * declares about the ground it throws a rider over. Everything else about a
+ * pad — its trigger and footprint radii, its kicker, its height — comes from
+ * `LAUNCH_PAD` and the finished ground when `cityLaunchPads` resolves it.
+ */
+export interface AuthoredLaunchPad {
+  /** Stable and unique within the plan. */
+  readonly id: string;
+  readonly x: number;
+  readonly z: number;
+  /** The kicker's facing about +Y, radians. Omnidirectional in play; this only
+   * turns the drawn octagon. */
+  readonly yaw: number;
+  /** The drop the lift cap reads (`LaunchPadSite.dropMetres`), metres, ≥ 0. A
+   * roof pad declares 0: its honest drop is the gap it exists to cross. */
+  readonly dropMetres: number;
+  /**
+   * The pad's **safe-point hold** radius, metres, ≥ 0 — optional; absent means
+   * 0, no hold (M44 decision D15). While the venue's pads stand, the rider's
+   * crash-recovery point is never stored within this horizontal distance of
+   * the pad's centre on ground no lower than the pad's own ground less
+   * `LAUNCH_PAD.holdSafeDropMetres` (`LaunchPadField.holdsSafePoint`). A roof
+   * pad declares one so that a rider who comes up short at its gap is
+   * recovered off the roofs, down the ramp, with a run-up — not a few metres
+   * before the pad they just failed. Carried onto the resolved
+   * `LaunchPadSite` only when written, so a pad that declares none resolves
+   * exactly as before.
+   */
+  readonly holdSafeMetres?: number;
+}
+
 export interface LevelPlan {
   id: string;
   /** Required reconnecting streets. Ordered segment ids, both arms forward
@@ -518,6 +573,15 @@ export interface LevelPlan {
    * Presence authorizes no physical actor until the shared population owner
    * validates the finished plan and installs its revised world identity. */
   populationPaths?: readonly AuthoredPopulationPath[];
+  /** Optional explicit roster; absent preserves existing authoring and limits. */
+  populationActivity?: PopulationActivity;
+  /** Render-only harbour outside a physically enclosed island (`level/harbourScenery.ts`): open water to the
+   * haze, a far shore, a lighthouse, moored boats. `halfWidth`/`halfDepth` are the guard wall's outer face;
+   * `waterWidth` is the near-shore band over which the water deepens from pale to open blue; `bridgeWidth`,
+   * when present, draws a deck of that width out to the north shore (never ridden). */
+  riverScenery?: { readonly halfWidth: number; readonly halfDepth: number; readonly waterWidth: number; readonly bridgeWidth?: number };
+  /** Render-only Quay Quarter dressing: beds, kerbs, paving, walls, market lane (`level/quayScenery.ts`). */
+  quayScenery?: QuayScenerySpec;
   /** Explicit finished-ground additions; no changes to the riding graph. */
   populationGroundSources?: readonly PopulationGroundSource[];
   populationParkingBays?: readonly AuthoredParkingBay[];
@@ -554,6 +618,19 @@ export interface LevelPlan {
    * never see this key at all.
    */
   targets?: Target[];
+  /**
+   * Authored launch pads — M44 (`docs/PLANS.md` §44.1 D5). Absent on a plan
+   * that carries none, which is every plan but EUClaude Heights.
+   *
+   * **An input, never the derived layer written back.** M42's finder
+   * (`level/launchPadSites.ts`) derives a city's pads after world preparation
+   * and never writes them into a plan (invariant 3). A hand-built venue that
+   * wants pads where the finder's city predicate cannot reach — on a roof, in
+   * a dense courtyard — lists them here, and `cityLaunchPads` resolves the list
+   * into the same `LaunchPadSite`s instead of searching. Absent, never empty:
+   * `planDigest` omits an absent key, so no other world's digest moves.
+   */
+  launchPads?: readonly AuthoredLaunchPad[];
   /**
    * Render-only dressing. Absent on a plan that carries none.
    *

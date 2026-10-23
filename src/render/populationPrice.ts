@@ -5,6 +5,7 @@
  */
 import type { PopulationPlan } from '../level/populationPlan.ts';
 import { STANDARD_MACHINE_LOOK } from './machineLook.ts';
+import { assignVehicleBodies, vehicleBodyParts } from './populationVehicles.ts';
 
 export interface SupplementCount {
   readonly colourDraws: number;
@@ -37,10 +38,11 @@ const HUMAN: Readonly<Record<string, Shape>> = {
   hair: loft(4, 18), shoe: loft(4, 16), sole: loft(2, 16), nose: loft(3, 10),
   round: shape(88, 360, 32), box: box(),
 };
-const WINDOW = patch(12, 6);
+/** 2026-10-22 shell: one-row glazing slabs (the band lies between two cabin rings). */
 const VEHICLE: Readonly<Record<string, Shape>> = {
-  hull: loft(5, 20), cabin: loft(4, 20), windshield: WINDOW, rearWindow: WINDOW,
-  sideWindow: merge(WINDOW, WINDOW), sidePassenger: merge(WINDOW, WINDOW),
+  hull: loft(5, 20), cabin: loft(5, 20), windshield: patch(8, 1), rearWindow: patch(6, 1),
+  sideWindow: merge(patch(6, 1), patch(6, 1)), sidePassenger: merge(patch(8, 1), patch(8, 1)),
+  arch: loft(2, 16), box: box(),
   tyre: cylinder(20, 32), rim: merge(loft(4, 16), ...Array.from({ length: 6 }, () => box(44))),
 };
 /** Standard euc.ts uses these fixed original profiles (7/7/7/4/4 rings),
@@ -73,19 +75,15 @@ export function countPopulation(plan: PopulationPlan | null): SupplementCount {
   };
   const human = (geometry: string, finish: string, count = 1, casts = false) =>
     add(`human-${geometry}-${finish}`, HUMAN[geometry], casts, count);
-  const van = (geometry: string, finish: string, count = 1, casts = false) =>
-    add(`vehicle-${geometry}-${finish}`, VEHICLE[geometry], casts, count);
+  const bodies = assignVehicleBodies(plan?.actors ?? []);
   for (const spec of plan?.actors ?? []) {
-    const vehicle = spec.kind === 'parkedVehicle' || spec.kind === 'serviceVehicle' || spec.kind === 'trafficVehicle';
-    if (vehicle) {
-      const passenger = spec.kind === 'trafficVehicle' || (spec.kind === 'parkedVehicle' && spec.appearanceIndex % 2 !== 0);
-      van('hull', 'paint', 1, true); van('cabin', 'paint', 1, true);
-      van('windshield', 'glass'); van('sideWindow', 'glass');
-      if (passenger) { van('sidePassenger', 'glass'); van('rearWindow', 'glass'); }
-      van('tyre', 'rubber', 4, true); van('rim', 'metal', 4);
-      human('box', 'paint', passenger ? 5 : 7); // mirrors, plates, ridge, optional service bands
-      human('box', 'glass', 2); human('box', 'metal', 2); human('box', 'lens', 4);
-      human('box', 'rubber', 5); // door seams, bumpers and grille
+    const body = bodies.get(spec.id);
+    if (body) {
+      // The factory builds exactly this list (populationVehicles.ts).
+      for (const part of vehicleBodyParts(body)) {
+        if (part.family === 'vehicle') add(`vehicle-${part.geometry}-${part.finish}`, VEHICLE[part.geometry]!, part.casts);
+        else human(part.geometry, part.finish, 1, part.casts);
+      }
     } else {
       human('torso', 'cloth', 1, true); human('pelvis', 'cloth'); human('head', 'skin', 1, true);
       human('hair', 'hair'); human('nose', 'skin'); human('round', 'skin', 3);

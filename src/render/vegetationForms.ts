@@ -6,7 +6,7 @@
  * geometry/material bucket; the caller owns physical bounds, colour and light.
  */
 import * as THREE from 'three';
-import { buildVegetationGrowthPlan, vegetationGrowthPrice, type GrowthDistance,
+import { buildVegetationGrowthPlan, vegetationGrowthPrice, CROWN_HABIT, type GrowthClump, type GrowthDistance,
   type VegetationGrowthPlan } from './vegetationGrowthPlan.ts';
 import { constructionScopeOpen, onConstructionScopeEnd } from './constructionScope.ts';
 
@@ -141,7 +141,7 @@ export const VEGETATION_VARIANT_NAMES = Object.freeze(['mature-spreading', 'asym
 
 /** The caller's box is an upper bound, not an instruction to stretch every plant. */
 export const VEGETATION_HEIGHT_SHARES = Object.freeze({
-  crown: Object.freeze([1, 1, 0.78] as const),
+  crown: CROWN_HABIT.heightShares,
   coniferFoliage: Object.freeze([1, 1, 1] as const),
   shrub: Object.freeze([1, 0.92, 0.86] as const),
 });
@@ -153,6 +153,8 @@ interface Shell {
   readonly mass: number[];
   readonly leaf: number[];
   readonly wood: number[];
+  /** 1 on a crown leaf mass's corners (its own facet response), else 0. */
+  readonly clump: number[];
   /** Each component must close outward by itself; a good mass cannot hide a bad one. */
   readonly components: { readonly first: number; readonly end: number;
     readonly base: number; readonly sectors: number; readonly rows: number;
@@ -179,10 +181,78 @@ function hash01(a: number, b: number, salt: number): number {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
-function addVertex(shell: Shell, p: Vec3, reach: number, mass: number, leaf = 0, wood = 0): number {
+function addVertex(shell: Shell, p: Vec3, reach: number, mass: number, leaf = 0, wood = 0, clump = 0): number {
   const index = shell.positions.length / 3;
   shell.positions.push(...p); shell.reach.push(reach); shell.mass.push(mass); shell.leaf.push(leaf); shell.wood.push(wood);
+  shell.clump.push(clump);
   return index;
+}
+
+/** Unit icospheres by subdivision: deterministic, indexed, outward (counter-clockwise). */
+const ICOSPHERES = new Map<number, { readonly vertices: readonly Vec3[]; readonly faces: readonly (readonly [number, number, number])[] }>();
+function icosphere(subdivisions: number) {
+  const known = ICOSPHERES.get(subdivisions);
+  if (known) return known;
+  const t = (1 + Math.sqrt(5)) / 2;
+  const vertices: Vec3[] = ([[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t],
+    [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]] as Vec3[]).map(unit);
+  let faces: [number, number, number][] = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4],
+    [11, 10, 2], [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9], [4, 9, 5], [2, 4, 11],
+    [6, 2, 10], [8, 6, 7], [9, 8, 1]];
+  for (let level = 0; level < subdivisions; level++) {
+    const midpoints = new Map<string, number>();
+    const middle = (a: number, b: number): number => {
+      const key = a < b ? `${a}/${b}` : `${b}/${a}`, held = midpoints.get(key);
+      if (held !== undefined) return held;
+      vertices.push(unit(times(plus(vertices[a], vertices[b]), .5)));
+      midpoints.set(key, vertices.length - 1);
+      return vertices.length - 1;
+    };
+    faces = faces.flatMap(([a, b, c]): [number, number, number][] => {
+      const ab = middle(a, b), bc = middle(b, c), ca = middle(c, a);
+      return [[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]];
+    });
+  }
+  const sphere = Object.freeze({ vertices: Object.freeze(vertices), faces: Object.freeze(faces) });
+  ICOSPHERES.set(subdivisions, sphere);
+  return sphere;
+}
+
+/**
+ * One crown leaf mass: a lumpy icosphere about its centre. Three broad
+ * swellings and hollows per mass plus a small per-corner jitter make its
+ * outline a cluster of leafy bumps rather than a ball; its underside is a
+ * little flatter, the way a mass of leaves hangs. Reach carries the mass's
+ * tone class plus its own relief, so bumps catch light and hollows sit back.
+ */
+function appendClump(shell: Shell, clump: GrowthClump): void {
+  const { vertices, faces } = icosphere(clump.subdivisions);
+  const first = shell.indices.length, base = shell.positions.length / 3;
+  // Two broad swellings and a hollow shape the mass; on a fine sphere four
+  // knots break its outline into leafy bumps — broad, low ones since the
+  // 2026-10-22 second look pass, so the crest reads as canopy, not florets.
+  const lobes = Array.from({ length: clump.subdivisions > 1 ? 7 : 3 }, (_, k) => {
+    const theta = hash01(clump.salt, k, 911) * TAU, y = hash01(clump.salt, k, 913) * 1.6 - 0.6;
+    const ring = Math.sqrt(Math.max(0, 1 - y * y)), broad = k < 3;
+    return { axis: [Math.cos(theta) * ring, y, Math.sin(theta) * ring] as Vec3,
+      amplitude: (k === 2 || k === 5 ? -1 : 1) * (broad ? 0.10 + hash01(clump.salt, k, 917) * 0.10
+        : 0.045 + hash01(clump.salt, k, 917) * 0.035),
+      sigma: broad ? 0.62 + hash01(clump.salt, k, 919) * 0.25 : 0.42 + hash01(clump.salt, k, 919) * 0.14 };
+  });
+  for (let i = 0; i < vertices.length; i++) {
+    const d = vertices[i];
+    let relief = (hash01(clump.salt, i, 929) - .5) * (clump.subdivisions > 1 ? 0.06 : 0.09);
+    for (const lobe of lobes) {
+      const angle = Math.acos(Math.max(-1, Math.min(1, d[0] * lobe.axis[0] + d[1] * lobe.axis[1] + d[2] * lobe.axis[2])));
+      relief += lobe.amplitude * Math.exp(-(angle * angle) / (lobe.sigma * lobe.sigma));
+    }
+    const r = 1 + relief, down = d[1] < 0 ? d[1] * (1 - 0.30 * -d[1]) : d[1];
+    addVertex(shell, [clump.centre[0] + d[0] * r * clump.radii[0], clump.centre[1] + down * r * clump.radii[1],
+      clump.centre[2] + d[2] * r * clump.radii[2]], clump.tone + relief * 0.9, clump.mass, 1, 0, 1);
+  }
+  for (const [a, b, c] of faces) shell.indices.push(base + a, base + b, base + c);
+  shell.components.push({ first, end: shell.indices.length, base, sectors: 0, rows: 0,
+    bottom: -1, top: -1, levels: clump.levels });
 }
 
 /** One closed shell, with disjoint vertex identities from all other shells. */
@@ -249,6 +319,7 @@ function appendGrowth(shell: Shell, plan: VegetationGrowthPlan): void {
         reach: .06 + .06 * Math.cos(theta),
       }), leaf.mass, 1, 0, leaf.levels);
   }
+  for (const clump of plan.clumps) appendClump(shell, clump);
   // Keep the intended complete height without moving the root or fitting each
   // shoot separately. This is a single positive affine Y scale of the sculpt;
   // attachment, leaf overlap and every gap survive it.
@@ -502,7 +573,7 @@ function preserveTrunkSideNormals(normal: THREE.BufferAttribute, shell: Shell,
 
 function makeShell(family: VegetationFamily, detail: VegetationDetail, variant: VegetationVariant,
   contract: VegetationContract): Shell {
-  const shell: Shell = { positions: [], indices: [], reach: [], mass: [], leaf: [], wood: [], components: [] };
+  const shell: Shell = { positions: [], indices: [], reach: [], mass: [], leaf: [], wood: [], clump: [], components: [] };
   if (family === 'coniferFoliage') appendConifer(shell, detail, variant);
   else {
     appendGrowth(shell, buildVegetationGrowthPlan(family, detail, variant));
@@ -513,8 +584,9 @@ function makeShell(family: VegetationFamily, detail: VegetationDetail, variant: 
     // Crown-only positive affine lean of its complete connected scaffold about
     // the basal root. Keep the root's successful crown repair; shrubs preserve
     // their planting layer through the rigid upper-subtree orientation above.
-    if (family === 'crown' && variant === 1) for (let i = 0; i < shell.positions.length; i += 3)
-      shell.positions[i] += shell.positions[i + 1] * 0.55;
+    const lean = family === 'crown' ? CROWN_HABIT.lean[variant] : 0;
+    if (lean !== 0) for (let i = 0; i < shell.positions.length; i += 3)
+      shell.positions[i] += shell.positions[i + 1] * lean;
   }
   fitContract(shell, contract);
   if (family === 'crown') continueCrownRoot(shell, contract, detail);
@@ -611,6 +683,36 @@ interface VegetationFormTemplate {
   readonly wood: Uint8Array;
 }
 
+/** Share of a crown mass's face normal kept against its smooth normal: the
+ * faceting that says low-poly canopy survives, the value steps soften. */
+const CLUMP_FACET = 0.32;
+/** Share of a crown mass's normal bent to the whole crown's radial direction
+ * (0.4 until the 2026-10-22 second look pass: each mass then lit as its own
+ * lit-topped floret with a dark crease under it; at 0.6 the crown shades as
+ * one canopy, a sunlit side and a shaded one, and the masses still read). */
+const CLUMP_CANOPY = 0.6;
+/**
+ * Upward lean added to a crown mass's normal after that bend (2026-10-22
+ * second look pass). The chase camera looks up into a crown from under it,
+ * so most of what it sees is the lower half, whose true normals face down
+ * and away from a sun 55° up: sunlit side or not, that half read near black.
+ * Leant up, the lower half on the sun's side catches it, the far side and
+ * the true undersides stay in shade (the crown keeps its form), and every
+ * instance turn agrees because the lean is about Y. Shading only: positions,
+ * topology and price are untouched.
+ */
+export const CLUMP_SKY = 0.55;
+/** The crown's own centre for that bend: the mean of every leaf-mass corner. */
+function clumpCentroid(shell: Shell): Vec3 | null {
+  let x = 0, y = 0, z = 0, count = 0;
+  for (let v = 0; v < shell.clump.length; v++) if (shell.clump[v] === 1) {
+    x += shell.positions[v * 3]; y += shell.positions[v * 3 + 1]; z += shell.positions[v * 3 + 2]; count++;
+  }
+  return count ? [x / count, y / count, z / count] : null;
+}
+/** Spread of the per-face reach dapple on a crown mass. */
+const CLUMP_DAPPLE = 0.36;
+
 const formTemplates = new Map<string, VegetationFormTemplate>();
 onConstructionScopeEnd(() => formTemplates.clear());
 
@@ -644,14 +746,27 @@ function growVegetationFormTemplate(family: VegetationFamily, detail: Vegetation
     const smoothCopy = new Float32Array(smooth.array);
     geometry.computeVertexNormals();
     const normal = geometry.getAttribute('normal') as THREE.BufferAttribute;
+    const crown = clumpCentroid(shell);
     for (let i = 0; i < normal.count; i++) {
-      const leaf = shell.leaf[shell.indices[i]] === 1;
+      const leaf = shell.leaf[shell.indices[i]] === 1, clump = shell.clump[shell.indices[i]] === 1;
       // Closed leaf folds and thin bough undersides retain definition. The
       // conifer normal blend remains unchanged; this exemplar changes its form.
-      const facet = leaf ? 0.62 : family === 'coniferFoliage' ? 0.31 : 0.22;
-      const x = normal.getX(i) * facet + smoothCopy[i * 3] * (1 - facet);
-      const y = normal.getY(i) * facet + smoothCopy[i * 3 + 1] * (1 - facet);
-      const z = normal.getZ(i) * facet + smoothCopy[i * 3 + 2] * (1 - facet);
+      // A crown leaf mass keeps a low-poly facet without the hard folds.
+      const facet = clump ? CLUMP_FACET : leaf ? 0.62 : family === 'coniferFoliage' ? 0.31 : 0.22;
+      let x = normal.getX(i) * facet + smoothCopy[i * 3] * (1 - facet);
+      let y = normal.getY(i) * facet + smoothCopy[i * 3 + 1] * (1 - facet);
+      let z = normal.getZ(i) * facet + smoothCopy[i * 3 + 2] * (1 - facet);
+      if (clump && crown) {
+        // Bent towards the whole crown's radial direction, so the masses are
+        // lit as one canopy (sunlit side, shaded side) and the creases
+        // between them soften, instead of each reading as its own stone.
+        const n = Math.hypot(x, y, z) || 1, p = shell.indices[i] * 3;
+        const rx = shell.positions[p] - crown[0], ry = shell.positions[p + 1] - crown[1], rz = shell.positions[p + 2] - crown[2];
+        const r = Math.hypot(rx, ry, rz) || 1;
+        x = x / n * (1 - CLUMP_CANOPY) + rx / r * CLUMP_CANOPY;
+        y = y / n * (1 - CLUMP_CANOPY) + ry / r * CLUMP_CANOPY + CLUMP_SKY;
+        z = z / n * (1 - CLUMP_CANOPY) + rz / r * CLUMP_CANOPY;
+      }
       const n = Math.hypot(x, y, z) || 1;
       normal.setXYZ(i, x / n, y / n, z / n);
     }
@@ -661,7 +776,10 @@ function growVegetationFormTemplate(family: VegetationFamily, detail: Vegetation
       triangles,
       position: (geometry.getAttribute('position') as THREE.BufferAttribute).array as Float32Array,
       normal: normal.array as Float32Array,
-      reach: new Float32Array(shell.indices.map(i => shell.reach[i])),
+      // A crown mass's faces each carry a small shade of their own: the
+      // dapple of a leaf mass, not one smooth gradient over a ball.
+      reach: new Float32Array(shell.indices.map((i, corner) => shell.reach[i]
+        + (shell.clump[i] === 1 ? (hash01(Math.floor(corner / 3), 0, 941) - .5) * CLUMP_DAPPLE : 0))),
       height: new Float32Array(shell.indices.map(i => (shell.positions[i * 3 + 1] - contract.min[1]) / span)),
       mass: new Uint8Array(shell.indices.map(i => shell.mass[i])),
       leaf: new Uint8Array(shell.indices.map(i => shell.leaf[i])),

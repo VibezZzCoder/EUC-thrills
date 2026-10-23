@@ -80,7 +80,7 @@ export function createMarkings(plan: LevelPlan, context?: UltraBuildContext, sup
       { r: colour.r, g: colour.g, b: colour.b },
       paint.wear,
       target,
-      (x, z) => fieldHeightAt(plan.heightfield, plan.surround, x, z) + MARKINGS.lift,
+      marking.elevation === 'authored' ? undefined : (x, z) => fieldHeightAt(plan.heightfield, plan.surround, x, z) + MARKINGS.lift,
     );
     for (let index = 1; index < marking.points.length; index += 1) {
       paintedLength += Math.hypot(

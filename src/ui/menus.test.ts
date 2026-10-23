@@ -14,6 +14,7 @@ import {
   qualityStateWords,
   routeStatusLine,
   stepEnabledOption,
+  venueButtonTemplate,
   titleCreditTemplate,
   aboutTemplate,
   aboutScrollStep,
@@ -97,6 +98,75 @@ test('every venue the chooser offers is named rather than spelt', () => {
       message.includes('Back to the title to ride it'),
       `${venue} stopped saying where the ride is`,
     );
+  }
+});
+
+/**
+ * A venue button's markup, split into what a browser would make of it.
+ *
+ * There is no document here, so this is the parse done by hand for the one
+ * shape the template emits: the `<svg>` blocks are counted and read whole, and
+ * `textContent` is every character outside a tag — which is what the browser's
+ * own `textContent` is for markup with no entities and no comments, and this
+ * markup has neither.
+ */
+function venueButtonParts(venue: (typeof VENUE_IDS)[number]): {
+  readonly button: string;
+  readonly svgs: readonly string[];
+  readonly text: string;
+} {
+  const html = venueButtonTemplate(venue);
+  const button = /<button\b[\s\S]*<\/button>/.exec(html)?.[0] ?? '';
+  const svgs = button.match(/<svg\b[\s\S]*?<\/svg>/g) ?? [];
+  const text = button.replace(/<[^>]*>/g, '').trim();
+  return { button, svgs, text };
+}
+
+test('Wheelhouse Wharf carries one decorative picture and keeps its name as its words (M44)', () => {
+  // DESIGN §9t / PLANS §44 D3: the Ultra flame's terms. The picture is hidden
+  // from assistive tech and from the Tab walk, and it has no <title>, so the
+  // button's name is the label and nothing else — the browser census reads
+  // `textContent.trim()` as the label, and a <title> would have been read into
+  // it.
+  const { button, svgs, text } = venueButtonParts('euclaude');
+  assert.ok(button.length > 0, 'the template drew no button');
+  assert.equal(svgs.length, 1, 'one picture, no more');
+  const [svg] = svgs;
+  assert.match(svg, /^<svg\b[^>]*\baria-hidden="true"/);
+  assert.match(svg, /^<svg\b[^>]*\bfocusable="false"/);
+  assert.ok(!/<title\b/i.test(svg), 'a <title> would join the button\'s name');
+  assert.ok(!/<text\b/i.test(svg), 'drawn text inside the picture would join its words');
+  assert.equal(text, 'Wheelhouse Wharf');
+  // The M44 repair pass (the critic: "two blue boxes", single-pixel dots):
+  // the buildings carry windows, and the jump is five separate round dots
+  // rather than dashes whose last one a renderer may drop.
+  assert.match(svg, /class="euc-venue__icon-windows"/, 'the buildings lost their windows');
+  const arc = /class="euc-venue__icon-arc" d="([^"]*)"/.exec(svg)?.[1] ?? '';
+  assert.equal(arc.match(/M/g)?.length ?? 0, 5, 'the jump arc is five dots');
+  // Still the chooser's own control: the same hook, the same state attribute,
+  // the picture before the words and never a second label.
+  assert.match(button, /data-menu="venue"/);
+  assert.match(button, /data-venue="euclaude"/);
+  assert.match(button, /aria-pressed="false"/);
+  assert.ok(button.indexOf('<svg') < button.indexOf('Wheelhouse Wharf'), 'the picture follows the name');
+});
+
+test('every venue button is its label in words, and any picture obeys the same rules', () => {
+  // A map rather than a branch (`VENUE_ICONS`): a place may have a picture or
+  // not, and either way its button's words are exactly the name the status
+  // line uses for it — the two are read out of the same label map.
+  for (const venue of VENUE_IDS) {
+    const { svgs, text } = venueButtonParts(venue);
+    assert.ok(svgs.length <= 1, `${venue} has more than one picture`);
+    for (const svg of svgs) {
+      assert.match(svg, /^<svg\b[^>]*\baria-hidden="true"/, `${venue}'s picture is announced`);
+      assert.match(svg, /^<svg\b[^>]*\bfocusable="false"/, `${venue}'s picture is focusable`);
+      assert.ok(!/<title\b/i.test(svg), `${venue}'s picture has a <title>`);
+    }
+    assert.ok(text.length > 0, `${venue}'s button has no words`);
+    assert.ok(!text.includes(venue), `${venue} reached the button as an id`);
+    const [, message] = routeStatusLine({ kind: 'venue-ready', venue }, false);
+    assert.ok(message.startsWith(`${text} is ready.`), `${venue}'s button and status line disagree`);
   }
 });
 

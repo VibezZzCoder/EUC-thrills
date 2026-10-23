@@ -17,6 +17,16 @@ import { LIGHTING } from '../data/tuning.ts';
 import type { ResolvedVenueLook, VenueLook } from '../data/venueLook.ts';
 import { ENHANCED_PRESENTATION, type PresentationSelection } from './presentation.ts';
 import type { SkyTexture } from './sky.ts';
+import { ORDINARY_BOUNCE_SCALE, ORDINARY_SHADE_FILL, ordinaryBounceHex, ordinaryHemisphereIntensity } from './shadeFill.ts';
+
+/** A bounce colour as the ordinary tier hangs it: the shade fill's scale on it (2026-10-22, `render/shadeFill.ts`). */
+const filledBounce = (hex: number): number => ordinaryBounceHex(hex);
+
+test('the shade fill\'s bounce hex is three\'s own decode, scale and encode', () => {
+  for (const hex of [LIGHTING.groundBounceColour, 0xb9a68d, 0x000000, 0x808080, 0xffffff, 0x123456]) {
+    assert.equal(ordinaryBounceHex(hex), new THREE.Color().setHex(hex).multiplyScalar(ORDINARY_BOUNCE_SCALE).getHex(), hex.toString(16));
+  }
+});
 import { HEADLESS_CAPS } from './ultra/ultraCost.ts';
 import { applyKitOverride, ULTRA_FULL } from './ultra/ultraRecipe.ts';
 import { UltraRuntime, type UltraHost } from './ultra/ultraRuntime.ts';
@@ -291,8 +301,9 @@ test('a venue with no look is composed as exactly the daylight LIGHTING ships', 
     fogNear: LIGHTING.fogNear,
     fogFar: LIGHTING.fogFar,
     hemisphereSky: LIGHTING.skyColour,
-    hemisphereGround: LIGHTING.groundBounceColour,
-    hemisphereIntensity: LIGHTING.hemisphereIntensity,
+    // 2026-10-22: the daylight fill as the ordinary tier hangs it (`render/shadeFill.ts`).
+    hemisphereGround: filledBounce(LIGHTING.groundBounceColour),
+    hemisphereIntensity: ordinaryHemisphereIntensity(LIGHTING.hemisphereIntensity),
     sunColour: LIGHTING.sunColour,
     sunIntensity: LIGHTING.sunIntensity,
     sunOffsetX: Math.sin(LIGHTING.sunAzimuth) * horizontal,
@@ -333,7 +344,8 @@ test('park → slice → park restores each look exactly, and leaves one sky ali
   assert.equal(warm.fogColour, WARM_LATE_AFTERNOON.horizonColour);
   assert.equal(warm.sunColour, WARM_LATE_AFTERNOON.sunColour);
   assert.equal(warm.hemisphereSky, WARM_LATE_AFTERNOON.skyColour);
-  assert.equal(warm.hemisphereGround, WARM_LATE_AFTERNOON.groundBounceColour);
+  assert.equal(warm.hemisphereGround, filledBounce(WARM_LATE_AFTERNOON.groundBounceColour!));
+  assert.equal(warm.hemisphereIntensity, ordinaryHemisphereIntensity(WARM_LATE_AFTERNOON.hemisphereIntensity!));
   assert.equal(warm.exposure, WARM_LATE_AFTERNOON.exposure);
   // It authors neither haze distance, so both stay the shipped ones: a partial
   // descriptor is filled from `LIGHTING`, never from the venue before it.
@@ -381,7 +393,7 @@ test('the F4 panel wins over a venue, and only while a value is actually tuned',
   assert.equal(untouched.exposure, WARM_LATE_AFTERNOON.exposure,
     'an untouched panel is not an override');
   assert.equal(untouched.sunIntensity, WARM_LATE_AFTERNOON.sunIntensity);
-  assert.equal(untouched.hemisphereIntensity, WARM_LATE_AFTERNOON.hemisphereIntensity);
+  assert.equal(untouched.hemisphereIntensity, ordinaryHemisphereIntensity(WARM_LATE_AFTERNOON.hemisphereIntensity!));
 
   fixture.rig.tune({ exposure: 1.4 });
   assert.equal(fixture.values().exposure, 1.4, 'a dragged slider overrides the venue');
@@ -685,7 +697,7 @@ test('the F4 panel wins over a venue at Ultra too, in both directions of a tier 
   fixture.rig.tune({ exposure: 1.4 });
   fixture.rig.setTier('ordinary');
   assert.equal(fixture.values().exposure, 1.4, 'leaving Ultra dropped the override');
-  assert.equal(fixture.hemisphere.intensity, 0.8, 'the tuned hemisphere is the ordinary fill again');
+  assert.equal(fixture.hemisphere.intensity, ordinaryHemisphereIntensity(0.8), 'the tuned hemisphere is the ordinary fill again');
   fixture.rig.setTier('ultra');
   assert.equal(fixture.values().exposure, 1.4, 'entering Ultra dropped the override');
   assert.equal(fixture.scene.environmentIntensity, 0.8 / Math.PI);
@@ -695,7 +707,7 @@ test('the F4 panel wins over a venue at Ultra too, in both directions of a tier 
   assert.equal(fixture.values().exposure, WARM_LATE_AFTERNOON.exposure);
   assert.equal(fixture.counting.tunedSeen.at(-1), undefined);
   fixture.rig.setTier('ordinary');
-  assert.equal(fixture.hemisphere.intensity, WARM_LATE_AFTERNOON.hemisphereIntensity);
+  assert.equal(fixture.hemisphere.intensity, ordinaryHemisphereIntensity(WARM_LATE_AFTERNOON.hemisphereIntensity!));
   assert.equal(fixture.scene.environmentIntensity, 1);
 });
 
@@ -804,6 +816,7 @@ function runtimeFixture(): {
   sun.shadow.mapSize.setScalar(LIGHTING.shadowMapSize);
   sun.shadow.bias = LIGHTING.shadowBias;
   sun.shadow.normalBias = LIGHTING.shadowNormalBias;
+  sun.shadow.intensity = ORDINARY_SHADE_FILL.shadow;
   const box = sun.shadow.camera;
   box.left = -LIGHTING.shadowRadius;
   box.right = LIGHTING.shadowRadius;

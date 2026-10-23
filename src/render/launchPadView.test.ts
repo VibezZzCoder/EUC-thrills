@@ -19,7 +19,7 @@ import { strict as assert } from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
 import * as THREE from 'three';
-import { CAMERA, LAUNCH_PAD, LAUNCH_PAD_LOOK as LOOK, LIVE_TUNABLES, PHYSICS } from '../data/tuning.ts';
+import { CAMERA, LAUNCH_PAD, LAUNCH_PAD_LOOK as LOOK } from '../data/tuning.ts';
 import { MARKING_PAINTS } from '../data/markings.ts';
 import { generateLevel } from '../level/generateRoute.ts';
 import type { LevelPlan } from '../level/plan.ts';
@@ -46,6 +46,7 @@ import { createDistrictExterior } from './districtExterior.ts';
 import { createDistrictExteriorAppearance } from './districtExteriorAppearance.ts';
 import { DEFAULT_SPATIAL_BATCH_METRES } from './spatialBatching.ts';
 import {
+  LAUNCH_PAD_CUE,
   countLaunchPads,
   createLaunchPadView,
   launchPadDrawnRise,
@@ -225,8 +226,8 @@ test('never on the Ultra static layer, receives and casts no shadow, and its col
 
   // Paint: inside DESIGN §2's band, the skirt's shaded foot too; the yellow under road paint; a
   // light top (R16: never a dark centre) and a lighter coping; dark ink only on the stripes and the
-  // marker's shaft.
-  for (const hex of [LOOK.rimColour, LOOK.topColour, LOOK.shaftColour, LOOK.inkColour, LOOK.copingColour]) {
+  // painted direction cue.
+  for (const hex of [LOOK.rimColour, LOOK.topColour, LOOK.inkColour, LOOK.copingColour]) {
     const luminance = linearLuminance(hex);
     assert.ok(luminance >= 0.03 && luminance <= 0.6, `${hex.toString(16)} at ${luminance}`);
   }
@@ -240,7 +241,7 @@ test('never on the Ultra static layer, receives and casts no shadow, and its col
 });
 
 test('critic r4: a tall octagonal kicker — a light top on the trigger, a light coping, a concave yellow skirt steepening to a striped lip, no apron, no dark centre', () => {
-  // The pad (the hovering marker above it is the next test's).
+  // The pad (its painted direction cue is the next test's).
   const template = launchPadTemplate(false);
   const counts = launchPadTemplateCounts(false);
   assert.equal(template.positions.length / 3, counts.vertices);
@@ -425,16 +426,20 @@ test('critic r4: the drawn top and skirt are the field\'s profile, and a human s
   }
 });
 
-test('q237/R14: the hovering marker clears every rider over the pad centre, reads from the road, turns gently, and is priced and hidden with it', () => {
+test('q237 cue (2026-10-22): a painted arrowhead up every side\'s ramp — on the kicker, never above it, read at 15–20 m, still, priced and hidden with it', () => {
+  // The visual-quality pass replaced R14's hovering 3.4 m waypoint arrow (owner-approved,
+  // 2026-10-22: smaller and lower, on the pad). The switch, the single draw, the price and the
+  // hiding keep R14's contract; the clearance rule now holds trivially — nothing stands above the lip.
   const plain = launchPadTemplateCounts(false), marked = launchPadTemplateCounts(true);
-  assert.equal(LOOK.markerShown, true, 'R14: on by default');
+  const sides = LOOK.octagonSides;
+  assert.equal(LOOK.markerShown, true, 'on by default');
   assert.deepEqual(launchPadTemplateCounts(), marked, 'the game builds what LAUNCH_PAD_LOOK says');
-  assert.equal(marked.vertices - plain.vertices, 36);
-  assert.equal(marked.triangles - plain.triangles, 16);
-  assert.ok(marked.triangles <= 160, `≤ 160 triangles a pad with the marker (${marked.triangles})`);
+  assert.equal(marked.vertices - plain.vertices, sides * 3, 'one decal triangle of its own corners a side');
+  assert.equal(marked.triangles - plain.triangles, sides);
+  assert.ok(marked.triangles <= 160, `≤ 160 triangles a pad with the cue (${marked.triangles})`);
   const padsBytes = marked.geometryBytes + LAUNCH_PAD.maximumPads * 64;
-  assert.ok(padsBytes <= 8 * 1024, `≤ 8 KB with the marker and the most pads' matrices (${padsBytes})`);
-  const template = launchPadTemplate(true), heights = launchPadHeights();
+  assert.ok(padsBytes <= 8 * 1024, `≤ 8 KB with the cue and the most pads' matrices (${padsBytes})`);
+  const template = launchPadTemplate(true), heights = launchPadHeights(), skirt = launchPadSkirt();
   assert.equal(template.positions.length / 3, marked.vertices);
   assert.equal(template.indices.length / 3, marked.triangles);
   assert.equal(template.markerFirst, plain.vertices);
@@ -442,50 +447,52 @@ test('q237/R14: the hovering marker clears every rider over the pad centre, read
   const low = launchPadTemplate(false);
   assert.deepEqual([...template.positions.subarray(0, low.positions.length)], [...low.positions]);
   assert.deepEqual([...template.indices.subarray(0, low.indices.length)], [...low.indices]);
-  // Over the pad's centre, its lowest point (the arrow's tip, on the centre
-  // line) above the highest rider a pad can throw from the dome's top: the F4 slider's top lift's
-  // apex + a ≈ 1.9 m rider + margin, and R14's 4.2 m.
-  const lift = LIVE_TUNABLES.find((spec) => spec.path === 'LAUNCH_PAD.verticalSpeed');
-  assert.ok(lift && typeof lift.max === 'number');
-  const highestRider = lift.max ** 2 / (2 * PHYSICS.gravity) + 1.9;
-  const yellow = new THREE.Color(LOOK.rimColour).toArray().map((v) => v.toFixed(6)).join();
-  const dark = new THREE.Color(LOOK.shaftColour).toArray().map((v) => v.toFixed(6)).join();
-  let lowest = Infinity, highest = -Infinity, widest = 0;
-  for (let v = plain.vertices; v < marked.vertices; v += 1) {
-    const x = template.positions[v * 3], y = template.positions[v * 3 + 1], z = template.positions[v * 3 + 2];
-    const paint = [...template.colours.subarray(v * 3, v * 3 + 3)].map((c) => c.toFixed(6)).join();
-    assert.ok(Math.hypot(x, z) <= LOOK.markerHeadHalfWidthMetres * Math.SQRT2 + 1e-6, `marker vertex ${v} over the pad`);
-    assert.ok(Math.hypot(x, z) < LAUNCH_PAD.triggerRadiusMetres, '… over the light top, seen from above');
-    if (y < heights.markerCap - 1e-6) assert.ok(Math.hypot(x, z) < 1e-9, 'below the cap only the tip, on the centre line');
-    // The arrowhead (its tip, and its corners at the cap) is signal yellow; the shaft above it is the dark centre's paint.
-    const shaftCorner = Math.abs(Math.hypot(x, z) - LOOK.markerShaftHalfWidthMetres * Math.SQRT2) < 1e-6;
-    const inShaft = y > heights.markerCap + 1e-6 || (Math.abs(y - heights.markerCap) < 1e-6 && shaftCorner);
-    assert.equal(paint, inShaft ? dark : yellow, `marker vertex ${v}: ${inShaft ? 'shaft dark' : 'arrowhead yellow'}`);
-    lowest = Math.min(lowest, y); highest = Math.max(highest, y);
-    widest = Math.max(widest, Math.abs(x), Math.abs(z));
-  }
-  assert.ok(Math.abs(lowest - heights.markerTip) < 1e-5 && Math.abs(highest - heights.markerTop) < 1e-5);
-  assert.ok(lowest - heights.apex >= 4.2 - 1e-6, `R14: tip ${(lowest - heights.apex).toFixed(2)} m over the pad's top`);
-  // R16: the highest rider takes off from the dome's top, never above its crown.
-  assert.ok(lowest - heights.apex >= highestRider + 0.9, `… ≥ 0.9 m over the highest rider (${highestRider.toFixed(2)} m over the top)`);
-  assert.ok(Math.abs(widest - LOOK.markerHeadHalfWidthMetres) < 1e-6 && LOOK.markerShaftHalfWidthMetres < widest / 2,
-    'a broad head on a narrow shaft: an arrow, pointing down');
-  // Its own normals: sides lit as uprights facing out, caps looking up; every face wound to its normal.
-  for (let v = 0; v < template.markerNormals.length / 3; v += 1) {
-    const nx = template.markerNormals[v * 3], ny = template.markerNormals[v * 3 + 1], nz = template.markerNormals[v * 3 + 2];
-    assert.ok(Math.abs(Math.hypot(nx, ny, nz) - 1) < 1e-6);
-    assert.ok(Math.abs(ny) < 1e-6 || Math.abs(ny - 1) < 1e-6, `marker vertex ${v}: upright or cap`);
-  }
-  for (let t = low.indices.length; t < template.indices.length; t += 3) {
-    const at = (k: number) => new THREE.Vector3().fromArray(template.positions, template.indices[t + k] * 3);
+  // Every cue corner is dark ink on its own face's middle facet (the lip's knee to the middle
+  // knee), lifted off it like the stripes, inside the face, and never above the lip.
+  const ink = new THREE.Color(LOOK.inkColour).toArray().map((v) => v.toFixed(6)).join();
+  const lipKnee = skirt.rings[2], middleKnee = skirt.rings[3], middle = skirt.angles[1];
+  const slant = Math.hypot(middleKnee.apothem - lipKnee.apothem, lipKnee.height - middleKnee.height);
+  let widest = 0, longest = 0;
+  for (let face = 0; face < sides; face += 1) {
+    const bearing = (face * Math.PI * 2) / sides, nx = Math.sin(bearing), nz = Math.cos(bearing);
+    const corners = [0, 1, 2].map((k) => {
+      const v = template.markerFirst + face * 3 + k;
+      const x = template.positions[v * 3], y = template.positions[v * 3 + 1], z = template.positions[v * 3 + 2];
+      assert.equal([...template.colours.subarray(v * 3, v * 3 + 3)].map((c) => c.toFixed(6)).join(), ink, `cue vertex ${v} is ink`);
+      assert.ok(y < heights.top, `cue vertex ${v} below the lip: nothing a pad adds stands where a rider flies`);
+      const along = x * nx + z * nz, across = x * nz - z * nx;
+      const faceY = lipKnee.height - (along - lipKnee.apothem) * Math.tan(middle);
+      const off = (y - faceY) * Math.cos(middle);
+      assert.ok(Math.abs(off - LOOK.decalLiftMetres) < 1e-5, `face ${face}: ${off} m off the middle facet`);
+      // Down the slope from the lip's knee, measured on the facet.
+      const down = (along - lipKnee.apothem - LOOK.decalLiftMetres * Math.sin(middle)) / Math.cos(middle);
+      assert.ok(down > 0.01 && down < slant - 0.01, `face ${face}: on the middle facet (${down.toFixed(3)} of ${slant.toFixed(3)} m)`);
+      assert.ok(Math.abs(across) < along * Math.tan(Math.PI / sides) - 0.05, `face ${face}: inside the face`);
+      return { across, down };
+    });
+    // An arrowhead pointing up the ramp: its apex on the face's centre line, nearest the lip;
+    // its base square across the face, symmetric about that line.
+    const [apex, left, right] = corners;
+    assert.ok(Math.abs(apex.across) < 1e-6, 'the apex on the centre line');
+    assert.ok(apex.down < left.down - 0.3 && Math.abs(left.down - right.down) < 1e-6, 'pointing up the slope, at the lip');
+    assert.ok(Math.abs(left.across + right.across) < 1e-6, 'symmetric');
+    widest = Math.max(widest, Math.abs(left.across - right.across));
+    longest = Math.max(longest, left.down - apex.down);
+    // Wound to face out of the ramp, like every pad face.
+    const at = (k: number) => new THREE.Vector3().fromArray(template.positions, template.indices[low.indices.length + face * 3 + k] * 3);
     const a = at(0), normal = at(1).sub(a).cross(at(2).sub(a)).normalize();
-    const lit = new THREE.Vector3().fromArray(template.markerNormals, (template.indices[t] - template.markerFirst) * 3);
-    assert.ok(normal.dot(lit) > 0.4, `marker triangle ${(t - low.indices.length) / 3} faces its own light`);
+    assert.ok(normal.y > 0.5 && normal.x * nx + normal.z * nz > 0.3, `face ${face}: the cue looks out of the ramp`);
   }
-  // From the road (the critics' farthest nearest-road distance, 65 m) at the widest chase lens on 720p it is ≥ 20 px tall.
-  const pixels = ((heights.markerTop - heights.markerTip) / (2 * 65 * Math.tan(CAMERA.fovAtSpeed / 2))) * 720;
-  assert.ok(pixels >= 20, `${pixels.toFixed(1)} px at 65 m`);
-  // Built: one mesh still, priced as built, no shadow, render-only, hidden with the pad.
+  assert.ok(Math.abs(widest - 2 * LAUNCH_PAD_CUE.halfBaseMetres) < 1e-5 && Math.abs(longest - LAUNCH_PAD_CUE.lengthMetres) < 1e-5);
+  // Read from a riding distance: at 20 m on the widest 720p chase lens it is ≥ 24 px across, and
+  // its slope foreshortened for an eye 2 m up still stands ≥ 5 px tall (15 m: more of both).
+  const pixelsPerMetre = (distance: number) => 720 / (2 * distance * Math.tan(CAMERA.fovAtSpeed / 2));
+  for (const distance of [15, 20]) {
+    const across = widest * pixelsPerMetre(distance);
+    const tall = longest * Math.sin(middle + Math.atan2(2 - (lipKnee.height + middleKnee.height) / 2, distance)) * pixelsPerMetre(distance);
+    assert.ok(across >= 24 && tall >= 5, `${distance} m: ${across.toFixed(1)} px across, ${tall.toFixed(1)} px tall`);
+  }
+  // Built: one mesh still, priced as built, no shadow, render-only, still, hidden with the pad.
   const before = JSON.stringify(town), sampler = new PlanTerrainSampler(town), sample = createGroundSample();
   const grounds = SITES.map((s) => sampler.sampleGround(s.x, s.z, sample).height);
   const view = createLaunchPadView(town, SITES, true);
@@ -494,7 +501,7 @@ test('q237/R14: the hovering marker clears every rider over the pad centre, read
     assert.equal(view.group.children.length, 1);
     assert.equal(mesh.castShadow, false);
     const price = countLaunchPads(SITES, true);
-    assert.equal(price.colourDraws, 1, 'one draw, the marker included');
+    assert.equal(price.colourDraws, 1, 'one draw, the cue included');
     assert.equal(price.colourTriangles, marked.triangles * SITES.length);
     assert.equal(price.geometryBytes, Object.values(mesh.geometry.attributes).reduce((sum, a) => sum + a.array.byteLength, 0)
       + mesh.geometry.index!.array.byteLength);
@@ -502,52 +509,27 @@ test('q237/R14: the hovering marker clears every rider over the pad centre, read
       colourTriangles: price.colourTriangles, geometryBytes: price.geometryBytes, instanceBytes: price.instanceBytes });
     const position = mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
     const normal = mesh.geometry.getAttribute('normal') as THREE.BufferAttribute;
-    assert.deepEqual([...(normal.array as Float32Array).subarray(template.markerFirst * 3)], [...template.markerNormals]);
-    const padPart = [...(position.array as Float32Array).subarray(0, template.markerFirst * 3)];
-    const matrix = new THREE.Matrix4(), point = new THREE.Vector3();
-    const holds = (label: string) => SITES.forEach((_, index) => {
-      mesh.getMatrixAt(index, matrix);
-      for (let v = template.markerFirst; v < position.count; v += 1) {
-        point.fromBufferAttribute(position, v).applyMatrix4(matrix);
-        assert.ok(mesh.boundingSphere!.distanceToPoint(point) <= 1e-3, `${label}: marker vertex ${v} inside the bounds computed once`);
+    // Lit as the facet it is painted on.
+    for (let face = 0; face < sides; face += 1) {
+      const bearing = (face * Math.PI * 2) / sides;
+      for (let k = 0; k < 3; k += 1) {
+        const v = template.markerFirst + face * 3 + k;
+        assert.ok(Math.abs(normal.getY(v) - Math.cos(middle)) < 1e-5
+          && Math.abs(normal.getX(v) - Math.sin(bearing) * Math.sin(middle)) < 1e-5, `cue vertex ${v} lit as its facet`);
       }
-    });
-    holds('at rest');
-    // It turns slowly about its upright: one turn per `markerTurnSeconds`, the same seconds the same pose.
-    const version = position.version;
-    view.update(LOOK.markerTurnSeconds / 8, false);
-    assert.ok(position.version > version, 'turned');
-    const eighth = [...(position.array as Float32Array)];
-    const tip = new THREE.Vector3().fromBufferAttribute(position, template.markerFirst);
-    assert.ok(Math.hypot(tip.x, tip.z) < 1e-6 && Math.abs(tip.y - heights.markerTip) < 1e-5, 'the tip stays on the centre line');
-    const corner = new THREE.Vector3().fromBufferAttribute(position, template.markerFirst + 1);
-    const restCorner = new THREE.Vector3().fromArray(template.positions, (template.markerFirst + 1) * 3);
-    // three turns +Z towards +X about +Y: the bearing atan2(x, z) grows by the turn.
-    const turnedBy = Math.atan2(corner.x, corner.z) - Math.atan2(restCorner.x, restCorner.z);
-    assert.ok(Math.abs(Math.atan2(Math.sin(turnedBy), Math.cos(turnedBy)) - Math.PI / 4) < 1e-5, 'an eighth of a turn');
-    assert.ok(Math.PI * 2 / LOOK.markerTurnSeconds <= 0.6, 'slow: at most ≈ 34°/s');
-    assert.deepEqual([...(position.array as Float32Array)].slice(0, padPart.length), padPart, 'the pad itself never moves');
-    holds('turned');
-    const settled = position.version;
-    view.update(LOOK.markerTurnSeconds / 8, false);
-    assert.equal(position.version, settled, 'an unchanged angle uploads nothing');
-    view.update(LOOK.markerTurnSeconds * 3 + LOOK.markerTurnSeconds / 8, false);
-    assert.deepEqual([...(position.array as Float32Array)].map((v) => +v.toFixed(4)), eighth.map((v) => +v.toFixed(4)), 'periodic');
-    view.update(5, true);
-    assert.deepEqual([...(position.array as Float32Array)].map((v) => +v.toFixed(5)),
-      [...padPart, ...template.positions.subarray(template.markerFirst * 3)].map((v) => +v.toFixed(5)), 'reduced motion holds it at rest');
+    }
+    const versions = [position.version, normal.version], rest = [...(position.array as Float32Array)];
+    for (const [seconds, reduced] of [[1.5, false], [7, false], [5, true]] as const) view.update(seconds, reduced);
+    assert.deepEqual([position.version, normal.version], versions, 'still: nothing turns and nothing uploads');
+    assert.deepEqual([...(position.array as Float32Array)], rest);
     view.setVisible(false);
     assert.equal(submitted(view.group), 0, 'hidden with the pad: nothing of it draws');
-    const hiddenVersion = position.version;
-    view.update(7, false);
-    assert.equal(position.version, hiddenVersion, 'hidden: no turn, no upload');
   } finally { view.dispose(); }
   assert.equal(JSON.stringify(town), before, 'never in the plan');
   assert.deepEqual(SITES.map((s) => sampler.sampleGround(s.x, s.z, sample).height), grounds, 'never in the sampler');
-  console.log(JSON.stringify({ pad: 'hovering marker (q237/R14)', shown: LOOK.markerShown, vertices: marked.vertices,
+  console.log(JSON.stringify({ pad: 'painted direction cue', shown: LOOK.markerShown, vertices: marked.vertices,
     triangles: marked.triangles, geometryBytes: marked.geometryBytes, addedTriangles: marked.triangles - plain.triangles,
-    addedBytes: marked.geometryBytes - plain.geometryBytes, tipOverPadTop: +(heights.markerTip - heights.apex).toFixed(3),
-    highestRider: +highestRider.toFixed(2), pixelsAt65m720p: +pixels.toFixed(1) }));
+    addedBytes: marked.geometryBytes - plain.geometryBytes, pixelsAcrossAt20m720p: +(widest * pixelsPerMetre(20)).toFixed(1) }));
 });
 
 test('repeated teardown frees every unique owner exactly once', () => {
@@ -758,7 +740,7 @@ test('corpus sweep: the M42 supplements move no presentation recipe, ground-edge
       footprintRadius: LAUNCH_PAD.footprintRadiusMetres, dropMetres: 0 };
     const most = { ...supplements, launchPads: Array.from({ length: LAUNCH_PAD.maximumPads },
       (_, k) => supplements.launchPads[k] ?? { ...first, id: `pad-max-${k}` }) };
-    // …and with the hovering marker switched the other way on every one of them (the owner's switch).
+    // …and with the painted direction cue switched the other way on every one of them (the owner's switch).
     const marked = { ...most, launchPadMarker: !LOOK.markerShown };
     const judged = [before, supplements, most, marked].map((prepared) => judgePreparedGroundEdges(level, edges, undefined, prepared));
     const fingerprint = (j: (typeof judged)[number]) => ({ recipe: j.selection.recipe.id, refusal: j.refusal?.reason ?? null,

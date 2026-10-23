@@ -2468,6 +2468,49 @@ export const EUC = {
   crashRecoverEarliestSeconds: 2.5,
   crashRecoverAutoSeconds: 3.6,
   /**
+   * How high above the ground a crash must begin in the air before the rider
+   * and the riderless wheel *fall* from where they are, m (M44, 2026-10-21).
+   *
+   * Below it a crash starts on the ground under the rider, exactly as it
+   * always has: the ragdoll is seeded at the ground and the crash step stands
+   * the wheel there on its first step — a drop of at most a metre or two in
+   * every older world, which nobody can see. Above it that same rule was a
+   * teleport: EUClaude Heights' short rider meets the far building's wall
+   * 8–11 m over the alley (measured on every gap at 0.60–0.95 of its design
+   * speed: 8.06–10.78 m), and was on the alley floor 8 ms later. So the body
+   * is seeded at the rider's height and falls undamped while it is more than
+   * this over the floor it is falling to, and the wheel falls under gravity to
+   * the ground beneath (`EucController.stepCrash`); then both lie exactly as
+   * before.
+   *
+   * **3 m, and why.** It has to sit above every airborne crash the existing
+   * worlds produce, so their crashes stay bit-identical, and well under
+   * EUClaude's lowest wall hit. Measured over the controller, crash, ragdoll,
+   * launch-pad, cop-landing, jump and Trick Run tests and benches
+   * (2026-10-21): the highest crash begun in the air on this path is 1.13 m
+   * (a launch-pad flight into a wall); the separate in-air contact crash
+   * (`crashInAir`, which seeds its own body height and is not gated here)
+   * reaches 1.95 m; Switchback's benches 0.28 m. 3 m clears the first by
+   * 1.9 m and the second by a metre, and EUClaude's lowest wall hit by 5 m.
+   * Flights deeper than 3 m do exist elsewhere (§44.1 D16: up to 8 m, and
+   * Switchback's rim more than 9 m), so a wall met mid-flight there would now
+   * fall as well; no test or bench produces one, and it would be this fix.
+   * It is also inside the heavy-landing tier (a flat lined-up fall onto
+   * pavement is heavy, not a crash, below 3.99 m): a drop the wheel itself
+   * would ride away from is one a crash may still start at the foot of.
+   */
+  crashHighFallMetres: 3.0,
+  /**
+   * How far in front of the face that stopped it a high fall's body starts,
+   * metres (M44). Such a crash seeds the ragdoll with none of the rider's
+   * forward speed — the wall took it — and a little back from the wall, so the
+   * body drops down the face with the wheel instead of carrying over the lip
+   * of a roof it never reached (most short EUClaude attempts did, leaving the
+   * rider on the far roof and the camera following the wheel into the alley)
+   * or starting inside a deck slab's overhang, where three of 45 hung frozen.
+   */
+  crashHighFallSetbackMetres: 0.6,
+  /**
    * Fraction of the pre-crash speed the rider is restored with.
    *
    * **A decision worth the owner's eye.** Quick reset puts the rider back
@@ -3108,6 +3151,50 @@ export const CAMERA = {
    * the landing already has the dip below to say something happened.
    */
   landingRestoreSeconds: 0.45,
+  /**
+   * How far the ground under a flight may fall below the ground the flight
+   * left from before the camera measures the hop from the takeoff ground
+   * instead of from the ground underneath, metres (M44, EUClaude Heights).
+   *
+   * `airHeightFollow` reads the hop off the ground directly beneath the rider.
+   * Over an EUClaude alley that ground falls 11 m in one step, so the old rule
+   * turned the gap itself into ~7 m of lag and dropped the camera into the
+   * alley, below the roof decks; a short flight that crashed then left that lag
+   * easing out with the rider on the alley floor, camera under the ground. Past
+   * this depth `render/chaseCamera.ts` latches the takeoff ground and, until
+   * the lag has gone, keeps the anchor at or above the ground beneath.
+   *
+   * **9 m: under EUClaude, over the other worlds' drops.** Under EUClaude's
+   * gap rule (every alley floor ≥ 10.5 m below its takeoff roof, §44.1 D6) and
+   * the 9.78 m flat pavement fall that crashes, so every alley crossing and
+   * every fall from a roof takes the latched path. Over the most a reachable
+   * ground point stands above the lowest ground within 25 m, measured
+   * 2026-10-21 on the built and the prepared plans (60 m moves only the slice,
+   * to 6.9): slice 6.7, track 1.0, proving 8.0, generated `euc` 6.8,
+   * `route-41` 5.4, `sweep-39` 5.9 — a city pad's kicker adds at most 0.75 m —
+   * so those worlds keep the pre-M44 camera bit for bit.
+   *
+   * **Switchback Park needs the second condition below.** Its summit stands
+   * 16 m over the foot of its own slopes, above EUClaude's 11 m, and
+   * real-controller rides straight off the summit's rims at 8–29 m/s (24,512
+   * rides, 1,183 flights) put 39 flights more than 9 m over the slope below
+   * them — all at 20 m/s or faster, almost all leaving the terrace-drop leg
+   * sideways over the rim of the central hollow. Depth alone would have moved
+   * those 39 cameras; `sheerDropMetres` keeps them on the pre-M44 rule.
+   */
+  deepDropMetres: 9,
+  /**
+   * How far the ground under a flight must fall **in one fixed step** for the
+   * flight to count as leaving a building's edge, metres (M44). Only such a
+   * flight may take `deepDropMetres`' path.
+   *
+   * **2 m: over every hillside, under every roof edge.** A heightfield falls a
+   * cell's slope between two steps — Switchback's deepest flights never saw
+   * more than 0.365 m — while an EUClaude deck edge falls 11 m at once. Below
+   * the 2.75 m terrace steps too, which is harmless: a terrace is never 9 m
+   * over anything.
+   */
+  sheerDropMetres: 2,
   /**
    * Camera drop per m/s of normal impact, m, and its ceiling.
    *
@@ -10201,6 +10288,21 @@ export const LAUNCH_PAD = Object.freeze({
    * safe point predates tilt-back and can lie far back on the line to the
    * pad, and a hands-off recovery coast must never be thrown again. */
   rearmMetres: 8,
+  /** M44 (`docs/PLANS.md` §44, decision D15): the depth of an authored pad's
+   * **safe-point hold** below the pad's own ground, m. A pad that declares
+   * `holdSafeMetres` (`AuthoredLaunchPad`; no derived pad ever does) stores no
+   * crash-recovery point within that many metres of its centre, horizontally,
+   * on ground at or above its centre's height less this — so on EUClaude
+   * Heights' 11 m roof decks and the top of each ramp, and nowhere lower. A
+   * rider who comes up short at a gap, or rolls off a roof, is then set down
+   * on the ramp below the band (≥ 28 m under its head, 6 m up) facing a
+   * run-up, never at the lip they just fell from. 5 m because the band must
+   * reach as far down the ramp as it can while every drop-line terrace but the
+   * first (tops 5.5 and 2.75 m) and all of the courtyard floor — the lane, its
+   * pad chains, the alley floors — stay below it and keep their own safe
+   * points; the turn roof and the first terrace, in the band, are kept out by
+   * the holding pads' radii (`euclaudeLines.ts`). */
+  holdSafeDropMetres: 5,
   // ── Placement (the finder, `src/level/launchPadSites.ts`) ──
   /** Candidate lattice pitch, m, anchored on the heightfield origin (integer keys). */
   siteLatticeMetres: 2,
@@ -13326,39 +13428,24 @@ export const LAUNCH_PAD_LOOK = Object.freeze({
    * `rimColour`): [the coping's foot, the lip's knee, the middle knee, the foot].
    * A darker foot reads as the ramp's contact with the lawn at small sizes. */
   skirtShades: Object.freeze([1, 1, 0.82, 0.62] as const),
-  // ── Hovering waypoint marker (q237, ruling R14: ON by default) ──
+  // ── Direction cue (q237's switch, ON by default) ──
   /**
-   * A render-only downward arrow hovering over the pad's centre, so a pad
-   * reads from the road: the critics measured the flat 7 m apron at 2–8 px
-   * tall from every road (720p); a flat disc's height on screen is bounded by
-   * geometry, not paint. A signal-yellow square arrowhead under a dark square
-   * shaft (the pad's own palette), turning slowly about its upright. It is
-   * part of the pad's own instanced mesh (one draw still: no collider, no
+   * A painted arrowhead up every side's ramp (`render/launchPadView.ts`
+   * LAUNCH_PAD_CUE holds its shape): one dark ink decal on each side's middle
+   * facet, its apex pointing up the slope to the lip, so a pad says "ride up
+   * here" from any approach. The visual pass of 2026-10-22 (owner-approved)
+   * replaced R14's hovering arrow with it. Paint on the kicker: no collider, no
    * shadow, never in the sampler or the plan, hidden exactly where pads are
-   * hidden, priced with it: +16 triangles and 1,392 B per world template).
-   * The owner's switch: `false` drops it everywhere.
+   * hidden, priced with the pad (+8 triangles a pad template). The owner's
+   * switch: `false` drops it everywhere.
    */
   markerShown: true,
-  /** The arrow's tip above the pad's top (the dome apex), m. R14: ≥ 4.2 — over the highest rider (apex at F4's 5.5 m/s ≈ 1.54 m + rider ≈ 1.9 m) with margin. */
-  markerClearanceMetres: 4.5,
-  /** The arrowhead (a square pyramid, point down): height, m… */
-  markerHeadMetres: 1.6,
-  /** …and half its width across a face, m (1.8 m across). */
-  markerHeadHalfWidthMetres: 0.9,
-  /** The shaft above it (a square prism): height, m (head + shaft ≈ 23 px tall at 65 m on a 720p chase view)… */
-  markerShaftMetres: 1.8,
-  /** …and half its width across a face, m. */
-  markerShaftHalfWidthMetres: 0.35,
-  /** One slow turn about its upright takes this long, s (on the simulation clock; still under reduced motion). */
-  markerTurnSeconds: 12,
   // ── Paint ──
-  /** linear (0.578, 0.402, 0.030), luminance 0.41 — signal yellow, under road paint's 0.43: the skirt (the kicker's rim) and the marker's arrowhead. */
+  /** linear (0.578, 0.402, 0.030), luminance 0.41 — signal yellow, under road paint's 0.43: the skirt (the kicker's rim). */
   rimColour: 0xc8aa30,
   /** linear (0.491, 0.474, 0.423), luminance 0.47 — the light top: pale concrete, lighter than the yellow, never a dark centre (R16). */
   topColour: 0xbab7ae,
-  /** linear (0.034, 0.038, 0.044), luminance 0.038 — the marker's dark shaft (the pad itself has no dark part but its ink). */
-  shaftColour: 0x34373b,
-  /** linear (0.048, 0.044, 0.038), luminance 0.044 — M36's direction ink (`MARKING_PAINTS.ink`): the lip's hazard stripes. */
+  /** linear (0.048, 0.044, 0.038), luminance 0.044 — M36's direction ink (`MARKING_PAINTS.ink`): the lip's hazard stripes and the painted direction cue. */
   inkColour: 0x3e3b37,
   /** linear (0.565, 0.584, 0.604), luminance 0.58 — the coping: a light steel band along the lip, the kicker's edge (critic repair r4). */
   copingColour: 0xc6c9cc,

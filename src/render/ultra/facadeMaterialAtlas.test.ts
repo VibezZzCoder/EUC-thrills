@@ -195,8 +195,10 @@ test('the glass mask is the albedo\'s glass, texel for texel, and glass is gloss
     }
   }
   assert.ok(glassTexels > (SIZE * SIZE) / 10, 'the sheet carries little glass');
-  // And the pages without glass carry none.
-  for (const id of ['plain', 'spandrel', 'ground', 'groundLow'] as const) {
+  // And the pages without glass carry none. (2026-10-22: the ground pages now
+  // paint glazed bays and no door, so they left this list; the texel-for-texel
+  // loop above already holds their mask to the albedo.)
+  for (const id of ['plain', 'spandrel'] as const) {
     const page = pageLayout(id);
     for (let y = page.interior.y0; y < page.interior.y1; y += 3) {
       for (let x = page.interior.x0; x < page.interior.x1; x += 3) {

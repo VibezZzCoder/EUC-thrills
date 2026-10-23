@@ -72,10 +72,29 @@
  * widened by half a lattice diagonal, so they only ever exclude more); the
  * remaining rules are checked lazily, only for the candidates the greedy pick
  * actually reaches, against bucketed geometry.
+ *
+ * **Authored pads** (M44, `docs/PLANS.md` §44.1 D5). A plan that carries
+ * `LevelPlan.launchPads` — a hand-built venue whose pads stand where the city
+ * predicate above never reaches (on a roof deck, in a dense courtyard) — is
+ * not searched: its list is *resolved* into the same `LaunchPadSite`s, in
+ * the authored order, and everything downstream (the field, the view, the
+ * pricing and the grass and squirrel discs) cannot tell the two apart. The
+ * entry gives the id, the centre, the yaw, the declared drop and — only if it
+ * writes one — its safe-point hold (D15, carried as written); the radii are
+ * `LAUNCH_PAD`'s, never the author's; `y` is the prepared plan's own ground
+ * at the centre through the same `PlanTerrainSampler` the finder reads, so a
+ * pad on a roof deck stands on the deck's top. A bad list throws instead of
+ * quietly losing a pad. The branch is a plan predicate like the gate (a key
+ * on the plan, never a level or venue id, invariant 22), and **the derived
+ * branch is untouched**: no shipped plan carries the key, so every derived
+ * list — and every digest, seed pin and record key — is what it was (the
+ * corpus pin in `src/bench/launchPadHook.test.ts`). Invariant 3 still holds
+ * the derived output: it is never written into a plan; the authored list is
+ * an *input* the producer wrote, as `hazards` and `softBodies` are.
  */
 import { EUC, LAUNCH_PAD, PHYSICS, TERRAIN, WHEEL } from '../data/tuning.ts';
 import { PROP_SOLIDS } from '../data/props.ts';
-import type { BoxCollider, LevelPlan } from './plan.ts';
+import type { AuthoredLaunchPad, BoxCollider, LevelPlan } from './plan.ts';
 import type { PopulationPlan } from './populationPlan.ts';
 import { RouteSpine, createSpineSample } from '../simulation/routeSpine.ts';
 import { PlanTerrainSampler } from '../simulation/planSampler.ts';
@@ -84,12 +103,13 @@ import { lateralCeilingG } from '../simulation/lateralCeiling.ts';
 import { METRES_PER_SECOND_PER_MPH, shippedTopSpeedMph } from '../simulation/topSpeedPreset.ts';
 
 export interface LaunchPadSite {
-  readonly id: string;              // stable, e.g. `pad-${ix}-${iz}` from integer lattice coords
-  readonly x: number; readonly y: number; readonly z: number;  // y = ground height at the centre
-  readonly yaw: number;             // octagon orientation; multiples of π/8, a flat face toward the nearest road
+  readonly id: string;              // stable: derived `pad-${ix}-${iz}` from integer lattice coords, or the authored entry's own id
+  readonly x: number; readonly y: number; readonly z: number;  // y = ground height at the centre (a collider's top where one stands)
+  readonly yaw: number;             // octagon orientation; derived: multiples of π/8, a flat face toward the nearest road; authored: as written
   readonly triggerRadius: number;   // LAUNCH_PAD.triggerRadiusMetres (1.4)
   readonly footprintRadius: number; // LAUNCH_PAD.footprintRadiusMetres (2.0)
-  readonly dropMetres: number;      // centre ground minus the lowest ground a flight can reach (flight cap + trigger, 21.4 m), + margin, ≥ 0 (the flight cap's Δh)
+  readonly dropMetres: number;      // the flight cap's Δh, ≥ 0. Derived: centre ground minus the lowest ground a flight can reach (flight cap + trigger, 21.4 m), + margin; authored: as declared (a roof pad declares 0)
+  readonly holdSafeMetres?: number; // authored only, and only when the entry writes it (M44 D15): the safe-point hold radius, m, ≥ 0 (`LaunchPadField.holdsSafePoint`). A derived site never carries the key, so its JSON is what it was.
 }
 
 /** The answer for every world that is not a town, shared and frozen. */
@@ -104,23 +124,95 @@ interface Memo {
 const MEMO = new WeakMap<LevelPlan, Memo>();
 let finderRuns = 0;
 
-/** Pure; memoised per plan object (WeakMap; recompute if called with a different population). Never mutates either plan. */
+/**
+ * Pure; memoised per plan object (WeakMap; recompute if called with a
+ * different population). Never mutates either plan. A plan carrying
+ * `launchPads` gets its authored list resolved (`authoredSites`; throws on a
+ * bad list); every other plan is searched exactly as M42 shipped.
+ */
 export function cityLaunchPads(plan: LevelPlan, population: PopulationPlan | null): readonly LaunchPadSite[] {
   // The game always passes the population it installed; a caller without one
-  // has no people to keep pads away from, and so gets none.
+  // has no people to keep pads away from, and so gets none. That holds for an
+  // authored list too: every consumer passes the installed population, so the
+  // two branches answer the same callers.
   if (population === null) return NO_SITES;
   const memo = MEMO.get(plan);
   if (memo !== undefined && memo.population === population) return memo.sites;
+  // One computation per world either way — a search or an authored list's
+  // resolution — so the counter reads "+1 per installed world" on every
+  // world, as the M42 browser spec expects across a swap.
   finderRuns += 1;
-  const found = findSites(plan, population);
+  const found = plan.launchPads !== undefined ? authoredSites(plan, plan.launchPads) : findSites(plan, population);
   const sites = found.length === 0 ? NO_SITES : Object.freeze(found.map((site) => Object.freeze(site)));
   MEMO.set(plan, { population, sites });
   return sites;
 }
 
-/** Test/QA only: how many times the finder actually computed (memo misses) since load. */
+/**
+ * Test/QA only: how many times `cityLaunchPads` actually computed (memo
+ * misses) since load — a derived search or an authored list's resolution.
+ */
 export function launchPadFinderRuns(): number {
   return finderRuns;
+}
+
+/**
+ * M44 (§44.1 D5): an authored list as sites, in its own order. Nothing is
+ * searched, moved or dropped: the author placed every pad on purpose, and the
+ * venue's own test proves where they stand (the lane rule, roof reach, the
+ * gap rule). What this checks is that each entry *is* a pad — a non-empty id
+ * no earlier entry used, a finite centre and yaw, a finite drop ≥ 0 and, when
+ * the entry writes one, a finite safe-point hold ≥ 0 — and it
+ * throws a `RangeError` naming the entry otherwise, so a typo fails the
+ * venue's first test instead of losing a pad or arming two under one id.
+ *
+ * `y` is the prepared plan's ground at the centre — the highest collider top
+ * there, or the heightfield, or the surround off it — through a
+ * `PlanTerrainSampler` built on this plan, exactly as `Validator.site` reads
+ * it. The drop is the author's: a roof pad's honest drop is the gap it exists
+ * to cross, which would crush the lift cap, so it declares the roof it stands
+ * on (`dropMetres: 0`, §44.1 D5). An empty list resolves to no pads (and
+ * never falls back to the search); `plan.ts` asks producers to omit the key
+ * instead, which is a digest matter, not a resolution one.
+ */
+function authoredSites(plan: LevelPlan, authored: readonly AuthoredLaunchPad[]): LaunchPadSite[] {
+  if (authored.length === 0) return [];
+  const sampler = new PlanTerrainSampler(plan);
+  const ground = createGroundSample();
+  const ids = new Set<string>();
+  const sites: LaunchPadSite[] = [];
+  authored.forEach((pad, index) => {
+    const named = typeof pad.id === 'string' && pad.id.length > 0 ? ` "${pad.id}"` : '';
+    const label = `authored launch pad ${index}${named}`;
+    // A blank id is no name: the QA bridge and the drawn-equals-armed check compare ids.
+    if (typeof pad.id !== 'string' || pad.id.trim().length === 0) throw new RangeError(`${label} needs a non-empty id`);
+    if (ids.has(pad.id)) throw new RangeError(`${label} repeats an earlier pad's id`);
+    ids.add(pad.id);
+    if (!Number.isFinite(pad.x) || !Number.isFinite(pad.z)) throw new RangeError(`${label} needs a finite centre`);
+    if (!Number.isFinite(pad.yaw)) throw new RangeError(`${label} needs a finite yaw`);
+    if (!Number.isFinite(pad.dropMetres) || pad.dropMetres < 0) {
+      throw new RangeError(`${label} needs a finite drop of at least 0 m`);
+    }
+    // The safe-point hold (D15) is optional: absent is no hold, and it stays
+    // absent on the site, so an entry that writes none resolves to the same
+    // eight keys as before (and as every derived site).
+    const hold = pad.holdSafeMetres;
+    if (hold !== undefined && (!Number.isFinite(hold) || hold < 0)) {
+      throw new RangeError(`${label} needs a finite safe-point hold of at least 0 m`);
+    }
+    const y = sampler.sampleGround(pad.x, pad.z, ground).height;
+    if (!Number.isFinite(y)) throw new RangeError(`${label} stands on ground that has no finite height`);
+    const site: LaunchPadSite = {
+      id: pad.id,
+      x: pad.x, y, z: pad.z,
+      yaw: pad.yaw,
+      triggerRadius: LAUNCH_PAD.triggerRadiusMetres,
+      footprintRadius: LAUNCH_PAD.footprintRadiusMetres,
+      dropMetres: pad.dropMetres,
+    };
+    sites.push(hold === undefined ? site : { ...site, holdSafeMetres: hold });
+  });
+  return sites;
 }
 
 // ---------------------------------------------------------------------------

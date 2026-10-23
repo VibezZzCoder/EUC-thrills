@@ -24,7 +24,7 @@ import type { SurfaceId } from '../simulation/world.ts';
 import type { GhostSample } from '../simulation/ghost.ts';
 import { createPose, type EucPose } from '../simulation/EucController.ts';
 import type { LevelPlan } from '../level/plan.ts';
-import type { PopulationPlan } from '../level/populationPlan.ts';
+import type { ActorSpec, PopulationPlan } from '../level/populationPlan.ts';
 import { createPopulationView, type PopulationView, type PopulationViewReport,
   type PopulationPainter, type PopulationRenderSnapshot } from './populationView.ts';
 import { createCheckpointGates, type CheckpointGates } from './checkpointGates.ts';
@@ -56,6 +56,10 @@ import { PLAYABLE_RIDER_LOOKS, riderLook } from './riderLook.ts';
 import { DEFAULT_CHARACTER, type CharacterId } from '../data/riders.ts';
 import { createParticleField, type ParticleField } from './particles.ts';
 import { createSky, type SkyTexture } from './sky.ts';
+import { ORDINARY_SHADE_FILL, ordinaryBounceHex, ordinaryHemisphereIntensity } from './shadeFill.ts';
+import { createContactShadows, riderBlobFade, type ContactShadows, type MovingBlob } from './contactShadows.ts';
+import { CONTACT_SHADOW, createContactGround, type ContactGround } from '../level/contactShadowPlan.ts';
+import { fieldHeightAt } from '../level/buildPlan.ts';
 import {
   DAYLIGHT_LOOK,
   resolveVenueLook,
@@ -181,6 +185,18 @@ const PARTICLE_COLOURS: Partial<Record<ParticleId, number>> = FX.particleColours
  * written because `roomSize` is the rule's one constant.
  */
 const PACK_TRIMS = CHASE.roomSize - 1;
+
+/**
+ * Moving contact-shadow slots kept for riders beyond the population's own
+ * (2026-10-22): four seats, the pack's three trims and the ghost.
+ */
+const CONTACT_RIDER_SLOTS = 4 + PACK_TRIMS + 1;
+
+/** Shortest signed turn from `a` to `b`, radians. */
+const contactAngleDelta = (a: number, b: number): number => {
+  const d = (b - a) % (Math.PI * 2);
+  return d > Math.PI ? d - Math.PI * 2 : d < -Math.PI ? d + Math.PI * 2 : d;
+};
 
 /**
  * The one place a venue's light is composed — M36 Phase 4.
@@ -416,11 +432,19 @@ export function createVenueLighting(
   const applyTuned = (): void => {
     setExposure(tuned.exposure ?? look.exposure);
     sun.intensity = tuned.sunIntensity ?? look.sunIntensity;
-    hemisphere.intensity = tuned.hemisphereIntensity ?? look.hemisphereIntensity;
+    // 2026-10-22, the shade fill (`render/shadeFill.ts`): the ordinary tier
+    // hangs the venue's (or the panel's) hemisphere brighter, mostly in its
+    // bounce half, so a face the sun cannot see reads as shade instead of a
+    // black slab. Absolute multipliers of the authored numbers, written here
+    // every time so a venue swap, a slider and a tier change all land on the
+    // same composition. Sun, exposure, haze and sky are untouched on both tiers.
+    const fill = tuned.hemisphereIntensity ?? look.hemisphereIntensity;
+    hemisphere.intensity = ordinaryHemisphereIntensity(fill);
+    hemisphere.groundColor.setHex(ordinaryBounceHex(look.groundBounceColour));
     // M39: on the Ultra tier the fill moves from the hemisphere to the
     // environment. Both values are W4's, computed from this look and the tuned
-    // hemisphere — written over the line above, never multiplied into it — so
-    // the ordinary tier is the three lines above and nothing else.
+    // hemisphere — written over the lines above, never multiplied into them —
+    // so the ordinary tier is the lines above and nothing else.
     if (tier === 'ultra') {
       const fill = ultraHooks().ultraFill(look, tuned.hemisphereIntensity);
       hemisphere.intensity = fill.hemisphereIntensity;
@@ -575,7 +599,8 @@ export function createVenueLighting(
       fog.far = look.fogFar;
 
       hemisphere.color.setHex(look.skyColour);
-      hemisphere.groundColor.setHex(look.groundBounceColour);
+      // The bounce colour is written by `applyTuned` below, with the shade
+      // fill's scale on it (2026-10-22).
       sun.color.setHex(look.sunColour);
 
       // The same derivation the painted sun uses, from the same two numbers, so
@@ -877,6 +902,23 @@ export class GameRenderer {
   private squirrels: Squirrels | null = null;
   /** One physical world's view, retained through pane/tier/context changes. */
   private population: PopulationView | null = null;
+  /**
+   * 2026-10-22: the contact shadows a frame without a shadow map lays down
+   * (`render/contactShadows.ts`). One layer per world; its moving blobs are
+   * rewritten once a frame, at the first pane, from what the frame draws.
+   */
+  private contactShadows: ContactShadows | null = null;
+  private contactPlan: LevelPlan | null = null;
+  private contactGround: ContactGround | null = null;
+  /** Set by `beginFrame`, spent by the frame's first `renderView`. */
+  private contactPending = true;
+  /** This frame's population endpoints, as `updatePopulation` was handed them. */
+  private contactPopulation: { previous: PopulationRenderSnapshot; current: PopulationRenderSnapshot; alpha: number } | null = null;
+  private readonly contactActors = new Map<string, ActorSpec>();
+  private readonly contactPrevious = new Map<string, PopulationRenderSnapshot['actors'][number]>();
+  private readonly contactBlob: MovingBlob = { x: 0, y: 0, z: 0, headingY: 0, halfX: 0, halfZ: 0, strength: 0,
+    innerX: 0, innerZ: 0, normalX: 0, normalY: 1, normalZ: 0 };
+  private readonly contactRoots = new WeakMap<THREE.Object3D, THREE.Object3D>();
   private readonly supplements = new UltraSupplements();
   /**
    * Which presentation recipe the installed world was built with, and what
@@ -1177,6 +1219,12 @@ export class GameRenderer {
     this.sun.shadow.mapSize.setScalar(LIGHTING.shadowMapSize);
     this.sun.shadow.bias = LIGHTING.shadowBias;
     this.sun.shadow.normalBias = LIGHTING.shadowNormalBias;
+    // 2026-10-22, the shade fill's third number (`render/shadeFill.ts`): a cast
+    // shadow keeps 22 % of the sun instead of none, so shadowed ground reads as
+    // shade rather than a black hole. The map and its edges are unchanged. The
+    // ordinary shadow rig (`ultraLighting.ts` `ordinaryRig`) restates it, which
+    // is what the Ultra teardown writes back.
+    this.sun.shadow.intensity = ORDINARY_SHADE_FILL.shadow;
 
     // A single cascade kept tight around the subject so texels stay dense
     // where they are actually read. It follows the rider from M3.
@@ -1517,6 +1565,12 @@ export class GameRenderer {
     const oldPreparedSupplements = this.preparedEnvironmentSupplements;
     this.population?.dispose();
     this.population = null;
+    this.contactShadows?.dispose();
+    this.contactShadows = null;
+    this.contactPlan = null;
+    this.contactGround = null;
+    this.contactPopulation = null;
+    this.contactActors.clear();
     this.vegetation?.dispose();
     this.vegetation = null;
     this.preparedEnvironmentSupplements = null;
@@ -1652,6 +1706,15 @@ export class GameRenderer {
     // plan's, and a rebuild of the *same* plan carries the same ones.
     for (const id of this.struckTargets) targets.strike(id);
 
+    // 2026-10-22: the world's contact shadows (`render/contactShadows.ts`) —
+    // shown only while the sun casts nothing, which is the ordinary Low tier.
+    const contact = createContactShadows(plan, CONTACT_RIDER_SLOTS + (populationPlan?.actors.length ?? 0));
+    contact.setVisible(!this.sun.castShadow);
+    this.contactShadows = contact;
+    this.contactPlan = plan;
+    this.contactGround = createContactGround(plan);
+    this.scene.add(contact.group);
+
     return terrain;
   }
 
@@ -1753,7 +1816,11 @@ export class GameRenderer {
     }
     this.population?.dispose();
     this.population = null;
+    this.contactActors.clear();
+    this.contactPopulation = null;
+    this.contactShadows?.setDynamicCapacity(CONTACT_RIDER_SLOTS + (plan?.actors.length ?? 0));
     if (plan === null) return;
+    for (const actor of plan.actors) this.contactActors.set(actor.id, actor);
     const population = createPopulationView(plan, painter);
     this.population = population;
     this.scene.add(population.group);
@@ -1762,6 +1829,8 @@ export class GameRenderer {
   /** Once before the pane loop. Repeating this call never advances a clock. */
   updatePopulation(previous: PopulationRenderSnapshot, current: PopulationRenderSnapshot, alpha: number): void {
     this.population?.update(previous, current, alpha);
+    // Read (never written) by this frame's contact shadows.
+    this.contactPopulation = { previous, current, alpha };
   }
 
   /**
@@ -2755,6 +2824,8 @@ export class GameRenderer {
     this.ordinaryQuality = level;
     const shadows = level !== 'low';
     if (this.sun.castShadow !== shadows) this.sun.castShadow = shadows;
+    // 2026-10-22: the blobs stand in for the cascade exactly when it is off.
+    this.contactShadows?.setVisible(!this.sun.castShadow);
 
     const mapSize = level === 'high' ? LIGHTING.shadowMapSize : LIGHTING.shadowMapSize / 2;
     if (shadows && this.sun.shadow.mapSize.x !== mapSize) {
@@ -2797,6 +2868,7 @@ export class GameRenderer {
     // of the next frame — before the caller points the shadow focus and the
     // surround plane, so the rebuilt ordinary world is drawn whole.
     if (this.ultra.demotionPending) this.ultra.demote();
+    this.contactPending = true;
     this.renderer.info.reset();
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, this.lastWidth, this.lastHeight);
@@ -2867,6 +2939,11 @@ export class GameRenderer {
    * the device-pixel ratio itself.
    */
   renderView(view: number): void {
+    // Once a frame, before any pane: every rig is posed and every seat synced.
+    if (this.contactPending) {
+      this.contactPending = false;
+      this.updateContactShadows();
+    }
     this.supplements.sync(this.ultra.supplementContext());
     // The armed quad probe takes over the frame — M27 Phase 0. `Game` still
     // believes the session is single-view (one seat, one camera, unsplit HUD,
@@ -2914,6 +2991,134 @@ export class GameRenderer {
       this.paneShadowTrim.restore();
       this.population?.restoreView();
       this.squirrels?.restoreView();
+    }
+  }
+
+  /**
+   * This frame's moving contact shadows (2026-10-22, `render/contactShadows.ts`).
+   *
+   * Shown only while the sun casts nothing; then rewritten from what the frame
+   * is about to draw — every seated rig, each shown cop trim, the ghost, and
+   * the outdoor population at the same interpolation `updatePopulation` was
+   * handed. Reads poses and plan geometry only; writes nothing anyone reads.
+   */
+  private updateContactShadows(): void {
+    const layer = this.contactShadows;
+    if (layer === null) return;
+    const shown = !this.sun.castShadow;
+    layer.setVisible(shown);
+    if (!shown) return;
+    layer.beginDynamic();
+    const rigs = this.paneShadowTrim.rigs;
+    for (let index = 0; index < rigs.length; index += 1) this.pushRiderContact(layer, rigs[index].group, 1);
+    for (let index = 0; index < this.cops.length; index += 1) {
+      const cop = this.cops[index];
+      if (cop.visible) this.pushRiderContact(layer, cop.group, 1);
+    }
+    if (this.ghost.visible) this.pushRiderContact(layer, this.ghost.group, CONTACT_SHADOW.ghostStrength);
+    this.pushPopulationContact(layer);
+    layer.endDynamic();
+  }
+
+  /** The node a rider's contact patch is: the `…riding-rig` root under `group`, or `group`. */
+  private contactRoot(group: THREE.Object3D): THREE.Object3D {
+    const known = this.contactRoots.get(group);
+    if (known !== undefined) return known;
+    let found: THREE.Object3D = group;
+    if (!group.name.endsWith('riding-rig')) {
+      group.traverse((node) => {
+        if (found === group && node.name.endsWith('riding-rig')) found = node;
+      });
+    }
+    this.contactRoots.set(group, found);
+    return found;
+  }
+
+  private pushRiderContact(layer: ContactShadows, group: THREE.Object3D, share: number): void {
+    if (!group.visible) return;
+    const root = this.contactRoot(group);
+    if (!root.visible) return;
+    root.updateWorldMatrix(true, false);
+    const m = root.matrixWorld.elements;
+    const x = m[12];
+    const y = m[13];
+    const z = m[14];
+    const ground = this.contactGround?.below(x, z, y) ?? y;
+    const { strength, grow } = riderBlobFade(y - ground);
+    const blob = this.contactBlob;
+    const rider = CONTACT_SHADOW.rider;
+    blob.x = x; blob.y = ground; blob.z = z;
+    blob.headingY = Math.atan2(m[8], m[10]);
+    blob.halfX = rider.halfX * grow; blob.halfZ = rider.halfZ * grow;
+    blob.strength = rider.strength * strength * share;
+    blob.innerX = 0; blob.innerZ = 0;
+    this.contactNormal(blob, x, z, ground);
+    layer.pushDynamic(blob);
+  }
+
+  /** The heightfield's normal under (x, z) when `ground` is the field there; flat on a solid's top. */
+  private contactNormal(blob: MovingBlob, x: number, z: number, ground: number): void {
+    blob.normalX = 0; blob.normalY = 1; blob.normalZ = 0;
+    const plan = this.contactPlan;
+    if (plan === null) return;
+    const field = (px: number, pz: number): number => fieldHeightAt(plan.heightfield, plan.surround, px, pz);
+    if (Math.abs(field(x, z) - ground) > 1e-3) return;
+    const e = 0.5;
+    const dx = (field(x + e, z) - field(x - e, z)) / (2 * e);
+    const dz = (field(x, z + e) - field(x, z - e)) / (2 * e);
+    blob.normalX = -dx; blob.normalY = 1; blob.normalZ = -dz;
+  }
+
+  private pushPopulationContact(layer: ContactShadows): void {
+    const frame = this.contactPopulation;
+    if (frame === null || this.contactActors.size === 0) return;
+    const alpha = Number.isFinite(frame.alpha) ? Math.min(1, Math.max(0, frame.alpha)) : 1;
+    const previous = this.contactPrevious;
+    previous.clear();
+    for (const pose of frame.previous.actors) previous.set(pose.id, pose);
+    const blob = this.contactBlob;
+    for (const b of frame.current.actors) {
+      const spec = this.contactActors.get(b.id);
+      if (spec === undefined || spec.kind !== b.kind) continue;
+      const candidate = previous.get(b.id);
+      const a = candidate !== undefined && candidate.kind === b.kind ? candidate : b;
+      blob.x = a.x + (b.x - a.x) * alpha;
+      blob.y = a.y + (b.y - a.y) * alpha;
+      blob.z = a.z + (b.z - a.z) * alpha;
+      blob.headingY = a.headingY + contactAngleDelta(a.headingY, b.headingY) * alpha;
+      const hasNormal = Number.isFinite(b.groundNormalX) && Number.isFinite(b.groundNormalY) && Number.isFinite(b.groundNormalZ);
+      blob.normalX = hasNormal ? b.groundNormalX! : 0;
+      blob.normalY = hasNormal ? b.groundNormalY! : 1;
+      blob.normalZ = hasNormal ? b.groundNormalZ! : 0;
+      const hull = spec.hull;
+      if (b.kind === 'parkedVehicle' || b.kind === 'serviceVehicle' || b.kind === 'trafficVehicle') {
+        const vehicle = CONTACT_SHADOW.vehicle;
+        blob.halfX = hull.halfWidthMetres + vehicle.skirtX;
+        blob.halfZ = hull.halfLengthMetres + vehicle.skirtZ;
+        blob.strength = vehicle.strength;
+        blob.innerX = vehicle.innerX; blob.innerZ = vehicle.innerZ;
+      } else if (b.kind === 'fictionalEuc') {
+        const euc = CONTACT_SHADOW.populationEuc;
+        blob.halfX = euc.halfX; blob.halfZ = euc.halfZ; blob.strength = euc.strength;
+        blob.innerX = 0; blob.innerZ = 0;
+      } else if (b.impactReaction === 'knockdown') {
+        // Lying along the fall: a longer blob reaching out the way they went.
+        const fallen = CONTACT_SHADOW.fallen;
+        const yaw = blob.headingY + (b.impactFallYaw ?? 0);
+        blob.x += Math.sin(yaw) * fallen.reach;
+        blob.z += Math.cos(yaw) * fallen.reach;
+        blob.headingY = yaw;
+        blob.halfX = fallen.halfX; blob.halfZ = fallen.halfZ;
+        blob.strength = CONTACT_SHADOW.person.strength;
+        blob.innerX = 0; blob.innerZ = 0;
+      } else {
+        const person = CONTACT_SHADOW.person;
+        blob.halfX = person.half;
+        blob.halfZ = person.half;
+        blob.strength = person.strength;
+        blob.innerX = 0; blob.innerZ = 0;
+      }
+      layer.pushDynamic(blob);
     }
   }
 
@@ -3228,6 +3433,8 @@ export class GameRenderer {
     this.presentationSelection = null;
     this.population?.dispose();
     this.population = null;
+    this.contactShadows?.dispose();
+    this.contactShadows = null;
     this.vegetation?.dispose();
     this.vegetation = null;
     this.supplements.dispose();

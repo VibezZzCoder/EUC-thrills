@@ -502,7 +502,9 @@ test.describe('M42 B — world render', () => {
     expectNoM42Errors(errors);
   });
 
-  test('town: the hovering marker (R14) is in the pads\' one draw, turns slowly while shown, and holds still while hidden', async ({ page }) => {
+  test('town: the painted direction cue (q237, 2026-10-22) is in the pads\' one draw and holds still, shown or hidden', async ({ page }) => {
+    // The visual-quality pass of 2026-10-22 replaced R14's hovering, turning waypoint arrow with an
+    // arrowhead painted up every side's ramp (`render/launchPadView.ts` LAUNCH_PAD_CUE).
     test.setTimeout(300_000);
     const errors = await bootM42(page);
     const result = await page.evaluate(({ hz }) => {
@@ -513,7 +515,7 @@ test.describe('M42 B — world render', () => {
       const mesh = renderer.scene.getObjectByName('launch-pad-instances') as unknown as
         { geometry: { getAttribute(name: string): { array: Float32Array; version: number } } };
       const position = mesh.geometry.getAttribute('position');
-      // The template's last vertex: a corner of the shaft's cap, turning about the pad's upright.
+      // The template's last vertex: a corner of the last side's painted arrowhead.
       const corner = () => { const a = position.array, n = a.length; return { x: a[n - 3], y: a[n - 2], z: a[n - 1], version: position.version }; };
       const pads = renderer.presentation()!.launchPads;
       const steps = Math.round(hz * 1.5);
@@ -527,20 +529,15 @@ test.describe('M42 B — world render', () => {
       const hiddenAfter = corner();
       renderer.setLaunchPadsVisible(true);
       game.advance(1);
-      return { pads, steps, shownBefore, shownAfter, hiddenBefore, hiddenAfter };
+      return { pads, shownBefore, shownAfter, hiddenBefore, hiddenAfter };
     }, { hz: SIMULATION.hz });
     expect(result.pads.pads).toBeGreaterThan(0);
-    expect(result.pads.drawCalls, 'the marker is in the pads\' one draw').toBe(1);
-    // Critic r4: the kicker (104 triangles: top, coping, concave skirt, hazard stripes) and its marker (16).
-    expect(result.pads.colourTriangles / result.pads.pads, 'the pad and its marker').toBe(120);
-    const angle = (p: { x: number; z: number }) => Math.atan2(p.x, p.z);
-    const turned = angle(result.shownAfter) - angle(result.shownBefore);
-    const wrapped = Math.atan2(Math.sin(turned), Math.cos(turned));
-    // One slow turn per `markerTurnSeconds` (12 s): 1.5 s of simulation is an eighth of a turn.
-    expect(result.shownAfter.version).toBeGreaterThan(result.shownBefore.version);
-    expect(Math.abs(wrapped - (2 * Math.PI * result.steps) / SIMULATION.hz / 12)).toBeLessThan(1e-3);
-    expect(result.shownAfter.y, 'it turns about its upright, never bobbing into a rider').toBe(result.shownBefore.y);
-    expect(result.hiddenAfter, 'hidden: no turn, no upload').toEqual(result.hiddenBefore);
+    expect(result.pads.drawCalls, 'the cue is in the pads\' one draw').toBe(1);
+    // Critic r4: the kicker (104 triangles: top, coping, concave skirt, hazard stripes) and its cue (8).
+    expect(result.pads.colourTriangles / result.pads.pads, 'the pad and its painted cue').toBe(112);
+    expect(result.shownAfter, 'shown: paint on the kicker, nothing turns or uploads').toEqual(result.shownBefore);
+    expect(result.hiddenAfter, 'hidden: nothing turns or uploads').toEqual(result.hiddenBefore);
+    expect(result.shownBefore.y, 'never above the lip a rider flies over').toBeLessThan(0.75);
     expectNoM42Errors(errors);
   });
 });

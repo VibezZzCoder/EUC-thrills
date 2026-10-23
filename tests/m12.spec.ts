@@ -329,10 +329,11 @@ test('the original city remains explicitly available alongside fresh routes', as
   expect(await page.evaluate(() => window.game.levelPlan.recordWorldId)).toBe('m7-slice~living-r1');
 
   const title = page.locator('.euc-menu--title');
-  await expect(title.locator('[data-menu="start"]')).toHaveClass(/euc-button--primary/);
+  // The 2026-10-22 title: Start ride is the lit start card and names the place.
+  await expect(title.locator('[data-menu="start"]')).toHaveClass(/euc-start--here/);
   await expect(title.locator('[data-menu="routes"]')).toBeVisible();
-  await expect(title.locator('[data-menu="routes"]')).not.toHaveClass(/euc-button--primary/);
-  await expect(title.locator('[data-menu="world"]')).toContainText('hand-built city');
+  await expect(title.locator('[data-menu="routes"]')).not.toHaveClass(/euc-start--here|euc-button--primary/);
+  await expect(title.locator('[data-menu="start"]')).toContainText('hand-built city');
 
   // And the panel is a screen the player has to ask for.
   expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('title');
@@ -365,7 +366,7 @@ test('a seed typed into the field becomes the world the player is riding', async
   await page.evaluate(() => window.game.setAppState('paused'));
   await expect(page.locator('.euc-menu--pause [data-menu="world"]')).toContainText(GOOD_SEED);
   await page.evaluate(() => window.game.setAppState('title'));
-  await expect(page.locator('.euc-menu--title [data-menu="world"]')).toContainText(GOOD_SEED);
+  await expect(page.locator('.euc-menu--title [data-menu="start"]')).toContainText(GOOD_SEED);
 
   expect(errors).toEqual([]);
 });
@@ -893,11 +894,13 @@ test('a gamepad alone can reach a route it cannot type', async ({ page }) => {
   await page.locator('.euc-menu--title [data-menu="start"]').focus();
   await press(DPAD_DOWN);
   await expect(page.locator('.euc-menu--title [data-menu="couch"]')).toBeFocused();
-  await press(DPAD_DOWN);
-  await expect(page.locator('.euc-menu--title [data-menu="track-day"]')).toBeFocused();
+  // The 2026-10-22 title (DESIGN §9u): modes in rows of four under two start
+  // cards, so Fresh route is two Downs and two Rights away.
   await press(DPAD_DOWN);
   await expect(page.locator('.euc-menu--title [data-menu="knockabout"]')).toBeFocused();
-  await press(DPAD_DOWN);
+  await press(15);
+  await expect(page.locator('.euc-menu--title [data-menu="chase"]')).toBeFocused();
+  await press(15);
   await expect(page.locator('.euc-menu--title [data-menu="routes"]')).toBeFocused();
   await press(A);
   expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('routes');

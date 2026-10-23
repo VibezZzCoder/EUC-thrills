@@ -15,7 +15,7 @@ export function sharedGroundArrayPrice(plan: LevelPlan): number {
   // a drawn heightfield material. Blocks independently install their material.
   const sampled = sharedGroundCode(SURFACES[plan.surround.surface].material) > 0
     || plan.heightfield.surfaces.some(surface => sharedGroundCode(SURFACES[surface].material) > 0)
-    || plan.segments.some(segment => segment.colliders.some(collider => sharedGroundCode(colliderMaterial(collider)) > 0));
+    || plan.segments.some(segment => segment.colliders.some(collider => collider.drawn !== false && sharedGroundCode(colliderMaterial(collider)) > 0));
   if (!sampled) return 0;
   let bytes = 0;
   for (let side = SHARED_GROUND.textureSize; side >= 1; side /= 2) bytes += side * side * 4;

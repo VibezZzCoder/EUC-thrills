@@ -47,6 +47,7 @@ import type { QualityStateView, UltraSwitch } from '../app/renderTier.ts';
 import {
   TRACK_VENUE_IDS,
   VENUE_IDS,
+  isVenueId,
   offersTrickRun,
   type VenueId,
 } from '../app/venues.ts';
@@ -122,6 +123,12 @@ export type TouchStatus = 'shown' | 'waiting' | 'forced' | 'disabled';
 
 export interface MenuCallbacks {
   onStartRide(): void;
+  /**
+   * The title's second start card (2026-10-22): ride a headline place now —
+   * `'euclaude'` (Wheelhouse Wharf) or `'town'` (the `euc` town the game opens
+   * on). The caller installs it if it is not loaded and refuses anything else.
+   */
+  onStartPlace(place: string): void;
   onResume(): void;
   onOpenSettings(): void;
   onCloseSettings(): void;
@@ -336,6 +343,7 @@ const WORLD_LINES: Readonly<Record<WorldView['world'], string>> = Object.freeze(
   track: 'BelVar Circuit — a kart-scale technical lap, built to be raced.',
   proving: 'The proving ground — a flat instrument, not a place.',
   switchback: 'Switchback Park — a forested hillside jump lap.',
+  euclaude: 'Wheelhouse Wharf — a harbour island built to jump: pads, rooftops, gaps.',
   generated: '',
 });
 
@@ -352,9 +360,15 @@ export interface WorldView {
    * to the city was hidden on the one world where it was the thing a player
    * most needed.
    */
-  readonly world: 'slice' | 'proving' | 'generated' | 'track' | 'switchback';
+  readonly world: 'slice' | 'proving' | 'generated' | 'track' | 'switchback' | 'euclaude';
   /** The loaded route's seed. Empty on every world but a generated one. */
   readonly seed: string;
+  /**
+   * Is this the world the game opens on — the default generated town? The
+   * title calls it "The town" rather than by its seed (2026-10-22). Optional,
+   * so a view that does not say is simply not home.
+   */
+  readonly home?: boolean;
   /**
    * Does the loaded plan close a ring? — M36 Phase 5.
    *
@@ -387,6 +401,7 @@ const VENUE_LABELS: Readonly<Record<VenueId, string>> = Object.freeze({
   slice: 'Original city',
   track: 'BelVar Circuit',
   switchback: 'Switchback Park',
+  euclaude: 'Wheelhouse Wharf',
 });
 
 /**
@@ -398,9 +413,9 @@ const VENUE_LABELS: Readonly<Record<VenueId, string>> = Object.freeze({
  */
 function lapVenueName(view: WorldView): string {
   if (!view.lap) return VENUE_LABELS.track;
-  return view.world === 'slice' || view.world === 'track' || view.world === 'switchback'
-    ? VENUE_LABELS[view.world]
-    : VENUE_LABELS.track;
+  // Any venue by its own name (M44: a chain that spelled the three old ones
+  // out would name BelVar the day a fourth place closed a ring).
+  return isVenueId(view.world) ? VENUE_LABELS[view.world] : VENUE_LABELS.track;
 }
 
 /**
@@ -1100,46 +1115,118 @@ export function aboutTemplate(): string {
 `;
 }
 
+/**
+ * The title's two start cards (2026-10-22, the owner's "split the big top
+ * button into two"). The first rides whatever is loaded — the town the game
+ * opens on, or whatever a player chose on the fresh-route panel — and is still
+ * `data-menu="start"`, so it stays the first stop and Enter's target. The
+ * second rides the other headline place in one press: Wheelhouse Wharf, or
+ * the town again while the Wharf is loaded. Both are written by `writeStarts`.
+ *
+ * Pictures are inline SVG keyed by place, `aria-hidden`, so a card's name is
+ * its words; every hook inside a card is `data-note`, never `data-menu`.
+ */
+type StartPlace = 'town' | 'route' | 'slice' | 'track' | 'switchback' | 'euclaude' | 'proving';
+
+const START_NAMES: Readonly<Record<StartPlace, string>> = Object.freeze({
+  town: 'The town',
+  route: 'Fresh route',
+  slice: 'Original city',
+  track: 'BelVar Circuit',
+  switchback: 'Switchback Park',
+  euclaude: 'Wheelhouse Wharf',
+  proving: 'Proving ground',
+});
+
+const START_NOTES: Readonly<Record<StartPlace, string>> = Object.freeze({
+  town: 'Streets, a park, a river ford and traffic',
+  route: 'Your own generated town',
+  slice: 'The hand-built city loop',
+  track: 'A kart-scale technical lap',
+  switchback: 'A forested hillside jump lap',
+  euclaude: 'A harbour island built to jump',
+  proving: 'A flat instrument, not a place',
+});
+
+const CITY_PICTURE = '<path class="euc-start__ink" d="M4 34V16h8v18M14 34V8h10v26M26 34V20h7v14M35 34V12h9v22M46 34V18h7v16"/>'
+  + '<path class="euc-start__lit" d="M17 12h2v2h-2zm4 0h2v2h-2zm-4 5h2v2h-2zm4 0h2v2h-2zm17-1h2v2h-2zm0 5h2v2h-2zM7 20h2v2H7z"/>'
+  + '<path class="euc-start__ground" d="M1 35h55"/>';
+const START_PICTURES: Readonly<Record<StartPlace, string>> = Object.freeze({
+  town: CITY_PICTURE,
+  route: CITY_PICTURE,
+  slice: CITY_PICTURE,
+  // A wheelhouse on a quay over water, and the jump arc from its roof.
+  euclaude: '<path class="euc-start__ink" d="M6 28V18h12v10M3 28h20M28 28V14h10v14M26 28h14"/>'
+    + '<path class="euc-start__lit" d="M9 21h6v3H9zM31 17h4v3h-4z"/>'
+    + '<path class="euc-start__arc" d="M14 12h.01M18 8.5h.01M23 7h.01M27 8.5h.01"/>'
+    + '<path class="euc-start__water" d="M1 33c3-2 5-2 8 0s5 2 8 0 5-2 8 0 5 2 8 0 5-2 8 0 5 2 8 0M5 37c3-2 5-2 8 0s5 2 8 0 5-2 8 0 5 2 8 0 5-2 8 0"/>',
+  // A chequered flag on its pole.
+  track: '<path class="euc-start__ink" d="M14 35V5M14 6h24v12H14"/>'
+    + '<path class="euc-start__lit" d="M14 6h6v6h-6zm12 0h6v6h-6zm-6 6h6v6h-6zm12 0h6v6h-6z"/>'
+    + '<path class="euc-start__ground" d="M1 35h55"/>',
+  switchback: '<path class="euc-start__ink" d="M10 32l7-20 7 20zM26 32l8-24 8 24z"/><path class="euc-start__ground" d="M1 35c12-6 22-6 34-2s14 2 20 0"/>',
+  proving: '<path class="euc-start__ground" d="M1 30h55M8 34h41"/>',
+});
+
+function startPicture(place: StartPlace): string {
+  return `<svg class="euc-start__picture" viewBox="0 0 57 40" aria-hidden="true" focusable="false">${START_PICTURES[place]}</svg>`;
+}
+
+function startCardTemplate(action: 'start' | 'start-place', kicker: string, place: StartPlace): string {
+  const away = action === 'start-place';
+  return `
+    <button type="button" class="euc-start${away ? '' : ' euc-start--here'}" data-menu="${action}"${away ? ` data-place="euclaude"` : ''}>
+      <span class="euc-start__art" data-note="start-art">${startPicture(place)}</span>
+      <span class="euc-start__words">
+        <span class="euc-start__kicker"><span data-note="start-kicker">${kicker}</span>${away ? '<span class="euc-start__new" data-note="start-new">New</span>' : ''}</span>
+        <span class="euc-start__place" data-note="start-place">${START_NAMES[place]}</span>
+        <span class="euc-start__note" data-note="start-note">${START_NOTES[place]}</span>
+      </span>
+    </button>`;
+}
+
 const TITLE_TEMPLATE = `
-<div class="euc-menu__panel" role="dialog" aria-modal="true" aria-labelledby="euc-title-heading">
-  <h1 class="euc-menu__title" id="euc-title-heading">EUC&nbsp;<span class="accent">THRILLS</span></h1>
-  <p class="euc-menu__tagline">One wheel. Total freedom. Ride anywhere.</p>
-  <div class="euc-menu__actions">
-    <button type="button" class="euc-button euc-button--primary" data-menu="start">
-      <span class="euc-button__label">Start ride</span>
-    </button>
-    <button type="button" class="euc-button" data-menu="couch" hidden>
+<div class="euc-menu__panel euc-title" role="dialog" aria-modal="true" aria-labelledby="euc-title-heading">
+  <div class="euc-title__head">
+    <h1 class="euc-menu__title" id="euc-title-heading">EUC&nbsp;<span class="accent">THRILLS</span></h1>
+    <p class="euc-menu__tagline">One wheel. Total freedom. Ride anywhere.</p>
+  </div>
+  <div class="euc-title__starts" role="group" aria-label="Start riding">${startCardTemplate('start', 'Start ride', 'town')}${startCardTemplate('start-place', 'New stage', 'euclaude')}
+  </div>
+  <div class="euc-title__modes" role="group" aria-label="Other ways to ride">
+    <button type="button" class="euc-button euc-mode" data-menu="couch" hidden>
       <span class="euc-button__label">2–4 Players</span>
-      <span class="euc-button__note">Up to four riders, one screen — the keyboard and your pads</span>
+      <span class="euc-button__note">Up to four riders on one screen</span>
     </button>
-    <button type="button" class="euc-button" data-menu="challenge">
+    <button type="button" class="euc-button euc-mode" data-menu="challenge">
       <span class="euc-button__label">Time trial</span>
       <span class="euc-button__note">Race the clock through the checkpoints</span>
     </button>
-    <button type="button" class="euc-button" data-menu="track-day">
+    <button type="button" class="euc-button euc-mode" data-menu="track-day">
       <span class="euc-button__label">Track Day</span>
       <span class="euc-button__note">Choose a track. Your best lap rides with you</span>
     </button>
-    <button type="button" class="euc-button" data-menu="trick-run">
+    <button type="button" class="euc-button euc-mode" data-menu="trick-run">
       <span class="euc-button__label">Trick Run</span>
       <span class="euc-button__note">Score tricks at Switchback Park</span>
     </button>
-    <button type="button" class="euc-button" data-menu="knockabout">
+    <button type="button" class="euc-button euc-mode" data-menu="knockabout">
       <span class="euc-button__label">Knockabout</span>
-      <span class="euc-button__note">Swing a paddle at everything on the way past</span>
+      <span class="euc-button__note">Swing a paddle at everything you pass</span>
     </button>
-    <button type="button" class="euc-button" data-menu="chase">
+    <button type="button" class="euc-button euc-mode" data-menu="chase">
       <span class="euc-button__label">Police chase</span>
-      <span class="euc-button__note">Officer Dorkins is behind you. Stay ahead for five minutes</span>
+      <span class="euc-button__note">Stay ahead of Officer Dorkins for five minutes</span>
     </button>
-    <button type="button" class="euc-button" data-menu="routes">
+    <button type="button" class="euc-button euc-mode" data-menu="routes">
       <span class="euc-button__label">Fresh route</span>
-      <span class="euc-button__note">Have the game procedurally generate a brand-new place to ride</span>
+      <span class="euc-button__note">Generate a brand-new town to ride</span>
     </button>${ULTRA_UTILITY}
   </div>
-  <p class="euc-world" data-menu="world"></p>
+  <div class="euc-title__foot">
   ${riderChipTemplate()}
   ${titleCreditTemplate()}
+  </div>
 </div>
 `;
 
@@ -2110,6 +2197,70 @@ function modeChooserTemplate(action: string, idBase: string, label = 'Playing'):
 }
 
 /**
+ * A place's small picture on its chooser button — M44 (`docs/PLANS.md` §44,
+ * D3; `DESIGN.md` §9t).
+ *
+ * **Decoration, in the Ultra flame's exact terms** (`ULTRA_UTILITY` above):
+ * static inline SVG, `aria-hidden="true"` and `focusable="false"`, and **no
+ * `<title>`** — so the button's name is its label and nothing else, its
+ * `textContent` trimmed is exactly the words `VENUE_LABELS` gives it (the
+ * browser census in `tests/m36_5.spec.ts` reads it that way), and a screen
+ * reader hears a place rather than a picture of one. The text, the focus ring
+ * and `aria-pressed` carry the meaning; the picture only says it again. An
+ * outline when the place is not loaded and lit when it is — one path for the
+ * buildings, one for their windows, one for the arc, and a class rule on
+ * `aria-pressed` — and forced-colours mode keeps the shapes in the text
+ * colour (`game.css`).
+ *
+ * **A map rather than a branch.** A venue with an entry gets its picture in
+ * front of its name; a venue without one gets its name alone, and nothing
+ * anywhere asks which venue a button is in order to decide what it does —
+ * this is presentation keyed by id, exactly as `VENUE_LABELS` is, and the day
+ * another place earns a picture it is one more entry here and no markup
+ * change.
+ *
+ * **Wheelhouse Wharf (id `euclaude`): two flat-roofed buildings and a dotted jump arc from the
+ * taller roof to the lower one** — the venue's own idea (a rooftop line with
+ * a real gap, `docs/PLANS.md` §44.3) and nothing else. Deliberately plain
+ * geometry: no starburst, asterisk, spark or sunburst, nothing that could be
+ * read as any company's mark.
+ *
+ * **Redrawn in the M44 repair pass** (the critic: about 12 px, single-pixel
+ * dots, "two blue boxes"). A 17 × 18 grid drawn at about 19 px tall (`game.css`),
+ * the canvas filled rather than a third of it: the takeoff building three
+ * storeys of a two-by-three window grid, the landing building two and 3.5
+ * units lower (a drop line, never a climb), the gap between them 2.4 units
+ * clear so it reads as a gap. The windows are what make a box a building, in
+ * both states — ink squares in the outline, lit squares in the accent fill.
+ * The arc is five round dots, each a zero-length run with round caps at a
+ * fixed point on the curve, so every renderer draws all five at the stroke's
+ * full width (2.1 units, past 2 px at 1x) — the first clear of the takeoff
+ * roof, the last clear of the landing roof, so neither reads as a chimney.
+ */
+const VENUE_ICONS: Readonly<Partial<Record<VenueId, string>>> = Object.freeze({
+  euclaude: '<svg class="euc-venue__icon" viewBox="0 0 17 18" aria-hidden="true" focusable="false">'
+    + '<path class="euc-venue__icon-buildings" d="M0.7 17.3V6.5h6v10.8zM10.5 17.3V10h5.8v7.3z"/>'
+    + '<path class="euc-venue__icon-windows" d="M1.8 8.35h1.4v1.5h-1.4zm2.4 0h1.4v1.5h-1.4zm-2.4 2.8h1.4v1.5h-1.4z'
+    + 'm2.4 0h1.4v1.5h-1.4zm-2.4 2.8h1.4v1.5h-1.4zm2.4 0h1.4v1.5h-1.4zM11.5 11.5h1.4v1.5h-1.4zm2.4 0h1.4v1.5h-1.4z'
+    + 'm-2.4 2.8h1.4v1.5h-1.4zm2.4 0h1.4v1.5h-1.4z"/>'
+    + '<path class="euc-venue__icon-arc" d="M3.7 3.8h.01M6 1.5h.01M9.2 2h.01M11.5 4.4h.01M13.4 7.2h.01"/>'
+    + '</svg>',
+});
+
+/**
+ * One place on the venue chooser: its picture if it has one, then its name.
+ *
+ * The label stays a bare text node after the picture, as it was before M44,
+ * so nothing that reads a venue button's words had to change. Exported so
+ * `menus.test.ts` reads the markup the player's browser parses.
+ */
+export function venueButtonTemplate(venue: VenueId): string {
+  return `
+        <button type="button" class="euc-couch__mode-button" data-menu="venue"
+                data-venue="${venue}" aria-pressed="false">${VENUE_ICONS[venue] ?? ''}${VENUE_LABELS[venue]}</button>`;
+}
+
+/**
  * The venue chooser — M36 Phase 5, and the control that replaced *Go back to
  * the hand-built city*.
  *
@@ -2136,11 +2287,13 @@ function modeChooserTemplate(action: string, idBase: string, label = 'Playing'):
  * The loaded venue is `disabled` as well as pressed. Rebuilding the world you
  * are standing on is a no-op the door refuses anyway (`Game.pickVenue`), and
  * `disabled` is what keeps the pad's walk from stopping on it.
+ *
+ * **Four places since M44**, and the row's fit is `game.css`'s (`DESIGN.md`
+ * §9t): one row of four everywhere it has the width, a two-by-two grid on a
+ * phone, and the join panel's copy still one line of labels at its 832 px.
  */
 function venueChooserTemplate(idBase: string, note = '', label = 'Riding at'): string {
-  const buttons = VENUE_IDS.map((venue) => `
-        <button type="button" class="euc-couch__mode-button" data-menu="venue"
-                data-venue="${venue}" aria-pressed="false">${VENUE_LABELS[venue]}</button>`).join('');
+  const buttons = VENUE_IDS.map((venue) => venueButtonTemplate(venue)).join('');
   // **The note is optional and the join panel declines it.** That panel is the
   // one screen in the game measured against a 1000 x 520 window with four seat
   // cards on it (`tests/m26.spec.ts`), the short-window tier already hides
@@ -3628,7 +3781,8 @@ export class Menus {
   setWorld(view: WorldView): void {
     const generated = view.world === 'generated';
     const line = generated ? `Fresh route · ${view.seed}` : WORLD_LINES[view.world];
-    for (const panel of [this.title, this.pause, this.routes]) {
+    this.writeStarts(view);
+    for (const panel of [this.pause, this.routes]) {
       const node = panel.querySelector<HTMLElement>('[data-menu="world"]');
       if (node && node.textContent !== line) node.textContent = line;
       if (node) node.dataset.generated = generated ? 'true' : 'false';
@@ -3667,6 +3821,40 @@ export class Menus {
     // change *while the join panel is open* — that is the whole point of the
     // control one block up.
     this.writeCouchNotes();
+  }
+
+  /**
+   * The title's two start cards, from the loaded world (2026-10-22).
+   *
+   * The first names what Start ride will ride. The second offers the other
+   * headline place: Wheelhouse Wharf, or — while the Wharf is loaded — the
+   * town the game opens on, so a player can always pick between the two.
+   */
+  private writeStarts(view: WorldView): void {
+    const here: StartPlace = view.world === 'generated' ? (view.home === true ? 'town' : 'route') : view.world;
+    const away: StartPlace = view.world === 'euclaude' ? 'town' : 'euclaude';
+    const write = (card: HTMLElement | null, place: StartPlace, kicker: string, isNew: boolean): void => {
+      if (card === null) return;
+      const set = (note: string, text: string): void => {
+        const node = card.querySelector<HTMLElement>(`[data-note="${note}"]`);
+        if (node && node.textContent !== text) node.textContent = text;
+      };
+      set('start-kicker', kicker);
+      set('start-place', here === 'route' && place === 'route' ? `Fresh route · ${view.seed}` : START_NAMES[place]);
+      set('start-note', START_NOTES[place]);
+      const art = card.querySelector<HTMLElement>('[data-note="start-art"]');
+      if (art && art.dataset.place !== place) {
+        art.innerHTML = startPicture(place);
+        art.dataset.place = place;
+      }
+      const badge = card.querySelector<HTMLElement>('[data-note="start-new"]');
+      if (badge) badge.hidden = !isNew;
+      card.dataset.startPlace = place;
+    };
+    write(this.title.querySelector<HTMLElement>('[data-menu="start"]'), here, 'Start ride', false);
+    const second = this.title.querySelector<HTMLElement>('[data-menu="start-place"]');
+    if (second && second.dataset.place !== away) second.dataset.place = away;
+    write(second, away, away === 'euclaude' ? 'New stage' : 'Or ride', away === 'euclaude');
   }
 
   /**
@@ -3960,6 +4148,10 @@ export class Menus {
     if (action === undefined) return;
 
     if (action === 'start') this.callbacks.onStartRide();
+    else if (action === 'start-place') {
+      const place = target.closest<HTMLElement>('[data-place]')?.dataset.place;
+      if (place !== undefined) this.callbacks.onStartPlace(place);
+    }
     else if (action === 'challenge') this.callbacks.onStartChallenge();
     else if (action === 'knockabout') this.callbacks.onStartKnockabout();
     else if (action === 'chase') this.callbacks.onStartChase();

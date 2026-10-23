@@ -189,17 +189,18 @@ test('seat 0 is the plan’s own spawn, untouched', () => {
   }
 });
 
-test('all five LevelPlan producers seat a second rider beside the first', () => {
+test('all six LevelPlan producers seat a second rider beside the first', () => {
   const plans = shippedPlans();
-  // The producer count is part of the claim: a sixth producer must arrive
-  // here rather than quietly ride on five worths of evidence. M36's Switchback
-  // Park is the fifth, and it arrived here exactly as this line intended —
-  // by failing until its spawn had been swept like everybody else's.
-  assert.equal(plans.length, 5, 'the producer list moved; the sweep below no longer covers it');
+  // The producer count is part of the claim: a seventh producer must arrive
+  // here rather than quietly ride on six worths of evidence. M36's Switchback
+  // Park was the fifth and M44's EUClaude Heights is the sixth, and each
+  // arrived here exactly as this line intended — by failing until its spawn
+  // had been swept like everybody else's.
+  assert.equal(plans.length, 6, 'the producer list moved (six since M44); the sweep below no longer covers it');
   for (const { label, plan } of plans) assertSeatedBeside(label, plan);
 });
 
-test('all five producers seat a full couch, each rider on the road and clear of the rest', () => {
+test('all six producers seat a full couch, each rider on the road and clear of the rest', () => {
   // **M27 Phase 1's contract, and the reason it is stated over the producers
   // rather than over the proving ground.** The generality test below proves
   // the *slot function* answers for four riders on a flat instrument; this

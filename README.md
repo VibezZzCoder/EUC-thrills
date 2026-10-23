@@ -17,8 +17,9 @@ browser. You ride a suspension wheel through a generated town — streets, a
 park, a river ford, a gravel trail and an industrial yard, with people and
 vans on the roads. The wheel behaves like a real one: you lean to go, it
 beeps near its top speed and lets go if you ignore the beeps, and a hard
-carve can ground a pedal. Three more places are built by hand: the
-**Original city**, **BelVar Circuit** and **Switchback Park**.
+carve can ground a pedal. Four more places are built by hand: the
+**Original city**, **BelVar Circuit**, **Switchback Park** and **Wheelhouse
+Wharf**, a harbour island built to jump, with launch pads and rooftop gaps.
 
 ## Modes
 

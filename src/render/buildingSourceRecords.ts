@@ -9,19 +9,20 @@ import { positionHash01 } from '../shared/maths.ts';
 
 export function buildingSourceRecords(prop: Prop): readonly BuildingPiece[] {
   if (prop.kind !== 'building') return [];
-  if (prop.look !== undefined) return composeBuilding({ position: prop.position, size: prop.size, look: prop.look });
+  if (prop.look !== undefined) return composeBuilding({ position: prop.position, size: prop.size, look: prop.look,
+    ...(prop.tone === undefined ? {} : { tone: prop.tone }), ...(prop.roofTone === undefined ? {} : { roofTone: prop.roofTone }) });
   // This is the original untagged createProps branch: cap tint keeps the
   // original salt-7 structure jitter, and short optional towers stay suppressed.
   const size = prop.size ?? { x: 12, y: 18, z: 12 }, shape = PROP_SIZES.building;
   const x = prop.position.x, z = prop.position.z;
-  const tone = BUILDING_TONES[Math.floor(positionHash01(x, z, 3) * BUILDING_TONES.length) % BUILDING_TONES.length];
+  const tone = prop.tone ?? BUILDING_TONES[Math.floor(positionHash01(x, z, 3) * BUILDING_TONES.length) % BUILDING_TONES.length];
   const jitter = 1 + (positionHash01(x, z, 5) * 2 - 1) * PROP_TINT_JITTER.building;
   const facade = (height: number): PropPartId => height >= BUILDING_FACADE.highRiseHeight ? 'buildingTall'
     : height >= BUILDING_FACADE.lowRiseHeight ? 'buildingBody' : 'buildingLow';
   const records: BuildingPiece[] = [
     { part: facade(size.y), x: 0, y: 0, z: 0, sx: size.x, sy: size.y, sz: size.z, yaw: 0, tone, jitter },
     { part: 'buildingCap', x: 0, y: size.y, z: 0, sx: size.x + shape.capOversail,
-      sy: shape.capHeight, sz: size.z + shape.capOversail, yaw: 0, tone: PROP_COLOURS.buildingCap,
+      sy: shape.capHeight, sz: size.z + shape.capOversail, yaw: 0, tone: prop.roofTone ?? PROP_COLOURS.buildingCap,
       jitter: 1 + (positionHash01(x, z, 7) * 2 - 1) * PROP_TINT_JITTER.structure },
   ];
   if (positionHash01(x, z, 9) > 0.55) {

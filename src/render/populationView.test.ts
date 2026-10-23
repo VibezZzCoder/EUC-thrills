@@ -4,13 +4,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import type { ActorKind, ActorSpec, PopulationPlan } from '../level/populationPlan.ts';
-import { createPopulationView, type PopulationRenderPose, type PopulationRenderSnapshot } from './populationView.ts';
+import { createPopulationView, pedestrianStatureMetres, PEDESTRIAN_FIGURE, POPULATION_NEAR_CAMERA,
+  type PopulationRenderPose, type PopulationRenderSnapshot } from './populationView.ts';
 import { physicalPopulationHull } from '../shared/populationHull.ts';
 import { populationSupportTargets, POPULATION_MODEL } from '../shared/populationSupport.ts';
 import { staticCasterBounds } from './ultra/ultraFarShadow.ts';
 import { WHEEL, RIDER_BLOCKOUT } from '../data/tuning.ts';
 import { collectLostContextHoldings } from './contextLoss.ts';
 import { countPopulation } from './populationPrice.ts';
+import { assignVehicleBodies, VEHICLE_BODY_HEIGHT, type PopulationVehicleBody } from './populationVehicles.ts';
 
 function spec(kind: ActorKind, id: string = kind, appearanceIndex = 0): ActorSpec {
   const vehicle = kind.endsWith('Vehicle');
@@ -47,6 +49,15 @@ function pose(actor: ActorSpec, extra: Partial<PopulationRenderPose> = {}): Popu
     ...(targets.tyres ? { tyreSupports: targets.tyres.map(support) as unknown as NonNullable<PopulationRenderPose['tyreSupports']> } : {}),
     ...extra };
 }
+/** A one-vehicle roster whose id deals it this body (bodies follow the id hash). */
+function vehicleWithBody(kind: ActorKind, body: PopulationVehicleBody): ActorSpec {
+  for (let index = 0; index < 200; index += 1) {
+    const candidate = spec(kind, `${kind}-${index}`, index);
+    if (assignVehicleBodies([candidate]).get(candidate.id) === body) return candidate;
+  }
+  throw new Error(`no ${kind} id deals a ${body}`);
+}
+const BODIES: readonly PopulationVehicleBody[] = ['deliveryVan', 'minibus', 'boxTruck'];
 function snapshot(actors: PopulationRenderPose[], tick = 0): PopulationRenderSnapshot {
   return { tick, clockSeconds: tick / 120, actors };
 }
@@ -92,6 +103,93 @@ test('pane selection retains off-camera shadow casters, restores full counts, an
     for (let i = 0; i < head.count; i++) { head.getMatrixAt(i, m); xs.push(m.elements[12]); }
     assert.deepEqual(xs.sort(), [0, 1], 'writers followed their slots after previous pane swaps');
     view.restoreView();
+  } finally { view.dispose(); }
+});
+
+/** Run one mesh's colour-pass hooks the way three does around its draw; returns the count it drew. */
+function colourDraw(mesh: THREE.InstancedMesh, camera: THREE.Camera): number {
+  const none = null as never;
+  mesh.onBeforeRender(none, none, camera, mesh.geometry, mesh.material as THREE.Material, none);
+  const drawn = mesh.count;
+  mesh.onAfterRender(none, none, camera, mesh.geometry, mesh.material as THREE.Material, none);
+  return drawn;
+}
+function drawnZs(mesh: THREE.InstancedMesh, count: number): number[] {
+  const m = new THREE.Matrix4(), zs: number[] = [];
+  for (let i = 0; i < count; i++) { mesh.getMatrixAt(i, m); zs.push(Math.round(m.elements[14])); }
+  return zs.sort((a, b) => a - b);
+}
+
+test('the camera looks through a person at its lens: colour pass leaves them out, the shadow pass keeps them (2026-10-22)', () => {
+  // The Quay roof critic: a spectator's head filled a quarter of the chase frame.
+  const actors = [spec('social', 'lens', 0), spec('social', 'far', 1)];
+  const view = createPopulationView(plan(actors));
+  const camera = new THREE.PerspectiveCamera(65, 16 / 9, 0.1, 100);
+  const place = (z: number) => { camera.position.set(0.3, 1.95, z); camera.lookAt(0, 1.2, 12); camera.updateMatrixWorld(); };
+  const shadow = new THREE.OrthographicCamera(-20, 20, 20, -20, 0.1, 100);
+  shadow.up.set(0, 0, 1); shadow.position.set(0, 40, 0); shadow.lookAt(0, 0, 0); shadow.updateMatrixWorld();
+  try {
+    view.apply(snapshot([pose(actors[0]), pose(actors[1], { z: 8 })]));
+    const head = view.group.getObjectByName('human-head-skin') as THREE.InstancedMesh;
+    place(-0.6); // 0.67 m from the near person's centre line, at head height
+    view.prepareView(camera, shadow);
+    assert.equal(head.count, 2, 'the sun\'s pass, rendered first, still draws both casters');
+    assert.equal(colourDraw(head, camera), 1, 'this pane\'s colour pass stops short of the person at the lens');
+    assert.deepEqual(drawnZs(head, 1), [8], 'and what it draws is the person further off');
+    assert.equal(head.count, 2, 'the after-hook restores the caster prefix');
+    assert.equal(colourDraw(head, shadow), 2, 'another camera (a shadow rig, a far map) is left alone');
+    view.restoreView(); assert.equal(head.count, 2);
+    assert.equal(colourDraw(head, camera), 2, 'restored, the hooks are inert');
+    // Without a sun pass (the Low tier) the colour pass still leaves them out.
+    view.prepareView(camera); assert.equal(colourDraw(head, camera), 1); view.restoreView();
+    // Hysteresis: inside the show distance the person stays out; past it they return; then hide only inside the hide distance.
+    const between = (POPULATION_NEAR_CAMERA.personHideMetres + POPULATION_NEAR_CAMERA.personShowMetres) / 2;
+    place(-Math.sqrt(between ** 2 - 0.09));
+    view.prepareView(camera, shadow); assert.equal(colourDraw(head, camera), 1, 'still looked through between the two distances'); view.restoreView();
+    place(-Math.sqrt((POPULATION_NEAR_CAMERA.personShowMetres + 0.05) ** 2 - 0.09));
+    view.prepareView(camera, shadow); assert.equal(colourDraw(head, camera), 2, 'drawn again past the show distance'); view.restoreView();
+    place(-Math.sqrt(between ** 2 - 0.09));
+    view.prepareView(camera, shadow); assert.equal(colourDraw(head, camera), 2, 'and not hidden again until inside the hide distance'); view.restoreView();
+    // Each pane camera keeps its own memory.
+    const other = camera.clone(); other.position.set(0.3, 1.95, -0.6); other.updateMatrixWorld();
+    view.prepareView(other, shadow); assert.equal(colourDraw(head, other), 1); view.restoreView();
+    // A camera standing over a person's head measures to the crown, not the feet.
+    camera.position.set(0, pedestrianStatureMetres('lens') + 1.0, 0); camera.lookAt(0, 0, 12); camera.updateMatrixWorld();
+    view.prepareView(camera, shadow); assert.equal(colourDraw(head, camera), 1); view.restoreView();
+  } finally { view.dispose(); }
+});
+
+test('a vehicle is looked through only while the camera is inside or touching its drawn body', () => {
+  const van = vehicleWithBody('parkedVehicle', 'deliveryVan');
+  const view = createPopulationView(plan([van]));
+  const camera = new THREE.PerspectiveCamera(65, 16 / 9, 0.1, 100);
+  try {
+    view.apply(snapshot([pose(van, { speedMetresPerSecond: 0 })]));
+    const meshes = view.group.children as THREE.InstancedMesh[];
+    const drawn = () => meshes.reduce((sum, mesh) => sum + colourDraw(mesh, camera), 0);
+    const at = (x: number, y: number, z: number) => {
+      camera.position.set(x, y, z); camera.lookAt(x, 1.2, z + 10); camera.updateMatrixWorld();
+      view.prepareView(camera); const parts = drawn(); view.restoreView(); return parts;
+    };
+    const whole = at(0, 1.95, -10);
+    assert.ok(whole > 0);
+    assert.equal(at(0.5, 1.95, -1), 0, 'inside the body: nothing of the van is drawn');
+    assert.equal(at(1.02 + 0.1, 1.95, 1), 0, 'touching its side');
+    assert.equal(at(1.02 + 0.6, 1.95, 1), whole, 'close beside it is a fair view: the whole van stays');
+    assert.equal(at(0.5, VEHICLE_BODY_HEIGHT.deliveryVan + 0.6, 0), whole, 'above its own roof it stays too');
+  } finally { view.dispose(); }
+});
+
+test('the drawn stature helper matches the figure the view draws', () => {
+  for (const id of ['a', 'b', 'quay-group-roof-final-turn-0', 'walker-7']) {
+    const stature = pedestrianStatureMetres(id);
+    assert.ok(Math.abs(stature / PEDESTRIAN_FIGURE.meanHeightMetres - 1) <= PEDESTRIAN_FIGURE.heightSpread + 1e-9, id);
+  }
+  const actor = spec('walker', 'walker-7'), view = createPopulationView(plan([actor]));
+  try {
+    view.apply(snapshot([pose(actor, { speedMetresPerSecond: 0, activity: 'waiting' })]));
+    const top = meshBounds(view.group).max.y;
+    assert.ok(Math.abs(top - pedestrianStatureMetres('walker-7')) < 0.04, `drawn crown ${top.toFixed(3)} vs ${pedestrianStatureMetres('walker-7').toFixed(3)}`);
   } finally { view.dispose(); }
 });
 
@@ -162,27 +260,91 @@ test('same species share geometry/material batches as the population grows', () 
   } finally { one.dispose(); many.dispose(); }
 });
 
-test('flat vehicle exterior exactly fits its original width, length and height', () => {
-  for (const kind of ['parkedVehicle', 'serviceVehicle', 'trafficVehicle'] as const) {
-    const actor = spec(kind);
+// 2026-10-22: each body draws its own roof inside the shared 2.8 m hull (a
+// high-roof delivery van 2.50 m, a minibus 2.42 m plus its roof rails, a box
+// truck's box the full 2.8 m), while mirrors/hub caps and bumper plates still
+// reach the hull's exact width and length so contact stays honest.
+test('flat vehicle exterior exactly fits its original width and length, and each body its own roof', () => {
+  for (const kind of ['parkedVehicle', 'serviceVehicle', 'trafficVehicle'] as const) for (const body of BODIES) {
+    if (kind === 'serviceVehicle' && body === 'minibus') continue;
+    const actor = vehicleWithBody(kind, body);
     const view = createPopulationView(plan([actor]));
     try {
       view.apply(snapshot([pose(actor)]));
       const bounds = meshBounds(view.group);
-      const h = actor.hull;
-      assert.ok(bounds.min.x >= -h.halfWidthMetres - 1e-5 && bounds.max.x <= h.halfWidthMetres + 1e-5);
-      assert.ok(bounds.min.z >= -h.halfLengthMetres - 1e-5 && bounds.max.z <= h.halfLengthMetres + 1e-5);
-      assert.ok(bounds.min.y >= -1e-5 && bounds.max.y <= h.heightMetres + 1e-5);
-      assert.ok(Math.abs(bounds.min.y) < 1e-5, 'tyres touch ground');
-      assert.ok(Math.abs(bounds.max.y - h.heightMetres) < 1e-5, 'roof reaches the authored height');
-      assert.ok(Math.abs(bounds.max.x - h.halfWidthMetres) < 1e-5, 'mirrors reach the authored width');
-      assert.ok(Math.abs(bounds.max.z - h.halfLengthMetres) < 1e-5, 'bumper reaches the authored length');
+      const h = actor.hull, label = `${kind}/${body}`;
+      assert.ok(bounds.min.x >= -h.halfWidthMetres - 1e-5 && bounds.max.x <= h.halfWidthMetres + 1e-5, label);
+      assert.ok(bounds.min.z >= -h.halfLengthMetres - 1e-5 && bounds.max.z <= h.halfLengthMetres + 1e-5, label);
+      assert.ok(bounds.min.y >= -1e-5 && bounds.max.y <= h.heightMetres + 1e-5, label);
+      assert.ok(Math.abs(bounds.min.y) < 1e-5, `${label}: tyres touch ground`);
+      const roof = body === 'boxTruck' ? h.heightMetres : VEHICLE_BODY_HEIGHT[body] + (body === 'minibus' ? 0.032 : 0);
+      assert.ok(Math.abs(bounds.max.y - roof) < 1e-5, `${label}: roof ${bounds.max.y.toFixed(3)} m reaches its body height`);
+      assert.ok(Math.abs(bounds.max.x - h.halfWidthMetres) < 1e-5, `${label}: mirrors reach the authored width`);
+      assert.ok(Math.abs(bounds.max.z - h.halfLengthMetres) < 1e-5, `${label}: the front plate reaches the authored length`);
+      assert.equal(view.report()[body === 'deliveryVan' ? 'cargoVans' : body === 'minibus' ? 'passengerVans' : 'boxTrucks'], 1);
     } finally { view.dispose(); }
   }
 });
 
+test('vehicle bodies are dealt from the ids: a mixed street, deterministic, priced exactly per body', () => {
+  // Three to fifteen vehicles of every kind: every street of three or more shows all three shapes.
+  for (const count of [3, 4, 8, 15]) {
+    const actors = Array.from({ length: count }, (_, index) =>
+      spec((['trafficVehicle', 'parkedVehicle', 'serviceVehicle'] as const)[index % 3], `street-${count}-${index}`, index));
+    const first = assignVehicleBodies(actors), again = assignVehicleBodies([...actors].reverse());
+    assert.deepEqual([...first].sort(), [...again].sort(), 'roster order never changes a body');
+    const seen = new Set(first.values());
+    for (const actor of actors) if (actor.kind === 'serviceVehicle') assert.notEqual(first.get(actor.id), 'minibus', 'a service vehicle works');
+    assert.ok(seen.has('deliveryVan') && seen.has('boxTruck') && (seen.has('minibus') || count < 4), `${count}: ${[...seen]}`);
+    const roster = plan(actors), view = createPopulationView(roster);
+    try {
+      const actual = view.report(), priced = countPopulation(roster);
+      assert.equal(actual.colourTriangles, priced.colourTriangles); assert.equal(actual.drawCalls, priced.colourDraws);
+      assert.equal(actual.shadowTriangles, priced.shadowTriangles); assert.equal(actual.shadowDrawCalls, priced.shadowDraws);
+      assert.equal(actual.instanceBytes, priced.instanceBytes); assert.equal(actual.geometryBytes, priced.geometryBytes);
+      assert.equal(actual.cargoVans + actual.passengerVans + actual.boxTrucks, count);
+    } finally { view.dispose(); }
+  }
+  // Paint follows the id too: a street of vans is not one copied colour.
+  const actors = Array.from({ length: 8 }, (_, index) => spec('trafficVehicle', `paint-${index}`, 0));
+  const view = createPopulationView(plan(actors));
+  try {
+    const hull = view.group.getObjectByName('vehicle-hull-paint') as THREE.InstancedMesh, colour = new THREE.Color();
+    const paints = new Set(actors.map((_, index) => { hull.getColorAt(index, colour); return colour.getHexString(); }));
+    assert.ok(paints.size >= 4, `${paints.size} paints across eight vehicles`);
+  } finally { view.dispose(); }
+});
+
+// 2026-10-22: pedestrians were drawn 1.845 m tall on the 1.9 m hull; they are
+// a natural 1.75 m on average now, each a little different, wheel riders unchanged.
+test('pedestrians stand a natural adult height that varies per person, feet on the ground; wheel riders keep theirs', () => {
+  const heights: number[] = [];
+  for (const kind of ['walker', 'jogger', 'worker', 'social'] as const) for (let index = 0; index < 16; index += 1) {
+    const actor = spec(kind, `${kind}-stature-${index}`, index), view = createPopulationView(plan([actor]));
+    try {
+      view.apply(snapshot([pose(actor, { activity: 'waiting', speedMetresPerSecond: 0 })]));
+      const bounds = meshBounds(view.group);
+      assert.ok(Math.abs(bounds.min.y) < 2e-5, `${actor.id}: soles on the ground (${bounds.min.y})`);
+      heights.push(bounds.max.y);
+      const again = createPopulationView(plan([actor]));
+      try { again.apply(snapshot([pose(actor, { activity: 'waiting', speedMetresPerSecond: 0 })]));
+        assert.deepEqual(matrices(again.group), matrices(view.group), 'stature follows the id'); } finally { again.dispose(); }
+    } finally { view.dispose(); }
+  }
+  const mean = heights.reduce((sum, value) => sum + value, 0) / heights.length;
+  assert.ok(Math.min(...heights) >= 1.68 && Math.max(...heights) <= 1.82, `${Math.min(...heights)}–${Math.max(...heights)}`);
+  assert.ok(mean > 1.72 && mean < 1.78, `mean ${mean.toFixed(3)} m`);
+  assert.ok(Math.max(...heights) - Math.min(...heights) > 0.06, 'people differ');
+  const rider = spec('fictionalEuc'), view = createPopulationView(plan([rider]));
+  try {
+    view.apply(snapshot([pose(rider, { speedMetresPerSecond: 0 })]));
+    const top = meshBounds(view.group).max.y;
+    assert.ok(Math.abs(top - 1.804) < 1e-3, `an NPC wheel rider is unchanged (${top.toFixed(4)} m)`);
+  } finally { view.dispose(); }
+});
+
 test('closed candidate shape families have opposing welded edge twins', () => {
-  const actors = [spec('walker'), spec('worker'), spec('trafficVehicle')];
+  const actors = [spec('walker'), spec('worker'), ...BODIES.map(body => vehicleWithBody('trafficVehicle', body))];
   const view = createPopulationView(plan(actors));
   try {
     for (const object of view.group.children) {
@@ -217,7 +379,8 @@ test('closed candidate shape families have opposing welded edge twins', () => {
 });
 
 test('all grade-aligned vehicle vertices are inside the matching physical slope prism', () => {
-  const actor = spec('trafficVehicle');
+  for (const body of BODIES) {
+  const actor = vehicleWithBody('trafficVehicle', body);
   const view = createPopulationView(plan([actor]));
   const normal = new THREE.Vector3(-0.07, 1, 0.08).normalize();
   const sample = pose(actor, { x: 17, y: 2, z: -23, headingY: 0.8,
@@ -248,6 +411,7 @@ test('all grade-aligned vehicle vertices are inside the matching physical slope 
       }
     });
   } finally { view.dispose(); }
+  }
 });
 
 test('gait interpolation is deterministic and no extra apply advances motion', () => {

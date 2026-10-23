@@ -14,6 +14,7 @@ import { SHARED_VEGETATION_CONTRACTS, ordinaryVegetationBuilders, ultraVegetatio
 import { PROP_COLOURS } from '../data/props.ts';
 import { materialAppearance } from '../data/surfaces.ts';
 import { linearFromHex } from './inkKit.ts';
+import { LEAF_REFLECTANCE } from './vegetationWoodFinish.ts';
 import { withSharedVegetationCost } from './sharedVegetationCost.ts';
 import { toneSharedVegetation, ultraTrunk } from './ultra/ultraFoliage.ts';
 import { createUltraShared } from './ultra/ultraMaterials.ts';
@@ -94,7 +95,9 @@ for (const detail of ['ordinary', 'ultra'] as const) for (const family of ['crow
               'Woody scaffold uses the actual original trunk albedo in the shared bucket');
             else { sum += color.array[index * 3 + channel]; count++; }
           }
-          assert.ok(Math.abs(sum / count - 1) < 1e-6,
+          // 1 for the conifer and the shrub; the broadleaf crown's stated leaf
+          // lift (2026-10-22, `foliageKit.ts` CROWN_LIGHT.leafLift) for the crown.
+          assert.ok(Math.abs(sum / count - LEAF_REFLECTANCE[family]) < 1e-6,
             'Authored foliage reflectance is normalized over leaves, independently of branch density');
         }
         outputs.push(Array.from(positions.array).join(','));

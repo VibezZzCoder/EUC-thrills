@@ -5,9 +5,9 @@
  * kicker's silhouette — a tall lip over a concave run, no apron).
  *
  * One `InstancedMesh` holds every pad of a world: one draw, no shadow pass,
- * 120 triangles a pad (104 without the marker) and 7,524 B per world plus a
- * 64 B matrix per pad. The template is a raised octagonal kicker, painted in
- * code (vertex colours, invariant 12):
+ * 112 triangles a pad (104 without the direction cue) and 7,044 B per world
+ * plus a 64 B matrix per pad. The template is a raised octagonal kicker,
+ * painted in code (vertex colours, invariant 12):
  *
  * - a **light top** — pale concrete, gently crowned — whose faces touch the
  *   trigger circle (`LAUNCH_PAD.triggerRadiusMetres`, derived, never typed),
@@ -21,13 +21,15 @@
  *   each side so the run reads as one curve and crisp between sides, its paint
  *   darkening towards the foot (`skirtShades`) where it meets the lawn;
  * - **bold dark diagonal hazard stripes** on every side's lip facet;
- * - (q237, ruling R14: `LAUNCH_PAD_LOOK.markerShown`, on by default) a
- *   **hovering waypoint marker**: a signal-yellow square arrowhead pointing
- *   down at the pad under a dark square shaft, its tip
- *   `markerClearanceMetres` over the pad's top (above the highest rider a pad
- *   can throw), turning slowly about its upright (`update`; still under reduced
- *   motion). It is in the same mesh — one draw, no collider, no shadow, never
- *   in the sampler or the plan — hidden and priced with the pad.
+ * - (q237's switch, `LAUNCH_PAD_LOOK.markerShown`, on by default) a **painted
+ *   direction cue**: a bold dark arrowhead on every side's middle facet,
+ *   pointing up the ramp at its lip (`LAUNCH_PAD_CUE`). The visual-quality
+ *   pass of 2026-10-22 (owner-approved) replaced R14's hovering 3.4 m
+ *   waypoint arrow with it: smaller, lower and part of the kicker, it reads
+ *   from a riding distance of 15–20 m and adds no height at all, so it can
+ *   never stand where a rider flies. It is in the same mesh — one draw, no
+ *   collider, no shadow, never in the sampler or the plan — hidden and priced
+ *   with the pad, and still (nothing turns or uploads per frame).
  *
  * No apron (the critic: a flat 7 m mat was two thirds of the pad's pixels and
  * read as a decal); `LAUNCH_PAD.apronRadiusMetres` stays the finder's
@@ -82,10 +84,9 @@ export interface LaunchPadView {
   readonly group: THREE.Group;
   setVisible(visible: boolean): void;
   /**
-   * Once per drawn frame (`GameRenderer.updateStreetLife`): the marker's slow
-   * turn at simulation second `seconds`, by rewriting only the marker's own
-   * vertices in place (no allocation, no new buffer). Nothing while hidden,
-   * without a marker, or on an unchanged angle; reduced motion holds it still.
+   * Once per drawn frame (`GameRenderer.updateStreetLife`). The painted
+   * direction cue is part of the kicker and never moves, so this writes
+   * nothing and uploads nothing; it stays so the frame's owner keeps one call.
    */
   update(seconds: number, reducedMotion: boolean): void;
   report(): LaunchPadViewReport;
@@ -110,18 +111,28 @@ const SKIRT_RINGS = 4;
 /** One hazard stripe: a parallelogram decal, four corners of its own, two triangles. */
 const STRIPE_VERTICES = 4;
 const STRIPE_TRIANGLES = 2;
-/** The marker's square section: the arrowhead's four faces and the shaft's four sides. */
-const MARKER_SIDES = 4;
-/** The marker's vertices, unshared (flat paint, its own normals): a triangle per arrowhead face, its cap, a quad per shaft side, the shaft's cap. */
-const MARKER_VERTICES = MARKER_SIDES * 3 + 4 + MARKER_SIDES * 4 + 4;
-/** The marker's triangles: one per arrowhead face, two per shaft side, two per cap. */
-const MARKER_TRIANGLES = MARKER_SIDES + 2 + MARKER_SIDES * 2 + 2;
+/** The painted direction cue: one arrowhead a side, a decal triangle of its own corners. */
+const CUE_VERTICES = 3;
+const CUE_TRIANGLES = 1;
+
+/**
+ * The painted direction cue's shape on each side's middle facet (≈ 30°, the
+ * steepest face a low chase camera sees squarely from the lawn), in the
+ * facet's own frame: its apex this far down the slope from the lip's knee,
+ * its length down the slope and its half-base across the face, m. 1.2 m
+ * across at its base is ≈ 27 px at 20 m on the widest 720p chase lens.
+ */
+export const LAUNCH_PAD_CUE = Object.freeze({
+  apexDownMetres: 0.05,
+  lengthMetres: 0.44,
+  halfBaseMetres: 0.6,
+});
 
 /**
  * What one pad template holds, derived from `LAUNCH_PAD_LOOK`: the top (an
  * apex fanned to the top octagon), the coping band (two octagons), the
  * skirt's sides (`SKIRT_RINGS` rings each, unshared between sides), the
- * hazard stripes on them and the q237 marker when `marker` is on.
+ * hazard stripes on them and the painted direction cue when `marker` is on.
  * `render/launchPadView.test.ts` holds the built geometry to these numbers.
  */
 export function launchPadTemplateCounts(marker: boolean = LOOK.markerShown): { readonly vertices: number;
@@ -129,9 +140,9 @@ export function launchPadTemplateCounts(marker: boolean = LOOK.markerShown): { r
   const sides = LOOK.octagonSides;
   const stripes = sides * LOOK.hazardStripes;
   const vertices = 1 + sides + 2 * sides + sides * SKIRT_RINGS * 2 + stripes * STRIPE_VERTICES
-    + (marker ? MARKER_VERTICES : 0);
+    + (marker ? sides * CUE_VERTICES : 0);
   const triangles = sides + 2 * sides + sides * (SKIRT_RINGS - 1) * 2 + stripes * STRIPE_TRIANGLES
-    + (marker ? MARKER_TRIANGLES : 0);
+    + (marker ? sides * CUE_TRIANGLES : 0);
   const indexBytes = triangles * 3 * (vertices <= 65_536 ? 2 : 4);
   return { vertices, triangles, indexBytes, geometryBytes: vertices * VERTEX_BYTES + indexBytes };
 }
@@ -141,7 +152,7 @@ export function launchPadTemplateCounts(marker: boolean = LOOK.markerShown): { r
  * template's triangles per pad, the template's bytes once and a matrix per
  * pad. **Priced whether or not the mode shows them**: installed resources are
  * priced regardless of mode, which keeps recipe selection independent of it.
- * `marker` is the q237 hovering marker (`LAUNCH_PAD_LOOK.markerShown`).
+ * `marker` is the painted direction cue (`LAUNCH_PAD_LOOK.markerShown`).
  */
 export function countLaunchPads(sites: readonly LaunchPadSite[], marker: boolean = LOOK.markerShown): SupplementCount {
   if (sites.length === 0) {
@@ -157,17 +168,13 @@ export function countLaunchPads(sites: readonly LaunchPadSite[], marker: boolean
 
 /**
  * The template's heights above the fitted ground plane, m: the skirt's foot
- * (`base`), the top's edge (`top`, the ridden lip height), the top's crowned
- * centre (`apex`), and the marker's tip, cap (where the arrowhead meets the
- * shaft) and top.
+ * (`base`), the top's edge (`top`, the ridden lip height) and the top's
+ * crowned centre (`apex`), the highest thing a pad draws.
  */
-export function launchPadHeights(): { readonly base: number; readonly top: number; readonly apex: number;
-  readonly markerTip: number; readonly markerCap: number; readonly markerTop: number } {
+export function launchPadHeights(): { readonly base: number; readonly top: number; readonly apex: number } {
   const base = LOOK.baseLiftMetres;
   const top = LAUNCH_PAD.domeHeightMetres;
-  const apex = top + LAUNCH_PAD.domeCrownMetres;
-  const markerTip = apex + LOOK.markerClearanceMetres, markerCap = markerTip + LOOK.markerHeadMetres;
-  return { base, top, apex, markerTip, markerCap, markerTop: markerCap + LOOK.markerShaftMetres };
+  return { base, top, apex: top + LAUNCH_PAD.domeCrownMetres };
 }
 
 /** A ring of the skirt: its apothem and height over the fitted plane, m. */
@@ -205,20 +212,14 @@ export interface LaunchPadTemplate {
   /** Linear RGB per vertex (three reads the `color` attribute as linear). */
   readonly colours: Float32Array;
   readonly indices: Uint16Array;
-  /** The first marker vertex (the vertex count when there is no marker): the marker is the template's tail. */
+  /** The first direction-cue vertex (the vertex count without the cue): the cue is the template's tail. */
   readonly markerFirst: number;
-  /**
-   * The marker's own unit normals, from `markerFirst` on: each side lit as an
-   * upright facing out (the arrowhead's faces look down, so their true normals
-   * would leave the signal yellow in shade), each cap looking up.
-   */
-  readonly markerNormals: Float32Array;
 }
 
 /**
  * The pad template in its own frame (origin on the fitted ground plane at the
- * centre, +Y up, a face midpoint on +Z), as plain arrays, with the q237 marker
- * when `marker` is on. Pure.
+ * centre, +Y up, a face midpoint on +Z), as plain arrays, with the painted
+ * direction cue when `marker` is on. Pure.
  */
 export function launchPadTemplate(marker: boolean = LOOK.markerShown): LaunchPadTemplate {
   const sides = LOOK.octagonSides;
@@ -232,7 +233,7 @@ export function launchPadTemplate(marker: boolean = LOOK.markerShown): LaunchPad
     const colour = new THREE.Color(hex);
     return [colour.r * shade, colour.g * shade, colour.b * shade];
   };
-  const topPaint = paint(LOOK.topColour), rim = paint(LOOK.rimColour), shaftPaint = paint(LOOK.shaftColour);
+  const topPaint = paint(LOOK.topColour);
   const ink = paint(LOOK.inkColour), copingPaint = paint(LOOK.copingColour);
   let vertex = 0, index = 0;
   const put = (x: number, y: number, z: number, colour: readonly [number, number, number]): number => {
@@ -328,50 +329,28 @@ export function launchPadTemplate(marker: boolean = LOOK.markerShown): LaunchPad
     }
   }
   const markerFirst = vertex;
-  const markerNormals = new Float32Array((counts.vertices - markerFirst) * 3);
   if (marker) {
-    /** Put a marker vertex with its own normal. */
-    const lit = (x: number, y: number, z: number, colour: readonly [number, number, number], n: readonly [number, number, number]): number => {
-      markerNormals.set(n, (vertex - markerFirst) * 3);
-      return put(x, y, z, colour);
-    };
-    /** Square corner `k` (0–3) at half-width `w`, and face `k`'s outward unit normal (between corners k and k + 1). */
-    const cornerX = (k: number, w: number): number => (k % 4 < 2 ? w : -w);
-    const cornerZ = (k: number, w: number): number => (k % 4 === 0 || k % 4 === 3 ? w : -w);
-    const out = (k: number): readonly [number, number, number] => {
-      const mx = cornerX(k, 1) + cornerX(k + 1, 1), mz = cornerZ(k, 1) + cornerZ(k + 1, 1), length = Math.hypot(mx, mz);
-      return [mx / length, 0, mz / length];
-    };
-    const head = LOOK.markerHeadHalfWidthMetres, shaft = LOOK.markerShaftHalfWidthMetres;
-    // The arrowhead: signal yellow, its point on the pad's centre line.
-    for (let k = 0; k < MARKER_SIDES; k += 1) {
-      const n = out(k);
-      facing(lit(0, heights.markerTip, 0, rim, n), lit(cornerX(k, head), heights.markerCap, cornerZ(k, head), rim, n),
-        lit(cornerX(k + 1, head), heights.markerCap, cornerZ(k + 1, head), rim, n), n);
+    // The direction cue: a dark arrowhead on each side's middle facet (the lip's
+    // knee down to the middle knee), its apex up the slope on the face's centre
+    // line and its base across the face, lifted off the facet like the stripes.
+    const lipKnee = skirt.rings[2], middleAngle = skirt.angles[1];
+    const cosMiddle = Math.cos(middleAngle), sinMiddle = Math.sin(middleAngle);
+    for (let face = 0; face < sides; face += 1) {
+      const bearing = (face * Math.PI * 2) / sides;
+      const nx = Math.sin(bearing), nz = Math.cos(bearing);
+      const at = (u: number, s: number): number => {
+        const v = lipKnee.apothem + s * cosMiddle + lift * sinMiddle;
+        return put(nx * v + nz * u, lipKnee.height - s * sinMiddle + lift * cosMiddle, nz * v - nx * u, ink);
+      };
+      const apexAt = LAUNCH_PAD_CUE.apexDownMetres, baseAt = apexAt + LAUNCH_PAD_CUE.lengthMetres;
+      facing(at(0, apexAt), at(-LAUNCH_PAD_CUE.halfBaseMetres, baseAt), at(LAUNCH_PAD_CUE.halfBaseMetres, baseAt),
+        faceNormal(face, middleAngle));
     }
-    const headCap = vertex;
-    for (let k = 0; k < MARKER_SIDES; k += 1) lit(cornerX(k, head), heights.markerCap, cornerZ(k, head), rim, upward);
-    facing(headCap, headCap + 1, headCap + 2, upward);
-    facing(headCap, headCap + 2, headCap + 3, upward);
-    // The shaft: dark, standing on the arrowhead's cap.
-    for (let k = 0; k < MARKER_SIDES; k += 1) {
-      const n = out(k);
-      const a = lit(cornerX(k, shaft), heights.markerCap, cornerZ(k, shaft), shaftPaint, n);
-      const b = lit(cornerX(k + 1, shaft), heights.markerCap, cornerZ(k + 1, shaft), shaftPaint, n);
-      const c = lit(cornerX(k + 1, shaft), heights.markerTop, cornerZ(k + 1, shaft), shaftPaint, n);
-      const d = lit(cornerX(k, shaft), heights.markerTop, cornerZ(k, shaft), shaftPaint, n);
-      facing(a, b, c, n);
-      facing(a, c, d, n);
-    }
-    const shaftCap = vertex;
-    for (let k = 0; k < MARKER_SIDES; k += 1) lit(cornerX(k, shaft), heights.markerTop, cornerZ(k, shaft), shaftPaint, upward);
-    facing(shaftCap, shaftCap + 1, shaftCap + 2, upward);
-    facing(shaftCap, shaftCap + 2, shaftCap + 3, upward);
   }
   if (vertex !== counts.vertices || index !== counts.triangles * 3) {
     throw new Error(`Launch pad template built ${vertex} vertices / ${index / 3} triangles, priced ${counts.vertices} / ${counts.triangles}`);
   }
-  return { positions, colours, indices, markerFirst, markerNormals };
+  return { positions, colours, indices, markerFirst };
 }
 
 /** The drawn dome's height over the fitted plane at a template-frame point (the mesh's own formula). */
@@ -449,7 +428,7 @@ export function launchPadPlacement(sampler: TerrainSampler, site: LaunchPadSite)
 
 /**
  * Build a world's pads from its sites (`cityLaunchPads`, never re-derived
- * here); `marker` is the q237 hovering marker, priced by `countLaunchPads`
+ * here); `marker` is the painted direction cue, priced by `countLaunchPads`
  * with the same flag.
  */
 export function createLaunchPadView(plan: LevelPlan, sites: readonly LaunchPadSite[],
@@ -478,16 +457,8 @@ export function createLaunchPadView(plan: LevelPlan, sites: readonly LaunchPadSi
   geometry.setAttribute('position', new THREE.BufferAttribute(template.positions, 3));
   geometry.setAttribute('color', new THREE.BufferAttribute(template.colours, 3));
   geometry.setIndex(new THREE.BufferAttribute(template.indices, 1));
+  // Decals (stripes and the cue) own their corners, so they take their facet's normal.
   geometry.computeVertexNormals();
-  // The marker's own normals: its sides lit as uprights, its caps looking up.
-  const normalAttribute = geometry.getAttribute('normal') as THREE.BufferAttribute;
-  const positionAttribute = geometry.getAttribute('position') as THREE.BufferAttribute;
-  (normalAttribute.array as Float32Array).set(template.markerNormals, template.markerFirst * 3);
-  // Its resting pose (turn 0), which `update` turns about the pad's upright.
-  const markerFloats = template.markerNormals.length;
-  const restPositions = template.positions.slice(template.markerFirst * 3);
-  const restNormals = template.markerNormals.slice();
-  let turned = 0;
   // The colour attribute only reaches the shader with `vertexColors` (the
   // LESSONS `instanceColor` trap); both are asserted in the test.
   const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: LOOK.roughness, metalness: 0 });
@@ -520,27 +491,7 @@ export function createLaunchPadView(plan: LevelPlan, sites: readonly LaunchPadSi
   return {
     group,
     setVisible(visible) { group.visible = visible; },
-    update(seconds, reducedMotion) {
-      if (disposed || markerFloats === 0 || !group.visible) return;
-      const turn = reducedMotion ? 0 : ((seconds / LOOK.markerTurnSeconds) % 1) * Math.PI * 2;
-      if (turn === turned) return;
-      turned = turn;
-      // About +Y through the pad's centre, so the bounds computed once still hold it.
-      const cos = Math.cos(turn), sin = Math.sin(turn), first = template.markerFirst * 3;
-      const positions = positionAttribute.array as Float32Array, normals = normalAttribute.array as Float32Array;
-      for (let at = 0; at < markerFloats; at += 3) {
-        const px = restPositions[at], pz = restPositions[at + 2], nx = restNormals[at], nz = restNormals[at + 2];
-        positions[first + at] = px * cos + pz * sin;
-        positions[first + at + 2] = pz * cos - px * sin;
-        normals[first + at] = nx * cos + nz * sin;
-        normals[first + at + 2] = nz * cos - nx * sin;
-      }
-      for (const attribute of [positionAttribute, normalAttribute]) {
-        attribute.clearUpdateRanges();
-        attribute.addUpdateRange(first, markerFloats);
-        attribute.needsUpdate = true;
-      }
-    },
+    update() { /* the cue is paint on the kicker: nothing turns, nothing uploads */ },
     report: () => ({ ids, visible: group.visible, pads: sites.length, drawCalls: 1, colourTriangles,
       geometryBytes, instanceBytes: mesh.instanceMatrix.array.byteLength }),
     dispose() {

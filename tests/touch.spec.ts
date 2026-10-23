@@ -657,8 +657,9 @@ test.describe('M12 Phase 4 — a fresh route on a phone', () => {
     await bootToTitle(page);
     await page.locator('.euc-menu--title [data-menu="routes"]').tap();
 
-    // `[data-menu="venue"]` is three buttons rather than one — M36 Phase 5's
-    // venue chooser stands on this panel, and it is the newest thing on it a
+    // `[data-menu="venue"]` is four buttons rather than one (three from M36
+    // Phase 5, the fourth from M44, which also turns the row into a 2 x 2 grid
+    // at phone width) — the venue chooser stands on this panel, and it is the newest thing on it a
     // thumb has to hit — so the scan resolves every match rather than assuming
     // one, and the width is asked for as well: a segmented row is the control
     // on this panel that can be short in the other axis.
@@ -2609,10 +2610,9 @@ test.describe('M39 — Ultra Graphics on a phone', () => {
       { width: 375, height: 812, shows: 'line' }, { width: 390, height: 844, shows: 'line' },
       { width: 393, height: 852, shows: 'line' }, { width: 412, height: 839, shows: 'line' },
       { width: 412, height: 915, shows: 'line' },
-      // Just past 26rem: the full stack, the helper as a note. 428x926 (iPhone
-      // Pro Max, standalone) fitted by 0.5 px until FU2 gave the stack under
-      // 60rem tier one's rhythm.
-      { width: 430, height: 932, shows: 'note' }, { width: 428, height: 926, shows: 'note', minSpare: 8 },
+      // The big phones: since the 2026-10-22 title every phone upright (34rem
+      // and narrower) shows the short label and the compact warning line.
+      { width: 430, height: 932, shows: 'line' }, { width: 428, height: 926, shows: 'line', minSpare: 8 },
       // Upright, the compact tier (50rem tall or less): two columns at 30rem
       // and narrower since FU2, so "Knockabout" fits its button.
       { width: 360, height: 780, shows: 'line' }, { width: 360, height: 800, shows: 'line' },
@@ -2627,8 +2627,8 @@ test.describe('M39 — Ultra Graphics on a phone', () => {
       { width: 740, height: 360, shows: 'line', minSpare: 8 }, { width: 800, height: 360, shows: 'line', minSpare: 8 },
     ];
     const upright = (size: { width: number; height: number }) => size.width <= 416 && size.height > 800;
-    // The compact title a phone held upright gets: two columns, the pair one row.
-    const narrowCompact = (size: { width: number; height: number }) => size.width <= 480 && size.height <= 800;
+    // Any phone upright: Settings and Ultra share one row (the 2026-10-22 title).
+    const narrowCompact = (size: { width: number; height: number }) => size.width <= 480;
 
     const check = async (size: (typeof SIZES)[number], what: string) => {
       const where = `${size.width}x${size.height} (${what})`;
@@ -2666,9 +2666,7 @@ test.describe('M39 — Ultra Graphics on a phone', () => {
         expect(facts.toggle.bottom - facts.toggle.top, `the pair's row grew at ${where}`).toBeLessThanOrEqual(46);
       }
       if (narrowCompact(size)) {
-        // Two columns and the pair one spanning row, as in the stack.
         expect(facts.pairOneRow, `Settings and Ultra left one row at ${where}`).toBe(true);
-        expect(facts.columns, `the compact title is not two columns at ${where}`).toBe(2);
       }
     };
     const sweep = async (what: string) => {
@@ -2770,14 +2768,14 @@ async function compactWarningFacts(page: Page) {
     // button's content box (border and padding taken off): a label that
     // overflows it is off-centre at best and past the border at worst (FU2).
     const spills: string[] = [];
-    for (const node of root.querySelectorAll<HTMLElement>('.euc-menu__actions button')) {
+    for (const node of root.querySelectorAll<HTMLElement>('.euc-title__starts button, .euc-title__modes button')) {
       if (node.offsetParent === null) continue;
       const style = getComputedStyle(node);
       const box = node.getBoundingClientRect();
       const left = box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
       const right = box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
       for (const piece of node.querySelectorAll<HTMLElement>(
-        '.euc-button__label, .euc-button__note, .euc-ultra__state, .euc-ultra__warn',
+        '.euc-button__label, .euc-button__note, .euc-ultra__state, .euc-ultra__warn, .euc-start__kicker, .euc-start__place, .euc-start__note',
       )) {
         if (!seen(piece)) continue;
         const range = document.createRange();
@@ -2798,7 +2796,6 @@ async function compactWarningFacts(page: Page) {
       spare: root.clientHeight - parseFloat(rootStyle.paddingTop) - parseFloat(rootStyle.paddingBottom)
         - panel.getBoundingClientRect().height,
       pairOneRow: Math.abs(settings.top - button.top) < 0.5,
-      columns: getComputedStyle(root.querySelector('.euc-menu__actions')!).gridTemplateColumns.split(' ').length,
       warnSeen: seen(warn),
       helpSeen: seen(help),
       warnText: warn?.textContent ?? '',

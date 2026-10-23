@@ -61,6 +61,9 @@ export interface LookedBuilding {
   readonly position: { readonly x: number; readonly y: number; readonly z: number };
   readonly size?: { readonly x: number; readonly y: number; readonly z: number };
   readonly look: BuildingLook;
+  /** See `Prop.tone`: an authored body and roof colour for the three district looks. */
+  readonly tone?: number;
+  readonly roofTone?: number;
 }
 
 /**
@@ -118,11 +121,11 @@ export function composeBuilding(building: LookedBuilding): BuildingPiece[] {
     case 'commercial': {
       // The city look the owner accepted, in the district's own palette: the
       // same body, parapet and setback tower an untagged block gets.
-      const tone = pick(DISTRICT_TONES.commercial.walls, px, pz, 3);
+      const tone = building.tone ?? pick(DISTRICT_TONES.commercial.walls, px, pz, 3);
       add(facadeForHeight(h), 0, 0, 0, size.x, h, size.z, tone, bodyJitter);
       const cap = PROP_SIZES.building;
       add('buildingCap', 0, h, 0, size.x + cap.capOversail, cap.capHeight, size.z + cap.capOversail,
-        PROP_COLOURS.buildingCap, roofJitter);
+        building.roofTone ?? PROP_COLOURS.buildingCap, roofJitter);
       const tower = buildingTowerPart(size, px, pz);
       if (tower !== null) {
         add(tower, 0, h + cap.capHeight, 0, size.x * cap.towerWidthFraction,
@@ -135,13 +138,13 @@ export function composeBuilding(building: LookedBuilding): BuildingPiece[] {
       // longer side, so a terrace row between two streets shows its gable ends
       // to both and a detached house its eaves to the pavement.
       add(facadeForHeight(h), 0, 0, 0, size.x, h, size.z,
-        pick(DISTRICT_TONES.residential.walls, px, pz, 3), bodyJitter);
+        building.tone ?? pick(DISTRICT_TONES.residential.walls, px, pz, 3), bodyJitter);
       const along = size.x >= size.z ? 'x' : 'z';
       const span = Math.min(size.x, size.z) + 0.8;
       const length = Math.max(size.x, size.z) + 0.8;
       const rise = Math.min(span * 0.42, 7);
       add('roofGable', 0, h, 0, span, rise, length,
-        pick(DISTRICT_TONES.residential.roofs, px, pz, 11), roofJitter, along === 'x' ? Math.PI / 2 : 0);
+        building.roofTone ?? pick(DISTRICT_TONES.residential.roofs, px, pz, 11), roofJitter, along === 'x' ? Math.PI / 2 : 0);
       return out;
     }
     case 'industrial': {
@@ -149,10 +152,10 @@ export function composeBuilding(building: LookedBuilding): BuildingPiece[] {
       // from the street, so the street elevation is a saw-edged skyline no
       // office block has. `z` is along the street for every frontage prop.
       add(facadeForHeight(h), 0, 0, 0, size.x, h, size.z,
-        pick(DISTRICT_TONES.industrial.walls, px, pz, 3), bodyJitter);
+        building.tone ?? pick(DISTRICT_TONES.industrial.walls, px, pz, 3), bodyJitter);
       const bays = Math.min(4, Math.max(1, Math.round(size.z / 10)));
       const bay = size.z / bays;
-      const roof = pick(DISTRICT_TONES.industrial.roofs, px, pz, 11);
+      const roof = building.roofTone ?? pick(DISTRICT_TONES.industrial.roofs, px, pz, 11);
       for (let index = 0; index < bays; index += 1) {
         add('roofGable', 0, h, -size.z / 2 + bay * (index + 0.5), bay + 0.3,
           Math.min(2.6, bay * 0.3), size.x + 0.6, roof, roofJitter, Math.PI / 2);

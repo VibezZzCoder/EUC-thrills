@@ -2165,7 +2165,7 @@ test('the title and the join panel fit every desktop window that is offered them
           h: Math.round(bounds.height * 10) / 10,
         };
       };
-      const actions = [...root.querySelectorAll<HTMLElement>('.euc-menu__actions button')]
+      const actions = [...root.querySelectorAll<HTMLElement>('.euc-title__starts button, .euc-title__modes button')]
         .filter((node) => node.offsetParent !== null);
       const label = root.querySelector<HTMLElement>('[data-menu="ultra"] .euc-ultra__label');
       const state = root.querySelector<HTMLElement>('[data-menu="ultra"] [data-ultra-text]');

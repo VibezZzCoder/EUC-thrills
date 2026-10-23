@@ -68,9 +68,10 @@ const PLACEMENT_SEEDS = ['bout-1', 'bout-2', 'bout-3'];
 const WORLDS: { label: string; plan: LevelPlan }[] = (() => {
   const shipped = LEVEL_IDS.map((id) => ({ label: id, plan: createLevel(id, 'euc') }));
   // The producer count is part of the claim, exactly as `spawnSlots.test.ts`
-  // states it: a sixth producer must arrive here rather than quietly ride on
-  // five worlds' worth of evidence about where a bout can be started.
-  assert.equal(shipped.length, 5, 'the producer list moved; the sweeps below no longer cover it');
+  // states it: a seventh producer must arrive here rather than quietly ride on
+  // six worlds' worth of evidence about where a bout can be started (the sixth,
+  // M44's EUClaude Heights, arrived by this line failing).
+  assert.equal(shipped.length, 6, 'the producer list moved (six since M44); the sweeps below no longer cover it');
   return [...shipped, ...SWEEP.map((seed) => ({ label: seed, plan: generateLevel(seed).plan }))];
 })();
 

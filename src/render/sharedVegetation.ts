@@ -2,7 +2,7 @@
 /** Shared vegetation templates. Original physical envelopes remain authoritative. */
 import { PROP_FOOTPRINTS, PROP_SIZES, PROP_SPREADS } from '../data/props.ts';
 import {
-  CROWN_ENVELOPE, CONIFER_ENVELOPE, SHRUB_ENVELOPE, toneFoliage,
+  CROWN_ENVELOPE, CONIFER_ENVELOPE, SHRUB_ENVELOPE, toneCrownLeaves, toneFoliage,
 } from './foliageKit.ts';
 import { positionHash01 } from '../shared/maths.ts';
 import {
@@ -53,9 +53,11 @@ export function vegetationVariantAt(x: number, z: number): VegetationVariant {
   return Math.floor(positionHash01(x, z, 617) * 3) as VegetationVariant;
 }
 
-/** Ordinary callback reuses the existing tone vocabulary without changing it. */
+/** Ordinary callback: the shared tone vocabulary, except the broadleaf crown,
+ * whose leaves take the crown light (`foliageKit.ts` CROWN_LIGHT, 2026-10-22). */
 export const ordinaryVegetationPainter: VegetationPainter = (geometry, context) => {
-  toneFoliage(geometry, context.reach);
+  if (context.family === 'crown') toneCrownLeaves(geometry, context.reach, context.height);
+  else toneFoliage(geometry, context.reach);
   finishVegetationWood(geometry, context);
 };
 

@@ -39,8 +39,11 @@
  * already averaged it. Individual windows at that scale collapse into a grey
  * shimmer; a black void reads as a hole in the block; both were rejected
  * before a line was painted. The pages carry only what survives a mip chain —
- * a plinth, a glazed strip with piers, a shutter's slats, a closed door — and
- * nothing finer. No texel on the sheet goes below 0.13 linear, so even the
+ * a plinth, a glazed strip with piers, a stallriser and a fascia — and
+ * nothing finer. Doors and shutters are not painted: a page is folded across
+ * a whole face, so anything painted on it lands on every face at a width that
+ * scales with the building. They are metric geometry on the faces that meet a
+ * street (`facadeGroundBays`, `render/buildingEntrances.ts`). No texel on the sheet goes below 0.13 linear, so even the
  * darkest building tone (≈0.235 linear) times any texel stays above the
  * project's 0.03 legibility floor (`DESIGN.md` §2); `facadeAtlas.test.ts`
  * holds that arithmetic.
@@ -206,46 +209,55 @@ const GLASS_TALL = {
   mullionsPerGroup: 1,
 } as const;
 
-/** `ground` — a mid-rise shopfront. */
+/**
+ * `ground` and `groundLow` — a ground storey of tall windows on a stallriser,
+ * under a fascia (2026-10-22).
+ *
+ * **No door is painted on any page any more.** The page is folded across the
+ * whole face, whatever its width, so a painted door was always at the centre
+ * of every face — the hidden ones included — and always 18 % of the face
+ * wide: a 1.8 m door on a ten-metre shop and an eleven-metre one on a
+ * sixty-metre block. The entrance is now real metric geometry, placed only on
+ * the faces that look onto a street or path (`render/buildingEntrances.ts`,
+ * drawn by `render/districtExteriorSites.ts`), and the page carries what
+ * survives being stretched: a stallriser, glazed groups between piers on the
+ * *same pier rhythm as the glazing page above it*, a transom bar and a fascia.
+ * The groups line up under the windows of the storeys above, which is what
+ * stops a ground floor reading as a blank band round a box.
+ */
 const GROUND = {
-  plinthShare: 0.22,
-  plinth: 0.78,
-  plinthEdgeRows: 2,
-  plinthEdge: 0.68,
-  fasciaShare: 0.12,
-  fascia: 0.88,
-  /** Width of the central entrance bay, as a share of the page. */
-  doorShare: 0.18,
-  /**
-   * A *closed* door. 0.55 is the floor of the page on purpose: an entrance
-   * darker than this starts to read as an open doorway into an unlit lobby,
-   * and a block full of open black doorways is the void look the audit
-   * rejected. The lintel above it is lighter still so the panel has a frame.
-   */
-  door: 0.55,
-  lintelRows: 4,
-  lintel: 0.7,
-  /** The recessed panels either side of the door. */
-  panel: 0.82,
-  panelBorderWidth: 2,
-  panelBorder: 0.7,
-  /** Wall left between a panel and the page edge or the door bay, as a share. */
-  panelMargin: 0.03,
+  /** The glazing page above this one, whose piers the ground storey repeats. */
+  pierShares: [0.07, 0.07, 0.07, 0.07],
+  /** Glazed lights per group, so a group reads as a shopfront rather than one pane. */
+  mullionsPerGroup: 2,
 } as const;
 
-/** `groundLow` — a workshop front. */
+/** `groundLow` repeats `glassLow`'s ribbon rhythm: two groups about one wider centre pier. */
 const GROUND_LOW = {
-  plinthShare: 0.18,
-  plinth: 0.8,
-  fasciaShare: 0.12,
-  fascia: 0.9,
-  /** Each roller shutter, as a share of the page width. */
-  shutterShare: 0.3,
-  slats: 6,
-  slatA: 0.8,
-  slatB: 0.72,
-  doorShare: 0.12,
-  door: 0.58,
+  pierShares: [0.05, 0.1, 0.05],
+  mullionsPerGroup: 1,
+} as const;
+
+/** What both ground-storey pages share, as shares of the page's height. */
+const GROUND_STOREY = {
+  /** The solid stallriser under the glass. */
+  stallShare: 0.17,
+  stall: 0.8,
+  stallEdgeRows: 2,
+  /** The sill line along the top of the stallriser. */
+  stallEdge: 0.7,
+  /** The glass head, from the bottom. Above it is the fascia. */
+  headShare: 0.8,
+  fascia: 0.88,
+  /** A shadow line under the fascia — the sign board's bottom edge. */
+  fasciaEdgeRows: 2,
+  fasciaEdge: 0.74,
+  /** Lobby-dark glass: under a fascia a ground window reflects less sky. */
+  glass: 0.9,
+  /** The transom bar across every group, from the bottom. */
+  transomShare: 0.66,
+  transomRows: 2,
+  transom: 0.78,
 } as const;
 
 /** `groundTall` — a tower lobby. */
@@ -587,72 +599,48 @@ function paintGlassTall(sheet: Sheet, glassTint: Rgb, salt: number): void {
   applyGrain(sheet, GRAIN.amplitude, salt);
 }
 
-/** `ground`: plinth, two recessed panels flanking a closed door, fascia. */
-function paintGround(sheet: Sheet, _glassTint: Rgb, salt: number): void {
+/**
+ * A ground storey: stallriser, glazed groups between piers, transom, fascia.
+ *
+ * The piers are the glazing page's own (`pierShares`), so every group sits
+ * under a group of the storeys above. Each group is the shared glass
+ * treatment (`paintGlassGroup`) without the sky reflection, a transom bar
+ * across it, and a sill line where it meets the stallriser.
+ */
+function paintGroundStorey(sheet: Sheet, glassTint: Rgb, salt: number,
+  pierShares: readonly number[], mullionsPerGroup: number): void {
   const width = sheet.width;
-  const plinthTop = rowsOf(sheet, GROUND.plinthShare);
-  const fasciaBottom = sheet.height - rowsOf(sheet, GROUND.fasciaShare);
+  const stallTop = rowsOf(sheet, GROUND_STOREY.stallShare);
+  const head = rowsOf(sheet, GROUND_STOREY.headShare);
+  const transom = rowsOf(sheet, GROUND_STOREY.transomShare);
 
-  setRect(sheet, 0, 0, width, plinthTop, grey(GROUND.plinth));
-  setRect(sheet, 0, plinthTop - GROUND.plinthEdgeRows, width, plinthTop, grey(GROUND.plinthEdge));
-  setRect(sheet, 0, fasciaBottom, width, sheet.height, grey(GROUND.fascia));
+  setRect(sheet, 0, 0, width, stallTop, grey(GROUND_STOREY.stall));
+  setRect(sheet, 0, stallTop - GROUND_STOREY.stallEdgeRows, width, stallTop, grey(GROUND_STOREY.stallEdge));
+  setRect(sheet, 0, head, width, sheet.height, grey(GROUND_STOREY.fascia));
+  setRect(sheet, 0, head, width, head + GROUND_STOREY.fasciaEdgeRows, grey(GROUND_STOREY.fasciaEdge));
 
-  const doorLeft = colsOf(sheet, 0.5 - GROUND.doorShare / 2);
-  const doorRight = colsOf(sheet, 0.5 + GROUND.doorShare / 2);
-  const lintelBottom = fasciaBottom - GROUND.lintelRows;
-  setRect(sheet, doorLeft, plinthTop, doorRight, lintelBottom, grey(GROUND.door));
-  setRect(sheet, doorLeft, lintelBottom, doorRight, fasciaBottom, grey(GROUND.lintel));
-
-  const margin = colsOf(sheet, GROUND.panelMargin);
-  const panels: Span[] = [
-    [margin, doorLeft - margin],
-    [doorRight + margin, width - margin],
-  ];
-  for (const [x0, x1] of panels) {
-    setRect(sheet, x0, plinthTop, x1, fasciaBottom, grey(GROUND.panel));
-    const border = GROUND.panelBorderWidth;
-    const frame = grey(GROUND.panelBorder);
-    setRect(sheet, x0, plinthTop, x0 + border, fasciaBottom, frame);
-    setRect(sheet, x1 - border, plinthTop, x1, fasciaBottom, frame);
-    setRect(sheet, x0, plinthTop, x1, plinthTop + border, frame);
-    setRect(sheet, x0, fasciaBottom - border, x1, fasciaBottom, frame);
+  const { piers, groups } = splitStrip(width, pierShares);
+  for (const pier of piers) paintPier(sheet, pier, stallTop, head);
+  const glass = scaled(glassTint, GROUND_STOREY.glass);
+  for (const group of groups) {
+    paintGlassGroup(sheet, group, stallTop, head, glass, {
+      reflection: false,
+      mullions: evenMullions(group, mullionsPerGroup),
+    });
+    scaleRect(sheet, group[0], transom - 1, group[1], transom - 1 + GROUND_STOREY.transomRows, GROUND_STOREY.transom);
   }
 
   applyGrain(sheet, GRAIN.amplitude, salt);
 }
 
-/** `groundLow`: plinth, two roller shutters in slats about a narrow door, fascia. */
-function paintGroundLow(sheet: Sheet, _glassTint: Rgb, salt: number): void {
-  const width = sheet.width;
-  const plinthTop = rowsOf(sheet, GROUND_LOW.plinthShare);
-  const fasciaBottom = sheet.height - rowsOf(sheet, GROUND_LOW.fasciaShare);
+/** `ground`: the mid-rise ground storey, on `glass`'s three-group rhythm. */
+function paintGround(sheet: Sheet, glassTint: Rgb, salt: number): void {
+  paintGroundStorey(sheet, glassTint, salt, GROUND.pierShares, GROUND.mullionsPerGroup);
+}
 
-  setRect(sheet, 0, 0, width, plinthTop, grey(GROUND_LOW.plinth));
-  setRect(sheet, 0, fasciaBottom, width, sheet.height, grey(GROUND_LOW.fascia));
-
-  // wall | shutter | wall | door | wall | shutter | wall — the four walls share
-  // whatever the shutters and the door leave.
-  const shutter = colsOf(sheet, GROUND_LOW.shutterShare);
-  const door = colsOf(sheet, GROUND_LOW.doorShare);
-  const wall = Math.round((width - shutter * 2 - door) / 4);
-  const doorLeft = wall * 2 + shutter;
-  const shutters: Span[] = [
-    [wall, wall + shutter],
-    [doorLeft + door + wall, doorLeft + door + wall + shutter],
-  ];
-
-  setRect(sheet, doorLeft, plinthTop, doorLeft + door, fasciaBottom, grey(GROUND_LOW.door));
-
-  const zone = fasciaBottom - plinthTop;
-  for (const [x0, x1] of shutters) {
-    for (let slat = 0; slat < GROUND_LOW.slats; slat += 1) {
-      const y0 = plinthTop + Math.round((zone * slat) / GROUND_LOW.slats);
-      const y1 = plinthTop + Math.round((zone * (slat + 1)) / GROUND_LOW.slats);
-      setRect(sheet, x0, y0, x1, y1, grey(slat % 2 === 0 ? GROUND_LOW.slatA : GROUND_LOW.slatB));
-    }
-  }
-
-  applyGrain(sheet, GRAIN.amplitude, salt);
+/** `groundLow`: the low-rise ground storey, on `glassLow`'s two-group ribbon rhythm. */
+function paintGroundLow(sheet: Sheet, glassTint: Rgb, salt: number): void {
+  paintGroundStorey(sheet, glassTint, salt, GROUND_LOW.pierShares, GROUND_LOW.mullionsPerGroup);
 }
 
 /** `groundTall`: a tall plinth, a lobby band of darker glass in three groups, a lintel. */
@@ -709,6 +697,35 @@ export const FACADE_PAGES: Readonly<Record<FacadePageId, FacadePageRect>> = Obje
     FacadePageRect
   >,
 );
+
+export type FacadeGroundPageId = 'ground' | 'groundLow' | 'groundTall';
+
+/** Where a ground page's glazed groups and piers fall, as shares of the face it is folded across. */
+export interface FacadeGroundBays {
+  /** Each glazed group, `[left, right]`, 0 the face's left edge and 1 its right. */
+  readonly groups: readonly (readonly [number, number])[];
+  /** The centre of every pier between two groups; the two end piers are not listed. */
+  readonly piers: readonly number[];
+}
+
+/**
+ * The bay layout a ground page paints, for geometry that has to sit on it.
+ *
+ * A page is folded across a face's whole width, so a texel column is a fixed
+ * share of the face, and this is the same `splitStrip` arithmetic the painter
+ * runs — not a second description of it. An entrance placed at a group's
+ * centre lands in that group's glass whatever the face's metric width; a
+ * pilaster placed at a pier's centre lands on the pier.
+ */
+export function facadeGroundBays(page: FacadeGroundPageId): FacadeGroundBays {
+  const shares = page === 'ground' ? GROUND.pierShares : page === 'groundLow' ? GROUND_LOW.pierShares
+    : Array.from({ length: GROUND_TALL.groups + 1 }, () => GROUND_TALL.pierShare);
+  const { piers, groups } = splitStrip(PAGE_WIDTH, shares);
+  return Object.freeze({
+    groups: Object.freeze(groups.map(([x0, x1]) => Object.freeze([x0 / PAGE_WIDTH, x1 / PAGE_WIDTH] as const))),
+    piers: Object.freeze(piers.slice(1, -1).map(([x0, x1]) => (x0 + x1) / 2 / PAGE_WIDTH)),
+  });
+}
 
 /**
  * Copy a painted page into its cell, gutter included.

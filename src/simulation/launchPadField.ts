@@ -8,10 +8,12 @@
  * (invariant 3), so the shared sampler — and with it the cop, the population,
  * the camera rays and every plan digest — never sees a pad. What a pad is to
  * the simulation is a discrete event with an identity, which is the hazard and
- * soft-body door: the composition root builds this field from the derived site
- * list and hands it to the human seats' controllers only (`EucController`
- * option `launchPads`). The cop, the population probe, every bench and every
- * headless fixture keep `NO_LAUNCH_PADS`.
+ * soft-body door: the composition root builds this field from the world's site
+ * list (`cityLaunchPads`: the derived M42 sites, or — M44 — a plan's authored
+ * list resolved into the same sites) and hands it to the human seats'
+ * controllers only (`EucController` option `launchPads`). The cop, the
+ * population probe, every bench and every headless fixture keep
+ * `NO_LAUNCH_PADS`.
  *
  * Two circles per pad, both centred on it:
  *
@@ -45,11 +47,24 @@
  * the wheel's ride height and keeps it out of its slope and kerb physics, so
  * the dome is a ramp the wheel rides up, never a kerb, a wall or a ledge.
  *
- * Immutable after construction and allocation-free on every query. A city has
- * at most six pads, so a linear scan with a bounds reject is the whole index:
- * a grid would be more code guarding less time (the `SoftBodyField` reasoning).
- * Plain data only — no `three`, no `app/` — so every headless test builds one
- * from object literals.
+ * **The field is 2-D**: every query reads (x, z) and never a height, so a pad
+ * answers wherever the wheel stands over its circles — a roof pad's whole
+ * ridden reach has to lie on the roof it stands on (an authored venue's own
+ * test proves that, §44.1 D8; the derived finder keeps pads on open lawn).
+ * The one exception is the **safe-point hold** (M44 D15, `holdsSafePoint`):
+ * an authored pad may declare a radius inside which no crash-recovery point
+ * is stored on ground near its own height, and that query is the only one
+ * here that reads a height.
+ *
+ * Immutable after construction and allocation-free on every query. A derived
+ * city has at most six pads and an authored venue a few dozen (EUClaude
+ * Heights plans about 16–30, `docs/PLANS.md` §44.3), and a linear scan with a
+ * bounds reject is still the whole index: measured 2026-10-20 in Node on the
+ * build machine, one `at` + `riseAt` + `inFootprint` triple costs about
+ * 0.09 µs over 6 pads and 0.37 µs over 40, and a human seat asks a handful a
+ * step — a grid would be more code guarding less time (the `SoftBodyField`
+ * reasoning). Plain data only — no `three`, no `app/` — so every headless
+ * test builds one from object literals.
  */
 import { LAUNCH_PAD, WHEEL } from '../data/tuning.ts';
 
@@ -62,10 +77,24 @@ export interface LaunchPadVolume {
   readonly triggerRadius: number;
   /** Latch disc radius, metres (the dome's foot reaches beyond it: `launchPadSkirtRun`). */
   readonly footprintRadius: number;
-  /** The site's worst ground drop inside its clear disc, metres (≥ 0): the flight cap's Δh. */
+  /**
+   * The flight cap's Δh, metres (≥ 0): a derived site's worst ground drop a
+   * flight can reach, or an authored pad's declared drop (a roof pad declares
+   * 0, so its flight is not capped by the gap it exists to cross).
+   */
   readonly dropMetres: number;
   /** The octagon's turn about +Y, rad (three's convention: local +Z faces (sin yaw, cos yaw)). Default 0. */
   readonly yaw?: number;
+  /**
+   * The ground's height at the centre, m (`LaunchPadSite.y`). Read by the
+   * safe-point hold only, and required (finite) on a pad that holds.
+   */
+  readonly y?: number;
+  /**
+   * The safe-point hold radius, m, ≥ 0 (M44 D15; absent is 0, no hold): see
+   * `holdsSafePoint`. Only an authored pad declares one.
+   */
+  readonly holdSafeMetres?: number;
 }
 
 /** cos(π/8): an octagon's apothem over its circumradius. */
@@ -179,6 +208,17 @@ export class LaunchPadField {
   private readonly bases: Float64Array;
   /** The farthest a ridden dome reaches along an axis, m: its rolled foot's corner radius. */
   private readonly reaches: Float64Array;
+  /**
+   * The largest safe-point hold any pad declares, m: 0 on every derived field
+   * and on `NO_LAUNCH_PADS`, where `holdsSafePoint` answers at once.
+   */
+  readonly maxHoldSafeMetres: number;
+  /** The holding pads only (hold > 0), packed: centre, squared radius and the band's floor, m. */
+  private readonly holdCount: number;
+  private readonly holdXs: Float64Array;
+  private readonly holdZs: Float64Array;
+  private readonly holdSquared: Float64Array;
+  private readonly holdFloors: Float64Array;
 
   constructor(pads: readonly LaunchPadVolume[] = []) {
     const count = pads.length;
@@ -196,6 +236,7 @@ export class LaunchPadField {
     this.reaches = new Float64Array(count);
     const run = launchPadSkirtRun();
     const ids: string[] = [];
+    let holdCount = 0, maxHold = 0;
     for (let index = 0; index < count; index += 1) {
       const pad = pads[index];
       const yaw = pad.yaw ?? 0;
@@ -212,6 +253,17 @@ export class LaunchPadField {
       if (!Number.isFinite(pad.dropMetres) || pad.dropMetres < 0) {
         throw new RangeError(`launch pad ${pad.id} needs a finite non-negative drop`);
       }
+      const hold = pad.holdSafeMetres ?? 0;
+      if (!Number.isFinite(hold) || hold < 0) {
+        throw new RangeError(`launch pad ${pad.id} needs a finite non-negative safe-point hold`);
+      }
+      if (hold > 0) {
+        if (pad.y === undefined || !Number.isFinite(pad.y)) {
+          throw new RangeError(`launch pad ${pad.id} holds safe points and needs a finite ground height`);
+        }
+        holdCount += 1;
+        if (hold > maxHold) maxHold = hold;
+      }
       ids.push(pad.id);
       this.xs[index] = pad.x;
       this.zs[index] = pad.z;
@@ -226,16 +278,60 @@ export class LaunchPadField {
       this.reaches[index] = (pad.triggerRadius + run + LAUNCH_PAD_ROLL_RADIUS) / OCTAGON_APOTHEM;
     }
     this.ids = Object.freeze(ids);
+    this.maxHoldSafeMetres = maxHold;
+    this.holdCount = holdCount;
+    this.holdXs = new Float64Array(holdCount);
+    this.holdZs = new Float64Array(holdCount);
+    this.holdSquared = new Float64Array(holdCount);
+    this.holdFloors = new Float64Array(holdCount);
+    let slot = 0;
+    for (let index = 0; index < count; index += 1) {
+      const pad = pads[index];
+      const hold = pad.holdSafeMetres ?? 0;
+      if (!(hold > 0)) continue;
+      this.holdXs[slot] = pad.x;
+      this.holdZs[slot] = pad.z;
+      this.holdSquared[slot] = hold * hold;
+      this.holdFloors[slot] = (pad.y as number) - LAUNCH_PAD.holdSafeDropMetres;
+      slot += 1;
+    }
     Object.freeze(this);
+  }
+
+  /**
+   * Whether a crash-recovery point may **not** be stored here: some pad that
+   * declares a safe-point hold (M44 D15) has its centre within its hold
+   * radius of (x, z), horizontally, and `groundY` — the ground under the
+   * wheel — is no lower than that pad's own ground less
+   * `LAUNCH_PAD.holdSafeDropMetres`. The one height-aware query on a 2-D
+   * field, and on purpose: a roof pad's hold spans its roof, the roofs before
+   * it and the top of the ramp, while the courtyard floor under the same disc
+   * — the lane, its chains, the alley floors — keeps its own safe points.
+   * Boundaries count as inside. False at once on a field no pad holds in
+   * (every derived city, `NO_LAUNCH_PADS`), so a world without holds pays a
+   * compare. Allocation-free.
+   */
+  holdsSafePoint(x: number, z: number, groundY: number): boolean {
+    if (this.maxHoldSafeMetres === 0) return false;
+    for (let index = 0; index < this.holdCount; index += 1) {
+      // Written so that a NaN height is never inside a band.
+      if (!(groundY >= this.holdFloors[index])) continue;
+      const dx = x - this.holdXs[index];
+      const dz = z - this.holdZs[index];
+      if (dx * dx + dz * dz <= this.holdSquared[index]) return true;
+    }
+    return false;
   }
 
   /**
    * The pad whose **trigger circle** contains this point, or −1.
    *
    * A point test, like every other trigger volume the contact patch meets
-   * (`HazardField.at`). The boundary counts as inside. Pads are placed at
-   * least 70 m apart, so at most one can answer; the lowest index wins if a
-   * hand-built fixture overlaps two.
+   * (`HazardField.at`). The boundary counts as inside. Derived pads are
+   * placed at least 70 m apart, so at most one can answer; authored pads may
+   * stand much closer (a chain), and nothing here forbids two triggers
+   * overlapping: the lowest index — the earliest in the list — wins where
+   * they do.
    */
   at(x: number, z: number): number {
     for (let index = 0; index < this.count; index += 1) {
@@ -261,7 +357,8 @@ export class LaunchPadField {
    * The ridden dome's height over the lawn at this point, m
    * (`launchPadRideRise`): 0 beyond every pad's foot octagon by more than the
    * wheel's radius, the top's height on the trigger. The highest answer wins
-   * if a hand-built fixture overlaps two.
+   * where two pads' domes overlap (a fixture, or an authored list packed
+   * tighter than two ridden reaches).
    */
   riseAt(x: number, z: number): number {
     let rise = 0;

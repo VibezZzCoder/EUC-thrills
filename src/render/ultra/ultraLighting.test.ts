@@ -20,6 +20,7 @@ import {
   ultraSkyOptions,
   writeShadowRig,
 } from './ultraLighting.ts';
+import { ORDINARY_SHADE_FILL } from '../shadeFill.ts';
 import type { ShadowRig } from './ultraTypes.ts';
 
 /**
@@ -40,6 +41,7 @@ function constructorSun(): THREE.DirectionalLight {
   sun.shadow.mapSize.setScalar(LIGHTING.shadowMapSize);
   sun.shadow.bias = LIGHTING.shadowBias;
   sun.shadow.normalBias = LIGHTING.shadowNormalBias;
+  sun.shadow.intensity = ORDINARY_SHADE_FILL.shadow;
   const camera = sun.shadow.camera;
   camera.left = -LIGHTING.shadowRadius;
   camera.right = LIGHTING.shadowRadius;
@@ -83,9 +85,11 @@ test('the ordinary rig is the constructor’s and setQuality’s, field for fiel
   assert.equal(rig.far, sun.shadow.camera.far);
   assert.equal(rig.bias, sun.shadow.bias);
   assert.equal(rig.normalBias, sun.shadow.normalBias);
-  // three's defaults, which the renderer never writes.
+  // Radius is three's default, which the renderer never writes; the
+  // intensity is the shade fill's (2026-10-22, `render/shadeFill.ts`).
   assert.equal(rig.radius, sun.shadow.radius);
   assert.equal(rig.intensity, sun.shadow.intensity);
+  assert.equal(rig.intensity, ORDINARY_SHADE_FILL.shadow);
   assert.ok(Math.abs(rig.lightDistance - sun.position.distanceTo(sun.target.position)) < 1e-9);
   assert.deepEqual([rig.forwardShare, rig.snap, rig.fadeShare], [0, false, 0]);
   // setQuality: 2048 on High, half below it.

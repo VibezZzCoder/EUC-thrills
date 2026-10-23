@@ -3,6 +3,7 @@ import { AUDIO, ENVIRONMENT_AMBIENCE } from '../data/tuning.ts';
 import type { AudioFrame, CrashVoiceId, TransientCue } from './director.ts';
 import { NOISE_SECONDS, alignLoopToQuantum, fillNoise } from './noise.ts';
 import { EnvironmentAmbienceGraph, type EnvironmentAmbienceFrame } from './environmentAmbience.ts';
+import type { TrafficHornCue } from './trafficHorn.ts';
 
 /**
  * The Web Audio graph. **This file makes no decisions.**
@@ -93,6 +94,12 @@ export interface SinkCounts {
    * buffer it reached for, at the moment it reached for it.
    */
   readonly lastCrashVoice: CrashVoiceId | null;
+  /**
+   * Traffic horns that were actually built (2026-10-21), counted after the
+   * voice cap — the engine's `horns.played` counts the decision, this counts
+   * the oscillators that started.
+   */
+  readonly hornPlays: number;
 }
 
 /** One motor partial: an oscillator and its own gain, before the shared filter. */
@@ -346,6 +353,9 @@ export class WebAudioSink {
   /** The ride bed, after ducking. Transients deliberately do not pass through. */
   private readonly bed: GainNode;
   private readonly transientTrim: GainNode;
+  /** Horns only, into the transient trim: closed while the ride is idle, so a
+   * honk already scheduled when the game pauses stops with the pause. */
+  private readonly hornBus: GainNode;
 
   // -- The permanent ride ---------------------------------------------------
   //
@@ -376,6 +386,8 @@ export class WebAudioSink {
   /** Stumbles that started the recording rather than the stand-in (M29). */
   private stumbleSamplePlays = 0;
   private lastCrashVoice: CrashVoiceId | null = null;
+  /** Traffic horns built (2026-10-21). See `SinkCounts.hornPlays`. */
+  private hornPlays = 0;
   private readonly scrapeFilter: BiquadFilterNode;
   private readonly scrapeGain: GainNode;
   private readonly scrapeRingLow: OscillatorNode;
@@ -451,6 +463,10 @@ export class WebAudioSink {
     this.transientTrim = this.keep(context.createGain());
     this.transientTrim.gain.value = AUDIO.transientTrim;
     this.transientTrim.connect(this.sfxBus);
+
+    this.hornBus = this.keep(context.createGain());
+    this.hornBus.gain.value = 1;
+    this.hornBus.connect(this.transientTrim);
 
     // -- Motor: one harmonic series through one filter -----------------------
     //
@@ -569,6 +585,7 @@ export class WebAudioSink {
       overspeedSamplePlays: this.overspeedSamplePlays,
       stumbleSamplePlays: this.stumbleSamplePlays,
       lastCrashVoice: this.lastCrashVoice,
+      hornPlays: this.hornPlays,
     };
   }
 
@@ -772,6 +789,92 @@ export class WebAudioSink {
     if (cue.toneSeconds > 0 && cue.toneHz > 0) this.playTone(cue, at, destination);
     if (cue.thumpSeconds > 0 && cue.thumpFromHz > 0) this.playThump(cue, at, destination);
     if (cue.noiseSeconds > 0 && cue.noiseHz > 0) this.playBurst(cue, at, destination);
+  }
+
+  /**
+   * One traffic horn honk (2026-10-21): two or three toots of a two-note horn.
+   *
+   * Synthesized, never sampled, so nothing new needs a credit. A car horn is
+   * two buzzing notes a third apart; here they are two sawtooths through one
+   * gently resonant lowpass, which keeps the brass and loses the fizz — the
+   * game's arcade rule is that nothing may hurt, and a real horn's 2–4 kHz
+   * shriek is exactly the part that would. Each toot "speaks" the way a
+   * diaphragm horn does: the pitch blooms up from a few percent flat and the
+   * filter opens over the first tens of milliseconds, so it says *honk* rather
+   * than *beep*. The oscillators run through the whole pattern and the
+   * envelope gates them, so one honk is four nodes (five when panned) however
+   * many toots it has.
+   *
+   * Through the horn bus into the transient trim like every one-shot, so it
+   * rides the effects and master volumes, is silent when muted and stops with a
+   * pause (`setHornsLive`); and registered as two voices,
+   * so the voice cap, `stopAllVoices` and disposal reach it like any other.
+   */
+  playHorn(cue: TrafficHornCue): void {
+    if (this.disposed) return;
+    if (!(cue.gain > 0) || !(cue.lowHz > 0) || !(cue.highHz > 0) || cue.toots < 1) return;
+    if (this.voices.size + 2 > MAX_VOICES) {
+      this.droppedVoices += 1;
+      return;
+    }
+    const context = this.context;
+    const at = context.currentTime + 0.005;
+    const low = context.createOscillator();
+    const high = context.createOscillator();
+    low.type = 'sawtooth';
+    high.type = 'sawtooth';
+    const filter = context.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.Q.value = 1.6;
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(SILENT, at);
+    // Two sawtooths sum to twice full scale before the filter; half keeps the
+    // cue's gain the level the pair actually arrives at.
+    const level = cue.gain * 0.5;
+    const bright = Math.min(cue.brightnessHz, context.sampleRate * 0.45);
+    let start = at;
+    for (let toot = 0; toot < cue.toots; toot += 1) {
+      const last = toot === cue.toots - 1;
+      const length = last ? cue.lastTootSeconds : cue.shortTootSeconds;
+      const end = start + Math.max(0.04, length);
+      low.frequency.setValueAtTime(cue.lowHz * 0.96, start);
+      low.frequency.linearRampToValueAtTime(cue.lowHz, start + 0.03);
+      high.frequency.setValueAtTime(cue.highHz * 0.96, start);
+      high.frequency.linearRampToValueAtTime(cue.highHz, start + 0.03);
+      filter.frequency.setValueAtTime(bright * 0.45, start);
+      filter.frequency.linearRampToValueAtTime(bright, start + 0.045);
+      gain.gain.setValueAtTime(SILENT, start);
+      gain.gain.linearRampToValueAtTime(level, start + 0.012);
+      gain.gain.setValueAtTime(level, end);
+      gain.gain.exponentialRampToValueAtTime(SILENT, end + 0.035);
+      start = end + Math.max(0.05, cue.gapSeconds);
+    }
+    const stopAt = start;
+
+    low.connect(filter);
+    high.connect(filter);
+    filter.connect(gain);
+    const downstream: AudioNode[] = [filter, gain];
+    // Placed left or right for a lone listener. Optional: a browser without a
+    // stereo panner hears it centred, which is also what a split screen gets.
+    const panner = Math.abs(cue.pan) > 1e-3 && typeof context.createStereoPanner === 'function'
+      ? context.createStereoPanner() : null;
+    if (panner) {
+      panner.pan.value = Math.max(-1, Math.min(1, cue.pan));
+      gain.connect(panner);
+      panner.connect(this.hornBus);
+      downstream.push(panner);
+    } else {
+      gain.connect(this.hornBus);
+    }
+    this.launch(low, at, stopAt, downstream);
+    this.launch(high, at, stopAt, []);
+    this.hornPlays += 1;
+  }
+
+  /** Open or close the horn bus: closed whenever the ride is idle or parked. */
+  setHornsLive(live: boolean): void {
+    if (!this.disposed) this.glide(this.hornBus.gain, live ? 1 : 0, this.context.currentTime);
   }
 
   /** Choose whose crash the next one is. Cheap, and safe at any time. */

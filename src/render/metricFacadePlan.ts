@@ -10,11 +10,17 @@ import { exactBuildingBody } from '../level/protectedSiteEligibility.ts';
 import { exteriorComposition } from './districtExteriorSites.ts';
 import type { FacadeOpening } from './streetFacadeOpenings.ts';
 import { groundOwnsFlushFloor } from './coplanarGround.ts';
+import { awningOver, DOOR_STEP, signLettering, streetEntrances, type EntranceRequest, type StreetEntrance } from './buildingEntrances.ts';
 import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 
 export type MetricFinish = 'masonry' | 'frame' | 'roofEdge' | 'entry' | 'glazing';
+/** A colour role inside a finish's batch: every finish, and a shop board's cream (2026-10-22). */
+export type MetricColour = MetricFinish | 'signBoard';
 export type MetricSurfaceKind = 'wall' | 'reveal' | 'closed-pane' | 'pane-frame'
-  | 'closed-entry' | 'closed-service' | 'service-slat' | 'roof' | 'roof-joint' | 'cap' | 'structural-return';
+  | 'closed-entry' | 'closed-service' | 'service-slat' | 'roof' | 'roof-joint' | 'cap' | 'structural-return'
+  /** Street entrances (2026-10-22): a shop's fascia board, a front door's canopy, a side door's hood,
+   * and the step in front of a door that opens onto turf. */
+  | 'sign' | 'canopy' | 'step';
 export interface MetricSurface {
   readonly propIndex: number;
   readonly pieceKey: string;
@@ -24,6 +30,10 @@ export interface MetricSurface {
   readonly vertices: readonly Vec3[];
   readonly normal: Vec3;
   readonly batchKey: string;
+  /** The colour role, when it is not the batch's own finish (2026-10-22): a
+   * street door's leaf, board or canopy draws in the frame batch every
+   * metric cell already submits, in the entry or roof colour. */
+  readonly colour?: MetricColour;
   /** Exact selected residential roof hull owns near and static-far casting. */
   readonly roofCaster?: boolean;
 }
@@ -73,7 +83,7 @@ export interface MetricFace {
 }
 export interface MetricArchitectureRecord {
   readonly propIndex: number; readonly pieceKey: string;
-  readonly kind: 'roof-module' | 'wall-seam' | 'served-portal' | 'walk-entry';
+  readonly kind: 'roof-module' | 'wall-seam' | 'served-portal' | 'walk-entry' | 'street-portal';
   readonly origin: Vec3; readonly yaw: number;
   readonly rect: Rect; readonly recess: number;
 }
@@ -122,6 +132,50 @@ const METRIC = Object.freeze({
   recess: 0.18, border: 0.065, doorWidth: 1.08, doorHeight: 2.12,
   serviceWidth: 3.2, serviceHeight: 3.05,
 });
+
+type MetricFamily = 'commercial' | 'residential' | 'industrial' | 'untagged';
+/** Service bay spans on an industrial ground storey, exactly as the floor loop admits them. */
+function serviceBays(width: number): readonly { left: number; right: number }[] {
+  const services = Math.max(1, Math.floor(width / 6.4)), pitch = width / services;
+  return Array.from({ length: services }, (_, bay) => {
+    const x = -width / 2 + pitch * (bay + 0.5);
+    return { left: x - METRIC.serviceWidth / 2, right: x + METRIC.serviceWidth / 2 };
+  });
+}
+/**
+ * Street doors for an unserved body (2026-10-22). A building the district
+ * layer gave no frontage still has a face onto a street or path, and that
+ * face gets the same closed human entry a served one does: a shop's glazed
+ * vestibule under a fascia, a house's front door under a canopy, a shed's
+ * side door between its roller shutters. Positions are the face's own room
+ * cells (or dwelling spans, or the gaps between service bays), so the door
+ * stands under a window column rather than across one.
+ */
+function metricStreetRequest(family: MetricFamily, room: number, floorHeight: number,
+  piece: BuildingPiece): EntranceRequest {
+  const cells = (width: number, pitch: number): number[] => {
+    const rooms = Math.max(1, Math.round(width / pitch)), step = width / rooms;
+    return Array.from({ length: rooms }, (_, index) => -width / 2 + step * (index + 0.5));
+  };
+  if (family === 'industrial') return { halfWidth: METRIC.doorWidth / 2 + 0.12, spacing: 6, secondaryFaces: 0,
+    maximumSill: floorHeight - METRIC.doorHeight - 0.6, doorsOnFace: (_face, primary) => primary ? 1 : 0,
+    candidates: face => {
+      const bays = serviceBays(face.width), edges = [-face.width / 2 + 0.15, ...bays.flatMap(bay => [bay.left, bay.right]), face.width / 2 - 0.15];
+      const gaps: number[] = [];
+      for (let index = 0; index < edges.length; index += 2) if (edges[index + 1] - edges[index] >= METRIC.doorWidth + 0.5)
+        gaps.push((edges[index] + edges[index + 1]) / 2);
+      return gaps; } };
+  if (family === 'residential') {
+    const spans = (width: number) => width >= Math.max(piece.sx, piece.sz) - EPS ? dwellingSpans(width, 0) : [];
+    return { halfWidth: 1.15, spacing: 3.5, secondaryFaces: 0, maximumSill: floorHeight - 2.6,
+      doorsOnFace: (face, primary) => primary ? Math.min(4, Math.max(1, spans(face.width).length)) : 0,
+      candidates: face => { const own = spans(face.width);
+        return own.length > 1 ? own.map(span => (span.left + span.right) / 2) : cells(face.width, room); } };
+  }
+  return { halfWidth: 2.0, spacing: 8, secondaryFaces: 1, maximumSill: floorHeight - 2.6,
+    doorsOnFace: (face, primary) => primary ? Math.min(4, Math.max(1, Math.round(face.width / 14))) : 1,
+    candidates: face => cells(face.width, room).filter(x => Math.abs(x) <= face.width / 2 - 1.85) };
+}
 const add = (a: Vec3, b: Vec3): Vec3 => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z });
 const sub = (a: Vec3, b: Vec3): Vec3 => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
 const dot = (a: Vec3, b: Vec3): number => a.x * b.x + a.y * b.y + a.z * b.z;
@@ -299,7 +353,7 @@ export function* buildMetricFacadePlanSteps(plan: LevelPlan, selection: MetricFa
   // once rather than once per emitted polygon.
   const openingPlanes = openings.map(opening => metricOpeningPlanes(opening));
   const emit = (propIndex: number, pieceKey: string, kind: MetricSurfaceKind, finish: MetricFinish,
-    vertices: readonly Vec3[]): void => {
+    vertices: readonly Vec3[], colour?: MetricColour): void => {
     const normal = normalOf(vertices);
     // Preserve the accepted masonry landing inside the original protecting
     // body, but give a flush architectural floor 2 cm of construction height.
@@ -322,14 +376,15 @@ export function* buildMetricFacadePlanSteps(plan: LevelPlan, selection: MetricFa
       if (poly.length < 3) continue;
       const centroid = scale(poly.reduce(add, { x: 0, y: 0, z: 0 }), 1 / poly.length);
       surfaces.push({ propIndex, pieceKey, kind, finish, vertices: poly, normal, roofCaster,
-        batchKey: `${finish}/${Math.floor(centroid.x / pitch)},${Math.floor(centroid.z / pitch)}${roofCaster ? '/roof-caster' : ''}` });
+        batchKey: `${finish}/${Math.floor(centroid.x / pitch)},${Math.floor(centroid.z / pitch)}${roofCaster ? '/roof-caster' : ''}`,
+        ...(colour !== undefined && colour !== finish ? { colour } : {}) });
     }
   };
   const rect = (propIndex: number, key: string, kind: MetricSurfaceKind, finish: MetricFinish,
-    frame: FaceFrame, r: Rect, depth = 0): void => {
+    frame: FaceFrame, r: Rect, depth = 0, colour?: MetricColour): void => {
     if (r.right <= r.left + EPS || r.top <= r.bottom + EPS) return;
     emit(propIndex, key, kind, finish, [uv(frame, r.left, r.bottom, depth), uv(frame, r.right, r.bottom, depth),
-      uv(frame, r.right, r.top, depth), uv(frame, r.left, r.top, depth)]);
+      uv(frame, r.right, r.top, depth), uv(frame, r.left, r.top, depth)], colour);
   };
 
   for (const propIndex of selection.propIndices) {
@@ -394,6 +449,14 @@ export function* buildMetricFacadePlanSteps(plan: LevelPlan, selection: MetricFa
         continue;
       }
       const floors = Math.max(1, Math.round(piece.sy / dimensions.storey)), floorHeight = piece.sy / floors;
+      // A body the district layer gave no approach at all (no served, retained
+      // or civic frontage) still faces a street: its ground storey gets street
+      // doors on the faces that look onto one. A served body keeps exactly the
+      // one entrance its frontage owns.
+      const unserved = pieceIndex === 0 && piece.y === 0 && METRIC.doorHeight <= floorHeight - 0.25
+        && !(plan.districtAdjacency?.frontages.some(front => front.propIndex === propIndex) ?? false);
+      const street: readonly StreetEntrance[] = unserved
+        ? streetEntrances(plan, building, piece, metricStreetRequest(family as MetricFamily, dimensions.room, floorHeight, piece)) : [];
       for (let side = 0; side < 4; side++) {
         const faceYaw = yaw + side * Math.PI / 2, width = side % 2 ? piece.sz : piece.sx;
         const depth = side % 2 ? piece.sx : piece.sz;
@@ -407,7 +470,9 @@ export function* buildMetricFacadePlanSteps(plan: LevelPlan, selection: MetricFa
         const zoneMaskRects = [...maskDepthRects, ...openings.flatMap(opening => [-portalDepth, -portalDepth - METRIC.recess]
           .map(d => maskRect(frame, width, piece.sy, opening, d))).filter((r): r is Rect => !!r)];
         const faceApertures: MetricAperture[] = [];
-        const zones: { rect: Rect; recess: number; kind: 'wall-seam' | 'served-portal' | 'walk-entry' }[] = [];
+        /** Street doors' leaves draw in the frame batch, in the entry colour. */
+        const streetApertures = new Set<string>();
+        const zones: { rect: Rect; recess: number; kind: 'wall-seam' | 'served-portal' | 'walk-entry' | 'street-portal' }[] = [];
         const addZone = (kind: typeof zones[number]['kind'], r: Rect, recess: number): boolean => {
           if (r.left < -width / 2 + 0.15 || r.right > width / 2 - 0.15 || r.bottom < 0 || r.top > piece.sy - 0.10
             || zoneMaskRects.some(mask => intersects(r, mask)) || zones.some(zone => intersects(r, zone.rect))) return false;
@@ -459,24 +524,42 @@ export function* buildMetricFacadePlanSteps(plan: LevelPlan, selection: MetricFa
           faceApertures.push({ id: `${key}/${side}/${floor}/${faceApertures.length}`, kind, ...r, recess, wallDepth,
             propIndex, pieceKey: key, side, floor, mouth, back });
         };
+        const commercialFamily = family === 'commercial' || family === 'untagged';
+        /** One closed human entry: the door, and for a portal family its vestibule,
+         * transom and (shops) sidelights. Returns the vestibule when it was built. */
+        const doorway = (x: number, y: number, kind: 'served-portal' | 'street-portal'): Rect | null => {
+          const doorTop = y + METRIC.doorHeight;
+          const portalWidth = commercialFamily ? 3.3 : 1.7, portalTop = Math.min(y + (commercialFamily ? 2.95 : 2.7), floorHeight - 0.15);
+          const portal = { left: x - portalWidth / 2, right: x + portalWidth / 2, bottom: y, top: portalTop };
+          const hasPortal = portalFamily && portalTop >= doorTop + 0.25 && addZone(kind, portal, portalDepth);
+          admit('entry', { left: x - METRIC.doorWidth / 2, right: x + METRIC.doorWidth / 2, bottom: y, top: doorTop }, 0);
+          if (hasPortal) {
+            admit('window', { left: portal.left + 0.16, right: portal.right - 0.16, bottom: doorTop + 0.10, top: portalTop - 0.10 }, 0);
+            if (commercialFamily) for (const sign of [-1, 1]) {
+              const a = x + sign * (METRIC.doorWidth / 2 + 0.14), b = x + sign * (portalWidth / 2 - 0.16);
+              admit('window', { left: Math.min(a, b), right: Math.max(a, b), bottom: y + 0.20, top: doorTop - 0.10 }, 0);
+            }
+          }
+          return hasPortal ? portal : null;
+        };
+        /** A closed box standing proud of the wall plane by `out`; its back face is the wall.
+         * A step buried in the ground has no underside to draw. */
+        const slab = (kind: 'sign' | 'canopy' | 'step', colour: MetricColour, r: Rect, out: number): void => {
+          if (r.right <= r.left + EPS || r.top <= r.bottom + EPS || !(out > EPS)) return;
+          const p = (x: number, y: number, z: number): Vec3 => uv(frame, x, y, z);
+          const { left: l, right: q, bottom: b, top: t } = r;
+          emit(propIndex, key, kind, 'frame', [p(l, b, out), p(q, b, out), p(q, t, out), p(l, t, out)], colour);
+          emit(propIndex, key, kind, 'frame', [p(l, t, out), p(q, t, out), p(q, t, 0), p(l, t, 0)], colour);
+          if (kind !== 'step') emit(propIndex, key, kind, 'frame', [p(l, b, 0), p(q, b, 0), p(q, b, out), p(l, b, out)], colour);
+          emit(propIndex, key, kind, 'frame', [p(l, b, 0), p(l, b, out), p(l, t, out), p(l, t, 0)], colour);
+          emit(propIndex, key, kind, 'frame', [p(q, b, out), p(q, b, 0), p(q, t, 0), p(q, t, out)], colour);
+        };
         // Entrances remain tied to native served ground. A wide vestibule
         // surrounds the same human-scale closed door; its geometry supplies
         // jamb/lintel depth, sidelights and a transom visible above the rider.
         if (pieceIndex === 0 && frontage && Math.cos(frontage.yaw - faceYaw) > 1 - 1e-7) {
-          const y = Math.max(0, entryDelta.y), doorTop = y + METRIC.doorHeight;
           if (METRIC.doorHeight <= floorHeight - 0.25) {
-            const commercial = family === 'commercial' || family === 'untagged';
-            const portalWidth = commercial ? 3.3 : 1.7, portalTop = Math.min(y + (commercial ? 2.95 : 2.7), floorHeight - 0.15);
-            const portal = { left: servedX - portalWidth / 2, right: servedX + portalWidth / 2, bottom: y, top: portalTop };
-            const hasPortal = portalFamily && portalTop >= doorTop + 0.25 && addZone('served-portal', portal, portalDepth);
-            admit('entry', { left: servedX - METRIC.doorWidth / 2, right: servedX + METRIC.doorWidth / 2, bottom: y, top: doorTop }, 0);
-            if (hasPortal) {
-              admit('window', { left: portal.left + 0.16, right: portal.right - 0.16, bottom: doorTop + 0.10, top: portalTop - 0.10 }, 0);
-              if (commercial) for (const sign of [-1, 1]) {
-                const a = servedX + sign * (METRIC.doorWidth / 2 + 0.14), b = servedX + sign * (portalWidth / 2 - 0.16);
-                admit('window', { left: Math.min(a, b), right: Math.max(a, b), bottom: y + 0.20, top: doorTop - 0.10 }, 0);
-              }
-            }
+            doorway(servedX, Math.max(0, entryDelta.y), 'served-portal');
             if (family === 'residential') for (const span of dwelling) {
               const x = (span.left + span.right) / 2;
               if (Math.abs(x - servedX) < 2.5) continue;
@@ -487,6 +570,47 @@ export function* buildMetricFacadePlanSteps(plan: LevelPlan, selection: MetricFa
                 admit('entry', { left: x - METRIC.doorWidth / 2, right: x + METRIC.doorWidth / 2, bottom, top: bottom + METRIC.doorHeight }, 0);
             }
           }
+        }
+        // Street doors on an unserved body's street faces: the same closed entry,
+        // with a fascia board over a shop, a canopy over a house door and a hood
+        // over a shed's side door. Each stands proud of the wall plane only.
+        // Doors fix (2026-10-22): the board is cream inside a keyline in the
+        // roof's tone and carries a painted name in the door's colour, never a
+        // dark slab, and a shop under an authored awning needs no board; a door
+        // whose doorstep is turf stands on a concrete step as wide as its portal.
+        for (const door of street.find(entrance => entrance.face.side === side)?.doors ?? []) {
+          const before = faceApertures.length, portal = doorway(door.x, door.y, 'street-portal');
+          for (const aperture of faceApertures.slice(before)) streetApertures.add(aperture.id);
+          if (!faceApertures.slice(before).some(aperture => aperture.kind === 'entry')) continue;
+          if (!door.paved) {
+            const half = portal ? (portal.right - portal.left) / 2 : METRIC.doorWidth / 2 + METRIC.border + 0.07;
+            slab('step', 'frame', { left: Math.max(-width / 2, door.x - half - DOOR_STEP.overhang),
+              right: Math.min(width / 2, door.x + half + DOOR_STEP.overhang),
+              bottom: Math.min(door.y, door.stepLow) - DOOR_STEP.footing,
+              top: Math.max(door.y, door.stepHigh) + DOOR_STEP.rise }, DOOR_STEP.depth);
+          }
+          if (commercialFamily && portal && !awningOver(plan, frame, door.x, 2.6)) {
+            const board: Rect = { left: Math.max(-width / 2 + 0.24, portal.left - 1.0),
+              right: Math.min(width / 2 - 0.24, portal.right + 1.0), bottom: portal.top + 0.14,
+              top: Math.min(portal.top + 0.52, floorHeight + 0.33, piece.sy - 0.25) };
+            if (board.top - board.bottom >= 0.2) {
+              slab('sign', 'roofEdge', { left: board.left - 0.04, right: board.right + 0.04,
+                bottom: board.bottom - 0.04, top: board.top + 0.04 }, 0.08);
+              slab('sign', 'signBoard', board, 0.10);
+              const spot = uv(frame, door.x, 0), middle = (board.left + board.right) / 2;
+              const y = (board.bottom + board.top) / 2, half = (board.top - board.bottom) * 0.2;
+              // The name is paint: one sealed quad per word, just proud of the board.
+              for (const word of signLettering(board.right - board.left, spot.x, spot.z)) {
+                const l = middle + word.x - word.width / 2, q = middle + word.x + word.width / 2;
+                emit(propIndex, key, 'sign', 'frame', [uv(frame, l, y - half, 0.112), uv(frame, q, y - half, 0.112),
+                  uv(frame, q, y + half, 0.112), uv(frame, l, y + half, 0.112)], 'entry');
+              }
+            }
+          } else if (family === 'residential' && portal) slab('canopy', 'roofEdge', { left: Math.max(-width / 2 + 0.1, portal.left - 0.2),
+            right: Math.min(width / 2 - 0.1, portal.right + 0.2), bottom: portal.top + 0.06, top: portal.top + 0.18 }, 0.78);
+          else if (family === 'industrial' && door.y + METRIC.doorHeight + 0.38 <= floorHeight) slab('canopy', 'roofEdge', {
+            left: door.x - 0.64, right: door.x + 0.64, bottom: door.y + METRIC.doorHeight + 0.16,
+            top: door.y + METRIC.doorHeight + 0.28 }, 0.5);
         }
         const roomCells = dwelling.length ? dwelling.flatMap(span => {
           const count = Math.max(1, Math.round((span.right - span.left) / dimensions.room)), cellPitch = (span.right - span.left) / count;
@@ -549,7 +673,8 @@ export function* buildMetricFacadePlanSteps(plan: LevelPlan, selection: MetricFa
               rect(propIndex, key, 'closed-service', 'entry', frame, { ...inner, bottom, top: top - 0.025 }, (r.wallDepth ?? 0) - r.recess);
               rect(propIndex, key, 'service-slat', 'frame', frame, { ...inner, bottom: top - 0.025, top }, (r.wallDepth ?? 0) - r.recess);
             }
-          } else if (r.kind === 'entry') rect(propIndex, key, 'closed-entry', 'entry', frame, inner, (r.wallDepth ?? 0) - r.recess);
+          } else if (r.kind === 'entry') rect(propIndex, key, 'closed-entry', streetApertures.has(r.id) ? 'frame' : 'entry', frame, inner,
+            (r.wallDepth ?? 0) - r.recess, 'entry');
           else {
             const middle = (inner.left + inner.right) / 2, mullion = inner.right - inner.left > 1.45 ? 0.045 : 0;
             if (mullion) {

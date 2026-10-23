@@ -166,7 +166,7 @@ test.describe('M10 — the challenge', () => {
     await expect(page.locator('.euc-menu--title [data-menu="challenge"]')).toBeVisible();
     // Start ride stays the primary action. Free ride is the game, and the
     // owner's deciding gate is five minutes with no objective at all.
-    await expect(page.locator('.euc-menu--title [data-menu="start"]')).toHaveClass(/euc-button--primary/);
+    await expect(page.locator('.euc-menu--title [data-menu="start"]')).toHaveClass(/euc-start--here/);
 
     // The proving ground is a measuring instrument rather than a place, so it
     // carries no route and cannot be timed.

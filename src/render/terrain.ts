@@ -1,4 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { riverScenery } from './riverScenery.ts';
+import { quayScenery } from './quayScenery.ts';
 import { sharedGroundArrayPrice } from './sharedGroundArrayPrice.ts';
 import type { PreparedEnvironmentSupplements } from './environmentSupplementPrice.ts';
 import * as THREE from 'three';
@@ -794,12 +796,19 @@ export function* createTerrainSteps(
   materials.push(...terrainMaterials);
   yield PREPARATION_SLICE;
 
+  const river=riverScenery(plan);
+  if(river){group.add(river);geometries.push(river.geometry);materials.push(river.material as THREE.Material);}
+  const scenery=quayScenery(plan);
+  for(const mesh of scenery){group.add(mesh);geometries.push(mesh.geometry);materials.push(mesh.material as THREE.Material);}
+
   // -- Kerbs, walls, bollards ---------------------------------------------
   // Merged per material into one geometry each, so the plaza's four bollards
   // and its gate cost two draw calls between them rather than six.
   const byMaterial = new Map<MaterialId, BoxCollider[]>();
   for (const segment of plan.segments) {
     for (const collider of segment.colliders) {
+      // A box the venue's dressing draws itself (`BoxCollider.drawn`) stays solid and unpriced here.
+      if (collider.drawn === false) continue;
       const id = collider.appearance ?? SURFACES[collider.surface].material;
       const list = byMaterial.get(id);
       if (list === undefined) byMaterial.set(id, [collider]);
@@ -958,7 +967,8 @@ export function* createTerrainSteps(
     markings,
     hazards,
     triangles: terrainGeometry.index!.count / 3 + colliderTriangles + fieldMesh.triangles + 2
-      + props.triangles + markings.triangles + hazards.triangles,
+      + props.triangles + markings.triangles + hazards.triangles + (river?.geometry.index?.count ?? 0) / 3
+      + scenery.reduce((sum, mesh) => sum + mesh.geometry.getAttribute('position').count / 3, 0),
     recipe: recipe.id,
     blockTriangles: colliderTriangles,
     textures: props.textures + (groundDetail?.textures ?? 0) + (sharedGround?.report().textures ?? 0),

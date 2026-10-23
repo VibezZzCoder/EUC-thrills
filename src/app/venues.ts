@@ -11,9 +11,10 @@ import type { LevelId } from '../level/levels.ts';
  * anywhere may ask *which* producer built the plan on screen in order to
  * decide behaviour. Asking "is this world lappable" is `LevelPlan.lap`'s job,
  * "can it host a fight" is `targets.count`'s and "can it host a chase" is
- * `RouteSpine`'s — all three read the plan, and all three keep working the day
- * a sixth producer is registered. What a list of ids cannot answer, this file
- * deliberately does not offer to answer.
+ * `RouteSpine`'s — all three read the plan, and all three kept working the day
+ * a sixth producer was registered (EUClaude Heights, M44) without a line here
+ * changing beyond the roster itself. What a list of ids cannot answer, this
+ * file deliberately does not offer to answer.
  *
  * It is `app/couch.ts`'s neighbour in every way that matters: a small pure
  * module of session identity, no DOM, no three.js, no `GameOptions`, and a
@@ -31,7 +32,7 @@ import type { LevelId } from '../level/levels.ts';
 /**
  * A hand-built place the game offers by name.
  *
- * **Two of the five `LevelId`s are deliberately absent.** `proving` is an
+ * **Two of the six `LevelId`s are deliberately absent.** `proving` is an
  * instrument rather than a place — it is flat by construction and exists to
  * measure the wheel — and offering it from a menu would be offering a
  * diagnostic as a destination. `generated` is not a name at all: it is a seed,
@@ -43,20 +44,29 @@ import type { LevelId } from '../level/levels.ts';
  * construction*: removing a builder from `level/levels.ts` fails this file's
  * type-check rather than leaving a chooser button that would build the slice.
  */
-export type VenueId = Extract<LevelId, 'slice' | 'track' | 'switchback'>;
+export type VenueId = Extract<LevelId, 'slice' | 'track' | 'switchback' | 'euclaude'>;
 
 /**
  * Every venue, in the order the chooser draws them.
  *
  * The shipped city first because it is the world the game boots into and the
  * one everything else is measured against, then the two circuits in the order
- * they were built. A player reading the row left to right reads the game's own
- * history, which is as good an order as any and is at least stable.
+ * they were built, then EUClaude Heights (M44), the newest. A player reading
+ * the row left to right reads the game's own history, which is as good an
+ * order as any and is at least stable — and a new place goes on the end, so a
+ * player who has learned where a place sits on the row never finds it moved.
+ *
+ * **Four is a fit, not just a count** (`DESIGN.md` §9t): the chooser's two
+ * panels were laid out for three, and the fourth took the row's compact type
+ * and a two-by-two grid on a phone (`ui/game.css`). A fifth reopens that
+ * measurement.
  */
 export const VENUE_IDS: readonly VenueId[] = Object.freeze([
   'slice',
   'track',
   'switchback',
+  // M44: the go-wild city, last because it is the newest (`docs/PLANS.md` §44).
+  'euclaude',
 ] as VenueId[]);
 
 /** The title's Track Day destinations. This roster offers choices; the

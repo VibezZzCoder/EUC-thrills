@@ -7,6 +7,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { createLevel, requestRoute } from '../level/levels.ts';
 import { SLICE_GRAPH } from '../level/sliceLevel.ts';
+import { EUCLAUDE_PLAN_ID } from '../level/euclaudeLevel.ts';
 import { forwardOf } from '../level/segments.ts';
 import type { LevelPlan } from '../level/plan.ts';
 import type { SurfaceId } from '../simulation/world.ts';
@@ -49,6 +50,27 @@ test('venues whose preparation added physical content file under the builder id 
     assert.equal(again.level.recordWorldId, world.level.recordWorldId, `${name}: read back on re-preparation`);
     assert.equal(again.level.id, world.level.id);
   }
+});
+
+test('EUClaude Heights files under its own builder id, revised only if preparation added content (M44)', () => {
+  // `docs/PLANS.md` §44 D2: records key on `recordWorldIdOf(plan)` like every
+  // venue — `euclaude-r1`, or `euclaude-r1~living-r1` once the population adds
+  // physical content (its parking bay, say). Which of the two it is depends on
+  // what the venue's living world authors, which is still being built, so the
+  // claim is the shape and the stability rather than one spelling: never a
+  // content hash, never another venue's key, and the same on re-preparation.
+  const { source, world } = venue('euclaude');
+  assert.equal(source.id, EUCLAUDE_PLAN_ID);
+  assert.match(source.id, /^euclaude-r\d+$/);
+  const key = world.level.recordWorldId!;
+  assert.match(key, /^euclaude-r\d+(~living-r1)?$/);
+  assert.ok(key === source.id || key === `${source.id}${living}`, `euclaude filed under ${key}`);
+  assert.equal(recordWorldIdOf(world.level), key);
+  assert.doesNotMatch(key, /[0-9a-f]{32}/, 'no content hash in a record key');
+  const again = preparePopulationWorld(world.level);
+  assert.equal(again.level.recordWorldId, key, 'read back on re-preparation');
+  // The pattern is anchored on the builder's own name, so the key cannot be
+  // another venue's: a best set here is never filed as the city's or the park's.
 });
 
 test('the proving ground and other untouched worlds keep their own id', () => {

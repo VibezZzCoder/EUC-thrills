@@ -140,4 +140,7 @@ function digest(value: unknown): string {
   };
   walk(value); return h.toString(16);
 }
-const RECORDED_WORLD = '791d98b4';
+// Re-recorded 2026-10-21 (Claude) for one deliberate change: a vehicle's route
+// scan ignores bodies wholly behind its rear bumper (`whollyBehind`, population.ts),
+// which ended the follower-held deadlock that froze every Quay van loop.
+const RECORDED_WORLD = '1a014c80';

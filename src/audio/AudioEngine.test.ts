@@ -200,3 +200,44 @@ test('the ambience seam does not alter any existing ride/cue output and shares t
   assert.equal(a.emitterCount, b.emitterCount);
   for (const engine of [ordinary, environment, batched]) engine.dispose();
 });
+
+test('traffic horns are decided on the population clock, counted unarmed, and silent while idle', () => {
+  // 2026-10-21. The engine is the gate between the horn model and the sink:
+  // idle (menus, pause, lost context) and a parked tab are silent, and the
+  // decision is counted whether or not a context exists, like `played`.
+  const engine = new AudioEngine(null);
+  const vehicles = [{ id: 'ring/trafficVehicle/1', kind: 'trafficVehicle', x: 0, y: 0, z: 0, headingY: 0,
+    speedMetresPerSecond: 0, activity: 'waiting', activityPhase: 1, backing: false }];
+  const riders = [{ x: 0, y: 0, z: 5 }];
+  let clock = 0;
+  const run = (seconds: number): void => {
+    for (let i = 0; i < Math.round(seconds * 60); i += 1) {
+      clock += 1 / 60;
+      engine.updateTrafficHorns(clock, vehicles, riders, 1, 0);
+    }
+  };
+  engine.input.idle = true;
+  run(8);
+  assert.equal(engine.snapshot().horns.played, 0, 'honked behind a menu');
+  engine.input.idle = false;
+  run(3.2);
+  const snap = engine.snapshot().horns;
+  assert.equal(snap.played, 1);
+  assert.equal(snap.built, 0, 'an unarmed engine claimed to have built a horn');
+  assert.equal(snap.blockedVehicles, 1);
+  assert.equal(snap.quietVehicles, 0, 'gave up after one honk');
+  assert.equal(snap.last?.vehicleId, 'ring/trafficVehicle/1');
+  assert.equal(snap.last?.toots, 2);
+  // Quick reset forgets the wait.
+  engine.reset();
+  run(2.9);
+  assert.equal(engine.snapshot().horns.played, 1, 'reset kept the patience');
+  run(0.3);
+  assert.equal(engine.snapshot().horns.played, 2);
+  // A parked tab is silent and forgets too.
+  engine.setSuspended(true);
+  run(10);
+  assert.equal(engine.snapshot().horns.played, 2);
+  engine.dispose();
+  engine.updateTrafficHorns(clock + 10, vehicles, riders, 1, 0);
+});

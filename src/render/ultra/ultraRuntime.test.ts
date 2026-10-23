@@ -13,6 +13,7 @@ import {
 import { createSliceLevel } from '../../level/sliceLevel.ts';
 import { createCopRider } from '../copRider.ts';
 import { createVenueLighting, type UltraEnvironment, type VenueLighting } from '../Renderer.ts';
+import { ORDINARY_SHADE_FILL } from '../shadeFill.ts';
 import { createSky, cumulusSeedFor, type SkyOptions, type SkyTexture } from '../sky.ts';
 import { DAYLIGHT_LOOK } from '../../data/venueLook.ts';
 import type { TerrainView } from '../terrain.ts';
@@ -228,6 +229,7 @@ function fixture(options: { readonly bake?: boolean | 'throw' } = {}): Fixture {
   sun.shadow.mapSize.setScalar(LIGHTING.shadowMapSize);
   sun.shadow.bias = LIGHTING.shadowBias;
   sun.shadow.normalBias = LIGHTING.shadowNormalBias;
+  sun.shadow.intensity = ORDINARY_SHADE_FILL.shadow;
   const shadowCamera = sun.shadow.camera;
   shadowCamera.left = -LIGHTING.shadowRadius;
   shadowCamera.right = LIGHTING.shadowRadius;

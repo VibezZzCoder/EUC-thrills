@@ -46,6 +46,8 @@ export const GROUPS = Object.freeze({
     'src/app/barkRate.test.ts',
     // M42 pads: prepared-corpus finder rules, the natural-line rides and the real-site landing sweep.
     'src/bench/launchPadSites.test.ts', 'src/bench/launchPadLine.test.ts', 'src/bench/launchPadSiteSweep.test.ts',
+    // M44: the derived corpus pinned byte for byte beside the authored-pad hook (~40 s).
+    'src/bench/launchPadHook.test.ts',
   ) },
 });
 

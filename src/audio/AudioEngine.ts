@@ -17,6 +17,7 @@ import {
   type EnvironmentAmbienceEmitter,
   type EnvironmentAmbienceFrame,
 } from './environmentAmbience.ts';
+import { TrafficHornModel, type TrafficHornBody, type TrafficHornVehicle } from './trafficHorn.ts';
 
 /**
  * The audio layer's composition root: context lifecycle, buses, volumes, and
@@ -143,6 +144,35 @@ export interface AudioSnapshot {
   readonly sirenGain: number;
   /** The shared Doppler rate. 1 when nobody is closing on anybody. */
   readonly sirenRate: number;
+  /**
+   * Traffic horns (2026-10-21). `played` counts honks the model decided on —
+   * on the population clock, so deterministic under `advance(n)` and counted
+   * whether or not anything is armed; `built` counts the ones the sink
+   * actually started (zero before arming). `blockedVehicles` is how many
+   * vehicles are standing with a player in the box ahead of them right now;
+   * `quietVehicles` is how many of those have honked that player out (four
+   * honks a wait, 2026-10-22) and say nothing more until they move.
+   */
+  readonly horns: TrafficHornSnapshot;
+}
+
+export interface TrafficHornSnapshot {
+  readonly played: number;
+  readonly built: number;
+  readonly blockedVehicles: number;
+  readonly quietVehicles: number;
+  readonly trackedVehicles: number;
+  /** The last honk's vehicle, notes, level and pattern; null before the first. */
+  readonly last: {
+    readonly vehicleId: string;
+    readonly lowHz: number;
+    readonly highHz: number;
+    readonly gain: number;
+    readonly pan: number;
+    readonly distanceMetres: number;
+    readonly toots: number;
+    readonly honkIndex: number;
+  } | null;
 }
 
 export interface EnvironmentAmbienceSnapshot extends Readonly<EnvironmentAmbienceFrame> {
@@ -212,6 +242,10 @@ export class AudioEngine {
   readonly input: RideAudioInput = createRideAudioInput();
   private readonly ambience = new EnvironmentAmbienceModel(ENVIRONMENT_AMBIENCE);
   private readonly ambienceInput = createEnvironmentAmbienceInput();
+  /** Traffic horns: presented rows in, honks out. See `audio/trafficHorn.ts`. */
+  private readonly horns = new TrafficHornModel();
+  private hornsPlayed = 0;
+  private lastHorn: TrafficHornSnapshot['last'] = null;
   private ambienceRequestedRunning = false;
   /** Plain model time on the existing update clock; no timer or callback. */
   private ambienceWarningSeconds = 0;
@@ -533,6 +567,7 @@ export class AudioEngine {
     if (this.disposed) return;
     this.ambience.replaceWorld(worldId, emitters);
     this.resetAmbience();
+    this.horns.reset();
   }
 
   /** Presentation supplies the installed moving sources once per shared frame. */
@@ -540,11 +575,44 @@ export class AudioEngine {
     return !this.disposed && this.ambience.updateEmitter(id, x, y, z, strength);
   }
 
+  /**
+   * Traffic horns, once per presented frame (2026-10-21).
+   *
+   * `vehicles` are the presented population rows every pane draws, read and
+   * never written; `bodies` are the presented riders — seats first, then any
+   * placed cop — of which the first `listenerCount` are the ears. Timed on the
+   * population's own `clockSeconds`, so it is called *after* `update` has set
+   * this frame's idle flag and needs no `dt` of its own. Silent (and patience
+   * forgotten) whenever the ride is idle — menus, pause, a lost context — or
+   * the tab is parked.
+   */
+  updateTrafficHorns(
+    clockSeconds: number,
+    vehicles: readonly TrafficHornVehicle[],
+    bodies: readonly TrafficHornBody[],
+    listenerCount: number,
+    listenerHeadingY: number,
+  ): void {
+    if (this.disposed) return;
+    const active = !this.input.idle && !this.wantSuspended;
+    this.horns.observe(clockSeconds, vehicles, bodies, listenerCount, listenerHeadingY, active);
+    for (let index = 0; index < this.horns.cueCount; index += 1) {
+      const cue = this.horns.cues[index];
+      this.hornsPlayed += 1;
+      this.lastHorn = {
+        vehicleId: cue.vehicleId, lowHz: cue.lowHz, highHz: cue.highHz, gain: cue.gain, pan: cue.pan,
+        distanceMetres: cue.distanceMetres, toots: cue.toots, honkIndex: cue.honkIndex,
+      };
+      this.sink?.playHorn(cue);
+    }
+  }
+
   /** Abandon the world and its single listener without rebuilding any nodes. */
   clearAmbienceWorld(): void {
     if (this.disposed) return;
     this.ambience.clearWorld();
     this.resetAmbience();
+    this.horns.reset();
   }
 
   /** Clear old proximity/priority tails while retaining the emitter roster. */
@@ -639,6 +707,8 @@ export class AudioEngine {
 
     this.sink?.applyFrame(this.director.frame);
     this.sink?.applyAmbienceFrame(this.ambience.frame);
+    // A honk scheduled just before a pause or a menu stops with it.
+    this.sink?.setHornsLive(!this.input.idle && !this.wantSuspended);
   }
 
   hop(charge: number): void {
@@ -747,6 +817,7 @@ export class AudioEngine {
     this.director.reset();
     this.sink?.stopAllVoices();
     this.resetAmbience();
+    this.horns.reset();
   }
 
   /**
@@ -761,7 +832,10 @@ export class AudioEngine {
     // Recorded before touching the context, so the `statechange` this call
     // provokes finds the flag already set and does not fight the decision.
     this.wantSuspended = suspended;
-    if (suspended) this.resetAmbience();
+    if (suspended) {
+      this.resetAmbience();
+      this.horns.reset();
+    }
     const context = this.context;
     if (!context || this.disposed) return;
     if (suspended) {
@@ -850,6 +924,14 @@ export class AudioEngine {
       scrapeGain: frame.scrapeGain,
       sirenGain: frame.sirenFarGain + frame.sirenCloseGain,
       sirenRate: frame.sirenRate,
+      horns: {
+        played: this.hornsPlayed,
+        built: counts?.hornPlays ?? 0,
+        blockedVehicles: this.horns.blockedVehicles,
+        quietVehicles: this.horns.quietVehicles,
+        trackedVehicles: this.horns.trackedVehicles,
+        last: this.lastHorn,
+      },
     };
   }
 

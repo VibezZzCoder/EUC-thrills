@@ -68,10 +68,32 @@ test('district form uses existing height/bands and roof vocabulary rather than u
   assert.ok(park.parts.some(part => part.kind === 'shaft-band'));
   assert.ok(park.parts.filter(part => part.kind === 'sill').every(part => part.shape === 'box' && part.position.y > 19),
     'only the actual glazed stage receives sills; the stone shaft has no office rows');
-  for (const site of [commercial, residential, industrial, park]) {
-    assert.ok(site.parts.every(part => ['plinth', 'cornice', 'sill', 'pier', 'roof-edge', 'ridge', 'ground-cover',
-      'base-panel', 'base-return', 'shaft-band', 'shaft-stile', 'shaft-brace', 'roof-rim'].includes(part.kind)));
+  // Revised 2026-10-22 (owner-approved street entrances): an unserved body
+  // still gets one closed entrance of its own family on its street face —
+  // never a universal storefront, and never on a landmark.
+  const trim = ['plinth', 'cornice', 'sill', 'pier', 'roof-edge', 'ridge', 'ground-cover',
+    'base-panel', 'base-return', 'shaft-band', 'shaft-stile', 'shaft-brace', 'roof-rim'];
+  // Doors fix (2026-10-22): this fixture's doors open onto lawn, so each stands
+  // on a step; the board carries a keyline and a painted name; and a shed set
+  // in turf takes a plain door under a hood, not a roller shutter.
+  const grammar = { commercial: ['closed-entry', 'door-glass', 'entry-frame', 'entry-handle', 'sign-band', 'sign-border', 'sign-letter', 'door-step'],
+    residential: ['closed-entry', 'entry-frame', 'entry-handle', 'canopy', 'door-step'],
+    industrial: ['closed-entry', 'entry-frame', 'entry-handle', 'canopy', 'door-step'] } as const;
+  for (const [family, site] of [['commercial', commercial], ['residential', residential], ['industrial', industrial]] as const) {
+    const own: readonly string[] = grammar[family];
+    assert.ok(site.parts.every(part => trim.includes(part.kind) || own.includes(part.kind)), `${family} wears only its own entrance`);
+    for (const kind of own) assert.ok(site.parts.some(part => part.kind === kind), `${family} entrance has its ${kind}`);
+    assert.equal(site.parts.filter(part => part.kind === 'closed-entry').length, 1, `${family}: one door on one street face`);
+    assert.equal(site.parts.some(part => part.kind === 'ground-window'), false, 'the glazing is the ground page, not boxes');
+    for (const part of site.parts.filter(part => own.includes(part.kind))) {
+      assert.equal(part.shape, 'box'); if (part.shape !== 'box') continue;
+      assert.ok(Math.sin(part.yaw) < -0.99, `${family} ${part.kind} faces the factual west-side street`);
+      assert.ok(Math.abs(part.position.x - (18 - 6)) < 1, `${family} ${part.kind} is mounted on that face`);
+    }
+    const door = site.parts.find(part => part.kind === 'closed-entry')!;
+    assert.ok(door.shape === 'box' && Math.abs(door.position.y - door.size.y / 2) < 1e-9, `${family} door stands on the ground`);
   }
+  assert.ok(park.parts.every(part => trim.includes(part.kind)), 'a landmark gets no invented entrance');
 });
 
 test('closed entries face admitted connected approaches and preserve selected or civic fronts', () => {
@@ -156,6 +178,9 @@ test('untagged legacy bodies retain neutral identity and exact original cap/towe
   'setback relief follows its own original band count and elevated datum');
   assert.ok(site.parts.some(part => part.kind === 'base-panel'));
   assert.ok(site.parts.some(part => part.kind === 'roof-rim'));
+  // 2026-10-22: an untagged tower's street door is a lobby under a canopy, never a shop board.
+  assert.equal(site.parts.filter(part => part.kind === 'closed-entry').length, 1);
+  assert.ok(site.parts.some(part => part.kind === 'canopy') && !site.parts.some(part => part.kind === 'sign-band'));
   const short = { ...building, size: { ...size, y: 7 } };
   assert.equal(exteriorComposition(short).length, 2, 'the original short-tower suppression is retained');
   assert.deepEqual(exteriorComposition(tagged), composeBuilding({ ...tagged, look: tagged.look! }));
@@ -235,8 +260,11 @@ test('A1: actual inward lower returns close both warehouse ends and all four nat
   const appearance = { materials: { masonry: material, frame: material, roofEdge: material,
     planting: material, entry: material, glazing: material }, colourFor: () => [1, 1, 1] as const };
   const view = createDistrictExterior(plan, appearance, [{ ...site, parts: returns }]);
+  // The control is the original base trim; the street entrance added on
+  // 2026-10-22 stands in one stretch of that perimeter and is not trim.
+  const entrance = ['closed-entry', 'entry-frame', 'entry-handle', 'service-shutter', 'shutter-slat', 'shutter-trim', 'canopy', 'door-step'];
   const legacy = createDistrictExterior(plan, appearance, [{ ...site,
-    parts: site.parts.filter(part => part.kind !== 'base-return') }]);
+    parts: site.parts.filter(part => part.kind !== 'base-return' && !entrance.includes(part.kind)) }]);
   const source = ultraFacadeBox('buildingBody');
   const drawn = new THREE.BufferGeometry();
   drawn.setAttribute('position', new THREE.BufferAttribute(new Float32Array(relievedPositions(source, [15, 16, 22])), 3));
@@ -298,4 +326,64 @@ test('A1: native recess dimensions, masks, selected owners and source-body refus
   assert.deepEqual(districtExteriorSites({ ...plan, solids: [] }), []);
   const enclosing = { ...plan.solids![0], halfExtents: { ...plan.solids![0].halfExtents, x: 7.6 } };
   assert.deepEqual(districtExteriorSites({ ...plan, solids: [enclosing] }), []);
+});
+
+// Doors fix (2026-10-22): boards read as painted signs, sheds keep their
+// shutter only onto paving, and a door onto turf stands on a step.
+test('a shop board is a cream sign with a keyline and a painted name; a door onto turf stands on a step', () => {
+  const site = districtExteriorSites(exteriorFixture('commercial'))[0];
+  const box = (kind: string) => site.parts.filter((part): part is Extract<typeof part, { shape: 'box' }> => part.shape === 'box' && part.kind === kind);
+  const [board] = box('sign-band'), [border] = box('sign-border'), letters = box('sign-letter'), [step] = box('door-step');
+  assert.equal(board.colour, 'signBoard', 'never the dark door colour');
+  assert.equal(border.colour, 'roofEdge');
+  assert.ok(border.size.x > board.size.x && border.size.y > board.size.y, 'the keyline frames the board');
+  assert.ok(letters.length >= 3 && letters.length <= 5 && letters.every(letter => letter.colour === 'entry'));
+  const along = (part: typeof board) => (part.position.x - board.position.x) * Math.cos(board.yaw)
+    - (part.position.z - board.position.z) * Math.sin(board.yaw);
+  for (const letter of letters) {
+    assert.ok(Math.abs(along(letter)) + letter.size.x / 2 < board.size.x / 2, 'the name stays on its board');
+    assert.ok(Math.abs(letter.position.y - board.position.y) < 1e-9 && letter.size.y < board.size.y);
+  }
+  assert.ok(step && step.finish === 'frame' && step.colour === undefined, 'the step draws in the frame batch, in its own colour');
+  const door = box('closed-entry')[0];
+  assert.ok(step.position.y + step.size.y / 2 > door.position.y - door.size.y / 2, 'the step rises above the turf at the sill');
+  assert.ok(step.position.y - step.size.y / 2 < 0, 'and is footed into the ground');
+  assert.ok(step.size.x >= 1.4 && step.size.z >= 1.1);
+  // The same board and step price one instance each in an existing batch: no new draw call.
+  const keys = new Set(site.parts.filter(part => part.shape === 'box' && ['sign-band', 'sign-border', 'sign-letter', 'door-step', 'closed-entry'].includes(part.kind))
+    .map(part => part.shape === 'box' ? `${part.finish}/${part.rich}` : ''));
+  assert.deepEqual([...keys], ['frame/false']);
+});
+
+test('a shed keeps its roller shutter where paving runs up to it, and no step', () => {
+  const plain = exteriorFixture('industrial');
+  const paved = { ...plain, heightfield: { ...plain.heightfield, surfaces: plain.heightfield.surfaces.map(
+    (surface, index) => (index % 160 - 80 < 12 ? 'pavement' : surface) as SurfaceId) } };
+  const site = districtExteriorSites(paved)[0], kinds = new Set(site.parts.map(part => part.kind));
+  for (const kind of ['service-shutter', 'shutter-slat', 'shutter-trim', 'closed-entry']) assert.ok(kinds.has(kind as never), kind);
+  assert.ok(!kinds.has('door-step') && !kinds.has('canopy'));
+  const turf = new Set(districtExteriorSites(plain)[0].parts.map(part => part.kind));
+  assert.ok(!turf.has('service-shutter') && turf.has('canopy') && turf.has('door-step'), 'onto turf: a plain door under a hood');
+});
+
+test('plinth, pilasters, head strip and door trim never share a face plane where they overlap', () => {
+  // The owner saw the bottom of the shopfront pilasters z-fight (2026-10-22):
+  // the plinth and the pilasters both faced out 2 mm from the wall.
+  const kinds = new Set(['plinth', 'base-panel', 'entry-frame']);
+  for (const look of ['commercial', 'residential', 'industrial'] as const) for (const yaw of [0, 0.7]) {
+    const site = districtExteriorSites(exteriorFixture(look, yaw))[0];
+    const boxes = site.parts.filter((part): part is Extract<typeof part, { shape: 'box' }> => part.shape === 'box' && kinds.has(part.kind));
+    const fronts = boxes.map(part => {
+      const c = Math.cos(part.yaw), s = Math.sin(part.yaw);
+      const along = part.position.x * c - part.position.z * s, out = part.position.x * s + part.position.z * c;
+      return { part, yaw: part.yaw, plane: out + part.size.z / 2, along, y: part.position.y };
+    });
+    for (let a = 0; a < fronts.length; a += 1) for (let b = a + 1; b < fronts.length; b += 1) {
+      const p = fronts[a], q = fronts[b];
+      if (Math.abs(Math.sin(p.yaw - q.yaw)) > 1e-6 || Math.cos(p.yaw - q.yaw) < 0 || Math.abs(p.plane - q.plane) > 1e-4) continue;
+      const wide = Math.min(p.along + p.part.size.x / 2, q.along + q.part.size.x / 2) - Math.max(p.along - p.part.size.x / 2, q.along - q.part.size.x / 2);
+      const tall = Math.min(p.y + p.part.size.y / 2, q.y + q.part.size.y / 2) - Math.max(p.y - p.part.size.y / 2, q.y - q.part.size.y / 2);
+      assert.ok(wide <= 1e-6 || tall <= 1e-6, `${look} ${p.part.kind}/${q.part.kind} overlap ${wide.toFixed(3)}×${tall.toFixed(3)} m on one plane`);
+    }
+  }
 });

@@ -29,7 +29,7 @@ function everyNth(every: number): () => Promise<void> | null {
 }
 
 test('each venue drained as slices is the world the synchronous builder returns', () => {
-  const minimum: Record<Exclude<LevelId, 'generated'>, number> = { slice: 10, track: 10, switchback: 10, proving: 0 };
+  const minimum: Record<Exclude<LevelId, 'generated'>, number> = { slice: 10, track: 10, switchback: 10, euclaude: 10, proving: 0 };
   for (const id of Object.keys(minimum) as (keyof typeof minimum)[]) {
     const sync = createLevel(id);
     const { value, slices } = drain(createLevelSteps(id));

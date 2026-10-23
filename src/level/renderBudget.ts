@@ -16,8 +16,11 @@ import {
 import { SURFACES, type MaterialId } from '../data/surfaces.ts';
 import { ribbonQuads } from '../shared/markingRibbon.ts';
 import { isContactHazard } from '../simulation/hazards.ts';
+import { harbourSceneryTriangles } from './harbourScenery.ts';
 import type { BoxCollider, LevelPlan } from './plan.ts';
 import { terrainCells } from './terrainCoverage.ts';
+import { quaySceneryTriangles } from './quayScenery.ts';
+import { contactShadowBlobs, contactShadowSkirts, staticContactShadowTriangles, staticContactSkirtTriangles } from './contactShadowPlan.ts';
 
 /**
  * What a `LevelPlan` will cost to draw — computed from the plan, with no
@@ -115,6 +118,8 @@ export function planRenderCost(plan: LevelPlan): LevelRenderCost {
   const collidersByMaterial = new Map<MaterialId, number>();
   for (const segment of plan.segments) {
     for (const collider of segment.colliders) {
+      // Drawn by the venue's own dressing instead (`BoxCollider.drawn`): priced there.
+      if (collider.drawn === false) continue;
       const material = colliderMaterial(collider);
       collidersByMaterial.set(material, (collidersByMaterial.get(material) ?? 0) + 1);
     }
@@ -207,6 +212,18 @@ export function planRenderCost(plan: LevelPlan): LevelRenderCost {
     colourTriangles += targets * LEVEL_GEOMETRY_COST.trianglesPerTarget;
   }
 
+  // Render-only harbour (water, far shore, lighthouse, bridge, boats): one vertex-colour mesh, no shadow caster,
+  // priced from the same primitive list `render/riverScenery.ts` builds (`level/harbourScenery.ts`).
+  if(plan.riverScenery){colourDrawCalls+=1;colourTriangles+=harbourSceneryTriangles(plan.riverScenery);}
+
+  // Quay Quarter's dressing: a ground layer and a shadow-casting raised layer,
+  // priced by the same builder that draws them.
+  if (plan.quayScenery) {
+    const scenery = quaySceneryTriangles(plan);
+    colourDrawCalls += 2; colourTriangles += scenery.ground + scenery.raised;
+    shadowDrawCalls += 1; shadowTriangles += scenery.raised;
+  }
+
   return {
     drawCalls: colourDrawCalls + shadowDrawCalls,
     triangles: colourTriangles + shadowTriangles,
@@ -224,6 +241,49 @@ export function planRenderCost(plan: LevelPlan): LevelRenderCost {
     pools,
     spills,
     targets,
+  };
+}
+
+/**
+ * The contact shadows' cost — the soft blobs the Low tier lays down because it
+ * has no shadow map (2026-10-22, `level/contactShadowPlan.ts`).
+ *
+ * **Not part of admission, and not added to `planRenderCost`.** The blobs are
+ * drawn only on a frame whose sun casts nothing, which is a frame that has
+ * already shed the level's entire shadow pass (`shadowDrawCalls`,
+ * `shadowTriangles` above) and every rider's. The contracts are priced with
+ * that pass in, so a Low frame with blobs is bounded by them as long as the
+ * blobs cost less than the pass they stand in for — which
+ * `render/contactShadows.test.ts` asserts for every venue, with the built
+ * mesh measured equal to this figure.
+ *
+ * Two calls at most: one merged mesh for the world's static blobs and the
+ * skirts round its blocks and buildings (none when it has neither), one
+ * instanced mesh for the moving ones (two triangles each).
+ */
+export interface ContactShadowCost extends RenderCost {
+  readonly staticBlobs: number;
+  readonly staticSkirts: number;
+  /** Blobs' and skirts' triangles together: the merged mesh. */
+  readonly staticTriangles: number;
+  readonly dynamicBlobs: number;
+  readonly dynamicTriangles: number;
+}
+
+export function contactShadowRenderCost(plan: LevelPlan, dynamicBlobs: number): ContactShadowCost {
+  const blobs = contactShadowBlobs(plan);
+  const skirts = contactShadowSkirts(plan);
+  const staticTriangles = staticContactShadowTriangles(blobs) + staticContactSkirtTriangles(skirts);
+  const moving = Math.max(0, Math.floor(dynamicBlobs));
+  const dynamicTriangles = moving * 2;
+  return {
+    drawCalls: (blobs.length + skirts.length > 0 ? 1 : 0) + (moving > 0 ? 1 : 0),
+    triangles: staticTriangles + dynamicTriangles,
+    staticBlobs: blobs.length,
+    staticSkirts: skirts.length,
+    staticTriangles,
+    dynamicBlobs: moving,
+    dynamicTriangles,
   };
 }
 

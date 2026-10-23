@@ -162,6 +162,7 @@ export function* presentationCostSteps(plan: LevelPlan, recipe: PresentationReci
   let blocks = 0;
   for (const segment of plan.segments) {
     for (const collider of segment.colliders) {
+      if (collider.drawn === false) continue;
       baselineBlocks += 12;
       blocks += recipe.walls ? colliderTriangles(collider, colliderMaterial(collider)) : 12;
     }

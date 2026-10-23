@@ -473,6 +473,32 @@ function rotationRadius(body: PopulationFootprint): number {
     body.sourceHull.hull.halfLengthMetres, body.sourceHull.hull.heightMetres)
     + (body.sourceHull.marginMetres ?? 0) : Math.hypot(body.halfWidthMetres, body.halfLengthMetres);
 }
+/**
+ * True when `body` lies wholly behind `own`'s rear bumper along the heading it
+ * travels (`travelY`), with a small tolerance (Quay traffic, 2026-10-21).
+ *
+ * A vehicle's forward route can never meet such a body, and the body behind
+ * owns that meeting in its own route scan. Counting it held a stopped leader
+ * still under its own follower's padded box, and the two waited on each other
+ * for good: every Quay van loop froze nose to tail within minutes. Native
+ * contact, which still sweeps every blocker, is unchanged.
+ */
+function whollyBehind(own: PopulationFootprint, travelY: number, body: PopulationFootprint): boolean {
+  const fx = Math.sin(travelY), fz = Math.cos(travelY), bx = Math.sin(body.headingY), bz = Math.cos(body.headingY);
+  const along = (body.x - own.x) * fx + (body.z - own.z) * fz;
+  const reach = Math.abs(body.halfLengthMetres * (bx * fx + bz * fz)) + Math.abs(body.halfWidthMetres * (bz * fx - bx * fz));
+  return along + reach < -own.halfLengthMetres - 0.05;
+}
+
+/** The source path's own heading at `distance`, turned round for reverse travel. */
+function travelHeading(path: PopulationPath, distance: number, direction: 1 | -1): number {
+  let low = 0, high = path.points.length - 1;
+  while (high - low > 1) { const middle = (low + high) >>> 1; if (path.points[middle].distanceMetres <= distance) low = middle; else high = middle; }
+  const a = path.points[low], b = path.points[Math.min(low + 1, path.points.length - 1)];
+  const heading = Math.atan2(b.x - a.x, b.z - a.z);
+  return direction === 1 ? heading : heading + Math.PI;
+}
+
 function predictBody(body: PopulationFootprint, seconds: number): PopulationFootprint {
   const dx = body.velocityX * seconds, dz = body.velocityZ * seconds;
   return { ...body, x: body.x + dx, z: body.z + dz,
@@ -1497,8 +1523,10 @@ export class PopulationSimulation {
         if (parts === undefined) vehicleParts.set(forecastSeconds, parts = anticipation.components.map(part => compactAnticipationBlocker(part, forecastSeconds)));
         const routeBlockers = [...parts];
         reserved.forEach(item => routeBlockers.push({ id: `reservation:${item.id}`, from: item.footprint, to: item.footprint, pad: 0 }));
+        const own = actorBlockers[index], travelY = travelHeading(state.path.path, state.distance, state.direction);
         for (let other = 0; other < actorBlockers.length; other += 1) if (other !== index) {
           const body = actorBlockers[other];
+          if (whollyBehind(own, travelY, body)) continue;
           // pedestrianPriority(vehicle, ...) is false before any forecast: a vehicle never has it (PERF-POP).
           // At the look-ahead horizon itself the forecast already holds predictBody(body, horizon).
           routeBlockers.push({ id: this.actorBlockerIds[other], from: body,

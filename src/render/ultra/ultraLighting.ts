@@ -33,6 +33,7 @@
 import * as THREE from 'three';
 import { LIGHTING, ULTRA } from '../../data/tuning.ts';
 import type { ResolvedVenueLook } from '../../data/venueLook.ts';
+import { ORDINARY_SHADE_FILL } from '../shadeFill.ts';
 import type { SkyOptions } from '../sky.ts';
 import type { ShadowRig, UltraLiveTuning } from './ultraTypes.ts';
 
@@ -46,11 +47,12 @@ export type { SkyOptions };
 /**
  * Today's rig, restated field by field from the two places that write it:
  * the `GameRenderer` constructor (map size, bias, normal bias, the ±30 m box,
- * near 1, far `2 × sunDistance`) and `setQuality` (2048 on High, 1024 below).
- * Radius and intensity are three's own defaults, which the renderer never
- * writes. Low does not cast at all (`setQuality` turns `castShadow` off), so
- * its map size is an idle value; it is stated as Medium's so an ordinary rig
- * never *grows* a map.
+ * near 1, far `2 × sunDistance`, and — from the second look pass of
+ * 2026-10-22 — the shade fill's shadow intensity, `ORDINARY_SHADE_FILL.shadow`)
+ * and `setQuality` (2048 on High, 1024 below). Radius is three's own default,
+ * which the renderer never writes. Low does not cast at all (`setQuality`
+ * turns `castShadow` off), so its map size is an idle value; it is stated as
+ * Medium's so an ordinary rig never *grows* a map.
  */
 function ordinaryRig(quality: 'low' | 'medium' | 'high'): ShadowRig {
   return Object.freeze({
@@ -61,7 +63,7 @@ function ordinaryRig(quality: 'low' | 'medium' | 'high'): ShadowRig {
     bias: LIGHTING.shadowBias,
     normalBias: LIGHTING.shadowNormalBias,
     radius: 1,
-    intensity: 1,
+    intensity: ORDINARY_SHADE_FILL.shadow,
     lightDistance: LIGHTING.sunDistance,
     forwardShare: 0,
     snap: false,
@@ -89,7 +91,8 @@ export function ultraNearMapSize(requested?: number): number {
  *
  * `'ordinary'` is today's constructor and `setQuality` exactly — 2048 on High
  * and 1024 below it, ±30 m, near 1, far 120, bias −0.0005, normal bias 0.02,
- * three's default radius and intensity, the light 60 m out — and must stay so
+ * three's default radius, the shade fill's 0.78 shadow intensity
+ * (`render/shadeFill.ts`), the light 60 m out — and must stay so
  * (`ultraLighting.test.ts`, `levelLifecycle.test.ts`).
  *
  * `'ultra'` is the §3.2 near cascade from `ULTRA.near`, with the bias, normal

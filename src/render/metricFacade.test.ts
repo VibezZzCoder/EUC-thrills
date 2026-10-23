@@ -268,6 +268,68 @@ test('actual polygons stop at chunk bounds, allocated prices are exact, and only
 });
 
 
+// 2026-10-22: an unserved body (no district frontage at all) gets street doors
+// of its own family on its open faces; a served body keeps exactly its one.
+test('unserved bodies gain sealed street doors, with a shop board, a house canopy and a shed door between its shutters', () => {
+  const unserved = (look: 'commercial' | 'residential' | 'industrial', width = 42): LevelPlan => {
+    const { districtAdjacency: _adjacency, ...rest } = fixture(look, width); return rest;
+  };
+  for (const look of ['commercial', 'residential', 'industrial'] as const) {
+    const level = unserved(look), before = JSON.stringify(level), plan = draft(level);
+    assert.equal(JSON.stringify(level), before, 'no frontage, path, collider or prop is written');
+    const doors = plan.apertures.filter(a => a.kind === 'entry');
+    assert.ok(doors.length >= 1, `${look}: at least one street door`);
+    for (const door of doors) {
+      assert.ok(Math.abs(door.right - door.left - 1.08) < 1e-8 && Math.abs(door.top - door.bottom - 2.12) < 1e-8);
+      assert.ok(door.bottom >= 0 && door.bottom < 1e-9, `${look}: the door stands on the ground, never on a deck`);
+      assert.equal(door.floor, 0);
+    }
+    assertWallCoverage(plan); assertSealedPanes(plan);
+    const extra = plan.surfaces.filter(surface => surface.kind === 'sign' || surface.kind === 'canopy');
+    assert.ok(extra.every(surface => surface.finish === 'frame' && surface.colour !== undefined), 'boards draw in an existing batch');
+    const kinds = new Set(extra.map(surface => surface.kind));
+    assert.deepEqual([...kinds], look === 'commercial' ? ['sign'] : ['canopy']);
+    // Boards and canopies stand proud of the wall plane only, and their fronts face the street.
+    for (const surface of extra) {
+      const c = surface.vertices.reduce((sum, p) => ({ x: sum.x + p.x / surface.vertices.length,
+        y: sum.y + p.y / surface.vertices.length, z: sum.z + p.z / surface.vertices.length }), { x: 0, y: 0, z: 0 });
+      assert.ok(Math.abs(c.x) >= 21 - 1e-7 || Math.abs(c.z) >= 6 - 1e-7, 'nothing is drawn inside the body');
+      if (Math.abs(c.z) > 6 + 1e-7 && Math.abs(surface.normal.z) > 0.99) assert.ok(surface.normal.z * c.z > 0, 'front faces out');
+      if (Math.abs(c.x) > 21 + 1e-7 && Math.abs(surface.normal.x) > 0.99) assert.ok(surface.normal.x * c.x > 0, 'front faces out');
+    }
+    if (look === 'commercial') assert.ok((plan.architecture ?? []).some(record => record.kind === 'street-portal'));
+    // Doors fix (2026-10-22): a cream board in a keyline with a painted name, never the dark door colour,
+    // and each door onto this fixture's turf on a step in the frame batch.
+    if (look === 'commercial') {
+      const colours = new Set(extra.map(surface => surface.colour));
+      assert.deepEqual([...colours].sort(), ['entry', 'roofEdge', 'signBoard']);
+      const letters = extra.filter(surface => surface.colour === 'entry');
+      assert.ok(letters.length >= 3 * doors.length && letters.every(surface => surface.vertices.length === 4), 'one painted quad per word');
+    }
+    const steps = plan.surfaces.filter(surface => surface.kind === 'step');
+    assert.ok(steps.length >= 4 * doors.length && steps.every(surface => surface.normal.y > -0.5),
+      `${look}: front, top and two ends per door (split at batch cells); no buried underside`);
+    assert.ok(steps.every(surface => surface.finish === 'frame' && surface.colour === undefined));
+    if (look === 'industrial') {
+      const served = draft(fixture('industrial')).apertures.filter(a => a.kind === 'service').length;
+      assert.equal(plan.apertures.filter(a => a.kind === 'service').length, served,
+        'the side door takes a gap between shutters, never a shutter');
+      for (const door of doors) assert.ok(plan.apertures.filter(a => a.kind === 'service' && a.side === door.side)
+        .every(bay => bay.right < door.left || bay.left > door.right), 'the side door stands clear of every shutter');
+    }
+  }
+  // A served body is unchanged: still exactly its one served entry, no street portal.
+  const served = draft(fixture('commercial'));
+  assert.equal(served.apertures.filter(a => a.kind === 'entry').length, 1);
+  assert.ok(!(served.architecture ?? []).some(record => record.kind === 'street-portal'));
+  assert.ok(!served.surfaces.some(surface => surface.kind === 'sign' || surface.kind === 'canopy'));
+  // Any district frontage, even a retained or civic one, means the district owns that entrance.
+  const retained = fixture('commercial');
+  retained.districtAdjacency = { ...retained.districtAdjacency!, frontages: retained.districtAdjacency!.frontages
+    .map(front => ({ ...front, retainedOpening: true })) };
+  assert.equal(draft(retained).apertures.filter(a => a.kind === 'entry').length, 0);
+});
+
 test('industrial final surfaces, apertures and extraction identities equal the frozen R19 kit', () => {
   for (const width of [10, 42, 80]) {
     const level = fixture('industrial', width), before = JSON.stringify(level), current = draft(level);

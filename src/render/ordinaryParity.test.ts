@@ -3,7 +3,9 @@ import { strict as assert } from 'node:assert';
 import { createHash, type Hash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { inflateSync } from 'node:zlib';
 import * as THREE from 'three';
+import { BUILDING_FACADE } from '../data/props.ts';
 import { generateLevel } from '../level/generateRoute.ts';
 import type { LevelPlan } from '../level/plan.ts';
 import { planDigest } from '../level/planDigest.ts';
@@ -12,6 +14,7 @@ import { createSliceLevel } from '../level/sliceLevel.ts';
 import { placedRunCount } from '../level/segments.ts';
 import { createSwitchbackLevel, SWITCHBACK_ADVANCE_CUES, SWITCHBACK_GRAPH } from '../level/switchbackLevel.ts';
 import { createTrackLevel } from '../level/trackLevel.ts';
+import { FACADE_ATLAS_SIZE, FACADE_PAGE_IDS, paintFacadeAtlas } from './facadeAtlas.ts';
 import { BASELINE_PRESENTATION, ENHANCED_PRESENTATION, type PresentationRecipe } from './presentation.ts';
 import { createTerrain as correctedTerrain } from './terrain.ts';
 
@@ -92,7 +95,54 @@ function createTerrain(plan: LevelPlan, recipe?: PresentationRecipe) {
     [first, first + 2, first + 1, first + 1, first + 2, first + 3]
       .forEach((value, offset) => index.setX(at + offset, value));
   }
+  projectHistoricalGroundPages(view.group);
   return view;
+}
+
+/** Test-only projection of the owner-approved 2026-10-22 street-door repaint:
+ * the `ground` and `groundLow` facade pages now paint glazed bays and no door
+ * (every door became metric geometry outside these factories). Require the
+ * atlas a view uploads to be exactly today's painter output first, then put
+ * back only those two cells' texels, archived from the named pre-Ultra source
+ * (ordinaryParityFacade.test-fixture.json), on a copy — so every other page,
+ * texel, material and mesh is still held to the untouched goldens. Runtime
+ * never uses this; facadeAtlas.test.ts pins the current pages. Off while
+ * computing goldens inside the pre-Ultra tree, whose atlas is the history. */
+let groundHistory: { readonly offset: number; readonly bytes: Uint8Array; readonly current: Uint8Array } | null = null;
+function projectHistoricalGroundPages(group: THREE.Object3D): void {
+  if (process.env.EUC_PARITY_OUT) return;
+  if (groundHistory === null) {
+    const fixture = JSON.parse(readFileSync(new URL('./ordinaryParityFacade.test-fixture.json', import.meta.url), 'utf8')) as {
+      archive: string; pages: string[]; byteOffset: number; byteLength: number; sha256: string; zlibBase64: string;
+    };
+    assert.equal(fixture.archive, 'pre-ultra-source-2026-09-22.tgz');
+    assert.deepEqual(fixture.pages, ['ground', 'groundLow']);
+    // Two cells to a row: cells 2 and 3 are the whole of the atlas's row 1.
+    assert.deepEqual([FACADE_PAGE_IDS.indexOf('ground'), FACADE_PAGE_IDS.indexOf('groundLow'), FACADE_PAGE_IDS.length], [2, 3, 8]);
+    const rowBytes = FACADE_ATLAS_SIZE * (FACADE_ATLAS_SIZE / 4) * 4;
+    assert.deepEqual([fixture.byteOffset, fixture.byteLength], [rowBytes, rowBytes]);
+    const bytes = new Uint8Array(inflateSync(Buffer.from(fixture.zlibBase64, 'base64')));
+    assert.equal(bytes.length, fixture.byteLength);
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), fixture.sha256);
+    groundHistory = { offset: fixture.byteOffset, bytes, current: paintFacadeAtlas({ glassTint: BUILDING_FACADE.glassTint }).data };
+  }
+  const history = groundHistory;
+  const seen = new Set<THREE.Texture>();
+  group.traverse((object) => {
+    const material = (object as THREE.Mesh).material;
+    if (material === undefined) return;
+    for (const entry of Array.isArray(material) ? material : [material]) {
+      const map = (entry as THREE.MeshStandardMaterial).map;
+      if (!(map instanceof THREE.DataTexture) || seen.has(map)) continue;
+      seen.add(map);
+      const image = map.image as { data: Uint8Array; width: number; height: number };
+      if (image.width !== FACADE_ATLAS_SIZE || image.height !== FACADE_ATLAS_SIZE) continue;
+      assert.equal(Buffer.compare(image.data, history.current), 0, 'a facade atlas that is not today\'s painter output');
+      const data = image.data.slice();
+      data.set(history.bytes, history.offset);
+      map.image = { data, width: image.width, height: image.height };
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------

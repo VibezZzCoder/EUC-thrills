@@ -16,7 +16,7 @@ import { materialAppearance } from '../data/surfaces.ts';
 import { linearFromHex, wordStrokes } from './inkKit.ts';
 import { positionHash01 } from '../shared/maths.ts';
 import type { LevelPlan, Prop } from '../level/plan.ts';
-import { enhancedConifer, enhancedCrown, shapedShrub, toneFoliage } from './foliageKit.ts';
+import { CROWN_HUE, CROWN_TURN, enhancedConifer, enhancedCrown, shapedShrub, toneFoliage } from './foliageKit.ts';
 import {
   FACADE_ATLAS_SIZE,
   FACADE_PAGES,
@@ -1242,6 +1242,14 @@ export function* createPropsSteps(
       const jitter = 1 + (hash01(prop.position.x, prop.position.z, salt) * 2 - 1) * tint;
       colour.multiplyScalar(jitter);
     }
+    // 2026-10-22: each shared broadleaf tree also leans a little yellow or
+    // blue, crown and trunk together, so its leader still meets its trunk in
+    // one bark (`foliageKit.ts` CROWN_HUE). Render-only instance colour.
+    if (preparedVegetation && (part === 'crown' || part === 'trunk')) {
+      const hue = hash01(prop.position.x, prop.position.z, CROWN_HUE.salt) * 2 - 1;
+      colour.setRGB(colour.r * (1 + CROWN_HUE.red * hue), colour.g * (1 + CROWN_HUE.green * hue),
+        colour.b * (1 + CROWN_HUE.blue * hue));
+    }
     return colour;
   };
 
@@ -1275,6 +1283,12 @@ export function* createPropsSteps(
 
     const simple = SIMPLE_PARTS[prop.kind];
     if (simple !== undefined) {
+      if (prop.kind === 'broadleafTree' && preparedVegetation) {
+        // A shared broadleaf tree's render-only turn (`foliageKit.ts` CROWN_TURN):
+        // trunk and crown together, the pivot (and so every cell key) unchanged.
+        quaternion.setFromAxisAngle(up, prop.rotationY + hash01(prop.position.x, prop.position.z, CROWN_TURN.salt) * Math.PI * 2);
+        base.compose(position, quaternion, scale);
+      }
       for (const part of simple) {
         const authored = part === 'crown' && prop.kind === 'treeCanopy' ? selectedAuthored?.get(propIndex) ?? null : null;
         emit(part, base, tintOf(part, prop, 11), false, authored);

@@ -27,6 +27,7 @@ import {
   withinQuadRenderBudget,
   withinSplitRenderBudget,
 } from '../level/renderBudget.ts';
+import { createEuclaudeLevel } from '../level/euclaudeLevel.ts';
 import { createProvingGround } from '../level/provingGround.ts';
 import { createSliceLevel } from '../level/sliceLevel.ts';
 import { terrainCells } from '../level/terrainCoverage.ts';
@@ -78,12 +79,16 @@ import { ULTRA_FULL, ULTRA_LADDER, ULTRA_LIT } from './ultra/ultraRecipe.ts';
 
 const slice = createSliceLevel();
 const proving = createProvingGround();
+// M44: the go-wild city is measured the way the slice is — the model against
+// the built scene, exactly — because it is the densest hand-built world
+// (`docs/PLANS.md` §44.1 D10).
+const euclaude = createEuclaudeLevel();
 
 // ---------------------------------------------------------------------------
 // The model against the built scene
 // ---------------------------------------------------------------------------
 
-for (const [name, plan] of [['the slice', slice], ['the proving ground', proving]] as const) {
+for (const [name, plan] of [['the slice', slice], ['the proving ground', proving], ['EUClaude Heights', euclaude]] as const) {
   test(`${name}: the predicted render cost is the measured render cost`, () => {
     const predicted = planRenderCost(plan);
     const measured = measureLevelScene(plan);
@@ -819,7 +824,7 @@ test('no level built from this library can breach the draw-call ceiling', () => 
       + `have become a scaling risk and Phase 3 has to treat them as one.`,
   );
 
-  for (const plan of [slice, proving]) {
+  for (const plan of [slice, proving, euclaude]) {
     assert.ok(
       planRenderCost(plan).drawCalls <= LIBRARY_MAX_DRAW_CALLS,
       'a real level costs more than the library bound, so the bound is wrong',

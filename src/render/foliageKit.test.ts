@@ -7,6 +7,7 @@ import {
   CONIFER_ENVELOPE,
   CONIFER_TIERS,
   CROWN_ENVELOPE,
+  CROWN_LIGHT,
   CROWN_LOBES,
   FOLIAGE_TONES,
   SHRUB_ENVELOPE,
@@ -230,4 +231,43 @@ test('the exported sculpting helpers keep a sphere closed, deterministic and ins
   // The lobe tables are the ones the enhanced shapes use, and stay authored.
   assert.equal(CROWN_LOBES.length, 8);
   assert.equal(SHRUB_LOBES.length, 3);
+});
+
+// ---------------------------------------------------------------------------
+// The shared crown's light (2026-10-22 second look pass, `CROWN_LIGHT`)
+// ---------------------------------------------------------------------------
+
+test('the shared crown is lifted by its stated share, warm above, cool below, bark still the trunk\'s', async () => {
+  const { buildVegetationForm } = await import('./vegetationForms.ts');
+  const { SHARED_VEGETATION_CONTRACTS, ordinaryVegetationPainter } = await import('./sharedVegetation.ts');
+  const { PROP_COLOURS } = await import('../data/props.ts');
+  const { materialAppearance } = await import('../data/surfaces.ts');
+  const { linearFromHex } = await import('./inkKit.ts');
+  // The lifted green still reads apart from the palette's other two foliage
+  // greens by the margins `data/props.test.ts` holds the authored ones to.
+  const luminance = (c: readonly number[]): number => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const broadleaf = linearFromHex(PROP_COLOURS.broadleafFoliage), lifted = luminance(broadleaf) * CROWN_LIGHT.leafLift;
+  assert.ok(CROWN_LIGHT.leafLift >= 1.15 && CROWN_LIGHT.leafLift <= 1.2, 'the critic-measured 15–20 % lift');
+  assert.ok(luminance(linearFromHex(PROP_COLOURS.shrubFoliage)) > lifted * 1.05, 'undergrowth still lighter than the lifted crown');
+  assert.ok(lifted > luminance(linearFromHex(PROP_COLOURS.coniferFoliage)) * 1.25, 'the crown still lighter than the conifer');
+  const bark = linearFromHex(materialAppearance('wood').albedo);
+  for (const detail of ['ordinary', 'ultra'] as const) for (const variant of [0, 1, 2] as const) {
+    const form = buildVegetationForm('crown', detail, variant, SHARED_VEGETATION_CONTRACTS.crown, ordinaryVegetationPainter);
+    try {
+      const color = form.geometry.getAttribute('color'), { leaf, wood, height } = form.context;
+      const mean = [0, 0, 0], upper = [0, 0, 0], lower = [0, 0, 0];
+      let leaves = 0, uppers = 0, lowers = 0;
+      for (let i = 0; i < color.count; i += 1) {
+        if (wood[i]) for (let c = 0; c < 3; c += 1) assert.ok(Math.abs(color.array[i * 3 + c] * broadleaf[c] - bark[c]) < 1e-6, 'bark is never lifted');
+        if (!leaf[i]) continue;
+        leaves += 1;
+        const band = height[i] > 0.75 ? upper : height[i] < 0.45 ? lower : null;
+        if (band === upper) uppers += 1; else if (band === lower) lowers += 1;
+        for (let c = 0; c < 3; c += 1) { mean[c] += color.array[i * 3 + c]; if (band) band[c] += color.array[i * 3 + c]; }
+      }
+      for (let c = 0; c < 3; c += 1) assert.ok(Math.abs(mean[c] / leaves - CROWN_LIGHT.leafLift) < 1e-6, `${detail} ${variant}: channel ${c} mean`);
+      assert.ok(upper[1] / uppers > 1.2 * (lower[1] / lowers), `${detail} ${variant}: the upper crown is lighter`);
+      assert.ok(upper[0] / upper[2] > 1.4 * (lower[0] / lower[2]), `${detail} ${variant}: warm (red over blue) above, cool below`);
+    } finally { form.geometry.dispose(); }
+  }
 });

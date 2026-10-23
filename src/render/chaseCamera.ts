@@ -99,6 +99,17 @@ export interface ChaseCameraTuning {
   airHeightResponseSeconds: number;
   /** Time constant for easing the height offset out after touchdown, s. */
   landingRestoreSeconds: number;
+  /**
+   * Fall of the ground under a flight below the ground it left from, metres,
+   * past which the hop is measured from the takeoff ground instead (M44).
+   */
+  deepDropMetres: number;
+  /**
+   * Fall of the ground under a flight in a single step, metres, that marks the
+   * flight as leaving a building's edge rather than a hillside (M44). Only such
+   * a flight may take the `deepDropMetres` path.
+   */
+  sheerDropMetres: number;
   /** Camera drop per m/s of normal impact, m, and its ceiling. */
   landingDipPerImpact: number;
   landingDipMax: number;
@@ -148,6 +159,8 @@ export function defaultChaseCameraTuning(): ChaseCameraTuning {
     airHeightFollow: CAMERA.airHeightFollow,
     airHeightResponseSeconds: CAMERA.airHeightResponseSeconds,
     landingRestoreSeconds: CAMERA.landingRestoreSeconds,
+    deepDropMetres: CAMERA.deepDropMetres,
+    sheerDropMetres: CAMERA.sheerDropMetres,
     landingDipPerImpact: CAMERA.landingDipPerImpact,
     landingDipMax: CAMERA.landingDipMax,
     landingDipRecoverSeconds: CAMERA.landingDipRecoverSeconds,
@@ -356,6 +369,25 @@ export class ChaseCamera {
   private dip = 0;
   private crashFrame = 0;
 
+  // -- The takeoff latch (M44) ------------------------------------------------
+  // Private, and deliberately not on `ChaseCameraState`: nothing interpolates
+  // or copies them, because what the renderer needs from them is already in
+  // `heightLag`. `reset` clears them; `step` is the only other writer.
+  /** Ground under the wheel on the latest grounded step, m. NaN until one is seen. */
+  private groundedY = Number.NaN;
+  /** Ground the current flight left from, m. NaN while the wheel is down. */
+  private takeoffY = Number.NaN;
+  /**
+   * Did the current or latest flight fall more than `deepDropMetres` below its
+   * takeoff ground? Held through the landing that follows, so the lag it leaves
+   * behind can be held above the ground the rider came down on.
+   */
+  private deepFlight = false;
+  /** Ground under the wheel on the flight's previous step, m. NaN while the wheel is down. */
+  private flightGroundY = Number.NaN;
+  /** Has the ground under this flight fallen more than `sheerDropMetres` in one step? */
+  private sheerFlight = false;
+
   private probe: OcclusionProbe | null = null;
 
   /**
@@ -407,6 +439,14 @@ export class ChaseCamera {
     this.heightLag = 0;
     this.dip = 0;
     this.crashFrame = 0;
+    // A snap is a new place: no flight carries across it. A rider snapped onto
+    // the ground is standing on the ground a flight would leave from; one
+    // snapped into the air has stood on nothing yet (M44).
+    this.groundedY = input.airborne ? Number.NaN : input.groundY;
+    this.takeoffY = Number.NaN;
+    this.deepFlight = false;
+    this.flightGroundY = Number.NaN;
+    this.sheerFlight = false;
   }
 
   /**
@@ -515,13 +555,63 @@ export class ChaseCamera {
     // `docs/PLANS.md` §5. On the ground both the target and the current value
     // are zero, so this is a no-op and the M3/M4 camera is untouched; the only
     // moments it can do anything are a flight and the ease-out after one.
+    //
+    // **M44: a flight over a hole measures the hop from where it left.** The
+    // rule above reads the hop off the ground directly under the rider, which
+    // is the hop on every ground that stays put. Over an EUClaude alley the
+    // ground falls 11 m in one step, and the same rule turned that into ~7 m of
+    // lag in a tenth of a second: the camera dropped into the alley, below the
+    // roof decks, and filled the frame with a building front; a short flight
+    // that crashed then left that lag easing out while the rider lay on the
+    // alley floor, which put the camera under the ground. So the camera latches
+    // the ground the flight left from, and only when the ground beneath has
+    // fallen more than `deepDropMetres` below it does it measure the hop from
+    // there instead — **and only when that ground fell away in a single step
+    // by more than `sheerDropMetres` somewhere in the flight**, which is a
+    // building's edge and never a hillside. Switchback's summit stands 16 m
+    // over its slopes and a fast rider off its rim does fly more than 9 m over
+    // them, but its terrain never falls more than 0.37 m between two steps, so
+    // it keeps the pre-M44 camera along with every other world without a sheer
+    // drop. Otherwise the pre-M44 expression runs verbatim, bit for bit.
+    let fromTakeoff = false;
+    if (input.airborne) {
+      if (Number.isNaN(this.takeoffY)) {
+        // The first airborne step. A camera snapped into the air has seen no
+        // ground, so that one flight starts from the ground under it now.
+        this.takeoffY = Number.isNaN(this.groundedY) ? input.groundY : this.groundedY;
+        this.flightGroundY = this.takeoffY;
+        this.deepFlight = false;
+        this.sheerFlight = false;
+      }
+      if (this.flightGroundY - input.groundY > t.sheerDropMetres) this.sheerFlight = true;
+      this.flightGroundY = input.groundY;
+      fromTakeoff = this.sheerFlight && this.takeoffY - input.groundY > t.deepDropMetres;
+      if (fromTakeoff) this.deepFlight = true;
+    } else {
+      this.groundedY = input.groundY;
+      this.takeoffY = Number.NaN;
+      this.flightGroundY = Number.NaN;
+    }
     this.heightLag = approach(
       this.heightLag,
-      input.airborne ? Math.max(0, input.y - input.groundY) * (1 - t.airHeightFollow) : 0,
+      input.airborne
+        ? fromTakeoff
+          ? Math.max(0, input.y - this.takeoffY) * (1 - t.airHeightFollow)
+          : Math.max(0, input.y - input.groundY) * (1 - t.airHeightFollow)
+        : 0,
       input.airborne ? t.airHeightResponseSeconds : t.landingRestoreSeconds,
       Infinity,
       dt,
     );
+    // After a deep flight the lag is held to the rider's own height above the
+    // ground beneath, so the anchor can never sit under the ground the rider
+    // comes down on: a flight that comes up short lands in the alley with the
+    // lag it carried, and easing that out over the landing restore was the
+    // camera under the ground. Only on this path, so every shallow landing
+    // keeps its eased restore.
+    if (this.deepFlight) {
+      this.heightLag = Math.min(this.heightLag, Math.max(0, input.y - input.groundY));
+    }
     // The landing dip decays. It is only ever *set* by `landingImpulse`.
     this.dip = approach(this.dip, 0, t.landingDipRecoverSeconds, Infinity, dt);
 

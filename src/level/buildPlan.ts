@@ -2300,6 +2300,8 @@ function resolveProp(
     },
     // Render composition only (M39 Phase 2); absent keeps the plan's bytes.
     ...(prop.look === undefined ? {} : { look: prop.look }),
+    ...(prop.tone === undefined ? {} : { tone: prop.tone }),
+    ...(prop.roofTone === undefined ? {} : { roofTone: prop.roofTone }),
   };
 }
 

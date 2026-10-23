@@ -4,6 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { boot, bootToTitle, collectErrors } from './harness.ts';
 import type { LevelPlan } from '../src/level/plan.ts';
 import { LIGHTING } from '../src/data/tuning.ts';
+import { ordinaryBounceHex, ordinaryHemisphereIntensity } from '../src/render/shadeFill.ts';
 import { DAYLIGHT_LOOK, resolveVenueLook } from '../src/data/venueLook.ts';
 import { PROP_SIZES } from '../src/data/props.ts';
 import { FOREST_SHADOW_STAND, FOREST_HEIGHTS } from '../src/level/parkDressing.ts';
@@ -316,8 +317,10 @@ test('Switchback Park wears the late afternoon it authors, and the frame is comp
   expect(rig.sun.colour).toBe(0xffd9a8);
   expect(rig.sun.intensity).toBeCloseTo(2.45, 9);
   expect(rig.fill.sky).toBe(0x8bb2e6);
-  expect(rig.fill.ground).toBe(0xb9a68d);
-  expect(rig.fill.intensity).toBeCloseTo(1.22, 9);
+  // 2026-10-22: the ordinary tier hangs the authored fill through the shade
+  // fill (`render/shadeFill.ts`); the descriptor's own numbers are pinned above.
+  expect(rig.fill.ground).toBe(ordinaryBounceHex(0xb9a68d));
+  expect(rig.fill.intensity).toBeCloseTo(ordinaryHemisphereIntensity(1.22), 9);
   expect(rig.exposure).toBeCloseTo(1.06, 9);
 
   // And the sky is the venue's own painting, at the size it always was: a look

@@ -12,7 +12,7 @@
  * tests/harness.ts:routePoints reconstructs sockets and adds a bollard detour;
  * that QA driver is deliberately NOT an authoring source for this module.
  */
-import { POPULATION_AUTHORING } from '../data/tuning.ts';
+import { POPULATION_AUTHORING, POPULATION } from '../data/tuning.ts';
 import type { BoxCollider, Hazard, LevelPlan, Prop, Target } from './plan.ts';
 import { centrelineAt, headingAt, surfaceHeightAt, type PlacedSegment } from './segments.ts';
 import { hash128 } from './planDigest.ts';
@@ -52,11 +52,29 @@ export interface AuthoredPopulationPath {
   readonly serviceShuttle: boolean;
 }
 
+/** Opt-in authored population. Finished ground is owned by the producer;
+ * no procedural storefront/parking stage may add obstacles to its reserved lines.
+ * One request/pace per path, explicit stations, no passing or cohort policy. */
+export interface PopulationActivity {
+  readonly revision: 'authored-cut1-r1';
+  readonly ground: 'authored';
+  readonly targets: { readonly people: number; readonly traffic: number; readonly riders: number };
+  readonly paths: readonly {
+    readonly pathId: string;
+    readonly kind: 'walker' | 'jogger' | 'social' | 'trafficVehicle' | 'fictionalEuc';
+    readonly pace: number;
+    readonly stations: readonly number[];
+    readonly direction: 1 | -1;
+    readonly groupId?: string;
+    readonly facings?: readonly number[];
+  }[];
+}
+
 /** Finished-ground sources are explicit additions, never new riding corridors.
  * Their polygons/patch ids share the original heightfield triangle planes. */
 export interface PopulationGroundSource {
   readonly id: string;
-  readonly purpose: 'turn-court' | 'driveway' | 'footpath' | 'parking-bay';
+  readonly purpose: 'turn-court' | 'driveway' | 'footpath' | 'parking-bay' | 'street-crossing';
   readonly hostSegmentIds: readonly string[];
   readonly sourcePropIndex?: number;
   readonly polygons: readonly (readonly Vec3[])[];
@@ -208,6 +226,7 @@ export interface PopulationPlan {
     /** A proved walk is not claimed as occupied without an actual admitted actor. */
     readonly inactiveActivityWalks?: readonly { readonly walkId: string; readonly pathId: string;
       readonly reason: 'no-initial-actor-admitted' }[];
+    readonly activityAdmission?: readonly { readonly pathId: string; readonly requested: number; readonly admitted: number }[];
     readonly missingAuthoredPaths: boolean;
     readonly rejected: readonly { readonly pathId: string; readonly reason: RejectionReason }[];
     readonly availableKinds: readonly ActorKind[];
@@ -2044,7 +2063,7 @@ function pathsFromSource(plan: LevelPlan, source: AuthoredPopulationPath, sample
   }
   if (current.length > 1) chunks.push(current);
   // A broken vehicle loop is not transformed into traffic that reverses at a gate.
-  if (source.closed && failed && (source.role === 'traffic' || source.role === 'service')) return [];
+  if (source.closed && failed && (plan.populationActivity !== undefined || source.role === 'traffic' || source.role === 'service')) return [];
   return chunks.flatMap((chunk, index) => {
     const start = chunk[0].distanceMetres;
     const length = chunk[chunk.length - 1].distanceMetres - start;
@@ -2314,7 +2333,7 @@ function actorHull(kind: ActorKind): ActorSpec['hull'] {
   return { halfWidthMetres: radius, halfLengthMetres: radius, heightMetres: R.actorHeightMetres };
 }
 
-function actorsFromPaths(plan: LevelPlan, paths: readonly PopulationPath[], anchors: readonly ActivityAnchor[],
+function actorsFromPaths(plan: LevelPlan, paths: readonly PopulationPath[], anchors: ActivityAnchor[],
   sampler: TerrainSampler, context: PopulationValidationContext,
   activityWalks: readonly AuthoredDistrictActivityWalk[] = []): ActorSpec[] {
   const worldId = plan.populationActivityChoiceWorldId ?? plan.id;
@@ -2322,8 +2341,9 @@ function actorsFromPaths(plan: LevelPlan, paths: readonly PopulationPath[], anch
   const positions: { position: Vec3; kind: ActorKind; body: PopulationHullPrism; socialGroupId?: string }[] = [];
   const isPerson = (kind: ActorKind): boolean => kind === 'walker' || kind === 'jogger' || kind === 'social' || kind === 'worker';
   const add = (kind: ActorKind, path: PopulationPath, along: number, anchor?: ActivityAnchor,
-    socialGroupId?: string, activityWalkId?: string): boolean => {
-    const point = atDistance(path, along);
+    socialGroupId?: string, activityWalkId?: string, authored?: { pace: number; direction: 1 | -1; headingY?: number; appearanceIndex?: number }): boolean => {
+    const sampled = atDistance(path, along);
+    const point = authored?.headingY === undefined ? sampled : { ...sampled, headingY: authored.headingY };
     const ground = sampler.sampleGround(point.x, point.z, createGroundSample());
     const hull = actorHull(kind);
     const body = physicalPopulationHull(point.x, ground.height, point.z, point.headingY,
@@ -2340,7 +2360,7 @@ function actorsFromPaths(plan: LevelPlan, paths: readonly PopulationPath[], anch
       // is judged by physical hulls instead of an arbitrary universal 10 m gap.
       return isPerson(kind) && isPerson(item.kind) && distance(item.position, point)
         < (socialGroupId !== undefined && item.socialGroupId === socialGroupId
-          ? R.socialSpacingMetres - R.epsilon : R.actorSpacingMetres);
+          ? R.socialSpacingMetres - R.epsilon : authored ? 2 * R.pedestrianRadiusMetres + POPULATION.humanWaitingGapMetres : R.actorSpacingMetres);
     })) return false;
     const moving = kind !== 'social' && kind !== 'parkedVehicle';
     const speed = kind === 'walker' || kind === 'worker' ? R.walkSpeedMetresPerSecond
@@ -2350,13 +2370,48 @@ function actorsFromPaths(plan: LevelPlan, paths: readonly PopulationPath[], anch
     actors.push({ id, kind, pathId: path.id, ...(anchor ? { anchorId: anchor.id } : {}),
       ...(socialGroupId ? { socialGroupId } : {}),
       ...(activityWalkId ? { activityWalkId } : {}),
-      initialDistanceMetres: along, direction: anchor?.activitySiteId || path.role === 'traffic' || path.role === 'service' ? 1
-        : populationChoice(worldId, 'direction', id) < 0.5 ? 1 : -1,
-      movement: moving ? path.closed ? 'loop' : 'shuttle' : 'stationary', speedMetresPerSecond: speed,
-      idleSeconds: R.idleSeconds, appearanceIndex: Math.floor(populationChoice(worldId, 'appearance', id) * 8), hull });
+      initialDistanceMetres: along, direction: authored?.direction ?? (anchor?.activitySiteId || path.role === 'traffic' || path.role === 'service' ? 1
+        : populationChoice(worldId, 'direction', id) < 0.5 ? 1 : -1),
+      movement: moving ? path.closed ? 'loop' : 'shuttle' : 'stationary', speedMetresPerSecond: authored?.pace ?? speed,
+      idleSeconds: R.idleSeconds, appearanceIndex: authored?.appearanceIndex ?? Math.floor(populationChoice(worldId, 'appearance', id) * 8), hull });
     positions.push({ position: { x: point.x, y: point.y, z: point.z }, kind, body,
       ...(socialGroupId ? { socialGroupId } : {}) }); return true;
   };
+  if (plan.populationActivity) {
+    const policy=plan.populationActivity, seen=new Set<string>();
+    if(policy.revision!=='authored-cut1-r1'||policy.ground!=='authored') throw new RangeError('Unknown population activity policy');
+    const requested={people:0,traffic:0,riders:0};
+    for(const request of policy.paths) {
+      const category=request.kind==='trafficVehicle'?'traffic':request.kind==='fictionalEuc'?'riders':'people';
+      requested[category]+=request.stations.length;
+      if(request.direction!==1&&request.direction!==-1)throw new RangeError('Invalid activity direction');
+      if(seen.has(request.pathId)||!Number.isFinite(request.pace)||request.pace<0
+        ||(request.kind==='social')!==(request.pace===0)) throw new RangeError('One valid pace per activity path is required');
+      seen.add(request.pathId);
+      const path=paths.find(p=>p.id===`${request.pathId}/clear-0`);
+      const source=plan.populationPaths?.find(p=>p.id===request.pathId);
+      if(!path||!source||path.points.length!==source.frames.length)continue;
+      const role=request.kind==='trafficVehicle'?'traffic':request.kind==='fictionalEuc'?'rider':'pedestrian';
+      if(path.role!==role)throw new RangeError('Activity kind/path role mismatch');
+      for(const [i,at] of request.stations.entries()) {
+        if(!Number.isFinite(at)||at<0||at>=path.lengthMetres)throw new RangeError('Activity station outside path');
+        const headingY=request.facings?.[i];
+        if(headingY!==undefined&&!Number.isFinite(headingY))throw new RangeError('Invalid activity facing');
+        // A stationary pose keeps its authored facing through an owned anchor.
+        const point=atDistance(path,at);
+        const anchor=request.kind==='social'?{id:`${path.id}/group-${i}`,kind:'social' as const,district:path.district,
+          position:{x:point.x,y:point.y,z:point.z},headingY:headingY??point.headingY,pathId:path.id,distanceMetres:at,sourcePropIndex:-1}:undefined;
+        if(add(request.kind,path,at,anchor,request.groupId,undefined,{pace:request.pace,direction:request.direction,appearanceIndex:(i+policy.paths.indexOf(request))%8,...(headingY===undefined?{}:{headingY})})&&anchor)
+          anchors.push(anchor);
+      }
+    }
+    for(const category of ['people','traffic','riders'] as const) {
+      if(!Number.isSafeInteger(policy.targets[category])||policy.targets[category]<0||requested[category]!==policy.targets[category])
+        throw new RangeError(`Activity target mismatch: ${category}`);
+    }
+    // Rejected paths/poses remain explicit in activityAdmission; never silently refill.
+    return actors;
+  }
   // Stationary vehicle reservation first. Never spawn a service shuttle through its own parked van.
   for (const anchor of anchors.filter(item => item.kind === 'parking').slice(0, R.maximumParkedVehicles)) {
     const path = paths.find(item => item.id === anchor.pathId)!;
@@ -2592,7 +2647,7 @@ function* buildPopulationPlanInSteps(
     && ids.some(id => path.id === id || path.id.startsWith(`${id}/clear-`))).map(path => path.id);
   const crossings = (plan.populationCrossings ?? []).flatMap(crossing => {
     const source = plan.populationGroundSources?.find(item => item.id === crossing.sourceId);
-    if (!source || source.purpose !== 'driveway' || !validGroundSource(plan, source)
+    if (!source || (source.purpose !== 'driveway' && !(plan.populationActivity && source.purpose === 'street-crossing')) || !validGroundSource(plan, source)
       || crossing.priority !== 'pedestrian' || crossing.corners.length < 3
       || crossing.corners.some(point => !(Number.isFinite(point.x) && Number.isFinite(point.z)))) return [];
     const vehiclePathIds = acceptedIds(crossing.vehiclePathIds, true);
@@ -2604,7 +2659,7 @@ function* buildPopulationPlanInSteps(
   return { schema: 1, rulesRevision: R.revision, sourceWorldId: plan.id,
     installedWorldId: populationWorldId(plan.id, actors.length > 0), contentDigest, paths, anchors, actors,
     ...(crossings.length ? { crossings } : {}),
-    report: { ...(inactiveActivityWalks.length ? { inactiveActivityWalks } : {}),
+    report: { ...(plan.populationActivity ? { activityAdmission: plan.populationActivity.paths.map(r=>({pathId:r.pathId,requested:r.stations.length,admitted:actors.filter(a=>a.pathId===`${r.pathId}/clear-0`).length})) } : {}), ...(inactiveActivityWalks.length ? { inactiveActivityWalks } : {}),
       missingAuthoredPaths: authoredPaths === undefined && !plan.populationParkingBays?.length, rejected: deduped,
       availableKinds, missingKinds: ALL_KINDS.filter(kind => !availableKinds.includes(kind)),
       ...(groundSupplement ? { groundSupplement } : {}) } };

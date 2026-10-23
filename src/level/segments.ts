@@ -229,6 +229,9 @@ export interface PlacedProp {
   size?: Vec3;
   /** See `Prop.look`. */
   look?: BuildingLook;
+  /** See `Prop.tone`. */
+  tone?: number;
+  roofTone?: number;
   /** Height above the ground at `(x, z)`, metres. */
   lift: number;
   /** See `SegmentProp.onCollider`. */

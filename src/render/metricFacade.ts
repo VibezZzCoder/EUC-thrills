@@ -4,13 +4,14 @@
 import * as THREE from 'three';
 import type { LevelPlan, Prop } from '../level/plan.ts';
 import { ULTRA_STATIC_LAYER } from './ultra/ultraRecipe.ts';
-import { metricFacadeCost, metricFacadeShadowCost, withoutEmittedSurfaces, type MetricFacadePlan, type MetricSurface,
-  type MetricFinish } from './metricFacadePlan.ts';
+import { metricFacadeCost, metricFacadeShadowCost, withoutEmittedSurfaces, type MetricColour, type MetricFacadePlan,
+  type MetricSurface, type MetricFinish } from './metricFacadePlan.ts';
 import type { PreparedMetricFacades } from './metricFacadePreparation.ts';
 
 export interface MetricFacadeAppearance {
   readonly materials: Readonly<Record<MetricFinish, THREE.Material>>;
-  readonly colourFor: (building: Prop, finish: MetricFinish) => readonly [number, number, number];
+  /** Linear RGB for a finish, or for a colour role drawn inside one (a shop board's cream). */
+  readonly colourFor: (building: Prop, finish: MetricColour) => readonly [number, number, number];
 }
 export interface MetricFacadeReport {
   readonly selectedBuildings: number;
@@ -18,6 +19,8 @@ export interface MetricFacadeReport {
   readonly structuralSeams?: number;
   readonly servedPortals?: number;
   readonly walkServedEntries?: number;
+  /** Vestibules round street doors on unserved bodies (2026-10-22). */
+  readonly streetPortals?: number;
   readonly replacedPieces: number;
   readonly bodyFaces: number;
   readonly roomWindows: number;
@@ -61,7 +64,8 @@ export function createMetricFacade(level: LevelPlan, descriptors: MetricFacadePl
     roofModules: descriptors.architecture?.filter(record => record.kind === 'roof-module').length ?? 0,
     structuralSeams: descriptors.architecture?.filter(record => record.kind === 'wall-seam').length ?? 0,
     servedPortals: descriptors.architecture?.filter(record => record.kind === 'served-portal').length ?? 0,
-    walkServedEntries: descriptors.architecture?.filter(record => record.kind === 'walk-entry').length ?? 0, replacedPieces: descriptors.replacements.length,
+    walkServedEntries: descriptors.architecture?.filter(record => record.kind === 'walk-entry').length ?? 0,
+    streetPortals: descriptors.architecture?.filter(record => record.kind === 'street-portal').length ?? 0, replacedPieces: descriptors.replacements.length,
     bodyFaces: descriptors.faces.length, roomWindows: descriptors.apertures.filter(a => a.kind === 'window').length,
     entries: descriptors.apertures.filter(a => a.kind === 'entry').length,
     serviceBays: descriptors.apertures.filter(a => a.kind === 'service').length };
@@ -96,7 +100,7 @@ export function createMetricFacade(level: LevelPlan, descriptors: MetricFacadePl
       for (const surface of batch) {
         const building = level.props?.[surface.propIndex];
         if (!building || building.kind !== 'building') throw new Error('Metric source owner disappeared before allocation');
-        const rgb = appearance.colourFor(building, surface.finish);
+        const rgb = appearance.colourFor(building, surface.colour ?? surface.finish);
         if (rgb.length !== 3 || !rgb.every(value => Number.isFinite(value) && value >= 0))
           throw new Error('Metric facade appearance must supply finite nonnegative linear RGB');
         for (let triangle = 1; triangle < surface.vertices.length - 1; triangle++) {

@@ -19,14 +19,28 @@ import { PlanTerrainSampler } from '../simulation/planSampler.ts';
 import { createGroundSample, type Vec3, type SurfaceId } from '../simulation/world.ts';
 import { boxOverlapsPolygon } from '../level/streetFronts.ts';
 import type { FacadeOpening } from './streetFacadeOpenings.ts';
+import { facadeGroundBays, type FacadeGroundBays, type FacadeGroundPageId } from './facadeAtlas.ts';
+import { awningOver, DOOR_STEP, signLettering, streetEntrances, type EntranceFamily, type EntranceRequest, type StreetDoor,
+  type StreetFace } from './buildingEntrances.ts';
 
 export type ExteriorFinish = 'masonry' | 'frame' | 'roofEdge' | 'planting' | 'entry' | 'glazing';
+/** A colour role a part may take inside its finish's batch: every finish, and a
+ * shop board's cream (2026-10-22), which has no batch or material of its own. */
+export type ExteriorColour = ExteriorFinish | 'signBoard';
 export type ExteriorKind = 'plinth' | 'cornice' | 'sill' | 'pier' | 'roof-edge' | 'ridge' | 'ground-cover'
   | 'base-panel' | 'base-return' | 'shaft-band' | 'shaft-stile' | 'shaft-brace' | 'roof-rim'
-  | 'closed-entry' | 'entry-frame' | 'entry-handle' | 'ground-window' | 'window-frame';
+  | 'closed-entry' | 'entry-frame' | 'entry-handle' | 'ground-window' | 'window-frame'
+  /** Street entrances on unserved bodies (2026-10-22). */
+  | 'sign-band' | 'canopy' | 'service-shutter' | 'shutter-slat' | 'shutter-trim' | 'door-glass'
+  /** A board's keyline and painted name, and a doorstep onto turf (2026-10-22 doors fix). */
+  | 'sign-border' | 'sign-letter' | 'door-step';
 export interface ExteriorBox {
   readonly shape: 'box'; readonly kind: ExteriorKind; readonly finish: ExteriorFinish;
   readonly position: Vec3; readonly size: Vec3; readonly yaw: number; readonly rich: boolean;
+  /** The colour role when it is not the batch's finish (2026-10-22): a street
+   * door's leaf and a shop's board are drawn in the frame batch every street
+   * already submits, in the entry colour, so entrances add no draw call. */
+  readonly colour?: ExteriorColour;
 }
 export interface ExteriorBeam {
   readonly shape: 'beam'; readonly kind: 'roof-edge' | 'ridge' | 'shaft-brace'; readonly finish: 'roofEdge' | 'frame';
@@ -60,17 +74,131 @@ const finite = (...values: number[]): boolean => values.every(Number.isFinite);
  * Tones/jitter are existing source descriptors for the appearance owner; this
  * helper neither assigns a district look nor changes any material or palette.
  * The optional legacy tower uses the shared cost model's suppression rule. */
+/** The ground page each facade body wears (`render/props.ts:facadeBox`). */
+const GROUND_PAGE: Readonly<Record<string, FacadeGroundPageId>> = Object.freeze({
+  buildingBody: 'ground', buildingLow: 'groundLow', buildingTall: 'groundTall' });
+/** How far an entrance's trim reaches back into the wall: through Ultra's set-back ground band too. */
+const ENTRANCE_REACH = ULTRA.relief.revealDepth + 0.02;
+/** Door leaf, metres; the trim is `ENTRANCE_TRIM` wide round it. */
+const ENTRANCE = Object.freeze({ doorWidth: 1.1, sideDoorWidth: 1.0, trim: 0.14,
+  shutterWidth: 3.2, shutterHeight: 3.05, signHeight: 0.42, canopyDepth: 0.85 });
+
+/** A street entrance's parts on one face, in face-local metres (x along, y up from the base, z out). */
+interface EntranceBox { readonly kind: ExteriorKind; readonly finish: ExteriorFinish; readonly colour?: ExteriorColour;
+  readonly x: number; readonly y: number; readonly z0: number; readonly z1: number;
+  readonly width: number; readonly height: number }
+
+/**
+ * The entrance grammar a family's street face wears (2026-10-22), on the
+ * original facade box whose ground page now paints glazed bays and no door:
+ * a shop's closed door set in a group of its glass under a fascia board; a
+ * house's front door under a canopy; a shed's roller shutter with a side door
+ * beside it. All of it is closed — no void, no new opening, no collider —
+ * and none of it reaches more than a canopy's depth off the wall.
+ *
+ * Doors fix (2026-10-22): the board is cream with a keyline in the roof's
+ * tone and a painted name in the door's colour, never a dark slab; a shed
+ * keeps its roller shutter only where paving runs up to it (a shutter onto
+ * turf is a garage door to nowhere) and otherwise takes a plain door under a
+ * hood; and a door whose doorstep is turf stands on a concrete step.
+ */
+function entranceBoxes(family: EntranceFamily, door: StreetDoor, band: number, doorHeight: number,
+  faceWidth: number, sign: 'board' | 'lobby' | 'none', shutter: boolean, seed: Vec3): EntranceBox[] {
+  const out: EntranceBox[] = [], y0 = door.y, trim = ENTRANCE.trim;
+  /** A step the width of the doorway's trim and a little more, from the wall out over the turf. */
+  const step = (x: number, width: number): void => {
+    if (door.paved) return;
+    const top = Math.max(y0, door.stepHigh) + DOOR_STEP.rise, bottom = Math.min(y0, door.stepLow) - DOOR_STEP.footing;
+    out.push({ kind: 'door-step', finish: 'frame', x, y: (top + bottom) / 2, z0: -ENTRANCE_REACH, z1: DOOR_STEP.depth,
+      width: width + 2 * DOOR_STEP.overhang, height: top - bottom });
+  };
+  const leaf = (x: number, width: number, glazed = false): void => {
+    // A shop door is a pale frame round a closed glass light; a house or side door is painted.
+    out.push({ kind: 'closed-entry', finish: 'frame', ...(glazed ? {} : { colour: 'entry' as const }), x, y: y0 + doorHeight / 2,
+      z0: -ENTRANCE_REACH, z1: 0.02, width, height: doorHeight });
+    if (glazed) out.push({ kind: 'door-glass', finish: 'frame', colour: 'glazing', x, y: y0 + doorHeight * 0.55,
+      z0: 0.02, z1: 0.03, width: width - 0.26, height: doorHeight * 0.72 });
+    // Jambs stop under the lintel, so each corner has one owner and no shared face.
+    for (const side of [-1, 1]) out.push({ kind: 'entry-frame', finish: 'frame', x: x + side * (width / 2 + trim / 2),
+      y: y0 + doorHeight / 2, z0: -ENTRANCE_REACH, z1: 0.075, width: trim, height: doorHeight });
+    out.push({ kind: 'entry-frame', finish: 'frame', x, y: y0 + doorHeight + trim / 2, z0: -ENTRANCE_REACH, z1: 0.075,
+      width: width + trim * 2, height: trim });
+    out.push({ kind: 'entry-handle', finish: 'roofEdge', x: x + width * 0.41, y: y0 + 1.02, z0: 0.02, z1: 0.05, width: 0.035, height: 0.24 });
+    step(x, width + trim * 2);
+  };
+  if (family === 'industrial' && !shutter) {
+    // A shed set in turf: its personnel door under a small hood, on a step.
+    leaf(door.x, ENTRANCE.sideDoorWidth);
+    out.push({ kind: 'canopy', finish: 'roofEdge', x: door.x, y: y0 + doorHeight + trim + 0.14, z0: -ENTRANCE_REACH,
+      z1: 0.5, width: ENTRANCE.sideDoorWidth + trim * 2 + 0.3, height: 0.1 });
+    return out;
+  }
+  if (family === 'industrial') {
+    const height = Math.min(ENTRANCE.shutterHeight, band - 0.5), x = door.x;
+    out.push({ kind: 'service-shutter', finish: 'frame', x, y: y0 + height / 2, z0: -ENTRANCE_REACH, z1: 0.03,
+      width: ENTRANCE.shutterWidth, height });
+    const slats = Math.max(2, Math.round(height / 0.6));
+    for (let slat = 1; slat < slats; slat += 1) out.push({ kind: 'shutter-slat', finish: 'roofEdge', x,
+      y: y0 + height * slat / slats, z0: -ENTRANCE_REACH, z1: 0.045, width: ENTRANCE.shutterWidth - 0.1, height: 0.035 });
+    for (const side of [-1, 1]) out.push({ kind: 'shutter-trim', finish: 'roofEdge', x: x + side * (ENTRANCE.shutterWidth / 2 + 0.06),
+      y: y0 + height / 2, z0: -ENTRANCE_REACH, z1: 0.07, width: 0.12, height });
+    out.push({ kind: 'shutter-trim', finish: 'roofEdge', x, y: y0 + height + 0.16, z0: -ENTRANCE_REACH, z1: 0.24,
+      width: ENTRANCE.shutterWidth + 0.3, height: 0.32 });
+    // The side door stands beside the shutter, on the side with the most wall.
+    const side = x > 0 ? -1 : 1, doorX = x + side * (ENTRANCE.shutterWidth / 2 + 0.45 + ENTRANCE.sideDoorWidth / 2);
+    if (Math.abs(doorX) + ENTRANCE.sideDoorWidth / 2 + trim <= faceWidth / 2 - 0.2) leaf(doorX, ENTRANCE.sideDoorWidth);
+    return out;
+  }
+  leaf(door.x, ENTRANCE.doorWidth, family === 'commercial');
+  if (family === 'residential') {
+    out.push({ kind: 'canopy', finish: 'roofEdge', x: door.x, y: y0 + doorHeight + trim + 0.16, z0: -ENTRANCE_REACH,
+      z1: ENTRANCE.canopyDepth, width: ENTRANCE.doorWidth + trim * 2 + 0.5, height: 0.12 });
+  } else if (sign === 'lobby') {
+    // An office tower's lobby door gets a broad flat canopy rather than a shop's board.
+    out.push({ kind: 'canopy', finish: 'roofEdge', x: door.x, y: y0 + doorHeight + trim + 0.22, z0: -ENTRANCE_REACH,
+      z1: 1.3, width: Math.min(3.2, faceWidth - 0.6), height: 0.16 });
+  } else if (sign === 'board') {
+    // The fascia board sits on the painted fascia, under the storey's cornice.
+    const top = band - 0.22, bottom = Math.max(top - ENTRANCE.signHeight, y0 + doorHeight + trim + 0.1);
+    const left = Math.max(-faceWidth / 2 + 0.3, door.x - 2.6), right = Math.min(faceWidth / 2 - 0.3, door.x + 2.6);
+    if (top - bottom >= 0.25 && right - left >= ENTRANCE.doorWidth + 1) {
+      const x = (left + right) / 2, y = (top + bottom) / 2, width = right - left, height = top - bottom;
+      // Cream board inside a keyline 4 cm wider all round, both proud of the wall.
+      out.push({ kind: 'sign-border', finish: 'frame', colour: 'roofEdge', x, y, z0: -ENTRANCE_REACH, z1: 0.07,
+        width: width + 0.08, height: height + 0.08 });
+      out.push({ kind: 'sign-band', finish: 'frame', colour: 'signBoard', x, y, z0: -ENTRANCE_REACH, z1: 0.09, width, height });
+      for (const word of signLettering(width, seed.x, seed.z)) out.push({ kind: 'sign-letter', finish: 'frame', colour: 'entry',
+        x: x + word.x, y, z0: 0.08, z1: 0.105, width: word.width, height: height * 0.4 });
+    }
+  }
+  return out;
+}
+
+/** Street-door positions on an original facade box: the centres of its ground page's glazed groups. */
+function exteriorStreetRequest(family: EntranceFamily, band: number, doorHeight: number, bays: FacadeGroundBays): EntranceRequest {
+  const centres = (face: StreetFace): number[] => bays.groups.map(([a, b]) => ((a + b) / 2 - 0.5) * face.width)
+    .sort((a, b) => Math.abs(a) - Math.abs(b) || a - b);
+  const sill = band - doorHeight - ENTRANCE.trim - 0.3;
+  if (family === 'industrial') return { halfWidth: ENTRANCE.shutterWidth / 2 + 1.3, spacing: 6, secondaryFaces: 0,
+    maximumSill: Math.min(sill, band - Math.min(ENTRANCE.shutterHeight, band - 0.5) - 0.45),
+    doorsOnFace: (_face, primary) => primary ? 1 : 0, candidates: centres };
+  if (family === 'residential') return { halfWidth: 1.05, spacing: 6, secondaryFaces: 0, maximumSill: sill,
+    doorsOnFace: (_face, primary) => primary ? 1 : 0, candidates: centres };
+  return { halfWidth: 1.0, spacing: 6, secondaryFaces: 1, maximumSill: sill, candidates: centres,
+    doorsOnFace: (face, primary) => primary && face.width >= 18 && bays.groups.length >= 3 ? 2 : 1 };
+}
+
 export function exteriorComposition(building: Prop): readonly BuildingPiece[] {
   if (building.kind !== 'building') return [];
   if (building.look !== undefined) return composeBuilding({ ...building, look: building.look });
   const size = building.size ?? { x: 12, y: 18, z: 12 }, shape = PROP_SIZES.building;
   const { x, z } = building.position;
-  const tone = BUILDING_TONES[Math.floor(positionHash01(x, z, 3) * BUILDING_TONES.length) % BUILDING_TONES.length];
+  const tone = building.tone ?? BUILDING_TONES[Math.floor(positionHash01(x, z, 3) * BUILDING_TONES.length) % BUILDING_TONES.length];
   const jitter = 1 + (positionHash01(x, z, 5) * 2 - 1) * PROP_TINT_JITTER.building;
   const pieces: BuildingPiece[] = [
     { part: facadeForHeight(size.y), x: 0, y: 0, z: 0, sx: size.x, sy: size.y, sz: size.z, yaw: 0, tone, jitter },
     { part: 'buildingCap', x: 0, y: size.y, z: 0, sx: size.x + shape.capOversail,
-      sy: shape.capHeight, sz: size.z + shape.capOversail, yaw: 0, tone: PROP_COLOURS.buildingCap,
+      sy: shape.capHeight, sz: size.z + shape.capOversail, yaw: 0, tone: building.roofTone ?? PROP_COLOURS.buildingCap,
       jitter: 1 + (positionHash01(x, z, 7) * 2 - 1) * PROP_TINT_JITTER.structure },
   ];
   const tower = buildingTowerPart(size, x, z);
@@ -180,6 +308,8 @@ export function* districtExteriorSitesSteps(plan: LevelPlan,
     const building = plan.props![propIndex], body = exactBuildingBody(plan, building), size = building.size;
     if (!body || !size) continue;
     const look = building.look, parts: ExteriorPart[] = [], parcels: ExteriorParcel[] = [];
+    /** Street doors placed on this body: a planting bed never fills a doorway. */
+    const doorways: { point: Vec3; yaw: number }[] = [];
     const emit = (part: ExteriorPart): void => {
       if (!protectedOpenings.some(opening => exteriorPartMeetsOpening(part, opening))) parts.push(part);
     };
@@ -234,14 +364,19 @@ export function* districtExteriorSitesSteps(plan: LevelPlan,
           if (reveal > back) box('base-return', 'frame', face, yaw, 0, 0.22,
             -(reveal + back) / 2, width - 2 * reveal, 0.44, reveal - back, true);
         }
-        // The original solid ground-floor band receives joints, not windows or
-        // invented accessible doors. Relief below rider height stays within
-        // the source wall with only the same 2 mm coplanar separation as base.
+        // The ground-floor band's glazing is the atlas page; this relief adds its
+        // head strip and pilasters. Its closed street door, if any, is placed
+        // below (2026-10-22). Relief below rider height stays within the source
+        // wall with only the same 2 mm coplanar separation as base.
         if (piece.y === 0) {
           box('base-panel', 'masonry', face, yaw, 0, band - 0.12, -0.028, width - 0.24, 0.24, 0.060);
-          const bays = Math.max(1, Math.min(5, Math.ceil(width / 7)));
-          for (let bay = 1; bay < bays; bay += 1) box('base-panel', 'frame', face, yaw,
-            -width / 2 + width * bay / bays, band / 2, -0.028, 0.16, Math.max(0.1, band - 0.44), 0.060);
+          // Pilasters on the ground page's own piers (2026-10-22): the page now
+          // paints glazed bays, and a strip anywhere else would cut through glass.
+          // They stand between the plinth top (0.44) and the head strip (band −
+          // 0.24): both share their face plane, so any overlap would z-fight.
+          const pilasterLow = 0.44, pilasterHigh = band - 0.24;
+          for (const pier of facadeGroundBays(GROUND_PAGE[piece.part]).piers) box('base-panel', 'frame', face, yaw,
+            (pier - 0.5) * width, (pilasterLow + pilasterHigh) / 2, -0.028, 0.16, pilasterHigh - pilasterLow, 0.060);
         }
         for (let floor = 1; floor < floors; floor += 1) {
           const bottom = floor * band + band * (1 - BUILDING_FACADE.glazing);
@@ -310,6 +445,39 @@ export function* districtExteriorSitesSteps(plan: LevelPlan,
         }
       }
     }
+    // A body the district layer gave no approach at all still has a face onto
+    // a street or path; its ground storey gets that family's entrance there
+    // (`render/buildingEntrances.ts`). A replaced body's metric shell owns its
+    // own street doors, so nothing is built here for it.
+    const family: EntranceFamily | null = look === undefined || look === 'commercial' ? 'commercial'
+      : look === 'residential' ? 'residential' : look === 'industrial' ? 'industrial' : null;
+    const main = composed[0];
+    if (family && main && main.y === 0 && GROUND_PAGE[main.part] !== undefined && !replacedPropIndices.has(propIndex)
+      && !(plan.districtAdjacency?.frontages.some(front => front.propIndex === propIndex) ?? false)) {
+      const floors = main.part === 'buildingTall' ? BUILDING_FACADE.highFloors
+        : main.part === 'buildingLow' ? BUILDING_FACADE.lowRiseFloors : BUILDING_FACADE.lowFloors;
+      const band = main.sy / floors, doorHeight = Math.min(2.12, band - 0.45);
+      if (doorHeight >= 1.9) {
+        const bays = facadeGroundBays(GROUND_PAGE[main.part]);
+        for (const entrance of streetEntrances(plan, building, main, exteriorStreetRequest(family, band, doorHeight, bays))) {
+          const { face } = entrance;
+          for (const door of entrance.doors) {
+            const spot = at(face.origin, face.yaw, door.x, 0, 0);
+            const local = entranceBoxes(family, door, band, doorHeight, face.width,
+              awningOver(plan, face, door.x, 2.6) ? 'none' : look === undefined && main.part === 'buildingTall' ? 'lobby' : 'board',
+              door.paved && face.paved >= 0.5, spot);
+            const built: ExteriorBox[] = local.map(part => ({ shape: 'box', kind: part.kind, finish: part.finish,
+              ...(part.colour ? { colour: part.colour } : {}),
+              position: at(face.origin, face.yaw, part.x, part.y, (part.z0 + part.z1) / 2),
+              size: { x: part.width, y: part.height, z: part.z1 - part.z0 }, yaw: face.yaw, rich: false }));
+            // All or nothing: an accepted opening never keeps half a door.
+            if (!built.some(part => protectedOpenings.some(opening => exteriorPartMeetsOpening(part, opening)))) {
+              parts.push(...built); doorways.push({ point: spot, yaw: face.yaw });
+            }
+          }
+        }
+      }
+    }
     // Plain caps are actual roof rims, shafts or tanks. Divisions follow only
     // those composed volumes; a lookout remains its authored solid timber
     // shaft under its glazed cabin, rather than becoming an invented shop.
@@ -368,6 +536,8 @@ export function* districtExteriorSitesSteps(plan: LevelPlan,
       for (const sign of [-1, 1]) {
         const origin = at(building.position, streetFaceYaw, sign * faceWidth * 0.30, 0,
           faceDepth / 2 + depth / 2 + 0.70);
+        if (doorways.some(door => Math.cos(door.yaw - streetFaceYaw) > 0.99 && Math.abs((door.point.x - origin.x) * Math.cos(streetFaceYaw)
+          - (door.point.z - origin.z) * Math.sin(streetFaceYaw)) < width / 2 + 1.3)) continue;
         const planted = parcel(plan, sampler, context, origin, streetFaceYaw, width, depth, 73 + propIndex);
         if (planted) { parcels.push(planted); parts.push(...planted.roots); }
       }

@@ -43,6 +43,14 @@ const BELVAR = 'level=track';
 const PARK_PLAN = 'switchback-r5~living-r1';
 const BELVAR_PLAN = 'belvar-r1';
 const CITY_PLAN = 'm7-slice~living-r1';
+/**
+ * EUClaude Heights' record key — M44 (`docs/PLANS.md` §44 D2). **A pattern,
+ * not a string**: the builder's id is `euclaude-r<N>`, and whether preparation
+ * appends `~living-r1` depends on what its living world authors, which
+ * `src/app/recordWorldId.test.ts` pins headlessly. A press is answered when
+ * the installed key matches.
+ */
+const EUCLAUDE_PLAN = /^euclaude-r\d+(~living-r1)?$/;
 
 /**
  * Where the frames land. **An environment variable with a repo-relative
@@ -90,10 +98,19 @@ async function coverLifted(page: Page): Promise<void> {
   await page.waitForFunction(() => !window.game.snapshot().route.pending, undefined, { timeout: 60_000 });
 }
 
-/** Press a venue and wait for the world the press asked for. */
-async function pickVenue(page: Page, panel: string, venue: string, planId: string): Promise<void> {
+/**
+ * Press a venue and wait for the world the press asked for — an exact record
+ * key, or a pattern for a venue whose key is still settling (`EUCLAUDE_PLAN`).
+ * The pattern crosses into the page as its source, since a `RegExp` does not
+ * survive serialisation.
+ */
+async function pickVenue(page: Page, panel: string, venue: string, planId: string | RegExp): Promise<void> {
   await page.locator(venueButton(panel, venue)).click();
-  await page.waitForFunction((id) => window.game.levelPlan.recordWorldId === id, planId, { timeout: 60_000 });
+  const wanted = typeof planId === 'string' ? { exact: planId, pattern: '' } : { exact: '', pattern: planId.source };
+  await page.waitForFunction(({ exact, pattern }) => {
+    const key = window.game.levelPlan.recordWorldId ?? '';
+    return pattern === '' ? key === exact : new RegExp(pattern).test(key);
+  }, wanted, { timeout: 60_000 });
   await coverLifted(page);
 }
 
@@ -284,18 +301,21 @@ test('the chooser stands in the two panels that choose a world, and nowhere else
   });
 
   expect(census.groups.sort()).toEqual(['euc-menu--couch', 'euc-menu--routes']);
-  // Three places per copy, in the roster's order, and the same three in both.
+  // Four places per copy since M44, in the roster's order, and the same four in
+  // both. The labels are `textContent`, so EUClaude Heights' picture (an
+  // `aria-hidden` SVG with no `<title>`, `DESIGN.md` §9t) must add nothing to
+  // its words.
   for (const panel of ['euc-menu--routes', 'euc-menu--couch']) {
     const row = census.buttons.filter((button) => button.panel === panel);
     expect(row.map((button) => button.venue), `${panel}'s row`)
-      .toEqual(['slice', 'track', 'switchback']);
+      .toEqual(['slice', 'track', 'switchback', 'euclaude']);
     expect(row.map((button) => button.label))
-      .toEqual(['Original city', 'BelVar Circuit', 'Switchback Park']);
+      .toEqual(['Original city', 'BelVar Circuit', 'Switchback Park', 'Wheelhouse Wharf']);
     // The loaded venue is lit and taken out of the pad's walk, in both copies.
-    expect(row.map((button) => button.pressed)).toEqual(['false', 'false', 'true']);
-    expect(row.map((button) => button.disabled)).toEqual([false, false, true]);
+    expect(row.map((button) => button.pressed)).toEqual(['false', 'false', 'true', 'false']);
+    expect(row.map((button) => button.disabled)).toEqual([false, false, true, false]);
   }
-  expect(census.buttons.length, 'a third copy of the chooser').toBe(6);
+  expect(census.buttons.length, 'a third copy of the chooser').toBe(8);
   // And the one button it replaced is gone rather than hidden.
   expect(census.rideCity, 'Go back to the hand-built city outlived its replacement').toBe(0);
 
@@ -410,8 +430,9 @@ test('every panel that names the park describes the venue that shipped', async (
   await page.waitForFunction(() => window.game.snapshot().app.state === 'routes');
   const lines = await page.evaluate(() => ['title', 'pause', 'routes'].map((panel) => ({
     panel,
+    // The title names the place on its Start ride card (2026-10-22).
     text: document.querySelector<HTMLElement>(
-      `.euc-menu--${panel} [data-menu="world"]`,
+      `.euc-menu--${panel} [data-menu="${panel === 'title' ? 'start' : 'world'}"]`,
     )?.textContent ?? '',
   })));
   expect(lines).toHaveLength(3);
@@ -1181,7 +1202,7 @@ test('Chase and Knockabout decline the park and land on the panel that can help'
   await expect(page.locator(`${ROUTES} [data-menu="venue-chooser"]`)).toBeHidden();
   // And nothing on it can be pressed: no box means no hit target, which is the
   // difference between a row that is marked withdrawn and a row that is gone.
-  for (const venue of ['slice', 'track', 'switchback']) {
+  for (const venue of ['slice', 'track', 'switchback', 'euclaude']) {
     const button = page.locator(venueButton(ROUTES, venue));
     await expect(button, `the ${venue} button survived the withdrawal`).toBeHidden();
     expect(await button.boundingBox(), `the ${venue} button still has a hit target`).toBeNull();
@@ -1252,7 +1273,9 @@ test('the chooser opens no new door to the couch on a window too small for one',
   expect(await page.evaluate(() => window.game.snapshot().couch.available)).toBe(false);
 
   // Press every venue on the narrow window; none of them opens the entrance.
-  for (const [venue, plan] of [['track', BELVAR_PLAN], ['switchback', PARK_PLAN]] as const) {
+  for (const [venue, plan] of [
+    ['track', BELVAR_PLAN], ['switchback', PARK_PLAN], ['euclaude', EUCLAUDE_PLAN],
+  ] as const) {
     await pickVenue(page, ROUTES, venue, plan);
     expect(await appState(page), `${venue} navigated somewhere`).toBe('routes');
     expect(await page.evaluate(() => window.game.snapshot().couch.available)).toBe(false);
@@ -1298,11 +1321,40 @@ test.describe('the chooser on a phone-shaped touchscreen', () => {
     expect(await page.evaluate(() => window.game.snapshot().couch.available)).toBe(false);
     await expect(page.locator(`${ROUTES} [data-menu="venue-chooser"]`)).toBeVisible();
 
-    for (const venue of ['slice', 'track', 'switchback']) {
+    for (const venue of ['slice', 'track', 'switchback', 'euclaude']) {
       const box = await page.locator(venueButton(ROUTES, venue)).boundingBox();
       expect(box, `${venue} has no box`).not.toBeNull();
       expect(box!.height, `${venue} is ${box!.height}px tall`).toBeGreaterThanOrEqual(44);
       expect(box!.width, `${venue} is ${box!.width}px wide`).toBeGreaterThanOrEqual(44);
+    }
+
+    // **Four places on a phone, and nothing spills** — M44 (`DESIGN.md` §9t).
+    // One row of four is 85 px a track at this width, narrower than the
+    // longest words, so the row is a two-by-two grid here; what is asserted is
+    // the promise rather than the layout: every button's words and picture lie
+    // inside its own box (a label may wrap, it may not overflow), and the
+    // picture is beside the words rather than pushing them out.
+    const spill = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>(
+      '.euc-menu--routes [data-menu="venue"]',
+    )].map((button) => {
+      const outer = button.getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(button);
+      const inner = range.getBoundingClientRect();
+      const icon = button.querySelector('svg')?.getBoundingClientRect() ?? null;
+      return {
+        venue: button.dataset.venue ?? '',
+        inside: inner.left >= outer.left - 0.5 && inner.right <= outer.right + 0.5
+          && inner.top >= outer.top - 0.5 && inner.bottom <= outer.bottom + 0.5,
+        iconInside: icon === null || (icon.left >= outer.left - 0.5 && icon.right <= outer.right + 0.5),
+        clipped: button.scrollWidth > button.clientWidth + 1,
+      };
+    }));
+    expect(spill.map((row) => row.venue)).toEqual(['slice', 'track', 'switchback', 'euclaude']);
+    for (const row of spill) {
+      expect(row.inside, `${row.venue}'s words spill out of its button`).toBe(true);
+      expect(row.iconInside, `${row.venue}'s picture sits outside its button`).toBe(true);
+      expect(row.clipped, `${row.venue}'s button scrolls sideways`).toBe(false);
     }
 
     // A tap on one is a world swap and nothing else: still the panel, still

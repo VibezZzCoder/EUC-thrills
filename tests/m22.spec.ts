@@ -540,14 +540,14 @@ async function sweepTitleGrid(
         if (box.top < -0.5 || box.bottom > innerHeight + 0.5) outside.push(node.dataset.menu ?? 'credit');
       }
       const spills: string[] = [];
-      for (const button of root.querySelectorAll<HTMLElement>('.euc-menu__actions button')) {
+      for (const button of root.querySelectorAll<HTMLElement>('.euc-title__starts button, .euc-title__modes button')) {
         if (button.offsetParent === null) continue;
         const style = getComputedStyle(button);
         const box = button.getBoundingClientRect();
         const left = box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
         const right = box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
         for (const piece of button.querySelectorAll(
-          '.euc-button__label, .euc-button__note, .euc-ultra__state, .euc-ultra__warn',
+          '.euc-button__label, .euc-button__note, .euc-ultra__state, .euc-ultra__warn, .euc-start__kicker, .euc-start__place, .euc-start__note',
         )) {
           if (!seen(piece)) continue;
           const range = document.createRange();

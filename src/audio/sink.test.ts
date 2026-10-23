@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { WebAudioSink, type SampleBank } from './sink.ts';
 import type { TransientCue } from './director.ts';
+import type { TrafficHornCue } from './trafficHorn.ts';
 import { ENVIRONMENT_AMBIENCE } from '../data/tuning.ts';
 import { EnvironmentAmbienceModel, createEnvironmentAmbienceInput } from './environmentAmbience.ts';
 
@@ -380,4 +381,96 @@ test('the fixed ambience graph connects through SFX/master, consumes no transien
   assert.equal(sink.counts.ambienceNodes, 0);
   assert.equal(sink.counts.ambienceSources, 0);
   assert.equal(sink.counts.ambienceBufferBytes, 0);
+});
+
+/** A resolved honk, as `TrafficHornModel` writes one. */
+function hornCue(overrides: Partial<TrafficHornCue> = {}): TrafficHornCue {
+  return {
+    vehicleId: 'van', x: 0, y: 0.9, z: 2.4, distanceMetres: 4, gain: 0.2, pan: 0, lowHz: 400, highHz: 500,
+    brightnessHz: 1900, toots: 2, shortTootSeconds: 0.13, gapSeconds: 0.1, lastTootSeconds: 0.17,
+    urgency: 0, honkIndex: 0, ...overrides,
+  };
+}
+
+test('a horn is two oscillators on the transient path, counted, capped and stopped like any one-shot', () => {
+  // 2026-10-21. Synthesized only: no buffer source may start, so no recording
+  // (and no credit) is involved. Two voices per honk, whatever the toot count.
+  const { context, sources, nodes } = fakeContext();
+  const sink = new WebAudioSink(context);
+  const permanentSources = sources.length;
+  const permanentNodes = nodes.length;
+
+  sink.playHorn(hornCue());
+  const launched = sources.slice(permanentSources);
+  assert.equal(launched.length, 2, 'a honk is not two notes');
+  assert.ok(launched.every((node) => node.kind === 'oscillator'));
+  assert.ok(launched.every((node) => node.type === 'sawtooth'));
+  assert.ok(launched.every((node) => node.starts === 1 && node.stops === 1), 'not scheduled to start and stop');
+  // Four nodes: two notes, one filter, one envelope — a panner only when placed.
+  assert.equal(nodes.length - permanentNodes, 4);
+  assert.equal(sink.counts.voices, 2);
+  assert.equal(sink.counts.hornPlays, 1);
+
+  // A three-toot honk is still the same two voices.
+  sink.playHorn(hornCue({ toots: 3, lastTootSeconds: 0.5 }));
+  assert.equal(sources.length - permanentSources, 4);
+  assert.equal(sink.counts.hornPlays, 2);
+
+  // Silence and nonsense build nothing.
+  sink.playHorn(hornCue({ gain: 0 }));
+  sink.playHorn(hornCue({ lowHz: Number.NaN }));
+  assert.equal(sink.counts.hornPlays, 2);
+
+  // The cap refuses a horn it cannot hold, honestly.
+  for (let i = 0; i < 40; i += 1) sink.playHorn(hornCue());
+  assert.ok(sink.counts.voices <= 48, 'the voice cap was exceeded');
+  assert.ok(sink.counts.droppedVoices > 0, 'a refused horn was not counted');
+
+  // Quick reset reaches horns too.
+  sink.stopAllVoices();
+  assert.ok(sources.slice(permanentSources).every((node) => Number(node.stops) >= 2), 'a horn survived stopAllVoices');
+  sink.dispose();
+});
+
+test('a placed horn pans where the browser can, and plays centred where it cannot', () => {
+  const plain = fakeContext();
+  const centred = new WebAudioSink(plain.context);
+  const before = plain.nodes.length;
+  centred.playHorn(hornCue({ pan: 0.4 }));
+  assert.equal(plain.nodes.length - before, 4, 'a browser without a stereo panner lost the horn');
+  assert.equal(centred.counts.hornPlays, 1);
+  centred.dispose();
+
+  const stereo = fakeContext();
+  const panners: Record<string, unknown>[] = [];
+  (stereo.context as unknown as Record<string, unknown>).createStereoPanner = () => {
+    const node = { kind: 'panner', pan: { value: 0 }, connect(): void {}, disconnect(): void {} };
+    panners.push(node);
+    return node;
+  };
+  const placed = new WebAudioSink(stereo.context);
+  placed.playHorn(hornCue({ pan: 0.4 }));
+  assert.equal(panners.length, 1);
+  assert.equal((panners[0].pan as { value: number }).value, 0.4);
+  placed.playHorn(hornCue({ pan: 0 }));
+  assert.equal(panners.length, 1, 'a centred horn built a panner');
+  placed.dispose();
+});
+
+test('a horn already sounding stops with a pause: its bus closes while the ride is idle', () => {
+  // Codex QA 2026-10-22: idle stopped new honks, but a honk scheduled a moment
+  // before the pause played out its toots under the pause menu.
+  const { context, nodes } = fakeContext();
+  const sink = new WebAudioSink(context);
+  const before = nodes.length;
+  sink.playHorn(hornCue({ toots: 3 }));
+  const envelope = nodes.slice(before).find((node) => node.kind === 'gain')!;
+  const bus = (envelope.connections as Record<string, unknown>[])[0];
+  const busGain = bus.gain as { value: number };
+  assert.equal(busGain.value, 1, 'the horn bus starts open');
+  sink.setHornsLive(false);
+  assert.equal(busGain.value, 0, 'a pause did not close the horn bus');
+  sink.setHornsLive(true);
+  assert.equal(busGain.value, 1);
+  sink.dispose();
 });

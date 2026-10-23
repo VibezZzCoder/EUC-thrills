@@ -538,66 +538,49 @@ test.describe('M9 — HUD, menus, options', () => {
       await frame();
     }, button);
 
-    // The d-pad walks the title screen's **real geometry**, and at M25 Phase 5
-    // that geometry became a grid.
+    // The d-pad walks the title screen's **real geometry** (`ui/menuRows.ts`),
+    // and every new entrance has failed this test by naming the wrong stop,
+    // which is the failure it is for.
     //
-    // The history is the point of this test. M10 inserted Time trial, M12
-    // Phase 4 Fresh route, M14 Knockabout, M18 Police chase, M23 Track Day,
-    // M38 Trick Run — each time this test failed by naming the wrong stop,
-    // which is the failure it is for. Phase 5's 2 Players is the eighth entrance, and eight
-    // stacked buttons do not fit an ordinary laptop (measured — see the
-    // 56 rem tier in `ui/game.css`), so the title lays out in two columns on
-    // any window shorter than 896 px. This project's is 700.
-    //
-    // **The ninth entrance moved every stop below it** (M38): the grid fills
-    // row by row, so Trick Run landing beside Track Day pushed Knockabout,
-    // Police chase, Fresh route and Settings each one place on. The left
-    // column is now Start, 2-4 Players, Track Day, Knockabout, Fresh route and
-    // the right is Time trial, Trick Run, Police chase, Settings — with
-    // Settings no longer alone on a last row of its own.
-    //
-    // **So Down walks a column and Right crosses to the other one**, which is
-    // M24's `ui/menuRows.ts` arithmetic doing exactly what it was written for:
-    // before it, "down" on a grid moved sideways and the d-pad appeared to have
-    // no vertical axis at all. Both columns are walked below, so every entrance
-    // is still named — a control that stops being reachable still fails here.
+    // **The 2026-10-22 title**: two start cards side by side (Start ride on
+    // the left, the second headline place on the right), the modes in rows of
+    // four under them at this 1000x700 window — 2–4 Players, Time trial, Track
+    // Day, Trick Run, then Knockabout, Police chase, Fresh route widened to
+    // fill the row — and Settings and Ultra as the last row. Down walks the
+    // left edge, Right crosses a row; the walk below names every entrance.
     // A activates what is focused.
-    //
-    // **M39 split Settings' own cell, and moved no stop.** The Ultra Graphics
-    // toggle takes the right half of the cell Settings had (`game.css`, DESIGN
-    // §9g), with Settings the wider track so that Down from Police chase still
-    // lands on Settings rather than on a tie; Right from Settings is the
-    // toggle, and Left comes back. Nothing above that cell moved.
     await pulse(13);
     await expect(menuButton(page, 'title', 'couch')).toBeFocused();
     await pulse(13);
-    await expect(menuButton(page, 'title', 'track-day')).toBeFocused();
-    await pulse(13);
     await expect(menuButton(page, 'title', 'knockabout')).toBeFocused();
-    await pulse(13);
-    await expect(menuButton(page, 'title', 'routes')).toBeFocused();
-
-    // Back up to the top of the left column, then across and down the right.
-    await pulse(12);
-    await expect(menuButton(page, 'title', 'knockabout')).toBeFocused();
-    await pulse(12);
-    await expect(menuButton(page, 'title', 'track-day')).toBeFocused();
-    await pulse(12);
-    await expect(menuButton(page, 'title', 'couch')).toBeFocused();
-    await pulse(15);
-    await expect(menuButton(page, 'title', 'challenge')).toBeFocused();
-    await pulse(13);
-    await expect(menuButton(page, 'title', 'trick-run')).toBeFocused();
-    await pulse(13);
-    await expect(menuButton(page, 'title', 'chase')).toBeFocused();
-
-    // Settings is the bottom of the right column, one row below Police chase.
     await pulse(13);
     await expect(menuButton(page, 'title', 'settings')).toBeFocused();
-    // The Ultra toggle is beside it, one Right away, and Left comes home. The
+    await pulse(12);
+    await expect(menuButton(page, 'title', 'knockabout')).toBeFocused();
+    await pulse(12);
+    await expect(menuButton(page, 'title', 'couch')).toBeFocused();
+    await pulse(12);
+    await expect(menuButton(page, 'title', 'start')).toBeFocused();
+    await pulse(15);
+    await expect(menuButton(page, 'title', 'start-place')).toBeFocused();
+    await pulse(13);
+    await expect(menuButton(page, 'title', 'trick-run')).toBeFocused();
+    await pulse(14);
+    await expect(menuButton(page, 'title', 'track-day')).toBeFocused();
+    await pulse(14);
+    await expect(menuButton(page, 'title', 'challenge')).toBeFocused();
+    await pulse(14);
+    await expect(menuButton(page, 'title', 'couch')).toBeFocused();
+    await pulse(13);
+    await expect(menuButton(page, 'title', 'knockabout')).toBeFocused();
+    await pulse(15);
+    await expect(menuButton(page, 'title', 'chase')).toBeFocused();
+    await pulse(15);
+    await expect(menuButton(page, 'title', 'routes')).toBeFocused();
+    // The Ultra toggle is under Fresh route, and Settings one Left away. The
     // pad only walks here: pressing A on the toggle would change the quality
     // tier under a test that is about navigation.
-    await pulse(15);
+    await pulse(13);
     await expect(menuButton(page, 'title', 'ultra')).toBeFocused();
     await pulse(14);
     await expect(menuButton(page, 'title', 'settings')).toBeFocused();
@@ -681,13 +664,13 @@ test.describe('M9 — HUD, menus, options', () => {
     );
 
     // Hat down (+1 on axis 7) walks the title's focus order; hat up walks back.
-    // The stops are the two-column grid's, exactly as the d-pad test above —
-    // this spec is about the *hat axes reaching the menu at all*, so it names
+    // The stops are the title grid's, exactly as the d-pad test above — this
+    // spec is about the *hat axes reaching the menu at all*, so it names
     // whatever the panel's geometry currently is.
     await pulseHat(7, 1);
     await expect(menuButton(page, 'title', 'couch')).toBeFocused();
     await pulseHat(7, 1);
-    await expect(menuButton(page, 'title', 'track-day')).toBeFocused();
+    await expect(menuButton(page, 'title', 'knockabout')).toBeFocused();
     await pulseHat(7, -1);
     await expect(menuButton(page, 'title', 'couch')).toBeFocused();
   });

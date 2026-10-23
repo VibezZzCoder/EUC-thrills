@@ -245,9 +245,16 @@ test('a pad walks to the title entry and A arms the run', async ({ page }) => {
       pad.buttons[button].value = 0;
       await frame();
     };
-    for (let step = 0; step < 24; step += 1) {
-      const active = document.activeElement as HTMLElement | null;
-      if (active?.dataset.menu === 'trick-run') return true;
+    // Row by row (the 2026-10-22 title lays modes out in rows): across each
+    // row with Right, back with Left, then Down.
+    const at = () => (document.activeElement as HTMLElement | null)?.dataset.menu === 'trick-run';
+    for (let row = 0; row < 8; row += 1) {
+      for (let step = 0; step < 5; step += 1) {
+        if (at()) return true;
+        await press(15);
+      }
+      if (at()) return true;
+      for (let step = 0; step < 5; step += 1) await press(14);
       await press(13);
     }
     return false;

@@ -294,6 +294,7 @@ export function ultraCostBreakdown(plan: LevelPlan, recipe: UltraRecipe, edges: 
   let blocks = 0;
   for (const segment of plan.segments) {
     for (const collider of segment.colliders) {
+      if (collider.drawn === false) continue;
       baselineBlocks += LEVEL_GEOMETRY_COST.trianglesPerCollider;
       blocks += ultraColliderTriangles(collider, colliderMaterial(collider), kit);
     }

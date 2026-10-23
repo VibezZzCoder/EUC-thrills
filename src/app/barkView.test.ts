@@ -10,10 +10,12 @@ import {
   resolveChaseView,
   type ChaseCameraInput,
 } from '../render/chaseCamera.ts';
+import { PEDESTRIAN_FIGURE, pedestrianStatureMetres } from '../render/populationView.ts';
 import {
   BarkView,
   DISPLAY_BAND,
   START_BAND,
+  anchorDropMetres,
   bubbleHidden,
   candidateHidden,
   inBand,
@@ -307,4 +309,59 @@ test('riding up to a facing pair face-on (the critic\'s euc approach): the asker
   assert.equal(faceOn.clearFrames, 0, 'face-on, the partner always hides the asker');
   const across = run(true);
   assert.ok(across.clearFrames > 0, 'side-on, the asker is clear and qualifies');
+});
+
+// -- Measured on the person drawn (2026-10-22) -------------------------------
+
+/** An id whose drawn stature is at most / at least `metres` (statures follow the id hash). */
+function idWithStature(prefix: string, test: (stature: number) => boolean): string {
+  for (let index = 0; index < 500; index += 1) if (test(pedestrianStatureMetres(`${prefix}-${index}`))) return `${prefix}-${index}`;
+  throw new Error(`no ${prefix} id with that stature`);
+}
+
+test('the bubble is drawn the same lift above the drawn crown — the speaker\'s own, or the mean stature', () => {
+  const { camera } = stoppedCamera();
+  const view = new BarkView();
+  const feet = { x: 1, y: 0, z: 6 };
+  const model = { x: feet.x, y: feet.y + ANCHOR_HEIGHT, z: feet.z };
+  const expect = new BarkView();
+  // The mean when the caller names nobody.
+  assert.ok(Math.abs(anchorDropMetres() - (POPULATION_AUTHORING.actorHeightMetres - PEDESTRIAN_FIGURE.meanHeightMetres)) < 1e-12);
+  assert.equal(view.bubbleInBand(camera, model), true);
+  expect.project(camera, feet.x, PEDESTRIAN_FIGURE.meanHeightMetres + BARKS.anchorLiftMetres, feet.z);
+  assert.ok(view.ndc.distanceTo(expect.ndc) < 1e-9);
+  // The speaker's own stature when named: a short and a tall person differ on screen.
+  const short = idWithStature('short', (h) => h < 1.71), tall = idWithStature('tall', (h) => h > 1.79);
+  for (const id of [short, tall]) {
+    assert.equal(view.bubbleInBand(camera, model, id), true);
+    expect.project(camera, feet.x, pedestrianStatureMetres(id) + BARKS.anchorLiftMetres, feet.z);
+    assert.ok(view.ndc.distanceTo(expect.ndc) < 1e-9, id);
+  }
+  view.bubbleInBand(camera, model, short); const shortY = view.ndc.y;
+  view.bubbleInBand(camera, model, tall); assert.ok(view.ndc.y > shortY, 'the taller speaker\'s bubble stands higher');
+  // The old hull anchor would float it a hand's width higher than the mean crown.
+  expect.project(camera, model.x, model.y, model.z);
+  view.bubbleInBand(camera, model);
+  assert.ok(expect.ndc.y > view.ndc.y);
+  // A candidate is judged where its bubble will be drawn.
+  const still = { x: 0, y: 0, z: 0 };
+  assert.equal(view.candidateSeen(camera, model, still, { x: 0, y: 0, z: 0 }, tall), true);
+  expect.project(camera, feet.x, pedestrianStatureMetres(tall) + BARKS.anchorLiftMetres, feet.z);
+  assert.ok(view.ndc.distanceTo(expect.ndc) < 1e-9);
+});
+
+test('a sight ray passing over a drawn crown is clear; one through the drawn head is not', () => {
+  // The eye just above head height, the asker 10 m off, someone 1 m in front of the eye on the line.
+  const eye = { x: 0, y: 1.85, z: 0 };
+  const asker = body('asker', 0, 10, Math.PI);
+  const shortId = idWithStature('passer', (h) => h < 1.72);
+  const short = body(shortId, 0, 1, Math.PI / 2, 'walker');
+  // Head and chest rays cross z 1 at about 1.82 and 1.78 m: over a 1.72 m crown, under the old 1.9 m cylinder.
+  assert.equal(candidateHidden(eye, asking('asker', 0, 10), bodies(asker, short), 0, 0), false, 'over the short passer-by');
+  assert.equal(bubbleHidden(eye, 'asker', { x: 0, y: ANCHOR_HEIGHT, z: 10 }, bodies(asker, short)), false);
+  // The same spot taken by a fictional rider (still the 1.9 m body) or someone further along, where the ray is lower, hides the asker.
+  assert.equal(candidateHidden(eye, asking('asker', 0, 10), bodies(asker, body('euc', 0, 1, Math.PI / 2, 'fictionalEuc')), 0, 0), true);
+  assert.equal(candidateHidden(eye, asking('asker', 0, 10), bodies(asker, body(shortId, 0, 5, Math.PI / 2, 'walker')), 0, 0), true);
+  // A vehicle still blocks as its full hull.
+  assert.equal(candidateHidden(eye, asking('asker', 0, 10), bodies(asker, body('van', 0, 5, Math.PI / 2, 'parkedVehicle')), 0, 0), true);
 });

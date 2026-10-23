@@ -2,6 +2,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { CAMERA, SIMULATION } from '../data/tuning.ts';
+import { approach } from '../shared/maths.ts';
 import {
   ChaseCamera,
   bankTargetFor,
@@ -10,6 +11,7 @@ import {
   defaultChaseCameraTuning,
   resolveChaseView,
   type ChaseCameraInput,
+  type ChaseCameraTuning,
 } from './chaseCamera.ts';
 
 /**
@@ -566,4 +568,262 @@ test('the resolved view drops with the dip without changing where it looks', () 
   assert.ok(Math.abs((view.targetY - dipped.targetY) - 0.12) < 1e-9);
   assert.equal(view.positionX, dipped.positionX);
   assert.equal(view.positionZ, dipped.positionZ);
+});
+
+// -- Deep drops: the takeoff latch (M44) --------------------------------------
+
+/**
+ * The pre-M44 height-lag rule, copied from the line M44 replaced. A flight that
+ * drops less than `deepDropMetres` has to match it to the last bit: that is the
+ * whole claim that no world without an EUClaude-deep hole sees a new camera.
+ */
+function preM44HeightLag(
+  previous: number,
+  dt: number,
+  values: ChaseCameraInput,
+  tuning: ChaseCameraTuning,
+): number {
+  return approach(
+    previous,
+    values.airborne ? Math.max(0, values.y - values.groundY) * (1 - tuning.airHeightFollow) : 0,
+    values.airborne ? tuning.airHeightResponseSeconds : tuning.landingRestoreSeconds,
+    Infinity,
+    dt,
+  );
+}
+
+const GRAVITY = 9.81;
+/** The roof pad's vertical launch cap, m/s (`docs/PLANS.md` §44.2): the biggest hop a pad throws. */
+const PAD_VERTICAL = 2.85;
+/** An EUClaude roof deck and the alley floor 11 m under it. */
+const DECK = 11;
+const ALLEY = 0;
+
+/** Height `k` steps into a ballistic flight from `y0` at `vy0`. */
+function ballistic(y0: number, vy0: number, k: number): number {
+  const t = k * STEP;
+  return y0 + vy0 * t - 0.5 * GRAVITY * t * t;
+}
+
+test('a flight over an 11 m alley measures the hop from the deck it left, not from the alley floor', () => {
+  // The EUClaude defect (15-south-airborne-gap3.png): over the alley the ground
+  // beneath falls 11 m in one step, and reading the hop off it put ~7 m of lag
+  // on the camera in a tenth of a second — the camera sank into the alley.
+  const tuning = defaultChaseCameraTuning();
+  const follow = 1 - tuning.airHeightFollow;
+  const camera = new ChaseCamera();
+  run(camera, 1, input({ y: DECK, groundY: DECK, speed: 18 }));
+
+  const state = createChaseCameraState();
+  const view = createChaseCameraView();
+  let preM44 = 0;
+  let preM44Worst = 0;
+  let highestHop = 0;
+  let airborneSteps = 0;
+  for (let k = 1; ; k += 1) {
+    const y = ballistic(DECK, PAD_VERTICAL, k);
+    // A third of a second over the alley, then the far roof at the deck's height.
+    const groundY = k * STEP < 0.35 ? ALLEY : DECK;
+    if (y <= groundY) break;
+    const values = input({ y, groundY, speed: 18, airborne: true });
+    camera.step(STEP, values);
+    camera.writeState(state);
+    resolveChaseView(state, values, tuning, view);
+    preM44 = preM44HeightLag(preM44, STEP, values, tuning);
+    preM44Worst = Math.max(preM44Worst, preM44);
+    airborneSteps += 1;
+
+    const hop = y - DECK;
+    highestHop = Math.max(highestHop, hop);
+    // Rising, the lag trails its target from below, so it never exceeds the
+    // hop above the deck: (y − 11) × 0.65. Falling, a first-order ease trails
+    // its target from above — but never past the most the hop ever asked for.
+    if (PAD_VERTICAL - GRAVITY * k * STEP > 0) {
+      assert.ok(state.heightLag <= hop * follow + 1e-12,
+        `step ${k}: lag ${state.heightLag} above the hop's ${hop * follow} while rising`);
+    }
+    assert.ok(state.heightLag <= highestHop * follow + 1e-12,
+      `step ${k}: lag ${state.heightLag} beyond the highest hop's ${highestHop * follow}`);
+    assert.ok(view.targetY > DECK, `step ${k}: the anchor ${view.targetY} sank below the ${DECK} m deck`);
+    assert.ok(view.positionY > DECK, `step ${k}: the camera ${view.positionY} sank below the ${DECK} m deck`);
+  }
+  assert.ok(airborneSteps > 60, `sanity: a real pad flight (${airborneSteps} steps)`);
+  assert.ok(preM44Worst > 5, `sanity: the pre-M44 rule put ${preM44Worst} m of lag on this flight`);
+});
+
+test('a short flight into the alley never puts the camera below the ground beneath it', () => {
+  // 08-north-short-gap2-crash.png: a short flight crashes, the rider is on the
+  // alley floor, and the lag the flight carried eased out over the landing
+  // restore with the camera under the ground. Every way a short flight ends:
+  // falling all the way to the floor; meeting the far wall at 9 m and being put
+  // down on the floor by the crash; and a kicker's much bigger hop (8 m/s up)
+  // meeting a wall at 13 m, still above the deck, with 2 m of honest lag — the
+  // case only the deep-flight clamp keeps above the floor.
+  const tuning = defaultChaseCameraTuning();
+  for (const { launch, crashHeight } of [
+    { launch: PAD_VERTICAL, crashHeight: ALLEY },
+    { launch: PAD_VERTICAL, crashHeight: 9 },
+    { launch: 8, crashHeight: 13 },
+  ]) {
+    const camera = new ChaseCamera();
+    run(camera, 1, input({ y: DECK, groundY: DECK, speed: 14 }));
+    const state = createChaseCameraState();
+    const view = createChaseCameraView();
+    let preM44 = 0;
+    let preM44Lowest = Infinity;
+    const check = (values: ChaseCameraInput, label: string): void => {
+      camera.step(STEP, values);
+      camera.writeState(state);
+      resolveChaseView(state, values, tuning, view);
+      assert.ok(view.targetY > values.groundY, `${label}: anchor ${view.targetY} under the ground ${values.groundY}`);
+      assert.ok(view.positionY > values.groundY, `${label}: camera ${view.positionY} under the ground ${values.groundY}`);
+      preM44 = preM44HeightLag(preM44, STEP, values, tuning);
+      preM44Lowest = Math.min(preM44Lowest, values.y - preM44 + tuning.anchorHeight - state.dip - values.groundY);
+    };
+    for (let k = 1; ; k += 1) {
+      const y = ballistic(DECK, launch, k);
+      if (launch - GRAVITY * k * STEP < 0 && y <= crashHeight) break;
+      check(input({ y, groundY: ALLEY, speed: 14, airborne: true }), `crash at ${crashHeight} m, flight step ${k}`);
+    }
+    // The crash: on the alley floor, off the wheel, with the deepest landing dip.
+    camera.landingImpulse(1000);
+    for (let i = 0; i < 2 * SIMULATION.hz; i += 1) {
+      check(input({ y: ALLEY, groundY: ALLEY, speed: 0, crashed: true }), `crash at ${crashHeight} m, floor step ${i}`);
+    }
+    if (crashHeight > ALLEY) {
+      assert.ok(preM44Lowest < 0, `sanity: the pre-M44 rule put the anchor ${-preM44Lowest} m under the floor`);
+    }
+  }
+});
+
+test('a flight that drops less than deepDropMetres is the pre-M44 camera, bit for bit', () => {
+  // A 1.2 m ledge, a pad on a 5 m hill whose far side falls away to the
+  // ground, and a roll off 8.9 m (the deepest shipped drop is the proving
+  // ground's 8 m block): every one under the threshold, so every step's lag —
+  // landings, their eased restore, a crash — must equal the old rule exactly.
+  const tuning = defaultChaseCameraTuning();
+  assert.ok(tuning.deepDropMetres > 8.9, 'sanity: every scripted drop is under the threshold');
+  const script: { values: ChaseCameraInput; impact?: number }[] = [];
+  const ride = (seconds: number, groundAt: (t: number) => number, speed: number): void => {
+    const steps = Math.round(seconds / STEP);
+    for (let i = 0; i < steps; i += 1) {
+      const y = groundAt(i * STEP);
+      script.push({ values: input({ y, groundY: y, speed }) });
+    }
+  };
+  const fly = (from: number, vy0: number, groundAt: (t: number) => number, speed: number, crashed = false): void => {
+    for (let k = 1; ; k += 1) {
+      const y = ballistic(from, vy0, k);
+      const groundY = groundAt(k * STEP);
+      if (y <= groundY) {
+        script.push({ values: input({ y: groundY, groundY, speed, crashed }), impact: 4 });
+        return;
+      }
+      script.push({ values: input({ y, groundY, speed, airborne: true }) });
+    }
+  };
+  ride(1, () => 0, 9);
+  ride(1, () => 1.2, 9);
+  fly(1.2, 0, () => 0, 9);
+  ride(0.5, () => 0, 9);
+  ride(2, (t) => 2.5 * t, 9);
+  ride(0.15, (t) => 5 + 5 * t, 9);
+  fly(5.75, PAD_VERTICAL, (t) => (t < 0.3 ? 5 : 0), 9);
+  ride(1, () => 0, 9);
+  ride(0.5, () => 8.9, 6);
+  fly(8.9, 0, () => 0, 6, true);
+  for (let i = 0; i < SIMULATION.hz; i += 1) script.push({ values: input({ crashed: true }) });
+
+  const camera = new ChaseCamera();
+  const unlatched = new ChaseCamera({ tuning: { deepDropMetres: Infinity } });
+  camera.reset(script[0].values);
+  unlatched.reset(script[0].values);
+  const state = createChaseCameraState();
+  const unlatchedState = createChaseCameraState();
+  let reference = 0;
+  let airborne = 0;
+  script.forEach(({ values, impact }, index) => {
+    if (impact !== undefined) {
+      camera.landingImpulse(impact);
+      unlatched.landingImpulse(impact);
+    }
+    camera.step(STEP, values);
+    unlatched.step(STEP, values);
+    reference = preM44HeightLag(reference, STEP, values, tuning);
+    camera.writeState(state);
+    unlatched.writeState(unlatchedState);
+    assert.equal(state.heightLag, reference, `step ${index}: lag ${state.heightLag} vs the pre-M44 ${reference}`);
+    assert.deepEqual(state, unlatchedState, `step ${index}: the whole camera state`);
+    if (values.airborne) airborne += 1;
+  });
+  assert.ok(airborne > 150, `sanity: the script flies (${airborne} airborne steps)`);
+  assert.ok(Math.max(...script.map(({ values }) => values.y - values.groundY)) > 5, 'sanity: real heights');
+});
+
+test('a deep flight over a hillside, which never falls away in one step, is the pre-M44 camera, bit for bit', () => {
+  // Switchback's summit rims: a fast rider leaving them sideways flies more
+  // than deepDropMetres over the slope below, but a heightfield falls only a
+  // cell's slope between two steps (0.365 m at worst there). Only a sheer step
+  // — a building's edge — may take the latched path, so this stays the old rule.
+  const tuning = defaultChaseCameraTuning();
+  const rim = 16;
+  const perStep = 0.36;
+  assert.ok(perStep < tuning.sheerDropMetres, 'sanity: the slope never falls a sheer step');
+  const camera = new ChaseCamera();
+  run(camera, 1, input({ y: rim, groundY: rim, speed: 24 }));
+  const state = createChaseCameraState();
+  let reference = 0;
+  let deepest = 0;
+  for (let k = 1; ; k += 1) {
+    const y = ballistic(rim, 1.5, k);
+    const groundY = Math.max(0, rim - perStep * k);
+    if (y <= groundY) break;
+    const values = input({ y, groundY, speed: 24, airborne: true });
+    camera.step(STEP, values);
+    camera.writeState(state);
+    reference = preM44HeightLag(reference, STEP, values, tuning);
+    assert.equal(state.heightLag, reference, `step ${k}: lag ${state.heightLag} vs the pre-M44 ${reference}`);
+    deepest = Math.max(deepest, rim - groundY);
+  }
+  assert.ok(deepest > tuning.deepDropMetres, `sanity: the flight is ${deepest} m deep`);
+});
+
+test('a reset clears the takeoff latch, and a reset onto a deck is where the next flight leaves from', () => {
+  const tuning = defaultChaseCameraTuning();
+  const follow = 1 - tuning.airHeightFollow;
+  const camera = new ChaseCamera();
+  const state = createChaseCameraState();
+  run(camera, 0.5, input({ y: DECK, groundY: DECK, speed: 18 }));
+  // Off the deck and over the alley: the latched path.
+  for (let k = 1; k <= 24; k += 1) {
+    camera.step(STEP, input({ y: ballistic(DECK, PAD_VERTICAL, k), groundY: ALLEY, speed: 18, airborne: true }));
+  }
+
+  // A snap onto a body already in the air, 3 m over the alley floor (`watch`):
+  // that flight has stood on nothing, so it is the pre-M44 rule. A latch that
+  // survived the reset would read the hop off the 11 m deck and hold no lag.
+  camera.reset(input({ y: 3, groundY: ALLEY, speed: 12, airborne: true }));
+  let reference = 0;
+  let largest = 0;
+  for (let k = 1; ; k += 1) {
+    const y = ballistic(3, 0, k);
+    if (y <= ALLEY) break;
+    const values = input({ y, groundY: ALLEY, speed: 12, airborne: true });
+    camera.step(STEP, values);
+    camera.writeState(state);
+    reference = preM44HeightLag(reference, STEP, values, tuning);
+    assert.equal(state.heightLag, reference, `step ${k} after the mid-air reset`);
+    largest = Math.max(largest, reference);
+  }
+  assert.ok(largest > 1, `sanity: the flight after the reset carried a real lag (${largest})`);
+
+  // A snap onto the deck, then straight off it with no grounded step between:
+  // the reset itself is the ground the flight left from.
+  camera.reset(input({ y: DECK, groundY: DECK, speed: 18 }));
+  for (let k = 1; PAD_VERTICAL - GRAVITY * k * STEP > 0; k += 1) {
+    const y = ballistic(DECK, PAD_VERTICAL, k);
+    camera.step(STEP, input({ y, groundY: ALLEY, speed: 18, airborne: true }));
+    camera.writeState(state);
+    assert.ok(state.heightLag <= (y - DECK) * follow + 1e-12, `step ${k}: lag ${state.heightLag} read off the alley`);
+  }
 });

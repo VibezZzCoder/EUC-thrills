@@ -32,6 +32,12 @@ export function preparePopulationWorldSteps(source: LevelPlan): Steps<PreparedPo
   return withPopulationAuthoringMemoSteps(() => preparePopulationWorldInSteps(source));
 }
 function* preparePopulationWorldInSteps(source: LevelPlan): Steps<PreparedPopulationWorld> {
+  if (source.populationActivity?.ground === 'authored') {
+    const canonical={...source,id:source.populationSourceWorldId??source.id};
+    const population=yield* buildPopulationPlanSteps(canonical,canonical.populationPaths);
+    return { level:{...canonical,populationSourceWorldId:canonical.id,id:population.installedWorldId,
+      recordWorldId:source.recordWorldId??canonical.id},population };
+  }
   const installed = (source as DistrictAdjacentPlan).districtAdjacency;
   // Preparing an installed plan must retain its owned street fragments and
   // canonical pre-population identity rather than strip them or hash twice.

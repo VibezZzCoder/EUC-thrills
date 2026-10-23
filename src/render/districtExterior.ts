@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
 import type { LevelPlan, Prop } from '../level/plan.ts';
-import { districtExteriorSites, type DistrictExteriorSite, type ExteriorFinish, type ExteriorPart }
+import { districtExteriorSites, type DistrictExteriorSite, type ExteriorColour, type ExteriorFinish, type ExteriorPart }
   from './districtExteriorSites.ts';
 import type { FacadeOpening } from './streetFacadeOpenings.ts';
 import type { PresentationCost } from './presentation.ts';
@@ -12,8 +12,8 @@ export interface DistrictExteriorAppearance {
   /** Borrowed, unmapped, opaque materials. Their owner installs any shared
    * environment response and retains sole colour/material/light authority. */
   readonly materials: Readonly<Record<ExteriorFinish, THREE.Material>>;
-  /** Linear RGB, supplied by the existing appearance owner. */
-  readonly colourFor: (building: Prop, finish: ExteriorFinish) => readonly [number, number, number];
+  /** Linear RGB, supplied by the existing appearance owner, for a finish or a colour role inside one. */
+  readonly colourFor: (building: Prop, finish: ExteriorColour) => readonly [number, number, number];
   readonly protectedOpenings?: readonly FacadeOpening[];
   readonly replacedPropIndices?: ReadonlySet<number>;
   /** Optional spatial partition. Infinity (default) keeps five world batches;
@@ -158,7 +158,7 @@ export function createDistrictExterior(plan: LevelPlan, appearance: DistrictExte
           }
         }
         matrix.compose(position, rotation, scale); mesh.setMatrixAt(index, matrix);
-        const rgb = appearance.colourFor(site.building, part.finish);
+        const rgb = appearance.colourFor(site.building, part.shape === 'box' && part.colour ? part.colour : part.finish);
         if (rgb.length !== 3 || !rgb.every(value => Number.isFinite(value) && value >= 0)) {
           throw new Error('Exterior appearance owner must supply finite nonnegative linear RGB');
         }

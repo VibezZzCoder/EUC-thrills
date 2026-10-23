@@ -10,7 +10,7 @@ import type { RiderOccupancyPose } from '../shared/riderOccupancy.ts';
 import { EUC_STEP_PRIMITIVE_FIELDS, copyEucStepPrimitives, type EucStepPrimitiveState } from './eucStepPrimitives.ts';
 import { roughnessAt } from './roughness.ts';
 import { HazardField, NO_HAZARDS } from './hazards.ts';
-import { CrashRagdoll, RAGDOLL_FLOATS } from './ragdoll.ts';
+import { CrashRagdoll, RAGDOLL_FLOATS, RD_PELVIS } from './ragdoll.ts';
 import { ragdollInterpolationBlock } from '../shared/ragdollInterpolation.ts';
 import { interpolateRagdollJointPoles } from '../shared/ragdollBoot.ts';
 import { NO_SOFT_BODIES, SoftBodyField } from './softBodies.ts';
@@ -808,6 +808,10 @@ export interface EucTuning {
   crashWheelLean: number;
   crashRecoverEarliestSeconds: number;
   crashRecoverAutoSeconds: number;
+  /** Height over the ground above which an airborne crash falls from where it is, m (M44). */
+  crashHighFallMetres: number;
+  /** How far before the face a high fall's body starts, m, with none of the forward speed (M44). */
+  crashHighFallSetbackMetres: number;
   crashRecoverSpeedFactor: number;
   crashSafeDelaySeconds: number;
   crashSafeWobbleCeiling: number;
@@ -1048,6 +1052,8 @@ export function defaultEucTuning(): EucTuning {
     crashWheelLean: EUC.crashWheelLean,
     crashRecoverEarliestSeconds: EUC.crashRecoverEarliestSeconds,
     crashRecoverAutoSeconds: EUC.crashRecoverAutoSeconds,
+    crashHighFallMetres: EUC.crashHighFallMetres,
+    crashHighFallSetbackMetres: EUC.crashHighFallSetbackMetres,
     crashRecoverSpeedFactor: EUC.crashRecoverSpeedFactor,
     crashSafeDelaySeconds: EUC.crashSafeDelaySeconds,
     crashSafeWobbleCeiling: EUC.crashSafeWobbleCeiling,
@@ -2101,6 +2107,9 @@ export class EucController {
    */
   private airDirX = 0;
   private airDirZ = 1;
+  /** Last attempted physical travel, including reverse; facing may spin in flight. */
+  private crashTravelX = 0;
+  private crashTravelZ = 1;
   private groundY = 0;
   private airTime = 0;
   private airApex = 0;
@@ -2301,6 +2310,24 @@ export class EucController {
   private wheelCrashLean = 0;
   private recoverTimer = 0;
   private invulnerableTimer = 0;
+  /**
+   * The riderless wheel is still falling from a high crash (M44). Set by
+   * `beginCrash` only for a crash begun in the air more than
+   * `crashHighFallMetres` over the ground, cleared on the crash step that
+   * reaches the ground. While set, `stepCrash` falls the wheel under gravity
+   * on `verticalVelocity` instead of standing it on the ground, and no
+   * recovery begins. False through every other crash, so theirs are the
+   * pre-M44 steps exactly.
+   */
+  private crashFalling = false;
+  /**
+   * Seconds a high crash's body has spent falling free (M44): its pelvis more
+   * than `crashHighFallMetres` over the floor it is falling to. The ragdoll's
+   * crash clock — the tumble that settles from 1.4 s — runs from when the fall
+   * ends (`crashTime - crashFallSeconds`), and the fall itself is undamped.
+   * Zero through every other crash.
+   */
+  private crashFallSeconds = 0;
 
   // -- The crash ragdoll and the wheel flourish (M15) -------------------------
 
@@ -3675,6 +3702,10 @@ export class EucController {
     const travelX = airborne ? this.airDirX : Math.sin(travelHeading);
     const travelZ = airborne ? this.airDirZ : Math.cos(travelHeading);
     const intended = speed * dt;
+    if (intended !== 0) {
+      this.crashTravelX = travelX * Math.sign(intended);
+      this.crashTravelZ = travelZ * Math.sign(intended);
+    }
     const moved = this.advance(travelX * intended, travelZ * intended, dt, speed, airborne);
     speed = moved.speed;
     this.collisionImpact = moved.impactSpeed;
@@ -3991,8 +4022,15 @@ export class EucController {
       // foot reaches beyond the footprint (critic repair r4), so its rise counts too.
       // **Gated on the pad standing**: city lawns store safe points today, so a
       // hidden, disarmed pad in Chase, Challenge or Knockabout must not move a respawn.
+      // Nor inside an authored pad's safe-point hold (M44 D15): on EUClaude
+      // Heights' roofs the newest safe point would sit a few metres before the
+      // gap the rider just came up short at, facing it, and a held throttle
+      // would crash there again and again. A hold keeps the point back down
+      // the ramp, so a recovery is a run-up. No derived pad holds, so
+      // everywhere else this is one compare and changes nothing.
       && !((this.launchPadsArmed || this.launchPadsShown)
-        && (this.launchPads.inFootprint(this.x, this.z) || this.launchPads.riseAt(this.x, this.z) > 0))
+        && (this.launchPads.inFootprint(this.x, this.z) || this.launchPads.riseAt(this.x, this.z) > 0
+          || this.launchPads.holdsSafePoint(this.x, this.z, this.ground.height)))
       && this.surface !== 'spill'
       && this.wobbleEnergy < t.crashSafeWobbleCeiling
       && this.tiltBack < 1e-6
@@ -4566,9 +4604,24 @@ export class EucController {
    * from under the rider rather than left behind them. A solid-obstacle impact
    * also falls sideways so the recovery pose never carries the rider through
    * the collider that stopped the wheel.
+   *
+   * **Where the body starts.** On the ground under the rider (`groundY`)
+   * unless a caller names a height (the in-air contact crash does) — and,
+   * since M44, at the rider's own height when the crash begins in the air more
+   * than `crashHighFallMetres` up. EUClaude Heights' short rider meets the far
+   * wall 8–11 m over the alley; seeding the body on the alley floor (and
+   * standing the wheel there on the next step) was a teleport, and the fall is
+   * the venue's payoff. Below the threshold, and for every grounded crash,
+   * nothing here differs from before it: the gate is false, the seed height is
+   * `groundY` and `crashFalling` stays false.
    */
-  private beginCrash(cause: CrashCause, speed: number, side = 0, motion?: Exclude<CrashMotion, 'none'>, glance = 0, bodyY = this.groundY): void {
+  private beginCrash(cause: CrashCause, speed: number, side = 0, motion?: Exclude<CrashMotion, 'none'>, glance = 0, bodyY?: number): void {
     const t = this.tuning;
+    const highFall = bodyY === undefined && this.airborne
+      && this.y - this.groundY > t.crashHighFallMetres;
+    // The wheel keeps its flight's `verticalVelocity` and falls on it.
+    this.crashFalling = highFall;
+    this.crashFallSeconds = 0;
 
     this.crashing = true;
     this.crashCause = cause;
@@ -4626,15 +4679,20 @@ export class EucController {
     // scripted M6 separation bit-for-bit; a headless test pins that.
     this.ragdolling = t.ragdollEnabled >= 0.5;
     if (this.ragdolling) {
+      // A high fall starts against the face that stopped it (M44): the wall
+      // took the rider's way, so the body leaves from just in front of it with
+      // none of the forward speed — it drops down the wall with the wheel
+      // rather than being thrown over a lip it never reached.
+      const setback = highFall ? t.crashHighFallSetbackMetres : 0;
       this.ragdoll.seed({
-        x: this.x,
-        y: bodyY,
-        z: this.z,
+        x: this.x - (highFall ? this.crashTravelX : Math.sin(this.headingY)) * setback,
+        y: bodyY ?? (highFall ? this.y : this.groundY),
+        z: this.z - (highFall ? this.crashTravelZ : Math.cos(this.headingY)) * setback,
         headingY: this.headingY,
         rollAngle: this.rollAngle,
         riderPitch: this.riderPitch,
         hipDrop: this.crouch * 0.2,
-        speed,
+        speed: highFall ? 0 : speed,
         cause: this.crashMotion,
         intoSolid: cause === 'obstacle' && motion === undefined,
         side: this.crashSide,
@@ -4746,8 +4804,20 @@ export class EucController {
     if (speed > 0) speed = Math.max(0, speed - resist);
     else if (speed < 0) speed = Math.min(0, speed + resist);
 
+    // **A high crash's wheel falls** (M44, `crashHighFallMetres`). Gravity
+    // first, then the move, as the riding step orders them, so the level
+    // judges the move at this step's height; and the move is an airborne one
+    // — no step-up, no wall nudge, people met at the wheel's real height — so
+    // a wheel sliding down a wall cannot climb back onto its roof. Every
+    // other crash takes the branch-free path it always has.
+    const falling = this.crashFalling;
+    if (falling) {
+      this.verticalVelocity -= t.gravity * dt;
+      this.y += this.verticalVelocity * dt;
+    }
+
     const intended = speed * dt;
-    const moved = this.advance(forwardX * intended, forwardZ * intended, dt, speed, false);
+    const moved = this.advance(forwardX * intended, forwardZ * intended, dt, speed, falling);
     speed = moved.speed;
     // A rolling crash wheel remains physically blocked, while a new dynamic
     // contact can still be reported without starting or attributing a crash.
@@ -4759,8 +4829,18 @@ export class EucController {
     this.traction = this.ground.traction ?? this.ground.surface;
     this.offCourse = this.ground.offCourse;
     this.settleGroundY();
-    this.y = this.groundY;
-    this.grounded = true;
+    if (falling && this.y > this.groundY) {
+      this.grounded = false;
+    } else {
+      // On the ground: the step that reaches it ends the fall, and from here
+      // the wheel lies exactly as a crash begun on the ground does.
+      if (falling) {
+        this.crashFalling = false;
+        this.verticalVelocity = 0;
+      }
+      this.y = this.groundY;
+      this.grounded = true;
+    }
     this.wheelSpin += (moved.keptX * forwardX + moved.keptZ * forwardZ) / t.wheelRadius;
     this.distanceTravelled += moved.distance;
 
@@ -4782,8 +4862,35 @@ export class EucController {
     // solids to every particle from the first step of the fall, exactly as a
     // wall is (2026-10-04): a body that hits someone stops at them and crumples
     // or glances off, and none of it is held or passes through them.
+    //
+    // **A high crash's body falls free first** (M44). The particle tuning is
+    // a ground tumble: damping that sheds 1.6 of the velocity a second (a
+    // terminal speed of g / 1.6 ≈ 6 m/s in the air) and a settle-and-hold from
+    // 1.4 s. Seeded 8–11 m up, that body drifted down and froze in mid-air
+    // (measured on EUClaude's short crashes: the pelvis still 3.4 m over the
+    // alley floor at the 2.5 s recovery). So while a high crash's pelvis is
+    // more than `crashHighFallMetres` over the floor it is falling to, the
+    // body falls undamped and its own crash clock waits; within that height
+    // it is the crash every world already plays from that height. Every other
+    // crash takes the line it always has, with `t` and `crashTime` exactly.
     if (this.ragdolling) {
-      this.ragdoll.step(dt, this.crashTime, this.x, this.z, this.sampler, this.softBodies, t, contactBodies, this.headingY);
+      let bodyTuning = t;
+      if (this.crashFalling || this.crashFallSeconds > 0) {
+        const pelvis = this.ragdoll.positions, under = createGroundSample();
+        const pelvisY = pelvis[RD_PELVIS * 3 + 1];
+        this.sampler.sampleGround(pelvis[RD_PELVIS * 3], pelvis[RD_PELVIS * 3 + 2], under);
+        // The floor it falls to: the top beneath the pelvis, unless that top is
+        // above it — then the pelvis is against the face of the wall it hit
+        // and falls to the floor the wheel falls to. A body thrown onto the
+        // far roof is on its floor already and is an ordinary crash there.
+        const floor = under.height <= pelvisY ? under.height : this.groundY;
+        if (pelvisY - floor > t.crashHighFallMetres) {
+          this.crashFallSeconds += dt;
+          bodyTuning = { ...t, ragdollDamping: 0 };
+        }
+      }
+      this.ragdoll.step(dt, this.crashTime - this.crashFallSeconds, this.x, this.z, this.sampler, this.softBodies,
+        bodyTuning, contactBodies, this.headingY);
     }
 
     // The wheel's flourish (M15): a ballistic bounce with a couple of damped
@@ -4884,7 +4991,11 @@ export class EucController {
     if (contactBefore) this.constrainCrashWheelSideContact(contactBefore, contactBodies);
     const asked = Math.abs(throttle) > 0.01 || Math.abs(steer) > 0.01 || crouch;
     const ready = this.crashTime >= t.crashRecoverEarliestSeconds;
-    if ((ready && asked) || this.crashTime >= t.crashRecoverAutoSeconds) this.respawn();
+    // Never out of a fall still in progress (M44): EUClaude's 8–11 m bring the
+    // wheel down in 0.7–1.1 s, inside the 2.5 s before any recovery opens; a
+    // longer fall holds the recovery until the wheel is down, and it always
+    // comes down — only the ground stops it.
+    if (!this.crashFalling && ((ready && asked) || this.crashTime >= t.crashRecoverAutoSeconds)) this.respawn();
   }
 
   /** The crash wheel's own side constraint against the living world's bodies. */
@@ -5209,6 +5320,9 @@ export class EucController {
     this.wheelCrashLean = 0;
     this.recoverTimer = 0;
     this.invulnerableTimer = 0;
+    // A quick reset in the middle of a high crash's fall ends it (M44).
+    this.crashFalling = false;
+    this.crashFallSeconds = 0;
 
     this.ragdolling = false;
     this.wheelCrashSpin = 0;
@@ -7626,7 +7740,7 @@ export class EucController {
       inFoliage: this.inSoftBody,
       crashTime: this.crashing ? this.crashTime : 0,
       crashes: this.crashes,
-      recoveryReady: this.crashing && this.crashTime >= t.crashRecoverEarliestSeconds,
+      recoveryReady: this.crashing && !this.crashFalling && this.crashTime >= t.crashRecoverEarliestSeconds,
       invulnerable: this.invulnerableTimer,
       safePosition: { x: this.safeX, y: 0, z: this.safeZ },
       safeHeading: this.safeHeading,

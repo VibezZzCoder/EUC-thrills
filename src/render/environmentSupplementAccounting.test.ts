@@ -86,8 +86,11 @@ test('near P/N/C and all-level indices have unique actual resident owners, and c
       //   Ultra    crown 9,607,680 + shrub 6,359,040 + conifer 9,626,688
       // (Ultra crown and conifer use Uint32 indices: >65,536 near corners).
       // Only the conifer terms differ from the R22 proposal.
-      const pinned = detail === 'ordinary' ? 4_490_640 + 3_198_528 + 4_519_872
-        : 9_607_680 + 6_359_040 + 9_626_688;
+      // re-recorded 2026-10-22: full-crown pass (leaf masses replace the crown's leaf whorls):
+      //   ordinary crown 1,370,880 (3,760/2,480/2,240), Ultra crown 2,960,640 (8,000/6,720/5,760,
+      //   now Uint16 indices); shrub and conifer terms unchanged.
+      const pinned = detail === 'ordinary' ? 1_370_880 + 3_198_528 + 4_519_872
+        : 2_960_640 + 6_359_040 + 9_626_688;
       assert.equal(resident, pinned + semanticBytes);
       console.log(JSON.stringify({ detail, resident, semanticBytes }));
       assert.notEqual(price.geometryBytes, price.families.reduce((sum, f) => sum + f.nearTriangles * f.variants * 108, 0),
@@ -99,7 +102,8 @@ test('near P/N/C and all-level indices have unique actual resident owners, and c
     try { const price = priceVegetation(single, 'ordinary', ordinaryTriangles, ordinaryPolicy);
       assert.equal(price.families[0].variants, 1); assert.equal(price.families[0].buckets, 1);
       assert.equal(price.instanceBytes, 152); assert.equal(price.colourDrawDelta, 0);
-      assert.equal(price.geometryBytes, 1_496_880);
+      // re-recorded 2026-10-22: one ordinary crown habit after the full-crown pass (was 1,496,880).
+      assert.equal(price.geometryBytes, 456_960);
     } finally { single.dispose(); }
   } finally { prepared.dispose(); }
 });

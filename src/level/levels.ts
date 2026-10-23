@@ -1,4 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { createEuclaudeLevelSteps } from './euclaudeLevel.ts';
 import { generateLevelSteps, type GeneratedLevel } from './generateRoute.ts';
 import type { LevelPlan } from './plan.ts';
 import { createProvingGround } from './provingGround.ts';
@@ -80,10 +81,16 @@ import { runSteps, type Steps } from '../shared/preparationSteps.ts';
  * BelVar and the city, and `?level=switchback` survives as the shape of a
  * shareable link.
  *
- * Nothing here branches on which of the five is loaded, which is invariant 2
- * still holding at five producers.
+ * **M44 adds a sixth, and the third *place*.** `?level=euclaude` builds
+ * EUClaude Heights (`euclaudeLevel.ts`), the go-wild city of `docs/PLANS.md`
+ * §44: a dense hand-built city whose rooftop lines and launch pads are the
+ * point. The venue chooser offers it beside the other three from the day it
+ * lands, and `?level=euclaude` is the shape of its shareable link.
+ *
+ * Nothing here branches on which of the six is loaded, which is invariant 2
+ * still holding at six producers.
  */
-export type LevelId = 'slice' | 'proving' | 'generated' | 'track' | 'switchback';
+export type LevelId = 'slice' | 'proving' | 'generated' | 'track' | 'switchback' | 'euclaude';
 
 /** M39 curated expanded launch; explicit authored-world links still win. */
 export const DEFAULT_LEVEL: LevelId = 'generated';
@@ -144,6 +151,9 @@ const BUILDERS: Readonly<Record<
   // `?level=switchback` survives as the shape of a shareable link.
   switchback: (_seed, hazardProbeMetres, targetProbeMetres) =>
     createSwitchbackLevelSteps(hazardProbeMetres, targetProbeMetres),
+  // M44 — offered by the venue chooser from the day it landed.
+  euclaude: (_seed, hazardProbeMetres, targetProbeMetres) =>
+    createEuclaudeLevelSteps(hazardProbeMetres, targetProbeMetres),
 };
 
 /** Every level id, for tests and diagnostics. */

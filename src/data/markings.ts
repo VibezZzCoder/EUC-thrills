@@ -41,7 +41,7 @@ import type { SurfaceId } from '../simulation/world.ts';
  * the difference travels on the vertex colour, exactly as a prop's tone travels
  * on its instance colour (`render/props.ts`).
  */
-export type MarkingPaint = 'road' | 'path' | 'kerb' | 'ink';
+export type MarkingPaint = 'road' | 'path' | 'kerb' | 'ink' | 'mulch';
 
 /**
  * Which line this is. Width comes from here rather than from the author, so a
@@ -54,6 +54,8 @@ export type MarkingPaint = 'road' | 'path' | 'kerb' | 'ink';
 export type MarkingRole = 'centre' | 'edge' | 'bar' | 'glyph';
 
 export const MARKING_PAINTS: Readonly<Record<MarkingPaint, { readonly albedo: number; readonly wear: number }>> = deepFreeze({
+  /** Catch-garden soil, linear approximately (.18, .11, .055). Same ribbon owner; no traction change. */
+  mulch: { albedo: 0x775e42, wear: 0.22 },
   /** Dark direction arrows on light wood; vertex colour, no extra material. */
   ink: { albedo: 0x3e3b37, wear: 0.10 },
   /**

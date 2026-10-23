@@ -12,7 +12,7 @@ import { ultraTrunk } from './ultra/ultraFoliage.ts';
 import { SHARED_VEGETATION_CONTRACTS } from './sharedVegetation.ts';
 import { buildVegetationForm, buildBroadleafDistanceForms, type VegetationDetail,
   type VegetationVariant } from './vegetationForms.ts';
-import { buildVegetationGrowthPlan, vegetationGrowthPrice } from './vegetationGrowthPlan.ts';
+import { buildVegetationGrowthPlan } from './vegetationGrowthPlan.ts';
 import { buildVegetationForm as oldForm } from './vegetationForms.r21-before-join.test-fixture.ts';
 import { buildVegetationGrowthPlan as oldGrowth } from './vegetationGrowthPlan.r21-before-join.test-fixture.ts';
 
@@ -227,26 +227,66 @@ for (const detail of ['ordinary', 'ultra'] as const) test(`${detail} all habits 
   } finally { source.dispose(); }
 });
 
-test('join repair preserves every leaf corner/normal and all distance leaders; only native Full leader sides add derived cost', () => {
+// Re-scoped 2026-10-22: the full-crown pass redesigned the crown's foliage (leaf masses replace
+// the R21 leaf whorls), so the old leaf-for-leaf identity with the frozen R21 fixture is retired.
+// What the join repair itself changed — the leader alone — is still held to the fixture here, and
+// the actual bole/cap join above is unchanged.
+test('join repair keeps every distance leader; only native Full leader sides add derived cost', () => {
   for (const detail of ['ordinary', 'ultra'] as const) for (const variant of [0, 1, 2] as const) {
     const root = SHARED_VEGETATION_CONTRACTS.crown, plan = buildVegetationGrowthPlan('crown', detail, variant), previous = oldGrowth('crown', detail, variant);
-    assert.equal(plan.leaves.length, previous.leaves.length); assert.deepEqual(plan.leaves, previous.leaves);
-    for (const level of ['near', 'middle', 'far'] as const) assert.equal(vegetationGrowthPrice(plan, level).triangles
-      - vegetationGrowthPrice(previous, level).triangles, detail === 'ultra' ? 16 : 0);
-    const form = buildVegetationForm('crown', detail, variant, root), old = oldForm('crown', detail, variant, root);
+    const leaderTriangles = (branch: { readonly sectors?: number; readonly sections?: readonly unknown[] }, sectors: number) =>
+      (branch.sectors ?? sectors) * (branch.sections?.length ?? 2) * 2;
+    assert.equal(leaderTriangles(plan.branches[0], plan.branchSectors) - leaderTriangles(previous.branches[0], previous.branchSectors),
+      detail === 'ultra' ? 16 : 0, 'only the native Full leader sides add derived cost');
+    assert.deepEqual([plan.branches[0].from, plan.branches[0].to, plan.branches[0].radiusFrom, plan.branches[0].radiusTo, plan.branches[0].parent],
+      [previous.branches[0].from, previous.branches[0].to, previous.branches[0].radiusFrom, previous.branches[0].radiusTo, previous.branches[0].parent],
+      'the leader record the join repair continues is the R21 leader');
+    const form = buildVegetationForm('crown', detail, variant, root);
     const levels = buildBroadleafDistanceForms('crown', detail, variant, root);
     try {
-      const currentLeaf = plan.branches.reduce((sum, branch) => sum + (branch.sectors ?? plan.branchSectors) * (branch.sections?.length ?? 2) * 2 * 3, 0);
-      const oldLeaf = previous.branches.reduce((sum, branch) => sum + (branch.sectors ?? previous.branchSectors) * (branch.sections?.length ?? 2) * 2 * 3, 0);
-      for (const name of ['position', 'normal', 'color']) assert.deepEqual(
-        form.geometry.getAttribute(name).array.slice(currentLeaf * 3), old.geometry.getAttribute(name).array.slice(oldLeaf * 3),
-        `Every ${detail}/${variant} leaf ${name} corner stays intact`);
       const corners = leaderCorners(detail, variant);
       for (const level of ['near', 'middle', 'far'] as const) {
         assert.ok(closedOutward(positions(levels[level]), corners), `Complete ${level} leader retained`);
         for (const name of ['position', 'normal', 'color']) assert.deepEqual(levels[level].getAttribute(name).array.slice(0, corners * 3),
           form.geometry.getAttribute(name).array.slice(0, corners * 3), `${level} keeps exact native join corners and normals`);
       }
-    } finally { form.geometry.dispose(); old.geometry.dispose(); Object.values(levels).forEach(geometry => geometry.dispose()); }
+    } finally { form.geometry.dispose(); Object.values(levels).forEach(geometry => geometry.dispose()); }
   }
+});
+
+/**
+ * 2026-10-22 second look pass (`foliageKit.ts` CROWN_TURN): a shared
+ * broadleaf tree takes a render-only turn from its position, trunk and crown
+ * together, so a row authored at one `rotationY` is not one tree copied —
+ * and the pivot, the scale and the plan are exactly the source's.
+ */
+test('shared broadleaf trees turn trunk and crown together about the unchanged pivot, render-only', async () => {
+  const { prepareVegetationPrice } = await import('./sharedVegetationPricePlan.ts');
+  const spots = [[0, 0], [14, 3], [-9, 17], [23, -11]];
+  const plan: LevelPlan = { ...sourcePlan, props: spots.map(([x, z]) => ({ kind: 'broadleafTree' as const,
+    position: { x, y: 0, z }, rotationY: 0, scale: 1.1 })) };
+  const before = JSON.stringify(plan), prepared = prepareVegetationPrice(plan);
+  const view = createProps(plan, BASELINE_PRESENTATION, undefined, { sharedVegetation: true, vegetationPrice: prepared });
+  try {
+    const matrices = (prefix: string): THREE.Matrix4[] => (view.group.children as THREE.InstancedMesh[])
+      .filter(mesh => mesh.name.startsWith(prefix)).flatMap(mesh => Array.from({ length: mesh.count }, (_, i) => {
+        const m = new THREE.Matrix4(); mesh.getMatrixAt(i, m); return m; }));
+    const trunks = matrices('level-props-trunk'), crowns = matrices('level-props-crown-habit-');
+    assert.equal(trunks.length, spots.length); assert.equal(crowns.length, spots.length);
+    const turns = new Set<string>();
+    for (const [x, z] of spots) {
+      const at = (m: THREE.Matrix4) => Math.abs(m.elements[12] - x) < 1e-9 && Math.abs(m.elements[14] - z) < 1e-9;
+      const trunk = trunks.find(at)!, crown = crowns.find(at)!;
+      assert.ok(trunk && crown, 'every tree keeps its own pivot');
+      assert.deepEqual(crown.elements, trunk.elements, 'the crown turns with its trunk');
+      const position = new THREE.Vector3(), turn = new THREE.Quaternion(), scale = new THREE.Vector3();
+      trunk.decompose(position, turn, scale);
+      // Float32 instance buffers: a millionth is the storage, not the transform.
+      assert.ok(Math.abs(turn.x) < 1e-6 && Math.abs(turn.z) < 1e-6, 'a turn about Y only');
+      for (const axis of [scale.x, scale.y, scale.z]) assert.ok(Math.abs(axis - 1.1) < 1e-6, 'the source scale');
+      turns.add(Math.atan2(trunk.elements[8], trunk.elements[0]).toFixed(3));
+    }
+    assert.equal(turns.size, spots.length, 'four trees authored at one rotationY are four turns');
+    assert.equal(JSON.stringify(plan), before, 'the plan is untouched');
+  } finally { view.dispose(); prepared.dispose(); }
 });

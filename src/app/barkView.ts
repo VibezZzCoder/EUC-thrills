@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { Vector3, type Camera } from 'three';
 import { BARKS, POPULATION_AUTHORING } from '../data/tuning.ts';
+import { PEDESTRIAN_FIGURE, pedestrianStatureMetres } from '../render/populationView.ts';
 
 /**
  * The barks' view rules (M42, `docs/PLANS.md` §42.2h, the plan review's one
@@ -23,6 +24,15 @@ import { BARKS, POPULATION_AUTHORING } from '../data/tuning.ts';
  *   camera's rays to the asker's head and chest must miss every other
  *   population body's hull, or the bubble would point at whoever stands in
  *   front — in a social pair, a partner with their back to the rider.
+ * - **Everything is measured on the person drawn** (2026-10-22): people are
+ *   drawn 1.75 m tall on average, each a little taller or shorter
+ *   (`render/populationView.ts` `pedestrianStatureMetres`), not as the 1.9 m
+ *   hull the model's anchor stands on. The bubble sits `anchorLiftMetres`
+ *   above the drawn crown — the speaker's own when the caller names them, the
+ *   mean stature otherwise — and the sight rays aim at the drawn head and
+ *   chest and pass over a drawn crown. Vehicles keep their hull: it is never
+ *   lower than the drawn body, so a roof can only hide an asker, never reveal
+ *   one wrongly.
  */
 
 export interface NdcBand {
@@ -89,10 +99,11 @@ export class BarkView {
 
   /**
    * A shown bubble's anchor: is it still in the display band? Leaves the
-   * projection in `this.ndc` for `ndcToPane`.
+   * projection in `this.ndc` for `ndcToPane`, above the drawn crown
+   * (`anchorDropMetres`: the speaker's own when `actorId` is given).
    */
-  bubbleInBand(camera: Camera, anchor: WorldPoint): boolean {
-    this.project(camera, anchor.x, anchor.y, anchor.z);
+  bubbleInBand(camera: Camera, anchor: WorldPoint, actorId?: string): boolean {
+    this.project(camera, anchor.x, anchor.y - anchorDropMetres(actorId), anchor.z);
     return inBand(this.ndc, DISPLAY_BAND);
   }
 
@@ -101,13 +112,17 @@ export class BarkView {
    * still in the display band once it would have been read
    * (`BARKS.minimumReadableSeconds`, owner round 2: a bubble that would leave
    * the screen before it is read is not started), and always deeper than the
-   * rider. Leaves the *current* projection in `this.ndc`.
+   * rider. Leaves the *current* projection in `this.ndc`. Measured where the
+   * bubble will be drawn, like `bubbleInBand`.
    */
-  candidateSeen(camera: Camera, anchor: WorldPoint, relativeVelocity: WorldPoint, rider: WorldPoint): boolean {
+  candidateSeen(
+    camera: Camera, anchor: WorldPoint, relativeVelocity: WorldPoint, rider: WorldPoint, actorId?: string,
+  ): boolean {
     const floor = this.depth(camera, rider.x, rider.y, rider.z) + BARKS.depthBeyondRiderMetres;
     const read = BARKS.minimumReadableSeconds;
+    const anchorY = anchor.y - anchorDropMetres(actorId);
     const readX = anchor.x + relativeVelocity.x * read;
-    const readY = anchor.y + relativeVelocity.y * read;
+    const readY = anchorY + relativeVelocity.y * read;
     const readZ = anchor.z + relativeVelocity.z * read;
     if (this.depth(camera, readX, readY, readZ) < floor) return false;
     this.project(camera, readX, readY, readZ);
@@ -118,7 +133,7 @@ export class BarkView {
       // so `this.ndc` holds it on return.
       const t = i === 0 ? 0 : predictions[i - 1];
       const x = anchor.x + relativeVelocity.x * t;
-      const y = anchor.y + relativeVelocity.y * t;
+      const y = anchorY + relativeVelocity.y * t;
       const z = anchor.z + relativeVelocity.z * t;
       if (this.depth(camera, x, y, z) < floor) return false;
       this.project(camera, x, y, z);
@@ -158,6 +173,31 @@ const VEHICLE_KINDS: ReadonlySet<string> = new Set(['parkedVehicle', 'serviceVeh
 /** The anchor stands this far above the asker's feet (`ui/barkModel.ts`). */
 const ANCHOR_ABOVE_FEET = POPULATION_AUTHORING.actorHeightMetres + BARKS.anchorLiftMetres;
 
+const PEOPLE_KINDS: ReadonlySet<string> = new Set(['walker', 'jogger', 'social', 'worker']);
+
+/** Drawn statures by actor id; a world's roster is a few hundred ids, so the memo is cleared past a bound rather than kept forever. */
+const statures = new Map<string, number>();
+/** A pedestrian's drawn crown above their soles, m (no allocation once seen). */
+function statureOf(id: string): number {
+  let stature = statures.get(id);
+  if (stature === undefined) {
+    if (statures.size >= 4096) statures.clear();
+    stature = pedestrianStatureMetres(id);
+    statures.set(id, stature);
+  }
+  return stature;
+}
+
+/**
+ * How far below the model's anchor the bubble is drawn, m: the model stands it
+ * on the 1.9 m hull, the bubble belongs `anchorLiftMetres` above the drawn
+ * crown — the speaker's own when known, else the mean drawn stature.
+ */
+export function anchorDropMetres(actorId?: string): number {
+  return POPULATION_AUTHORING.actorHeightMetres
+    - (actorId === undefined ? PEDESTRIAN_FIGURE.meanHeightMetres : statureOf(actorId));
+}
+
 /** The open parameter interval of the segment being clipped (one test at a time; no allocation). */
 const clipRange = { enter: 0, exit: 1 };
 
@@ -182,18 +222,19 @@ function clipSlab(start: number, delta: number, min: number, max: number): boole
  * is drawn to fill: ± half-width × ± half-length, `vehicleHeightMetres` tall,
  * turned to its heading. A person (or a fictional rider) is the upright body
  * actually drawn — a vertical cylinder of `BARKS.sightPersonRadiusMetres`,
- * `actorHeightMetres` tall — not the clearance square of the hull, which is
- * about 1.6 times as wide as the shoulders and would hide askers nobody hides.
+ * `personHeight` tall (a pedestrian's drawn stature; `actorHeightMetres` for
+ * a fictional rider) — not the clearance square of the hull, which is about
+ * 1.6 times as wide as the shoulders and would hide askers nobody hides.
  * Everything stands on its feet.
  */
 function segmentHitsHull(
   eye: WorldPoint, targetX: number, targetY: number, targetZ: number,
-  kind: string, bodyX: number, bodyY: number, bodyZ: number, headingY: number,
+  kind: string, bodyX: number, bodyY: number, bodyZ: number, headingY: number, personHeight: number,
 ): boolean {
   clipRange.enter = 0;
   clipRange.exit = 1;
   if (!VEHICLE_KINDS.has(kind)) {
-    if (!clipSlab(eye.y - bodyY, targetY - eye.y, 0, POPULATION_AUTHORING.actorHeightMetres)) return false;
+    if (!clipSlab(eye.y - bodyY, targetY - eye.y, 0, personHeight)) return false;
     // The nearest the segment's in-height span comes to the body's axis.
     const deltaX = targetX - eye.x;
     const deltaZ = targetZ - eye.z;
@@ -233,6 +274,10 @@ function hiddenAt(
   const askerX = anchor.x + relativeVelocity.x * t;
   const askerZ = anchor.z + relativeVelocity.z * t;
   const feetY = anchor.y + relativeVelocity.y * t - ANCHOR_ABOVE_FEET;
+  // The sight heights were set on the modelled 1.845 m figure; this asker is drawn at their own stature.
+  const askerScale = statureOf(candidate.actorId) / PEDESTRIAN_FIGURE.modelledHeightMetres;
+  const headY = feetY + BARKS.sightHeadMetres * askerScale;
+  const chestY = feetY + BARKS.sightChestMetres * askerScale;
   const alpha = Number.isFinite(bodies.alpha) ? Math.min(1, Math.max(0, bodies.alpha)) : 1;
   const { previous, current } = bodies;
   for (let index = 0; index < current.length; index += 1) {
@@ -252,8 +297,9 @@ function hiddenAt(
       x += (speed * Math.sin(body.headingY) - riderVelocityX) * t;
       z += (speed * Math.cos(body.headingY) - riderVelocityZ) * t;
     }
-    if (segmentHitsHull(eye, askerX, feetY + BARKS.sightHeadMetres, askerZ, body.kind, x, y, z, body.headingY)) return true;
-    if (chest && segmentHitsHull(eye, askerX, feetY + BARKS.sightChestMetres, askerZ, body.kind, x, y, z, body.headingY)) {
+    const height = PEOPLE_KINDS.has(body.kind) ? statureOf(body.id) : POPULATION_AUTHORING.actorHeightMetres;
+    if (segmentHitsHull(eye, askerX, headY, askerZ, body.kind, x, y, z, body.headingY, height)) return true;
+    if (chest && segmentHitsHull(eye, askerX, chestY, askerZ, body.kind, x, y, z, body.headingY, height)) {
       return true;
     }
   }
