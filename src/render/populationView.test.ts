@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import type { ActorKind, ActorSpec, PopulationPlan } from '../level/populationPlan.ts';
 import { createPopulationView, pedestrianStatureMetres, PEDESTRIAN_FIGURE, POPULATION_NEAR_CAMERA,
-  type PopulationRenderPose, type PopulationRenderSnapshot } from './populationView.ts';
+  unionInstanceSpheres, type InstanceSphereSlot, type PopulationRenderPose, type PopulationRenderSnapshot } from './populationView.ts';
 import { physicalPopulationHull } from '../shared/populationHull.ts';
 import { populationSupportTargets, POPULATION_MODEL } from '../shared/populationSupport.ts';
 import { staticCasterBounds } from './ultra/ultraFarShadow.ts';
@@ -1025,4 +1025,118 @@ test('an NPC wheel rider and a stagger never take the knock-down pose (M42)', ()
     view.apply(snapshot([pose(rider, { activity: 'impacted', activityPhase: 0.4, activityBlend: 0, impactReaction: 'knockdown', impactFallYaw: 1 })], 1));
     assert.deepEqual(matrices(view.group), stagger, 'a rider on a wheel keeps the flinch');
   } finally { view.dispose(); }
+});
+
+// --- PERF-WHARF exactness (2026-10-23) ------------------------------------
+// The view's per-frame savings are meant to be bit-identical; these pin the
+// three facts they rest on. The whole-view side-by-side against the untouched
+// module, on recorded Wharf and town rides, is in the pass's report.
+const f64 = new Float64Array(1), u32 = new Uint32Array(f64.buffer);
+const bitsOf = (value: number): string => { f64[0] = value; return `${u32[1]!.toString(16)}:${u32[0]!.toString(16)}`; };
+
+test('PERF-WHARF: per-part bounds equal three\'s getMatrixAt + applyMatrix4 + union, to the float bit', () => {
+  let seed = 7;
+  const random = (): number => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const geometries = [new THREE.SphereGeometry(0.3), new THREE.BoxGeometry(1, 0.2, 2).translate(0.4, 1.1, -0.3),
+    new THREE.CylinderGeometry(0.05, 0.05, 0.01).translate(0, 0, 3), new THREE.BufferGeometry()];
+  geometries[3].setAttribute('position', new THREE.Float32BufferAttribute([1, 1, 1], 3));
+  for (const geometry of geometries) geometry.computeBoundingSphere();
+  const meshes = geometries.map(geometry => new THREE.InstancedMesh(geometry, new THREE.MeshBasicMaterial(), 24));
+  const object = new THREE.Object3D(), matrix = new THREE.Matrix4(), reference = new THREE.Sphere(), part = new THREE.Sphere();
+  const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
+  let cases = 0, equalCentres = 0, inside = 0;
+  try {
+    for (let round = 0; round < 400; round += 1) {
+      for (const mesh of meshes) for (let index = 0; index < 24; index += 1) {
+        const kind = random();
+        if (kind < 0.1) { mesh.setMatrixAt(index, hidden); continue; }
+        // A shared spot makes equal transformed centres; a big spread makes far parts.
+        const spot = kind < 0.25 ? 0 : (random() - 0.5) * (kind < 0.5 ? 0.2 : 400);
+        object.position.set(spot, kind < 0.25 ? 1 : (random() - 0.5) * 3, spot * 0.5);
+        object.rotation.set(random() * 7, random() * 7, random() * 7);
+        const scale = kind < 0.3 ? 0 : random() * 2;
+        object.scale.set(kind > 0.9 ? -scale : scale, random() * 2, random() * 1.5 + 0.01);
+        object.updateMatrix(); mesh.setMatrixAt(index, object.matrix);
+      }
+      const slots: InstanceSphereSlot[] = Array.from({ length: 1 + Math.floor(random() * 40) }, () => {
+        const mesh = meshes[Math.floor(random() * meshes.length)]!;
+        return { batch: { mesh, geometry: mesh.geometry }, index: Math.floor(random() * 24) };
+      });
+      // Repeated parts (the same matrix row twice) are the union's equal-centre branch.
+      if (round % 4 === 0) slots.splice(1, 0, slots[0]!, slots[0]!);
+      reference.makeEmpty();
+      for (const slot of slots) {
+        slot.batch.mesh!.getMatrixAt(slot.index, matrix);
+        part.copy(slot.batch.geometry.boundingSphere!).applyMatrix4(matrix);
+        if (!reference.isEmpty() && !part.isEmpty() && reference.center.equals(part.center)) equalCentres += 1;
+        if (!reference.isEmpty() && reference.containsPoint(part.center)) inside += 1;
+        reference.union(part);
+      }
+      const bounds = unionInstanceSpheres(new THREE.Sphere(new THREE.Vector3(9, 9, 9), 9), slots);
+      assert.deepEqual([bounds.center.x, bounds.center.y, bounds.center.z, bounds.radius].map(bitsOf),
+        [reference.center.x, reference.center.y, reference.center.z, reference.radius].map(bitsOf), `round ${round}`);
+      cases += slots.length;
+    }
+    const empty = unionInstanceSpheres(new THREE.Sphere(new THREE.Vector3(1, 2, 3), 4), []);
+    const made = new THREE.Sphere().makeEmpty();
+    assert.deepEqual([empty.center.x, empty.center.y, empty.center.z, empty.radius].map(bitsOf),
+      [made.center.x, made.center.y, made.center.z, made.radius].map(bitsOf), 'no slots is makeEmpty');
+    assert.ok(cases > 6000 && equalCentres > 50 && inside > 500, JSON.stringify({ cases, equalCentres, inside }));
+  } finally { for (const mesh of meshes) mesh.dispose(); for (const geometry of geometries) geometry.dispose(); }
+});
+
+test('PERF-WHARF: an unrotated part\'s quaternion is exactly (+0, +0, +0, 1), and only +0 angles give it', () => {
+  const quaternion = new THREE.Quaternion(), euler = new THREE.Euler();
+  const bits = () => [quaternion.x, quaternion.y, quaternion.z, quaternion.w].map(bitsOf);
+  quaternion.set(9, 9, 9, 9); quaternion.setFromEuler(euler.set(0, 0, 0), false);
+  assert.deepEqual(bits(), [0, 0, 0, 1].map(bitsOf), 'what write()\'s shortcut sets');
+  // Signed zeros are why the shortcut is guarded with Object.is: some leave a −0 behind.
+  quaternion.setFromEuler(euler.set(-0, 0, -0), false);
+  assert.notDeepEqual(bits(), [0, 0, 0, 1].map(bitsOf));
+});
+
+test('PERF-WHARF: a length test is never failed by a normal whose up component alone exceeds twice its threshold', () => {
+  let seed = 11;
+  const random = (): number => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  for (let index = 0; index < 20_000; index += 1) {
+    const y = 2e-6 * (1 + random() * (index % 2 ? 1e-9 : 4)) + Number.EPSILON * random();
+    const x = (random() - 0.5) * 10 ** (Math.floor(random() * 14) - 9), z = (random() - 0.5) * 10 ** (Math.floor(random() * 14) - 9);
+    assert.ok(Math.hypot(x, y, z) > 1e-6, `${x} ${y} ${z}`);
+    assert.ok(Math.hypot(x, y, z) >= y, `hypot below its largest component at ${x} ${y} ${z}`);
+  }
+});
+
+test('PERF-WHARF: rows are found by the learned layout exactly as by id, in any order, with stale duplicates and gaps', () => {
+  const actors = [spec('walker', 'w0', 0), spec('social', 's1', 1), spec('trafficVehicle', 'v2', 2),
+    spec('jogger', 'j3', 3), spec('fictionalEuc', 'e4', 4), spec('worker', 'k5', 5)];
+  const reference = createPopulationView(plan(actors)), shuffled = createPopulationView(plan(actors));
+  const at = (frame: number) => actors.map((actor, index) => pose(actor, { x: index * 6 + frame * 0.03, z: frame * 0.02 * index,
+    gaitDistanceMetres: frame * 0.04, wheelTravelMetres: frame * 0.05, activityPhase: (frame * 0.07 + index * 0.1) % 1 }));
+  // The simulation's own layout is id-sorted, not the plan's order.
+  const sorted = (rows: PopulationRenderPose[]) => [...rows].sort((a, b) => a.id < b.id ? -1 : 1);
+  const layouts: ((rows: PopulationRenderPose[], frame: number) => PopulationRenderPose[])[] = [
+    rows => sorted(rows), rows => sorted(rows), rows => [...rows].reverse(), rows => sorted(rows),
+    // A stale earlier copy of one id: the id map keeps the last row, and so must the layout.
+    (rows, frame) => [{ ...rows[1]!, x: -50 }, ...sorted(rows)].map((row, i) => i === 0 ? row : { ...row, z: row.z + frame * 1e-3 }),
+    rows => sorted(rows).slice(1), rows => sorted(rows),
+  ];
+  try {
+    let previous = at(0), compared = 0;
+    for (let frame = 1; frame < 60; frame += 1) {
+      const current = at(frame), layout = layouts[frame % layouts.length]!, shape = layouts[(frame + 3) % layouts.length]!;
+      const ordered = layout(current, frame), before = shape(previous, frame);
+      // The reference reads by id from the plan-ordered rows the layouts were built from (last row of an id wins).
+      const byId = (rows: PopulationRenderPose[]) => { const map = new Map(rows.map(row => [row.id, row]));
+        return actors.flatMap(actor => map.has(actor.id) ? [map.get(actor.id)!] : []); };
+      for (const alpha of [0.25, 0.75]) {
+        reference.update(snapshot(byId(before), frame - 1), snapshot(byId(ordered), frame), alpha);
+        shuffled.update(snapshot(before, frame - 1), snapshot(ordered, frame), alpha);
+        assert.deepEqual(matrices(shuffled.group).map(row => row.map(bitsOf)), matrices(reference.group).map(row => row.map(bitsOf)), `frame ${frame}`);
+        assert.deepEqual(shuffled.report().missingPoseIds, reference.report().missingPoseIds);
+        compared += 1;
+      }
+      previous = current;
+    }
+    assert.ok(compared > 100);
+  } finally { reference.dispose(); shuffled.dispose(); }
 });

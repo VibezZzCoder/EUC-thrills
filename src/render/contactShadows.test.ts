@@ -270,9 +270,11 @@ test('blocks and buildings lay skirts: drawn blocks with a foot, every building,
   // The see-through railings' boxes and the Quay's stalls (which lay a stall blob) lay none.
   const quay = planFor('euclaude');
   const quaySkirts = contactShadowSkirts(quay);
-  const centres = new Set(quaySkirts.map((skirt) => `${skirt.x},${skirt.z}`));
+  // Keyed by footprint as well as centre: the rear stair masonry's undrawn coping solid shares
+  // the drawn masonry's centre (2026-10-23), and only the masonry lays a skirt.
+  const centres = new Set(quaySkirts.map((skirt) => `${skirt.x},${skirt.z},${skirt.footX},${skirt.footZ}`));
   for (const box of planColliders(quay)) {
-    if (box.drawn === false) assert.ok(!centres.has(`${box.centre.x},${box.centre.z}`), 'an undrawn railing box laid a skirt');
+    if (box.drawn === false) assert.ok(!centres.has(`${box.centre.x},${box.centre.z},${box.halfExtents.x},${box.halfExtents.z}`), 'an undrawn railing box laid a skirt');
   }
   for (const rect of quay.quayScenery!.stalls) {
     assert.ok(!quaySkirts.some((skirt) => skirt.x >= rect.x0 && skirt.x <= rect.x1 && skirt.z >= rect.z0 && skirt.z <= rect.z1), 'a stall is shaded twice');

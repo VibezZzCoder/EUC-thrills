@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { createEuclaudeLevel } from './euclaudeLevel.ts';
-import { buildQuayScenery, QUAY_ROOF_COLOURS, quayRailingGeometry, quaySceneryTriangles, type QuayRect } from './quayScenery.ts';
+import { buildQuayScenery, COPING, copingSolid, QUAY_ROOF_COLOURS, quayRailingGeometry, quaySceneryTriangles, type QuayRect } from './quayScenery.ts';
 import { planRenderCost } from './renderBudget.ts';
 
 const plan = createEuclaudeLevel();
@@ -55,7 +55,10 @@ test('ground dressing never paints the carriageway and stays on the island', () 
 
 // -- See-through railings and roof cues (2026-10-22) -------------------------
 
-const hidden = plan.segments.flatMap(s => s.colliders).filter(c => c.drawn === false);
+// Undrawn boxes are railings, except the rear stair masonry's coping solid, drawn as that wall's coping (2026-10-23).
+const undrawn = plan.segments.flatMap(s => s.colliders).filter(c => c.drawn === false);
+const copingSolids = undrawn.filter(c => Math.abs(c.halfExtents.y - COPING.depth / 2) < 1e-9);
+const hidden = undrawn.filter(c => !copingSolids.includes(c));
 const footprint = (c: (typeof hidden)[number]): QuayRect => ({ x0: c.centre.x - c.halfExtents.x, x1: c.centre.x + c.halfExtents.x, z0: c.centre.z - c.halfExtents.z, z1: c.centre.z + c.halfExtents.z });
 const within = (r: QuayRect, x: number, z: number, m = 1e-9): boolean => x >= r.x0 - m && x <= r.x1 + m && z >= r.z0 - m && z <= r.z1 + m;
 
@@ -122,6 +125,32 @@ test('the walls the railings replace keep no coping', () => {
     const edge = Math.abs(x) > 117.5 || Math.abs(z) > 87.5, parapet = hidden.some(c => c.centre.y > 11 && within(footprint(c), x, z, 0.1));
     if (edge) assert.ok(Math.abs(y - 1.48) > 1e-3, `island coping left at ${x},${z}`);
     if (parapet) assert.ok(Math.abs(y - 12.68) > 1e-3, `parapet coping left at ${x},${z}`);
+  }
+});
+
+test('the rear stair wall stops a wheel at its drawn coping, and the ramp-wall joint has one coping either side', () => {
+  // 2026-10-23: the masonry's coping is solid (its step from the deck is 0.28 m), exactly where it is drawn.
+  assert.equal(copingSolids.length, 1);
+  const [solid] = copingSolids, f = footprint(solid), base = solid.centre.y - solid.halfExtents.y;
+  const wall = plan.segments.flatMap(s => s.colliders).find(c => c.drawn !== false && Math.abs(c.centre.y + c.halfExtents.y - base) < 1e-9
+    && within(footprint(c), solid.centre.x, solid.centre.z));
+  assert.ok(wall && Math.abs(base - 1.4) < 1e-9);
+  assert.deepEqual(solid, copingSolid(wall));
+  const r = buildQuayScenery(plan)!.raised.positions;
+  let corners = 0;
+  for (let i = 0; i < r.length; i += 3) {
+    const x = r[i], y = r[i + 1], z = r[i + 2];
+    if (y < base - 1e-6 || y > base + COPING.depth + 1e-6 || !within(f, x, z, 0.2) || z < -1) continue;
+    assert.ok(within(f, x, z, 1e-5), `coping drawn outside its solid at ${x},${y},${z}`);
+    if ((Math.abs(z - f.z0) < 1e-5 || Math.abs(z - f.z1) < 1e-5) && (Math.abs(x - f.x0) < 1e-5 || Math.abs(x - f.x1) < 1e-5)) corners++;
+  }
+  assert.ok(corners >= 8, 'and the coping fills the solid to its corners');
+  // The deck's east guard meets the return ramp's wall at x 49.8: no coping crosses that joint (no shallow-angle crease).
+  for (let i = 0; i < r.length; i += 9) {
+    const v = [0, 3, 6].map(k => [r[i + k], r[i + k + 1], r[i + k + 2]]);
+    if (v.some(p => p[1] < 2.3 || p[2] <= 1 || p[2] >= 12 || p[0] < 48 || p[0] > 51)) continue;
+    const lo = Math.min(...v.map(p => p[0])), hi = Math.max(...v.map(p => p[0]));
+    assert.ok(hi <= 49.8 + 1e-5 || lo >= 49.8 - 1e-5, `a coping triangle crosses the joint at x ${lo.toFixed(3)}…${hi.toFixed(3)}`);
   }
 });
 

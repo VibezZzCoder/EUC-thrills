@@ -13534,7 +13534,8 @@ export class Game {
     const populationPrevious = this.populationPresentationPrevious, populationCurrent = this.populationPresentationCurrent;
     this.population.writePresentationEndpoints(populationPrevious, populationCurrent);
     this.renderer.updatePopulation(populationPrevious, populationCurrent, alpha);
-    updatePopulationAudio(this.audio, populationPrevious, populationCurrent, alpha);
+    // The plan whose `populationAudioEmitters` `installLevel` handed the ambience (PERF-WHARF, 2026-10-23).
+    updatePopulationAudio(this.audio, populationPrevious, populationCurrent, alpha, this.populationPlan);
     // Traffic horns (2026-10-21): read-only presented rows and the presented
     // riders above (seats first, then placed cops). The seat count is load-
     // bearing: seats are the ears and the only riders honked at; a placed CPU

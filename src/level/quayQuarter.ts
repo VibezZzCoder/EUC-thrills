@@ -8,7 +8,7 @@ import type { AuthoredLaunchPad, BoxCollider, LevelPlan, Marking } from './plan.
 import type { SegmentBranch, SegmentSpec } from './segments.ts';
 import { quayDressing } from './quayDressing.ts';
 import { PROP_SOLIDS } from '../data/props.ts';
-import type { QuayRailing, QuayRect, QuayScenerySpec } from './quayScenery.ts';
+import { copingSolid, type QuayRailing, type QuayRect, type QuayScenerySpec } from './quayScenery.ts';
 import { LAUNCH_PAD } from '../data/tuning.ts';
 import { LAUNCH_PAD_ROLL_RADIUS, launchPadSkirtRun } from '../simulation/launchPadField.ts';
 
@@ -60,8 +60,13 @@ export function* createQuayGeometrySteps(guards=false, dressed=false):Steps<Leve
  const p=yield* buildLevelPlanSteps({main,branches},{id:'euclaude-r2',spawn:{position:{x:-98,y:0,z:-52},headingY:0},surround:{height:0,surface:'pavement'},spacing:1,fieldMargin:15,settleBlocks:false,...(dressed?{props:quayDressing()}:{})});
  const boxes:BoxCollider[]=[quayBox(-84,-64,-27,-11,11,dressed?10:0),quayBox(-84,-64,-7,17,11,dressed?10:0),quayBox(-84,-64,25,39,11,dressed?10:0),quayBox(-84,-24,39,59,11,dressed?10:0),
  quayBox(21,27,12,12.6,.15),quayBox(21,27,12.6,13.2,.3),quayBox(21,34,13.2,21.8,.45),quayBox(21,27,21.8,22.4,.3),quayBox(21,27,22.4,23,.15),
- quayBox(35,49,0,12,1.2),quayBox(42,54,0,1,1.2),quayBox(-32,-28,-7,-6,.6)];
- for(let i=0;i<11;i++)boxes.push(quayBox(38,46,12+i*.8,12+(i+1)*.8,(11-i)*.1));
+ // The grand stair deck and the ramp-top connector run back to the rear wall's
+ // face at z −0.25: a 0.25 m slot there dropped a rider to y0 and held him (2026-10-23).
+ // The connector starts at the deck's edge, so the two tops never share a plane.
+ quayBox(35,49,-.25,12,1.2),quayBox(49,54,-.25,1,1.2),quayBox(-32,-28,-7,-6,.6)];
+ // Treads run under both cheeks to their outer faces, as the drawn cheek walls
+ // stand from the ground: no 0.15 m slot beside the stair (2026-10-23).
+ for(let i=0;i<11;i++)boxes.push(quayBox(37.55,46.45,12+i*.8,12+(i+1)*.8,(11-i)*.1));
  // The island edge and the roof parapets are drawn as see-through railings
  // (`quayScenery.ts`, 2026-10-22): the same boxes in the same order, solid and
  // camera-occluding as ever, only not drawn as blocks.
@@ -91,9 +96,13 @@ export function* createQuayGeometrySteps(guards=false, dressed=false):Steps<Leve
   run(-24.25,39,-24.25,58.75,1,0,{x0:-24.25,x1:-23.75,z0:39,z1:59.25});
   run(-83.75,58.75,-24.25,58.75,0,1,{x0:-83.75,x1:-24.25,z0:58.75,z1:59.25});
   // The raised stair deck and return ramp cannot be attacked as a sideways launcher.
-  boxes.push(quayBox(34.5,35,0,12,2.8,0,'brick'),quayBox(49,49.5,1,12,2.8,0,'brick'));
+  // The west guard closes on the rear wall; the east one meets the return ramp's
+  // wall at x 49.8, closing the 0.3 m channel between them (2026-10-23).
+  boxes.push(quayBox(34.5,35,-.25,12,2.8,0,'brick'),quayBox(49,49.8,1,12,2.8,0,'brick'));
   // Open rear railing keeps the entry chase view clear; deck face still blocks a straight approach.
-  boxes.push(quayBox(35,50,-.75,-.25,1.4,0,'brick'),quayBox(35,50,-.58,-.42,2.8,2.64,'metal'));
+  // Its coping is solid too, so the deck's step onto it is 0.28 m, not a climbable 0.2 (2026-10-23).
+  const rear=quayBox(35,50,-.75,-.25,1.4,0,'brick');
+  boxes.push(rear,copingSolid(rear),quayBox(35,50,-.58,-.42,2.8,2.64,'metal'));
   for(const x of[35,38,41,44,47,50])boxes.push(quayBox(x-.08,x+.08,-.58,-.42,2.8,1.4,'metal'));
   for(let i=0;i<27;i++)for(const x of[50,54])boxes.push(quayBox(x-.2,x+.2,27-i,28-i,1.2*(i+1)/27+1.6));
   for(const [z0,z1] of [[-27,-11],[-7,17],[25,39]])for(const x of[-84,-64])boxes.push(unseen(quayBox(x-.25,x+.25,z0,z1,12.6,11,'brick')));

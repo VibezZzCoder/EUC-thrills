@@ -11,9 +11,11 @@ export function quayDressing():PlacedProp[]{
  const building=(x0:number,x1:number,z0:number,z1:number,h:number,look?:BuildingLook,rotationY=0,tone?:number,roofTone?:number)=>props.push({kind:'building',x:(x0+x1)/2,z:(z0+z1)/2,lift:0,rotationY,scale:1,size:{x:x1-x0,y:h,z:z1-z0},...(look?{look}:{}),...(tone===undefined?{}:{tone}),...(roofTone===undefined?{}:{roofTone})});
  // A harbour town is painted: neighbours never share a colour, warehouses are brick.
  const H=QUAY_HARBOUR_TONES,R=QUAY_HARBOUR_ROOFS;
- // One metre of slab encloses the kit's .75 m cap; facade bodies end at y10.
- building(-83.7,-64.3,-26.7,-11.3,10,undefined,0,0x9a5443);building(-83.7,-64.3,-6.7,16.7,10,undefined,0,0xb07a4a);
- building(-83.7,-64.3,25.3,38.7,10,undefined,0,0x9a5443);building(-83.7,-24.3,39.3,58.7,10,undefined,0,0x8f6a52);
+ // Facade bodies end at y10, where each riding slab starts; the slab is the roof,
+ // so no kit cap shares its underside and fights it at the eave (2026-10-23).
+ const warehouse=(x0:number,x1:number,z0:number,z1:number,tone:number)=>{building(x0,x1,z0,z1,10,undefined,0,tone);props[props.length-1].slabRoof=true;};
+ warehouse(-83.7,-64.3,-26.7,-11.3,0x9a5443);warehouse(-83.7,-64.3,-6.7,16.7,0xb07a4a);
+ warehouse(-83.7,-64.3,25.3,38.7,0x9a5443);warehouse(-83.7,-24.3,39.3,58.7,0x8f6a52);
  // The park's north edge is a terrace of gabled townhouses.
  for(let i=0;i<8;i++)building(16+9*i,23+9*i,-61,-53,[6.4,7,7.6][i%3],'residential',0,H[(i*3)%H.length],R[i%R.length]);
   // Heights sit in the kit's bands: under 8 m draws two storeys, 8–26 m draws four, so a

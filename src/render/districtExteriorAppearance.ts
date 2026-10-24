@@ -5,7 +5,7 @@ import { PROP_COLOURS } from '../data/props.ts';
 import { positionHash01 } from '../shared/maths.ts';
 import type { Prop } from '../level/plan.ts';
 import type { DistrictExteriorAppearance } from './districtExterior.ts';
-import { exteriorComposition, type ExteriorColour, type ExteriorFinish } from './districtExteriorSites.ts';
+import { exteriorSourceComposition, type ExteriorColour, type ExteriorFinish } from './districtExteriorSites.ts';
 
 /** Shop fascia boards (2026-10-22): cream, stone white and sand, sRGB. A pale
  * board carries the dark painted name; a dark one read as a hole in the wall. */
@@ -24,7 +24,8 @@ export function createDistrictExteriorAppearance(): Pick<DistrictExteriorAppeara
     colourFor(prop, finish) {
       let cached = colours.get(prop);
       if (!cached) {
-        const pieces = exteriorComposition(prop), body = pieces[0];
+        // Colours from the source composition: a slab roof (`Prop.slabRoof`) keeps its trim's roof tone.
+        const pieces = exteriorSourceComposition(prop), body = pieces[0];
         if (!body) throw new Error('Exterior appearance needs an actual building composition');
         const roof = pieces.find(piece => piece.part === 'roofGable') ?? pieces[pieces.length - 1];
         const rgb = (hex: number, scale: number): [number, number, number] =>

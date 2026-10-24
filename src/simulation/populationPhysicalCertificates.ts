@@ -93,6 +93,43 @@ const isSamePose = (a: RiderOccupancyPose, b: RiderOccupancyPose) => Object.keys
   }
   return a[key as Exclude<keyof RiderOccupancyPose, 'ragdoll' | 'ragdollJointPoles'>] === b[key as Exclude<keyof RiderOccupancyPose, 'ragdoll' | 'ragdollJointPoles'>];
 });
+/**
+ * Each actor's coarse motion box and owner id, kept per actor array that is
+ * frozen down to its footprints' local hulls (PERF-WHARF, 2026-10-23): the
+ * transaction's census is, and every owner of every pass and every native-step
+ * check asks it the same 122 boxes again. An array is kept from its second
+ * question on; any other array is measured afresh.
+ */
+interface ActorBoxes { readonly owners: readonly string[]; readonly boxes: readonly Aabb[] }
+const actorBoxCache = new WeakMap<readonly PopulationCompoundActorMotion[], ActorBoxes>(), askedOnce = new WeakSet<readonly PopulationCompoundActorMotion[]>();
+const frozenFootprint = (body: PopulationFootprint): boolean => Object.isFrozen(body)
+  && (!body.sourceHull || (Object.isFrozen(body.sourceHull) && Object.isFrozen(body.sourceHull.hull)));
+function actorBoxes(actors: readonly PopulationCompoundActorMotion[]): ActorBoxes | undefined {
+  let known = actorBoxCache.get(actors);
+  if (known !== undefined || !Object.isFrozen(actors)) return known;
+  if (!askedOnce.has(actors)) { askedOnce.add(actors); return undefined; }
+  if (actors.every(actor => Object.isFrozen(actor) && frozenFootprint(actor.previous) && frozenFootprint(actor.current))) {
+    known = { owners: actors.map(actor => actor.ownerId ?? `actor:${actor.id}`), boxes: actors.map(actor => coarseActorMotionWorldAabb(actor.previous, actor.current)) };
+    actorBoxCache.set(actors, known);
+  }
+  return known;
+}
+/** Bit-identical poses: the same own keys, every value and particle Object.is. */
+function exactPose(a: RiderOccupancyPose, b: RiderOccupancyPose): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+    const first = a[key as keyof RiderOccupancyPose], last = b[key as keyof RiderOccupancyPose];
+    if (ArrayBuffer.isView(first) || ArrayBuffer.isView(last)) {
+      if (!ArrayBuffer.isView(first) || !ArrayBuffer.isView(last)) return false;
+      const x = first as unknown as ArrayLike<number>, y = last as unknown as ArrayLike<number>;
+      if (x.length !== y.length) return false;
+      for (let index = 0; index < x.length; index += 1) if (!Object.is(x[index], y[index])) return false;
+    } else if (!Object.is(first, last)) return false;
+  }
+  return true;
+}
 export const footprintFromOccupancy = (p: RiderOccupancyPrism, velocityX = 0, velocityZ = 0): PopulationFootprint => ({ x: p.x, z: p.z, headingY: p.headingY,
   halfWidthMetres: p.halfWidth, halfLengthMetres: p.halfLength, minY: p.baseY, maxY: p.topY, velocityX, velocityZ });
 export class PopulationPhysicalCertificates {
@@ -108,12 +145,29 @@ export class PopulationPhysicalCertificates {
   private slot(ownerId: string, kind: OccupancyCertificateKind, role: string): CompiledOccupancySlot {
     const key = `${ownerId}/${kind}/${role}`; let slot = this.slots.get(key); if (!slot) { slot = this.template(kind).createSlot(); this.slots.set(key, slot); } return slot;
   }
+  /**
+   * A rag slot's load always forgets its remembered points and rebuilds its
+   * quaternion fields, and a crashed owner's selection candidate and native
+   * replay load it with bit-identical poses pass after pass. The loaded slot
+   * is a pure function of its two poses, so an exact repeat of the slot's last
+   * successful load (every field Object.is, every particle) is not reloaded
+   * (PERF-WHARF, 2026-10-23). Wheel and mounted slots keep their own check.
+   */
+  private readonly ragLoads = new Map<CompiledOccupancySlot, { readonly before: RiderOccupancyPose; readonly after: RiderOccupancyPose }>();
+  private load(slot: CompiledOccupancySlot, kind: OccupancyCertificateKind, before: RiderOccupancyPose, after: RiderOccupancyPose): void {
+    if (kind !== 'rag-human') { slot.load(before, after); return; }
+    const last = this.ragLoads.get(slot);
+    if (last && exactPose(last.before, before) && exactPose(last.after, after)) return;
+    this.ragLoads.delete(slot);
+    slot.load(before, after);
+    this.ragLoads.set(slot, { before: detached(before), after: detached(after) });
+  }
   components(ownerId: string, before: RiderOccupancyPose, after: RiderOccupancyPose, dt: number, role: 'moving' | 'held' | 'placement',
     only?: readonly OccupancyCertificateKind[]): readonly PopulationCompoundTrajectory[] {
     if (role !== 'moving' && !isSamePose(before, after)) throw new RangeError('Held/placement components require one unchanged physical pose');
     const kinds: readonly OccupancyCertificateKind[] = only ?? ['wheel', before.ragdollBlend > 0 || after.ragdollBlend > 0 ? 'rag-human' : 'mounted-human'];
     return kinds.map(kind => {
-      const slot = this.slot(ownerId, kind, role); slot.load(before, after);
+      const slot = this.slot(ownerId, kind, role); this.load(slot, kind, before, after);
       // Held and placement descriptors carry zero velocity, so only a moving
       // role reads its endpoints here (eagerly, as before). A point at() cannot
       // throw once load() has accepted the pose; callers evaluate it on demand.
@@ -135,7 +189,7 @@ export class PopulationPhysicalCertificates {
    * this shape; the fall itself answers to its particles and wheel.
    */
   private ragSweep(ownerId: string, before: RiderOccupancyPose, after: RiderOccupancyPose, dt: number): PopulationCompoundTrajectory {
-    const slot = this.slot(ownerId, 'rag-human', 'moving'); slot.load(before, after);
+    const slot = this.slot(ownerId, 'rag-human', 'moving'); this.load(slot, 'rag-human', before, after);
     const first = withParticles(footprintFromOccupancy(slot.at(0)), before), last = withParticles(footprintFromOccupancy(slot.at(1)), after);
     const velocityX = dt > 0 ? (last.x - first.x) / dt : 0, velocityZ = dt > 0 ? (last.z - first.z) / dt : 0;
     // One heading frame: a crash never turns its wheel's heading (only a recovery placement does).
@@ -158,7 +212,9 @@ export class PopulationPhysicalCertificates {
     const before = detached(previous), after = detached(current), input = { previous: before, current: discontinuous ? before : after, coefficients: this.coefficients };
     const activeRag = input.previous.ragdollBlend > 0 || input.current.ragdollBlend > 0;
     const boxes = [coarseWheelWorldAabb(input), activeRag ? physicalRagHumanWorldAabb(input) : coarseMountedHumanWorldAabb(input)];
-    const admitted = actors.some(actor => (actor.ownerId ?? `actor:${actor.id}`) !== ownerId && boxes.some(box => aabbsOverlap(box, coarseActorMotionWorldAabb(actor.previous, actor.current))));
+    const kept = actorBoxes(actors);
+    const admitted = kept ? kept.owners.some((owner, index) => owner !== ownerId && boxes.some(box => aabbsOverlap(box, kept.boxes[index])))
+      : actors.some(actor => (actor.ownerId ?? `actor:${actor.id}`) !== ownerId && boxes.some(box => aabbsOverlap(box, coarseActorMotionWorldAabb(actor.previous, actor.current))));
     // No crashed body waits for a frame certificate any more: its human is the
     // straight sweep between its exact ends, which needs none (CR-1). A body
     // that only starts its fall in this step keeps the certified enclosure.

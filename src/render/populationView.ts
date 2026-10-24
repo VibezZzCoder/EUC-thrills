@@ -10,7 +10,8 @@ import { loftGeometry, loftProfile, patchGeometry, mergeGeometries, shaded, type
 import { createBlockoutEUC, type BlockoutEUC } from './euc.ts';
 import { STANDARD_MACHINE_LOOK } from './machineLook.ts';
 import { ULTRA_STATIC_LAYER } from './ultra/ultraRecipe.ts';
-import { POPULATION_MODEL, populationSupportTargets, type PopulationGroundSupport } from '../shared/populationSupport.ts';
+import { createPopulationSupportTargetsRecord, POPULATION_MODEL, populationSupportTargetsInto,
+  type PopulationGroundSupport, type PopulationSupportInput } from '../shared/populationSupport.ts';
 import { compactVisibleInstances } from './instanceVisibility.ts';
 import { assignVehicleBodies, populationHash, vehicleBodyParts, vehiclePaint, VEHICLE_BODY_HEIGHT,
   type PopulationVehicleBody } from './populationVehicles.ts';
@@ -217,6 +218,24 @@ function samePose(a: MutablePose, b: MutablePose): boolean {
   for (const key of POSE_SCALARS) if (!Object.is(a[key], b[key])) return false;
   return sameSupports(a.footSupports, b.footSupports) && sameSupports(a.tyreSupports, b.tyreSupports);
 }
+/**
+ * Pose-loop constants (PERF-WHARF, 2026-10-23). The loops used to build their
+ * part names and side/axle lists every frame for every actor — a few dozen
+ * string concatenations and small arrays per person per frame on the Wharf.
+ * The same names, in the same order, are built once here.
+ */
+const SIGNS = [1, -1] as const;
+const AXLES = [true, false] as const;
+const sideKeys = <T extends string>(names: readonly T[]): readonly Readonly<Record<T, string>>[] =>
+  (['l', 'r'] as const).map(side => Object.fromEntries(names.map(name => [name, `${side}-${name}`])) as Record<T, string>);
+const HUMAN_SIDE_KEYS = sideKeys(['eye', 'brow', 'ear', 'shoe', 'sole', 'thigh', 'shin', 'upper-arm', 'forearm', 'hand'] as const);
+const VEHICLE_SIDE_KEYS = sideKeys(['front-tyre', 'front-rim', 'front-arch', 'rear-tyre', 'rear-rim', 'rear-arch',
+  'mirror', 'mirror-glass', 'headlamp', 'handle', 'cab-seam', 'door-seam', 'slide-seam', 'slide-handle', 'taillamp',
+  'side-rub', 'livery', 'pillar', 'roof-rail', 'waist-stripe', 'top-rail', 'sill-rail', 'rear-post', 'front-post',
+  'mudguard', 'side-guard'] as const);
+const SHELL_KEYS = ['hull', 'cabin', 'windshield', 'sideWindows', 'sidePassenger', 'rearWindow'] as const;
+const DOOR_SLATS = [0.30, 0.55, 0.80] as const;
+const DOOR_SLAT_KEYS = DOOR_SLATS.map((_, index) => `door-slat-${index}`);
 const TAU = Math.PI * 2;
 const clamp = (n: number, low: number, high: number): number => Math.min(high, Math.max(low, n));
 const fraction = (n: number): number => n - Math.floor(n);
@@ -548,6 +567,56 @@ const VEHICLE_GEOMETRY: Readonly<Record<string, () => THREE.BufferGeometry>> = {
   ]).rotateZ(Math.PI / 2),
 };
 
+/** One instance of a batch: its stored matrix row and the batch geometry's own sphere. */
+export interface InstanceSphereSlot {
+  readonly batch: { readonly mesh: THREE.InstancedMesh | null; readonly geometry: THREE.BufferGeometry };
+  readonly index: number;
+}
+/**
+ * `bounds` := the union of every slot's geometry bounding sphere under its
+ * stored instance matrix, in slot order — what `makeEmpty()` then, per slot,
+ * `getMatrixAt` + `Sphere.copy(...).applyMatrix4` + `Sphere.union` (three
+ * 0.185) leave, to the float bit. PERF-WHARF (2026-10-23): the same arithmetic,
+ * operation for operation, read straight from the instance words (the float32
+ * values `getMatrixAt` would copy out) without a matrix copy or five method
+ * calls per part. `populationView.test.ts` pins it to three's own result.
+ */
+export function unionInstanceSpheres(bounds: THREE.Sphere, slots: readonly InstanceSphereSlot[]): THREE.Sphere {
+  let radius = -1, cx = 0, cy = 0, cz = 0;
+  for (const slot of slots) {
+    const e = slot.batch.mesh!.instanceMatrix.array, o = slot.index * 16;
+    const local = slot.batch.geometry.boundingSphere!, lx = local.center.x, ly = local.center.y, lz = local.center.z;
+    // Vector3.applyMatrix4, then radius × Matrix4.getMaxScaleOnAxis.
+    const w = 1 / (e[o + 3]! * lx + e[o + 7]! * ly + e[o + 11]! * lz + e[o + 15]!);
+    const px = (e[o]! * lx + e[o + 4]! * ly + e[o + 8]! * lz + e[o + 12]!) * w;
+    const py = (e[o + 1]! * lx + e[o + 5]! * ly + e[o + 9]! * lz + e[o + 13]!) * w;
+    const pz = (e[o + 2]! * lx + e[o + 6]! * ly + e[o + 10]! * lz + e[o + 14]!) * w;
+    const pr = local.radius * Math.sqrt(Math.max(e[o]! * e[o]! + e[o + 1]! * e[o + 1]! + e[o + 2]! * e[o + 2]!,
+      e[o + 4]! * e[o + 4]! + e[o + 5]! * e[o + 5]! + e[o + 6]! * e[o + 6]!,
+      e[o + 8]! * e[o + 8]! + e[o + 9]! * e[o + 9]! + e[o + 10]! * e[o + 10]!));
+    // Sphere.union.
+    if (pr < 0) continue;
+    if (radius < 0) { cx = px; cy = py; cz = pz; radius = pr; continue; }
+    if (px === cx && py === cy && pz === cz) { radius = Math.max(radius, pr); continue; }
+    // (part centre − centre).setLength(part radius): normalize, then scale.
+    let ox = px - cx, oy = py - cy, oz = pz - cz;
+    const inverse = 1 / (Math.sqrt(ox * ox + oy * oy + oz * oz) || 1);
+    ox *= inverse; oy *= inverse; oz *= inverse; ox *= pr; oy *= pr; oz *= pr;
+    // expandByPoint(part centre + that), then expandByPoint(part centre − that).
+    for (let end = 0; end < 2; end += 1) {
+      const qx = end === 0 ? px + ox : px - ox, qy = end === 0 ? py + oy : py - oy, qz = end === 0 ? pz + oz : pz - oz;
+      if (radius < 0) { cx = qx; cy = qy; cz = qz; radius = 0; continue; }
+      const dx = qx - cx, dy = qy - cy, dz = qz - cz, lengthSq = dx * dx + dy * dy + dz * dz;
+      if (lengthSq > radius * radius) {
+        const length = Math.sqrt(lengthSq), grow = (length - radius) * 0.5, share = grow / length;
+        cx += dx * share; cy += dy * share; cz += dz * share; radius += grow;
+      }
+    }
+  }
+  bounds.center.set(cx, cy, cz); bounds.radius = radius;
+  return bounds;
+}
+
 /** One world view. Instancing makes the submission count a finite family count,
  * not actor-count × articulated-part-count. Individual colours are instances. */
 export function createPopulationView(
@@ -741,15 +810,24 @@ export function createPopulationView(
   }
 
   // Shared scratch memory; no object allocation per joint or pane. The shared
-  // support helper returns one small plain target record per actor update.
-  const transform = new THREE.Object3D();
+  // support helper writes its targets into a record this view owns.
+  // PERF-WHARF (2026-10-23): a bare position/quaternion/scale scratch in place
+  // of an Object3D. An Object3D keeps its Euler and quaternion in step through
+  // change callbacks, so every `quaternion.copy` below paid a matrix-to-Euler
+  // decomposition nobody read. Setting the Euler still converts it by the same
+  // `setFromEuler`, and the matrix is the same `compose` (no pivot).
+  const transform = {
+    position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), scale: new THREE.Vector3(1, 1, 1),
+    rotation: new THREE.Euler(), matrix: new THREE.Matrix4(),
+    updateMatrix(): void { this.matrix.compose(this.position, this.quaternion, this.scale); },
+  };
+  transform.rotation._onChange(() => { transform.quaternion.setFromEuler(transform.rotation, false); });
   const root = new THREE.Matrix4();
   const normalRoot = new THREE.Matrix4();
   const inverseRoot = new THREE.Matrix4();
   const matrix = new THREE.Matrix4();
   const extra = new THREE.Matrix4();
   const headMatrix = new THREE.Matrix4();
-  const partBounds = new THREE.Sphere();
   const worldBounds = new THREE.Sphere();
   const viewFrustum = new THREE.Frustum(), shadowFrustum = new THREE.Frustum();
   const projection = new THREE.Matrix4();
@@ -770,14 +848,7 @@ export function createPopulationView(
       : PEDESTRIAN_FIGURE.modelledHeightMetres * visual.figure.height;
     return Math.hypot(dx, dz, dy < 0 ? -dy : Math.max(0, dy - crown));
   };
-  const updateBounds = (visual: Visual): void => {
-    visual.bounds.makeEmpty();
-    for (const slot of visual.slots) {
-      slot.batch.mesh!.getMatrixAt(slot.index, matrix);
-      partBounds.copy(slot.batch.geometry.boundingSphere!).applyMatrix4(matrix);
-      visual.bounds.union(partBounds);
-    }
-  };
+  const updateBounds = (visual: Visual): void => { unionInstanceSpheres(visual.bounds, visual.slots); };
   const torsoMatrix = new THREE.Matrix4();
   const normal = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);
@@ -807,7 +878,11 @@ export function createPopulationView(
     rx = 0, ry = 0, rz = 0): void => {
     if (!part || !part.batch.mesh) return;
     transform.position.set(x, y, z);
-    transform.rotation.set(rx, ry, rz);
+    // An unrotated part (most of them): `setFromEuler` of three +0 angles is
+    // exactly (+0, +0, +0, 1). Signed zeros are not (−0 can leave a −0 in the
+    // quaternion), so only exact +0 takes the shortcut (PERF-WHARF, 2026-10-23).
+    if (Object.is(rx, 0) && Object.is(ry, 0) && Object.is(rz, 0)) transform.quaternion.set(0, 0, 0, 1);
+    else transform.rotation.set(rx, ry, rz);
     transform.scale.set(sx, sy, sz);
     transform.updateMatrix();
     matrix.multiplyMatrices(parent, transform.matrix);
@@ -841,14 +916,36 @@ export function createPopulationView(
     if (bend.lengthSq() < 0.01) bend.set(1, 0, 0);
     out.copy(a).addScaledVector(axis, along).addScaledVector(bend, bow);
   };
+  /**
+   * The shared support helper's input, one reused record (PERF-WHARF,
+   * 2026-10-23) instead of a spread of the whole spec per actor per frame. The
+   * helper reads only these fields and keeps nothing; each carries exactly the
+   * value the spread literal gave it.
+   */
+  const supportQuery: { -readonly [K in keyof PopulationSupportInput]: PopulationSupportInput[K] } = {
+    kind: '', appearanceIndex: 0, x: 0, y: 0, z: 0, headingY: 0, speedMetresPerSecond: 0, gaitDistanceMetres: 0,
+    activity: '', groundNormalX: 0, groundNormalY: 1, groundNormalZ: 0,
+    hull: { halfWidthMetres: 0, halfLengthMetres: 0, heightMetres: 0 },
+    posture: undefined, sittingBlend: undefined, seatHeightMetres: undefined,
+  };
+  /** ...and its answer, written into this view's own record (PERF-WHARF, 2026-10-23): read
+   * within one `poseHuman`/`poseVehicle` call only, which never pose another actor. */
+  const supportTargets = createPopulationSupportTargetsRecord();
+  const supportInput = (visual: Visual, posture: PopulationSupportInput['posture'],
+    sittingBlend: number | undefined, seatHeightMetres: number | undefined): PopulationSupportInput => {
+    const s = visual.pose, spec = visual.spec;
+    supportQuery.kind = spec.kind; supportQuery.appearanceIndex = spec.appearanceIndex; supportQuery.hull = spec.hull;
+    supportQuery.x = s.x; supportQuery.y = s.y; supportQuery.z = s.z; supportQuery.headingY = s.headingY;
+    supportQuery.speedMetresPerSecond = s.speed; supportQuery.gaitDistanceMetres = s.gait; supportQuery.activity = s.activity;
+    supportQuery.groundNormalX = s.normalX; supportQuery.groundNormalY = s.normalY; supportQuery.groundNormalZ = s.normalZ;
+    supportQuery.posture = posture; supportQuery.sittingBlend = sittingBlend; supportQuery.seatHeightMetres = seatHeightMetres;
+    return supportQuery;
+  };
   const poseHuman = (visual: Visual): void => {
     const s = visual.pose, p = visual.parts;
     const riding = visual.spec.kind === 'fictionalEuc';
     const jogging = visual.spec.kind === 'jogger';
-    const targets = populationSupportTargets({ ...visual.spec, x: s.x, y: s.y, z: s.z, headingY: s.headingY,
-      speedMetresPerSecond: s.speed, gaitDistanceMetres: s.gait, activity: s.activity,
-      groundNormalX: s.normalX, groundNormalY: s.normalY, groundNormalZ: s.normalZ,
-      posture: s.posture, sittingBlend: s.sittingBlend, seatHeightMetres: s.seatHeight });
+    const targets = populationSupportTargetsInto(supportInput(visual, s.posture, s.sittingBlend, s.seatHeight), supportTargets);
     const { moving, phase, widthScale, heightScale, lengthScale, sittingBlend: sitting } = targets;
     // The drawn figure's own stature and build on top of the hull's scale
     // (PEDESTRIAN_FIGURE). Every pose below is authored in the modelled
@@ -947,11 +1044,11 @@ export function createPopulationView(
     // The previous line's front was inside the jaw. Retain the same box and
     // batch, placing its dark front just outside the actual faceted face.
     write(p.mouth, headMatrix, 0, 0.061, 0.098, 0.059, 0.008, 0.012);
-    for (const sign of [1, -1]) {
-      const side = sign > 0 ? 'l' : 'r';
-      write(p[`${side}-eye`], headMatrix, sign * 0.041, 0.153, 0.093, 0.011, 0.010, 0.009);
-      write(p[`${side}-brow`], headMatrix, sign * 0.041, 0.178, 0.088, 0.045, 0.010, 0.012, 0, 0, sign * -0.04);
-      write(p[`${side}-ear`], headMatrix, sign * 0.112, 0.129, -0.006, 0.022, 0.034, 0.023);
+    for (const sign of SIGNS) {
+      const keys = HUMAN_SIDE_KEYS[sign > 0 ? 0 : 1]!;
+      write(p[keys['eye']], headMatrix, sign * 0.041, 0.153, 0.093, 0.011, 0.010, 0.009);
+      write(p[keys['brow']], headMatrix, sign * 0.041, 0.178, 0.088, 0.045, 0.010, 0.012, 0, 0, sign * -0.04);
+      write(p[keys['ear']], headMatrix, sign * 0.112, 0.129, -0.006, 0.022, 0.034, 0.023);
       // Terrain samples come from simulation at these exact shared targets.
       // Pedal targets instead come from the existing machine's transformed art.
       const index = sign > 0 ? 0 : 1, target = targets.feet![index]!;
@@ -982,8 +1079,8 @@ export function createPopulationView(
       orientation.copy(footOrientation).multiply(pitchOrientation);
       transform.position.copy(foot); transform.quaternion.copy(orientation); transform.scale.setScalar(1);
       transform.updateMatrix(); extra.multiplyMatrices(root, transform.matrix);
-      write(p[`${side}-shoe`], extra, 0, 0, 0);
-      write(p[`${side}-sole`], extra, 0, 0, 0);
+      write(p[keys['shoe']], extra, 0, 0, 0);
+      write(p[keys['sole']], extra, 0, 0, 0);
       ankle.set(0, POPULATION_MODEL.ankleHeight, POPULATION_MODEL.ankleRearward).applyQuaternion(orientation).add(foot);
       hip.set(sign * 0.123 + shift, hipY, hipZ);
       // Sat with the hip-ankle line nearly level, the knees come up, not out;
@@ -997,8 +1094,8 @@ export function createPopulationView(
       knee.z = clamp(knee.z, -visual.spec.hull.halfLengthMetres / lengthScale + 0.082,
         visual.spec.hull.halfLengthMetres / lengthScale - 0.082);
       if (k) knee.x = clamp(knee.x, -hull.halfWidthMetres / widthScale + 0.082, hull.halfWidthMetres / widthScale - 0.082);
-      directed(p[`${side}-thigh`]!, root, hip, knee);
-      directed(p[`${side}-shin`]!, root, knee, ankle);
+      directed(p[keys['thigh']]!, root, hip, knee);
+      directed(p[keys['shin']]!, root, knee, ankle);
 
       if (k) {
         // The shoulder rides the waist's lean.
@@ -1054,8 +1151,8 @@ export function createPopulationView(
         elbow.z = Math.min(elbow.z, hull.halfLengthMetres / lengthScale - 0.095);
         elbow.x = clamp(elbow.x, -hull.halfWidthMetres / widthScale + 0.095, hull.halfWidthMetres / widthScale - 0.095);
       }
-      directed(p[`${side}-upper-arm`]!, root, shoulder, elbow);
-      directed(p[`${side}-forearm`]!, root, elbow, wrist);
+      directed(p[keys['upper-arm']]!, root, shoulder, elbow);
+      directed(p[keys['forearm']]!, root, elbow, wrist);
       // Hands point along the forearm without being a detached ball at its end.
       delta.subVectors(wrist, elbow).normalize().multiplyScalar(0.12).add(wrist);
       delta.z = clamp(delta.z, -visual.spec.hull.halfLengthMetres / lengthScale + 0.046,
@@ -1065,7 +1162,7 @@ export function createPopulationView(
         delta.x = clamp(delta.x, -hull.halfWidthMetres / widthScale + 0.046, hull.halfWidthMetres / widthScale - 0.046);
         delta.y = Math.max(delta.y, KNOCKDOWN.handFloor + slopeX * delta.x + slopeZ * delta.z);
       }
-      directed(p[`${side}-hand`]!, root, wrist, delta);
+      directed(p[keys['hand']]!, root, wrist, delta);
     }
     const clipboardVisible = s.activity === 'working';
     write(p.clipboard, root, 0, hipY + 0.125, 0.245,
@@ -1096,9 +1193,10 @@ export function createPopulationView(
     const truck = bodyType === 'boxTruck';
     // The drawn roof: the body's own height, never above the hull; a box truck's box fills it.
     const H = truck ? hullHeight : Math.min(hullHeight, VEHICLE_BODY_HEIGHT[bodyType]);
-    const targets = populationSupportTargets({ ...visual.spec, x: s.x, y: s.y, z: s.z, headingY: s.headingY,
-      speedMetresPerSecond: s.speed, gaitDistanceMetres: s.gait, activity: s.activity,
-      groundNormalX: s.normalX, groundNormalY: s.normalY, groundNormalZ: s.normalZ });
+    // A vehicle's support input had no posture fields of its own: the spec's (none) stood.
+    const spec = visual.spec as ActorSpec & Partial<Pick<PopulationSupportInput, 'posture' | 'sittingBlend' | 'seatHeightMetres'>>;
+    const targets = populationSupportTargetsInto(supportInput(visual, spec.posture, spec.sittingBlend, spec.seatHeightMetres),
+      supportTargets);
     const radius = targets.tyres![0].radiusMetres;
     normal.set(s.normalX, s.normalY, s.normalZ).normalize();
     orientation.setFromUnitVectors(up, normal);
@@ -1114,7 +1212,7 @@ export function createPopulationView(
     const fw = truck ? V.truckCabWidth * w : w, fh = truck ? V.truckCabHeight * H : H;
     const Y = (n: number): number => n * fh, Z = (n: number): number => fz + n * fl;
     const side = SHELL_SIDE * fw;
-    for (const key of ['hull', 'cabin', 'windshield', 'sideWindows', 'sidePassenger', 'rearWindow']) {
+    for (const key of SHELL_KEYS) {
       write(p[key], root, 0, 0, fz, fw, fh, fl);
     }
     write(p.grille, root, 0, Y(0.372), Z(0.982), 1.04 * fw, 0.05 * fh, 0.03 * fl);
@@ -1126,15 +1224,14 @@ export function createPopulationView(
       write(p['rear-plate'], root, 0, Y(0.195), -l + V.bumperInset / 2, 0.30 * fw, 0.045 * fh, V.bumperInset);
       write(p['rear-seam'], root, 0, Y(0.59), Z(-0.995), 0.010, 0.70 * fh, 0.010 * fl);
     }
-    for (const sign of [1, -1]) {
-      const k = sign > 0 ? 'l' : 'r';
-      for (const front of [true, false]) {
-        const axle = front ? 'front' : 'rear';
+    for (const sign of SIGNS) {
+      const keys = VEHICLE_SIDE_KEYS[sign > 0 ? 0 : 1]!;
+      for (const front of AXLES) {
         const supportIndex = (sign > 0 ? 0 : 2) + (front ? 0 : 1);
         const target = targets.tyres![supportIndex]!, support = s.tyreSupports[supportIndex]!;
         const z = target.localZ;
         const roll = s.wheelTravel / Math.max(radius, 1e-6);
-        const tyrePart = p[`${k}-${axle}-tyre`]!, rimPart = p[`${k}-${axle}-rim`]!;
+        const tyrePart = p[front ? keys['front-tyre'] : keys['rear-tyre']]!, rimPart = p[front ? keys['front-rim'] : keys['rear-rim']]!;
         // Rubber has rotationally uniform art. Its polygon bottom stays planted;
         // the embossed alloy spokes carry the actual signed wheel rotation. The
         // tread stands just proud of the body side, the hub cap just proud of the tread.
@@ -1154,46 +1251,46 @@ export function createPopulationView(
         matrix.elements[14]! += support.z - target.z;
         rimPart.batch.mesh!.setMatrixAt(rimPart.index, matrix);
         // The wheel well: a dark disc on the body side round the tyre, its foot on the ground.
-        write(p[`${k}-${axle}-arch`], root, sign * (side + V.archProud - V.archDepth / 2), V.archHeight * radius, z,
+        write(p[front ? keys['front-arch'] : keys['rear-arch']], root, sign * (side + V.archProud - V.archDepth / 2), V.archHeight * radius, z,
           V.archDepth, V.archHeight * radius, V.archLength * radius);
       }
       // Mirror outer faces end exactly at |x| = authored halfWidth.
       const mirrorHalf = truck ? V.truckMirrorHalfHeight : V.mirrorHalfHeight;
       const mirrorY = Y(truck ? 0.60 : 0.57), mirrorZ = Z(0.585);
-      write(p[`${k}-mirror`], root, sign * (w - V.mirrorHalfWidth), mirrorY, mirrorZ,
+      write(p[keys['mirror']], root, sign * (w - V.mirrorHalfWidth), mirrorY, mirrorZ,
         2 * V.mirrorHalfWidth, 2 * mirrorHalf, 2 * V.mirrorHalfDepth);
-      write(p[`${k}-mirror-glass`], root, sign * (w - V.mirrorHalfWidth), mirrorY, mirrorZ - V.mirrorHalfDepth - 0.003,
+      write(p[keys['mirror-glass']], root, sign * (w - V.mirrorHalfWidth), mirrorY, mirrorZ - V.mirrorHalfDepth - 0.003,
         1.6 * V.mirrorHalfWidth, 1.6 * mirrorHalf, 0.006);
-      write(p[`${k}-headlamp`], root, sign * 0.66 * fw, Y(0.375), Z(0.978), 0.24 * fw, 0.055 * fh, 0.03 * fl);
+      write(p[keys['headlamp']], root, sign * 0.66 * fw, Y(0.375), Z(0.978), 0.24 * fw, 0.055 * fh, 0.03 * fl);
       // The door pull sits at the cab door's rear (a truck's door runs back to its cab wall).
-      write(p[`${k}-handle`], root, sign * (side + 0.003), Y(0.445), Z(truck ? -0.70 : 0.27), 0.012, 0.025, 0.11);
+      write(p[keys['handle']], root, sign * (side + 0.003), Y(0.445), Z(truck ? -0.70 : 0.27), 0.012, 0.025, 0.11);
       if (truck) {
         // The cab door's front shut line, under the pillar between its two panes.
-        write(p[`${k}-cab-seam`], root, sign * (side + 0.004), Y(0.33), Z(0.20), 0.008, 0.34 * fh, 0.010);
+        write(p[keys['cab-seam']], root, sign * (side + 0.004), Y(0.33), Z(0.20), 0.008, 0.34 * fh, 0.010);
         continue;
       }
       // Vans: cab-door and sliding-door shut lines, a sliding-door pull and the rear lamps.
-      write(p[`${k}-door-seam`], root, sign * (side + 0.004), Y(0.33), Z(0.225), 0.008, 0.34 * fh, 0.010);
-      write(p[`${k}-slide-seam`], root, sign * (side + 0.004), Y(0.33), Z(-0.42), 0.008, 0.34 * fh, 0.010);
-      write(p[`${k}-slide-handle`], root, sign * (side + 0.003), Y(0.445), Z(-0.36), 0.012, 0.025, 0.11);
-      write(p[`${k}-taillamp`], root, sign * 0.772 * fw, Y(0.36), Z(-0.975), 0.10 * fw, 0.20 * fh, 0.03 * fl);
+      write(p[keys['door-seam']], root, sign * (side + 0.004), Y(0.33), Z(0.225), 0.008, 0.34 * fh, 0.010);
+      write(p[keys['slide-seam']], root, sign * (side + 0.004), Y(0.33), Z(-0.42), 0.008, 0.34 * fh, 0.010);
+      write(p[keys['slide-handle']], root, sign * (side + 0.003), Y(0.445), Z(-0.36), 0.012, 0.025, 0.11);
+      write(p[keys['taillamp']], root, sign * 0.772 * fw, Y(0.36), Z(-0.975), 0.10 * fw, 0.20 * fh, 0.03 * fl);
       // A dark rubbing strip along the lower side, between the wheel wells.
       const rubFrom = targets.tyres![sign > 0 ? 1 : 3]!.localZ + V.archLength * radius + 0.02;
       const rubTo = targets.tyres![sign > 0 ? 0 : 2]!.localZ - V.archLength * radius - 0.02;
-      write(p[`${k}-side-rub`], root, sign * (side + 0.004), Y(0.205), (rubFrom + rubTo) / 2, 0.008, 0.05 * fh, rubTo - rubFrom);
+      write(p[keys['side-rub']], root, sign * (side + 0.004), Y(0.205), (rubFrom + rubTo) / 2, 0.008, 0.05 * fh, rubTo - rubFrom);
       // The delivery van's fleet stripe along the cargo side.
-      write(p[`${k}-livery`], root, sign * (side + 0.003), Y(0.36), Z(-0.38), 0.006, 0.09 * fh, 1.08 * fl);
+      write(p[keys['livery']], root, sign * (side + 0.003), Y(0.36), Z(-0.38), 0.006, 0.09 * fh, 1.08 * fl);
       // The minibus: a C-pillar splitting the long glass (leaning with the
       // tumblehome), roof rails and a contrasting waist stripe.
-      if (p[`${k}-pillar`]) {
+      if (p[keys['pillar']]) {
         const v0 = WINDOW_V0 - 1, v1 = WINDOW_V1 - 1, ring1 = CABIN[1]!, ring2 = CABIN[2]!;
         const x0 = ring1.halfWidth + (ring2.halfWidth - ring1.halfWidth) * v0, x1 = ring1.halfWidth + (ring2.halfWidth - ring1.halfWidth) * v1;
         const y0 = ring1.y + (ring2.y - ring1.y) * v0, y1 = ring1.y + (ring2.y - ring1.y) * v1;
         const lean = Math.atan2((x0 - x1) * fw, (y1 - y0) * fh);
-        write(p[`${k}-pillar`], root, sign * (x0 + x1) / 2 * fw, Y((y0 + y1) / 2), Z(-0.36),
+        write(p[keys['pillar']], root, sign * (x0 + x1) / 2 * fw, Y((y0 + y1) / 2), Z(-0.36),
           0.016, (y1 - y0) * fh / Math.cos(lean) + 0.06, 0.08 * fl, 0, 0, sign * lean);
-        write(p[`${k}-roof-rail`], root, sign * 0.60 * fw, fh + 0.016, Z(-0.27), 0.03, 0.032, 1.10 * fl);
-        write(p[`${k}-waist-stripe`], root, sign * (0.9598 * fw + 0.003), Y(0.472), Z(-0.135), 0.006, 0.022 * fh, 1.67 * fl);
+        write(p[keys['roof-rail']], root, sign * 0.60 * fw, fh + 0.016, Z(-0.27), 0.03, 0.032, 1.10 * fl);
+        write(p[keys['waist-stripe']], root, sign * (0.9598 * fw + 0.003), Y(0.472), Z(-0.135), 0.006, 0.022 * fh, 1.67 * fl);
       }
     }
     if (!truck) return;
@@ -1207,21 +1304,22 @@ export function createPopulationView(
     const peakBottom = fh + V.truckPeakGap, peakTop = yb1 - 0.005;
     write(p.peak, root, 0, (peakBottom + peakTop) / 2, (zb1 + peakFront) / 2, 2 * bw - 0.004, peakTop - peakBottom, peakFront - zb1);
     const rail = V.truckRailHeight, railX = bw - 0.012;
-    for (const sign of [1, -1]) {
-      const k = sign > 0 ? 'l' : 'r';
-      write(p[`${k}-top-rail`], root, sign * railX, yb1, (zb0 + peakFront) / 2, 0.04, rail, peakFront - zb0);
-      write(p[`${k}-sill-rail`], root, sign * railX, yb0 + 0.02, (zb0 + zb1) / 2, 0.04, 0.05, boxLength);
-      write(p[`${k}-rear-post`], root, sign * railX, (yb0 + yb1) / 2, zb0 + 0.012, 0.04, boxHeight, 0.04);
-      write(p[`${k}-front-post`], root, sign * railX, (yb0 + yb1) / 2, zb1 - 0.012, 0.04, boxHeight, 0.04);
-      write(p[`${k}-taillamp`], root, sign * (bw - 0.10), yb0 + 0.16, zb0 - 0.005, 0.10, 0.22, 0.010);
+    for (const sign of SIGNS) {
+      const keys = VEHICLE_SIDE_KEYS[sign > 0 ? 0 : 1]!;
+      write(p[keys['top-rail']], root, sign * railX, yb1, (zb0 + peakFront) / 2, 0.04, rail, peakFront - zb0);
+      write(p[keys['sill-rail']], root, sign * railX, yb0 + 0.02, (zb0 + zb1) / 2, 0.04, 0.05, boxLength);
+      write(p[keys['rear-post']], root, sign * railX, (yb0 + yb1) / 2, zb0 + 0.012, 0.04, boxHeight, 0.04);
+      write(p[keys['front-post']], root, sign * railX, (yb0 + yb1) / 2, zb1 - 0.012, 0.04, boxHeight, 0.04);
+      write(p[keys['taillamp']], root, sign * (bw - 0.10), yb0 + 0.16, zb0 - 0.005, 0.10, 0.22, 0.010);
       const rearAxle = targets.tyres![sign > 0 ? 1 : 3]!.localZ;
-      write(p[`${k}-mudguard`], root, sign * 0.87 * w, 2 * radius + 0.04, rearAxle, 0.25 * w, 0.025, 0.90);
+      write(p[keys['mudguard']], root, sign * 0.87 * w, 2 * radius + 0.04, rearAxle, 0.25 * w, 0.025, 0.90);
       const guardFrom = rearAxle + radius + 0.10, guardTo = cabRear - 0.02;
-      write(p[`${k}-side-guard`], root, sign * (bw - 0.02), V.truckGuardHeight * H, (guardFrom + guardTo) / 2, 0.015, 0.05, guardTo - guardFrom);
-      write(p[`${k}-livery`], root, sign * (bw + 0.003), yb0 + 0.56 * boxHeight, (zb0 + zb1) / 2, 0.006, 0.16 * boxHeight, boxLength - 0.5);
+      write(p[keys['side-guard']], root, sign * (bw - 0.02), V.truckGuardHeight * H, (guardFrom + guardTo) / 2, 0.015, 0.05, guardTo - guardFrom);
+      write(p[keys['livery']], root, sign * (bw + 0.003), yb0 + 0.56 * boxHeight, (zb0 + zb1) / 2, 0.006, 0.16 * boxHeight, boxLength - 0.5);
     }
-    for (const [index, share] of [0.30, 0.55, 0.80].entries()) {
-      write(p[`door-slat-${index}`], root, 0, yb0 + share * boxHeight, zb0 - 0.003, 1.8 * bw, 0.014, 0.006);
+    for (let index = 0; index < DOOR_SLATS.length; index += 1) {
+      const share = DOOR_SLATS[index]!;
+      write(p[DOOR_SLAT_KEYS[index]!], root, 0, yb0 + share * boxHeight, zb0 - 0.003, 1.8 * bw, 0.014, 0.006);
     }
     write(p['door-handle'], root, 0, yb0 + 0.16, zb0 - 0.007, 0.22, 0.035, 0.014);
     const chassisBottom = V.truckChassisBottom * H, chassisFrom = zb0 + 0.30, chassisTo = cabRear + 0.10;
@@ -1235,47 +1333,90 @@ export function createPopulationView(
     if (!visual.visible) return;
     visual.visible = false;
     matrix.makeScale(0, 0, 0);
-    for (const part of Object.values(visual.parts)) {
+    // Every part, then every machine part: `slots` is exactly that list (PERF-WHARF, 2026-10-23).
+    for (const part of visual.slots) {
       part.batch.mesh!.setMatrixAt(part.index, matrix); part.batch.dirty = true;
-    }
-    for (const part of visual.machine) {
-      part.slot.batch.mesh!.setMatrixAt(part.slot.index, matrix); part.slot.batch.dirty = true;
     }
   };
   const finitePose = (pose: PopulationRenderPose): boolean =>
     Number.isFinite(pose.x) && Number.isFinite(pose.y) && Number.isFinite(pose.z) && Number.isFinite(pose.headingY)
       && Number.isFinite(pose.speedMetresPerSecond) && Number.isFinite(pose.gaitDistanceMetres)
       && Number.isFinite(pose.activityPhase) && Number.isFinite(pose.activityBlend);
+  /**
+   * The same test, in the same order, as the former `every` (PERF-WHARF,
+   * 2026-10-23: no closure per call). The length is only measured when the
+   * up component alone cannot settle it: a length is never shorter than its
+   * largest component, and `Math.hypot` (which scales by that component) is
+   * within a few ulps of the exact length, so `normalY > 2e-6` passes the
+   * `> 1e-6` length test with a margin no rounding can cross.
+   */
   const validSupports = (supports: readonly PopulationGroundSupport[] | undefined, count: number):
-    supports is readonly PopulationGroundSupport[] => supports?.length === count && supports.every(support =>
-      Number.isFinite(support.x) && Number.isFinite(support.y) && Number.isFinite(support.z)
-      && Number.isFinite(support.normalX) && Number.isFinite(support.normalY) && Number.isFinite(support.normalZ)
-      && support.normalY > 0 && Math.hypot(support.normalX, support.normalY, support.normalZ) > 1e-6);
+    supports is readonly PopulationGroundSupport[] => {
+    if (supports?.length !== count) return false;
+    for (let index = 0; index < count; index += 1) {
+      const support = supports[index]!;
+      if (!(Number.isFinite(support.x) && Number.isFinite(support.y) && Number.isFinite(support.z)
+        && Number.isFinite(support.normalX) && Number.isFinite(support.normalY) && Number.isFinite(support.normalZ)
+        && support.normalY > 0 && (support.normalY > 2e-6
+          || Math.hypot(support.normalX, support.normalY, support.normalZ) > 1e-6))) return false;
+    }
+    return true;
+  };
 
+  /** Snapshot row of each visual in the last layout learned (PERF-WHARF, 2026-10-23); see `update`. */
+  const visualIndexById = new Map(visuals.map((visual, index) => [visual.spec.id, index]));
+  const rowOf = new Int32Array(visuals.length);
+  let rowsLearned = false;
+  const learnRows = (actors: readonly PopulationRenderPose[]): void => {
+    rowsLearned = false;
+    if (actors.length !== visuals.length) return;
+    rowOf.fill(-1);
+    for (let row = 0; row < actors.length; row += 1) {
+      const index = visualIndexById.get(actors[row]!.id);
+      if (index !== undefined) rowOf[index] = row;
+    }
+    rowsLearned = !rowOf.includes(-1);
+  };
+  const inLearnedRows = (actors: readonly PopulationRenderPose[]): boolean => {
+    if (!rowsLearned || actors.length !== visuals.length) return false;
+    for (let index = 0; index < visuals.length; index += 1) if (actors[rowOf[index]!]!.id !== visuals[index]!.spec.id) return false;
+    return true;
+  };
   const update = (previous: PopulationRenderSnapshot, current: PopulationRenderSnapshot, rawAlpha: number): void => {
     if (disposed) return;
     const alpha = Number.isFinite(rawAlpha) ? clamp(rawAlpha, 0, 1) : 1;
+    // PERF-WHARF (2026-10-23): each frame's rows are found where the last
+    // learned layout put them (the simulation writes its rows in one fixed,
+    // id-sorted order). The layout is used only when every visual's id sits in
+    // its row and there are exactly as many rows as visuals: the plan's ids are
+    // unique, so each row then holds one visual's id and no other row has it,
+    // which is exactly the row the id map would return. Otherwise, the maps.
     previousById.clear(); currentById.clear();
-    previous.actors.forEach(pose => previousById.set(pose.id, pose));
-    current.actors.forEach(pose => currentById.set(pose.id, pose));
+    let currentInRows = inLearnedRows(current.actors);
+    if (!currentInRows) { learnRows(current.actors); currentInRows = inLearnedRows(current.actors); }
+    const previousInRows = inLearnedRows(previous.actors);
+    if (!previousInRows) for (const pose of previous.actors) previousById.set(pose.id, pose);
+    if (!currentInRows) for (const pose of current.actors) currentById.set(pose.id, pose);
     missingPoseIds.length = 0; missingGroundNormalIds.length = 0;
     missingWheelTravelIds.length = 0; missingSurfaceSupportIds.length = 0;
     clockSeconds = previous.clockSeconds + (current.clockSeconds - previous.clockSeconds) * alpha;
-    for (const visual of visuals) {
-      const b = currentById.get(visual.spec.id);
+    for (let visualIndex = 0; visualIndex < visuals.length; visualIndex += 1) {
+      const visual = visuals[visualIndex]!;
+      const b = currentInRows ? current.actors[rowOf[visualIndex]!] : currentById.get(visual.spec.id);
       if (!b || b.kind !== visual.spec.kind || !finitePose(b)) {
         missingPoseIds.push(visual.spec.id); hide(visual); continue;
       }
-      const candidateA = previousById.get(visual.spec.id);
+      const candidateA = previousInRows ? previous.actors[rowOf[visualIndex]!] : previousById.get(visual.spec.id);
       const a = candidateA && candidateA.kind === b.kind && finitePose(candidateA) ? candidateA : b;
-      const mix = (first: number, last: number): number => first + (last - first) * alpha;
       const s = visual.pendingPose;
-      s.x = mix(a.x, b.x); s.y = mix(a.y, b.y); s.z = mix(a.z, b.z);
+      // `blendTo` is the same a + (b − a)·alpha the former per-actor `mix`
+      // closure computed (PERF-WHARF, 2026-10-23: no closure per actor per frame).
+      s.x = blendTo(a.x, b.x, alpha); s.y = blendTo(a.y, b.y, alpha); s.z = blendTo(a.z, b.z, alpha);
       s.headingY = a.headingY + angleDelta(a.headingY, b.headingY) * alpha;
-      s.speed = mix(a.speedMetresPerSecond, b.speedMetresPerSecond);
-      s.gait = mix(a.gaitDistanceMetres, b.gaitDistanceMetres);
+      s.speed = blendTo(a.speedMetresPerSecond, b.speedMetresPerSecond, alpha);
+      s.gait = blendTo(a.gaitDistanceMetres, b.gaitDistanceMetres, alpha);
       const wheel = Number.isFinite(b.wheelTravelMetres) && Number.isFinite(a.wheelTravelMetres);
-      s.wheelTravel = wheel ? mix(a.wheelTravelMetres!, b.wheelTravelMetres!) : s.gait;
+      s.wheelTravel = wheel ? blendTo(a.wheelTravelMetres!, b.wheelTravelMetres!, alpha) : s.gait;
       if (!wheel && (vehicleKind(b.kind) || b.kind === 'fictionalEuc')) missingWheelTravelIds.push(b.id);
       // Activity change is a discrete fixed-step fact. Progress wraps only
       // within one activity; never blend an inspection into an impact state.
@@ -1287,15 +1428,15 @@ export function createPopulationView(
       s.phase = sameActivity
         ? fraction(a.activityPhase + (phaseDelta < -0.5 ? phaseDelta + 1 : phaseDelta > 0.5 ? phaseDelta - 1 : phaseDelta) * alpha)
         : b.activityPhase;
-      s.blend = sameActivity ? mix(a.activityBlend, b.activityBlend) : b.activityBlend;
+      s.blend = sameActivity ? blendTo(a.activityBlend, b.activityBlend, alpha) : b.activityBlend;
       s.posture = b.posture ?? 'standing';
-      s.sittingBlend = s.posture === 'seated' ? clamp(mix(a.sittingBlend ?? 1, b.sittingBlend ?? 1), 0, 1) : 0;
+      s.sittingBlend = s.posture === 'seated' ? clamp(blendTo(a.sittingBlend ?? 1, b.sittingBlend ?? 1, alpha), 0, 1) : 0;
       s.seatHeight = b.seatHeightMetres;
       const hasNormal = Number.isFinite(b.groundNormalX) && Number.isFinite(b.groundNormalY) && Number.isFinite(b.groundNormalZ);
       if (!hasNormal) missingGroundNormalIds.push(b.id);
-      s.normalX = hasNormal ? mix(a.groundNormalX ?? b.groundNormalX!, b.groundNormalX!) : 0;
-      s.normalY = hasNormal ? mix(a.groundNormalY ?? b.groundNormalY!, b.groundNormalY!) : 1;
-      s.normalZ = hasNormal ? mix(a.groundNormalZ ?? b.groundNormalZ!, b.groundNormalZ!) : 0;
+      s.normalX = hasNormal ? blendTo(a.groundNormalX ?? b.groundNormalX!, b.groundNormalX!, alpha) : 0;
+      s.normalY = hasNormal ? blendTo(a.groundNormalY ?? b.groundNormalY!, b.groundNormalY!, alpha) : 1;
+      s.normalZ = hasNormal ? blendTo(a.groundNormalZ ?? b.groundNormalZ!, b.groundNormalZ!, alpha) : 0;
       const norm = Math.hypot(s.normalX, s.normalY, s.normalZ);
       if (!Number.isFinite(norm) || norm < 1e-6 || s.normalY <= 0) { s.normalX = 0; s.normalY = 1; s.normalZ = 0; }
       else { s.normalX /= norm; s.normalY /= norm; s.normalZ /= norm; }
@@ -1313,9 +1454,11 @@ export function createPopulationView(
         const target = interpolated[index] ?? (interpolated[index] = {
           x: 0, y: 0, z: 0, normalX: 0, normalY: 1, normalZ: 0,
         });
-        target.x = mix(first.x, last.x); target.y = mix(first.y, last.y); target.z = mix(first.z, last.z);
-        target.normalX = mix(first.normalX, last.normalX); target.normalY = mix(first.normalY, last.normalY);
-        target.normalZ = mix(first.normalZ, last.normalZ);
+        target.x = blendTo(first.x, last.x, alpha); target.y = blendTo(first.y, last.y, alpha);
+        target.z = blendTo(first.z, last.z, alpha);
+        target.normalX = blendTo(first.normalX, last.normalX, alpha);
+        target.normalY = blendTo(first.normalY, last.normalY, alpha);
+        target.normalZ = blendTo(first.normalZ, last.normalZ, alpha);
       }
       if (visual.visible && samePose(visual.pose, s)) continue;
       visual.pendingPose = visual.pose; visual.pose = s; visual.visible = true;

@@ -276,6 +276,15 @@ export interface Prop {
    */
   tone?: number;
   roofTone?: number;
+  /**
+   * A drawn riding slab is this untagged building's roof (Wheelhouse Wharf's
+   * four warehouses, 2026-10-23): the kit's cap would sit wholly inside it with
+   * its underside in the slab's own underside plane, and the two fought over the
+   * eave. With this set the cap is not composed, emitted or priced, so the slab
+   * is that surface's only owner. Render composition only; a look composes its
+   * own roof and ignores it.
+   */
+  slabRoof?: true;
 }
 
 /**

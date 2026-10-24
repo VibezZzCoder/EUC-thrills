@@ -232,6 +232,8 @@ export interface PlacedProp {
   /** See `Prop.tone`. */
   tone?: number;
   roofTone?: number;
+  /** See `Prop.slabRoof`. */
+  slabRoof?: true;
   /** Height above the ground at `(x, z)`, metres. */
   lift: number;
   /** See `SegmentProp.onCollider`. */

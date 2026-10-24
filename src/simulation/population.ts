@@ -15,7 +15,8 @@ import type { PopulationCompoundActorMotion, PopulationCompoundMotionBatch,
   PopulationCompoundTrajectory } from './populationCompound.ts';
 
 import { compactAnticipationBlocker, type PopulationCompactAnticipation } from './populationCompactAnticipation.ts';
-import { routeAnticipation, routeBrakingSpeedCap, type RouteAnticipationResult } from './populationRouteAnticipation.ts';
+import { createRouteBlockerTerms, routeAnticipation, routeBrakingSpeedCap, type RouteAnticipationBlocker,
+  type RouteAnticipationResult } from './populationRouteAnticipation.ts';
 import { POPULATION, POPULATION_REACTION } from '../data/tuning.ts';
 export { POPULATION } from '../data/tuning.ts';
 const R = POPULATION;
@@ -374,10 +375,42 @@ interface BoundedMotion {
   nativeFirst?: PopulationFootprint;
   nativeLast?: PopulationFootprint;
   nativeEndpointsOf?: PopulationFootprint;
+  /** PERF-WHARF: the actor's persistent slot for these endpoints across steps (`wholeEndpoints`). */
+  readonly memo?: EndpointMemo;
+}
+/**
+ * One actor motion's whole endpoints from the step that last formed them, with
+ * the very bodies they were formed from (PERF-WHARF, 2026-10-23). mixBody is
+ * pure in the values it reads, so a motion whose two bodies carry the same
+ * values (`sameMixInput`) has the same endpoints: the Wharf's 68 standing
+ * people re-formed theirs, four grade-hull rebuilds each, every step.
+ */
+interface EndpointMemo { from?: PopulationFootprint; to?: PopulationFootprint; first?: PopulationFootprint; last?: PopulationFootprint }
+/** Every value mixBody can read from one body (either branch), compared exactly. */
+function sameMixInput(a: PopulationFootprint, b: PopulationFootprint): boolean {
+  if (a === b) return true;
+  if (!(Object.is(a.x, b.x) && Object.is(a.z, b.z) && Object.is(a.headingY, b.headingY)
+    && Object.is(a.halfWidthMetres, b.halfWidthMetres) && Object.is(a.halfLengthMetres, b.halfLengthMetres)
+    && Object.is(a.minY, b.minY) && Object.is(a.maxY, b.maxY) && Object.is(a.velocityX, b.velocityX)
+    && Object.is(a.velocityZ, b.velocityZ))) return false;
+  const p = a.sourceHull, q = b.sourceHull;
+  if (p === undefined || q === undefined) return p === q;
+  return Object.is(p.x, q.x) && Object.is(p.y, q.y) && Object.is(p.z, q.z) && Object.is(p.headingY, q.headingY)
+    && Object.is(p.normalX, q.normalX) && Object.is(p.normalY, q.normalY) && Object.is(p.normalZ, q.normalZ)
+    && Object.is(p.marginMetres, q.marginMetres) && Object.is(p.verticalPaddingBelowMetres, q.verticalPaddingBelowMetres)
+    && Object.is(p.verticalPaddingAboveMetres, q.verticalPaddingAboveMetres)
+    && Object.is(p.hull.halfWidthMetres, q.hull.halfWidthMetres) && Object.is(p.hull.halfLengthMetres, q.hull.halfLengthMetres)
+    && Object.is(p.hull.heightMetres, q.hull.heightMetres);
 }
 /** The two sweep endpoints of a whole motion, formed once (first, then last: the sweep's own order). */
 function wholeEndpoints(motion: BoundedMotion): void {
-  if (motion.first === undefined) { motion.first = mixBody(motion.from, motion.to, 0); motion.last = mixBody(motion.from, motion.to, 1); }
+  if (motion.first !== undefined) return;
+  const memo = motion.memo;
+  if (memo !== undefined && memo.first !== undefined && sameMixInput(memo.from!, motion.from) && sameMixInput(memo.to!, motion.to)) {
+    motion.first = memo.first; motion.last = memo.last; return;
+  }
+  motion.first = mixBody(motion.from, motion.to, 0); motion.last = mixBody(motion.from, motion.to, 1);
+  if (memo !== undefined) { memo.from = motion.from; memo.to = motion.to; memo.first = motion.first; memo.last = motion.last; }
 }
 /**
  * The same for a blocker's native prefix (from -> nativeTo). Keyed by the very
@@ -432,8 +465,8 @@ function mayMeet(first: MotionBounds, second: MotionBounds): boolean {
     && first.minY <= second.maxY && first.maxY >= second.minY
     && first.minZ <= second.maxZ && first.maxZ >= second.minZ);
 }
-const boundedMotion = (from: PopulationFootprint, to: PopulationFootprint): BoundedMotion =>
-  ({ from, to, bounds: motionBounds(from, to) });
+const boundedMotion = (from: PopulationFootprint, to: PopulationFootprint, memo?: EndpointMemo): BoundedMotion =>
+  memo === undefined ? { from, to, bounds: motionBounds(from, to) } : { from, to, bounds: motionBounds(from, to), memo };
 const sortId = (a: { id: string }, b: { id: string }): number => a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 const vehicle = (kind: ActorKind): boolean => kind === 'parkedVehicle'
   || kind === 'serviceVehicle' || kind === 'trafficVehicle';
@@ -482,9 +515,12 @@ function rotationRadius(body: PopulationFootprint): number {
  * still under its own follower's padded box, and the two waited on each other
  * for good: every Quay van loop froze nose to tail within minutes. Native
  * contact, which still sweeps every blocker, is unchanged.
+ *
+ * The caller passes sin/cos of `travelY` (fx, fz) and of the body's heading
+ * (bx, bz): formed once per vehicle and once per body a step (PERF-WHARF),
+ * where every vehicle formed all four for every pair.
  */
-function whollyBehind(own: PopulationFootprint, travelY: number, body: PopulationFootprint): boolean {
-  const fx = Math.sin(travelY), fz = Math.cos(travelY), bx = Math.sin(body.headingY), bz = Math.cos(body.headingY);
+function whollyBehindAlong(own: PopulationFootprint, fx: number, fz: number, body: PopulationFootprint, bx: number, bz: number): boolean {
   const along = (body.x - own.x) * fx + (body.z - own.z) * fz;
   const reach = Math.abs(body.halfLengthMetres * (bx * fx + bz * fz)) + Math.abs(body.halfWidthMetres * (bz * fx - bx * fz));
   return along + reach < -own.halfLengthMetres - 0.05;
@@ -918,6 +954,67 @@ function withImpactReaction(pose: PopulationActorPose, state: ActorState, clock:
   return rest;
 }
 
+/**
+ * One forecast's boxed actor motions in X order (PERF-WHARF, 2026-10-23):
+ * their box minima sorted, the widest box, and how many have a box at all
+ * (the boxless sort last). `XOrder` is the actor's storage kept between steps
+ * per horizon, so the insertion sort starts from last step's nearly right order.
+ */
+interface XOrder { readonly order: number[]; readonly key: Float64Array; readonly minX: Float64Array }
+interface ForecastXIndex { readonly order: readonly number[]; readonly minX: Float64Array; readonly width: number; readonly boxed: number }
+function forecastXIndex(actors: readonly BoundedMotion[], store: XOrder): ForecastXIndex {
+  const { order, key, minX } = store;
+  let width = 0, boxed = 0;
+  for (let other = 0; other < actors.length; other += 1) {
+    const bounds = actors[other].bounds;
+    if (bounds === null) { key[other] = Infinity; continue; }
+    key[other] = bounds.minX; boxed += 1; width = Math.max(width, bounds.maxX - bounds.minX);
+  }
+  for (let at = 1; at < order.length; at += 1) {
+    const value = order[at], k = key[value];
+    let to = at - 1;
+    while (to >= 0 && key[order[to]] > k) { order[to + 1] = order[to]; to -= 1; }
+    order[to + 1] = value;
+  }
+  for (let at = 0; at < boxed; at += 1) minX[at] = key[order[at]];
+  return { order, minX, width, boxed };
+}
+/**
+ * The other actors (never `index`) whose blocker mayMeet could accept against
+ * `query`, ascending: the order the full loop visited them in, so who is waited
+ * on is recorded in the same order. Every one left out is one mayMeet refuses:
+ * its box starts right of the query's end, or starts so far left that even the
+ * widest box (padded well past any rounding) ends before the query begins. A
+ * held actor's stationary blocker and a boxless motion are always included,
+ * as is everyone when the query itself has no box (mayMeet accepts all then).
+ * The callers still ask mayMeet of each, so this only skips sure refusals.
+ */
+function actorCandidates(forecast: { actors: readonly BoundedMotion[]; xStore: XOrder; xIndex?: ForecastXIndex }, query: MotionBounds,
+  index: number, held: Float64Array, stamp: number, heldCandidates: readonly number[], out: number[]): number[] {
+  out.length = 0;
+  const actors = forecast.actors;
+  if (query === null) { for (let other = 0; other < actors.length; other += 1) if (other !== index) out.push(other); return out; }
+  const xIndex = forecast.xIndex ??= forecastXIndex(actors, forecast.xStore);
+  const { order, minX, width, boxed } = xIndex;
+  const lower = query.minX - width - 1e-6 * (1 + Math.abs(query.minX) + width), upper = query.maxX;
+  let low = 0, high = boxed;
+  while (low < high) { const middle = (low + high) >>> 1; if (minX[middle] < lower) low = middle + 1; else high = middle; }
+  for (let at = low; at < boxed && minX[at] <= upper; at += 1) {
+    const other = order[at];
+    if (other !== index && held[other] !== stamp) out.push(other);
+  }
+  for (let at = boxed; at < order.length; at += 1) { const other = order[at]; if (other !== index && held[other] !== stamp) out.push(other); }
+  for (const other of heldCandidates) if (held[other] === stamp) out.push(other);
+  // Ascending (a short list, nearly in order already only by chance).
+  for (let at = 1; at < out.length; at += 1) {
+    const value = out[at];
+    let to = at - 1;
+    while (to >= 0 && out[to] > value) { out[to + 1] = out[to]; to -= 1; }
+    out[to + 1] = value;
+  }
+  return out;
+}
+
 /** A crossing's corner extents, fixed once per plan instead of per priority query. */
 interface CrossingExtent { readonly minX: number; readonly maxX: number; readonly minZ: number; readonly maxZ: number }
 /** Conservative broad phase is appropriate for yielding, never contact. */
@@ -951,7 +1048,47 @@ export class PopulationSimulation {
   /** Route-scan blocker ids, formed once per world rather than per vehicle per step. */
   private actorBlockerIds: readonly string[] = [];
   /** One actor iteration's blocker list (PERF-POP); never read after the iteration. */
-  private readonly blockerScratch: BoundedMotion[] = [];
+  /**
+   * The plan's pedestrian-priority pairs, fixed at reset (PERF-WHARF): per
+   * pedestrian, the vehicles on a path sharing one of its crossings, and per
+   * vehicle, those pedestrians, in index order. `pedestrianPriority` answers
+   * false for every other pair before reading anything, so only these are asked.
+   * `priorityHeld[other] === priorityStamp` marks one actor iteration's answers.
+   */
+  private priorityVehicles: readonly (readonly number[])[] = [];
+  private priorityPedestrians: readonly (readonly number[])[] = [];
+  private priorityHeld = new Float64Array(0);
+  private priorityStamp = 0;
+  /** One actor iteration's look and candidate move's possible actor blockers (`actorCandidates`). */
+  private readonly lookCandidates: number[] = [];
+  private readonly nativeCandidates: number[] = [];
+  /** The vehicles' route-scan id order and the part/reservation ids it was sorted with (`routeOrderFor`). */
+  private routeOrder: readonly number[] = [];
+  private routeOrderIds: readonly string[] = [];
+  /** Per role (the step's actual motions, its forecasts per horizon) and actor index: last step's endpoints. */
+  private endpointMemos = new Map<string, EndpointMemo[]>();
+  /** Per forecast horizon, the movers' candidate X order kept between steps (`forecastXIndex`). */
+  private xOrders = new Map<number, XOrder>();
+  private xOrderFor(seconds: number): XOrder {
+    let store = this.xOrders.get(seconds);
+    if (store === undefined) {
+      const count = this.states.length;
+      this.xOrders.set(seconds, store = { order: Array.from({ length: count }, (_, index) => index),
+        key: new Float64Array(count), minX: new Float64Array(count) });
+    }
+    return store;
+  }
+  private endpointMemoRow(role: string): EndpointMemo[] {
+    let memos = this.endpointMemos.get(role);
+    if (memos === undefined) this.endpointMemos.set(role, memos = []);
+    return memos;
+  }
+  /** The actor-pair sweep's X order (a permutation kept between steps) and each motion's X extent. */
+  private pairOrder: number[] = [];
+  private pairLow = new Float64Array(0);
+  private pairHigh = new Float64Array(0);
+  /** One vehicle's route-scan blocker list (PERF-WHARF); the scan reads it and keeps nothing. */
+  private readonly routeBlockerScratch: RouteAnticipationBlocker[] = [];
   private readonly lowerCorners: readonly MutablePopulationHullCorner[] = [
     { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }];
   private tick = 0;
@@ -1059,6 +1196,16 @@ export class PopulationSimulation {
     this.stateIndex.clear(); this.lookaheads = [];
     this.states.forEach((state, index) => this.stateIndex.set(state.spec.id, index));
     this.actorBlockerIds = this.states.map(state => `actor:${state.spec.id}`);
+    const shareCrossing = (person: ActorState, traffic: ActorState): boolean => !vehicle(person.spec.kind) && vehicle(traffic.spec.kind)
+      && this.crossingIndex.get(person.spec.pathId)?.has(traffic.spec.pathId) === true;
+    this.priorityVehicles = this.states.map((person, index) => this.states.flatMap((traffic, other) =>
+      other !== index && shareCrossing(person, traffic) ? [other] : []));
+    this.priorityPedestrians = this.states.map((traffic, index) => this.states.flatMap((person, other) =>
+      other !== index && shareCrossing(person, traffic) ? [other] : []));
+    this.priorityHeld = new Float64Array(this.states.length); this.priorityStamp = 0;
+    this.pairOrder = this.states.map((_, index) => index); this.endpointMemos.clear();
+    this.routeOrder = []; this.routeOrderIds = []; this.xOrders.clear();
+    this.pairLow = new Float64Array(this.states.length); this.pairHigh = new Float64Array(this.states.length);
     this.publish(); this.previous = copySnapshot(this.current);
   }
 
@@ -1358,11 +1505,13 @@ export class PopulationSimulation {
     }
     const anticipationRows: Array<RouteAnticipationResult & { actorId: string; targetSpeedMetresPerSecond: number; incomplete: boolean }> = [];
     this.anticipationRows = anticipationRows;
-    const actorBlockers = this.current.actors.map(actorFootprint);
+    // The epoch start's own footprints: every reader below only reads them, and
+    // published footprints are never written in place (PERF-WHARF: no copies).
+    const actorBlockers = this.current.actors.map(pose => pose.footprint);
     // Formed on first use (a pedestrian-priority pair): one pure object per actor per step, as before.
-    const stationaryActors: (BoundedMotion | undefined)[] = [];
+    const stationaryActors: (BoundedMotion | undefined)[] = [], stationaryMemos = this.endpointMemoRow('stationary');
     const stationaryActor = (other: number): BoundedMotion =>
-      stationaryActors[other] ??= boundedMotion(actorBlockers[other], actorBlockers[other]);
+      stationaryActors[other] ??= boundedMotion(actorBlockers[other], actorBlockers[other], stationaryMemos[other] ??= {});
     const reservationBlockers = reserved.map(item => boundedMotion(item.footprint, item.footprint));
     // PERF-POP: each compact part's padded blocker is a pure function of the part and
     // the horizon, so it is formed once per step: for walkers at the one human
@@ -1373,13 +1522,44 @@ export class PopulationSimulation {
       const partFrom = grow(near.from, near.pad), partTo = grow(near.to, near.pad);
       return { from: partFrom, to: partTo, bounds: motionBounds(partFrom, partTo) };
     })();
-    const vehicleParts = new Map<number, ReturnType<typeof compactAnticipationBlocker>[]>();
-    const forecasts = new Map<number, { people: BoundedMotion[]; actors: BoundedMotion[] }>();
+    const vehicleParts = new Map<number, RouteAnticipationBlocker[]>();
+    // PERF-WHARF: per step, the vehicles' shared route-scan rows (see the vehicle branch below).
+    let routeReservations: RouteAnticipationBlocker[] | undefined, routeOrder: readonly number[] | undefined;
+    let routeHeadingSin: Float64Array | undefined, routeHeadingCos: Float64Array | undefined;
+    const routeActorRows = new Map<number, (RouteAnticipationBlocker | undefined)[]>();
+    /** The stable id order of [parts, reservations, every actor]; each scan's blockers are a subsequence of it. */
+    const routeOrderFor = (parts: readonly RouteAnticipationBlocker[]): readonly number[] => {
+      if (routeOrder !== undefined) return routeOrder;
+      const reservations = routeReservations = reserved.map(item => ({ id: `reservation:${item.id}`, from: item.footprint, to: item.footprint, pad: 0,
+        terms: createRouteBlockerTerms() }));
+      const ids = this.actorBlockerIds, partCount = parts.length, rowCount = partCount + reservations.length;
+      const idOf = (slot: number): string => slot < partCount ? parts[slot].id : slot < rowCount ? reservations[slot - partCount].id : ids[slot - rowCount];
+      // The actor ids are the world's; a step naming the same part and
+      // reservation ids, in the same places, has last step's order.
+      const known = this.routeOrderIds;
+      let same = known.length === rowCount && this.routeOrder.length === rowCount + actorBlockers.length;
+      for (let slot = 0; same && slot < rowCount; slot += 1) same = known[slot] === idOf(slot);
+      if (same) { routeHeadings(); return routeOrder = this.routeOrder; }
+      const order = Array.from({ length: rowCount + actorBlockers.length }, (_, slot) => slot);
+      order.sort((first, second) => { const a = idOf(first), b = idOf(second); return a < b ? -1 : a > b ? 1 : 0; });
+      this.routeOrder = order; this.routeOrderIds = Array.from({ length: rowCount }, (_, slot) => idOf(slot));
+      routeHeadings();
+      return routeOrder = order;
+    };
+    const routeHeadings = (): void => {
+      routeHeadingSin = new Float64Array(actorBlockers.length); routeHeadingCos = new Float64Array(actorBlockers.length);
+      for (let other = 0; other < actorBlockers.length; other += 1) {
+        routeHeadingSin[other] = Math.sin(actorBlockers[other].headingY); routeHeadingCos[other] = Math.cos(actorBlockers[other].headingY);
+      }
+    };
+    const forecasts = new Map<number, { people: BoundedMotion[]; actors: BoundedMotion[]; xStore: XOrder; xIndex?: ForecastXIndex }>();
     const forecastFor = (seconds: number) => {
       let forecast = forecasts.get(seconds);
       if (!forecast) {
+        const forecastMemos = this.endpointMemoRow(`forecast:${seconds}`);
         forecast = { people: people.map(person => boundedMotion(person.current, predictBody(person.current, seconds))),
-          actors: actorBlockers.map(body => boundedMotion(body, predictBody(body, seconds))) };
+          actors: actorBlockers.map((body, other) => boundedMotion(body, predictBody(body, seconds), forecastMemos[other] ??= {})),
+          xStore: this.xOrderFor(seconds) };
         forecasts.set(seconds, forecast);
       }
       return forecast;
@@ -1458,24 +1638,29 @@ export class PopulationSimulation {
       const gap = isVehicle ? R.vehicleWaitingGapMetres : R.humanWaitingGapMetres;
       const from = before.footprint;
       const forecast = forecastFor(horizon);
-      const blockers = this.blockerScratch;
-      blockers.length = 0;
-      for (const blocker of forecast.people) blockers.push(blocker);
-      for (const blocker of reservationBlockers) blockers.push(blocker);
+      // The blockers, in their former list's order: the people's forecasts, the
+      // reservations, then every other actor (PERF-WHARF: read in place, no list).
       // A vehicle never has pedestrian priority over anyone, and a pair with no
       // shared crossing has none either: pedestrianPriority answers both false
-      // before any forecast, so they are not asked (PERF-POP).
-      const crossingsByVehiclePath = isVehicle ? undefined : this.crossingIndex.get(spec.pathId);
-      for (let other = 0; other < actorBlockers.length; other += 1) if (other !== index) blockers.push(
-        // The waiting vehicle's hypothetical future must not deadlock the
-        // pedestrian who has priority. Its actual body still blocks this step.
-        crossingsByVehiclePath !== undefined && vehicle(this.states[other].spec.kind)
-          && crossingsByVehiclePath.has(this.states[other].spec.pathId)
-          && this.pedestrianPriority(state,this.states[other]) ? stationaryActor(other) : forecast.actors[other]);
+      // before any forecast, so they are not asked (PERF-POP). The pairs that do
+      // share one are fixed by the plan, listed once at reset, and asked here in
+      // the same order. The waiting vehicle's hypothetical future must not
+      // deadlock the pedestrian who has priority: its actual body still blocks this step.
+      const held = this.priorityHeld, stamp = this.priorityStamp += 1;
+      const candidates = this.priorityVehicles[index];
+      let heldCount = 0;
+      for (let c = 0; c < candidates.length; c += 1) {
+        const other = candidates[c];
+        if (this.pedestrianPriority(state, this.states[other])) { stationaryActor(other); held[other] = stamp; heldCount += 1; }
+      }
+      const actorBlocker = (other: number): BoundedMotion => heldCount > 0 && held[other] === stamp ? stationaryActor(other) : forecast.actors[other];
       const look = isVehicle && anticipation ? null : this.ownLookahead(state, index, horizon);
       const grownFrom = grow(from, gap), grownLook = look === null ? null : grow(look, gap);
       const lookBounds = grownLook === null ? null : motionBounds(grownFrom, grownLook);
-      const priorityHold=isVehicle&&this.states.some(other=>this.pedestrianPriority(other,state));
+      // this.states.some(other => this.pedestrianPriority(other, state)): only the
+      // pedestrians sharing a crossing with this vehicle can answer true (PERF-WHARF).
+      let priorityHold = false;
+      if (isVehicle) for (const other of this.priorityPedestrians[index]) if (this.pedestrianPriority(this.states[other], state)) { priorityHold = true; break; }
       // A blocker the look starts inside and leaves (its gap grows) is not
       // waited on: the fraction loop's and constrain()'s departing-overlap
       // rule, so a walker walks away from a body stopped just behind it (POP-5).
@@ -1492,13 +1677,18 @@ export class PopulationSimulation {
           return hit !== null && !(hit.initiallyOverlapping && (staticContact(grownLook, blocker.to)?.gap ?? Infinity)
             > (staticContact(grownFrom, blocker.from)?.gap ?? Infinity) + R.epsilon);
         };
-        const firstActor = forecast.people.length + reservationBlockers.length;
-        for (let k = 0; k < blockers.length; k += 1) {
-          const blocker = blockers[k];
+        for (const blocker of forecast.people) {
           if (!mayMeet(lookBounds, blocker.bounds) || !waitsOn(blocker)) continue;
           needsWait = true;
-          if (k >= firstActor) state.waitingOn.push(k - firstActor < index ? k - firstActor : k - firstActor + 1);
-          else if (k < forecast.people.length && !state.waitingOn.includes(OCCUPANT_WAIT)) state.waitingOn.push(OCCUPANT_WAIT);
+          if (!state.waitingOn.includes(OCCUPANT_WAIT)) state.waitingOn.push(OCCUPANT_WAIT);
+        }
+        for (const blocker of reservationBlockers) if (mayMeet(lookBounds, blocker.bounds) && waitsOn(blocker)) needsWait = true;
+        // Only the others mayMeet could accept, in index order (PERF-WHARF, `actorCandidates`).
+        const lookCandidates = actorCandidates(forecast, lookBounds, index, held, stamp, candidates, this.lookCandidates);
+        for (let c = 0; c < lookCandidates.length; c += 1) {
+          const other = lookCandidates[c], blocker = actorBlocker(other);
+          if (!mayMeet(lookBounds, blocker.bounds) || !waitsOn(blocker)) continue;
+          needsWait = true; state.waitingOn.push(other);
         }
         // **And on a rider's compact parts, where the caller supplied them.**
         // A leaning rider's body reaches past his coarse box, and the contact
@@ -1520,17 +1710,34 @@ export class PopulationSimulation {
         const pathTravel = Math.max(spec.speedMetresPerSecond * forecastSeconds,
           state.speed * state.speed / (2 * R.vehicleBrakingMetresPerSecondSquared) + state.speed * dt + gap);
         let parts = vehicleParts.get(forecastSeconds);
-        if (parts === undefined) vehicleParts.set(forecastSeconds, parts = anticipation.components.map(part => compactAnticipationBlocker(part, forecastSeconds)));
-        const routeBlockers = [...parts];
-        reserved.forEach(item => routeBlockers.push({ id: `reservation:${item.id}`, from: item.footprint, to: item.footprint, pad: 0 }));
+        if (parts === undefined) vehicleParts.set(forecastSeconds, parts = anticipation.components.map(part =>
+          ({ ...compactAnticipationBlocker(part, forecastSeconds), terms: createRouteBlockerTerms() })));
+        // PERF-WHARF: the scan's blockers are built already in its own stable id
+        // order (parts, reservations, then the other actors, by one sort a step),
+        // and each blocker record, reservation row and forecast body is formed
+        // once a step per horizon and shared by every vehicle: the scan reads
+        // them and keeps none. The same set, the same values, the same order.
+        const routeOrder = routeOrderFor(parts);
+        let actorRows = routeActorRows.get(forecastSeconds);
+        if (actorRows === undefined) routeActorRows.set(forecastSeconds, actorRows = []);
+        const routeBlockers = this.routeBlockerScratch;
+        routeBlockers.length = 0;
         const own = actorBlockers[index], travelY = travelHeading(state.path.path, state.distance, state.direction);
-        for (let other = 0; other < actorBlockers.length; other += 1) if (other !== index) {
+        const travelSin = Math.sin(travelY), travelCos = Math.cos(travelY);
+        const headingSin = routeHeadingSin!, headingCos = routeHeadingCos!, partCount = parts.length;
+        for (let entry = 0; entry < routeOrder.length; entry += 1) {
+          const slot = routeOrder[entry];
+          if (slot < partCount) { routeBlockers.push(parts[slot]); continue; }
+          if (slot < partCount + routeReservations!.length) { routeBlockers.push(routeReservations![slot - partCount]); continue; }
+          const other = slot - partCount - routeReservations!.length;
+          if (other === index) continue;
           const body = actorBlockers[other];
-          if (whollyBehind(own, travelY, body)) continue;
+          if (whollyBehindAlong(own, travelSin, travelCos, body, headingSin[other], headingCos[other])) continue;
           // pedestrianPriority(vehicle, ...) is false before any forecast: a vehicle never has it (PERF-POP).
           // At the look-ahead horizon itself the forecast already holds predictBody(body, horizon).
-          routeBlockers.push({ id: this.actorBlockerIds[other], from: body,
-            to: Object.is(forecastSeconds, horizon) ? forecast.actors[other].to : predictBody(body, forecastSeconds), pad: 0 });
+          routeBlockers.push(actorRows[other] ??= { id: this.actorBlockerIds[other], from: body,
+            to: Object.is(forecastSeconds, horizon) ? forecast.actors[other].to : predictBody(body, forecastSeconds), pad: 0,
+            terms: createRouteBlockerTerms() });
         }
         const incomplete = anticipation.incompleteOwnerIds.length > 0 || anticipation.components.length > R.compactAnticipationMaximumComponents;
         const scan: RouteAnticipationResult = incomplete
@@ -1538,8 +1745,9 @@ export class PopulationSimulation {
           : routeAnticipation({ path: state.path.path, distanceMetres: state.distance, direction: state.direction,
             travelMetres: pathTravel, fullHullAxisBoundMetres: Math.hypot(spec.hull.halfWidthMetres, spec.hull.halfLengthMetres, spec.hull.heightMetres),
             gapMetres: gap, blockers: routeBlockers,
+            // The scan only reads the current footprint, which is never written in place (PERF-WHARF).
             flatSupport: { sampler: this.sampler, hull: spec.hull, currentHeadingY: state.heading,
-              currentFootprint: detachedFootprint(state.pose.footprint),
+              currentFootprint: state.pose.footprint,
               maximumNativeStepTravelMetres: Math.max(spec.speedMetresPerSecond, state.speed) * dt } });
         const target = priorityHold || incomplete || scan.overflow ? 0
           : scan.blockedBy === null ? spec.speedMetresPerSecond
@@ -1564,7 +1772,14 @@ export class PopulationSimulation {
       const nativeFraction = Math.min(1, dt / horizon);
       let fraction = 1;
       const candidateTrack: SweepTrack = { from: grownFrom, to: grownProspective };
-      for (const blocker of blockers) {
+      // Every blocker in the former list's order (Math.min over the same values: order-free anyway).
+      // The others: only those mayMeet could accept (PERF-WHARF, `actorCandidates`).
+      const nativeCandidates = actorCandidates(forecast, prospectiveBounds, index, held, stamp, candidates, this.nativeCandidates);
+      const blockerCount = forecast.people.length + reservationBlockers.length + nativeCandidates.length;
+      for (let k = 0; k < blockerCount; k += 1) {
+        const other = k - forecast.people.length - reservationBlockers.length;
+        const blocker = other < 0 ? k < forecast.people.length ? forecast.people[k] : reservationBlockers[k - forecast.people.length]
+          : actorBlocker(nativeCandidates[other]);
         if (!mayMeet(prospectiveBounds, blocker.bounds)) continue;
         if (blocker.nativeFraction !== nativeFraction || !blocker.nativeTo) {
           blocker.nativeFraction = nativeFraction; blocker.nativeTo = mixBody(blocker.from, blocker.to, nativeFraction);
@@ -1616,6 +1831,7 @@ export class PopulationSimulation {
     // velocities alone cannot prevent two newly accelerating actors meeting
     // at a crossing; rotating a stopped actor also has a physical swept hull.
     const fractions = this.states.map(() => 1);
+    const originalMemos = this.endpointMemoRow('original'), grownMemos = this.endpointMemoRow('grown');
     const actualMotions = this.states.map((state, index) => {
       // The published footprints themselves: never written in place (PERF-POP).
       const from = this.previous.actors[index].footprint, to = state.pose.footprint;
@@ -1624,7 +1840,8 @@ export class PopulationSimulation {
       // a rider could never turn round and leave (R2C-5, 2026-10-04).
       const turningOnly = state.speed === 0 && state.stepTravel === 0 && from.headingY !== to.headingY;
       const gap = turningOnly ? 0 : vehicle(state.spec.kind) ? R.vehicleWaitingGapMetres : R.humanWaitingGapMetres;
-      return { original: boundedMotion(from, to), grown: boundedMotion(grow(from, gap), grow(to, gap)),
+      return { original: boundedMotion(from, to, originalMemos[index] ??= {}),
+        grown: boundedMotion(grow(from, gap), grow(to, gap), grownMemos[index] ??= {}),
         turnsInPlace: turningOnly && turnsThroughRiders(state.spec.kind), sidestep: state.aside !== state.stepStartAside };
     });
     const nativeMotions = people.map(person => boundedMotion(person.current, predictBody(person.current, dt)));
@@ -1655,11 +1872,42 @@ export class PopulationSimulation {
       // is still refused. Wider actors keep the constraint (`turnSweepClear`).
       if (!first.turnsInPlace) for (const person of first.sidestep ? standingBodies : nativeMotions) constrain(i, first.grown, person, first.sidestep);
       for (const item of reservationBlockers) constrain(i, first.grown, item);
-      for (let j = i + 1; j < this.states.length; j += 1) {
-        const second = actualMotions[j];
-        constrain(i, first.grown, second.original);
-        constrain(j, second.grown, first.original);
-      }
+    }
+    // Every actor pair, i < j: constrain(i, i grown, j original) and
+    // constrain(j, j grown, i original). PERF-WHARF: a pair whose two motions'
+    // X extents (the grown and original boxes together) do not overlap is one
+    // mayMeet refuses both ways, so it is not visited; every pair it could
+    // accept is, both calls in their former direction. Their fractions are
+    // Math.min over the same values, which is order-free; nothing else is
+    // written but each motion's pure endpoint cache. Comparisons only, no sums.
+    const count = this.states.length, order = this.pairOrder, low = this.pairLow, high = this.pairHigh;
+    let unbounded = 0;
+    for (let i = 0; i < count; i += 1) {
+      const grown = actualMotions[i].grown.bounds, original = actualMotions[i].original.bounds;
+      // A motion with no box (non-finite or malformed) meets everything: mayMeet answers true.
+      if (grown === null || original === null) { low[i] = -Infinity; high[i] = -Infinity; unbounded += 1; continue; }
+      low[i] = Math.min(grown.minX, original.minX); high[i] = Math.max(grown.maxX, original.maxX);
+    }
+    const pair = (a: number, b: number): void => {
+      const i = a < b ? a : b, j = a < b ? b : a;
+      constrain(i, actualMotions[i].grown, actualMotions[j].original);
+      constrain(j, actualMotions[j].grown, actualMotions[i].original);
+    };
+    if (unbounded > 0) for (let a = 0; a < count; a += 1) if (low[a] === -Infinity) {
+      for (let b = 0; b < count; b += 1) if (b !== a && (low[b] !== -Infinity || b > a)) pair(a, b);
+    }
+    // The permutation is kept from step to step, so this insertion sort is nearly free.
+    for (let index = 1; index < count; index += 1) {
+      const value = order[index], key = low[value];
+      let at = index - 1;
+      while (at >= 0 && low[order[at]] > key) { order[at + 1] = order[at]; at -= 1; }
+      order[at + 1] = value;
+    }
+    // Boxless motions sort first; from a boxed one, every later one starts no further left.
+    for (let p = 0; p < count; p += 1) {
+      const a = order[p], reach = high[a];
+      if (low[a] === -Infinity) continue;
+      for (let q = p + 1; q < count && low[order[q]] <= reach; q += 1) pair(a, order[q]);
     }
     fractions.forEach((fraction, index) => {
       if (fraction < 1) { this.stopAtFraction(this.states[index], fraction); this.states[index].waiting = true;

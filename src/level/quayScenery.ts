@@ -435,7 +435,14 @@ function steppedWalls(plan: LevelPlan): { x0: number; x1: number; steps: Step[] 
   return out;
 }
 
-function smoothWall(R: Layer, w: { x0: number; x1: number; steps: Step[] }, brick: boolean): void {
+/** A wall's coping: its depth, and how far it stands proud of a deck guard's faces and of the island edge's. */
+export const COPING = Object.freeze({ depth: 0.08, wall: 0.07, edge: 0.12 });
+/** Z spans along a wall's −x and +x faces where another coped wall stands against it. */
+interface Joints { readonly neg: readonly (readonly [number, number])[]; readonly pos: readonly (readonly [number, number])[] }
+const NO_JOINTS: Joints = { neg: [], pos: [] };
+const meets = (spans: Joints['neg'], z: number): boolean => spans.some(([a, b]) => z > a && z < b);
+
+function smoothWall(R: Layer, w: { x0: number; x1: number; steps: Step[] }, brick: boolean, joints: Joints = NO_JOINTS): void {
   const s = w.steps, first = s[0], last = s[s.length - 1];
   const slope = (last.top - first.top) / ((last.z0 + last.z1) / 2 - (first.z0 + first.z1) / 2);
   let c = -Infinity;
@@ -449,37 +456,84 @@ function smoothWall(R: Layer, w: { x0: number; x1: number; steps: Step[] }, bric
   }
   R.quad([x0, 0, za], [x0, h(za), za], [x1, h(za), za], [x1, 0, za], C.wallFoot, C.wall, C.wall, C.wallFoot);
   R.quad([x1, 0, zb], [x1, h(zb), zb], [x0, h(zb), zb], [x0, 0, zb], C.wallFoot, C.wall, C.wall, C.wallFoot);
-  // Sloped coping, a hand's width proud of each face.
-  const o = 0.06, t = 0.1, cx0 = x0 - o, cx1 = x1 + o;
-  R.quad([cx0, h(za) + t, za], [cx0, h(zb) + t, zb], [cx1, h(zb) + t, zb], [cx1, h(za) + t, za], C.coping);
-  R.quad([cx1, h(za), za], [cx1, h(za) + t, za], [cx1, h(zb) + t, zb], [cx1, h(zb), zb], shade(C.coping, 0.85));
-  R.quad([cx0, h(zb), zb], [cx0, h(zb) + t, zb], [cx0, h(za) + t, za], [cx0, h(za), za], shade(C.coping, 0.85));
-}
-
-/** A coping cap along the top of a long thin wall box. */
-function coping(R: Layer, c: BoxCollider, over: number): void {
-  const top = c.centre.y + c.halfExtents.y, alongX = c.halfExtents.x > c.halfExtents.z;
-  const len = alongX ? c.halfExtents.x : c.halfExtents.z, half = (alongX ? c.halfExtents.z : c.halfExtents.x) + over;
-  const n = Math.max(1, Math.round(len * 2 / 2.4));
-  for (let k = 0; k < n; k++) {
-    const a = -len + 2 * len * k / n, b = -len + 2 * len * (k + 1) / n, tone = shade(C.coping, 0.93 + hash(c.centre.x + a, c.centre.z, 181) * 0.12);
-    if (alongX) R.box(c.centre.x + a, c.centre.x + b, top, top + 0.08, c.centre.z - half, c.centre.z + half, tone, shade(tone, 0.9));
-    else R.box(c.centre.x - half, c.centre.x + half, top, top + 0.08, c.centre.z + a, c.centre.z + b, tone, shade(tone, 0.9));
+  // Sloped coping, a hand's width proud of each face; where another coped wall
+  // stands against a face it stops at the joint, so the sloped and the flat
+  // coping never cross at a shallow angle (2026-10-23).
+  const o = 0.06, t = 0.1, side = shade(C.coping, 0.85);
+  // A joint that ends at the wall's own end runs to its drawn end, 15 mm on.
+  const snap = (z: number): number => Math.abs(z - za) <= 2 * e ? za : Math.abs(z - zb) <= 2 * e ? zb : z;
+  const neg = joints.neg.map(([a, b]) => [snap(a), snap(b)] as const), pos = joints.pos.map(([a, b]) => [snap(a), snap(b)] as const);
+  const cuts = [...new Set([za, zb, ...[...neg, ...pos].flat().filter(z => z > za && z < zb)])].sort((a, b) => a - b);
+  const edge = (z: number): [number, number] => [meets(neg, z) ? w.x0 : x0 - o, meets(pos, z) ? w.x1 : x1 + o];
+  for (let k = 0; k + 1 < cuts.length; k++) {
+    const p = cuts[k], q = cuts[k + 1], [cx0, cx1] = edge((p + q) / 2);
+    R.quad([cx0, h(p) + t, p], [cx0, h(q) + t, q], [cx1, h(q) + t, q], [cx1, h(p) + t, p], C.coping);
+    R.quad([cx1, h(p), p], [cx1, h(p) + t, p], [cx1, h(q) + t, q], [cx1, h(q), q], side);
+    R.quad([cx0, h(q), q], [cx0, h(q) + t, q], [cx0, h(p) + t, p], [cx0, h(p), p], side);
+    if (k === 0) continue;
+    // The step where the coping's width changes, facing the narrower piece.
+    const [b0, b1] = edge((cuts[k - 1] + p) / 2), y0 = h(p), y1 = h(p) + t;
+    for (const [was, now, narrowBefore] of [[b0, cx0, b0 > cx0], [b1, cx1, b1 < cx1]] as const) {
+      if (was === now) continue;
+      const lo = Math.min(was, now), hi = Math.max(was, now);
+      if (narrowBefore) R.quad([lo, y0, p], [lo, y1, p], [hi, y1, p], [hi, y0, p], side);
+      else R.quad([hi, y0, p], [hi, y1, p], [lo, y1, p], [lo, y0, p], side);
+    }
   }
 }
 
+/** A coping cap along the top of a long thin wall box; `joints` end its overhang where a coped wall stands against it. */
+function coping(R: Layer, c: BoxCollider, over: number, joints: Joints = NO_JOINTS): void {
+  const top = c.centre.y + c.halfExtents.y, alongX = c.halfExtents.x > c.halfExtents.z;
+  const len = alongX ? c.halfExtents.x : c.halfExtents.z, half = (alongX ? c.halfExtents.z : c.halfExtents.x) + over, thin = half - over;
+  const n = Math.max(1, Math.round(len * 2 / 2.4));
+  for (let k = 0; k < n; k++) {
+    const a = -len + 2 * len * k / n, b = -len + 2 * len * (k + 1) / n, tone = shade(C.coping, 0.93 + hash(c.centre.x + a, c.centre.z, 181) * 0.12);
+    if (alongX) R.box(c.centre.x + a, c.centre.x + b, top, top + COPING.depth, c.centre.z - half, c.centre.z + half, tone, shade(tone, 0.9));
+    else {
+      const mid = c.centre.z + (a + b) / 2, lo = meets(joints.neg, mid) ? thin : half, hi = meets(joints.pos, mid) ? thin : half;
+      R.box(c.centre.x - lo, c.centre.x + hi, top, top + COPING.depth, c.centre.z + a, c.centre.z + b, tone, shade(tone, 0.9));
+    }
+  }
+}
+
+/**
+ * The solid under a wall's drawn coping, overhang and all (2026-10-23), for
+ * the one wall a wheel could mount: the grand stair's rear masonry stands 0.2 m
+ * over its deck, inside the 0.216 m step-up, and a wheel rolled on and sank into
+ * the render-only coping. With this box the step is 0.28 m and what stops the
+ * wheel is what is drawn. It is `drawn: false`: the coping on the wall is its look.
+ */
+export function copingSolid(c: BoxCollider, over: number = COPING.wall): BoxCollider {
+  const top = c.centre.y + c.halfExtents.y, alongX = c.halfExtents.x > c.halfExtents.z;
+  return { ...c, centre: { ...c.centre, y: top + COPING.depth / 2 }, drawn: false,
+    halfExtents: { x: c.halfExtents.x + (alongX ? 0 : over), y: COPING.depth / 2, z: c.halfExtents.z + (alongX ? over : 0) } };
+}
+
 function walls(R: Layer, plan: LevelPlan): void {
-  // The stair cheeks and the market's return-ramp walls stand in the brick plaza.
-  for (const w of steppedWalls(plan)) smoothWall(R, w, w.x0 > 16 && w.x1 < 86 && w.steps[0].z0 > -5 && w.steps[w.steps.length - 1].z1 < 50);
+  const coped: { c: BoxCollider; over: number }[] = [];
   for (const s of plan.segments) for (const c of s.colliders) {
     const top = c.centre.y + c.halfExtents.y, thin = Math.min(c.halfExtents.x, c.halfExtents.z), long = Math.max(c.halfExtents.x, c.halfExtents.z);
     // A box drawn as railing (`drawn: false`) has no wall to cap.
     if (c.rotationY !== 0 || thin > 1.05 || long < 2 || c.drawn === false) continue;
     const guard = Math.abs(top - 1.4) < 1e-6 && c.centre.y - c.halfExtents.y < 0.01 && (Math.abs(c.centre.x) > 118 || Math.abs(c.centre.z) > 88);
     const parapet = (c.appearance === 'stone' || c.appearance === 'brick') && top > 12.5;
-    const deckGuard = ['concrete', 'brick'].includes(c.appearance ?? 'concrete') && thin <= 0.3 && top > 1.35 && top < 3 && c.centre.y - c.halfExtents.y < 0.01 && !guard;
-    if (guard) coping(R, c, 0.12); else if (parapet || deckGuard) coping(R, c, 0.07);
+    // 0.4: the stair deck's east guard is 0.8 m thick where it meets the return ramp's wall (2026-10-23).
+    const deckGuard = ['concrete', 'brick'].includes(c.appearance ?? 'concrete') && thin <= 0.4 && top > 1.35 && top < 3 && c.centre.y - c.halfExtents.y < 0.01 && !guard;
+    if (guard) coped.push({ c, over: COPING.edge }); else if (parapet || deckGuard) coped.push({ c, over: COPING.wall });
   }
+  // Where a coped wall box stands against a smooth wall's face, both copings
+  // end at that joint (the stair deck's east guard on the return ramp's wall).
+  const stepped = steppedWalls(plan), along = coped.filter(({ c }) => c.halfExtents.z > c.halfExtents.x);
+  const x0 = (c: BoxCollider): number => c.centre.x - c.halfExtents.x, x1 = (c: BoxCollider): number => c.centre.x + c.halfExtents.x;
+  const span = (c: BoxCollider): [number, number] => [c.centre.z - c.halfExtents.z, c.centre.z + c.halfExtents.z];
+  const run = (w: (typeof stepped)[number]): [number, number] => [w.steps[0].z0, w.steps[w.steps.length - 1].z1];
+  const at = (a: number, b: number): boolean => Math.abs(a - b) < 1e-6;
+  // The stair cheeks and the market's return-ramp walls stand in the brick plaza.
+  for (const w of stepped) smoothWall(R, w, w.x0 > 16 && w.x1 < 86 && w.steps[0].z0 > -5 && w.steps[w.steps.length - 1].z1 < 50,
+    { neg: along.filter(({ c }) => at(x1(c), w.x0)).map(({ c }) => span(c)), pos: along.filter(({ c }) => at(x0(c), w.x1)).map(({ c }) => span(c)) });
+  for (const { c, over } of coped) coping(R, c, over, c.halfExtents.z > c.halfExtents.x
+    ? { neg: stepped.filter(w => at(w.x1, x0(c))).map(run), pos: stepped.filter(w => at(w.x0, x1(c))).map(run) } : NO_JOINTS);
 }
 
 // -- Railings: the island edge and the roof decks ---------------------------

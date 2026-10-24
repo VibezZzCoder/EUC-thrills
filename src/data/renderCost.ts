@@ -215,6 +215,8 @@ export interface CostableProp {
   readonly size?: { readonly x: number; readonly y: number; readonly z: number };
   /** M39 Phase 2's district look or landmark; only `building` reads it. */
   readonly look?: BuildingLook;
+  /** `Prop.slabRoof`: an untagged building whose riding slab is its roof composes no cap. */
+  readonly slabRoof?: true;
 }
 
 /**
@@ -257,7 +259,8 @@ export function propPartCounts(
 
   const size = prop.size ?? DEFAULT_BUILDING_SIZE;
   add(facadeFor(size.y));
-  add('buildingCap');
+  // A slab roof owns the cap's volume (`Prop.slabRoof`, 2026-10-23).
+  if (!prop.slabRoof) add('buildingCap');
   const tower = buildingTowerPart(size, prop.position.x, prop.position.z);
   if (tower !== null) add(tower);
   return into;

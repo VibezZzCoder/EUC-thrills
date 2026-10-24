@@ -21,10 +21,11 @@ export function buildingSourceRecords(prop: Prop): readonly BuildingPiece[] {
     : height >= BUILDING_FACADE.lowRiseHeight ? 'buildingBody' : 'buildingLow';
   const records: BuildingPiece[] = [
     { part: facade(size.y), x: 0, y: 0, z: 0, sx: size.x, sy: size.y, sz: size.z, yaw: 0, tone, jitter },
-    { part: 'buildingCap', x: 0, y: size.y, z: 0, sx: size.x + shape.capOversail,
-      sy: shape.capHeight, sz: size.z + shape.capOversail, yaw: 0, tone: prop.roofTone ?? PROP_COLOURS.buildingCap,
-      jitter: 1 + (positionHash01(x, z, 7) * 2 - 1) * PROP_TINT_JITTER.structure },
   ];
+  // A slab roof owns the cap's volume and underside (`Prop.slabRoof`, 2026-10-23).
+  if (!prop.slabRoof) records.push({ part: 'buildingCap', x: 0, y: size.y, z: 0, sx: size.x + shape.capOversail,
+    sy: shape.capHeight, sz: size.z + shape.capOversail, yaw: 0, tone: prop.roofTone ?? PROP_COLOURS.buildingCap,
+    jitter: 1 + (positionHash01(x, z, 7) * 2 - 1) * PROP_TINT_JITTER.structure });
   if (positionHash01(x, z, 9) > 0.55) {
     const height = size.y * shape.towerHeightFraction;
     const part: PropPartId = height >= BUILDING_FACADE.highRiseHeight ? 'buildingTall' : 'buildingBody';

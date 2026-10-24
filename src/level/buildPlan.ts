@@ -2302,6 +2302,7 @@ function resolveProp(
     ...(prop.look === undefined ? {} : { look: prop.look }),
     ...(prop.tone === undefined ? {} : { tone: prop.tone }),
     ...(prop.roofTone === undefined ? {} : { roofTone: prop.roofTone }),
+    ...(prop.slabRoof === undefined ? {} : { slabRoof: prop.slabRoof }),
   };
 }
 

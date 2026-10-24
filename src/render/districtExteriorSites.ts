@@ -189,6 +189,13 @@ function exteriorStreetRequest(family: EntranceFamily, band: number, doorHeight:
 }
 
 export function exteriorComposition(building: Prop): readonly BuildingPiece[] {
+  const pieces = exteriorSourceComposition(building);
+  // A slab roof owns the cap's volume and underside (`Prop.slabRoof`, 2026-10-23).
+  return building.slabRoof && building.look === undefined ? pieces.filter(piece => piece.part !== 'buildingCap') : pieces;
+}
+/** The kit's composition before a slab roof takes the cap away; its pieces still
+ * name the trim's colours (`districtExteriorAppearance.ts`), which a slab roof keeps. */
+export function exteriorSourceComposition(building: Prop): readonly BuildingPiece[] {
   if (building.kind !== 'building') return [];
   if (building.look !== undefined) return composeBuilding({ ...building, look: building.look });
   const size = building.size ?? { x: 12, y: 18, z: 12 }, shape = PROP_SIZES.building;
@@ -493,7 +500,10 @@ export function* districtExteriorSitesSteps(plan: LevelPlan,
         const width = side % 2 ? piece.sz : piece.sx, depth = side % 2 ? piece.sx : piece.sz;
         const face = at(origin, yaw, 0, 0, depth / 2);
         if (rim) {
-          box('roof-rim', 'roofEdge', face, yaw, 0, piece.sy - 0.08, 0.012, width, 0.16, 0.08);
+          // Wholly outside the cap face (2026-10-23): its top meets the cap's top
+          // edge to edge, as before, rather than repeating 28 mm of it in the
+          // same plane, and neighbouring rims no longer cross at the corners.
+          box('roof-rim', 'roofEdge', face, yaw, 0, piece.sy - 0.08, 0.026, width, 0.16, 0.052);
           continue;
         }
         const sections = Math.max(2, Math.min(6, Math.round(piece.sy / 4)));

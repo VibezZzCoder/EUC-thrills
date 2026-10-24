@@ -9,7 +9,7 @@ import { POPULATION as R, GROUND_CERTIFICATE as C } from '../data/tuning.ts';
 import { physicalPopulationHull } from '../shared/populationHull.ts';
 import { PlanTerrainSampler } from './planSampler.ts';
 import type { PopulationFootprint } from './population.ts';
-import { routeAnticipation, sourceYawSupport, type RouteAnticipationBlocker } from './populationRouteAnticipation.ts';
+import { forgetRouteAnticipationMemos, routeAnticipation, sourceYawSupport, type RouteAnticipationBlocker } from './populationRouteAnticipation.ts';
 import { routeAnticipation as frozenV1 } from './populationRouteAnticipation.v1.test-fixture.ts';
 
 type Input = Parameters<typeof routeAnticipation>[0];
@@ -169,10 +169,13 @@ test('a blocker\'s flat terms are formed once per scan, not once per certified s
   // Every Math.atan2 the scan makes: per span (source yaw, axis phases, supports)
   // and per blocker (its turn and yaw extents). Extra blockers must cost the
   // same on a 4-span and a 16-span straight road; results stay exact (above).
+  // PERF-WHARF: the scan's exact-keyed term memos carry terms from scan to
+  // scan, so each counted scan starts from none, as every scan once did.
   const atan2 = Math.atan2;
   const count = (spans: number, blockers: number) => {
     const path = pathFrom(Array.from({ length: spans + 1 }, (_, index) => [0, index - 10] as const));
     const rows = Array.from({ length: blockers }, (_, index) => blocker(`side-${index}`, body(8, index * 3 - 9, .3 * index)));
+    forgetRouteAnticipationMemos();
     let calls = 0;
     Math.atan2 = (y, x) => { calls += 1; return atan2(y, x); };
     let result;

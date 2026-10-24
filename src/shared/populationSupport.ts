@@ -132,3 +132,117 @@ export function populationSupportTargets(input: PopulationSupportInput): Populat
   };
   return { ...common, feet: [foot(1), foot(-1)], tyres: null };
 }
+
+/** One caller-owned support target (`PopulationSupportTarget`, writable). */
+export type MutablePopulationSupportTarget = { -readonly [K in keyof PopulationSupportTarget]: PopulationSupportTarget[K] };
+/** Caller-owned storage for `populationSupportTargetsInto`. `feet`/`tyres`
+ * point at its own fixed records (or are null), so it allocates nothing per call. */
+export interface PopulationSupportTargetsRecord extends PopulationSupportTargets {
+  widthScale: number; heightScale: number; lengthScale: number;
+  phase: number; bobMetres: number; moving: boolean; sittingBlend: number; seatHeightLocalMetres: number;
+  feet: readonly [MutablePopulationSupportTarget, MutablePopulationSupportTarget] | null;
+  tyres: readonly [MutablePopulationSupportTarget, MutablePopulationSupportTarget,
+    MutablePopulationSupportTarget, MutablePopulationSupportTarget] | null;
+  readonly footStore: readonly [MutablePopulationSupportTarget, MutablePopulationSupportTarget];
+  readonly tyreStore: readonly [MutablePopulationSupportTarget, MutablePopulationSupportTarget,
+    MutablePopulationSupportTarget, MutablePopulationSupportTarget];
+}
+export function createPopulationSupportTargetsRecord(): PopulationSupportTargetsRecord {
+  const target = (): MutablePopulationSupportTarget => ({ x: 0, y: 0, z: 0, localX: 0, localY: 0, localZ: 0,
+    liftMetres: 0, pitchRadians: 0, contact: 'ground', radiusMetres: 0 });
+  return { widthScale: 1, heightScale: 1, lengthScale: 1, phase: 0, bobMetres: 0, moving: false, sittingBlend: 0,
+    seatHeightLocalMetres: 0, feet: null, tyres: null,
+    footStore: [target(), target()], tyreStore: [target(), target(), target(), target()] };
+}
+
+/** `populationGradePoint`'s arithmetic, written into `out` (no record per call). */
+function gradePointInto(input: Pick<PopulationSupportInput, 'x' | 'y' | 'z' | 'headingY'
+  | 'groundNormalX' | 'groundNormalY' | 'groundNormalZ'>, localX: number, localY: number, localZ: number,
+  out: MutablePopulationSupportTarget): void {
+  const length = Math.hypot(input.groundNormalX, input.groundNormalY, input.groundNormalZ);
+  const valid = Number.isFinite(length) && length > 0 && input.groundNormalY > 0;
+  const nx = valid ? input.groundNormalX / length : 0;
+  const ny = valid ? input.groundNormalY / length : 1;
+  const nz = valid ? input.groundNormalZ / length : 0;
+  const denominator = 1 + ny, c = Math.cos(input.headingY), s = Math.sin(input.headingY);
+  const yawX = c * localX + s * localZ, yawZ = -s * localX + c * localZ;
+  out.x = input.x + (1 - nx * nx / denominator) * yawX + nx * localY - nx * nz / denominator * yawZ;
+  out.y = input.y - nx * yawX + ny * localY - nz * yawZ;
+  out.z = input.z - nx * nz / denominator * yawX + nz * localY + (1 - nz * nz / denominator) * yawZ;
+}
+
+/**
+ * `populationSupportTargets`, written into caller-owned storage (PERF-WHARF,
+ * 2026-10-23, for the renderer, which asks once per posed actor per frame).
+ * The same arithmetic in the same order, expression for expression; only the
+ * fresh records are gone. The simulation keeps the allocating original, whose
+ * behaviour and returned records are unchanged; `populationSupport.test.ts`
+ * pins this variant to it by float bits. Change the two together.
+ */
+export function populationSupportTargetsInto(input: PopulationSupportInput,
+  out: PopulationSupportTargetsRecord): PopulationSupportTargetsRecord {
+  const m = POPULATION_MODEL;
+  const vehicle = input.kind.endsWith('Vehicle');
+  const riding = input.kind === 'fictionalEuc', jogging = input.kind === 'jogger';
+  const pedal = riding ? m.pedalHeight : 0;
+  const widthScale = Math.min(1, input.hull.halfWidthMetres / m.adultHalfWidth);
+  const heightScale = (input.hull.heightMetres - pedal) / m.adultHeight;
+  const lengthScale = Math.min(1, input.hull.halfLengthMetres / m.adultHalfLength);
+  const sittingBlend = input.posture === 'seated' && Number.isFinite(input.seatHeightMetres)
+    && input.seatHeightMetres! > 0 && input.seatHeightMetres! / heightScale <= 0.83
+    ? clamp(input.sittingBlend ?? 1, 0, 1) : 0;
+  const moving = !riding && sittingBlend === 0 && (input.activity === 'walking' || input.activity === 'jogging')
+    && Math.abs(input.speedMetresPerSecond) > 0.03;
+  const stanceShare = jogging ? m.joggerStanceShare : m.walkerStanceShare;
+  const extent = jogging ? m.joggerStepExtent : m.walkerStepExtent;
+  const phase = fract(input.gaitDistanceMetres / (extent / stanceShare) + fract(input.appearanceIndex / 11));
+  const bobMetres = moving ? (jogging ? 0.045 : 0.018) * (0.5 - 0.5 * Math.cos(phase * Math.PI * 4)) : 0;
+  out.widthScale = widthScale; out.heightScale = heightScale; out.lengthScale = lengthScale;
+  out.phase = phase; out.bobMetres = bobMetres; out.moving = moving; out.sittingBlend = sittingBlend;
+  out.seatHeightLocalMetres = sittingBlend > 0 ? input.seatHeightMetres! / heightScale : 0;
+  if (vehicle) {
+    const w = input.hull.halfWidthMetres, l = input.hull.halfLengthMetres;
+    const radiusMetres = Math.min(input.hull.heightMetres * m.tyreHeightRadiusShare, l * m.tyreLengthRadiusShare);
+    for (let index = 0; index < 4; index += 1) {
+      // Left-front, left-rear, right-front, right-rear.
+      const sign = index < 2 ? 1 : -1, front = index % 2 === 0 ? 1 : -1, tyre = out.tyreStore[index]!;
+      const localX = sign * m.tyreOutwardShare * w, localZ = front * m.tyreAxleShare * l;
+      gradePointInto(input, localX, 0, localZ, tyre);
+      tyre.localX = localX; tyre.localY = 0; tyre.localZ = localZ;
+      tyre.liftMetres = 0; tyre.pitchRadians = 0; tyre.contact = 'ground'; tyre.radiusMetres = radiusMetres;
+    }
+    out.feet = null; out.tyres = out.tyreStore;
+    return out;
+  }
+  for (let index = 0; index < 2; index += 1) {
+    const sign = index === 0 ? 1 : -1, foot = out.footStore[index]!;
+    let localX = sign * m.footOutward, localZ = 0.035, lift = 0, pitchRadians = 0;
+    if (moving) {
+      const f = fract(phase + (sign < 0 ? 0.5 : 0));
+      if (f < stanceShare) localZ = extent * (0.5 - f / stanceShare);
+      else {
+        const t = (f - stanceShare) / (1 - stanceShare);
+        localZ = extent * (-0.5 + smooth(t));
+        pitchRadians = m.swingPitch * Math.sin(t * Math.PI);
+        lift = Math.sin(t * Math.PI) * (jogging ? m.joggerSwingHeight : m.walkerSwingHeight)
+          + Math.abs(Math.sin(pitchRadians)) * (m.footHalfDepth + m.footForwardOffset);
+      }
+    }
+    localX += (sign * m.seatedFootOutward - localX) * sittingBlend;
+    localZ += (m.seatedFootForward - localZ) * sittingBlend;
+    if (riding) {
+      const pedalX = sign * m.pedalHalfStance;
+      gradePointInto(input, pedalX, m.pedalHeight, 0, foot);
+      foot.localX = pedalX; foot.localY = m.pedalHeight; foot.localZ = 0;
+      foot.liftMetres = 0; foot.pitchRadians = 0; foot.contact = 'pedal'; foot.radiusMetres = 0;
+      continue;
+    }
+    const c = Math.cos(input.headingY), s = Math.sin(input.headingY);
+    foot.x = input.x + c * localX * widthScale + s * localZ * lengthScale; foot.y = input.y;
+    foot.z = input.z - s * localX * widthScale + c * localZ * lengthScale;
+    foot.localX = localX; foot.localY = 0; foot.localZ = localZ;
+    foot.liftMetres = lift * heightScale; foot.pitchRadians = pitchRadians; foot.contact = 'ground'; foot.radiusMetres = 0;
+  }
+  out.feet = out.footStore; out.tyres = null;
+  return out;
+}

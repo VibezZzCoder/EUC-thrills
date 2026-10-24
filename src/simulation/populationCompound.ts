@@ -112,6 +112,11 @@ interface Motion {
   readonly worldBounds: Aabb | null;
   /** A person or EUC rider turning on the spot, met by riders at its start (`turningInPlace`). */
   readonly turning?: true;
+  /** `${ownerId}/${componentId}`, and `${kind}/` before it: formed once, not per comparison. */
+  readonly identityKey: string;
+  readonly sortKey: string;
+  /** An actor's kept exact values (PERF-WHARF), or null when it has none. */
+  readonly record: ActorRecord | null;
 }
 
 /**
@@ -150,6 +155,8 @@ interface Pair {
   /** Population actors still stop each other, but have no rider charge record. */
   readonly actorComponent: boolean;
   readonly key: string;
+  /** An actor/actor pair's kept key and first-pass verdict (PERF-WHARF). */
+  readonly entry?: PairVerdict;
 }
 
 interface Candidate {
@@ -227,7 +234,8 @@ function trajectoryBounds(first: PopulationFootprint, last: PopulationFootprint,
   const bounds = coarseActorMotionWorldAabb(pad === 0 ? first : inflate(first, pad), pad === 0 ? last : inflate(last, pad));
   // A malformed optional source hull must still reach the existing validating
   // narrow phase; an invalid bound is never evidence that a pair cannot touch.
-  if (!Object.values(bounds).every(Number.isFinite)) return null;
+  if (!(Number.isFinite(bounds.minX) && Number.isFinite(bounds.maxX) && Number.isFinite(bounds.minY) && Number.isFinite(bounds.maxY)
+    && Number.isFinite(bounds.minZ) && Number.isFinite(bounds.maxZ))) return null;
   const skin = R.contactSkinMetres + R.epsilon;
   return { minX: bounds.minX - skin, maxX: bounds.maxX + skin,
     minY: bounds.minY - skin, maxY: bounds.maxY + skin,
@@ -237,9 +245,200 @@ function trajectoryBounds(first: PopulationFootprint, last: PopulationFootprint,
 const possiblePair = (a: Motion, b: Motion): boolean => a.worldBounds === null || b.worldBounds === null
   || aabbsOverlap(a.worldBounds, b.worldBounds);
 
+/**
+ * Exact actor values kept across batches (PERF-WHARF, 2026-10-23). A batch's
+ * first chronology pass starts every stop at 1 and its cursor at 0, so there an
+ * actor/actor pair's verdict (escaped, clear, or its contact and time) is a pure
+ * function of the two actors' previous/current footprints alone. The Wharf asks
+ * it about ~90 pairs per batch, most between standing social people whose
+ * bodies are bit-identical from tick to tick, and a transaction asks it again
+ * in every refusal pass. Each actor's endpoint values are compared field by
+ * field (Object.is, so -0 and NaN keep their identity) against the last batch
+ * that saw its id; a generation names one exact value set, and a pair's verdict
+ * is reused only under both generations. Its endpoint bodies and broad-phase
+ * box, pure in the same values, are reused with it. Nothing approximate is kept.
+ * The record also keeps the actor's identity strings and pair keys, so the
+ * maps and sets keyed by them hash one stable string instead of a fresh one.
+ */
+const BODY_FIELDS = 22;
+interface ActorRecord {
+  /** The raw identity inputs these strings were formed from. */
+  ownerInput: string | undefined; componentInput: string | undefined; stopGroupInput: string | undefined;
+  ownerId: string; componentId: string; stopGroupId: string; groupKey: string; identityKey: string; sortKey: string;
+  /** Pair keys and first-pass verdicts with each later actor, by its record. */
+  readonly pairs: Map<ActorRecord, PairVerdict>;
+  /** The kept values describe plain number data; otherwise nothing value-derived is reused. */
+  valid: boolean;
+  readonly values: Float64Array; flags: number; generation: number; seen: number;
+  bounds: Aabb | null; first: PopulationFootprint | undefined; last: PopulationFootprint | undefined;
+}
+interface PairVerdict {
+  readonly key: string; readonly firstKey: string; readonly secondKey: string;
+  first: number; second: number; seen: number;
+  /** undefined: the endpoint overlap escape skipped the pair; null: clear. */
+  found: Swept | null | undefined;
+}
+const actorRecords = new Map<string, ActorRecord>();
+let actorGeneration = 0, batchSerial = 0;
+/** Entries unseen for this many batches are dropped; a later return is merely recomputed. */
+const RECORD_RETENTION_BATCHES = 256;
+const optionalNumber = (value: unknown): boolean => value === undefined || value === null || typeof value === 'number';
+/** The footprint's flags (bit 0 source hull, 1–3 its optional paddings), or -1 when it is not plain number data. */
+function bodyFlags(body: PopulationFootprint): number {
+  if (typeof body.x !== 'number' || typeof body.z !== 'number' || typeof body.headingY !== 'number'
+    || typeof body.halfWidthMetres !== 'number' || typeof body.halfLengthMetres !== 'number' || typeof body.minY !== 'number'
+    || typeof body.maxY !== 'number' || typeof body.velocityX !== 'number' || typeof body.velocityZ !== 'number') return -1;
+  const source = body.sourceHull as unknown;
+  if (source === undefined || source === null || source === false) return 0;
+  if (typeof source !== 'object') return -1;
+  const hull = (source as { hull?: unknown }).hull, s = source as NonNullable<PopulationFootprint['sourceHull']>;
+  if (typeof hull !== 'object' || hull === null || typeof s.x !== 'number' || typeof s.y !== 'number' || typeof s.z !== 'number'
+    || typeof s.headingY !== 'number' || typeof s.normalX !== 'number' || typeof s.normalY !== 'number' || typeof s.normalZ !== 'number'
+    || typeof s.hull.halfWidthMetres !== 'number' || typeof s.hull.halfLengthMetres !== 'number' || typeof s.hull.heightMetres !== 'number'
+    || !optionalNumber(s.marginMetres) || !optionalNumber(s.verticalPaddingBelowMetres) || !optionalNumber(s.verticalPaddingAboveMetres)) return -1;
+  const present = (value: number | undefined) => value !== undefined && value !== null;
+  return 1 | (present(s.marginMetres) ? 2 : 0) | (present(s.verticalPaddingBelowMetres) ? 4 : 0) | (present(s.verticalPaddingAboveMetres) ? 8 : 0);
+}
+function writeBody(values: Float64Array, at: number, body: PopulationFootprint, flags: number): void {
+  values[at] = body.x; values[at + 1] = body.z; values[at + 2] = body.headingY; values[at + 3] = body.halfWidthMetres;
+  values[at + 4] = body.halfLengthMetres; values[at + 5] = body.minY; values[at + 6] = body.maxY;
+  values[at + 7] = body.velocityX; values[at + 8] = body.velocityZ;
+  if (!(flags & 1)) return;
+  const s = body.sourceHull!;
+  values[at + 9] = s.x; values[at + 10] = s.y; values[at + 11] = s.z; values[at + 12] = s.headingY;
+  values[at + 13] = s.normalX; values[at + 14] = s.normalY; values[at + 15] = s.normalZ;
+  values[at + 16] = s.hull.halfWidthMetres; values[at + 17] = s.hull.halfLengthMetres; values[at + 18] = s.hull.heightMetres;
+  values[at + 19] = flags & 2 ? s.marginMetres! : 0; values[at + 20] = flags & 4 ? s.verticalPaddingBelowMetres! : 0;
+  values[at + 21] = flags & 8 ? s.verticalPaddingAboveMetres! : 0;
+}
+function sameBody(values: Float64Array, at: number, body: PopulationFootprint, flags: number): boolean {
+  if (!Object.is(values[at], body.x) || !Object.is(values[at + 1], body.z) || !Object.is(values[at + 2], body.headingY)
+    || !Object.is(values[at + 3], body.halfWidthMetres) || !Object.is(values[at + 4], body.halfLengthMetres)
+    || !Object.is(values[at + 5], body.minY) || !Object.is(values[at + 6], body.maxY)
+    || !Object.is(values[at + 7], body.velocityX) || !Object.is(values[at + 8], body.velocityZ)) return false;
+  if (!(flags & 1)) return true;
+  const s = body.sourceHull!;
+  return Object.is(values[at + 9], s.x) && Object.is(values[at + 10], s.y) && Object.is(values[at + 11], s.z)
+    && Object.is(values[at + 12], s.headingY) && Object.is(values[at + 13], s.normalX) && Object.is(values[at + 14], s.normalY)
+    && Object.is(values[at + 15], s.normalZ) && Object.is(values[at + 16], s.hull.halfWidthMetres)
+    && Object.is(values[at + 17], s.hull.halfLengthMetres) && Object.is(values[at + 18], s.hull.heightMetres)
+    && (!(flags & 2) || Object.is(values[at + 19], s.marginMetres)) && (!(flags & 4) || Object.is(values[at + 20], s.verticalPaddingBelowMetres))
+    && (!(flags & 8) || Object.is(values[at + 21], s.verticalPaddingAboveMetres));
+}
+/**
+ * This batch's record for one actor id: its identity strings, formed exactly
+ * as the batch forms them, and its endpoint values with their generation.
+ */
+function actorRecord(actor: PopulationCompoundActorMotion): ActorRecord {
+  let record = actorRecords.get(actor.id);
+  if (!record || record.ownerInput !== actor.ownerId || record.componentInput !== actor.componentId || record.stopGroupInput !== actor.stopGroupId) {
+    const ownerId = actor.ownerId ?? `actor:${actor.id}`, componentId = actor.componentId ?? actor.id, stopGroupId = actor.stopGroupId ?? componentId;
+    const identityKey = identity(ownerId, componentId);
+    // New identity strings start a new record: no kept pair or value belongs to them.
+    record = { ownerInput: actor.ownerId, componentInput: actor.componentId, stopGroupInput: actor.stopGroupId,
+      ownerId, componentId, stopGroupId, groupKey: groupIdentity(ownerId, stopGroupId), identityKey, sortKey: `actor/${identityKey}`,
+      pairs: new Map(), valid: false, values: new Float64Array(BODY_FIELDS * 2),
+      flags: 0, generation: ++actorGeneration, seen: 0, bounds: null, first: undefined, last: undefined };
+    actorRecords.set(actor.id, record);
+  }
+  record.seen = batchSerial;
+  const before = bodyFlags(actor.previous), after = bodyFlags(actor.current);
+  if (before < 0 || after < 0) {
+    // Never matched again: the next plain values start a new generation.
+    if (record.valid) { record.valid = false; record.generation = ++actorGeneration; }
+    return record;
+  }
+  const flags = before | (after << 4);
+  if (!record.valid || record.flags !== flags || !sameBody(record.values, 0, actor.previous, before)
+    || !sameBody(record.values, BODY_FIELDS, actor.current, after)) {
+    writeBody(record.values, 0, actor.previous, before); writeBody(record.values, BODY_FIELDS, actor.current, after);
+    record.flags = flags; record.valid = true; record.generation = ++actorGeneration;
+    record.bounds = trajectoryBounds(actor.previous, actor.current); record.first = undefined; record.last = undefined;
+  }
+  return record;
+}
+/** The pair's kept key and verdict slot, created with the key the batch would form. */
+function pairEntry(first: ActorRecord, second: ActorRecord): PairVerdict {
+  let entry = first.pairs.get(second);
+  if (!entry || entry.firstKey !== first.identityKey || entry.secondKey !== second.identityKey) {
+    entry = { key: `${first.identityKey}|${second.identityKey}`, firstKey: first.identityKey, secondKey: second.identityKey,
+      first: -1, second: -1, seen: 0, found: undefined };
+    first.pairs.set(second, entry);
+  }
+  entry.seen = batchSerial;
+  return entry;
+}
+/**
+ * Every i < j index pair possiblePair admits, in the all-pairs loop's (i, j)
+ * order, as i * n + j: a sweep over sorted minX visits only pairs whose x
+ * intervals overlap, the first clause aabbsOverlap tests (PERF-WHARF). A
+ * motion without bounds meets every other, as possiblePair says.
+ */
+function possibleActorPairs(motions: readonly Motion[]): ArrayLike<number> & Iterable<number> {
+  const count = motions.length, found: number[] = [];
+  // Any non-decreasing minX order finds the same pairs. Start from the last
+  // batch's order, nearly sorted when the same actors barely moved, and
+  // insertion-sort it.
+  const order: number[] = [], placed = new Uint8Array(count);
+  for (const index of sweepOrder) if (index < count && !placed[index] && motions[index].worldBounds !== null) { placed[index] = 1; order.push(index); }
+  for (let index = 0; index < count; index += 1) if (!placed[index] && motions[index].worldBounds !== null) order.push(index);
+  for (let at = 1; at < order.length; at += 1) {
+    const index = order[at], minX = motions[index].worldBounds!.minX;
+    let to = at;
+    while (to > 0 && motions[order[to - 1]].worldBounds!.minX > minX) { order[to] = order[to - 1]; to -= 1; }
+    order[to] = index;
+  }
+  sweepOrder = order;
+  for (let at = 0; at < order.length; at += 1) {
+    const index = order[at], box = motions[index].worldBounds!;
+    for (let next = at + 1; next < order.length; next += 1) {
+      const other = order[next], otherBox = motions[other].worldBounds!;
+      if (otherBox.minX > box.maxX) break;
+      if (aabbsOverlap(box, otherBox)) found.push(index < other ? index * count + other : other * count + index);
+    }
+  }
+  for (let index = 0; index < count; index += 1) {
+    if (motions[index].worldBounds !== null) continue;
+    for (let other = 0; other < count; other += 1) {
+      if (other !== index && !(motions[other].worldBounds === null && other < index)) found.push(index < other ? index * count + other : other * count + index);
+    }
+  }
+  // Codes are below count^2: the typed array's own numeric sort while they fit.
+  return count <= 46340 ? Int32Array.from(found).sort() : found.sort((a, b) => a - b);
+}
+let sweepOrder: readonly number[] = [];
+
+/**
+ * Sort in place by `localeCompare` of each item's key, as the batch always has.
+ * A stable sort's permutation depends only on its comparator's answers, so a
+ * key sequence equal to the last one's reuses that permutation (PERF-WHARF).
+ */
+interface SortMemo { keys: readonly string[]; order: readonly number[] }
+function sortByKey<T>(items: T[], keyOf: (item: T) => string, memo: SortMemo): SortMemo {
+  const keys = items.map(keyOf);
+  let order = memo.order;
+  if (keys.length !== memo.keys.length || keys.some((key, index) => key !== memo.keys[index])) {
+    order = keys.map((_, index) => index).sort((a, b) => keys[a].localeCompare(keys[b]));
+  }
+  const source = items.slice();
+  for (let index = 0; index < order.length; index += 1) items[index] = source[order[index]];
+  return { keys, order };
+}
+let motionOrder: SortMemo = { keys: [], order: [] }, pairOrder: SortMemo = { keys: [], order: [] };
+function pruneRecords(): void {
+  if (batchSerial % RECORD_RETENTION_BATCHES !== 0) return;
+  const oldest = batchSerial - RECORD_RETENTION_BATCHES;
+  for (const [key, record] of actorRecords) {
+    if (record.seen < oldest) { actorRecords.delete(key); continue; }
+    for (const [other, entry] of record.pairs) if (entry.seen < oldest || other.seen < oldest) record.pairs.delete(other);
+  }
+}
+
 function assertFootprint(body: PopulationFootprint): void {
-  if (!finite(body.x, body.z, body.headingY, body.minY, body.maxY, body.halfWidthMetres,
-    body.halfLengthMetres, body.velocityX, body.velocityZ) || body.maxY <= body.minY
+  // `finite` spelled out: no rest array per footprint (PERF-WHARF).
+  if (!(Number.isFinite(body.x) && Number.isFinite(body.z) && Number.isFinite(body.headingY) && Number.isFinite(body.minY)
+    && Number.isFinite(body.maxY) && Number.isFinite(body.halfWidthMetres) && Number.isFinite(body.halfLengthMetres)
+    && Number.isFinite(body.velocityX) && Number.isFinite(body.velocityZ)) || body.maxY <= body.minY
     || body.halfWidthMetres <= 0 || body.halfLengthMetres <= 0) {
     throw new RangeError('Population compound contact needs finite positive physical prisms');
   }
@@ -277,6 +476,23 @@ function inflate(body: PopulationFootprint, metres: number): PopulationFootprint
     halfLengthMetres: body.halfLengthMetres + metres, minY: body.minY - metres, maxY: body.maxY + metres,
     ...(body.sourceHull ? { sourceHull: { ...body.sourceHull,
       marginMetres: (body.sourceHull.marginMetres ?? 0) + metres } } : {}) };
+}
+
+/** memoizeFootprint, whose exact 0 and 1 endpoints are also kept on the actor's record. */
+function recordedFootprint(record: ActorRecord, actor: PopulationCompoundActorMotion): (time: number) => PopulationFootprint {
+  const values = new Map<number, PopulationFootprint>();
+  return time => {
+    const held = values.get(time);
+    if (held !== undefined) return held;
+    let value: PopulationFootprint;
+    if (Object.is(time, 0) && record.first !== undefined) value = record.first;
+    else if (time === 1 && record.last !== undefined) value = record.last;
+    else {
+      value = mixFootprint(actor.previous, actor.current, time);
+      if (Object.is(time, 0)) record.first = value; else if (time === 1) record.last = value;
+    }
+    values.set(time, value); return value;
+  };
 }
 
 function stoppedBody(motion: Motion, groupStops: ReadonlyMap<string, number>, time: number): PopulationFootprint {
@@ -457,6 +673,7 @@ export function resolvePopulationCompoundMotionBatch(actors: readonly Population
   // and a caller may share its fresh evaluations across the batches of one
   // fixed step. Search nodes are per batch: every pass re-walks remembered work.
   const refinement = policy.refinement ?? new Map<string, RefinementWork>();
+  batchSerial += 1;
   for (const work of refinement.values()) work.nodes = 0;
   const total = stepRefinementTotal(refinement), unstoppable = policy.unstoppableOwnerIds;
   const workFor = (ownerId: string): RefinementWork => {
@@ -469,13 +686,16 @@ export function resolvePopulationCompoundMotionBatch(actors: readonly Population
     const stopGroupId = actor.stopGroupId ?? componentId;
     if (!actor.id || !ownerId || !componentId || !stopGroupId) throw new Error('Compound transaction needs stable actor identities');
     assertFootprint(actor.previous); assertFootprint(actor.current);
-    const motion: Motion = { kind: 'actor', id: actor.id, ownerId, componentId, stopGroupId,
-      groupKey: groupIdentity(ownerId, stopGroupId), atUnstopped: memoizeFootprint(time => mixFootprint(actor.previous, actor.current, time)),
-      envelope: () => 0, worldBounds: trajectoryBounds(actor.previous, actor.current) };
+    const kept = actorRecord(actor), record = kept.valid ? kept : null;
+    const motion: Motion = { kind: 'actor', id: actor.id, ownerId: kept.ownerId, componentId: kept.componentId, stopGroupId: kept.stopGroupId,
+      groupKey: kept.groupKey, atUnstopped: record ? recordedFootprint(record, actor)
+        : memoizeFootprint(time => mixFootprint(actor.previous, actor.current, time)),
+      envelope: () => 0, worldBounds: record ? record.bounds : trajectoryBounds(actor.previous, actor.current),
+      identityKey: kept.identityKey, sortKey: kept.sortKey, record: kept };
     motions.push(motion);
     if (turningInPlace(actor)) {
       const still = { ...actor.previous, velocityX: 0, velocityZ: 0 };
-      standing.set(motion, { ...motion, atUnstopped: () => still, worldBounds: trajectoryBounds(still, still), turning: true });
+      standing.set(motion, { ...motion, atUnstopped: () => still, worldBounds: trajectoryBounds(still, still), turning: true, record: null });
     }
   }
   for (const component of components) {
@@ -488,15 +708,16 @@ export function resolvePopulationCompoundMotionBatch(actors: readonly Population
     // chronological contacts change groupStops.
     const envelope = (from: number, to: number): number => readEnvelope(component, table, from, to, work, total), pad = envelope(0, 1);
     if (!Number.isFinite(pad) || pad < 0) throw new RangeError('Compound interval envelope must be finite and non-negative');
+    const identityKey = identity(component.ownerId, component.componentId);
     motions.push({ kind: 'component', id: component.componentId, ownerId: component.ownerId,
       componentId: component.componentId, stopGroupId: component.stopGroupId,
       groupKey: groupIdentity(component.ownerId, component.stopGroupId), atUnstopped: time => readPoint(component, table, time),
-      envelope, worldBounds: trajectoryBounds(first, last, pad) });
+      envelope, worldBounds: trajectoryBounds(first, last, pad), identityKey, sortKey: `component/${identityKey}`, record: null });
   }
-  motions.sort((a, b) => `${a.kind}/${identity(a.ownerId, a.componentId)}`.localeCompare(`${b.kind}/${identity(b.ownerId, b.componentId)}`));
+  motionOrder = sortByKey(motions, motion => motion.sortKey, motionOrder);
   const componentKeys = new Set<string>(), actorIds = new Set<string>();
   for (const motion of motions) {
-    const key = identity(motion.ownerId, motion.componentId);
+    const key = motion.identityKey;
     if (componentKeys.has(key)) throw new Error('Compound transaction needs distinct owner/component identities');
     componentKeys.add(key);
     if (motion.kind === 'actor') {
@@ -509,45 +730,69 @@ export function resolvePopulationCompoundMotionBatch(actors: readonly Population
   const actorMotions = motions.filter(value => value.kind === 'actor');
   const componentMotions = motions.filter(value => value.kind === 'component');
   const pairs: Pair[] = [];
-  for (let index = 0; index < actorMotions.length; index += 1) for (let other = index + 1; other < actorMotions.length; other += 1) {
-    const first = actorMotions[index], second = actorMotions[other];
-    if (first.ownerId !== second.ownerId && possiblePair(first, second)) pairs.push({ first, second, actorComponent: false,
-      key: `${identity(first.ownerId, first.componentId)}|${identity(second.ownerId, second.componentId)}` });
+  for (const code of possibleActorPairs(actorMotions)) {
+    const first = actorMotions[Math.floor(code / actorMotions.length)], second = actorMotions[code % actorMotions.length];
+    if (first.ownerId !== second.ownerId && possiblePair(first, second)) {
+      const entry = pairEntry(first.record!, second.record!);
+      pairs.push({ first, second, actorComponent: false, key: entry.key, entry });
+    }
   }
   for (const actor of actorMotions) for (const component of componentMotions) {
     const first = standing.get(actor) ?? actor;
     if (actor.ownerId !== component.ownerId && possiblePair(first, component)) pairs.push({ first, second: component, actorComponent: true,
-      key: `${identity(actor.ownerId, actor.componentId)}|${identity(component.ownerId, component.componentId)}` });
+      key: `${actor.identityKey}|${component.identityKey}` });
   }
-  pairs.sort((a, b) => a.key.localeCompare(b.key));
+  pairOrder = sortByKey(pairs, pair => pair.key, pairOrder);
   const visited = new Set<string>(), earliestByOwnerPair = new Map<string, PopulationCompoundHit>();
   let cursor = 0;
+  /** One pair's earliest event under the current stops and cursor; undefined when the overlap escape skips it. */
+  const evaluate = (pair: Pair): Swept | null | undefined => {
+    const start = sweepPopulationHulls(stoppedBody(pair.first, groupStops, 0), stoppedBody(pair.first, groupStops, 0),
+      stoppedBody(pair.second, groupStops, 0), stoppedBody(pair.second, groupStops, 0));
+    // Only an initial overlap reads the end sweep. Two actors' end bodies are
+    // valid mixed hulls by construction, so their sweep cannot throw and is
+    // formed only when read (PERF-WHARF); a component's is always formed.
+    const firstEnd = stoppedBody(pair.first, groupStops, 1), secondEnd = stoppedBody(pair.second, groupStops, 1);
+    const end = pair.actorComponent || start?.initiallyOverlapping ? sweepPopulationHulls(firstEnd, stoppedBody(pair.first, groupStops, 1),
+      secondEnd, stoppedBody(pair.second, groupStops, 1)) : null;
+    // Preserve the existing overlap-escape rule: do not arrest a pair that
+    // began merged and has reduced that merge by the end of this transaction.
+    // Nor one that only slides along its touching face with rigid support,
+    // which the fixed-axis proof shows never deepens (R2C-5, 2026-10-04): a
+    // walker stepping aside from a rider held against his back.
+    const certified = pair.actorComponent && policy.certifiedInitialOverlap === 'continuous-proof';
+    if (start?.initiallyOverlapping && (((!end || end.penetrationMetres < start.penetrationMetres - R.epsilon)
+      && (!certified || continuousNonWorseningEscape(pair, groupStops) || directlyAwayEscape(pair, groupStops)))
+      || (certified && continuousNonWorseningEscape(pair, groupStops)))) return undefined;
+    const breaks = [cursor, ...[groupStops.get(pair.first.groupKey)!, groupStops.get(pair.second.groupKey)!]
+      .filter(value => value > cursor + R.epsilon && value < 1 - R.epsilon), 1].sort((a, b) => a - b);
+    let found: Swept | null = null;
+    for (let index = 0; index < breaks.length - 1; index += 1) {
+      if (breaks[index + 1] <= breaks[index] + R.epsilon) continue;
+      found = sweepContinuous(pair.first, pair.second, groupStops, breaks[index], breaks[index + 1], workFor(pair.second.ownerId), total);
+      if (found) break;
+    }
+    return found;
+  };
   for (let iteration = 0; iteration < pairs.length; iteration += 1) {
     let earliest = Infinity;
     const candidates: Candidate[] = [];
     for (const pair of pairs) {
       if (visited.has(pair.key)) continue;
-      const start = sweepPopulationHulls(stoppedBody(pair.first, groupStops, 0), stoppedBody(pair.first, groupStops, 0),
-        stoppedBody(pair.second, groupStops, 0), stoppedBody(pair.second, groupStops, 0));
-      const end = sweepPopulationHulls(stoppedBody(pair.first, groupStops, 1), stoppedBody(pair.first, groupStops, 1),
-        stoppedBody(pair.second, groupStops, 1), stoppedBody(pair.second, groupStops, 1));
-      // Preserve the existing overlap-escape rule: do not arrest a pair that
-      // began merged and has reduced that merge by the end of this transaction.
-      // Nor one that only slides along its touching face with rigid support,
-      // which the fixed-axis proof shows never deepens (R2C-5, 2026-10-04): a
-      // walker stepping aside from a rider held against his back.
-      const certified = pair.actorComponent && policy.certifiedInitialOverlap === 'continuous-proof';
-      if (start?.initiallyOverlapping && (((!end || end.penetrationMetres < start.penetrationMetres - R.epsilon)
-        && (!certified || continuousNonWorseningEscape(pair, groupStops) || directlyAwayEscape(pair, groupStops)))
-        || (certified && continuousNonWorseningEscape(pair, groupStops)))) continue;
-      const breaks = [cursor, ...[groupStops.get(pair.first.groupKey)!, groupStops.get(pair.second.groupKey)!]
-        .filter(value => value > cursor + R.epsilon && value < 1 - R.epsilon), 1].sort((a, b) => a - b);
-      let found: Swept | null = null;
-      for (let index = 0; index < breaks.length - 1; index += 1) {
-        if (breaks[index + 1] <= breaks[index] + R.epsilon) continue;
-        found = sweepContinuous(pair.first, pair.second, groupStops, breaks[index], breaks[index + 1], workFor(pair.second.ownerId), total);
-        if (found) break;
-      }
+      let found: Swept | null | undefined;
+      const first = pair.first.record, second = pair.second.record, verdict = pair.entry;
+      // The first pass's actor/actor verdict depends on the two actors alone
+      // (every stop is 1, the cursor 0): reuse it under both exact generations.
+      if (iteration === 0 && verdict !== undefined && first!.valid && second!.valid) {
+        if (verdict.first === first!.generation && verdict.second === second!.generation) {
+          found = verdict.found;
+          // Its single [0, 1] interval opened this owner's refinement record.
+          if (found !== undefined) workFor(pair.second.ownerId);
+        } else {
+          found = evaluate(pair);
+          verdict.first = first!.generation; verdict.second = second!.generation; verdict.found = found;
+        }
+      } else found = evaluate(pair);
       if (!found) continue;
       if (found.time < earliest - R.epsilon) { earliest = found.time; candidates.length = 0; }
       if (found.time <= earliest + R.epsilon) candidates.push({ pair, ...found });
@@ -585,6 +830,7 @@ export function resolvePopulationCompoundMotionBatch(actors: readonly Population
     else componentFractions[identity(motion.ownerId, motion.componentId)] = stop;
   }
   for (const [key, stop] of groupStops) stopGroupFractions[key] = stop;
+  pruneRecords();
   return { actorFractions, componentFractions, stopGroupFractions,
     hits: [...earliestByOwnerPair.values()].sort((a, b) => a.timeOfImpact - b.timeOfImpact
       || ownerPair(a.actorOwnerId, a.ownerId).localeCompare(ownerPair(b.actorOwnerId, b.ownerId))) };
