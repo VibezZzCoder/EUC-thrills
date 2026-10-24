@@ -75,7 +75,8 @@ export function transformPopulationHullLowerInto(x: number, y: number, z: number
 function transformHull(x: number, y: number, z: number, headingY: number,
   normalX: number, normalY: number, normalZ: number, hull: PopulationLocalHull,
   velocityX: number, velocityZ: number, corners: PopulationHullCorner[] | null,
-  lowerCorners: PopulationHullCorner[] | null, lowerScratch: readonly MutablePopulationHullCorner[] | null): PopulationHullPrism {
+  lowerCorners: PopulationHullCorner[] | null, lowerScratch: readonly MutablePopulationHullCorner[] | null,
+  plumb = false): PopulationHullPrism {
   const normalLength = Math.hypot(normalX, normalY, normalZ);
   if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) && Number.isFinite(headingY)
     && Number.isFinite(normalLength) && Number.isFinite(hull.halfWidthMetres) && Number.isFinite(hull.halfLengthMetres)
@@ -88,6 +89,9 @@ function transformHull(x: number, y: number, z: number, headingY: number,
   const denominator = 1 + ny, c = Math.cos(headingY), s = Math.sin(headingY);
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   let minY = Infinity, maxY = -Infinity, lower = 0;
+  // The rotation's corner-independent factors, each the same expression the
+  // corner formulas evaluated left to right, formed once (PERF-WHARF, 2026-10-23).
+  const xx = 1 - nx * nx / denominator, xz = nx * nz / denominator, zz = 1 - nz * nz / denominator, negX = -nx;
   for (let xSide = 0; xSide < 2; xSide += 1) {
     const localX = xSide ? hull.halfWidthMetres : -hull.halfWidthMetres;
     for (let zSide = 0; zSide < 2; zSide += 1) {
@@ -95,9 +99,9 @@ function transformHull(x: number, y: number, z: number, headingY: number,
       const yawX = c * localX + s * localZ, yawZ = -s * localX + c * localZ;
       for (let ySide = 0; ySide < 2; ySide += 1) {
         const localY = ySide ? hull.heightMetres : 0;
-        const worldX = (1 - nx * nx / denominator) * yawX + nx * localY - nx * nz / denominator * yawZ;
-        const worldY = -nx * yawX + ny * localY - nz * yawZ;
-        const worldZ = -nx * nz / denominator * yawX + nz * localY + (1 - nz * nz / denominator) * yawZ;
+        const worldX = xx * yawX + nx * localY - xz * yawZ;
+        const worldY = negX * yawX + ny * localY - nz * yawZ;
+        const worldZ = -xz * yawX + nz * localY + zz * yawZ;
         const projectedX = worldX * c - worldZ * s, projectedZ = worldX * s + worldZ * c;
         minX = Math.min(minX, projectedX); maxX = Math.max(maxX, projectedX);
         minZ = Math.min(minZ, projectedZ); maxZ = Math.max(maxZ, projectedZ);
@@ -113,20 +117,28 @@ function transformHull(x: number, y: number, z: number, headingY: number,
     }
   }
   const centreX = (minX + maxX) * 0.5, centreZ = (minZ + maxZ) * 0.5;
-  return {
-    x: x + c * centreX + s * centreZ, z: z - s * centreX + c * centreZ, headingY,
-    halfWidthMetres: (maxX - minX) * 0.5, halfLengthMetres: (maxZ - minZ) * 0.5,
-    minY, maxY, velocityX, velocityZ,
-    sourceHull: { x, y, z, headingY, normalX: nx, normalY: ny, normalZ: nz, hull: { ...hull } },
-  };
+  const tiltedX = x + c * centreX + s * centreZ, tiltedZ = z - s * centreX + c * centreZ;
+  const halfWidth = (maxX - minX) * 0.5, halfLength = (maxZ - minZ) * 0.5;
+  const sourceHull = { x, y, z, headingY, normalX: nx, normalY: ny, normalZ: nz, hull: { ...hull } };
+  if (!plumb) return { x: tiltedX, z: tiltedZ, headingY, halfWidthMetres: halfWidth, halfLengthMetres: halfLength,
+    minY, maxY, velocityX, velocityZ, sourceHull };
+  // physicalPopulationPrism of that tilted footprint, from the same values and
+  // in its key order, without forming the tilted object (PERF-WHARF, 2026-10-23).
+  const local = sourceHull.hull, dx = tiltedX - x, dz = tiltedZ - z;
+  const cx = dx * c - dz * s, cz = dx * s + dz * c;
+  const plumbMinX = Math.min(cx - halfWidth, -local.halfWidthMetres), plumbMaxX = Math.max(cx + halfWidth, local.halfWidthMetres);
+  const plumbMinZ = Math.min(cz - halfLength, -local.halfLengthMetres), plumbMaxZ = Math.max(cz + halfLength, local.halfLengthMetres);
+  const midX = (plumbMinX + plumbMaxX) * 0.5, midZ = (plumbMinZ + plumbMaxZ) * 0.5;
+  return { x: x + c * midX + s * midZ, z: z - s * midX + c * midZ, headingY,
+    halfWidthMetres: (plumbMaxX - plumbMinX) * 0.5, halfLengthMetres: (plumbMaxZ - plumbMinZ) * 0.5,
+    minY: Math.min(y, minY), maxY: Math.max(y + local.heightMetres, maxY), velocityX, velocityZ, sourceHull };
 }
 
 export function physicalPopulationHull(x: number, y: number, z: number, headingY: number,
   normalX: number, normalY: number, normalZ: number, hull: PopulationLocalHull,
   velocityX = 0, velocityZ = 0): PopulationHullPrism {
   // The prism never reads the transform's corners; none are formed.
-  return physicalPopulationPrism(transformHull(x, y, z, headingY, normalX, normalY, normalZ, hull,
-    velocityX, velocityZ, null, null, null));
+  return transformHull(x, y, z, headingY, normalX, normalY, normalZ, hull, velocityX, velocityZ, null, null, null, true);
 }
 
 /** Reuse the exact grade transform when its lower corners are also needed. */

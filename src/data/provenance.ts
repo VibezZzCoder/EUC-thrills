@@ -74,7 +74,7 @@ export const PROVENANCE: Provenance = Object.freeze({
   year: '2026',
   licence: 'MIT',
   assetLicence: 'CC-BY-4.0',
-  version: '1.1.5',
+  version: '1.1.6',
   devlogUrl: 'https://www.youtube.com/@EdwinRodMen',
 });
 
@@ -83,7 +83,7 @@ export function devlogHandle(): string {
   return PROVENANCE.devlogUrl.slice(PROVENANCE.devlogUrl.lastIndexOf('/') + 1);
 }
 
-/** The build stamp a player reads and a bug report quotes: `v1.1.5`. */
+/** The build stamp a player reads and a bug report quotes: `v1.1.6`. */
 export function versionStamp(): string {
   return `v${PROVENANCE.version}`;
 }

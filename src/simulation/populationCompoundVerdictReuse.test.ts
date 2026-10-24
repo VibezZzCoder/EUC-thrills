@@ -3,7 +3,8 @@
  * PERF-WHARF (2026-10-23): resolvePopulationCompoundMotionBatch keeps each
  * actor's exact endpoint values, identity strings and first-pass actor/actor
  * verdicts across batches. Every warm batch here must equal, to the float bit
- * and key order, the same batch resolved cold under a never-seen id namespace:
+ * and key order, the same batch resolved by the plain algorithm with every
+ * reuse switched off, under a never-seen id namespace:
  * standing crowds bit-identical tick after tick (fresh, frozen and unfrozen
  * objects), walkers crossing them, merged pairs that escape, grade-aligned
  * source hulls, a -0 that flips sign, a second world reusing the same ids
@@ -11,7 +12,7 @@
  */
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { resolvePopulationCompoundMotionBatch, type PopulationCompoundActorMotion, type PopulationCompoundTrajectory } from './populationCompound.ts';
+import { resolvePopulationCompoundMotionBatch, setPopulationCompoundReuseForTests, type PopulationCompoundActorMotion, type PopulationCompoundContactPolicy, type PopulationCompoundTrajectory } from './populationCompound.ts';
 import { physicalPopulationHull, type PopulationFootprint } from './population.ts';
 import { bits } from './populationPerfExactness.test-support.ts';
 
@@ -48,10 +49,12 @@ function world(tick: number, ns: string, shift = 0): { actors: PopulationCompoun
       current: { ...at, ...(at.sourceHull ? { sourceHull: { ...at.sourceHull, hull: { ...at.sourceHull.hull } } } : {}) } });
   }
   for (let walker = 0; walker < 6; walker += 1) {
-    const speed = 1.2 + walker * .1, x0 = -4 + tick * speed / 120 + walker * 4 + shift, z0 = (walker % 3) * .9 - .3;
+    // Coarse steps (a quarter metre and more per batch) so walkers meet the
+    // standing people and each other mid-step, not only at an endpoint.
+    const speed = 1.2 + walker * .1, step = speed / 4, x0 = -4 + tick * step / 7 + walker * 4 + shift, z0 = (walker % 3) * .9 - .3;
     const make = walker % 2 ? graded : person;
     actors.push({ id: `${ns}walk-${walker}`, ownerId: walker === 5 ? `${ns}crew` : undefined,
-      previous: make(x0, z0, Math.PI / 2, speed, 0), current: make(x0 + speed / 120, z0, Math.PI / 2, speed, 0) });
+      previous: make(x0, z0, Math.PI / 2, speed, 0), current: make(x0 + step, z0, Math.PI / 2, speed, 0) });
   }
   const rider = (t: number) => ({ x: 20 - t * 6 / 120 + shift, z: .4 });
   const a = rider(tick), b = rider(tick + 1);
@@ -61,9 +64,16 @@ function world(tick: number, ns: string, shift = 0): { actors: PopulationCompoun
 }
 
 let fresh = 0;
+/** The plain algorithm: no kept record, verdict, sweep, order or box is reused. */
+function plain<T>(run: () => T): T {
+  setPopulationCompoundReuseForTests(false);
+  try { return run(); } finally { setPopulationCompoundReuseForTests(true); }
+}
+const plainBatch = (actors: readonly PopulationCompoundActorMotion[], components: readonly PopulationCompoundTrajectory[],
+  policy?: PopulationCompoundContactPolicy) => plain(() => resolvePopulationCompoundMotionBatch(actors, components, policy));
 const cold = (tick: number, shift = 0): string => {
   const ns = `cold${fresh++}:`, { actors, components } = world(tick, ns, shift);
-  return bits(resolvePopulationCompoundMotionBatch(actors, components, { certifiedInitialOverlap: 'continuous-proof' })).replaceAll(ns, '');
+  return bits(plainBatch(actors, components, { certifiedInitialOverlap: 'continuous-proof' })).replaceAll(ns, '');
 };
 const warm = (actors: readonly PopulationCompoundActorMotion[], components: readonly PopulationCompoundTrajectory[]): string =>
   bits(resolvePopulationCompoundMotionBatch(actors, components, { certifiedInitialOverlap: 'continuous-proof' })).replaceAll('warm:', '');
@@ -97,7 +107,25 @@ test('an actor mutated in place after a batch is measured again, never served fr
   moved.previous.x += 30; moved.current.x += 30;
   const expectedNs = `cold${fresh++}:`, copy = world(30, expectedNs);
   (copy.actors[15].previous as { x: number }).x += 30; (copy.actors[15].current as { x: number }).x += 30;
-  const expected = bits(resolvePopulationCompoundMotionBatch(copy.actors, copy.components)).replaceAll(expectedNs, ns);
+  const expected = bits(plainBatch(copy.actors, copy.components)).replaceAll(expectedNs, ns);
   assert.equal(bits(resolvePopulationCompoundMotionBatch(actors, components)), expected);
   assert.notEqual(expected, before, 'the move must change the batch, or this test proves nothing');
+});
+
+test('a falling rider that stops actors at fractions re-walks kept sweeps to the same bits (crash pass)', () => {
+  // The rider is an unstoppable native fall: actors stop against it mid-step,
+  // so later chronology passes re-sweep every unvisited pair at a fresh cursor.
+  const policy = (ns: string) => ({ certifiedInitialOverlap: 'continuous-proof' as const, unstoppableOwnerIds: new Set([`${ns}human-0`]) });
+  let fractional = 0;
+  for (let tick = 0; tick < 300; tick += 1) {
+    const ns = `fall${fresh++}:`, coldWorld = world(tick, ns), cold = plainBatch(coldWorld.actors, coldWorld.components, policy(ns));
+    fractional += Object.values(cold.actorFractions).filter(value => value > 0 && value < 1).length;
+    const expected = bits(cold).replaceAll(ns, '');
+    const census = Object.freeze(world(tick, 'warm:').actors.map(freeze));
+    for (let pass = 0; pass < 3; pass += 1) {
+      const components = world(tick, 'warm:').components;
+      assert.equal(bits(resolvePopulationCompoundMotionBatch(census, components, policy('warm:'))).replaceAll('warm:', ''), expected, `tick ${tick} pass ${pass}`);
+    }
+  }
+  assert.ok(fractional > 0, 'some actor must stop at a fraction, or the later chronology passes go untested');
 });

@@ -659,8 +659,12 @@ export function sweepPopulationHulls(a0: PopulationFootprint, a1: PopulationFoot
   b0: PopulationFootprint, b1: PopulationFootprint): PopulationHullContact | null {
   // A recursive child's endpoint is exactly its parent's endpoint or the same
   // original-track midpoint. Carry those values rather than rebuilding hulls.
-  const firstA = mixBody(a0, a1, 0), lastA = mixBody(a0, a1, 1);
-  const firstB = mixBody(b0, b1, 0), lastB = mixBody(b0, b1, 1);
+  // A body held for the whole interval (the same object at both ends, as every
+  // static start/end test passes it) mixes to one value at any t >= 0: each
+  // lerp(v, v, t) is v + (+0) and wrapAngle(+0) is +0, and a non-finite field
+  // throws at t = 0 or is NaN at both. Its end is its start (PERF-WHARF, 2026-10-23).
+  const firstA = mixBody(a0, a1, 0), lastA = a1 === a0 ? firstA : mixBody(a0, a1, 1);
+  const firstB = mixBody(b0, b1, 0), lastB = b1 === b0 ? firstB : mixBody(b0, b1, 1);
   return sweepHullsWithEndpoints(a0, a1, b0, b1, firstA, lastA, firstB, lastB);
 }
 /** sweepPopulationHulls with its four mixBody endpoints supplied by a caller that formed them once. */

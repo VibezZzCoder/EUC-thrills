@@ -117,6 +117,8 @@ interface Motion {
   readonly sortKey: string;
   /** An actor's kept exact values (PERF-WHARF), or null when it has none. */
   readonly record: ActorRecord | null;
+  /** The last held (zero-velocity) copy stoppedBody formed, and the body it copies. */
+  held?: { readonly from: PopulationFootprint; readonly body: PopulationFootprint };
 }
 
 /**
@@ -271,14 +273,22 @@ interface ActorRecord {
   valid: boolean;
   readonly values: Float64Array; flags: number; generation: number; seen: number;
   bounds: Aabb | null; first: PopulationFootprint | undefined; last: PopulationFootprint | undefined;
+  /** Previous and current are the same finite values: every t >= 0 mixes to one body (`stillValues`). */
+  still: boolean;
 }
 interface PairVerdict {
   readonly key: string; readonly firstKey: string; readonly secondKey: string;
   first: number; second: number; seen: number;
   /** undefined: the endpoint overlap escape skipped the pair; null: clear. */
   found: Swept | null | undefined;
+  /** This pair's latest hull sweeps by their exact input bodies (`SweepMemo`). */
+  readonly sweeps: SweepMemo;
 }
 const actorRecords = new Map<string, ActorRecord>();
+/** Every kept-result reuse below (PERF-WHARF) is on; off, each batch recomputes
+ * everything as the plain algorithm states it. Exactness tests only. */
+let reuse = true;
+export function setPopulationCompoundReuseForTests(enabled: boolean): void { reuse = enabled; }
 let actorGeneration = 0, batchSerial = 0;
 /** Entries unseen for this many batches are dropped; a later return is merely recomputed. */
 const RECORD_RETENTION_BATCHES = 256;
@@ -338,7 +348,7 @@ function actorRecord(actor: PopulationCompoundActorMotion): ActorRecord {
     record = { ownerInput: actor.ownerId, componentInput: actor.componentId, stopGroupInput: actor.stopGroupId,
       ownerId, componentId, stopGroupId, groupKey: groupIdentity(ownerId, stopGroupId), identityKey, sortKey: `actor/${identityKey}`,
       pairs: new Map(), valid: false, values: new Float64Array(BODY_FIELDS * 2),
-      flags: 0, generation: ++actorGeneration, seen: 0, bounds: null, first: undefined, last: undefined };
+      flags: 0, generation: ++actorGeneration, seen: 0, bounds: null, first: undefined, last: undefined, still: false };
     actorRecords.set(actor.id, record);
   }
   record.seen = batchSerial;
@@ -354,15 +364,32 @@ function actorRecord(actor: PopulationCompoundActorMotion): ActorRecord {
     writeBody(record.values, 0, actor.previous, before); writeBody(record.values, BODY_FIELDS, actor.current, after);
     record.flags = flags; record.valid = true; record.generation = ++actorGeneration;
     record.bounds = trajectoryBounds(actor.previous, actor.current); record.first = undefined; record.last = undefined;
+    record.still = stillValues(record.values, flags);
   }
   return record;
+}
+/**
+ * A standing actor (PERF-WHARF crash pass, 2026-10-23): its previous and
+ * current footprints are the same finite numbers, so mixFootprint is the same
+ * body at every t >= 0. Each lerp(v, v, t) is v + (v - v) * t = v + (+0), the
+ * heading's wrapAngle(+0) is +0, and the source hull is formed from those same
+ * values. A chronology that stops it at a fraction asks that one body again.
+ */
+function stillValues(values: Float64Array, flags: number): boolean {
+  if ((flags & 15) !== flags >> 4) return false;
+  const used = flags & 1 ? BODY_FIELDS : 9;
+  for (let index = 0; index < used; index += 1) {
+    const value = values[index];
+    if (!Number.isFinite(value) || !Object.is(value, values[BODY_FIELDS + index])) return false;
+  }
+  return true;
 }
 /** The pair's kept key and verdict slot, created with the key the batch would form. */
 function pairEntry(first: ActorRecord, second: ActorRecord): PairVerdict {
   let entry = first.pairs.get(second);
   if (!entry || entry.firstKey !== first.identityKey || entry.secondKey !== second.identityKey) {
     entry = { key: `${first.identityKey}|${second.identityKey}`, firstKey: first.identityKey, secondKey: second.identityKey,
-      first: -1, second: -1, seen: 0, found: undefined };
+      first: -1, second: -1, seen: 0, found: undefined, sweeps: [] };
     first.pairs.set(second, entry);
   }
   entry.seen = batchSerial;
@@ -375,7 +402,21 @@ function pairEntry(first: ActorRecord, second: ActorRecord): PairVerdict {
  * motion without bounds meets every other, as possiblePair says.
  */
 function possibleActorPairs(motions: readonly Motion[]): ArrayLike<number> & Iterable<number> {
+  // The same box objects in the same order (a transaction's later passes over
+  // one census) are the same values: the last answer stands (PERF-WHARF crash pass).
+  if (reuse && motions.length === lastPairBoxes.length && motions.every((motion, index) => motion.worldBounds !== null
+    && motion.worldBounds === lastPairBoxes[index])) return lastPairCodes;
+  const answer = freshActorPairs(motions);
+  lastPairBoxes = motions.map(motion => motion.worldBounds); lastPairCodes = answer;
+  return answer;
+}
+let lastPairBoxes: readonly (Aabb | null)[] = [], lastPairCodes: ArrayLike<number> & Iterable<number> = [];
+function freshActorPairs(motions: readonly Motion[]): ArrayLike<number> & Iterable<number> {
   const count = motions.length, found: number[] = [];
+  if (!reuse) {
+    for (let index = 0; index < count; index += 1) for (let other = index + 1; other < count; other += 1) found.push(index * count + other);
+    return found;
+  }
   // Any non-decreasing minX order finds the same pairs. Start from the last
   // batch's order, nearly sorted when the same actors barely moved, and
   // insertion-sort it.
@@ -417,7 +458,7 @@ interface SortMemo { keys: readonly string[]; order: readonly number[] }
 function sortByKey<T>(items: T[], keyOf: (item: T) => string, memo: SortMemo): SortMemo {
   const keys = items.map(keyOf);
   let order = memo.order;
-  if (keys.length !== memo.keys.length || keys.some((key, index) => key !== memo.keys[index])) {
+  if (!reuse || keys.length !== memo.keys.length || keys.some((key, index) => key !== memo.keys[index])) {
     order = keys.map((_, index) => index).sort((a, b) => keys[a].localeCompare(keys[b]));
   }
   const source = items.slice();
@@ -485,7 +526,11 @@ function recordedFootprint(record: ActorRecord, actor: PopulationCompoundActorMo
     const held = values.get(time);
     if (held !== undefined) return held;
     let value: PopulationFootprint;
-    if (Object.is(time, 0) && record.first !== undefined) value = record.first;
+    if (record.still && time >= 0 && !Object.is(time, -0)) {
+      // One body for every t >= 0 (`stillValues`): formed once, at the first t asked.
+      value = record.first ??= mixFootprint(actor.previous, actor.current, time);
+      record.last = value;
+    } else if (Object.is(time, 0) && record.first !== undefined) value = record.first;
     else if (time === 1 && record.last !== undefined) value = record.last;
     else {
       value = mixFootprint(actor.previous, actor.current, time);
@@ -498,7 +543,52 @@ function recordedFootprint(record: ActorRecord, actor: PopulationCompoundActorMo
 function stoppedBody(motion: Motion, groupStops: ReadonlyMap<string, number>, time: number): PopulationFootprint {
   const stop = groupStops.get(motion.groupKey)!;
   const body = motion.atUnstopped(Math.min(time, stop));
-  return time > stop + R.epsilon ? { ...body, velocityX: 0, velocityZ: 0 } : body;
+  if (!(time > stop + R.epsilon)) return body;
+  // The held copy of one body is one object, so a sweep memo can know it again.
+  const held = motion.held;
+  if (reuse && held !== undefined && held.from === body) return held.body;
+  const copy = { ...body, velocityX: 0, velocityZ: 0 };
+  motion.held = { from: body, body: copy };
+  return copy;
+}
+
+/**
+ * An actor pair's recent hull sweeps, keyed by the exact body objects and pads
+ * they were formed from (PERF-WHARF crash pass, 2026-10-23). The bodies are
+ * this module's own mixed or held footprints, never mutated, so the same
+ * objects are the same values and the sweep is the same pure result. A crash
+ * stops actors at fractions and re-walks every unvisited pair at each later
+ * cursor; a standing pair's bodies (`stillValues`) and every start body are
+ * then the objects already swept, in this pass or a kept one.
+ */
+type SweepMemo = { a0: PopulationFootprint; a1: PopulationFootprint; b0: PopulationFootprint; b1: PopulationFootprint;
+  aPad: number; bPad: number; inflated: boolean; result: PopulationHullContact | null }[];
+const SWEEP_MEMO_ENTRIES = 6;
+type Sweeper = (a0: PopulationFootprint, a1: PopulationFootprint, b0: PopulationFootprint, b1: PopulationFootprint,
+  aPad: number, bPad: number, inflated: boolean) => PopulationHullContact | null;
+/** The batch's own sweep: inflated by the pads when asked, exactly as written before. */
+const directSweep: Sweeper = (a0, a1, b0, b1, aPad, bPad, inflated) => inflated
+  ? sweepPopulationHulls(inflate(a0, aPad), inflate(a1, aPad), inflate(b0, bPad), inflate(b1, bPad))
+  : sweepPopulationHulls(a0, a1, b0, b1);
+/**
+ * inflate(body, +0) changes no value the hull sweep reads unless maxY or a half
+ * extent is -0 (x + 0 is then +0): minY - 0 keeps -0, and the source hull's
+ * margin is only ever read as `?? 0` and added to a positive or lerped +0
+ * value. Such a zero-pad sweep is the raw sweep of the same bodies.
+ */
+const zeroInflationExact = (body: PopulationFootprint): boolean => !Object.is(body.maxY, -0)
+  && !Object.is(body.halfWidthMetres, -0) && !Object.is(body.halfLengthMetres, -0);
+function memoSweeper(memo: SweepMemo): Sweeper {
+  return (a0, a1, b0, b1, aPad, bPad, inflated) => {
+    if (inflated && Object.is(aPad, 0) && Object.is(bPad, 0) && zeroInflationExact(a0) && zeroInflationExact(a1)
+      && zeroInflationExact(b0) && zeroInflationExact(b1)) inflated = false;
+    for (const entry of memo) if (entry.a0 === a0 && entry.a1 === a1 && entry.b0 === b0 && entry.b1 === b1 && entry.inflated === inflated
+      && Object.is(entry.aPad, aPad) && Object.is(entry.bPad, bPad)) return entry.result;
+    const result = directSweep(a0, a1, b0, b1, aPad, bPad, inflated);
+    if (memo.length >= SWEEP_MEMO_ENTRIES) memo.shift();
+    memo.push({ a0, a1, b0, b1, aPad, bPad, inflated, result });
+    return result;
+  };
 }
 
 /**
@@ -517,14 +607,14 @@ function stoppedBody(motion: Motion, groupStops: ReadonlyMap<string, number>, ti
  * that keeps the proof table can resume the identical proof next step.
  */
 function sweepContinuous(a: Motion, b: Motion, groupStops: ReadonlyMap<string, number>,
-  from: number, to: number, work: RefinementWork = { fresh: 0, nodes: 0 }, total?: RefinementWork): Swept | null {
+  from: number, to: number, work: RefinementWork = { fresh: 0, nodes: 0 }, total?: RefinementWork, sweep: Sweeper = directSweep): Swept | null {
   const stopA = groupStops.get(a.groupKey)!, stopB = groupStops.get(b.groupKey)!;
   // A curve that becomes held inside an interval cannot use the original
   // interval's enclosure against a rescaled endpoint.  Split at that exact
   // state transition; the held suffix has a zero envelope by construction.
   for (const stop of [stopA, stopB]) {
     if (stop > from + R.epsilon && stop < to - R.epsilon) {
-      return sweepContinuous(a, b, groupStops, from, stop, work, total) ?? sweepContinuous(a, b, groupStops, stop, to, work, total);
+      return sweepContinuous(a, b, groupStops, from, stop, work, total, sweep) ?? sweepContinuous(a, b, groupStops, stop, to, work, total, sweep);
     }
   }
   const envelope = (motion: Motion): number => {
@@ -545,10 +635,9 @@ function sweepContinuous(a: Motion, b: Motion, groupStops: ReadonlyMap<string, n
     }
     const aPad = low >= stopA - R.epsilon ? 0 : a.envelope(low, Math.min(high, stopA));
     const bPad = low >= stopB - R.epsilon ? 0 : b.envelope(low, Math.min(high, stopB));
-    if (!finite(aPad, bPad) || aPad < 0 || bPad < 0) throw new RangeError('Compound interval envelope must be finite and non-negative');
-    const possible = sweepPopulationHulls(inflate(stoppedBody(a, groupStops, low), aPad),
-      inflate(stoppedBody(a, groupStops, high), aPad), inflate(stoppedBody(b, groupStops, low), bPad),
-      inflate(stoppedBody(b, groupStops, high), bPad));
+    if (!(Number.isFinite(aPad) && Number.isFinite(bPad)) || aPad < 0 || bPad < 0) throw new RangeError('Compound interval envelope must be finite and non-negative');
+    const possible = sweep(stoppedBody(a, groupStops, low), stoppedBody(a, groupStops, high),
+      stoppedBody(b, groupStops, low), stoppedBody(b, groupStops, high), aPad, bPad, true);
     if (!possible) return null;
     if (Math.max(aPad, bPad) <= R.contactSkinMetres) {
       return { hit: possible, time: lerp(low, high, possible.timeOfImpact) };
@@ -556,8 +645,8 @@ function sweepContinuous(a: Motion, b: Motion, groupStops: ReadonlyMap<string, n
     // Within the sweep's resolution the interval's own linear sweep decides,
     // a witnessed contact or a clear interval (R2C-6): never a held proof.
     if (Math.max(aPad, bPad) <= R.sweepResolutionMetres) {
-      const linear = sweepPopulationHulls(stoppedBody(a, groupStops, low), stoppedBody(a, groupStops, high),
-        stoppedBody(b, groupStops, low), stoppedBody(b, groupStops, high));
+      const linear = sweep(stoppedBody(a, groupStops, low), stoppedBody(a, groupStops, high),
+        stoppedBody(b, groupStops, low), stoppedBody(b, groupStops, high), 0, 0, false);
       return linear ? { hit: linear, time: lerp(low, high, linear.timeOfImpact) } : null;
     }
     // Every earlier subinterval is already proved clear (time-ordered search),
@@ -568,7 +657,7 @@ function sweepContinuous(a: Motion, b: Motion, groupStops: ReadonlyMap<string, n
     if (depth >= R.sweepMaximumSubdivisionDepth || work.fresh > R.sweepRefinementBudget
       || work.nodes > R.sweepRefinementNodeBudget || (total !== undefined && total.fresh > R.stepTotalRefinementBudget)) {
       const endA = stoppedBody(a, groupStops, to), endB = stoppedBody(b, groupStops, to);
-      return sweepPopulationHulls(endA, endA, endB, endB) ? { hit: possible, time: low }
+      return sweep(endA, endA, endB, endB, 0, 0, false) ? { hit: possible, time: low }
         : { hit: possible, time: low, conservative: true };
     }
     const middle = (low + high) * 0.5;
@@ -686,7 +775,7 @@ export function resolvePopulationCompoundMotionBatch(actors: readonly Population
     const stopGroupId = actor.stopGroupId ?? componentId;
     if (!actor.id || !ownerId || !componentId || !stopGroupId) throw new Error('Compound transaction needs stable actor identities');
     assertFootprint(actor.previous); assertFootprint(actor.current);
-    const kept = actorRecord(actor), record = kept.valid ? kept : null;
+    const kept = actorRecord(actor), record = reuse && kept.valid ? kept : null;
     const motion: Motion = { kind: 'actor', id: actor.id, ownerId: kept.ownerId, componentId: kept.componentId, stopGroupId: kept.stopGroupId,
       groupKey: kept.groupKey, atUnstopped: record ? recordedFootprint(record, actor)
         : memoizeFootprint(time => mixFootprint(actor.previous, actor.current, time)),
@@ -733,6 +822,7 @@ export function resolvePopulationCompoundMotionBatch(actors: readonly Population
   for (const code of possibleActorPairs(actorMotions)) {
     const first = actorMotions[Math.floor(code / actorMotions.length)], second = actorMotions[code % actorMotions.length];
     if (first.ownerId !== second.ownerId && possiblePair(first, second)) {
+      if (!reuse) { pairs.push({ first, second, actorComponent: false, key: `${first.identityKey}|${second.identityKey}` }); continue; }
       const entry = pairEntry(first.record!, second.record!);
       pairs.push({ first, second, actorComponent: false, key: entry.key, entry });
     }
@@ -747,14 +837,16 @@ export function resolvePopulationCompoundMotionBatch(actors: readonly Population
   let cursor = 0;
   /** One pair's earliest event under the current stops and cursor; undefined when the overlap escape skips it. */
   const evaluate = (pair: Pair): Swept | null | undefined => {
-    const start = sweepPopulationHulls(stoppedBody(pair.first, groupStops, 0), stoppedBody(pair.first, groupStops, 0),
-      stoppedBody(pair.second, groupStops, 0), stoppedBody(pair.second, groupStops, 0));
+    // An actor pair's sweeps go through its kept memo; at t = 0 and t = 1 each
+    // stoppedBody call returns one remembered object, so it is asked once.
+    const sweep = pair.entry ? memoSweeper(pair.entry.sweeps) : directSweep;
+    const firstStart = stoppedBody(pair.first, groupStops, 0), secondStart = stoppedBody(pair.second, groupStops, 0);
+    const start = sweep(firstStart, firstStart, secondStart, secondStart, 0, 0, false);
     // Only an initial overlap reads the end sweep. Two actors' end bodies are
     // valid mixed hulls by construction, so their sweep cannot throw and is
     // formed only when read (PERF-WHARF); a component's is always formed.
     const firstEnd = stoppedBody(pair.first, groupStops, 1), secondEnd = stoppedBody(pair.second, groupStops, 1);
-    const end = pair.actorComponent || start?.initiallyOverlapping ? sweepPopulationHulls(firstEnd, stoppedBody(pair.first, groupStops, 1),
-      secondEnd, stoppedBody(pair.second, groupStops, 1)) : null;
+    const end = pair.actorComponent || start?.initiallyOverlapping ? sweep(firstEnd, firstEnd, secondEnd, secondEnd, 0, 0, false) : null;
     // Preserve the existing overlap-escape rule: do not arrest a pair that
     // began merged and has reduced that merge by the end of this transaction.
     // Nor one that only slides along its touching face with rigid support,
@@ -764,12 +856,18 @@ export function resolvePopulationCompoundMotionBatch(actors: readonly Population
     if (start?.initiallyOverlapping && (((!end || end.penetrationMetres < start.penetrationMetres - R.epsilon)
       && (!certified || continuousNonWorseningEscape(pair, groupStops) || directlyAwayEscape(pair, groupStops)))
       || (certified && continuousNonWorseningEscape(pair, groupStops)))) return undefined;
-    const breaks = [cursor, ...[groupStops.get(pair.first.groupKey)!, groupStops.get(pair.second.groupKey)!]
-      .filter(value => value > cursor + R.epsilon && value < 1 - R.epsilon), 1].sort((a, b) => a - b);
+    // [cursor, the stops strictly inside (cursor, 1) in ascending order, 1]:
+    // the sorted break list, without its filter and comparator sort (PERF-WHARF).
+    const stopA = groupStops.get(pair.first.groupKey)!, stopB = groupStops.get(pair.second.groupKey)!;
+    const hasA = stopA > cursor + R.epsilon && stopA < 1 - R.epsilon, hasB = stopB > cursor + R.epsilon && stopB < 1 - R.epsilon;
+    const breaks = [cursor];
+    if (hasA && hasB) { if (stopB < stopA) breaks.push(stopB, stopA); else breaks.push(stopA, stopB); }
+    else if (hasA) breaks.push(stopA); else if (hasB) breaks.push(stopB);
+    breaks.push(1);
     let found: Swept | null = null;
     for (let index = 0; index < breaks.length - 1; index += 1) {
       if (breaks[index + 1] <= breaks[index] + R.epsilon) continue;
-      found = sweepContinuous(pair.first, pair.second, groupStops, breaks[index], breaks[index + 1], workFor(pair.second.ownerId), total);
+      found = sweepContinuous(pair.first, pair.second, groupStops, breaks[index], breaks[index + 1], workFor(pair.second.ownerId), total, sweep);
       if (found) break;
     }
     return found;

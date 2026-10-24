@@ -3,10 +3,10 @@
 import { EUC } from '../data/tuning.ts';
 import type { EucDynamicWorld, EucHeldPhysicalContact, EucPose, EucPreparedStep } from './EucController.ts';
 import type { PopulationSimulation, PopulationContact, PopulationFootprint, PopulationOccupant, PopulationReservation, PopulationPhysicalFinalByOwner } from './population.ts';
-import { adoptPopulationEnvelopeProof, type PopulationCompoundActorMotion, type PopulationCompoundHit, type PopulationCompoundMotionBatch, type PopulationCompoundTrajectory, type RefinementWork } from './populationCompound.ts';
+import { adoptPopulationEnvelopeProof, resolvePopulationCompoundMotionBatch, type PopulationCompoundActorMotion, type PopulationCompoundContactPolicy, type PopulationCompoundHit, type PopulationCompoundMotionBatch, type PopulationCompoundTrajectory, type RefinementWork } from './populationCompound.ts';
 import { PopulationPhysicalCertificates } from './populationPhysicalCertificates.ts';
 import { sharePopulationStepRefinement } from './populationPhysicalReactionAdmission.ts';
-import { resolvePopulationWholeStepRefusalPreferActorYield, type PopulationPhysicalOwner, type PopulationWholeStepResolution } from './populationWholeStepRefusal.ts';
+import { resolvePopulationWholeStepRefusalPreferActorYield, type PopulationPhysicalOwner, type PopulationWholeStepBatchResolver, type PopulationWholeStepResolution } from './populationWholeStepRefusal.ts';
 
 export interface PopulationPhysicalController {
   readonly discontinuitySerial: number;
@@ -69,6 +69,8 @@ const posed = (pose: EucPose): EucPose => ({ ...pose, ragdoll: Float32Array.from
 interface KeptProof { readonly certificates: PopulationPhysicalCertificates; readonly start: EucPose; readonly pose: EucPose; readonly dt: number;
   readonly discontinuous: boolean; readonly components: readonly PopulationCompoundTrajectory[] }
 const keptProofs = new WeakMap<PopulationPhysicalController, readonly KeptProof[]>();
+/** Compound batches searched, and repeats answered by an earlier batch of the same step (`resolveBatch`): diagnostics for tests. */
+export const populationPhysicalBatchCounts = { searched: 0, reused: 0 };
 
 /**
  * Response evidence: the refusing hit's normal (actor toward rider), whether
@@ -133,15 +135,22 @@ export function commitPopulationPhysicalTransaction(input: PopulationPhysicalTra
   // bit-identical, and so is a held owner's next retry. Their same-named
   // components then share one proof table, so each enclosure is paid once.
   const proofs = new Map<string, KeptProof[]>();
-  const reusedMoving = (seat: PopulationPhysicalSeat, owner: PopulationPhysicalOwner, isDiscontinuous: boolean) => () => {
+  // This step's candidates by their native-fall flag, and each rebuilt
+  // component's earliest same-step twin: the same seat, certificates, poses,
+  // dt, discontinuity and fall, so the same pure trajectory, sharing its
+  // proof table (PERF-WHARF, 2026-10-23; see `resolveBatch` below).
+  const candidateFalls = new Map<KeptProof, boolean>(), twins = new Map<PopulationCompoundTrajectory, PopulationCompoundTrajectory>();
+  const reusedMoving = (seat: PopulationPhysicalSeat, owner: PopulationPhysicalOwner, isDiscontinuous: boolean, nativeFall: boolean) => () => {
     const components = owner.movingComponents(), from = start(seat), tick = proofs.get(seat.id) ?? [];
     const known = [...tick, ...(keptProofs.get(seat.controller) ?? [])].find(entry => entry.certificates === certificates
       && entry.discontinuous === isDiscontinuous && entry.dt === input.dt && samePose(entry.pose, seat.pose) && samePose(entry.start, from));
+    const sameStep = known !== undefined && candidateFalls.get(known) === nativeFall;
     if (known) for (const component of components) {
       const twin = known.components.find(value => value.componentId === component.componentId);
-      if (twin) adoptPopulationEnvelopeProof(twin, component);
+      if (twin) { adoptPopulationEnvelopeProof(twin, component); if (sameStep) twins.set(component, twins.get(twin) ?? twin); }
     }
-    tick.push({ certificates, start: posed(from), pose: posed(seat.pose), dt: input.dt, discontinuous: isDiscontinuous, components }); proofs.set(seat.id, tick);
+    const entry: KeptProof = { certificates, start: posed(from), pose: posed(seat.pose), dt: input.dt, discontinuous: isDiscontinuous, components };
+    tick.push(entry); proofs.set(seat.id, tick); candidateFalls.set(entry, nativeFall);
     return components;
   };
   const makeOwners = (): PopulationPhysicalOwner[] => [...seats.values()].map(seat => {
@@ -149,9 +158,10 @@ export function commitPopulationPhysicalTransaction(input: PopulationPhysicalTra
     // A controller that did not prepare this tick is already a parked body
     // or a checked direct placement. It has no discarded private candidate.
     // A body that starts the step crashed keeps its native fall (R2C-1/R2C-3).
+    const nativeFall = seat.controller.crashed === true;
     const fresh = certificates.owner(seat.id, candidate ? start(seat) : seat.pose, seat.pose,
-      candidate ? input.dt : 0, actors, Boolean(candidate && discontinuous(seat)), seat.controller.crashed === true);
-    const owner = candidate ? { ...fresh, movingComponents: reusedMoving(seat, fresh, discontinuous(seat)) } : fresh;
+      candidate ? input.dt : 0, actors, Boolean(candidate && discontinuous(seat)), nativeFall);
+    const owner = candidate ? { ...fresh, movingComponents: reusedMoving(seat, fresh, discontinuous(seat), nativeFall) } : fresh;
     if (!candidate || !discontinuous(seat)) return owner;
     return { ...owner, placementAllowed: (batch: PopulationCompoundMotionBatch, _components: readonly PopulationCompoundTrajectory[], refused: ReadonlySet<string>) => {
       const actorBodies = population.actorBodiesAtFractions(batch.actorFractions);
@@ -179,6 +189,45 @@ export function commitPopulationPhysicalTransaction(input: PopulationPhysicalTra
   // responses below) share.
   const refinement = new Map<string, RefinementWork>();
   sharePopulationStepRefinement(population, refinement);
+  // **A batch is searched once per step** (PERF-WHARF, 2026-10-23). A crashed
+  // or airborne owner's native replay usually reproduces its selection
+  // candidate bit for bit, and the replay's first refusal pass then asks the
+  // selection's batch again: the same actor objects, every component a
+  // same-step twin sharing its proof table, the same policy. The batch is a
+  // pure function of those inputs and of the shared refinement, which it
+  // reads only at its work bound, right after counting a search node: so a
+  // batch that left every node count at 0 never read it. Asked again with
+  // every table already holding all it reads, it would evaluate nothing fresh,
+  // count no node and return the same batch, so that batch is the answer. A
+  // batch that reached its work bound, any other refinement, a held or
+  // unprepared owner's new component or a yielded body searches afresh.
+  const searched: { readonly actors: readonly PopulationCompoundActorMotion[]; readonly components: readonly PopulationCompoundTrajectory[];
+    readonly policy: PopulationCompoundContactPolicy; readonly works: readonly (readonly [string, RefinementWork])[]; readonly batch: PopulationCompoundMotionBatch }[] = [];
+  const untouched = () => { for (const work of refinement.values()) if (work.nodes !== 0) return false; return true; };
+  const twinOf = (component: PopulationCompoundTrajectory) => twins.get(component) ?? component;
+  const sameUnstoppable = (a: ReadonlySet<string> | undefined, b: ReadonlySet<string> | undefined) => a === b
+    || (a !== undefined && b !== undefined && a.size === b.size && [...a].every(id => b.has(id)));
+  const repeats = (entry: typeof searched[number], batchActors: readonly PopulationCompoundActorMotion[],
+    components: readonly PopulationCompoundTrajectory[], policy: PopulationCompoundContactPolicy) => {
+    if (Object.keys(policy).length !== 3 || policy.refinement !== refinement || entry.policy.certifiedInitialOverlap !== policy.certifiedInitialOverlap
+      || !sameUnstoppable(entry.policy.unstoppableOwnerIds, policy.unstoppableOwnerIds)) return false;
+    if (refinement.size !== entry.works.length || entry.works.some(([key, work]) => refinement.get(key) !== work)) return false;
+    if (entry.actors.length !== batchActors.length || entry.components.length !== components.length) return false;
+    for (let index = 0; index < batchActors.length; index += 1) if (entry.actors[index] !== batchActors[index]) return false;
+    for (let index = 0; index < components.length; index += 1) {
+      const known = entry.components[index], component = components[index];
+      if (twinOf(known) !== twinOf(component) || known.ownerId !== component.ownerId || known.componentId !== component.componentId
+        || known.stopGroupId !== component.stopGroupId) return false;
+    }
+    return true;
+  };
+  const resolveBatch: PopulationWholeStepBatchResolver = (batchActors, components, policy) => {
+    if (untouched()) for (const entry of searched) if (repeats(entry, batchActors, components, policy)) { populationPhysicalBatchCounts.reused += 1; return entry.batch; }
+    const batch = resolvePopulationCompoundMotionBatch(batchActors, components, policy); populationPhysicalBatchCounts.searched += 1;
+    if (untouched() && Object.keys(policy).length === 3) searched.push({ actors: batchActors, components, policy: { certifiedInitialOverlap: policy.certifiedInitialOverlap, refinement: policy.refinement,
+      unstoppableOwnerIds: policy.unstoppableOwnerIds === undefined ? undefined : new Set(policy.unstoppableOwnerIds) }, works: [...refinement], batch });
+    return batch;
+  };
   const preferred = new Set(input.preferActorYieldOwnerIds ?? []);
   for (const id of preferred) if (!prepared.has(id)) throw new Error('Actor yield preference needs a prepared physical owner');
   // **An actor that walks or drives into a rider yields first** (R2C-5,
@@ -203,7 +252,7 @@ export function commitPopulationPhysicalTransaction(input: PopulationPhysicalTra
       seat.controller.writePreparedPose(seat.token, seat.pose); seats.set(seat.id, seat);
     }
     owners = makeOwners();
-    const selection = resolvePopulationWholeStepRefusalPreferActorYield(actors, owners, yielded, preferred, refinement);
+    const selection = resolvePopulationWholeStepRefusalPreferActorYield(actors, owners, yielded, preferred, refinement, resolveBatch);
     for (const id of selection.yieldedActorIds) yielded.add(id);
   }
   while (true) {
@@ -221,7 +270,7 @@ export function commitPopulationPhysicalTransaction(input: PopulationPhysicalTra
       seat.controller.writePreparedPose(seat.token, seat.pose); seats.set(seat.id, seat);
     }
     endpointCache.clear(); owners = makeOwners();
-    resolution = resolvePopulationWholeStepRefusalPreferActorYield(actors, owners, yielded, eligible, refinement);
+    resolution = resolvePopulationWholeStepRefusalPreferActorYield(actors, owners, yielded, eligible, refinement, resolveBatch);
     const additions = (resolution.yieldedActorIds ?? []).filter(id => !yielded.has(id));
     if (!additions.length) break;
     for (const id of additions) yielded.add(id);
