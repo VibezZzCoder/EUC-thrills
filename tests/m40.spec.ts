@@ -58,6 +58,8 @@ async function expectAboutContents(page: Page): Promise<void> {
     ['play', PROVENANCE.homepageUrl, 'Play online'],
     ['source', PROVENANCE.repositoryUrl, 'Source'],
     ['devlog', PROVENANCE.devlogUrl, `${devlogHandle()} on YouTube`],
+    // §46: the pad's way to the spin-off, since the title chip is not a stop.
+    ['spin-off', PROVENANCE.spinOffUrl, `${PROVENANCE.spinOffTitle}, the Manhattan spin-off`],
   ] as const;
   for (const [hook, href, text] of links) {
     const link = about(page).locator(`[data-about="${hook}"]`);
@@ -131,6 +133,81 @@ test.describe('M40 — stamp, About and licences, share link (desktop)', () => {
       licence: LICENCE, licenceType: 'text/plain', notice: NOTICE, noticeType: 'text/plain', inBody: true,
     });
     expect(errors).toEqual([]);
+  });
+
+  test('the title links the spin-off from PROVENANCE, in the same tab, and the pad walk passes it by (§46)', async ({ page }) => {
+    const errors = collectErrors(page);
+    await page.addInitScript(() => {
+      const pad = {
+        index: 0,
+        id: 'fake standard pad',
+        connected: true,
+        mapping: 'standard',
+        axes: [0, 0, 0, 0],
+        buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0, touched: false })),
+      };
+      (window as unknown as { fakePad: typeof pad }).fakePad = pad;
+      navigator.getGamepads = () => [pad, null, null, null] as never;
+    });
+    await bootToTitle(page);
+    await page.waitForFunction(() => window.game.snapshot().gamepadConnected);
+
+    const chip = page.locator('.euc-menu--title .euc-title__foot a.euc-spin-off-chip');
+    await expect(chip).toBeVisible();
+    expect(await chip.getAttribute('href')).toBe(PROVENANCE.spinOffUrl);
+    expect(PROVENANCE.spinOffUrl).toBe('https://vibezzzcoder.github.io/euc-nyc/');
+    expect(await chip.getAttribute('target')).toBeNull();
+    await expect(chip.locator('strong')).toHaveText('EUC NYC');
+    await expect(chip).toContainText('Ride the Manhattan spin-off');
+    // Between the rider chip and the credit, and never an action hook.
+    const order = await page.evaluate(() => [...document.querySelector('.euc-menu--title .euc-title__foot')!.children]
+      .map((node) => node.className.split(' ')[0]));
+    expect(order).toEqual(['euc-rider-chip', 'euc-spin-off-chip', 'euc-credit']);
+    expect(await chip.getAttribute('data-menu')).toBeNull();
+
+    // The pad walks the whole title, down and up, and never stands on it.
+    const pulse = async (button: number): Promise<void> => page.evaluate(async (index) => {
+      const pad = (window as unknown as { fakePad: { buttons: { pressed: boolean; value: number }[] } }).fakePad;
+      const frame = () => new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+      pad.buttons[index].pressed = true;
+      pad.buttons[index].value = 1;
+      await frame();
+      pad.buttons[index].pressed = false;
+      pad.buttons[index].value = 0;
+      await frame();
+    }, button);
+    const onChip = () => page.evaluate(() => document.activeElement?.classList.contains('euc-spin-off-chip') ?? false);
+    const visited = new Set<string>();
+    for (const button of [13, 12]) {
+      for (let step = 0; step < 16; step += 1) {
+        await pulse(button);
+        expect(await onChip(), `the pad stopped on the spin-off chip (${button === 13 ? 'down' : 'up'} ${step})`).toBe(false);
+        visited.add(await page.evaluate(() => (document.activeElement as HTMLElement | null)?.className.split(' ')[0] ?? ''));
+      }
+    }
+    // The walk did reach the foot on both sides of the chip.
+    expect(visited.has('euc-rider-chip')).toBe(true);
+    expect(visited.has('euc-credit__link')).toBe(true);
+
+    // Focus can still reach it by Tab or a click; A there never leaves the game.
+    await chip.focus();
+    await pulse(0);
+    expect(page.url()).not.toContain('euc-nyc');
+    expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('title');
+    expect(errors).toEqual([]);
+
+    // A click goes there in this tab, and Back brings the title back alive
+    // (a back-forward cache restore reloads rather than showing a disposed game).
+    await page.route(/^https:\/\/vibezzzcoder\.github\.io\/euc-nyc\//, (route) => route.fulfill({
+      contentType: 'text/html', body: '<!doctype html><title>EUC NYC</title><p>stub</p>',
+    }));
+    await chip.click();
+    await page.waitForURL(PROVENANCE.spinOffUrl);
+    await page.goBack();
+    await page.waitForFunction(() => window.game?.snapshot().app.state === 'title', null, { timeout: 60_000 });
+    await expect(page.locator('.euc-menu--title .euc-spin-off-chip')).toBeVisible();
   });
 
   test('a mouse opens About from the title\'s Settings, and Back and Escape step back one screen', async ({ page }) => {
@@ -416,7 +493,7 @@ test.describe('M40 — About on a phone (Pixel 7, real touch)', () => {
     // Every target on the panel meets the 44 px coarse-pointer floor.
     const targets = await about(page).evaluate((root) => [...root.querySelectorAll('a[href], button')]
       .map((node) => ({ name: node.textContent!.trim(), height: node.getBoundingClientRect().height })));
-    expect(targets.length).toBe(5);
+    expect(targets.length).toBe(6);
     for (const target of targets) expect(target.height, target.name).toBeGreaterThanOrEqual(44 - 0.5);
 
     // A real touch drag on the text scrolls the text, natively.

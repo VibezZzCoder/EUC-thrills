@@ -59,6 +59,15 @@ export interface Provenance {
    * spelling of the channel refuses every publication.
    */
   readonly devlogUrl: string;
+  /**
+   * The owner's spin-off game, EUC NYC, a separate repository (§46, his
+   * decision 2026-10-25). The title's second chip and an About link read it.
+   * Only this github.io address: never another domain for the spin-off, and
+   * never the owner's landing page, which the export's token scan refuses.
+   */
+  readonly spinOffUrl: string;
+  /** The spin-off's name, as its chip and About link print it. */
+  readonly spinOffTitle: string;
 }
 
 export const PROVENANCE: Provenance = Object.freeze({
@@ -74,8 +83,10 @@ export const PROVENANCE: Provenance = Object.freeze({
   year: '2026',
   licence: 'MIT',
   assetLicence: 'CC-BY-4.0',
-  version: '1.1.6',
+  version: '1.1.7',
   devlogUrl: 'https://www.youtube.com/@EdwinRodMen',
+  spinOffUrl: 'https://vibezzzcoder.github.io/euc-nyc/',
+  spinOffTitle: 'EUC NYC',
 });
 
 /** The devlog channel's handle, the only other form the scanner lets through. */
@@ -83,7 +94,7 @@ export function devlogHandle(): string {
   return PROVENANCE.devlogUrl.slice(PROVENANCE.devlogUrl.lastIndexOf('/') + 1);
 }
 
-/** The build stamp a player reads and a bug report quotes: `v1.1.6`. */
+/** The build stamp a player reads and a bug report quotes: `v1.1.7`. */
 export function versionStamp(): string {
   return `v${PROVENANCE.version}`;
 }

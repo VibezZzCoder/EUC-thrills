@@ -212,6 +212,10 @@ riders changes nothing about any of them. Each venue is its own course, so a
 best lap at BelVar Circuit and a best lap at Switchback Park keep their own
 times and their own ghosts.
 
+**EUC NYC ›**, the chip under the rider line, opens the same author's
+Manhattan spin-off in the same tab, and the browser's Back button returns here. On a
+gamepad, the same link is in **Settings → About and licences**.
+
 ## 2–4 Players
 
 Up to four riders on one desktop screen. Each player presses a button on

@@ -1057,6 +1057,42 @@ export function titleCreditTemplate(): string {
 }
 
 /**
+ * The way to the owner's other game, EUC NYC (§46, 2026-10-25).
+ *
+ * **A link, not a control.** It leaves the game, so it is an `<a>` in the
+ * title's foot under the rider chip, and it navigates in the same tab: Thrills
+ * unloads, one game runs at a time, and Back returns to this title. No dialog
+ * and no browser check — the spin-off falls back to WebGL2 by itself.
+ *
+ * **Not a pad stop.** `data-outbound` keeps it out of `Menus.navigate`'s walk
+ * (the title's stops are exactly what `tests/m9.spec.ts` names); a pad player
+ * reaches the same address from Settings → About. Keyboard Tab still reaches
+ * it, because Tab is the browser's own.
+ *
+ * The icon is a yellow cab in front of three plain blocks and a rooftop water
+ * tower: generic on purpose, never a named landmark, roundel or slogan.
+ * `aria-hidden`, so the chip's name is its words.
+ */
+export function spinOffChipTemplate(): string {
+  return `
+  <a class="euc-spin-off-chip" data-outbound="spin-off" href="${PROVENANCE.spinOffUrl}" rel="noopener">
+    <svg class="euc-spin-off-chip__icon" viewBox="0 0 20 16" aria-hidden="true" focusable="false">
+      <path class="euc-spin-off-chip__city"
+            d="M1 11V4.6h4.4V11zM6 11V2h4.6v9zM11.2 11V6h4.8v5zM12.4 4.7V2.5l1.2-1.2 1.2 1.2v2.2z
+               M12.7 6V4.7h.5V6zM14 6V4.7h.5V6z"/>
+      <path class="euc-spin-off-chip__cab" fill-rule="evenodd"
+            d="M2 10.2l3.2-.2 1.6-2.8h1.8V6.3h1.8v.9h2l2.2 2.8 2.8.4c.6.1 1 .6 1 1.2V13H1.8l-.2-1
+               c0-1 .1-1.6.4-1.8zM7.4 9.6l1-1.7h.9v1.7zM9.9 7.9h2.2l1.3 1.7H9.9z"/>
+      <path class="euc-spin-off-chip__wheels"
+            d="M4.1 13.2a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0zM13.1 13.2a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0z"/>
+    </svg>
+    <strong>${PROVENANCE.spinOffTitle}</strong>
+    <span class="euc-spin-off-chip__more">Ride the Manhattan spin-off</span>
+    <span class="euc-spin-off-chip__chevron" aria-hidden="true">›</span>
+  </a>`;
+}
+
+/**
  * Settings → About and licences (M40, §40.4 q8).
  *
  * A Settings subpanel built like Track Day's: opening or closing it never
@@ -1092,6 +1128,8 @@ export function aboutTemplate(): string {
          target="_blank" rel="noopener">Source</a>
       <a class="euc-about__link euc-about__link--out" data-about="devlog" href="${PROVENANCE.devlogUrl}"
          target="_blank" rel="noopener">${devlogHandle()} on YouTube</a>
+      <a class="euc-about__link euc-about__link--out" data-about="spin-off" href="${PROVENANCE.spinOffUrl}"
+         target="_blank" rel="noopener">${PROVENANCE.spinOffTitle}, the Manhattan spin-off</a>
     </div>
 
     <p class="euc-about__guide">Below: the code licence, then the notices and credits for every rider. Scroll to read them all.</p>
@@ -1225,6 +1263,7 @@ const TITLE_TEMPLATE = `
   </div>
   <div class="euc-title__foot">
   ${riderChipTemplate()}
+  ${spinOffChipTemplate()}
   ${titleCreditTemplate()}
   </div>
 </div>
@@ -4489,7 +4528,9 @@ export class Menus {
     // Reachable from the gamepad and nothing else: the keyboard walks menus by
     // native Tab, which the browser rings for us.
     this.padDriving = true;
-    const focusable = this.focusableControls();
+    // An outbound link (the spin-off chip, §46) leaves the game, so the pad's
+    // walk passes it by; About carries the same address for a pad.
+    const focusable = this.focusableControls().filter((node) => !node.hasAttribute('data-outbound'));
     if (focusable.length === 0) return;
 
     const active = document.activeElement;
@@ -4557,6 +4598,9 @@ export class Menus {
     // with a cursor on it.
     this.padDriving = true;
     const focused = document.activeElement;
+    // An outbound link is not a pad stop (§46), and focus can still reach it
+    // by Tab or a mouse click: A never leaves the game from there.
+    if (focused instanceof HTMLElement && focused.hasAttribute('data-outbound')) return;
     if (this.seedField !== null && focused === this.seedField) {
       this.callbacks.onRideRoute(this.seed);
       return;

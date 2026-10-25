@@ -16,6 +16,7 @@ import {
   stepEnabledOption,
   venueButtonTemplate,
   titleCreditTemplate,
+  spinOffChipTemplate,
   aboutTemplate,
   aboutScrollStep,
   reflowParagraphs,
@@ -495,6 +496,20 @@ test('the title credit reads PROVENANCE and its stamp is text, not a stop (M40)'
   assert.ok(!/tabindex|<button|data-menu/.test(html));
 });
 
+test('the spin-off chip is one same-tab link to the github.io address, outside the pad walk (§46)', () => {
+  const html = spinOffChipTemplate();
+  assert.equal(PROVENANCE.spinOffUrl, 'https://vibezzzcoder.github.io/euc-nyc/');
+  assert.equal((html.match(/<a\b/g) ?? []).length, 1);
+  assert.ok(html.includes(`href="${PROVENANCE.spinOffUrl}"`));
+  assert.ok(/<a [^>]*data-outbound="spin-off"/.test(html), 'the pad walk skips it by this hook');
+  assert.ok(!/target=|tabindex|<button|data-menu/.test(html));
+  assert.ok(html.includes('<strong>EUC NYC</strong>'));
+  assert.ok(html.includes('>Ride the Manhattan spin-off<'));
+  assert.ok(/<svg [^>]*aria-hidden="true"/.test(html));
+  // Exactly one external address in it.
+  assert.deepEqual(html.match(/https?:\/\/[^"\s]+/g), [PROVENANCE.spinOffUrl]);
+});
+
 test('the About template carries the three links, the stamp and no long text of its own (M40)', () => {
   const html = aboutTemplate();
   assert.ok(html.includes('About and licences'));
@@ -504,6 +519,7 @@ test('the About template carries the three links, the stamp and no long text of 
     ['play', PROVENANCE.homepageUrl],
     ['source', PROVENANCE.repositoryUrl],
     ['devlog', PROVENANCE.devlogUrl],
+    ['spin-off', PROVENANCE.spinOffUrl],
   ] as const) {
     const link = new RegExp(`<a [^>]*data-about="${hook}" href="([^"]*)"[^>]*target="_blank" rel="noopener">`).exec(html);
     assert.ok(link !== null, `${hook} link`);

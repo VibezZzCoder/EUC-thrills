@@ -133,6 +133,12 @@ export async function start(loading: LoadingScreen): Promise<void> {
     game.dispose();
   };
   window.addEventListener('pagehide', teardown);
+  // The spin-off chip (§46) is the first same-tab way out, so Back can restore
+  // this page from the back-forward cache with the game already disposed by
+  // `teardown`. A restored page is reloaded instead of shown dead.
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) window.location.reload();
+  });
 
   // The QA bridge. Durable tooling rather than a development-only hook: the
   // browser suite runs against the built artifact too, and a diagnostic that

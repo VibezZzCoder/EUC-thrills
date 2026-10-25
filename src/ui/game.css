@@ -59,6 +59,10 @@
   --ultra-flame: #ff5a3c;
   --ultra-flame-core: #ffc34d;
 
+  /* The spin-off chip's cab (§46): its one colour, kept apart from the cue
+     yellow so a link never wears the status light's notice. */
+  --spin-off-cab: #f7b500;
+
   --panel: rgba(13, 16, 20, 0.92);
   --panel-edge: #2b3542;
   --shade: rgba(7, 9, 12, 0.72);
@@ -3188,6 +3192,79 @@
   white-space: nowrap;
 }
 
+/*
+ * The spin-off chip (§46): the rider chip's pill, as a link to EUC NYC.
+ *
+ * Same surface, ink, radius, height and padding as `.euc-rider-chip`, so the
+ * foot reads as one family; the cab in the icon is the only colour on it, so
+ * hover changes the border to the dim ink rather than to a hue.
+ */
+.euc-spin-off-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-self: center;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0.45rem 0.85rem;
+  border: 1px solid var(--panel-edge);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 0.9rem;
+  text-decoration: none;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+
+.euc-spin-off-chip:hover { border-color: var(--ink-dim); background: #161d25; }
+
+.euc-spin-off-chip strong { color: var(--ink); font-weight: 700; white-space: nowrap; }
+
+.euc-spin-off-chip__icon {
+  flex: none;
+  width: 1.4rem;
+  height: 1.12rem;
+}
+
+.euc-spin-off-chip__city { fill: currentColor; opacity: 0.42; }
+.euc-spin-off-chip__cab { fill: var(--spin-off-cab); }
+.euc-spin-off-chip__wheels { fill: #0b0e12; }
+
+.euc-spin-off-chip__more {
+  color: var(--ink-dim);
+  font-size: 0.8rem;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  white-space: nowrap;
+}
+
+/* Where the full line would wrap — the narrowest phones upright, every
+   phone on its side, and a short window under 50rem wide, where it shares a
+   row with the rider chip — the chip shows only "EUC NYC ›" and the icon.
+   The words stay its accessible name. */
+@media (max-width: 22rem), (max-height: 30rem),
+  (max-height: 40rem) and (min-width: 34.0625rem) and (max-width: 50rem) {
+  .euc-spin-off-chip__more {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+}
+
+.euc-spin-off-chip__chevron {
+  margin-left: -0.2rem;
+  color: var(--ink-dim);
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+@media (forced-colors: active) {
+  .euc-spin-off-chip__city, .euc-spin-off-chip__cab { fill: LinkText; }
+  .euc-spin-off-chip__wheels { fill: Canvas; }
+}
+
 /* -- About and licences (M40) ---------------------------------------------
  * A Settings subpanel: the stamp, three links, and the licence and notices
  * as the files have them. One box like Settings' own, one scrolling region
@@ -5193,6 +5270,7 @@
   /* The chooser's own targets. A card is already far past the floor, but
      the chip is a single line of small text and would not be. */
   .euc-rider-chip { min-height: 2.75rem; }
+  .euc-spin-off-chip { min-height: 2.75rem; }
   .euc-rider-card { min-height: 2.75rem; }
 
   /* The credit link is one word of small text. Padding grows the touch target
@@ -5436,6 +5514,15 @@
 /* -- The rider chip and the colophon ------------------------------------- */
 
 .euc-title__foot { display: grid; justify-items: center; gap: 0.55rem; }
+
+/* Under 40rem of height, on anything but a phone upright, a third stacked row
+   would push the title past the fold (740x481 scrolled 13px), so the spin-off
+   chip (§46) shares the rider chip's row and the credit sits under both. The
+   compact tier below puts all three on one row instead. */
+@media (max-height: 40rem) and (min-height: 30.0625rem) and (min-width: 34.0625rem) {
+  .euc-title__foot { grid-template-columns: auto auto; justify-content: center; align-items: center; column-gap: 0.75rem; }
+  .euc-title__foot .euc-credit { grid-column: 1 / -1; }
+}
 
 /* -- Snug: shorter windows and every phone upright ---------------------- */
 
