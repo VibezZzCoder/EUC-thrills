@@ -718,7 +718,8 @@ export function createPopulationView(
   };
 
   const ids = new Set<string>();
-  const bodies = assignVehicleBodies(plan.actors);
+  // The price's own call (populationPrice.ts): density extras continue the base deal (M47).
+  const bodies = assignVehicleBodies(plan.actors, plan.density?.actors);
   try {
     for (const spec of plan.actors) {
       if (!spec.id || ids.has(spec.id) || ![spec.hull.halfWidthMetres, spec.hull.halfLengthMetres,

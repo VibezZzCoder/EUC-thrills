@@ -75,7 +75,8 @@ export function countPopulation(plan: PopulationPlan | null): SupplementCount {
   };
   const human = (geometry: string, finish: string, count = 1, casts = false) =>
     add(`human-${geometry}-${finish}`, HUMAN[geometry], casts, count);
-  const bodies = assignVehicleBodies(plan?.actors ?? []);
+  // The factory's own call (populationView.ts): density extras continue the base deal (M47).
+  const bodies = assignVehicleBodies(plan?.actors ?? [], plan?.density?.actors);
   for (const spec of plan?.actors ?? []) {
     const body = bodies.get(spec.id);
     if (body) {

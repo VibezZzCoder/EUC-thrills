@@ -7,6 +7,8 @@ import { prepareLivingWorldGroundSteps } from '../level/livingWorldGround.ts';
 import { withDistrictAdjacencySteps, type DistrictAdjacentPlan } from '../level/districtAdjacency.ts';
 import { withDistrictCompositionSteps } from '../level/districtComposition.ts';
 import { withDistrictActivitySteps } from '../level/districtActivity.ts';
+import { GENERATED_LEVEL_PREFIX } from '../level/generateRoute.ts';
+import { authorPopulationDensitySteps, POPULATION_DENSITY_LAYERS } from '../level/populationDensity.ts';
 import { PREPARATION_SLICE, runSteps, type Steps } from '../shared/preparationSteps.ts';
 
 export interface PreparedPopulationWorld {
@@ -19,6 +21,8 @@ export interface PreparedPopulationWorld {
  * Presentation tiers never call this or supply an option. District finishing
  * follows accepted traffic/parking so its furniture reserves those actual lanes.
  * A changed physical plan is validated once more before any consumer installs it.
+ * A generated city's population also carries its M47 density layer, authored
+ * last; a consumer picks a roster from it (`populationRoster`), never a world.
  */
 export function preparePopulationWorld(source: LevelPlan): PreparedPopulationWorld {
   // One preparation shares the verified, value-checked footprint and coverage
@@ -61,7 +65,28 @@ function* preparePopulationWorldInSteps(source: LevelPlan): Steps<PreparedPopula
     : { ...finished, populationGroundReport: population.report.groundSupplement };
   const level = population.installedWorldId === reconciled.id ? reconciled
     : { ...reconciled, populationSourceWorldId: reconciled.id, id: population.installedWorldId };
-  return { level: { ...level, recordWorldId: recordWorldIdFor(source, level) }, population };
+  const recorded = { ...level, recordWorldId: recordWorldIdFor(source, level) };
+  if (!builderWorldId(source).startsWith(GENERATED_LEVEL_PREFIX)) return { level: recorded, population };
+  // M47: a generated city's density layer, authored last against the finished
+  // ground. No district stage or static key reads actors, so the world, its
+  // ids and its record key are exactly those above; the base roster too.
+  yield PREPARATION_SLICE;
+  const density = yield* authorPopulationDensitySteps(recorded, population, POPULATION_DENSITY_LAYERS);
+  return { level: recorded, population: { ...population, density } };
+}
+
+/**
+ * The builder's own world id: the earliest stage's record of it, else the
+ * plan's id (`generated-r6-<seed>`, m7-slice, switchback-r<N>, belvar-r1, …).
+ * Only the generator spells ids with `GENERATED_LEVEL_PREFIX`; its fallback
+ * world is the slice under the slice's own id, and an installed city keeps the
+ * id in `districtAdjacency.sourceWorldId` through every later preparation. So
+ * this one string, which the record key is also built from, says whether a
+ * world is a generated city, before or after installation.
+ */
+function builderWorldId(source: LevelPlan): string {
+  return source.districtAdjacency?.sourceWorldId ?? source.districtActivity?.sourceWorldId
+    ?? source.districtComposition?.sourceWorldId ?? source.id;
 }
 
 /** Content a timed run is ridden against. Population actors are not in it:
@@ -96,8 +121,7 @@ export const RECORD_WORLD_REVISION = 'living-r1';
 function recordWorldIdFor(source: LevelPlan, level: LevelPlan): string {
   if (source.recordWorldId !== undefined) return source.recordWorldId;
   // A plan installed without this field: its earliest stage names the builder world.
-  const origin = source.districtAdjacency?.sourceWorldId ?? source.districtActivity?.sourceWorldId
-    ?? source.districtComposition?.sourceWorldId ?? source.id;
+  const origin = builderWorldId(source);
   const changed = source.populationSourceWorldId !== undefined
     ? source.populationSourceWorldId !== origin : !sameStaticWorld(source, level);
   if (!origin || origin.length > 64) throw new RangeError('Invalid record source world id');

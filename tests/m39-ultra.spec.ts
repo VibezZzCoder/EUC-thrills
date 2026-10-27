@@ -1812,16 +1812,25 @@ test('journey 5: a couch pause Settings neither offers Ultra nor lets a pad reac
     shown: (document.querySelector('[data-option="quality"]') as HTMLSelectElement).value,
     effective: window.game.snapshot().quality.effective,
   }));
+  // Every tier change runs behind its loading notice and the select refuses
+  // presses until it clears (M47 follow-up, 2026-10-26), so each press waits.
+  const settled = () => page.waitForFunction(
+    () => !document.querySelector('[data-option="quality"]')?.hasAttribute('aria-busy'),
+  );
   await page.locator('[data-option="quality"]').focus();
   await pulsePad(page, 0, PAD_RIGHT);
+  await settled();
   expect(await quality(), 'a pad Right reached the disabled Ultra').toMatchObject({ saved: 'high', shown: 'high' });
   await pulsePad(page, 0, PAD_LEFT);
+  await settled();
   expect(await quality()).toMatchObject({ saved: 'medium', shown: 'medium', effective: 'medium' });
   await pulsePad(page, 0, PAD_RIGHT);
+  await settled();
   expect(await quality(), 'a pad Right stepped onto the disabled Ultra').toMatchObject({ saved: 'high', shown: 'high' });
   const lap: string[] = [];
   for (let press = 0; press < 5; press += 1) {
     await pulsePad(page, 0, PAD_A);
+    await settled();
     const now = await quality();
     lap.push(now.saved);
     // Ordinary tiers keep working exactly as today in couch (invariant 18).

@@ -43,7 +43,7 @@ import {
   COUCH_SEATS,
   type CouchRide,
 } from '../app/couch.ts';
-import type { QualityStateView, UltraSwitch } from '../app/renderTier.ts';
+import type { QualitySwitch, QualityStateView } from '../app/renderTier.ts';
 import {
   TRACK_VENUE_IDS,
   VENUE_IDS,
@@ -840,6 +840,8 @@ export function qualityStateWords(
  */
 export const ULTRA_LOADING_NOTICE = 'Loading Ultra graphics…';
 export const ULTRA_LEAVING_NOTICE = 'Turning Ultra off…';
+/** A change among Low, Medium and High (`renderTier.ts:qualitySwitchFor`). */
+export const QUALITY_CHANGING_NOTICE = 'Changing graphics…';
 
 /**
  * A switch across Ultra under way, as the menus are told it by `app/Game.ts`.
@@ -851,7 +853,7 @@ export const ULTRA_LEAVING_NOTICE = 'Turning Ultra off…';
  * just made.
  */
 export interface QualityBusy {
-  readonly direction: UltraSwitch;
+  readonly direction: QualitySwitch;
   readonly from: QualityLevel;
   readonly to: QualityLevel;
 }
@@ -863,9 +865,9 @@ export interface QualityBusyWords {
 }
 
 export function qualityBusyWords(busy: QualityBusy): QualityBusyWords {
-  return busy.direction === 'entering'
-    ? { state: 'Loading…', notice: ULTRA_LOADING_NOTICE }
-    : { state: 'Switching…', notice: ULTRA_LEAVING_NOTICE };
+  if (busy.direction === 'entering') return { state: 'Loading…', notice: ULTRA_LOADING_NOTICE };
+  if (busy.direction === 'leaving') return { state: 'Switching…', notice: ULTRA_LEAVING_NOTICE };
+  return { state: 'Switching…', notice: QUALITY_CHANGING_NOTICE };
 }
 
 /**
@@ -4816,8 +4818,10 @@ export class Menus {
                 aria-describedby="euc-quality-warning euc-quality-state">${qualityOptions}</select>
         <span class="euc-field__value"></span>
         <p class="euc-field__note">
-          Lower settings reduce resolution and shadow detail. The ride itself is
-          identical at every setting.
+          Lower settings reduce resolution and shadow detail, and in the
+          generated towns fewer people and vans. The wheel handles the same at
+          every setting. A change made during a timed run, race or chase
+          reaches the crowd when it ends.
         </p>
         <p class="euc-field__note euc-quality-warning" id="euc-quality-warning">
           <span class="euc-quality-warning__tag">Ultra</span> ${QUALITY_ULTRA_WARNING}

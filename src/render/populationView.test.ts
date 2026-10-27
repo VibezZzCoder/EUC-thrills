@@ -315,6 +315,46 @@ test('vehicle bodies are dealt from the ids: a mixed street, deterministic, pric
   } finally { view.dispose(); }
 });
 
+// M47: density extras continue the deal instead of re-dealing it, so adding
+// the Medium and High layers never changes a living-r1 van's body, and a
+// Medium extra keeps its body at High (the town itself: populationDensityRoster.test.ts).
+test('density extras continue the base deal: base bodies unchanged, a Medium extra keeps its body at High', () => {
+  const kinds = ['trafficVehicle', 'parkedVehicle', 'serviceVehicle'] as const;
+  const base = [spec('walker', 'base-walker'), ...Array.from({ length: 5 }, (_, index) => spec(kinds[index % 3], `base-${index}`, index))];
+  const extras = Array.from({ length: 8 }, (_, index) => spec(index === 2 ? 'walker' : 'trafficVehicle', `extra-${index}`, index));
+  const before = assignVehicleBodies(base);
+  assert.deepEqual([...assignVehicleBodies(base, extras)], [...before], 'a base roster is dealt exactly as before');
+  // The control: the old deal over base and extras together re-ranks today's vans.
+  const redealt = assignVehicleBodies([...base, ...extras]);
+  assert.ok(base.some(actor => before.has(actor.id) && redealt.get(actor.id) !== before.get(actor.id)), 'the re-deal this replaces');
+  const medium = assignVehicleBodies([...base, ...extras.slice(0, 4)], extras);
+  const high = assignVehicleBodies([...base, ...extras], extras);
+  for (const bodies of [medium, high]) for (const actor of base) assert.equal(bodies.get(actor.id), before.get(actor.id), actor.id);
+  for (const actor of extras.slice(0, 4)) assert.equal(medium.get(actor.id), high.get(actor.id), `${actor.id} keeps its body`);
+  assert.equal(high.get('extra-2'), undefined, 'a person is never dealt a body');
+  assert.deepEqual([...assignVehicleBodies([...extras, ...base].reverse(), extras)].sort(), [...high].sort(), 'roster order never changes a body');
+  // Extras take the cycle in turn after the base vehicles, so a street of three extras shows all three shapes.
+  const cycle = ['deliveryVan', 'boxTruck', 'minibus'];
+  const vehicles = extras.filter(actor => actor.kind === 'trafficVehicle');
+  for (let index = 1; index < vehicles.length; index += 1) {
+    assert.equal(cycle.indexOf(high.get(vehicles[index].id)!), (cycle.indexOf(high.get(vehicles[index - 1].id)!) + 1) % 3);
+  }
+  // The factory and the price read the plan's density alike.
+  const roster: PopulationPlan = { ...plan([...base, ...extras]),
+    density: { revision: 'living-r2', actors: extras.map(actor => ({ ...actor, layer: 'high' })), digest: 'fixture-density' } };
+  const view = createPopulationView(roster);
+  try {
+    const actual = view.report(), priced = countPopulation(roster);
+    assert.equal(actual.colourTriangles, priced.colourTriangles); assert.equal(actual.drawCalls, priced.colourDraws);
+    assert.equal(actual.shadowTriangles, priced.shadowTriangles); assert.equal(actual.shadowDrawCalls, priced.shadowDraws);
+    assert.equal(actual.instanceBytes, priced.instanceBytes); assert.equal(actual.geometryBytes, priced.geometryBytes);
+    const dealt = [...high.values()];
+    assert.equal(actual.cargoVans, dealt.filter(body => body === 'deliveryVan').length);
+    assert.equal(actual.passengerVans, dealt.filter(body => body === 'minibus').length);
+    assert.equal(actual.boxTrucks, dealt.filter(body => body === 'boxTruck').length);
+  } finally { view.dispose(); }
+});
+
 // 2026-10-22: pedestrians were drawn 1.845 m tall on the 1.9 m hull; they are
 // a natural 1.75 m on average now, each a little different, wheel riders unchanged.
 test('pedestrians stand a natural adult height that varies per person, feet on the ground; wheel riders keep theirs', () => {

@@ -20,8 +20,11 @@ The town is lived in. People walk the pavements, joggers and other wheel
 riders use the park paths, vans circle the side streets, and downtown has a
 coffee bar, a grocer and a repair shop with people inside. People and vans are
 solid: ride into one fast and you go over the front; slower, you scrub off
-them as you would off a wall. People step aside when you are in their way. A
-few raised yellow kickers sit on the lawns off the road in free ride,
+them as you would off a wall. People step aside when you are in their way.
+Quality decides how busy a generated town is: Low keeps the lightest crowd,
+Medium about doubles it, and High and Ultra about triple it, with more vans
+following each other round the streets. Hand-built venues are the same at
+every level. A few raised yellow kickers sit on the lawns off the road in free ride,
 each marked by a floating arrow: ride up one from any direction and launch.
 
 That town is generated rather than built by hand: it is the route named
@@ -518,7 +521,8 @@ offers **Retry loading**.
 
 On a phone the game is doing the same work it does on a desktop, so an older
 handset runs it slower. **Quality** in Settings is the first thing to turn
-down, and it changes nothing about how the wheel rides. **Ultra** wants a
+down, and it changes nothing about how the wheel rides; a lower level only
+thins a generated town's crowd and traffic. **Ultra** wants a
 capable graphics chip on any device; if it stutters, High is one press away.
 
 ## Deliberately not planned

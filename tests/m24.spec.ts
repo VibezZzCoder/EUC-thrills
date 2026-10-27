@@ -309,7 +309,8 @@ test('a pad operates the settings dropdowns, and binding rows are one stop each'
   // 2026-09-25): the switch runs two frames after the press, and the select
   // refuses presses until it has settled — a pad's A mashed through the
   // freeze must not queue another switch. So each press waits for the select
-  // to stop being busy before the next; an ordinary step never is.
+  // to stop being busy before the next. Since the M47 follow-up (2026-10-26)
+  // a step among Low, Medium and High is covered the same way.
   const settled = () => page.waitForFunction(
     () => !document.querySelector('[data-option="quality"]')?.hasAttribute('aria-busy'),
   );

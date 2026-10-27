@@ -4,7 +4,10 @@ import { driveSteps, runSteps, type Steps } from '../shared/preparationSteps.ts'
 import { createBootSlicer } from './bootSlicer.ts';
 import type { LoadingScreen } from '../ui/loadingScreen.ts';
 import type { PopulationPlan } from '../level/populationPlan.ts';
-import { POPULATION, POPULATION_OCCUPANT, RIDER_CONTACT } from '../data/tuning.ts';
+import { populationRoster } from '../level/populationDensity.ts';
+import { densityLayerFor } from './populationDensityTier.ts';
+import { pricedPopulationRoster } from '../render/pricedPopulation.ts';
+import { POPULATION, POPULATION_DENSITY, POPULATION_OCCUPANT, RIDER_CONTACT } from '../data/tuning.ts';
 import type { RiderOccupancyPose } from '../shared/riderOccupancy.ts';
 import { PopulationPhysicalCertificates } from '../simulation/populationPhysicalCertificates.ts';
 import { PopulationCompactAnticipationHistory, type CompactAnticipationOwner, type CompactOwnerComponent } from '../simulation/populationCompactAnticipation.ts';
@@ -221,7 +224,7 @@ import {
   returnTierAfter,
   ultraFaultFrom,
   ultraKitOverrideFrom,
-  ultraSwitchFor,
+  qualitySwitchFor,
   ultraToggleTarget,
   type QualityStateView,
   type RenderTierInput,
@@ -306,6 +309,7 @@ import {
 } from '../ui/hudModel.ts';
 import {
   Menus,
+  qualityBusyWords,
   type CouchSeatView,
   type CouchSpare,
   type MenuScreen,
@@ -2690,6 +2694,10 @@ export class Game {
   populationState() {
     return { sourceWorldId: this.populationPlan.sourceWorldId,
       installedWorldId: this.populationPlan.installedWorldId, digest: this.populationPlan.contentDigest,
+      // M47: the drawn roster's density layer ('base' is living-r1), its size,
+      // and whether a tier or seat change is waiting for the running session.
+      densityLayer: this.populationPlan.densityLayer ?? 'base', rosterActors: this.populationPlan.actors.length,
+      densityPending: this.densityRoster() !== this.populationPlan,
       report: this.populationPlan.report,
       paths: this.populationPlan.paths.map(value => ({ id: value.id, role: value.role,
         district: value.district, lengthMetres: value.lengthMetres, closed: value.closed })),
@@ -2857,8 +2865,26 @@ export class Game {
   }
 
   private terrain: PlanTerrainSampler;
+  /**
+   * M47: the world's prepared population — the living-r1 base roster carrying
+   * its density layer (generated worlds only). The renderer prices its High
+   * roster; nothing else consumes it directly.
+   */
+  private preparedPopulation: PopulationPlan;
+  /**
+   * The roster the effective ordinary tier and the seat count draw
+   * (`densityRoster`): every consumer — simulation, certificates, the view,
+   * audio, QA — takes this one. At Low it is `preparedPopulation` itself.
+   */
   private populationPlan: PopulationPlan;
   private population: PopulationSimulation;
+  /**
+   * M47: a live roster swap held because one of its restarted actors would
+   * stand in a seated body (`reconcileDensityRoster`): the roster's fresh
+   * simulation, built once, and the population clock of the next try.
+   */
+  private densityCandidate: { readonly roster: PopulationPlan; readonly simulation: PopulationSimulation } | null = null;
+  private densityRetryAtSeconds = 0;
   private readonly populationPresentationPrevious = createPopulationPresentationSnapshot();
   private readonly populationPresentationCurrent = createPopulationPresentationSnapshot();
   private populationPhysicalCertificates = new PopulationPhysicalCertificates(RIDER_CONTACT, createPose());
@@ -3597,7 +3623,10 @@ export class Game {
     const living = prepared === undefined ? preparePopulationWorld(world.level)
       : { level: prepared.level, population: prepared.population };
     this.levelPlan = living.level;
-    this.populationPlan = living.population;
+    // M47: the boot's roster is a pure function of options.quality, the URL's
+    // presentation override and one seat (no multiplayer session yet).
+    this.preparedPopulation = living.population;
+    this.populationPlan = this.densityRoster(1);
     this.terrain = new PlanTerrainSampler(this.levelPlan);
     this.population = new PopulationSimulation(this.populationPlan, this.terrain);
     this.populationPlacementProbe = new EucController(this.terrain);
@@ -3624,11 +3653,13 @@ export class Game {
     // always ran, in `applyOptions` after the first `applyTuning`.
     if (this.ultraFault !== null) this.renderer.setUltraFault(this.ultraFault);
     this.applyRenderTier('boot');
-    if (prepared === undefined) this.renderer.setLevel(this.levelPlan, this.presentationOverride, this.populationPlan);
+    // The renderer is handed the prepared plan and prices its High roster
+    // (`render/pricedPopulation.ts`); it draws the tier's roster.
+    if (prepared === undefined) this.renderer.setLevel(this.levelPlan, this.presentationOverride, this.preparedPopulation);
     this.renderer.setPopulation(this.populationPlan);
     this.hazards = new HazardField(this.levelPlan.hazards ?? []);
     this.softBodies = new SoftBodyField(this.levelPlan.softBodies ?? []);
-    this.installLaunchPads(this.levelPlan, this.populationPlan);
+    this.installLaunchPads(this.levelPlan, this.preparedPopulation);
     // A local rather than a field, because it is about to become seat 0's and
     // the seat cannot be built until the rig below exists — M25 Phase 1.
     const controller = new EucController(this.terrain, {
@@ -4872,6 +4903,8 @@ export class Game {
     // players rather than the chairs.
     this.applyViewCount();
     this.mountSeatHud(this.seats[index]);
+    // M47: a third seat (the 2×2 grid) rides at most the Medium roster.
+    this.reconcileDensityRoster();
     // **A chair that arrives used to take the mode away with it** — M27 Phase
     // 1 (q94), the bridge's copy of the claim-change demotion. It read
     // `if (this.rideBlockedForSeats(this.couchRide)) this.couchRide =
@@ -4953,6 +4986,8 @@ export class Game {
     // The screen goes back to one view, and every remaining HUD is told it is
     // no longer a half.
     this.applyViewCount();
+    // M47: back under three seats, the tier's own roster returns.
+    this.reconcileDensityRoster();
   }
 
   /** Whether switching to Knockabout needs a fresh course for this room. */
@@ -5145,7 +5180,10 @@ export class Game {
    * the plan.
    */
   private installLaunchPads(plan: LevelPlan, population: PopulationPlan): void {
-    this.launchPadSites = cityLaunchPads(plan, population);
+    // M47: the very roster the renderer priced its pads with, so the finder's
+    // memo answers both (one run per world). Pads read only the shared paths,
+    // so every tier's roster finds the same sites.
+    this.launchPadSites = cityLaunchPads(plan, pricedPopulationRoster(population));
     this.launchPads = new LaunchPadField(this.launchPadSites);
   }
 
@@ -5992,7 +6030,12 @@ export class Game {
    * so the start is checked against the actors the attempt will meet.
    */
   private restartPopulation(): void {
-    this.population = new PopulationSimulation(this.populationPlan, this.terrain);
+    // M47: a roster the tier or the seats changed while a session ran is taken now.
+    this.adoptDensityRoster();
+    const candidate = this.densityCandidate;
+    this.densityCandidate = null;
+    this.population = candidate?.roster === this.populationPlan ? candidate.simulation
+      : new PopulationSimulation(this.populationPlan, this.terrain);
     this.populationBefore.clear(); this.populationProbed.clear();
     this.populationReservations = []; this.populationContacts = [];
     this.populationPhysicalEpochOpen = false;
@@ -6000,6 +6043,105 @@ export class Game {
     this.populationAnticipation.clear();
     this.populationOwnerComponents.clear();
     this.populationPlacementControllers.clear();
+  }
+
+  // ---------------------------------------------------------------------------
+  // M47: the living world's density follows the effective tier (PLANS §47.3)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The roster the effective ordinary tier draws for this many seats
+   * (`app/populationDensityTier.ts`): Low the living-r1 base itself, Medium
+   * and High their density layers (Ultra draws High), at most Medium with
+   * three or four seats. A world without a density layer (every hand-built
+   * venue) has one roster at every tier. Pure: it reads the session facts.
+   */
+  private densityRoster(seatCount = this.seats.length): PopulationPlan {
+    const ordinary = resolveRenderTier({ ...this.renderTierFacts(), refused: false }).ordinary;
+    return populationRoster(this.preparedPopulation, densityLayerFor(ordinary, seatCount));
+  }
+
+  /**
+   * Whether a timed attempt, race, Track Day, Trick Run, Knockabout match or
+   * chase is running (its referee is not idle: armed, counting down, live or
+   * holding its card). A roster change restarts the living world, so it waits
+   * for these. A chase room counts only while the chase (or its pause,
+   * Settings or card) is on screen: a solo room quit to the title is left as
+   * it ended until the next mode entrance stands it down.
+   */
+  private populationSessionRunning(): boolean {
+    const app = this.appState;
+    const shown = launchPadEffectiveState(app.current, app.settingsReturn, app.rideReturn);
+    return this.challenge.state.phase !== 'idle' || this.trackDay.state.phase !== 'idle'
+      || this.race.state.phase !== 'idle' || this.trickRun.phase !== 'idle' || this.match.phase !== 'idle'
+      || (this.chaseRoom.phase !== 'idle' && (shown === 'chase' || shown === 'results'));
+  }
+
+  /**
+   * Take the roster `densityRoster` names, if it is not the one drawn: the
+   * view (whose contact-blob capacity follows it), the certificates and the
+   * ambience beds. The simulation is `restartPopulation`'s, the only caller.
+   * Never a world install, a rider move or a record (records are shared
+   * across tiers: actors key nothing persisted).
+   */
+  private adoptDensityRoster(): void {
+    const roster = this.densityRoster();
+    if (roster === this.populationPlan) return;
+    this.pausedView.invalidate('population');
+    this.populationPlan = roster;
+    this.renderer.setPopulation(roster);
+    if (roster.actors.length > 0) this.populationPhysicalCertificates.warm();
+    this.audio.replaceAmbienceWorld(this.levelPlan.id, [...environmentAudioEmitters(this.levelPlan),
+      ...populationAudioEmitters(roster)]);
+  }
+
+  /**
+   * A tier or seat-count change that changes the roster (`applyRenderTier`,
+   * a seat arriving or leaving, the title or a free ride). Applied at once
+   * unless a session is running; then it waits, and is taken at the next
+   * `restartPopulation` (every timed start), world install, or return to the
+   * title or a free ride. Applied live, the living world restarts in place
+   * and every seated rider is briefly reserved, as a committed placement is
+   * (`didPlace`), so the restarted actors yield rather than spawn into them.
+   * A restarted actor that would START inside a seated body stays put inside
+   * it (an initial overlap is never resolved by moving), so such a swap is
+   * held, its simulation kept, and tried again every
+   * `POPULATION_DENSITY.swapRetrySeconds` between steps until the seats are clear.
+   */
+  private reconcileDensityRoster(): void {
+    const roster = this.densityRoster();
+    if (roster === this.populationPlan || this.populationSessionRunning()) { this.densityCandidate = null; return; }
+    if (this.densityCandidate?.roster !== roster) {
+      this.densityCandidate = { roster, simulation: new PopulationSimulation(roster, this.terrain) };
+    }
+    const { simulation } = this.densityCandidate;
+    const reservations = this.seatReservations(simulation.clockSeconds + POPULATION.placementReservationSeconds);
+    if (reservations.some(item => !simulation.recoveryClearance(item.footprint, [], [], 0).clear)) {
+      this.densityRetryAtSeconds = this.population.clockSeconds + POPULATION_DENSITY.swapRetrySeconds;
+      return;
+    }
+    this.pausedView.invalidate('population');
+    this.restartPopulation();
+    this.populationReservations.push(...reservations);
+  }
+
+  /** Every seated body's placement components as reservations lasting until `expires` (`didPlace`'s). */
+  private seatReservations(expires: number): PopulationReservation[] {
+    const reservations: PopulationReservation[] = [];
+    for (const body of this.populationBodies()) {
+      let components: ReturnType<PopulationPhysicalCertificates['components']>;
+      try {
+        components = this.populationPhysicalCertificates.components(body.id, body.pose, body.pose, 0, 'placement');
+      } catch {
+        // An unrepresentable present occupancy reserves nothing (as `populationAnticipationOwners`).
+        continue;
+      }
+      for (const component of components) {
+        reservations.push({ id: `${body.id}/${component.componentId}`, footprint: component.at(0),
+          expiresAtClockSeconds: expires });
+      }
+    }
+    return reservations;
   }
 
   private startChallenge(): void {
@@ -11646,7 +11788,10 @@ export class Game {
     this.levelId = levelId;
     this.seed = seed;
     this.levelPlan = plan;
-    this.populationPlan = living.population;
+    // M47: the new world's roster for the tier and the seats as they are now;
+    // a layer that was waiting on the old world is simply this one.
+    this.preparedPopulation = living.population;
+    this.populationPlan = this.densityRoster();
     this.populationBefore.clear(); this.populationProbed.clear();
     this.populationReservations = []; this.populationContacts = [];
     // M39 W1: the tier's intent only, because the `setLevel` below builds
@@ -11654,7 +11799,7 @@ export class Game {
     // refusal is a fact about *this* world and a new world can earn or lose
     // Ultra on its own. Both do nothing for a player who never asked for it.
     this.applyRenderTier('world');
-    this.renderer.setLevel(plan, this.presentationOverride, this.populationPlan);
+    this.renderer.setLevel(plan, this.presentationOverride, this.preparedPopulation);
     this.renderer.setPopulation(this.populationPlan);
     if (this.appliedUltraWanted) this.publishQualityState();
     this.terrain = new PlanTerrainSampler(plan);
@@ -11676,7 +11821,7 @@ export class Game {
     // anyone can write to.
     this.hazards = new HazardField(plan.hazards ?? []);
     this.softBodies = new SoftBodyField(plan.softBodies ?? []);
-    this.installLaunchPads(plan, this.populationPlan);
+    this.installLaunchPads(plan, this.preparedPopulation);
     // **Every seat's controller, not the player's** — M25 Phase 1 (§25.5).
     // A loop rather than one assignment because the reason above is a reason
     // about worlds, not about who is riding: a second seat left holding the
@@ -12234,6 +12379,8 @@ export class Game {
     // the second player able to stall the first player's world.
     // M42: a pad mode change that arrived mid-epoch lands here, between steps.
     if (this.launchPadModePending) this.applyLaunchPadMode();
+    // M47: a live roster swap held by a seated body is tried again here, between steps.
+    if (this.densityCandidate !== null && this.population.clockSeconds >= this.densityRetryAtSeconds) this.reconcileDensityRoster();
     this.beginPopulationStep(stepSeconds);
     let worldReset = false;
     // **And whether *any* seat respawned, which is a different question** — M26
@@ -15054,6 +15201,11 @@ export class Game {
       this.resultsIn = 0;
     }
 
+    // M47: a roster change that waited for a session (the tier or the seats
+    // changed mid-run) is taken once the session is back at the title or in a
+    // free ride, after every referee above has stood down.
+    if (state === 'title' || state === 'freeRide') this.reconcileDensityRoster();
+
     // The results panel is filled before it is shown, or the player reads one
     // frame of the previous run's numbers.
     if (state === 'results') this.menus.setResults(this.buildResultsView());
@@ -16569,6 +16721,10 @@ export class Game {
       if (!setLevelFollows) this.renderer.reconcileUltra();
     }
     if (!setLevelFollows) this.publishQualityState();
+    // M47: the effective ordinary tier picks the living world's roster. `boot`
+    // and `world` choose theirs before `setPopulation`; every other moment
+    // switches it live or leaves it waiting for the running session.
+    if (!setLevelFollows) this.reconcileDensityRoster();
   }
 
   /** The session facts `resolveRenderTier` needs, minus what only the renderer knows. */
@@ -16657,10 +16813,12 @@ export class Game {
    * so a player saw a dead button and pressed it again. Now the press writes
    * the busy state ("Loading Ultra graphics…", `aria-busy`), the loop draws
    * `ULTRA_SWITCH_PAINT_FRAMES` frames with it on screen, and only then is
-   * the option set (`stepQualitySwitch`). Every other choice — Low, Medium and
-   * High among themselves, or leaving a saved Ultra a couch session is
-   * already drawing as High — is set at once, as it always was
-   * (`renderTier.ts:ultraSwitchFor`).
+   * the option set (`stepQualitySwitch`). **Since the M47 follow-up a change
+   * among Low, Medium and High takes the same path** ("Changing graphics…"):
+   * it built unwarmed programs and a new roster inside the press, a measured
+   * 170–202 ms hitch. Only a choice the session already draws — leaving a
+   * saved Ultra a couch session is drawing as High, say — is set at once
+   * (`renderTier.ts:qualitySwitchFor`).
    *
    * **While a switch is in flight the choice is refused**, here and in the
    * menus, so mashing cannot queue a second switch behind the first. The QA
@@ -16670,7 +16828,7 @@ export class Game {
   private requestQuality(to: QualityLevel): void {
     if (this.qualitySwitchBusy()) return;
     const from = this.options.current.quality;
-    const direction = ultraSwitchFor({ ...this.renderTierFacts(), requested: to }, this.appliedUltraWanted);
+    const direction = qualitySwitchFor({ ...this.renderTierFacts(), requested: to }, this.appliedUltraWanted, this.appliedOrdinary);
     if (direction === null) {
       this.options.set({ quality: to });
       return;
@@ -16680,7 +16838,7 @@ export class Game {
     this.qualityResumeRunning = this.loop.isRunning();
     this.menus.setQualityBusy({ direction, from, to });
     this.menus.setLoadingBusy(true);
-    this.loadingScreen?.begin('quality', direction === 'entering' ? 'Loading Ultra graphics…' : 'Turning Ultra off…',
+    this.loadingScreen?.begin('quality', qualityBusyWords({ direction, from, to }).notice,
       'Your ride will continue when the new view is ready.');
     this.loadingScreen?.stage('Preparing the graphics change', 0, 3);
     this.updateRunning();
@@ -16781,7 +16939,9 @@ export class Game {
     // merely intended.
     if (previous === null || options.quality !== previous.quality) {
       // Quality: resolution and shadow detail. Both are presentation, and the
-      // ride is bit-identical at every setting.
+      // wheel's ride is bit-identical at every setting. (M47: on a generated
+      // world the tier also picks the living world's roster —
+      // `applyRenderTier` → `reconcileDensityRoster`.)
       //
       // M39: through the render tier rather than straight to `setQuality`,
       // because the request is no longer always what is drawn (a couch

@@ -14,6 +14,7 @@ import {
   returnTierAfter,
   ultraFaultFrom,
   ultraKitOverrideFrom,
+  qualitySwitchFor,
   ultraSwitchFor,
   ultraToggleTarget,
   type RenderTierResolution,
@@ -397,6 +398,25 @@ test('a couch session is never a switch — Ultra is not applied there — but a
   assert.equal(ultraSwitchFor(couch('ultra'), false), null);
   // A `?presentation=` override keeps the intent, so the renderer is asked (and refuses quickly).
   assert.equal(ultraSwitchFor({ requested: 'ultra', multiplayerSession: false, presentationOverride: true }, false), 'entering');
+});
+
+test('every tier change the renderer draws is a switch; a choice it already draws is not', () => {
+  // M47 follow-up: Low, Medium and High among themselves are now `ordinary`
+  // switches behind the same notice, and Ultra's two directions are unchanged.
+  for (const from of ORDINARY) {
+    for (const to of ORDINARY) {
+      assert.equal(qualitySwitchFor(solo(to), false, from), to === from ? null : 'ordinary', `${from} → ${to}`);
+    }
+    assert.equal(qualitySwitchFor(solo('ultra'), false, from), 'entering', from);
+  }
+  for (const to of ORDINARY) assert.equal(qualitySwitchFor(solo(to), true, 'high'), 'leaving', to);
+  // A couch session draws its own resolution of the request: a choice that
+  // resolves to the tier already applied builds nothing and is set at once.
+  const couch = (requested: QualityLevel) => ({ requested, multiplayerSession: true, presentationOverride: false });
+  for (const requested of [...ORDINARY, 'ultra'] as const) {
+    const drawn = resolveRenderTier({ ...couch(requested), refused: false }).ordinary;
+    assert.equal(qualitySwitchFor(couch(requested), false, drawn), null, requested);
+  }
 });
 
 test('the notice paints before the switch, and outlasts it', () => {

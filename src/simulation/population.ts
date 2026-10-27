@@ -6,9 +6,11 @@
 import type { ActorKind, ActorSpec, PopulationPath, PopulationPlan } from '../level/populationPlan.ts';
 import { clamp, lerp, wrapAngle } from '../shared/maths.ts';
 import { createGroundSample, type TerrainSampler } from './world.ts';
-import { populationSupportTargets, type PopulationGroundSupport } from '../shared/populationSupport.ts';
-import { physicalPopulationHull, physicalPopulationPrism, transformPopulationHullLowerInto, type MutablePopulationHullCorner, type PopulationHullSource } from '../shared/populationHull.ts';
-import { coarseActorMotionWorldAabb } from '../shared/occupancyBroadphase.ts';
+import { createPopulationSupportTargetsRecord, populationSupportTargetsInto, type PopulationGroundSupport,
+  type PopulationSupportInput } from '../shared/populationSupport.ts';
+import { recordType } from '../shared/plainRecord.ts';
+import { createPopulationPrismScratch, physicalPopulationHullInto, physicalPopulationPrism, transformPopulationHullLowerInto, type MutablePopulationHullCorner, type PopulationHullSource } from '../shared/populationHull.ts';
+import { coarseActorMotionWorldAabbAt } from '../shared/occupancyBroadphase.ts';
 export { physicalPopulationHull, transformPopulationHull } from '../shared/populationHull.ts';
 
 import type { PopulationCompoundActorMotion, PopulationCompoundMotionBatch,
@@ -17,7 +19,7 @@ import type { PopulationCompoundActorMotion, PopulationCompoundMotionBatch,
 import { compactAnticipationBlocker, type PopulationCompactAnticipation } from './populationCompactAnticipation.ts';
 import { createRouteBlockerTerms, routeAnticipation, routeBrakingSpeedCap, type RouteAnticipationBlocker,
   type RouteAnticipationResult } from './populationRouteAnticipation.ts';
-import { POPULATION, POPULATION_REACTION } from '../data/tuning.ts';
+import { POPULATION, POPULATION_REACTION, POPULATION_TRAFFIC } from '../data/tuning.ts';
 export { POPULATION } from '../data/tuning.ts';
 const R = POPULATION;
 /**
@@ -59,8 +61,26 @@ const SIDESTEP_ALONG_PATH_COSINE = Math.SQRT1_2;
 /** A step aside must leave the walker this far off the rider's way ahead, metres: a person and a rider side by side. */
 const SIDESTEP_CLEAR_METRES = 0.9;
 const SIDESTEP_GIVE_UP_SECONDS = 0.5;
+/** `trimLaneEnds`: the path sampling step, and the shortest path left that is still trimmed; metres. */
+const LANE_END_SAMPLE_METRES = 0.25;
+const LANE_END_MINIMUM_METRES = 4;
+/** `stepAsideForPathmate` checks the routes of loop vehicles within this of the spot, metres. */
+const PATHMATE_VEHICLE_REACH_METRES = 30;
 /** Farther than this from every rider, a walker has no rider in its way (its look-ahead, both bodies and the gap), metres. */
 const SIDESTEP_NEAR_METRES = 6;
+/** M47 living-r2: extra growth of the route-scan broad phase's box past the scan's own widest reach, metres (rounding room only). */
+const ROUTE_SCAN_BOX_SLACK_METRES = 0.05;
+/** M47 living-r2: the bare hull's slack when checking that a squeeze clears the whole route ahead, metres. */
+const SQUEEZE_SLACK_METRES = 0.01;
+/** M47 living-r2: a step's travel past which a loop vehicle's native hold no longer counts as unbroken, metres. */
+const NATIVE_HOLD_PROGRESS_METRES = 0.001;
+/** M47 living-r2: `standingHit`'s sampling step along the route and its slack for the step and a modest grade, metres. */
+const STANDING_HIT_STEP_METRES = 0.25;
+const STANDING_HIT_SLACK_METRES = 0.15;
+/** M47 living-r2: how much nearer than where it starts a person already inside the grown body must come to count, metres. */
+const STANDING_HIT_NEARER_METRES = 0.01;
+/** M47 living-r2: a vehicle whose target without its crossing hold is above this is held by that hold alone (patience), m/s. */
+const PATIENCE_READY_METRES_PER_SECOND = 0.05;
 
 export type PopulationActivity = 'walking' | 'jogging' | 'riding' | 'social' | 'working'
   | 'parked' | 'driving' | 'reversing' | 'waiting' | 'turning' | 'impacted';
@@ -348,6 +368,16 @@ interface ActorState {
   stepStartAside: number;
   /** Seconds a step aside has made no headway; past `SIDESTEP_GIVE_UP_SECONDS` it is dropped. */
   asideStalled: number;
+  /**
+   * M47 living-r2: where a shuttle turns round, path distances: 0 and the
+   * length but where a path end lies in a loop's lane, there the lane's edge
+   * (`trimLaneEnds`; Codex's audit, 2026-10-26: pavements that end in a lane
+   * left a walker standing in it, nose to nose with a van). Read only on living-r2.
+   */
+  shuttleLow: number;
+  shuttleHigh: number;
+  /** M47 living-r2: the loop vehicle or pathmate it stood aside for (-1: a rider, or none); it comes back once that one and its own path are clear too. */
+  asideFor: number;
   pose: PopulationActorPose;
   previousDistance: number;
   stepTravel: number;
@@ -357,10 +387,103 @@ interface ActorState {
   stepStartPause: number;
   stepStartTurning: boolean;
   stepStartWorkerLeg: ActorState['workerLeg'];
+  /** M48: the spec's hull, detached once; every pose and source frame of this actor shares it (never written). */
+  hull: ActorSpec['hull'];
+}
+
+/**
+ * M48 (PLANS §48): the crowd's per-step records are built by constructors
+ * (`recordType`), never object or array literals, so V8 has no allocation site
+ * to pretenure them by. In most High sessions it had made them straight in old
+ * memory (~28 MB/s, a full collection every ~12 s). Each keeps its former
+ * literal's key order, and every footprint and source frame has one of two
+ * shapes (with and without the source frame; with and without its margin).
+ */
+const GroundSupport = recordType<PopulationGroundSupport, [number, number, number, number, number, number]>(
+  function (x, y, z, normalX, normalY, normalZ) {
+    this.x = x; this.y = y; this.z = z; this.normalX = normalX; this.normalY = normalY; this.normalZ = normalZ;
+  });
+const HullSource = recordType<PopulationHullSource, [number, number, number, number, number, number, number,
+  PopulationHullSource['hull'], number | undefined, number | undefined, number | undefined]>(
+  function (x, y, z, headingY, normalX, normalY, normalZ, hull, below, above, margin) {
+    this.x = x; this.y = y; this.z = z; this.headingY = headingY;
+    this.normalX = normalX; this.normalY = normalY; this.normalZ = normalZ; this.hull = hull;
+    if (below !== undefined) this.verticalPaddingBelowMetres = below;
+    if (above !== undefined) this.verticalPaddingAboveMetres = above;
+    if (margin !== undefined) this.marginMetres = margin;
+  });
+const LocalHull = recordType<PopulationHullSource['hull'], [number, number, number]>(
+  function (halfWidthMetres, halfLengthMetres, heightMetres) {
+    this.halfWidthMetres = halfWidthMetres; this.halfLengthMetres = halfLengthMetres; this.heightMetres = heightMetres;
+  });
+const Footprint = recordType<PopulationFootprint, [number, number, number, number, number, number, number, number, number,
+  PopulationHullSource | undefined]>(
+  function (x, z, headingY, halfWidthMetres, halfLengthMetres, minY, maxY, velocityX, velocityZ, sourceHull) {
+    this.x = x; this.z = z; this.headingY = headingY; this.halfWidthMetres = halfWidthMetres;
+    this.halfLengthMetres = halfLengthMetres; this.minY = minY; this.maxY = maxY;
+    this.velocityX = velocityX; this.velocityZ = velocityZ;
+    if (sourceHull !== undefined) this.sourceHull = sourceHull;
+  });
+const ActorPose = recordType<PopulationActorPose, [string, ActorKind, number, number, number, number, number, number, number,
+  number, number, number, PopulationActivity, number, number, boolean, string, number, 1 | -1, ActorSpec['hull'],
+  PopulationFootprint, PopulationActorPose['supportHeights'], PopulationActorPose['footSupports'], PopulationActorPose['tyreSupports'],
+  number, number, number, number, number, number | undefined]>(
+  function (id, kind, appearanceIndex, x, y, z, headingY, velocityX, velocityZ, speedMetresPerSecond, gaitDistanceMetres,
+    wheelTravelMetres, activity, activityPhase, activityBlend, backing, pathId, distanceMetres, direction, hull,
+    footprint, supportHeights, footSupports, tyreSupports, groundNormalX, groundNormalY, groundNormalZ, groundPitch, groundRoll,
+    impactFallYaw) {
+    this.id = id; this.kind = kind; this.appearanceIndex = appearanceIndex; this.x = x; this.y = y; this.z = z;
+    this.headingY = headingY; this.velocityX = velocityX; this.velocityZ = velocityZ;
+    this.speedMetresPerSecond = speedMetresPerSecond; this.gaitDistanceMetres = gaitDistanceMetres;
+    this.wheelTravelMetres = wheelTravelMetres; this.activity = activity; this.activityPhase = activityPhase;
+    this.activityBlend = activityBlend; this.backing = backing; this.pathId = pathId; this.distanceMetres = distanceMetres;
+    this.direction = direction; this.hull = hull; this.footprint = footprint; this.supportHeights = supportHeights;
+    if (footSupports !== undefined) this.footSupports = footSupports;
+    if (tyreSupports !== undefined) this.tyreSupports = tyreSupports;
+    this.groundNormalX = groundNormalX; this.groundNormalY = groundNormalY; this.groundNormalZ = groundNormalZ;
+    this.groundPitch = groundPitch; this.groundRoll = groundRoll;
+    // Knocked down: `impactFallYaw` is the fall direction; otherwise both keys are absent.
+    if (impactFallYaw !== undefined) { this.impactReaction = 'knockdown'; this.impactFallYaw = impactFallYaw; }
+  });
+/**
+ * `predictBody` for an actor's own footprint (`Footprint`/`HullSource` key
+ * order, as every pose and prospective footprint is built); a rider's body
+ * keeps `predictBody`, which copies whatever keys and order it came with.
+ */
+function predictActorBody(body: PopulationFootprint, seconds: number): PopulationFootprint {
+  const dx = body.velocityX * seconds, dz = body.velocityZ * seconds, source = body.sourceHull;
+  return new Footprint(body.x + dx, body.z + dz, body.headingY, body.halfWidthMetres, body.halfLengthMetres,
+    body.minY, body.maxY, body.velocityX, body.velocityZ, source === undefined ? undefined
+      : new HullSource(source.x + dx, source.y, source.z + dz, source.headingY, source.normalX, source.normalY, source.normalZ,
+        source.hull, source.verticalPaddingBelowMetres, source.verticalPaddingAboveMetres, source.marginMetres));
 }
 
 const finite = (...values: number[]): boolean => values.every(Number.isFinite);
-type MotionBounds = ReturnType<typeof coarseActorMotionWorldAabb> | null;
+/** A motion's padded coarse box: its slot in this step's `BoxArena`, or `NO_BOX`. */
+type MotionBounds = number;
+const NO_BOX = -1;
+/**
+ * Step-scoped motion boxes (M47 follow-up, 2026-10-26), six doubles a slot in
+ * one typed array: minX, maxX, minY, maxY, minZ, maxZ. `motionBounds` takes a
+ * slot per motion and `step` releases them all as it begins. Every bounded
+ * motion is formed and read inside one step (forecasts, the look and
+ * candidate boxes, the actual motions), so no slot is read after its release.
+ * At High these were about 26 fresh boxes per actor per step, each number its
+ * own heap box. `data` is replaced when it grows: read it after `take`.
+ */
+class BoxArena {
+  data = new Float64Array(6 * 512);
+  private used = 0;
+  release(): void { this.used = 0; }
+  take(): number {
+    if (6 * (this.used + 1) > this.data.length) {
+      const grown = new Float64Array(this.data.length * 2);
+      grown.set(this.data);
+      this.data = grown;
+    }
+    return this.used++;
+  }
+}
 interface BoundedMotion {
   readonly from: PopulationFootprint;
   readonly to: PopulationFootprint;
@@ -385,6 +508,13 @@ interface BoundedMotion {
  * values (`sameMixInput`) has the same endpoints: the Wharf's 68 standing
  * people re-formed theirs, four grade-hull rebuilds each, every step.
  */
+/** One actor's last two grown bodies (`PopulationSimulation.grownFor`), slot `next` replaced first. */
+interface GrownMemo {
+  readonly body: [PopulationFootprint | undefined, PopulationFootprint | undefined];
+  readonly margin: [number, number];
+  readonly grown: [PopulationFootprint | undefined, PopulationFootprint | undefined];
+  next: number;
+}
 interface EndpointMemo { from?: PopulationFootprint; to?: PopulationFootprint; first?: PopulationFootprint; last?: PopulationFootprint }
 /** Every value mixBody can read from one body (either branch), compared exactly. */
 function sameMixInput(a: PopulationFootprint, b: PopulationFootprint): boolean {
@@ -447,26 +577,46 @@ function boundableFootprint(body: PopulationFootprint): boolean {
     && source.normalY > 0 && hull.halfWidthMetres > 0 && hull.halfLengthMetres > 0 && hull.heightMetres > 0
     && margin >= 0 && below >= 0 && above >= 0;
 }
-function motionBounds(from: PopulationFootprint, to: PopulationFootprint): MotionBounds {
+function motionBounds(from: PopulationFootprint, to: PopulationFootprint, boxes: BoxArena): MotionBounds {
   // A stationary motion validates its one body once (a pure predicate).
-  if (!boundableFootprint(from) || (to !== from && !boundableFootprint(to))) return null;
-  // The coarse box is freshly owned here; it is padded in place.
-  const bounds = coarseActorMotionWorldAabb(from, to) as { -readonly [K in keyof NonNullable<MotionBounds>]: number };
+  if (!boundableFootprint(from) || (to !== from && !boundableFootprint(to))) return NO_BOX;
+  // The coarse box is this step's own slot (`BoxArena`); it is padded in place.
+  const slot = boxes.take(), box = boxes.data, at = 6 * slot;
+  coarseActorMotionWorldAabbAt(from, to, box, at);
   const padding = R.contactSkinMetres + R.epsilon;
-  if (!(Number.isFinite(bounds.minX) && Number.isFinite(bounds.maxX) && Number.isFinite(bounds.minY)
-    && Number.isFinite(bounds.maxY) && Number.isFinite(bounds.minZ) && Number.isFinite(bounds.maxZ))) return null;
-  bounds.minX = bounds.minX - padding; bounds.maxX = bounds.maxX + padding;
-  bounds.minY = bounds.minY - padding; bounds.maxY = bounds.maxY + padding;
-  bounds.minZ = bounds.minZ - padding; bounds.maxZ = bounds.maxZ + padding;
-  return bounds;
+  if (!(Number.isFinite(box[at]) && Number.isFinite(box[at + 1]) && Number.isFinite(box[at + 2])
+    && Number.isFinite(box[at + 3]) && Number.isFinite(box[at + 4]) && Number.isFinite(box[at + 5]))) return NO_BOX;
+  box[at] = box[at] - padding; box[at + 1] = box[at + 1] + padding;
+  box[at + 2] = box[at + 2] - padding; box[at + 3] = box[at + 3] + padding;
+  box[at + 4] = box[at + 4] - padding; box[at + 5] = box[at + 5] + padding;
+  return slot;
 }
-function mayMeet(first: MotionBounds, second: MotionBounds): boolean {
-  return !first || !second || (first.minX <= second.maxX && first.maxX >= second.minX
-    && first.minY <= second.maxY && first.maxY >= second.minY
-    && first.minZ <= second.maxZ && first.maxZ >= second.minZ);
+/** Whether two motions' boxes overlap; a motion with no box meets everything. */
+function mayMeet(boxes: BoxArena, first: MotionBounds, second: MotionBounds): boolean {
+  if (first === NO_BOX || second === NO_BOX) return true;
+  const box = boxes.data, a = 6 * first, b = 6 * second;
+  return box[a] <= box[b + 1] && box[a + 1] >= box[b]
+    && box[a + 2] <= box[b + 3] && box[a + 3] >= box[b + 2]
+    && box[a + 4] <= box[b + 5] && box[a + 5] >= box[b + 4];
 }
-const boundedMotion = (from: PopulationFootprint, to: PopulationFootprint, memo?: EndpointMemo): BoundedMotion =>
-  memo === undefined ? { from, to, bounds: motionBounds(from, to) } : { from, to, bounds: motionBounds(from, to), memo };
+/** M48: every bounded motion has one shape: the fields formed later start undefined (they are only ever compared to undefined). */
+const Motion = recordType<BoundedMotion, [PopulationFootprint, PopulationFootprint, MotionBounds, EndpointMemo | undefined]>(
+  function (from, to, bounds, memo) {
+    this.from = from; this.to = to; this.bounds = bounds; this.nativeFraction = undefined; this.nativeTo = undefined;
+    this.first = undefined; this.last = undefined; this.nativeFirst = undefined; this.nativeLast = undefined;
+    this.nativeEndpointsOf = undefined; this.memo = memo;
+  });
+const boundedMotion = (from: PopulationFootprint, to: PopulationFootprint, boxes: BoxArena, memo?: EndpointMemo): BoundedMotion =>
+  new Motion(from, to, motionBounds(from, to, boxes), memo);
+/** One actor's committed motion in `step`'s contact pass: bare, and grown by its waiting gap. */
+interface ActualMotion {
+  readonly original: BoundedMotion; readonly grown: BoundedMotion;
+  readonly turnsInPlace: boolean; readonly sidestep: boolean; readonly slidesPast: boolean;
+}
+const ActualMotion = recordType<ActualMotion, [BoundedMotion, BoundedMotion, boolean, boolean, boolean]>(
+  function (original, grown, turnsInPlace, sidestep, slidesPast) {
+    this.original = original; this.grown = grown; this.turnsInPlace = turnsInPlace; this.sidestep = sidestep; this.slidesPast = slidesPast;
+  });
 const sortId = (a: { id: string }, b: { id: string }): number => a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 const vehicle = (kind: ActorKind): boolean => kind === 'parkedVehicle'
   || kind === 'serviceVehicle' || kind === 'trafficVehicle';
@@ -491,6 +641,14 @@ const grow = (body: PopulationFootprint, margin: number): PopulationFootprint =>
   ...(body.sourceHull ? { sourceHull: { ...body.sourceHull,
     marginMetres: (body.sourceHull.marginMetres ?? 0) + margin } } : {}),
 });
+/** M48: `grow` for an actor's own footprint (`Footprint`/`HullSource` key order), built by constructors. */
+function growActor(body: PopulationFootprint, margin: number): PopulationFootprint {
+  const source = body.sourceHull;
+  return new Footprint(body.x, body.z, body.headingY, body.halfWidthMetres + margin, body.halfLengthMetres + margin,
+    body.minY, body.maxY, body.velocityX, body.velocityZ, source === undefined ? undefined
+      : new HullSource(source.x, source.y, source.z, source.headingY, source.normalX, source.normalY, source.normalZ,
+        source.hull, source.verticalPaddingBelowMetres, source.verticalPaddingAboveMetres, (source.marginMetres ?? 0) + margin));
+}
 
 function orientationTravel(a: PopulationFootprint, b: PopulationFootprint): number {
   let angle = Math.abs(wrapAngle(b.headingY - a.headingY));
@@ -526,6 +684,19 @@ function whollyBehindAlong(own: PopulationFootprint, fx: number, fz: number, bod
   return along + reach < -own.halfLengthMetres - 0.05;
 }
 
+/**
+ * M47 living-r2 broad phase for a route-scan row that may turn or carry a pad
+ * (a rider's compact part, a reservation): whether its centres' box, grown by
+ * its whole rotation radius and its pad, can meet the scan's box. The scan's
+ * own yaw extents never exceed that radius. A non-finite row is kept (the scan refuses it).
+ */
+function turningRowMayReach(row: RouteAnticipationBlocker, box: ScanBox): boolean {
+  const from = row.from, to = row.to;
+  const radius = Math.hypot(Math.max(from.halfWidthMetres, to.halfWidthMetres), Math.max(from.halfLengthMetres, to.halfLengthMetres)) + (row.pad ?? 0);
+  return !(Math.min(from.x, to.x) - radius > box.maxX || Math.max(from.x, to.x) + radius < box.minX
+    || Math.min(from.z, to.z) - radius > box.maxZ || Math.max(from.z, to.z) + radius < box.minZ);
+}
+
 /** The source path's own heading at `distance`, turned round for reverse travel. */
 function travelHeading(path: PopulationPath, distance: number, direction: 1 | -1): number {
   let low = 0, high = path.points.length - 1;
@@ -550,33 +721,34 @@ function assertFootprint(body: PopulationFootprint): void {
   }
 }
 
+/** mixBody's plumb prism, written in place: read at once and never kept. */
+const MIX_PRISM = createPopulationPrismScratch();
 function mixBody(a: PopulationFootprint, b: PopulationFootprint, t: number): PopulationFootprint {
   if (a.sourceHull && b.sourceHull) {
     const first = a.sourceHull, last = b.sourceHull;
-    const mixed = physicalPopulationHull(lerp(first.x, last.x, t), lerp(first.y, last.y, t), lerp(first.z, last.z, t),
-      first.headingY + wrapAngle(last.headingY - first.headingY) * t,
+    const x = lerp(first.x, last.x, t), y = lerp(first.y, last.y, t), z = lerp(first.z, last.z, t);
+    const headingY = first.headingY + wrapAngle(last.headingY - first.headingY) * t;
+    const hull = new LocalHull(lerp(first.hull.halfWidthMetres, last.hull.halfWidthMetres, t),
+      lerp(first.hull.halfLengthMetres, last.hull.halfLengthMetres, t), lerp(first.hull.heightMetres, last.hull.heightMetres, t));
+    const mixed = physicalPopulationHullInto(x, y, z, headingY,
       lerp(first.normalX, last.normalX, t), lerp(first.normalY, last.normalY, t), lerp(first.normalZ, last.normalZ, t),
-      { halfWidthMetres: lerp(first.hull.halfWidthMetres, last.hull.halfWidthMetres, t),
-        halfLengthMetres: lerp(first.hull.halfLengthMetres, last.hull.halfLengthMetres, t),
-        heightMetres: lerp(first.hull.heightMetres, last.hull.heightMetres, t) },
-      lerp(a.velocityX, b.velocityX, t), lerp(a.velocityZ, b.velocityZ, t));
+      hull, lerp(a.velocityX, b.velocityX, t), lerp(a.velocityZ, b.velocityZ, t), null, MIX_PRISM);
     const margin = lerp(first.marginMetres ?? 0, last.marginMetres ?? 0, t);
     const below = lerp(first.verticalPaddingBelowMetres ?? 0, last.verticalPaddingBelowMetres ?? 0, t);
     const above = lerp(first.verticalPaddingAboveMetres ?? 0, last.verticalPaddingAboveMetres ?? 0, t);
     // The padded body and its grow(margin), built as one object: the same
     // fields, sums and key order without the intermediate copies (PERF-R2-2).
-    const source = mixed.sourceHull!;
-    return { ...mixed, minY: mixed.minY - below, maxY: mixed.maxY + above,
-      halfWidthMetres: mixed.halfWidthMetres + margin, halfLengthMetres: mixed.halfLengthMetres + margin,
-      sourceHull: { ...source, verticalPaddingBelowMetres: below, verticalPaddingAboveMetres: above,
-        marginMetres: (source.marginMetres ?? 0) + margin } };
+    // M47 follow-up: and without the hull's prism, source frame and hull copy
+    // (the fresh `hull` above is the frame's own). A fresh frame has no
+    // margin, so its grow is `0 + margin`, as `(undefined ?? 0) + margin` was.
+    // M48: the same values and key order, built by `Footprint`/`HullSource`.
+    return new Footprint(mixed.x, mixed.z, mixed.headingY, mixed.halfWidthMetres + margin, mixed.halfLengthMetres + margin,
+      mixed.minY - below, mixed.maxY + above, mixed.velocityX, mixed.velocityZ,
+      new HullSource(x, y, z, headingY, mixed.normalX, mixed.normalY, mixed.normalZ, hull, below, above, 0 + margin));
   }
-  return { x: lerp(a.x, b.x, t), z: lerp(a.z, b.z, t),
-    headingY: a.headingY + wrapAngle(b.headingY - a.headingY) * t,
-    halfWidthMetres: lerp(a.halfWidthMetres, b.halfWidthMetres, t),
-    halfLengthMetres: lerp(a.halfLengthMetres, b.halfLengthMetres, t),
-    minY: lerp(a.minY, b.minY, t), maxY: lerp(a.maxY, b.maxY, t),
-    velocityX: lerp(a.velocityX, b.velocityX, t), velocityZ: lerp(a.velocityZ, b.velocityZ, t) };
+  return new Footprint(lerp(a.x, b.x, t), lerp(a.z, b.z, t), a.headingY + wrapAngle(b.headingY - a.headingY) * t,
+    lerp(a.halfWidthMetres, b.halfWidthMetres, t), lerp(a.halfLengthMetres, b.halfLengthMetres, t),
+    lerp(a.minY, b.minY, t), lerp(a.maxY, b.maxY, t), lerp(a.velocityX, b.velocityX, t), lerp(a.velocityZ, b.velocityZ, t), undefined);
 }
 
 /** Exact horizontal OBB SAT. Bounding radii never decide contact. */
@@ -966,13 +1138,13 @@ function withImpactReaction(pose: PopulationActorPose, state: ActorState, clock:
  */
 interface XOrder { readonly order: number[]; readonly key: Float64Array; readonly minX: Float64Array }
 interface ForecastXIndex { readonly order: readonly number[]; readonly minX: Float64Array; readonly width: number; readonly boxed: number }
-function forecastXIndex(actors: readonly BoundedMotion[], store: XOrder): ForecastXIndex {
-  const { order, key, minX } = store;
+function forecastXIndex(actors: readonly BoundedMotion[], store: XOrder, boxes: BoxArena): ForecastXIndex {
+  const { order, key, minX } = store, box = boxes.data;
   let width = 0, boxed = 0;
   for (let other = 0; other < actors.length; other += 1) {
     const bounds = actors[other].bounds;
-    if (bounds === null) { key[other] = Infinity; continue; }
-    key[other] = bounds.minX; boxed += 1; width = Math.max(width, bounds.maxX - bounds.minX);
+    if (bounds === NO_BOX) { key[other] = Infinity; continue; }
+    key[other] = box[6 * bounds]; boxed += 1; width = Math.max(width, box[6 * bounds + 1] - box[6 * bounds]);
   }
   for (let at = 1; at < order.length; at += 1) {
     const value = order[at], k = key[value];
@@ -994,13 +1166,14 @@ function forecastXIndex(actors: readonly BoundedMotion[], store: XOrder): Foreca
  * The callers still ask mayMeet of each, so this only skips sure refusals.
  */
 function actorCandidates(forecast: { actors: readonly BoundedMotion[]; xStore: XOrder; xIndex?: ForecastXIndex }, query: MotionBounds,
-  index: number, held: Float64Array, stamp: number, heldCandidates: readonly number[], out: number[]): number[] {
+  index: number, held: Float64Array, stamp: number, heldCandidates: readonly number[], out: number[], boxes: BoxArena): number[] {
   out.length = 0;
   const actors = forecast.actors;
-  if (query === null) { for (let other = 0; other < actors.length; other += 1) if (other !== index) out.push(other); return out; }
-  const xIndex = forecast.xIndex ??= forecastXIndex(actors, forecast.xStore);
+  if (query === NO_BOX) { for (let other = 0; other < actors.length; other += 1) if (other !== index) out.push(other); return out; }
+  const xIndex = forecast.xIndex ??= forecastXIndex(actors, forecast.xStore, boxes);
   const { order, minX, width, boxed } = xIndex;
-  const lower = query.minX - width - 1e-6 * (1 + Math.abs(query.minX) + width), upper = query.maxX;
+  const queryMinX = boxes.data[6 * query], queryMaxX = boxes.data[6 * query + 1];
+  const lower = queryMinX - width - 1e-6 * (1 + Math.abs(queryMinX) + width), upper = queryMaxX;
   let low = 0, high = boxed;
   while (low < high) { const middle = (low + high) >>> 1; if (minX[middle] < lower) low = middle + 1; else high = middle; }
   for (let at = low; at < boxed && minX[at] <= upper; at += 1) {
@@ -1021,6 +1194,72 @@ function actorCandidates(forecast: { actors: readonly BoundedMotion[]; xStore: X
 
 /** A crossing's corner extents, fixed once per plan instead of per priority query. */
 interface CrossingExtent { readonly minX: number; readonly maxX: number; readonly minZ: number; readonly maxZ: number }
+/**
+ * M47 living-r2: one run of a closed loop where a vehicle's body overlaps one
+ * pedestrian-priority crossing polygon, as centre path distances: the run
+ * starts at `entry` (in [0, length of the loop)) and lasts `length`, across
+ * the seam if it must. Each polygon keeps its own runs (`zonesFor`).
+ */
+interface CrossingZone { readonly entry: number; readonly length: number }
+/**
+ * M47 living-r2: one arm of a loop's neck (`POPULATION_TRAFFIC.neck*`), a run
+ * of centre distances like a crossing zone. Arms of one neck conflict with
+ * each other; an `exclusive` arm also conflicts with itself (one vehicle at a time).
+ */
+interface LoopArm extends CrossingZone { readonly neck: number; readonly exclusive: boolean }
+/** The world box a living-r2 route scan's swept car can reach (`routeScanBox`), reused per vehicle. */
+interface ScanBox { minX: number; maxX: number; minZ: number; maxZ: number }
+/** wrap(value) into [0, length). */
+const wrapDistance = (value: number, length: number): number => ((value % length) + length) % length;
+/**
+ * M47 living-r2 IDM-style following (`POPULATION_TRAFFIC`): the speed one step
+ * of a(v, s, Δv) leaves, never below zero. `gap` is the bumper gap along the
+ * loop, `closing` the speed at which it shrinks. No gap left is a stop.
+ */
+function followingSpeedCap(speed: number, freeSpeed: number, gap: number, closing: number, dt: number): number {
+  if (!(gap > 0) || !(freeSpeed > 0)) return 0;
+  const a = POPULATION_TRAFFIC.accelerationMetresPerSecondSquared, b = POPULATION_TRAFFIC.comfortableBrakingMetresPerSecondSquared;
+  const desired = POPULATION_TRAFFIC.standstillGapMetres
+    + Math.max(0, speed * POPULATION_TRAFFIC.headwaySeconds + speed * closing / (2 * Math.sqrt(a * b)));
+  const ratio = desired / gap;
+  const acceleration = a * (1 - (speed / freeSpeed) ** POPULATION_TRAFFIC.accelerationExponent - ratio * ratio);
+  // IDM's last metre at walking pace brakes too gently and ends ~0.2 m inside
+  // s0: no faster than it could stop at b in what is left of the gap past s0.
+  const left = Math.max(0, gap - POPULATION_TRAFFIC.standstillGapMetres);
+  return Math.max(0, Math.min(speed + acceleration * dt, Math.sqrt((b * dt) ** 2 + 2 * b * left) - b * dt));
+}
+/** The SAT gap between two flat oriented boxes (centre, heading, half width, half length): negative when they overlap. */
+function flatBoxGap(ax: number, az: number, ah: number, aw: number, al: number,
+  bx: number, bz: number, bh: number, bw: number, bl: number): number {
+  const ca = Math.cos(ah), sa = Math.sin(ah), cb = Math.cos(bh), sb = Math.sin(bh);
+  let gap = -Infinity;
+  for (let index = 0; index < 4; index += 1) {
+    const c = index < 2 ? ca : cb, s = index < 2 ? sa : sb, along = (index & 1) === 1;
+    const axisX = along ? s : c, axisZ = along ? c : -s;
+    gap = Math.max(gap, Math.abs((bx - ax) * axisX + (bz - az) * axisZ)
+      - supportAt(ca, sa, aw, al, axisX, axisZ) - supportAt(cb, sb, bw, bl, axisX, axisZ));
+  }
+  return gap;
+}
+/** Whether an oriented box (centre, heading frame, half extents) overlaps a polygon: SAT, conservative for a concave one. */
+function boxOverlapsPolygon(x: number, z: number, heading: number, halfWidth: number, halfLength: number,
+  corners: readonly { readonly x: number; readonly z: number }[]): boolean {
+  const c = Math.cos(heading), s = Math.sin(heading);
+  const test = (axisX: number, axisZ: number): boolean => {
+    const centre = x * axisX + z * axisZ;
+    const reach = Math.abs(c * axisX - s * axisZ) * halfWidth + Math.abs(s * axisX + c * axisZ) * halfLength;
+    let low = Infinity, high = -Infinity;
+    for (const corner of corners) { const d = corner.x * axisX + corner.z * axisZ; low = Math.min(low, d); high = Math.max(high, d); }
+    return centre + reach >= low && centre - reach <= high;
+  };
+  if (!test(c, -s) || !test(s, c)) return false;
+  for (let index = 0; index < corners.length; index += 1) {
+    const a = corners[index], b = corners[(index + 1) % corners.length];
+    const ex = b.x - a.x, ez = b.z - a.z;
+    if ((ex !== 0 || ez !== 0) && !test(-ez, ex)) return false;
+  }
+  return true;
+}
 /** Conservative broad phase is appropriate for yielding, never contact. */
 function touchesCrossingWithin(extent: CrossingExtent, body: PopulationFootprint, radius: number): boolean {
   return body.x >= extent.minX - radius && body.x <= extent.maxX + radius
@@ -1030,11 +1269,12 @@ function touchesCrossingWithin(extent: CrossingExtent, body: PopulationFootprint
  * One priority lookahead per actor and epoch. The forecast reads only the
  * epoch's start pose, the clock and these live fields; speed is passed in.
  */
+/** One actor's last look-ahead and its keys; M48: one record per actor, rewritten in place. */
 interface LookaheadMemo {
-  readonly epoch: PopulationSnapshot; readonly start: PopulationActorPose; readonly clock: number;
-  readonly seconds: number; readonly direction: 1 | -1; readonly workerLeg: ActorState['workerLeg'];
-  readonly pause: number; readonly turning: boolean; readonly waiting: boolean; readonly impactUntil: number;
-  readonly footprint: PopulationFootprint;
+  epoch: PopulationSnapshot; start: PopulationActorPose; clock: number;
+  seconds: number; direction: 1 | -1; workerLeg: ActorState['workerLeg'];
+  pause: number; turning: boolean; waiting: boolean; impactUntil: number;
+  footprint: PopulationFootprint;
 }
 
 export class PopulationSimulation {
@@ -1049,6 +1289,14 @@ export class PopulationSimulation {
   /** previous.actors keeps states order; ids are validated unique. */
   private readonly stateIndex = new Map<string, number>();
   private lookaheads: (LookaheadMemo | undefined)[] = [];
+  /**
+   * M47 follow-up (2026-10-26): each actor's last two `grow` results, keyed by
+   * the very body and the margin (`grownFor`). Footprints are never written
+   * in place, so a grown body is a pure function of that pair: one step's
+   * grown end pose is the next step's grown start, asked for twice more.
+   */
+  private grown: GrownMemo[] = [];
+  private readonly boxes = new BoxArena();
   /** Route-scan blocker ids, formed once per world rather than per vehicle per step. */
   private actorBlockerIds: readonly string[] = [];
   /** One actor iteration's blocker list (PERF-POP); never read after the iteration. */
@@ -1093,8 +1341,78 @@ export class PopulationSimulation {
   private pairHigh = new Float64Array(0);
   /** One vehicle's route-scan blocker list (PERF-WHARF); the scan reads it and keeps nothing. */
   private readonly routeBlockerScratch: RouteAnticipationBlocker[] = [];
+  /**
+   * M47: the plan's living-r2 vehicle rules (`POPULATION_TRAFFIC`), on only for
+   * a plan with `vehicleFollowing: 'living-r2'`. Every field below this one is
+   * formed and read only then; a living-r1 plan keeps the living-r1 rules bit
+   * for bit (the exactness pins: Wharf, town, world, step budget).
+   */
+  private readonly following: boolean;
+  /** Per state: its closed loop's index among the loops carrying traffic vehicles, else -1. */
+  private loopId = new Int32Array(0);
+  /** Per loop: its traffic vehicles' state indices, ascending. */
+  private loopMembers: readonly (readonly number[])[] = [];
+  /** Per state: the crossing zones its own body meets on its loop (traffic vehicles only). */
+  private crossingZones: readonly (readonly CrossingZone[] | undefined)[] = [];
+  /** Zones per loop and hull, formed once per world. */
+  private readonly zoneMemo = new Map<string, readonly CrossingZone[]>();
+  /** Per state: its loop's neck arms for its own hull (traffic vehicles only); per loop and hull, formed once. */
+  private loopArms: readonly (readonly LoopArm[] | undefined)[] = [];
+  private readonly armMemo = new Map<string, readonly LoopArm[]>();
+  /** Per state: the arms it holds, the arm it waits for (-1 none), since when, and whether only others held it back. */
+  private armsHeld: number[][] = [];
+  private armWaiting = new Int32Array(0);
+  private armWaitingSince = new Float64Array(0);
+  private armWaitingReady = new Uint8Array(0);
+  /** Per state: the standing actors no pose of its own round its loop can meet (`standingClear`). */
+  private standingClear: readonly (ReadonlySet<number> | undefined)[] = [];
+  private readonly standingMemo = new Map<string, ReadonlySet<number>>();
+  /**
+   * Per state (traffic vehicles): seconds held on end by pedestrian priority
+   * alone, and the crossings it has claimed by its patience (empty: none).
+   */
+  private holdSeconds = new Float64Array(0);
+  private patience: CrossingExtent[][] = [];
+  /** Per state: at its last step its pedestrian priority alone held it (1), so people wait for its claim. */
+  private patienceReady = new Uint8Array(0);
+  /** Vehicle path -> every accepted crossing extent on it, and pedestrian path -> vehicle path -> the same extents as a set. */
+  private readonly vehicleCrossings = new Map<string, readonly CrossingExtent[]>();
+  private readonly crossingSets = new Map<string, Map<string, ReadonlySet<CrossingExtent>>>();
+  /** Each accepted crossing extent's own polygon: a person is on a crossing by its polygon (`onCrossing`). */
+  private readonly crossingCorners = new Map<CrossingExtent, readonly { readonly x: number; readonly z: number }[]>();
+  /**
+   * Per vehicle: the crossings its priority look-ahead enters this step (its
+   * look-ahead touches, its body does not), the tick and direction they were
+   * formed for. Only those can grant anyone priority over it (`priorityOver`).
+   */
+  private entering: CrossingExtent[][] = [];
+  private enteringTick = new Float64Array(0);
+  private enteringDirection = new Int8Array(0);
+  /** Per vehicle, four numbers: the world box (minX, maxX, minZ, maxZ) round its `entering` crossings. */
+  private enteringBox = new Float64Array(0);
+  /** Per path: its seam turn and its largest XZ-per-path-metre scale, for the scan's broad phase. */
+  private readonly pathScanTerms = new Map<string, { readonly seamTurn: number; readonly metric: number }>();
+  private readonly scanBox: ScanBox = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 };
+  /** One vehicle's standing and pinned people for `standingHit` (reused), and the travel the last hit left. */
+  private readonly standingScratch: number[] = [];
+  private readonly pinnedScratch: number[] = [];
+  private standingHitTravel = 0;
+  /** Per state (loop vehicles): the person native contact held its move against this step (-1 none), and since when it has been that one. */
+  private nativeBlocker = new Int32Array(0);
+  private nativeHeldBy = new Int32Array(0);
+  private nativeHeldSeconds = new Float64Array(0);
   private readonly lowerCorners: readonly MutablePopulationHullCorner[] = [
     { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }];
+  /**
+   * M47 follow-up (2026-10-26): makePose's and prospectiveFrom's plumb prism,
+   * support input and support targets, written in place and read at once. A
+   * kept footprint, support or pose is always a fresh record built from them.
+   */
+  private readonly prism = createPopulationPrismScratch();
+  private readonly supportInput: { -readonly [K in keyof PopulationSupportInput]: PopulationSupportInput[K] } = {
+    kind: '', appearanceIndex: 0, x: 0, y: 0, z: 0, headingY: 0, speedMetresPerSecond: 0, gaitDistanceMetres: 0,
+    activity: '', groundNormalX: 0, groundNormalY: 1, groundNormalZ: 0, hull: { halfWidthMetres: 1, halfLengthMetres: 1, heightMetres: 1 } };
+  private readonly supportTargets = createPopulationSupportTargetsRecord();
   private tick = 0;
   private clock = 0;
   private stepDt = 0;
@@ -1137,6 +1455,7 @@ export class PopulationSimulation {
       paths.set(path.id, { path });
     }
     this.paths = paths;
+    this.following = this.plan.vehicleFollowing === 'living-r2';
     for (const crossing of this.plan.crossings ?? []) {
       if (crossing.priority !== 'pedestrian') continue;
       const xs = crossing.corners.map(value => value.x), zs = crossing.corners.map(value => value.z);
@@ -1151,6 +1470,17 @@ export class PopulationSimulation {
           if (list[list.length - 1] !== extent) list.push(extent);
         }
       }
+      if (this.following) this.crossingCorners.set(extent, crossing.corners);
+      if (this.following) for (const vehiclePathId of crossing.vehiclePathIds) {
+        const list = (this.vehicleCrossings.get(vehiclePathId) ?? []) as CrossingExtent[];
+        if (!list.includes(extent)) list.push(extent);
+        this.vehicleCrossings.set(vehiclePathId, list);
+      }
+    }
+    if (this.following) for (const [pedestrianPathId, byVehicle] of this.crossingIndex) {
+      const sets = new Map<string, ReadonlySet<CrossingExtent>>();
+      for (const [vehiclePathId, list] of byVehicle) sets.set(vehiclePathId, new Set(list));
+      this.crossingSets.set(pedestrianPathId, sets);
     }
     const ids = new Set<string>();
     for (const spec of this.plan.actors) {
@@ -1191,13 +1521,13 @@ export class PopulationSimulation {
         turning: false, workerLeg: 'work', workerAnchor, workerTarget,
         impactUntil: 0, impactSeconds: R.impactPauseSeconds, reaction: 'stagger', fallYaw: 0,
         waiting: false, waitingOn: [], blockedBy: -1, blockedSeconds: 0, blockedGait: 0, turnedAt: -Infinity,
-        aside: 0, asideTarget: 0, stepStartAside: 0, asideStalled: 0, pose: {} as PopulationActorPose,
+        aside: 0, asideTarget: 0, stepStartAside: 0, asideStalled: 0, asideFor: -1, shuttleLow: 0, shuttleHigh: 0, pose: {} as PopulationActorPose,
         previousDistance: spec.initialDistanceMetres, stepTravel: 0, stepGaitStart: 0,
         stepWheelStart: 0, stepStartDirection: spec.direction, stepStartPause: 0,
-        stepStartTurning: false, stepStartWorkerLeg: 'work' };
+        stepStartTurning: false, stepStartWorkerLeg: 'work', hull: { ...spec.hull } };
       state.pose = this.makePose(state, 0, 0); return state;
     });
-    this.stateIndex.clear(); this.lookaheads = [];
+    this.stateIndex.clear(); this.lookaheads = []; this.grown = [];
     this.states.forEach((state, index) => this.stateIndex.set(state.spec.id, index));
     this.actorBlockerIds = this.states.map(state => `actor:${state.spec.id}`);
     const shareCrossing = (person: ActorState, traffic: ActorState): boolean => !vehicle(person.spec.kind) && vehicle(traffic.spec.kind)
@@ -1210,7 +1540,251 @@ export class PopulationSimulation {
     this.pairOrder = this.states.map((_, index) => index); this.endpointMemos.clear();
     this.routeOrder = []; this.routeOrderIds = []; this.xOrders.clear();
     this.pairLow = new Float64Array(this.states.length); this.pairHigh = new Float64Array(this.states.length);
+    if (this.following) this.resetTraffic();
     this.publish(); this.previous = copySnapshot(this.current);
+  }
+
+  /**
+   * `shuttleLow` / `shuttleHigh` for the living-r2 roster: a walker's or jogger's path end
+   * is moved back along the path, in `LANE_END_SAMPLE_METRES` steps, until
+   * its body (grown by the waiting gap and `STANDING_HIT_SLACK_METRES`) is
+   * clear of every loop's lane (the loop's centreline, its widest vehicle's
+   * half width and the loop's waiting gap). A path left shorter than
+   * `LANE_END_MINIMUM_METRES` keeps its ends.
+   */
+  private trimLaneEnds(): void {
+    const lanes = this.loopMembers.map(members => {
+      const path = this.states[members[0]].path.path;
+      const halfWidth = Math.max(...members.map(index => this.states[index].spec.hull.halfWidthMetres));
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (const point of path.points) {
+        minX = Math.min(minX, point.x); maxX = Math.max(maxX, point.x); minZ = Math.min(minZ, point.z); maxZ = Math.max(maxZ, point.z);
+      }
+      return { points: path.points, reach: halfWidth + POPULATION_TRAFFIC.waitingGapMetres, minX, maxX, minZ, maxZ };
+    });
+    const inLane = (x: number, z: number, radius: number): boolean => lanes.some(lane => {
+      const reach = lane.reach + radius;
+      if (x < lane.minX - reach || x > lane.maxX + reach || z < lane.minZ - reach || z > lane.maxZ + reach) return false;
+      for (let index = 1; index < lane.points.length; index += 1) {
+        const a = lane.points[index - 1], b = lane.points[index], dx = b.x - a.x, dz = b.z - a.z, squared = dx * dx + dz * dz;
+        const t = squared > 0 ? clamp(((x - a.x) * dx + (z - a.z) * dz) / squared, 0, 1) : 0;
+        if (Math.hypot(x - a.x - dx * t, z - a.z - dz * t) < reach) return true;
+      }
+      return false;
+    });
+    for (const state of this.states) {
+      const { spec } = state, length = state.path.path.lengthMetres;
+      state.shuttleLow = 0; state.shuttleHigh = length;
+      if ((spec.kind !== 'walker' && spec.kind !== 'jogger') || spec.movement !== 'shuttle') continue;
+      const radius = Math.hypot(spec.hull.halfWidthMetres, spec.hull.halfLengthMetres) + R.humanWaitingGapMetres + STANDING_HIT_SLACK_METRES;
+      const clearFrom = (start: number, step: number): number => {
+        for (let along = start; along >= 0 && along <= length; along += step) {
+          const point = pathPoint(state.path.path, along);
+          if (!inLane(point.x, point.z, radius)) return along;
+        }
+        return start;
+      };
+      const low = clearFrom(0, LANE_END_SAMPLE_METRES), high = clearFrom(length, -LANE_END_SAMPLE_METRES);
+      if (high - low < LANE_END_MINIMUM_METRES) continue;
+      state.shuttleLow = low; state.shuttleHigh = high;
+    }
+  }
+
+  /**
+   * M47 living-r2: each closed loop's traffic vehicles (state indices,
+   * ascending), each one's crossing zones and the per-step priority storage.
+   * Formed only for a plan with `vehicleFollowing`; nothing else reads them.
+   */
+  private resetTraffic(): void {
+    const count = this.states.length, loops = new Map<string, number[]>();
+    this.loopId = new Int32Array(count).fill(-1);
+    const zones: (readonly CrossingZone[] | undefined)[] = [], arms: (readonly LoopArm[] | undefined)[] = [];
+    const clear: (ReadonlySet<number> | undefined)[] = [];
+    this.states.forEach((state, index) => {
+      const { spec } = state;
+      if (spec.kind !== 'trafficVehicle' || spec.movement !== 'loop' || !state.path.path.closed) return;
+      let members = loops.get(spec.pathId);
+      if (!members) loops.set(spec.pathId, members = []);
+      members.push(index);
+      zones[index] = this.zonesFor(state.path.path, spec.hull);
+      arms[index] = this.armsFor(state.path.path, spec.hull);
+      clear[index] = this.standingClearOf(state.path.path, spec.hull);
+    });
+    this.loopMembers = [...loops.values()];
+    this.loopMembers.forEach((members, loop) => { for (const index of members) this.loopId[index] = loop; });
+    this.crossingZones = zones; this.loopArms = arms; this.standingClear = clear;
+    this.armsHeld = this.states.map(() => []);
+    this.armWaiting = new Int32Array(count).fill(-1); this.armWaitingSince = new Float64Array(count);
+    this.armWaitingReady = new Uint8Array(count);
+    this.holdSeconds = new Float64Array(count); this.patience = this.states.map(() => []); this.patienceReady = new Uint8Array(count);
+    this.nativeBlocker = new Int32Array(count).fill(-1); this.nativeHeldBy = new Int32Array(count).fill(-1);
+    this.nativeHeldSeconds = new Float64Array(count);
+    this.entering = this.states.map(() => []);
+    this.enteringTick = new Float64Array(count).fill(-1); this.enteringDirection = new Int8Array(count);
+    this.enteringBox = new Float64Array(count * 4);
+    this.trimLaneEnds();
+    for (const state of this.states) if (vehicle(state.spec.kind) && !this.pathScanTerms.has(state.spec.pathId)) {
+      const points = state.path.path.points, first = points[0], last = points[points.length - 1];
+      let metric = 0;
+      for (let index = 1; index < points.length; index += 1) {
+        const a = points[index - 1], b = points[index];
+        metric = Math.max(metric, Math.hypot(b.x - a.x, b.z - a.z) / (b.distanceMetres - a.distanceMetres));
+      }
+      this.pathScanTerms.set(state.spec.pathId, { metric,
+        seamTurn: state.path.path.closed ? Math.abs(wrapAngle(first.headingY - last.headingY)) : 0 });
+    }
+  }
+
+  /**
+   * The centre runs of a closed loop where a vehicle of this hull overlaps each
+   * pedestrian-priority crossing polygon on it, per polygon (a run through the
+   * seam is one), each grown by one sample step at both ends. Sampled every
+   * `crossingZoneSampleMetres` at the loop's own pose; a polygon whose box the
+   * body cannot reach is not tested. Not merged across polygons: the town's
+   * chained pads made 30-78 m zones, and behind a slow leader a van waited
+   * before the whole chain (copper-drift's longest stand 39 s, 33 s per polygon).
+   */
+  private zonesFor(path: PopulationPath, hull: ActorSpec['hull']): readonly CrossingZone[] {
+    const key = `${path.id}\n${hull.halfWidthMetres}\n${hull.halfLengthMetres}`, known = this.zoneMemo.get(key);
+    if (known) return known;
+    const polygons = (this.plan.crossings ?? []).filter(crossing => crossing.priority === 'pedestrian'
+      && crossing.vehiclePathIds.includes(path.id)).map(crossing => {
+      const xs = crossing.corners.map(value => value.x), zs = crossing.corners.map(value => value.z);
+      return { corners: crossing.corners, minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs) };
+    });
+    const length = path.lengthMetres, step = POPULATION_TRAFFIC.crossingZoneSampleMetres;
+    const reach = Math.hypot(hull.halfWidthMetres, hull.halfLengthMetres);
+    const samples = Math.ceil(length / step), zones: CrossingZone[] = [];
+    for (const polygon of polygons) {
+      const runs: [number, number][] = [];
+      let start = -1, previous = -1;
+      for (let sample = 0; sample <= samples; sample += 1) {
+        const along = Math.min(sample * step, length), point = pathPoint(path, along);
+        const touches = point.x >= polygon.minX - reach && point.x <= polygon.maxX + reach
+          && point.z >= polygon.minZ - reach && point.z <= polygon.maxZ + reach
+          && boxOverlapsPolygon(point.x, point.z, point.headingY, hull.halfWidthMetres, hull.halfLengthMetres, polygon.corners);
+        if (touches && start < 0) start = along;
+        if (touches) previous = along;
+        if ((!touches || sample === samples) && start >= 0) { runs.push([start - step, previous + step]); start = -1; }
+      }
+      if (runs.length > 1 && runs[0][0] <= 0 && runs[runs.length - 1][1] >= length) {
+        const first = runs.shift()!;
+        runs[runs.length - 1][1] = length + first[1];
+      }
+      for (const [from, to] of runs) zones.push(to - from >= length ? { entry: 0, length } : { entry: wrapDistance(from, length), length: to - from });
+    }
+    this.zoneMemo.set(key, zones);
+    return zones;
+  }
+
+  /**
+   * A closed loop's necks for a vehicle of this hull (`POPULATION_TRAFFIC.neck*`):
+   * every pair of sampled poses at least `neckSeparationMetres` apart along the
+   * loop whose bodies, one grown by the waiting gap and the slack and the other
+   * by the slack, overlap. The poses in such pairs form runs; each run, grown by
+   * one sample and the pad and merged with any it then overlaps (across the
+   * seam too), is an arm. Arms linked by a pair are one neck; an arm linked to
+   * itself is exclusive. Flat boxes at the loop's own pose: the slack covers
+   * the sampling and a modest grade.
+   */
+  private armsFor(path: PopulationPath, hull: ActorSpec['hull']): readonly LoopArm[] {
+    const key = `${path.id}\n${hull.halfWidthMetres}\n${hull.halfLengthMetres}`, known = this.armMemo.get(key);
+    if (known) return known;
+    const T = POPULATION_TRAFFIC, length = path.lengthMetres, step = T.neckSampleMetres;
+    const count = Math.max(1, Math.floor(length / step));
+    const xs = new Float64Array(count), zs = new Float64Array(count), hs = new Float64Array(count);
+    for (let index = 0; index < count; index += 1) {
+      const point = pathPoint(path, index * step);
+      xs[index] = point.x; zs[index] = point.z; hs[index] = point.headingY;
+    }
+    const gap = T.waitingGapMetres, slack = T.neckSlackMetres;
+    const grownWidth = hull.halfWidthMetres + gap + slack, grownLength = hull.halfLengthMetres + gap + slack;
+    const plainWidth = hull.halfWidthMetres + slack, plainLength = hull.halfLengthMetres + slack;
+    const reach = Math.hypot(grownWidth, grownLength) + Math.hypot(plainWidth, plainLength);
+    const marked = new Uint8Array(count), pairs: number[] = [];
+    for (let first = 0; first < count; first += 1) for (let second = first + 1; second < count; second += 1) {
+      const apart = (second - first) * step;
+      if (Math.min(apart, length - apart) < T.neckSeparationMetres) continue;
+      const dx = xs[second] - xs[first], dz = zs[second] - zs[first];
+      if (dx * dx + dz * dz > reach * reach) continue;
+      if (flatBoxGap(xs[first], zs[first], hs[first], grownWidth, grownLength, xs[second], zs[second], hs[second], plainWidth, plainLength) < 0
+        || flatBoxGap(xs[first], zs[first], hs[first], plainWidth, plainLength, xs[second], zs[second], hs[second], grownWidth, grownLength) < 0) {
+        marked[first] = 1; marked[second] = 1; pairs.push(first, second);
+      }
+    }
+    if (pairs.length === 0) { this.armMemo.set(key, []); return []; }
+    const pad = step + T.neckArmPadMetres, merged: [number, number][] = [];
+    for (let index = 0; index < count; index += 1) {
+      if (marked[index] === 0) continue;
+      let last = index;
+      while (last + 1 < count && marked[last + 1] === 1) last += 1;
+      const from = index * step - pad, to = last * step + pad, previous = merged[merged.length - 1];
+      if (previous && from <= previous[1]) previous[1] = Math.max(previous[1], to); else merged.push([from, to]);
+      index = last;
+    }
+    // Across the seam: the first run carries on from the last.
+    while (merged.length > 1 && merged[0][0] + length <= merged[merged.length - 1][1]) {
+      const first = merged.shift()!, last = merged[merged.length - 1];
+      last[1] = Math.max(last[1], first[1] + length);
+    }
+    const armOf = (sample: number): number => {
+      const along = sample * step;
+      for (let arm = 0; arm < merged.length; arm += 1) {
+        if (wrapDistance(along - merged[arm][0], length) <= merged[arm][1] - merged[arm][0]) return arm;
+      }
+      return 0;
+    };
+    const parent = merged.map((_, arm) => arm), exclusive = merged.map(() => false);
+    const root = (arm: number): number => { while (parent[arm] !== arm) arm = parent[arm] = parent[parent[arm]]; return arm; };
+    for (let at = 0; at < pairs.length; at += 2) {
+      const a = armOf(pairs[at]), b = armOf(pairs[at + 1]);
+      if (a === b) exclusive[a] = true; else parent[root(a)] = root(b);
+    }
+    const necks = new Map<number, number>();
+    const arms: LoopArm[] = merged.map(([from, to], arm) => {
+      const neck = necks.get(root(arm)) ?? necks.size;
+      necks.set(root(arm), neck);
+      return to - from >= length ? { entry: 0, length, neck, exclusive: true }
+        : { entry: wrapDistance(from, length), length: to - from, neck, exclusive: exclusive[arm] };
+    });
+    this.armMemo.set(key, arms);
+    return arms;
+  }
+
+  /**
+   * The standing actors (stationary movement: they never leave their pose) that
+   * a vehicle of this hull on this loop can never meet: its actual body at every
+   * sampled pose round the loop, grown by the waiting gap and
+   * `standingClearanceSlackMetres`, clears theirs. Those are no route-scan
+   * blocker for it (`POPULATION_TRAFFIC.standingClearance*`). Ground the
+   * sampler refuses clears nobody.
+   */
+  private standingClearOf(path: PopulationPath, hull: ActorSpec['hull']): ReadonlySet<number> {
+    const key = `${path.id}\n${hull.halfWidthMetres}\n${hull.halfLengthMetres}\n${hull.heightMetres}`, known = this.standingMemo.get(key);
+    if (known) return known;
+    const standing = this.states.flatMap((state, index) => state.spec.movement === 'stationary' ? [index] : []);
+    const met = new Set<number>(), grow = POPULATION_TRAFFIC.waitingGapMetres + POPULATION_TRAFFIC.standingClearanceSlackMetres;
+    const step = POPULATION_TRAFFIC.standingClearanceSampleMetres, samples = Math.ceil(path.lengthMetres / step);
+    let valid = standing.length > 0;
+    for (let sample = 0; valid && sample <= samples; sample += 1) {
+      const point = pathPoint(path, Math.min(sample * step, path.lengthMetres));
+      const ground = this.sampler.sampleGround(point.x, point.z, this.ground);
+      if (!(Number.isFinite(ground.height) && Number.isFinite(ground.normal.x) && Number.isFinite(ground.normal.y)
+        && Number.isFinite(ground.normal.z)) || ground.normal.y <= 0) { valid = false; break; }
+      const body = physicalPopulationPrism(transformPopulationHullLowerInto(point.x, ground.height, point.z, point.headingY,
+        ground.normal.x, ground.normal.y, ground.normal.z, hull, 0, 0, this.lowerCorners));
+      const width = body.halfWidthMetres + grow, length = body.halfLengthMetres + grow, reach = Math.hypot(width, length);
+      for (const index of standing) {
+        if (met.has(index)) continue;
+        const other = this.states[index].pose.footprint;
+        if (Math.hypot(other.x - body.x, other.z - body.z) > reach + Math.hypot(other.halfWidthMetres, other.halfLengthMetres)) continue;
+        if (!(flatBoxGap(body.x, body.z, body.headingY, width, length, other.x, other.z, other.headingY,
+          other.halfWidthMetres, other.halfLengthMetres) > 0)) met.add(index);
+      }
+    }
+    const clear: ReadonlySet<number> = new Set(valid ? standing.filter(index => !met.has(index)) : []);
+    this.standingMemo.set(key, clear);
+    return clear;
   }
 
   /** Reading or interpolation never advances a clock or mutates a physical pose. */
@@ -1259,37 +1833,31 @@ export class PopulationSimulation {
     const sin = Math.sin(state.heading), cos = Math.cos(state.heading);
     const normalX = ground.normal.x, normalY = ground.normal.y, normalZ = ground.normal.z;
     const y = ground.height;
-    // The transform's lower corners land in owned scratch; only the prism is kept.
+    // The transform's lower corners and its prism land in owned scratch; the
+    // footprint below is the one record kept.
     const corners = this.lowerCorners;
-    let footprint = physicalPopulationPrism(transformPopulationHullLowerInto(point.x, y, point.z, state.heading,
-      normalX, normalY, normalZ, spec.hull, velocityX, velocityZ, corners));
+    const prism = physicalPopulationHullInto(point.x, y, point.z, state.heading,
+      normalX, normalY, normalZ, spec.hull, velocityX, velocityZ, corners, this.prism);
     // Actual support ground is sampled at the horizontal location of each
     // grade-aligned lower corner, not inferred from a renderer tangent plane.
-    const supportHeights = [] as number[];
-    for (const corner of corners) {
-        const supportGround = this.sampler.sampleGround(corner.x, corner.z, this.ground);
-        if (!Number.isFinite(supportGround.height)) throw new Error(`Invalid population support ground: ${spec.id}`);
-        supportHeights.push(supportGround.height);
-    }
-    const targets = populationSupportTargets({ kind: spec.kind, appearanceIndex: spec.appearanceIndex,
-      x: point.x, y, z: point.z, headingY: state.heading, hull: spec.hull,
-      speedMetresPerSecond: signedSpeed, gaitDistanceMetres: state.gaitDistance, activity,
-      groundNormalX: normalX, groundNormalY: normalY, groundNormalZ: normalZ });
+    // M48: Array.of, not an array literal (no allocation site; see `recordType`); the corners in the same order.
+    const supportHeights = Array.of(this.cornerHeight(corners[0], spec.id), this.cornerHeight(corners[1], spec.id),
+      this.cornerHeight(corners[2], spec.id), this.cornerHeight(corners[3], spec.id));
+    const targets = populationSupportTargetsInto(this.supportFor(spec, point.x, y, point.z, state.heading,
+      signedSpeed, state.gaitDistance, activity, normalX, normalY, normalZ), this.supportTargets);
     const sampleSupport = (target: { x: number; y: number; z: number; contact: 'ground' | 'pedal' }): PopulationGroundSupport => {
-      if (target.contact === 'pedal') return { x: target.x, y: target.y, z: target.z,
-        normalX, normalY, normalZ };
+      if (target.contact === 'pedal') return new GroundSupport(target.x, target.y, target.z, normalX, normalY, normalZ);
       const sample = this.sampler.sampleGround(target.x, target.z, this.ground);
       if (!(Number.isFinite(sample.height) && Number.isFinite(sample.normal.x) && Number.isFinite(sample.normal.y)
         && Number.isFinite(sample.normal.z)) || sample.normal.y <= 0)
         throw new Error(`Population support lost finished ground: ${spec.id}`);
-      return { x: target.x, y: sample.height, z: target.z,
-        normalX: sample.normal.x, normalY: sample.normal.y, normalZ: sample.normal.z };
+      return new GroundSupport(target.x, sample.height, target.z, sample.normal.x, sample.normal.y, sample.normal.z);
     };
     const footSupports = targets.feet?.map(sampleSupport) as [PopulationGroundSupport, PopulationGroundSupport] | undefined;
     const tyreSupports = targets.tyres?.map(sampleSupport) as
       [PopulationGroundSupport, PopulationGroundSupport, PopulationGroundSupport, PopulationGroundSupport] | undefined;
     // Math.min/max over the same values, folded pairwise (both are order-free, -0 and NaN included).
-    let minY = footprint.minY, maxY = footprint.maxY;
+    let minY = prism.minY, maxY = prism.maxY;
     if (footSupports) for (const value of footSupports) minY = Math.min(minY, value.y);
     if (tyreSupports) for (let index = 0; index < tyreSupports.length; index += 1) {
       minY = Math.min(minY, tyreSupports[index].y);
@@ -1297,28 +1865,22 @@ export class PopulationSimulation {
     }
     // PERF-POP: a committed move's velocities are the step's displacement, written
     // here into the same keys the former outer spreads overwrote (order unchanged).
-    footprint = before === undefined ? { ...footprint, minY, maxY, sourceHull: { ...footprint.sourceHull!,
-      verticalPaddingBelowMetres: footprint.minY - minY,
-      verticalPaddingAboveMetres: maxY - footprint.maxY } }
-      : { ...footprint, minY, maxY, velocityX: (footprint.x - before.footprint.x) / dt,
-        velocityZ: (footprint.z - before.footprint.z) / dt, sourceHull: { ...footprint.sourceHull!,
-          verticalPaddingBelowMetres: footprint.minY - minY,
-          verticalPaddingAboveMetres: maxY - footprint.maxY } };
-    return { id: spec.id, kind: spec.kind, appearanceIndex: spec.appearanceIndex,
-      x: point.x, y, z: point.z, headingY: state.heading,
-      velocityX: before === undefined ? velocityX + 0 : (point.x - before.x) / dt,
-      velocityZ: before === undefined ? velocityZ + 0 : (point.z - before.z) / dt,
-      speedMetresPerSecond: signedSpeed + 0, gaitDistanceMetres: state.gaitDistance,
-      wheelTravelMetres: state.wheelTravel,
-      activity, activityPhase, activityBlend,
-      backing: vehicle(spec.kind) && signedSpeed < 0, pathId: spec.pathId,
-      distanceMetres: state.distance, direction: state.direction, hull: { ...spec.hull },
-      footprint, supportHeights: supportHeights as [number, number, number, number],
-      ...(footSupports ? { footSupports } : {}), ...(tyreSupports ? { tyreSupports } : {}),
-      groundNormalX: normalX, groundNormalY: normalY, groundNormalZ: normalZ,
-      groundPitch: Math.atan2(-(normalX * sin + normalZ * cos), normalY),
-      groundRoll: Math.atan2(-(normalX * cos - normalZ * sin), normalY),
-      ...(knockedDown(state, this.clock) ? { impactReaction: 'knockdown' as const, impactFallYaw: state.fallYaw } : {}) };
+    // M47 follow-up: one record, in physicalPopulationPrism's key order, from the scratch prism.
+    // M48: the records are built by constructors in the former literals' key
+    // order (`recordType`), and the hull is the actor's one detached copy.
+    const footprint = new Footprint(prism.x, prism.z, prism.headingY, prism.halfWidthMetres, prism.halfLengthMetres, minY, maxY,
+      before === undefined ? prism.velocityX : (prism.x - before.footprint.x) / dt,
+      before === undefined ? prism.velocityZ : (prism.z - before.footprint.z) / dt,
+      new HullSource(point.x, y, point.z, state.heading, prism.normalX, prism.normalY, prism.normalZ, state.hull,
+        prism.minY - minY, maxY - prism.maxY, undefined));
+    return new ActorPose(spec.id, spec.kind, spec.appearanceIndex, point.x, y, point.z, state.heading,
+      before === undefined ? velocityX + 0 : (point.x - before.x) / dt,
+      before === undefined ? velocityZ + 0 : (point.z - before.z) / dt,
+      signedSpeed + 0, state.gaitDistance, state.wheelTravel, activity, activityPhase, activityBlend,
+      vehicle(spec.kind) && signedSpeed < 0, spec.pathId, state.distance, state.direction, state.hull,
+      footprint, supportHeights as [number, number, number, number], footSupports, tyreSupports,
+      normalX, normalY, normalZ, Math.atan2(-(normalX * sin + normalZ * cos), normalY),
+      Math.atan2(-(normalX * cos - normalZ * sin), normalY), knockedDown(state, this.clock) ? state.fallYaw : undefined);
   }
 
   private along(state: ActorState, signedTravel: number): number {
@@ -1333,7 +1895,9 @@ export class PopulationSimulation {
       return direction === 1 ? Math.min(from + signedTravel, destination)
         : Math.max(from + signedTravel, destination);
     }
-    return clamp(from + signedTravel, 0, length);
+    if (!this.following) return clamp(from + signedTravel, 0, length);
+    // A lane-trimmed end is never walked back into; one who starts past it walks out.
+    return clamp(from + signedTravel, Math.min(state.shuttleLow, from), Math.max(state.shuttleHigh, from));
   }
 
   private prospective(state: ActorState, travel: number): PopulationFootprint {
@@ -1363,19 +1927,17 @@ export class PopulationSimulation {
     const normalX = ground.normal.x, normalY = ground.normal.y, normalZ = ground.normal.z;
     const y = ground.height;
     const corners = this.lowerCorners;
-    const footprint = physicalPopulationPrism(transformPopulationHullLowerInto(pointX, y, pointZ, heading,
-      normalX, normalY, normalZ, spec.hull, 0, 0, corners));
+    const prism = physicalPopulationHullInto(pointX, y, pointZ, heading,
+      normalX, normalY, normalZ, spec.hull, 0, 0, corners, this.prism);
     // The corner support samples are refused exactly as makePose refuses them; a
     // footprint never reads their heights.
     for (const corner of corners) {
       const supportGround = this.sampler.sampleGround(corner.x, corner.z, this.ground);
       if (!Number.isFinite(supportGround.height)) throw new Error(`Invalid population support ground: ${spec.id}`);
     }
-    const targets = populationSupportTargets({ kind: spec.kind, appearanceIndex: spec.appearanceIndex,
-      x: pointX, y, z: pointZ, headingY: heading, hull: spec.hull,
-      speedMetresPerSecond: signedSpeed, gaitDistanceMetres: gaitDistance, activity,
-      groundNormalX: normalX, groundNormalY: normalY, groundNormalZ: normalZ });
-    let minY = footprint.minY, maxY = footprint.maxY;
+    const targets = populationSupportTargetsInto(this.supportFor(spec, pointX, y, pointZ, heading,
+      signedSpeed, gaitDistance, activity, normalX, normalY, normalZ), this.supportTargets);
+    let minY = prism.minY, maxY = prism.maxY;
     const feet = targets.feet, tyres = targets.tyres;
     if (feet) for (let index = 0; index < feet.length; index += 1) minY = Math.min(minY, this.supportHeight(feet[index], spec.id));
     if (tyres) for (let index = 0; index < tyres.length; index += 1) {
@@ -1383,9 +1945,25 @@ export class PopulationSimulation {
       minY = Math.min(minY, height);
       maxY = Math.max(maxY, height + 2 * tyres[index].radiusMetres);
     }
-    return { ...footprint, minY, maxY, sourceHull: { ...footprint.sourceHull!,
-      verticalPaddingBelowMetres: footprint.minY - minY,
-      verticalPaddingAboveMetres: maxY - footprint.maxY } };
+    return new Footprint(prism.x, prism.z, prism.headingY, prism.halfWidthMetres, prism.halfLengthMetres, minY, maxY,
+      prism.velocityX, prism.velocityZ, new HullSource(pointX, y, pointZ, heading, prism.normalX, prism.normalY, prism.normalZ,
+        state.hull, prism.minY - minY, maxY - prism.maxY, undefined));
+  }
+  /** The support targets' input, written into its scratch (the fields the simulation names, nothing seated). */
+  private supportFor(spec: ActorSpec, x: number, y: number, z: number, headingY: number, speedMetresPerSecond: number,
+    gaitDistanceMetres: number, activity: string, groundNormalX: number, groundNormalY: number, groundNormalZ: number): PopulationSupportInput {
+    const input = this.supportInput;
+    input.kind = spec.kind; input.appearanceIndex = spec.appearanceIndex; input.x = x; input.y = y; input.z = z;
+    input.headingY = headingY; input.hull = spec.hull; input.speedMetresPerSecond = speedMetresPerSecond;
+    input.gaitDistanceMetres = gaitDistanceMetres; input.activity = activity;
+    input.groundNormalX = groundNormalX; input.groundNormalY = groundNormalY; input.groundNormalZ = groundNormalZ;
+    return input;
+  }
+  /** The finished ground's height at a lower hull corner, with its refusal. */
+  private cornerHeight(corner: MutablePopulationHullCorner, id: string): number {
+    const supportGround = this.sampler.sampleGround(corner.x, corner.z, this.ground);
+    if (!Number.isFinite(supportGround.height)) throw new Error(`Invalid population support ground: ${id}`);
+    return supportGround.height;
   }
   /** makePose's sampleSupport(target).y, with its refusal. */
   private supportHeight(target: { x: number; y: number; z: number; contact: 'ground' | 'pedal' }, id: string): number {
@@ -1419,6 +1997,547 @@ export class PopulationSimulation {
     return false;
   }
 
+  /**
+   * M47 living-r2 pedestrian priority: `pedestrianPriority`'s rule, asked for
+   * less and refined. A crossing grants priority only where the vehicle's
+   * look-ahead touches it and its body does not, and that set is the vehicle's
+   * alone (`enteringCrossings`): on the town every crossing lists every
+   * pedestrian path, so the per-pair walk over all of them was most of a dense
+   * step. The person's look-ahead is formed only when its body does not decide.
+   * Refined: a person is on a crossing by its polygon (`onCrossing`); someone
+   * waiting for this very vehicle holds nothing over it; and a crossing the
+   * vehicle has claimed by its patience answers only to people crossing it now.
+   */
+  private priorityOver(person: number, traffic: number): boolean {
+    const personState = this.states[person], trafficState = this.states[traffic];
+    if (vehicle(personState.spec.kind) || !vehicle(trafficState.spec.kind)) return false;
+    // Someone waiting for this very vehicle holds nothing over it: it is in
+    // their way already, and each waiting on the other stood for good.
+    if (personState.blockedBy === traffic || personState.waitingOn.includes(traffic)) return false;
+    const crossings = this.crossingSets.get(personState.spec.pathId)?.get(trafficState.spec.pathId);
+    if (crossings === undefined) return false;
+    const entering = this.enteringCrossings(traffic);
+    if (entering.length === 0) return false;
+    const personStart = this.previousActor(personState.spec.id) ?? personState.pose;
+    const personFrom = personStart.footprint;
+    // Broad phase: `onCrossing` needs a body's centre within its radius of a
+    // crossing's box, and the look-ahead's centre is never farther from the
+    // start's than its travel along the path, the step-aside offsets and the
+    // body's own size (a turn swings an off-centre hull). A person beyond that
+    // from every crossing the vehicle enters can be granted nothing.
+    const box = this.enteringBox, at = traffic * 4;
+    const reach = 3 * Math.hypot(personFrom.halfWidthMetres, personFrom.halfLengthMetres)
+      + Math.abs(personState.spec.speedMetresPerSecond) * R.humanLookAheadSeconds
+      + Math.abs(personState.aside) + Math.abs(personState.stepStartAside) + Math.abs(personState.asideTarget) + 1;
+    if (personFrom.x < box[at] - reach || personFrom.x > box[at + 1] + reach
+      || personFrom.z < box[at + 2] - reach || personFrom.z > box[at + 3] + reach) return false;
+    let personTo: PopulationFootprint | undefined;
+    const claim = this.patience[traffic];
+    // People standing (a pause at a path end, a turn, a wait) are not crossing.
+    const crossingNow = Math.abs(personStart.speedMetresPerSecond) > R.epsilon
+      && (personStart.activity === 'walking' || personStart.activity === 'jogging' || personStart.activity === 'riding');
+    for (const crossing of entering) {
+      if (!crossings.has(crossing)) continue;
+      // A crossing the vehicle has claimed by its patience answers only to people already crossing it.
+      const claimed = claim.length > 0 && claim.includes(crossing);
+      if (this.onCrossing(crossing, personFrom) && (!claimed || crossingNow)) return true;
+      if (claimed) continue;
+      if (personTo === undefined) {
+        personTo = this.lookahead(personState, personStart, R.humanLookAheadSeconds);
+      }
+      if (this.onCrossing(crossing, personTo)) return true;
+    }
+    return false;
+  }
+  /**
+   * M47 living-r2: a person's body (or look-ahead) is on a crossing when it
+   * overlaps the crossing's own polygon. The extent-plus-radius test a vehicle
+   * keeps is a square round a diagonal pad: walkers going along the pavement
+   * beside it held vans as if they were crossing.
+   */
+  private onCrossing(crossing: CrossingExtent, body: PopulationFootprint): boolean {
+    const radius = Math.hypot(body.halfWidthMetres, body.halfLengthMetres);
+    if (!touchesCrossingWithin(crossing, body, radius)) return false;
+    const corners = this.crossingCorners.get(crossing);
+    return corners === undefined || boxOverlapsPolygon(body.x, body.z, body.headingY, body.halfWidthMetres, body.halfLengthMetres, corners);
+  }
+  /**
+   * The crossings a vehicle's priority look-ahead enters this step. Its body is
+   * the step's start; its look-ahead's place reads only that start, the path
+   * and the live direction (a vehicle never steps aside), so it is formed once
+   * per step and direction and every pair reads the same list.
+   */
+  private enteringCrossings(index: number): readonly CrossingExtent[] {
+    const state = this.states[index];
+    if (this.enteringTick[index] === this.tick && this.enteringDirection[index] === state.direction) return this.entering[index];
+    const out = this.entering[index];
+    out.length = 0;
+    const all = this.vehicleCrossings.get(state.spec.pathId);
+    if (all !== undefined) {
+      const start = this.previousActor(state.spec.id) ?? state.pose;
+      const from = start.footprint, to = this.lookahead(state, start, R.vehicleLookAheadSeconds);
+      const fromRadius = Math.hypot(from.halfWidthMetres, from.halfLengthMetres), toRadius = Math.hypot(to.halfWidthMetres, to.halfLengthMetres);
+      for (const crossing of all) if (touchesCrossingWithin(crossing, to, toRadius) && !touchesCrossingWithin(crossing, from, fromRadius)) out.push(crossing);
+    }
+    const box = this.enteringBox, at = index * 4;
+    box[at] = Infinity; box[at + 1] = -Infinity; box[at + 2] = Infinity; box[at + 3] = -Infinity;
+    for (const crossing of out) {
+      box[at] = Math.min(box[at], crossing.minX); box[at + 1] = Math.max(box[at + 1], crossing.maxX);
+      box[at + 2] = Math.min(box[at + 2], crossing.minZ); box[at + 3] = Math.max(box[at + 3], crossing.maxZ);
+    }
+    this.enteringTick[index] = this.tick; this.enteringDirection[index] = state.direction;
+    return out;
+  }
+
+  /**
+   * M47 living-r2 route-scan broad phase: a world box every blocker the scan
+   * could stop for must meet. It walks the very source spans `routeAnticipation`
+   * visits (same distance, direction and travel, same arithmetic), so the swept
+   * centre stays inside the box of their endpoints, then grows it by more than
+   * the scan's widest car support on any span: the flat spans' padded hull
+   * support and chord reserve, and the unknown spans' full-hull axis bound with
+   * the seam turn, the actual-pose bridge and the gap. A blocker whose own
+   * world box misses it is one every span refuses on a world axis. Null where
+   * the walk itself would overflow the scan's work cap (the scan then decides).
+   */
+  private routeScanBox(state: ActorState, travel: number, gap: number, dt: number): ScanBox | null {
+    const path = state.path.path, points = path.points, direction = state.direction;
+    const box = this.scanBox;
+    box.minX = Infinity; box.maxX = -Infinity; box.minZ = Infinity; box.maxZ = -Infinity;
+    let distance = state.distance, travelled = 0, visits = 0, firstX = NaN, firstZ = NaN;
+    let low = 0, high = points.length - 1;
+    while (high - low > 1) { const middle = (low + high) >>> 1; if (points[middle].distanceMetres <= distance) low = middle; else high = middle; }
+    let span = low;
+    if (direction === -1 && distance === points[span].distanceMetres && span > 0) span--;
+    while (travelled < travel) {
+      if (visits >= R.compactAnticipationMaximumSpans) return null;
+      visits++;
+      const a = points[span], b = points[span + 1], length = b.distanceMetres - a.distanceMetres;
+      if (!(length > 0)) return null;
+      const remaining = direction === 1 ? b.distanceMetres - distance : distance - a.distanceMetres;
+      const along = Math.min(travel - travelled, Math.max(0, remaining));
+      const fromT = (distance - a.distanceMetres) / length, toT = (distance + direction * along - a.distanceMetres) / length;
+      const fromX = a.x + (b.x - a.x) * fromT, fromZ = a.z + (b.z - a.z) * fromT;
+      const toX = a.x + (b.x - a.x) * toT, toZ = a.z + (b.z - a.z) * toT;
+      if (visits === 1) { firstX = fromX; firstZ = fromZ; }
+      box.minX = Math.min(box.minX, fromX, toX); box.maxX = Math.max(box.maxX, fromX, toX);
+      box.minZ = Math.min(box.minZ, fromZ, toZ); box.maxZ = Math.max(box.maxZ, fromZ, toZ);
+      travelled += along; distance += direction * along;
+      if (travelled >= travel) break;
+      if (direction === 1) {
+        if (span + 1 < points.length - 1) span++;
+        else if (path.closed) { span = 0; distance = 0; }
+        else break;
+      } else {
+        if (span > 0) span--;
+        else if (path.closed) { span = points.length - 2; distance = path.lengthMetres; }
+        else break;
+      }
+    }
+    if (visits === 0) return box;
+    const hull = state.spec.hull, terms = this.pathScanTerms.get(state.spec.pathId)!, current = state.pose.footprint;
+    const fullHull = Math.hypot(hull.halfWidthMetres, hull.halfLengthMetres, hull.heightMetres);
+    const bridge = Math.hypot(current.halfWidthMetres, current.halfLengthMetres) + Math.hypot(current.x - firstX, current.z - firstZ);
+    const flat = Math.hypot(hull.halfWidthMetres + gap, hull.halfLengthMetres + gap)
+      + Math.max(state.spec.speedMetresPerSecond, state.speed) * dt * terms.metric / 2;
+    const unknown = Math.max(fullHull * Math.SQRT2 * (1 + terms.seamTurn), bridge) + Math.SQRT2 * gap;
+    const margin = Math.max(flat, unknown) + (path.closed ? R.closedPositionToleranceMetres : 0) + ROUTE_SCAN_BOX_SLACK_METRES;
+    if (!(Number.isFinite(margin) && Number.isFinite(box.minX) && Number.isFinite(box.maxX)
+      && Number.isFinite(box.minZ) && Number.isFinite(box.maxZ))) return null;
+    box.minX -= margin; box.maxX += margin; box.minZ -= margin; box.maxZ += margin;
+    return box;
+  }
+
+  /**
+   * M47 living-r2: the cap a closed loop's traffic puts on this vehicle's
+   * target speed (`POPULATION_TRAFFIC`), Infinity for none, and the vehicle it
+   * then waits on in `trafficWaitsOn` (-1 none). Three rules, the least cap wins:
+   * - **Following.** The leader is the nearest of its loop's other vehicles
+   *   ahead along the loop at the step's start, never a live state (a lower
+   *   index has already moved); within `followingRangeMetres` the IDM law caps it.
+   * - **Crossing zones.** Behind a slow leader, a vehicle outside every zone
+   *   that could not clear the next one stops short of its entry; one already
+   *   inside a zone follows on.
+   * - **Necks** (`neckCap`).
+   */
+  private trafficCap(index: number, state: ActorState, dt: number, deciding: boolean): number {
+    this.trafficWaitsOn = -1;
+    const loop = this.loopId[index];
+    if (loop < 0) return Infinity;
+    const members = this.loopMembers[loop];
+    if (members.length < 2) return Infinity;
+    const start = this.previous.actors, length = state.path.path.lengthMetres, self = start[index].distanceMetres;
+    let leader = -1, ahead = Infinity;
+    for (const other of members) {
+      if (other === index) continue;
+      let along = wrapDistance(start[other].distanceMetres - self, length);
+      // Two at one distance: the higher index is the one ahead.
+      if (along === 0 && other < index) along = length;
+      if (along < ahead) { ahead = along; leader = other; }
+    }
+    const ownHalf = state.spec.hull.halfLengthMetres, leaderHalf = this.states[leader].spec.hull.halfLengthMetres;
+    const speed = state.speed, free = state.spec.speedMetresPerSecond, leaderSpeed = Math.abs(start[leader].speedMetresPerSecond);
+    // How far its centre could go behind the leader were the leader to stand where it is.
+    const room = ahead - leaderHalf - POPULATION_TRAFFIC.standstillGapMetres - ownHalf;
+    let cap = Infinity, crossingHeld = false;
+    const gap = ahead - ownHalf - leaderHalf;
+    if (gap <= POPULATION_TRAFFIC.followingRangeMetres) {
+      cap = followingSpeedCap(speed, free, gap, speed - leaderSpeed, dt);
+      this.trafficWaitsOn = leader;
+      const zones = this.crossingZones[index];
+      if (zones !== undefined && zones.length > 0 && leaderSpeed < POPULATION_TRAFFIC.slowLeaderMetresPerSecond) {
+        let entry = Infinity, exit = 0, inside = false;
+        for (const zone of zones) {
+          const into = wrapDistance(self - zone.entry, length);
+          if (into <= zone.length) { inside = true; break; }
+          const toEntry = length - into;
+          if (toEntry < entry) { entry = toEntry; exit = toEntry + zone.length; }
+        }
+        if (!inside && entry < ahead && room < exit + POPULATION_TRAFFIC.crossingStopMarginMetres) {
+          // A standing obstacle whose standstill gap ends where the centre must stop.
+          crossingHeld = true;
+          cap = Math.min(cap, followingSpeedCap(speed, free,
+            entry - POPULATION_TRAFFIC.crossingStopMarginMetres + POPULATION_TRAFFIC.standstillGapMetres, speed, dt));
+        }
+      }
+    }
+    const arms = this.loopArms[index];
+    if (arms !== undefined && arms.length > 0) {
+      const neck = this.neckCap(index, state, dt, self, length, arms, members, room, deciding && !crossingHeld);
+      if (neck < cap) { cap = neck; this.trafficWaitsOn = this.neckWaitsOn; }
+    }
+    return cap;
+  }
+  private trafficWaitsOn = -1;
+  private neckWaitsOn = -1;
+
+  /**
+   * M47 living-r2: after a step, how long native contact has held each loop
+   * vehicle's own move against one and the same person (`nativeBlocker`): a
+   * move it got through, or no such hold, starts the count again. The vehicle
+   * waits on that person, so a wait round the two is seen (`resolveMutualWaits`).
+   */
+  private noteNativeHolds(dt: number): void {
+    for (const members of this.loopMembers) for (const index of members) {
+      const by = this.nativeBlocker[index], state = this.states[index];
+      if (by < 0 || Math.abs(state.stepTravel) > NATIVE_HOLD_PROGRESS_METRES) { this.nativeHeldBy[index] = -1; this.nativeHeldSeconds[index] = 0; continue; }
+      if (this.nativeHeldBy[index] === by) this.nativeHeldSeconds[index] += dt;
+      else { this.nativeHeldBy[index] = by; this.nativeHeldSeconds[index] = dt; }
+      if (!state.waitingOn.includes(by)) state.waitingOn.push(by);
+    }
+  }
+  /**
+   * M47 living-r2: whether its own path, from beside it to its look-ahead, is
+   * clear of every other actor's body by its waiting gap: one stood aside for
+   * a vehicle steps back only into an empty path (a pathmate behind it held
+   * the step back and it held the pathmate, for good).
+   */
+  private pathClearOfActors(state: ActorState, index: number): boolean {
+    const onPath = { ...state, aside: 0 }, from = grow(this.makePose(onPath, 0, 0, 0).footprint, R.humanWaitingGapMetres);
+    const to = grow(this.prospective(onPath, state.direction * state.spec.speedMetresPerSecond * R.humanLookAheadSeconds), R.humanWaitingGapMetres);
+    for (let other = 0; other < this.states.length; other += 1) {
+      if (other === index) continue;
+      const body = this.states[other].pose.footprint;
+      if (Math.hypot(body.x - from.x, body.z - from.z) > SIDESTEP_NEAR_METRES + Math.hypot(body.halfWidthMetres, body.halfLengthMetres)) continue;
+      if (sweepPopulationHulls(from, to, body, body) !== null) return false;
+    }
+    return true;
+  }
+  /**
+   * M47 living-r2: `stepAside` for a loop vehicle rather than a rider. The
+   * side away from the vehicle first, the wider offset first (the rider's
+   * offsets, then `POPULATION_TRAFFIC.pinnedWalkerWiderOffsetsMetres`), onto ground
+   * `sidestepClear` accepts, and only to a spot the vehicle's own route ahead
+   * clears (`routeMeets`): a van is long, so "farther from its centre and off
+   * its centreline", the rider's test, refused every step aside in front of one
+   * at an angle.
+   */
+  private stepAsideFor(state: ActorState, vehicleIndex: number): boolean {
+    // A step aside dropped part way (`SIDESTEP_GIVE_UP_SECONDS`) stands settled off the path, and may go again.
+    if ((state.spec.kind !== 'walker' && state.spec.kind !== 'jogger') || state.aside !== state.asideTarget
+      || state.pause > 0) return false;
+    const point = pathPoint(state.path.path, state.distance), lateralX = Math.cos(point.headingY), lateralZ = -Math.sin(point.headingY);
+    const van = this.states[vehicleIndex].pose.footprint, body = state.pose.footprint;
+    const grownVan = grow(van, POPULATION_TRAFFIC.waitingGapMetres + STANDING_HIT_SLACK_METRES);
+    const away = (van.x - point.x) * lateralX + (van.z - point.z) * lateralZ <= 0 ? 1 : -1;
+    for (const offset of [...SIDESTEP_OFFSETS_METRES, ...POPULATION_TRAFFIC.pinnedWalkerWiderOffsetsMetres]) for (const side of [away, -away]) {
+      const there = { ...body, x: point.x + lateralX * side * offset, z: point.z + lateralZ * side * offset };
+      if (this.routeMeets(vehicleIndex, there)) continue;
+      // Not past the vehicle's body within its gap: such a step stalls on it, is
+      // dropped and is tried again for good. From inside the gap, only out of it.
+      const hit = sweepPopulationHulls(body, there, grownVan, grownVan);
+      if (hit !== null && (!hit.initiallyOverlapping || sweepPopulationHulls(there, there, grownVan, grownVan) !== null)) continue;
+      if (!this.sidestepClear(state, point, lateralX * side, lateralZ * side, offset)) continue;
+      state.asideTarget = side * offset; return true;
+    }
+    return false;
+  }
+  /**
+   * Whether a loop vehicle's body, grown by its waiting gap and
+   * `STANDING_HIT_SLACK_METRES`, meets `body` anywhere along its route from
+   * where it stands to a full look-ahead of free-road travel past its length.
+   */
+  private routeMeets(vehicleIndex: number, body: PopulationFootprint): boolean {
+    const state = this.states[vehicleIndex];
+    const reach = state.spec.speedMetresPerSecond * R.vehicleLookAheadSeconds + 2 * state.spec.hull.halfLengthMetres;
+    return this.standingHitOf(state, [body], reach, POPULATION_TRAFFIC.waitingGapMetres, STANDING_HIT_SLACK_METRES, false) >= 0;
+  }
+  /**
+   * M47 living-r2: a walker or jogger held at its path's end by someone
+   * walking up to it who stands in a loop vehicle's way steps off the path to
+   * let them by (the rider's offsets),
+   * to a spot clear of the other's body and walk ahead, onto ground
+   * `sidestepClear` accepts and out of every nearby loop vehicle's route; it
+   * comes back once its path is clear (`asideFor`). Codex's audit, seed
+   * `m47-audit-02` High at 1/120 s: two walkers met at a pavement's end
+   * beside a lane, the one in the lane turning between them and a van for good.
+   */
+  private stepAsideForPathmate(state: ActorState, other: number): boolean {
+    if ((state.spec.kind !== 'walker' && state.spec.kind !== 'jogger') || state.aside !== state.asideTarget
+      || state.pause > 0) return false;
+    const mate = this.states[other], onPath = { ...mate, aside: 0 };
+    // Only for one held in a loop vehicle's way: pathmates elsewhere settle it among themselves.
+    const inVehicleWay = (spot: PopulationFootprint): boolean => this.loopMembers.some(members => members.some(vehicleIndex => {
+      const van = this.states[vehicleIndex].pose.footprint;
+      return Math.hypot(van.x - spot.x, van.z - spot.z) < PATHMATE_VEHICLE_REACH_METRES && this.routeMeets(vehicleIndex, spot);
+    }));
+    if (!inVehicleWay(mate.pose.footprint)) return false;
+    const mateFrom = grow(mate.pose.footprint, R.humanWaitingGapMetres);
+    const mateTo = grow(this.prospective(onPath, mate.direction * mate.spec.speedMetresPerSecond * R.humanLookAheadSeconds), R.humanWaitingGapMetres);
+    const point = pathPoint(state.path.path, state.distance), lateralX = Math.cos(point.headingY), lateralZ = -Math.sin(point.headingY);
+    const body = state.pose.footprint;
+    for (const offset of SIDESTEP_OFFSETS_METRES) for (const side of [1, -1]) {
+      const there = { ...body, x: point.x + lateralX * side * offset, z: point.z + lateralZ * side * offset };
+      if (sweepPopulationHulls(there, there, mateFrom, mateTo) !== null) continue;
+      if (!this.sidestepClear(state, point, lateralX * side, lateralZ * side, offset)) continue;
+      if (inVehicleWay(there)) continue;
+      state.asideTarget = side * offset; return true;
+    }
+    return false;
+  }
+  /** A vehicle's own body as a standing occupant, for the step-aside rules written for riders. */
+  private vehicleAsOccupant(index: number): PopulationOccupant {
+    const body = this.states[index].pose.footprint;
+    return { id: this.actorBlockerIds[index], kind: 'cop', previous: body, current: body };
+  }
+  /** Someone this loop vehicle may squeeze past hull to hull at a walk: pinned against it, or holding its own move for the mutual wait. */
+  private pinnedAgainst(other: number, vehicleIndex: number, people: readonly PopulationOccupant[]): boolean {
+    return (this.nativeHeldBy[vehicleIndex] === other && this.nativeHeldSeconds[vehicleIndex] >= MUTUAL_WAIT_SECONDS)
+      || this.waitsForGood(other, vehicleIndex, people);
+  }
+
+  /**
+   * M47 living-r2: the route scan for people standing still, by the hull
+   * itself rather than the scan's world boxes (on ground the certificate
+   * cannot call flat those widen to several metres, and a person standing on
+   * the pavement beside the lane held the van). The vehicle's body, grown by
+   * the waiting gap and `STANDING_HIT_SLACK_METRES`, at its own pose every
+   * `STANDING_HIT_STEP_METRES` along the next `reach` of its route: the first
+   * person it would meet (one already inside that grown body counts only where
+   * it would come nearer), else -1. The travel left before it is in `standingHitTravel`.
+   */
+  private standingHit(state: ActorState, standing: readonly number[], bodies: readonly PopulationFootprint[], reach: number,
+    gap: number, slack: number): number {
+    const at = this.standingHitOf(state, standing.map(index => bodies[index]), reach, gap, slack, true);
+    return at < 0 ? -1 : standing[at];
+  }
+  /**
+   * `standingHit` over bodies themselves: the index of the first one met, else
+   * -1. `departing`: one already inside the grown body counts only where it
+   * would come nearer; else any meeting counts.
+   */
+  private standingHitOf(state: ActorState, bodies: readonly PopulationFootprint[], reach: number, gap: number, slack: number,
+    departing: boolean): number {
+    const path = state.path.path, own = state.pose.footprint;
+    const width = Math.max(state.spec.hull.halfWidthMetres, own.halfWidthMetres) + gap + slack;
+    const length = Math.max(state.spec.hull.halfLengthMetres, own.halfLengthMetres) + gap + slack;
+    const radius = Math.hypot(width, length);
+    const start = new Array<number>(bodies.length);
+    for (let travel = 0; ; travel += STANDING_HIT_STEP_METRES) {
+      const along = Math.min(travel, reach), point = pathPoint(path, this.alongFrom(state, state.distance, state.direction, state.direction * along));
+      for (let at = 0; at < bodies.length; at += 1) {
+        const body = bodies[at];
+        if (Math.hypot(body.x - point.x, body.z - point.z) > radius + Math.hypot(body.halfWidthMetres, body.halfLengthMetres)) {
+          if (travel === 0) start[at] = Infinity;
+          continue;
+        }
+        const clearance = flatBoxGap(point.x, point.z, point.headingY, width, length, body.x, body.z, body.headingY,
+          body.halfWidthMetres, body.halfLengthMetres);
+        if (travel === 0 && departing) { start[at] = clearance; continue; }
+        if (clearance < 0 && (!departing || clearance < Math.min(0, start[at]) - STANDING_HIT_NEARER_METRES)) {
+          this.standingHitTravel = Math.max(0, along - STANDING_HIT_STEP_METRES);
+          return at;
+        }
+      }
+      if (along >= reach) return -1;
+    }
+  }
+
+  /**
+   * M47 living-r2: a person pinned against this very vehicle: stalled on it for
+   * the mutual wait and unable to turn round (a path end at its back, a rider
+   * in its turn), or stalled on it again just after a turn. Each waited on the
+   * other for good (a walker back at the end of a pavement that ends beside the
+   * lane, the van stopped beside them). The vehicle squeezes past them hull to
+   * hull at a walk when its whole route ahead clears them so, else they step
+   * aside for it as for a rider (`resolveMutualWaits`).
+   */
+  private waitsForGood(other: number, vehicleIndex: number, people: readonly PopulationOccupant[]): boolean {
+    const person = this.states[other];
+    if (vehicle(person.spec.kind) || person.blockedBy !== vehicleIndex) return false;
+    // Turned round lately and stalled on the vehicle again: the other way is
+    // shut too (a pathmate at the path end), and turning back only flips them
+    // between the two for good.
+    if (this.clock - person.turnedAt < MUTUAL_RECENT_TURN_SECONDS && person.blockedSeconds >= OCCUPANT_WAIT_SECONDS) return true;
+    return person.blockedSeconds >= MUTUAL_WAIT_SECONDS
+      && !(this.turnRoom(person) > MUTUAL_TURN_ROOM_METRES && this.turnSweepClear(person, people));
+  }
+
+  /**
+   * M47 living-r2 patience at a crossing (`holdPatienceSeconds`). `held`: its
+   * pedestrian priority held it this step; `free`: the target it would have had
+   * without that hold. Only a hold that alone stops it counts; once it has
+   * lasted the patience, the crossings it is entering are its claim.
+   */
+  private notePatience(index: number, held: boolean, free: number, dt: number): void {
+    const ready = held && free > PATIENCE_READY_METRES_PER_SECOND;
+    this.patienceReady[index] = ready ? 1 : 0;
+    if (!ready) { if (!held) this.holdSeconds[index] = 0; return; }
+    this.holdSeconds[index] += dt;
+    // Every crossing it enters while it has run out of patience joins the claim (its look-ahead creeps on with it).
+    if (this.holdSeconds[index] < POPULATION_TRAFFIC.holdPatienceSeconds) return;
+    const claim = this.patience[index];
+    for (const crossing of this.enteringCrossings(index)) if (!claim.includes(crossing)) claim.push(crossing);
+  }
+  /** A claim ends once the vehicle has driven through: neither its body nor its priority look-ahead touches any claimed crossing. */
+  private releasePatience(index: number, state: ActorState): void {
+    const claim = this.patience[index];
+    if (claim.length === 0) return;
+    const start = this.previousActor(state.spec.id) ?? state.pose;
+    const from = start.footprint, to = this.lookahead(state, start, R.vehicleLookAheadSeconds);
+    const fromRadius = Math.hypot(from.halfWidthMetres, from.halfLengthMetres), toRadius = Math.hypot(to.halfWidthMetres, to.halfLengthMetres);
+    if (claim.some(crossing => touchesCrossingWithin(crossing, from, fromRadius) || touchesCrossingWithin(crossing, to, toRadius))) return;
+    claim.length = 0; this.holdSeconds[index] = 0;
+  }
+  /**
+   * Whether this person must wait for a vehicle's patience claim: its body is
+   * on none of the claimed crossings it shares with the vehicle, its look-ahead
+   * touches one, and the vehicle would go but for people on it. The first such
+   * vehicle in index order, else -1.
+   */
+  private yieldsToPatience(index: number, state: ActorState, from: PopulationFootprint, look: PopulationFootprint): number {
+    const byVehicle = this.crossingSets.get(state.spec.pathId);
+    if (byVehicle === undefined) return -1;
+    for (const other of this.priorityVehicles[index]) {
+      const claim = this.patience[other];
+      if (claim.length === 0 || this.patienceReady[other] === 0) continue;
+      const shared = byVehicle.get(this.states[other].spec.pathId);
+      if (shared === undefined || claim.some(crossing => shared.has(crossing) && this.onCrossing(crossing, from))) continue;
+      if (claim.some(crossing => shared.has(crossing) && this.onCrossing(crossing, look))) return other;
+    }
+    return -1;
+  }
+
+  /**
+   * M47 living-r2: necks, taken in turn. Arms passed are let go; an arm the
+   * vehicle is already in is its own. Before the next arm, within its decision
+   * distance of the stop line (the arm's entry less the margin, or the entry of
+   * a crossing zone that line falls in, when the vehicle is not in one yet),
+   * it takes the arm if no other vehicle holds a conflicting arm, no vehicle
+   * ready to go has waited longer for one, and it has room behind its leader
+   * to clear the arm were the leader to stop now; else it stops at the line
+   * and waits there, the first to wait going first. Deterministic: state
+   * order, fixed-step clock.
+   */
+  private neckCap(index: number, state: ActorState, dt: number, self: number, length: number,
+    arms: readonly LoopArm[], members: readonly number[], room: number, deciding: boolean): number {
+    this.neckWaitsOn = -1;
+    const T = POPULATION_TRAFFIC, held = this.armsHeld[index];
+    // The next arm it does not hold (one it has slipped into unheld comes
+    // first, decided where it stands), and how far it is committed: the far
+    // end of every arm it holds, which it must drive out of before it can wait.
+    let next = -1, toEntry = Infinity, holding = -Infinity;
+    for (let arm = 0; arm < arms.length; arm += 1) {
+      const into = wrapDistance(self - arms[arm].entry, length), inside = into <= arms[arm].length;
+      const mine = held.indexOf(arm);
+      if (mine >= 0) {
+        // Taken ahead of its entry or in it, it is still the vehicle's; once passed it is let go.
+        if (!inside && length - into > (length - arms[arm].length) / 2) { held.splice(mine, 1); continue; }
+        holding = Math.max(holding, inside ? arms[arm].length - into : length - into + arms[arm].length);
+        continue;
+      }
+      const before = inside ? -into : length - into;
+      if (before < toEntry) { toEntry = before; next = arm; }
+    }
+    if (next < 0) { this.armWaiting[index] = -1; return Infinity; }
+    // Held back by something else it takes nothing new, lets go of what it
+    // has taken but not entered, and keeps its place in any wait; unless it
+    // could no longer stop short of the arm braking hard, when it decides now.
+    const speed = state.speed;
+    const committed = toEntry - T.crossingStopMarginMetres <= speed * speed / (2 * R.vehicleBrakingMetresPerSecondSquared) + speed * dt;
+    if (!deciding && !committed) {
+      for (let at = held.length - 1; at >= 0; at -= 1) {
+        const into = wrapDistance(self - arms[held[at]].entry, length);
+        if (into > arms[held[at]].length) held.splice(at, 1);
+      }
+      // It could not go if let: no one defers to it meanwhile.
+      this.armWaitingReady[index] = 0;
+      return Infinity;
+    }
+    const arm = arms[next];
+    let stop = toEntry < 0 ? 0 : toEntry - T.crossingStopMarginMetres;
+    // Outside every crossing zone, a line inside one moves back to that zone's
+    // entry, unless that is behind the vehicle or inside an arm it holds.
+    const zones = this.crossingZones[index];
+    if (toEntry >= 0 && zones !== undefined && !zones.some(zone => wrapDistance(self - zone.entry, length) <= zone.length)) {
+      for (const zone of zones) {
+        const toZone = wrapDistance(zone.entry - self, length);
+        if (toZone <= stop && stop <= toZone + zone.length) {
+          const shifted = toZone - T.crossingStopMarginMetres;
+          if (shifted >= Math.max(0, holding)) stop = shifted;
+          break;
+        }
+      }
+    }
+    // It cannot wait short of an arm it holds: this one is decided past it.
+    if (stop < holding) return Infinity;
+    if (stop > speed * speed / (2 * T.comfortableBrakingMetresPerSecondSquared) + T.crossingStopMarginMetres + T.neckDecisionMetres) {
+      return Infinity;
+    }
+    const conflicts = (other: number): boolean => other !== next || arm.exclusive;
+    // A holder is one that has taken a conflicting arm or stands in one (it may have rolled in, held by something else).
+    let holder = -1;
+    const start = this.previous.actors;
+    for (const other of members) {
+      if (other === index) continue;
+      for (const theirs of this.armsHeld[other]) if (arms[theirs].neck === arm.neck && conflicts(theirs)) { holder = other; break; }
+      if (holder >= 0) break;
+      const at = start[other].distanceMetres;
+      for (let theirs = 0; theirs < arms.length; theirs += 1) {
+        if (arms[theirs].neck === arm.neck && conflicts(theirs) && wrapDistance(at - arms[theirs].entry, length) <= arms[theirs].length) { holder = other; break; }
+      }
+      if (holder >= 0) break;
+    }
+    const roomy = room >= toEntry + arm.length + T.crossingStopMarginMetres;
+    const since = this.armWaiting[index] === next ? this.armWaitingSince[index] : this.clock;
+    let earlier = -1;
+    if (holder < 0) for (const other of members) {
+      const theirs = this.armWaiting[other];
+      if (other === index || theirs < 0 || this.armWaitingReady[other] === 0 || arms[theirs].neck !== arm.neck || !conflicts(theirs)) continue;
+      const otherSince = this.armWaitingSince[other];
+      if (otherSince < since || (otherSince === since && other < index)) { earlier = other; break; }
+    }
+    if (holder < 0 && earlier < 0 && roomy) {
+      held.push(next); this.armWaiting[index] = -1;
+      return Infinity;
+    }
+    if (this.armWaiting[index] !== next) { this.armWaiting[index] = next; this.armWaitingSince[index] = this.clock; }
+    // Ready: only another vehicle holds it back, so it goes the moment that one has passed.
+    this.armWaitingReady[index] = roomy ? 1 : 0;
+    this.neckWaitsOn = holder >= 0 ? holder : earlier;
+    return followingSpeedCap(speed, state.spec.speedMetresPerSecond, stop + T.standstillGapMetres, speed, dt);
+  }
+
   /** The actor's own look ahead is the priority forecast whenever its live
    * state still holds the epoch's start, as it does until its own move. */
   private ownLookahead(state: ActorState, index: number, seconds: number): PopulationFootprint {
@@ -1428,6 +2547,17 @@ export class PopulationSimulation {
       && Object.is(state.gaitDistance, start.gaitDistanceMetres) && Object.is(state.wheelTravel, start.wheelTravelMetres))
       return this.lookahead(state, start, seconds);
     return this.prospective(state, state.direction * state.spec.speedMetresPerSecond * seconds);
+  }
+
+  /** grow(body, margin) for actor `index`, reusing either of its last two (`grown`). */
+  private grownFor(index: number, body: PopulationFootprint, margin: number): PopulationFootprint {
+    const memo = this.grown[index] ??= { body: [undefined, undefined], margin: [0, 0], grown: [undefined, undefined], next: 0 };
+    for (let slot = 0; slot < 2; slot += 1) {
+      if (memo.body[slot] === body && Object.is(memo.margin[slot], margin)) return memo.grown[slot]!;
+    }
+    const grown = growActor(body, margin), slot = memo.next;
+    memo.body[slot] = body; memo.margin[slot] = margin; memo.grown[slot] = grown; memo.next = 1 - slot;
+    return grown;
   }
 
   /** This epoch's start pose for an actor id; the index replaces a linear find. */
@@ -1451,9 +2581,16 @@ export class PopulationSimulation {
     // startState(state, start) then prospective: the start frame is passed, not copied.
     const footprint = this.prospectiveFrom(state, start.distanceMetres, start.direction, start.gaitDistanceMetres,
       state.direction * state.spec.speedMetresPerSecond * seconds);
-    if (index !== undefined && this.states[index] === state) this.lookaheads[index] = { epoch: this.previous, start,
-      clock: this.clock, seconds, direction: state.direction, workerLeg: state.workerLeg, pause: state.pause,
-      turning: state.turning, waiting: state.waiting, impactUntil: state.impactUntil, footprint };
+    if (index !== undefined && this.states[index] === state) {
+      if (memo === undefined) this.lookaheads[index] = { epoch: this.previous, start,
+        clock: this.clock, seconds, direction: state.direction, workerLeg: state.workerLeg, pause: state.pause,
+        turning: state.turning, waiting: state.waiting, impactUntil: state.impactUntil, footprint };
+      else {
+        memo.epoch = this.previous; memo.start = start; memo.clock = this.clock; memo.seconds = seconds;
+        memo.direction = state.direction; memo.workerLeg = state.workerLeg; memo.pause = state.pause;
+        memo.turning = state.turning; memo.waiting = state.waiting; memo.impactUntil = state.impactUntil; memo.footprint = footprint;
+      }
+    }
     return footprint;
   }
 
@@ -1507,6 +2644,9 @@ export class PopulationSimulation {
         && (!ids.has(`${person.id}/wheel`) || !ids.has(`${person.id}/human`)))
         throw new RangeError('Compact anticipation omitted an active native owner');
     }
+    // This step's motion boxes: last step's are released (`BoxArena`).
+    const boxes = this.boxes;
+    boxes.release();
     const anticipationRows: Array<RouteAnticipationResult & { actorId: string; targetSpeedMetresPerSecond: number; incomplete: boolean }> = [];
     this.anticipationRows = anticipationRows;
     // The epoch start's own footprints: every reader below only reads them, and
@@ -1515,8 +2655,8 @@ export class PopulationSimulation {
     // Formed on first use (a pedestrian-priority pair): one pure object per actor per step, as before.
     const stationaryActors: (BoundedMotion | undefined)[] = [], stationaryMemos = this.endpointMemoRow('stationary');
     const stationaryActor = (other: number): BoundedMotion =>
-      stationaryActors[other] ??= boundedMotion(actorBlockers[other], actorBlockers[other], stationaryMemos[other] ??= {});
-    const reservationBlockers = reserved.map(item => boundedMotion(item.footprint, item.footprint));
+      stationaryActors[other] ??= boundedMotion(actorBlockers[other], actorBlockers[other], boxes, stationaryMemos[other] ??= {});
+    const reservationBlockers = reserved.map(item => boundedMotion(item.footprint, item.footprint, boxes));
     // PERF-POP: each compact part's padded blocker is a pure function of the part and
     // the horizon, so it is formed once per step: for walkers at the one human
     // horizon (indexed by part), for vehicles per forecast horizon.
@@ -1524,7 +2664,7 @@ export class PopulationSimulation {
     const humanPart = (index: number): BoundedMotion => humanParts[index] ??= (() => {
       const near = compactAnticipationBlocker(anticipation!.components[index], R.humanLookAheadSeconds);
       const partFrom = grow(near.from, near.pad), partTo = grow(near.to, near.pad);
-      return { from: partFrom, to: partTo, bounds: motionBounds(partFrom, partTo) };
+      return new Motion(partFrom, partTo, motionBounds(partFrom, partTo, boxes), undefined);
     })();
     const vehicleParts = new Map<number, RouteAnticipationBlocker[]>();
     // PERF-WHARF: per step, the vehicles' shared route-scan rows (see the vehicle branch below).
@@ -1561,8 +2701,8 @@ export class PopulationSimulation {
       let forecast = forecasts.get(seconds);
       if (!forecast) {
         const forecastMemos = this.endpointMemoRow(`forecast:${seconds}`);
-        forecast = { people: people.map(person => boundedMotion(person.current, predictBody(person.current, seconds))),
-          actors: actorBlockers.map((body, other) => boundedMotion(body, predictBody(body, seconds), forecastMemos[other] ??= {})),
+        forecast = { people: people.map(person => boundedMotion(person.current, predictBody(person.current, seconds), boxes)),
+          actors: actorBlockers.map((body, other) => boundedMotion(body, predictActorBody(body, seconds), boxes, forecastMemos[other] ??= {})),
           xStore: this.xOrderFor(seconds) };
         forecasts.set(seconds, forecast);
       }
@@ -1615,7 +2755,9 @@ export class PopulationSimulation {
       }
       // Stood aside for a rider: back onto the path once it is clear of them,
       // and a step to either side is walked before anything else.
-      if (state.aside !== 0 && state.asideTarget === state.aside && this.pathClearOfPeople(state, people)) state.asideTarget = 0;
+      if (state.aside !== 0 && state.asideTarget === state.aside && this.pathClearOfPeople(state, people)
+        && (state.asideFor < 0 || (this.pathClearOfPeople(state, [this.vehicleAsOccupant(state.asideFor)]) && this.pathClearOfActors(state, index)))) state.asideTarget = 0;
+      if (state.asideFor >= 0 && state.aside === 0 && state.asideTarget === 0) state.asideFor = -1;
       if (state.aside !== state.asideTarget) {
         const step = clamp(state.asideTarget - state.aside, -SIDESTEP_METRES_PER_SECOND * dt, SIDESTEP_METRES_PER_SECOND * dt);
         state.aside = Math.abs(state.asideTarget - state.aside - step) <= R.epsilon ? state.asideTarget : state.aside + step;
@@ -1639,7 +2781,8 @@ export class PopulationSimulation {
       }
       const isVehicle = vehicle(spec.kind);
       const horizon = isVehicle ? R.vehicleLookAheadSeconds : R.humanLookAheadSeconds;
-      const gap = isVehicle ? R.vehicleWaitingGapMetres : R.humanWaitingGapMetres;
+      // M47 living-r2: loop traffic keeps its own, smaller waiting gap (`POPULATION_TRAFFIC.waitingGapMetres`).
+      const gap = isVehicle ? (this.following && this.loopId[index] >= 0 ? POPULATION_TRAFFIC.waitingGapMetres : R.vehicleWaitingGapMetres) : R.humanWaitingGapMetres;
       const from = before.footprint;
       const forecast = forecastFor(horizon);
       // The blockers, in their former list's order: the people's forecasts, the
@@ -1655,16 +2798,29 @@ export class PopulationSimulation {
       let heldCount = 0;
       for (let c = 0; c < candidates.length; c += 1) {
         const other = candidates[c];
-        if (this.pedestrianPriority(state, this.states[other])) { stationaryActor(other); held[other] = stamp; heldCount += 1; }
+        if (this.following ? this.priorityOver(index, other) : this.pedestrianPriority(state, this.states[other])) {
+          stationaryActor(other); held[other] = stamp; heldCount += 1;
+        }
       }
       const actorBlocker = (other: number): BoundedMotion => heldCount > 0 && held[other] === stamp ? stationaryActor(other) : forecast.actors[other];
       const look = isVehicle && anticipation ? null : this.ownLookahead(state, index, horizon);
-      const grownFrom = grow(from, gap), grownLook = look === null ? null : grow(look, gap);
-      const lookBounds = grownLook === null ? null : motionBounds(grownFrom, grownLook);
+      const grownFrom = this.grownFor(index, from, gap), grownLook = look === null ? null : growActor(look, gap);
+      const lookBounds = grownLook === null ? NO_BOX : motionBounds(grownFrom, grownLook, boxes);
       // this.states.some(other => this.pedestrianPriority(other, state)): only the
       // pedestrians sharing a crossing with this vehicle can answer true (PERF-WHARF).
       let priorityHold = false;
-      if (isVehicle) for (const other of this.priorityPedestrians[index]) if (this.pedestrianPriority(this.states[other], state)) { priorityHold = true; break; }
+      // M47 living-r2: a patience claim it has driven through ends before its priority is asked.
+      if (isVehicle && this.following && this.loopId[index] >= 0) this.releasePatience(index, state);
+      // Living-r2: who holds it is who it waits on (the one it already waited
+      // on first, so the stall's clock runs on), so a wait round people and
+      // vehicles is seen and resolved (`resolveMutualWaits`).
+      if (isVehicle && this.following && state.blockedBy >= 0 && this.priorityPedestrians[index].includes(state.blockedBy)
+        && this.priorityOver(state.blockedBy, index)) { priorityHold = true; state.waitingOn.push(state.blockedBy); }
+      if (isVehicle && !priorityHold) for (const other of this.priorityPedestrians[index]) {
+        if (this.following ? this.priorityOver(other, index) : this.pedestrianPriority(this.states[other], state)) {
+          priorityHold = true; if (this.following) state.waitingOn.push(other); break;
+        }
+      }
       // A blocker the look starts inside and leaves (its gap grows) is not
       // waited on: the fraction loop's and constrain()'s departing-overlap
       // rule, so a walker walks away from a body stopped just behind it (POP-5).
@@ -1682,16 +2838,16 @@ export class PopulationSimulation {
             > (staticContact(grownFrom, blocker.from)?.gap ?? Infinity) + R.epsilon);
         };
         for (const blocker of forecast.people) {
-          if (!mayMeet(lookBounds, blocker.bounds) || !waitsOn(blocker)) continue;
+          if (!mayMeet(boxes, lookBounds, blocker.bounds) || !waitsOn(blocker)) continue;
           needsWait = true;
           if (!state.waitingOn.includes(OCCUPANT_WAIT)) state.waitingOn.push(OCCUPANT_WAIT);
         }
-        for (const blocker of reservationBlockers) if (mayMeet(lookBounds, blocker.bounds) && waitsOn(blocker)) needsWait = true;
+        for (const blocker of reservationBlockers) if (mayMeet(boxes, lookBounds, blocker.bounds) && waitsOn(blocker)) needsWait = true;
         // Only the others mayMeet could accept, in index order (PERF-WHARF, `actorCandidates`).
-        const lookCandidates = actorCandidates(forecast, lookBounds, index, held, stamp, candidates, this.lookCandidates);
+        const lookCandidates = actorCandidates(forecast, lookBounds, index, held, stamp, candidates, this.lookCandidates, boxes);
         for (let c = 0; c < lookCandidates.length; c += 1) {
           const other = lookCandidates[c], blocker = actorBlocker(other);
-          if (!mayMeet(lookBounds, blocker.bounds) || !waitsOn(blocker)) continue;
+          if (!mayMeet(boxes, lookBounds, blocker.bounds) || !waitsOn(blocker)) continue;
           needsWait = true; state.waitingOn.push(other);
         }
         // **And on a rider's compact parts, where the caller supplied them.**
@@ -1703,10 +2859,15 @@ export class PopulationSimulation {
           for (let partIndex = 0; partIndex < anticipation.components.length; partIndex += 1) {
             // A non-vehicle's horizon is always the human look-ahead, so the part index alone keys its padded blocker.
             const part = humanPart(partIndex);
-            if (!mayMeet(lookBounds, part.bounds) || !waitsOn(part)) continue;
+            if (!mayMeet(boxes, lookBounds, part.bounds) || !waitsOn(part)) continue;
             needsWait = true; state.waitingOn.push(OCCUPANT_WAIT);
             break;
           }
+        }
+        // M47 living-r2: a person not yet on a crossing a patient vehicle has claimed waits for it.
+        if (this.following && !isVehicle && look !== null) {
+          const claimant = this.yieldsToPatience(index, state, from, look);
+          if (claimant >= 0) { needsWait = true; state.waitingOn.push(claimant); }
         }
       }
       if (isVehicle && anticipation) {
@@ -1729,22 +2890,47 @@ export class PopulationSimulation {
         const own = actorBlockers[index], travelY = travelHeading(state.path.path, state.distance, state.direction);
         const travelSin = Math.sin(travelY), travelCos = Math.cos(travelY);
         const headingSin = routeHeadingSin!, headingCos = routeHeadingCos!, partCount = parts.length;
+        // M47 living-r2: the scan's broad phase (`routeScanBox`); this loop's own
+        // traffic left to the following rule (path distance, not boxes); standing
+        // bodies its loop can never meet left out (`standingClearOf`); people
+        // standing still judged by the hull itself (`standingHit`).
+        const box = this.following ? this.routeScanBox(state, pathTravel, gap, dt) : null;
+        const loop = this.following ? this.loopId[index] : -1, standing = loop >= 0 ? this.standingClear[index] : undefined;
+        const standingPeople = this.standingScratch, pinnedPeople = this.pinnedScratch;
+        standingPeople.length = 0; pinnedPeople.length = 0;
+        let squeezing = false;
         for (let entry = 0; entry < routeOrder.length; entry += 1) {
           const slot = routeOrder[entry];
-          if (slot < partCount) { routeBlockers.push(parts[slot]); continue; }
-          if (slot < partCount + routeReservations!.length) { routeBlockers.push(routeReservations![slot - partCount]); continue; }
+          if (slot < partCount + routeReservations!.length) {
+            const row = slot < partCount ? parts[slot] : routeReservations![slot - partCount];
+            if (box === null || turningRowMayReach(row, box)) routeBlockers.push(row);
+            continue;
+          }
           const other = slot - partCount - routeReservations!.length;
-          if (other === index) continue;
+          if (other === index || (loop >= 0 && (this.loopId[other] === loop || standing!.has(other)))) continue;
+          if (loop >= 0 && this.pinnedAgainst(other, index, people)) { pinnedPeople.push(other); continue; }
           const body = actorBlockers[other];
           if (whollyBehindAlong(own, travelSin, travelCos, body, headingSin[other], headingCos[other])) continue;
+          if (box !== null) {
+            // Its forecast keeps its heading and size: its box is its body's, swept by its velocity.
+            const c = Math.abs(headingCos[other]), s = Math.abs(headingSin[other]);
+            const reachX = c * body.halfWidthMetres + s * body.halfLengthMetres, reachZ = s * body.halfWidthMetres + c * body.halfLengthMetres;
+            const toX = body.x + body.velocityX * forecastSeconds, toZ = body.z + body.velocityZ * forecastSeconds;
+            if (Math.min(body.x, toX) - reachX > box.maxX || Math.max(body.x, toX) + reachX < box.minX
+              || Math.min(body.z, toZ) - reachZ > box.maxZ || Math.max(body.z, toZ) + reachZ < box.minZ) continue;
+          }
+          // Living-r2: a person standing still is judged by the hull itself along the route (`standingHit`).
+          if (loop >= 0 && body.velocityX === 0 && body.velocityZ === 0 && !vehicle(this.states[other].spec.kind)) {
+            standingPeople.push(other); continue;
+          }
           // pedestrianPriority(vehicle, ...) is false before any forecast: a vehicle never has it (PERF-POP).
-          // At the look-ahead horizon itself the forecast already holds predictBody(body, horizon).
+          // At the look-ahead horizon itself the forecast already holds predictActorBody(body, horizon).
           routeBlockers.push(actorRows[other] ??= { id: this.actorBlockerIds[other], from: body,
-            to: Object.is(forecastSeconds, horizon) ? forecast.actors[other].to : predictBody(body, forecastSeconds), pad: 0,
+            to: Object.is(forecastSeconds, horizon) ? forecast.actors[other].to : predictActorBody(body, forecastSeconds), pad: 0,
             terms: createRouteBlockerTerms() });
         }
         const incomplete = anticipation.incompleteOwnerIds.length > 0 || anticipation.components.length > R.compactAnticipationMaximumComponents;
-        const scan: RouteAnticipationResult = incomplete
+        let scan: RouteAnticipationResult = incomplete
           ? { availableTravelMetres: 0, blockedBy: 'incomplete-compact-census', overflow: false, spanVisits: 0, blockerTests: 0 }
           : routeAnticipation({ path: state.path.path, distanceMetres: state.distance, direction: state.direction,
             travelMetres: pathTravel, fullHullAxisBoundMetres: Math.hypot(spec.hull.halfWidthMetres, spec.hull.halfLengthMetres, spec.hull.heightMetres),
@@ -1753,12 +2939,34 @@ export class PopulationSimulation {
             flatSupport: { sampler: this.sampler, hull: spec.hull, currentHeadingY: state.heading,
               currentFootprint: state.pose.footprint,
               maximumNativeStepTravelMetres: Math.max(spec.speedMetresPerSecond, state.speed) * dt } });
-        const target = priorityHold || incomplete || scan.overflow ? 0
+        // Someone pinned against it is squeezed past hull to hull only if the
+        // whole route ahead clears them so; else they are an ordinary stop.
+        if (pinnedPeople.length > 0 && !incomplete && !scan.overflow) {
+          if (this.standingHit(state, pinnedPeople, actorBlockers, pathTravel, 0, SQUEEZE_SLACK_METRES) >= 0) standingPeople.push(...pinnedPeople);
+          else squeezing = true;
+        }
+        if (standingPeople.length > 0 && !incomplete && !scan.overflow) {
+          const reach = scan.blockedBy === null ? pathTravel : scan.availableTravelMetres;
+          const hit = this.standingHit(state, standingPeople, actorBlockers, reach, gap, STANDING_HIT_SLACK_METRES);
+          if (hit >= 0) { scan = { ...scan, availableTravelMetres: this.standingHitTravel, blockedBy: this.actorBlockerIds[hit] }; squeezing = false; }
+        }
+        let scanTarget = incomplete || scan.overflow ? 0
           : scan.blockedBy === null ? spec.speedMetresPerSecond
           : Math.min(spec.speedMetresPerSecond, routeBrakingSpeedCap(scan.availableTravelMetres, dt));
+        // Squeezing past someone pinned against it, hull to hull: at a walk.
+        if (squeezing) scanTarget = Math.min(scanTarget, POPULATION_TRAFFIC.squeezeMetresPerSecond);
+        let target = priorityHold ? 0 : scanTarget;
+        // M47 living-r2: its loop's traffic, by path distance; a cap, never a push.
+        let waitsOnTraffic = -1;
+        if (loop >= 0) {
+          const cap = this.trafficCap(index, state, dt, target > 0);
+          if (cap < target) { target = cap; waitsOnTraffic = this.trafficWaitsOn; }
+          this.notePatience(index, priorityHold, Math.min(scanTarget, cap), dt);
+        }
         needsWait = target < spec.speedMetresPerSecond;
         anticipationRows.push({ ...scan, actorId: spec.id, targetSpeedMetresPerSecond: target, incomplete });
-        if (scan.blockedBy?.startsWith('actor:')) {
+        if (waitsOnTraffic >= 0) state.waitingOn.push(waitsOnTraffic);
+        else if (scan.blockedBy?.startsWith('actor:')) {
           const other = this.states.findIndex(value => value.spec.id === scan.blockedBy!.slice(6));
           if (other >= 0) state.waitingOn.push(other);
         }
@@ -1772,34 +2980,48 @@ export class PopulationSimulation {
       }
       const wanted = state.direction * state.speed * dt;
       const prospective = this.prospective(state, wanted);
-      const grownProspective = grow(prospective, gap), prospectiveBounds = motionBounds(grownFrom, grownProspective);
+      const grownProspective = growActor(prospective, gap), prospectiveBounds = motionBounds(grownFrom, grownProspective, boxes);
       const nativeFraction = Math.min(1, dt / horizon);
+      // M47 living-r2: loop traffic slides along a body already inside its
+      // waiting gap, getting no closer (a person standing beside the van held
+      // it for good: driving on parallel to them never widened the gap).
+      const slidesPast = this.following && this.loopId[index] >= 0;
+      if (slidesPast) this.nativeBlocker[index] = -1;
       let fraction = 1;
       const candidateTrack: SweepTrack = { from: grownFrom, to: grownProspective };
+      let pinnedTrack: SweepTrack | undefined;
       // Every blocker in the former list's order (Math.min over the same values: order-free anyway).
       // The others: only those mayMeet could accept (PERF-WHARF, `actorCandidates`).
-      const nativeCandidates = actorCandidates(forecast, prospectiveBounds, index, held, stamp, candidates, this.nativeCandidates);
+      const nativeCandidates = actorCandidates(forecast, prospectiveBounds, index, held, stamp, candidates, this.nativeCandidates, boxes);
       const blockerCount = forecast.people.length + reservationBlockers.length + nativeCandidates.length;
       for (let k = 0; k < blockerCount; k += 1) {
         const other = k - forecast.people.length - reservationBlockers.length;
         const blocker = other < 0 ? k < forecast.people.length ? forecast.people[k] : reservationBlockers[k - forecast.people.length]
           : actorBlocker(nativeCandidates[other]);
-        if (!mayMeet(prospectiveBounds, blocker.bounds)) continue;
+        if (!mayMeet(boxes, prospectiveBounds, blocker.bounds)) continue;
         if (blocker.nativeFraction !== nativeFraction || !blocker.nativeTo) {
           blocker.nativeFraction = nativeFraction; blocker.nativeTo = mixBody(blocker.from, blocker.to, nativeFraction);
         }
         const next = blocker.nativeTo;
-        trackEndpoints(candidateTrack); nativeEndpoints(blocker);
-        const hit = sweepHullsWithEndpoints(grownFrom, grownProspective, blocker.from, next,
-          candidateTrack.first!, candidateTrack.last!, blocker.nativeFirst!, blocker.nativeLast!);
+        // M47 living-r2: someone pinned against this vehicle for good
+        // (`waitsForGood`) is passed hull to hull, without the waiting gap,
+        // at a walk: a van's tail swinging out of a turn, or a lane brushing
+        // the end of a pavement, kept it a hand short of them for the session.
+        const pinned = slidesPast && other >= 0 && this.pinnedAgainst(nativeCandidates[other], index, people);
+        const track = pinned ? (pinnedTrack ??= { from, to: prospective }) : candidateTrack;
+        trackEndpoints(track); nativeEndpoints(blocker);
+        const hit = sweepHullsWithEndpoints(track.from, track.to, blocker.from, next,
+          track.first!, track.last!, blocker.nativeFirst!, blocker.nativeLast!);
         if (hit) {
           // A merged blocker moving away may be allowed to leave, but we do
           // not walk deeper into it while waiting for that to happen.
-          const startGap = staticContact(grownFrom, blocker.from)?.gap ?? Infinity;
-          const endGap = staticContact(grownProspective, next)?.gap ?? Infinity;
-          if (hit.initiallyOverlapping && endGap > startGap + R.epsilon) continue;
-          fraction = Math.min(fraction, Math.max(0, hit.timeOfImpact - R.contactSkinMetres
-            / Math.max(Math.abs(wanted), R.contactSkinMetres)));
+          const startGap = staticContact(track.from, blocker.from)?.gap ?? Infinity;
+          const endGap = staticContact(track.to, next)?.gap ?? Infinity;
+          if (hit.initiallyOverlapping && (endGap > startGap + R.epsilon
+            || (slidesPast && endGap >= startGap - R.epsilon))) continue;
+          const stop = Math.max(0, hit.timeOfImpact - R.contactSkinMetres / Math.max(Math.abs(wanted), R.contactSkinMetres));
+          if (slidesPast && other >= 0 && stop < fraction && !vehicle(this.states[nativeCandidates[other]].spec.kind)) this.nativeBlocker[index] = nativeCandidates[other];
+          fraction = Math.min(fraction, stop);
         }
       }
       const travel = wanted * fraction;
@@ -1822,8 +3044,8 @@ export class PopulationSimulation {
           } else { state.workerLeg = 'work'; state.pause = spec.idleSeconds; }
           state.speed = 0;
         }
-      } else if (spec.movement === 'shuttle' && ((state.distance <= R.epsilon && state.direction === -1)
-        || (state.distance >= state.path.path.lengthMetres - R.epsilon && state.direction === 1))) {
+      } else if (spec.movement === 'shuttle' && ((state.distance <= this.shuttleLow(state) + R.epsilon && state.direction === -1)
+        || (state.distance >= this.shuttleHigh(state) - R.epsilon && state.direction === 1))) {
         // Only an arrival turns: one already facing back in, held at the end
         // by someone in its way, flipped back to the end every step (POP-2).
         state.direction = state.direction === 1 ? -1 : 1;
@@ -1843,17 +3065,27 @@ export class PopulationSimulation {
       // for walking up to someone, and grown by it a walker stopped in front of
       // a rider could never turn round and leave (R2C-5, 2026-10-04).
       const turningOnly = state.speed === 0 && state.stepTravel === 0 && from.headingY !== to.headingY;
-      const gap = turningOnly ? 0 : vehicle(state.spec.kind) ? R.vehicleWaitingGapMetres : R.humanWaitingGapMetres;
-      return { original: boundedMotion(from, to, originalMemos[index] ??= {}),
-        grown: boundedMotion(grow(from, gap), grow(to, gap), grownMemos[index] ??= {}),
-        turnsInPlace: turningOnly && turnsThroughRiders(state.spec.kind), sidestep: state.aside !== state.stepStartAside };
+      const gap = turningOnly ? 0 : vehicle(state.spec.kind) ? (this.following && this.loopId[index] >= 0 ? POPULATION_TRAFFIC.waitingGapMetres
+        : R.vehicleWaitingGapMetres) : R.humanWaitingGapMetres;
+      return new ActualMotion(boundedMotion(from, to, boxes, originalMemos[index] ??= {}),
+        boundedMotion(this.grownFor(index, from, gap), this.grownFor(index, to, gap), boxes, grownMemos[index] ??= {}),
+        turningOnly && turnsThroughRiders(state.spec.kind), state.aside !== state.stepStartAside,
+        this.following && this.loopId[index] >= 0);
     });
-    const nativeMotions = people.map(person => boundedMotion(person.current, predictBody(person.current, dt)));
+    // M47 living-r2: the person a loop vehicle's own move answers to (`nativeBlocker`), else -1.
+    const heldBy = (self: number, other: number): number => actualMotions[self].slidesPast && !vehicle(this.states[other].spec.kind) ? other : -1;
+    // M47 living-r2: a loop vehicle passes someone pinned against it hull to hull (see the native step).
+    const grownAgainst = (self: number, other: number): BoundedMotion => {
+      const motion = actualMotions[self];
+      if (!motion.slidesPast || !this.pinnedAgainst(other, self, people)) return motion.grown;
+      return motion.original;
+    };
+    const nativeMotions = people.map(person => boundedMotion(person.current, predictBody(person.current, dt), boxes));
     // A step aside answers where a rider is, not where he pushes: his travel
     // into the walker is refused anyway, and stopped it every step (R2C-5).
-    const standingBodies = people.map(person => boundedMotion(person.current, person.current));
-    const constrain = (index: number, first: BoundedMotion, second: BoundedMotion, slides = false): void => {
-      if (!mayMeet(first.bounds, second.bounds)) return;
+    const standingBodies = people.map(person => boundedMotion(person.current, person.current, boxes));
+    const constrain = (index: number, first: BoundedMotion, second: BoundedMotion, slides = false, other = -1): void => {
+      if (!mayMeet(boxes, first.bounds, second.bounds)) return;
       const a0 = first.from, a1 = first.to, b0 = second.from, b1 = second.to;
       wholeEndpoints(first); wholeEndpoints(second);
       const hit = sweepHullsWithEndpoints(a0, a1, b0, b1, first.first!, first.last!, second.first!, second.last!);
@@ -1864,8 +3096,9 @@ export class PopulationSimulation {
       if (hit.initiallyOverlapping && (endGap > startGap + R.epsilon || (slides && endGap >= startGap - R.epsilon))) return;
       const distance = Math.hypot(a1.x - a0.x, a1.z - a0.z)
         + Math.hypot(a0.halfWidthMetres, a0.halfLengthMetres) * Math.abs(wrapAngle(a1.headingY - a0.headingY));
-      fractions[index] = Math.min(fractions[index], Math.max(0, hit.timeOfImpact
-        - R.contactSkinMetres / Math.max(distance, R.contactSkinMetres)));
+      const stop = Math.max(0, hit.timeOfImpact - R.contactSkinMetres / Math.max(distance, R.contactSkinMetres));
+      if (other >= 0 && stop < fractions[index]) this.nativeBlocker[index] = other;
+      fractions[index] = Math.min(fractions[index], stop);
     };
     for (let i = 0; i < this.states.length; i += 1) {
       const first = actualMotions[i];
@@ -1889,13 +3122,19 @@ export class PopulationSimulation {
     for (let i = 0; i < count; i += 1) {
       const grown = actualMotions[i].grown.bounds, original = actualMotions[i].original.bounds;
       // A motion with no box (non-finite or malformed) meets everything: mayMeet answers true.
-      if (grown === null || original === null) { low[i] = -Infinity; high[i] = -Infinity; unbounded += 1; continue; }
-      low[i] = Math.min(grown.minX, original.minX); high[i] = Math.max(grown.maxX, original.maxX);
+      if (grown === NO_BOX || original === NO_BOX) { low[i] = -Infinity; high[i] = -Infinity; unbounded += 1; continue; }
+      const box = boxes.data;
+      low[i] = Math.min(box[6 * grown], box[6 * original]); high[i] = Math.max(box[6 * grown + 1], box[6 * original + 1]);
     }
+    // M47 living-r2: a walker or jogger turning on the spot turns through a
+    // loop vehicle as through a rider (only the corners of its square stand-in
+    // sweep): turned round against a van squeezing past, it froze mid-turn and
+    // its sweeping corners held the van, for good.
+    const turnsThrough = (self: number, other: number): boolean => actualMotions[self].turnsInPlace && actualMotions[other].slidesPast;
     const pair = (a: number, b: number): void => {
       const i = a < b ? a : b, j = a < b ? b : a;
-      constrain(i, actualMotions[i].grown, actualMotions[j].original);
-      constrain(j, actualMotions[j].grown, actualMotions[i].original);
+      if (!turnsThrough(i, j)) constrain(i, grownAgainst(i, j), actualMotions[j].original, actualMotions[i].slidesPast, heldBy(i, j));
+      if (!turnsThrough(j, i)) constrain(j, grownAgainst(j, i), actualMotions[i].original, actualMotions[j].slidesPast, heldBy(j, i));
     };
     if (unbounded > 0) for (let a = 0; a < count; a += 1) if (low[a] === -Infinity) {
       for (let b = 0; b < count; b += 1) if (b !== a && (low[b] !== -Infinity || b > a)) pair(a, b);
@@ -1917,6 +3156,7 @@ export class PopulationSimulation {
       if (fraction < 1) { this.stopAtFraction(this.states[index], fraction); this.states[index].waiting = true;
         this.refreshActorActivity(this.states[index], 0); }
     });
+    if (this.following) this.noteNativeHolds(dt);
     this.resolveMutualWaits(dt, people);
     this.publish();
   }
@@ -1987,7 +3227,41 @@ export class PopulationSimulation {
           && this.turnRoom(states[i]) > MUTUAL_TURN_ROOM_METRES && this.turnSweepClear(states[i], people)) turnRound(states[i], [i]);
         continue;
       }
+      // M47 living-r2: a walker or jogger pinned against a loop vehicle for
+      // good (`waitsForGood`: a path end or a fresh turn at its back) steps off
+      // the path to let it by, as for a rider, when the van cannot squeeze past.
+      // One kept waiting on a loop vehicle for `giveWaySeconds` gives way the
+      // same way, else turns round: a van can stand for them while it waits on
+      // someone else (Codex's audit, seed `m47-audit-03` High: a walker stood
+      // in front of the head van waiting for it, the van waited on another
+      // walker at the crossing ahead, and its queue stood 70 s).
+      if (this.following && states[i].aside === states[i].asideTarget) {
+        const by = states[i].blockedBy, kind = states[i].spec.kind;
+        if (by >= 0 && (kind === 'walker' || kind === 'jogger') && this.loopId[by] >= 0) {
+          const forGood = this.waitsForGood(i, by, people);
+          const givesWay = forGood || states[i].blockedSeconds >= POPULATION_TRAFFIC.giveWaySeconds;
+          if (givesWay && this.stepAsideFor(states[i], by)) {
+            states[i].asideFor = by; states[i].blockedBy = -1; states[i].blockedSeconds = 0; continue;
+          }
+          if (givesWay && !forGood && states[i].impactUntil <= this.clock
+            && this.turnRoom(states[i]) > MUTUAL_TURN_ROOM_METRES && this.turnSweepClear(states[i], people)) {
+            turnRound(states[i], [i]); continue;
+          }
+        }
+        if (by >= 0 && (kind === 'walker' || kind === 'jogger') && !vehicle(states[by].spec.kind)
+          && states[i].blockedSeconds >= MUTUAL_WAIT_SECONDS && this.turnRoom(states[i]) <= MUTUAL_TURN_ROOM_METRES
+          && states[i].pause === 0 && !states[i].turning && this.stepAsideForPathmate(states[i], by)) {
+          states[i].asideFor = by; states[i].blockedBy = -1; states[i].blockedSeconds = 0; continue;
+        }
+      }
       if (states[i].blockedSeconds < MUTUAL_WAIT_SECONDS) continue;
+      // M47 living-r2: someone standing for good across its way is a path end
+      // (a standing group on a walk): it turns round there as at one.
+      const partner = states[i].blockedBy;
+      if (this.following && partner >= 0 && states[partner].spec.movement === 'stationary') {
+        if (this.turnRoom(states[i]) > MUTUAL_TURN_ROOM_METRES && this.turnSweepClear(states[i], people)) turnRound(states[i], [i]);
+        continue;
+      }
       // Who waits on whom, followed round: a loop back to i is a deadlock,
       // handled once, from its lowest index.
       const loop = [i];
@@ -2097,8 +3371,12 @@ export class PopulationSimulation {
       if (state.workerLeg === 'work') return 0;
       return Math.abs(state.distance - (state.workerLeg === 'outbound' ? state.workerAnchor : state.workerTarget));
     }
-    return state.direction === 1 ? state.distance : state.path.path.lengthMetres - state.distance;
+    if (!this.following) return state.direction === 1 ? state.distance : state.path.path.lengthMetres - state.distance;
+    return Math.max(0, state.direction === 1 ? state.distance - state.shuttleLow : state.shuttleHigh - state.distance);
   }
+  /** Where a shuttle turns round at its start and end (the state's lane-trimmed ends on living-r2, else 0 and the length). */
+  private shuttleLow(state: ActorState): number { return this.following ? state.shuttleLow : 0; }
+  private shuttleHigh(state: ActorState): number { return this.following ? state.shuttleHigh : state.path.path.lengthMetres; }
 
   private refreshActorActivity(state: ActorState, signedSpeed = state.pose.speedMetresPerSecond): void {
     const pose = state.pose;

@@ -5561,6 +5561,13 @@ export const ENVIRONMENT_AMBIENCE = {
 /** Quiet outdoor beds on the existing ambience graph; no extra AudioNodes. */
 export const POPULATION_AMBIENCE = Object.freeze({
   maximumEmitters: 16,
+  /**
+   * M47: on a density roster (Medium, High) at most this many beds go to
+   * moving vehicles, the base roster's first and then the extras in density
+   * order: Medium's six. Moving vehicles otherwise come first, so High's
+   * twelve took 12 of 16 beds and the walkers it adds went silent.
+   */
+  densityVehicleEmitters: 6,
   /** Source origin above physical foot/tyre ground, metres. */
   sourceHeightMetres: 0.85,
   /** Vehicle bed reaches its full authored strength at this speed, m/s. */
@@ -6856,6 +6863,63 @@ export const POPULATION_AUTHORING = Object.freeze({
   trafficSpeedMetresPerSecond: 5.5,
   idleSeconds: 3,
   epsilon: 1e-8,
+});
+
+/**
+ * M47 living-world density (`level/populationDensity.ts`). A generated city's
+ * living-r1 roster (`POPULATION_AUTHORING`'s caps) stays exactly as it is; each
+ * layer appends extras through the same physical admission, and a later layer
+ * never moves an earlier one. Hand-built venues get no layer. This revision is
+ * the density layer's own: it renames no plan id, digest or record key.
+ *
+ * Layer caps are TOTALS, the base roster included, and cumulative in the order
+ * medium then high. Set from the PLANS §47 Phase 0 table (M1, 2026-10-25): the
+ * population's fixed-step CPU is the knee, not drawing (instanced, 44 colour /
+ * 10 shadow calls at any count). Medium is the 2x step, whose simulation stays
+ * under the 2026-10-17 audit's Medium median; High is 60 people and twelve
+ * moving vehicles (eleven traffic plus the service van), held to the Wharf's
+ * accepted simulation cost. Lengths in metres; shares are fractions of one.
+ */
+export const POPULATION_DENSITY = Object.freeze({
+  revision: 'living-r2' as const,
+  medium: Object.freeze({
+    /** Walkers, joggers, workers and standing people together, the base 20 included. */
+    maximumPeople: 40,
+    /** Traffic vehicles on every closed loop together, the base ones included. */
+    maximumTrafficVehicles: 5,
+  }),
+  high: Object.freeze({ maximumPeople: 60, maximumTrafficVehicles: 11 }),
+  /** Path distance between consecutive traffic vehicles on one loop, centre to
+   * centre and around the wrap; a station nearer than this is skipped. */
+  minimumTrafficHeadwayMetres: 24,
+  /**
+   * A loop shorter than this carries at most `compactLoopMaximumVehicles`
+   * traffic vehicles, the base ones included; metres. The towns' fallback
+   * circuit (`livingWorldGround.ts` `localDistrictLoopSteps`) is two 14-24 m
+   * lanes 3 m apart joined by turning courts, about 130-150 m, while every
+   * district circuit is longer than 280 m. Four vans on the default world's
+   * 147 m one queued round its courts in plain view (the owner's ride and
+   * Codex's audit, 2026-10-26); two circulated smoothly. The vans a capped
+   * loop cannot take go to the other loops by the same spacing rule.
+   */
+  compactLoopMetres: 200,
+  compactLoopMaximumVehicles: 2,
+  /** A standing group has two or three members, all admitted or none. */
+  socialGroupMinimumSize: 2,
+  socialGroupMaximumSize: 3,
+  /** Hashed per anchor: the share of groups that try three members first (then two). */
+  socialGroupTrioShare: 0.5,
+  /** Along-path gap between neighbouring members. At least
+   * `POPULATION_AUTHORING.socialSpacingMetres`, with room for a curved path's chord. */
+  socialGroupSpacingMetres: 1.5,
+  /** At most this share of a layer's extra people stand in groups; walkers and joggers fill the rest. */
+  socialGroupShare: 0.25,
+  /**
+   * A live tier or seat change whose restarted roster would start an actor
+   * inside a seated body is held and tried again this often, seconds of the
+   * living world's clock (`Game.reconcileDensityRoster`).
+   */
+  swapRetrySeconds: 1,
 });
 
 
@@ -10440,6 +10504,7 @@ export const TUNING = deepFreeze({
   DISTRICT_EXTERIOR,
   ENVIRONMENT_VEGETATION,
   POPULATION_AUTHORING,
+  POPULATION_DENSITY,
   // M39: addressed by path (`ULTRA.nearBias`, `ULTRA.shade.lift` …) for the fifteen live values.
   ULTRA,
   INPUT,
@@ -13340,6 +13405,122 @@ export const POPULATION = Object.freeze({
    * within this of its actual particles, never by a frame-gain bound. */
   ragAdmissionReachMetres: 1.2,
   epsilon: 1e-9,
+});
+
+/**
+ * M47 (PLANS §47): the living-r2 traffic rules, read by `simulation/population.ts`
+ * only for a plan with `vehicleFollowing: 'living-r2'` (the Medium and High
+ * density rosters). Every living-r1 plan, the Wharf's vans and every fixture
+ * keep the living-r1 rules bit for bit. Metres, seconds, m/s and m/s².
+ *
+ * Traffic vehicles on one closed loop follow each other by path distance with
+ * an IDM-style law, a(v, s, Δv) = a·[1 − (v/v0)⁴ − (s* / s)²] with
+ * s* = s0 + max(0, v·T + v·Δv / (2√(a·b))), where s is the bumper gap along the
+ * loop and Δv the closing speed. It is a cap on the route scan's target speed,
+ * never a push: the scan still answers for people, riders, reservations,
+ * service vans and other loops' traffic. Contact itself is unchanged (no two
+ * bodies ever overlap); the waiting margins round it are living-r2's own
+ * (`waitingGapMetres`, `squeezeMetresPerSecond`).
+ */
+export const POPULATION_TRAFFIC = Object.freeze({
+  /**
+   * The waiting gap a loop's traffic keeps from every body (its route scan, its
+   * native step and the pair constraint), metres: the people's own
+   * (`POPULATION.humanWaitingGapMetres`), where living-r1 vans keep
+   * `POPULATION.vehicleWaitingGapMetres` (0.65). The generated towns' pavements
+   * run inside 0.65 m of their lanes for tens of metres: a van could not pass a
+   * walker on the kerb, and at a pavement's end beside the lane a van and two
+   * walkers each held the next for minutes. Contact itself is unchanged.
+   */
+  waitingGapMetres: 0.25,
+  /** Desired time headway T behind a leader, seconds. */
+  headwaySeconds: 1.4,
+  /** Standstill bumper gap s0 behind a stopped leader, metres. */
+  standstillGapMetres: 2.5,
+  /** IDM's maximum acceleration a: the vehicles' own `POPULATION.vehicleAccelerationMetresPerSecondSquared`. */
+  accelerationMetresPerSecondSquared: 0.9,
+  /** IDM's comfortable deceleration b; the hard limit is still `POPULATION.vehicleBrakingMetresPerSecondSquared` (2.5). */
+  comfortableBrakingMetresPerSecondSquared: 1.8,
+  /** The free-road exponent δ. */
+  accelerationExponent: 4,
+  /** A leader farther ahead than this, bumper to bumper along the loop, is free road: no cap at all, metres. */
+  followingRangeMetres: 60,
+  /**
+   * Never enter a crossing you cannot clear. A crossing zone is a run of the
+   * loop where the vehicle's body overlaps one pedestrian-priority crossing
+   * polygon on it (per polygon: merged, the towns' chained pads made zones of
+   * 30-78 m that a van behind a slow leader waited before whole). Outside every
+   * zone, behind a leader slower than this, a vehicle without room to clear the
+   * next zone stops this far short of its entry, centre to entry; m/s and metres.
+   */
+  slowLeaderMetresPerSecond: 1,
+  crossingStopMarginMetres: 0.5,
+  /** Path sampling step for the crossing zones, metres; each zone is grown by one step at both ends. */
+  crossingZoneSampleMetres: 0.1,
+  /**
+   * Where a loop passes close to itself (the town's bulb turnarounds, whose
+   * entry and exit lanes run side by side, or a stretch driven twice), two of
+   * its vehicles far apart along it can meet. Those runs are "necks", taken in
+   * turn: a vehicle enters one run (an arm) only when no other holds a
+   * conflicting arm and it has room behind its leader to clear the arm, as if
+   * the leader stopped now. Two positions conflict when they are at least
+   * `neckSeparationMetres` apart along the loop (nearer ones are the following
+   * rule's) and the body at one, grown by `waitingGapMetres` and
+   * `neckSlackMetres`, meets the body at the other grown by the slack.
+   * Sampled every `neckSampleMetres`; each arm is grown by `neckArmPadMetres`.
+   * The decision is taken `neckDecisionMetres` past the comfortable stopping
+   * distance before the stop line. Metres. The slack is small on purpose: the
+   * town's out-and-back lanes run 3.0 m apart, so a van grown by the gap
+   * beside a plain one clears the other lane by little, and a slack of 0.35 m
+   * made both whole straights one neck (no two vans could pass on them). The
+   * pad covers the sampling.
+   */
+  neckSeparationMetres: 15,
+  neckSlackMetres: 0.05,
+  neckSampleMetres: 0.25,
+  neckArmPadMetres: 0.75,
+  neckDecisionMetres: 3,
+  /**
+   * A standing body (a social group, a parked car) that the vehicle's own hull,
+   * grown by `waitingGapMetres` and this slack, clears at every pose round the
+   * loop is no route-scan blocker on that loop: where the scan cannot certify
+   * the ground flat its car bound widens to several metres, and a person
+   * standing beside the lane held its van for the session. Native contact still sweeps it. Metres,
+   * with the loop sampled every `standingClearanceSampleMetres`.
+   */
+  standingClearanceSlackMetres: 0.4,
+  standingClearanceSampleMetres: 0.25,
+  /**
+   * Patience at a crossing. A vehicle held by pedestrian priority this long on
+   * end, and held by nothing else, claims the crossings it is entering: people
+   * whose bodies are not yet on one of them wait for it rather than step in,
+   * and its priority answers only to people walking on it now (not standing
+   * there), until it has driven through (neither its body nor its look-ahead
+   * touches them). Seconds.
+   */
+  holdPatienceSeconds: 6,
+  /**
+   * Someone pinned against a vehicle (stalled on it with a path end or a fresh
+   * turn at their back) is passed hull to hull, without the waiting gap, at no
+   * more than this, m/s, when the vehicle's whole route ahead clears them so;
+   * else they step aside for it as for a rider. Contact itself still decides.
+   */
+  squeezeMetresPerSecond: 1,
+  /**
+   * Wider step-aside offsets a pinned walker tries for a loop vehicle once the
+   * rider's own (1.4 m, 1.0 m) all meet the vehicle's route, metres, in order.
+   * Codex's audit (2026-10-26, seed `m47-audit-02` High): a walker at its
+   * path's end beside the lane and a van waited on each other for good; 1.8 m
+   * cleared the van's route and the queue drove on.
+   */
+  pinnedWalkerWiderOffsetsMetres: [1.8, 2.2] as const,
+  /**
+   * A walker or jogger kept waiting on one loop vehicle this long steps aside
+   * for it as a pinned one does, else turns round; seconds. The van may be
+   * standing for them while it waits on someone else, a loop the mutual-wait
+   * rule (which follows one blocker each) cannot see.
+   */
+  giveWaySeconds: 8,
 });
 
 /**

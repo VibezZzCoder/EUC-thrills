@@ -93,7 +93,8 @@ Firefox or Safari on a desktop, laptop, phone or tablet. Settings and best
 times are saved in your own browser; there is no account, no server and no
 analytics, and the game loads nothing but its own files. **Quality** in
 Settings is the first thing to turn down on a slow device and changes nothing
-about how the wheel rides; **Ultra** is an optional fourth level for riding
+about how the wheel rides, though a lower level thins a generated town's crowd
+and traffic; **Ultra** is an optional fourth level for riding
 alone that wants a capable graphics chip.
 
 ## Building from source

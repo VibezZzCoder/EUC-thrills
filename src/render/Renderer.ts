@@ -27,6 +27,7 @@ import type { LevelPlan } from '../level/plan.ts';
 import type { ActorSpec, PopulationPlan } from '../level/populationPlan.ts';
 import { createPopulationView, type PopulationView, type PopulationViewReport,
   type PopulationPainter, type PopulationRenderSnapshot } from './populationView.ts';
+import { PRICED_POPULATION_LAYER, populationRosterAdmitted, pricedPopulationRoster } from './pricedPopulation.ts';
 import { createCheckpointGates, type CheckpointGates } from './checkpointGates.ts';
 import { createTargets, type TargetFamily } from './targets.ts';
 import { createStreetLife, streetFronts, EMPTY_STREET_LIFE_REPORT, type StreetLife, type StreetLifeReport } from './streetLife.ts';
@@ -758,7 +759,16 @@ export interface RendererPresentation {
   readonly groundEdgeRefusal: GroundEdgeRefusal | null;
   readonly sharedVegetation: SharedVegetationReport | null;
   readonly vegetation: EnvironmentVegetationReport | null;
+  /** The roster drawn now (the active tier's, M47). */
   readonly population: PopulationViewReport | null;
+  /**
+   * M47: the roster `cost` and every admission verdict priced: the High roster
+   * (`render/pricedPopulation.ts`), the largest any tier draws, so `cost`
+   * reads the same at every tier. Null before a world, or when the world has
+   * no density layer (it prices the one roster it draws). `population` is the
+   * drawn roster's own report.
+   */
+  readonly pricedPopulation: { readonly layer: typeof PRICED_POPULATION_LAYER; readonly actors: number } | null;
   readonly supplementMaterialOwners: number;
   /** Installed cullable partitions; source admission/recipe verdicts stay historical. */
   readonly spatialBatching: SpatialBatchingDelta;
@@ -1609,7 +1619,9 @@ export class GameRenderer {
     let supplements: PreparedEnvironmentSupplements, terrain: TerrainView;
     const endConstruction = beginConstructionScope();
     try {
-    supplements = yield* prepareEnvironmentSupplementsSteps(plan, populationPlan, metricFacadeRequestFromSearch(window.location.search), authoredCanopyRequestFromSearch(window.location.search));
+    // M47: priced at the High roster, the largest any tier draws (`render/pricedPopulation.ts`),
+    // so the recipe, edges, supplements, pads and Ultra admission hold at every tier.
+    supplements = yield* prepareEnvironmentSupplementsSteps(plan, pricedPopulationRoster(populationPlan), metricFacadeRequestFromSearch(window.location.search), authoredCanopyRequestFromSearch(window.location.search));
     this.preparedEnvironmentSupplements = supplements;
     yield PREPARATION_SLICE;
     const edgeAdmission = yield* admitSharedGroundEdgesSteps(plan, recipe, supplements);
@@ -1708,6 +1720,8 @@ export class GameRenderer {
 
     // 2026-10-22: the world's contact shadows (`render/contactShadows.ts`) —
     // shown only while the sun casts nothing, which is the ordinary Low tier.
+    // Sized from the plan as handed in (M47: the prepared base roster), never
+    // the priced one; `setPopulation` resizes it to the roster actually drawn.
     const contact = createContactShadows(plan, CONTACT_RIDER_SLOTS + (populationPlan?.actors.length ?? 0));
     contact.setVisible(!this.sun.castShadow);
     this.contactShadows = contact;
@@ -1809,9 +1823,13 @@ export class GameRenderer {
   }
 
   /** Install after setLevel. This owns GPU presentation only; Game owns the
-   * fixed-step population and supplies the same roster for every mode/tier. */
+   * fixed-step population and supplies the roster the effective tier draws
+   * (M47). Any roster of the prepared plan `setLevel` priced is accepted (it
+   * shares the priced plan's paths and every actor in it was counted); the
+   * contact-blob capacity follows the roster drawn, so Low draws exactly the
+   * living-r1 world. May be called again on the same world to change roster. */
   setPopulation(plan: PopulationPlan | null, painter?: PopulationPainter): void {
-    if (plan !== (this.preparedEnvironmentSupplements?.populationPlan ?? null)) {
+    if (!populationRosterAdmitted(this.preparedEnvironmentSupplements?.populationPlan ?? null, plan)) {
       throw new Error('Population roster must be supplied to setLevel before render admission');
     }
     this.population?.dispose();
@@ -1979,7 +1997,9 @@ export class GameRenderer {
    * The recipe named here is the one the scene was built with, and the cost
    * is the selector's prediction for it — `render/presentation.test.ts`
    * asserts the prediction equals the built scene for both recipes, so a
-   * reported cost always names the representation it describes.
+   * reported cost always names the representation it describes. **From M47 the
+   * population inside `cost` is the High roster's on a generated city at every
+   * tier** (`pricedPopulation` says so); `population` is the drawn roster's.
    *
    * **M39 extends it and changes none of its fields** (§6.3 W5). `tier` says
    * which tier the frame is drawn at and why a requested Ultra is not; `ultra`
@@ -2005,6 +2025,8 @@ export class GameRenderer {
     const districtExteriorMaterialOwners = this.districtExteriorAppearance?.materialOwners ?? 0;
     const vegetation = this.vegetation?.report() ?? null;
     const population = this.population?.report() ?? null;
+    const priced = this.preparedEnvironmentSupplements?.populationPlan ?? null;
+    const pricedPopulation = priced?.densityLayer === PRICED_POPULATION_LAYER ? { layer: PRICED_POPULATION_LAYER, actors: priced.actors.length } : null;
     const spatialBatching = sumSpatialBatchingDeltas(terrain?.spatialBatching, districtExterior?.spatialBatching);
     const spatialGeometry = terrain?.spatialGeometry ?? null;
     // M42: the installed pads and flock (zeros before a world is built).
@@ -2019,7 +2041,7 @@ export class GameRenderer {
       sharedEdges: terrain?.sharedEdges ?? null, groundEdgeRefusal: this.groundEdgeRefusal,
       featureBlocks: terrain?.featureBlocks ?? null,
       sharedVegetation: terrain?.sharedVegetation ?? null,
-      vegetation, population, districtExterior, metricFacade, districtExteriorMaterialOwners,
+      vegetation, population, pricedPopulation, districtExterior, metricFacade, districtExteriorMaterialOwners,
       supplementMaterialOwners: this.supplements.materialOwners(),
       spatialBatching, spatialGeometry, launchPads, birds, squirrels: this.squirrels?.report() ?? null,
     };
@@ -2038,7 +2060,7 @@ export class GameRenderer {
       sharedEdges: terrain.sharedEdges, groundEdgeRefusal: this.groundEdgeRefusal,
       featureBlocks: terrain.featureBlocks ?? null,
       sharedVegetation: terrain.sharedVegetation,
-      vegetation, population, districtExterior, metricFacade, districtExteriorMaterialOwners,
+      vegetation, population, pricedPopulation, districtExterior, metricFacade, districtExteriorMaterialOwners,
       supplementMaterialOwners: this.supplements.materialOwners(),
       spatialBatching, spatialGeometry, launchPads, birds, squirrels: this.squirrels?.report() ?? null,
     };

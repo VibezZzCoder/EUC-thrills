@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import {
   COUCH_COP_HINT,
   COUCH_RIDER_HINT,
+  QUALITY_CHANGING_NOTICE,
   QUALITY_ULTRA_WARNING,
   ULTRA_LEAVING_NOTICE,
   ULTRA_LOADING_NOTICE,
@@ -360,6 +361,12 @@ test('a switch across Ultra says so in the owner’s words, and never in a word 
       notice: ULTRA_LEAVING_NOTICE,
     });
   }
+  // M47 follow-up: a change among Low, Medium and High has its own notice.
+  assert.equal(QUALITY_CHANGING_NOTICE, 'Changing graphics…');
+  assert.deepEqual(qualityBusyWords({ direction: 'ordinary', from: 'low', to: 'high' }), {
+    state: 'Switching…',
+    notice: QUALITY_CHANGING_NOTICE,
+  });
   // The busy state word can never be mistaken for a settled one, so anything
   // waiting for "On", "Off" or "Using High" waits for the switch to finish.
   for (const busy of ['Loading…', 'Switching…']) {
@@ -367,7 +374,7 @@ test('a switch across Ultra says so in the owner’s words, and never in a word 
   }
   // The same offers scan as the helper: nothing here reads as a second player.
   const offersScan = /2 player|two player|couch|split/;
-  for (const text of [ULTRA_LOADING_NOTICE, ULTRA_LEAVING_NOTICE, 'Loading…', 'Switching…']) {
+  for (const text of [ULTRA_LOADING_NOTICE, ULTRA_LEAVING_NOTICE, QUALITY_CHANGING_NOTICE, 'Loading…', 'Switching…']) {
     assert.ok(!offersScan.test(text.toLowerCase()), `"${text}" reads as a multiplayer offer`);
   }
 });

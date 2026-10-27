@@ -92,7 +92,27 @@ export function admitCoarseStopGroups<T>(components: readonly LazyCoarseComponen
 
 /** Pure conservative actor admission boxes; actor collision geometry remains native. */
 import type { PopulationHullPrism } from './populationHull.ts';
+import { recordType } from './plainRecord.ts';
+/** M48: a box record built by a constructor (`recordType`), in `Aabb`'s key order. */
+export const AabbRecord = recordType<Aabb, [number, number, number, number, number, number]>(
+  function (minX, maxX, minY, maxY, minZ, maxZ) {
+    this.minX = minX; this.maxX = maxX; this.minY = minY; this.maxY = maxY; this.minZ = minZ; this.maxZ = maxZ;
+  });
 export function coarseActorMotionWorldAabb(a: PopulationHullPrism, b: PopulationHullPrism): Aabb {
+  const box = COARSE_BOX;
+  coarseActorMotionWorldAabbAt(a, b, box, 0);
+  return new AabbRecord(box[0], box[1], box[2], box[3], box[4], box[5]);
+}
+const COARSE_BOX = new Float64Array(6);
+/**
+ * coarseActorMotionWorldAabb written into `out` at `offset` as minX, maxX,
+ * minY, maxY, minZ, maxZ (M47 follow-up, 2026-10-26). At High the crowd and
+ * the rider's contact checks formed about 26 of these boxes per actor per
+ * step, and every number stored in a fresh object is its own heap box; a
+ * typed array holds them unboxed. A double round-trips a Float64Array
+ * exactly (a NaN stays a NaN, and every reader refuses or compares false).
+ */
+export function coarseActorMotionWorldAabbAt(a: PopulationHullPrism, b: PopulationHullPrism, out: Float64Array, offset: number): void {
   if (a.sourceHull && b.sourceHull) {
     const first = a.sourceHull, last = b.sourceHull;
     const localRadius = Math.hypot(Math.max(first.hull.halfWidthMetres, last.hull.halfWidthMetres),
@@ -101,11 +121,18 @@ export function coarseActorMotionWorldAabb(a: PopulationHullPrism, b: Population
     // combine corners of different sources, hence sqrt(2) horizontal support.
     const margin = Math.max(first.marginMetres ?? 0, last.marginMetres ?? 0), horizontal = Math.SQRT2 * (localRadius + margin);
     const below = Math.max(first.verticalPaddingBelowMetres ?? 0, last.verticalPaddingBelowMetres ?? 0), above = Math.max(first.verticalPaddingAboveMetres ?? 0, last.verticalPaddingAboveMetres ?? 0);
-    return { minX: Math.min(first.x, last.x) - horizontal, maxX: Math.max(first.x, last.x) + horizontal,
-      minY: Math.min(first.y, last.y) - localRadius - below - margin, maxY: Math.max(first.y, last.y) + localRadius + above + margin,
-      minZ: Math.min(first.z, last.z) - horizontal, maxZ: Math.max(first.z, last.z) + horizontal };
+    out[offset] = Math.min(first.x, last.x) - horizontal; out[offset + 1] = Math.max(first.x, last.x) + horizontal;
+    out[offset + 2] = Math.min(first.y, last.y) - localRadius - below - margin; out[offset + 3] = Math.max(first.y, last.y) + localRadius + above + margin;
+    out[offset + 4] = Math.min(first.z, last.z) - horizontal; out[offset + 5] = Math.max(first.z, last.z) + horizontal;
+    return;
   }
   const radius = Math.max(Math.hypot(a.halfWidthMetres, a.halfLengthMetres), Math.hypot(b.halfWidthMetres, b.halfLengthMetres));
-  return { minX: Math.min(a.x, b.x) - radius, maxX: Math.max(a.x, b.x) + radius, minY: Math.min(a.minY, b.minY), maxY: Math.max(a.maxY, b.maxY),
-    minZ: Math.min(a.z, b.z) - radius, maxZ: Math.max(a.z, b.z) + radius };
+  out[offset] = Math.min(a.x, b.x) - radius; out[offset + 1] = Math.max(a.x, b.x) + radius;
+  out[offset + 2] = Math.min(a.minY, b.minY); out[offset + 3] = Math.max(a.maxY, b.maxY);
+  out[offset + 4] = Math.min(a.z, b.z) - radius; out[offset + 5] = Math.max(a.z, b.z) + radius;
+}
+/** aabbsOverlap(box, other) for a box stored by `coarseActorMotionWorldAabbAt`: the same six comparisons. */
+export function aabbOverlapsAt(box: Aabb, other: Float64Array, offset: number): boolean {
+  return box.minX <= other[offset + 1] && box.maxX >= other[offset] && box.minY <= other[offset + 3]
+    && box.maxY >= other[offset + 2] && box.minZ <= other[offset + 5] && box.maxZ >= other[offset + 4];
 }

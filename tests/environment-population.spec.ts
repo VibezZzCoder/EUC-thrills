@@ -90,6 +90,9 @@ test('population survives graphics rebuilds and all supported pane counts withou
   const errors=collectErrors(page);await page.setViewportSize({width:1440,height:1000});
   await bootAtTier(page,'level=generated&seed=euc-thrills','high',{freezeAtStart:true});
   const original=await page.evaluate(()=>window.game.populationState());
+  // M47: Ultra draws High, so the two share one density roster and a switch
+  // between them never restarts the living world.
+  expect(original.densityLayer).toBe('high');
   const tierEvidence:unknown[]=[], resources=new Map<string,unknown>();
   for(let round=0;round<3;round++)for(const quality of ['ultra','high']as const){
     const current=await page.evaluate(quality=>{
@@ -97,6 +100,9 @@ test('population survives graphics rebuilds and all supported pane counts withou
       return {population:game.populationState(),resources:game.snapshot().resources,presentation:game.renderer.presentation()};
     },quality);
     expect(current.population.simulation).toEqual(original.simulation);
+    expect(current.population.digest).toBe(original.digest);
+    expect(current.population.densityLayer).toBe('high');
+    expect(current.population.rosterActors).toBe(original.rosterActors);
     if(round>0)expect(current.resources).toEqual(resources.get(quality));
     resources.set(quality,current.resources);tierEvidence.push({round,quality,...current});
   }
@@ -109,8 +115,41 @@ test('population survives graphics rebuilds and all supported pane counts withou
     },count);
     expect(current.views).toBe(count);expect(current.after.simulation.tick-current.before.simulation.tick).toBe(120);
     expect(current.presentation!.population!.actors).toBe(current.after.simulation.actors.length);
+    // M47: the 2×2 grid rides at most the Medium roster; two panes keep High's.
+    expect(current.after.densityLayer).toBe(count>=3?'medium':'high');
+    expect(current.after.rosterActors).toBe(current.after.simulation.actors.length);
+    if(count<3)expect(current.after.digest).toBe(original.digest);
+    else expect(current.after.rosterActors).toBeLessThan(original.rosterActors);
     await page.screenshot({path:join(directory,`population-${count}-panes.png`)});panes.push(current);
   }
   expect(errors).toEqual([]);
   writeFileSync(join(directory,'population-lifecycle.json'),JSON.stringify({tierEvidence,panes,errors},null,2));
+});
+
+test('M47: a live tier change never restarts an actor inside a standing rider; it is taken once the rider is clear',async({page})=>{
+  test.setTimeout(120_000);
+  const errors=collectErrors(page);
+  await bootAtTier(page,'level=generated&seed=euc','low',{freezeAtStart:true});
+  const result=await page.evaluate(async()=>{
+    const game=window.game as any, modulePath='/src/level/populationDensity.ts';
+    const {populationRoster}=await import(modulePath);
+    const prepared=game.preparedPopulation, high=populationRoster(prepared,'high');
+    // The rider stands on the start station of High's first extra van.
+    const van=high.actors.slice(prepared.actors.length).find((actor:any)=>actor.kind==='trafficVehicle');
+    const points=high.paths.find((path:any)=>path.id===van.pathId).points;
+    const at=points.findIndex((point:any)=>point.distanceMetres>=van.initialDistanceMetres);
+    const a=points[Math.max(0,at-1)], b=points[at];
+    const spawn=game.snapshot().euc;
+    game.placeRider({x:b.x,y:0,z:b.z},Math.atan2(b.x-a.x,b.z-a.z));game.clearActions();game.advance(2);
+    const read=()=>{const state=game.populationState();return {layer:state.densityLayer,pending:state.densityPending,actors:state.rosterActors};};
+    game.setOptions({quality:'high'});game.advance(0);const held=read();
+    game.advance(360);const stillHeld=read();
+    game.placeRider({x:spawn.position.x,y:0,z:spawn.position.z},spawn.headingY);game.clearActions();game.advance(240);
+    return {held,stillHeld,taken:read(),vanStarted:game.population.snapshot().actors.some((actor:any)=>actor.id===van.id)};
+  });
+  expect(result.held).toEqual({layer:'base',pending:true,actors:28});
+  expect(result.stillHeld).toEqual(result.held);
+  expect(result.taken).toEqual({layer:'high',pending:false,actors:76});
+  expect(result.vanStarted).toBe(true);
+  expect(errors).toEqual([]);
 });

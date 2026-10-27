@@ -71,12 +71,41 @@ export function transformPopulationHullLowerInto(x: number, y: number, z: number
   return transformHull(x, y, z, headingY, normalX, normalY, normalZ, hull, velocityX, velocityZ, null, null, lowerCorners);
 }
 
+/**
+ * A caller-owned physical prism (`physicalPopulationHullInto`): the plumb
+ * prism's own fields plus the unit normal its source frame would carry.
+ */
+export interface MutablePopulationPrism {
+  x: number; z: number; headingY: number; halfWidthMetres: number; halfLengthMetres: number;
+  minY: number; maxY: number; velocityX: number; velocityZ: number;
+  normalX: number; normalY: number; normalZ: number;
+}
+export function createPopulationPrismScratch(): MutablePopulationPrism {
+  return { x: 0, z: 0, headingY: 0, halfWidthMetres: 0, halfLengthMetres: 0, minY: 0, maxY: 0,
+    velocityX: 0, velocityZ: 0, normalX: 0, normalY: 1, normalZ: 0 };
+}
+/**
+ * physicalPopulationHull, written into caller-owned scratch with no prism,
+ * source frame or hull copy formed (M47 follow-up, 2026-10-26: High's
+ * population step formed three short-lived records per transform, every
+ * forecast and every committed pose). The same validation and arithmetic; a
+ * caller that keeps the body builds its own record from these values, so
+ * nothing it publishes is shared. `lowerCorners`, when given, receives the
+ * four lower corners as transformPopulationHullLowerInto writes them.
+ */
+export function physicalPopulationHullInto(x: number, y: number, z: number, headingY: number,
+  normalX: number, normalY: number, normalZ: number, hull: PopulationLocalHull, velocityX: number, velocityZ: number,
+  lowerCorners: readonly MutablePopulationHullCorner[] | null, out: MutablePopulationPrism): MutablePopulationPrism {
+  transformHull(x, y, z, headingY, normalX, normalY, normalZ, hull, velocityX, velocityZ, null, null, lowerCorners, true, out);
+  return out;
+}
+
 /** The one corner loop: corners are pushed to the sinks or written to scratch. */
 function transformHull(x: number, y: number, z: number, headingY: number,
   normalX: number, normalY: number, normalZ: number, hull: PopulationLocalHull,
   velocityX: number, velocityZ: number, corners: PopulationHullCorner[] | null,
   lowerCorners: PopulationHullCorner[] | null, lowerScratch: readonly MutablePopulationHullCorner[] | null,
-  plumb = false): PopulationHullPrism {
+  plumb = false, prismOut: MutablePopulationPrism | null = null): PopulationHullPrism {
   const normalLength = Math.hypot(normalX, normalY, normalZ);
   if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) && Number.isFinite(headingY)
     && Number.isFinite(normalLength) && Number.isFinite(hull.halfWidthMetres) && Number.isFinite(hull.halfLengthMetres)
@@ -119,19 +148,29 @@ function transformHull(x: number, y: number, z: number, headingY: number,
   const centreX = (minX + maxX) * 0.5, centreZ = (minZ + maxZ) * 0.5;
   const tiltedX = x + c * centreX + s * centreZ, tiltedZ = z - s * centreX + c * centreZ;
   const halfWidth = (maxX - minX) * 0.5, halfLength = (maxZ - minZ) * 0.5;
-  const sourceHull = { x, y, z, headingY, normalX: nx, normalY: ny, normalZ: nz, hull: { ...hull } };
   if (!plumb) return { x: tiltedX, z: tiltedZ, headingY, halfWidthMetres: halfWidth, halfLengthMetres: halfLength,
-    minY, maxY, velocityX, velocityZ, sourceHull };
+    minY, maxY, velocityX, velocityZ, sourceHull: { x, y, z, headingY, normalX: nx, normalY: ny, normalZ: nz, hull: { ...hull } } };
   // physicalPopulationPrism of that tilted footprint, from the same values and
   // in its key order, without forming the tilted object (PERF-WHARF, 2026-10-23).
-  const local = sourceHull.hull, dx = tiltedX - x, dz = tiltedZ - z;
+  // The source hull's copy carries `hull`'s own values, so they are read here.
+  const dx = tiltedX - x, dz = tiltedZ - z;
   const cx = dx * c - dz * s, cz = dx * s + dz * c;
-  const plumbMinX = Math.min(cx - halfWidth, -local.halfWidthMetres), plumbMaxX = Math.max(cx + halfWidth, local.halfWidthMetres);
-  const plumbMinZ = Math.min(cz - halfLength, -local.halfLengthMetres), plumbMaxZ = Math.max(cz + halfLength, local.halfLengthMetres);
+  const plumbMinX = Math.min(cx - halfWidth, -hull.halfWidthMetres), plumbMaxX = Math.max(cx + halfWidth, hull.halfWidthMetres);
+  const plumbMinZ = Math.min(cz - halfLength, -hull.halfLengthMetres), plumbMaxZ = Math.max(cz + halfLength, hull.halfLengthMetres);
   const midX = (plumbMinX + plumbMaxX) * 0.5, midZ = (plumbMinZ + plumbMaxZ) * 0.5;
-  return { x: x + c * midX + s * midZ, z: z - s * midX + c * midZ, headingY,
-    halfWidthMetres: (plumbMaxX - plumbMinX) * 0.5, halfLengthMetres: (plumbMaxZ - plumbMinZ) * 0.5,
-    minY: Math.min(y, minY), maxY: Math.max(y + local.heightMetres, maxY), velocityX, velocityZ, sourceHull };
+  const plumbX = x + c * midX + s * midZ, plumbZ = z - s * midX + c * midZ;
+  const plumbHalfWidth = (plumbMaxX - plumbMinX) * 0.5, plumbHalfLength = (plumbMaxZ - plumbMinZ) * 0.5;
+  const plumbMinY = Math.min(y, minY), plumbMaxY = Math.max(y + hull.heightMetres, maxY);
+  if (prismOut !== null) {
+    prismOut.x = plumbX; prismOut.z = plumbZ; prismOut.headingY = headingY;
+    prismOut.halfWidthMetres = plumbHalfWidth; prismOut.halfLengthMetres = plumbHalfLength;
+    prismOut.minY = plumbMinY; prismOut.maxY = plumbMaxY; prismOut.velocityX = velocityX; prismOut.velocityZ = velocityZ;
+    prismOut.normalX = nx; prismOut.normalY = ny; prismOut.normalZ = nz;
+    return prismOut;
+  }
+  return { x: plumbX, z: plumbZ, headingY, halfWidthMetres: plumbHalfWidth, halfLengthMetres: plumbHalfLength,
+    minY: plumbMinY, maxY: plumbMaxY, velocityX, velocityZ,
+    sourceHull: { x, y, z, headingY, normalX: nx, normalY: ny, normalZ: nz, hull: { ...hull } } };
 }
 
 export function physicalPopulationHull(x: number, y: number, z: number, headingY: number,

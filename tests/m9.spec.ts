@@ -609,8 +609,12 @@ test.describe('M9 — HUD, menus, options', () => {
     await expect(page.locator('[data-option="quality"]')).toBeFocused();
 
     // Left adjusts the focused native select through the same option path as
-    // keyboard/mouse input, then B returns to the title.
+    // keyboard/mouse input, then B returns to the title — once the change's
+    // loading notice has cleared, since the menus refuse presses under it
+    // (every tier change is covered since the M47 follow-up, 2026-10-26).
     await pulse(14);
+    await page.waitForFunction(() => window.game.snapshot().options.quality === 'medium'
+      && !document.querySelector('[data-option="quality"]')?.hasAttribute('aria-busy'));
     expect((await options(page)).quality).toBe('medium');
     await pulse(1);
     await page.waitForFunction(() => window.game.snapshot().app.state === 'title');

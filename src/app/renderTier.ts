@@ -402,8 +402,9 @@ export type UltraSwitch = 'entering' | 'leaving';
  * or null when it makes none — decided from the *intent*, what
  * `resolveRenderTier` wants for the new request against what the renderer was
  * last told (`appliedUltraWanted`), exactly the two facts `applyRenderTier`
- * acts on. So Low ↔ Medium ↔ High stays the instant change it always was, and
- * so does Ultra → High inside a couch session, which already draws High. A
+ * acts on. So Low ↔ Medium ↔ High makes no Ultra switch (`qualitySwitchFor`
+ * covers those), and neither does Ultra → High inside a couch session, which
+ * already draws High. A
  * request the renderer will go on to refuse (a `?presentation=` override, a
  * session refusal) still counts as `entering`: finding the refusal is the
  * renderer's job, and a notice that turns out to be brief costs two frames.
@@ -415,6 +416,32 @@ export function ultraSwitchFor(
   const wanted = resolveRenderTier({ ...facts, refused: false }).wantUltra;
   if (wanted === appliedUltraWanted) return null;
   return wanted ? 'entering' : 'leaving';
+}
+
+/**
+ * Every tier change a Settings or toggle press can make: a switch across
+ * Ultra, or `ordinary`, a change among Low, Medium and High that the renderer
+ * draws (M47 fix-pass follow-up, 2026-10-26).
+ *
+ * An ordinary change used to be made inside the press. It builds new tier
+ * programs and, on a generated world, a new living-world roster, and none of
+ * it was warmed: Codex's audit measured a 170–202 ms main-thread task on the
+ * first frames after Low ↔ High on a MacBook, which the owner's ride felt.
+ * So it now takes Ultra's path — notice, paint frames, the change, the
+ * bounded program warm-up, settle frames. A request the session already draws
+ * (`resolveRenderTier`'s `ordinary` unchanged, as inside a couch session that
+ * holds Medium) is no switch and is still set at once.
+ */
+export type QualitySwitch = UltraSwitch | 'ordinary';
+
+export function qualitySwitchFor(
+  facts: Omit<RenderTierInput, 'refused'>,
+  appliedUltraWanted: boolean,
+  appliedOrdinary: OrdinaryQuality | null,
+): QualitySwitch | null {
+  const ultra = ultraSwitchFor(facts, appliedUltraWanted);
+  if (ultra !== null) return ultra;
+  return resolveRenderTier({ ...facts, refused: false }).ordinary === appliedOrdinary ? null : 'ordinary';
 }
 
 /**

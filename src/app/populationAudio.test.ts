@@ -125,3 +125,25 @@ test('PERF-WHARF: only installed sources are offered, with the same values in th
     assert.ok(rows.size >= 3, `${name}: ${[...rows]}`);
   }
 });
+
+test('M47: a density roster keeps the town\'s beds — at most six for moving vehicles, the base vans first', { timeout: 120_000 }, async () => {
+  const { populationRoster } = await import('../level/populationDensity.ts');
+  const living = preparePopulationWorld(createLevel('generated', 'euc'));
+  const kinds = (plan: PopulationPlan) => populationAudioEmitters(plan).reduce<Record<string, number>>((count, emitter) =>
+    ({ ...count, [emitter.kind]: (count[emitter.kind] ?? 0) + 1 }), {});
+  const low = populationRoster(living.population, 'base'), medium = populationRoster(living.population, 'medium');
+  const high = populationRoster(living.population, 'high');
+  // Low is the base plan itself: its beds are today's (vans first, no cap).
+  assert.equal(low, living.population);
+  assert.deepEqual(kinds(low), { industrial: 3, park: 12, workshop: 1 });
+  for (const plan of [medium, high]) {
+    assert.equal(populationAudioEmitters(plan).length, T.maximumEmitters);
+    assert.equal(kinds(plan).industrial, T.densityVehicleEmitters);
+  }
+  // High's vehicle beds are Medium's: the base vans, then the extras in density order.
+  const vehicleBeds = (plan: PopulationPlan) => populationAudioEmitters(plan).filter(emitter => emitter.kind === 'industrial').map(emitter => emitter.id);
+  assert.deepEqual(vehicleBeds(high), vehicleBeds(medium));
+  for (const actor of low.actors) if (actor.kind === 'trafficVehicle' || actor.kind === 'serviceVehicle') {
+    assert.ok(vehicleBeds(high).includes(`population-audio/${actor.id}`));
+  }
+});

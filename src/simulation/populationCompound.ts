@@ -9,7 +9,7 @@
  * it never promotes a fixed set of intermediate samples to exact CCD.
  */
 import { lerp, wrapAngle } from '../shared/maths.ts';
-import { aabbsOverlap, coarseActorMotionWorldAabb } from '../shared/occupancyBroadphase.ts';
+import { AabbRecord, aabbsOverlap, coarseActorMotionWorldAabbAt } from '../shared/occupancyBroadphase.ts';
 import type { Aabb } from '../shared/occupancyExpressions.ts';
 import { physicalPopulationHull, POPULATION, sweepPopulationHulls,
   type PopulationFootprint, type PopulationHullContact } from './population.ts';
@@ -222,26 +222,29 @@ export function adoptPopulationEnvelopeProof(source: PopulationCompoundTrajector
   envelopeTables.set(target, envelopeTable(source));
 }
 
+/** A source hull present but malformed (`trajectoryBounds` then returns no box). */
+function malformedSource(body: PopulationFootprint): boolean {
+  const source = body.sourceHull;
+  return !!source && (!source.hull || !finite(source.x, source.y, source.z, source.headingY,
+    source.normalX, source.normalY, source.normalZ, source.hull.halfWidthMetres,
+    source.hull.halfLengthMetres, source.hull.heightMetres, source.marginMetres ?? 0,
+    source.verticalPaddingBelowMetres ?? 0, source.verticalPaddingAboveMetres ?? 0)
+    || source.normalY <= 0 || source.hull.halfWidthMetres <= 0 || source.hull.halfLengthMetres <= 0
+    || source.hull.heightMetres <= 0 || (source.marginMetres ?? 0) < 0
+    || (source.verticalPaddingBelowMetres ?? 0) < 0 || (source.verticalPaddingAboveMetres ?? 0) < 0);
+}
+/** trajectoryBounds' coarse box, written in place and read at once (M48). */
+const TRAJECTORY_BOX = new Float64Array(6);
 function trajectoryBounds(first: PopulationFootprint, last: PopulationFootprint, pad = 0): Aabb | null {
-  for (const body of [first, last]) {
-    const source = body.sourceHull;
-    if (source && (!source.hull || !finite(source.x, source.y, source.z, source.headingY,
-      source.normalX, source.normalY, source.normalZ, source.hull.halfWidthMetres,
-      source.hull.halfLengthMetres, source.hull.heightMetres, source.marginMetres ?? 0,
-      source.verticalPaddingBelowMetres ?? 0, source.verticalPaddingAboveMetres ?? 0)
-      || source.normalY <= 0 || source.hull.halfWidthMetres <= 0 || source.hull.halfLengthMetres <= 0
-      || source.hull.heightMetres <= 0 || (source.marginMetres ?? 0) < 0
-      || (source.verticalPaddingBelowMetres ?? 0) < 0 || (source.verticalPaddingAboveMetres ?? 0) < 0)) return null;
-  }
-  const bounds = coarseActorMotionWorldAabb(pad === 0 ? first : inflate(first, pad), pad === 0 ? last : inflate(last, pad));
+  if (malformedSource(first) || malformedSource(last)) return null;
+  const box = TRAJECTORY_BOX;
+  coarseActorMotionWorldAabbAt(pad === 0 ? first : inflate(first, pad), pad === 0 ? last : inflate(last, pad), box, 0);
   // A malformed optional source hull must still reach the existing validating
   // narrow phase; an invalid bound is never evidence that a pair cannot touch.
-  if (!(Number.isFinite(bounds.minX) && Number.isFinite(bounds.maxX) && Number.isFinite(bounds.minY) && Number.isFinite(bounds.maxY)
-    && Number.isFinite(bounds.minZ) && Number.isFinite(bounds.maxZ))) return null;
+  if (!(Number.isFinite(box[0]) && Number.isFinite(box[1]) && Number.isFinite(box[2]) && Number.isFinite(box[3])
+    && Number.isFinite(box[4]) && Number.isFinite(box[5]))) return null;
   const skin = R.contactSkinMetres + R.epsilon;
-  return { minX: bounds.minX - skin, maxX: bounds.maxX + skin,
-    minY: bounds.minY - skin, maxY: bounds.maxY + skin,
-    minZ: bounds.minZ - skin, maxZ: bounds.maxZ + skin };
+  return new AabbRecord(box[0] - skin, box[1] + skin, box[2] - skin, box[3] + skin, box[4] - skin, box[5] + skin);
 }
 
 const possiblePair = (a: Motion, b: Motion): boolean => a.worldBounds === null || b.worldBounds === null

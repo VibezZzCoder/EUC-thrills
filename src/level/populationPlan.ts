@@ -21,6 +21,7 @@ import { physicalPopulationHull, transformPopulationHull, type PopulationHullPri
 import { PlanTerrainSampler } from '../simulation/planSampler.ts';
 import { exactBuildingBody } from './protectedSiteEligibility.ts';
 import { rectGrid, rectGridAny, type RectGrid } from './rectGrid.ts';
+import type { PopulationDensity } from './populationDensity.ts';
 import { createGroundSample, type SurfaceId, type TerrainSampler, type Vec3 }
   from '../simulation/world.ts';
 
@@ -233,6 +234,15 @@ export interface PopulationPlan {
     readonly missingKinds: readonly ActorKind[];
     readonly groundSupplement?: LivingWorldGroundReport;
   };
+  /** M47: a generated city's living-r2 density layer (`populationDensity.ts`),
+   * authored once after the final build. Absent on hand-built venues and on
+   * every intermediate build, and never part of `contentDigest`. */
+  readonly density?: PopulationDensity;
+  /** Set on a density roster (`populationRoster`): the layer its actors run up to. */
+  readonly densityLayer?: string;
+  /** Opt-in vehicle rules. Absent means the living-r1 vehicle rules,
+   * bit-identical; a density roster sets 'living-r2' and the simulation reads it. */
+  readonly vehicleFollowing?: 'living-r2';
 }
 
 export type RejectionReason = 'invalid-source' | 'missing-segment' | 'narrow-band'
@@ -2333,32 +2343,76 @@ function actorHull(kind: ActorKind): ActorSpec['hull'] {
   return { halfWidthMetres: radius, halfLengthMetres: radius, heightMetres: R.actorHeightMetres };
 }
 
-function actorsFromPaths(plan: LevelPlan, paths: readonly PopulationPath[], anchors: ActivityAnchor[],
-  sampler: TerrainSampler, context: PopulationValidationContext,
-  activityWalks: readonly AuthoredDistrictActivityWalk[] = []): ActorSpec[] {
-  const worldId = plan.populationActivityChoiceWorldId ?? plan.id;
-  const actors: ActorSpec[] = []; const parkedReservations: { pathId: string; distanceMetres: number }[] = [];
-  const positions: { position: Vec3; kind: ActorKind; body: PopulationHullPrism; socialGroupId?: string }[] = [];
-  const isPerson = (kind: ActorKind): boolean => kind === 'walker' || kind === 'jogger' || kind === 'social' || kind === 'worker';
-  const add = (kind: ActorKind, path: PopulationPath, along: number, anchor?: ActivityAnchor,
-    socialGroupId?: string, activityWalkId?: string, authored?: { pace: number; direction: 1 | -1; headingY?: number; appearanceIndex?: number }): boolean => {
+/** An authored station's own pace, direction, facing and look (populationActivity only). */
+interface AuthoredStation { readonly pace: number; readonly direction: 1 | -1; readonly headingY?: number; readonly appearanceIndex?: number }
+
+/** Walkers, joggers, workers and standing people: the kinds every people cap counts. */
+export function isPopulationPerson(kind: ActorKind): boolean {
+  return kind === 'walker' || kind === 'jogger' || kind === 'social' || kind === 'worker';
+}
+
+/** The order every fill visits districts: representative activity before bulk. */
+export const POPULATION_DISTRICT_ORDER: readonly District[] = ['park', 'residential', 'industrial', 'commercial'];
+
+/**
+ * One roster's physical admission (M47). The living-r1 fill below and the
+ * living-r2 density layer (`populationDensity.ts`) admit every actor through
+ * this one `add`, against one set of bodies, so the two cannot drift: an extra
+ * respects every base hull, clearance and person gap exactly as a base actor
+ * would. `worldId` seeds the hashed direction and look of each admitted id.
+ */
+export interface PopulationActorAdmission {
+  /** Admitted actors in admission order (one growing array). */
+  readonly actors: readonly ActorSpec[];
+  /**
+   * Validate one exact initial pose and admit it, or change nothing. `facing`
+   * fixes a stationary person's direction without any authored-station
+   * relaxation (pace, look or the waiting gap). The simulation turns a person
+   * by its direction only: heading is the path's, plus a half turn at -1.
+   */
+  add(kind: ActorKind, path: PopulationPath, along: number, anchor?: ActivityAnchor, socialGroupId?: string,
+    activityWalkId?: string, authored?: AuthoredStation, facing?: 1 | -1): boolean;
+  /** Re-admit an actor an earlier admission on this plan and sampler accepted:
+   * its exact body, without validating again. Never for an authored station,
+   * whose facing an ActorSpec does not record. */
+  restore(actor: ActorSpec, path: PopulationPath): void;
+  /** Keep only the first `count` actors: an atomic group did not fit. */
+  truncate(count: number): void;
+}
+export function populationActorAdmission(plan: LevelPlan, sampler: TerrainSampler,
+  context: PopulationValidationContext, worldId: string): PopulationActorAdmission {
+  const actors: ActorSpec[] = [];
+  const positions: { position: Vec3; kind: ActorKind; body: PopulationHullPrism; polygon: readonly Point2[];
+    socialGroupId?: string }[] = [];
+  const pose = (kind: ActorKind, path: PopulationPath, along: number, headingY: number | undefined) => {
     const sampled = atDistance(path, along);
-    const point = authored?.headingY === undefined ? sampled : { ...sampled, headingY: authored.headingY };
+    const point = headingY === undefined ? sampled : { ...sampled, headingY };
     const ground = sampler.sampleGround(point.x, point.z, createGroundSample());
     const hull = actorHull(kind);
     const body = physicalPopulationHull(point.x, ground.height, point.z, point.headingY,
       ground.normal.x, ground.normal.y, ground.normal.z, hull);
-    const polygon = expandedPolygon(hullCorners(body), R.staticClearanceMetres);
+    // The same expansion every later candidate's own polygon receives; kept
+    // with the body so each admission is not re-expanded for every candidate.
+    return { point, hull, body, polygon: expandedPolygon(hullCorners(body), R.staticClearanceMetres) };
+  };
+  const occupy = (kind: ActorKind, point: PathPoint, body: PopulationHullPrism, polygon: readonly Point2[],
+    socialGroupId: string | undefined): void => {
+    positions.push({ position: { x: point.x, y: point.y, z: point.z }, kind, body, polygon,
+      ...(socialGroupId ? { socialGroupId } : {}) });
+  };
+  const add = (kind: ActorKind, path: PopulationPath, along: number, anchor?: ActivityAnchor,
+    socialGroupId?: string, activityWalkId?: string, authored?: AuthoredStation, facing?: 1 | -1): boolean => {
+    const { point, hull, body, polygon } = pose(kind, path, along, authored?.headingY);
     // Validate the exact initial interpolated physical pose as well as its
     // surrounding path sweep; the real spawn exclusion covers the full prism.
     if (exclusion(plan, { polygon, minY: body.minY, maxY: body.maxY, fromFraction: 0, toFraction: 1,
       fromHull: body, toHull: body }, context)) return false;
     if (positions.some(item => {
       if (body.minY < item.body.maxY && body.maxY > item.body.minY
-        && polygonsMeet(polygon, expandedPolygon(hullCorners(item.body), R.staticClearanceMetres))) return true;
+        && polygonsMeet(polygon, item.polygon)) return true;
       // Keep people spread out, while a genuine adjacent worker/service lane
       // is judged by physical hulls instead of an arbitrary universal 10 m gap.
-      return isPerson(kind) && isPerson(item.kind) && distance(item.position, point)
+      return isPopulationPerson(kind) && isPopulationPerson(item.kind) && distance(item.position, point)
         < (socialGroupId !== undefined && item.socialGroupId === socialGroupId
           ? R.socialSpacingMetres - R.epsilon : authored ? 2 * R.pedestrianRadiusMetres + POPULATION.humanWaitingGapMetres : R.actorSpacingMetres);
     })) return false;
@@ -2370,13 +2424,59 @@ function actorsFromPaths(plan: LevelPlan, paths: readonly PopulationPath[], anch
     actors.push({ id, kind, pathId: path.id, ...(anchor ? { anchorId: anchor.id } : {}),
       ...(socialGroupId ? { socialGroupId } : {}),
       ...(activityWalkId ? { activityWalkId } : {}),
-      initialDistanceMetres: along, direction: authored?.direction ?? (anchor?.activitySiteId || path.role === 'traffic' || path.role === 'service' ? 1
+      initialDistanceMetres: along, direction: authored?.direction ?? facing ?? (anchor?.activitySiteId || path.role === 'traffic' || path.role === 'service' ? 1
         : populationChoice(worldId, 'direction', id) < 0.5 ? 1 : -1),
       movement: moving ? path.closed ? 'loop' : 'shuttle' : 'stationary', speedMetresPerSecond: authored?.pace ?? speed,
       idleSeconds: R.idleSeconds, appearanceIndex: authored?.appearanceIndex ?? Math.floor(populationChoice(worldId, 'appearance', id) * 8), hull });
-    positions.push({ position: { x: point.x, y: point.y, z: point.z }, kind, body,
-      ...(socialGroupId ? { socialGroupId } : {}) }); return true;
+    occupy(kind, point, body, polygon, socialGroupId); return true;
   };
+  const restore = (actor: ActorSpec, path: PopulationPath): void => {
+    if (actor.pathId !== path.id) throw new Error(`Population actor ${actor.id} restored on another path`);
+    const { point, body, polygon } = pose(actor.kind, path, actor.initialDistanceMetres, undefined);
+    actors.push(actor); occupy(actor.kind, point, body, polygon, actor.socialGroupId);
+  };
+  const truncate = (count: number): void => { actors.length = count; positions.length = count; };
+  return { actors, add, restore, truncate };
+}
+
+/** One station a walker or jogger may start from. */
+export interface PopulationWalkingSlot {
+  readonly path: PopulationPath;
+  readonly along: number;
+  readonly kind: 'walker' | 'jogger';
+}
+/**
+ * Every walking slot the fill offers, per district in `POPULATION_DISTRICT_ORDER`
+ * and path order: one slot at the middle of a short walk, otherwise one each
+ * 30 m from 10 m in; park joggers by the roster hash. Fresh arrays per call:
+ * the living-r1 fill consumes its own; the density layer reorders a copy.
+ */
+export function populationWalkingSlots(paths: readonly PopulationPath[], anchors: readonly ActivityAnchor[],
+  worldId: string): PopulationWalkingSlot[][] {
+  const stationarySupports = new Set(anchors.filter(anchor => anchor.activitySiteId).map(anchor => anchor.pathId));
+  const slots = (path: PopulationPath): readonly number[] => {
+    if (path.lengthMetres <= R.actorSpacingMetres * 2) return [path.lengthMetres / 2];
+    const result: number[] = [];
+    for (let along = R.actorSpacingMetres; along < path.lengthMetres - R.actorSpacingMetres;
+      along += R.actorSpacingMetres * 3) result.push(along);
+    return result;
+  };
+  return POPULATION_DISTRICT_ORDER.map(district => paths.filter(path => path.role === 'pedestrian' && path.district === district && !stationarySupports.has(path.id))
+    .flatMap(path => slots(path).map((along, index) => ({ path, along,
+      kind: (district === 'park' && (index === 1 || (index > 1
+        && populationChoice(worldId, 'roster', `${path.id}/${along}`) < 0.4)) ? 'jogger' : 'walker') as 'walker' | 'jogger' }))));
+}
+
+/** A closed traffic loop's living-r1 vehicle starts this share of the loop in; density stations count from it. */
+export const POPULATION_TRAFFIC_STATION_SHARE = 0.3;
+
+function actorsFromPaths(plan: LevelPlan, paths: readonly PopulationPath[], anchors: ActivityAnchor[],
+  sampler: TerrainSampler, context: PopulationValidationContext,
+  activityWalks: readonly AuthoredDistrictActivityWalk[] = []): readonly ActorSpec[] {
+  const worldId = plan.populationActivityChoiceWorldId ?? plan.id;
+  const admission = populationActorAdmission(plan, sampler, context, worldId);
+  const { actors, add } = admission;
+  const parkedReservations: { pathId: string; distanceMetres: number }[] = [];
   if (plan.populationActivity) {
     const policy=plan.populationActivity, seen=new Set<string>();
     if(policy.revision!=='authored-cut1-r1'||policy.ground!=='authored') throw new RangeError('Unknown population activity policy');
@@ -2420,7 +2520,7 @@ function actorsFromPaths(plan: LevelPlan, paths: readonly PopulationPath[], anch
   let people = 0, riders = 0, service = 0, traffic = 0;
   // Representative activity before bulk filling: ids cannot let a long list
   // of commercial sidewalks consume the entire shared people budget.
-  const districts: readonly District[] = ['park', 'residential', 'industrial', 'commercial'];
+  const districts = POPULATION_DISTRICT_ORDER;
   // Populate completed places before generic far-path filling, within the
   // existing people cap. Each pair is atomic and has its own actual facing.
   const activitySites = [...new Set(anchors.flatMap(anchor => anchor.activitySiteId ? [anchor.activitySiteId] : []))];
@@ -2432,9 +2532,8 @@ function actorsFromPaths(plan: LevelPlan, paths: readonly PopulationPath[], anch
       const path = paths.find(item => item.id === anchor.pathId);
       return !!path && add('social', path, anchor.distanceMetres, anchor, siteId);
     })) people += 2;
-    else { actors.length = before; positions.length = before; }
+    else admission.truncate(before);
   }
-  const stationarySupports = new Set(anchors.filter(anchor => anchor.activitySiteId).map(anchor => anchor.pathId));
   // Spread existing capacity across finished districts before distant bulk
   // filling. Each admitted route receives one actor first; only long routes
   // receive a second at a distinct third. Existing actor appearance/direction
@@ -2506,23 +2605,13 @@ function actorsFromPaths(plan: LevelPlan, paths: readonly PopulationPath[], anch
           if (add('social', path, anchor.distanceMetres, anchor, anchor.id)
             && add('social', path, companion, anchor, anchor.id)) { people += 2; break; }
           // A real social pair is atomic; do not leave a lone failed companion.
-          actors.length = before; positions.length = before;
+          admission.truncate(before);
         }
       }
     }
   }
 
-  const slots = (path: PopulationPath): readonly number[] => {
-    if (path.lengthMetres <= R.actorSpacingMetres * 2) return [path.lengthMetres / 2];
-    const result: number[] = [];
-    for (let along = R.actorSpacingMetres; along < path.lengthMetres - R.actorSpacingMetres;
-      along += R.actorSpacingMetres * 3) result.push(along);
-    return result;
-  };
-  const queues = districts.map(district => paths.filter(path => path.role === 'pedestrian' && path.district === district && !stationarySupports.has(path.id))
-    .flatMap(path => slots(path).map((along, index) => ({ path, along,
-      kind: (district === 'park' && (index === 1 || (index > 1
-        && populationChoice(worldId, 'roster', `${path.id}/${along}`) < 0.4)) ? 'jogger' : 'walker') as 'walker' | 'jogger' }))));
+  const queues = populationWalkingSlots(paths, anchors, worldId);
   // One walking presence per supported district, then the park's distinct jogger.
   for (const queue of queues) for (let index = 0; index < queue.length; index += 1) {
     const candidate = queue[index];
@@ -2544,7 +2633,7 @@ function actorsFromPaths(plan: LevelPlan, paths: readonly PopulationPath[], anch
       const workplace = anchors.find(anchor => anchor.pathId === path.id && anchor.kind === 'worker');
       if (workplace && add('serviceVehicle', path, path.lengthMetres * 0.5, workplace)) service += 1;
     } else if (path.role === 'traffic' && path.closed && traffic < R.maximumTrafficVehicles) {
-      if (add('trafficVehicle', path, path.lengthMetres * 0.3)) traffic += 1;
+      if (add('trafficVehicle', path, path.lengthMetres * POPULATION_TRAFFIC_STATION_SHARE)) traffic += 1;
     }
   }
   while (people < R.maximumPeople && queues.some(queue => queue.length > 0)) {

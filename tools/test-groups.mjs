@@ -48,6 +48,10 @@ export const GROUPS = Object.freeze({
     'src/bench/launchPadSites.test.ts', 'src/bench/launchPadLine.test.ts', 'src/bench/launchPadSiteSweep.test.ts',
     // M44: the derived corpus pinned byte for byte beside the authored-pad hook (~40 s).
     'src/bench/launchPadHook.test.ts',
+    // M47: three generated cities prepared end to end, euc twice plus a re-preparation (~14 s).
+    'src/app/populationDensityWorld.test.ts',
+    // M47: ten simulated minutes of four living-r2 density rosters plus the broad-phase equivalence (~130 s).
+    'src/app/populationDenseCensus.test.ts',
   ) },
 });
 

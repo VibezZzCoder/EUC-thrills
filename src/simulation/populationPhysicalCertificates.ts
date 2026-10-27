@@ -6,7 +6,7 @@ import type { PopulationFootprint } from './population.ts';
 import { compileRiderOccupancyCertificate, type CompiledOccupancySlot, type CompiledOccupancyTemplate, type OccupancyCertificateKind } from '../shared/compiledOccupancy.ts';
 import { checkInterval } from '../shared/occupancyExpressions.ts';
 import { coarseMountedHumanWorldAabb, coarseWheelWorldAabb, aabbsOverlap } from '../shared/occupancyBroadphase.ts';
-import { coarseActorMotionWorldAabb } from '../shared/occupancyBroadphase.ts';
+import { aabbOverlapsAt, coarseActorMotionWorldAabb, coarseActorMotionWorldAabbAt } from '../shared/occupancyBroadphase.ts';
 import type { PopulationPhysicalOwner } from './populationWholeStepRefusal.ts';
 import { POPULATION } from '../data/tuning.ts';
 type Aabb = ReturnType<typeof coarseWheelWorldAabb>;
@@ -101,15 +101,24 @@ const isSamePose = (a: RiderOccupancyPose, b: RiderOccupancyPose) => Object.keys
  * question on; any other array is measured afresh.
  */
 interface ActorBoxes { readonly owners: readonly string[]; readonly boxes: readonly Aabb[] }
+/** `owner`'s uncached admission box: written per actor, read at once, never kept. */
+const ADMISSION_BOX = new Float64Array(6);
 const actorBoxCache = new WeakMap<readonly PopulationCompoundActorMotion[], ActorBoxes>(), askedOnce = new WeakSet<readonly PopulationCompoundActorMotion[]>();
 const frozenFootprint = (body: PopulationFootprint): boolean => Object.isFrozen(body)
   && (!body.sourceHull || (Object.isFrozen(body.sourceHull) && Object.isFrozen(body.sourceHull.hull)));
+/** `actor:${id}`, formed once per id (M48: a census asked for it for every actor every step). */
+const actorOwners = new Map<string, string>();
+function actorOwner(id: string): string {
+  let owner = actorOwners.get(id);
+  if (owner === undefined) actorOwners.set(id, owner = `actor:${id}`);
+  return owner;
+}
 function actorBoxes(actors: readonly PopulationCompoundActorMotion[]): ActorBoxes | undefined {
   let known = actorBoxCache.get(actors);
   if (known !== undefined || !Object.isFrozen(actors)) return known;
   if (!askedOnce.has(actors)) { askedOnce.add(actors); return undefined; }
   if (actors.every(actor => Object.isFrozen(actor) && frozenFootprint(actor.previous) && frozenFootprint(actor.current))) {
-    known = { owners: actors.map(actor => actor.ownerId ?? `actor:${actor.id}`), boxes: actors.map(actor => coarseActorMotionWorldAabb(actor.previous, actor.current)) };
+    known = { owners: actors.map(actor => actor.ownerId ?? actorOwner(actor.id)), boxes: actors.map(actor => coarseActorMotionWorldAabb(actor.previous, actor.current)) };
     actorBoxCache.set(actors, known);
   }
   return known;
@@ -214,7 +223,12 @@ export class PopulationPhysicalCertificates {
     const boxes = [coarseWheelWorldAabb(input), activeRag ? physicalRagHumanWorldAabb(input) : coarseMountedHumanWorldAabb(input)];
     const kept = actorBoxes(actors);
     const admitted = kept ? kept.owners.some((owner, index) => owner !== ownerId && boxes.some(box => aabbsOverlap(box, kept.boxes[index])))
-      : actors.some(actor => (actor.ownerId ?? `actor:${actor.id}`) !== ownerId && boxes.some(box => aabbsOverlap(box, coarseActorMotionWorldAabb(actor.previous, actor.current))));
+      : actors.some(actor => {
+        if ((actor.ownerId ?? `actor:${actor.id}`) === ownerId) return false;
+        // The actor's box, written once into scratch and only compared (M47 follow-up).
+        coarseActorMotionWorldAabbAt(actor.previous, actor.current, ADMISSION_BOX, 0);
+        return boxes.some(box => aabbOverlapsAt(box, ADMISSION_BOX, 0));
+      });
     // No crashed body waits for a frame certificate any more: its human is the
     // straight sweep between its exact ends, which needs none (CR-1). A body
     // that only starts its fall in this step keeps the certified enclosure.

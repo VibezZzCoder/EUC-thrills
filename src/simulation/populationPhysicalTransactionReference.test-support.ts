@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 /**
  * The 1.1.5 whole-step transaction and actor-yield refusal, verbatim
- * (PERF-WHARF, 2026-10-23): the reference `populationPhysicalTransactionExactness.test.ts`
+ * (PERF-WHARF, 2026-10-23): the reference `app/populationPhysicalTransactionExactness.test.ts`
  * rides beside the live modules. Only the imports, the export names and the
  * interfaces (taken from the live module) differ from the shipped 1.1.5 text.
  * Test support only: never import it from game code, and never edit its logic.

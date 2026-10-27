@@ -98,7 +98,7 @@ test('four moving seats preserve population and shadow pixels across separated v
     scope: 'Production fixed-step four-seat motion, six chase samples and six moving-actor camera sweeps. Pixel parity includes shadows. Physical controllers and sustained device play remain owner acceptance.' }, null, 2));
 });
 
-test('native world changes and graphics rebuilds plateau without changing the population', async ({ page }) => {
+test('native world changes and graphics rebuilds plateau; each tier keeps one stable roster', async ({ page }) => {
   test.setTimeout(240_000);
   const errors = collectErrors(page), records: unknown[] = [];
   await bootAtTier(page, 'level=generated&seed=euc', 'high', {
@@ -125,20 +125,84 @@ test('native world changes and graphics rebuilds plateau without changing the po
     if (cycle === 2) expect(current.resources).toEqual(previous.get(identity));
     previous.set(identity, current.resources); records.push({ cycle, identity, ...current });
   }
+  // M47 (PLANS §47.3): the effective tier picks the living world's roster.
+  // Low is the living-r1 base, Medium and High their density layers, and
+  // Ultra draws High's. Each tier's roster is the same on every visit, a
+  // switch never re-identifies the world, and High's is the boot's.
   const baseline = await page.evaluate(() => window.game.populationState());
+  expect(baseline.densityLayer).toBe('high');
+  const layerOf = { low: 'base', medium: 'medium', high: 'high', ultra: 'high' } as const;
   const tiers = new Map<string, unknown>();
+  const rosters = new Map<string, { digest: string; rosterActors: number; simulation: unknown }>();
   for (let cycle = 0; cycle < 3; cycle++) for (const [index, quality] of (['low', 'medium', 'high', 'ultra', 'high'] as const).entries()) {
     const key = index === 4 ? 'high-return' : quality;
     const current = await page.evaluate(quality => {
       const g = window.game; g.setOptions({ quality }); g.advance(0);
       return { population: g.populationState(), resources: g.snapshot().resources,
-        glError: g.renderer.renderer.getContext().getError() };
+        recordWorldId: g.levelPlan.recordWorldId, glError: g.renderer.renderer.getContext().getError() };
     }, quality);
-    expect(current.population.simulation).toEqual(baseline.simulation);
-    expect(current.population.digest).toBe(baseline.digest); expect(current.glError).toBe(0);
+    expect(current.recordWorldId).toBe('generated-r6-euc~living-r1');
+    expect(current.population.densityLayer).toBe(layerOf[quality]);
+    expect(current.population.densityPending).toBe(false);
+    expect(current.population.rosterActors).toBe(current.population.simulation.actors.length);
+    // High and Ultra share one roster; every other tier keeps its own.
+    const roster = rosters.get(layerOf[quality]);
+    if (roster) {
+      expect(current.population.digest).toBe(roster.digest);
+      expect(current.population.rosterActors).toBe(roster.rosterActors);
+      // Ultra over High changes no roster, so the living world runs on untouched.
+      if (quality === 'ultra') expect(current.population.simulation).toEqual(roster.simulation);
+    } else rosters.set(layerOf[quality], { digest: current.population.digest,
+      rosterActors: current.population.rosterActors, simulation: current.population.simulation });
+    expect(current.glError).toBe(0);
     if (cycle === 2) expect(current.resources).toEqual(tiers.get(key));
     tiers.set(key, current.resources); records.push({ cycle, quality, key, ...current });
   }
+  expect(rosters.get('high')!.digest).toBe(baseline.digest);
+  expect(new Set([...rosters.values()].map(value => value.digest)).size).toBe(3);
+  expect(rosters.get('base')!.rosterActors).toBeLessThan(rosters.get('medium')!.rosterActors);
+  expect(rosters.get('medium')!.rosterActors).toBeLessThan(rosters.get('high')!.rosterActors);
+  // A change during a timed attempt waits for it: the attempt keeps the roster
+  // it started with, and the change is taken on the way back to a free ride,
+  // or by the next timed start (which restarts the living world anyway).
+  const pending = await page.evaluate(() => {
+    const g = window.game, read = () => {
+      const { densityLayer, densityPending, digest, rosterActors } = g.populationState();
+      return { densityLayer, densityPending, digest, rosterActors, state: g.snapshot().app.state };
+    };
+    const rows: Record<string, ReturnType<typeof read>> = {};
+    // The title's Time trial button, as a player reaches it from a free ride.
+    g.setAppState('title'); g.startTimeTrial(); g.advance(0); rows.started = read();
+    g.setAppState('paused'); g.setOptions({ quality: 'low' }); g.advance(0); rows.changed = read();
+    g.setAppState('challenge'); g.advance(2); rows.resumed = read();
+    g.setAppState('paused'); g.setAppState('freeRide'); g.advance(0); rows.freeRide = read();
+    g.setAppState('title'); g.startTimeTrial(); g.advance(0); g.setAppState('paused'); g.setOptions({ quality: 'high' }); g.advance(0);
+    rows.changedAgain = read();
+    // The pause card's Retry: a new attempt, the living world restarted for it.
+    g.startTimeTrial(); g.advance(0); rows.restarted = read();
+    g.setAppState('paused'); g.setAppState('freeRide'); g.advance(0); rows.done = read();
+    return rows;
+  });
+  records.push({ pending });
+  expect(pending.started).toMatchObject({ state: 'challenge', densityLayer: 'high', densityPending: false });
+  expect(pending.changed).toMatchObject({ state: 'paused', densityLayer: 'high', densityPending: true,
+    digest: rosters.get('high')!.digest });
+  expect(pending.resumed).toMatchObject({ state: 'challenge', densityLayer: 'high', densityPending: true });
+  expect(pending.freeRide).toMatchObject({ state: 'freeRide', densityLayer: 'base', densityPending: false,
+    digest: rosters.get('base')!.digest });
+  expect(pending.changedAgain).toMatchObject({ state: 'paused', densityLayer: 'base', densityPending: true });
+  expect(pending.restarted).toMatchObject({ state: 'challenge', densityLayer: 'high', densityPending: false,
+    digest: rosters.get('high')!.digest });
+  expect(pending.done).toMatchObject({ state: 'freeRide', densityLayer: 'high', densityPending: false });
+  // Low's roster is the one a Low boot installs: the living-r1 base itself.
+  await bootAtTier(page, 'level=generated&seed=euc', 'low', { freezeAtStart: true, options: { showFps: false } });
+  const lowBoot = await page.evaluate(() => ({ population: window.game.populationState(),
+    recordWorldId: window.game.levelPlan.recordWorldId }));
+  expect(lowBoot.recordWorldId).toBe('generated-r6-euc~living-r1');
+  expect(lowBoot.population.densityLayer).toBe('base');
+  expect(lowBoot.population.digest).toBe(rosters.get('base')!.digest);
+  expect(lowBoot.population.rosterActors).toBe(rosters.get('base')!.rosterActors);
+  records.push({ lowBoot });
   expect(errors).toEqual([]);
   writeFileSync(join(out, 'lifecycle.json'), JSON.stringify({ records, errors }, null, 2));
 });

@@ -4,12 +4,19 @@ import type { EnvironmentAmbienceEmitter } from '../audio/environmentAmbience.ts
 import type { ActorSpec, PopulationPlan } from '../level/populationPlan.ts';
 import type { PopulationRenderSnapshot } from '../render/populationView.ts';
 
-/** The actors that own an outdoor bed: moving vehicles first, then workers, social groups and the rest, by id. */
+const movingVehicle = (actor: ActorSpec): boolean => actor.kind === 'serviceVehicle' || actor.kind === 'trafficVehicle';
+/** The actors that own an outdoor bed: moving vehicles first, then workers,
+ * social groups and the rest, by id. A density roster's moving vehicles keep
+ * at most `densityVehicleEmitters` beds, chosen in roster order. */
 function emitterActors(plan: PopulationPlan): ActorSpec[] {
-  const priority = (actor: ActorSpec): number => actor.kind === 'serviceVehicle' || actor.kind === 'trafficVehicle'
+  const priority = (actor: ActorSpec): number => movingVehicle(actor)
     ? 0 : actor.kind === 'worker' ? 1 : actor.kind === 'social' ? 2 : 3;
-  return plan.actors.filter(actor => actor.kind !== 'parkedVehicle')
-    .sort((a, b) => priority(a) - priority(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  let actors = plan.actors.filter(actor => actor.kind !== 'parkedVehicle');
+  if (plan.densityLayer !== undefined) {
+    const kept = new Set(actors.filter(movingVehicle).slice(0, T.densityVehicleEmitters));
+    actors = actors.filter(actor => !movingVehicle(actor) || kept.has(actor));
+  }
+  return actors.sort((a, b) => priority(a) - priority(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     .slice(0, T.maximumEmitters);
 }
 const emitterId = (actor: Pick<ActorSpec, 'id'>): string => `population-audio/${actor.id}`;

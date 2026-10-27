@@ -68,17 +68,33 @@ const BODY_CYCLE: readonly PopulationVehicleBody[] = Object.freeze(['deliveryVan
  * shapes; the starting body comes from the first id's hash. A service vehicle
  * is a working vehicle: dealt a minibus, it drives a delivery van instead.
  * Pure function of the roster's ids and kinds.
+ *
+ * **M47 density extras continue the deal; they never re-deal it.** `extras`
+ * is the plan's density layer (`PopulationPlan.density.actors`), in admission
+ * order. A vehicle that is not an extra is ranked and dealt exactly as before
+ * among the non-extras alone, so a base (living-r1) roster's bodies are
+ * bit-identical whatever layer is drawn. Each extra vehicle then takes the
+ * next body in the cycle by its place among the layer's vehicles, so a
+ * Medium extra keeps its body at High (Medium is a prefix of High).
  */
-export function assignVehicleBodies(actors: readonly Pick<ActorSpec, 'id' | 'kind'>[]): ReadonlyMap<string, PopulationVehicleBody> {
-  const vehicles = actors.filter(actor => kindIsVehicle(actor.kind))
+export function assignVehicleBodies(actors: readonly Pick<ActorSpec, 'id' | 'kind'>[],
+  extras: readonly Pick<ActorSpec, 'id' | 'kind'>[] = []): ReadonlyMap<string, PopulationVehicleBody> {
+  const extraOrder = new Map<string, number>();
+  for (const actor of extras) if (kindIsVehicle(actor.kind) && !extraOrder.has(actor.id)) extraOrder.set(actor.id, extraOrder.size);
+  const vehicles = actors.filter(actor => kindIsVehicle(actor.kind) && !extraOrder.has(actor.id))
     .map(actor => ({ actor, hash: populationHash(actor.id) }))
     .sort((a, b) => a.hash - b.hash || (a.actor.id < b.actor.id ? -1 : a.actor.id > b.actor.id ? 1 : 0));
   const out = new Map<string, PopulationVehicleBody>();
   const offset = vehicles.length > 0 ? vehicles[0]!.hash % BODY_CYCLE.length : 0;
-  vehicles.forEach(({ actor }, rank) => {
-    const dealt = BODY_CYCLE[(rank + offset) % BODY_CYCLE.length]!;
+  const deal = (actor: Pick<ActorSpec, 'id' | 'kind'>, place: number): void => {
+    const dealt = BODY_CYCLE[(place + offset) % BODY_CYCLE.length]!;
     out.set(actor.id, actor.kind === 'serviceVehicle' && dealt === 'minibus' ? 'deliveryVan' : dealt);
-  });
+  };
+  vehicles.forEach(({ actor }, rank) => deal(actor, rank));
+  for (const actor of actors) {
+    const place = kindIsVehicle(actor.kind) ? extraOrder.get(actor.id) : undefined;
+    if (place !== undefined) deal(actor, vehicles.length + place);
+  }
   return out;
 }
 
