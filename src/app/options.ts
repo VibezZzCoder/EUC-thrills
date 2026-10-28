@@ -71,6 +71,24 @@ export type SpeedUnit = 'kph' | 'mph';
 export const SPEED_UNITS: readonly SpeedUnit[] = ['kph', 'mph'];
 
 /**
+ * The frame rate limit (1.2.0, the owner's ask): draw no faster than this.
+ *
+ * `auto` draws every frame the display offers, which is what the game always
+ * did. A number caps *drawing* only — the simulation still runs its fixed 120
+ * steps a second and interpolates between them, so a capped player rides the
+ * same game and sees fewer frames of it (`app/loop.ts`). Nothing below 30:
+ * under about 24 the catch-up ceiling starts dropping time.
+ */
+export type FrameRateLimit = 'auto' | '120' | '60' | '30';
+
+export const FRAME_RATE_LIMITS: readonly FrameRateLimit[] = ['auto', '120', '60', '30'];
+
+/** The cap in frames per second, or null for `auto`. */
+export function frameRateCap(limit: FrameRateLimit): number | null {
+  return limit === 'auto' ? null : Number(limit);
+}
+
+/**
  * Whether the on-screen controls are shown (M11.5).
  *
  * Three states rather than a Boolean, because the honest answer for most
@@ -157,6 +175,8 @@ export interface GameOptions {
    * it structurally and never read its value (AGENTS invariant 11).
    */
   readonly showFps: boolean;
+  /** See `FrameRateLimit`. Presentation only; the simulation never reads it. */
+  readonly frameRateLimit: FrameRateLimit;
 
   // -- Audio ----------------------------------------------------------------
   readonly volumeMaster: number;
@@ -237,6 +257,7 @@ export const DEFAULT_OPTIONS: GameOptions = Object.freeze({
   fieldOfViewTrim: 0,
   speedUnit: 'kph' as SpeedUnit,
   showFps: false,
+  frameRateLimit: 'auto' as FrameRateLimit,
 
   // Unity across the board, because the owner accepted the M8 mix at exactly
   // these levels on 2026-08-05. A default that trimmed anything would silently
@@ -324,6 +345,9 @@ export function coerceOptions(raw: unknown, base: GameOptions = DEFAULT_OPTIONS)
       ? (record.speedUnit as SpeedUnit)
       : base.speedUnit,
     showFps: typeof record.showFps === 'boolean' ? record.showFps : base.showFps,
+    frameRateLimit: FRAME_RATE_LIMITS.includes(record.frameRateLimit as FrameRateLimit)
+      ? (record.frameRateLimit as FrameRateLimit)
+      : base.frameRateLimit,
 
     volumeMaster: typeof record.volumeMaster === 'number'
       ? clamp01(record.volumeMaster)
@@ -503,6 +527,7 @@ export function sameOptions(a: GameOptions, b: GameOptions): boolean {
     || a.fieldOfViewTrim !== b.fieldOfViewTrim
     || a.speedUnit !== b.speedUnit
     || a.showFps !== b.showFps
+    || a.frameRateLimit !== b.frameRateLimit
     || a.volumeMaster !== b.volumeMaster
     || a.volumeSfx !== b.volumeSfx
     || a.volumeUi !== b.volumeUi

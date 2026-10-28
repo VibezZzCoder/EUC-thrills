@@ -627,7 +627,14 @@ import { BARK_LINES as D_BARK_LINES } from '../src/ui/barkModel.ts';
 const D_SLICE = 'level=slice';
 /** Pad buttons (`tests/m24.spec.ts`). */
 const D_DPAD_DOWN = 13;
+const D_DPAD_LEFT = 14;
+const D_DPAD_RIGHT = 15;
 const D_CONFIRM = 0;
+
+/** One button of the Settings "Frame rate counter" row (1.2.0 choice rows). */
+function dFpsChoice(page: Page, value: 'off' | 'on') {
+  return page.locator(`[data-choice="showFps"][data-value="${value}"]`);
+}
 
 /**
  * Invariant 11 for a failed case's automatic artifacts. `screenshot` and
@@ -1060,7 +1067,7 @@ test.describe('M42 D — FPS and barks', () => {
       await dInkOutFps(page);
     });
 
-    test('off by default; the Settings checkbox shows it in seat 0 only, at one, two and four seats', async ({ page }) => {
+    test('off by default; the Settings choice shows it in seat 0 only, at one, two and four seats', async ({ page }) => {
       const errors = await bootM42ToTitle(page, D_SLICE);
       expect(await page.evaluate(() => window.game.snapshot().options.showFps)).toBe(false);
       expect(await dFpsShown(page)).toEqual([false]);
@@ -1071,8 +1078,10 @@ test.describe('M42 D — FPS and barks', () => {
         '.euc-menu--settings [data-option]',
       )].map((node) => node.dataset.option));
       expect(order.indexOf('showFps')).toBe(order.indexOf('speedUnit') + 1);
-      await page.locator('#euc-opt-fps').click();
+      await expect(dFpsChoice(page, 'off')).toHaveAttribute('aria-pressed', 'true');
+      await dFpsChoice(page, 'on').click();
       expect(await page.evaluate(() => window.game.snapshot().options.showFps)).toBe(true);
+      await expect(dFpsChoice(page, 'on')).toHaveAttribute('aria-pressed', 'true');
 
       await dSettingsToRide(page);
       await expect.poll(() => dFpsShown(page), { timeout: 10_000 }).toEqual([true]);
@@ -1098,7 +1107,7 @@ test.describe('M42 D — FPS and barks', () => {
       expectNoM42Errors(errors);
     });
 
-    test('a pad reaches the checkbox one Down past Speed units and toggles it', async ({ page }) => {
+    test('a pad reaches the choice row one Down past Speed units and switches it', async ({ page }) => {
       await page.addInitScript(() => {
         const pad = {
           index: 0, id: 'fake standard pad', connected: true, mapping: 'standard', axes: [0, 0, 0, 0],
@@ -1123,15 +1132,20 @@ test.describe('M42 D — FPS and barks', () => {
       }, button);
 
       await page.evaluate(() => window.game.setAppState('settings'));
-      await expect(page.locator('[data-option="quality"]')).toBeFocused();
+      await expect(page.locator('[data-choice="quality"][data-value="high"]')).toBeFocused();
       await pulse(D_DPAD_DOWN);
       await pulse(D_DPAD_DOWN);
-      await expect(page.locator('[data-option="speedUnit"]')).toBeFocused();
+      await expect(page.locator('[data-choice="speedUnit"][aria-pressed="true"]')).toBeFocused();
+      // Down lands on the value the row holds (Off), Right walks to On without
+      // changing anything, and A chooses it.
       await pulse(D_DPAD_DOWN);
-      await expect(page.locator('#euc-opt-fps')).toBeFocused();
+      await expect(dFpsChoice(page, 'off')).toBeFocused();
+      await pulse(D_DPAD_RIGHT);
+      await expect(dFpsChoice(page, 'on')).toBeFocused();
+      expect(await page.evaluate(() => window.game.snapshot().options.showFps)).toBe(false);
       await pulse(D_CONFIRM);
       expect(await page.evaluate(() => window.game.snapshot().options.showFps)).toBe(true);
-      await expect(page.locator('#euc-opt-fps')).toBeChecked();
+      await expect(dFpsChoice(page, 'on')).toHaveAttribute('aria-pressed', 'true');
       await dSettingsToRide(page);
       await expect.poll(() => dFpsShown(page), { timeout: 10_000 }).toEqual([true]);
 
@@ -1140,7 +1154,9 @@ test.describe('M42 D — FPS and barks', () => {
         window.game.setAppState('paused');
         window.game.setAppState('settings');
       });
-      await page.locator('#euc-opt-fps').focus();
+      await dFpsChoice(page, 'on').focus();
+      await pulse(D_DPAD_LEFT);
+      await expect(dFpsChoice(page, 'off')).toBeFocused();
       await pulse(D_CONFIRM);
       expect(await page.evaluate(() => window.game.snapshot().options.showFps)).toBe(false);
       await page.evaluate(() => window.game.resetOptions());
@@ -1153,7 +1169,7 @@ test.describe('M42 D — FPS and barks', () => {
       await bootM42(page, D_SLICE);
       expect(await page.evaluate(() => window.game.snapshot().options.showFps)).toBe(true);
       await expect.poll(() => dFpsShown(page), { timeout: 10_000 }).toEqual([true]);
-      await expect(page.locator('#euc-opt-fps')).toBeChecked();
+      await expect(dFpsChoice(page, 'on')).toHaveAttribute('aria-pressed', 'true');
       await page.evaluate(() => window.game.setOptions({ showFps: false }));
       await expect.poll(() => dFpsShown(page)).toEqual([false]);
       await page.evaluate(() => window.game.resetOptions());

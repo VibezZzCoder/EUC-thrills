@@ -518,12 +518,13 @@ test.describe('M11.5 — on-screen controls', () => {
     await page.locator('[data-touch-tap="pause"]').tap();
     await page.locator('.euc-menu--pause [data-menu="settings"]').tap();
 
-    const select = page.locator('[data-option="touchControls"]');
-    await expect(select).toBeVisible();
-    await expect(select).toHaveValue('auto');
+    const touchControls = (value: string) => page.locator(`[data-choice="touchControls"][data-value="${value}"]`);
+    await expect(touchControls('off')).toBeVisible();
+    await expect(touchControls('auto')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('[data-menu="touch-status"]')).toContainText('showing');
 
-    await select.selectOption('off');
+    await touchControls('off').tap();
+    await expect(touchControls('off')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('[data-menu="touch-status"]')).toContainText('switched off');
 
     await page.locator('.euc-menu--settings [data-menu="back"]').tap();
@@ -2532,15 +2533,20 @@ test.describe('M39 — Ultra Graphics on a phone', () => {
     // choosing it presses the toggle, and choosing a tier turns it off.
     await page.locator(SETTINGS).tap();
     await page.waitForFunction(() => window.game.snapshot().app.menu === 'settings');
-    const select = page.locator('[data-option="quality"]');
-    await expect(select.locator('option[value="ultra"]')).toBeEnabled();
+    const choice = (value: string) => page.locator(`[data-choice="quality"][data-value="${value}"]`);
+    await expect(choice('ultra')).toBeEnabled();
     await expect(page.locator('#euc-quality-warning')).toContainText(
       'Requires a capable GPU; smoothness and battery use vary by device.',
     );
-    await select.selectOption('ultra');
+    await choice('ultra').tap();
     await expect.poll(quality).toBe('ultra');
     await expect(toggle).toHaveAttribute('aria-pressed', 'true');
-    await select.selectOption('high');
+    // The row refuses a choice while the switch is loading (M39 follow-up),
+    // as a player's next tap would wait for the cover to lift.
+    await page.waitForFunction(
+      () => !document.querySelector('[data-option="quality"]')?.hasAttribute('aria-busy'),
+    );
+    await choice('high').tap();
     await expect.poll(quality).toBe('high');
     await expect(toggle).toHaveAttribute('aria-pressed', 'false');
     await expect(stateWord).toHaveText('Off');

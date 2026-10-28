@@ -14,7 +14,9 @@ import {
   qualityBusyWords,
   qualityStateWords,
   routeStatusLine,
-  stepEnabledOption,
+  choiceTemplate,
+  frameRateOffers,
+  ON_OFF_CHOICES,
   venueButtonTemplate,
   titleCreditTemplate,
   spinOffChipTemplate,
@@ -379,46 +381,34 @@ test('a switch across Ultra says so in the owner’s words, and never in a word 
   }
 });
 
-test('a disabled option is stepped over by confirm and by a press, and nothing else changes', () => {
-  // Nothing disabled: exactly the old arithmetic — confirm is (i + 1) % n,
-  // a press is clamp(i ± 1). Every ordinary select steps as it always did.
-  const open = [false, false, false, false];
-  for (let from = 0; from < open.length; from += 1) {
-    assert.equal(stepEnabledOption(open, from, 1, true), (from + 1) % open.length);
-    assert.equal(stepEnabledOption(open, from, 1, false), Math.min(open.length - 1, from + 1));
-    assert.equal(stepEnabledOption(open, from, -1, false), Math.max(0, from - 1));
-  }
-
-  // The quality list in a couch session: Ultra (last) disabled.
-  const couch = QUALITY_LEVELS.map((level) => level === 'ultra');
-  const at = (level: QualityLevel) => QUALITY_LEVELS.indexOf(level);
-  // A's lap goes round the ordinary three and never lands on Ultra.
-  assert.equal(stepEnabledOption(couch, at('high'), 1, true), at('low'));
-  // From a saved Ultra (selected, disabled), A leaves it for the next choosable one.
-  assert.equal(stepEnabledOption(couch, at('ultra'), 1, true), at('low'));
-  // Right from High stays on High: the clamped walk does not jump past the end.
-  assert.equal(stepEnabledOption(couch, at('high'), 1, false), at('high'));
-  // Left from a saved Ultra reaches High, and Right from it goes nowhere.
-  assert.equal(stepEnabledOption(couch, at('ultra'), -1, false), at('high'));
-  assert.equal(stepEnabledOption(couch, at('ultra'), 1, false), at('ultra'));
-
-  // A disabled option in the middle is stepped *over*, not onto.
-  assert.equal(stepEnabledOption([false, true, false], 0, 1, false), 2);
-  assert.equal(stepEnabledOption([false, true, false], 2, -1, false), 0);
-  assert.equal(stepEnabledOption([false, true, false], 2, 1, true), 0);
-
-  // Nowhere to go stays put rather than throwing or spinning.
-  assert.equal(stepEnabledOption([true, true], 0, 1, true), 0);
-  assert.equal(stepEnabledOption([false, true], 0, 1, true), 0);
-  assert.equal(stepEnabledOption([], 0, 1, true), 0);
+test('Ultra is the last quality, after the ordinary three in their order', () => {
+  assert.deepEqual(QUALITY_LEVELS, ['low', 'medium', 'high', 'ultra']);
 });
 
-test('Ultra is the last quality, so single player’s A-lap from High passes through it', () => {
-  // `tests/m24.spec.ts` presses A round the whole list from the default; the
-  // first press from High is Ultra, and the ordinary three keep their order.
-  assert.deepEqual(QUALITY_LEVELS, ['low', 'medium', 'high', 'ultra']);
-  const open = QUALITY_LEVELS.map(() => false);
-  assert.equal(QUALITY_LEVELS[stepEnabledOption(open, QUALITY_LEVELS.indexOf('high'), 1, true)], 'ultra');
+// -- 1.2.0: choice rows and the frame rate limit -------------------------------
+
+test('a choice row is one named group of aria-pressed buttons, one per value', () => {
+  const html = choiceTemplate('quality', 'euc-opt-quality', [
+    { value: 'low', label: 'Low' },
+    { value: 'high', label: 'High' },
+  ], ' aria-describedby="x"');
+  assert.match(html, /role="group"/);
+  assert.match(html, /aria-labelledby="euc-opt-quality"/);
+  assert.match(html, /data-option="quality"/);
+  assert.match(html, /aria-describedby="x"/);
+  const buttons = [...html.matchAll(/<button type="button" class="euc-choice__option" data-choice="quality"\s+data-value="(\w+)" aria-pressed="false">(\w+)<\/button>/g)];
+  assert.deepEqual(buttons.map((m) => [m[1], m[2]]), [['low', 'Low'], ['high', 'High']]);
+  assert.doesNotMatch(html, /<select|type="checkbox"/);
+  assert.deepEqual(ON_OFF_CHOICES.map((c) => c.value), ['off', 'on']);
+});
+
+test('frame rate limits at or above the display rate are not offered; Auto always is', () => {
+  assert.deepEqual(frameRateOffers(null), ['auto', '120', '60', '30']);
+  assert.deepEqual(frameRateOffers(60), ['auto', '30']);
+  assert.deepEqual(frameRateOffers(59.94), ['auto', '30']);
+  assert.deepEqual(frameRateOffers(120), ['auto', '60', '30']);
+  assert.deepEqual(frameRateOffers(144), ['auto', '120', '60', '30']);
+  assert.deepEqual(frameRateOffers(30), ['auto']);
 });
 
 // -- M39 Part P: the chase on the couch's two doors and its wheel ------------

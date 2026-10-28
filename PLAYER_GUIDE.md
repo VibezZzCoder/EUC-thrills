@@ -447,8 +447,10 @@ and you can have both out of one hop.
 ## Settings, saving, and your data
 
 **Display**: Quality (Low, Medium, High, Ultra), a field-of-view trim, speed
-units (km/h or mph), and a frame-rate counter that is off unless you turn it
-on. **Audio**: Master, Ride and effects, and Warnings on separate faders, so
+units (km/h or mph), a frame-rate counter that is off unless you turn it
+on, and a frame rate limit (Auto, or 120, 60 or 30 where your screen is fast
+enough for the number to matter). Every choice is a row of buttons you can
+tap, click, or reach with the d-pad and press A. **Audio**: Master, Ride and effects, and Warnings on separate faders, so
 the wheel can still warn you with everything else turned down, plus Mute
 everything. **Controls**: the key remap above, the gamepad on or off, and
 its stick dead zone. **Touch controls**: Automatic, Always show or Never
@@ -522,7 +524,9 @@ offers **Retry loading**.
 On a phone the game is doing the same work it does on a desktop, so an older
 handset runs it slower. **Quality** in Settings is the first thing to turn
 down, and it changes nothing about how the wheel rides; a lower level only
-thins a generated town's crowd and traffic. **Ultra** wants a
+thins a generated town's crowd and traffic. If the picture is uneven rather
+than slow, a **Frame rate limit** of 30 can feel steadier and keeps a phone
+cooler. **Ultra** wants a
 capable graphics chip on any device; if it stutters, High is one press away.
 
 ## Deliberately not planned

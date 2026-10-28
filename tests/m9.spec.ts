@@ -334,26 +334,56 @@ test.describe('M9 — HUD, menus, options', () => {
     const shape = await page.evaluate(() => {
       const panel = document.querySelector('.euc-menu--settings .euc-menu__panel') as HTMLElement;
       const controls = [...panel.querySelectorAll<HTMLElement>('[data-option]')];
+      // **1.2.0: every fixed-value setting is a choice row** — a labelled
+      // `role="group"` of native `<button aria-pressed>`s — and every other
+      // setting a native range slider with a real `<label for>`. No `<select>`
+      // and no checkbox remains anywhere in the panel.
+      const sliders = controls.filter(
+        (node) => node instanceof HTMLInputElement && node.type === 'range',
+      );
+      const groups = controls.filter((node) => node.getAttribute('role') === 'group');
       return {
         dialog: panel.getAttribute('role'),
         modal: panel.getAttribute('aria-modal'),
         labelled: panel.getAttribute('aria-labelledby'),
-        tags: [...new Set(controls.map((node) => node.tagName))].sort(),
-        // Every control has a real label associated with it.
-        unlabelled: controls.filter((node) => {
+        controls: controls.length,
+        selects: panel.querySelectorAll('select').length,
+        checkboxes: panel.querySelectorAll('input[type="checkbox"]').length,
+        // Every `[data-option]` is one of the two shapes and nothing else.
+        neither: controls.length - sliders.length - groups.length,
+        sliders: sliders.length,
+        groups: groups.length,
+        // Every slider has a real label associated with it.
+        unlabelledSliders: sliders.filter((node) => {
           const id = node.id;
           return id === '' || panel.querySelector(`label[for="${id}"]`) === null;
         }).length,
-        groups: panel.querySelectorAll('fieldset > legend').length,
+        // Every choice row names itself through a label that exists and says
+        // something, and offers at least two native pressed-state buttons.
+        unlabelledGroups: groups.filter((node) => {
+          const id = node.getAttribute('aria-labelledby');
+          const label = id === null ? null : document.getElementById(id);
+          return label === null || (label.textContent ?? '').trim() === '';
+        }).length,
+        thinGroups: groups.filter(
+          (node) => node.querySelectorAll('button[aria-pressed]').length < 2,
+        ).length,
+        fieldsets: panel.querySelectorAll('fieldset > legend').length,
       };
     });
 
     expect(shape.dialog).toBe('dialog');
     expect(shape.modal).toBe('true');
     expect(shape.labelled).toBeTruthy();
-    expect(shape.tags).toEqual(['INPUT', 'SELECT']);
-    expect(shape.unlabelled).toBe(0);
-    expect(shape.groups).toBeGreaterThanOrEqual(3);
+    expect(shape.selects).toBe(0);
+    expect(shape.checkboxes).toBe(0);
+    expect(shape.neither).toBe(0);
+    expect(shape.sliders).toBeGreaterThan(0);
+    expect(shape.groups).toBeGreaterThan(0);
+    expect(shape.unlabelledSliders).toBe(0);
+    expect(shape.unlabelledGroups).toBe(0);
+    expect(shape.thinGroups).toBe(0);
+    expect(shape.fieldsets).toBeGreaterThanOrEqual(3);
 
     // Tab from the last control wraps to the first rather than walking out
     // into the canvas behind the dialog, where the player cannot see what has
@@ -407,7 +437,9 @@ test.describe('M9 — HUD, menus, options', () => {
     // The controls show what was restored rather than their defaults, and the
     // two retired motion settings no longer exist in the menu.
     const shown = await page.evaluate(() => ({
-      quality: (document.querySelector('[data-option="quality"]') as HTMLSelectElement).value,
+      quality: document.querySelector<HTMLElement>(
+        '[data-choice="quality"][aria-pressed="true"]',
+      )?.dataset.value,
       retiredControls: document.querySelectorAll(
         '[data-option="cameraShake"], [data-option="reducedMotion"]',
       ).length,
@@ -500,10 +532,10 @@ test.describe('M9 — HUD, menus, options', () => {
 
     await page.evaluate(() => window.game.setAppState('paused'));
     await menuButton(page, 'pause', 'settings').click();
-    const checked = await page.evaluate(
-      () => (document.querySelector('[data-option="muted"]') as HTMLInputElement).checked,
-    );
-    expect(checked).toBe(true);
+    await expect(page.locator('[data-choice="muted"][data-value="on"]'))
+      .toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('[data-choice="muted"][data-value="off"]'))
+      .toHaveAttribute('aria-pressed', 'false');
     await page.evaluate(() => window.game.resetOptions());
   });
 
@@ -586,7 +618,8 @@ test.describe('M9 — HUD, menus, options', () => {
     await expect(menuButton(page, 'title', 'settings')).toBeFocused();
     await pulse(0);
     await page.waitForFunction(() => window.game.snapshot().app.state === 'settings');
-    await expect(page.locator('[data-option="quality"]')).toBeFocused();
+    // Settings opens on the value Quality holds (1.2.0 choice rows).
+    await expect(page.locator('[data-choice="quality"][data-value="high"]')).toBeFocused();
 
     // **M40 gave Settings a last row, and this walk names it.** Up from the
     // first row wraps to the last, which is now About and licences rather
@@ -606,13 +639,17 @@ test.describe('M9 — HUD, menus, options', () => {
     await page.waitForFunction(() => window.game.snapshot().app.menu === 'settings');
     await expect(page.locator('.euc-menu--settings [data-menu="about"]')).toBeFocused();
     await pulse(13);
-    await expect(page.locator('[data-option="quality"]')).toBeFocused();
+    await expect(page.locator('[data-choice="quality"][data-value="high"]')).toBeFocused();
 
-    // Left adjusts the focused native select through the same option path as
-    // keyboard/mouse input, then B returns to the title — once the change's
-    // loading notice has cleared, since the menus refuse presses under it
-    // (every tier change is covered since the M47 follow-up, 2026-10-26).
+    // Left moves along the choice row without changing anything (1.2.0); A
+    // chooses through the same option path as a click, then B returns to the
+    // title — once the change's loading notice has cleared, since the menus
+    // refuse presses under it (every tier change is covered since the M47
+    // follow-up, 2026-10-26).
     await pulse(14);
+    await expect(page.locator('[data-choice="quality"][data-value="medium"]')).toBeFocused();
+    expect((await options(page)).quality).toBe('high');
+    await pulse(0);
     await page.waitForFunction(() => window.game.snapshot().options.quality === 'medium'
       && !document.querySelector('[data-option="quality"]')?.hasAttribute('aria-busy'));
     expect((await options(page)).quality).toBe('medium');
@@ -853,13 +890,13 @@ test.describe('M9 — HUD, menus, options', () => {
     const status = page.locator('[data-menu="gamepad-status"]');
     await expect(status).toHaveText(/Gamepad connected/);
 
-    // Unticking the box never fires a disconnection event — the pad is still
-    // on the desk — so the status has to be refreshed by the option change
-    // itself, or the stale "connected" line contradicts the box beside it.
-    await page.locator('[data-option="gamepadEnabled"]').uncheck();
+    // Switching the pad off never fires a disconnection event — the pad is
+    // still on the desk — so the status has to be refreshed by the option
+    // change itself, or the stale "connected" line contradicts the row beside it.
+    await page.locator('[data-choice="gamepadEnabled"][data-value="off"]').click();
     await expect(status).toHaveText(/switched off/);
 
-    await page.locator('[data-option="gamepadEnabled"]').check();
+    await page.locator('[data-choice="gamepadEnabled"][data-value="on"]').click();
     await expect(status).toHaveText(/Gamepad connected/);
 
     await page.evaluate(() => window.game.resetOptions());

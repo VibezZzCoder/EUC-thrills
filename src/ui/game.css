@@ -2157,22 +2157,6 @@
   accent-color: var(--accent);
 }
 
-.euc-field select {
-  padding: 0.4rem 0.5rem;
-  border: 1px solid var(--panel-edge);
-  border-radius: 0.4rem;
-  background: #131a22;
-  color: var(--ink);
-  font: inherit;
-  font-size: 0.9rem;
-}
-
-.euc-field input[type="checkbox"] {
-  width: 1.15rem;
-  height: 1.15rem;
-  accent-color: var(--accent);
-  justify-self: start;
-}
 
 /* -- Rebinding ------------------------------------------------------------ */
 
@@ -3991,7 +3975,8 @@
  * results card's short-window tier trims that content further where its own
  * tracks are narrower.
  */
-.euc-couch__modes {
+.euc-couch__modes,
+.euc-choice {
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(0, 1fr);
@@ -4008,7 +3993,8 @@
    choice the panel wants noticed, and it was previously drawn at the weight of
    a caption. `flex: 1 1 8rem` lets the pair share the panel's width and fall to
    one per line only when there is genuinely no room. */
-.euc-couch__mode-button {
+.euc-couch__mode-button,
+.euc-choice__option {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4038,7 +4024,8 @@
    colour** (2026-09-12). At `--panel-edge` on a dark strip it was a dot you
    had to go looking for, and an unpressed radio nobody can see is a control
    that looks like a label — the whole of the report this row answers. */
-.euc-couch__mode-button::before {
+.euc-couch__mode-button::before,
+.euc-choice__option::before {
   content: '';
   width: 0.95rem;
   height: 0.95rem;
@@ -4051,28 +4038,80 @@
 
 /* `:not(:disabled)`, because a hover that lights up the loaded venue or a mode
    this world cannot carry is a hover that promises a press the button refuses. */
-.euc-couch__mode-button:hover:not(:disabled) {
+.euc-couch__mode-button:hover:not(:disabled),
+.euc-choice__option:hover:not(:disabled) {
   border-color: var(--accent);
   background: rgba(255, 255, 255, 0.07);
 }
 
-.euc-couch__mode-button:hover:not(:disabled)::before { border-color: #ffffff; }
+.euc-couch__mode-button:hover:not(:disabled)::before,
+.euc-choice__option:hover:not(:disabled)::before { border-color: #ffffff; }
 
 /* The chosen one, and it says so three ways — the filled dot, the accent tint,
    and `aria-pressed` itself, which is the selector. **A tint rather than a
    fill**: a solid accent would make this look like the primary action of the
    screen, which on the pause menu is `Resume` and on the join panel is `Start
    riding`. A choice is not a verb. */
-.euc-couch__mode-button[aria-pressed="true"] {
+.euc-couch__mode-button[aria-pressed="true"],
+.euc-choice__option[aria-pressed="true"] {
   border-color: var(--accent);
   background: rgba(31, 111, 224, 0.22);
 }
 
-.euc-couch__mode-button[aria-pressed="true"]::before {
+.euc-couch__mode-button[aria-pressed="true"]::before,
+.euc-choice__option[aria-pressed="true"]::before {
   border-color: var(--accent);
   background: var(--accent);
   box-shadow: inset 0 0 0 2px #0d1014;
 }
+
+/*
+ * Choice rows (1.2.0): every fixed-value setting, drawn as the couch mode
+ * picker is (the shared rules above; this block must stay after them) —
+ * every value visible, a radio dot and a tint on the chosen one. An Off/On pair sits beside its
+ * label in the control column, sized to its two words (Mute keeps its `M`
+ * key hint beside it); a row of three or more takes the panel's width under
+ * its label, because four values beside a label clip "Medium" on a desktop.
+ */
+.euc-field > .euc-choice { grid-column: 1 / -1; }
+.euc-field > .euc-choice--pair { grid-column: 2 / -1; }
+.euc-field > .euc-choice--pair:has(+ .euc-field__value) { grid-column: auto; }
+
+.euc-choice {
+  gap: 0.25rem;
+  padding: 0.25rem;
+}
+
+.euc-choice--pair {
+  justify-self: start;
+  width: min(100%, 11rem);
+}
+
+.euc-choice__option {
+  gap: 0.4rem;
+  min-width: 0;
+  min-height: 2.25rem;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.9rem;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.euc-choice__option::before {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+/* Ultra in a couch session: still pressed if it is the saved choice, never
+   pressable, and drawn at the weight `:disabled` has everywhere else. */
+.euc-choice__option:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+/* A frame rate limit this display cannot use (`[hidden]` needs its own rule
+   beside a `display: flex`, §9). */
+.euc-choice__option[hidden] { display: none; }
 
 /*
  * **Five offers, one row — M39 Part P (R-UI-1).**
@@ -4326,14 +4365,15 @@
     grid-column: 1 / -1;
   }
 
-  /* A select carries its own minimum width, so in two columns it takes the
-     room the label needed and a longer label — "On-screen controls" — breaks
-     one word per line beside it. Given the full width it reads as an ordinary
-     stacked form field, which is what a narrow screen wants anyway. */
-  .euc-field select {
-    grid-column: 1 / -1;
-    width: 100%;
+  /* Four values across a phone clip "Medium" with the dot beside it, so a
+     row of three or more stacks each dot above its word: the same two
+     channels, half the width. Pairs keep the dot beside. */
+  .euc-choice:not(.euc-choice--pair) .euc-choice__option {
+    flex-direction: column;
+    gap: 0.25rem;
+    padding-inline: 0.25rem;
   }
+
 
   /*
    * A status line inside a field spans, exactly as `.euc-field__note` already
@@ -5294,7 +5334,7 @@
   /* A slider thumb sized for a mouse is roughly a quarter of a fingertip. */
   .euc-field input[type="range"] { height: 2.25rem; }
 
-  .euc-field input[type="checkbox"] { width: 1.5rem; height: 1.5rem; }
+  .euc-choice__option { min-height: 2.75rem; }
 
   .euc-hud__prompt-dismiss { width: 2.2rem; height: 2.2rem; }
 

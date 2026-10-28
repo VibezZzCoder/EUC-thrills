@@ -28,11 +28,13 @@ import {
 import {
   FOV_TRIM_MAX,
   FOV_TRIM_MIN,
+  FRAME_RATE_LIMITS,
   QUALITY_LEVELS,
   SPEED_UNITS,
   TOUCH_CONTROL_MODES,
   TOUCH_SCALE_MAX,
   TOUCH_SCALE_MIN,
+  type FrameRateLimit,
   type GameOptions,
   type QualityLevel,
   type TouchControlsMode,
@@ -76,11 +78,14 @@ import { PROVENANCE, devlogHandle, versionStamp } from '../data/provenance.ts';
  * ARIA role is a *description* of behaviour that already exists, never a
  * substitute for it. So:
  *
- *   - Every control is the native element for the job — `<button>`,
- *     `<input type="range">`, `<input type="checkbox">`, `<select>`. Each
- *     arrives with keyboard behaviour, an accessible name from its `<label>`,
- *     and a value announcement that no amount of `role="slider"` on a `<div>`
- *     would have reproduced correctly.
+ *   - Every control is the native element for the job — `<button>` and
+ *     `<input type="range">`. Each arrives with keyboard behaviour and an
+ *     accessible name, and a slider its value announcement, that no amount of
+ *     `role="slider"` on a `<div>` would have reproduced correctly. **Since
+ *     1.2.0 a setting with a fixed set of values is a row of `aria-pressed`
+ *     buttons** (`choiceTemplate`), never a `<select>` or a checkbox: every
+ *     value is on screen, and a mouse, a finger, Tab and Enter, and a pad's
+ *     d-pad and A all choose one the same way.
  *   - The panel is a real modal dialog: `role="dialog"`, `aria-modal`, a
  *     label, a focus trap on Tab, Escape to leave, and focus **restored** to
  *     whatever had it before the menu opened. A trap without a restore is how
@@ -106,7 +111,7 @@ export type MenuScreen =
   | 'none' | 'title' | 'tracks' | 'pause' | 'settings' | 'about' | 'results' | 'routes' | 'riders' | 'couch';
 
 /**
- * The touch-mode select's words.
+ * The touch-mode row's words.
  *
  * "Automatic" says nothing on its own, so each option says what it *does* —
  * a player deciding whether to force the controls on needs to know that the
@@ -895,39 +900,69 @@ function refusalReadout(reason: string | null): string {
     : `Ultra couldn’t start here — using High (${said})`;
 }
 
-/**
- * The next option a pad or arrow press may land on, skipping disabled ones.
- *
- * `confirm()` wraps (A on a select steps round the list, M24) and
- * `adjustControl()` clamps (left/right stop at the ends, M24 §4.6); both skip
- * a disabled option, which is how a multiplayer session's Ultra entry stays
- * unreachable from a pad while the saved preference underneath it is left
- * alone. **An option that cannot be reached leaves the selection where it
- * is** — the clamped walk from High towards a disabled Ultra goes nowhere
- * rather than jumping past it, and a wrapped walk that meets only disabled
- * options returns home.
- *
- * With nothing disabled this is exactly the old arithmetic: `(i + 1) % n` for
- * confirm and `clamp(i ± 1)` for a press, so every ordinary select steps
- * precisely as it did.
- */
-export function stepEnabledOption(
-  disabled: readonly boolean[],
-  from: number,
-  delta: 1 | -1,
-  wrap: boolean,
-): number {
-  const count = disabled.length;
-  if (count === 0) return from;
-  for (let step = 1; step <= count; step += 1) {
-    let at = from + delta * step;
-    if (wrap) at = ((at % count) + count) % count;
-    else if (at < 0 || at >= count) return from;
-    if (at === from) return from;
-    if (!disabled[at]) return at;
-  }
-  return from;
+/** One value of a choice row: what it stores, and the word on its button. */
+export interface ChoiceSpec {
+  readonly value: string;
+  readonly label: string;
 }
+
+/** The two values of an on/off setting, Off first, as the row reads. */
+export const ON_OFF_CHOICES: readonly ChoiceSpec[] = Object.freeze([
+  { value: 'off', label: 'Off' },
+  { value: 'on', label: 'On' },
+]);
+
+/** The settings stored as booleans and drawn as an Off/On row. */
+const BOOLEAN_CHOICES: ReadonlySet<string> = new Set([
+  'showFps', 'muted', 'gamepadEnabled', 'touchSwapSides',
+]);
+
+/**
+ * A settings row's values as buttons — 1.2.0, the owner's report on the old
+ * dropdowns: *"kind of awkward … especially on desktop playing with a
+ * controller … you have to press a button and it kind of scrolls through
+ * them."*
+ *
+ * The couch mode picker's grammar (`DESIGN.md` §9i), for the same reasons:
+ * every value is visible, so nothing is hidden behind a closed list; each is a
+ * real `<button>` with `aria-pressed`, so the pad's walk stops on every one
+ * and A presses it exactly as a click or a tap does; and `role="group"` named
+ * by the row's label tells a screen reader which setting the buttons belong
+ * to. A choice is chosen by moving to it, never by cycling through the others.
+ *
+ * `data-option` is on the group, and the buttons carry `data-choice` (the
+ * setting) and `data-value`: the click dispatch reads those two and nothing
+ * else, so a new row is markup only.
+ */
+export function choiceTemplate(
+  option: string,
+  labelId: string,
+  choices: readonly ChoiceSpec[],
+  attributes = '',
+): string {
+  const pair = choices.length === 2 ? ' euc-choice--pair' : '';
+  const buttons = choices.map((choice) => `
+          <button type="button" class="euc-choice__option" data-choice="${option}"
+                  data-value="${choice.value}" aria-pressed="false">${choice.label}</button>`).join('');
+  return `<div class="euc-choice${pair}" role="group" aria-labelledby="${labelId}"
+             data-option="${option}"${attributes}>${buttons}
+        </div>`;
+}
+
+/**
+ * Which frame rate limits are worth showing on a display of `displayHz`, or
+ * all of them while the rate is unknown. A limit at or above the display's own
+ * rate does nothing there, so it is not offered; Auto always is.
+ */
+export function frameRateOffers(displayHz: number | null): readonly FrameRateLimit[] {
+  if (displayHz === null) return FRAME_RATE_LIMITS;
+  return FRAME_RATE_LIMITS.filter((limit) => limit === 'auto' || Number(limit) < displayHz * 0.95);
+}
+
+const FRAME_RATE_CHOICES: readonly ChoiceSpec[] = FRAME_RATE_LIMITS.map((limit) => ({
+  value: limit,
+  label: limit === 'auto' ? 'Auto' : limit,
+}));
 
 /**
  * The title's utility row: Settings, and the **Ultra Graphics** shortcut
@@ -2862,6 +2897,12 @@ export class Menus {
    * put the select back on the tier being loaded.
    */
   private qualityBusy: QualityBusy | null = null;
+  /**
+   * The highest display rate the loop has reported this session (1.2.0), or
+   * null before it has. Only ever rises, so a busy stretch of slow frames
+   * never takes a limit away while the player is looking at it.
+   */
+  private displayHz: number | null = null;
   private loadingBusy = false;
 
   /** Refuse all controls while the shared full-screen load owns input. */
@@ -3095,9 +3136,11 @@ export class Menus {
     this.setText('fieldOfViewTrim-value', `${options.fieldOfViewTrim > 0 ? '+' : ''}${options.fieldOfViewTrim}°`);
     // While a switch is loading, the select keeps the choice being loaded
     // rather than snapping back to the saved tier for a frame or two.
-    this.setSelect('quality', this.qualityBusy?.to ?? options.quality);
-    this.setSelect('speedUnit', options.speedUnit);
-    this.setChecked('showFps', options.showFps);
+    this.setChoice('quality', this.qualityBusy?.to ?? options.quality);
+    this.setChoice('speedUnit', options.speedUnit);
+    this.setChoice('showFps', options.showFps ? 'on' : 'off');
+    this.setChoice('frameRateLimit', options.frameRateLimit);
+    this.writeFrameRateOffers();
 
     this.setValue('volumeMaster', Math.round(options.volumeMaster * 100));
     this.setText('volumeMaster-value', `${Math.round(options.volumeMaster * 100)}%`);
@@ -3105,20 +3148,20 @@ export class Menus {
     this.setText('volumeSfx-value', `${Math.round(options.volumeSfx * 100)}%`);
     this.setValue('volumeUi', Math.round(options.volumeUi * 100));
     this.setText('volumeUi-value', `${Math.round(options.volumeUi * 100)}%`);
-    this.setChecked('muted', options.muted);
+    this.setChoice('muted', options.muted ? 'on' : 'off');
 
-    this.setChecked('gamepadEnabled', options.gamepadEnabled);
+    this.setChoice('gamepadEnabled', options.gamepadEnabled ? 'on' : 'off');
     this.setValue('gamepadDeadZone', Math.round(options.gamepadDeadZone * 100));
     this.setText('gamepadDeadZone-value', `${Math.round(options.gamepadDeadZone * 100)}%`);
 
-    this.setSelect('touchControls', options.touchControls);
-    this.setChecked('touchSwapSides', options.touchSwapSides);
+    this.setChoice('touchControls', options.touchControls);
+    this.setChoice('touchSwapSides', options.touchSwapSides ? 'on' : 'off');
     this.setValue('touchScale', Math.round(options.touchScale * 100));
     this.setText('touchScale-value', `${Math.round(options.touchScale * 100)}%`);
 
     this.renderBindings();
-    // Last, after the select has taken the saved value: disabling the Ultra
-    // option must never be what moves the selection off it.
+    // Last, after the row has taken the saved value: disabling the Ultra
+    // button must never be what moves the selection off it.
     this.writeQuality();
   }
 
@@ -3131,11 +3174,12 @@ export class Menus {
    * every other write in this file, so a redundant call changes no attribute
    * a screen reader or a stylesheet could notice.
    *
-   * **The Ultra option is disabled, never removed or deselected**, in a
-   * multiplayer session: the select keeps showing a saved Ultra (the readout
-   * says why this session draws High), a pad cannot step onto it
-   * (`stepEnabledOption`), and nothing here writes the preference back — that
-   * is the "do not silently overwrite the saved preference" half of q201.
+   * **The Ultra button is disabled, never removed or unpressed**, in a
+   * multiplayer session: the row keeps showing a saved Ultra (the readout
+   * says why this session draws High), a pad's walk passes over it (a
+   * disabled button is not a stop), and nothing here writes the preference
+   * back — that is the "do not silently overwrite the saved preference" half
+   * of q201.
    */
   private writeQuality(): void {
     // **While a switch runs, the toggle keeps the state it was pressed in**
@@ -3165,15 +3209,15 @@ export class Menus {
     const status = this.title.querySelector<HTMLElement>('[data-ultra-status]');
     if (status && status.textContent !== notice) status.textContent = notice;
 
-    const select = this.settings.querySelector<HTMLSelectElement>('[data-option="quality"]');
-    if (select) setBusy(select, busy !== null);
-    const option = this.settings.querySelector<HTMLOptionElement>(
-      '[data-option="quality"] option[value="ultra"]',
+    const row = this.settings.querySelector<HTMLElement>('[data-option="quality"]');
+    if (row) setBusy(row, busy !== null);
+    const ultra = this.settings.querySelector<HTMLButtonElement>(
+      '[data-choice="quality"][data-value="ultra"]',
     );
-    if (option && option.disabled !== words.disabled) option.disabled = words.disabled;
+    if (ultra && ultra.disabled !== words.disabled) ultra.disabled = words.disabled;
 
     // The readout is already the panel's polite live region, so the notice
-    // rides in it: beside the select, in the pause menu's Settings as well as
+    // rides in it: beside the row, in the pause menu's Settings as well as
     // the title's, where the toggle is not on screen.
     const readout = this.settings.querySelector<HTMLElement>('[data-readout="quality-state"]');
     if (readout) {
@@ -3201,6 +3245,30 @@ export class Menus {
   setQualityBusy(busy: QualityBusy | null): void {
     this.qualityBusy = busy;
     this.sync(this.options);
+  }
+
+  /**
+   * The display's refresh rate, as the loop measures it (1.2.0). Called every
+   * drawn frame; writes only when the rate rises past a limit's threshold.
+   */
+  setDisplayRate(hz: number): void {
+    if (this.displayHz !== null && hz <= this.displayHz) return;
+    const before = frameRateOffers(this.displayHz).length;
+    this.displayHz = hz;
+    if (frameRateOffers(hz).length !== before) this.writeFrameRateOffers();
+  }
+
+  /**
+   * Hide the limits this display cannot use — except the one saved, which
+   * stays visible and pressed so the row always shows the truth.
+   */
+  private writeFrameRateOffers(): void {
+    const offered = frameRateOffers(this.displayHz);
+    for (const button of this.settings.querySelectorAll<HTMLElement>('[data-choice="frameRateLimit"]')) {
+      const value = button.dataset.value as FrameRateLimit;
+      const hidden = !offered.includes(value) && value !== this.options.frameRateLimit;
+      if (button.hidden !== hidden) button.hidden = hidden;
+    }
   }
 
   /**
@@ -4138,9 +4206,11 @@ export class Menus {
     const shown = (node: Element): node is HTMLElement =>
       node instanceof HTMLElement && node.offsetParent !== null;
     const named = panel.querySelector('[data-focus-first]');
-    const first = (named !== null && shown(named) && named.matches(focusableSelector()) ? named : null)
+    const found = (named !== null && shown(named) && named.matches(focusableSelector()) ? named : null)
       ?? [...panel.querySelectorAll(focusableSelector())].find(shown)
       ?? null;
+    // A panel that opens on a choice row (Settings) opens on its value.
+    const first = found === null ? null : pressedInRow(found);
     first?.focus();
     // A pad that opened this panel keeps its cursor across the boundary; a
     // mouse that opened it gets the ringless panel `:focus-visible` promises.
@@ -4174,6 +4244,12 @@ export class Menus {
     const clear = target.closest<HTMLElement>('[data-binding-clear]');
     if (clear) {
       this.assign(clear.dataset.bindingClear as BindableAction, []);
+      return;
+    }
+
+    const choice = target.closest<HTMLButtonElement>('[data-choice]');
+    if (choice) {
+      this.choose(choice);
       return;
     }
 
@@ -4303,7 +4379,27 @@ export class Menus {
   };
 
   /**
-   * A control moved.
+   * A choice row's button was pressed — by a click, a tap, Enter or Space, or
+   * a pad's A (`confirm()` clicks the focused button).
+   *
+   * A quality choice while a switch is loading is refused, whichever way it
+   * came, and nothing is reported (the loading notice, 2026-09-25): the row
+   * keeps showing the tier being loaded. Pressing the value already chosen is
+   * no change, so it reports nothing either.
+   */
+  private choose(button: HTMLButtonElement): void {
+    const option = button.dataset.choice;
+    const value = button.dataset.value;
+    if (option === undefined || value === undefined || button.disabled) return;
+    if (option === 'quality' && this.qualityBusy !== null) return;
+    if (button.getAttribute('aria-pressed') === 'true') return;
+    this.callbacks.onChange({
+      [option]: BOOLEAN_CHOICES.has(option) ? value === 'on' : value,
+    } as Partial<GameOptions>);
+  }
+
+  /**
+   * A slider moved.
    *
    * Percent sliders carry integers because a range input's value is a string
    * and "0.35" invites float drift on every round trip; the division happens
@@ -4314,28 +4410,9 @@ export class Menus {
   private readonly onInput = (event: Event): void => {
     if (this.loadingBusy) { this.sync(this.options); return; }
     const target = event.target;
-    if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLSelectElement)) return;
+    if (!(target instanceof HTMLInputElement) || target.type !== 'range') return;
     const option = target.dataset.option;
     if (option === undefined) return;
-
-    // A quality choice while a switch is loading is refused, whichever way it
-    // came — a pointer in the dropdown, a key, a pad's Left/Right or A (both
-    // arrive here as this event): the select goes back to the tier being
-    // loaded and nothing is reported (the loading notice, 2026-09-25).
-    if (option === 'quality' && this.qualityBusy !== null) {
-      this.setSelect('quality', this.qualityBusy.to);
-      return;
-    }
-
-    if (target instanceof HTMLInputElement && target.type === 'checkbox') {
-      this.callbacks.onChange({ [option]: target.checked } as Partial<GameOptions>);
-      return;
-    }
-
-    if (option === 'quality' || option === 'speedUnit' || option === 'touchControls') {
-      this.callbacks.onChange({ [option]: target.value } as Partial<GameOptions>);
-      return;
-    }
 
     const numeric = Number(target.value);
     const percent = option === 'gamepadDeadZone'
@@ -4569,9 +4646,12 @@ export class Menus {
         next = beside;
       }
     }
-    focusable[next].focus();
-    this.setPadCursor(focusable[next]);
-    focusable[next].scrollIntoView({ block: 'nearest' });
+    // Up or Down into a choice row lands on the value it holds, not on
+    // whichever button happens to sit nearest the last column (1.2.0).
+    const landing = action === 'up' || action === 'down' ? pressedInRow(focusable[next]) : focusable[next];
+    landing.focus();
+    this.setPadCursor(landing);
+    landing.scrollIntoView({ block: 'nearest' });
   }
 
   /**
@@ -4607,27 +4687,9 @@ export class Menus {
       this.callbacks.onRideRoute(this.seed);
       return;
     }
-    // A `.click()` on a native `<select>` opens nothing and changes nothing in
-    // any browser this game runs in, and on a checkbox it toggles only by the
-    // grace of the default click action — which is why the owner's §4.6
-    // report named the quality and speed-unit dropdowns as "not accepting the
-    // action button" (M24). Confirm on a select means what a click cannot:
-    // step to the next option, wrapping, through the same `input` event the
-    // pointer path fires. Everything else keeps the click, which is right for
-    // buttons and cards.
-    //
-    // **A disabled option is stepped over** (M39): a couch session disables
-    // Ultra, and a pad's A must go round the list without landing on it —
-    // `stepEnabledOption` is the old `(i + 1) % n` whenever nothing is
-    // disabled, so every ordinary select cycles exactly as it did.
-    if (focused instanceof HTMLSelectElement) {
-      if (focused.options.length === 0) return;
-      const next = stepEnabledOption(optionsDisabled(focused), focused.selectedIndex, 1, true);
-      if (next === focused.selectedIndex) return;
-      focused.selectedIndex = next;
-      focused.dispatchEvent(new Event('input', { bubbles: true }));
-      return;
-    }
+    // A click, which is right for buttons, cards and the settings' choice
+    // rows alike: since 1.2.0 the panel has no `<select>` (which a `.click()`
+    // cannot operate, M24 §4.6) and no checkbox, so A means what a tap means.
     if (focused instanceof HTMLElement) focused.click();
   }
 
@@ -4636,21 +4698,6 @@ export class Menus {
       if (delta > 0) control.stepUp();
       else control.stepDown();
       control.dispatchEvent(new Event('input', { bubbles: true }));
-      return true;
-    }
-    if (control instanceof HTMLInputElement && control.type === 'checkbox') {
-      control.checked = delta > 0;
-      control.dispatchEvent(new Event('input', { bubbles: true }));
-      return true;
-    }
-    if (control instanceof HTMLSelectElement) {
-      // Clamped at the ends as before, and over a disabled option rather than
-      // onto it (M39) — from High, Right in a couch session stays on High.
-      const next = stepEnabledOption(optionsDisabled(control), control.selectedIndex, delta, false);
-      if (next !== control.selectedIndex) {
-        control.selectedIndex = next;
-        control.dispatchEvent(new Event('input', { bubbles: true }));
-      }
       return true;
     }
     return false;
@@ -4737,14 +4784,11 @@ export class Menus {
     if (node && node.value !== String(value)) node.value = String(value);
   }
 
-  private setChecked(name: string, checked: boolean): void {
-    const node = this.input(name);
-    if (node && node.checked !== checked) node.checked = checked;
-  }
-
-  private setSelect(name: string, value: string): void {
-    const node = this.settings.querySelector<HTMLSelectElement>(`[data-option="${name}"]`);
-    if (node && node.value !== value) node.value = value;
+  private setChoice(name: string, value: string): void {
+    for (const button of this.settings.querySelectorAll<HTMLElement>(`[data-choice="${name}"]`)) {
+      const pressed = button.dataset.value === value ? 'true' : 'false';
+      if (button.getAttribute('aria-pressed') !== pressed) button.setAttribute('aria-pressed', pressed);
+    }
   }
 
   private setText(name: string, text: string): void {
@@ -4769,21 +4813,22 @@ export class Menus {
    * because every `data-option` on this panel is a labelled control and the
    * M9 shape check counts them. The select is described by both notes, so a
    * screen reader hears the tradeoff and the session's reason with the value.
+   *
+   * **Every fixed-value setting is a choice row** (`choiceTemplate`, 1.2.0):
+   * its label is a plain element the row's `role="group"` is named by, not a
+   * `<label for>`, because a group is not a labelable element.
    * While a switch across Ultra runs, the readout carries the loading notice
    * (it is already the panel's polite live region) and the sweep under it
    * shows, so the pause menu's Settings — where the title toggle is not on
    * screen — says what the freeze is right beside the control that caused it.
    */
   private settingsTemplate(): string {
-    const qualityOptions = QUALITY_LEVELS
-      .map((level) => `<option value="${level}">${level[0].toUpperCase()}${level.slice(1)}</option>`)
-      .join('');
-    const unitOptions = SPEED_UNITS
-      .map((unit) => `<option value="${unit}">${unit === 'kph' ? 'km/h' : 'mph'}</option>`)
-      .join('');
-    const touchOptions = TOUCH_CONTROL_MODES
-      .map((mode) => `<option value="${mode}">${TOUCH_MODE_LABELS[mode]}</option>`)
-      .join('');
+    const qualityChoices = QUALITY_LEVELS
+      .map((level) => ({ value: level, label: `${level[0].toUpperCase()}${level.slice(1)}` }));
+    const unitChoices = SPEED_UNITS
+      .map((unit) => ({ value: unit, label: unit === 'kph' ? 'km/h' : 'mph' }));
+    const touchChoices = TOUCH_CONTROL_MODES
+      .map((mode) => ({ value: mode, label: TOUCH_MODE_LABELS[mode] }));
 
     const bindingRows = BINDINGS.map((spec) => `
       <div class="euc-binding" data-binding-row="${spec.action}" data-listening="false">
@@ -4813,10 +4858,9 @@ export class Menus {
       <legend class="euc-settings__legend">Display</legend>
 
       <div class="euc-field">
-        <label class="euc-field__label" for="euc-opt-quality">Quality</label>
-        <select id="euc-opt-quality" data-option="quality"
-                aria-describedby="euc-quality-warning euc-quality-state">${qualityOptions}</select>
-        <span class="euc-field__value"></span>
+        <span class="euc-field__label" id="euc-opt-quality">Quality</span>
+        ${choiceTemplate('quality', 'euc-opt-quality', qualityChoices,
+          ' aria-describedby="euc-quality-warning euc-quality-state"')}
         <p class="euc-field__note">
           Lower settings reduce resolution and shadow detail, and in the
           generated towns fewer people and vans. The wheel handles the same at
@@ -4840,16 +4884,26 @@ export class Menus {
       </div>
 
       <div class="euc-field">
-        <label class="euc-field__label" for="euc-opt-units">Speed units</label>
-        <select id="euc-opt-units" data-option="speedUnit">${unitOptions}</select>
-        <span class="euc-field__value"></span>
+        <span class="euc-field__label" id="euc-opt-units">Speed units</span>
+        ${choiceTemplate('speedUnit', 'euc-opt-units', unitChoices)}
       </div>
 
       <div class="euc-field">
-        <label class="euc-field__label" for="euc-opt-fps">Frame rate counter</label>
-        <input id="euc-opt-fps" type="checkbox" data-option="showFps" />
-        <span class="euc-field__value"></span>
+        <span class="euc-field__label" id="euc-opt-fps">Frame rate counter</span>
+        ${choiceTemplate('showFps', 'euc-opt-fps', ON_OFF_CHOICES)}
         <p class="euc-field__note">A small frames-per-second readout next to the speed readout. Off by default.</p>
+      </div>
+
+      <div class="euc-field">
+        <span class="euc-field__label" id="euc-opt-frame-limit">Frame rate limit</span>
+        ${choiceTemplate('frameRateLimit', 'euc-opt-frame-limit', FRAME_RATE_CHOICES,
+          ' aria-describedby="euc-frame-limit-note"')}
+        <p class="euc-field__note" id="euc-frame-limit-note">
+          Draws no more frames a second than the number you pick. A steady
+          lower rate can feel smoother than an uneven high one, and keeps a
+          phone cooler. The ride is the same at every setting. Auto draws
+          every frame your screen shows.
+        </p>
       </div>
     </fieldset>
 
@@ -4880,8 +4934,8 @@ export class Menus {
       </div>
 
       <div class="euc-field">
-        <label class="euc-field__label" for="euc-opt-muted">Mute everything</label>
-        <input id="euc-opt-muted" type="checkbox" data-option="muted" />
+        <span class="euc-field__label" id="euc-opt-muted">Mute everything</span>
+        ${choiceTemplate('muted', 'euc-opt-muted', ON_OFF_CHOICES)}
         <span class="euc-field__value">M</span>
       </div>
     </fieldset>
@@ -4895,9 +4949,8 @@ export class Menus {
       </p>
 
       <div class="euc-field">
-        <label class="euc-field__label" for="euc-opt-pad">Gamepad</label>
-        <input id="euc-opt-pad" type="checkbox" data-option="gamepadEnabled" />
-        <span class="euc-field__value"></span>
+        <span class="euc-field__label" id="euc-opt-pad">Gamepad</span>
+        ${choiceTemplate('gamepadEnabled', 'euc-opt-pad', ON_OFF_CHOICES)}
         <p class="euc-controls-note" data-menu="gamepad-status"></p>
       </div>
 
@@ -4913,16 +4966,14 @@ export class Menus {
       <legend class="euc-settings__legend">Touch controls</legend>
 
       <div class="euc-field">
-        <label class="euc-field__label" for="euc-opt-touch">On-screen controls</label>
-        <select id="euc-opt-touch" data-option="touchControls">${touchOptions}</select>
-        <span class="euc-field__value"></span>
+        <span class="euc-field__label" id="euc-opt-touch">On-screen controls</span>
+        ${choiceTemplate('touchControls', 'euc-opt-touch', touchChoices)}
         <p class="euc-controls-note" data-menu="touch-status"></p>
       </div>
 
       <div class="euc-field">
-        <label class="euc-field__label" for="euc-opt-touch-side">Left-handed layout</label>
-        <input id="euc-opt-touch-side" type="checkbox" data-option="touchSwapSides" />
-        <span class="euc-field__value"></span>
+        <span class="euc-field__label" id="euc-opt-touch-side">Left-handed layout</span>
+        ${choiceTemplate('touchSwapSides', 'euc-opt-touch-side', ON_OFF_CHOICES)}
         <p class="euc-field__note">
           Puts the ride stick under your right thumb and CHARGE / HOP under your left.
         </p>
@@ -5143,11 +5194,6 @@ export function routeStatusLine(status: RouteStatus, laps: boolean): [string, st
   return ['idle', ''];
 }
 
-/** A select's options as `stepEnabledOption` reads them: disabled or not, in order. */
-function optionsDisabled(select: HTMLSelectElement): boolean[] {
-  return [...select.options].map((option) => option.disabled);
-}
-
 /** The keys that scroll the About text while it has focus (M40). */
 /**
  * LICENSE is hard-wrapped at about 78 columns, which on a phone-width panel
@@ -5220,6 +5266,17 @@ export const ABOUT_SCROLL_KEYS: Readonly<Record<string, 'up' | 'down' | 'pageUp'
  */
 export function aboutScrollStep(clientHeight: number): number {
   return Math.max(24, Math.min(56, Math.round(clientHeight / 3)));
+}
+
+/**
+ * The pressed, enabled, visible button of the choice row `node` is in, or
+ * `node` itself when it is not in one or the row's value cannot take focus.
+ */
+function pressedInRow(node: HTMLElement): HTMLElement {
+  const row = node.closest('.euc-choice');
+  if (row === null) return node;
+  const pressed = row.querySelector<HTMLButtonElement>('[aria-pressed="true"]');
+  return pressed !== null && !pressed.disabled && pressed.offsetParent !== null ? pressed : node;
 }
 
 function focusableSelector(): string {

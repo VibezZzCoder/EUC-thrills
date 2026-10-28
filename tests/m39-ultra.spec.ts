@@ -272,15 +272,16 @@ interface SteadyFrame {
   readonly live: { readonly drawCalls: number; readonly triangles: number };
 }
 
-/** The title toggle and the Settings select, as the DOM has them. */
+/** The title toggle and the Settings quality row, as the DOM has them. */
 interface QualityUi {
   readonly togglePresent: boolean;
   readonly pressed: string | null;
   readonly disabled: boolean | null;
   readonly kind: string | null;
   readonly state: string | null;
-  readonly selectValue: string | null;
-  readonly ultraOptionDisabled: boolean | null;
+  /** The `data-value` of the quality row's pressed button (1.2.0 choice rows). */
+  readonly shownValue: string | null;
+  readonly ultraChoiceDisabled: boolean | null;
   readonly readout: string | null;
   readonly readoutHidden: boolean | null;
 }
@@ -597,8 +598,8 @@ function installUltraProbes(): void {
 
   const qualityUi = (): QualityUi => {
     const toggle = document.querySelector<HTMLButtonElement>('.euc-menu--title [data-menu="ultra"]');
-    const select = document.querySelector<HTMLSelectElement>('[data-option="quality"]');
-    const option = document.querySelector<HTMLOptionElement>('[data-option="quality"] option[value="ultra"]');
+    const shown = document.querySelector<HTMLElement>('[data-choice="quality"][aria-pressed="true"]');
+    const ultra = document.querySelector<HTMLButtonElement>('[data-choice="quality"][data-value="ultra"]');
     const readout = document.querySelector<HTMLElement>('[data-readout="quality-state"]');
     return {
       togglePresent: toggle !== null,
@@ -606,8 +607,8 @@ function installUltraProbes(): void {
       disabled: toggle === null ? null : toggle.disabled,
       kind: toggle?.dataset.ultraState ?? null,
       state: toggle?.querySelector('[data-ultra-text]')?.textContent?.trim() ?? null,
-      selectValue: select?.value ?? null,
-      ultraOptionDisabled: option === null ? null : option.disabled,
+      shownValue: shown?.dataset.value ?? null,
+      ultraChoiceDisabled: ultra === null ? null : ultra.disabled,
       readout: readout?.textContent?.trim() ?? null,
       readoutHidden: readout === null ? null : readout.hidden,
     };
@@ -1210,7 +1211,7 @@ test('journey 1: a saved Ultra boots Ultra on the town, and every core view is l
   expectUltraState(booted, 'the town at boot');
   // The title entrance says what is drawn: pressed, and "On" because it is.
   expect(await page.evaluate(() => window.m39.qualityUi())).toMatchObject({
-    togglePresent: true, pressed: 'true', kind: 'on', state: 'On', disabled: false, selectValue: 'ultra',
+    togglePresent: true, pressed: 'true', kind: 'on', state: 'On', disabled: false, shownValue: 'ultra',
   });
 
   const breaches: EnvelopeBreaches = [];
@@ -1697,7 +1698,7 @@ async function expectEntrances(page: Page, expected: {
 }, where: string): Promise<TierFacts> {
   const pressed = expected.requested === 'ultra' ? 'true' : 'false';
   await expect.poll(() => page.evaluate(() => window.m39.qualityUi()), { message: where, timeout: 15_000 })
-    .toMatchObject({ pressed, state: expected.state, selectValue: expected.requested });
+    .toMatchObject({ pressed, state: expected.state, shownValue: expected.requested });
   const facts = await tierFacts(page);
   expect(facts.requestedOption, where).toBe(expected.requested);
   expect(facts.quality.requested, where).toBe(expected.requested);
@@ -1719,7 +1720,7 @@ test('journey 5: the title toggle and Settings are one preference, the toggle re
   await bootAtTier(page, SLICE, 'medium', { ride: false });
   await installProbes(page);
   const toggle = page.locator('.euc-menu--title [data-menu="ultra"]');
-  const select = page.locator('[data-option="quality"]');
+  const quality = (value: string) => page.locator(`[data-choice="quality"][data-value="${value}"]`);
 
   let facts = await expectEntrances(page, { requested: 'medium', state: 'Off' }, 'a Medium boot');
   expect(facts.quality.effective).toBe('medium');
@@ -1738,9 +1739,9 @@ test('journey 5: the title toggle and Settings are one preference, the toggle re
   await toggle.click();
   await expectEntrances(page, { requested: 'ultra', state: 'On' }, 'the toggle on again');
   await openSettingsFromTitle(page);
-  await expect(select).toHaveValue('ultra');
+  await expect(quality('ultra')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('[data-readout="quality-state"]')).toBeHidden();
-  await select.selectOption('low');
+  await quality('low').click();
   facts = await expectEntrances(page, { requested: 'low', state: 'Off' }, 'Low chosen in Settings');
   expect(facts.quality.effective).toBe('low');
   expectOrdinaryState(facts, 'Low chosen in Settings');
@@ -1754,7 +1755,7 @@ test('journey 5: the title toggle and Settings are one preference, the toggle re
 
   // Ultra chosen *in Settings* records the tier it left, for the toggle to return to.
   await openSettingsFromTitle(page);
-  await select.selectOption('ultra');
+  await quality('ultra').click();
   await expectEntrances(page, { requested: 'ultra', state: 'On' }, 'Ultra chosen in Settings');
   await backToTitle(page);
   await toggle.click();
@@ -1785,13 +1786,13 @@ test('journey 5: a couch pause Settings neither offers Ultra nor lets a pad reac
   await page.locator('.euc-menu--pause [data-menu="settings"]').click();
   await waitForState(page, 'settings');
 
-  // Ultra is disabled and the select shows the High saved on entry. The
+  // Ultra is disabled and the row shows the High saved on entry. The
   // title's toggle
   // (on its hidden panel) is disabled with the same words.
   const ui = await page.evaluate(() => window.m39.qualityUi());
   expect(ui).toMatchObject({
-    ultraOptionDisabled: true,
-    selectValue: 'high',
+    ultraChoiceDisabled: true,
+    shownValue: 'high',
     readoutHidden: true,
     readout: '',
     disabled: true,
@@ -1804,39 +1805,47 @@ test('journey 5: a couch pause Settings neither offers Ultra nor lets a pad reac
   expect(couch.requestedOption).toBe('high');
   expectOrdinaryState(couch, 'the couch pause Settings');
 
-  // The pad: Right from High cannot step onto Ultra. Left chooses Medium,
-  // and the next Right returns to High without stepping onto
-  // the disabled Ultra and A's wrapping lap goes round without landing on it.
+  // The pad (1.2.0 choice rows): Left/Right walks the row and A chooses.
+  // Right from High cannot step onto the disabled Ultra, and a walk across
+  // the whole row with A on every tier it reaches never lands on it.
   const quality = () => page.evaluate(() => ({
     saved: window.game.snapshot().options.quality,
-    shown: (document.querySelector('[data-option="quality"]') as HTMLSelectElement).value,
+    shown: document.querySelector<HTMLElement>('[data-choice="quality"][aria-pressed="true"]')?.dataset.value,
+    focused: document.activeElement instanceof HTMLElement && document.activeElement.dataset.choice === 'quality'
+      ? document.activeElement.dataset.value : null,
     effective: window.game.snapshot().quality.effective,
   }));
-  // Every tier change runs behind its loading notice and the select refuses
+  // Every tier change runs behind its loading notice and the row refuses
   // presses until it clears (M47 follow-up, 2026-10-26), so each press waits.
   const settled = () => page.waitForFunction(
     () => !document.querySelector('[data-option="quality"]')?.hasAttribute('aria-busy'),
   );
-  await page.locator('[data-option="quality"]').focus();
+  await page.locator('[data-choice="quality"][data-value="high"]').focus();
   await pulsePad(page, 0, PAD_RIGHT);
-  await settled();
-  expect(await quality(), 'a pad Right reached the disabled Ultra').toMatchObject({ saved: 'high', shown: 'high' });
+  expect(await quality(), 'a pad Right reached the disabled Ultra')
+    .toMatchObject({ saved: 'high', shown: 'high', focused: 'high' });
   await pulsePad(page, 0, PAD_LEFT);
+  expect(await quality(), 'walking is not choosing').toMatchObject({ saved: 'high', shown: 'high', focused: 'medium' });
+  await pulsePad(page, 0, PAD_A);
   await settled();
-  expect(await quality()).toMatchObject({ saved: 'medium', shown: 'medium', effective: 'medium' });
+  expect(await quality()).toMatchObject({ saved: 'medium', shown: 'medium', effective: 'medium', focused: 'medium' });
   await pulsePad(page, 0, PAD_RIGHT);
-  await settled();
-  expect(await quality(), 'a pad Right stepped onto the disabled Ultra').toMatchObject({ saved: 'high', shown: 'high' });
+  expect(await quality(), 'a pad Right stepped past High').toMatchObject({ saved: 'medium', focused: 'high' });
+  await pulsePad(page, 0, PAD_RIGHT);
+  expect(await quality(), 'a pad Right stepped onto the disabled Ultra').toMatchObject({ focused: 'high' });
+  // A on every tier the walk reaches, Left to the row's edge and back.
   const lap: string[] = [];
-  for (let press = 0; press < 5; press += 1) {
+  for (const press of [PAD_LEFT, PAD_LEFT, PAD_LEFT, PAD_RIGHT, PAD_RIGHT, PAD_RIGHT]) {
+    await pulsePad(page, 0, press);
     await pulsePad(page, 0, PAD_A);
     await settled();
     const now = await quality();
+    expect(now.focused, 'the pad walked onto the disabled Ultra').not.toBe('ultra');
     lap.push(now.saved);
     // Ordinary tiers keep working exactly as today in couch (invariant 18).
     expect(now.effective).toBe(now.saved);
   }
-  expect(lap, `the pad's A lap reached Ultra: ${lap.join(' → ')}`).not.toContain('ultra');
+  expect(lap, `the pad's walk reached Ultra: ${lap.join(' → ')}`).not.toContain('ultra');
   expect(new Set(lap)).toEqual(new Set(['low', 'medium', 'high']));
   expect(await page.evaluate(() => window.game.snapshot().quality.ultraOffered)).toBe(false);
   expect(errors).toEqual([]);
@@ -1864,7 +1873,7 @@ for (const recipe of ['enhanced', 'baseline'] as const) {
     expectOrdinaryState(facts, `?presentation=${recipe}`);
 
     await expect.poll(() => page.evaluate(() => window.m39.qualityUi())).toMatchObject({
-      pressed: 'true', kind: 'fallback', state: 'Using High', disabled: false, selectValue: 'ultra',
+      pressed: 'true', kind: 'fallback', state: 'Using High', disabled: false, shownValue: 'ultra',
     });
     await openSettingsFromTitle(page);
     await expect(page.locator('[data-readout="quality-state"]')).toBeVisible();
@@ -1906,7 +1915,7 @@ for (const stage of FAULT_STAGES) {
       pressed: 'true', kind: 'fallback', state: 'Using High', disabled: false,
     });
     await openSettingsFromTitle(page);
-    await expect(page.locator('[data-option="quality"]')).toHaveValue('ultra');
+    await expect(page.locator('[data-choice="quality"][data-value="ultra"]')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('[data-readout="quality-state"]')).toBeVisible();
     await expect(page.locator('[data-readout="quality-state"]')).toHaveText(READOUT.refused(reason));
     await backToTitle(page);
@@ -1981,7 +1990,7 @@ for (const entrance of ['title', 'settings'] as const) {
       await page.locator('.euc-menu--title [data-menu="ultra"]').click();
     } else {
       await openSettingsFromTitle(page);
-      await page.locator('[data-option="quality"]').selectOption('ultra');
+      await page.locator('[data-choice="quality"][data-value="ultra"]').click();
     }
     const after = await expectEntrances(page, { requested: 'ultra', state: 'Using High' }, `Ultra asked for from ${entrance}`);
     expect(after.report.refusal, 'the refusal does not name the build').toMatchObject({ kind: 'setup-failed', stage: 'build' });
@@ -2481,7 +2490,7 @@ test('journey 10: Settings round trips to Ultra and back in the middle of a Tric
     const paused = await run();
     await page.locator('.euc-menu--pause [data-menu="settings"]').click();
     await waitForState(page, 'settings');
-    await page.locator('[data-option="quality"]').selectOption(tier);
+    await page.locator(`[data-choice="quality"][data-value="${tier}"]`).click();
     // 2026-10-04: a Settings switch now runs behind the loading cover with a
     // program warm-up (bounded at 10 s) and settle frames before it lands.
     await expect.poll(async () => (await run()).effective, { message: `Settings → ${tier}`, timeout: 90_000 })

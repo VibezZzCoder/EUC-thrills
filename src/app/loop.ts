@@ -21,6 +21,14 @@ import { SIMULATION } from '../data/tuning.ts';
  *   3. **There is exactly one scheduler running at a time** — either
  *      requestAnimationFrame or the timer fallback, never both.
  *
+ * **The frame rate limit (1.2.0) skips whole animation frames and nothing
+ * else.** A skipped callback re-requests and returns before `runFrame`, so the
+ * next drawn frame hands the accumulator the whole elapsed interval and the
+ * simulation runs exactly the steps it always would — fewer pictures of the
+ * same ride. The cap lands on whole display frames (it measures since the
+ * last *drawn* frame against the display's own interval), so pacing stays
+ * even and the drawn rate never exceeds the number chosen.
+ *
  * No DOM and no `three` here. The scheduler is injected, so the whole loop is
  * unit-testable under `node --test` with a fake clock, which is the only way
  * to test a negative first frame or a two-second stall deterministically.
@@ -91,6 +99,8 @@ export interface LoopStats {
   readonly alpha: number;
   /** Unconsumed simulation time, seconds. Always below one step. */
   readonly accumulatorSeconds: number;
+  /** Animation frames passed over by the frame rate limit. A count, not a rate. */
+  readonly capSkippedFrames: number;
   /** True once the first-frame probe gave up on requestAnimationFrame. */
   readonly timerFallback: boolean;
   /**
@@ -132,6 +142,19 @@ export class FixedStepLoop {
   private frameHandle = 0;
   private timerHandle = 0;
   private probeHandle = 0;
+
+  /** Minimum milliseconds between drawn frames; 0 draws every frame. */
+  private capIntervalMs = 0;
+  private lastDrawnMs = -1;
+  private capSkippedFrames = 0;
+  /**
+   * The display's frame interval as the animation-frame callbacks report it,
+   * biased to the shortest steady interval: quick to fall, slow to rise, so a
+   * run of long frames under load does not read as a slower screen.
+   */
+  private displayIntervalMs = 0;
+  private displaySamples = 0;
+  private lastCallbackMs = -1;
 
   private frames = 0;
   private syntheticFrames = 0;
@@ -201,6 +224,26 @@ export class FixedStepLoop {
   }
 
   /**
+   * The frame rate limit, in frames per second, or null to draw every frame.
+   * Affects requestAnimationFrame delivery only; the timer fallback and
+   * `advance()` are untouched.
+   */
+  setFrameCap(fps: number | null): void {
+    this.capIntervalMs = fps !== null && Number.isFinite(fps) && fps > 0 ? 1000 / fps : 0;
+    this.lastDrawnMs = -1;
+  }
+
+  /**
+   * The display's refresh rate as measured from animation-frame callbacks, or
+   * null before enough have arrived. Used to decide which limits are worth
+   * offering; never a performance figure and never reported.
+   */
+  displayHz(): number | null {
+    if (this.displaySamples < 60 || this.displayIntervalMs <= 0) return null;
+    return 1000 / this.displayIntervalMs;
+  }
+
+  /**
    * Run exactly `steps` fixed steps through the real update path, then draw.
    *
    * The QA bridge's primary tool. Stepping without forcing a render silently
@@ -256,6 +299,7 @@ export class FixedStepLoop {
       mode: this.mode,
       alpha: this.alpha,
       accumulatorSeconds: this.accumulator,
+      capSkippedFrames: this.capSkippedFrames,
       timerFallback: this.timerFallback,
       firstFrameMs: this.firstFrameMs,
     };
@@ -286,8 +330,42 @@ export class FixedStepLoop {
     // Re-request before running the frame, so a throw inside the frame does not
     // silently end the loop.
     this.frameHandle = this.scheduler.requestFrame(this.onAnimationFrame);
+    this.sampleDisplay(nowMs);
+    if (this.skipForCap(nowMs)) {
+      this.capSkippedFrames += 1;
+      return;
+    }
     this.runFrame(nowMs);
   };
+
+  private sampleDisplay(nowMs: number): void {
+    const interval = nowMs - this.lastCallbackMs;
+    this.lastCallbackMs = nowMs;
+    // Outside 3–50 ms is a stall, a hidden tab or a clock reset, not a refresh.
+    if (interval < 3 || interval > 50) return;
+    if (this.displaySamples === 0) this.displayIntervalMs = interval;
+    else this.displayIntervalMs += (interval - this.displayIntervalMs) * (interval < this.displayIntervalMs ? 0.3 : 0.003);
+    this.displaySamples += 1;
+  }
+
+  /**
+   * True when this animation frame comes too soon after the last drawn one.
+   *
+   * The quarter-frame tolerance absorbs timestamp jitter without ever letting
+   * a frame through a whole display interval early: on a 60 Hz screen a 30 cap
+   * draws every second frame, on 120 Hz a 60 cap every second, and on 144 Hz a
+   * 60 cap every third (48) rather than alternating two and three.
+   */
+  private skipForCap(nowMs: number): boolean {
+    if (this.capIntervalMs <= 0) return false;
+    const elapsed = nowMs - this.lastDrawnMs;
+    if (this.lastDrawnMs >= 0 && elapsed >= 0) {
+      const display = this.displayIntervalMs > 0 ? this.displayIntervalMs : 1000 / 60;
+      if (elapsed < this.capIntervalMs - display * 0.25) return true;
+    }
+    this.lastDrawnMs = nowMs;
+    return false;
+  }
 
   private readonly onProbeExpired = (): void => {
     this.probeHandle = 0;

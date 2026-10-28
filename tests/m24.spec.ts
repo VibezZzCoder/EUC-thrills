@@ -287,61 +287,76 @@ test('a pad drives the rider chooser as the grid the player sees', async ({ page
   expect(errors).toEqual([]);
 });
 
-test('a pad operates the settings dropdowns, and binding rows are one stop each', async ({ page }) => {
+test('a pad operates the settings choice rows, and binding rows are one stop each', async ({ page }) => {
   const errors = collectErrors(page);
   await bootWithPad(page);
   await page.evaluate(() => window.game.setAppState('settings'));
-  await expect(page.locator('[data-option="quality"]')).toBeFocused();
+  const quality = (value: string) => page.locator(`[data-choice="quality"][data-value="${value}"]`);
+  await expect(quality('high')).toBeFocused();
 
-  // Confirm cycles the focused select — the §4.6 report's named controls,
-  // graphics quality and the mph/km-h dropdown, were exactly the ones a
-  // pad's A did nothing on, because `.click()` on a native select is a
-  // no-op. A full lap of presses returns to the starting value, so the
-  // cycle provably wraps rather than sticking at the last option.
+  // The §4.6 report's named controls — graphics quality and the mph/km-h
+  // setting — were exactly the ones a pad's A did nothing on, because
+  // `.click()` on a native select is a no-op. Since 1.2.0 they are choice
+  // rows: Left/Right walks the row's buttons without changing anything, and A
+  // chooses the focused one. A lap through every tier ends where it started.
   //
   // **The lap passes through Ultra since M39**, and that is asserted rather
-  // than left to the count: Ultra is the last option, so the first press from
-  // the default High lands on it, and a single-player session offers it — a
-  // lap that stepped over it here would be the couch rule (a disabled option
-  // is skipped) leaking into a session that is not a couch.
+  // than left to the count: a single-player session offers it — a walk that
+  // stepped over it here would be the couch rule (a disabled button is
+  // skipped) leaking into a session that is not a couch.
   //
   // **A step onto or off Ultra waits for its loading notice** (M39 follow-up,
-  // 2026-09-25): the switch runs two frames after the press, and the select
+  // 2026-09-25): the switch runs two frames after the press, and the row
   // refuses presses until it has settled — a pad's A mashed through the
-  // freeze must not queue another switch. So each press waits for the select
+  // freeze must not queue another switch. So each choice waits for the row
   // to stop being busy before the next. Since the M47 follow-up (2026-10-26)
   // a step among Low, Medium and High is covered the same way.
   const settled = () => page.waitForFunction(
     () => !document.querySelector('[data-option="quality"]')?.hasAttribute('aria-busy'),
   );
-  const qualityStart = await page.evaluate(() => window.game.snapshot().options.quality);
-  expect(qualityStart).toBe('high');
-  await pulse(page, CONFIRM);
-  await settled();
-  const qualityNext = await page.evaluate(() => window.game.snapshot().options.quality);
-  expect(qualityNext).not.toBe(qualityStart);
-  expect(qualityNext).toBe('ultra');
-  const qualityCount = await page.evaluate(
-    () => (document.querySelector('[data-option="quality"]') as HTMLSelectElement).options.length,
-  );
-  expect(qualityCount).toBe(4);
-  const lap: string[] = [qualityNext];
-  for (let press = 1; press < qualityCount; press += 1) {
+  const current = () => page.evaluate(() => window.game.snapshot().options.quality);
+  expect(await current()).toBe('high');
+  expect(await page.locator('[data-choice="quality"]').count()).toBe(4);
+
+  // Each leg: the d-pad presses that walk to the next tier, then A.
+  const legs: { walk: number[]; to: string }[] = [
+    { walk: [DPAD.right], to: 'ultra' },
+    { walk: [DPAD.left, DPAD.left, DPAD.left], to: 'low' },
+    { walk: [DPAD.right], to: 'medium' },
+    { walk: [DPAD.right], to: 'high' },
+  ];
+  const lap: string[] = [];
+  for (const leg of legs) {
+    const before = await current();
+    for (const press of leg.walk) await pulse(page, press);
+    await expect(quality(leg.to)).toBeFocused();
+    // Walking is not choosing.
+    expect(await current()).toBe(before);
     await pulse(page, CONFIRM);
+    await page.waitForFunction((to) => window.game.snapshot().options.quality === to, leg.to);
     await settled();
-    lap.push(await page.evaluate(() => window.game.snapshot().options.quality));
+    lap.push(await current());
+    await expect(quality(leg.to)).toHaveAttribute('aria-pressed', 'true');
   }
   expect(lap).toEqual(['ultra', 'low', 'medium', 'high']);
-  expect(await page.evaluate(() => window.game.snapshot().options.quality)).toBe(qualityStart);
 
-  // Down walks the Display rows to the speed-unit dropdown, and confirm
-  // cycles it too.
-  await pulse(page, DPAD.down);
-  await pulse(page, DPAD.down);
-  await expect(page.locator('[data-option="speedUnit"]')).toBeFocused();
-  const unitStart = await page.evaluate(() => window.game.snapshot().options.speedUnit);
+  // A on the value already chosen changes nothing.
   await pulse(page, CONFIRM);
-  expect(await page.evaluate(() => window.game.snapshot().options.speedUnit)).not.toBe(unitStart);
+  await settled();
+  expect(await current()).toBe('high');
+
+  // Down walks the Display rows to Speed units, landing on the unit it holds,
+  // and a walk plus A changes it too.
+  const unitStart = await page.evaluate(() => window.game.snapshot().options.speedUnit);
+  const unitOther = unitStart === 'kph' ? 'mph' : 'kph';
+  await pulse(page, DPAD.down);
+  await pulse(page, DPAD.down);
+  await expect(page.locator(`[data-choice="speedUnit"][data-value="${unitStart}"]`)).toBeFocused();
+  await pulse(page, unitOther === 'mph' ? DPAD.right : DPAD.left);
+  await expect(page.locator(`[data-choice="speedUnit"][data-value="${unitOther}"]`)).toBeFocused();
+  expect(await page.evaluate(() => window.game.snapshot().options.speedUnit)).toBe(unitStart);
+  await pulse(page, CONFIRM);
+  expect(await page.evaluate(() => window.game.snapshot().options.speedUnit)).toBe(unitOther);
 
   // The key-binding rows: each is one down-stop (the pre-M24 walk visited
   // Change and Clear separately, doubling the trip through Controls), and the

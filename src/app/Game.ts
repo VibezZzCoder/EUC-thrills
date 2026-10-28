@@ -210,6 +210,7 @@ import { SafeStorage } from '../platform/storage.ts';
 import {
   OptionsStore,
   deviceDefaults,
+  frameRateCap,
   type GameOptions,
   type OrdinaryQuality,
   type QualityLevel,
@@ -12262,6 +12263,11 @@ export class Game {
       this.fpsMeter.sample(nowMs);
       this.seats[0]?.hud?.setFrameRate(this.fpsMeter.text);
     }
+    // 1.2.0: which frame rate limits are worth offering on this display. The
+    // menus keep the highest rate seen and write the DOM only when that adds a
+    // limit, so this is a comparison per frame.
+    const displayHz = this.loop.displayHz();
+    if (displayHz !== null) this.menus.setDisplayRate(displayHz);
 
     // The pad is polled here rather than in `step`, and it has to be: a paused
     // or title-screen loop runs no steps at all, and a pad that only reported
@@ -17049,6 +17055,11 @@ export class Game {
     if (previous === null || options.showFps !== previous.showFps) {
       this.fpsMeter.reset();
       this.seats[0]?.hud?.setFrameRate('');
+    }
+    // 1.2.0: the frame rate limit caps drawing only (`app/loop.ts`).
+    if (previous === null || options.frameRateLimit !== previous.frameRateLimit) {
+      this.loop.setFrameCap(frameRateCap(options.frameRateLimit));
+      this.fpsMeter.reset();
     }
 
     // The settings screen is always resynced: it diffs every write against

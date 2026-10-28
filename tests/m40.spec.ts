@@ -257,7 +257,12 @@ test.describe('M40 — stamp, About and licences, share link (desktop)', () => {
     await page.locator('.euc-menu--pause [data-menu="settings"]').focus();
     await page.keyboard.press('Enter');
     await page.waitForFunction(() => window.game.snapshot().app.state === 'settings');
-    await expect(page.locator('[data-option="quality"]')).toBeFocused();
+    // Settings opens on the value Quality holds (1.2.0 choice rows), which is
+    // the row's third button; native Shift+Tab walks back to its first.
+    await expect(page.locator('[data-choice="quality"][data-value="high"]')).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Shift+Tab');
+    await expect(page.locator('[data-choice="quality"][data-value="low"]')).toBeFocused();
 
     // The Tab trap wraps backwards from the first control to the last, which
     // is the About row.
@@ -342,7 +347,7 @@ test.describe('M40 — stamp, About and licences, share link (desktop)', () => {
     await page.locator('.euc-menu--title [data-menu="settings"]').focus();
     await pulse(A);
     await page.waitForFunction(() => window.game.snapshot().app.state === 'settings');
-    await expect(page.locator('[data-option="quality"]')).toBeFocused();
+    await expect(page.locator('[data-choice="quality"][data-value="high"]')).toBeFocused();
     // Up from the first row wraps to the last: the About row.
     await pulse(UP);
     expect(await cursorOn('.euc-menu--settings [data-menu="about"]')).toBe(true);

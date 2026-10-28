@@ -42,7 +42,18 @@ const LOADING = 'Loading Ultra graphics…';
 const LEAVING = 'Turning Ultra off…';
 
 const TOGGLE = '.euc-menu--title [data-menu="ultra"]';
-const QUALITY = '[data-option="quality"]';
+/** One button of the Settings quality row (1.2.0 choice rows). */
+const quality = (page: Page, value: string) => page.locator(`[data-choice="quality"][data-value="${value}"]`);
+/**
+ * A second press while a switch is loading. The whole menu is under the
+ * loading cover then, so a pointer cannot reach the button (a real click
+ * lands on the cover), and a programmatic `.click()` — what Enter and a pad's
+ * A both are — reaches the row's handler, which must refuse it. Both are sent.
+ */
+async function pressWhileBusy(page: Page, value: string): Promise<void> {
+  await quality(page, value).click({ force: true });
+  await quality(page, value).evaluate((node) => (node as HTMLButtonElement).click());
+}
 
 interface Facts {
   /** `renderer.reconcileUltra` calls since the probe was installed: tier switches. */
@@ -57,8 +68,8 @@ interface Facts {
   readonly noticeShown: boolean;
   /** The title's polite status region. */
   readonly status: string;
-  readonly selectValue: string | null;
-  readonly selectBusy: string | null;
+  readonly rowValue: string | null;
+  readonly rowBusy: string | null;
   readonly readout: string;
   readonly readoutShown: boolean;
 }
@@ -127,7 +138,8 @@ function installLoadingProbe(): void {
     const toggle = document.querySelector<HTMLButtonElement>('.euc-menu--title [data-menu="ultra"]');
     const line = toggle?.querySelector<HTMLElement>('[data-ultra-busy-text]') ?? null;
     const status = document.querySelector<HTMLElement>('[data-ultra-status]');
-    const select = document.querySelector<HTMLSelectElement>('[data-option="quality"]');
+    const row = document.querySelector<HTMLElement>('[data-option="quality"]');
+    const pressed = document.querySelector<HTMLElement>('[data-choice="quality"][aria-pressed="true"]');
     const readout = document.querySelector<HTMLElement>('[data-readout="quality-state"]');
     const snapshot = game.snapshot();
     return {
@@ -140,8 +152,8 @@ function installLoadingProbe(): void {
       notice: line?.textContent?.trim() ?? '',
       noticeShown: shown(document.getElementById('boot-heading')) && document.getElementById('boot')?.dataset.kind === 'quality',
       status: status?.textContent?.trim() ?? '',
-      selectValue: select?.value ?? null,
-      selectBusy: select?.getAttribute('aria-busy') ?? null,
+      rowValue: pressed?.dataset.value ?? null,
+      rowBusy: row?.getAttribute('aria-busy') ?? null,
       readout: readout?.textContent?.trim() ?? '',
       readoutShown: shown(document.getElementById('boot-heading')) && document.getElementById('boot')?.dataset.kind === 'quality',
     };
@@ -235,10 +247,10 @@ async function attachShot(page: Page, testInfo: TestInfo, name: string): Promise
 async function waitUntilSettled(page: Page, pressed: 'true' | 'false'): Promise<Facts> {
   await expect.poll(async () => {
     const now = await facts(page);
-    return { busy: now.busy, selectBusy: now.selectBusy, pressed: now.pressed, notice: now.notice };
+    return { busy: now.busy, rowBusy: now.rowBusy, pressed: now.pressed, notice: now.notice };
   }, { message: 'the switch never settled', timeout: 20_000 }).toEqual({
     busy: null,
-    selectBusy: null,
+    rowBusy: null,
     pressed,
     notice: '',
   });
@@ -297,7 +309,7 @@ test('the title toggle shows "Loading Ultra graphics…" before the work, ignore
   expect(work, 'the notice was not up when the work began').toMatchObject({ busy: 'true', notice: LOADING, noticeShown: true, pressed: 'false', status: LOADING });
   expect(work.framesSinceNotice, 'the work started before the loop drew two frames with the notice').toBeGreaterThanOrEqual(2);
   expect(done.state).toBe(done.effective === 'ultra' ? 'On' : 'Using High');
-  expect(done).toMatchObject({ noticeShown: false, status: '', selectValue: 'ultra' });
+  expect(done).toMatchObject({ noticeShown: false, status: '', rowValue: 'ultra' });
 
   // And back off: the same notice discipline, in the leaving words.
   await toggle.focus();
@@ -312,7 +324,7 @@ test('the title toggle shows "Loading Ultra graphics…" before the work, ignore
   expect(errors).toEqual([]);
 });
 
-test('Settings (the pause menu’s too) shows the notice beside the quality select, and a second choice while loading is refused', async ({ page }, testInfo) => {
+test('Settings (the pause menu’s too) shows the notice beside the quality row, and a second choice while loading is refused', async ({ page }, testInfo) => {
   const errors = collectErrors(page);
   await bootAtTier(page, 'level=slice', 'ultra', { ride: true });
   await page.evaluate(installLoadingProbe);
@@ -320,36 +332,35 @@ test('Settings (the pause menu’s too) shows the notice beside the quality sele
   await page.waitForFunction(() => window.game.snapshot().app.state === 'paused');
   await page.locator('.euc-menu--pause [data-menu="settings"]').click();
   await page.waitForFunction(() => window.game.snapshot().app.state === 'settings');
-  const select = page.locator(QUALITY);
-  await expect(select).toHaveValue('ultra');
+  await expect(quality(page, 'ultra')).toHaveAttribute('aria-pressed', 'true');
 
   // Leaving Ultra, then a second choice before the work has run.
   await holdFrames(page);
-  await select.selectOption('high');
-  await select.selectOption('low');
+  await quality(page, 'high').click();
+  await pressWhileBusy(page, 'low');
   const leaving = await facts(page);
   expect.soft(leaving.switches, 'the choice did the heavy work inside the event').toBe(0);
-  expect.soft(leaving.selectBusy, 'the select is not aria-busy').toBe('true');
-  expect.soft(leaving.readout, 'no notice beside the select').toBe(LEAVING);
+  expect.soft(leaving.rowBusy, 'the quality row is not aria-busy').toBe('true');
+  expect.soft(leaving.readout, 'no notice beside the quality row').toBe(LEAVING);
   expect.soft(leaving.readoutShown).toBe(true);
-  expect.soft(leaving.selectValue, 'the refused second choice stayed in the select').toBe('high');
+  expect.soft(leaving.rowValue, 'the refused second choice was pressed in the row').toBe('high');
   expect.soft(leaving.quality).toBe('ultra');
   await releaseFrames(page);
   const high = await waitUntilSettled(page, 'false');
-  expect(high).toMatchObject({ switches: 1, quality: 'high', selectValue: 'high', readout: '', readoutShown: false });
+  expect(high).toMatchObject({ switches: 1, quality: 'high', rowValue: 'high', readout: '', readoutShown: false });
 
-  // Entering Ultra from the same select.
+  // Entering Ultra from the same row.
   await holdFrames(page);
-  await select.selectOption('ultra');
-  await select.selectOption('medium');
+  await quality(page, 'ultra').click();
+  await pressWhileBusy(page, 'medium');
   const entering = await facts(page);
-  expect(entering).toMatchObject({ switches: 1, quality: 'high', selectBusy: 'true', readout: LOADING, readoutShown: true, selectValue: 'ultra' });
+  expect(entering).toMatchObject({ switches: 1, quality: 'high', rowBusy: 'true', readout: LOADING, readoutShown: true, rowValue: 'ultra' });
   await attachShot(page, testInfo, 'settings-loading');
   await releaseFrames(page);
   const ultra = await waitUntilSettled(page, 'true');
-  expect(ultra).toMatchObject({ switches: 2, quality: 'ultra', selectValue: 'ultra' });
+  expect(ultra).toMatchObject({ switches: 2, quality: 'ultra', rowValue: 'ultra' });
   const work = (await page.evaluate(() => window.m39Loading.atWork))[1];
-  expect(work).toMatchObject({ selectBusy: 'true', readout: LOADING, readoutShown: true });
+  expect(work).toMatchObject({ rowBusy: 'true', readout: LOADING, readoutShown: true });
   expect(work.framesSinceNotice).toBeGreaterThanOrEqual(2);
   // No notice left behind, and the readout says nothing unless Ultra fell back.
   expect(ultra.readout).toBe(ultra.effective === 'ultra' ? '' : ultra.readout);
@@ -438,7 +449,7 @@ test.describe('at phone width', () => {
     await page.locator('.euc-menu--title [data-menu="settings"]').tap();
     await page.waitForFunction(() => window.game.snapshot().app.state === 'settings');
     await holdFrames(page);
-    await page.locator(QUALITY).selectOption('high');
+    await quality(page, 'high').tap();
     const settings = await page.evaluate(() => {
       const readout = document.getElementById('boot-heading')!;
       const box = readout.getBoundingClientRect();
@@ -450,7 +461,7 @@ test.describe('at phone width', () => {
         facts: window.m39Loading.facts(),
       };
     });
-    expect(settings.facts).toMatchObject({ readout: LEAVING, readoutShown: true, selectBusy: 'true' });
+    expect(settings.facts).toMatchObject({ readout: LEAVING, readoutShown: true, rowBusy: 'true' });
     expect(settings.left).toBeGreaterThanOrEqual(0);
     expect(settings.right).toBeLessThanOrEqual(375);
     expect(settings.clipped).toBeLessThanOrEqual(1);

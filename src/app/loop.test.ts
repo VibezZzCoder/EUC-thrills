@@ -422,3 +422,73 @@ test('a step that resets the clock never renders a frame backwards', () => {
   }
   loop.dispose();
 });
+
+// ---- the frame rate limit (1.2.0) ----
+
+/** Deliver `count` animation frames at a display's refresh rate. */
+function ride(scheduler: FakeScheduler, displayHz: number, count: number, fromMs = 0): number {
+  const interval = 1000 / displayHz;
+  let at = fromMs;
+  for (let i = 0; i < count; i += 1) {
+    at = fromMs + i * interval;
+    scheduler.deliverFrame(at);
+  }
+  return at;
+}
+
+for (const [displayHz, cap, every] of [
+  [60, 30, 2], [120, 60, 2], [120, 30, 4], [144, 60, 3], [240, 120, 2], [60, 60, 1], [60, 120, 1],
+] as const) {
+  test(`a ${cap} limit on a ${displayHz} Hz display draws every ${every} frame(s), evenly`, () => {
+    const { loop, scheduler, renders } = harness();
+    loop.setFrameCap(cap);
+    loop.start();
+    const frames = 241;
+    ride(scheduler, displayHz, frames);
+    assert.equal(renders.length, Math.ceil(frames / every));
+    assert.equal(loop.stats().capSkippedFrames, frames - renders.length);
+    loop.dispose();
+  });
+}
+
+test('the limit changes how often the ride is drawn, never how far it runs', () => {
+  const uncapped = harness();
+  const capped = harness();
+  capped.loop.setFrameCap(30);
+  for (const { loop, scheduler } of [uncapped, capped]) {
+    loop.start();
+    ride(scheduler, 60, 601); // ten seconds
+  }
+  assert.ok(capped.renders.length < uncapped.renders.length);
+  assert.ok(Math.abs(capped.steps.length - uncapped.steps.length) <= 1);
+  assert.ok(Math.abs(uncapped.steps.length - 10 * SIMULATION.hz) <= 1);
+  // At 30 frames a second each drawn frame carries four steps — under the
+  // catch-up ceiling, so no time is dropped.
+  assert.equal(capped.loop.stats().droppedSteps, 0);
+  assert.ok(4 < SIMULATION.maxStepsPerFrame);
+});
+
+test('auto (null) draws every frame and clearing a limit takes effect at once', () => {
+  const { loop, scheduler, renders } = harness();
+  loop.setFrameCap(30);
+  loop.start();
+  const end = ride(scheduler, 60, 61);
+  const capped = renders.length;
+  loop.setFrameCap(null);
+  ride(scheduler, 60, 60, end + 1000 / 60);
+  assert.equal(renders.length - capped, 60);
+});
+
+test('the display rate is unknown until enough frames arrive, and is not fooled by slow frames', () => {
+  const { loop, scheduler } = harness();
+  loop.start();
+  let end = ride(scheduler, 120, 30);
+  assert.equal(loop.displayHz(), null);
+  end = ride(scheduler, 120, 90, end + 1000 / 120);
+  const hz = loop.displayHz();
+  assert.ok(hz !== null && Math.abs(hz - 120) < 1);
+  // A run of 25 ms frames under load reads as load, not as a 40 Hz screen.
+  ride(scheduler, 40, 20, end + 25);
+  assert.ok((loop.displayHz() ?? 0) > 100);
+  loop.dispose();
+});
