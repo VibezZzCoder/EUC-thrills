@@ -1871,6 +1871,33 @@
   text-align: center;
 }
 
+/*
+ * A phone on its side keeps the centre clear — the folding-phone pass,
+ * 2026-10-28.
+ *
+ * Stacked as above, the objective waits under the whole challenge lane (87 px
+ * on a track day) and the cues under that, so in a window 280–406 px tall the
+ * objective and the first-ride prompt crossed the protected middle fifth (§9)
+ * and at 280 px the prompt sat on the rider. Here the objective joins the top
+ * row between the speed and the clock, the clock spans two rows, and the cues
+ * start under the speed pill rather than under the clock: about 55 px higher,
+ * ending above the middle fifth down to 280 px. The same short-landscape
+ * band the controls shrink in; portrait and taller windows are untouched.
+ */
+@media (orientation: landscape) and (max-height: 30rem) {
+  .euc-hud[data-touch="true"] {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto 1fr;
+    grid-template-areas:
+      "speed objective challenge"
+      ".     cues      challenge"
+      ".     .         .        ";
+  }
+
+  /* The base rule spans the objective across every column; here it has one. */
+  .euc-hud[data-touch="true"] .euc-hud__objective { grid-column: objective; }
+}
+
 /* ---------------------------------------------------------------------------
  * Menus — title, pause, settings
  * ------------------------------------------------------------------------ */
@@ -4948,6 +4975,35 @@
   .euc-menu--riders .euc-menu__tagline { display: none; }
 
   .euc-riders__heading { font-size: clamp(1.2rem, 5vh, 1.5rem); }
+
+  /*
+   * The results card's actions stay on screen — the folding-phone pass,
+   * 2026-10-28.
+   *
+   * A track day's card is 52–99 px past the fold on a 382–385 px phone or
+   * Split View window 571–618 px tall, so `New route` and `Back to title`
+   * waited under the fold. In a short landscape window (594×368, 667×280) it
+   * was worse the other way: focusing `Ride it again` scrolled the card to its
+   * bottom, and the heading and the lap time — the reason the card exists —
+   * opened above the top edge. Sticky actions answer both: every control is
+   * on screen at scroll 0, so the focus has nothing to scroll, the headline
+   * opens where it is read, and only the breakdown between them scrolls.
+   *
+   * **Inert wherever the card fits.** Sticky moves nothing until the card
+   * overflows, and the padding the band needs is given back by equal negative
+   * margins, so a card that fits lays out exactly as before. The band reaches
+   * through the menu's own bottom padding (the tier's value, restated) so no
+   * scrolled row shows beneath the buttons. Scoped to this tier, so the
+   * desktop fit contracts (`tests/m26`, `m37`, `m38`) never meet it.
+   */
+  .euc-menu--results .euc-menu__actions {
+    position: sticky;
+    z-index: 1;
+    bottom: calc(-1 * max(0.75rem, env(safe-area-inset-bottom)));
+    margin-block: -0.6rem calc(-1 * max(0.75rem, env(safe-area-inset-bottom)));
+    padding-block: 0.6rem max(0.75rem, env(safe-area-inset-bottom));
+    background: linear-gradient(to bottom, rgba(7, 9, 12, 0), rgba(7, 9, 12, 0.94) 0.6rem);
+  }
 }
 
 /* A `display` of our own beats the user agent's `[hidden]` (§9). */

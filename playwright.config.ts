@@ -1,5 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { defineConfig, devices } from '@playwright/test';
+import { existsSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { defineConfig, devices, webkit } from '@playwright/test';
 
 /**
  * Browser QA (`npm run test:browser`).
@@ -36,6 +38,28 @@ const GL_ARGS = [...(process.env.EUC_SOFTWARE_GL === '1'
   : ['--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader']),
   // Diagnostic only: extra Chromium switches for one run, space-separated.
   ...(process.env.EUC_EXTRA_CHROME_ARGS?.split(' ').filter(Boolean) ?? [])];
+
+/**
+ * The WebKit the `fold` project launches (2026-10-28).
+ *
+ * `EUC_WEBKIT_EXECUTABLE` wins when set. Otherwise Playwright's own build for
+ * this version is used when it is installed (`npx playwright install webkit`);
+ * when it is not, the newest WebKit already in Playwright's browser cache is
+ * borrowed, so a machine that has a WebKit from another project can still run
+ * the fold cases. A borrowed build is still upstream WebKit, never branded
+ * Safari, and the spec says so in what it reports.
+ */
+function webkitExecutable(): string | undefined {
+  if (process.env.EUC_WEBKIT_EXECUTABLE) return process.env.EUC_WEBKIT_EXECUTABLE;
+  const own = webkit.executablePath();
+  if (existsSync(own)) return undefined;
+  const cache = dirname(dirname(own));
+  if (!existsSync(cache)) return undefined;
+  const builds = readdirSync(cache)
+    .filter((name) => /^webkit-\d+$/.test(name) && existsSync(join(cache, name, 'pw_run.sh')))
+    .sort((a, b) => Number(b.slice(7)) - Number(a.slice(7)));
+  return builds.length > 0 ? join(cache, builds[0], 'pw_run.sh') : undefined;
+}
 
 const PERFORMANCE_ONLY = process.env.EUC_PERFORMANCE === '1';
 
@@ -131,7 +155,7 @@ export default defineConfig({
       // The touch spec is the mobile project's, below. Everything else is a
       // desktop question and answering it twice would double a suite that
       // already takes minutes.
-      testIgnore: /touch\.spec\.ts/,
+      testIgnore: /(touch|fold)\.spec\.ts/,
       use: {
         ...devices['Desktop Chrome'],
         viewport: { width: 1000, height: 700 },
@@ -167,6 +191,21 @@ export default defineConfig({
       use: {
         ...devices['Pixel 7'],
         launchOptions: { args: GL_ARGS },
+      },
+    },
+    {
+      /*
+       * Folding phones (2026-10-28): the iPhone Duo's Safari 27.1 window sizes
+       * and Split View, in WebKit with touch on. The iPhone 15 descriptor
+       * supplies WebKit, `hasTouch`, `isMobile`, an iPhone user agent and a
+       * device scale factor of 3 — test configuration, not a Duo
+       * specification. Every window size is set by the spec itself.
+       */
+      name: 'fold',
+      testMatch: /fold\.spec\.ts/,
+      use: {
+        ...devices['iPhone 15'],
+        launchOptions: { executablePath: webkitExecutable() },
       },
     },
   ],
