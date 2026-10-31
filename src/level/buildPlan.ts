@@ -2281,6 +2281,9 @@ function resolveProp(
       rotationY: prop.rotationY,
       scale: prop.scale,
       ...(prop.size === undefined ? {} : { size: { ...prop.size } }),
+      // Render-only tone (Foundry Yard's galvanised fence bays, 1.4.0 critic
+      // pass 1); absent on every other non-building prop, so their bytes stay.
+      ...(prop.tone === undefined ? {} : { tone: prop.tone }),
     };
   }
 

@@ -127,6 +127,214 @@ export interface Heightfield {
    * Absent on every world without grip bands.
    */
   traction?: Readonly<Record<number, SurfaceId>>;
+  /**
+   * Transition cells — 1.4.0 (`docs/PLANS.md` §51.5.9, C1): cell index →
+   * `true` where the ground is a shaped face (a cell whose four corners are
+   * not level) or the floor under a block too narrow to restart on — a ledge,
+   * a manual pad, a planter, a stair tread, a kicker lip, the euro gap's pit.
+   * The sampler answers a block's top there, but the cell index is XZ, so the
+   * flag still says "not here". Simulation reads it for the skatepark rules
+   * (the wall turn, the come-back coping air, no safe point on a flagged
+   * cell); nothing drawn or heard does. Absent on every world but Foundry
+   * Yard, so no other plan's digest or ride moves.
+   */
+  transition?: Readonly<Record<number, true>>;
+}
+
+/**
+ * How a crash recovery restarts the rider — 1.4.0 (`docs/PLANS.md` §51.5.9,
+ * C5). Absent, a recovery restores `EUC.crashRecoverSpeedFactor` of the crash
+ * speed along the stored heading, which is every world that shipped before
+ * this one. `'rest'` restarts at 0 m/s: in a dense yard the stored heading
+ * usually points at the next feature.
+ */
+export interface RecoveryPolicy {
+  readonly speed: 'rest';
+}
+
+/** One run of coping pipe: its centreline, in drawing order, two or more points. */
+export interface CopingRun {
+  readonly points: readonly Vec3[];
+  /**
+   * `'pipe'` (absent) draws the steel pipe; `'edge'` draws no pipe, only the
+   * `band` and a short drop face over the lip — a poured concrete lip, such as
+   * a snake channel's (critic pass 1, A3).
+   */
+  readonly style?: 'pipe' | 'edge';
+  /**
+   * A flat pale-concrete band this wide (metres) on the deck side of the
+   * line, flush a few millimetres over the deck: pool coping (A4). Absent,
+   * none.
+   */
+  readonly band?: number;
+  /**
+   * A painted stripe this wide (metres) on the deck side of the line, a few
+   * millimetres over the deck at the pipe's own height, with a short drop
+   * face over the open side: a kicker's lip edge (critic pass 2, K1). It
+   * stands on a riding block's top, so unlike `band` it never reads the
+   * field. Absent, none.
+   */
+  readonly cap?: { readonly width: number; readonly colour: number };
+}
+
+/**
+ * Render-only coping pipe — 1.4.0 (`docs/PLANS.md` §51.5.1, C6). The points
+ * are the pipe's own centreline in world metres, already placed so its top
+ * sits flush with the deck and it overhangs the face; nothing collides with
+ * it, because a coping proud of the deck crashed the rider in nine to twelve
+ * phases in twelve (§51.3 b). The heightfield's lip is the riding edge.
+ */
+export interface CopingScenery {
+  /** Pipe radius, metres. */
+  readonly radius: number;
+  readonly runs: readonly CopingRun[];
+}
+
+/**
+ * A tonal patch the yard's faces are worn with — 1.4.0's look pass. A soft,
+ * blotchy colour block on the transition faces inside the rectangle (world
+ * XZ), never letters, words or marks: what a decade of paint looks like from
+ * the chase camera. `colour` is the sRGB the patch moves toward and
+ * `strength` how far (0–1) at its heart.
+ */
+export interface WearPatch {
+  readonly x0: number;
+  readonly x1: number;
+  readonly z0: number;
+  readonly z1: number;
+  readonly colour: number;
+  readonly strength: number;
+  /**
+   * A solid painted wash over every shaped sample in the rectangle, at any
+   * slope — a painted ride face, such as a kicker's (critic pass 1, A2) —
+   * instead of blotches on the steep faces only.
+   */
+  readonly wash?: boolean;
+}
+
+/**
+ * A painted piece on a straight transition face — critic pass 1, R4. Drawn
+ * as geometry conforming to the face, so its edges stay hard where per-sample
+ * colour would smear them down a steep wall. The face runs along `along`
+ * from `from` to `to`; its coping line is at `at` on the other axis, and the
+ * face falls away from it toward `down` (±1 on that axis). The heightfield
+ * across such a face must not vary along it (an axis-aligned straight).
+ */
+export interface YardFaceMural {
+  readonly along: 'x' | 'z';
+  readonly at: number;
+  readonly down: 1 | -1;
+  readonly from: number;
+  readonly to: number;
+  readonly fill: number;
+  readonly outline: number;
+  readonly seed: number;
+  /**
+   * Paint the whole face solid in `fill` from `top` to `foot` (metres of
+   * face under the coping and over the floor), hard-edged on every side: a
+   * painted ride face, such as a kicker's (critic pass 2, K1/F3). Absent,
+   * one seeded piece inside the wall-sized margins.
+   */
+  readonly solid?: { readonly top: number; readonly foot: number };
+}
+
+/**
+ * A steel plate lying on the floor at a ramp's toe (critic pass 2, R5): a
+ * box from `x0`–`x1`, `z0`–`z1`, `thickness` metres proud of the floor.
+ * Render-only, like everything in `YardWear`.
+ */
+export interface YardPlate {
+  readonly x0: number;
+  readonly x1: number;
+  readonly z0: number;
+  readonly z1: number;
+  readonly thickness: number;
+}
+
+/**
+ * A floodlight mast standing outside the riding area (critic pass 2, R7):
+ * a tapered pole `height` metres tall at (`x`, `z`) with a crossbar of lamp
+ * heads aimed toward (`aimX`, `aimZ`). Render-only scenery.
+ */
+export interface YardMast {
+  readonly x: number;
+  readonly z: number;
+  readonly height: number;
+  readonly aimX: number;
+  readonly aimZ: number;
+}
+
+/**
+ * The yard floor's saw-cut joints and stains — critic pass 1, R1/A6. Render
+ * geometry a few millimetres over the floor wherever the field is exactly 0.
+ */
+export interface YardFloor {
+  /** Joint spacing, metres, on the 8 m lattice's own lines and between them. */
+  readonly jointPitch: number;
+  /** Joint width, metres. */
+  readonly jointWidth: number;
+  /** The rectangle the joints are cut over (the riding area). */
+  readonly minX: number;
+  readonly maxX: number;
+  readonly minZ: number;
+  readonly maxZ: number;
+  /** How many stains and skid marks, and the hash they are placed from. */
+  readonly stains: number;
+  readonly seed: number;
+  /** Where stains gather: a third of them land in these rectangles, the rest anywhere. */
+  readonly stainBias: readonly { readonly x0: number; readonly x1: number; readonly z0: number; readonly z1: number }[];
+}
+
+/**
+ * A painted panel on a vertical face the yard's dressing stands against —
+ * the plinth's inner side. A rounded, irregular blob of `fill` inside an
+ * `outline` rim, centred at (`x`, `z`) on the face, `width` along it and from
+ * `bottom` to `bottom + height` up it; `normal` is the face's outward
+ * direction, one of the four axes. The shape is drawn from `seed`.
+ */
+export interface YardMural {
+  readonly x: number;
+  readonly z: number;
+  readonly normal: 'x+' | 'x-' | 'z+' | 'z-';
+  readonly width: number;
+  readonly bottom: number;
+  readonly height: number;
+  readonly fill: number;
+  readonly outline: number;
+  readonly seed: number;
+  /**
+   * What the panel is painted on, for weathering its colours toward:
+   * absent, the plinth's brick; `'concrete'`, a riding block's side
+   * (critic pass 2, R3).
+   */
+  readonly ground?: 'concrete';
+}
+
+/**
+ * Render-only wear for a concrete yard — 1.4.0's look pass (`docs/PLANS.md`
+ * §51, the Look stage). Vertex colour on the heightfield's shaped cells and
+ * a few painted panels; no texture, no surface, no material and no collider.
+ * Exactly 1 everywhere the field stands at exactly 0, so the shaped squares
+ * meet the 8 m surround patches with no tonal seam.
+ */
+export interface YardWear {
+  readonly revision: string;
+  /** Albedo multiplier on a face at full slope (≥ 40°); 1 is no change. */
+  readonly faceShade: number;
+  /** How far the band just under a coping darkens, 0–1. */
+  readonly lipGrime: number;
+  /** How deep the scuffs on a sunken or raised floor go, 0–1. */
+  readonly scuff: number;
+  readonly patches: readonly WearPatch[];
+  readonly murals: readonly YardMural[];
+  /** Pieces on the straight transition faces (critic pass 1, R4); absent, none. */
+  readonly faceMurals?: readonly YardFaceMural[];
+  /** Joints and stains on the floor (critic pass 1, R1/A6); absent, none. */
+  readonly floor?: YardFloor;
+  /** Steel toe plates (critic pass 2, R5); absent, none. */
+  readonly plates?: readonly YardPlate[];
+  /** Floodlight masts (critic pass 2, R7); absent, none. */
+  readonly masts?: readonly YardMast[];
 }
 
 /** A surface-only fragment of an existing heightfield triangle. */
@@ -273,6 +481,8 @@ export interface Prop {
    * A venue-authored body and roof colour for a building, sRGB hex, in place of
    * the district palette's pick (Quay Quarter, 2026-10-21). Render composition
    * only, exactly as `look` is; absent, a building draws as it always has.
+   * On any other prop, its parts' albedo in place of the part's own (Foundry
+   * Yard's galvanised fence bays, 1.4.0 critic pass 1).
    */
   tone?: number;
   roofTone?: number;
@@ -778,6 +988,22 @@ export interface LevelPlan {
    * well-formedness check every producer's own test runs.
    */
   trickZones?: readonly TrickZone[];
+  /**
+   * The recovery rule this world asks for — 1.4.0, C5. Absent, never empty:
+   * only Foundry Yard emits one (`RecoveryPolicy`).
+   */
+  recovery?: RecoveryPolicy;
+  /**
+   * Render-only coping — 1.4.0, C6 (`CopingScenery`). Absent on every plan but
+   * Foundry Yard; the sampler never reads it.
+   */
+  copings?: CopingScenery;
+  /**
+   * Render-only wear — 1.4.0's look pass (`YardWear`). Absent on every plan
+   * but Foundry Yard; nothing in `simulation/` reads it, and the renderer
+   * leaves every vertex colour of a plan without it exactly as it was.
+   */
+  yardWear?: YardWear;
 }
 
 /**

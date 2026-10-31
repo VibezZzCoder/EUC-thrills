@@ -466,3 +466,23 @@ test('spawnSlot\'s veto search starts past every rank a full couch\'s seats stan
   // longer veto seats and a later join there would stack on them.
   assert.equal(SLOT_SEAT_RANKS, Math.ceil((COUCH_SEATS - 1) / 2));
 });
+
+test('QA R2-COUCH1-CLEAR: a seat\'s respawn forgets its own contact pairs, never the whole room', () => {
+  // The room-level rule is `ContactRoom.forgetResets` (contact.test.ts); this
+  // pins Game's wiring. A whole `clear()` on every seat reset wiped the charge
+  // clocks of two riders still leaning on each other, so a third seat's `R`
+  // re-charged them on every press (q72 at three and four seats).
+  const contact = methodBody('private stepContact(');
+  const full = contact.indexOf('if (!this.contactLive || this.matchFrozen || this.chaseFrozen) {');
+  const reset = contact.indexOf('if (seatReset) {');
+  const forget = contact.indexOf('this.contactRoom.forgetResets(this.contactResetThisStep);');
+  assert.ok(full >= 0 && reset > full && forget > reset, 'a seat reset still clears every pair');
+  assert.ok(!/if \([^)]*seatReset[^)]*\) \{\s*this\.clearContactHistory\(\)/.test(contact), 'a seat reset still reaches clearContactHistory');
+  const stepAt = GAME_SOURCE.indexOf('private readonly step = (stepSeconds: number): void => {');
+  assert.ok(stepAt >= 0, 'Game.ts no longer declares its step');
+  const step = GAME_SOURCE.slice(stepAt, GAME_SOURCE.indexOf('this.stepContact(stepSeconds, seatReset);', stepAt));
+  const cleared = step.indexOf('this.contactResetThisStep.fill(false);');
+  const loop = step.indexOf('const wasReset = this.stepSeat(');
+  const marked = step.indexOf('if (wasReset) this.contactResetThisStep[index] = true;');
+  assert.ok(cleared >= 0 && loop > cleared && marked > loop, 'the contact reset mask is not this step\'s alone');
+});

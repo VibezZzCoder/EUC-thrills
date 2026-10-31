@@ -1279,6 +1279,25 @@ test('journey 2: High → Ultra → High three times gives back the same High fr
     return { meshes, cached: vegetation?.ultraCached ?? null };
   });
 
+  // 2026-10-31: the frames are drawn with an opaque sort that does not read
+  // `material.id`. The way back to High rebuilds `level-terrain` with new
+  // materials, every id 379 higher, and three's default opaque sort orders
+  // by material id, so the rebuilt ground draws after objects it used to draw
+  // before. One far brick-paving pixel is a depth tie and flipped by 8/255
+  // (1.3.1 and 1.4.0 alike; the last pass on record is 1.1.0). With this sort
+  // the round trip is byte-identical again. It changes only the order of
+  // ties, so the leaks this journey hunts still move pixels, and the Ultra
+  // frame below still differs.
+  await page.evaluate(() => {
+    window.game.renderer.renderer.setOpaqueSort((a, b) => {
+      if (a.groupOrder !== b.groupOrder) return a.groupOrder - b.groupOrder;
+      if (a.renderOrder !== b.renderOrder) return a.renderOrder - b.renderOrder;
+      if (a.z !== b.z) return a.z - b.z;
+      const left = `${a.object.name}|${a.material.name}|${a.group?.start ?? -1}`;
+      const right = `${b.object.name}|${b.material.name}|${b.group?.start ?? -1}`;
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+  });
   await settle();
   const tick = await page.evaluate(() => window.game.snapshot().tick);
   const before = {

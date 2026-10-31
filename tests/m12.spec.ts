@@ -1,6 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test } from '@playwright/test';
-import { boot, bootToTitle, collectErrors, DEAD_SEED, forceRefusal } from './harness.ts';
+import { boot, bootAtTier, bootToTitle, collectErrors, DEAD_SEED, forceRefusal } from './harness.ts';
 import { RENDER_BUDGET } from '../src/data/renderCost.ts';
 import { generateLevel } from '../src/level/generateRoute.ts';
 import { withinRenderBudget } from '../src/level/renderBudget.ts';
@@ -421,7 +421,15 @@ test('a generated time trial composes into a finishable physical ride', async ({
   // so the follower rides at the slice ride's own 10 m/s cap (`m10.spec.ts`),
   // which is how that test has always taken the kicker without a hop.
   const errors = collectErrors(page);
-  await bootToTitle(page, `level=generated&seed=${PHYSICAL_ROUTE_SEED}`);
+  // 2026-10-31: Low, the living-r1 world (3 moving vans) this ride was
+  // calibrated on. Since 1.1.8 (M47) High rides 12 vans with living-r2 traffic
+  // rules, and one waits on this line: the follower faceplants into it at step
+  // ≈ 4,930, and after the recovery it pushes against the van, which waits for
+  // the rider standing in front of it, until all 40,000 steps are spent. The
+  // van drives on once the rider leaves (measured). A rider who steers around
+  // it never meets the stall; this driver has no eyes, so the stall is the
+  // driver's, not the route's.
+  await bootAtTier(page, `level=generated&seed=${PHYSICAL_ROUTE_SEED}`, 'low', { ride: false });
 
   const ridden = await page.evaluate(({ ids, windowSteps }) => {
     window.game.clearRecords();

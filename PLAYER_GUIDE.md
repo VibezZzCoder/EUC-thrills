@@ -29,12 +29,12 @@ each marked by a floating arrow: ride up one from any direction and launch.
 
 That town is generated rather than built by hand: it is the route named
 `euc`. **Fresh route** builds a new town from the same pieces, a different
-shape every time. Beside the towns there are four places built by hand, and
+shape every time. Beside the towns there are five places built by hand, and
 they stay exactly where they are: the **Original city**, the hand-built loop
 everything else is measured against — a plaza, a boulevard, a park and a
 river ford, a gravel trail, and an alley shortcut; **BelVar Circuit**, a
 kart-scale lap with barriers, kerbs, gravel runoff, a start gantry and a
-paddock; **Switchback Park**; and **Wheelhouse Wharf**.
+paddock; **Switchback Park**; **Wheelhouse Wharf**; and **Foundry Yard**.
 
 **Wheelhouse Wharf** is a small river island built to jump. Six riding lines
 start from its streets: warehouse rooftops with real gaps between them, short
@@ -42,7 +42,8 @@ technical steps, launch pads in the park and on the waterfront, a proper stair
 jump down from the market terrace, and a kicker on the ramp back. Every line
 has a run-out, and the main streets and the waterfront are an ordinary ride,
 busy with cafés, market stalls, traffic and people, so you can also just
-cruise it. The title screen's second big card takes you straight there.
+cruise it. The **Where to ride** row on the Fresh route screen takes you
+there.
 
 **Switchback Park** is a jump lap: about 950 metres of forested hillside
 ridden as a loop, down through the trees and back up a fire road. Nine
@@ -54,6 +55,19 @@ and leaves the other half as a bypass that never asks you to leave the
 ground, and every one is signed before you reach it: a board points **TECH**
 (**AIR** at the kicker) one way and **SAFE** the other, with the same pair
 painted on the trail further back.
+
+**Foundry Yard** is a small concrete skate park walled in brick, with
+warehouses behind the fence. There is no lap and nothing to race: you ride
+it however you like. It has a bowl, an in-ground mini ramp, a long
+quarter-pipe wall down one side, a snake run that rolls in through a berm
+and over three rollers into the bowl, two kickers, a raised deck with a
+drop, a five-stair and a bank down, a euro gap, two ledges, two manual pads,
+a hip pyramid and a line of three planters to hop across. Ride up a steep
+wall fast enough and the wheel leaves the coping and comes back down into
+the wall facing the other way, the way a real wall air does; that automatic
+turn is free and never counts as a 180. Stall on a face and the wheel turns
+you back down it, and a crash here starts you again at rest, on clear ground.
+Nothing in the yard grinds, stalls on a coping or flips.
 
 Some of what the wheel does is specific to a real EUC and worth knowing
 before it surprises you:
@@ -94,12 +108,15 @@ than the whole run.
 
 The title screen offers these, in this order.
 
-**Start ride** — the big lit card at the top: free ride in the world
-currently loaded, which is the town until you choose otherwise, and the card
-names it. No clock, no objective, nothing to fail, and the way to practise the
-Original city, BelVar Circuit or Switchback Park with nothing running. The
-card beside it rides **Wheelhouse Wharf** in one press, and while you are on
-the Wharf it offers the town instead. The modes below are smaller tiles.
+**The four place cards** — the coloured row at the top. **Start ride**
+(blue) is free ride in the world currently loaded, which is the town until you
+choose otherwise, and the card names it: no clock, no objective, nothing to
+fail, and the way to practise the Original city, BelVar Circuit or Switchback
+Park with nothing running. **Wheelhouse Wharf** (teal) and **Foundry Yard**
+(orange) ride their stage in one press; while you are on one of them, the
+first card offers the town instead. **EUC NYC** (yellow) leaves this game for
+the same author's Manhattan spin-off in the same tab, and the browser's Back
+button returns here. The modes below are smaller tiles.
 
 **2–4 Players** — see the next section. The button appears only on a window
 at least 1000 pixels wide with a mouse, trackpad or gamepad, so a phone never
@@ -115,7 +132,8 @@ both lines cross the same checkpoints. The people and traffic start from the
 same places at every start, here and in Trick Run, Track Day and the couch
 race, so an attempt never depends on where they had wandered to. Time trial
 runs in the town, on every Fresh route and in the Original city; the button
-is hidden while one of the two circuits is loaded.
+is hidden while one of the two circuits, Wheelhouse Wharf or Foundry Yard
+is loaded.
 
 **Track Day** — lap a hand-built course. The button asks which: **BelVar
 Circuit** or **Switchback Park**. Pick one and it loads and starts you on an
@@ -137,21 +155,23 @@ out lap to find the throttle; the clock starts when you cross the line.
   landings, charged hops, 180s landed and one-foot airs: counts only, never a
   score.
 
-**Trick Run** — ninety seconds at Switchback Park, and points for what you
-land. The button takes you straight to the park and starts the clock on the
-first step; the lap does not matter and nothing ends the run but the clock.
+**Trick Run** — ninety seconds at Switchback Park or Foundry Yard, and
+points for what you land. Pressed in Foundry Yard it runs there; anywhere
+else the button takes you straight to Switchback Park. Either way the clock
+starts on the first step, the lap does not matter and nothing ends the run
+but the clock.
 Every flight you land is worth its tricks: a clean landing is 10, a charged
 hop 25, a landed 180 is 200 and a one-foot air 100; two different tricks in
 one flight add 50; a clean landing multiplies the flight's tricks by 1.25, a
 heavy one leaves them alone and a wobbly one halves them; a crash costs you the
 flight you were in and nothing you had banked. **Tricks only score on a
-flight that left the ground from one of the nine features**; a 180 or a
+flight that left the ground from one of the park's features**; a 180 or a
 one-foot air off a flat hop is rideable and worth its landing, and
 the pane says *off feature* so you know why. **Each feature pays in full once
 a minute**: hit the same one again sooner and the whole flight pays half,
 then a quarter, and the game forgets one of those repeats for every minute
 you leave it alone. The card at the end shows where every point came from,
-and a completed run is compared with your best at the park; **Ride it again**
+and a completed run is compared with your best at that park; **Ride it again**
 starts another. Pause offers **Retry run** and **End run**; a run ended early
 is shown but never saved.
 
@@ -197,12 +217,13 @@ another rather than quietly building something else.
 
 That screen is also where the places built by hand are chosen. A **Where to
 ride** row offers the **Original city**, **BelVar Circuit**, **Switchback
-Park** and **Wheelhouse Wharf**; pressing one loads it there and then, and
-**Back** takes you to the title, where **Start ride** rides it. With
-Switchback Park loaded the screen also offers **Trick Run** directly. Those
-places have addresses of their own:
+Park**, **Wheelhouse Wharf** and **Foundry Yard**; pressing one loads it there
+and then, and **Back** takes you to the title, where **Start ride** rides it.
+With Switchback Park or Foundry Yard loaded the screen also offers **Trick
+Run** directly. Those places have addresses of their own:
 `?level=switchback` opens Switchback Park and `?level=slice` the Original
-city, `?level=track` BelVar Circuit, and `?level=euclaude` Wheelhouse Wharf.
+city, `?level=track` BelVar Circuit, `?level=euclaude` Wheelhouse Wharf, and
+`?level=skatepark` Foundry Yard.
 
 **New route**, on the pause menu and the results card, builds a fresh course
 without a visit to that screen. From a Time trial, Knockabout or Police chase
@@ -214,10 +235,6 @@ Trick Run score and chase survival never overwrite each other, and switching
 riders changes nothing about any of them. Each venue is its own course, so a
 best lap at BelVar Circuit and a best lap at Switchback Park keep their own
 times and their own ghosts.
-
-**EUC NYC ›**, the chip under the rider line, opens the same author's
-Manhattan spin-off in the same tab, and the browser's Back button returns here. On a
-gamepad, the same link is in **Settings → About and licences**.
 
 ## 2–4 Players
 
@@ -254,7 +271,7 @@ you are on will not do:
   Three and four start in a ring on clear ground behind a **3 – 2 – 1**
   count. It needs a course with targets, so the join panel opens the Fresh
   route screen when the room is on a place built by hand.
-- **Trick Run** — ninety seconds at Switchback Park for everybody at once,
+- **Trick Run** — ninety seconds at Switchback Park or Foundry Yard for everybody at once,
   one clock and a score per pane; the solo rules, nothing saved, and nobody
   declared the winner.
 - **Police chase** — up to three of you on the run from one cop for five

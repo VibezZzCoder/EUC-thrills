@@ -238,8 +238,10 @@ test.describe('matched original depot return diagnosis', () => {
         expect(hidden.environment.groupCount).toBe(1); expect(hidden.environment.visible).toBe(false);
         expect(hidden.environment.uuid).toBe(current.environment.uuid);
         for (const item of [current, hidden]) {
-          expect(item.pose).toEqual(baseline.pose); expect(item.camera).toEqual(baseline.camera);
-          expect(item.camera).toEqual(frame.framing.camera);
+          // 1.3.0's camera views added fields after the baseline build (view, blend,
+          // cinematic, label…); every field the baseline has must still match exactly.
+          expect(item.pose).toEqual(baseline.pose); expect(item.camera).toMatchObject(baseline.camera);
+          expect(item.camera).toMatchObject(frame.framing.camera as Record<string, unknown>);
           expect(item.viewArrays).toEqual(baseline.viewArrays); expect(item.portalPoints).toEqual(baseline.portalPoints);
           expect(item.portalBounds).toEqual(baseline.portalBounds); expect(item.viewport).toEqual(baseline.viewport);
           // 2026-10-18: options added after the baseline (M42's `showFps`) must

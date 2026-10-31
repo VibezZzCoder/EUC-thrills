@@ -187,6 +187,23 @@ export interface TerrainSampler {
    */
   raycast(origin: Vec3, direction: Vec3, maxDistance: number): number | null;
   /**
+   * Whether the field cell under a point is a flagged transition — 1.4.0
+   * (`Heightfield.transition`, `docs/PLANS.md` §51.5.9 C1). The cell is the
+   * XZ cell, so a ledge's top answers its flagged floor. False off the field
+   * and on every world without the map.
+   *
+   * Optional, and a method rather than a `GroundSample` field, so the sample
+   * every sampler double fills is unchanged and a world without the map pays
+   * nothing: the skatepark rules ask only while the answer can matter.
+   */
+  transitionAt?(x: number, z: number): boolean;
+  /**
+   * Whether a crash recovery on this world restarts at rest — 1.4.0
+   * (`LevelPlan.recovery`, C5). Absent or false, a recovery restores the
+   * shipped share of the crash speed.
+   */
+  restartsAtRest?(): boolean;
+  /**
    * Distance to authored solid geometry only, excluding the heightfield.
    *
    * Optional so small headless terrain doubles stay small. The production

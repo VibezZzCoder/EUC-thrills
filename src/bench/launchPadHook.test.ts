@@ -66,8 +66,8 @@ for (const [seed, digest] of DERIVED_BASELINE) {
   });
 }
 
-test('derived pads unchanged: the four shipped no-pad worlds still prepare to none', () => {
-  const ids: LevelId[] = ['slice', 'proving', 'track', 'switchback'];
+test('derived pads unchanged: the five shipped no-pad worlds still prepare to none', () => {
+  const ids: LevelId[] = ['slice', 'proving', 'track', 'switchback', 'skatepark'];
   for (const id of ids) {
     const world = preparePopulationWorld(createLevel(id));
     assert.equal(Object.hasOwn(world.level, 'launchPads'), false, id);

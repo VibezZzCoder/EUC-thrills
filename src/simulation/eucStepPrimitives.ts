@@ -28,17 +28,19 @@ export const EUC_STEP_PRIMITIVE_FIELDS = Object.freeze([
   'attackHold', 'attack', 'carveStance', 'absorb', 'airBlend', 'airPitch',
   'landingTimer', 'landingQuality', 'landingImpact', 'landingMisalignment', 'landingScore', 'landingSpeedLoss',
   'landings', 'pedalStrike', 'pedalClearance', 'justTookOff', 'justTouchedDown', 'justHopped',
-  'spinSwept', 'flights', 'stylePhaseA', 'stylePhaseB', 'styleGate', 'styleSway',
-  'styleHeading', 'styleWeaveRate', 'styleMetres', 'stumbleTime', 'stumbleLength', 'stumbles',
-  'styleYaw', 'styleRoll', 'styleStumble', 'wobbleEnergy', 'wobblePhase', 'wobbleYaw',
-  'wobbleRoll', 'wobbleSway', 'wobbleRate', 'wobbleProbeDistance', 'wobbleSmoothness', 'wobbleFootCorrection',
-  'steerSign', 'steerHold', 'loadFactor', 'powerStage', 'landingLoad', 'tiltBack',
-  'tiltBackLatched', 'overspeedFactor', 'overspeedHold', 'crashing', 'crashCause', 'crashMotion',
-  'crashTime', 'crashes', 'crashSpeed', 'crashSide', 'crashBlend', 'wheelCrashLean',
-  'recoverTimer', 'invulnerableTimer', 'crashFalling', 'crashFallSeconds', 'ragdolling', 'wheelCrashSpin',
-  'wheelCrashSpinRate', 'wheelCrashPop', 'wheelCrashPopVelocity', 'safeX', 'safeZ', 'safeHeading',
-  'safeHold', 'safeRingCount', 'safeRingNext', 'recoveryRefusedSeconds', 'contactHoldMask', 'contactHoldMaskOlder',
-  'airPhaseContactUpdate', 'nativePhaseRetryReserveMetres',
+  'spinSwept', 'flights', 'wallTurnSeconds', 'wallTurnDirection', 'wallTurns', 'comeBackTurn',
+  'comeBackDirection', 'comeBackFlight', 'comeBackClimb', 'comeBackUpX', 'comeBackUpZ', 'comeBackAirs',
+  'kickRise', 'kickRun', 'kickOnTop', 'flaggedSlopeRun', 'stylePhaseA', 'stylePhaseB',
+  'styleGate', 'styleSway', 'styleHeading', 'styleWeaveRate', 'styleMetres', 'stumbleTime',
+  'stumbleLength', 'stumbles', 'styleYaw', 'styleRoll', 'styleStumble', 'wobbleEnergy',
+  'wobblePhase', 'wobbleYaw', 'wobbleRoll', 'wobbleSway', 'wobbleRate', 'wobbleProbeDistance',
+  'wobbleSmoothness', 'wobbleFootCorrection', 'steerSign', 'steerHold', 'loadFactor', 'powerStage',
+  'landingLoad', 'tiltBack', 'tiltBackLatched', 'overspeedFactor', 'overspeedHold', 'crashing',
+  'crashCause', 'crashMotion', 'crashTime', 'crashes', 'crashSpeed', 'crashSide',
+  'crashBlend', 'wheelCrashLean', 'recoverTimer', 'invulnerableTimer', 'crashFalling', 'crashFallSeconds',
+  'ragdolling', 'wheelCrashSpin', 'wheelCrashSpinRate', 'wheelCrashPop', 'wheelCrashPopVelocity', 'safeX',
+  'safeZ', 'safeHeading', 'safeHold', 'safeRingCount', 'safeRingNext', 'recoveryRefusedSeconds',
+  'contactHoldMask', 'contactHoldMaskOlder', 'airPhaseContactUpdate', 'nativePhaseRetryReserveMetres',
 ] as const);
 export type EucStepPrimitiveField = typeof EUC_STEP_PRIMITIVE_FIELDS[number];
 export type EucStepPrimitiveState = { -readonly [K in EucStepPrimitiveField]: unknown };
@@ -149,6 +151,20 @@ export function copyEucStepPrimitives(to: EucStepPrimitiveState, from: EucStepPr
   to.justHopped = from.justHopped;
   to.spinSwept = from.spinSwept;
   to.flights = from.flights;
+  to.wallTurnSeconds = from.wallTurnSeconds;
+  to.wallTurnDirection = from.wallTurnDirection;
+  to.wallTurns = from.wallTurns;
+  to.comeBackTurn = from.comeBackTurn;
+  to.comeBackDirection = from.comeBackDirection;
+  to.comeBackFlight = from.comeBackFlight;
+  to.comeBackClimb = from.comeBackClimb;
+  to.comeBackUpX = from.comeBackUpX;
+  to.comeBackUpZ = from.comeBackUpZ;
+  to.comeBackAirs = from.comeBackAirs;
+  to.kickRise = from.kickRise;
+  to.kickRun = from.kickRun;
+  to.kickOnTop = from.kickOnTop;
+  to.flaggedSlopeRun = from.flaggedSlopeRun;
   to.stylePhaseA = from.stylePhaseA;
   to.stylePhaseB = from.stylePhaseB;
   to.styleGate = from.styleGate;

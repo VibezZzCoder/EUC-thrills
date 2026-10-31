@@ -1,6 +1,8 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { riverScenery } from './riverScenery.ts';
 import { quayScenery } from './quayScenery.ts';
+import { yardScenery } from './yardScenery.ts';
+import { yardWearTints } from './yardWear.ts';
 import { sharedGroundArrayPrice } from './sharedGroundArrayPrice.ts';
 import type { PreparedEnvironmentSupplements } from './environmentSupplementPrice.ts';
 import * as THREE from 'three';
@@ -579,6 +581,13 @@ export function* createTerrainSteps(
   const blended: GroundTint = { r: 1, g: 1, b: 1 };
   const encroaching: GroundTint = { r: 0, g: 0, b: 0 };
   const surfaceLook = surfaceLookup(plan.palette);
+  // 1.4.0: a yard's worn concrete (`render/yardWear.ts`), a multiplier per
+  // sample over whatever tint a corner already took. Null on every plan
+  // without `yardWear`, and then every corner is pushed exactly as before.
+  // `let`, and dropped once the heightfield is built (QA APP-2): `corner`
+  // captures it, so it shares the view's closure context.
+  let wearTints: Float32Array | null = yardWearTints(plan, linearFromSrgbHex(surroundAppearance.albedo, { r: 1, g: 1, b: 1 }));
+  const worn: GroundTint = { r: 1, g: 1, b: 1 };
 
   for (const [surface, cells] of cellsBySurface) {
     yield PREPARATION_SLICE;
@@ -674,7 +683,10 @@ export function* createTerrainSteps(
             appearance.mottle, effective, sharedProfile, tint);
           if (weight > 0) rebaseTint(tint, effective, base);
         }
-        return pushCorner(cx, cz, tint);
+        if (wearTints === null) return pushCorner(cx, cz, tint);
+        const sample = (cz * field.columns + cx) * 3;
+        worn.r = tint.r * wearTints[sample]; worn.g = tint.g * wearTints[sample + 1]; worn.b = tint.b * wearTints[sample + 2];
+        return pushCorner(cx, cz, worn);
       };
       const a = corner(column, row);
       const b = corner(column + 1, row);
@@ -800,6 +812,9 @@ export function* createTerrainSteps(
   if(river){group.add(river);geometries.push(river.geometry);materials.push(river.material as THREE.Material);}
   const scenery=quayScenery(plan);
   for(const mesh of scenery){group.add(mesh);geometries.push(mesh.geometry);materials.push(mesh.material as THREE.Material);}
+  // 1.4.0: Foundry Yard's coping pipe and plinth panels — one colour call, no shadow (`level/yardScenery.ts`).
+  const yard = yardScenery(plan);
+  if (yard) { group.add(yard); geometries.push(yard.geometry); materials.push(yard.material as THREE.Material); }
 
   // -- Kerbs, walls, bollards ---------------------------------------------
   // Merged per material into one geometry each, so the plaza's four bollards
@@ -959,7 +974,10 @@ export function* createTerrainSteps(
   // The staging arrays above were copied into typed attributes. The view's
   // closures below share this scope, so without this a living-world city kept
   // ~30 MB of JavaScript doubles alive for the world's lifetime (2026-10-05).
+  // The yard's 1.6 MB wear buffer likewise (1.4.0, QA APP-2): `corner` has
+  // run its last call.
   positions.length = 0; normals.length = 0; colors.length = 0; indices.length = 0;
+  wearTints = null;
 
   const view: TerrainView = {
     group,
@@ -968,7 +986,9 @@ export function* createTerrainSteps(
     hazards,
     triangles: terrainGeometry.index!.count / 3 + colliderTriangles + fieldMesh.triangles + 2
       + props.triangles + markings.triangles + hazards.triangles + (river?.geometry.index?.count ?? 0) / 3
-      + scenery.reduce((sum, mesh) => sum + mesh.geometry.getAttribute('position').count / 3, 0),
+      + scenery.reduce((sum, mesh) => sum + mesh.geometry.getAttribute('position').count / 3, 0)
+      // The yard scenery mesh, unindexed like the quay's (1.4.0, QA APP-1).
+      + (yard ? yard.geometry.getAttribute('position').count / 3 : 0),
     recipe: recipe.id,
     blockTriangles: colliderTriangles,
     textures: props.textures + (groundDetail?.textures ?? 0) + (sharedGround?.report().textures ?? 0),

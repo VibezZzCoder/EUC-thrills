@@ -582,13 +582,13 @@ test.describe('M9 — HUD, menus, options', () => {
     // and every new entrance has failed this test by naming the wrong stop,
     // which is the failure it is for.
     //
-    // **The 2026-10-22 title**: two start cards side by side (Start ride on
-    // the left, the second headline place on the right), the modes in rows of
-    // four under them at this 1000x700 window — 2–4 Players, Time trial, Track
-    // Day, Trick Run, then Knockabout, Police chase, Fresh route widened to
-    // fill the row — and Settings and Ultra as the last row. Down walks the
-    // left edge, Right crosses a row; the walk below names every entrance.
-    // A activates what is focused.
+    // **The 1.4.0 title**: four place cards in a row (Start ride, Wheelhouse
+    // Wharf, Foundry Yard, then the EUC NYC link, a pad stop like the rest),
+    // the modes in rows of four under them at this 1000x700 window — 2–4
+    // Players, Time trial, Track Day, Trick Run, then Knockabout, Police chase,
+    // Fresh route widened to fill the row — and Settings and Ultra as the last
+    // row. Down walks the left edge, Right crosses a row; the walk below names
+    // every entrance. A activates what is focused.
     await pulse(13);
     await expect(menuButton(page, 'title', 'couch')).toBeFocused();
     await pulse(13);
@@ -601,8 +601,13 @@ test.describe('M9 — HUD, menus, options', () => {
     await expect(menuButton(page, 'title', 'couch')).toBeFocused();
     await pulse(12);
     await expect(menuButton(page, 'title', 'start')).toBeFocused();
+    const placeCard = (place: string) => page.locator(`.euc-menu--title [data-menu="start-place"][data-place="${place}"]`);
     await pulse(15);
-    await expect(menuButton(page, 'title', 'start-place')).toBeFocused();
+    await expect(placeCard('euclaude')).toBeFocused();
+    await pulse(15);
+    await expect(placeCard('skatepark')).toBeFocused();
+    await pulse(15);
+    await expect(page.locator('.euc-menu--title a.euc-start--nyc')).toBeFocused();
     await pulse(13);
     await expect(menuButton(page, 'title', 'trick-run')).toBeFocused();
     await pulse(14);

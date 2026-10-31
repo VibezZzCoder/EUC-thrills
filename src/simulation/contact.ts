@@ -134,6 +134,16 @@ export class ContactPair {
     this.overlapping = false;
   }
 
+  /**
+   * Treat the pair as already overlapping without charging it — a recovery
+   * placed one body inside the other (1.4.0 QA COUCH-4). Being set down is a
+   * discontinuity, not an entry: the pair still separates every step, and
+   * pays only if it comes apart and meets again.
+   */
+  adoptOverlap(): void {
+    this.overlapping = true;
+  }
+
   step(
     dt: number,
     first: ContactBody,
@@ -217,5 +227,183 @@ export class ContactPair {
     }
 
     return { axisX, axisZ, pushMetres, charge };
+  }
+}
+
+/**
+ * What a seat's controller offers the contact pass — `EucController`'s own
+ * doors, named here so the pass can be driven headless by the very code the
+ * game runs.
+ */
+export interface ContactRider {
+  /** In a skatepark come-back air (1.4.0); false on every other world. */
+  readonly inComeBackAir: boolean;
+  /** Bumped by every reset and recovery placement. */
+  readonly discontinuitySerial: number;
+  separate(deltaX: number, deltaZ: number): void;
+  bump(pushX: number, pushZ: number, speedCost: number): void;
+}
+
+/**
+ * Every unordered pair of up to `capacity` seats, plus the two per-seat rules
+ * a pair cannot see — the couch's contact pass (M27, repaired 1.4.0 QA).
+ *
+ * **A charge is capped per rider, not only per pair** (QA COUCH-1). Each pair
+ * keeps its own edge and cooldown, so with three or four seats one rider took
+ * a `softKnock` from two or three pairs inside one step — 0.35 wobble each
+ * against a crash at 1.0 — and a bump crashed them, which q72 forbids. A seat
+ * now takes at most one charge per `cooldownSeconds`, whichever pair delivers
+ * it; the separation still runs every step for every pair. The gate only
+ * applies while three or more seats take part: with two there is one pair,
+ * whose own cooldown already is the seat's, so a two-seat room is exactly
+ * what it was.
+ *
+ * **A come-back air is outside contact** (QA COUCH-3). Contact is planar, and a
+ * come-back air hangs over the coping above whoever climbs the face beneath
+ * it: the separation slid the airborne rider over the deck. The pair is not
+ * resolved while either seat is in one, and so (this file's rule) forgets
+ * its history. Inert off the skatepark: nothing else sets the flag.
+ *
+ * **A recovery set down inside another rider is not a collision** (QA
+ * COUCH-4), on a plan whose recoveries restart at rest — where followers on
+ * one line walk back to the same clear point. The pair is adopted as already
+ * overlapping, so the placement itself charges nobody; it still separates.
+ */
+export class ContactRoom {
+  private readonly pairs = new Map<number, ContactPair>();
+  private readonly chargeRemaining: number[];
+  private readonly serials: number[];
+  private readonly capacity: number;
+
+  constructor(capacity: number) {
+    this.capacity = capacity;
+    this.chargeRemaining = new Array<number>(capacity).fill(0);
+    this.serials = new Array<number>(capacity).fill(Number.NaN);
+  }
+
+  /**
+   * The `ContactPair` that belongs to one unordered pair of seats, created on
+   * demand and kept for the session. The key is symmetric by construction, so
+   * (1, 3) and (3, 1) are one pair with one cooldown.
+   */
+  pairFor(first: number, second: number): ContactPair {
+    const key = this.key(first, second);
+    let pair = this.pairs.get(key);
+    if (pair === undefined) {
+      pair = new ContactPair();
+      this.pairs.set(key, pair);
+    }
+    return pair;
+  }
+
+  /** Forget one pair's history, if it has any. */
+  clearPair(first: number, second: number): void {
+    this.pairs.get(this.key(first, second))?.clear();
+  }
+
+  /** Forget every pair's history and every seat's charge clock — the discontinuity door. */
+  clear(): void {
+    for (const pair of this.pairs.values()) pair.clear();
+    this.chargeRemaining.fill(0);
+  }
+
+  /** Forget one seat's pairs and charge clock (a despawn). */
+  clearSeat(index: number): void {
+    for (let other = 0; other < this.capacity; other += 1) {
+      if (other !== index) this.clearPair(index, other);
+    }
+    this.chargeRemaining[index] = 0;
+  }
+
+  /**
+   * A step some seats teleported on (a respawn, `R`): forget those seats'
+   * pairs and charge clocks, and only theirs (1.4.0, QA R2-COUCH1-CLEAR). The
+   * caller skips `step` for it, as ever. A whole `clear` here also zeroed the
+   * pair cooldown and charge clock of two riders who had not moved and were
+   * still leaning on each other, so their overlap was a fresh entry on the
+   * next step: a third seat pressing `R` a few times a second charged them
+   * again on every press and wobble-crashed them (q72). With two seats the
+   * one pair holds the resetting seat, so this is `clear` exactly.
+   */
+  forgetResets(reset: readonly boolean[]): void {
+    for (let index = 0; index < this.capacity && index < reset.length; index += 1) {
+      if (reset[index]) this.clearSeat(index);
+    }
+  }
+
+  /**
+   * Resolve one step for the first `bodies.length` seats. `excluded` names a
+   * seat outside contact this step (a couch chase's cop); `placementsAtRest`
+   * is the plan's `restartsAtRest`.
+   */
+  step(
+    dt: number,
+    bodies: readonly ContactBody[],
+    riders: readonly ContactRider[],
+    tuning: ContactTuning,
+    excluded: ((seat: number) => boolean) | null,
+    placementsAtRest: boolean,
+  ): void {
+    const seats = Math.min(bodies.length, riders.length, this.capacity);
+    let taking = 0;
+    for (let index = 0; index < seats; index += 1) {
+      if (excluded === null || !excluded(index)) taking += 1;
+      this.chargeRemaining[index] = Math.max(0, this.chargeRemaining[index] - dt);
+    }
+    const gated = taking >= 3;
+    const radiusSquared = tuning.radiusMetres * tuning.radiusMetres;
+    for (let index = 0; index < seats; index += 1) {
+      const serial = riders[index].discontinuitySerial;
+      if (placementsAtRest && serial !== this.serials[index]) {
+        for (let other = 0; other < seats; other += 1) {
+          if (other === index) continue;
+          const deltaX = bodies[other].x - bodies[index].x;
+          const deltaZ = bodies[other].z - bodies[index].z;
+          if (deltaX * deltaX + deltaZ * deltaZ <= radiusSquared) this.pairFor(index, other).adoptOverlap();
+        }
+      }
+      this.serials[index] = serial;
+    }
+
+    // **Every unordered pair, and the pushes accumulate** — M27 Phase 1. Three
+    // riders meeting at a corner are three pairs, and each one is entitled to
+    // its own separation. `separate` and `bump` are additive nudges, so two
+    // pairs pushing one rider add up the way two shoves would.
+    for (let first = 0; first < seats; first += 1) {
+      for (let second = first + 1; second < seats; second += 1) {
+        if (excluded !== null && (excluded(first) || excluded(second))) {
+          this.clearPair(first, second);
+          continue;
+        }
+        if (riders[first].inComeBackAir || riders[second].inComeBackAir) {
+          this.clearPair(first, second);
+          continue;
+        }
+        const contact = this.pairFor(first, second).step(dt, bodies[first], bodies[second], tuning);
+        if (contact === null) continue;
+        // The separation first, and every step; the charge is the event.
+        riders[first].separate(-contact.axisX * contact.pushMetres, -contact.axisZ * contact.pushMetres);
+        riders[second].separate(contact.axisX * contact.pushMetres, contact.axisZ * contact.pushMetres);
+        const charge = contact.charge;
+        if (charge === null) continue;
+        if (this.admit(first, tuning.cooldownSeconds, gated)) {
+          riders[first].bump(charge.first.pushX, charge.first.pushZ, charge.first.speedCost);
+        }
+        if (this.admit(second, tuning.cooldownSeconds, gated)) {
+          riders[second].bump(charge.second.pushX, charge.second.pushZ, charge.second.speedCost);
+        }
+      }
+    }
+  }
+
+  /** Whether `seat` may take a charge now; arms its clock when it does. */
+  private admit(seat: number, cooldownSeconds: number, gated: boolean): boolean {
+    if (gated && this.chargeRemaining[seat] > 0) return false;
+    this.chargeRemaining[seat] = cooldownSeconds;
+    return true;
+  }
+
+  private key(first: number, second: number): number {
+    return Math.min(first, second) * this.capacity + Math.max(first, second);
   }
 }

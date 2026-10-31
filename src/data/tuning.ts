@@ -3498,6 +3498,91 @@ export const TERRAIN = {
   surroundBackstopDrop: 0.08,
 } as const;
 
+/**
+ * Where the drawn rider is kept out of solids the simulation lets him stand
+ * beside — 1.4.0 ride fixes (the owner's first Foundry Yard ride,
+ * 2026-10-31). **Presentation only**: `app/nearSolids.ts` asks the sampler,
+ * `RidingRig.setNearSolids` moves the drawn rig, and nothing here reaches a
+ * controller, a pose, a digest or a recording.
+ *
+ * Two defects, one channel. **The tyre and a step's nose**: the controller
+ * carries the contact patch, which rises only when it crosses a riser, so
+ * for 0.24 m in front of every 0.18 m riser the drawn tyre circle stood
+ * inside the step. The drawn wheel is lifted until its circle clears the
+ * nearest climbable step edge — what a real tyre does, rolling up over the
+ * nose — and lands on the tread exactly when the contact crosses it.
+ * **The body and a face** (widened after the owner's second ride, which
+ * showed it on every world): the M17 standoff keeps the wheel a tyre radius
+ * off a wall ahead and the pedals `TERRAIN.wallStandoff` off one beside, but
+ * the body reaches further — 0.5–0.57 m ahead of the axle at a 20° forward
+ * lean, 0.37–0.59 m to the side in the stopped stance — so a rider pressing
+ * into a wall, leaning along one or parked beside one stood in it. Every
+ * drawn frame on the ground, the rig measures its own posed body against the
+ * faces probed around it and moves the drawn rider just clear.
+ */
+export const NEAR_SOLID = {
+  /**
+   * Edge search spacing along the heading, metres: the tyre's radius in this
+   * many steps each side of the contact (21 samples in all). A step found
+   * between two samples is then bisected (`edgeBisections`), so the spacing
+   * only decides what is found, never where.
+   */
+  liftSamplesPerSide: 10,
+  /** Halvings of the bracket around a found edge: 25 mm / 2^6 ≈ 0.4 mm. */
+  edgeBisections: 6,
+  /**
+   * Ground pitch or roll beyond which no lift is drawn, radians. Steps are
+   * flat-topped; on a bank or a transition the drawn wheel is already tilted
+   * onto the slope and a vertical clearance would be the wrong question.
+   */
+  flatGroundTilt: 0.3,
+  /**
+   * Heights above the drawn ground at which the face probes run, metres,
+   * lowest first. Band `i` covers `[h[i], h[i + 1])` (band 0 also everything
+   * below it, the last one up to the helmet); a face that reaches a band's
+   * probe holds back that band's part of the body. The lowest probe sits
+   * above the controller's step-up (0.216 m), so a kerb the wheel will mount
+   * never holds the boots back. The yard deck's 0.90 m face reaches the first
+   * two and not the third, so a shoulder over a low face is left where it is.
+   */
+  bandHeights: [0.25, 0.6, 0.95, 1.3] as readonly number[],
+  /** Probe directions around the rider, evenly spaced from straight ahead. */
+  directions: 12,
+  /** How far the face probes look, metres — past the body's reach at full lean. */
+  probeDistance: 1.0,
+  /** Air kept between the drawn body and the face, metres. */
+  faceGap: 0.02,
+  /** Relaxation passes over the face constraints (corners meet two at once). */
+  solveIterations: 4,
+  /**
+   * Local directions each body mesh is searched along for its extreme
+   * vertices, once per rig. The hull points found are what is transformed
+   * per frame — about 1/40 of the vertices for the same answer on a face.
+   */
+  hullDirections: 48,
+  /**
+   * Seconds over which the drawn rider eases back onto his pose once a face
+   * stops asking for room (a wall ends, he turns away). Arriving at a face is
+   * never eased: the body is kept out on the frame it would enter.
+   */
+  releaseSeconds: 0.12,
+  /**
+   * Rest blend at which the stopped-on-a-nose roll-back is fully in. Below
+   * it the roll ramps from zero with the foot going down.
+   */
+  restGateFull: 0.25,
+  /**
+   * Most lift a *stopped* rig keeps, metres. The planted boot reaches 0.03 m
+   * below the drawn root at most (measured: 0.06 of lift leaves it 0.029 m
+   * up), so a rider who stops with the tyre on a nose has the drawn wheel
+   * rolled back (or on) along the heading, off the nose, until this is all the
+   * lift left — gated in with the rest blend like the sideways step.
+   */
+  restLiftMax: 0.02,
+  /** Ceiling on the drawn push, metres — a probe started inside a solid answers 0. */
+  maxPush: 0.6,
+} as const;
+
 
 /**
  * What a pothole looks like — M13 Phase 2, redrawn after the owner's first look.
@@ -10529,6 +10614,99 @@ export const LAUNCH_PAD = Object.freeze({
   /** Finder time on `euc` above which the builder stops and reports, ms. Never
    * asserted in a test. */
   finderCeilingMs: 100,
+});
+
+/**
+ * The skatepark's transition rules — 1.4.0 (`docs/PLANS.md` §51.5.9, C2–C5).
+ *
+ * Every rule here is switched on by plan data only Foundry Yard emits: the
+ * flagged cells of `Heightfield.transition` (C2, C3, C4), read through the
+ * sampler's optional `transitionAt`, and `LevelPlan.recovery` (C5), read
+ * through `restartsAtRest`. Steepness alone never fires one: the slice, the
+ * Wharf and EUClaude Heights already ride faces up to 86°, and their rides
+ * must not move. Angles are the facet's own tilt, `acos(normal.y)`.
+ */
+export const SKATE_TRANSITION = Object.freeze({
+  // ── C2, the wall turn (D8) ──
+  /** A flagged facet tilted past this turns a stalled rider back down, rad
+   * (20°). §51.5.9 wrote 30°; the ridden stall test parked riders for good on
+   * the 25° banks, the pyramid and the snake's channel sides, where steering
+   * is disarmed at a standstill. Below 20° nothing in the yard is a face. */
+  wallTurnMinTilt: (20 * Math.PI) / 180,
+  /** At or under this speed, m/s, a rider still heading up the face is
+   * stalling. A carve at riding speed is never turned: the turn is a stall
+   * rescue, not a steering assist. */
+  wallTurnSpeed: 1.0,
+  /** The slew onto the fall line, s (steep-walls #2: 0.3 s reaches the flat
+   * in 1.0–1.1 s from a 1.5 m stall, at 4.8 m/s). */
+  wallTurnSeconds: 0.3,
+  /** Within this of the fall line, rad (10°), the rider already faces down
+   * and gravity takes them; no turn starts. */
+  wallTurnAlignedTilt: (10 * Math.PI) / 180,
+  // ── C4, the come-back coping air (D7, the cbi2 variant) ──
+  /** A climb that crossed a flagged facet tilted past this comes back in at
+   * the top, rad (42°). §51.5.9 wrote 50°; the berm's outer wall (R 2 to 60°,
+   * radial on the square lattice) draws its steepest facets at only 47–52°
+   * and launches off a 43–49° one, so 50° left it throwing riders 9–80 m into
+   * the alley. The snake's own channel sides draw 36° at most, so 42° still
+   * never fires there. */
+  comeBackMinTilt: (42 * Math.PI) / 180,
+  /** The come-back air's ceiling on upward speed, m/s: an apex of about
+   * 1.8 m above the coping, whatever the approach speed. */
+  comeBackMaxVerticalSpeed: 6,
+  /** Horizontal drift back over the face during the air, m/s. */
+  comeBackDriftSpeed: 0.2,
+  /** The automatic half turn's duration, s. It is written onto the heading
+   * like the 180's sweep and never through it, so it is never a spin (D19). */
+  comeBackTurnSeconds: 0.4,
+  /** Slower than this along the face, m/s, the lip is rolled over rather than
+   * aired: the air would be too short to finish the half turn in. */
+  comeBackMinSpeed: 2.5,
+  /** Approaches more than this off the fall line, rad (70°), are a carve
+   * along the lip and keep the shipped behaviour: the automatic half turn
+   * would fight a rider riding the top of the wall on purpose. */
+  comeBackMaxApproach: (70 * Math.PI) / 180,
+  /** A come-back touchdown on a face tilted past this converts the fall into
+   * speed down the face, rad (20°). */
+  comeBackLandMinTilt: (20 * Math.PI) / 180,
+  /** The share of the touchdown's fall speed, along the face, that it keeps. */
+  comeBackLandShare: 0.9,
+  // ── The face brake (QA R2-TR2) ──
+  /** Facing down a flagged facet tilted past `wallTurnMinTilt` (the wall
+   * turn's own faces), a brake cancels at most this share of the slope's
+   * pull, so the wheel never stops on the face: a stand-still anywhere on the
+   * quarter pipe's 24–66° transition was a hop spot its section paid. */
+  faceBrakeShare: 0.5,
+  // ── C5, the restart at rest ──
+  /** A restart at rest is set down facing at least this much clear of any
+   * authored solid, m, when the validated trail has such a point: the newest
+   * point of a ride into a ledge is a rider parked nose to it. */
+  restClearAheadMetres: 3,
+  // ── G-K, the kicker launch ──
+  /** A launch off a narrow flagged top (a kicker's level lip block) this
+   * soon after a rising flagged facet keeps that facet's slope, m. The lip
+   * is 0.30 m and the wedge's steep facets end a cell before it; at 25 m/s
+   * one step is 0.21 m. */
+  kickLaunchWindowMetres: 0.5,
+  /** Gentler rising facets than this never arm the kicker latch, rad (5°). */
+  kickMinSlope: (5 * Math.PI) / 180,
+  /** The kicker launch's ceiling on upward speed, m/s: the come-back air's,
+   * an apex of about 1.8 m whatever the approach speed. */
+  kickMaxVerticalSpeed: 6,
+  // ── G-C and containment, the crest cap ──
+  /** A launch straight off a sloped flagged facet (a snake lip, a bank or
+   * roll-out top, the pyramid crest) keeps `speed·sin(slope)` up to this,
+   * m/s: an apex of about 0.8 m, under the 1.0 m plinth from the floor. */
+  crestMaxVerticalSpeed: 4,
+  /** The crest cap still holds this far past the last sloped flagged facet,
+   * m: a lip's last cell is often level while the launch takes the face's
+   * slope. */
+  crestWindowMetres: 0.5,
+  /** A hop taken on flagged ground — a sloped facet or a kicker's lip —
+   * leaves at no more than this upward in all, m/s (never under the bare hop):
+   * an apex of about 1.5 m, so from the 0.88 m bank tops it stays 0.48 m
+   * under the 2.9 m guard, more than a step-up. */
+  hopMaxVerticalSpeed: 5.5,
 });
 
 /**

@@ -20,6 +20,7 @@ import { harbourSceneryTriangles } from './harbourScenery.ts';
 import type { BoxCollider, LevelPlan } from './plan.ts';
 import { terrainCells } from './terrainCoverage.ts';
 import { quaySceneryTriangles } from './quayScenery.ts';
+import { yardSceneryTriangles } from './yardScenery.ts';
 import { contactShadowBlobs, contactShadowSkirts, staticContactShadowTriangles, staticContactSkirtTriangles } from './contactShadowPlan.ts';
 
 /**
@@ -223,6 +224,11 @@ export function planRenderCost(plan: LevelPlan): LevelRenderCost {
     colourDrawCalls += 2; colourTriangles += scenery.ground + scenery.raised;
     shadowDrawCalls += 1; shadowTriangles += scenery.raised;
   }
+
+  // Foundry Yard's coping pipe and plinth panels (1.4.0, C6): one vertex-colour
+  // mesh casting nothing, priced by the same builder that draws it.
+  const yard = yardSceneryTriangles(plan);
+  if (yard > 0) { colourDrawCalls += 1; colourTriangles += yard; }
 
   return {
     drawCalls: colourDrawCalls + shadowDrawCalls,

@@ -28,7 +28,7 @@ import { createRidingRig } from './ridingRig.ts';
  * touching nothing the simulation reads.
  */
 
-const VENUES: readonly LevelId[] = ['generated', 'slice', 'proving', 'track', 'switchback', 'euclaude'];
+const VENUES: readonly LevelId[] = ['generated', 'slice', 'proving', 'track', 'switchback', 'euclaude', 'skatepark'];
 const plans = new Map<LevelId, LevelPlan>();
 const planFor = (id: LevelId): LevelPlan => {
   let plan = plans.get(id);

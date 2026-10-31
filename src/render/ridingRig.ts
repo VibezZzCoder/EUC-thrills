@@ -1,6 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
-import { RIDER, RIDER_BLOCKOUT, WHEEL } from '../data/tuning.ts';
+import { NEAR_SOLID, RIDER, RIDER_BLOCKOUT, WHEEL } from '../data/tuning.ts';
 import { clamp01 } from '../shared/maths.ts';
 import type { EucPose } from '../simulation/EucController.ts';
 import {
@@ -178,6 +178,35 @@ export interface RidingRig {
    */
   setTrickPose(amount: number, side: number): void;
   /**
+   * What the drawn rider must be kept out of — 1.4.0 ride fixes
+   * (`NEAR_SOLID` in `data/tuning.ts`, `app/nearSolids.ts`).
+   *
+   * `lift` raises the drawn rig (wheel, rider, ground under the planted
+   * boot) so the tyre circle clears a step's nose, and `along` moves it along
+   * the heading (+ forward) — a stopped tyre is drawn rolled off a nose.
+   * `faces` are the distances to a solid round the drawn root, per band and
+   * direction (`NearSolids.faces`); after the stance is solved `apply`
+   * measures this rig's own posed body against them and pushes the drawn
+   * rider just clear of every face, riding, leaning or parked. `seconds` is
+   * the drawn time since the last call, which eases the push back off once a
+   * face stops asking for room; arriving at a face is never eased. `normals`
+   * are the faces' own outward normals (`NearSolids.normals`); without them a
+   * face is taken square to its probe.
+   *
+   * **A sibling method rather than an `EucPose` field**, for
+   * `setTrickPose`'s reason: the controller cannot read what never enters the
+   * pose, so this cannot move a ride. Called before `apply(pose)` in the same
+   * frame; held between calls. A rig never told — the cop's, every ghost's,
+   * every test's — keeps zero lift and no face, and draws exactly the pose.
+   */
+  setNearSolids(lift: number, faces: ArrayLike<number>, along?: number, seconds?: number,
+    normals?: ArrayLike<number>): void;
+  /**
+   * The world-space push the last `apply` drew the rider by, metres
+   * (`[x, z]`, zero with no face near). Read by tests.
+   */
+  readonly nearPush: readonly [number, number];
+  /**
    * What the build-time consolidation merged (`render/rigConsolidation.ts`,
    * perf item "riders" 2026-10-17), or null for a rig built with
    * `{ consolidate: false }` — the ghost's and the CPU-cop trims'. Read by
@@ -302,6 +331,37 @@ export function createRidingRig(
    */
   let trickOneFoot = 0;
   let trickSide = 0;
+  /**
+   * The near-solid channel — 1.4.0 ride fixes. Held between calls like the
+   * trick pose; zero lift and no face until `setNearSolids` says otherwise.
+   */
+  const bandCount = NEAR_SOLID.bandHeights.length;
+  const directionCount = NEAR_SOLID.directions;
+  let solidLift = 0;
+  let solidAlong = 0;
+  let solidSeconds = 0;
+  let solidAny = false;
+  const solidFaces = new Float64Array(bandCount * directionCount).fill(Number.POSITIVE_INFINITY);
+  /** Each face's outward normal in the rig's frame, `(x, z)` pairs, refreshed per call. */
+  const solidNormals = new Float64Array(2 * bandCount * directionCount);
+  const worldNormals = new Float64Array(2 * bandCount * directionCount);
+  let solidHasNormals = false;
+  /** Per face: the body's least reach along its normal, and the face's own offset. */
+  const nearest = new Float64Array(bandCount * directionCount);
+  const offsets = new Float64Array(bandCount * directionCount);
+  let posed = new Float64Array(0);
+  const directionX = new Float64Array(directionCount);
+  const directionZ = new Float64Array(directionCount);
+  for (let index = 0; index < directionCount; index += 1) {
+    const angle = (2 * Math.PI * index) / directionCount;
+    directionX[index] = Math.sin(angle);
+    directionZ[index] = Math.cos(angle);
+  }
+  /** The drawn push, world metres, held for the ease back off a face. */
+  const push: [number, number] = [0, 0];
+  let hull: { readonly mesh: THREE.Mesh; readonly points: Float32Array }[] | null = null;
+  const groupInverse = new THREE.Matrix4();
+  const toRoot = new THREE.Matrix4();
 
   // Ragdoll scratch (M15), preallocated for the same reason the solver's is:
   // a crash runs this every frame, and fresh matrices would be steady garbage.
@@ -329,7 +389,165 @@ export function createRidingRig(
       .applyMatrix4(ragLean);
   };
 
-  return {
+  /**
+   * Each body mesh's hull points, once per rig: the local vertices that are
+   * furthest along `NEAR_SOLID.hullDirections` directions spread over the
+   * sphere. Every mesh under the rider's root is rigid in its own frame, so
+   * its extreme point toward a face is always one of these — the face test
+   * transforms a few dozen points per mesh instead of every vertex. The
+   * paddle is not the body: it swings through walls in Knockabout as it
+   * always has, and is left out.
+   */
+  const buildHull = (): { readonly mesh: THREE.Mesh; readonly points: Float32Array }[] => {
+    const count = NEAR_SOLID.hullDirections;
+    const golden = Math.PI * (3 - Math.sqrt(5));
+    const axes: [number, number, number][] = [];
+    for (let index = 0; index < count; index += 1) {
+      const y = 1 - (2 * (index + 0.5)) / count;
+      const radius = Math.sqrt(1 - y * y);
+      axes.push([Math.cos(golden * index) * radius, y, Math.sin(golden * index) * radius]);
+    }
+    const entries: { readonly mesh: THREE.Mesh; readonly points: Float32Array }[] = [];
+    rider.root.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (mesh.isMesh !== true || mesh.name === 'rider-paddle-mesh') return;
+      const position = mesh.geometry.getAttribute('position');
+      if (position === undefined || position.count === 0) return;
+      const chosen = new Set<number>();
+      for (const [ax, ay, az] of axes) {
+        let best = 0;
+        let most = Number.NEGATIVE_INFINITY;
+        for (let index = 0; index < position.count; index += 1) {
+          const along = position.getX(index) * ax + position.getY(index) * ay + position.getZ(index) * az;
+          if (along > most) {
+            most = along;
+            best = index;
+          }
+        }
+        chosen.add(best);
+      }
+      const points = new Float32Array(chosen.size * 3);
+      let write = 0;
+      for (const index of chosen) {
+        points[write] = position.getX(index);
+        points[write + 1] = position.getY(index);
+        points[write + 2] = position.getZ(index);
+        write += 3;
+      }
+      entries.push({ mesh, points });
+    });
+    return entries;
+  };
+
+  /** Whether a mesh is drawn: itself and every group up to the rider's root shown. */
+  const shown = (mesh: THREE.Object3D): boolean => {
+    for (let node: THREE.Object3D | null = mesh; node !== null && node !== rider.root; node = node.parent) {
+      if (!node.visible) return false;
+    }
+    return true;
+  };
+
+  /**
+   * The drawn push out of every face, in the rig's own frame (+X the
+   * rider's left, +Z ahead), written to `push` turned into world terms.
+   *
+   * The body as posed this frame is measured — its hull points, each in the
+   * band its height falls in — and every face a probe hit is a plane: the
+   * hit point, and the face's outward normal. The body's least reach along
+   * that normal must stay `faceGap` on the rider's side of the plane. A few
+   * relaxation passes settle two faces at once (a corner); the push is
+   * capped, because a probe that starts inside a solid answers 0.
+   */
+  const facePushFor = (pose: EucPose): void => {
+    let localX = 0;
+    let localZ = 0;
+    const sin = Math.sin(pose.headingY);
+    const cos = Math.cos(pose.headingY);
+    if (solidAny) {
+      hull ??= buildHull();
+      let total = 0;
+      for (const entry of hull) total += entry.points.length / 3;
+      if (posed.length < total * 3) posed = new Float64Array(total * 3);
+      group.updateMatrixWorld(true);
+      groupInverse.copy(group.matrixWorld).invert();
+      const heights = NEAR_SOLID.bandHeights;
+      let write = 0;
+      for (const entry of hull) {
+        if (!shown(entry.mesh)) continue;
+        toRoot.multiplyMatrices(groupInverse, entry.mesh.matrixWorld);
+        const e = toRoot.elements;
+        const points = entry.points;
+        for (let read = 0; read < points.length; read += 3) {
+          const px = points[read];
+          const py = points[read + 1];
+          const pz = points[read + 2];
+          const y = e[1] * px + e[5] * py + e[9] * pz + e[13];
+          let band = 0;
+          while (band + 1 < bandCount && y >= heights[band + 1]) band += 1;
+          posed[write] = e[0] * px + e[4] * py + e[8] * pz + e[12];
+          posed[write + 1] = band;
+          posed[write + 2] = e[2] * px + e[6] * py + e[10] * pz + e[14];
+          write += 3;
+        }
+      }
+      for (let entry = 0; entry < solidFaces.length; entry += 1) {
+        const face = solidFaces[entry];
+        if (!(face < Number.POSITIVE_INFINITY)) continue;
+        const index = entry % directionCount;
+        const band = (entry - index) / directionCount;
+        let normalX = -directionX[index];
+        let normalZ = -directionZ[index];
+        if (solidHasNormals && (worldNormals[2 * entry] !== 0 || worldNormals[2 * entry + 1] !== 0)) {
+          // World to the rig's frame, as the body points are.
+          const wx = worldNormals[2 * entry];
+          const wz = worldNormals[2 * entry + 1];
+          normalX = wx * cos - wz * sin;
+          normalZ = wx * sin + wz * cos;
+        }
+        solidNormals[2 * entry] = normalX;
+        solidNormals[2 * entry + 1] = normalZ;
+        offsets[entry] = face * (directionX[index] * normalX + directionZ[index] * normalZ);
+        let least = Number.POSITIVE_INFINITY;
+        for (let read = 0; read < write; read += 3) {
+          if (posed[read + 1] !== band) continue;
+          const reach = posed[read] * normalX + posed[read + 2] * normalZ;
+          if (reach < least) least = reach;
+        }
+        nearest[entry] = least;
+      }
+      for (let pass = 0; pass < NEAR_SOLID.solveIterations; pass += 1) {
+        for (let entry = 0; entry < solidFaces.length; entry += 1) {
+          if (!(solidFaces[entry] < Number.POSITIVE_INFINITY) || nearest[entry] === Number.POSITIVE_INFINITY) continue;
+          const normalX = solidNormals[2 * entry];
+          const normalZ = solidNormals[2 * entry + 1];
+          const short = offsets[entry] + NEAR_SOLID.faceGap - (nearest[entry] + localX * normalX + localZ * normalZ);
+          if (short > 0) {
+            localX += normalX * short;
+            localZ += normalZ * short;
+          }
+        }
+      }
+      const length = Math.hypot(localX, localZ);
+      if (length > NEAR_SOLID.maxPush) {
+        localX *= NEAR_SOLID.maxPush / length;
+        localZ *= NEAR_SOLID.maxPush / length;
+      }
+    }
+    const targetX = localX * cos + localZ * sin;
+    const targetZ = -localX * sin + localZ * cos;
+    // Arriving at a face is never eased; leaving one is, so a wall that ends
+    // (or a rider who turns away) does not snap him sideways.
+    if (Math.hypot(targetX, targetZ) >= Math.hypot(push[0], push[1]) - 1e-9 || !(solidSeconds > 0)) {
+      push[0] = targetX;
+      push[1] = targetZ;
+    } else {
+      const keep = Math.exp(-solidSeconds / NEAR_SOLID.releaseSeconds);
+      push[0] = targetX + (push[0] - targetX) * keep;
+      push[1] = targetZ + (push[1] - targetZ) * keep;
+    }
+  };
+
+  const self: RidingRig = {
     group,
     groundPivot,
     leanPivot,
@@ -339,7 +557,21 @@ export function createRidingRig(
     resetCrashPose(): void { rider.resetCrashPose(); },
 
     apply(pose: EucPose): void {
-      group.position.set(pose.x, pose.y, pose.z);
+      // The near-solid channel (1.4.0 ride fixes) moves the drawn rig only:
+      // up by the tyre's clearance over a step's nose and along the heading
+      // off one here, and out of any face the posed body would enter at the
+      // end of this call (`facePushFor`). All zero unless `setNearSolids` said
+      // otherwise, so every rig nobody tells — and every pose with no step and
+      // no face near it — is drawn as before.
+      const crashing = pose.crashBlend > 0 || pose.ragdollBlend > 0;
+      const along = crashing ? 0 : solidAlong;
+      const sin = Math.sin(pose.headingY);
+      const cos = Math.cos(pose.headingY);
+      group.position.set(
+        pose.x + sin * along,
+        pose.y + solidLift,
+        pose.z + cos * along,
+      );
       // The root and camera carry the rider's chosen heading. Wobble belongs
       // to the machine child below: putting it here rotates the rider as one
       // rigid object, which is exactly the Phase 0 defect the owner reported.
@@ -414,7 +646,9 @@ export function createRidingRig(
       const rag = clamp01(pose.ragdollBlend);
       stance.ragdollBlend = rag;
       if (rag > 0) {
-        ragLean.makeRotationY(pose.headingY).setPosition(pose.x, pose.y, pose.z);
+        // From the drawn root, so a near-solid offset (zero in a crash, by
+        // `app/nearSolids.ts`) could never part the body from its particles.
+        ragLean.makeRotationY(pose.headingY).setPosition(group.position);
         ragEuler.set(pose.groundPitch, 0, pose.groundRoll);
         ragLean.multiply(ragStage.makeRotationFromEuler(ragEuler));
         ragEuler.set(pose.wheelPitch, 0, -pose.rollAngle);
@@ -536,7 +770,9 @@ export function createRidingRig(
       stance.lookYaw = pose.riderLookYaw - pose.riderTurnTwist;
       stance.reverse = pose.reverseBlend;
       stance.restFactor = pose.restFactor;
-      stance.groundY = -pose.suspensionOffset;
+      // A lifted rig (a tyre on a step's nose) still stands its planted boot
+      // on the ground the contact patch is on, which is below the drawn root.
+      stance.groundY = -pose.suspensionOffset - solidLift;
       stance.crouch = pose.crouch;
       stance.tuck = pose.tuck;
       stance.attack = pose.attack;
@@ -592,6 +828,22 @@ export function createRidingRig(
       // repeat at the same air height is not falling.
       settlingAfterApply = (swingHead === null && carry > 0) || stance.falling;
       rider.applyStanceReaction(stance);
+      // The body as posed, out of every face (1.4.0, the owner's second ride).
+      // After the stance solve, because what is measured is this frame's
+      // body; before the paddle, which aims from the grip's world matrix.
+      // A crash or a tumble is drawn exactly where the pose says: the ragdoll
+      // frame above was built from the unpushed root.
+      if (crashing) {
+        push[0] = 0;
+        push[1] = 0;
+      } else {
+        facePushFor(pose);
+        if (push[0] !== 0 || push[1] !== 0) {
+          group.position.x += push[0];
+          group.position.z += push[1];
+          group.updateMatrixWorld(true);
+        }
+      }
       // Last, because the paddle aims itself from the grip's world matrix and
       // the line above is what just moved the grip. The ground height is the
       // root's own frame's ground (`stance.groundY`) put back into world
@@ -637,6 +889,28 @@ export function createRidingRig(
       trickSide = trickOneFoot > 0 ? Math.sign(side) : 0;
     },
 
+    setNearSolids(lift: number, faces: ArrayLike<number>, along = 0, seconds = 0, normals?: ArrayLike<number>): void {
+      solidLift = Number.isFinite(lift) && lift > 0 ? lift : 0;
+      solidAlong = Number.isFinite(along) ? along : 0;
+      solidSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+      solidHasNormals = normals !== undefined;
+      for (let entry = 0; entry < worldNormals.length; entry += 1) {
+        const value = normals?.[entry];
+        worldNormals[entry] = value === undefined || !Number.isFinite(value) ? 0 : value;
+      }
+      solidAny = false;
+      for (let entry = 0; entry < solidFaces.length; entry += 1) {
+        const face = faces[entry];
+        const value = face === undefined || Number.isNaN(face) ? Number.POSITIVE_INFINITY : face;
+        solidFaces[entry] = value;
+        if (value < Number.POSITIVE_INFINITY) solidAny = true;
+      }
+    },
+
+    get nearPush(): readonly [number, number] {
+      return push;
+    },
+
     dispose(): void {
       paddle.dispose();
       euc.dispose();
@@ -647,6 +921,7 @@ export function createRidingRig(
       group.removeFromParent();
     },
   };
+  return self;
 }
 
 /**

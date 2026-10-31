@@ -70,8 +70,9 @@ const WORLDS: { label: string; plan: LevelPlan }[] = (() => {
   // The producer count is part of the claim, exactly as `spawnSlots.test.ts`
   // states it: a seventh producer must arrive here rather than quietly ride on
   // six worlds' worth of evidence about where a bout can be started (the sixth,
-  // M44's EUClaude Heights, arrived by this line failing).
-  assert.equal(shipped.length, 6, 'the producer list moved (six since M44); the sweeps below no longer cover it');
+  // M44's EUClaude Heights, and the seventh, 1.4.0's Foundry Yard, each
+  // arrived by this line failing).
+  assert.equal(shipped.length, 7, 'the producer list moved (seven since 1.4.0); the sweeps below no longer cover it');
   return [...shipped, ...SWEEP.map((seed) => ({ label: seed, plan: generateLevel(seed).plan }))];
 })();
 

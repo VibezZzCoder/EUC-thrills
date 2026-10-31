@@ -681,9 +681,10 @@ test.describe('M12 Phase 4 — a fresh route on a phone', () => {
     await bootToTitle(page);
     await page.locator('.euc-menu--title [data-menu="routes"]').tap();
 
-    // `[data-menu="venue"]` is four buttons rather than one (three from M36
+    // `[data-menu="venue"]` is five buttons rather than one (three from M36
     // Phase 5, the fourth from M44, which also turns the row into a 2 x 2 grid
-    // at phone width) — the venue chooser stands on this panel, and it is the newest thing on it a
+    // at phone width, the fifth from 1.4.0, which takes the grid's whole last
+    // row) — the venue chooser stands on this panel, and it is the newest thing on it a
     // thumb has to hit — so the scan resolves every match rather than assuming
     // one, and the width is asked for as well: a segmented row is the control
     // on this panel that can be short in the other axis.

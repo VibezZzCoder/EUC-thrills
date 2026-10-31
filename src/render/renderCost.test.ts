@@ -28,6 +28,8 @@ import {
   withinSplitRenderBudget,
 } from '../level/renderBudget.ts';
 import { createEuclaudeLevel } from '../level/euclaudeLevel.ts';
+import { createSkateparkLevel } from '../level/skateparkLevel.ts';
+import { yardSceneryTriangles } from '../level/yardScenery.ts';
 import { createProvingGround } from '../level/provingGround.ts';
 import { createSliceLevel } from '../level/sliceLevel.ts';
 import { terrainCells } from '../level/terrainCoverage.ts';
@@ -55,6 +57,8 @@ import { COP_LOOK } from './riderLook.ts';
 import { BASELINE_PRESENTATION, ENHANCED_PRESENTATION } from './presentation.ts';
 import { PLAYABLE_RIDER_LOOKS } from './riderLook.ts';
 import { ULTRA_FULL, ULTRA_LADDER, ULTRA_LIT } from './ultra/ultraRecipe.ts';
+import { DEFAULT_SPATIAL_BATCH_METRES } from './spatialBatching.ts';
+import { createTerrain } from './terrain.ts';
 
 /**
  * The render-cost model, regenerated from the built scene — M12 Phase 0.
@@ -83,12 +87,16 @@ const proving = createProvingGround();
 // the built scene, exactly — because it is the densest hand-built world
 // (`docs/PLANS.md` §44.1 D10).
 const euclaude = createEuclaudeLevel();
+// 1.4.0: the skatepark is measured the same way — its 0.25 m field is the
+// finest any shipped venue draws (`docs/PLANS.md` §51.4.1).
+const skatepark = createSkateparkLevel();
 
 // ---------------------------------------------------------------------------
 // The model against the built scene
 // ---------------------------------------------------------------------------
 
-for (const [name, plan] of [['the slice', slice], ['the proving ground', proving], ['EUClaude Heights', euclaude]] as const) {
+for (const [name, plan] of [['the slice', slice], ['the proving ground', proving], ['EUClaude Heights', euclaude],
+  ['Foundry Yard', skatepark]] as const) {
   test(`${name}: the predicted render cost is the measured render cost`, () => {
     const predicted = planRenderCost(plan);
     const measured = measureLevelScene(plan);
@@ -120,6 +128,38 @@ for (const [name, plan] of [['the slice', slice], ['the proving ground', proving
     );
   });
 }
+
+test('Foundry Yard: the coping pipe and plinth panels are one colour call, no shadow call, priced as drawn', () => {
+  // C6 (`docs/PLANS.md` §51.5.1): one vertex-colour mesh, casting nothing,
+  // and no new surface, material or part, so the library bound stands.
+  const bare: Partial<LevelPlan> = { ...skatepark };
+  delete bare.copings;
+  delete bare.yardWear;
+  const without = planRenderCost(bare as LevelPlan);
+  const priced = planRenderCost(skatepark);
+  assert.equal(priced.colourDrawCalls - without.colourDrawCalls, 1);
+  assert.equal(priced.shadowDrawCalls, without.shadowDrawCalls);
+  assert.equal(priced.colourTriangles - without.colourTriangles, yardSceneryTriangles(skatepark));
+  assert.equal(priced.shadowTriangles, without.shadowTriangles);
+  const scenery = measureLevelScene(skatepark).meshes.filter((mesh) => mesh.name === 'level-yard-scenery');
+  assert.equal(scenery.length, 1);
+  assert.equal(scenery[0].triangles, yardSceneryTriangles(skatepark));
+  assert.equal(scenery[0].castsShadow, false);
+  // No other world draws it.
+  for (const plan of [slice, proving, euclaude]) assert.equal(yardSceneryTriangles(plan), 0);
+});
+
+test('Foundry Yard: spatial batching splits one 256 m tile, +24 colour calls and no shadow call', () => {
+  // §51.4.1: every drawn cell, block and prop lies in [0, 256)², so the
+  // spatial split is the one tile's (against +44/+49 for the Wharf and
+  // Switchback). The coping mesh is not partitioned and adds nothing here.
+  const view = createTerrain(skatepark, BASELINE_PRESENTATION, undefined, { spatialBatchMetres: DEFAULT_SPATIAL_BATCH_METRES });
+  try {
+    assert.deepEqual(view.spatialBatching, { colourDrawDelta: 24, shadowDrawDelta: 0, farShadowDrawDelta: 0, propDrawDelta: 0 });
+  } finally {
+    view.dispose();
+  }
+});
 
 test('the surfaces and block materials the model names are the ones the scene draws', () => {
   const predicted = planRenderCost(slice);
@@ -824,7 +864,7 @@ test('no level built from this library can breach the draw-call ceiling', () => 
       + `have become a scaling risk and Phase 3 has to treat them as one.`,
   );
 
-  for (const plan of [slice, proving, euclaude]) {
+  for (const plan of [slice, proving, euclaude, skatepark]) {
     assert.ok(
       planRenderCost(plan).drawCalls <= LIBRARY_MAX_DRAW_CALLS,
       'a real level costs more than the library bound, so the bound is wrong',

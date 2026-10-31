@@ -97,9 +97,10 @@ test('the switch reaches the generator through both of the doors Game builds wor
 
 test('the hand-authored worlds are the same worlds under the switch', () => {
   // Only a generator spaces a road for a wheel — `BUILDERS` says why. The slice,
-  // the proving ground, BelVar, Switchback Park and EUClaude Heights (M44) were
-  // laid out by hand, so `?mph=` has to reach them as nothing at all.
-  for (const id of ['slice', 'proving', 'track', 'switchback', 'euclaude'] as const) {
+  // the proving ground, BelVar, Switchback Park, EUClaude Heights (M44) and
+  // Foundry Yard (1.4.0) were laid out by hand, so `?mph=` has to reach them
+  // as nothing at all.
+  for (const id of ['slice', 'proving', 'track', 'switchback', 'euclaude', 'skatepark'] as const) {
     // Ordinary samples of the window the parser accepts, the shipped speed
     // among them; none of them is a reference wheel (M38 Part B).
     for (const mph of [20, 58, 65, 90]) {

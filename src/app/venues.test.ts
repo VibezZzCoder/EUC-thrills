@@ -1,7 +1,18 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { TRACK_VENUE_IDS, VENUE_IDS, isTrackVenueId, isVenueId, offersTrickRun, type VenueId } from './venues.ts';
+import {
+  TITLE_STAGES,
+  isTitleStage,
+  TRACK_VENUE_IDS,
+  TRICK_RUN_DESTINATION,
+  TRICK_RUN_VENUE_IDS,
+  VENUE_IDS,
+  isTrackVenueId,
+  isVenueId,
+  offersTrickRun,
+  type VenueId,
+} from './venues.ts';
 import { LEVEL_IDS, createLevel, type LevelId } from '../level/levels.ts';
 
 /**
@@ -15,9 +26,10 @@ import { LEVEL_IDS, createLevel, type LevelId } from '../level/levels.ts';
  */
 
 test('the roster is the hand-built places, in the chooser’s order', () => {
-  // M44 put EUClaude Heights on the end: a new place joins after the others,
-  // so nobody's learned position on the row moves (`venues.ts`).
-  assert.deepEqual([...VENUE_IDS], ['slice', 'track', 'switchback', 'euclaude']);
+  // M44 put EUClaude Heights on the end, and 1.4.0 Foundry Yard after it: a
+  // new place joins after the others, so nobody's learned position on the row
+  // moves (`venues.ts`).
+  assert.deepEqual([...VENUE_IDS], ['slice', 'track', 'switchback', 'euclaude', 'skatepark']);
 });
 
 test('the newest place is offered but promises no lap and no Trick Run', () => {
@@ -30,13 +42,37 @@ test('the newest place is offered but promises no lap and no Trick Run', () => {
   assert.equal(offersTrickRun('euclaude'), false);
 });
 
+test('the skatepark is offered with a Trick Run and no lap', () => {
+  // Foundry Yard (`docs/PLANS.md` §51): "there's no racing on a skate park",
+  // so it is off the Track Day roster and closes no lap; it is the second
+  // Trick Run place, after Switchback, so a door that has to bring a world
+  // still brings the park it always did.
+  assert.ok(isVenueId('skatepark'));
+  assert.equal(isTrackVenueId('skatepark'), false);
+  assert.equal(offersTrickRun('skatepark'), true);
+  assert.deepEqual([...TRICK_RUN_VENUE_IDS], ['switchback', 'skatepark']);
+  assert.equal(TRICK_RUN_DESTINATION, 'switchback');
+  assert.equal(createLevel('skatepark', '').lap, undefined);
+});
+
+test('the title\u2019s stage cards are the Wharf and Foundry Yard, both real venues', () => {
+  // The owner's 1.4.0 ride: the town, the Wharf, the yard and EUC NYC, four
+  // cards (`DESIGN.md` §9u). The stage list is roster data, in card order.
+  assert.deepEqual([...TITLE_STAGES], ['euclaude', 'skatepark']);
+  for (const stage of TITLE_STAGES) assert.ok(isVenueId(stage));
+  assert.equal(isTitleStage('skatepark'), true);
+  assert.equal(isTitleStage('town'), false);
+  assert.equal(isTitleStage('switchback'), false);
+  assert.equal(VENUE_IDS.indexOf('euclaude'), 3);
+});
+
 test('every Track Day choice builds a lap, and unrelated venue strings are refused', () => {
   for (const venue of TRACK_VENUE_IDS) {
     assert.ok(isVenueId(venue));
     assert.ok(isTrackVenueId(venue));
     assert.ok(createLevel(venue, '').lap, `${venue} offers a lap it cannot run`);
   }
-  for (const value of ['slice', 'euclaude', 'generated', 'proving', 'toString', '', 'Track']) {
+  for (const value of ['slice', 'euclaude', 'skatepark', 'generated', 'proving', 'toString', '', 'Track']) {
     assert.equal(isTrackVenueId(value), false);
   }
 });

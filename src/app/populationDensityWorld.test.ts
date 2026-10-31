@@ -266,7 +266,7 @@ test('2x and 4x rosters are reachable on every seed: 40 and 80 people, 4 and 8 v
 });
 
 test('hand-built venues get no density layer, and every roster of theirs is the plan itself', () => {
-  for (const id of ['slice', 'proving', 'track', 'switchback', 'euclaude'] as const satisfies readonly LevelId[]) {
+  for (const id of ['slice', 'proving', 'track', 'switchback', 'euclaude', 'skatepark'] as const satisfies readonly LevelId[]) {
     const { population } = preparePopulationWorld(createLevel(id));
     assert.equal(population.density, undefined, `${id}: no density`);
     for (const layer of ['base', 'medium', 'high'] as const) assert.equal(populationRoster(population, layer), population);

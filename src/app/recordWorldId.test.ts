@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import { createLevel, requestRoute } from '../level/levels.ts';
 import { SLICE_GRAPH } from '../level/sliceLevel.ts';
 import { EUCLAUDE_PLAN_ID } from '../level/euclaudeLevel.ts';
+import { SKATEPARK_PLAN_ID } from '../level/skateparkLevel.ts';
 import { forwardOf } from '../level/segments.ts';
 import type { LevelPlan } from '../level/plan.ts';
 import type { SurfaceId } from '../simulation/world.ts';
@@ -71,6 +72,24 @@ test('EUClaude Heights files under its own builder id, revised only if preparati
   assert.equal(again.level.recordWorldId, key, 'read back on re-preparation');
   // The pattern is anchored on the builder's own name, so the key cannot be
   // another venue's: a best set here is never filed as the city's or the park's.
+});
+
+test('Foundry Yard files under its bare plan id: zero population adds nothing (1.4.0)', () => {
+  // `docs/PLANS.md` §51 D17: the yard authors an empty population, so
+  // preparation adds no physical content and the key is the builder's own id —
+  // never `~living-r1`, never a content hash, never another venue's key.
+  const { source, world } = venue('skatepark');
+  assert.equal(source.id, SKATEPARK_PLAN_ID);
+  assert.equal(world.population.actors.length, 0);
+  assert.equal(world.population.paths.length, 0);
+  assert.equal(world.level.id, source.id);
+  assert.equal(world.level.recordWorldId, 'foundry-yard-r1');
+  assert.equal(recordWorldIdOf(world.level), 'foundry-yard-r1');
+  assert.equal(world.level.props, source.props);
+  assert.equal(world.level.solids, source.solids);
+  assert.equal(world.level.heightfield, source.heightfield);
+  const again = preparePopulationWorld(world.level);
+  assert.equal(again.level.recordWorldId, 'foundry-yard-r1', 'read back on re-preparation');
 });
 
 test('the proving ground and other untouched worlds keep their own id', () => {

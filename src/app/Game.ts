@@ -152,7 +152,7 @@ import {
   raceGridSlot,
   spawnSlot,
 } from '../simulation/spawnSlots.ts';
-import { ContactPair, type ContactBody, type ContactTuning } from '../simulation/contact.ts';
+import { ContactRoom, type ContactBody, type ContactRider, type ContactTuning } from '../simulation/contact.ts';
 import {
   Paddle,
   type HittableSet,
@@ -360,6 +360,7 @@ import {
   type CouchRide,
 } from './couch.ts';
 import {
+  isTitleStage,
   TRICK_RUN_DESTINATION,
   isTrackVenueId,
   isVenueId,
@@ -536,6 +537,7 @@ const SPLITS_TABLE: ResultsTable = Object.freeze({
 });
 import { loudestWarning, nearestCutout, type RiderWarningState } from './riderMix.ts';
 import { PausedViewGate, type PausedViewFrame, type PausedViewStats } from './pausedView.ts';
+import { createNearSolids, measureNearSolids } from './nearSolids.ts';
 import { Onboarding, type PromptDevice } from '../ui/onboarding.ts';
 import { shareableWorldLink } from './shareLink.ts';
 import { PROVENANCE } from '../data/provenance.ts';
@@ -2167,6 +2169,14 @@ export class Game {
    * downstream can read a stale answer from a step that did not run.
    */
   private readonly seatResetThisStep: boolean[] = new Array<boolean>(COUCH_SEATS).fill(false);
+  /**
+   * Contact's own copy of the step's teleports (1.4.0, QA R2-COUCH1-CLEAR):
+   * cleared before the seat loop and set beside `seatReset`, so it names this
+   * step's resets and no other. Not `seatResetThisStep` (latched until
+   * `raceInputs` drains it) nor `strikeResetThisStep` (drained just before
+   * `stepContact`).
+   */
+  private readonly contactResetThisStep: boolean[] = new Array<boolean>(COUCH_SEATS).fill(false);
   /** Scratch for `raceInputs`: the per-seat slots, one each, made once. */
   private readonly racePool: { -readonly [K in keyof RaceRiderInput]: RaceRiderInput[K] }[] =
     Array.from({ length: COUCH_SEATS }, () => ({ x: 0, y: 0, z: 0, reset: false }));
@@ -2928,6 +2938,14 @@ export class Game {
 
   private terrain: PlanTerrainSampler;
   /**
+   * The near-solid answer one seat's drawn pose is given before `rig.apply`
+   * (1.4.0 ride fixes, `app/nearSolids.ts`). One scratch for every seat:
+   * filled and spent inside the same call, never held across seats.
+   */
+  private readonly nearSolids = createNearSolids();
+  /** Each seat's drawn simulation time at its last near-solids call (the push's ease-out clock). */
+  private readonly nearSolidsDrawnAt = new WeakMap<RiderSeat, number>();
+  /**
    * M47: the world's prepared population — the living-r1 base roster carrying
    * its density layer (generated worlds only). The renderer prices its High
    * roster; nothing else consumes it directly.
@@ -3148,15 +3166,23 @@ export class Game {
    * pairs, and every one of them needs its own cooldown or two riders leaning
    * on each other would spend the charge a third pair had just armed. The key
    * is the unordered seat pair — `low * COUCH_SEATS + high`, computed in
-   * `contactPairFor` and nowhere else, so pair identity is one expression
+   * `ContactRoom.pairFor` and nowhere else, so pair identity is one expression
    * exactly as `contactLive` is one expression.
    *
    * Created on demand rather than allocated square, because five of sixteen
    * slots would never be used and a `Map` keyed by a number allocates nothing
    * to read. Cleared as a whole whenever the step declines to resolve
    * *anything* (see `stepContact`), which is the same rule one pair obeyed.
+   *
+   * **The pairs moved into `ContactRoom` at 1.4.0** (QA COUCH-1/3/4), with the
+   * per-seat charge clock a pair cannot keep and the two skatepark rules, so a
+   * headless test drives the pass the game runs.
    */
-  private readonly contactPairs = new Map<number, ContactPair>();
+  private readonly contactRoom = new ContactRoom(COUCH_SEATS);
+  /** The seats' controllers, refilled in place every contact step. */
+  private readonly contactRiders: ContactRider[] = [];
+  /** A seat outside contact this step (the couch chase's cop and watchers). */
+  private readonly contactExcluded = (seat: number): boolean => this.outOfChaseContact(seat);
   /**
    * Is contact on for this session? — §26.3, q71/q72. **Default on.**
    *
@@ -5050,11 +5076,9 @@ export class Game {
     // nothing ever runs their cooldowns down again. A seat despawned and
     // refilled between steps would hand the replacement rider an armed
     // cooldown, and their first real bump would go missing. The pair objects
-    // stay in the map (`contactPairFor` promises a rejoining seat the same
-    // object) — cleared, which is what that comment always claimed they were.
-    for (let other = 0; other < COUCH_SEATS; other += 1) {
-      if (other !== index) this.contactPairs.get(contactKey(index, other))?.clear();
-    }
+    // stay in the room (`ContactRoom.pairFor` promises a rejoining seat the
+    // same object) — cleared, with the seat's charge clock (1.4.0).
+    this.contactRoom.clearSeat(index);
     this.seats.length = index;
     this.populationPlacementControllers.delete(`human-${index}`);
     // The router drops the seat's input *and* any claim that pointed at it: a
@@ -5397,8 +5421,8 @@ export class Game {
    * not the swing toward it. Never writes the saved default.
    */
   setCameraMode(mode: CameraMode, index = 0, snap = true): void {
-    if (!isCameraViewId(mode)) throw new Error(`no such camera view: ${String(mode)}`);
     this.pausedView.invalidate('bridge');
+    if (!isCameraViewId(mode)) throw new Error(`no such camera view: ${String(mode)}`);
     const seat = this.requireSeat(index);
     // Silent: a scripted set is not a player's press, and the view's name
     // must not sit over a capture (the README shot).
@@ -6947,9 +6971,10 @@ export class Game {
    * **The offer roster is `app/venues.ts`' and the referee has never heard of
    * it.** `offersTrickRun` is the pure predicate every door asks; `TrickRun`
    * receives facts and a rules table, so invariant 22 holds — nothing in the
-   * scoring branches on which world is loaded. Switchback is the only member
-   * today (q176) and the day a second park is opened this method does not
-   * change.
+   * scoring branches on which world is loaded. Switchback opened the roster
+   * (q176) and Foundry Yard joined it in 1.4.0 without this method changing;
+   * a door that has to bring a world still brings `TRICK_RUN_DESTINATION`,
+   * the first entry.
    *
    * **The park is brought rather than demanded.** The title button explicitly
    * selects it (§38.6's "no one-option selection screen"), which is
@@ -11765,21 +11790,25 @@ export class Game {
    * must get the venue it has been riding, not a different build of it.
    */
   /**
-   * The title's second start card (2026-10-22): ride Wheelhouse Wharf, or the
-   * town the game opens on, in one press. The place is installed first if it
-   * is not the one loaded — behind the world cover, as `chooseTrackDay` does —
-   * and then this is exactly Start ride.
+   * The title's place cards (2026-10-22; four cards since the owner's 1.4.0
+   * ride): ride the town the game opens on, Wheelhouse Wharf or Foundry Yard
+   * (`TITLE_STAGES`) in one press. The place is installed first if it is not
+   * the one loaded — behind the world cover, as `chooseTrackDay` does — and
+   * then this is exactly Start ride. Any other string is refused: a stale or
+   * forged card does nothing rather than build a world the title does not
+   * offer.
    */
   private startPlaceRide(place: string): void {
     if (this.appState.current !== 'title' || this.pendingRoute !== null) return;
-    if (place !== 'euclaude' && place !== 'town') return;
-    const loaded = place === 'euclaude' ? this.levelId === 'euclaude'
+    const stage = isTitleStage(place) ? place : null;
+    if (stage === null && place !== 'town') return;
+    const loaded = stage !== null ? this.levelId === stage
       : this.levelId === DEFAULT_LEVEL && this.seed === DEFAULT_SEED;
     if (!loaded) {
       if (this.coverWorldSwap('Heading somewhere new', () => this.startPlaceRide(place))) return;
-      if (place === 'euclaude') {
-        this.installLevel('euclaude', '',
-          createLevel('euclaude', DEFAULT_SEED, this.hazardProbe, this.targetProbe, this.topSpeedMph));
+      if (stage !== null) {
+        this.installLevel(stage, '',
+          createLevel(stage, DEFAULT_SEED, this.hazardProbe, this.targetProbe, this.topSpeedMph));
       } else {
         const outcome = requestRoute(DEFAULT_SEED, this.hazardProbe, this.targetProbe, this.topSpeedMph);
         if (!outcome.ok) return;
@@ -12650,6 +12679,7 @@ export class Game {
       aim.y = pose.y;
       aim.z = pose.z;
     }
+    this.contactResetThisStep.fill(false);
     for (let index = 0; index < this.seats.length; index += 1) {
       const wasReset = this.stepSeat(this.seats[index], index, stepSeconds, riding);
       // **Per seat as well as aggregated** — M27 Phase 3. `seatReset` answers
@@ -12670,6 +12700,7 @@ export class Game {
       // Drained by `spendRiderStrikes` on every step, hit or no hit.
       if (wasReset) this.strikeResetThisStep[index] = true;
       if (wasReset) seatReset = true;
+      if (wasReset) this.contactResetThisStep[index] = true;
       if (wasReset && index === 0) worldReset = true;
     }
     if(this.populationPlan.actors.length>0){
@@ -12723,8 +12754,8 @@ export class Game {
     // swing already on its way into a shove, which is the ordering reading
     // backwards.
     // The strikes take their teleport facts per seat off their own latch
-    // (§37.3); contact keeps the aggregate, because a pair that met is still
-    // one meeting and `stepContact` clears every pair on a discontinuity.
+    // (§37.3); contact takes the aggregate as its gate and forgets only the
+    // teleported seats' pairs (`contactResetThisStep`, 1.4.0).
     this.spendRiderStrikes();
     this.stepContact(stepSeconds, seatReset);
 
@@ -13802,8 +13833,16 @@ export class Game {
     // what makes the contact half of GO's clear a statement rather than a
     // hope: by the time the room is released the map is already empty.
     // **And the chase's count**, on the bout's own argument (M39 Part P, q223).
-    if (!this.contactLive || seatReset || this.matchFrozen || this.chaseFrozen) {
+    if (!this.contactLive || this.matchFrozen || this.chaseFrozen) {
       this.clearContactHistory();
+      return;
+    }
+    // **A teleport forgets the teleported seats, not the room** (1.4.0, QA
+    // R2-COUCH1-CLEAR). The pairs a respawn is in are a discontinuity; two
+    // riders who stayed put and are still leaning on each other are not, and
+    // clearing them too re-charged them on every `R` a third seat pressed.
+    if (seatReset) {
+      this.contactRoom.forgetResets(this.contactResetThisStep);
       return;
     }
 
@@ -13828,84 +13867,18 @@ export class Game {
 
     // **Every unordered pair, and the pushes accumulate** — M27 Phase 1. Three
     // riders meeting at a corner are three pairs, and each one is entitled to
-    // its own separation: resolving only the first would leave the third rider
-    // inside somebody, which is the merged-pair state the mechanic exists to
-    // end. `EucController.separate` and `bump` are both additive nudges rather
-    // than assignments, so two pairs pushing one rider add up the way two
-    // shoves would.
-    for (let first = 0; first < seats; first += 1) {
-      for (let second = first + 1; second < seats; second += 1) {
-        // The cop seat and a watching outlaw are outside contact in a couch
-        // chase (M39 Part P, q73) — and a pair that is not resolved has no
-        // history, this method's own rule, so its cooldown is forgotten.
-        if (this.outOfChaseContact(first) || this.outOfChaseContact(second)) {
-          this.contactPairs.get(contactKey(first, second))?.clear();
-          continue;
-        }
-        this.stepContactPair(stepSeconds, first, second, tuning);
-      }
-    }
-  }
-
-  /**
-   * Resolve one unordered pair of seats — M27 Phase 1.
-   *
-   * Split out of `stepContact` when the couch grew past one pair, because the
-   * body of the loop is exactly what the two-seat method used to be and a
-   * nested loop around forty lines is a method nobody re-reads.
-   */
-  private stepContactPair(
-    stepSeconds: number,
-    firstIndex: number,
-    secondIndex: number,
-    tuning: ContactTuning,
-  ): void {
-    const first = this.seats[firstIndex];
-    const second = this.seats[secondIndex];
-    const contact = this.contactPairFor(firstIndex, secondIndex).step(
-      stepSeconds,
-      this.contactBodies[firstIndex],
-      this.contactBodies[secondIndex],
-      tuning,
-    );
-    if (contact === null) return;
-
-    // **The separation first, and every step** — the two halves are on
-    // different clocks (`simulation/contact.ts`). Two riders in the same place
-    // is a fact that stays true until it stops being true, so it is answered
-    // whenever it is asked; the wobble and the speed shed are an event, and
-    // §26.3's cooldown is theirs alone. Each side moves its own half, along
-    // the axis, in opposite directions.
-    first.controller.separate(-contact.axisX * contact.pushMetres, -contact.axisZ * contact.pushMetres);
-    second.controller.separate(contact.axisX * contact.pushMetres, contact.axisZ * contact.pushMetres);
-
-    const charge = contact.charge;
-    if (charge === null) return;
-    first.controller.bump(charge.first.pushX, charge.first.pushZ, charge.first.speedCost);
-    second.controller.bump(charge.second.pushX, charge.second.pushZ, charge.second.speedCost);
-  }
-
-  /**
-   * The `ContactPair` that belongs to one unordered pair of seats.
-   *
-   * **Pair identity in one expression**, which is the thing the old single-pair
-   * field's comment said a collection must not hide. The key is symmetric by
-   * construction — the lower seat index is always the high digit — so (1, 3)
-   * and (3, 1) are the same pair and cannot end up with two cooldowns
-   * disagreeing about whether these two have already charged each other.
-   *
-   * Created on demand and kept for the session. A pair whose seats leave keeps
-   * its (cleared) entry, which costs one object and is what makes a rejoining
-   * seat 3 meet the same object rather than a fresh one mid-bump.
-   */
-  private contactPairFor(first: number, second: number): ContactPair {
-    const key = contactKey(first, second);
-    let pair = this.contactPairs.get(key);
-    if (pair === undefined) {
-      pair = new ContactPair();
-      this.contactPairs.set(key, pair);
-    }
-    return pair;
+    // its own separation. The cop seat and a watching outlaw are outside
+    // contact in a couch chase (M39 Part P, q73), and a pair that is not
+    // resolved has no history. `ContactRoom` owns the loop since 1.4.0, with
+    // the per-seat charge clock (q72 at three and four seats) and the
+    // skatepark's come-back and placement rules.
+    const riders = this.contactRiders;
+    riders.length = seats;
+    for (let index = 0; index < seats; index += 1) riders[index] = this.seats[index].controller;
+    // The room walks the first `riders.length` bodies: the pool is sized
+    // from `COUCH_SEATS`, the riders from the seats present.
+    this.contactRoom.step(stepSeconds, this.contactBodies, riders, tuning, this.contactExcluded,
+      this.terrain.restartsAtRest());
   }
 
   /**
@@ -13921,7 +13894,7 @@ export class Game {
    * the paddles so that nothing a held count arranged survives the release.
    */
   private clearContactHistory(): void {
-    for (const pair of this.contactPairs.values()) pair.clear();
+    this.contactRoom.clear();
   }
 
   /**
@@ -14258,6 +14231,11 @@ export class Game {
       lerp(seat.previousOneFoot, seat.currentOneFoot, alpha),
       seat.oneFoot.side,
     );
+    // The tyre over a step's nose and the parked body out of a face (1.4.0
+    // ride fixes): asked of the *interpolated* pose, recorded on the rig
+    // before the stance is solved, for the trick pose's reason. Presentation
+    // only — nothing it answers reaches a controller.
+    this.applyNearSolids(seat, pose, this.simTimeSeconds + alpha * this.loop.stepSeconds);
     seat.rig.apply(pose);
 
     // The machine's own status light (M6). Driven from the simulation clock
@@ -16628,7 +16606,23 @@ export class Game {
     // `renderSeat` keeps (M36 §36.5).
     seat.previousOneFoot = seat.currentOneFoot;
     seat.rig.setTrickPose(seat.currentOneFoot, seat.oneFoot.side);
+    this.applyNearSolids(seat, seat.renderPose, null);
     seat.rig.apply(seat.renderPose);
+  }
+
+  /**
+   * Tell one seat's rig what its drawn pose is near (1.4.0 ride fixes,
+   * `app/nearSolids.ts`). `drawnAt` is the drawn simulation time, which times
+   * the push's ease back off a face — so `advance(n)` draws the same frames
+   * every run — or null for a hard reset, which snaps it.
+   */
+  private applyNearSolids(seat: RiderSeat, pose: EucPose, drawnAt: number | null): void {
+    const near = measureNearSolids(this.terrain, pose, this.nearSolids);
+    const last = this.nearSolidsDrawnAt.get(seat);
+    const seconds = drawnAt === null || last === undefined ? 0 : Math.max(0, drawnAt - last);
+    if (drawnAt !== null) this.nearSolidsDrawnAt.set(seat, drawnAt);
+    else this.nearSolidsDrawnAt.delete(seat);
+    seat.rig.setNearSolids(near.lift, near.faces, near.along, seconds, near.normals);
   }
 
   /**
@@ -17705,15 +17699,6 @@ function rigFor(id: CharacterId): RidingRig {
  * arcade reading and matches every other proximity rule in this game (the
  * touch bust included).
  */
-/**
- * One unordered pair of seats as one map key — `contactPairFor`'s identity
- * expression, shared with `despawnRider`'s clear so the two cannot drift.
- * Symmetric by construction: the lower seat index is always the high digit.
- */
-function contactKey(first: number, second: number): number {
-  return Math.min(first, second) * COUCH_SEATS + Math.max(first, second);
-}
-
 function writeContactBody(
   pose: EucPose,
   body: { -readonly [K in keyof ContactBody]: ContactBody[K] },

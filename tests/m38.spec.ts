@@ -139,6 +139,9 @@ async function finish(page: Page): Promise<void> {
 test('the title entry brings the park, runs a fixed clock and lands on a card', async ({ page }) => {
   const errors = collectErrors(page);
   // **From the city, so the entrance has to bring its own world** (§38.6).
+  // The note names the park the press would ride: with no park loaded that is
+  // the roster's first, Switchback (1.4.0 — at Foundry Yard it names the yard,
+  // `tests/skatepark.spec.ts`).
   await bootToTitle(page);
   await expect(page.locator(`${TITLE_ENTRY} .euc-button__note`))
     .toHaveText('Score tricks at Switchback Park');
@@ -1067,12 +1070,14 @@ for (const seats of [2, 3, 4]) {
     await sitDown(page, seats, '');
     await page.evaluate(() => window.game.clearRecords());
 
-    // The chooser offers the new member, and its note names the destination.
+    // The chooser offers the new member, and its note names the destination:
+    // from the city that is the roster's first park, Switchback (1.4.0 — a
+    // room sat down at Foundry Yard reads the yard, `tests/skatepark.spec.ts`).
     await expect(page.locator(`${COUCH_MODE}[data-couch-mode="trickRun"]`)).toBeVisible();
     await page.locator(`${COUCH_MODE}[data-couch-mode="trickRun"]`).click();
     expect(await page.evaluate(() => window.game.snapshot().couch.ride)).toBe('trickRun');
     await expect(page.locator('.euc-menu--couch .euc-couch__mode .euc-field__note').last())
-      .toContainText('Switchback Park');
+      .toContainText('one clock at Switchback Park');
 
     await page.locator(COUCH_START).click();
     // 2026-10-04: Start brings the park behind the shared cover; the room is

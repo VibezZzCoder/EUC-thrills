@@ -36,8 +36,8 @@ test('the derived numbers are sums of LAUNCH_PAD, never typed', () => {
   assert.ok(bend > 110 && bend < 130, `≈ 120 m at the shipped top speed, got ${bend.toFixed(1)}`);
 });
 
-test('a world without a closed town ring and a spine gets no pads: slice, proving, BelVar, Switchback', () => {
-  const ids: LevelId[] = ['slice', 'proving', 'track', 'switchback'];
+test('a world without a closed town ring and a spine gets no pads: slice, proving, BelVar, Switchback, Foundry Yard', () => {
+  const ids: LevelId[] = ['slice', 'proving', 'track', 'switchback', 'skatepark'];
   for (const id of ids) {
     const plan = createLevel(id);
     const runs = launchPadFinderRuns();

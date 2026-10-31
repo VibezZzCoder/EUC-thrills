@@ -1472,18 +1472,16 @@ test('a solo track day still pits in, which is the control this did not break', 
 // `src/simulation/raceRun.test.ts`, where the rules live.
 // ---------------------------------------------------------------------------
 
-test('four riders stacked together are six pairs, and the pile-up proves it', async ({ page }) => {
+test('four riders stacked together are six pairs, and the pile-up crashes nobody', async ({ page }) => {
   // The three-seat test above proves the pairs are enumerated and separation
-  // opens them. What four seats add is the *count*: 4·3/2 pairs whose bumps
-  // accumulate — \"two pairs pushing one rider add up the way two shoves
-  // would\" (M27 Phase 1) — so a rider in a four-way stack takes three
-  // charges at once where the triangle's riders took two. The observable is
-  // the game's own verdict on that much wobble: the triangle stays upright,
-  // and the four-way stack is a pile-up that puts everybody down (M15's fun
-  // wipeouts, arrived at honestly). A partial enumeration — one pair, or a
-  // star around one seat — cannot put all four down, because the probe data
-  // says two charges are survivable; only all six pairs give every rider
-  // their third.
+  // opens them. Four seats are 4·3/2 pairs, and before 1.4.0 each pair charged
+  // on its own clock, so a rider in a four-way stack took three charges at
+  // once and was wobble-crashed by contact alone. That broke q72 ("never worse
+  // than a bush … never a crash"), so 1.4.0's `ContactRoom` gives each seat at
+  // most one charge per cooldown from whichever pair delivers it (PLANS §51.7.4
+  // D58; the old per-pair loop is kept as a crashing control in
+  // `contact.test.ts`). The observable is now the owner's rule: every rider in
+  // the stack is charged, and every rider is still standing.
   const errors = collectErrors(page);
   await bootSeats(page, 4);
 
@@ -1505,22 +1503,32 @@ test('four riders stacked together are six pairs, and the pile-up proves it', as
         seat,
       );
     }
-    game.advance(12);
+    // A charge is a rise in wobble energy (m26's rule; wobble otherwise only
+    // decays), so each seat is watched step by step. One second is two and a
+    // half cooldowns: long enough for a stacked charge to have crashed someone.
+    const seats = [0, 1, 2, 3];
+    let wobble = seats.map((seat) => game.snapshotFor(seat).euc.wobbleEnergy);
+    const rises = seats.map(() => 0);
+    for (let step = 0; step < 120; step += 1) {
+      game.advance(1);
+      const next = seats.map((seat) => game.snapshotFor(seat).euc.wobbleEnergy);
+      for (const seat of seats) if (next[seat] > wobble[seat] + 1e-9) rises[seat] += 1;
+      wobble = next;
+    }
     return {
       live,
-      riders: [0, 1, 2, 3].map((seat) => {
+      riders: seats.map((seat) => {
         const euc = game.snapshotFor(seat).euc;
-        return { crashed: euc.crashed, crashes: euc.crashes };
+        return { crashed: euc.crashed, crashes: euc.crashes, charged: rises[seat] };
       }),
     };
   });
 
   expect(pileUp.live).toBe(true);
   for (const [seat, rider] of pileUp.riders.entries()) {
-    // The wobble itself is spent by the fall, so the durable evidence is the
-    // crash counter and the ragdoll still on the ground.
-    expect(rider.crashes, `seat ${seat} was never put down`).toBeGreaterThanOrEqual(1);
-    expect(rider.crashed, `seat ${seat} stayed upright through a four-way pile-up`).toBe(true);
+    expect(rider.charged, `seat ${seat} was never bumped in a four-way stack`).toBeGreaterThanOrEqual(1);
+    expect(rider.crashes, `seat ${seat} was crashed by contact (q72)`).toBe(0);
+    expect(rider.crashed, `seat ${seat} is on the ground after a pile-up`).toBe(false);
   }
   expect(errors).toEqual([]);
 });
@@ -1580,9 +1588,25 @@ test('a seat refilled on the step it emptied does not inherit the old bump', asy
     const gap = Math.hypot(landed.x - zero.x, landed.z - zero.z);
 
     // Well inside the old pair's cooldown (0.40 s is 48 steps): if its
-    // history survived the recycle, nothing can charge in this window.
-    const met = charges(0, 2, 10);
-    return { armed, gap, met };
+    // history survived the recycle, nothing can charge in this window. With
+    // three seats in the room each seat also keeps its own charge clock
+    // (1.4.0's `ContactRoom`, D58), so rider 0 — charged a few steps ago — is
+    // rightly not charged again; the new rider, whose clock left with the old
+    // one, is. A rise on seat 2 alone is the first meeting.
+    let fresh = game.snapshotFor(2).euc.wobbleEnergy;
+    let held = game.snapshotFor(0).euc.wobbleEnergy;
+    let met = 0;
+    let reCharged = 0;
+    for (let i = 0; i < 10; i += 1) {
+      game.advance(1);
+      const nextFresh = game.snapshotFor(2).euc.wobbleEnergy;
+      const nextHeld = game.snapshotFor(0).euc.wobbleEnergy;
+      if (nextFresh > fresh + 1e-9) met += 1;
+      if (nextHeld > held + 1e-9) reCharged += 1;
+      fresh = nextFresh;
+      held = nextHeld;
+    }
+    return { armed, gap, met, reCharged };
   });
 
   // The fixture armed the state it claims to: the first meeting really did
@@ -1591,6 +1615,7 @@ test('a seat refilled on the step it emptied does not inherit the old bump', asy
   expect(verdict.gap, 'the respawned rider did not land beside rider 0').toBeLessThan(0.7);
   // **The claim**: the replacement rider's first meeting is a first meeting.
   expect(verdict.met, 'the new rider inherited the old pair\'s bump').toBeGreaterThan(0);
+  expect(verdict.reCharged, 'rider 0 took a second charge inside its own cooldown').toBe(0);
   expect(errors).toEqual([]);
 });
 

@@ -1236,7 +1236,11 @@ export function* createPropsSteps(
     // `Color(hex)` decodes sRGB to linear on its own. A second conversion here
     // would land the value at about a seventh of its authored reflectance —
     // `DESIGN.md` §6b, the trap that has caught this project four times.
-    colour.setHex(definition.albedo);
+    // A prop's own `tone` replaces the part's albedo (Foundry Yard's
+    // galvanised fence bays, 1.4.0 critic pass 1). Before that only buildings
+    // carried one, and they never reach here, so every shipped world draws
+    // exactly as it did.
+    colour.setHex(prop.tone ?? definition.albedo);
     const tint = part === 'crown' && preparedVegetation ? PROP_TINT_JITTER.structure : definition.tint;
     if (tint > 0) {
       const jitter = 1 + (hash01(prop.position.x, prop.position.z, salt) * 2 - 1) * tint;

@@ -416,6 +416,8 @@ test('the trick run lane speaks to nobody, and leaves the room its one voice', a
     'euc-hud__count',
     'euc-hud__match-status',
     'euc-hud__stray',
+    // 1.3.0's camera-view label (polite status, hidden until a view change).
+    'euc-hud__view',
     'euc-hud__warning',
   ].sort());
 });

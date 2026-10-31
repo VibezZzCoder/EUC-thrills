@@ -1112,7 +1112,8 @@ test('the debug overlay reports the ride state it is looking at', async ({ page 
   const overlay = page.locator('#euc-debug-overlay');
   await expect(overlay).toBeVisible();
   await expect(overlay.locator('[data-field="ridestate"]')).toHaveText(state.state);
-  await expect(overlay.locator('[data-field="camera"]')).toHaveText('chase');
+  // 1.3.0's camera views label the mode: "<view label> (<mode id>)".
+  await expect(overlay.locator('[data-field="camera"]')).toHaveText('Chase (chase)');
 
   // The overlay must contain the value it names, not merely a plausible one.
   const speedText = await overlay.locator('[data-field="speed"]').textContent();

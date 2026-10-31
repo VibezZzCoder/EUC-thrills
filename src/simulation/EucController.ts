@@ -1,7 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { proposeRiderPhaseSideProjection, proposeWheelClearOfBodies, proposeWheelSideProjection, type FullRagSideProjection } from '../shared/riderSideContact.ts';
 import type { PopulationFootprint } from './population.ts';
-import { EUC, PHYSICS, SIMULATION, TERRAIN, WHEEL, POPULATION, POPULATION_CONTACT, RIDER_CONTACT, RIDER_BLOCKOUT, LAUNCH_PAD } from '../data/tuning.ts';
+import { EUC, PHYSICS, SIMULATION, TERRAIN, WHEEL, POPULATION, POPULATION_CONTACT, RIDER_CONTACT, RIDER_BLOCKOUT, LAUNCH_PAD, SKATE_TRANSITION } from '../data/tuning.ts';
 import { SURFACES, SURFACE_IDS } from '../data/surfaces.ts';
 import { SOBER_STYLE, type RideStyle } from '../data/rideStyles.ts';
 import type { ActionSnapshot } from '../input/actions.ts';
@@ -368,6 +368,25 @@ interface PreparedControllerStep {
   notifications: EucPlacementRequest[];
   didPlace: EucDynamicWorld['didPlace'];
 }
+
+/**
+ * The skatepark rules' tilt gates as normal.y ceilings (1.4.0, §51.5.9): a
+ * facet is past a tilt when `normal.y` is under its cosine. Computed once.
+ */
+const WALL_TURN_NORMAL_Y = Math.cos(SKATE_TRANSITION.wallTurnMinTilt);
+const WALL_TURN_ALIGNED = Math.cos(SKATE_TRANSITION.wallTurnAlignedTilt);
+const COME_BACK_NORMAL_Y = Math.cos(SKATE_TRANSITION.comeBackMinTilt);
+/**
+ * The wall turn's crest look-ahead (QA CTRL-3), metres: the shortest reach
+ * asked, and the margin past where the climb would stop — half the yard's
+ * 0.25 m lattice cell, so a coping's mixed top cell reads as the deck.
+ */
+const WALL_TURN_CREST_MIN_REACH = 0.05;
+const WALL_TURN_CREST_MARGIN = 0.125;
+const COME_BACK_APPROACH = Math.cos(SKATE_TRANSITION.comeBackMaxApproach);
+const COME_BACK_LAND_NORMAL_Y = Math.cos(SKATE_TRANSITION.comeBackLandMinTilt);
+/** `kickMinSlope` as the tangent a facet's normal gives along the move. */
+const KICK_MIN_RISE = Math.tan(SKATE_TRANSITION.kickMinSlope);
 
 const PREPARED_CONTROLLER_STEPS = new WeakMap<EucPreparedStep, PreparedControllerStep>();
 
@@ -2205,6 +2224,50 @@ export class EucController {
   /** Flights begun since this controller was built. Never reset — `flightIndex`. */
   private flights = 0;
 
+  // -- The skatepark transition rules (1.4.0, `docs/PLANS.md` §51.5.9) --------
+  //
+  // Every one is switched on by plan data (`TerrainSampler.transitionAt`,
+  // `restartsAtRest`) that only Foundry Yard emits, so on every other world
+  // these stay at their initial values and no ride moves.
+
+  /** The wall turn's slew still to run, s (C2); 0 when none is turning. */
+  private wallTurnSeconds = 0;
+  /** Which way an exactly-uphill wall turn goes, +1 left / −1 right. */
+  private wallTurnDirection = 1;
+  /** Wall turns begun since the last reset — a diagnostic count (C2). */
+  private wallTurns = 0;
+  /** The come-back air's half turn still to sweep, rad (C4). Never a spin (D19). */
+  private comeBackTurn = 0;
+  /** The half turn's sense, +1 or −1, as a yaw sign. */
+  private comeBackDirection = 1;
+  /** The current flight is a come-back air: its touchdown converts the fall (C4). */
+  private comeBackFlight = false;
+  /**
+   * The climb latch (C4): the sine of the steepest qualifying facet this climb
+   * has crossed, 0 when none, and that facet's uphill direction (unit XZ).
+   */
+  private comeBackClimb = 0;
+  private comeBackUpX = 0;
+  private comeBackUpZ = 0;
+  /** Come-back airs begun since the last reset — a diagnostic count (C4). */
+  private comeBackAirs = 0;
+  /**
+   * The kicker latch (1.4.0, G-K): the sine of the steepest rising flagged
+   * facet of the ground run that led onto a narrow flagged block top, 0 when
+   * none, and the metres travelled since the last such facet. A launch off
+   * that block within `kickLaunchWindowMetres` keeps the facet's slope.
+   */
+  private kickRise = 0;
+  private kickRun = 0;
+  /** The last latch update stood on a level flagged top (a lip block). */
+  private kickOnTop = false;
+  /**
+   * Metres of grounded travel since the wheel last stood on a sloped flagged
+   * facet (the crest cap); Infinity when it has not. A lip's last cell can be
+   * level while the slope the launch takes is still the face's.
+   */
+  private flaggedSlopeRun = Infinity;
+
   // -- The ride style (M29) ---------------------------------------------------
   //
   // One clock, advanced by the fixed step and never by wall time, so
@@ -3015,6 +3078,9 @@ export class EucController {
     // after a reset is the one way an observer's key can collide.
     this.justHopped = false;
     this.spinSwept = false;
+    this.clearTransitionMotion();
+    this.wallTurns = 0;
+    this.comeBackAirs = 0;
 
     // A reset is a fresh run: the crash count and the wobble the rider had
     // built up both belong to a ride that no longer happened. Crash *recovery*
@@ -3201,7 +3267,11 @@ export class EucController {
       ? 0
       : Math.asin(clamp(-this.slopeAccel / t.gravity, -1, 1));
 
-    let speed = this.speed + (accel + this.slopeAccel) * dt;
+    // A steep skatepark face out-pulls the brake (1.4.0, QA R2-TR2): inert
+    // without the plan's transition flags, so every other world's sum is the
+    // shipped one, to the bit.
+    const pull = airborne || this.sampler.transitionAt === undefined ? accel : this.faceBrake(accel, throttle);
+    let speed = this.speed + (pull + this.slopeAccel) * dt;
 
     // -- 3. Resistance ------------------------------------------------------
     // Quadratic drag gives a top speed that emerges from the model instead of
@@ -3432,6 +3502,23 @@ export class EucController {
       // the π was delivered rather than merely asked for. It costs a boolean
       // write inside a branch that was already taken; no number moves.
       if (this.spinRemaining <= 0) this.spinSwept = true;
+    }
+
+    // -- 5c. The skatepark's automatic turns (1.4.0, §51.5.9) ---------------
+    // Both are written straight onto the heading, as the spin's sweep is, so
+    // neither drives the lean or the lateral model. The come-back air's half
+    // turn (C4) never touches `spinRemaining` or `spinSwept`: it is not a spin
+    // and never pays one (D19). The wall turn (C2) is ground-only. Both are
+    // inert without the plan's transition flags — `comeBackTurn` is only ever
+    // set by a flagged lip, and `stepWallTurn` asks the flags first.
+    if (airborne) {
+      if (this.comeBackTurn > 0) {
+        const sweep = Math.min(this.comeBackTurn, (Math.PI / SKATE_TRANSITION.comeBackTurnSeconds) * dt);
+        this.headingY += sweep * this.comeBackDirection;
+        this.comeBackTurn -= sweep;
+      }
+    } else if (this.sampler.transitionAt !== undefined) {
+      this.stepWallTurn(dt, throttle, steer, speed);
     }
 
     // -- 6. Roll ------------------------------------------------------------
@@ -3683,11 +3770,6 @@ export class EucController {
     // did — except in the air, where it uses the direction the wheel took off
     // in and the heading is nobody's business but the landing score's.
     const previousY = this.y;
-    if (airborne) {
-      this.verticalVelocity -= t.gravity * dt;
-      this.y += this.verticalVelocity * dt;
-      this.airTime += dt;
-    }
 
     // **The wobble is spent here** (M6). On the ground the wheel travels along
     // `headingY + wobbleYaw`, so an oscillating wheel genuinely weaves; the
@@ -3699,16 +3781,49 @@ export class EucController {
     // contact patch really shimmies, the camera never sees it, and a symmetric
     // burst cannot accumulate into a turn.
     const travelHeading = this.headingY + this.wobbleYaw + this.styleYaw;
-    const travelX = airborne ? this.airDirX : Math.sin(travelHeading);
-    const travelZ = airborne ? this.airDirZ : Math.cos(travelHeading);
+
+    // -- 8a. The come-back coping air (1.4.0, §51.5.9 C4, D7) ---------------
+    // Decided before the move, on the step that would carry the wheel over the
+    // top of a flagged face: instead of crossing the coping it leaves the
+    // ground where it is, rising, drifting back over the face, and this step is
+    // flown like any other airborne step from here on. The shipped crest rule
+    // would throw a T75 wall's rider 6–127 m forward over the deck into the
+    // fence (§51.3 b). Never on a world without the transition flags.
+    let comeBack = false;
+    if (!airborne && this.sampler.transitionAt !== undefined) {
+      comeBack = this.comeBackAtLip(
+        Math.sin(travelHeading) * speed * dt, Math.cos(travelHeading) * speed * dt, speed, steer);
+      if (comeBack) speed = SKATE_TRANSITION.comeBackDriftSpeed;
+    }
+    const flying = airborne || comeBack;
+    if (flying) {
+      this.verticalVelocity -= t.gravity * dt;
+      this.y += this.verticalVelocity * dt;
+      this.airTime += dt;
+    }
+
+    const travelX = flying ? this.airDirX : Math.sin(travelHeading);
+    const travelZ = flying ? this.airDirZ : Math.cos(travelHeading);
     const intended = speed * dt;
     if (intended !== 0) {
       this.crashTravelX = travelX * Math.sign(intended);
       this.crashTravelZ = travelZ * Math.sign(intended);
     }
-    const moved = this.advance(travelX * intended, travelZ * intended, dt, speed, airborne);
+    const moved = this.advance(travelX * intended, travelZ * intended, dt, speed, flying);
     speed = moved.speed;
     this.collisionImpact = moved.impactSpeed;
+    // -- 8a2. A flight stopped by a flagged wall comes back in too (C4) -----
+    // A hop low on a T75 face, or one taken at its foot, flies forward with
+    // the climb's whole speed: the face refuses the move and scrubs only
+    // 0.35 m/s a step, so the wheel rises along the face and is thrown over
+    // the coping, across the deck and over the fence (measured at 9–20 m/s on
+    // the east wall). Refused on the way up by a flagged face, the flight
+    // becomes the come-back air instead.
+    if (flying && !comeBack && this.blocked && !this.comeBackFlight && this.verticalVelocity > 0
+      && intended !== 0 && this.sampler.transitionAt !== undefined
+      && this.comeBackAgainstFace(travelX * Math.sign(intended), travelZ * Math.sign(intended), intended > 0, steer)) {
+      speed = this.speed;
+    }
 
     this.surface = this.ground.surface;
     this.traction = this.ground.traction ?? this.ground.surface;
@@ -3726,14 +3841,16 @@ export class EucController {
 
     // -- 8b. Contact: land, leave the ground, or stay on it -----------------
     let landed = false;
-    if (airborne) {
+    if (flying) {
       if (this.y <= this.groundY && this.verticalVelocity <= 0) {
         // `response` was captured at the top of the step for the surface the
         // wheel occupied before moving. Landing quality belongs to the contact
         // patch just sampled by `advance`, which may be a different material
         // on this very step (pavement takeoff, gravel touchdown).
+        const fall = this.verticalVelocity;
         speed = this.land(speed, this.surfaceResponse());
         landed = true;
+        if (this.comeBackFlight) speed = this.comeBackTouchdown(speed, fall);
       } else if (this.y - this.groundY > this.airApex) {
         this.airApex = this.y - this.groundY;
       }
@@ -3743,9 +3860,13 @@ export class EucController {
       // height it was riding at, carrying the vertical rate the slope was
       // already giving it — which is what turns a ramp crest into a jump with
       // no ramp-specific code anywhere.
-      this.leaveGround(previousY, speed * Math.sin(this.slope), travelX, travelZ);
+      this.leaveGround(previousY, this.transitionLaunch(speed, speed * Math.sin(this.slope)), travelX, travelZ);
     } else {
       this.y = this.groundY;
+      // The kicker latch (G-K) follows the ground run; inert unless flagged.
+      if (this.sampler.transitionAt !== undefined) {
+        this.stepKickLatch(travelX * Math.sign(intended), travelZ * Math.sign(intended), moved.distance);
+      }
       // **The city launch pad** (M42): the one new way a flight begins, and it
       // begins through the same `leaveGround` — so the flight, the judged
       // landing, the 180, the one-foot and the trick facts are M36's, unchanged.
@@ -3835,7 +3956,7 @@ export class EucController {
     // A soft body's *entry* lurch is excluded with them; the sustained drag
     // while ploughing on through is left in, because a rider bracing against
     // deceleration is exactly what pushing through a hedge looks like.
-    this.longitudinalAccel = landed || hazardStruck || softStruck
+    this.longitudinalAccel = landed || hazardStruck || softStruck || comeBack
       ? 0
       : (speed - previousSpeed) / dt;
 
@@ -4034,7 +4155,12 @@ export class EucController {
       && this.surface !== 'spill'
       && this.wobbleEnergy < t.crashSafeWobbleCeiling
       && this.tiltBack < 1e-6
-      && Math.abs(this.speed) > t.stoppedSpeed;
+      && Math.abs(this.speed) > t.stoppedSpeed
+      // Never on a flagged transition cell (1.4.0, C3): a face, a coping, the
+      // floor under a ledge or a planter. A recovery there would put the rider
+      // back mid-face or on a block too narrow to restart on. Last in the
+      // chain, and false on every world without the map.
+      && this.sampler.transitionAt?.(this.x, this.z) !== true;
 
     if (!safe) {
       this.safeHold = 0;
@@ -5110,7 +5236,13 @@ export class EucController {
    */
   private respawn(): boolean {
     const t = this.tuning;
-    const restored = this.crashSpeed * t.crashRecoverSpeedFactor;
+    // **At rest where the plan asks for it** (1.4.0, C5). The shipped share of
+    // the crash speed, aimed along the stored heading, usually points at the
+    // next feature in a dense yard; the optional call is absent or false on
+    // every other world, so their recoveries are what they were.
+    const restored = this.sampler.restartsAtRest?.() === true
+      ? 0
+      : this.crashSpeed * t.crashRecoverSpeedFactor;
     const target = this.recoveryTarget(restored);
     if (!target) return false;
 
@@ -5174,6 +5306,7 @@ export class EucController {
     // step the observer read the latch on. `flights` survives, as it does a
     // reset: it is an identity, not a tally.
     this.spinSwept = false;
+    this.clearTransitionMotion();
     this.crouch = 0;
     this.tuck = 0;
     this.attackHold = 0;
@@ -5237,6 +5370,16 @@ export class EucController {
    * short sideways offsets that the static world also allows.
    */
   private recoveryTarget(restored: number): { x: number; z: number; headingY: number } | null {
+    // **A restart at rest also looks where it is facing** (1.4.0, C5). The
+    // newest safe point is "just short of the wall" for a rider who rode into
+    // one, which at the shipped restart speed is the run-up and in a dense
+    // yard is a rider set down nose to a ledge. The validated trail is walked
+    // back, newest first, to the first point with `restClearAheadMetres` of
+    // no authored solid ahead; if none has, the shipped order below decides.
+    if (this.sampler.restartsAtRest?.() === true) {
+      const clear = this.clearAheadRecoveryTarget(restored);
+      if (clear !== null) return clear;
+    }
     if (this.dynamicPlacementClear(this.safeX, this.safeZ, this.safeHeading, restored, 'recover')) {
       return { x: this.safeX, z: this.safeZ, headingY: this.safeHeading };
     }
@@ -5256,6 +5399,34 @@ export class EucController {
     }
     // Every candidate's refusal left the blocked flag set; the next step asks again.
     return null;
+  }
+
+  /** The newest validated point facing clear ground (C5's restart at rest), or null. */
+  private clearAheadRecoveryTarget(restored: number): { x: number; z: number; headingY: number } | null {
+    if (this.clearAhead(this.safeX, this.safeZ, this.safeHeading)
+      && this.dynamicPlacementClear(this.safeX, this.safeZ, this.safeHeading, restored, 'recover')) {
+      return { x: this.safeX, z: this.safeZ, headingY: this.safeHeading };
+    }
+    const ring = this.safeRing, size = POPULATION_CONTACT.recoveryRingPoints;
+    for (let age = 0; age < this.safeRingCount; age += 1) {
+      const slot = ((this.safeRingNext + size - 1 - age) % size) * 3;
+      const x = ring[slot], z = ring[slot + 1], headingY = ring[slot + 2];
+      if (x === this.safeX && z === this.safeZ) continue;
+      if (this.clearAhead(x, z, headingY)
+        && this.dynamicPlacementClear(x, z, headingY, restored, 'recover')) return { x, z, headingY };
+    }
+    return null;
+  }
+
+  /** No authored solid within `restClearAheadMetres` along a heading, at pedal height over the ground there. */
+  private clearAhead(x: number, z: number, headingY: number): boolean {
+    const raycastObstacle = this.sampler.raycastObstacle;
+    if (raycastObstacle === undefined) return true;
+    const ground = createGroundSample();
+    this.sampler.sampleGround(x, z, ground);
+    return raycastObstacle.call(this.sampler, { x, y: ground.height + this.tuning.maxStepUp + 1e-6, z },
+      { x: Math.sin(headingY), y: 0, z: Math.cos(headingY) }, SKATE_TRANSITION.restClearAheadMetres,
+      this.tuning.pedalHalfSpan) === null;
   }
 
   /**
@@ -5748,9 +5919,16 @@ export class EucController {
     if (horizontal === 0) return false;
 
     const normal = this.ground.normal;
-    const rise = normal.y > 1e-4
+    let rise = normal.y > 1e-4
       ? -(normal.x * deltaX + normal.z * deltaZ) / normal.y
       : 0;
+    // **Level, not down, off a flagged transition** (1.4.0, §51.5.9). Cast
+    // along a steep falling facet, the envelope dives under the top of a
+    // block the wheel is about to step onto — bank-S's 48° strip beside the
+    // stair treads read a 0.18 m tread as a wall and crashed riders at
+    // 12 m/s. The excess test still prices that step; only a rising cast or
+    // a world without the flags keeps the slope.
+    if (rise < 0 && this.sampler.transitionAt?.(this.x, this.z) === true) rise = 0;
     const distance = Math.hypot(deltaX, rise, deltaZ) + this.tuning.wheelRadius;
     const hit = raycastObstacle.call(
       this.sampler,
@@ -5959,6 +6137,14 @@ export class EucController {
         this.spinDirection = actions.steer >= t.spinSteerThreshold
           ? -1
           : 1;
+        // **Inside a come-back air the 180 turns the way the rule's half turn
+        // does** (1.4.0, QA CTRL-1). The two sweep the heading at nearly the
+        // same rate, so a spin chosen against the rule's direction cancels it:
+        // about 31° of visible yaw, paid as a 180. Turning together they make
+        // the whole turn `comeBackTouchdown` assumes. The stick still chose
+        // the rule's direction at takeoff. Never true without the plan's
+        // transition flags: only they set `comeBackTurn`.
+        if (this.comeBackTurn > 0) this.spinDirection = this.comeBackDirection;
         this.spinsCount += 1;
       }
       this.compressTimer = 0;
@@ -5969,7 +6155,7 @@ export class EucController {
 
     if (this.compressing) {
       this.compressTimer = Math.max(0, this.compressTimer - dt);
-      if (this.compressTimer === 0) this.launchHop();
+      if (this.compressTimer === 0) this.launchHop(actions.steer);
       return;
     }
 
@@ -5981,7 +6167,7 @@ export class EucController {
       // A zero compression time is a legal F4 setting, and it must fire now
       // rather than a step later — otherwise the slider's own extreme is the
       // one value at which the hop feels laggy.
-      if (this.compressTimer <= 0) this.launchHop();
+      if (this.compressTimer <= 0) this.launchHop(actions.steer);
       return;
     }
 
@@ -6000,8 +6186,12 @@ export class EucController {
     }
   }
 
-  /** Fire the impulse. Called only from `stepHop`, only while grounded. */
-  private launchHop(): void {
+  /**
+   * Fire the impulse. Called only from `stepHop`, only while grounded.
+   * `steer` is the step's held stick: a hopped come-back air turns the way it
+   * says, as the lip's does (1.4.0, QA CTRL-1).
+   */
+  private launchHop(steer: number): void {
     const t = this.tuning;
     // **The charge bonus is a height, not a velocity.** §4.4 promises "up to
     // 40% height", height goes as the square of launch speed, so the bonus
@@ -6009,11 +6199,26 @@ export class EucController {
     // quietly deliver a 96% height bonus and the constant would stop meaning
     // what the plan says it means.
     const launch = t.hopLaunchSpeed * Math.sqrt(1 + t.hopChargeHeightBonus * this.hopCharge);
-    // Hopping off a rise keeps the vertical rate the slope was already
-    // giving the wheel, so a hop taken over a crest goes higher than the same
-    // hop on the flat. The slope is one step stale — the same eight
-    // milliseconds of lag the surface sample carries, for the same reason.
-    this.leaveGround(this.y, launch + this.speed * Math.sin(this.slope), 0, 0);
+    // A hop up a flagged wall face is a come-back air (1.4.0, C4): flown
+    // forward it would carry the climb's full speed over the coping, the deck
+    // and into the fence. It is still a hop — `hops`, `justHopped` and the
+    // charge below are the shipped ones — so a charged wall air pays.
+    const forwardX = Math.sin(this.headingY);
+    const forwardZ = Math.cos(this.headingY);
+    const sense = this.speed < 0 ? -1 : 1;
+    if (this.sampler.transitionAt !== undefined
+      && Math.abs(this.speed) >= SKATE_TRANSITION.comeBackMinSpeed
+      && (this.comeBackClimb > 0 || this.ground.normal.y < COME_BACK_NORMAL_Y)
+      && this.updateComeBackClimb(forwardX * sense, forwardZ * sense)) {
+      this.startComeBack(forwardX * sense, forwardZ * sense, this.speed,
+        launch + Math.abs(this.speed) * this.comeBackClimb, clamp(safeAxis(steer), -1, 1));
+    } else {
+      // Hopping off a rise keeps the vertical rate the slope was already
+      // giving the wheel, so a hop taken over a crest goes higher than the same
+      // hop on the flat. The slope is one step stale — the same eight
+      // milliseconds of lag the surface sample carries, for the same reason.
+      this.leaveGround(this.y, this.transitionHop(launch, this.speed, this.speed * Math.sin(this.slope)), 0, 0);
+    }
     this.compressing = false;
     this.compressTimer = 0;
     this.crouchHold = 0;
@@ -6128,6 +6333,387 @@ export class EucController {
     // read it — see `spinCompleted`.
     this.spinSwept = false;
     this.flights += 1;
+    // Any new flight is an ordinary one until `startComeBack` says otherwise.
+    this.comeBackFlight = false;
+    this.comeBackTurn = 0;
+    // The wall turn is ground-only, its state included: any flight ends it
+    // (1.4.0, QA CTRL-2). Left armed, it froze in the air and resumed on
+    // touchdown, slewing a landed 180 back to the fall line. A rider who
+    // lands still stalled on the face re-arms a fresh one.
+    this.wallTurnSeconds = 0;
+    this.comeBackClimb = 0;
+    this.kickRise = 0;
+    this.kickOnTop = false;
+    this.flaggedSlopeRun = Infinity;
+  }
+
+  /**
+   * The upward speed a grounded launch takes on a flagged plan (1.4.0), given
+   * the shipped answer `shipped` (`speed·sin(slope)`) for a wheel leaving the
+   * ground at `speed`: a ledge or crest launch, or the slope's share of a hop.
+   * Exactly `shipped` whenever neither rule below is armed — which is always
+   * on every world without the transition flags.
+   *
+   * **The kicker (G-K).** A kicker's lip is a level block, which is what makes
+   * its launch the same every run (the Switchback note on `kicker`), but the
+   * shipped rule then launches it flat: the last grounded slope is the
+   * block's, 0. A launch off a narrow flagged top reached within
+   * `kickLaunchWindowMetres` of a rising flagged facet keeps that facet's
+   * slope instead, capped at `kickMaxVerticalSpeed`, and never lower than
+   * the shipped answer.
+   *
+   * **The crest cap (G-C, containment).** A launch straight off a sloped
+   * flagged facet — a snake lip, a roll-out or bank top, the pyramid's crest —
+   * keeps the shipped rule's `speed·sin(slope)` only up to
+   * `crestMaxVerticalSpeed`. Uncapped, a 37° channel lip crossed at 23 m/s
+   * threw the rider 3.5 m up and over the 3.49 m guard; capped, every such
+   * flight stays under the 1.0 m plinth.
+   */
+  private transitionLaunch(speed: number, shipped: number): number {
+    const rule = SKATE_TRANSITION;
+    if (this.kickArmed()) {
+      return Math.max(shipped, Math.min(Math.abs(speed) * this.kickRise, rule.kickMaxVerticalSpeed));
+    }
+    if (this.onFlaggedSlope() && shipped > rule.crestMaxVerticalSpeed) return rule.crestMaxVerticalSpeed;
+    return shipped;
+  }
+
+  /** The ground run is still on, or just off, a sloped flagged facet (the crest cap). */
+  private onFlaggedSlope(): boolean {
+    return this.flaggedSlopeRun <= SKATE_TRANSITION.crestWindowMetres;
+  }
+
+  /** The kicker latch would set this launch's slope (`transitionLaunch`). */
+  private kickArmed(): boolean {
+    return this.kickRise !== 0 && this.kickOnTop && this.kickRun <= SKATE_TRANSITION.kickLaunchWindowMetres;
+  }
+
+  /**
+   * A hop's whole upward speed (1.4.0): the impulse `launch` plus the ground's
+   * share, `shipped` being the shipped `speed·sin(slope)`. On flagged ground —
+   * a sloped flagged facet or an armed kicker lip — the ground's share is
+   * `transitionLaunch`'s and the sum is held to `hopMaxVerticalSpeed` (never
+   * under the bare impulse): a charged hop off a bank top or a snake lip at
+   * speed otherwise cleared the 2.4–2.9 m guards and rode along their tops.
+   * Everywhere else it is the shipped `launch + shipped`, to the bit.
+   */
+  private transitionHop(launch: number, speed: number, shipped: number): number {
+    if (!this.onFlaggedSlope() && !this.kickArmed()) return launch + shipped;
+    return Math.min(launch + this.transitionLaunch(speed, shipped),
+      Math.max(launch, SKATE_TRANSITION.hopMaxVerticalSpeed));
+  }
+
+  /**
+   * Advance the kicker latch for a grounded move of `distance` metres along
+   * the unit (`dirX`, `dirZ`). A rising flagged facet steeper than
+   * `kickMinSlope` (re)arms it with its slope — the steepest of the run while
+   * the run is unbroken; a level flagged top (a lip block, a narrow block)
+   * holds it while the window lasts; anything else — unflagged ground, a
+   * falling facet, a gentle one — clears it.
+   */
+  private stepKickLatch(dirX: number, dirZ: number, distance: number): void {
+    const normal = this.ground.normal;
+    const flagged = this.sampler.transitionAt!(this.x, this.z);
+    const across = Math.hypot(normal.x, normal.z);
+    this.flaggedSlopeRun = flagged && across >= 1e-9 ? 0 : this.flaggedSlopeRun + distance;
+    if (flagged && across < 1e-9) {
+      if (this.kickRise === 0) return;
+      this.kickRun += distance;
+      this.kickOnTop = true;
+      return;
+    }
+    // Rise along the move: the slope's sine from the unit normal.
+    const rise = normal.y > 0 ? -(normal.x * dirX + normal.z * dirZ) : 0;
+    if (!flagged || rise < KICK_MIN_RISE * normal.y) {
+      this.kickRise = 0;
+      this.kickOnTop = false;
+      return;
+    }
+    const sine = rise / Math.hypot(rise, normal.y);
+    this.kickRise = this.kickOnTop || this.kickRun > SKATE_TRANSITION.kickLaunchWindowMetres
+      ? sine : Math.max(this.kickRise, sine);
+    this.kickRun = 0;
+    this.kickOnTop = false;
+  }
+
+  // -- The skatepark transition rules (1.4.0, `docs/PLANS.md` §51.5.9) --------
+
+  /**
+   * The wall turn (C2, D8): a grounded rider stalled on a flagged face tilted
+   * past `wallTurnMinTilt` is slewed onto the fall line over `wallTurnSeconds`, and gravity
+   * rolls them back to the flat. The shipped controller parks them there for
+   * good — steering is disarmed at a standstill and throttle cannot out-pull a
+   * 60–75° face (§51.3 b).
+   *
+   * **The rider's own escapes start nothing and stop a turn.** A held brake is
+   * the reverse request (`reverseHold`), so it never starts one and cancels one
+   * under way; held throttle that can still climb the face — the creep a 45°
+   * face allows — is not a stall. Above `wallTurnSpeed` nothing starts, so a
+   * carve across the face at riding speed is never turned.
+   */
+  private stepWallTurn(dt: number, throttle: number, steer: number, speed: number): void {
+    const rule = SKATE_TRANSITION;
+    const normal = this.ground.normal;
+    if (this.wallTurnSeconds <= 0) {
+      if (normal.y >= WALL_TURN_NORMAL_Y || Math.abs(speed) > rule.wallTurnSpeed) return;
+      if (this.reversing || this.compressing || throttle < -0.01) return;
+      // Throttle that out-pulls the slope along the heading is a creep up the
+      // face, the rider's own way out. Only a face too steep for the drive
+      // held turns a rider who is holding it — the drive the stick asks for,
+      // not full drive (1.4.0, QA RIDE-2): tested at full drive, a half-held
+      // analog trigger or touch stick that cannot climb a 30–49° face parked
+      // the wheel there, motionless and unsteerable, for as long as it was
+      // held. At full throttle the two are the same test.
+      const drive = throttle > 0.01
+        ? this.tuning.leanToAccel * Math.sin(clamp01(throttle) * this.tuning.maxLeanPitch) : 0;
+      if (throttle > 0.01 && this.slopeAccel + drive > 0) return;
+      const across = Math.hypot(normal.x, normal.z);
+      const facingDown = (Math.sin(this.headingY) * normal.x + Math.cos(this.headingY) * normal.z) / across;
+      if (facingDown >= WALL_TURN_ALIGNED) return;
+      if (!this.sampler.transitionAt!(this.x, this.z)) return;
+      // **A climb going over the top is not a stall** (1.4.0, QA CTRL-3). A
+      // slow roll over a coping or bank top passes under `wallTurnSpeed` on
+      // the last face cell, and a turn started there was cancelled by the
+      // level deck a step or two later with its yaw kept: 5–60° the rider
+      // never steered. While still climbing, look where the climb would stop
+      // (v²/2a along the heading, plus half a lattice cell); if that is off
+      // the steep flags, the rider is cresting. A real stall below the top is
+      // turned a step later, once it has stopped or rolled back.
+      const decel = -(this.slopeAccel + drive);
+      if (speed > 0 && decel > 0) {
+        const reach = Math.max(WALL_TURN_CREST_MIN_REACH, (speed * speed) / (2 * decel)) + WALL_TURN_CREST_MARGIN;
+        const aheadX = this.x + Math.sin(this.headingY) * reach;
+        const aheadZ = this.z + Math.cos(this.headingY) * reach;
+        if (!this.sampler.transitionAt!(aheadX, aheadZ)) return;
+        if (this.sampler.sampleGround(aheadX, aheadZ, this.probe).normal.y >= WALL_TURN_NORMAL_Y) return;
+      }
+      this.wallTurnSeconds = rule.wallTurnSeconds;
+      // A stall exactly up the fall line turns the way the stick says; with no
+      // stick, to the left. A right turn is negative yaw (section 5's sign).
+      this.wallTurnDirection = steer > 0.01 ? -1 : 1;
+      this.wallTurns += 1;
+    }
+    const across = Math.hypot(normal.x, normal.z);
+    if (throttle < -0.01 || across < 1e-6) {
+      this.wallTurnSeconds = 0;
+      return;
+    }
+    const fallLine = Math.atan2(normal.x, normal.z);
+    let delta = fallLine - this.headingY;
+    delta = Math.atan2(Math.sin(delta), Math.cos(delta));
+    if (Math.abs(delta) > Math.PI - 1e-3) delta = this.wallTurnDirection * (Math.PI - 1e-3);
+    this.headingY += delta * Math.min(1, dt / this.wallTurnSeconds);
+    this.wallTurnSeconds = Math.max(0, this.wallTurnSeconds - dt);
+  }
+
+  /**
+   * The brake on a flagged face (1.4.0, QA R2-TR2): a rider facing down a
+   * flagged facet tilted past `wallTurnMinTilt` and leaning back, or rolling
+   * down one either way round and braking, keeps no more than
+   * `faceBrakeShare` of the slope's pull as braking, so the face always wins
+   * and the wheel rolls on down it. The shipped brake is far stronger than
+   * any slope, and with the stop clamp (or reverse's own brake) it held a
+   * wheel dead still on the 66° quarter-pipe face for as long as the brake was
+   * held or feathered — a stand-still hop spot the referee paid as the wall's
+   * own section, anywhere on its 24–66° part. With the wall turn (C2), which
+   * owns the same faces, no flagged face is standable either way round.
+   * Drive up a face (the creep), and gentler faces, keep the shipped sum.
+   */
+  private faceBrake(accel: number, throttle: number): number {
+    const slope = this.slopeAccel;
+    if (accel * slope >= 0) return accel;
+    if (!(this.speed * slope > 0 || (slope > 0 && throttle < -0.01))) return accel;
+    if (this.ground.normal.y >= WALL_TURN_NORMAL_Y || !this.sampler.transitionAt!(this.x, this.z)) return accel;
+    const most = SKATE_TRANSITION.faceBrakeShare * Math.abs(slope);
+    return clamp(accel, -most, most);
+  }
+
+  /**
+   * The come-back coping air's trigger at a lip (C4), asked on every grounded
+   * step of a world with transition flags: the step that would carry the wheel
+   * off the top of the flags — or over a fall the shipped crest rule would
+   * launch from — at the end of a climb that reached a facet tilted past
+   * `comeBackMinTilt` within `comeBackMaxApproach` of its fall line.
+   * `deltaX/Z` is the step's intended move.
+   *
+   * **The climb is latched, not read off the last facet.** A curved coping's
+   * top cell mixes face and deck, and a radial wall sampled on the square
+   * lattice is a sawtooth: on a bowl corner the last facet before the deck can
+   * lean 55° yet face 75° off the line the rider climbed, and on the berm the
+   * steep facet sits a cell below a 20° one. The steepest qualifying facet of
+   * the climb and its uphill direction are kept (`comeBackClimb`, `comeBackUp`)
+   * until the wheel leaves the flags, stops climbing, or turns more than the
+   * approach limit away from that direction.
+   */
+  private comeBackAtLip(deltaX: number, deltaZ: number, speed: number, steer: number): boolean {
+    const normal = this.ground.normal;
+    if (this.comeBackClimb === 0 && normal.y >= COME_BACK_NORMAL_Y) return false;
+    const length = Math.hypot(deltaX, deltaZ);
+    if (length < 1e-9) return false;
+    if (!this.updateComeBackClimb(deltaX / length, deltaZ / length)) return false;
+    if (Math.abs(speed) < SKATE_TRANSITION.comeBackMinSpeed) return false;
+    if (this.sampler.transitionAt!(this.x + deltaX, this.z + deltaZ)
+      && !(this.excessAt(deltaX, deltaZ) < -this.tuning.dropLaunchThreshold)) return false;
+    this.startComeBack(deltaX / length, deltaZ / length, speed, Math.abs(speed) * this.comeBackClimb, steer);
+    return true;
+  }
+
+  /**
+   * Advance the climb latch for a grounded move along the unit (`dirX`,
+   * `dirZ`); true while it holds. Cleared off the flags, on a move that does
+   * not climb, and on one turned past the approach limit from the latched
+   * uphill direction.
+   */
+  private updateComeBackClimb(dirX: number, dirZ: number): boolean {
+    const normal = this.ground.normal;
+    const across = Math.hypot(normal.x, normal.z);
+    // The normal's horizontal part points down the face, so a climb opposes it.
+    const rise = -(normal.x * dirX + normal.z * dirZ);
+    // A level facet inside the flags — the deck half of a corner coping's
+    // mixed cell — holds a latch rather than clearing it; a falling one ends it.
+    const level = across < 1e-9;
+    if ((level ? this.comeBackClimb === 0 : rise <= 0) || !this.sampler.transitionAt!(this.x, this.z)) {
+      this.comeBackClimb = 0;
+      return false;
+    }
+    if (!level && normal.y < COME_BACK_NORMAL_Y && across > this.comeBackClimb && rise / across > COME_BACK_APPROACH) {
+      this.comeBackClimb = across;
+      this.comeBackUpX = -normal.x / across;
+      this.comeBackUpZ = -normal.z / across;
+    }
+    if (this.comeBackClimb === 0) return false;
+    if (this.comeBackUpX * dirX + this.comeBackUpZ * dirZ <= COME_BACK_APPROACH) {
+      this.comeBackClimb = 0;
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Leave the ground as a come-back air (C4), travelling along the unit
+   * (`dirX`, `dirZ`) at `speed`; `vertical` is the upward speed asked for,
+   * capped here.
+   *
+   * The wheel leaves where it stands, at `min(vertical, 6)` upward, drifting
+   * back over the face at `comeBackDriftSpeed`, and a forward climb is turned
+   * half round over `comeBackTurnSeconds` — so it comes back in riding forward,
+   * as a fakie climb does unturned. The half turn is the rule's, not the
+   * rider's: it is never a spin, and a 180 the rider adds in the air is spun
+   * and paid as ever (D19).
+   */
+  private startComeBack(dirX: number, dirZ: number, speed: number, vertical: number, steer: number): void {
+    const rule = SKATE_TRANSITION;
+    const upX = this.comeBackUpX;
+    const upZ = this.comeBackUpZ;
+    this.leaveGround(this.y, Math.min(vertical, rule.comeBackMaxVerticalSpeed), -dirX, -dirZ);
+    this.speed = rule.comeBackDriftSpeed;
+    this.reversing = false;
+    this.reverseHold = 0;
+    this.wallTurnSeconds = 0;
+    this.comeBackFlight = true;
+    this.comeBackTurn = speed > 0 ? Math.PI : 0;
+    // The half turn goes the way the stick says, else toward the fall line.
+    const fallLine = Math.atan2(-upX, -upZ) - this.headingY;
+    this.comeBackDirection = steer >= this.tuning.spinSteerThreshold ? -1
+      : steer <= -this.tuning.spinSteerThreshold ? 1
+        : Math.sin(fallLine) < 0 ? -1 : 1;
+    this.comeBackAirs += 1;
+    this.alignComeBackWithSpin();
+  }
+
+  /**
+   * Turn a flight refused on its way up by a flagged face tilted past
+   * `comeBackMinTilt` into a come-back air (C4); true if it did. (`dirX`,
+   * `dirZ`) is the unit direction the wheel was moving, `forward` whether
+   * that was along its heading.
+   *
+   * The upward speed is kept (capped as the lip's is) and the horizontal
+   * becomes the drift back. A forward flight with time left to finish the
+   * half turn before it falls back to the face is turned like the lip's; one
+   * without it keeps its heading and falls back with no drift, to roll down
+   * the face in reverse — a half-finished turn would land square across the
+   * wall, which scores as a crash.
+   */
+  private comeBackAgainstFace(dirX: number, dirZ: number, forward: boolean, steer: number): boolean {
+    const rule = SKATE_TRANSITION;
+    const aheadX = this.x + dirX * 0.25;
+    const aheadZ = this.z + dirZ * 0.25;
+    if (!this.sampler.transitionAt!(aheadX, aheadZ)) return false;
+    const face = this.sampler.sampleGround(aheadX, aheadZ, this.probe);
+    const normal = face.normal;
+    if (normal.y >= COME_BACK_NORMAL_Y || face.height <= this.y) return false;
+    const across = Math.hypot(normal.x, normal.z);
+    if (-(normal.x * dirX + normal.z * dirZ) / across <= COME_BACK_APPROACH) return false;
+
+    const vertical = Math.min(this.verticalVelocity, rule.comeBackMaxVerticalSpeed);
+    // Up and back down to about the height it stands at now.
+    const flight = (2 * vertical) / this.tuning.gravity;
+    const turn = forward && flight >= rule.comeBackTurnSeconds * 1.25;
+    this.verticalVelocity = vertical;
+    this.comeBackUpX = -normal.x / across;
+    this.comeBackUpZ = -normal.z / across;
+    if (!forward || turn) {
+      this.airDirX = -dirX;
+      this.airDirZ = -dirZ;
+      this.speed = rule.comeBackDriftSpeed;
+    } else {
+      this.airDirX = Math.sin(this.headingY);
+      this.airDirZ = Math.cos(this.headingY);
+      this.speed = 0;
+    }
+    this.comeBackFlight = true;
+    this.comeBackTurn = turn ? Math.PI : 0;
+    const fallLine = Math.atan2(normal.x, normal.z) - this.headingY;
+    this.comeBackDirection = steer >= this.tuning.spinSteerThreshold ? -1
+      : steer <= -this.tuning.spinSteerThreshold ? 1
+        : Math.sin(fallLine) < 0 ? -1 : 1;
+    this.comeBackAirs += 1;
+    this.alignComeBackWithSpin();
+    return true;
+  }
+
+  /**
+   * A come-back air that starts with a 180 already sweeping turns the spin's
+   * way (1.4.0, QA CTRL-1): the hop's press chose it first, and the two
+   * turning against each other would cancel to a few degrees of yaw paid as
+   * a spin. `stepHop` aligns the other order, a spin pressed in the air.
+   */
+  private alignComeBackWithSpin(): void {
+    if (this.comeBackTurn > 0 && this.spinRemaining > 0) this.comeBackDirection = this.spinDirection;
+  }
+
+  /**
+   * A come-back air's touchdown (C4): the fall becomes speed down the face,
+   * `max(speed, 0.9·|vy|·sinθ)` on a face tilted past 20°, so the rider rolls
+   * back out of the wall with the height they dropped. Signed along the
+   * heading: a rider who spun the 180 on top (their half turn and the rule's
+   * make a whole one) lands facing up the face and rolls back down it in
+   * reverse, engaged here as a spun landing's is. `land()` cannot be asked
+   * for that sign — the drift back is usually scrubbed to nothing against the
+   * face in the last step of the fall.
+   */
+  private comeBackTouchdown(speed: number, fall: number): number {
+    this.comeBackFlight = false;
+    this.comeBackTurn = 0;
+    const normal = this.ground.normal;
+    if (normal.y >= COME_BACK_LAND_NORMAL_Y) return speed;
+    const along = SKATE_TRANSITION.comeBackLandShare * Math.abs(fall) * Math.sqrt(1 - normal.y * normal.y);
+    const facingDown = Math.sin(this.headingY) * normal.x + Math.cos(this.headingY) * normal.z;
+    if (facingDown >= 0) return Math.max(speed, along);
+    this.reversing = true;
+    return Math.min(speed, -along);
+  }
+
+  /** Clear every transition rule's motion in progress (reset and respawn). */
+  private clearTransitionMotion(): void {
+    this.wallTurnSeconds = 0;
+    this.comeBackTurn = 0;
+    this.comeBackFlight = false;
+    this.comeBackClimb = 0;
+    this.kickRise = 0;
+    this.kickRun = 0;
+    this.kickOnTop = false;
+    this.flaggedSlopeRun = Infinity;
   }
 
   /**
@@ -6522,6 +7108,21 @@ export class EucController {
     return this.spinSwept;
   }
 
+  /** Wall turns (C2) begun since the last reset. Zero on every world without transition flags. */
+  get wallTurnCount(): number {
+    return this.wallTurns;
+  }
+
+  /** Come-back coping airs (C4) begun since the last reset. Zero on every world without transition flags. */
+  get comeBackAirCount(): number {
+    return this.comeBackAirs;
+  }
+
+  /** The flight in progress (or the last, on the ground) is a come-back air whose touchdown is still to come. */
+  get inComeBackAir(): boolean {
+    return this.comeBackFlight;
+  }
+
   /** True while the rider is off the wheel. `app/Game.ts` frames the camera. */
   /** The authoritative snapshot field without allocating diagnostic state. */
   get isGrounded(): boolean { return this.grounded; }
@@ -6834,6 +7435,16 @@ export class EucController {
   separate(deltaX: number, deltaZ: number): void {
     if (this.crashing) return;
     if (deltaX === 0 && deltaZ === 0) return;
+    // **Nobody is shoved over a coping either** (1.4.0, QA COUCH-2). The
+    // come-back air is decided inside this rider's own move (`comeBackAtLip`);
+    // a separation that carried a grounded climber off the steep flags between
+    // two steps skipped it, and the rider rode the deck at full speed into
+    // the fence. Refused like the kerb: the pair stays touching this step, and
+    // the rider's next move reaches the lip and comes back as ever. Inert
+    // without the plan's transition flags — the current cell must be flagged.
+    if (this.sampler.transitionAt?.(this.x, this.z) === true && !this.airborne
+      && (this.comeBackClimb > 0 || this.ground.normal.y < COME_BACK_NORMAL_Y)
+      && this.sampler.transitionAt(this.x + deltaX, this.z + deltaZ) !== true) return;
     if (this.dynamicWorld?.canReact) return this.admitPhysicalReaction('separate', working => working.separate(deltaX, deltaZ), undefined);
     this.invalidatePreparedStep();
     const nextX = this.x + deltaX;

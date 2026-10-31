@@ -1,6 +1,6 @@
 {
   "name": "euc-thrills",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "private": true,
   "type": "module",
   "description": "EUC Thrills — an open-source arcade riding game about electric unicycles",

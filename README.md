@@ -19,9 +19,11 @@ browser. You ride a suspension wheel through a generated town — streets, a
 park, a river ford, a gravel trail and an industrial yard, with people and
 vans on the roads. The wheel behaves like a real one: you lean to go, it
 beeps near its top speed and lets go if you ignore the beeps, and a hard
-carve can ground a pedal. Four more places are built by hand: the
-**Original city**, **BelVar Circuit**, **Switchback Park** and **Wheelhouse
-Wharf**, a harbour island built to jump, with launch pads and rooftop gaps.
+carve can ground a pedal. Five more places are built by hand: the
+**Original city**, **BelVar Circuit**, **Switchback Park**, **Wheelhouse
+Wharf**, a harbour island built to jump, with launch pads and rooftop gaps,
+and **Foundry Yard**, a small concrete skate park with a bowl, a mini ramp,
+a quarter-pipe wall, a snake run, kickers, ledges and a euro gap.
 
 ## Modes
 
@@ -29,7 +31,7 @@ Wharf**, a harbour island built to jump, with launch pads and rooftop gaps.
 - **2–4 Players** — up to four riders on one desktop screen, each in their own pane: free ride, a three-lap race, Knockabout, Trick Run or a Police chase, with one of you or the CPU as the cop.
 - **Time trial** — the start line and five more checkpoints, pure elapsed time, and a ghost of your best to ride against.
 - **Track Day** — lap **BelVar Circuit** or **Switchback Park** with sector splits; your best lap becomes the ghost at once.
-- **Trick Run** — ninety seconds at Switchback Park, points for the tricks you land off its nine features.
+- **Trick Run** — ninety seconds at Switchback Park or Foundry Yard, points for the tricks you land off their features.
 - **Knockabout** — carry a paddle round the town or a generated route and knock down its yellow targets.
 - **Police chase** — Officer Dorkins and two patrols hunt you through the town; stay free for five minutes.
 - **Fresh route** — generate a new town from a route name or at random, or pick one of the hand-built places.

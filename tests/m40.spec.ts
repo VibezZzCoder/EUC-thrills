@@ -135,7 +135,7 @@ test.describe('M40 — stamp, About and licences, share link (desktop)', () => {
     expect(errors).toEqual([]);
   });
 
-  test('the title links the spin-off from PROVENANCE, in the same tab, and the pad walk passes it by (§46)', async ({ page }) => {
+  test('the title\'s EUC NYC card links the spin-off from PROVENANCE, in the same tab, and the pad can take it (1.4.0)', async ({ page }) => {
     const errors = collectErrors(page);
     await page.addInitScript(() => {
       const pad = {
@@ -152,20 +152,16 @@ test.describe('M40 — stamp, About and licences, share link (desktop)', () => {
     await bootToTitle(page);
     await page.waitForFunction(() => window.game.snapshot().gamepadConnected);
 
-    const chip = page.locator('.euc-menu--title .euc-title__foot a.euc-spin-off-chip');
-    await expect(chip).toBeVisible();
-    expect(await chip.getAttribute('href')).toBe(PROVENANCE.spinOffUrl);
+    // The fourth place card (owner's 1.4.0 ride), replacing §46's foot chip.
+    const card = page.locator('.euc-menu--title .euc-title__starts a.euc-start--nyc');
+    await expect(card).toBeVisible();
+    expect(await card.getAttribute('href')).toBe(PROVENANCE.spinOffUrl);
     expect(PROVENANCE.spinOffUrl).toBe('https://vibezzzcoder.github.io/euc-nyc/');
-    expect(await chip.getAttribute('target')).toBeNull();
-    await expect(chip.locator('strong')).toHaveText('EUC NYC');
-    await expect(chip).toContainText('Ride the Manhattan spin-off');
-    // Between the rider chip and the credit, and never an action hook.
-    const order = await page.evaluate(() => [...document.querySelector('.euc-menu--title .euc-title__foot')!.children]
-      .map((node) => node.className.split(' ')[0]));
-    expect(order).toEqual(['euc-rider-chip', 'euc-spin-off-chip', 'euc-credit']);
-    expect(await chip.getAttribute('data-menu')).toBeNull();
+    expect(await card.getAttribute('target')).toBeNull();
+    await expect(card.locator('.euc-start__place')).toHaveText('EUC NYC');
+    expect(await card.getAttribute('data-menu')).toBeNull();
+    await expect(page.locator('.euc-menu--title .euc-spin-off-chip')).toHaveCount(0);
 
-    // The pad walks the whole title, down and up, and never stands on it.
     const pulse = async (button: number): Promise<void> => page.evaluate(async (index) => {
       const pad = (window as unknown as { fakePad: { buttons: { pressed: boolean; value: number }[] } }).fakePad;
       const frame = () => new Promise<void>((resolve) => {
@@ -178,36 +174,24 @@ test.describe('M40 — stamp, About and licences, share link (desktop)', () => {
       pad.buttons[index].value = 0;
       await frame();
     }, button);
-    const onChip = () => page.evaluate(() => document.activeElement?.classList.contains('euc-spin-off-chip') ?? false);
-    const visited = new Set<string>();
-    for (const button of [13, 12]) {
-      for (let step = 0; step < 16; step += 1) {
-        await pulse(button);
-        expect(await onChip(), `the pad stopped on the spin-off chip (${button === 13 ? 'down' : 'up'} ${step})`).toBe(false);
-        visited.add(await page.evaluate(() => (document.activeElement as HTMLElement | null)?.className.split(' ')[0] ?? ''));
-      }
-    }
-    // The walk did reach the foot on both sides of the chip.
-    expect(visited.has('euc-rider-chip')).toBe(true);
-    expect(visited.has('euc-credit__link')).toBe(true);
 
-    // Focus can still reach it by Tab or a click; A there never leaves the game.
-    await chip.focus();
-    await pulse(0);
-    expect(page.url()).not.toContain('euc-nyc');
-    expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('title');
+    // Right three times from Start ride stands on it, like any place card…
+    await expect(page.locator('.euc-menu--title [data-menu="start"]')).toBeFocused();
+    for (let step = 0; step < 3; step += 1) await pulse(15);
+    await expect(card).toBeFocused();
     expect(errors).toEqual([]);
 
-    // A click goes there in this tab, and Back brings the title back alive
+    // …and A goes there in this tab, and Back brings the title back alive
     // (a back-forward cache restore reloads rather than showing a disposed game).
     await page.route(/^https:\/\/vibezzzcoder\.github\.io\/euc-nyc\//, (route) => route.fulfill({
       contentType: 'text/html', body: '<!doctype html><title>EUC NYC</title><p>stub</p>',
     }));
-    await chip.click();
+    // The press navigates while the pulse is still waiting on frames.
+    await pulse(0).catch(() => undefined);
     await page.waitForURL(PROVENANCE.spinOffUrl);
     await page.goBack();
     await page.waitForFunction(() => window.game?.snapshot().app.state === 'title', null, { timeout: 60_000 });
-    await expect(page.locator('.euc-menu--title .euc-spin-off-chip')).toBeVisible();
+    await expect(page.locator('.euc-menu--title a.euc-start--nyc')).toBeVisible();
   });
 
   test('a mouse opens About from the title\'s Settings, and Back and Escape step back one screen', async ({ page }) => {

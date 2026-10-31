@@ -19,12 +19,13 @@ import {
   ON_OFF_CHOICES,
   venueButtonTemplate,
   titleCreditTemplate,
-  spinOffChipTemplate,
+  spinOffCardTemplate,
   aboutTemplate,
   aboutScrollStep,
   reflowParagraphs,
   plainNotice,
   ABOUT_SCROLL_KEYS,
+  startPlacesFor,
 } from './menus.ts';
 import { PROVENANCE, devlogHandle, versionStamp } from '../data/provenance.ts';
 import { VENUE_IDS } from '../app/venues.ts';
@@ -65,6 +66,17 @@ test('a venue press says which place is loaded and where the ride is', () => {
   );
   // Not a refusal and not a wait: the world is already swapped when this is
   // written, so the line reads as the success it reports.
+  assert.equal(tone, 'ready');
+});
+
+test('the skatepark press offers its Trick Run and never a lap (1.4.0)', () => {
+  // Foundry Yard is the second place that hosts a Trick Run (`app/venues.ts`)
+  // and closes no lap, so the line names the run and withholds the lap.
+  const [tone, message] = routeStatusLine({ kind: 'venue-ready', venue: 'skatepark' }, false);
+  assert.equal(
+    message,
+    'Foundry Yard is ready. Trick Run scores your tricks here, or Back to the title to ride it.',
+  );
   assert.equal(tone, 'ready');
 });
 
@@ -438,6 +450,20 @@ test('the couch chooser offers a fifth button, Police chase, last (A-9)', () => 
   assert.ok(!/score/i.test(note), 'the chooser note said "score"');
 });
 
+test('the couch paragraph names the park a Trick Run would be ridden at (1.4.0)', () => {
+  // Two parks host a run since Foundry Yard (`app/venues.ts`). The caller
+  // passes the park `enterTrickRun` would keep or bring, and the paragraph
+  // names it; with no park named it is the roster's first, Switchback Park,
+  // which is where a door that has to bring a world still goes.
+  const atYard = modeChooserNote('BelVar Circuit', 'Foundry Yard');
+  assert.match(atYard, /Trick Run gives everybody one clock at Foundry Yard and points/);
+  assert.ok(!atYard.includes('Switchback'), 'the yard\'s paragraph named the other park');
+  // The race clause is the lap venue's and stays independent of it.
+  assert.match(atYard, /Race is three laps of BelVar Circuit/);
+  assert.match(modeChooserNote('BelVar Circuit'), /one clock at Switchback Park and points/);
+  assert.ok(!/score/i.test(atYard), 'the chooser note said "score"');
+});
+
 /**
  * Walk one seat's wheel the way the join panel's arrows do: `Game` answers
  * each press with `cycleSeatCharacter`, and the card draws
@@ -503,18 +529,16 @@ test('the title credit reads PROVENANCE and its stamp is text, not a stop (M40)'
   assert.ok(!/tabindex|<button|data-menu/.test(html));
 });
 
-test('the spin-off chip is one same-tab link to the github.io address, outside the pad walk (§46)', () => {
-  const html = spinOffChipTemplate();
+test('the EUC NYC card is one same-tab link to the github.io address, and a pad stop (1.4.0)', () => {
+  const html = spinOffCardTemplate();
   assert.equal(PROVENANCE.spinOffUrl, 'https://vibezzzcoder.github.io/euc-nyc/');
   assert.equal((html.match(/<a\b/g) ?? []).length, 1);
   assert.ok(html.includes(`href="${PROVENANCE.spinOffUrl}"`));
-  assert.ok(/<a [^>]*data-outbound="spin-off"/.test(html), 'the pad walk skips it by this hook');
+  // One of the four place cards now, so the pad walk stands on it like the rest.
+  assert.ok(!/data-outbound/.test(html), 'the pad walk must not skip the card');
   assert.ok(!/target=|tabindex|<button|data-menu/.test(html));
-  assert.ok(html.includes('<strong>EUC NYC</strong>'));
-  assert.ok(html.includes('>Ride the Manhattan spin-off<'));
+  assert.ok(html.includes('>EUC NYC<'));
   assert.ok(/<svg [^>]*aria-hidden="true"/.test(html));
-  // Exactly one external address in it.
-  assert.deepEqual(html.match(/https?:\/\/[^"\s]+/g), [PROVENANCE.spinOffUrl]);
 });
 
 test('the About template carries the three links, the stamp and no long text of its own (M40)', () => {
@@ -582,4 +606,14 @@ test('NOTICE is shown as plain text: no Markdown marks, every word and link kept
   for (const url of notice.match(/https?:\/\/[^\s)>|]+/g) ?? []) assert.ok(shown.includes(url), `a link went missing: ${url}`);
   assert.equal(plainNotice('| Source | <https://x.example/a> |\n|---|---|\n| | |'), 'Source: https://x.example/a\n');
   assert.equal(plainNotice('*EUC Thrills* is **bold** with [a link](https://x.example/)'), 'EUC Thrills is bold with a link (https://x.example/)\n');
+});
+
+test('the first place card names what is loaded, and offers the town from a stage with its own card (1.4.0)', () => {
+  // DESIGN §9u: four cards — the loaded place (or the town), the Wharf, the
+  // yard and EUC NYC. Only the first card moves.
+  assert.deepEqual(startPlacesFor('generated', true), { here: 'town', first: 'town', loadsTown: false });
+  assert.deepEqual(startPlacesFor('generated', false), { here: 'route', first: 'route', loadsTown: false });
+  assert.deepEqual(startPlacesFor('switchback', undefined), { here: 'switchback', first: 'switchback', loadsTown: false });
+  assert.deepEqual(startPlacesFor('euclaude', undefined), { here: 'euclaude', first: 'town', loadsTown: true });
+  assert.deepEqual(startPlacesFor('skatepark', undefined), { here: 'skatepark', first: 'town', loadsTown: true });
 });

@@ -1,6 +1,6 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { expect, test } from '@playwright/test';
-import { bootToTitle, collectErrors } from './harness.ts';
+import { bootAtTier, bootToTitle, collectErrors } from './harness.ts';
 import { CHASE } from '../src/data/tuning.ts';
 
 /**
@@ -286,10 +286,13 @@ test('the banner turns urgent before the run ends, and the end is no longer a su
 
 test('the max-speed glyph appears with the beeps and blinks at their rate', async ({ page }) => {
   const errors = collectErrors(page);
-  await bootToTitle(page, `level=generated&seed=${SEED}`);
-  await page.evaluate(() => {
-    window.game.setAppState('freeRide');
-  });
+  // 2026-10-31: Low, frozen. Since 1.1.8 (M47) High rides route-41 with twelve
+  // moving vans, and one crosses this straight at z ≈ 164 m just as the band
+  // reaches 0.38: the rider faceplants into it and overspeed reads 0. Low is
+  // the living-r1 world this was written on, unchanged by M47. The frozen loop
+  // keeps the rider where the loop below leaves them while the glyph is read,
+  // instead of riding on in real time into whatever is next on the street.
+  await bootAtTier(page, `level=generated&seed=${SEED}`, 'low', { freezeAtStart: true });
 
   const glyph = page.locator('[data-hud="overspeed"]');
   await expect(glyph).toBeHidden();

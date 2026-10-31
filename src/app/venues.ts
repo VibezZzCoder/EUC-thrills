@@ -32,7 +32,7 @@ import type { LevelId } from '../level/levels.ts';
 /**
  * A hand-built place the game offers by name.
  *
- * **Two of the six `LevelId`s are deliberately absent.** `proving` is an
+ * **Two of the seven `LevelId`s are deliberately absent.** `proving` is an
  * instrument rather than a place — it is flat by construction and exists to
  * measure the wheel — and offering it from a menu would be offering a
  * diagnostic as a destination. `generated` is not a name at all: it is a seed,
@@ -44,7 +44,7 @@ import type { LevelId } from '../level/levels.ts';
  * construction*: removing a builder from `level/levels.ts` fails this file's
  * type-check rather than leaving a chooser button that would build the slice.
  */
-export type VenueId = Extract<LevelId, 'slice' | 'track' | 'switchback' | 'euclaude'>;
+export type VenueId = Extract<LevelId, 'slice' | 'track' | 'switchback' | 'euclaude' | 'skatepark'>;
 
 /**
  * Every venue, in the order the chooser draws them.
@@ -58,8 +58,10 @@ export type VenueId = Extract<LevelId, 'slice' | 'track' | 'switchback' | 'eucla
  *
  * **Four is a fit, not just a count** (`DESIGN.md` §9t): the chooser's two
  * panels were laid out for three, and the fourth took the row's compact type
- * and a two-by-two grid on a phone (`ui/game.css`). A fifth reopens that
- * measurement.
+ * and a two-by-two grid on a phone (`ui/game.css`). Foundry Yard (1.4.0) is
+ * the fifth, and was measured in (`DESIGN.md` §9z): the join panel keeps one
+ * row sized by its words, the fresh-route panel takes three and two, and a
+ * phone's two columns give the odd fifth place the whole last row.
  */
 export const VENUE_IDS: readonly VenueId[] = Object.freeze([
   'slice',
@@ -67,7 +69,29 @@ export const VENUE_IDS: readonly VenueId[] = Object.freeze([
   'switchback',
   // M44: the go-wild city, last because it is the newest (`docs/PLANS.md` §44).
   'euclaude',
+  // 1.4.0: Foundry Yard, the skatepark (`docs/PLANS.md` §51), the newest.
+  'skatepark',
 ] as VenueId[]);
+
+/**
+ * The hand-built stages that have their own start card on the title, beside
+ * the town (`DESIGN.md` §9u, 1.4.0 owner ride): Wheelhouse Wharf and Foundry
+ * Yard, in card order.
+ *
+ * **One list, read by both ends of a card**, so the markup's `data-place`,
+ * the card's words and `Game.startPlaceRide`'s door cannot disagree. Until the
+ * owner's 1.4.0 ride the title had one "New stage" card for the newest place
+ * only, and the Wharf lost its card when the yard arrived; he asked for both
+ * back, each in its own colour, with no "New" badge. Nothing about how any
+ * world plays reads this.
+ */
+export const TITLE_STAGES = Object.freeze(['euclaude', 'skatepark'] as const);
+export type TitleStage = typeof TITLE_STAGES[number];
+
+/** Whether a string names one of the title's stage cards. */
+export function isTitleStage(place: string): place is TitleStage {
+  return (TITLE_STAGES as readonly string[]).includes(place);
+}
 
 /** The title's Track Day destinations. This roster offers choices; the
  * entrance still validates the selected plan's lap before installing it. */
@@ -82,17 +106,18 @@ export function isTrackVenueId(value: string): value is typeof TRACK_VENUE_IDS[n
  *
  * **One list, read by every door**, so the title button, the routes panel's
  * contextual action, the couch chooser and the QA bridge cannot disagree about
- * which places are on offer. Switchback only (q176), and that is an
+ * which places are on offer. Switchback only at first (q176), and that is an
  * *application* decision rather than a rule inside the referee: `TrickRun`
  * receives facts and a rules table and has never heard of a venue name
  * (invariant 22 — nothing branches on which world is loaded). The day the
  * owner opens a second park (q183), this array grows by one entry and no door
- * changes.
+ * changes — and 1.4.0 is that day: Foundry Yard joins second, so a door that
+ * has to bring a world still brings Switchback.
  *
  * `TRICK_RUN_DESTINATION` is where a door that has to *bring* a world sends
  * the room, which is the first entry rather than a second spelling of it.
  */
-export const TRICK_RUN_VENUE_IDS = Object.freeze(['switchback'] as const);
+export const TRICK_RUN_VENUE_IDS = Object.freeze(['switchback', 'skatepark'] as const);
 
 export const TRICK_RUN_DESTINATION: VenueId = TRICK_RUN_VENUE_IDS[0];
 

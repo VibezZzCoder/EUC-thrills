@@ -112,6 +112,10 @@ export class PlanTerrainSampler implements TerrainSampler {
   private readonly obstacleFace: ObstacleHit = { distance: 0, halfExtentX: 0, halfExtentZ: 0, inside: false, faceOffset: 0 };
   private readonly colliders: readonly PreparedCollider[];
   private readonly field: Heightfield;
+  /** The field's transition flags (C1); undefined on every world but Foundry Yard. */
+  private readonly transition: Heightfield['transition'];
+  /** `LevelPlan.recovery` asks for a restart at rest (C5). */
+  private readonly atRest: boolean;
   private readonly surround: Surround;
   private readonly groundPatches: ReadonlyMap<number, readonly PreparedGroundTriangle[]> | undefined;
   /** Detached geometry of ALL authored hazards, including painted spills.
@@ -183,6 +187,8 @@ export class PlanTerrainSampler implements TerrainSampler {
       };
     });
     this.field = plan.heightfield;
+    this.transition = plan.heightfield.transition;
+    this.atRest = plan.recovery?.speed === 'rest';
     this.surround = plan.surround;
     this.maxX = this.field.originX + (this.field.columns - 1) * this.field.spacing;
     this.maxZ = this.field.originZ + (this.field.rows - 1) * this.field.spacing;
@@ -744,6 +750,26 @@ export class PlanTerrainSampler implements TerrainSampler {
       if (patch.sourceSurface !== undefined && patch.sourceSurface !== sourceSurface) continue;
       if (containsGroundTriangle(patch.vertices, x, z)) out.surface = patch.surface;
     }
+  }
+
+  /**
+   * The flagged-transition answer (`TerrainSampler.transitionAt`, C1): the
+   * cell `sampleField` would interpolate in, by the same index arithmetic, so
+   * a point on a grid line belongs to its +X/+Z cell here too.
+   */
+  transitionAt(x: number, z: number): boolean {
+    const flags = this.transition;
+    if (flags === undefined) return false;
+    const field = this.field;
+    if (x < field.originX || x > this.maxX || z < field.originZ || z > this.maxZ) return false;
+    const column = Math.min(field.columns - 2, Math.max(0, Math.floor((x - field.originX) / field.spacing)));
+    const row = Math.min(field.rows - 2, Math.max(0, Math.floor((z - field.originZ) / field.spacing)));
+    return flags[row * (field.columns - 1) + column] === true;
+  }
+
+  /** `LevelPlan.recovery` (`TerrainSampler.restartsAtRest`, C5). */
+  restartsAtRest(): boolean {
+    return this.atRest;
   }
 
   /** Terrain height alone. The marcher's inner loop; no normal, no surface. */

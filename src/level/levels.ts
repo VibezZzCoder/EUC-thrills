@@ -3,6 +3,7 @@ import { createEuclaudeLevelSteps } from './euclaudeLevel.ts';
 import { generateLevelSteps, type GeneratedLevel } from './generateRoute.ts';
 import type { LevelPlan } from './plan.ts';
 import { createProvingGround } from './provingGround.ts';
+import { createSkateparkLevelSteps } from './skateparkLevel.ts';
 import { createSliceLevelSteps } from './sliceLevel.ts';
 import { createSwitchbackLevelSteps } from './switchbackLevel.ts';
 import { createTrackLevelSteps } from './trackLevel.ts';
@@ -87,10 +88,15 @@ import { runSteps, type Steps } from '../shared/preparationSteps.ts';
  * point. The venue chooser offers it beside the other three from the day it
  * lands, and `?level=euclaude` is the shape of its shareable link.
  *
- * Nothing here branches on which of the six is loaded, which is invariant 2
- * still holding at six producers.
+ * **1.4.0 adds a seventh, and the fourth *place*.** `?level=skatepark` builds
+ * Foundry Yard (`skateparkLevel.ts`), the fenced concrete skatepark of
+ * `docs/PLANS.md` §51: no lap and no finish, a start line for Trick Run and
+ * the couch. The chooser offers it last, from the day it lands.
+ *
+ * Nothing here branches on which of the seven is loaded, which is invariant 2
+ * still holding at seven producers.
  */
-export type LevelId = 'slice' | 'proving' | 'generated' | 'track' | 'switchback' | 'euclaude';
+export type LevelId = 'slice' | 'proving' | 'generated' | 'track' | 'switchback' | 'euclaude' | 'skatepark';
 
 /** M39 curated expanded launch; explicit authored-world links still win. */
 export const DEFAULT_LEVEL: LevelId = 'generated';
@@ -154,6 +160,10 @@ const BUILDERS: Readonly<Record<
   // M44 — offered by the venue chooser from the day it landed.
   euclaude: (_seed, hazardProbeMetres, targetProbeMetres) =>
     createEuclaudeLevelSteps(hazardProbeMetres, targetProbeMetres),
+  // 1.4.0 — Foundry Yard, the skatepark (`docs/PLANS.md` §51); offered by the
+  // venue chooser from the day it landed, last in its order.
+  skatepark: (_seed, hazardProbeMetres, targetProbeMetres) =>
+    createSkateparkLevelSteps(hazardProbeMetres, targetProbeMetres),
 };
 
 /** Every level id, for tests and diagnostics. */

@@ -4,7 +4,9 @@ import { test } from 'node:test';
 import { CONTACT } from '../data/tuning.ts';
 import {
   ContactPair,
+  ContactRoom,
   type ContactBody,
+  type ContactRider,
   type ContactTuning,
 } from './contact.ts';
 
@@ -336,4 +338,141 @@ test('the push clears the boundary instead of resting on it', () => {
   const deep = new ContactPair().step(STEP, STILL, STILL);
   assert.ok(deep);
   assert.equal(deep.pushMetres, CONTACT.separationSpeed * STEP);
+});
+
+// ---------------------------------------------------------------------------
+// ContactRoom — the couch's pass (1.4.0 QA COUCH-1/3/4)
+// ---------------------------------------------------------------------------
+
+/** A body that moves as it is pushed and records every call. */
+class Recorder implements ContactRider {
+  inComeBackAir = false;
+  discontinuitySerial = 0;
+  readonly calls: string[] = [];
+  bumps = 0;
+  readonly body: { x: number; z: number; velocityX: number; velocityZ: number };
+  constructor(body: { x: number; z: number; velocityX: number; velocityZ: number }) {
+    this.body = body;
+  }
+  separate(deltaX: number, deltaZ: number): void {
+    this.calls.push(`separate ${deltaX} ${deltaZ}`);
+    this.body.x += deltaX;
+    this.body.z += deltaZ;
+  }
+  bump(pushX: number, pushZ: number, speedCost: number): void {
+    this.calls.push(`bump ${pushX} ${pushZ} ${speedCost}`);
+    this.bumps += 1;
+  }
+}
+
+/** Two bodies that close, merge, part and close again, stepped `steps` times. */
+function twoSeatScript(step: number): [ContactBody, ContactBody] {
+  const gap = 0.3 + Math.abs(Math.sin(step * 0.05)) * 1.2;
+  return [{ x: 0, z: 0, velocityX: 1, velocityZ: 0 }, { x: gap, z: 0.1 * Math.sin(step * 0.3), velocityX: -1, velocityZ: 0 }];
+}
+
+test('ContactRoom with two seats is exactly the one pair it always was', () => {
+  const room = new ContactRoom(4);
+  const pair = new ContactPair();
+  const roomRiders = [new Recorder({ ...STILL }), new Recorder({ ...STILL })];
+  const pairRiders = [new Recorder({ ...STILL }), new Recorder({ ...STILL })];
+  for (let step = 0; step < 2000; step += 1) {
+    const [a, b] = twoSeatScript(step);
+    room.step(STEP, [a, b], roomRiders, TUNING, null, false);
+    const contact = pair.step(STEP, a, b, TUNING);
+    if (contact === null) continue;
+    pairRiders[0].separate(-contact.axisX * contact.pushMetres, -contact.axisZ * contact.pushMetres);
+    pairRiders[1].separate(contact.axisX * contact.pushMetres, contact.axisZ * contact.pushMetres);
+    if (contact.charge) {
+      pairRiders[0].bump(contact.charge.first.pushX, contact.charge.first.pushZ, contact.charge.first.speedCost);
+      pairRiders[1].bump(contact.charge.second.pushX, contact.charge.second.pushZ, contact.charge.second.speedCost);
+    }
+  }
+  assert.ok(pairRiders[0].bumps > 3, 'the script must charge more than once');
+  assert.deepEqual(roomRiders.map((rider) => rider.calls), pairRiders.map((rider) => rider.calls));
+});
+
+test('ContactRoom charges a rider once per cooldown however many pairs meet it (three seats and up)', () => {
+  const room = new ContactRoom(4);
+  // One rider in the middle, three others entering it on the same step.
+  const centre = { x: 0, z: 0, velocityX: 0, velocityZ: 0 };
+  const others = [0, 1, 2].map((index) => ({ x: Math.cos(index * 2.1) * 0.5, z: Math.sin(index * 2.1) * 0.5, velocityX: 0, velocityZ: 0 }));
+  const riders = [centre, ...others].map((body) => new Recorder(body));
+  const bodies = [centre, ...others];
+  room.step(STEP, bodies, riders, TUNING, null, false);
+  assert.equal(riders[0].bumps, 1, 'three pairs entered the centre rider in one step');
+  assert.ok(riders.slice(1).every((rider) => rider.bumps === 1), 'each other rider still pays its own entry');
+  // Within the cooldown nobody pays again, however the pairs part and re-enter.
+  for (let step = 1; step * STEP < TUNING.cooldownSeconds - 1e-9; step += 1) {
+    for (const body of others) { body.x *= 0.5; body.z *= 0.5; }
+    room.step(STEP, bodies, riders, TUNING, null, false);
+  }
+  assert.equal(riders[0].bumps, 1);
+  // An excluded seat leaves two taking part: the per-pair rule alone, as ever.
+  const pairRoom = new ContactRoom(4);
+  const trio = [new Recorder({ ...STILL }), new Recorder({ ...STILL, x: 0.5 }), new Recorder({ ...STILL, x: -0.5 })];
+  pairRoom.step(STEP, trio.map((rider) => rider.body), trio, TUNING, (seat) => seat === 2, false);
+  assert.equal(trio[0].bumps, 1);
+  assert.equal(trio[2].calls.length, 0);
+});
+
+test('ContactRoom leaves a pair alone while either seat is in a come-back air', () => {
+  const room = new ContactRoom(4);
+  const riders = [new Recorder({ ...STILL }), new Recorder({ ...STILL, x: 0.4 })];
+  riders[0].inComeBackAir = true;
+  room.step(STEP, riders.map((rider) => rider.body), riders, TUNING, null, false);
+  assert.deepEqual(riders.map((rider) => rider.calls.length), [0, 0]);
+  // Back on the ground the overlap is a fresh entry: the pair forgot its history.
+  riders[0].inComeBackAir = false;
+  room.step(STEP, riders.map((rider) => rider.body), riders, TUNING, null, false);
+  assert.deepEqual(riders.map((rider) => rider.bumps), [1, 1]);
+});
+
+test('ContactRoom: a recovery set down inside a rider is adopted, not charged — on plans that restart at rest only', () => {
+  for (const atRest of [true, false]) {
+    const room = new ContactRoom(4);
+    const riders = [new Recorder({ ...STILL }), new Recorder({ ...STILL, x: 5 })];
+    room.step(STEP, riders.map((rider) => rider.body), riders, TUNING, null, atRest);
+    // Seat 1 is placed on top of seat 0: a new discontinuity serial.
+    riders[1].body.x = 0.1;
+    riders[1].discontinuitySerial += 1;
+    room.step(STEP, riders.map((rider) => rider.body), riders, TUNING, null, atRest);
+    assert.equal(riders[0].bumps, atRest ? 0 : 1, `at rest ${atRest}`);
+    assert.ok(riders[0].calls.some((call) => call.startsWith('separate')), 'the placement still separates');
+  }
+});
+
+test('QA R2-COUCH1-CLEAR: a third seat\'s respawns never re-charge two riders leaning on each other', () => {
+  // Seats 0 and 1 overlap and drive into each other for 4 s; seat 2, far
+  // away, presses R every 15 steps, and Game skips the room's step on a
+  // teleport step. Forgetting only the teleported seat leaves the leaning
+  // pair its one charge each; the old whole-room clear (the control) wiped
+  // both their pair cooldown and their charge clocks on every press.
+  const run = (forget: (room: ContactRoom) => void): number[] => {
+    const room = new ContactRoom(4);
+    const riders = [new Recorder({ x: 0, z: 0, velocityX: 1, velocityZ: 0 }),
+      new Recorder({ x: 0.5, z: 0, velocityX: -1, velocityZ: 0 }),
+      new Recorder({ x: -20, z: 10, velocityX: 0, velocityZ: 0 })];
+    for (let step = 0; step * STEP < 4; step += 1) {
+      // Leaning: whatever the push did, they are back inside each other.
+      riders[0].body.x = 0;
+      riders[1].body.x = 0.5;
+      if (step > 0 && step % 15 === 0) {
+        forget(room);
+        continue;
+      }
+      room.step(STEP, riders.map((rider) => rider.body), riders, TUNING, null, false);
+    }
+    return riders.map((rider) => rider.bumps);
+  };
+  assert.deepEqual(run((room) => room.forgetResets([false, false, true])), [1, 1, 0]);
+  const control = run((room) => room.clear());
+  assert.ok(control[0] > 5 && control[1] > 5, `the whole-room clear charged ${control.join('/')}`);
+  // With two seats the one pair holds the resetting seat: forgetResets is clear.
+  const pairRoom = new ContactRoom(4);
+  const pair = [new Recorder({ ...STILL }), new Recorder({ ...STILL, x: 0.4 })];
+  pairRoom.step(STEP, pair.map((rider) => rider.body), pair, TUNING, null, false);
+  pairRoom.forgetResets([false, true]);
+  pairRoom.step(STEP, pair.map((rider) => rider.body), pair, TUNING, null, false);
+  assert.deepEqual(pair.map((rider) => rider.bumps), [2, 2]);
 });

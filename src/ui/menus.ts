@@ -48,7 +48,9 @@ import {
 } from '../app/couch.ts';
 import type { QualitySwitch, QualityStateView } from '../app/renderTier.ts';
 import {
+  TITLE_STAGES,
   TRACK_VENUE_IDS,
+  TRICK_RUN_DESTINATION,
   VENUE_IDS,
   isVenueId,
   offersTrickRun,
@@ -130,9 +132,10 @@ export type TouchStatus = 'shown' | 'waiting' | 'forced' | 'disabled';
 export interface MenuCallbacks {
   onStartRide(): void;
   /**
-   * The title's second start card (2026-10-22): ride a headline place now —
-   * `'euclaude'` (Wheelhouse Wharf) or `'town'` (the `euc` town the game opens
-   * on). The caller installs it if it is not loaded and refuses anything else.
+   * A title place card (2026-10-22; four cards since the owner's 1.4.0 ride):
+   * ride a place now — one of `TITLE_STAGES` (Wheelhouse Wharf, Foundry Yard)
+   * or `'town'` (the `euc` town the game opens on). The caller installs it if
+   * it is not loaded and refuses anything else.
    */
   onStartPlace(place: string): void;
   onResume(): void;
@@ -181,8 +184,9 @@ export interface MenuCallbacks {
    * The player chose Trick Run — M38 §38.6.
    *
    * **One callback for two controls**, because both mean the same thing: the
-   * title's entry explicitly selects Switchback Park and the routes panel's
-   * contextual action is offered only once that park is already loaded. Which
+   * title's entry keeps a loaded park that hosts a run and otherwise brings
+   * the first one (`TRICK_RUN_DESTINATION`), and the routes panel's
+   * contextual action is offered only once such a park is already loaded. Which
    * of those is possible from where the player is standing is the caller's
    * decision (`Game.enterTrickRun`), exactly as `onStartTrackDay`'s is.
    */
@@ -350,6 +354,7 @@ const WORLD_LINES: Readonly<Record<WorldView['world'], string>> = Object.freeze(
   proving: 'The proving ground — a flat instrument, not a place.',
   switchback: 'Switchback Park — a forested hillside jump lap.',
   euclaude: 'Wheelhouse Wharf — a harbour island built to jump: pads, rooftops, gaps.',
+  skatepark: 'Foundry Yard — a concrete skate park: bowl, ramps, tricks, no racing.',
   generated: '',
 });
 
@@ -366,7 +371,7 @@ export interface WorldView {
    * to the city was hidden on the one world where it was the thing a player
    * most needed.
    */
-  readonly world: 'slice' | 'proving' | 'generated' | 'track' | 'switchback' | 'euclaude';
+  readonly world: 'slice' | 'proving' | 'generated' | 'track' | 'switchback' | 'euclaude' | 'skatepark';
   /** The loaded route's seed. Empty on every world but a generated one. */
   readonly seed: string;
   /**
@@ -408,6 +413,7 @@ const VENUE_LABELS: Readonly<Record<VenueId, string>> = Object.freeze({
   track: 'BelVar Circuit',
   switchback: 'Switchback Park',
   euclaude: 'Wheelhouse Wharf',
+  skatepark: 'Foundry Yard',
 });
 
 /**
@@ -422,6 +428,25 @@ function lapVenueName(view: WorldView): string {
   // Any venue by its own name (M44: a chain that spelled the three old ones
   // out would name BelVar the day a fourth place closed a ring).
   return isVenueId(view.world) ? VENUE_LABELS[view.world] : VENUE_LABELS.track;
+}
+
+/**
+ * The park a Trick Run would be ridden at, from what is loaded — 1.4.0.
+ *
+ * `enterTrickRun`'s rule said in words, `lapVenueName`'s twin: a place on the
+ * Trick Run roster is kept, and anywhere else brings the roster's first entry
+ * with it. So the three sentences that name the park (the title's note, the
+ * routes panel's contextual action and the couch chooser's paragraph) name
+ * Foundry Yard while Foundry Yard is loaded and Switchback Park everywhere
+ * else, and none of them knows which places are parks — the roster does.
+ */
+function trickVenueName(view: WorldView): string {
+  return offersTrickRun(view.world) ? VENUE_LABELS[view.world] : VENUE_LABELS[TRICK_RUN_DESTINATION];
+}
+
+/** The note on both Trick Run buttons, for the park `trickVenueName` names. */
+function trickRunNote(venue: string): string {
+  return `Score tricks at ${venue}`;
 }
 
 /**
@@ -1122,42 +1147,6 @@ export function titleCreditTemplate(): string {
 }
 
 /**
- * The way to the owner's other game, EUC NYC (§46, 2026-10-25).
- *
- * **A link, not a control.** It leaves the game, so it is an `<a>` in the
- * title's foot under the rider chip, and it navigates in the same tab: Thrills
- * unloads, one game runs at a time, and Back returns to this title. No dialog
- * and no browser check — the spin-off falls back to WebGL2 by itself.
- *
- * **Not a pad stop.** `data-outbound` keeps it out of `Menus.navigate`'s walk
- * (the title's stops are exactly what `tests/m9.spec.ts` names); a pad player
- * reaches the same address from Settings → About. Keyboard Tab still reaches
- * it, because Tab is the browser's own.
- *
- * The icon is a yellow cab in front of three plain blocks and a rooftop water
- * tower: generic on purpose, never a named landmark, roundel or slogan.
- * `aria-hidden`, so the chip's name is its words.
- */
-export function spinOffChipTemplate(): string {
-  return `
-  <a class="euc-spin-off-chip" data-outbound="spin-off" href="${PROVENANCE.spinOffUrl}" rel="noopener">
-    <svg class="euc-spin-off-chip__icon" viewBox="0 0 20 16" aria-hidden="true" focusable="false">
-      <path class="euc-spin-off-chip__city"
-            d="M1 11V4.6h4.4V11zM6 11V2h4.6v9zM11.2 11V6h4.8v5zM12.4 4.7V2.5l1.2-1.2 1.2 1.2v2.2z
-               M12.7 6V4.7h.5V6zM14 6V4.7h.5V6z"/>
-      <path class="euc-spin-off-chip__cab" fill-rule="evenodd"
-            d="M2 10.2l3.2-.2 1.6-2.8h1.8V6.3h1.8v.9h2l2.2 2.8 2.8.4c.6.1 1 .6 1 1.2V13H1.8l-.2-1
-               c0-1 .1-1.6.4-1.8zM7.4 9.6l1-1.7h.9v1.7zM9.9 7.9h2.2l1.3 1.7H9.9z"/>
-      <path class="euc-spin-off-chip__wheels"
-            d="M4.1 13.2a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0zM13.1 13.2a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0z"/>
-    </svg>
-    <strong>${PROVENANCE.spinOffTitle}</strong>
-    <span class="euc-spin-off-chip__more">Ride the Manhattan spin-off</span>
-    <span class="euc-spin-off-chip__chevron" aria-hidden="true">›</span>
-  </a>`;
-}
-
-/**
  * Settings → About and licences (M40, §40.4 q8).
  *
  * A Settings subpanel built like Track Day's: opening or closing it never
@@ -1219,17 +1208,25 @@ export function aboutTemplate(): string {
 }
 
 /**
- * The title's two start cards (2026-10-22, the owner's "split the big top
- * button into two"). The first rides whatever is loaded — the town the game
- * opens on, or whatever a player chose on the fresh-route panel — and is still
- * `data-menu="start"`, so it stays the first stop and Enter's target. The
- * second rides the other headline place in one press: Wheelhouse Wharf, or
- * the town again while the Wharf is loaded. Both are written by `writeStarts`.
+ * The title's four place cards (2026-10-22 as two; four since the owner's
+ * 1.4.0 ride: "split it into four … the town, the wharf, the foundry yard,
+ * and … New York City"). Each card has its own colour and no "New" badge.
+ *
+ * - **The first** rides whatever is loaded — the town the game opens on, or
+ *   whatever a player chose on the fresh-route panel — and is still
+ *   `data-menu="start"`, so it stays the first stop and Enter's target. While
+ *   a stage that has its own card is loaded, the first card offers the town
+ *   instead (a `data-place` on it), so no place is named twice.
+ * - **The Wharf and the yard** (`TITLE_STAGES`) ride their stage in one press.
+ * - **EUC NYC** is a link, not a control: it leaves this game for the owner's
+ *   spin-off in the same tab (§46), so Thrills unloads and one game runs at a
+ *   time. Since it is now one of the four cards it is a pad stop like the
+ *   others; About still carries the same address.
  *
  * Pictures are inline SVG keyed by place, `aria-hidden`, so a card's name is
  * its words; every hook inside a card is `data-note`, never `data-menu`.
  */
-type StartPlace = 'town' | 'route' | 'slice' | 'track' | 'switchback' | 'euclaude' | 'proving';
+export type StartPlace = 'town' | 'route' | 'slice' | 'track' | 'switchback' | 'euclaude' | 'skatepark' | 'proving';
 
 const START_NAMES: Readonly<Record<StartPlace, string>> = Object.freeze({
   town: 'The town',
@@ -1238,6 +1235,7 @@ const START_NAMES: Readonly<Record<StartPlace, string>> = Object.freeze({
   track: 'BelVar Circuit',
   switchback: 'Switchback Park',
   euclaude: 'Wheelhouse Wharf',
+  skatepark: 'Foundry Yard',
   proving: 'Proving ground',
 });
 
@@ -1248,6 +1246,7 @@ const START_NOTES: Readonly<Record<StartPlace, string>> = Object.freeze({
   track: 'A kart-scale technical lap',
   switchback: 'A forested hillside jump lap',
   euclaude: 'A harbour island built to jump',
+  skatepark: 'A concrete skate park built for tricks',
   proving: 'A flat instrument, not a place',
 });
 
@@ -1268,24 +1267,77 @@ const START_PICTURES: Readonly<Record<StartPlace, string>> = Object.freeze({
     + '<path class="euc-start__lit" d="M14 6h6v6h-6zm12 0h6v6h-6zm-6 6h6v6h-6zm12 0h6v6h-6z"/>'
     + '<path class="euc-start__ground" d="M1 35h55"/>',
   switchback: '<path class="euc-start__ink" d="M10 32l7-20 7 20zM26 32l8-24 8 24z"/><path class="euc-start__ground" d="M1 35c12-6 22-6 34-2s14 2 20 0"/>',
+  // A mini ramp: two quarter-pipes on their decks, lit copings, and the arc
+  // of an air out of one and back into it.
+  skatepark: '<path class="euc-start__ink" d="M2 35V14h7c0 13 6 20 17 20h5c11 0 17-7 17-20h7v21"/>'
+    + '<path class="euc-start__lit" d="M8 12.5h2v2H8zm39 0h2v2h-2z"/>'
+    + '<path class="euc-start__arc" d="M51 9h.01M49 5h.01M45.5 3h.01M42 4.5h.01"/>'
+    + '<path class="euc-start__ground" d="M1 35h55"/>',
   proving: '<path class="euc-start__ground" d="M1 30h55M8 34h41"/>',
+});
+
+/** Each stage card's kicker, in its own words rather than "New". */
+const STAGE_KICKERS: Readonly<Record<typeof TITLE_STAGES[number], string>> = Object.freeze({
+  euclaude: 'Jump island',
+  skatepark: 'Skate park',
 });
 
 function startPicture(place: StartPlace): string {
   return `<svg class="euc-start__picture" viewBox="0 0 57 40" aria-hidden="true" focusable="false">${START_PICTURES[place]}</svg>`;
 }
 
-function startCardTemplate(action: 'start' | 'start-place', kicker: string, place: StartPlace): string {
-  const away = action === 'start-place';
+/**
+ * What the first card names, from the loaded world: `here` is what is loaded,
+ * `first` is the card's place, and `loadsTown` says the card offers the town
+ * because the loaded world is a stage with a card of its own. Pure, so
+ * `menus.test.ts` holds the rule without a document.
+ */
+export function startPlacesFor(world: WorldView['world'], home: boolean | undefined):
+  { readonly here: StartPlace; readonly first: StartPlace; readonly loadsTown: boolean } {
+  const here: StartPlace = world === 'generated' ? (home === true ? 'town' : 'route') : world;
+  const loadsTown = (TITLE_STAGES as readonly string[]).includes(here);
+  return { here, first: loadsTown ? 'town' : here, loadsTown };
+}
+
+function startCardTemplate(action: 'start' | 'start-place', slot: string, kicker: string, place: StartPlace): string {
+  const here = action === 'start';
   return `
-    <button type="button" class="euc-start${away ? '' : ' euc-start--here'}" data-menu="${action}"${away ? ` data-place="euclaude"` : ''}>
+    <button type="button" class="euc-start euc-start--${slot}${here ? ' euc-start--here' : ''}" data-menu="${action}"${here ? '' : ` data-place="${place}"`}>
       <span class="euc-start__art" data-note="start-art">${startPicture(place)}</span>
       <span class="euc-start__words">
-        <span class="euc-start__kicker"><span data-note="start-kicker">${kicker}</span>${away ? '<span class="euc-start__new" data-note="start-new">New</span>' : ''}</span>
+        <span class="euc-start__kicker" data-note="start-kicker">${kicker}</span>
         <span class="euc-start__place" data-note="start-place">${START_NAMES[place]}</span>
         <span class="euc-start__note" data-note="start-note">${START_NOTES[place]}</span>
       </span>
     </button>`;
+}
+
+/**
+ * The EUC NYC card. The picture is a yellow cab in front of three plain
+ * blocks and a rooftop water tower: generic on purpose, never a named
+ * landmark, roundel or slogan.
+ */
+export function spinOffCardTemplate(): string {
+  return `
+    <a class="euc-start euc-start--nyc" data-start-out="spin-off" href="${PROVENANCE.spinOffUrl}" rel="noopener">
+      <span class="euc-start__art">
+        <svg class="euc-start__picture" viewBox="0 0 20 16" aria-hidden="true" focusable="false">
+          <path class="euc-start__city"
+                d="M1 11V4.6h4.4V11zM6 11V2h4.6v9zM11.2 11V6h4.8v5zM12.4 4.7V2.5l1.2-1.2 1.2 1.2v2.2z
+                   M12.7 6V4.7h.5V6zM14 6V4.7h.5V6z"/>
+          <path class="euc-start__cab" fill-rule="evenodd"
+                d="M2 10.2l3.2-.2 1.6-2.8h1.8V6.3h1.8v.9h2l2.2 2.8 2.8.4c.6.1 1 .6 1 1.2V13H1.8l-.2-1
+                   c0-1 .1-1.6.4-1.8zM7.4 9.6l1-1.7h.9v1.7zM9.9 7.9h2.2l1.3 1.7H9.9z"/>
+          <path class="euc-start__wheels"
+                d="M4.1 13.2a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0zM13.1 13.2a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0z"/>
+        </svg>
+      </span>
+      <span class="euc-start__words">
+        <span class="euc-start__kicker">Spin-off</span>
+        <span class="euc-start__place">${PROVENANCE.spinOffTitle}</span>
+        <span class="euc-start__note">Leave for Manhattan in the other game</span>
+      </span>
+    </a>`;
 }
 
 const TITLE_TEMPLATE = `
@@ -1294,7 +1346,7 @@ const TITLE_TEMPLATE = `
     <h1 class="euc-menu__title" id="euc-title-heading">EUC&nbsp;<span class="accent">THRILLS</span></h1>
     <p class="euc-menu__tagline">One wheel. Total freedom. Ride anywhere.</p>
   </div>
-  <div class="euc-title__starts" role="group" aria-label="Start riding">${startCardTemplate('start', 'Start ride', 'town')}${startCardTemplate('start-place', 'New stage', 'euclaude')}
+  <div class="euc-title__starts" role="group" aria-label="Start riding">${startCardTemplate('start', 'town', 'Start ride', 'town')}${startCardTemplate('start-place', 'wharf', STAGE_KICKERS.euclaude, 'euclaude')}${startCardTemplate('start-place', 'yard', STAGE_KICKERS.skatepark, 'skatepark')}${spinOffCardTemplate()}
   </div>
   <div class="euc-title__modes" role="group" aria-label="Other ways to ride">
     <button type="button" class="euc-button euc-mode" data-menu="couch" hidden>
@@ -1311,7 +1363,7 @@ const TITLE_TEMPLATE = `
     </button>
     <button type="button" class="euc-button euc-mode" data-menu="trick-run">
       <span class="euc-button__label">Trick Run</span>
-      <span class="euc-button__note">Score tricks at Switchback Park</span>
+      <span class="euc-button__note">${trickRunNote(VENUE_LABELS[TRICK_RUN_DESTINATION])}</span>
     </button>
     <button type="button" class="euc-button euc-mode" data-menu="knockabout">
       <span class="euc-button__label">Knockabout</span>
@@ -1328,7 +1380,6 @@ const TITLE_TEMPLATE = `
   </div>
   <div class="euc-title__foot">
   ${riderChipTemplate()}
-  ${spinOffChipTemplate()}
   ${titleCreditTemplate()}
   </div>
 </div>
@@ -2223,7 +2274,7 @@ export type CouchBlockReason = 'no-targets' | 'no-room' | null;
  * three laps of *where*, which stopped being a constant the day a second lap
  * venue existed.
  */
-function couchBlockNote(reason: CouchBlockReason, venue: string): string {
+function couchBlockNote(reason: CouchBlockReason, venue: string, trickVenue: string): string {
   if (reason === 'no-targets') {
     return 'Choose Knockabout to build a fresh course with targets for everybody.';
   }
@@ -2236,7 +2287,7 @@ function couchBlockNote(reason: CouchBlockReason, venue: string): string {
   // The `'too-many-seats'` branch stood here until M37 (§37.1) and said
   // *"Knockabout is a two-player fight. Race and free ride take everybody."*
   // Nothing composes that reason any more, so nothing says it.
-  return modeChooserNote(venue);
+  return modeChooserNote(venue, trickVenue);
 }
 
 /**
@@ -2255,7 +2306,9 @@ function couchBlockNote(reason: CouchBlockReason, venue: string): string {
  * card but still in its text (`tests/m36_3.spec.ts` reads the panel, not the
  * region). A sentence describing a *different* mode is not a licence to put
  * that word on a card that must not use it, and "points for what they land"
- * is the truer description of the rule anyway.
+ * is the truer description of the rule anyway. `trickVenue` is the park that
+ * clock runs at (`trickVenueName`, 1.4.0), Switchback Park unless the loaded
+ * place hosts a run of its own.
  *
  * **"Everybody" rather than "two players" since M37** (§37.1, q167/q168):
  * Knockabout is a free-for-all at two, three and four, and the sentence that
@@ -2264,11 +2317,14 @@ function couchBlockNote(reason: CouchBlockReason, venue: string): string {
  * because it sits under a segmented control on a panel with a measured fit
  * (`tests/m25.spec.ts`'s twelve-viewport loop).
  */
-export function modeChooserNote(venue: string): string {
+export function modeChooserNote(
+  venue: string,
+  trickVenue: string = VENUE_LABELS[TRICK_RUN_DESTINATION],
+): string {
   return 'Free ride is riding, with nothing to win. Race is three laps of '
     + `${venue} from a standing grid. Knockabout gives everybody a paddle: `
     + 'first to five knockdowns takes the match. Trick Run gives everybody one '
-    + 'clock at Switchback Park and points for what they land. Police chase sets '
+    + `clock at ${trickVenue} and points for what they land. Police chase sets `
     + 'Officer Dorkins on everybody, unless one of you rides as him.';
 }
 
@@ -2392,9 +2448,11 @@ export function venueButtonTemplate(venue: VenueId): string {
  * are standing on is a no-op the door refuses anyway (`Game.pickVenue`), and
  * `disabled` is what keeps the pad's walk from stopping on it.
  *
- * **Four places since M44**, and the row's fit is `game.css`'s (`DESIGN.md`
- * §9t): one row of four everywhere it has the width, a two-by-two grid on a
- * phone, and the join panel's copy still one line of labels at its 832 px.
+ * **Five places since 1.4.0** (Foundry Yard is the fifth), and the row's fit
+ * is `game.css`'s (`DESIGN.md` §9t, §9z): one row sized by its words on the
+ * join panel (still one line of labels at its 832 px), three and two on the
+ * fresh-route panel, and two columns on a phone with the odd place taking the
+ * whole last row.
  */
 function venueChooserTemplate(idBase: string, note = '', label = 'Riding at'): string {
   const buttons = VENUE_IDS.map((venue) => venueButtonTemplate(venue)).join('');
@@ -2671,7 +2729,7 @@ function routesTemplate(seedMaxLength: number): string {
            hand-built park. -->
       <button type="button" class="euc-button" data-menu="trick-run" hidden>
         <span class="euc-button__label">Trick Run</span>
-        <span class="euc-button__note">Score tricks at Switchback Park</span>
+        <span class="euc-button__note">${trickRunNote(VENUE_LABELS[TRICK_RUN_DESTINATION])}</span>
       </button>
       <button type="button" class="euc-button" data-menu="copy-link" hidden>
         Copy a link to the route above
@@ -2880,6 +2938,13 @@ export class Menus {
    * without every caller having to know a venue exists.
    */
   private lapVenue = VENUE_LABELS.track;
+
+  /**
+   * The park a Trick Run would be ridden at, as `setWorld` last composed it —
+   * 1.4.0, `lapVenue`'s twin for the same reason: the couch paragraph that
+   * names it is rewritten on a press, not only on a world change.
+   */
+  private trickVenue = VENUE_LABELS[TRICK_RUN_DESTINATION];
 
   /**
    * Whether the loaded world closes a ring, as `setWorld` was last told.
@@ -3941,6 +4006,16 @@ export class Menus {
     // press would disagree the moment `Game.pickVenue` refused one.
     const trickRun = this.routes.querySelector<HTMLElement>('[data-menu="trick-run"]');
     if (trickRun) trickRun.hidden = !offersTrickRun(view.world);
+    // **And both of its notes name the park the press would ride** — 1.4.0,
+    // the second park. The title's button keeps a loaded park and brings
+    // Switchback otherwise; the routes panel's is drawn only at a park, so it
+    // names the loaded one. One rule (`trickVenueName`) answers both.
+    this.trickVenue = trickVenueName(view);
+    const trickNote = trickRunNote(this.trickVenue);
+    for (const panel of [this.title, this.routes]) {
+      const note = panel.querySelector<HTMLElement>('[data-menu="trick-run"] .euc-button__note');
+      if (note && note.textContent !== trickNote) note.textContent = trickNote;
+    }
 
     // The copy button stays generated-only: a link is only worth copying when
     // it carries a seed somebody else could not otherwise guess.
@@ -3962,37 +4037,29 @@ export class Menus {
   }
 
   /**
-   * The title's two start cards, from the loaded world (2026-10-22).
-   *
-   * The first names what Start ride will ride. The second offers the other
-   * headline place: Wheelhouse Wharf, or — while the Wharf is loaded — the
-   * town the game opens on, so a player can always pick between the two.
+   * The title's first card, from the loaded world (2026-10-22; four cards
+   * since 1.4.0). It names what Start ride will ride — or, while the Wharf or
+   * the yard is loaded (each has its own card), offers the town instead. The
+   * stage cards and the NYC card are fixed.
    */
   private writeStarts(view: WorldView): void {
-    const here: StartPlace = view.world === 'generated' ? (view.home === true ? 'town' : 'route') : view.world;
-    const away: StartPlace = view.world === 'euclaude' ? 'town' : 'euclaude';
-    const write = (card: HTMLElement | null, place: StartPlace, kicker: string, isNew: boolean): void => {
-      if (card === null) return;
-      const set = (note: string, text: string): void => {
-        const node = card.querySelector<HTMLElement>(`[data-note="${note}"]`);
-        if (node && node.textContent !== text) node.textContent = text;
-      };
-      set('start-kicker', kicker);
-      set('start-place', here === 'route' && place === 'route' ? `Fresh route · ${view.seed}` : START_NAMES[place]);
-      set('start-note', START_NOTES[place]);
-      const art = card.querySelector<HTMLElement>('[data-note="start-art"]');
-      if (art && art.dataset.place !== place) {
-        art.innerHTML = startPicture(place);
-        art.dataset.place = place;
-      }
-      const badge = card.querySelector<HTMLElement>('[data-note="start-new"]');
-      if (badge) badge.hidden = !isNew;
-      card.dataset.startPlace = place;
+    const { first, loadsTown } = startPlacesFor(view.world, view.home);
+    const card = this.title.querySelector<HTMLElement>('[data-menu="start"]');
+    if (card === null) return;
+    const set = (note: string, text: string): void => {
+      const node = card.querySelector<HTMLElement>(`[data-note="${note}"]`);
+      if (node && node.textContent !== text) node.textContent = text;
     };
-    write(this.title.querySelector<HTMLElement>('[data-menu="start"]'), here, 'Start ride', false);
-    const second = this.title.querySelector<HTMLElement>('[data-menu="start-place"]');
-    if (second && second.dataset.place !== away) second.dataset.place = away;
-    write(second, away, away === 'euclaude' ? 'New stage' : 'Or ride', away === 'euclaude');
+    set('start-place', first === 'route' ? `Fresh route · ${view.seed}` : START_NAMES[first]);
+    set('start-note', START_NOTES[first]);
+    const art = card.querySelector<HTMLElement>('[data-note="start-art"]');
+    if (art && art.dataset.art !== first) {
+      art.innerHTML = startPicture(first);
+      art.dataset.art = first;
+    }
+    if (loadsTown) card.dataset.place = 'town';
+    else delete card.dataset.place;
+    card.dataset.startPlace = first;
   }
 
   /**
@@ -4036,7 +4103,7 @@ export class Menus {
 
   private writeCouchNote(note: HTMLElement | null, reason: CouchBlockReason): void {
     if (note === null) return;
-    const text = couchBlockNote(reason, this.lapVenue);
+    const text = couchBlockNote(reason, this.lapVenue, this.trickVenue);
     if (note.textContent?.trim() !== text) note.textContent = text;
   }
 
@@ -4293,10 +4360,12 @@ export class Menus {
     const action = target.closest<HTMLElement>('[data-menu]')?.dataset.menu;
     if (action === undefined) return;
 
-    if (action === 'start') this.callbacks.onStartRide();
-    else if (action === 'start-place') {
-      const place = target.closest<HTMLElement>('[data-place]')?.dataset.place;
+    if (action === 'start' || action === 'start-place') {
+      // The card's own `data-place`, never a nested one: Start ride carries a
+      // place only while it offers the town from a stage that has its own card.
+      const place = target.closest<HTMLElement>('[data-menu]')?.dataset.place;
       if (place !== undefined) this.callbacks.onStartPlace(place);
+      else if (action === 'start') this.callbacks.onStartRide();
     }
     else if (action === 'challenge') this.callbacks.onStartChallenge();
     else if (action === 'knockabout') this.callbacks.onStartKnockabout();
@@ -4636,8 +4705,9 @@ export class Menus {
     // Reachable from the gamepad and nothing else: the keyboard walks menus by
     // native Tab, which the browser rings for us.
     this.padDriving = true;
-    // An outbound link (the spin-off chip, §46) leaves the game, so the pad's
-    // walk passes it by; About carries the same address for a pad.
+    // An outbound link marked `data-outbound` leaves the game, so the pad's
+    // walk passes it by. (The title's EUC NYC card is a pad stop on purpose:
+    // since 1.4.0 it is one of the four place cards.)
     const focusable = this.focusableControls().filter((node) => !node.hasAttribute('data-outbound'));
     if (focusable.length === 0) return;
 
