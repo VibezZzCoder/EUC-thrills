@@ -73,7 +73,7 @@ const TEMPLATE = `
   <button type="button" class="euc-touch__chip" data-touch-tap="reset"
           aria-label="Quick reset back to the start">RESET</button>
   <button type="button" class="euc-touch__chip" data-touch-tap="cameraCycle"
-          aria-label="Change camera view">VIEW</button>
+          aria-label="Next camera view; current: Chase">VIEW</button>
 </div>
 `;
 
@@ -161,6 +161,17 @@ export class TouchControls {
     (options.parent ?? document.body).appendChild(root);
     this.root = root;
     this.stick = root.querySelector<HTMLElement>('[data-touch-stick]') as HTMLElement;
+  }
+
+  /**
+   * Name the view the VIEW chip is on — 1.3.0 (§50). The chip stays the
+   * compact word; its accessible name says what a press does and where the
+   * camera is now. Written by the composition root on a change only.
+   */
+  setCameraView(label: string): void {
+    const chip = this.root.querySelector<HTMLElement>('[data-touch-tap="cameraCycle"]');
+    const name = `Next camera view; current: ${label}`;
+    if (chip !== null && chip.getAttribute('aria-label') !== name) chip.setAttribute('aria-label', name);
   }
 
   get visible(): boolean {

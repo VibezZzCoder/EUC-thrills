@@ -883,6 +883,15 @@ export class GameRenderer {
    * that is no longer seated) falls back to the seat of the same index.
    */
   private readonly paneSubjects: (RidingRig | null | undefined)[] = [];
+  /**
+   * The rig whose head a pane's camera sits inside, by view — 1.3.0's
+   * First-Person (§50). `renderView` hides that rig's neck subtree (head,
+   * helmet, face, hair) for that pane's pass only and shows it again in its
+   * `finally`, so another pane drawing the same rider still sees a whole
+   * rider and nothing outlives the pass. Set every frame by `Game.render`;
+   * `null` (the default) hides nothing.
+   */
+  private readonly paneEyeRigs: (RidingRig | null)[] = [];
 
   /** The world, built from a `LevelPlan`. Disposed and rebuilt with the level. */
   private terrain: TerrainView | null = null;
@@ -2912,6 +2921,11 @@ export class GameRenderer {
     this.paneSubjects[view] = rig;
   }
 
+  /** Which rig's head pane `view`'s camera is inside (First-Person), or null. */
+  setPaneEyeRig(view: number, rig: RidingRig | null): void {
+    this.paneEyeRigs[view] = rig;
+  }
+
   /** The rig pane `view` keeps whole, resolved against the seats as last synced. */
   private paneSubject(view: number): RidingRig | null {
     const rigs = this.paneShadowTrim.rigs;
@@ -3003,6 +3017,10 @@ export class GameRenderer {
     this.sun.shadow.updateMatrices(this.sun);
     this.squirrels?.prepareView(camera, this.viewCameras.length);
     this.population?.prepareView(camera, this.sun.castShadow ? this.sun.shadow.camera : undefined);
+    // First-Person (§50): the head this pane's eye sits in is not drawn here.
+    const eye = this.paneEyeRigs[view] ?? null;
+    const head = eye !== null && eye.rider.neck.visible ? eye.rider.neck : null;
+    if (head !== null) head.visible = false;
     try {
       // OD-3: in a split frame, this pane's shadow pass carries every other
       // seat rider's machine, torso and head, never their limbs, boots or
@@ -3011,6 +3029,7 @@ export class GameRenderer {
       this.renderer.render(this.scene, camera);
     } finally {
       this.paneShadowTrim.restore();
+      if (head !== null) head.visible = true;
       this.population?.restoreView();
       this.squirrels?.restoreView();
     }

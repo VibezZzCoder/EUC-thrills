@@ -50,6 +50,10 @@ function input(overrides: Partial<ChaseCameraInput> = {}): ChaseCameraInput {
     // And on the wheel by default, for the same reason: every M3, M4, and M5
     // assertion below was written against a camera with no crash framing in it.
     crashed: false,
+    // The body rides on the wheel unless a test throws it (1.3.1).
+    bodyX: overrides.x ?? 0,
+    bodyY: overrides.y ?? 0,
+    bodyZ: overrides.z ?? 0,
     ...overrides,
   };
 }
@@ -826,4 +830,91 @@ test('a reset clears the takeoff latch, and a reset onto a deck is where the nex
     camera.writeState(state);
     assert.ok(state.heightLag <= (y - DECK) * follow + 1e-12, `step ${k}: lag ${state.heightLag} read off the alley`);
   }
+});
+
+// --- The crash focus, 1.3.1 -------------------------------------------------
+
+/** The resolved view for one stepped state, at the wheel the input names. */
+function viewOf(camera: ChaseCamera, values: ChaseCameraInput) {
+  const state = createChaseCameraState();
+  camera.writeState(state);
+  const view = createChaseCameraView();
+  resolveChaseView(state, values, camera.tuning, view);
+  return { state, view };
+}
+
+test('riding, the crash focus is exactly nothing, even with a body reported off the wheel', () => {
+  const camera = new ChaseCamera();
+  const riding = input({ speed: 12, x: 3, z: 40, bodyX: 30, bodyY: 5, bodyZ: -20 });
+  camera.reset(riding);
+  run(camera, 2, riding);
+  const { state } = viewOf(camera, riding);
+  assert.equal(state.focusX, 0);
+  assert.equal(state.focusY, 0);
+  assert.equal(state.focusZ, 0);
+});
+
+test('a crash eases the focus off the wheel onto the body', () => {
+  const camera = new ChaseCamera();
+  camera.reset(input());
+  const down = input({ crashed: true, bodyX: 0, bodyZ: 4 });
+  camera.step(STEP, down);
+  const first = viewOf(camera, down).state.focusZ;
+  assert.ok(first > 0 && first < 0.4, `no snap on the first step: ${first}`);
+  run(camera, 3, down);
+  assert.ok(Math.abs(viewOf(camera, down).state.focusZ - 4) < 1e-3, 'on the body');
+});
+
+test('a wheel that rolls far beyond the rider leaves the rider in frame', () => {
+  // The owner's 65 mph wipeout (§50.2): the wheel rolls on 23 m past the
+  // rider. Before 1.3.1 the camera, hung off the wheel, stood 8 m past the
+  // body looking away from it.
+  const camera = new ChaseCamera();
+  const thrown = input({ z: 23, crashed: true, bodyX: 0, bodyZ: 0 });
+  camera.reset(thrown);
+  run(camera, 3, thrown);
+  const { state, view } = viewOf(camera, thrown);
+  const focusZ = thrown.z + state.focusZ;
+  assert.ok(Math.abs(focusZ) < 0.01, `on the body: ${focusZ}`);
+  // The camera stands behind the body along the heading and looks forward,
+  // past the body, toward the wheel that rolled on.
+  assert.ok(view.positionZ < 0, `camera behind the body: ${view.positionZ}`);
+  assert.ok(view.targetZ > view.positionZ);
+});
+
+test('recovery hands the camera back to the wheel without a cut', () => {
+  const camera = new ChaseCamera();
+  camera.reset(input({ z: 20 }));
+  run(camera, 2, input({ z: 20, crashed: true, bodyX: 0, bodyZ: 0 }));
+  // The crash ends with the rider back on the wheel where it stands.
+  const back = input({ z: 20 });
+  let previous = viewOf(camera, back).state.focusZ;
+  for (let i = 0; i < SIMULATION.hz * 3; i += 1) {
+    camera.step(STEP, back);
+    const now = viewOf(camera, back).state.focusZ;
+    assert.ok(Math.abs(now - previous) <= camera.tuning.crashFocusMaxRate * STEP + 1e-9, `step ${i} moved ${now - previous} m`);
+    previous = now;
+  }
+  assert.ok(Math.abs(previous) < 0.01, 'back on the wheel');
+});
+
+test('the obstruction probe is cast from the crash focus', () => {
+  const camera = new ChaseCamera();
+  const origins: number[] = [];
+  camera.setOcclusionProbe((origin) => { origins.push(origin.z); return null; });
+  camera.reset(input({ z: 23 }));
+  run(camera, 3, input({ z: 23, crashed: true, bodyX: 0, bodyZ: 0 }));
+  assert.ok(Math.abs(origins[origins.length - 1]) < 0.01, 'cast from the body, not the wheel 23 m on');
+});
+
+test('a recovery that places the rider elsewhere takes the focus with it in one step', () => {
+  const camera = new ChaseCamera();
+  camera.reset(input({ z: 20 }));
+  run(camera, 2, input({ z: 20, crashed: true, bodyX: 0, bodyZ: 0 }));
+  assert.ok(viewOf(camera, input({ z: 20 })).state.focusZ < -10);
+  // The last safe spot, 60 m away: the wheel is put there, not ridden there.
+  camera.step(STEP, input({ x: 60, z: 5 }));
+  const { state } = viewOf(camera, input({ x: 60, z: 5 }));
+  assert.equal(state.focusX, 0);
+  assert.equal(state.focusZ, 0);
 });

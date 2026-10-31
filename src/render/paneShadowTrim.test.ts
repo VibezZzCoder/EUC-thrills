@@ -171,6 +171,7 @@ function paneRenderer(views: number, rigs: readonly RidingRig[], draw: (view: nu
     population: null,
     paneShadowTrim: createPaneShadowTrim(),
     paneSubjects: [],
+    paneEyeRigs: [],
     scene: new THREE.Scene(),
     renderer: {
       setScissorTest(): void {},
@@ -318,6 +319,10 @@ test('the renderer trims per pane and restores in a finally; the game hands it t
   assert.ok(viewAt > 0, 'renderView moved');
   const view = renderer.slice(viewAt, renderer.indexOf('\n  }\n', viewAt));
   assert.match(view, /try \{\s*\/\/[^]*?this\.trimOtherRiders\(this\.viewCameras\.length, this\.paneSubject\(view\)\);\s*this\.renderer\.render\(this\.scene, camera\);\s*\} finally \{\s*this\.paneShadowTrim\.restore\(\);/);
+  // First-Person (1.3.0, §50): the pane's own head is hidden for its pass and
+  // put back in the same finally.
+  assert.match(view, /if \(head !== null\) head\.visible = false;\s*try \{/);
+  assert.match(view, /\} finally \{[^}]*if \(head !== null\) head\.visible = true;/);
   const quadAt = renderer.indexOf('  private renderPerfQuadFrame(');
   assert.ok(quadAt > 0, 'the quad probe frame moved');
   const quad = renderer.slice(quadAt, renderer.indexOf('\n  }\n', quadAt));

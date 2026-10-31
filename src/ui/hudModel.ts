@@ -1,8 +1,8 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { SPEED_UNITS, type SpeedUnit } from '../app/options.ts';
 import type { PowerStage } from '../simulation/EucController.ts';
 import type { RunPhase } from '../simulation/challenge.ts';
 import type { LapPhase } from '../simulation/trackDay.ts';
-import { SPEED_UNITS, type SpeedUnit } from '../app/options.ts';
 import { AUDIO, CHALLENGE, CHASE, TRACK_DAY } from '../data/tuning.ts';
 import { COP_CHARACTER } from '../data/riders.ts';
 import {
@@ -49,10 +49,22 @@ import {
 export type HudWarning = 'none' | 'notice' | 'warn' | 'tiltBack';
 
 /**
- * Re-exported so a consumer of the HUD does not have to know that the unit is
- * also a saved option. It is declared in `app/options.ts` because it persists.
+ * The speed lane shows both units at once, car-dashboard style (1.3.0, the
+ * owner's ask). km/h is the big figure by default, as it was the readout's
+ * default since M9; the Speed units setting picks which one is big (1.3.1).
  */
 export { SPEED_UNITS, type SpeedUnit };
+
+/** The unit printed small beside `unit`. */
+export function otherSpeedUnit(unit: SpeedUnit): SpeedUnit {
+  return unit === 'kph' ? 'mph' : 'kph';
+}
+
+/** How a unit is printed beside its figure. */
+export const SPEED_UNIT_LABELS: Readonly<Record<SpeedUnit, string>> = Object.freeze({
+  kph: 'km/h',
+  mph: 'mph',
+});
 
 /**
  * What a timed run tells the HUD, once per reading.
@@ -555,9 +567,15 @@ export interface MatchRowView {
 const NO_MATCH_ROWS: readonly MatchRowView[] = Object.freeze([]);
 
 export interface HudView {
-  /** Already rounded and ready to write. No units — the unit has its own element. */
+  /**
+   * Already rounded and ready to write, in `speedUnit`. No units — the unit
+   * has its own element.
+   */
   readonly speed: string;
+  /** The unit `speed` is in, which the Speed units setting picks. */
   readonly speedUnit: SpeedUnit;
+  /** The same speed in the other unit, for the smaller figure (1.3.0). */
+  readonly speedAlt: string;
   /** True while the rider is travelling backwards, which the number cannot show. */
   readonly reversing: boolean;
   /** One line, top-centre. Empty means the lane is not drawn at all. */
@@ -1575,10 +1593,21 @@ function warningFor(stage: PowerStage): HudWarning {
   return 'none';
 }
 
+/**
+ * A speed as a results card prints it, both units in the HUD's order:
+ * `93 km/h · 58 mph`, or `58 mph · 93 km/h` with mph big (1.3.0).
+ */
+export function formatSpeedPair(speedMetresPerSecond: number, unit: SpeedUnit = 'kph'): string {
+  const other = otherSpeedUnit(unit);
+  return `${formatSpeed(speedMetresPerSecond, unit)} ${SPEED_UNIT_LABELS[unit]}`
+    + ` · ${formatSpeed(speedMetresPerSecond, other)} ${SPEED_UNIT_LABELS[other]}`;
+}
+
 export interface HudModelOptions {
-  readonly speedUnit?: SpeedUnit;
   /** The one line at top-centre. M10 replaces this while a challenge runs. */
   readonly objective?: string;
+  /** The big unit; km/h when omitted. */
+  readonly speedUnit?: SpeedUnit;
 }
 
 export class HudModel {
@@ -1695,6 +1724,7 @@ export class HudModel {
       return {
         speed: formatSpeed(input.speed, this.speedUnit),
         speedUnit: this.speedUnit,
+        speedAlt: formatSpeed(input.speed, otherSpeedUnit(this.speedUnit)),
         reversing: false,
         objective: this.objectiveFor(input),
         countdown: countdownLabel(input),
@@ -1774,6 +1804,7 @@ export class HudModel {
     return {
       speed: formatSpeed(input.speed, this.speedUnit),
       speedUnit: this.speedUnit,
+      speedAlt: formatSpeed(input.speed, otherSpeedUnit(this.speedUnit)),
       reversing: input.speed < -0.1,
       objective: this.objectiveFor(input),
       countdown: countdownLabel(input),

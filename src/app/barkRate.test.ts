@@ -72,6 +72,7 @@ class PaneCamera {
   readonly camera = new PerspectiveCamera(65, 16 / 9, 0.1, 500);
   readonly input: ChaseCameraInput = {
     x: 0, y: 0, z: 0, headingY: 0, rollAngle: 0, speed: 0, groundY: 0, airborne: false, crashed: false,
+    bodyX: 0, bodyY: 0, bodyZ: 0,
   };
 
   follow(x: number, y: number, z: number, headingY: number, speed: number, reset = false): PerspectiveCamera {

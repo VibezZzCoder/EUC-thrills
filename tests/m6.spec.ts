@@ -354,9 +354,9 @@ test('a hazard triggers visible foot correction, and then gets out of the way', 
 
   await page.screenshot({ path: testInfo.outputPath('wobble-foot-correction.png') });
   await page.evaluate(() => {
-    window.game.setActions({ cameraCycle: true });
+    // Inspect by name since 1.3.0 put it at the end of the cycle (§50).
+    window.game.setCameraMode('orbit');
     window.game.advance(1);
-    window.game.setActions({ cameraCycle: false });
   });
   await page.screenshot({ path: testInfo.outputPath('wobble-foot-correction-inspection.png') });
 

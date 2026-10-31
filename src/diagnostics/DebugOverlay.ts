@@ -39,6 +39,8 @@ export interface DebugContext {
   consumed: Readonly<Record<string, number>>;
   euc: EucSnapshot;
   cameraMode: string;
+  /** Where the drawn view stands and what it aims at, preformatted (1.3.0, §50). */
+  cameraView: string;
   /** Spring-arm length actually in use, after any obstruction pull-in. */
   cameraDistance: number;
   cameraFov: number;
@@ -342,6 +344,7 @@ export class DebugOverlay {
       `${MS.format(context.cameraLookAhead)} m ahead  bank ${MS.format(context.cameraBank)} rad`,
     );
     this.set('camlag', `${MS.format(context.cameraYawLag)} rad behind heading`);
+    this.set('camview', context.cameraView);
 
     this.set('viewport', `${context.viewportWidth}x${context.viewportHeight} @${context.pixelRatio}x`);
     this.set('draws', `${COUNT.format(context.drawCalls)} draws  ${COUNT.format(context.triangles)} tris`);
@@ -536,6 +539,7 @@ export class DebugOverlay {
         ['camarm', 'arm'],
         ['camaim', 'aim'],
         ['camlag', 'yaw lag'],
+        ['camview', 'view'],
       ]],
       ['Render', [
         ['viewport', 'viewport'],

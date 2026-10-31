@@ -10,6 +10,13 @@ import type {
   ChaseCameraState,
   ChaseCameraView,
 } from '../render/chaseCamera.ts';
+import type { CameraViewId } from '../render/cameraPresets.ts';
+import type {
+  CameraBlend,
+  CinematicCamera,
+  CinematicInput,
+  CinematicState,
+} from '../render/cinematicCamera.ts';
 import type { RiderSource } from '../input/riderSource.ts';
 import type { OneFootPoseState } from './oneFootPose.ts';
 import type { Hud } from '../ui/hud.ts';
@@ -22,9 +29,11 @@ import type { Onboarding } from '../ui/onboarding.ts';
  * Defined here rather than in `Game.ts` since M25 Phase 3, because it became
  * a property of a seat the moment `cameraCycle` started acting per seat. The
  * list of modes and the cycling stay in the composition root; this is only
- * the name of the thing a seat holds.
+ * the name of the thing a seat holds. **1.3.0 widened it to the eleven views
+ * of `render/cameraPresets.ts`** (§50); `'chase'` and `'orbit'` keep their
+ * names and meanings, the latter now labelled "Inspect".
  */
-export type CameraMode = 'chase' | 'orbit';
+export type CameraMode = CameraViewId;
 
 /**
  * The seat model — what "the player" becomes at M25 (docs/PLANS.md §25.3).
@@ -257,6 +266,48 @@ export interface RiderSeat {
   /** The diagnostic orbit's angle, at the two most recent steps. */
   orbitAngle: number;
   previousOrbitAngle: number;
+
+  // -- The rider-relative views — 1.3.0 (§50) --------------------------------
+
+  /**
+   * The view this pane is actually drawing: `cameraMode`, except that a crash
+   * from First-Person or Action draws the native chase's crash framing until
+   * the rider is back up. Written only by the fixed step, which is where a
+   * change between the two starts the local blend; never saved, never a choice.
+   */
+  shownMode: CameraMode;
+  /**
+   * This seat's own cinematic solver — its side choice, Director phase and
+   * scratch. One per seat for the reason the chase camera is one per seat: it
+   * carries accumulated state about *this* rider. Stepped only while a
+   * cinematic view is shown; snapped onto the view on every entry.
+   */
+  readonly cinematic: CinematicCamera;
+  readonly previousCinematic: CinematicState;
+  readonly currentCinematic: CinematicState;
+  readonly renderCinematic: CinematicState;
+  /** This seat's cinematic input, filled from a pose and read immediately. */
+  readonly cinematicInput: CinematicInput;
+  /** The local blend between the last view drawn and the one now shown. */
+  readonly cameraBlend: CameraBlend;
+  /**
+   * What this pane last drew — written at the end of `placeCamera`, read by
+   * the next view change to seed its blend, the snapshot and F3.
+   */
+  readonly drawnView: ChaseCameraView;
+  /** The rider the drawn view was framed around, so a blend can be held relative to him. */
+  readonly drawnAt: { x: number; y: number; z: number };
+  /** Whether `drawnView` holds a real frame yet; no blend is seeded from nothing. */
+  drawnValid: boolean;
+  /**
+   * The view the last return pane was written for (`writeReturnPane`), so
+   * its half-angle takes the same trim rule the camera does.
+   */
+  paneMode: CameraMode;
+  /** Scratch for the selected view resolved at the fixed step (`writeReturnPane`). */
+  readonly stepView: ChaseCameraView;
+  /** Simulation time until which the HUD names the view just chosen, s. */
+  cameraNoticeUntil: number;
 
   /**
    * This seat's HUD, or `null` when the seat has no half of the screen.

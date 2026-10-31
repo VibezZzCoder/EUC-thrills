@@ -10,6 +10,7 @@ import {
   formatDelta,
   formatRunTime,
   formatSpeed,
+  formatSpeedPair,
   type ChallengeHudInput,
   type ChaseCopHudInput,
   type HudInput,
@@ -66,7 +67,7 @@ function at(input: Partial<HudInput>): HudInput {
   return { ...RIDING, ...input };
 }
 
-test('speed reads as whole units in the unit the player chose', () => {
+test('speed reads as whole units in either unit', () => {
   assert.equal(formatSpeed(10, 'kph'), '36');
   assert.equal(formatSpeed(10, 'mph'), '22');
   // Reverse shows its magnitude — the number cannot carry a sign the player
@@ -189,13 +190,36 @@ test('reset forgets the dwell timers', () => {
   assert.equal(view.offRoute, false);
 });
 
-test('the unit can change while the game runs', () => {
-  const hud = new HudModel({ speedUnit: 'mph' });
-  assert.equal(hud.update(0, at({ speed: 10 })).speed, '22');
-  hud.setSpeedUnit('kph');
+test('both units are reported at once, km/h big and mph beside it (1.3.0)', () => {
+  const hud = new HudModel();
   const view = hud.update(0, at({ speed: 10 }));
-  assert.equal(view.speed, '36');
   assert.equal(view.speedUnit, 'kph');
+  assert.equal(view.speed, '36');
+  assert.equal(view.speedAlt, '22');
+  // Reversing shows both magnitudes, and a crash still reports both.
+  const back = hud.update(0.01, at({ speed: -5 }));
+  assert.equal(back.speed, '18');
+  assert.equal(back.speedAlt, '11');
+  const down = hud.update(0.02, at({ speed: 3, crashed: true }));
+  assert.equal(down.speed, '11');
+  assert.equal(down.speedAlt, '7');
+  // The results cards print the pair in the same order.
+  assert.equal(formatSpeedPair(26), '94 km/h · 58 mph');
+  assert.equal(formatSpeedPair(0), '0 km/h · 0 mph');
+});
+
+test('the Speed units setting swaps which unit is big (1.3.1)', () => {
+  const hud = new HudModel({ speedUnit: 'mph' });
+  const view = hud.update(0, at({ speed: 10 }));
+  assert.equal(view.speedUnit, 'mph');
+  assert.equal(view.speed, '22');
+  assert.equal(view.speedAlt, '36');
+  hud.setSpeedUnit('kph');
+  const back = hud.update(0.01, at({ speed: 10 }));
+  assert.equal(back.speedUnit, 'kph');
+  assert.equal(back.speed, '36');
+  assert.equal(back.speedAlt, '22');
+  assert.equal(formatSpeedPair(26, 'mph'), '58 mph · 94 km/h');
 });
 
 // --- The challenge lane, M10 ------------------------------------------------

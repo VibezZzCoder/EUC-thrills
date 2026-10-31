@@ -402,13 +402,23 @@ test('a choice row is one named group of aria-pressed buttons, one per value', (
   assert.deepEqual(ON_OFF_CHOICES.map((c) => c.value), ['off', 'on']);
 });
 
-test('frame rate limits at or above the display rate are not offered; Auto always is', () => {
+test('the display\'s own rate is offered, faster limits are not, and Auto always is', () => {
   assert.deepEqual(frameRateOffers(null), ['auto', '120', '60', '30']);
-  assert.deepEqual(frameRateOffers(60), ['auto', '30']);
-  assert.deepEqual(frameRateOffers(59.94), ['auto', '30']);
-  assert.deepEqual(frameRateOffers(120), ['auto', '60', '30']);
+  // A 60 Hz screen offers 60 — measured a hair under or over.
+  assert.deepEqual(frameRateOffers(60), ['auto', '60', '30']);
+  assert.deepEqual(frameRateOffers(59.94), ['auto', '60', '30']);
+  assert.deepEqual(frameRateOffers(60.3), ['auto', '60', '30']);
+  // A 120 Hz panel measuring 119.9 offers 120.
+  assert.deepEqual(frameRateOffers(120), ['auto', '120', '60', '30']);
+  assert.deepEqual(frameRateOffers(119.9), ['auto', '120', '60', '30']);
+  // 144 is not a fixed choice; everything under it is offered.
   assert.deepEqual(frameRateOffers(144), ['auto', '120', '60', '30']);
-  assert.deepEqual(frameRateOffers(30), ['auto']);
+  // Clearly slower screens hide the limits above them.
+  assert.deepEqual(frameRateOffers(90), ['auto', '60', '30']);
+  assert.deepEqual(frameRateOffers(75), ['auto', '60', '30']);
+  assert.deepEqual(frameRateOffers(50), ['auto', '30']);
+  assert.deepEqual(frameRateOffers(30), ['auto', '30']);
+  assert.deepEqual(frameRateOffers(24), ['auto']);
 });
 
 // -- M39 Part P: the chase on the couch's two doors and its wheel ------------

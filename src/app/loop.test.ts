@@ -438,6 +438,9 @@ function ride(scheduler: FakeScheduler, displayHz: number, count: number, fromMs
 
 for (const [displayHz, cap, every] of [
   [60, 30, 2], [120, 60, 2], [120, 30, 4], [144, 60, 3], [240, 120, 2], [60, 60, 1], [60, 120, 1],
+  // A limit equal to the display's own rate (offered since 1.3.0) draws every
+  // frame even when the screen measures a hair fast or slow.
+  [59.94, 60, 1], [60.3, 60, 1], [119.88, 120, 1],
 ] as const) {
   test(`a ${cap} limit on a ${displayHz} Hz display draws every ${every} frame(s), evenly`, () => {
     const { loop, scheduler, renders } = harness();

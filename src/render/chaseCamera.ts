@@ -59,6 +59,18 @@ import type { Vec3 } from '../simulation/world.ts';
  * the ordinary view back rather than make the player wait for the camera to
  * finish being cinematic.
  *
+ * **1.3.1 moves where a crash is framed from.** Until then everything above
+ * hung off the wheel, and a riderless wheel at speed rolls on long after the
+ * rider has slid to a stop: on a 65 mph wipeout the camera drove past the
+ * body inside a second and spent the next three looking at the wheel with the
+ * rider behind it. Now a crash eases the camera's focus off the wheel onto
+ * the rider's body (`focusX`/`focusY`/`focusZ`, an offset from the wheel).
+ * The arm still stands back along the heading, so a wheel that rolls on ahead
+ * of the rider — the usual case — stays in shot beyond them. A midpoint aim
+ * was tried first and lost the body at 65 mph: the wheel outran the easing
+ * and the short early arm let the body slip under the camera. Exactly zero
+ * whenever the rider is on the wheel.
+ *
  */
 
 /** Every number the chase camera reads. Plain data, so a test can state its own. */
@@ -122,7 +134,10 @@ export interface ChaseCameraTuning {
   crashFov: number;
   crashFrameSeconds: number;
   crashRestoreSeconds: number;
-
+  /** Time constant the crash focus follows the body with, s (1.3.1). */
+  crashFocusSeconds: number;
+  /** The fastest the focus moves against the wheel, m/s (1.3.1). */
+  crashFocusMaxRate: number;
 }
 
 export function defaultChaseCameraTuning(): ChaseCameraTuning {
@@ -170,7 +185,8 @@ export function defaultChaseCameraTuning(): ChaseCameraTuning {
     crashFov: CAMERA.crashFov,
     crashFrameSeconds: CAMERA.crashFrameSeconds,
     crashRestoreSeconds: CAMERA.crashRestoreSeconds,
-
+    crashFocusSeconds: CAMERA.crashFocusSeconds,
+    crashFocusMaxRate: CAMERA.crashFocusMaxRate,
   };
 }
 
@@ -204,6 +220,14 @@ export interface ChaseCameraInput {
    * followed the rider's tumble frame by frame would be needlessly disorienting.
    */
   crashed: boolean;
+  /**
+   * Where the rider's body is, world metres (1.3.1): the ragdoll's pelvis
+   * while the rider is thrown, and the wheel's own `x`/`y`/`z` otherwise.
+   * Read only while `crashed`.
+   */
+  bodyX: number;
+  bodyY: number;
+  bodyZ: number;
 }
 
 /**
@@ -249,6 +273,14 @@ export interface ChaseCameraState {
    * its first argument exactly.
    */
   crashFrame: number;
+  /**
+   * Where the camera is centred, as an offset from the wheel, metres (1.3.1).
+   * Zero whenever the rider is on the wheel; during a crash it eases toward
+   * the rider's body. See the file comment.
+   */
+  focusX: number;
+  focusY: number;
+  focusZ: number;
 }
 
 export function createChaseCameraState(): ChaseCameraState {
@@ -262,6 +294,9 @@ export function createChaseCameraState(): ChaseCameraState {
     heightLag: 0,
     dip: 0,
     crashFrame: 0,
+    focusX: 0,
+    focusY: 0,
+    focusZ: 0,
   };
 }
 
@@ -275,6 +310,9 @@ export function copyChaseCameraState(from: ChaseCameraState, to: ChaseCameraStat
   to.heightLag = from.heightLag;
   to.dip = from.dip;
   to.crashFrame = from.crashFrame;
+  to.focusX = from.focusX;
+  to.focusY = from.focusY;
+  to.focusZ = from.focusZ;
 }
 
 export function lerpChaseCameraState(
@@ -292,6 +330,9 @@ export function lerpChaseCameraState(
   out.heightLag = lerp(from.heightLag, to.heightLag, alpha);
   out.dip = lerp(from.dip, to.dip, alpha);
   out.crashFrame = lerp(from.crashFrame, to.crashFrame, alpha);
+  out.focusX = lerp(from.focusX, to.focusX, alpha);
+  out.focusY = lerp(from.focusY, to.focusY, alpha);
+  out.focusZ = lerp(from.focusZ, to.focusZ, alpha);
 }
 
 /** Where the camera goes and what it looks at. Filled in place; no allocation. */
@@ -368,6 +409,13 @@ export class ChaseCamera {
   private heightLag = 0;
   private dip = 0;
   private crashFrame = 0;
+  private focusX = 0;
+  private focusY = 0;
+  private focusZ = 0;
+  /** The wheel on the previous step, for telling a placement from travel. */
+  private lastX = Number.NaN;
+  private lastZ = Number.NaN;
+  private lastSpeed = 0;
 
   // -- The takeoff latch (M44) ------------------------------------------------
   // Private, and deliberately not on `ChaseCameraState`: nothing interpolates
@@ -439,6 +487,12 @@ export class ChaseCamera {
     this.heightLag = 0;
     this.dip = 0;
     this.crashFrame = 0;
+    this.focusX = 0;
+    this.focusY = 0;
+    this.focusZ = 0;
+    this.lastX = input.x;
+    this.lastZ = input.z;
+    this.lastSpeed = input.speed;
     // A snap is a new place: no flight carries across it. A rider snapped onto
     // the ground is standing on the ground a flight would leave from; one
     // snapped into the air has stood on nothing yet (M44).
@@ -485,6 +539,32 @@ export class ChaseCamera {
       Infinity,
       dt,
     );
+
+    // -- Crash focus (1.3.1): keep the rider, not just the wheel, in shot ---
+    // On the body while the rider is down, on the wheel otherwise — a zero
+    // target, so riding is untouched.
+    const focusWeight = input.crashed ? 1 : 0;
+    const bodyDX = input.bodyX - input.x;
+    const bodyDY = input.bodyY - input.y;
+    const bodyDZ = input.bodyZ - input.z;
+    // A wheel that moved further than it could travel was *put* somewhere —
+    // a crash recovery at the last safe spot, a respawn — and the camera has
+    // always moved with it in one step; the focus goes with it rather than
+    // gliding across the map from where the body lay. The bench's teleport
+    // rule (`movedByReset`): the faster speed's travel plus a metre.
+    const travel = Math.hypot(input.x - this.lastX, input.z - this.lastZ);
+    const placed = travel > Math.max(Math.abs(input.speed), Math.abs(this.lastSpeed)) * dt + 1;
+    this.lastX = input.x;
+    this.lastZ = input.z;
+    this.lastSpeed = input.speed;
+    if (placed) {
+      this.focusX = 0;
+      this.focusY = 0;
+      this.focusZ = 0;
+    }
+    this.focusX = approach(this.focusX, bodyDX * focusWeight, t.crashFocusSeconds, t.crashFocusMaxRate, dt);
+    this.focusY = approach(this.focusY, bodyDY * focusWeight, t.crashFocusSeconds, t.crashFocusMaxRate, dt);
+    this.focusZ = approach(this.focusZ, bodyDZ * focusWeight, t.crashFocusSeconds, t.crashFocusMaxRate, dt);
 
     // -- Terrain visibility: aim at ground the rider has not reached yet ----
     // Expressed as seconds of travel, so it scales with speed for free.
@@ -640,6 +720,9 @@ export class ChaseCamera {
     target.heightLag = this.heightLag;
     target.dip = this.dip;
     target.crashFrame = this.crashFrame;
+    target.focusX = this.focusX;
+    target.focusY = this.focusY;
+    target.focusZ = this.focusZ;
   }
 
   /**
@@ -660,20 +743,24 @@ export class ChaseCamera {
     if (this.probe === null) return Infinity;
     const t = this.tuning;
 
-    const anchorY = input.y - this.heightLag + t.anchorHeight;
-    const desiredX = input.x - Math.sin(this.yaw) * this.distance;
-    const desiredY = input.y + t.armHeight;
-    const desiredZ = input.z - Math.cos(this.yaw) * this.distance;
+    // From the crash focus, which is the wheel itself whenever riding.
+    const centreX = input.x + this.focusX;
+    const centreY = input.y + this.focusY;
+    const centreZ = input.z + this.focusZ;
+    const anchorY = centreY - this.heightLag + t.anchorHeight;
+    const desiredX = centreX - Math.sin(this.yaw) * this.distance;
+    const desiredY = centreY + t.armHeight;
+    const desiredZ = centreZ - Math.cos(this.yaw) * this.distance;
 
-    const dx = desiredX - input.x;
+    const dx = desiredX - centreX;
     const dy = desiredY - anchorY;
-    const dz = desiredZ - input.z;
+    const dz = desiredZ - centreZ;
     const length = Math.hypot(dx, dy, dz);
     if (length <= 1e-6) return Infinity;
 
-    this.probeOrigin.x = input.x;
+    this.probeOrigin.x = centreX;
     this.probeOrigin.y = anchorY;
-    this.probeOrigin.z = input.z;
+    this.probeOrigin.z = centreZ;
     this.probeDirection.x = dx;
     this.probeDirection.y = dy;
     this.probeDirection.z = dz;
@@ -708,20 +795,23 @@ export function resolveChaseView(
   tuning: ChaseCameraTuning,
   out: ChaseCameraView,
 ): void {
-  const anchorY = input.y - state.heightLag + tuning.anchorHeight - state.dip;
+  // The crash focus is exactly zero while riding (1.3.1).
+  const centreX = input.x + state.focusX;
+  const centreZ = input.z + state.focusZ;
+  const anchorY = input.y + state.focusY - state.heightLag + tuning.anchorHeight - state.dip;
   const extension = state.distance > 1e-6 ? state.armDistance / state.distance : 1;
   // Higher as well as further back during a crash, so a rider on the ground
   // beside a wheel that is still rolling both fit in the shot. Zero crash
   // frame returns `tuning.armHeight` exactly.
   const armHeight = lerp(tuning.armHeight, tuning.crashArmHeight, state.crashFrame);
 
-  out.positionX = input.x - Math.sin(state.yaw) * state.armDistance;
+  out.positionX = centreX - Math.sin(state.yaw) * state.armDistance;
   out.positionY = anchorY + (armHeight - tuning.anchorHeight) * extension;
-  out.positionZ = input.z - Math.cos(state.yaw) * state.armDistance;
+  out.positionZ = centreZ - Math.cos(state.yaw) * state.armDistance;
 
-  out.targetX = input.x + Math.sin(input.headingY) * state.lookAhead;
+  out.targetX = centreX + Math.sin(input.headingY) * state.lookAhead;
   out.targetY = anchorY;
-  out.targetZ = input.z + Math.cos(input.headingY) * state.lookAhead;
+  out.targetZ = centreZ + Math.cos(input.headingY) * state.lookAhead;
 
   out.fov = state.fov;
   out.roll = state.bank;

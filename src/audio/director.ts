@@ -290,8 +290,8 @@ export function createAudioFrame(): AudioFrame {
  * everything under `audio/` except `samples.ts` runs headlessly under
  * `node --test` with no bundler and no DOM, and it stays that way by owing
  * nothing to `app/`, `data/`, or `ui/`. The composition root maps one to the
- * other, which is the same route `quality` and `speedUnit` already take out of
- * the options store.
+ * other, which is the same route `quality` already takes out of the options
+ * store.
  *
  * It lives in *this* file rather than in `sink.ts` since M25 Phase 5, because
  * a `TransientCue` names the voice it wants and a cue is this file's.

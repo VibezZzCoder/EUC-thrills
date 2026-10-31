@@ -794,7 +794,7 @@ function chaseRide(plan: LevelPlan, script: 'follower' | 'evader', pace: number,
   const top = Math.sqrt(outlaw.brain.driveAcceleration / outlaw.brain.dragCoefficient);
   outlaw.brain.cutoutMarginShare = pace / (top * outlaw.brain.cutoutSpeedShare);
   const camera = new ChaseCamera(), state = createChaseCameraState(), view = createChaseCameraView();
-  const input = { x: 0, y: 0, z: 0, headingY: 0, rollAngle: 0, speed: 0, groundY: 0, airborne: false, crashed: false };
+  const input = { x: 0, y: 0, z: 0, headingY: 0, rollAngle: 0, speed: 0, groundY: 0, airborne: false, crashed: false, bodyX: 0, bodyY: 0, bodyZ: 0 };
   const fill = (): void => {
     const pose = outlaw.body.pose;
     input.x = pose.x; input.y = pose.y; input.z = pose.z; input.headingY = pose.headingY; input.rollAngle = pose.rollAngle;

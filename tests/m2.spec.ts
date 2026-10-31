@@ -1012,7 +1012,10 @@ test('quick reset puts the rider back at the spawn from the keyboard', async ({ 
 // was rigid, which was M2's placeholder and is exactly what M3 replaced. Every
 // claim about where the camera is now lives in `tests/m3.spec.ts`.
 
-test('C cycles to the inspection camera without disturbing the ride', async ({ page }) => {
+test('C walks the eleven views to the inspection camera and back to chase without disturbing the ride', async ({ page }) => {
+  // 1.3.0 (§50): C used to toggle chase ↔ inspection. It now walks the whole
+  // cycle — Inspect is the eleventh stop — and the ride underneath is the
+  // same ride at every stop.
   await boot(page);
 
   await page.evaluate(() => {
@@ -1021,17 +1024,32 @@ test('C cycles to the inspection camera without disturbing the ride', async ({ p
   });
   const before = await page.evaluate(() => window.game.snapshot());
 
-  await page.keyboard.press('KeyC');
+  const walked: string[] = [];
+  for (let press = 0; press < 10; press += 1) {
+    await page.keyboard.press('KeyC');
+    walked.push(await page.evaluate(() => {
+      window.game.advance(1);
+      return window.game.snapshot().camera.mode;
+    }));
+  }
+  // Ten steps of the same held throttle: the ride carried on, unslowed.
+  const walkedSpeed = await page.evaluate(() => window.game.snapshot().euc.speed);
+  expect(walked).toEqual([
+    'action', 'firstPerson', 'avenue', 'elevated', 'side',
+    'crossroads', 'overlook', 'architecture', 'director', 'orbit',
+  ]);
   const orbiting = await page.evaluate(() => {
-    window.game.advance(1);
+    window.game.advance(60);
     return { snapshot: window.game.snapshot(), camera: window.qa.cameraTransform() };
   });
 
   expect(orbiting.snapshot.camera.mode).toBe('orbit');
+  expect(orbiting.snapshot.camera.label).toBe('Inspect');
   expect(orbiting.camera.mode).toBe('orbit');
   // The orbit is centred on the rider now, not on the world origin.
   expect(orbiting.camera.distanceToRider).toBeLessThan(5);
-  expect(orbiting.snapshot.euc.speed).toBeCloseTo(before.euc.speed, 1);
+  expect(walkedSpeed).toBeGreaterThanOrEqual(before.euc.speed - 0.05);
+  expect(walkedSpeed).toBeLessThan(before.euc.speed + 1);
 
   await page.keyboard.press('KeyC');
   const back = await page.evaluate(() => {

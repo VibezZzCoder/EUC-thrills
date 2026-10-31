@@ -13,6 +13,7 @@ import { PopulationPhysicalCertificates } from '../simulation/populationPhysical
 import { PopulationCompactAnticipationHistory, type CompactAnticipationOwner, type CompactOwnerComponent } from '../simulation/populationCompactAnticipation.ts';
 import { commitPopulationPhysicalTransaction } from '../simulation/populationPhysicalTransaction.ts';
 import { PopulationOwnerSerialHistory } from '../simulation/populationOwnerSerials.ts';
+import { RD_PELVIS } from '../simulation/ragdoll.ts';
 import { populationPhysicalReactionAllowed } from '../simulation/populationPhysicalReactionAdmission.ts';
 import { resolvePopulationCompoundMotionBatch } from '../simulation/populationCompound.ts';
 import { PopulationSimulation, createPopulationPresentationSnapshot, type PopulationFootprint, type PopulationOccupant,
@@ -21,7 +22,7 @@ import type { EucDynamicWorld, EucPreparedStep } from '../simulation/EucControll
 import { StreetLoops } from '../simulation/streetLoops.ts';
 import * as THREE from 'three';
 import {
-  INSPECTION_CAMERA, CAMERA, CHALLENGE, CHASE, CONTACT, EUC, INPUT, KNOCKABOUT, RIDER, TARGET,
+  INSPECTION_CAMERA, CINEMATIC_CAMERA, CAMERA, CHALLENGE, CHASE, CONTACT, EUC, INPUT, KNOCKABOUT, RIDER, TARGET,
   RENDER, SIMULATION, TRICK_RUN, WHEEL,
 } from '../data/tuning.ts';
 import { LiveTuning } from '../data/liveTuning.ts';
@@ -47,8 +48,32 @@ import {
   lerpChaseCameraState,
   resolveChaseView,
   type ChaseCameraInput,
+  type ChaseCameraView,
   type OcclusionProbe,
 } from '../render/chaseCamera.ts';
+import {
+  CAMERA_VIEW_LABELS,
+  CINEMATIC_PROFILES,
+  DEFAULT_CAMERA_VIEW,
+  isCameraViewId,
+  isCinematicView,
+  nextCameraView,
+} from '../render/cameraPresets.ts';
+import {
+  CinematicCamera,
+  applyCameraBlend,
+  beginCameraBlend,
+  cameraBlendWeight,
+  copyCinematicState,
+  createCameraBlend,
+  createCinematicInput,
+  createCinematicState,
+  endCameraBlend,
+  lerpCinematicState,
+  resolveCinematicView,
+  stepCameraBlend,
+  type CinematicInput,
+} from '../render/cinematicCamera.ts';
 import {
   DEFAULT_LEVEL,
   DEFAULT_SEED,
@@ -300,7 +325,7 @@ import {
   HudModel,
   formatDelta,
   formatRunTime,
-  formatSpeed,
+  formatSpeedPair,
   type ChaseCopHudInput,
   type ChaseSpectatorStatus,
   type HudInput,
@@ -582,7 +607,6 @@ type RouteArrival = RouteDestination | 'choose';
 type RenderTierTrigger =
   | 'boot' | 'options' | 'couch-open' | 'seat-spawn' | 'couch-close' | 'title' | 'world';
 
-const CAMERA_MODES: readonly CameraMode[] = ['chase', 'orbit'];
 
 /**
  * The empty action list, for states that take no ride input.
@@ -592,6 +616,9 @@ const CAMERA_MODES: readonly CameraMode[] = ['chase', 'orbit'];
  * title screen.
  */
 const NO_ACTIONS: readonly never[] = Object.freeze([]);
+
+/** F3's camera view row: two decimals, no allocation beyond the string (§50). */
+const MS_VIEW = (value: number): string => value.toFixed(2);
 
 /** One pursuer as a browser spec sees him — M39 Part P (`GameSnapshot.chase.pursuers`). */
 export interface ChasePursuerSnapshot {
@@ -872,6 +899,35 @@ export interface GameSnapshot {
     readonly crashFrame: number;
     /** True while a QA-scripted obstruction is installed. */
     readonly scriptedOcclusion: boolean;
+    // -- 1.3.0, the rider-relative views (§50) ------------------------------
+    /** The selected view's player-facing name ("Side Tracking"). */
+    readonly label: string;
+    /** The view drawn: `mode`, or `'chase'` while First-Person/Action defer to the crash framing. */
+    readonly shown: CameraMode;
+    /** The host's saved view for new rides (Settings → Default camera). */
+    readonly defaultMode: CameraMode;
+    /** What this pane last drew, after the blend: world position, aim, vertical FOV (rad, before trim and split) and roll. */
+    readonly view: {
+      readonly position: { readonly x: number; readonly y: number; readonly z: number };
+      readonly target: { readonly x: number; readonly y: number; readonly z: number };
+      readonly fov: number;
+      readonly roll: number;
+    };
+    /** The cinematic solver's stepped state, side and Director phase (meaningful while one is shown). */
+    readonly cinematic: {
+      readonly yaw: number;
+      readonly radius: number;
+      readonly height: number;
+      readonly lookYaw: number;
+      readonly lookAhead: number;
+      readonly lookHeight: number;
+      readonly extension: number;
+      readonly fov: number;
+      readonly side: number;
+      readonly directorPhase: number;
+    };
+    /** The local view blend's progress, 0..1; 1 is no blend. */
+    readonly blend: number;
   };
   /** Live particle counts, for the QA bridge and the resource audit (M5). */
   readonly particles: { readonly sparks: number; readonly dust: number };
@@ -1927,6 +1983,11 @@ export class Game {
   private readonly copBearing = { bearing: Number.NaN, range: Number.POSITIVE_INFINITY };
   /** One pane per human chair for the every-pane return predicate, built once; `panes` is refilled from these. */
   private readonly paneSlots: readonly { x: number; z: number; headingY: number }[] =
+    Array.from({ length: COUCH_SEATS }, () => ({ x: 0, z: 0, headingY: 0 }));
+  /** Scratch for the QA snapshot's half-angles; never one of `panes`. */
+  private readonly snapshotPane = { x: 0, z: 0, headingY: 0 };
+  /** A second pane per chair while its view blends (1.3.0, §50): the view it is leaving. */
+  private readonly blendPaneSlots: readonly { x: number; z: number; headingY: number }[] =
     Array.from({ length: COUCH_SEATS }, () => ({ x: 0, z: 0, headingY: 0 }));
   /**
    * The widest horizontal half-angle any human pane showed at the last
@@ -3505,6 +3566,7 @@ export class Game {
     consumed: {},
     euc: {} as EucSnapshot,
     cameraMode: 'chase',
+    cameraView: '',
     cameraDistance: 0,
     cameraFov: 0,
     cameraLookAhead: 0,
@@ -4224,10 +4286,26 @@ export class Game {
         groundY: 0,
         airborne: false,
         crashed: false,
+        bodyX: 0,
+        bodyY: 0,
+        bodyZ: 0,
       },
       cameraMode: 'chase',
       orbitAngle: 0,
       previousOrbitAngle: 0,
+      shownMode: 'chase',
+      paneMode: 'chase',
+      cinematic: new CinematicCamera(),
+      previousCinematic: createCinematicState(),
+      currentCinematic: createCinematicState(),
+      renderCinematic: createCinematicState(),
+      cinematicInput: createCinematicInput(),
+      cameraBlend: createCameraBlend(),
+      drawnView: createChaseCameraView(),
+      drawnAt: { x: 0, y: 0, z: 0 },
+      drawnValid: false,
+      stepView: createChaseCameraView(),
+      cameraNoticeUntil: -1,
 
       // The HUD's *model* is built here; the DOM it drives is mounted
       // separately by `mountSeatHud`, because a second `.euc-hud` in the
@@ -5309,6 +5387,29 @@ export class Game {
   }
 
   /**
+   * Put a seat's camera on a named view — 1.3.0 (§50). **Bridge only**, for
+   * the diagnostic captures that used to reach Inspect with one press: since
+   * Inspect moved to the end of an eleven-view cycle, a capture asking for it
+   * by name is honest where ten scripted presses would be a test of the cycle.
+   * The same door as a press (`selectCameraMode`), so the view is snapped and
+   * blended on the next step exactly as a player's would be; `snap` also
+   * finishes that step's blend at once, for a capture that wants the view and
+   * not the swing toward it. Never writes the saved default.
+   */
+  setCameraMode(mode: CameraMode, index = 0, snap = true): void {
+    if (!isCameraViewId(mode)) throw new Error(`no such camera view: ${String(mode)}`);
+    this.pausedView.invalidate('bridge');
+    const seat = this.requireSeat(index);
+    // Silent: a scripted set is not a player's press, and the view's name
+    // must not sit over a capture (the README shot).
+    this.selectCameraMode(seat, mode, false);
+    if (snap) {
+      this.snapSeatView(seat, this.followedPose(seat, false));
+      seat.drawnValid = false;
+    }
+  }
+
+  /**
    * Pretend something solid sits `distance` metres along the spring arm, or
    * `null` to hand obstruction back to the level.
    *
@@ -5344,7 +5445,10 @@ export class Game {
     const probe: OcclusionProbe = scripted === null
       ? (origin, direction, maxDistance) => this.terrain.raycast(origin, direction, maxDistance)
       : (_origin, _direction, maxDistance) => (scripted <= maxDistance ? scripted : null);
-    for (const seat of this.seats) seat.chase.setOcclusionProbe(probe);
+    for (const seat of this.seats) {
+      seat.chase.setOcclusionProbe(probe);
+      seat.cinematic.setOcclusionProbe(probe);
+    }
   }
 
   /**
@@ -5539,6 +5643,21 @@ export class Game {
         dip: seat.currentCamera.dip,
         crashFrame: seat.currentCamera.crashFrame,
         scriptedOcclusion: this.scriptedOcclusion !== null,
+        label: CAMERA_VIEW_LABELS[seat.cameraMode],
+        shown: seat.shownMode,
+        defaultMode: this.defaultCameraView(),
+        view: {
+          position: { x: seat.drawnView.positionX, y: seat.drawnView.positionY, z: seat.drawnView.positionZ },
+          target: { x: seat.drawnView.targetX, y: seat.drawnView.targetY, z: seat.drawnView.targetZ },
+          fov: seat.drawnView.fov,
+          roll: seat.drawnView.roll,
+        },
+        cinematic: {
+          ...seat.currentCinematic,
+          side: seat.cinematic.side,
+          directorPhase: seat.cinematic.directorPhase,
+        },
+        blend: seat.cameraBlend.progress,
       },
       particles: this.renderer.particleCounts(),
       viewport: this.renderer.viewport(),
@@ -8884,6 +9003,13 @@ export class Game {
     // (§39.6b.3b, P6's measurement). Every 16:9 to 21:9 window is narrower
     // than the cone, so there the rule is F4's value exactly, as the bench's.
     this.widestPaneHalfAngle = this.paneHalfAngle(seat, 0, fov);
+    // A view change mid-blend is two panes until it lands (§50).
+    const blendSlot = this.blendPaneSlots[0];
+    const blendFov = this.writeBlendPane(seat, seat.currentPose, blendSlot);
+    if (blendFov > 0) {
+      this.panes.push(blendSlot);
+      this.widestPaneHalfAngle = Math.max(this.widestPaneHalfAngle, this.paneHalfAngle(seat, 0, blendFov));
+    }
   }
 
   /**
@@ -8922,31 +9048,117 @@ export class Game {
         && target.kind === 'pursuer' && target.index === moving) continue;
       const pose = this.followedPose(seat, false);
       const pane = this.paneSlots[index];
-      const fov = this.writeReturnPane(seat, pose, pane);
+      const fov = this.writeReturnPane(seat, pose, pane, index);
       panes.push(pane);
       if (index < views) widest = Math.max(widest, this.paneHalfAngle(seat, index, fov));
+      const blendSlot = this.blendPaneSlots[index];
+      const blendFov = this.writeBlendPane(seat, pose, blendSlot);
+      if (blendFov > 0) {
+        panes.push(blendSlot);
+        if (index < views) widest = Math.max(widest, this.paneHalfAngle(seat, index, blendFov));
+      }
     }
     this.widestPaneHalfAngle = widest;
   }
 
-  /** The selected view, on placeCamera's terms: orbit can look behind the rider. */
+  /**
+   * The selected view, on placeCamera's terms: orbit can look behind the
+   * rider, and since 1.3.0 so can Side Tracking, Crossroads, Architecture and
+   * Director (§50). A rider-relative view is resolved by the same pure solver
+   * `placeCamera` draws with, on the stepped state and the stepped pose, and
+   * its pane faces from the camera toward the point it aims at.
+   *
+   * **The pane is a ground-plane cone, and an aerial view is not a cone.** A
+   * camera that looks down steeply enough sees past the ground straight below
+   * it — behind its own feet. The conservative answer is to stand the cone's
+   * apex further back along its facing, by how far behind the nadir the
+   * lowest ray of the lens lands, so that ground falls inside the cone too. A
+   * view with no horizontal facing at all (straight down) faces the rider's
+   * heading and takes the same setback for half its lens. This approximates
+   * what an aerial camera frames; it is not a 3D visibility test.
+   */
   private writeReturnPane(
     seat: RiderSeat,
     pose: EucPose,
     pane: { x: number; z: number; headingY: number },
+    index = 0,
   ): number {
-    if (seat.cameraMode === 'orbit') {
+    const shown = this.viewOnScreen(seat, pose);
+    seat.paneMode = shown;
+    if (shown === 'orbit') {
       const radius = CAMERA.distanceAtRest * INSPECTION_CAMERA.distanceFactor;
       pane.x = pose.x + Math.sin(seat.orbitAngle) * radius;
       pane.z = pose.z + Math.cos(seat.orbitAngle) * radius;
       pane.headingY = seat.orbitAngle + Math.PI;
       return seat.chase.tuning.fovAtRest;
     }
+    if (isCinematicView(shown)) {
+      const view = seat.stepView;
+      const input = this.readCinematicInput(seat, index, pose, false);
+      resolveCinematicView(seat.currentCinematic, input, CINEMATIC_PROFILES[shown], view);
+      this.paneFromView(view, pose, seat, pane);
+      return view.fov;
+    }
     const camera = seat.currentCamera;
     pane.x = pose.x - Math.sin(camera.yaw) * camera.armDistance;
     pane.z = pose.z - Math.cos(camera.yaw) * camera.armDistance;
     pane.headingY = camera.yaw;
     return camera.fov;
+  }
+
+  /**
+   * The view this seat's blend is leaving, as a second pane, while the blend
+   * runs — the camera sweeps from there, so for those 0.4 s a return is
+   * judged by both ends (§50). Returns the FOV, or −1 with no blend running.
+   */
+  private writeBlendPane(
+    seat: RiderSeat,
+    pose: EucPose,
+    pane: { x: number; z: number; headingY: number },
+  ): number {
+    const blend = seat.cameraBlend;
+    if (blend.progress >= 1) return -1;
+    const view = seat.stepView;
+    view.positionX = pose.x + Math.sin(blend.fromBearing) * blend.fromRadius;
+    view.positionY = pose.y + blend.fromHeight;
+    view.positionZ = pose.z + Math.cos(blend.fromBearing) * blend.fromRadius;
+    view.targetX = pose.x + blend.fromTargetX;
+    view.targetY = pose.y + blend.fromTargetY;
+    view.targetZ = pose.z + blend.fromTargetZ;
+    view.fov = blend.fromFov;
+    view.roll = 0;
+    this.paneFromView(view, pose, seat, pane);
+    return blend.fromFov;
+  }
+
+  /** A resolved view as a ground-plane pane, with the aerial setback (`writeReturnPane`). */
+  private paneFromView(
+    view: ChaseCameraView,
+    pose: EucPose,
+    seat: RiderSeat,
+    pane: { x: number; z: number; headingY: number },
+  ): void {
+    const dx = view.targetX - view.positionX;
+    const dz = view.targetZ - view.positionZ;
+    const across = Math.hypot(dx, dz);
+    const drop = view.positionY - view.targetY;
+    const height = Math.max(0, view.positionY - pose.y);
+    // Half the drawn vertical lens, trim and split widening included.
+    const halfLens = this.paneVerticalFov(seat, view.fov) / 2;
+    let heading: number;
+    let lowest: number;
+    if (across > CINEMATIC_CAMERA.paneFacingMetres) {
+      heading = Math.atan2(dx, dz);
+      lowest = Math.atan2(drop, across) + halfLens;
+    } else {
+      heading = pose.headingY;
+      lowest = Math.PI / 2 + halfLens;
+    }
+    const pastNadir = Math.min(lowest - Math.PI / 2, CINEMATIC_CAMERA.paneSetbackMaxRadians);
+    const setback = pastNadir > 0 ? height * Math.tan(pastNadir) + CINEMATIC_CAMERA.paneSetbackMargin : 0;
+    pane.x = view.positionX - Math.sin(heading) * setback;
+    pane.z = view.positionZ - Math.cos(heading) * setback;
+    pane.headingY = heading;
   }
 
   /**
@@ -8962,17 +9174,28 @@ export class Game {
    * reads across window shapes.
    */
   private paneHalfAngle(seat: RiderSeat, view: number, fov: number): number {
+    const vertical = this.paneVerticalFov(seat, fov);
+    const bounds = this.renderer.viewBounds(view);
+    const aspect = bounds.height > 0 ? bounds.width / bounds.height : 1;
+    return Math.atan(Math.tan(vertical / 2) * aspect);
+  }
+
+  /**
+   * The vertical angle the renderer draws a pane at: the view's own, plus the
+   * host's trim on the views that take it (`fovTrimFor`, the camera's rule),
+   * then the split's widening, capped — `GameRenderer.splitFieldOfView`'s
+   * arithmetic. One function, so the cone and the camera cannot disagree.
+   */
+  private paneVerticalFov(seat: RiderSeat, fov: number): number {
     const views = this.renderer.viewCount;
-    let vertical = fov + (seat.cameraMode === 'chase' && this.ownsTheFrame(seat) ? this.fieldOfViewTrimRadians : 0);
+    let vertical = fov + this.fovTrimFor(seat, seat.paneMode);
     if (views >= 2) {
       const gain = paneGridFor(views).rows > 1
         ? this.tuning.get('CAMERA.quadFovGain')
         : this.tuning.get('CAMERA.splitFovGain');
       vertical = Math.min(this.tuning.get('CAMERA.splitFovCap'), vertical * gain);
     }
-    const bounds = this.renderer.viewBounds(view);
-    const aspect = bounds.height > 0 ? bounds.width / bounds.height : 1;
-    return Math.atan(Math.tan(vertical / 2) * aspect);
+    return vertical;
   }
 
   /**
@@ -9663,6 +9886,8 @@ export class Game {
     seat.chase.writeState(seat.currentCamera);
     copyChaseCameraState(seat.currentCamera, seat.previousCamera);
     copyChaseCameraState(seat.currentCamera, seat.renderCamera);
+    // A new body: no yaw, phase or blend of the last one's carries over (§50).
+    this.snapSeatView(seat, pose);
   }
 
   /**
@@ -9682,6 +9907,21 @@ export class Game {
       }
     }
     return render ? seat.renderPose : seat.currentPose;
+  }
+
+  /** `followedPose`'s body one step earlier, by the same fallbacks (1.3.1). */
+  private followedPreviousPose(seat: RiderSeat): EucPose {
+    const target = seat.spectating;
+    if (target !== undefined && target !== null) {
+      if (target.kind === 'seat') {
+        const other = this.seats[target.index];
+        if (other !== undefined) return other.previousPose;
+      } else {
+        const pursuer = this.pursuers[target.index];
+        if (pursuer !== undefined) return pursuer.previous;
+      }
+    }
+    return seat.previousPose;
   }
 
   /**
@@ -9902,7 +10142,10 @@ export class Game {
     const views = Math.min(this.renderer.viewCount, this.seats.length);
     const halfAngles: number[] = [];
     for (let view = 0; view < views; view += 1) {
-      halfAngles.push(this.paneHalfAngle(this.seats[view], view, this.seats[view].currentCamera.fov));
+      // The selected view's own lens since 1.3.0 (§50), as a return reads it.
+      const seat = this.seats[view];
+      const fov = this.writeReturnPane(seat, this.followedPose(seat, false), this.snapshotPane, view);
+      halfAngles.push(this.paneHalfAngle(seat, view, fov));
     }
     if (this.chaseIsCouch) this.refreshRoomPanes();
     return {
@@ -10153,7 +10396,6 @@ export class Game {
    * zeroes under a summary that correctly reads seconds faster.
    */
   private buildTrackDayResults(session: TrackDaySessionResult): ResultsView {
-    const unit = this.options.current.speedUnit;
     const best = session.bestLapSeconds;
     const previous = session.previousBest;
     const previousSplits = this.lastTrackDayPreviousSplits;
@@ -10189,7 +10431,7 @@ export class Game {
       notes.push(`Best sectors together ${formatRunTime(session.idealLapSeconds)}`);
     }
     notes.push(
-      `Top speed ${formatSpeed(session.topSpeed, unit)} ${unit === 'mph' ? 'mph' : 'km/h'}`,
+      `Top speed ${formatSpeedPair(session.topSpeed, this.options.current.speedUnit)}`,
     );
     if (session.crashes > 0) {
       notes.push(session.crashes === 1 ? 'One crash' : `${session.crashes} crashes`);
@@ -11228,9 +11470,8 @@ export class Game {
     // **Shown, and scored at zero** (`docs/PLANS.md` §10, M10 decision 1). The
     // information is here for a player who wants it; the run is ranked on time
     // alone, so nothing below can make a slower lap beat a faster one.
-    const unit = this.options.current.speedUnit;
     const notes: string[] = [
-      `Top speed ${formatSpeed(result.topSpeed, unit)} ${unit === 'mph' ? 'mph' : 'km/h'}`,
+      `Top speed ${formatSpeedPair(result.topSpeed, this.options.current.speedUnit)}`,
     ];
     if (result.landings > 0) {
       notes.push(`Clean landings ${result.cleanLandings} of ${result.landings}`);
@@ -12591,19 +12832,153 @@ export class Game {
     // `resetRiderTo` collapses the camera too, so this loop is what puts it
     // back in step with the rider on the very next tick.
     const orbitRate = this.tuning.get('INSPECTION_CAMERA.orbitRate');
-    for (const seat of this.seats) {
+    for (let index = 0; index < this.seats.length; index += 1) {
+      const seat = this.seats[index];
       copyChaseCameraState(seat.currentCamera, seat.previousCamera);
       // A watching outlaw's camera follows the body he is watching (M39 Part
       // P, q226): the same camera on another seat's pose, no new pass.
-      seat.chase.step(stepSeconds, this.readChaseInput(seat, this.followedPose(seat, false)));
+      const pose = this.followedPose(seat, false);
+      seat.chase.step(stepSeconds, this.readChaseInput(seat, pose));
       seat.chase.writeState(seat.currentCamera);
 
       // Diagnostic orbit. Also stepped rather than driven from wall time, so a
       // frozen inspection capture lands on the angle that was asked for.
       seat.previousOrbitAngle = seat.orbitAngle;
       seat.orbitAngle += orbitRate * stepSeconds;
+
+      // The rider-relative views (1.3.0, §50), after the native chase so they
+      // can ride its airborne lag. Only the shown view is stepped; a change
+      // of shown view snaps the new one and starts the local blend.
+      this.stepSeatView(seat, index, pose, stepSeconds);
     }
   };
+
+  /**
+   * One fixed step of a seat's rider-relative view — 1.3.0 (§50).
+   *
+   * The shown view is the selected one, except that First-Person and Action
+   * hand the pane to the native chase's crash framing while the rider is down
+   * (the choice is not touched, so the view comes back on the way up). A
+   * change of shown view — a press, a crash, a recovery — snaps the cinematic
+   * solver onto the new view (Director's orbit starting at its base angle) and
+   * blends locally from whatever was last drawn; into or out of First-Person
+   * it cuts, because a blend from the eye passes through the rider's head.
+   */
+  private stepSeatView(seat: RiderSeat, index: number, pose: EucPose, stepSeconds: number): void {
+    const shown = this.shownViewFor(seat, pose);
+    copyCinematicState(seat.currentCinematic, seat.previousCinematic);
+    if (shown !== seat.shownMode) {
+      const before = seat.shownMode;
+      seat.shownMode = shown;
+      if (isCinematicView(shown)) {
+        const input = this.readCinematicInput(seat, index, pose, false);
+        seat.cinematic.reset(input, shown, true);
+        seat.cinematic.writeState(seat.currentCinematic);
+        copyCinematicState(seat.currentCinematic, seat.previousCinematic);
+      }
+      // A body *put* somewhere this step — a crash recovery at the last safe
+      // spot — cuts like any other placement (1.3.1): a blend would sweep in
+      // from where the crash was framed, metres or a street away.
+      const placed = movedByReset(this.followedPreviousPose(seat), pose, stepSeconds);
+      if (seat.drawnValid && !placed && before !== 'firstPerson' && shown !== 'firstPerson') {
+        // Where the new view stands round the rider, so a wide swing is given
+        // the time to be a move rather than a whip.
+        const toBearing = isCinematicView(shown) ? seat.currentCinematic.yaw
+          : shown === 'orbit' ? seat.orbitAngle : seat.currentCamera.yaw + Math.PI;
+        beginCameraBlend(seat.cameraBlend, seat.drawnView, seat.drawnAt, toBearing);
+      } else {
+        endCameraBlend(seat.cameraBlend);
+      }
+    } else if (isCinematicView(shown)) {
+      seat.cinematic.step(stepSeconds, this.readCinematicInput(seat, index, pose, false));
+      seat.cinematic.writeState(seat.currentCinematic);
+    }
+    stepCameraBlend(seat.cameraBlend, stepSeconds);
+  }
+
+  /** The view a seat draws for a pose: its choice, or the chase's crash framing (`shownMode`). */
+  private shownViewFor(seat: RiderSeat, pose: EucPose): CameraMode {
+    const selected = seat.cameraMode;
+    return isCinematicView(selected)
+      && CINEMATIC_PROFILES[selected].crashFallback
+      && pose.crashBlend > 1e-6
+      ? 'chase'
+      : selected;
+  }
+
+  /**
+   * The view a pane draws *now*, for `placeCamera` and the return pane
+   * (§50). Chase and Inspect need no stepped state, so a choice of either
+   * shows at once — as a press always has, and as a diagnostic that writes
+   * `cameraMode` directly expects. A rider-relative view shows once the fixed
+   * step has snapped its solver (`shownMode`); until then the pane keeps
+   * what it had.
+   */
+  private viewOnScreen(seat: RiderSeat, pose: EucPose): CameraMode {
+    const live = this.shownViewFor(seat, pose);
+    return isCinematicView(live) && live !== seat.shownMode ? seat.shownMode : live;
+  }
+
+  /**
+   * Snap a seat's rider-relative view onto a pose — every path that snaps
+   * the chase camera (`syncCamera`, `watch`) calls this beside it (§50). No
+   * blend survives a placement and nothing eases across the map: the shown
+   * view is re-decided for the new pose, and a cinematic one is snapped with
+   * its side and Director's phase kept, because the player's view did not
+   * change — only the place, or the body, it frames.
+   */
+  private snapSeatView(seat: RiderSeat, pose: EucPose): void {
+    endCameraBlend(seat.cameraBlend);
+    const shown = this.shownViewFor(seat, pose);
+    const entering = shown !== seat.shownMode;
+    seat.shownMode = shown;
+    if (!isCinematicView(shown)) return;
+    const index = Math.max(0, this.seats.indexOf(seat));
+    seat.cinematic.reset(this.readCinematicInput(seat, index, pose, false), shown, entering);
+    seat.cinematic.writeState(seat.currentCinematic);
+    copyCinematicState(seat.currentCinematic, seat.previousCinematic);
+    copyCinematicState(seat.currentCinematic, seat.renderCinematic);
+  }
+
+  /**
+   * Fill this seat's cinematic input from a pose. Allocation-free. `render`
+   * reads the drawn chase lag rather than the stepped one, so the view rises
+   * through a jump on the same interpolation the rider does.
+   */
+  private readCinematicInput(seat: RiderSeat, index: number, pose: EucPose, render: boolean): CinematicInput {
+    const input = seat.cinematicInput;
+    input.x = pose.x;
+    input.y = pose.y;
+    input.z = pose.z;
+    input.headingY = pose.headingY;
+    input.speed = pose.speed;
+    input.groundPitch = pose.groundPitch;
+    const lag = render ? seat.renderCamera : seat.currentCamera;
+    input.drop = Math.max(0, lag.heightLag + lag.dip);
+    // The seat's own pane, never the window: a half or a quadrant is the
+    // narrow pane NYC's portrait rule is about. A chair with no pane of its
+    // own yet (the join panel) reads the first view's.
+    const views = this.renderer.viewCount;
+    const bounds = this.renderer.viewBounds(index < views ? index : 0);
+    input.aspect = bounds.height > 0 ? bounds.width / bounds.height : 16 / 9;
+    // Which side the room's other riders are on (critic re-review, §50): a
+    // side view stands on the other one. Signed along the side the solver
+    // calls +1 — (cos h, −sin h) — and weighted by nearness.
+    let crowd = 0;
+    const reach = CINEMATIC_CAMERA.crowdMetres;
+    for (let other = 0; other < this.seats.length; other += 1) {
+      if (other === index) continue;
+      const them = render ? this.seats[other].renderPose : this.seats[other].currentPose;
+      const dx = them.x - pose.x;
+      const dz = them.z - pose.z;
+      const range = Math.hypot(dx, dz);
+      if (range > reach || range < 1e-3) continue;
+      const lateral = (dx * Math.cos(pose.headingY) - dz * Math.sin(pose.headingY)) / range;
+      crowd += lateral * (1 - range / reach);
+    }
+    input.crowd = crowd;
+    return input;
+  }
 
   /**
    * One fixed step of one seat — M25 Phase 1 (docs/PLANS.md §25.5).
@@ -13575,6 +13950,19 @@ export class Game {
     // from the height: a boolean does not interpolate, and this is read from
     // the interpolated pose on the render frame as well as from the stepped one.
     input.crashed = pose.crashBlend > 1e-6;
+    // The thrown body, for the crash focus (1.3.1): the ragdoll's pelvis while
+    // the rig is handed to it, the wheel otherwise (the pose contract says a
+    // zero blend must not read the ragdoll block).
+    if (pose.ragdollBlend > 0) {
+      const ragdoll = pose.ragdoll;
+      input.bodyX = ragdoll[RD_PELVIS * 3];
+      input.bodyY = ragdoll[RD_PELVIS * 3 + 1];
+      input.bodyZ = ragdoll[RD_PELVIS * 3 + 2];
+    } else {
+      input.bodyX = pose.x;
+      input.bodyY = pose.y;
+      input.bodyZ = pose.z;
+    }
     return input;
   }
 
@@ -13729,6 +14117,10 @@ export class Game {
       this.renderer.setShadowFocus(at.x, at.y, at.z);
       this.terrainView.setSurroundCentre(at.x, at.z);
       this.placeCamera(drawn, view, alpha);
+      // First-Person draws from inside the followed rider's helmet: that
+      // pane, and only that pane, leaves his head out (§50). Not while a blend
+      // runs — none does into or out of First-Person, which cuts.
+      this.renderer.setPaneEyeRig(view, drawn.shownMode === 'firstPerson' ? this.followedRig(drawn) : null);
       // The rider this pane is about keeps its whole shadow (OD-3): its own,
       // or the body a watching outlaw follows — the one `at` just framed.
       this.renderer.setPaneSubject(view, this.followedRig(drawn));
@@ -14117,7 +14509,12 @@ export class Game {
     // else looks at it, and a future reader should find it still set.
     if (this.ownsTheFrame(seat)) this.persistSeenPrompts();
 
-    if (seat.hud?.visible === true) seat.hud.update(seat.hudView, prompt.text);
+    if (seat.hud?.visible === true) {
+      seat.hud.update(seat.hudView, prompt.text);
+      // The view this seat just chose, for a moment after the press (§50).
+      seat.hud.setCameraNotice(this.simTimeSeconds < seat.cameraNoticeUntil
+        ? CAMERA_VIEW_LABELS[seat.cameraMode] : '');
+    }
   }
 
   /**
@@ -14326,33 +14723,46 @@ export class Game {
   private placeCamera(seat: RiderSeat, view: number, alpha: number): void {
     const camera = this.renderer.cameraFor(view);
     const pose = this.followedPose(seat, true);
+    const resolved = seat.chaseView;
+    const shown = this.viewOnScreen(seat, pose);
 
-    if (seat.cameraMode === 'orbit') {
+    if (shown === 'orbit') {
       const angle = seat.previousOrbitAngle
         + (seat.orbitAngle - seat.previousOrbitAngle) * alpha;
       const radius = CAMERA.distanceAtRest * INSPECTION_CAMERA.distanceFactor;
-      camera.position.set(
-        pose.x + Math.sin(angle) * radius,
-        pose.y + WHEEL.shellHeight * INSPECTION_CAMERA.heightFactor,
-        pose.z + Math.cos(angle) * radius,
-      );
-      camera.up.set(0, 1, 0);
-      camera.lookAt(pose.x, pose.y + RIDER.hipHeight * INSPECTION_CAMERA.targetHeightFactor, pose.z);
+      resolved.positionX = pose.x + Math.sin(angle) * radius;
+      resolved.positionY = pose.y + WHEEL.shellHeight * INSPECTION_CAMERA.heightFactor;
+      resolved.positionZ = pose.z + Math.cos(angle) * radius;
+      resolved.targetX = pose.x;
+      resolved.targetY = pose.y + RIDER.hipHeight * INSPECTION_CAMERA.targetHeightFactor;
+      resolved.targetZ = pose.z;
       // The diagnostic view holds the resting field of view: a speed-eased FOV
       // would make an inspection capture depend on how fast the rider happened
       // to be going when it was taken.
-      this.renderer.setFieldOfView(view, seat.chase.tuning.fovAtRest);
-      return;
+      resolved.fov = seat.chase.tuning.fovAtRest;
+      resolved.roll = 0;
+    } else if (isCinematicView(shown)) {
+      // 1.3.0 (§50): the same pure resolver the fixed step's pane uses, on the
+      // interpolated state and the drawn pose, then one ray along the drawn
+      // arm — the frame between a clear step and a blocked one is safe too.
+      lerpCinematicState(seat.previousCinematic, seat.currentCinematic, alpha, seat.renderCinematic);
+      const input = this.readCinematicInput(seat, view, pose, true);
+      const profile = CINEMATIC_PROFILES[shown];
+      resolveCinematicView(seat.renderCinematic, input, profile, resolved);
+      seat.cinematic.constrain(input, profile, resolved);
+    } else {
+      lerpChaseCameraState(seat.previousCamera, seat.currentCamera, alpha, seat.renderCamera);
+      resolveChaseView(
+        seat.renderCamera,
+        this.readChaseInput(seat, pose),
+        seat.chase.tuning,
+        resolved,
+      );
     }
 
-    lerpChaseCameraState(seat.previousCamera, seat.currentCamera, alpha, seat.renderCamera);
-    const resolved = seat.chaseView;
-    resolveChaseView(
-      seat.renderCamera,
-      this.readChaseInput(seat, pose),
-      seat.chase.tuning,
-      resolved,
-    );
+    // A view change eases locally around the rider, from what was drawn last.
+    const weight = cameraBlendWeight(seat.cameraBlend, alpha);
+    if (weight < 1) applyCameraBlend(seat.cameraBlend, weight, pose, resolved);
 
     camera.position.set(resolved.positionX, resolved.positionY, resolved.positionZ);
     camera.up.set(0, 1, 0);
@@ -14368,8 +14778,32 @@ export class Game {
     // guest's half takes the untrimmed angle. The renderer applies the split
     // widening on top of whatever arrives, so the trim still moves both ends
     // of the speed ease together (see `GameRenderer.splitFieldOfView`).
-    const trim = this.ownsTheFrame(seat) ? this.fieldOfViewTrimRadians : 0;
-    this.renderer.setFieldOfView(view, resolved.fov + trim);
+    // 1.3.0: every gameplay view takes it; Inspect never has (`fovTrimFor`).
+    this.renderer.setFieldOfView(view, resolved.fov + this.fovTrimFor(seat, shown));
+
+    const drawn = seat.drawnView;
+    drawn.positionX = resolved.positionX;
+    drawn.positionY = resolved.positionY;
+    drawn.positionZ = resolved.positionZ;
+    drawn.targetX = resolved.targetX;
+    drawn.targetY = resolved.targetY;
+    drawn.targetZ = resolved.targetZ;
+    drawn.fov = resolved.fov;
+    drawn.roll = resolved.roll;
+    seat.drawnAt.x = pose.x;
+    seat.drawnAt.y = pose.y;
+    seat.drawnAt.z = pose.z;
+    seat.drawnValid = true;
+  }
+
+  /**
+   * The host's saved FOV trim, for this seat's view, radians — one rule for
+   * the drawn camera and the return cone (§50): seat 0's preference reaches
+   * every gameplay view on seat 0's pane; Inspect, the fixed-lens diagnostic,
+   * and every guest pane take none.
+   */
+  private fovTrimFor(seat: RiderSeat, shown: CameraMode): number {
+    return shown !== 'orbit' && this.ownsTheFrame(seat) ? this.fieldOfViewTrimRadians : 0;
   }
 
   private readonly onFrameSampled = (sample: FrameSample): void => {
@@ -14392,7 +14826,16 @@ export class Game {
     context.euc = this.seats[0].controller.snapshot();
     // The diagnostic reads seat 0 — the overlay is one panel about one rider,
     // and F3 during a couch session is the owner debugging his own half.
-    context.cameraMode = this.seats[0].cameraMode;
+    // 1.3.0 (§50): the selected view by name and id, and what is drawn when
+    // that differs (First-Person and Action defer to the crash framing).
+    const host = this.seats[0];
+    context.cameraMode = host.shownMode === host.cameraMode
+      ? `${CAMERA_VIEW_LABELS[host.cameraMode]} (${host.cameraMode})`
+      : `${CAMERA_VIEW_LABELS[host.cameraMode]} (${host.cameraMode}) → drawing ${host.shownMode}`;
+    const drawnView = host.drawnView;
+    context.cameraView = `${MS_VIEW(drawnView.positionX)}, ${MS_VIEW(drawnView.positionY)}, `
+      + `${MS_VIEW(drawnView.positionZ)} → ${MS_VIEW(drawnView.targetX)}, ${MS_VIEW(drawnView.targetY)}, `
+      + `${MS_VIEW(drawnView.targetZ)}  fov ${MS_VIEW(drawnView.fov)} rad`;
     context.cameraDistance = this.seats[0].currentCamera.armDistance;
     context.cameraFov = this.seats[0].currentCamera.fov;
     context.cameraLookAhead = this.seats[0].currentCamera.lookAhead;
@@ -14740,9 +15183,28 @@ export class Game {
    * was one camera to cycle; with two, a guest pressing V to look at their own
    * wheel must not swing the player's view into an orbit mid-corner.
    */
+  /** The view the host saved for new rides (Settings → Default camera). */
+  private defaultCameraView(): CameraMode {
+    const saved = (this.options.current as { readonly defaultCamera?: unknown }).defaultCamera;
+    return isCameraViewId(saved) ? saved : DEFAULT_CAMERA_VIEW;
+  }
+
   private cycleCamera(seat: RiderSeat): void {
-    const next = (CAMERA_MODES.indexOf(seat.cameraMode) + 1) % CAMERA_MODES.length;
-    seat.cameraMode = CAMERA_MODES[next];
+    this.selectCameraMode(seat, nextCameraView(seat.cameraMode));
+  }
+
+  /**
+   * Choose a seat's view — the press, the ride's default and the QA bridge's
+   * one door (1.3.0, §50). It only records the choice and names it: the fixed
+   * camera loop that follows in the same step is what snaps the view and
+   * starts the blend, so a choice is never integrated in a click and a press
+   * and its first framed step are one tick.
+   */
+  private selectCameraMode(seat: RiderSeat, mode: CameraMode, announce = true): void {
+    if (seat.cameraMode === mode) return;
+    seat.cameraMode = mode;
+    seat.cameraNoticeUntil = announce ? this.simTimeSeconds + CINEMATIC_CAMERA.noticeSeconds : -1;
+    if (seat === this.seats[0]) this.touchControls.setCameraView(CAMERA_VIEW_LABELS[mode]);
   }
 
   // ---------------------------------------------------------------------------
@@ -14895,6 +15357,20 @@ export class Game {
     // paused frames in a row).
     this.pausedView.invalidate('state');
     const spec = this.appState.spec;
+    // 1.3.0 (§50): **a new ride starts in the host's default camera.** A ride
+    // entered from the title, the routes panel or the join panel is a new ride;
+    // one resumed from a pause or restarted from the results card is the same
+    // ride, and keeps whatever the room cycled to. The host's seat takes the
+    // saved choice, and every guest the native chase — the setting is the
+    // host's, and a guest never asked for it. The title itself is drawn from
+    // the chase, so a quit leaves no aerial view hanging behind the card.
+    if (spec.acceptsRideInput && (from === 'title' || from === 'routes' || from === 'couchJoin')) {
+      for (let index = 0; index < this.seats.length; index += 1) {
+        this.selectCameraMode(this.seats[index], index === 0 ? this.defaultCameraView() : 'chase', false);
+      }
+    } else if (state === 'title' && from !== 'title') {
+      for (const seat of this.seats) this.selectCameraMode(seat, 'chase', false);
+    }
     // Leaving the requesting card cancels deferred work. Resume, settings or
     // quit must not be followed by a course swap from a stale mode press.
     if (state !== from && this.pendingRoute !== null) {
@@ -16219,6 +16695,7 @@ export class Game {
     seat.chase.writeState(seat.currentCamera);
     copyChaseCameraState(seat.currentCamera, seat.previousCamera);
     copyChaseCameraState(seat.currentCamera, seat.renderCamera);
+    this.snapSeatView(seat, seat.currentPose);
   }
 
   /**
@@ -17015,9 +17492,9 @@ export class Game {
       this.fieldOfViewTrimRadians = THREE.MathUtils.degToRad(options.fieldOfViewTrim);
     }
     if (previous === null || options.speedUnit !== previous.speedUnit) {
-      // Every seat: the unit is a preference about *reading numbers*, and two
-      // halves of one screen disagreeing about miles and kilometres would be
-      // a bug rather than a courtesy to the guest.
+      // Every seat: which unit is big is a preference about *reading numbers*,
+      // and two halves of one screen disagreeing about it would be a bug
+      // rather than a courtesy to the guest.
       for (const seat of this.seats) seat.hudModel.setSpeedUnit(options.speedUnit);
     }
 

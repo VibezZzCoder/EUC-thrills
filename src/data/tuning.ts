@@ -3237,9 +3237,15 @@ export const CAMERA = {
    * the arm still decides is the *eventual* wide shot, three seconds in, which
    * frames the wheel's run-off — and that run-off grows with the speed it was
    * rolling at, so the arm scales with the wheel. Keeping a 65 mph body in
-   * shot is an anchor or an easing decision, not an arm length, and it is
+   * shot is an anchor or an easing decision, not an arm length, and it was
    * `docs/PLANS.md` §30.4 item 2's surfaced finding rather than a thing this
    * milestone settled.
+   *
+   * **1.3.1 settled it with the anchor** (§50.2): a crash eases the camera's
+   * focus off the wheel onto the body (`crashFocusSeconds` below), so the arm
+   * now stands back from the rider, and the wheel rolling on ahead stays in
+   * shot beyond them. The length was left as it was; a 10 m arm reads the
+   * rider larger but loses a wheel stopped at a post behind the rider.
    */
   crashDistance: 14.973961839719554,
   crashArmHeight: 2.35,
@@ -3248,6 +3254,18 @@ export const CAMERA = {
   /** Time constants for taking the wider framing and for giving it back, s. */
   crashFrameSeconds: 0.45,
   crashRestoreSeconds: 0.35,
+  /**
+   * Where a crash is framed from (1.3.1, the owner's report): the camera's
+   * focus eases off the wheel onto the rider's body, so a rider the wheel has
+   * rolled far beyond stays in shot. This is how quickly, s.
+   */
+  crashFocusSeconds: 0.12,
+  /**
+   * The fastest the focus may move against the wheel, m/s: well above the
+   * 62 mph cutout (27.7 m/s), so it keeps up with a wheel rolling away at top
+   * speed, and still a glide when a crash ends without a placement.
+   */
+  crashFocusMaxRate: 40,
 
   near: 0.1,
   far: 500,
@@ -8695,6 +8713,69 @@ export const INSPECTION_CAMERA = {
 } as const;
 
 /**
+ * The cinematic camera views — 1.3.0 (`docs/PLANS.md` §50).
+ *
+ * The motion, obstruction and side-choice numbers every rider-relative view
+ * shares. Each view's own composition (arm, height, look, lens) is its profile
+ * in `render/cameraPresets.ts`; these are the rules that move between and
+ * protect those compositions. Starting values are the owner-accepted NYC
+ * spin-off's, re-judged in this game.
+ */
+export const CINEMATIC_CAMERA = {
+  /** Polar easing rate for yaw, radius, height and look, 1/s (α = 1 − e^(−rate·dt)). */
+  followRate: 4,
+  /** Height above the rider's contact patch the obstruction probe starts from, m. */
+  probeHeight: 1.2,
+  /**
+   * Gap kept between the camera and a hit, m. The near plane is 0.1 m and at
+   * the widest split lens its half-width is about 0.21 m, so 0.6 m keeps the
+   * whole near plane out of the surface with room for the four guard rays.
+   */
+  clearance: 0.6,
+  /** Sideways and fore/aft offset of the four guard rays beside the arm ray, m. */
+  guardOffset: 0.25,
+  /** A guard ray that meets something closer than this started inside it and is ignored, m. */
+  guardSwallowed: 0.3,
+  /**
+   * Shortest arm from the probe anchor, m. Shorter puts the lens inside the
+   * rider; a camera pressed into a wall's single-sided box still sees out.
+   */
+  minimumArm: 1.2,
+  /** Rate the arm eases back out once clear, 1/s. Pull-in is immediate. */
+  restoreRate: 4,
+  /** How often a two-sided view re-scores its sides, s. */
+  sideCheckSeconds: 0.3,
+  /** How much clearer (fraction of the arm) the other side must be to switch. */
+  sideThreshold: 0.22,
+  /** How long a side is held after switching, s. */
+  sideHoldSeconds: 1.5,
+  /** Length of the local blend between two views, s. A change to or from First-Person cuts. */
+  blendSeconds: 0.4,
+  /** Extra blend time per quarter turn of swing beyond the first, s (the critic's whip pans). */
+  blendSecondsPerQuarter: 0.25,
+  /** Score taken off a side the other riders are on (couch rooms), share of a clear arm. */
+  crowdPenalty: 0.5,
+  /** Other riders nearer than this count toward a side view's crowd, m. */
+  crowdMetres: 10,
+  /** Action: extra rear arm per m/s of smoothed speed, s. */
+  actionLagPerSpeed: 0.06,
+  /** Action: speed smoothing rate, 1/s. */
+  actionSpeedRate: 3,
+  /** First-Person: how far ahead it reads the slope, m, and the steepest look it takes, rad. */
+  eyeSlopeMetres: 40,
+  eyeSlopeMax: 0.35,
+  /** How long a seat's HUD names the view just chosen, s of simulation. */
+  noticeSeconds: 1.6,
+  // -- The return pane (pursuer visibility, `Game.writeReturnPane`) ----------
+  /** Shorter horizontal reach from camera to aim than this has no facing, m: straight down. */
+  paneFacingMetres: 0.5,
+  /** Cap on how far past the nadir the aerial setback reckons, rad (keeps tan finite). */
+  paneSetbackMaxRadians: 1.2,
+  /** Extra setback behind an aerial pane's apex, m. */
+  paneSetbackMargin: 2,
+} as const;
+
+/**
  * The timed route — M10.
  *
  * **Everything here is a rule of the challenge, not a property of the wheel.**
@@ -10477,6 +10558,7 @@ export const TUNING = deepFreeze({
   LIGHTING,
   CAMERA,
   INSPECTION_CAMERA,
+  CINEMATIC_CAMERA,
   BLOCKOUT_COLOURS,
   HAZARD,
   POTHOLE,

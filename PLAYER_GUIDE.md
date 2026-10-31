@@ -432,6 +432,35 @@ force the controls on or off, mirror them for a **left-handed layout**, and
 set a **size** that scales the controls and both stick throws together, so a
 bigger stick is a gentler one. Touch always drives player one.
 
+### Camera views
+
+The camera button — `C` on a keyboard, Y on a gamepad, **VIEW** on a touch
+screen — steps through eleven views, one per press, and wraps back to the
+start:
+
+| View | What it shows |
+|---|---|
+| **Chase** | The usual view behind you; it pulls back and widens with speed |
+| **Action** | Low and close at your shoulder, the wheel big in frame |
+| **First-Person** | Your rider's own eyes, looking down the road |
+| **Avenue** | Further back and low, with more of the road ahead |
+| **Elevated** | Raised behind you, for ramps and what is around them |
+| **Side Tracking** | Alongside, to watch your stance and the wheel |
+| **Crossroads** | A wide, raised three-quarter view from behind and to one side |
+| **Overlook** | High above, looking down on where you are |
+| **Architecture** | Low to the ground, your rider against the buildings and the sky |
+| **Director** | A slow aerial circle that travels with you |
+| **Inspect** | A close circle round the rider and wheel, for a good look at them |
+
+Every view follows your rider wherever you go, up hills and over jumps, and
+slides in rather than through a wall when something solid gets in the way;
+the views to one side swing round to whichever side is clearer. When you
+crash, the camera pulls out and stays on you, however far the wheel rolls
+on, and goes back to your view when you are up. Each player in a split screen changes only
+their own view. **Settings → Display → Default camera** picks the view every
+new ride starts in; changing views while riding never changes it, and a
+second player always starts in Chase.
+
 ### The air moves
 
 **The one-foot air is the same gesture everywhere**: keep Hop held as the
@@ -446,10 +475,13 @@ and you can have both out of one hop.
 
 ## Settings, saving, and your data
 
-**Display**: Quality (Low, Medium, High, Ultra), a field-of-view trim, speed
-units (km/h or mph), a frame-rate counter that is off unless you turn it
-on, and a frame rate limit (Auto, or 120, 60 or 30 where your screen is fast
-enough for the number to matter). Every choice is a row of buttons you can
+**Display**: Quality (Low, Medium, High, Ultra), a field-of-view trim, a
+frame-rate counter that is off unless you turn it on, a frame rate limit
+(Auto, or 120, 60 or 30 up to your screen's own refresh rate; on a 60 Hz
+screen that is Auto, 60 and 30), the main speed unit, and the default camera
+view. The speed readout always shows km/h and mph together, the way a car's
+dashboard does; the main speed unit (km/h unless you change it) is the big
+number. Every choice is a row of buttons you can
 tap, click, or reach with the d-pad and press A. **Audio**: Master, Ride and effects, and Warnings on separate faders, so
 the wheel can still warn you with everything else turned down, plus Mute
 everything. **Controls**: the key remap above, the gamepad on or off, and

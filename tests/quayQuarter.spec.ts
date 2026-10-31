@@ -14,7 +14,7 @@ test('Quay Quarter: High journey, Low gap cues, four seats and one phone layout'
  await capture('spawn-high');
  for(const [name,x,z,h]of [['roof-entry',-74,-59,0],['roof-gap-1',-74,-21,0],['roof-gap-2',-74,7,0],['roof-finale',-74,31,0],['pocket',24,4,0],['park',16,-42,Math.PI/2],['grand-stair',42,15,0],['waterfront',-76,78,Math.PI/2],['kicker',-30,9,Math.PI],['market',65,24,0],['roof-exterior',-90,14,Math.PI/4]] as const){await place(x,z,h);await capture(name+'-high');}
  // Existing diagnostic orbit supplies useful construction views; chase remains the acceptance view.
- for(const [name,x,z] of [['roof-oblique',-78,-7],['grand-stair-oblique',42,25]] as const){await place(x,z);await page.evaluate(()=>{window.game.setActions({cameraCycle:true});window.game.advance(1);window.game.setActions({cameraCycle:false});window.game.advance(100);});await capture(name+'-high');await page.evaluate(()=>{window.game.setActions({cameraCycle:true});window.game.advance(1);window.game.setActions({cameraCycle:false});});}
+ for(const [name,x,z] of [['roof-oblique',-78,-7],['grand-stair-oblique',42,25]] as const){await place(x,z);await page.evaluate(()=>{window.game.setCameraMode('orbit');window.game.advance(100);});await capture(name+'-high');await page.evaluate(()=>{window.game.setCameraMode('chase');window.game.advance(1);});}
  const journeys=[];
  for(const line of QUAY_LINES){
   await page.evaluate(e=>{window.game.placeRider({x:e.x,y:0,z:e.z},e.heading);window.game.setActions({throttle:0,steer:0,hop:false});},line.entry);

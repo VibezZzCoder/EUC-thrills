@@ -1,6 +1,11 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { BARKS } from '../data/tuning.ts';
-import type { HudView } from './hudModel.ts';
+import {
+  otherSpeedUnit,
+  SPEED_UNIT_LABELS,
+  type HudView,
+  type SpeedUnit,
+} from './hudModel.ts';
 
 /**
  * The HUD's DOM — `docs/PLANS.md` §8.1.
@@ -105,7 +110,11 @@ const TEMPLATE = `
 
 <div class="euc-hud__speed">
   <span class="euc-hud__speed-value" data-hud="speed">0</span>
-  <span class="euc-hud__speed-unit" data-hud="unit">km/h</span>
+  <span class="euc-hud__speed-units">
+    <span class="euc-hud__speed-unit" data-hud="unit">${SPEED_UNIT_LABELS.kph}</span>
+    <span class="euc-hud__speed-alt"><span class="euc-hud__speed-alt-value" data-hud="speed-alt">0</span>
+      <span class="euc-hud__speed-alt-unit" data-hud="unit-alt">${SPEED_UNIT_LABELS.mph}</span></span>
+  </span>
   <span class="euc-hud__reverse" data-hud="reverse" hidden>Reverse</span>
   <span class="euc-hud__fps" data-hud="fps" aria-hidden="true" hidden></span>
 </div>
@@ -113,6 +122,7 @@ const TEMPLATE = `
 <div class="euc-hud__bark" data-bark aria-hidden="true" hidden><span class="euc-hud__bark-text" data-bark-text></span></div>
 
 <div class="euc-hud__cues">
+  <div class="euc-hud__view" data-hud="view" role="status" aria-live="polite" hidden></div>
   <div class="euc-hud__warning" data-hud="warning" role="status" aria-live="polite" hidden></div>
   <div class="euc-hud__prompt" data-hud="prompt" hidden>
     <span data-hud="prompt-text"></span>
@@ -121,8 +131,6 @@ const TEMPLATE = `
   </div>
 </div>
 `;
-
-const UNIT_LABELS = Object.freeze({ kph: 'km/h', mph: 'mph' });
 
 export interface HudOptions {
   /** The player pressed the prompt's dismiss button. */
@@ -157,7 +165,9 @@ export class Hud {
 
   /** What was last written, so nothing is written twice. */
   private lastSpeed = '';
-  private lastUnit = '';
+  /** The small figure (1.3.0), and which unit is big (1.3.1). */
+  private lastSpeedAlt = '';
+  private lastSpeedUnit: SpeedUnit = 'kph';
   private lastReverse = false;
   private lastObjective = '';
   private lastModeLabel = '';
@@ -200,6 +210,8 @@ export class Hud {
   private lastAnnounce = '';
   /** The frame-rate readout's last text — M42. Seat 0 only; `''` is hidden. */
   private lastFps = '';
+  /** The camera cue's last text — 1.3.0. `''` is hidden. */
+  private lastView = '';
 
   // -- The question bubble (M42, `DESIGN.md` §9r) ----------------------------
   /**
@@ -351,10 +363,16 @@ export class Hud {
       this.lastSpeed = view.speed;
     }
 
-    const unit = UNIT_LABELS[view.speedUnit];
-    if (unit !== this.lastUnit) {
-      this.nodes.unit.textContent = unit;
-      this.lastUnit = unit;
+    // Both units at once since 1.3.0, car-dashboard style. The labels change
+    // only when Settings swaps which unit is big.
+    if (view.speedUnit !== this.lastSpeedUnit) {
+      this.nodes.unit.textContent = SPEED_UNIT_LABELS[view.speedUnit];
+      this.nodes['unit-alt'].textContent = SPEED_UNIT_LABELS[otherSpeedUnit(view.speedUnit)];
+      this.lastSpeedUnit = view.speedUnit;
+    }
+    if (view.speedAlt !== this.lastSpeedAlt) {
+      this.nodes['speed-alt'].textContent = view.speedAlt;
+      this.lastSpeedAlt = view.speedAlt;
     }
 
     if (view.reversing !== this.lastReverse) {
@@ -450,6 +468,22 @@ export class Hud {
       const key = this.barkLaneState();
       if (key !== this.barkLaneKey) this.barkLanesDirty = true;
     }
+  }
+
+  /**
+   * Name the camera view this seat just chose — 1.3.0 (`docs/PLANS.md` §50).
+   * A small pill in the cue stack for a moment after each change, `''` to
+   * hide it. The composition root decides how long; this only diffs and
+   * writes. A polite status, so a keyboard player hears the view they picked
+   * once, on the change, and never per frame.
+   */
+  setCameraNotice(text: string): void {
+    if (text === this.lastView) return;
+    const node = this.nodes.view;
+    node.textContent = text;
+    if (this.lastBarkShown && (text === '') !== (this.lastView === '')) this.barkLanesDirty = true;
+    node.hidden = text === '';
+    this.lastView = text;
   }
 
   /**

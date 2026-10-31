@@ -587,6 +587,29 @@ test.describe('M11.5 — on-screen controls', () => {
     expect(afterFixedDrag.steer).toBeLessThan(1);
   });
 
+  test('VIEW steps the camera one view per tap and says which view it is on (1.3.0)', async ({ page }) => {
+    const errors = collectErrors(page);
+    await boot(page);
+    const chip = page.locator('[data-touch-tap="cameraCycle"]');
+    await expect(chip).toHaveAttribute('aria-label', 'Next camera view; current: Chase');
+    await page.evaluate(() => window.game.loop.setRunning(false));
+    const seen: string[] = [];
+    for (const expected of ['Action', 'First-Person', 'Avenue']) {
+      await chip.tap();
+      await advance(page, 2);
+      seen.push(await page.evaluate(() => window.game.snapshot().camera.label));
+      await expect(chip).toHaveAttribute('aria-label', `Next camera view; current: ${expected}`);
+      // The chip stays the one short word whatever the view.
+      await expect(chip).toHaveText('VIEW');
+    }
+    expect(seen).toEqual(['Action', 'First-Person', 'Avenue']);
+    // The view's name shows in the HUD for a moment after the tap.
+    await expect(page.locator('[data-hud="view"]')).toHaveText('Avenue');
+    await advance(page, 240);
+    await expect(page.locator('[data-hud="view"]')).toBeHidden();
+    expect(errors).toEqual([]);
+  });
+
   test('the whole thing is silent', async ({ page }) => {
     const errors = collectErrors(page);
     await boot(page);

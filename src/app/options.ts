@@ -1,6 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import { CHARACTER_IDS, DEFAULT_CHARACTER, type PlayableCharacterId } from '../data/riders.ts';
 import { SafeStorage } from '../platform/storage.ts';
+import { DEFAULT_CAMERA_VIEW, isCameraViewId, type CameraViewId } from '../render/cameraPresets.ts';
 import type { PressedAction, HeldAction } from '../input/actions.ts';
 
 /**
@@ -60,11 +61,8 @@ export type QualityLevel = OrdinaryQuality | 'ultra';
 export const QUALITY_LEVELS: readonly QualityLevel[] = ['low', 'medium', 'high', 'ultra'];
 
 /**
- * What the speed readout is labelled in.
- *
- * The world is metric everywhere else and stays that way — this changes one
- * number on the HUD and nothing else. It is here rather than in the HUD
- * because a player who picks mph means it next time too.
+ * Which unit the speed lane prints large. Both are always on screen since
+ * 1.3.0; this only decides which one is the big figure (1.3.1).
  */
 export type SpeedUnit = 'kph' | 'mph';
 
@@ -166,6 +164,12 @@ export interface GameOptions {
    * offset moves both ends together and keeps the cue intact at every setting.
    */
   readonly fieldOfViewTrim: number;
+  /**
+   * The unit the speed lane prints large; the other sits small beside it.
+   * Both have shown at once since 1.3.0, the way a car dashboard does. Up to
+   * 1.2 this key chose the only unit shown, so a player who picked mph then
+   * keeps mph as the big figure now (1.3.1).
+   */
   readonly speedUnit: SpeedUnit;
   /**
    * Whether seat 0's speed lane shows a small `NN FPS` frame-rate readout (M42,
@@ -177,6 +181,14 @@ export interface GameOptions {
   readonly showFps: boolean;
   /** See `FrameRateLimit`. Presentation only; the simulation never reads it. */
   readonly frameRateLimit: FrameRateLimit;
+  /**
+   * The camera view every new ride starts in — 1.3.0 (`docs/PLANS.md` §50).
+   * The host's choice: Settings writes it, and nothing else does. Cycling
+   * views during a ride never rewrites it, and a guest's seat never reads or
+   * writes it (guests start in Chase). Presentation only; a view id from
+   * `render/cameraPresets.ts`, which imports nothing.
+   */
+  readonly defaultCamera: CameraViewId;
 
   // -- Audio ----------------------------------------------------------------
   readonly volumeMaster: number;
@@ -258,6 +270,7 @@ export const DEFAULT_OPTIONS: GameOptions = Object.freeze({
   speedUnit: 'kph' as SpeedUnit,
   showFps: false,
   frameRateLimit: 'auto' as FrameRateLimit,
+  defaultCamera: DEFAULT_CAMERA_VIEW,
 
   // Unity across the board, because the owner accepted the M8 mix at exactly
   // these levels on 2026-08-05. A default that trimmed anything would silently
@@ -348,6 +361,7 @@ export function coerceOptions(raw: unknown, base: GameOptions = DEFAULT_OPTIONS)
     frameRateLimit: FRAME_RATE_LIMITS.includes(record.frameRateLimit as FrameRateLimit)
       ? (record.frameRateLimit as FrameRateLimit)
       : base.frameRateLimit,
+    defaultCamera: isCameraViewId(record.defaultCamera) ? record.defaultCamera : base.defaultCamera,
 
     volumeMaster: typeof record.volumeMaster === 'number'
       ? clamp01(record.volumeMaster)
@@ -528,6 +542,7 @@ export function sameOptions(a: GameOptions, b: GameOptions): boolean {
     || a.speedUnit !== b.speedUnit
     || a.showFps !== b.showFps
     || a.frameRateLimit !== b.frameRateLimit
+    || a.defaultCamera !== b.defaultCamera
     || a.volumeMaster !== b.volumeMaster
     || a.volumeSfx !== b.volumeSfx
     || a.volumeUi !== b.volumeUi

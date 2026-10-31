@@ -150,6 +150,18 @@ test('a record that is not an object at all degrades to the defaults', () => {
   assert.ok(sameOptions(coerceOptions([1, 2, 3]), DEFAULT_OPTIONS));
 });
 
+test('the speed unit picks the big figure, km/h by default, and a 1.2 choice carries over', () => {
+  // Up to 1.2 `speedUnit` chose the only unit shown; since 1.3.1 it chooses
+  // which of the two is big, so an old mph save keeps mph as the big number.
+  assert.equal(DEFAULT_OPTIONS.speedUnit, 'kph');
+  const restored = coerceOptions({ speedUnit: 'mph', quality: 'low', fieldOfViewTrim: 4 });
+  assert.equal(restored.speedUnit, 'mph');
+  assert.equal(restored.quality, 'low');
+  assert.equal(restored.fieldOfViewTrim, 4);
+  assert.equal(coerceOptions({ speedUnit: 'knots' }).speedUnit, 'kph');
+  assert.equal(sameOptions(restored, { ...restored, speedUnit: 'kph' }), false);
+});
+
 test('binding overrides survive a round trip and reject rubbish', () => {
   const options = coerceOptions({
     bindings: {

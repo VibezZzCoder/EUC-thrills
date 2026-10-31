@@ -526,28 +526,25 @@ test('a default boot rides the shipped wheel with nothing in the store, and its 
 // The crash camera at 65 (§30.4 item 2)
 // ---------------------------------------------------------------------------
 
-test('the crash camera at 65: the body never nears the top of the frame, and the arm is not what frames it', async ({ page }) => {
+test('the crash camera at 65: the body stays in frame, framed on the body rather than the wheel', async ({ page }) => {
   // **What this pins is a measurement, not a hope.** §30.4 item 2 asked for
   // M16's judgement repeated at 65 — M16 lengthened the arm because "a 50 mph
-  // wipeout threw the ragdoll out through the *top* of the frame". Measured on
-  // today's crash the body does no such thing: its highest
-  // point is a few hundredths above centre in the first frames, and it leaves
-  // through the **bottom** — the camera is anchored on a wheel that rolls on
-  // at ~28 m/s while the ragdoll stops within metres, so the
-  // camera plane reaches the body's first corner at about 0.40 s with the crash
-  // arm still at its riding length: it eases at `distanceResponseSeconds`
-  // under the crash blend and has not moved yet. The arm therefore decides
-  // nothing about the body (11.5 → 18.0 m all exit at 0.35–0.37 s), and the
-  // preset keeps the plan's linear scale (`CRASH_DISTANCE_EXPONENT`). If any
-  // of the numbers below move, the camera changed and the exponent is worth
-  // re-measuring.
+  // wipeout threw the ragdoll out through the *top* of the frame". Measured
+  // at M30 the body did no such thing: it left through the **bottom** and
+  // went behind the camera plane at about 0.40 s, because the camera was
+  // anchored on a wheel that rolls on at ~28 m/s while the ragdoll stops
+  // within metres. This test pinned that as the finding until 1.3.1.
   //
-  // **M38 Part B: measured once, on the shipped wheel.** Phase 0 ran the same
-  // crash under the retired 50 mph reference as well and compared the two.
-  // The shipped wheel is 65; 50 certifies nothing about it, and the finding
-  // this test exists for — that the *arm* is not what frames the body — is a
-  // statement about one wheel, not about an ordering between two. The dated
-  // two-wheel figures survive in `CRASH_DISTANCE_EXPONENT` as history.
+  // **1.3.1 (`docs/PLANS.md` §50.2, the owner's report) fixed it**: a crash
+  // eases the camera's focus off the wheel onto the body
+  // (`render/chaseCamera.ts`). The same crash now keeps every corner of every
+  // rider mesh in front of the camera and inside the frame until the
+  // recovery, and the wheel rolling on ahead stays in shot beyond the body.
+  // Measured 2026-10-30: body |x| ≤ 0.13, y from −0.56 to +0.04; wheel |y|
+  // ≤ 0.29, never behind.
+  //
+  // **M38 Part B: measured once, on the shipped wheel.** The dated two-wheel
+  // figures survive in `CRASH_DISTANCE_EXPONENT` as history.
   const errors = collectErrors(page);
 
   await boot(page, 'level=proving');
@@ -569,31 +566,22 @@ test('the crash camera at 65: the body never nears the top of the frame, and the
   expect(r.cause).toBe('cutout');
   expect(r.motion).toBe('faceplant');
   expect(r.recovered).toBe(true);
-  // Never out through the top: M16's failure mode is absent.
-  expect(r.peakY, report).toBeLessThan(0.15);
-  expect(r.peakY, report).toBeGreaterThan(-0.15);
-  // Out through the bottom instead, and then behind the camera plane.
-  expect(r.lowY, report).toBeLessThan(-1);
-  expect(Number.isNaN(r.passedAt), `no corner of the body ever went behind the camera — ${report}`).toBe(false);
-  expect(Number.isNaN(r.allBehindAt), `some corner of the body stayed in front — ${report}`).toBe(false);
-  expect(r.allBehindAt, report).toBeGreaterThanOrEqual(r.passedAt);
-  // While the crash arm is still the riding arm — which is why its length
-  // has no purchase on the body.
-  expect(r.armAtPass, report).toBeLessThan(r.armBefore + 1);
-  expect(r.armAtPass, report).toBeLessThan(r.crashDistance - 3);
-  // The wheel — what the camera is actually framing — stays in shot.
-  expect(r.wheelBehind).toBe(0);
-  expect(r.wheelPeakY).toBeLessThan(0.5);
+  // No corner of the body ever goes behind the camera plane, so the extrema
+  // below bound the whole crash rather than its first few tenths.
+  expect(Number.isNaN(r.passedAt), `a corner of the body went behind the camera — ${report}`).toBe(true);
+  expect(Number.isNaN(r.allBehindAt), report).toBe(true);
+  // Inside the frame on every sample, with margin, and never near the top
+  // (M16's failure mode) or out through the bottom (M30's).
+  expect(r.peakY, report).toBeLessThan(0.5);
+  expect(r.lowY, report).toBeGreaterThan(-0.85);
+  expect(r.peakX, report).toBeLessThan(0.5);
+  // The wheel rolling on ahead stays in shot too.
+  expect(r.wheelBehind, report).toBe(0);
+  expect(r.wheelPeakY, report).toBeLessThan(0.5);
 
   // -- The framing itself, on the shipped arm ------------------------------
   expect(r.crashDistance).toBeCloseTo(CAMERA.crashDistance, 9);
   expect(r.crashDistance).toBeCloseTo(SIXTY_FIVE.crashDistance, 9);
-  // 0.40 s measured, with the last corner following within a tenth of a
-  // second: the body goes as one, not limb by limb. Codex's per-vertex probe
-  // put the whole body behind the camera at 0.45 s.
-  expect(r.passedAt, report).toBeGreaterThan(0.3);
-  expect(r.passedAt, report).toBeLessThan(0.6);
-  expect(r.allBehindAt, report).toBeLessThan(0.6);
 
   expect(errors).toEqual([]);
 });

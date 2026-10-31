@@ -44,6 +44,7 @@ class PaneCamera {
   readonly camera: PerspectiveCamera;
   readonly input: ChaseCameraInput = {
     x: 0, y: 0, z: 0, headingY: 0, rollAngle: 0, speed: 0, groundY: 0, airborne: false, crashed: false,
+    bodyX: 0, bodyY: 0, bodyZ: 0,
   };
   private readonly split: boolean;
 

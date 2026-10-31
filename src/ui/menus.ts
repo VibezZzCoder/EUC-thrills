@@ -1,4 +1,5 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
+import { CAMERA_VIEW_CYCLE, CAMERA_VIEW_LABELS, CAMERA_VIEW_SHORT_LABELS } from '../render/cameraPresets.ts';
 import { GNARWHEEL_LOGO_PNG_BASE64, GNARWHEEL_LOGO_ASPECT } from '../data/gnarwheelLogoAsset.ts';
 import {
   CHARACTERS,
@@ -904,6 +905,8 @@ function refusalReadout(reason: string | null): string {
 export interface ChoiceSpec {
   readonly value: string;
   readonly label: string;
+  /** The button's accessible name when the word on it is a short form (1.3.0). */
+  readonly name?: string;
 }
 
 /** The two values of an on/off setting, Off first, as the row reads. */
@@ -940,24 +943,49 @@ export function choiceTemplate(
   choices: readonly ChoiceSpec[],
   attributes = '',
 ): string {
-  const pair = choices.length === 2 ? ' euc-choice--pair' : '';
+  const shape = choices.length === 2 ? ' euc-choice--pair' : choices.length > 6 ? ' euc-choice--grid' : '';
   const buttons = choices.map((choice) => `
           <button type="button" class="euc-choice__option" data-choice="${option}"
-                  data-value="${choice.value}" aria-pressed="false">${choice.label}</button>`).join('');
-  return `<div class="euc-choice${pair}" role="group" aria-labelledby="${labelId}"
+                  data-value="${choice.value}" aria-pressed="false"${
+                    choice.name === undefined ? '' : ` aria-label="${choice.name}"`}>${choice.label}</button>`).join('');
+  return `<div class="euc-choice${shape}" role="group" aria-labelledby="${labelId}"
              data-option="${option}"${attributes}>${buttons}
         </div>`;
 }
 
 /**
+ * How far above the measured display rate a limit may sit and still count as
+ * the display's own rate. A screen's refresh is measured from animation-frame
+ * timestamps and lands a hair either side of its nominal figure (59.94 for a
+ * 60 Hz panel, 119.9 for a 120 Hz one), so the limit matching it must survive
+ * that wobble; 5 % is far below the gap between neighbouring limits.
+ */
+export const FRAME_RATE_OFFER_TOLERANCE = 1.05;
+
+/**
  * Which frame rate limits are worth showing on a display of `displayHz`, or
- * all of them while the rate is unknown. A limit at or above the display's own
- * rate does nothing there, so it is not offered; Auto always is.
+ * all of them while the rate is unknown. **The display's own rate is offered**
+ * (the owner, 1.3.0: a 60 Hz screen showing only Auto and 30 hid the number
+ * players were looking for); a limit clearly faster than the screen does
+ * nothing there, so it is not. Auto always is.
  */
 export function frameRateOffers(displayHz: number | null): readonly FrameRateLimit[] {
   if (displayHz === null) return FRAME_RATE_LIMITS;
-  return FRAME_RATE_LIMITS.filter((limit) => limit === 'auto' || Number(limit) < displayHz * 0.95);
+  const ceiling = displayHz * FRAME_RATE_OFFER_TOLERANCE;
+  return FRAME_RATE_LIMITS.filter((limit) => limit === 'auto' || Number(limit) <= ceiling);
 }
+
+/** Settings → Default camera (1.3.0, §50): every view, in the cycle's order, by its short name. */
+const CAMERA_CHOICES: readonly ChoiceSpec[] = CAMERA_VIEW_CYCLE.map((view) => ({
+  value: view,
+  label: CAMERA_VIEW_SHORT_LABELS[view],
+  name: CAMERA_VIEW_LABELS[view],
+}));
+
+const SPEED_UNIT_CHOICES: readonly ChoiceSpec[] = SPEED_UNITS.map((unit) => ({
+  value: unit,
+  label: unit === 'kph' ? 'km/h' : 'mph',
+}));
 
 const FRAME_RATE_CHOICES: readonly ChoiceSpec[] = FRAME_RATE_LIMITS.map((limit) => ({
   value: limit,
@@ -3140,6 +3168,7 @@ export class Menus {
     this.setChoice('speedUnit', options.speedUnit);
     this.setChoice('showFps', options.showFps ? 'on' : 'off');
     this.setChoice('frameRateLimit', options.frameRateLimit);
+    this.setChoice('defaultCamera', options.defaultCamera);
     this.writeFrameRateOffers();
 
     this.setValue('volumeMaster', Math.round(options.volumeMaster * 100));
@@ -4825,8 +4854,6 @@ export class Menus {
   private settingsTemplate(): string {
     const qualityChoices = QUALITY_LEVELS
       .map((level) => ({ value: level, label: `${level[0].toUpperCase()}${level.slice(1)}` }));
-    const unitChoices = SPEED_UNITS
-      .map((unit) => ({ value: unit, label: unit === 'kph' ? 'km/h' : 'mph' }));
     const touchChoices = TOUCH_CONTROL_MODES
       .map((mode) => ({ value: mode, label: TOUCH_MODE_LABELS[mode] }));
 
@@ -4884,8 +4911,9 @@ export class Menus {
       </div>
 
       <div class="euc-field">
-        <span class="euc-field__label" id="euc-opt-units">Speed units</span>
-        ${choiceTemplate('speedUnit', 'euc-opt-units', unitChoices)}
+        <span class="euc-field__label" id="euc-opt-units">Main speed unit</span>
+        ${choiceTemplate('speedUnit', 'euc-opt-units', SPEED_UNIT_CHOICES)}
+        <p class="euc-field__note">Both show while you ride. This one is the big number.</p>
       </div>
 
       <div class="euc-field">
@@ -4902,7 +4930,18 @@ export class Menus {
           Draws no more frames a second than the number you pick. A steady
           lower rate can feel smoother than an uneven high one, and keeps a
           phone cooler. The ride is the same at every setting. Auto draws
-          every frame your screen shows.
+          every frame your screen shows; limits faster than your screen are
+          not listed.
+        </p>
+      </div>
+
+      <div class="euc-field">
+        <span class="euc-field__label" id="euc-opt-camera">Default camera</span>
+        ${choiceTemplate('defaultCamera', 'euc-opt-camera', CAMERA_CHOICES,
+          ' aria-describedby="euc-camera-note"')}
+        <p class="euc-field__note" id="euc-camera-note">
+          The view every new ride starts in. C, Y or VIEW still changes it
+          while you ride.
         </p>
       </div>
     </fieldset>

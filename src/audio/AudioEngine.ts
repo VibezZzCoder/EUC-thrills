@@ -796,9 +796,9 @@ export class AudioEngine {
   /**
    * Whose crash one-shot plays (M14.5).
    *
-   * A plain string across the boundary, exactly as `quality` and `speedUnit`
-   * cross it — never an options record (`AGENTS.md` invariant 5). Held on the
-   * engine as well as pushed at the sink, because the sink is built on the
+   * A plain string across the boundary, exactly as `quality` crosses it —
+   * never an options record (`AGENTS.md` invariant 5). Held on the engine
+   * as well as pushed at the sink, because the sink is built on the
    * first gesture and this can be set long before one.
    */
   setCrashVoice(voice: CrashVoiceId): void {

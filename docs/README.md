@@ -12,7 +12,7 @@
 >
 > **Play offline:** the whole game as one file you download and double-click, from the [Releases page](https://github.com/VibezZzCoder/EUC-thrills/releases) — for computers; on a phone, play at the link above.
 
-![EUC Thrills in Ultra graphics — a Police chase across the town's brick plaza: Cool Rider rides toward the camera while Officer Dorkins, paddle out, closes in a few metres behind; the screen reads "He is right behind you" and SURVIVE 4:56, and behind them stand warehouses, a green apartment block, the brick water tower and two parked vans, with bollards and trees on the plaza and the rider's long shadow on the brick](https://vibezzzcoder.github.io/EUC-thrills/media/euc-thrills-gameplay.jpg)
+![EUC Thrills in Ultra graphics — a Police chase across the town's brick plaza: Cool Rider rides toward the camera while Officer Dorkins, paddle out, closes in a few metres behind; the screen reads "He is right behind you" and SURVIVE 4:56, the speed readout shows 28 mph with 45 km/h beside it, and behind them stand warehouses, a green apartment block, the brick water tower and two parked vans, with bollards and trees on the plaza and the rider's long shadow on the brick](https://vibezzzcoder.github.io/EUC-thrills/media/euc-thrills-gameplay.jpg)
 
 An open-source arcade riding game about electric unicycles, played in the
 browser. You ride a suspension wheel through a generated town — streets, a
@@ -70,12 +70,14 @@ Keyboard, gamepad and touch all work at the same time.
 | One-foot air | Hold `Space` through take-off | Hold A through take-off | Hold **HOP** through take-off |
 | Swing the paddle | `F` | RB | **SWING** |
 | Quick reset | `R` | X | **RESET** |
-| Camera view | `C` | Y | **VIEW** |
+| Next camera view (eleven, from Chase to an aerial Director) | `C` | Y | **VIEW** |
 | Mute | `M` | — | — |
 | Pause | `Esc` | Start | **II** |
 
 Every key except `Esc` can be changed in **Settings → Controls**. Pad names
-are the Xbox layout; a PlayStation pad uses the same positions.
+are the Xbox layout; a PlayStation pad uses the same positions. **Settings →
+Display → Default camera** picks the view a ride starts in; the
+[player guide](PLAYER_GUIDE.md) describes all eleven.
 
 ## Phone and home screen
 

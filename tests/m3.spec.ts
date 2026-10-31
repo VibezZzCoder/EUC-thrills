@@ -576,9 +576,13 @@ test('a full camera ride produces no console errors', async ({ page }, testInfo)
   await page.keyboard.down('KeyS');
   await page.waitForTimeout(500);
   await page.keyboard.up('KeyS');
-  await page.keyboard.press('KeyC');
-  await page.waitForTimeout(200);
-  await page.keyboard.press('KeyC');
+  // 1.3.0 (§50): C walks all eleven views and the eleventh press is Chase
+  // again, so the ride below is captured from the view it names — and every
+  // view has been drawn live on the way round.
+  for (let press = 0; press < 11; press += 1) {
+    await page.keyboard.press('KeyC');
+    await page.waitForTimeout(120);
+  }
   await page.keyboard.press('KeyR');
 
   const captured = await page.evaluate(() => {
@@ -655,7 +659,10 @@ test('the inspection orbit stays available as a diagnostic and holds a fixed fie
     window.qa.resetRide();
     window.qa.drive([{ actions: { throttle: 1 }, steps }]);
     const chase = window.qa.cameraTransform();
-    window.qa.drive([{ actions: { cameraCycle: true, throttle: 1 }, steps: 1 }]);
+    // 1.3.0 (§50): Inspect is the eleventh stop of the cycle now, so the
+    // diagnostic is asked for by name rather than by ten scripted presses.
+    window.game.setCameraMode('orbit');
+    window.game.setActions({ throttle: 1 });
     window.game.advance(60);
     const orbit = window.qa.cameraTransform();
     return { chase, orbit };

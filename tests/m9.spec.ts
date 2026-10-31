@@ -101,6 +101,7 @@ test.describe('M9 — HUD, menus, options', () => {
       game.setActions({ throttle: 0 });
       const snap = game.snapshot();
       const speedNode = document.querySelector('[data-hud="speed"]');
+      const altNode = document.querySelector('[data-hud="speed-alt"]');
       const hud = document.querySelector('.euc-hud') as HTMLElement;
       const box = hud.getBoundingClientRect();
       // Every lane, as the browser actually laid it out.
@@ -110,6 +111,8 @@ test.describe('M9 — HUD, menus, options', () => {
       return {
         hudSpeed: snap.hud.speed,
         domSpeed: speedNode?.textContent ?? '',
+        hudSpeedAlt: snap.hud.speedAlt,
+        domSpeedAlt: altNode?.textContent ?? '',
         kph: snap.euc.speedKph,
         // The middle fifth of the screen in both axes: the rider, and the
         // ground they are about to reach.
@@ -128,6 +131,9 @@ test.describe('M9 — HUD, menus, options', () => {
     expect(reading.domSpeed).toBe(reading.hudSpeed);
     expect(Number(reading.hudSpeed)).toBe(Math.round(reading.kph));
     expect(Number(reading.hudSpeed)).toBeGreaterThan(10);
+    // 1.3.0: mph rides beside it, from the same speed.
+    expect(reading.domSpeedAlt).toBe(reading.hudSpeedAlt);
+    expect(Number(reading.hudSpeedAlt)).toBe(Math.round(reading.kph / 1.609344));
 
     for (const lane of reading.lanes) {
       const overlaps = lane.right > reading.centre.left
@@ -416,9 +422,9 @@ test.describe('M9 — HUD, menus, options', () => {
     await page.evaluate(() => {
       window.game.setOptions({
         quality: 'low',
-        speedUnit: 'mph',
         volumeMaster: 0.5,
         fieldOfViewTrim: 6,
+        speedUnit: 'mph',
         // M42: the frame-rate counter is a saved choice like any other.
         showFps: true,
       });
@@ -428,9 +434,9 @@ test.describe('M9 — HUD, menus, options', () => {
     const restored = await options(page);
     expect(restored).toMatchObject({
       quality: 'low',
-      speedUnit: 'mph',
       volumeMaster: 0.5,
       fieldOfViewTrim: 6,
+      speedUnit: 'mph',
       showFps: true,
     });
 
@@ -445,10 +451,12 @@ test.describe('M9 — HUD, menus, options', () => {
       ).length,
     }));
     expect(shown.quality).toBe('low');
-    // The model is restored before the next HUD write. Assert the rendered
-    // value with Playwright's retrying locator rather than sampling that
-    // one-frame seam; the failure screenshot already showed the correct mph.
+    // Both units show at once since 1.3.0; the saved choice is which is big
+    // (1.3.1). Asserted with Playwright's retrying locator rather than by
+    // sampling the one-frame seam before the next HUD write.
+    await expect(page.locator('[data-choice="speedUnit"][aria-pressed="true"]')).toHaveAttribute('data-value', 'mph');
     await expect(page.locator('[data-hud="unit"]')).toHaveText('mph');
+    await expect(page.locator('[data-hud="unit-alt"]')).toHaveText('km/h');
     expect(shown.retiredControls).toBe(0);
 
     await page.evaluate(() => window.game.resetOptions());
@@ -1025,8 +1033,8 @@ test.describe('M9 — HUD, menus, options', () => {
     await menuButton(page, 'pause', 'settings').click();
     await page.evaluate(() => {
       const game = window.game;
-      game.setOptions({ quality: 'low', speedUnit: 'mph' });
-      game.setOptions({ quality: 'high', speedUnit: 'kph' });
+      game.setOptions({ quality: 'low', fieldOfViewTrim: 4 });
+      game.setOptions({ quality: 'high', fieldOfViewTrim: 0 });
     });
     await menuButton(page, 'settings', 'reset').click();
     await menuButton(page, 'settings', 'back').click();

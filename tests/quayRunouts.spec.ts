@@ -36,8 +36,8 @@ test('Quay fix: six native coast arrivals and visible catch returns',async({page
  for(const [name,x,z,h]of [['stair-close',42,9,0],['stair-landing',48,30,-Math.PI/2],['roof-catch',-68,37,0],['park-catch',63,-37,Math.PI/2],['market-cross',10,46,-Math.PI/2]] as const){
   await page.evaluate(({x,z,h})=>{window.game.placeRider({x,y:0,z},h);window.game.advance(30);},{x,z,h});await page.screenshot({path:join(shots,name+'.png')});
  }
- await page.evaluate(()=>{window.game.placeRider({x:42,y:0,z:9},0);window.game.setActions({cameraCycle:true});window.game.advance(1);window.game.setActions({cameraCycle:false});window.game.advance(100);});await page.screenshot({path:join(shots,'stair-oblique.png')});
- await page.evaluate(()=>{window.game.setActions({cameraCycle:true});window.game.advance(1);window.game.setActions({cameraCycle:false});window.game.setOptions({quality:'low'});window.game.advance(1);});await page.screenshot({path:join(shots,'stair-low.png')});
+ await page.evaluate(()=>{window.game.placeRider({x:42,y:0,z:9},0);window.game.setCameraMode('orbit');window.game.advance(100);});await page.screenshot({path:join(shots,'stair-oblique.png')});
+ await page.evaluate(()=>{window.game.setCameraMode('chase');window.game.advance(1);window.game.setOptions({quality:'low'});window.game.advance(1);});await page.screenshot({path:join(shots,'stair-low.png')});
  await page.evaluate(()=>{window.game.setOptions({quality:'high'});window.game.spawnRider('cool-rider');window.game.spawnRider('red-rider');window.game.spawnRider('gnarwheel');window.game.advance(1);});await page.screenshot({path:join(shots,'split-high.png')});
  await writeFile(join(shots,review?'native-review.json':'native-coasts.json'),JSON.stringify(rows,null,2));expect(errors).toEqual([]);
 });
