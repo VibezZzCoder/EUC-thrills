@@ -514,7 +514,8 @@ test('Track Day offers both tracks, preserves the world on Back, and fits short 
   expect(await planId(page)).toBe(CITY_PLAN);
   await claimWithPad(page, 0); // A reopens the chooser.
   await expect(picker).toBeVisible();
-  await claimWithPad(page, 0, 13); // Down chooses the park.
+  // The tracks sit side by side at this window since 1.4.1, so Right, not Down.
+  await claimWithPad(page, 0, 15); // Right chooses the park.
   await expect(picker.locator('[data-venue="switchback"]')).toBeFocused();
   await claimWithPad(page, 0);
   await page.waitForFunction(() => window.game.snapshot().app.state === 'trackDay');

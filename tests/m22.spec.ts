@@ -534,13 +534,13 @@ async function sweepTitleGrid(
           && box.width > 1 && box.height > 1 && style.clipPath === 'none';
       };
       const outside: string[] = [];
-      for (const node of root.querySelectorAll<HTMLElement>('[data-menu], .euc-credit')) {
+      for (const node of root.querySelectorAll<HTMLElement>('[data-menu], .euc-start--out, .euc-credit')) {
         if (node.offsetParent === null) continue;
         const box = node.getBoundingClientRect();
-        if (box.top < -0.5 || box.bottom > innerHeight + 0.5) outside.push(node.dataset.menu ?? 'credit');
+        if (box.top < -0.5 || box.bottom > innerHeight + 0.5) outside.push(node.dataset.menu ?? node.className);
       }
       const spills: string[] = [];
-      for (const button of root.querySelectorAll<HTMLElement>('.euc-title__starts button, .euc-title__modes button')) {
+      for (const button of root.querySelectorAll<HTMLElement>('.euc-title__starts button, .euc-title__cities a, .euc-title__modes button')) {
         if (button.offsetParent === null) continue;
         const style = getComputedStyle(button);
         const box = button.getBoundingClientRect();
@@ -555,7 +555,7 @@ async function sweepTitleGrid(
           for (const rect of range.getClientRects()) {
             const past = Math.max(left - rect.left, rect.right - right);
             if (rect.width > 0 && past > 0.5) {
-              spills.push(`${button.dataset.menu} "${piece.textContent?.trim()}" by ${past.toFixed(1)}px`);
+              spills.push(`${button.dataset.menu ?? button.className} "${piece.textContent?.trim()}" by ${past.toFixed(1)}px`);
             }
           }
         }

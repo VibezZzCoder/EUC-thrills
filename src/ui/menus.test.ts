@@ -529,19 +529,26 @@ test('the title credit reads PROVENANCE and its stamp is text, not a stop (M40)'
   assert.ok(!/tabindex|<button|data-menu/.test(html));
 });
 
-test('the EUC NYC card is one same-tab link to the github.io address, and a pad stop (1.4.0)', () => {
-  const html = spinOffCardTemplate();
-  assert.equal(PROVENANCE.spinOffUrl, 'https://vibezzzcoder.github.io/euc-nyc/');
-  assert.equal((html.match(/<a\b/g) ?? []).length, 1);
-  assert.ok(html.includes(`href="${PROVENANCE.spinOffUrl}"`));
-  // One of the four place cards now, so the pad walk stands on it like the rest.
-  assert.ok(!/data-outbound/.test(html), 'the pad walk must not skip the card');
-  assert.ok(!/target=|tabindex|<button|data-menu/.test(html));
-  assert.ok(html.includes('>EUC NYC<'));
-  assert.ok(/<svg [^>]*aria-hidden="true"/.test(html));
+test('each spin-off card is one same-tab link to its github.io address, and a pad stop (1.4.1)', () => {
+  assert.deepEqual(PROVENANCE.spinOffs.map((spinOff) => [spinOff.id, spinOff.url, spinOff.title, spinOff.note]), [
+    ['nyc', 'https://vibezzzcoder.github.io/euc-nyc/', 'EUC NYC', 'Leave for Manhattan in the other game'],
+    ['sf', 'https://vibezzzcoder.github.io/euc-sanfrancisco/', 'EUC SF', 'Leave for San Francisco in the other game'],
+  ]);
+  for (const spinOff of PROVENANCE.spinOffs) {
+    const html = spinOffCardTemplate(spinOff);
+    assert.equal((html.match(/<a\b/g) ?? []).length, 1);
+    assert.ok(html.includes(`class="euc-start euc-start--out euc-start--${spinOff.id}" data-start-out="spin-off" href="${spinOff.url}" rel="noopener"`));
+    // A card in the "Other cities" row, so the pad walk stands on it like the places.
+    assert.ok(!/data-outbound/.test(html), `${spinOff.id}: the pad walk must not skip the card`);
+    assert.ok(!/target=|tabindex|<button|data-menu/.test(html), spinOff.id);
+    assert.ok(html.includes(`>${spinOff.title}<`));
+    assert.ok(html.includes(`>${spinOff.note}<`));
+    assert.ok(html.includes('>Spin-off<'));
+    assert.ok(/<svg [^>]*aria-hidden="true"/.test(html));
+  }
 });
 
-test('the About template carries the three links, the stamp and no long text of its own (M40)', () => {
+test('the About template carries every outbound link, one per spin-off, the stamp and no long text of its own (M40; 1.4.1)', () => {
   const html = aboutTemplate();
   assert.ok(html.includes('About and licences'));
   assert.ok(html.includes(versionStamp()));
@@ -550,13 +557,16 @@ test('the About template carries the three links, the stamp and no long text of 
     ['play', PROVENANCE.homepageUrl],
     ['source', PROVENANCE.repositoryUrl],
     ['devlog', PROVENANCE.devlogUrl],
-    ['spin-off', PROVENANCE.spinOffUrl],
+    ['spin-off-nyc', 'https://vibezzzcoder.github.io/euc-nyc/'],
+    ['spin-off-sf', 'https://vibezzzcoder.github.io/euc-sanfrancisco/'],
   ] as const) {
     const link = new RegExp(`<a [^>]*data-about="${hook}" href="([^"]*)"[^>]*target="_blank" rel="noopener">`).exec(html);
     assert.ok(link !== null, `${hook} link`);
     assert.equal(link[1], href);
   }
   assert.ok(html.includes(`>${devlogHandle()} on YouTube</a>`));
+  assert.ok(html.includes('>EUC NYC, the Manhattan spin-off</a>'));
+  assert.ok(html.includes('>EUC SF, the San Francisco spin-off</a>'));
   // The texts arrive at open time through textContent; the pre blocks are empty.
   assert.ok(/<pre class="euc-about__pre" data-about="licence"><\/pre>/.test(html));
   assert.ok(/<pre class="euc-about__pre" data-about="notice"><\/pre>/.test(html));

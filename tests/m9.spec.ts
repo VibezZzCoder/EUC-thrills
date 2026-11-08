@@ -582,13 +582,18 @@ test.describe('M9 — HUD, menus, options', () => {
     // and every new entrance has failed this test by naming the wrong stop,
     // which is the failure it is for.
     //
-    // **The 1.4.0 title**: four place cards in a row (Start ride, Wheelhouse
-    // Wharf, Foundry Yard, then the EUC NYC link, a pad stop like the rest),
-    // the modes in rows of four under them at this 1000x700 window — 2–4
-    // Players, Time trial, Track Day, Trick Run, then Knockabout, Police chase,
-    // Fresh route widened to fill the row — and Settings and Ultra as the last
-    // row. Down walks the left edge, Right crosses a row; the walk below names
-    // every entrance. A activates what is focused.
+    // **The 1.4.1 title**: three place cards in a row (Start ride, Wheelhouse
+    // Wharf, Foundry Yard), the "Other cities" row under them (the EUC NYC and
+    // EUC SF links, pad stops like the places), then the modes in rows of
+    // four at this 1000x700 window — 2–4 Players, Time trial, Track Day,
+    // Trick Run, then Knockabout, Police chase, Fresh route widened to fill
+    // the row — and Settings and Ultra as the last row. Down walks the left
+    // edge, Right crosses a row; the walk below names every entrance. A
+    // activates what is focused.
+    const placeCard = (place: string) => page.locator(`.euc-menu--title [data-menu="start-place"][data-place="${place}"]`);
+    const city = (id: string) => page.locator(`.euc-menu--title a.euc-start--${id}`);
+    await pulse(13);
+    await expect(city('nyc')).toBeFocused();
     await pulse(13);
     await expect(menuButton(page, 'title', 'couch')).toBeFocused();
     await pulse(13);
@@ -600,14 +605,20 @@ test.describe('M9 — HUD, menus, options', () => {
     await pulse(12);
     await expect(menuButton(page, 'title', 'couch')).toBeFocused();
     await pulse(12);
+    await expect(city('nyc')).toBeFocused();
+    await pulse(12);
     await expect(menuButton(page, 'title', 'start')).toBeFocused();
-    const placeCard = (place: string) => page.locator(`.euc-menu--title [data-menu="start-place"][data-place="${place}"]`);
     await pulse(15);
     await expect(placeCard('euclaude')).toBeFocused();
     await pulse(15);
     await expect(placeCard('skatepark')).toBeFocused();
+    // Down from the yard lands on the nearer city, EUC SF; Left crosses to NYC.
+    await pulse(13);
+    await expect(city('sf')).toBeFocused();
+    await pulse(14);
+    await expect(city('nyc')).toBeFocused();
     await pulse(15);
-    await expect(page.locator('.euc-menu--title a.euc-start--nyc')).toBeFocused();
+    await expect(city('sf')).toBeFocused();
     await pulse(13);
     await expect(menuButton(page, 'title', 'trick-run')).toBeFocused();
     await pulse(14);
@@ -721,12 +732,13 @@ test.describe('M9 — HUD, menus, options', () => {
     // The stops are the title grid's, exactly as the d-pad test above — this
     // spec is about the *hat axes reaching the menu at all*, so it names
     // whatever the panel's geometry currently is.
+    // Since 1.4.1 the row under Start ride is "Other cities".
+    await pulseHat(7, 1);
+    await expect(page.locator('.euc-menu--title a.euc-start--nyc')).toBeFocused();
     await pulseHat(7, 1);
     await expect(menuButton(page, 'title', 'couch')).toBeFocused();
-    await pulseHat(7, 1);
-    await expect(menuButton(page, 'title', 'knockabout')).toBeFocused();
     await pulseHat(7, -1);
-    await expect(menuButton(page, 'title', 'couch')).toBeFocused();
+    await expect(page.locator('.euc-menu--title a.euc-start--nyc')).toBeFocused();
   });
 
   test('a held menu direction repeats in the pause menu, where the sim clock is frozen', async ({ page }) => {

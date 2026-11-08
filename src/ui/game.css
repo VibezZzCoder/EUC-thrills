@@ -1997,6 +1997,36 @@
 /* Track selection stays easy to hit in the short-window tier as well. */
 .euc-menu--tracks .euc-button { min-height: 44px; }
 
+/* -- Track Day's two tracks as place cards (1.4.1) -----------------------
+ * The title's card anatomy (`.euc-start`), pinned to its roomy size here so
+ * the title's own height tiers (which drop card notes on short screens)
+ * cannot reach this panel, where there is room for every word. */
+.euc-tracks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.euc-menu--tracks .euc-start {
+  min-height: 6.25rem;
+  padding: 0.75rem 0.85rem;
+  row-gap: 0.35rem;
+}
+.euc-menu--tracks .euc-start__art { width: 2.9rem; height: 2.1rem; }
+.euc-menu--tracks .euc-start__kicker { font-size: 0.7rem; }
+.euc-menu--tracks .euc-start__place { font-size: 1.12rem; }
+.euc-menu--tracks .euc-start__note { display: block; }
+
+/* Two across from 435 px; at 433 the kickers wrap beside the picture and
+   the cards grow from 107 to 123 px (320 spilled "Hillside jump park" by
+   6.7 px), so phones upright stack them (measured, 1.4.1). */
+@media (max-width: 27.15rem) {
+  .euc-tracks { grid-template-columns: minmax(0, 1fr); }
+}
+
+.euc-menu--tracks .euc-start--lap-track { --start-from: #2fae5f; --start-to: #1b6e3a; --start-soft: #dcf8e6; --start-glow: rgba(27, 110, 58, 0.35); }
+.euc-menu--tracks .euc-start--lap-switchback { --start-from: #c98d22; --start-to: #8a5a0e; --start-soft: #fff0d4; --start-glow: rgba(138, 90, 14, 0.35); }
+
 .euc-menu__title {
   margin: 0;
   font-size: clamp(1.8rem, 6vw, 3.2rem);
@@ -5509,16 +5539,52 @@
 
 .euc-menu--title .euc-menu__tagline { color: #c4cdd8; }
 
-/* -- The four place cards (1.4.0 owner ride) --------------------------
- * The town, Wheelhouse Wharf, Foundry Yard and EUC NYC, each in its own
- * colour (DESIGN §9u): town blue, harbour teal, brick orange, taxi yellow.
- * Picture and kicker share the top line, the name and note sit under them,
- * so a quarter of the panel still holds "Wheelhouse Wharf". */
+/* -- The three place cards, then "Other cities" (1.4.1) ------------------
+ * Row 1 is the game's own places: the town, Wheelhouse Wharf and Foundry
+ * Yard, each in its own colour (DESIGN §9u): town blue, harbour teal, brick
+ * orange. Under it, the spin-off cities (§9v): EUC NYC in taxi yellow and
+ * EUC SF in bridge red, same-tab links. Picture and kicker share the top
+ * line, the name and note sit under them. */
 
 .euc-title__starts {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.6rem;
+}
+
+.euc-title__cities { display: grid; gap: 0.35rem; }
+
+/* The two group headings, "Other cities" and "Ways to ride" (1.4.1). */
+.euc-title__group-head {
+  margin: 0;
+  color: var(--ink-dim);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* A wrapping row, like the modes: two cards side by side, one per row when
+   the panel cannot hold two. */
+.euc-title__city-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.euc-start--out { flex: 1 1 8rem; min-width: 0; }
+
+/* Three places across from 437 px: at 428 "Jump island" and "Wheelhouse"
+   spill their card (measured, 1.4.1). Narrower, two and the yard under them. */
+@media (max-width: 27.25rem) {
+  .euc-title__starts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* The yard has the whole row, so its name sits beside the picture under
+     the kicker: one line shorter, which the short phones need. */
+  .euc-title__starts > .euc-start:last-child {
+    grid-column: 1 / -1;
+    grid-template-areas: "art kicker" "art place";
+  }
+  .euc-title__starts > .euc-start:last-child .euc-start__place { grid-area: place; }
 }
 
 .euc-start {
@@ -5552,6 +5618,7 @@
 .euc-start--wharf { --start-from: #13a091; --start-to: #0b6a62; --start-soft: #d9fbf5; --start-glow: rgba(11, 106, 98, 0.35); }
 .euc-start--yard { --start-from: #d8642c; --start-to: #9e3b17; --start-soft: #ffe6d8; --start-glow: rgba(158, 59, 23, 0.35); }
 .euc-start--nyc { --start-from: #ffd23f; --start-to: #f2a900; --start-ink: #1a1306; --start-soft: #3a2a07; --start-glow: rgba(242, 169, 0, 0.3); }
+.euc-start--sf { --start-from: #c0362c; --start-to: #8f2419; --start-soft: #ffe1dd; --start-glow: rgba(143, 36, 25, 0.35); }
 
 .euc-start:hover { filter: brightness(1.08); }
 .euc-start:active { transform: translateY(1px); }
@@ -5591,6 +5658,8 @@
 .euc-start__city { fill: currentColor; opacity: 0.35; }
 .euc-start__cab { fill: currentColor; }
 .euc-start__wheels { fill: var(--start-from); stroke: currentColor; stroke-width: 0.9; }
+/* The EUC SF picture: the street and the cable in the card's ink. */
+.euc-start__hill { fill: none; stroke: currentColor; stroke-width: 0.8; stroke-linecap: round; }
 
 .euc-start__words { display: contents; }
 
@@ -5618,12 +5687,53 @@
   line-height: 1.3;
 }
 
-/* Under 680px a quarter of the panel cannot hold "Wheelhouse": two by two. */
-@media (max-width: 42.5rem) {
-  .euc-title__starts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
 
 /* -- The modes, then Settings and Ultra ---------------------------------- */
+
+/* "Ways to ride" (1.4.1, the owner's pick of the mode-tile mockups): a
+   heading over the modes, and each mode its own accent — a stroked icon
+   before its name and a thin edge in the same colour — so the modes read as
+   things to play beside the bright place cards without competing with them.
+   Settings and Ultra stay plain: they are utilities, not ways to play. */
+.euc-title__ways { display: grid; gap: 0.35rem; }
+
+/* The heading costs about 19 px, so it goes where the title is short: each
+   boundary sits just above the matching city-chip boundary (measured 1.4.1:
+   with the heading, 1000x537 scrolled 15 px, a coarse 1000x560 15, 360x753
+   20; 1000x553, a coarse 1000x577 and 360x777 fit). The group keeps its name:
+   `aria-labelledby` still reads a hidden heading. */
+@media (max-height: 34.5rem), (pointer: coarse) and (max-height: 36rem), (max-width: 34rem) and (max-height: 48.5rem) {
+  .euc-title__ways-head { display: none; }
+}
+
+/* And just above 40rem, where the mode notes come back: with the heading,
+   1000x641 scrolled 7 px (11 on a touch screen offering the couch); 656
+   fits on both. Below 40rem the notes are off and the heading fits again. */
+@media (min-height: 40.01rem) and (max-height: 41rem) {
+  .euc-title__ways-head { display: none; }
+}
+
+.euc-mode { --mode-accent: #8fb8ff; --mode-edge: #8fb8ff59; }
+.euc-mode[data-menu="couch"] { --mode-accent: #4d9bff; --mode-edge: #4d9bff59; }
+.euc-mode[data-menu="challenge"] { --mode-accent: #ffb020; --mode-edge: #ffb02059; }
+.euc-mode[data-menu="track-day"] { --mode-accent: #3ccf6e; --mode-edge: #3ccf6e59; }
+.euc-mode[data-menu="trick-run"] { --mode-accent: #b07cff; --mode-edge: #b07cff59; }
+.euc-mode[data-menu="knockabout"] { --mode-accent: #ff5fa2; --mode-edge: #ff5fa259; }
+.euc-mode[data-menu="chase"] { --mode-accent: #ff5252; --mode-edge: #ff525259; }
+.euc-mode[data-menu="routes"] { --mode-accent: #2fd1c4; --mode-edge: #2fd1c459; }
+
+.euc-mode__icon {
+  display: inline-block;
+  width: 1.15em;
+  height: 1.15em;
+  margin-inline-end: 0.45em;
+  vertical-align: -0.2em;
+  fill: none;
+  stroke: var(--mode-accent);
+  stroke-width: 2.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 
 .euc-title__modes {
   /* Rows that always fill: a world without Time trial, or a machine not
@@ -5648,7 +5758,10 @@
 
 .euc-mode[hidden] { display: none; }
 
+.euc-menu--title .euc-mode { border-color: var(--mode-edge); box-shadow: inset 3px 0 0 var(--mode-accent); }
+
 .euc-mode:hover { background: rgba(31, 42, 53, 0.95); border-color: #4a5d73; }
+.euc-menu--title .euc-mode:hover { border-color: var(--mode-accent); }
 
 .euc-mode .euc-button__label { font-size: 0.98rem; }
 
@@ -5695,8 +5808,7 @@
 
   .euc-menu--title .euc-menu__tagline { display: none; }
 
-  /* Two by two on a phone upright. */
-  .euc-title__starts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; }
+  .euc-title__starts { gap: 0.5rem; }
 
   .euc-start__place { font-size: 1.05rem; }
 
@@ -5735,9 +5847,10 @@
   .euc-menu--title .euc-button--ultra { padding-block: 0.3rem; }
 }
 
-/* The smallest phones upright (320x568 and the like): the cards lose their
-   notes and the wordmark and rhythm come in, so nothing scrolls. */
-@media (max-width: 34rem) and (max-height: 38rem) {
+/* Short phones upright (320x568 up to 375x667): the cards lose their notes
+   and the wordmark and rhythm come in, so nothing scrolls. 38rem until
+   1.4.1; the cities row moved it to 42rem (375x667 scrolled 38 px). */
+@media (max-width: 34rem) and (max-height: 42rem) {
   .euc-menu--title .euc-title { gap: 0.5rem; }
   .euc-menu--title .euc-menu__title { font-size: 1.7rem; }
   .euc-start { padding: 0.45rem 0.65rem; row-gap: 0.2rem; }
@@ -5753,7 +5866,9 @@
     padding-bottom: max(0.45rem, env(safe-area-inset-bottom));
   }
 
-  .euc-menu--title .euc-title { width: min(56rem, 100%); gap: 0.45rem; }
+  /* 0.35rem since 1.4.1: the cities row put the Duo sideways (594x368, WebKit)
+     2 px past the fold at 0.45rem. */
+  .euc-menu--title .euc-title { width: min(56rem, 100%); gap: 0.35rem; }
 
   .euc-menu--title .euc-menu__title { font-size: clamp(1.3rem, 6vh, 1.8rem); }
 
@@ -5780,8 +5895,80 @@
   .euc-title__foot { grid-auto-flow: column; justify-content: center; align-items: center; gap: 0.9rem; }
 }
 
+/* -- City chips: the compact tier, and the windows just above it ------- *
+ * The cities collapse to one-line chips (kicker and name) beside their
+ * heading. Measured (1.4.1), so full cards stay wherever they fit:
+ * - fine pointer: full cards scroll windows 536 px tall and under (1000x529
+ *   by 4 px, 740x481 by 42, 1600x500 by 33); 1000x537 fits;
+ * - coarse pointer (44 px floors on every tile): 1000x550 scrolls by 6,
+ *   768x537 by 11; 1000x556 and up fit;
+ * - phones upright (34rem wide or less): 360x752 scrolled by 20 before the
+ *   yard's two-line card, so 47rem; 360x753 fits with full cards. */
+@media (max-height: 33.5rem), (pointer: coarse) and (max-height: 34.75rem), (max-width: 34rem) and (max-height: 47rem) {
+  .euc-title__cities { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; }
+  .euc-title__city-row { flex: 1 1 auto; gap: 0.4rem; }
+  .euc-start--out {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 0.45rem;
+    min-height: 0;
+    padding: 0.3rem 0.8rem;
+    border-radius: 999px;
+  }
+  .euc-start--out .euc-start__art,
+  .euc-start--out .euc-start__note { display: none; }
+  .euc-start--out .euc-start__kicker { font-size: 0.62rem; }
+  .euc-start--out .euc-start__place { font-size: 0.98rem; }
+}
+
+/* Short windows above the compact tier (481-536 px tall) take its place-card
+   anatomy too: the cities row costs 56 px there, and a coarse 1280x485
+   scrolled 15 px with roomier cards (1.4.0 fitted it with 20 to spare). */
+@media (max-height: 33.5rem) {
+  .euc-title__starts .euc-start { min-height: 0; padding: 0.35rem 0.6rem; row-gap: 0.15rem; }
+  .euc-title__starts .euc-start__art { width: 2.2rem; height: 1.6rem; }
+}
+
+/* Under 358 px two chips with kickers need two rows; the heading already says
+   "Other cities", so the chip is its name alone (320x568 scrolled 42 px). */
+@media (max-width: 22.4rem) and (max-height: 47rem) {
+  .euc-start--out .euc-start__kicker { display: none; }
+}
+
 @media (pointer: coarse) {
   .euc-start { min-height: max(2.75rem, 3.6rem); }
+}
+
+/* The smallest phones upright (320x568): three place cards and the cities
+   row need 36 px more than the screen has on a coarse pointer (1.4.1,
+   measured), so the place pictures go (the kicker takes the top line on its
+   own and stops wrapping), the yard's full-width card is one line on the
+   44 px floor, and the panel's rhythm tightens to 0.4rem. */
+@media (max-width: 34rem) and (max-height: 38rem) {
+  .euc-title__starts .euc-start__art { display: none; }
+  .euc-title__starts .euc-start { grid-template-columns: minmax(0, 1fr); grid-template-areas: "kicker" "place"; }
+}
+
+@media (max-width: 27.25rem) and (max-height: 38rem) {
+  .euc-menu--title .euc-title { gap: 0.4rem; }
+  .euc-title__starts { gap: 0.4rem; }
+  .euc-start { padding-block: 0.35rem; }
+  .euc-title__starts > .euc-start:last-child {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+}
+
+@media (pointer: coarse) and (max-width: 27.25rem) and (max-height: 38rem) {
+  .euc-title__starts > .euc-start:last-child { min-height: 2.75rem; align-items: center; }
+}
+
+/* A city chip is one line: the 44 px floor, centred, not a card's height. */
+@media (pointer: coarse) and (max-height: 34.75rem), (pointer: coarse) and (max-width: 34rem) and (max-height: 47rem) {
+  .euc-start--out { min-height: 2.75rem; align-items: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -5796,8 +5983,9 @@
 
 @media (forced-colors: active) {
   .euc-start { border: 1px solid ButtonText; }
-  .euc-start__ink, .euc-start__ground, .euc-start__water, .euc-start__arc { stroke: ButtonText; }
+  .euc-start__ink, .euc-start__ground, .euc-start__water, .euc-start__arc, .euc-start__hill { stroke: ButtonText; }
   .euc-start__lit, .euc-start__city, .euc-start__cab { fill: ButtonText; }
   .euc-start__wheels { fill: Canvas; stroke: ButtonText; }
+  .euc-mode__icon { stroke: ButtonText; }
   .euc-menu--title .euc-button--ultra[aria-pressed="true"] { border-color: Highlight; }
 }

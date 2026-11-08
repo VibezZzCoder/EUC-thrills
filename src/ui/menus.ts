@@ -57,7 +57,7 @@ import {
   type VenueId,
 } from '../app/venues.ts';
 import { rowNeighbour, rowStep, type ControlRect } from './menuRows.ts';
-import { PROVENANCE, devlogHandle, versionStamp } from '../data/provenance.ts';
+import { PROVENANCE, devlogHandle, versionStamp, type SpinOff } from '../data/provenance.ts';
 
 /**
  * Title, pause, and settings — the menu surfaces M9 owes, and the file that
@@ -1182,9 +1182,9 @@ export function aboutTemplate(): string {
          target="_blank" rel="noopener">Source</a>
       <a class="euc-about__link euc-about__link--out" data-about="devlog" href="${PROVENANCE.devlogUrl}"
          target="_blank" rel="noopener">${devlogHandle()} on YouTube</a>
-      <a class="euc-about__link euc-about__link--out" data-about="spin-off" href="${PROVENANCE.spinOffUrl}"
-         target="_blank" rel="noopener">${PROVENANCE.spinOffTitle}, the Manhattan spin-off</a>
-    </div>
+${PROVENANCE.spinOffs.map((spinOff) => `      <a class="euc-about__link euc-about__link--out" data-about="spin-off-${spinOff.id}" href="${spinOff.url}"
+         target="_blank" rel="noopener">${spinOff.title}, the ${SPIN_OFF_PLACES[spinOff.id]} spin-off</a>
+`).join('')}    </div>
 
     <p class="euc-about__guide">Below: the code licence, then the notices and credits for every rider. Scroll to read them all.</p>
     <div class="euc-about__text" data-about="text" tabindex="0" role="region"
@@ -1208,9 +1208,9 @@ export function aboutTemplate(): string {
 }
 
 /**
- * The title's four place cards (2026-10-22 as two; four since the owner's
- * 1.4.0 ride: "split it into four … the town, the wharf, the foundry yard,
- * and … New York City"). Each card has its own colour and no "New" badge.
+ * The title's place cards (2026-10-22 as two; four since the owner's 1.4.0
+ * ride; split into two groups at 1.4.1). Each card has its own colour and no
+ * "New" badge.
  *
  * - **The first** rides whatever is loaded — the town the game opens on, or
  *   whatever a player chose on the fresh-route panel — and is still
@@ -1218,10 +1218,8 @@ export function aboutTemplate(): string {
  *   a stage that has its own card is loaded, the first card offers the town
  *   instead (a `data-place` on it), so no place is named twice.
  * - **The Wharf and the yard** (`TITLE_STAGES`) ride their stage in one press.
- * - **EUC NYC** is a link, not a control: it leaves this game for the owner's
- *   spin-off in the same tab (§46), so Thrills unloads and one game runs at a
- *   time. Since it is now one of the four cards it is a pad stop like the
- *   others; About still carries the same address.
+ * - **"Other cities"** (1.4.1), the row under them, holds one link per
+ *   `PROVENANCE.spinOffs` entry (EUC NYC, EUC SF): see `spinOffCardTemplate`.
  *
  * Pictures are inline SVG keyed by place, `aria-hidden`, so a card's name is
  * its words; every hook inside a card is `data-note`, never `data-menu`.
@@ -1312,32 +1310,89 @@ function startCardTemplate(action: 'start' | 'start-place', slot: string, kicker
     </button>`;
 }
 
+/** Where each spin-off city is, as its About link names it. */
+const SPIN_OFF_PLACES: Readonly<Record<SpinOff['id'], string>> = Object.freeze({
+  nyc: 'Manhattan',
+  sf: 'San Francisco',
+});
+
 /**
- * The EUC NYC card. The picture is a yellow cab in front of three plain
- * blocks and a rooftop water tower: generic on purpose, never a named
- * landmark, roundel or slogan.
+ * Each spin-off card's picture, generic on purpose: never a named landmark,
+ * bridge, roundel, slogan or wordmark.
+ *
+ * - **EUC NYC**: a yellow cab in front of three plain blocks and a rooftop
+ *   water tower.
+ * - **EUC SF** (1.4.1): a cable car climbing a steep street under its cable,
+ *   with three row houses stepping up the hill behind it.
  */
-export function spinOffCardTemplate(): string {
-  return `
-    <a class="euc-start euc-start--nyc" data-start-out="spin-off" href="${PROVENANCE.spinOffUrl}" rel="noopener">
-      <span class="euc-start__art">
-        <svg class="euc-start__picture" viewBox="0 0 20 16" aria-hidden="true" focusable="false">
-          <path class="euc-start__city"
+const SPIN_OFF_PICTURES: Readonly<Record<SpinOff['id'], string>> = Object.freeze({
+  nyc: `<path class="euc-start__city"
                 d="M1 11V4.6h4.4V11zM6 11V2h4.6v9zM11.2 11V6h4.8v5zM12.4 4.7V2.5l1.2-1.2 1.2 1.2v2.2z
                    M12.7 6V4.7h.5V6zM14 6V4.7h.5V6z"/>
           <path class="euc-start__cab" fill-rule="evenodd"
                 d="M2 10.2l3.2-.2 1.6-2.8h1.8V6.3h1.8v.9h2l2.2 2.8 2.8.4c.6.1 1 .6 1 1.2V13H1.8l-.2-1
                    c0-1 .1-1.6.4-1.8zM7.4 9.6l1-1.7h.9v1.7zM9.9 7.9h2.2l1.3 1.7H9.9z"/>
           <path class="euc-start__wheels"
-                d="M4.1 13.2a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0zM13.1 13.2a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0z"/>
+                d="M4.1 13.2a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0zM13.1 13.2a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0z"/>`,
+  sf: `<path class="euc-start__city" d="M10 11.6V6.5l1.5-1.5 1.5 1.5v5.1zM13.4 10.4V4.5l1.4-1.4 1.4 1.4v5.9zM16.6 9.3V3l1.2-1.2L19 3v6.3z"/>
+          <path class="euc-start__hill" d="M1 14.5L19 8M1 8L9.5 4.9"/>
+          <g transform="rotate(-19.8 6 12.7)">
+            <path class="euc-start__cab" fill-rule="evenodd"
+                  d="M3 12.2V9h6v3.2zM3.8 9.7h1.2v1.2H3.8zM5.4 9.7h1.2v1.2H5.4zM7 9.7h1.2v1.2H7zM2.6 9V8.3h6.8V9z"/>
+            <path class="euc-start__hill" d="M6 8.3V6.6"/>
+            <path class="euc-start__wheels" d="M3.65 12.6a.55.55 0 1 0 1.1 0a.55.55 0 1 0-1.1 0zM7.25 12.6a.55.55 0 1 0 1.1 0a.55.55 0 1 0-1.1 0z"/>
+          </g>`,
+});
+
+/**
+ * One spin-off card (§46; the "Other cities" row since 1.4.1). A link, not a
+ * control: it leaves this game for the owner's other game in the same tab, so
+ * Thrills unloads and one game runs at a time. It is a pad stop like the
+ * place cards (no `data-outbound`), and About carries the same address.
+ */
+export function spinOffCardTemplate(spinOff: SpinOff): string {
+  return `
+    <a class="euc-start euc-start--out euc-start--${spinOff.id}" data-start-out="spin-off" href="${spinOff.url}" rel="noopener">
+      <span class="euc-start__art">
+        <svg class="euc-start__picture" viewBox="0 0 20 16" aria-hidden="true" focusable="false">
+          ${SPIN_OFF_PICTURES[spinOff.id]}
         </svg>
       </span>
       <span class="euc-start__words">
         <span class="euc-start__kicker">Spin-off</span>
-        <span class="euc-start__place">${PROVENANCE.spinOffTitle}</span>
-        <span class="euc-start__note">Leave for Manhattan in the other game</span>
+        <span class="euc-start__place">${spinOff.title}</span>
+        <span class="euc-start__note">${spinOff.note}</span>
       </span>
     </a>`;
+}
+
+/**
+ * Each title mode's picture (1.4.1, the owner's pick of the mode-tile
+ * mockups): a small stroked icon before the mode's name, in the mode's own
+ * accent colour (`game.css`, `--mode-accent`), so the modes read as things to
+ * play beside the bright place cards without competing with them. Generic
+ * shapes, `aria-hidden`, so a tile's name is still its words.
+ */
+const MODE_ICONS: Readonly<Record<string, string>> = Object.freeze({
+  // Two riders side by side.
+  couch: '<circle cx="8" cy="8" r="3"/><path d="M2.5 20c0-3.2 2.4-5.5 5.5-5.5s5.5 2.3 5.5 5.5"/>'
+    + '<circle cx="16.5" cy="8" r="3"/><path d="M11 20c0-3.2 2.4-5.5 5.5-5.5S22 16.8 22 20"/>',
+  // A stopwatch.
+  challenge: '<circle cx="12" cy="13.5" r="7"/><path d="M12 13.5V9.5M9.5 2.5h5M12 2.5v4M18.2 6.8l1.6-1.6"/>',
+  // A flag on its pole.
+  'track-day': '<path d="M5 21.5V3.5M5 4h13l-2.5 4.5L18 13H5"/>',
+  // A spin arrow.
+  'trick-run': '<path d="M5 15.5a7.5 7.5 0 1 1 2.6 4.6"/><path d="M4 21v-5.5h5.5"/>',
+  // A paddle.
+  knockabout: '<circle cx="9.5" cy="9.5" r="6"/><path d="M14 14l6.5 6.5"/>',
+  // A siren light.
+  chase: '<path d="M6.5 18.5v-5a5.5 5.5 0 0 1 11 0v5M4.5 18.5h15v3h-15zM12 2.5V5M3.8 6l1.8 1.8M20.2 6l-1.8 1.8"/>',
+  // A map pin.
+  routes: '<path d="M12 21.5s-6.5-6.2-6.5-11.5a6.5 6.5 0 0 1 13 0c0 5.3-6.5 11.5-6.5 11.5z"/><circle cx="12" cy="10" r="2.3"/>',
+});
+
+function modeIcon(menu: string): string {
+  return `<svg class="euc-mode__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${MODE_ICONS[menu]}</svg>`;
 }
 
 const TITLE_TEMPLATE = `
@@ -1346,37 +1401,45 @@ const TITLE_TEMPLATE = `
     <h1 class="euc-menu__title" id="euc-title-heading">EUC&nbsp;<span class="accent">THRILLS</span></h1>
     <p class="euc-menu__tagline">One wheel. Total freedom. Ride anywhere.</p>
   </div>
-  <div class="euc-title__starts" role="group" aria-label="Start riding">${startCardTemplate('start', 'town', 'Start ride', 'town')}${startCardTemplate('start-place', 'wharf', STAGE_KICKERS.euclaude, 'euclaude')}${startCardTemplate('start-place', 'yard', STAGE_KICKERS.skatepark, 'skatepark')}${spinOffCardTemplate()}
+  <div class="euc-title__starts" role="group" aria-label="Start riding">${startCardTemplate('start', 'town', 'Start ride', 'town')}${startCardTemplate('start-place', 'wharf', STAGE_KICKERS.euclaude, 'euclaude')}${startCardTemplate('start-place', 'yard', STAGE_KICKERS.skatepark, 'skatepark')}
   </div>
-  <div class="euc-title__modes" role="group" aria-label="Other ways to ride">
+  <div class="euc-title__cities" role="group" aria-labelledby="euc-title-cities">
+    <p class="euc-title__group-head euc-title__cities-head" id="euc-title-cities">Other cities</p>
+    <div class="euc-title__city-row">${PROVENANCE.spinOffs.map(spinOffCardTemplate).join('')}
+    </div>
+  </div>
+  <div class="euc-title__ways">
+  <p class="euc-title__group-head euc-title__ways-head" id="euc-title-ways">Ways to ride</p>
+  <div class="euc-title__modes" role="group" aria-labelledby="euc-title-ways">
     <button type="button" class="euc-button euc-mode" data-menu="couch" hidden>
-      <span class="euc-button__label">2–4 Players</span>
+      <span class="euc-button__label">${modeIcon('couch')}2–4 Players</span>
       <span class="euc-button__note">Up to four riders on one screen</span>
     </button>
     <button type="button" class="euc-button euc-mode" data-menu="challenge">
-      <span class="euc-button__label">Time trial</span>
+      <span class="euc-button__label">${modeIcon('challenge')}Time trial</span>
       <span class="euc-button__note">Race the clock through the checkpoints</span>
     </button>
     <button type="button" class="euc-button euc-mode" data-menu="track-day">
-      <span class="euc-button__label">Track Day</span>
+      <span class="euc-button__label">${modeIcon('track-day')}Track Day</span>
       <span class="euc-button__note">Choose a track. Your best lap rides with you</span>
     </button>
     <button type="button" class="euc-button euc-mode" data-menu="trick-run">
-      <span class="euc-button__label">Trick Run</span>
+      <span class="euc-button__label">${modeIcon('trick-run')}Trick Run</span>
       <span class="euc-button__note">${trickRunNote(VENUE_LABELS[TRICK_RUN_DESTINATION])}</span>
     </button>
     <button type="button" class="euc-button euc-mode" data-menu="knockabout">
-      <span class="euc-button__label">Knockabout</span>
+      <span class="euc-button__label">${modeIcon('knockabout')}Knockabout</span>
       <span class="euc-button__note">Swing a paddle at everything you pass</span>
     </button>
     <button type="button" class="euc-button euc-mode" data-menu="chase">
-      <span class="euc-button__label">Police chase</span>
+      <span class="euc-button__label">${modeIcon('chase')}Police chase</span>
       <span class="euc-button__note">Stay ahead of Officer Dorkins for five minutes</span>
     </button>
     <button type="button" class="euc-button euc-mode" data-menu="routes">
-      <span class="euc-button__label">Fresh route</span>
+      <span class="euc-button__label">${modeIcon('routes')}Fresh route</span>
       <span class="euc-button__note">Generate a brand-new town to ride</span>
     </button>${ULTRA_UTILITY}
+  </div>
   </div>
   <div class="euc-title__foot">
   ${riderChipTemplate()}
@@ -1385,22 +1448,36 @@ const TITLE_TEMPLATE = `
 </div>
 `;
 
-/** Track selection is a title subpanel: opening or cancelling it never loads a world. */
+/**
+ * Track selection is a title subpanel: opening or cancelling it never loads a
+ * world. Since 1.4.1 each track is a place card like the title's
+ * (`.euc-start`: picture, kicker, name, note) in its own colour, so the two
+ * tracks read as places to go rather than as two more grey buttons: BelVar
+ * Circuit in Track Day's green with the chequered flag, Switchback Park in
+ * hillside ochre with its pines. The hooks (`data-menu="lap-venue"`,
+ * `data-venue`) are unchanged.
+ */
 function tracksTemplate(): string {
-  const notes: Record<typeof TRACK_VENUE_IDS[number], string> = {
-    track: 'Paved circuit · flowing corners and fast laps',
-    switchback: 'Hillside jump park · drops, jumps and tight turns',
+  const words: Record<typeof TRACK_VENUE_IDS[number], { readonly kicker: string; readonly note: string }> = {
+    track: { kicker: 'Paved circuit', note: 'Flowing corners and fast laps' },
+    switchback: { kicker: 'Hillside jump park', note: 'Drops, jumps and tight turns' },
   };
   return `
 <div class="euc-menu__panel" role="dialog" aria-modal="true" aria-labelledby="euc-tracks-heading">
   <h2 class="euc-menu__title" id="euc-tracks-heading">Track Day</h2>
   <p class="euc-menu__tagline">Choose your track. Your best lap rides with you.</p>
-  <div class="euc-menu__actions">
+  <div class="euc-tracks" role="group" aria-label="Tracks">
     ${TRACK_VENUE_IDS.map((venue) => `
-    <button type="button" class="euc-button" data-menu="lap-venue" data-venue="${venue}">
-      <span class="euc-button__label">${VENUE_LABELS[venue]}</span>
-      <span class="euc-button__note">${notes[venue]}</span>
+    <button type="button" class="euc-start euc-start--lap-${venue}" data-menu="lap-venue" data-venue="${venue}">
+      <span class="euc-start__art" data-note="start-art">${startPicture(venue)}</span>
+      <span class="euc-start__words">
+        <span class="euc-start__kicker" data-note="start-kicker">${words[venue].kicker}</span>
+        <span class="euc-start__place" data-note="start-place">${VENUE_LABELS[venue]}</span>
+        <span class="euc-start__note" data-note="start-note">${words[venue].note}</span>
+      </span>
     </button>`).join('')}
+  </div>
+  <div class="euc-menu__actions">
     <button type="button" class="euc-button euc-button--quiet" data-menu="tracks-back">Back</button>
   </div>
 </div>`;
@@ -4706,8 +4783,9 @@ export class Menus {
     // native Tab, which the browser rings for us.
     this.padDriving = true;
     // An outbound link marked `data-outbound` leaves the game, so the pad's
-    // walk passes it by. (The title's EUC NYC card is a pad stop on purpose:
-    // since 1.4.0 it is one of the four place cards.)
+    // walk passes it by. (The title's spin-off cards, EUC NYC and EUC SF, are
+    // pad stops on purpose: since 1.4.0 they are place cards, in the "Other
+    // cities" row since 1.4.1.)
     const focusable = this.focusableControls().filter((node) => !node.hasAttribute('data-outbound'));
     if (focusable.length === 0) return;
 

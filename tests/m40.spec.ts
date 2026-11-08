@@ -58,8 +58,9 @@ async function expectAboutContents(page: Page): Promise<void> {
     ['play', PROVENANCE.homepageUrl, 'Play online'],
     ['source', PROVENANCE.repositoryUrl, 'Source'],
     ['devlog', PROVENANCE.devlogUrl, `${devlogHandle()} on YouTube`],
-    // §46: the pad's way to the spin-off, since the title chip is not a stop.
-    ['spin-off', PROVENANCE.spinOffUrl, `${PROVENANCE.spinOffTitle}, the Manhattan spin-off`],
+    // §9v: every link that leaves the game is in About too, one per spin-off.
+    ['spin-off-nyc', 'https://vibezzzcoder.github.io/euc-nyc/', 'EUC NYC, the Manhattan spin-off'],
+    ['spin-off-sf', 'https://vibezzzcoder.github.io/euc-sanfrancisco/', 'EUC SF, the San Francisco spin-off'],
   ] as const;
   for (const [hook, href, text] of links) {
     const link = about(page).locator(`[data-about="${hook}"]`);
@@ -135,7 +136,7 @@ test.describe('M40 — stamp, About and licences, share link (desktop)', () => {
     expect(errors).toEqual([]);
   });
 
-  test('the title\'s EUC NYC card links the spin-off from PROVENANCE, in the same tab, and the pad can take it (1.4.0)', async ({ page }) => {
+  test('the title\'s EUC NYC card links the spin-off from PROVENANCE, in the same tab, and the pad can take it (1.4.0; cities row 1.4.1)', async ({ page }) => {
     const errors = collectErrors(page);
     await page.addInitScript(() => {
       const pad = {
@@ -152,11 +153,12 @@ test.describe('M40 — stamp, About and licences, share link (desktop)', () => {
     await bootToTitle(page);
     await page.waitForFunction(() => window.game.snapshot().gamepadConnected);
 
-    // The fourth place card (owner's 1.4.0 ride), replacing §46's foot chip.
-    const card = page.locator('.euc-menu--title .euc-title__starts a.euc-start--nyc');
+    // The first card of the "Other cities" row (1.4.1), replacing §46's foot chip.
+    const card = page.locator('.euc-menu--title .euc-title__cities a.euc-start--nyc');
     await expect(card).toBeVisible();
-    expect(await card.getAttribute('href')).toBe(PROVENANCE.spinOffUrl);
-    expect(PROVENANCE.spinOffUrl).toBe('https://vibezzzcoder.github.io/euc-nyc/');
+    const nyc = PROVENANCE.spinOffs.find((spinOff) => spinOff.id === 'nyc')!;
+    expect(nyc.url).toBe('https://vibezzzcoder.github.io/euc-nyc/');
+    expect(await card.getAttribute('href')).toBe(nyc.url);
     expect(await card.getAttribute('target')).toBeNull();
     await expect(card.locator('.euc-start__place')).toHaveText('EUC NYC');
     expect(await card.getAttribute('data-menu')).toBeNull();
@@ -175,9 +177,10 @@ test.describe('M40 — stamp, About and licences, share link (desktop)', () => {
       await frame();
     }, button);
 
-    // Right three times from Start ride stands on it, like any place card…
+    // Down once from Start ride stands on it: the cities are the row under
+    // the places (1.4.1), and the card is a pad stop like any place card…
     await expect(page.locator('.euc-menu--title [data-menu="start"]')).toBeFocused();
-    for (let step = 0; step < 3; step += 1) await pulse(15);
+    await pulse(13);
     await expect(card).toBeFocused();
     expect(errors).toEqual([]);
 
@@ -188,7 +191,7 @@ test.describe('M40 — stamp, About and licences, share link (desktop)', () => {
     }));
     // The press navigates while the pulse is still waiting on frames.
     await pulse(0).catch(() => undefined);
-    await page.waitForURL(PROVENANCE.spinOffUrl);
+    await page.waitForURL(nyc.url);
     await page.goBack();
     await page.waitForFunction(() => window.game?.snapshot().app.state === 'title', null, { timeout: 60_000 });
     await expect(page.locator('.euc-menu--title a.euc-start--nyc')).toBeVisible();
@@ -482,7 +485,8 @@ test.describe('M40 — About on a phone (Pixel 7, real touch)', () => {
     // Every target on the panel meets the 44 px coarse-pointer floor.
     const targets = await about(page).evaluate((root) => [...root.querySelectorAll('a[href], button')]
       .map((node) => ({ name: node.textContent!.trim(), height: node.getBoundingClientRect().height })));
-    expect(targets.length).toBe(6);
+    // Seven: author, play, source, devlog, the two spin-offs (1.4.1), Back.
+    expect(targets.length).toBe(7);
     for (const target of targets) expect(target.height, target.name).toBeGreaterThanOrEqual(44 - 0.5);
 
     // A real touch drag on the text scrolls the text, natively.

@@ -28,6 +28,16 @@
  * in `src/data/`.
  */
 
+/** One spin-off city: its own game, its own repository, one github.io address. */
+export interface SpinOff {
+  readonly id: 'nyc' | 'sf';
+  readonly url: string;
+  /** The name its card and About link print. */
+  readonly title: string;
+  /** The card's second line. */
+  readonly note: string;
+}
+
 export interface Provenance {
   /** The game's name, as it is published. */
   readonly title: string;
@@ -60,14 +70,13 @@ export interface Provenance {
    */
   readonly devlogUrl: string;
   /**
-   * The owner's spin-off game, EUC NYC, a separate repository (§46, his
-   * decision 2026-10-25). The title's second chip and an About link read it.
-   * Only this github.io address: never another domain for the spin-off, and
-   * never the owner's landing page, which the export's token scan refuses.
+   * The owner's spin-off games, each a separate repository (§46, his decision
+   * 2026-10-25 for EUC NYC; EUC SF joined at 1.4.1). The title's "Other
+   * cities" row and Settings → About read this list, in this order. Only these
+   * github.io addresses: never another domain for a spin-off, and never the
+   * owner's landing page, which the export's token scan refuses.
    */
-  readonly spinOffUrl: string;
-  /** The spin-off's name, as its chip and About link print it. */
-  readonly spinOffTitle: string;
+  readonly spinOffs: readonly SpinOff[];
 }
 
 export const PROVENANCE: Provenance = Object.freeze({
@@ -83,10 +92,18 @@ export const PROVENANCE: Provenance = Object.freeze({
   year: '2026',
   licence: 'MIT',
   assetLicence: 'CC-BY-4.0',
-  version: '1.4.0',
+  version: '1.4.1',
   devlogUrl: 'https://www.youtube.com/@EdwinRodMen',
-  spinOffUrl: 'https://vibezzzcoder.github.io/euc-nyc/',
-  spinOffTitle: 'EUC NYC',
+  spinOffs: Object.freeze([
+    Object.freeze({
+      id: 'nyc', url: 'https://vibezzzcoder.github.io/euc-nyc/', title: 'EUC NYC',
+      note: 'Leave for Manhattan in the other game',
+    }),
+    Object.freeze({
+      id: 'sf', url: 'https://vibezzzcoder.github.io/euc-sanfrancisco/', title: 'EUC SF',
+      note: 'Leave for San Francisco in the other game',
+    }),
+  ]),
 });
 
 /** The devlog channel's handle, the only other form the scanner lets through. */

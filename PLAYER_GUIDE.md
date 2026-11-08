@@ -108,15 +108,20 @@ than the whole run.
 
 The title screen offers these, in this order.
 
-**The four place cards** — the coloured row at the top. **Start ride**
+**The place cards** — the coloured row at the top. **Start ride**
 (blue) is free ride in the world currently loaded, which is the town until you
 choose otherwise, and the card names it: no clock, no objective, nothing to
 fail, and the way to practise the Original city, BelVar Circuit or Switchback
 Park with nothing running. **Wheelhouse Wharf** (teal) and **Foundry Yard**
 (orange) ride their stage in one press; while you are on one of them, the
-first card offers the town instead. **EUC NYC** (yellow) leaves this game for
-the same author's Manhattan spin-off in the same tab, and the browser's Back
-button returns here. The modes below are smaller tiles.
+first card offers the town instead.
+
+**Other cities** — the row under them. **EUC NYC** (yellow) and **EUC SF**
+(red) leave this game for the same author's Manhattan and San Francisco
+spin-offs in the same tab, and the browser's Back button returns here. On a
+short screen they shrink to one-line chips.
+
+**Ways to ride** — the tiles below, each marked with its own coloured icon.
 
 **2–4 Players** — see the next section. The button appears only on a window
 at least 1000 pixels wide with a mouse, trackpad or gamepad, so a phone never
@@ -136,7 +141,7 @@ is hidden while one of the two circuits, Wheelhouse Wharf or Foundry Yard
 is loaded.
 
 **Track Day** — lap a hand-built course. The button asks which: **BelVar
-Circuit** or **Switchback Park**. Pick one and it loads and starts you on an
+Circuit** (green) or **Switchback Park** (ochre). Pick one and it loads and starts you on an
 out lap to find the throttle; the clock starts when you cross the line.
 
 - Crossing the line again closes that lap and starts the next one, so the

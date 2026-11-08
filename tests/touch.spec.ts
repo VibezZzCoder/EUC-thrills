@@ -905,14 +905,15 @@ test.describe('M23 Phase B2 — a track day on a phone', () => {
     expect(await page.evaluate(() => window.game.snapshot().app.menu)).toBe('tracks');
     expect(await page.evaluate(() => window.game.snapshot().app.state)).toBe('title');
 
-    // Tap two is the same geometry again: BelVar's card is a label over a note,
-    // and the note is the half of it a thumb is most likely to land on.
+    // Tap two is the same geometry again: BelVar's card (a place card since
+    // 1.4.1) carries its name over a note, and the note is the part of it a
+    // thumb is most likely to land on.
     const card = picker.locator('[data-menu="lap-venue"][data-venue="track"]');
     const cardBox = await card.boundingBox();
     expect(cardBox, 'the BelVar card has no box').not.toBeNull();
     expect(cardBox!.height, `the BelVar card is ${cardBox!.height}px tall`)
       .toBeGreaterThanOrEqual(44);
-    await card.locator('.euc-button__note').tap();
+    await card.locator('.euc-start__note').tap();
 
     // 2026-10-04: the venue swap runs behind the loading cover; the session is
     // the player's once it lifts. Identity is the record key (see above).
@@ -2798,7 +2799,7 @@ async function compactWarningFacts(page: Page) {
     // button's content box (border and padding taken off): a label that
     // overflows it is off-centre at best and past the border at worst (FU2).
     const spills: string[] = [];
-    for (const node of root.querySelectorAll<HTMLElement>('.euc-title__starts button, .euc-title__modes button')) {
+    for (const node of root.querySelectorAll<HTMLElement>('.euc-title__starts button, .euc-title__cities a, .euc-title__modes button')) {
       if (node.offsetParent === null) continue;
       const style = getComputedStyle(node);
       const box = node.getBoundingClientRect();
@@ -2813,7 +2814,7 @@ async function compactWarningFacts(page: Page) {
         for (const rect of range.getClientRects()) {
           const past = Math.max(left - rect.left, rect.right - right);
           if (rect.width > 0 && past > 0.5) {
-            spills.push(`${node.dataset.menu} "${piece.textContent?.trim()}" by ${past.toFixed(1)}px`);
+            spills.push(`${node.dataset.menu ?? node.className} "${piece.textContent?.trim()}" by ${past.toFixed(1)}px`);
           }
         }
       }
