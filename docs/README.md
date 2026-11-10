@@ -10,7 +10,7 @@
 >
 > **Spin-offs:** the title screen's "Other cities" row links to [EUC NYC](https://vibezzzcoder.github.io/euc-nyc/), the WebGPU Manhattan spin-off ([github.com/VibezZzCoder/euc-nyc](https://github.com/VibezZzCoder/euc-nyc)), and [EUC SF](https://vibezzzcoder.github.io/euc-sanfrancisco/), the San Francisco spin-off in early access ([github.com/VibezZzCoder/euc-sanfrancisco](https://github.com/VibezZzCoder/euc-sanfrancisco)).
 >
-> **Play offline:** the whole game as one file you download and double-click, from the [Releases page](https://github.com/VibezZzCoder/EUC-thrills/releases) — for computers; on a phone, play at the link above.
+> **Play offline:** the whole game as one file you download and double-click, from the [Releases page](https://github.com/VibezZzCoder/EUC-thrills/releases) — for computers; on a phone, play at the link above. The file can be a release behind this site, and its "Other cities" cards open the spin-offs online.
 
 ![EUC Thrills in Ultra graphics — a Police chase across the town's brick plaza: Cool Rider rides toward the camera while Officer Dorkins, paddle out, closes in a few metres behind; the screen reads "He is right behind you" and SURVIVE 4:56, the speed readout shows 28 mph with 45 km/h beside it, and behind them stand warehouses, a green apartment block, the brick water tower and two parked vans, with bollards and trees on the plaza and the rider's long shadow on the brick](https://vibezzzcoder.github.io/EUC-thrills/media/euc-thrills-gameplay.jpg)
 
