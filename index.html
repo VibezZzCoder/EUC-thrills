@@ -14,11 +14,17 @@
       The manifest is what iOS 16.4+ and Android read for the name, the icon,
       and `display: standalone`; the four `apple-` lines below are the older
       iOS route, kept because a handset that has not been updated is exactly
-      the handset somebody rides this on. `black-translucent` puts the page
-      under the status bar, which is only safe because the viewport is already
-      `viewport-fit=cover` and every HUD lane and menu in `game.css` is padded
-      by `env(safe-area-inset-*)` — remove either and the speed readout goes
-      under the notch.
+      the handset somebody rides this on.
+
+      The status bar is `default` (1.4.4): a solid strip, with the page
+      starting below it. `black-translucent` drew the page under it, and on
+      iOS 26+ an installed copy then sometimes cold-launched shifted up by the
+      status bar's height, with every tap landing that far below what was
+      drawn (docs/LESSONS_LEARNED.md, "shifted up by the status bar"). It also
+      covers the spin-off cities, which open inside this app (manifest scope).
+      iOS reads it only when the icon is added. `viewport-fit=cover` and the
+      `env(safe-area-inset-*)` padding stay for landscape and the home
+      indicator.
 
       There is no service worker, so this is an installed launcher and not an
       offline game: it still fetches the build each time it opens. That is a
@@ -31,8 +37,32 @@
     <meta name="theme-color" content="#0d1014" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="EUC Thrills" />
+    <script>
+      // The page never scrolls: html and body are overflow hidden. If iOS
+      // shifts it anyway (installed copies on iOS 26+, a closing keyboard),
+      // put it back, or taps land below what is drawn (1.4.4). A focused text
+      // field is left alone, because iOS scrolls to keep it above the
+      // keyboard.
+      (() => {
+        const editing = () => {
+          const el = document.activeElement;
+          return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+        };
+        const snap = () => {
+          if (!editing() && (window.scrollX !== 0 || window.scrollY !== 0)) window.scrollTo(0, 0);
+        };
+        for (const type of ['load', 'pageshow', 'resize', 'orientationchange', 'scroll']) {
+          window.addEventListener(type, snap, { passive: true });
+        }
+        window.addEventListener('focusout', () => setTimeout(snap, 0));
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener('resize', snap);
+          window.visualViewport.addEventListener('scroll', snap);
+        }
+      })();
+    </script>
 
     <!--
       Critical boot styles are inline on purpose. The loading shell has to be

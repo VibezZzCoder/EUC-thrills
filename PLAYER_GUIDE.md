@@ -564,10 +564,10 @@ always works. And your saved times live in the browser's storage
 for this page, so a game launched from the home screen and the same game
 opened in a tab may not always be looking at the same records.
 
-**An icon added before version 1.4.3** opens the other cities in a small
-browser view with an address bar. To have them open full screen, remove the
-icon and add the game to the home screen again. The new icon may start
-with fresh settings and records.
+**An icon added before version 1.4.4** should be removed and added again.
+Older icons open the other cities in a small browser view with an address
+bar, or on iPhone can open the game shifted up under the clock, so taps land
+below the buttons. The new icon may start with fresh settings and records.
 
 For a copy that works with no network at all, the **Releases page** at
 <https://github.com/VibezZzCoder/EUC-thrills/releases> carries the whole game
