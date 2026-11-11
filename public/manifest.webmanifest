@@ -4,7 +4,7 @@
   "description": "An open-source arcade riding game about electric unicycles. One wheel. Total freedom. Ride anywhere.",
   "id": "./",
   "start_url": "./",
-  "scope": "./",
+  "scope": "/",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#0d1014",

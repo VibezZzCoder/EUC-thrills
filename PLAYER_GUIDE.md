@@ -118,8 +118,10 @@ first card offers the town instead.
 
 **Other cities** — the row under them. **EUC NYC** (yellow) and **EUC SF**
 (red) leave this game for the same author's Manhattan and San Francisco
-spin-offs in the same tab, and the browser's Back button returns here. On a
-short screen they shrink to one-line chips.
+spin-offs in the same tab, and the browser's Back button returns here. In
+the game installed on a phone's home screen they open inside the same
+window, full screen, and their **← EUC Thrills main menu** link brings you
+back. On a short screen they shrink to one-line chips.
 
 **Ways to ride** — the tiles below, each marked with its own coloured icon.
 
@@ -561,6 +563,11 @@ strongest install prompt, which is why the menu route above is the one that
 always works. And your saved times live in the browser's storage
 for this page, so a game launched from the home screen and the same game
 opened in a tab may not always be looking at the same records.
+
+**An icon added before version 1.4.3** opens the other cities in a small
+browser view with an address bar. To have them open full screen, remove the
+icon and add the game to the home screen again. The new icon may start
+with fresh settings and records.
 
 For a copy that works with no network at all, the **Releases page** at
 <https://github.com/VibezZzCoder/EUC-thrills/releases> carries the whole game

@@ -92,7 +92,7 @@ export const PROVENANCE: Provenance = Object.freeze({
   year: '2026',
   licence: 'MIT',
   assetLicence: 'CC-BY-4.0',
-  version: '1.4.2',
+  version: '1.4.3',
   devlogUrl: 'https://www.youtube.com/@EdwinRodMen',
   spinOffs: Object.freeze([
     Object.freeze({
