@@ -57,6 +57,7 @@ import {
   type VenueId,
 } from '../app/venues.ts';
 import { rowNeighbour, rowStep, type ControlRect } from './menuRows.ts';
+import { watchSideRail } from './sideRail.ts';
 import { PROVENANCE, devlogHandle, versionStamp, type SpinOff } from '../data/provenance.ts';
 
 /**
@@ -3083,6 +3084,9 @@ export class Menus {
     }
   }
 
+  /** Stops the watch that tells `game.css` about a system rail (`sideRail.ts`). */
+  private readonly stopSideRail: () => void;
+
   constructor(initial: GameOptions, config: MenuOptions) {
     this.callbacks = config.callbacks;
     this.parent = config.parent ?? document.body;
@@ -3099,6 +3103,7 @@ export class Menus {
     this.about = this.mount('euc-menu--about', aboutTemplate());
     this.seedField = this.routes.querySelector<HTMLInputElement>('[data-menu="seed"]');
 
+    this.stopSideRail = watchSideRail();
     this.parent.addEventListener('click', this.onClick);
     // `input` rather than `change`, so a slider reports while it is being
     // dragged: the whole point of a volume control is that the player hears
@@ -4271,6 +4276,7 @@ export class Menus {
   }
 
   dispose(): void {
+    this.stopSideRail();
     this.parent.removeEventListener('click', this.onClick);
     this.settings.removeEventListener('input', this.onInput);
     this.seedField?.removeEventListener('keydown', this.onSeedKeyDown);

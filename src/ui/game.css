@@ -5595,6 +5595,52 @@
   .euc-title__starts .euc-start__place { text-wrap: wrap; }
 }
 
+/* -- A system rail beside an upright screen (1.4.6) ----------------------
+ * The iPhone Duo's outer screen, installed: the page is 466 px wide and the
+ * camera, clock and Wi-Fi sit in an 84 px rail down its right side, reported
+ * as a safe-area inset. `ui/sideRail.ts` reads the inset through the probe
+ * below and sets `data-side-rail` on the root, because a media query sees
+ * the 466 px viewport and cannot see what the rail leaves.
+ *
+ * Every menu keeps out of the rail with a transparent border, so its dimmed
+ * background still runs under the clock. What is left is 382 px, the page
+ * Safari shows on this screen, so the rules of the narrow tiers that the
+ * viewport width skipped are repeated here: `max-width: 27.25rem` above for
+ * the place cards and `max-width: 27.15rem` for the track cards. Change one,
+ * change both. */
+.euc-safe-area-probe {
+  position: fixed;
+  inset: 0 auto auto 0;
+  width: 0;
+  height: 0;
+  visibility: hidden;
+  pointer-events: none;
+  padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+
+:root[data-side-rail="right"] .euc-menu { border-right: env(safe-area-inset-right) solid transparent; }
+:root[data-side-rail="left"] .euc-menu { border-left: env(safe-area-inset-left) solid transparent; }
+
+@media (max-width: 34rem) {
+  :root[data-side-rail] .euc-title__starts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  :root[data-side-rail] .euc-title__starts > .euc-start:last-child {
+    grid-column: 1 / -1;
+    grid-template-areas: "art kicker" "art place";
+  }
+  :root[data-side-rail] .euc-title__starts > .euc-start:last-child .euc-start__place { grid-area: place; }
+  :root[data-side-rail] .euc-title__starts .euc-start__place { text-wrap: wrap; }
+  :root[data-side-rail] .euc-tracks { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Beside the rail the Duo's outer screen is 382x657 with a 34 px home
+   indicator: 17 px taller than the tier that drops the ride cards' notes
+   (`max-height: 40rem`), and with them the title scrolled 29 px (measured,
+   1.4.6). The notes go here too. */
+@media (max-width: 34rem) and (max-height: 44rem) {
+  :root[data-side-rail] .euc-mode .euc-button__note { display: none; }
+  :root[data-side-rail] .euc-mode { padding-block: 0.45rem; }
+}
+
 .euc-start {
   --start-from: #3b8bff;
   --start-to: #1f5fd6;
