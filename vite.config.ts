@@ -1,7 +1,9 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { defineConfig, transformWithEsbuild, type Plugin } from 'vite';
 import { PROVENANCE, provenanceBanner, provenanceHtmlComment } from './src/data/provenance.ts';
+import { insertPolicy } from './src/data/contentSecurityPolicy.ts';
 
 /**
  * Stamp the page with where it came from.
@@ -111,11 +113,39 @@ function minifyLinkedCssPlugin(): Plugin {
   };
 }
 
+/**
+ * Write the Content-Security-Policy into the built page.
+ *
+ * Production builds only. The dev server's client injects inline scripts and
+ * styles of its own, which the policy would refuse, so `npm run dev` serves
+ * the page without one — which also means **the dev server cannot show a
+ * policy violation**; `tools/csp-smoke.mjs` drives the built page for that.
+ *
+ * It runs in `writeBundle`, on the file Vite has finished writing, because the
+ * policy names each inline script and the inline style by the hash of its
+ * final bytes. Vite rewrites `index.html` after every `transformIndexHtml`
+ * hook has returned (asset URLs, inline CSS), so a hash taken inside a
+ * transform is a hash of a page that is not the one served.
+ * `src/data/contentSecurityPolicy.ts` holds the policy and the reasons.
+ */
+function contentSecurityPolicyPlugin(): Plugin {
+  return {
+    name: 'euc-thrills-content-security-policy',
+    apply: 'build',
+    enforce: 'post',
+    writeBundle(options) {
+      if (!options.dir) throw new Error('content-security-policy: the build has no output directory.');
+      const path = join(options.dir, 'index.html');
+      writeFileSync(path, insertPolicy(readFileSync(path, 'utf8')));
+    },
+  };
+}
+
 export default defineConfig(({ mode }) => {
   const githubPages = mode === 'github-pages';
 
   return {
-    plugins: [provenancePlugin(), minifyLinkedCssPlugin()],
+    plugins: [provenancePlugin(), minifyLinkedCssPlugin(), contentSecurityPolicyPlugin()],
     // GitHub Pages serves project sites below /<repository>/. Relative asset
     // URLs keep the generated package independent of the eventual repo name,
     // and of whether it is served from a subpath at all. A default production

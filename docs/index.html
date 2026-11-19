@@ -13,6 +13,7 @@
       to say so rather than to present the work as its own.
     -->
     <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'sha256-0eJgz5VHRQAo0XYqDXyHVseyjWXCNhQtRb4NmRxrRgY=' 'sha256-Drg1ePfgLWEWeKd1eWDJ0pJbML0/uzt0hBpBzJ+7FYk=' 'sha256-B/mK0QaoegwTVDtRRluM3igFBqgdDOzAcoM5tGMvQrs='; worker-src 'self'; style-src 'self' 'sha256-F52q7qP5wTXqixFjHQzoTPTm2GcU2HNWOXt/it48S9I='; img-src 'self' data:; font-src 'self'; connect-src 'self'; media-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>EUC Thrills</title>
     <meta name="description" content="An open-source arcade riding game about electric unicycles. One wheel. Total freedom. Ride anywhere." />
@@ -226,10 +227,36 @@
 
       #boot-error[hidden] { display: none; }
     </style>
+    <!--
+      The built page carries a Content-Security-Policy that names every inline
+      script and the style block above by hash (`src/data/contentSecurityPolicy.ts`;
+      Vite adds it to production builds only). After changing any of them,
+      rebuild: the policy is regenerated from the built page, and the packager
+      refuses a page whose policy does not match.
+
+      Inline `onload`/`onerror` attributes are refused by that policy, so the
+      two flags `boot.ts` reads are set from this script. It listens on the
+      document, in the capture phase, and is registered before the link exists,
+      so neither event can fire unheard.
+    -->
+    <script>
+      (() => {
+        const flag = name => event => {
+          const link = event.target;
+          if (!(link instanceof HTMLLinkElement) || link.id !== 'game-styles') return;
+          link.dataset[name] = 'true';
+          document.removeEventListener('load', loaded, true);
+          document.removeEventListener('error', failed, true);
+        };
+        const loaded = flag('loaded');
+        const failed = flag('failed');
+        document.addEventListener('load', loaded, true);
+        document.addEventListener('error', failed, true);
+      })();
+    </script>
     <!-- Nonblocking until the tiny boot entry confirms this required sheet. -->
-    <link id="game-styles" rel="stylesheet" href="./assets/game-C_EZULCu.css" media="print"
-      onload="this.dataset.loaded='true'" onerror="this.dataset.failed='true'" />
-    <script type="module" crossorigin src="./assets/index-Dt9XDDMx.js"></script>
+    <link id="game-styles" rel="stylesheet" href="./assets/game-B4QHgA8U.css" media="print" />
+    <script type="module" crossorigin src="./assets/index-BKhov3Ed.js"></script>
     <meta name="author" content="VibezZzCoder">
     <link rel="author" href="https://github.com/VibezZzCoder">
     <link rel="canonical" href="https://vibezzzcoder.github.io/EUC-thrills/">

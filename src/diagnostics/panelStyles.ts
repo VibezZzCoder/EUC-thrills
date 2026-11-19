@@ -164,8 +164,28 @@ const CSS = `
 }
 `;
 
+const adopted = new WeakSet<Document>();
+
+/**
+ * A constructed style sheet, not a `<style>` element. The built page's
+ * Content-Security-Policy (`src/data/contentSecurityPolicy.ts`) allows inline
+ * style only by hash, and a hash cannot name a block created at run time; a
+ * sheet built through the CSSOM is not inline style and needs no allowance.
+ *
+ * The `<style>` fallback is for a browser without constructed sheets (Safari
+ * before 16.4). Under the policy that browser shows the panels unstyled, which
+ * is the right price for a developer tool: it still opens and still reports.
+ */
 export function ensureDiagnosticStyles(doc: Document = document): void {
-  if (doc.getElementById(STYLE_ID)) return;
+  if (adopted.has(doc) || doc.getElementById(STYLE_ID)) return;
+  const Sheet = doc.defaultView?.CSSStyleSheet;
+  if (Sheet && 'adoptedStyleSheets' in doc && 'replaceSync' in Sheet.prototype) {
+    const sheet = new Sheet();
+    sheet.replaceSync(CSS);
+    doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, sheet];
+    adopted.add(doc);
+    return;
+  }
   const style = doc.createElement('style');
   style.id = STYLE_ID;
   style.textContent = CSS;

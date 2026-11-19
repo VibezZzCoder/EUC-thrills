@@ -740,7 +740,7 @@ export interface MenuOptions {
 function riderChipTemplate(): string {
   const dots = CHARACTERS.map((character) => `
       <span class="euc-rider-chip__dot" data-rider-dot="${character.id}"
-            style="--rider-swatch: ${character.swatch}"></span>`).join('');
+            data-rider-swatch="${character.swatch}"></span>`).join('');
 
   return `
   <button type="button" class="euc-rider-chip" data-menu="riders" data-attract="false">
@@ -2151,7 +2151,7 @@ function ridersTemplate(): string {
     return `
       <button type="button" class="euc-rider-card" data-menu="pick-rider"
               data-rider="${character.id}" aria-pressed="false"
-              style="--rider-swatch: ${character.swatch}">
+              data-rider-swatch="${character.swatch}">
         ${card.portrait}
         <span class="euc-rider-card__name">${character.name}</span>
         <span class="euc-rider-card__blurb">${card.blurb}</span>
@@ -4293,6 +4293,13 @@ export class Menus {
     root.className = `euc-menu euc-ui ${modifier}`;
     root.hidden = true;
     root.innerHTML = html;
+    // The page's Content-Security-Policy refuses a `style=` attribute, in
+    // markup and in an `innerHTML` template alike, so a template names its
+    // colour in `data-rider-swatch` and it is applied here through the CSSOM,
+    // which the policy allows.
+    for (const element of root.querySelectorAll<HTMLElement>('[data-rider-swatch]')) {
+      element.style.setProperty('--rider-swatch', element.dataset.riderSwatch ?? '');
+    }
     this.parent.appendChild(root);
     return root;
   }

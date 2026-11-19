@@ -216,9 +216,35 @@
 
       #boot-error[hidden] { display: none; }
     </style>
+    <!--
+      The built page carries a Content-Security-Policy that names every inline
+      script and the style block above by hash (`src/data/contentSecurityPolicy.ts`;
+      Vite adds it to production builds only). After changing any of them,
+      rebuild: the policy is regenerated from the built page, and the packager
+      refuses a page whose policy does not match.
+
+      Inline `onload`/`onerror` attributes are refused by that policy, so the
+      two flags `boot.ts` reads are set from this script. It listens on the
+      document, in the capture phase, and is registered before the link exists,
+      so neither event can fire unheard.
+    -->
+    <script>
+      (() => {
+        const flag = name => event => {
+          const link = event.target;
+          if (!(link instanceof HTMLLinkElement) || link.id !== 'game-styles') return;
+          link.dataset[name] = 'true';
+          document.removeEventListener('load', loaded, true);
+          document.removeEventListener('error', failed, true);
+        };
+        const loaded = flag('loaded');
+        const failed = flag('failed');
+        document.addEventListener('load', loaded, true);
+        document.addEventListener('error', failed, true);
+      })();
+    </script>
     <!-- Nonblocking until the tiny boot entry confirms this required sheet. -->
-    <link id="game-styles" rel="stylesheet" href="/src/ui/game.css" media="print"
-      onload="this.dataset.loaded='true'" onerror="this.dataset.failed='true'" />
+    <link id="game-styles" rel="stylesheet" href="/src/ui/game.css" media="print" />
   </head>
 
   <body>

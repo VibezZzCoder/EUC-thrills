@@ -3043,8 +3043,10 @@
  * Tab order, the gamepad's confirm, the coarse-pointer floor — comes from that
  * and not from anything written here.
  *
- * `--rider-swatch` is the character's own colour, set inline from
- * `data/riders.ts` per card. It is deliberately NOT `--accent`: that token is
+ * `--rider-swatch` is the character's own colour, from `data/riders.ts` per
+ * card. `menus.ts` sets it through the CSSOM when a panel mounts, never as a
+ * `style=` attribute, which the page's Content-Security-Policy refuses. It is
+ * deliberately NOT `--accent`: that token is
  * the focus ring, the primary button fill and the word THRILLS, and rebinding
  * it per rider would recolour focus itself (`DESIGN.md` §9).
  */
@@ -5585,6 +5587,12 @@
     grid-template-areas: "art kicker" "art place";
   }
   .euc-title__starts > .euc-start:last-child .euc-start__place { grid-area: place; }
+  /* Plain wrapping in the half-width cards. On the iPhone Duo's outer screen
+     (382 px, Safari 27.1) "Wheelhouse Wharf" is an exact fit: the card was
+     sized for one line and `balance` then drew two, so "Wharf" hung out of
+     the card (1.4.5, seen on the Simulator; the emulated size did not show
+     it). */
+  .euc-title__starts .euc-start__place { text-wrap: wrap; }
 }
 
 .euc-start {
