@@ -583,8 +583,9 @@ test.describe('M9 — HUD, menus, options', () => {
     // which is the failure it is for.
     //
     // **The 1.4.1 title**: three place cards in a row (Start ride, Wheelhouse
-    // Wharf, Foundry Yard), the "Other cities" row under them (the EUC NYC and
-    // EUC SF links, pad stops like the places), then the modes in rows of
+    // Wharf, Foundry Yard), the "Other cities" row under them (the EUC NYC,
+    // EUC SF and, since 1.5.0, EUC San Juan links, three across under the
+    // places, pad stops like the places), then the modes in rows of
     // four at this 1000x700 window — 2–4 Players, Time trial, Track Day,
     // Trick Run, then Knockabout, Police chase, Fresh route widened to fill
     // the row — and Settings and Ultra as the last row. Down walks the left
@@ -612,13 +613,18 @@ test.describe('M9 — HUD, menus, options', () => {
     await expect(placeCard('euclaude')).toBeFocused();
     await pulse(15);
     await expect(placeCard('skatepark')).toBeFocused();
-    // Down from the yard lands on the nearer city, EUC SF; Left crosses to NYC.
+    // Down from the yard lands on the city under it, EUC San Juan (1.5.0);
+    // Left crosses to SF and NYC, Right comes back.
     await pulse(13);
+    await expect(city('sj')).toBeFocused();
+    await pulse(14);
     await expect(city('sf')).toBeFocused();
     await pulse(14);
     await expect(city('nyc')).toBeFocused();
     await pulse(15);
     await expect(city('sf')).toBeFocused();
+    await pulse(15);
+    await expect(city('sj')).toBeFocused();
     await pulse(13);
     await expect(menuButton(page, 'title', 'trick-run')).toBeFocused();
     await pulse(14);

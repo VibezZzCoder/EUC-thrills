@@ -30,7 +30,7 @@
 
 /** One spin-off city: its own game, its own repository, one github.io address. */
 export interface SpinOff {
-  readonly id: 'nyc' | 'sf';
+  readonly id: 'nyc' | 'sf' | 'sj';
   readonly url: string;
   /** The name its card and About link print. */
   readonly title: string;
@@ -71,8 +71,9 @@ export interface Provenance {
   readonly devlogUrl: string;
   /**
    * The owner's spin-off games, each a separate repository (§46, his decision
-   * 2026-10-25 for EUC NYC; EUC SF joined at 1.4.1). The title's "Other
-   * cities" row and Settings → About read this list, in this order. Only these
+   * 2026-10-25 for EUC NYC; EUC SF joined at 1.4.1, EUC San Juan at 1.5.0).
+   * The title's "Other cities" row and Settings → About read this list, in
+   * this order. Only these
    * github.io addresses: never another domain for a spin-off, and never the
    * owner's landing page, which the export's token scan refuses.
    */
@@ -92,7 +93,7 @@ export const PROVENANCE: Provenance = Object.freeze({
   year: '2026',
   licence: 'MIT',
   assetLicence: 'CC-BY-4.0',
-  version: '1.4.6',
+  version: '1.5.0',
   devlogUrl: 'https://www.youtube.com/@EdwinRodMen',
   spinOffs: Object.freeze([
     Object.freeze({
@@ -102,6 +103,11 @@ export const PROVENANCE: Provenance = Object.freeze({
     Object.freeze({
       id: 'sf', url: 'https://vibezzzcoder.github.io/euc-sanfrancisco/', title: 'EUC SF',
       note: 'Leave for San Francisco in the other game',
+    }),
+    // El Viejo San Juan (1.5.0): the owner's own city, built from scratch.
+    Object.freeze({
+      id: 'sj', url: 'https://vibezzzcoder.github.io/euc-sanjuan/', title: 'EUC San Juan',
+      note: 'Leave for Old San Juan in the other game',
     }),
   ]),
 });

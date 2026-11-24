@@ -1220,7 +1220,8 @@ ${PROVENANCE.spinOffs.map((spinOff) => `      <a class="euc-about__link euc-abou
  *   instead (a `data-place` on it), so no place is named twice.
  * - **The Wharf and the yard** (`TITLE_STAGES`) ride their stage in one press.
  * - **"Other cities"** (1.4.1), the row under them, holds one link per
- *   `PROVENANCE.spinOffs` entry (EUC NYC, EUC SF): see `spinOffCardTemplate`.
+ *   `PROVENANCE.spinOffs` entry (EUC NYC, EUC SF, and EUC San Juan since
+ *   1.5.0), three across like the places: see `spinOffCardTemplate`.
  *
  * Pictures are inline SVG keyed by place, `aria-hidden`, so a card's name is
  * its words; every hook inside a card is `data-note`, never `data-menu`.
@@ -1315,6 +1316,7 @@ function startCardTemplate(action: 'start' | 'start-place', slot: string, kicker
 const SPIN_OFF_PLACES: Readonly<Record<SpinOff['id'], string>> = Object.freeze({
   nyc: 'Manhattan',
   sf: 'San Francisco',
+  sj: 'Old San Juan',
 });
 
 /**
@@ -1325,6 +1327,10 @@ const SPIN_OFF_PLACES: Readonly<Record<SpinOff['id'], string>> = Object.freeze({
  *   water tower.
  * - **EUC SF** (1.4.1): a cable car climbing a steep street under its cable,
  *   with three row houses stepping up the hill behind it.
+ * - **EUC San Juan** (1.5.0): a domed sentry box on the corner of a city wall,
+ *   the sea and a low sun beside it, in the ink-on-ivory of the spin-off's own
+ *   postcard menus. A garita is a building type found all over the island's
+ *   old walls, not one named fort.
  */
 const SPIN_OFF_PICTURES: Readonly<Record<SpinOff['id'], string>> = Object.freeze({
   nyc: `<path class="euc-start__city"
@@ -1343,6 +1349,11 @@ const SPIN_OFF_PICTURES: Readonly<Record<SpinOff['id'], string>> = Object.freeze
             <path class="euc-start__hill" d="M6 8.3V6.6"/>
             <path class="euc-start__wheels" d="M3.65 12.6a.55.55 0 1 0 1.1 0a.55.55 0 1 0-1.1 0zM7.25 12.6a.55.55 0 1 0 1.1 0a.55.55 0 1 0-1.1 0z"/>
           </g>`,
+  sj: `<circle class="euc-start__sun" cx="4.6" cy="5" r="2.3"/>
+          <path class="euc-start__sea" d="M.8 12.4c1-.7 1.9-.7 2.9 0s1.9.7 2.9 0M1.6 14.9c1-.7 1.9-.7 2.9 0s1.9.7 2.9 0"/>
+          <path class="euc-start__city" d="M8.4 16l1.5-5.2H20V16z"/>
+          <path class="euc-start__garita" d="M12.9 10.8V6.9h4.2v3.9zM12.4 6.9V6.1h5.2v.8zM12.9 6.1c0-2 .9-3.1 2.1-3.4 1.2.3 2.1 1.4 2.1 3.4zM14.65 2.8V1.5h.7v1.3z"/>
+          <path class="euc-start__slit" d="M14.7 7.6h.6v2.3h-.6z"/>`,
 });
 
 /**
@@ -4796,9 +4807,9 @@ export class Menus {
     // native Tab, which the browser rings for us.
     this.padDriving = true;
     // An outbound link marked `data-outbound` leaves the game, so the pad's
-    // walk passes it by. (The title's spin-off cards, EUC NYC and EUC SF, are
-    // pad stops on purpose: since 1.4.0 they are place cards, in the "Other
-    // cities" row since 1.4.1.)
+    // walk passes it by. (The title's spin-off cards, EUC NYC, EUC SF and EUC
+    // San Juan, are pad stops on purpose: since 1.4.0 they are place cards, in
+    // the "Other cities" row since 1.4.1.)
     const focusable = this.focusableControls().filter((node) => !node.hasAttribute('data-outbound'));
     if (focusable.length === 0) return;
 

@@ -5544,8 +5544,9 @@
 /* -- The three place cards, then "Other cities" (1.4.1) ------------------
  * Row 1 is the game's own places: the town, Wheelhouse Wharf and Foundry
  * Yard, each in its own colour (DESIGN §9u): town blue, harbour teal, brick
- * orange. Under it, the spin-off cities (§9v): EUC NYC in taxi yellow and
- * EUC SF in bridge red, same-tab links. Picture and kicker share the top
+ * orange. Under it, the spin-off cities (§9v): EUC NYC in taxi yellow, EUC SF
+ * in bridge red and, since 1.5.0, EUC San Juan in postcard ivory, same-tab
+ * links, three across like the places. Picture and kicker share the top
  * line, the name and note sit under them. */
 
 .euc-title__starts {
@@ -5566,15 +5567,16 @@
   text-transform: uppercase;
 }
 
-/* A wrapping row, like the modes: two cards side by side, one per row when
-   the panel cannot hold two. */
+/* Three cities across at every width, the grid of the place cards above
+   (1.5.0; two side by side in a wrapping row before). Phones upright drop the
+   cities' notes below, so three fit in a third of a phone each. */
 .euc-title__city-row {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.6rem;
 }
 
-.euc-start--out { flex: 1 1 8rem; min-width: 0; }
+.euc-start--out { min-width: 0; }
 
 /* Three places across from 437 px: at 428 "Jump island" and "Wheelhouse"
    spill their card (measured, 1.4.1). Narrower, two and the yard under them. */
@@ -5673,6 +5675,9 @@
 .euc-start--yard { --start-from: #d8642c; --start-to: #9e3b17; --start-soft: #ffe6d8; --start-glow: rgba(158, 59, 23, 0.35); }
 .euc-start--nyc { --start-from: #ffd23f; --start-to: #f2a900; --start-ink: #1a1306; --start-soft: #3a2a07; --start-glow: rgba(242, 169, 0, 0.3); }
 .euc-start--sf { --start-from: #c0362c; --start-to: #8f2419; --start-soft: #ffe1dd; --start-glow: rgba(143, 36, 25, 0.35); }
+/* EUC San Juan (1.5.0): the spin-off's own postcard, navy ink on ivory going
+   to sand (its `--ink`, `--ivory` and `--ochre`). */
+.euc-start--sj { --start-from: #f8f1e3; --start-to: #e3cb8f; --start-ink: #182c40; --start-soft: #44546a; --start-glow: rgba(227, 203, 143, 0.3); }
 
 .euc-start:hover { filter: brightness(1.08); }
 .euc-start:active { transform: translateY(1px); }
@@ -5714,6 +5719,13 @@
 .euc-start__wheels { fill: var(--start-from); stroke: currentColor; stroke-width: 0.9; }
 /* The EUC SF picture: the street and the cable in the card's ink. */
 .euc-start__hill { fill: none; stroke: currentColor; stroke-width: 0.8; stroke-linecap: round; }
+/* The EUC San Juan picture: a navy garita on the wall, the Atlantic and a
+   coral sun (the spin-off's `--atlantic` and `--coral`, a step deeper so they
+   hold on ivory). */
+.euc-start__garita { fill: currentColor; }
+.euc-start__slit { fill: var(--start-from); }
+.euc-start__sea { fill: none; stroke: #3f729c; stroke-width: 0.9; stroke-linecap: round; }
+.euc-start__sun { fill: #ec8a80; }
 
 .euc-start__words { display: contents; }
 
@@ -5960,7 +5972,9 @@
  *   yard's two-line card, so 47rem; 360x753 fits with full cards. */
 @media (max-height: 33.5rem), (pointer: coarse) and (max-height: 34.75rem), (max-width: 34rem) and (max-height: 47rem) {
   .euc-title__cities { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; }
-  .euc-title__city-row { flex: 1 1 auto; gap: 0.4rem; }
+  /* Chips size to their names (EUC San Juan is the longest), so a row, not
+     the cards' grid of equal thirds. */
+  .euc-title__city-row { flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 0.4rem; }
   .euc-start--out {
     flex: 1 1 auto;
     display: flex;
@@ -5971,9 +5985,12 @@
     padding: 0.3rem 0.8rem;
     border-radius: 999px;
   }
+  /* A chip is its name: the heading beside the chips says "Other cities"
+     (the "Spin-off" kicker went at 1.5.0, when three chips with it pushed
+     the row under the heading on the Duo sideways, 594x368, by 19 px). */
   .euc-start--out .euc-start__art,
+  .euc-start--out .euc-start__kicker,
   .euc-start--out .euc-start__note { display: none; }
-  .euc-start--out .euc-start__kicker { font-size: 0.62rem; }
   .euc-start--out .euc-start__place { font-size: 0.98rem; }
 }
 
@@ -5985,10 +6002,26 @@
   .euc-title__starts .euc-start__art { width: 2.2rem; height: 1.6rem; }
 }
 
-/* Under 358 px two chips with kickers need two rows; the heading already says
-   "Other cities", so the chip is its name alone (320x568 scrolled 42 px). */
-@media (max-width: 22.4rem) and (max-height: 47rem) {
+/* Phones upright: three cities in a third of a screen each (1.5.0). The
+   note and the "Spin-off" kicker go (the heading says where the cards lead;
+   at 360 px the kicker spilled its card by 15 px), and the card is a step
+   more compact, so "EUC San Juan" on two lines costs no more height than a
+   one-line name did beside two cities. */
+@media (max-width: 34rem) {
+  .euc-start--out { min-height: 0; padding: 0.4rem 0.55rem; row-gap: 0.2rem; }
+  .euc-start--out .euc-start__note,
   .euc-start--out .euc-start__kicker { display: none; }
+  .euc-start--out .euc-start__art { width: 2.2rem; height: 1.5rem; }
+  .euc-start--out .euc-start__place { font-size: 1rem; }
+}
+
+/* And as chips there (the phone chip tier below): one row of three names
+   needs the whole width, so the heading goes. The group keeps its name:
+   `aria-labelledby` still reads a hidden heading. */
+@media (max-width: 34rem) and (max-height: 47rem) {
+  .euc-title__cities-head { display: none; }
+  .euc-title__city-row { flex-wrap: nowrap; }
+  .euc-start--out { padding: 0.3rem 0.5rem; }
 }
 
 @media (pointer: coarse) {
@@ -6037,9 +6070,9 @@
 
 @media (forced-colors: active) {
   .euc-start { border: 1px solid ButtonText; }
-  .euc-start__ink, .euc-start__ground, .euc-start__water, .euc-start__arc, .euc-start__hill { stroke: ButtonText; }
-  .euc-start__lit, .euc-start__city, .euc-start__cab { fill: ButtonText; }
-  .euc-start__wheels { fill: Canvas; stroke: ButtonText; }
+  .euc-start__ink, .euc-start__ground, .euc-start__water, .euc-start__arc, .euc-start__hill, .euc-start__sea { stroke: ButtonText; }
+  .euc-start__lit, .euc-start__city, .euc-start__cab, .euc-start__garita, .euc-start__sun { fill: ButtonText; }
+  .euc-start__wheels, .euc-start__slit { fill: Canvas; stroke: ButtonText; }
   .euc-mode__icon { stroke: ButtonText; }
   .euc-menu--title .euc-button--ultra[aria-pressed="true"] { border-color: Highlight; }
 }

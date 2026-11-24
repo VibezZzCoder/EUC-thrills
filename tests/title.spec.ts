@@ -12,8 +12,9 @@ import { PROVENANCE } from '../src/data/provenance.ts';
  * is loaded — except while the Wharf or the yard is loaded, when it offers the
  * town (both stages have cards of their own). The stage cards
  * (`data-menu="start-place"`, `TITLE_STAGES` in `app/venues.ts`) ride their
- * stage in one press. Under them, "Other cities": EUC NYC and EUC SF, same-tab
- * links to the spin-offs, read from `PROVENANCE.spinOffs`. The fit of every
+ * stage in one press. Under them, "Other cities": EUC NYC, EUC SF and (1.5.0)
+ * EUC San Juan, same-tab links to the spin-offs, three across like the
+ * places, read from `PROVENANCE.spinOffs`. The fit of every
  * tier is held by the sweep at the end of this file and by the existing sweeps
  * (`tests/m22.spec.ts`, `tests/m25.spec.ts`, `tests/touch.spec.ts`), the pad
  * walk by `tests/m9.spec.ts` and the NYC card's journey by `tests/m40.spec.ts`.
@@ -30,7 +31,7 @@ const YARD_PLAN = /^foundry-yard-r\d+(~living-r1)?$/;
 const WHARF_PLAN = /^euclaude-r\d+(~living-r1)?$/;
 const toFreeRide = (page: Page) => page.waitForFunction(() => window.game.snapshot().app.state === 'freeRide', undefined, { timeout: 90_000 });
 
-test('three place cards, "Other cities" with EUC NYC and EUC SF, then "Ways to ride" with an accent per mode', async ({ page }) => {
+test('three place cards, "Other cities" with EUC NYC, EUC SF and EUC San Juan, then "Ways to ride" with an accent per mode', async ({ page }) => {
   const errors = collectErrors(page);
   await bootToTitle(page, '');
 
@@ -52,12 +53,13 @@ test('three place cards, "Other cities" with EUC NYC and EUC SF, then "Ways to r
   await expect(group).toHaveAccessibleName('Other cities');
   await expect(group.locator('.euc-title__cities-head')).toHaveText('Other cities');
   const cities = group.locator('a.euc-start--out');
-  await expect(cities).toHaveCount(2);
-  expect(await cities.locator('.euc-start__place').allTextContents()).toEqual(['EUC NYC', 'EUC SF']);
+  await expect(cities).toHaveCount(3);
+  expect(await cities.locator('.euc-start__place').allTextContents()).toEqual(['EUC NYC', 'EUC SF', 'EUC San Juan']);
   // Each leaves in this tab, to its github.io address only (§46), as a pad stop.
   const expected = [
     ['nyc', 'https://vibezzzcoder.github.io/euc-nyc/'],
     ['sf', 'https://vibezzzcoder.github.io/euc-sanfrancisco/'],
+    ['sj', 'https://vibezzzcoder.github.io/euc-sanjuan/'],
   ];
   expect(PROVENANCE.spinOffs.map((spinOff) => [spinOff.id, spinOff.url])).toEqual(expected);
   for (const [index, [id, url]] of expected.entries()) {
@@ -72,14 +74,17 @@ test('three place cards, "Other cities" with EUC NYC and EUC SF, then "Ways to r
   const cards = page.locator(`${TITLE} .euc-start`);
   for (const svg of await cards.locator('svg').all()) expect(await svg.getAttribute('aria-hidden')).toBe('true');
   const fills = await cards.evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).backgroundImage));
-  expect(new Set(fills).size, `five different colours: ${fills.join(' | ')}`).toBe(5);
-  // At this window: the three places on one row, the two cities side by side under them.
+  expect(new Set(fills).size, `six different colours: ${fills.join(' | ')}`).toBe(6);
+  // At this window: the three places on one row, the three cities across under them,
+  // each city under a place (the same three columns).
   const tops = async (locator: typeof cards) => locator.evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().top)));
   const placeTops = await tops(places);
   const cityTops = await tops(cities);
   expect(new Set(placeTops).size).toBe(1);
   expect(new Set(cityTops).size).toBe(1);
   expect(cityTops[0]).toBeGreaterThan(placeTops[0]);
+  const lefts = async (locator: typeof cards) => locator.evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().left)));
+  expect(await lefts(cities)).toEqual(await lefts(places));
   // "Ways to ride": a heading names the modes' group, and each mode has its own
   // accent — an aria-hidden icon before its name and an edge in the same colour.
   const ways = page.locator(`${TITLE} .euc-title__modes`);
@@ -108,8 +113,8 @@ test('three place cards, "Other cities" with EUC NYC and EUC SF, then "Ways to r
 
   // Keyboard order: the places, then the cities, then the modes.
   const order = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('.euc-menu--title .euc-start, .euc-menu--title .euc-mode')]
-    .slice(0, 6).map((node) => node.querySelector('.euc-start__place')?.textContent ?? node.dataset.menu));
-  expect(order).toEqual(['The town', 'Wheelhouse Wharf', 'Foundry Yard', 'EUC NYC', 'EUC SF', 'couch']);
+    .slice(0, 7).map((node) => node.querySelector('.euc-start__place')?.textContent ?? node.dataset.menu));
+  expect(order).toEqual(['The town', 'Wheelhouse Wharf', 'Foundry Yard', 'EUC NYC', 'EUC SF', 'EUC San Juan', 'couch']);
   expect(errors).toEqual([]);
 });
 
@@ -173,9 +178,11 @@ test('a fresh route is named by its seed on Start ride, and a forged card is ref
  * size: nothing to scroll, every card inside the viewport, every card's words
  * inside its own box, and the layout the stylesheet's measured breakpoints
  * promise — three places across from 437 px wide (two and the yard under
- * them below), the two cities side by side everywhere, and the cities as
- * one-line chips at the compact tier and the short windows just above it,
- * and the "Ways to ride" heading only where it fits.
+ * them below), the three cities in one row everywhere (1.5.0; two before),
+ * and the cities as one-line chips at the compact tier and the short windows
+ * just above it — their name alone, and on short phones upright without the
+ * "Other cities" heading, which is what lets three fit across 320 px — and
+ * the "Ways to ride" heading only where it fits.
  * Run on a fine pointer here and on a coarse one below (44 px floors).
  */
 const FIT_SIZES: readonly { width: number; height: number }[] = ([
@@ -222,6 +229,7 @@ async function sweepTitleFit(page: Page, coarse: boolean): Promise<void> {
         placeRows: rowsOf('.euc-title__starts > .euc-start'),
         cityRows: rowsOf('.euc-start--out'),
         chip: getComputedStyle(sf.querySelector('.euc-start__art')!).display === 'none',
+        citiesHead: getComputedStyle(root.querySelector('.euc-title__cities-head')!).display !== 'none',
         waysHead: getComputedStyle(root.querySelector('.euc-title__ways-head')!).display !== 'none',
         minHeight: Math.min(...cards.map((card) => card.getBoundingClientRect().height)),
       };
@@ -234,6 +242,7 @@ async function sweepTitleFit(page: Page, coarse: boolean): Promise<void> {
     const shortWindow = size.height <= (coarse ? 556 : 536);
     const shortPhone = size.width <= 544 && size.height <= 752;
     expect(facts.chip, `city chips at ${where}`).toBe(shortWindow || shortPhone);
+    expect(facts.citiesHead, `the "Other cities" heading at ${where}`).toBe(!(shortPhone && facts.chip));
     // "Ways to ride" goes a step before the chips do (about 19 px of heading).
     // It also goes just above 640 px, where the mode notes come back.
     const headless = size.height <= (coarse ? 576 : 552) || (size.width <= 544 && size.height <= 776)
@@ -243,24 +252,23 @@ async function sweepTitleFit(page: Page, coarse: boolean): Promise<void> {
   }
 }
 
-test('the two groups fit every sweep size with nothing to scroll, and the cities become chips when short (1.4.1)', async ({ page }) => {
+test('the two groups fit every sweep size with nothing to scroll, and the cities become chips when short (1.4.1; three cities 1.5.0)', async ({ page }) => {
   const errors = collectErrors(page);
   await bootToTitle(page, '');
   await sweepTitleFit(page, false);
-  // The compact tier is one line per city: kicker and name, no picture, no note.
+  // The compact tier is one line per city: its name beside the "Other cities"
+  // heading, no kicker (1.5.0), no picture, no note.
   await page.setViewportSize({ width: 844, height: 390 });
-  const sf = page.locator(`${TITLE} .euc-start--sf`);
-  await expect(sf.locator('.euc-start__kicker')).toBeVisible();
-  await expect(sf.locator('.euc-start__place')).toBeVisible();
-  await expect(sf.locator('.euc-start__art')).toBeHidden();
-  await expect(sf.locator('.euc-start__note')).toBeHidden();
-  const lines = await sf.evaluate((node) => {
-    const kicker = node.querySelector('.euc-start__kicker')!.getBoundingClientRect();
-    const place = node.querySelector('.euc-start__place')!.getBoundingClientRect();
-    return { sameLine: kicker.top < place.bottom && place.top < kicker.bottom, height: node.getBoundingClientRect().height };
-  });
-  expect(lines.sameLine, 'the chip is not one line').toBe(true);
-  expect(lines.height).toBeLessThan(40);
+  await expect(page.locator(`${TITLE} .euc-title__cities-head`)).toBeVisible();
+  for (const id of ['nyc', 'sf', 'sj']) {
+    const chip = page.locator(`${TITLE} .euc-start--${id}`);
+    await expect(chip.locator('.euc-start__place')).toBeVisible();
+    await expect(chip.locator('.euc-start__kicker')).toBeHidden();
+    await expect(chip.locator('.euc-start__art')).toBeHidden();
+    await expect(chip.locator('.euc-start__note')).toBeHidden();
+    const height = await chip.evaluate((node) => node.getBoundingClientRect().height);
+    expect(height, `${id} chip is not one line`).toBeLessThan(40);
+  }
   expect(errors).toEqual([]);
 });
 

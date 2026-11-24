@@ -8,7 +8,7 @@
 >
 > **Devlogs:** [@EdwinRodMen on YouTube](https://www.youtube.com/@EdwinRodMen)
 >
-> **Spin-offs:** the title screen's "Other cities" row links to [EUC NYC](https://vibezzzcoder.github.io/euc-nyc/), the WebGPU Manhattan spin-off ([github.com/VibezZzCoder/euc-nyc](https://github.com/VibezZzCoder/euc-nyc)), and [EUC SF](https://vibezzzcoder.github.io/euc-sanfrancisco/), the San Francisco spin-off in early access ([github.com/VibezZzCoder/euc-sanfrancisco](https://github.com/VibezZzCoder/euc-sanfrancisco)).
+> **Spin-offs:** the title screen's "Other cities" row links to [EUC NYC](https://vibezzzcoder.github.io/euc-nyc/), the WebGPU Manhattan spin-off ([github.com/VibezZzCoder/euc-nyc](https://github.com/VibezZzCoder/euc-nyc)), [EUC SF](https://vibezzzcoder.github.io/euc-sanfrancisco/), the San Francisco spin-off in early access ([github.com/VibezZzCoder/euc-sanfrancisco](https://github.com/VibezZzCoder/euc-sanfrancisco)), and [EUC San Juan](https://vibezzzcoder.github.io/euc-sanjuan/), El Viejo San Juan in Puerto Rico, a city built from scratch for the game ([github.com/VibezZzCoder/euc-sanjuan](https://github.com/VibezZzCoder/euc-sanjuan)).
 >
 > **Play offline:** the whole game as one file you download and double-click, from the [Releases page](https://github.com/VibezZzCoder/EUC-thrills/releases) — for computers; on a phone, play at the link above. The file can be a release behind this site, and its "Other cities" cards open the spin-offs online.
 

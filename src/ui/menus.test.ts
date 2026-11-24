@@ -529,10 +529,11 @@ test('the title credit reads PROVENANCE and its stamp is text, not a stop (M40)'
   assert.ok(!/tabindex|<button|data-menu/.test(html));
 });
 
-test('each spin-off card is one same-tab link to its github.io address, and a pad stop (1.4.1)', () => {
+test('each spin-off card is one same-tab link to its github.io address, and a pad stop (1.4.1; three since 1.5.0)', () => {
   assert.deepEqual(PROVENANCE.spinOffs.map((spinOff) => [spinOff.id, spinOff.url, spinOff.title, spinOff.note]), [
     ['nyc', 'https://vibezzzcoder.github.io/euc-nyc/', 'EUC NYC', 'Leave for Manhattan in the other game'],
     ['sf', 'https://vibezzzcoder.github.io/euc-sanfrancisco/', 'EUC SF', 'Leave for San Francisco in the other game'],
+    ['sj', 'https://vibezzzcoder.github.io/euc-sanjuan/', 'EUC San Juan', 'Leave for Old San Juan in the other game'],
   ]);
   for (const spinOff of PROVENANCE.spinOffs) {
     const html = spinOffCardTemplate(spinOff);
@@ -559,6 +560,7 @@ test('the About template carries every outbound link, one per spin-off, the stam
     ['devlog', PROVENANCE.devlogUrl],
     ['spin-off-nyc', 'https://vibezzzcoder.github.io/euc-nyc/'],
     ['spin-off-sf', 'https://vibezzzcoder.github.io/euc-sanfrancisco/'],
+    ['spin-off-sj', 'https://vibezzzcoder.github.io/euc-sanjuan/'],
   ] as const) {
     const link = new RegExp(`<a [^>]*data-about="${hook}" href="([^"]*)"[^>]*target="_blank" rel="noopener">`).exec(html);
     assert.ok(link !== null, `${hook} link`);
@@ -567,6 +569,7 @@ test('the About template carries every outbound link, one per spin-off, the stam
   assert.ok(html.includes(`>${devlogHandle()} on YouTube</a>`));
   assert.ok(html.includes('>EUC NYC, the Manhattan spin-off</a>'));
   assert.ok(html.includes('>EUC SF, the San Francisco spin-off</a>'));
+  assert.ok(html.includes('>EUC San Juan, the Old San Juan spin-off</a>'));
   // The texts arrive at open time through textContent; the pre blocks are empty.
   assert.ok(/<pre class="euc-about__pre" data-about="licence"><\/pre>/.test(html));
   assert.ok(/<pre class="euc-about__pre" data-about="notice"><\/pre>/.test(html));

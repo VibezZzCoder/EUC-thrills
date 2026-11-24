@@ -61,6 +61,7 @@ async function expectAboutContents(page: Page): Promise<void> {
     // §9v: every link that leaves the game is in About too, one per spin-off.
     ['spin-off-nyc', 'https://vibezzzcoder.github.io/euc-nyc/', 'EUC NYC, the Manhattan spin-off'],
     ['spin-off-sf', 'https://vibezzzcoder.github.io/euc-sanfrancisco/', 'EUC SF, the San Francisco spin-off'],
+    ['spin-off-sj', 'https://vibezzzcoder.github.io/euc-sanjuan/', 'EUC San Juan, the Old San Juan spin-off'],
   ] as const;
   for (const [hook, href, text] of links) {
     const link = about(page).locator(`[data-about="${hook}"]`);
@@ -485,8 +486,8 @@ test.describe('M40 — About on a phone (Pixel 7, real touch)', () => {
     // Every target on the panel meets the 44 px coarse-pointer floor.
     const targets = await about(page).evaluate((root) => [...root.querySelectorAll('a[href], button')]
       .map((node) => ({ name: node.textContent!.trim(), height: node.getBoundingClientRect().height })));
-    // Seven: author, play, source, devlog, the two spin-offs (1.4.1), Back.
-    expect(targets.length).toBe(7);
+    // Eight: author, play, source, devlog, the three spin-offs (1.5.0), Back.
+    expect(targets.length).toBe(8);
     for (const target of targets) expect(target.height, target.name).toBeGreaterThanOrEqual(44 - 0.5);
 
     // A real touch drag on the text scrolls the text, natively.
