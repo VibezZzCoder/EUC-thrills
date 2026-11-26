@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import * as THREE from 'three';
 import { BLOCKOUT_COLOURS, RIDER_BLOCKOUT } from '../data/tuning.ts';
 import { createPose } from '../simulation/EucController.ts';
-import { loftGeometry, loftPoint, tintOver, vAtHeight } from './blockoutKit.ts';
+import { loftGeometry, tintOver } from './blockoutKit.ts';
 import { createPlaceholderRider } from './rider.ts';
 import { createRidingRig } from './ridingRig.ts';
 import { createGhostRider } from './ghostRider.ts';
@@ -197,120 +197,58 @@ test('he is an eighth look and not a recoloured one', () => {
   }
 });
 
-test("his lid is the roster's road shell: nothing leaves it, one sunk visor", () => {
-  // The owner's two look passes on the last rider (2026-09-01): an off-road
-  // lid built as volumes leaving the shell read as a snout (*"it's like... a
-  // pig!"*), and colour hung on as lifted patches read as *"yellow panels
-  // protruding"*. So the head mesh may stand no further off its own rings than
-  // a patch does; the aperture holds one sunk visor; nothing is bolted on.
-  assert.equal(HIS.extras.length, 0, "something is bolted onto him — the lid's shape is the profile's");
+test('his domed helmet has a closed opaque shield covering cheeks and chin', () => {
   const rider = createPlaceholderRider(HIS);
   try {
-    // The neck carries two unnamed casting meshes — the collar gaiter and the
-    // head; the head is the one that reaches the crown.
-    const head = rider.neck.children.find((child) => {
-      if ((child as THREE.Mesh).isMesh !== true || child.name !== '') return false;
-      const geometry = (child as THREE.Mesh).geometry;
-      geometry.computeBoundingBox();
-      return geometry.boundingBox!.max.y > 0.30;
-    }) as THREE.Mesh;
-    assert.ok(head, 'the head mesh is missing');
-    const shell = HIS.profiles.head;
-    const point = new THREE.Vector3();
-    // How far a vertex stands off the shell's own surface in its direction:
-    // the shell's radius at that height and (nearly) that polar angle, against
-    // the vertex's own — `wheelInMotion.test.ts:464`'s method.
-    const standOff = (x: number, y: number, z: number): number => {
-      const v = vAtHeight(shell, y);
-      const angle = Math.atan2(z, x);
-      let nearest = Infinity;
-      let radius = 0;
-      for (let k = 0; k < 96; k += 1) {
-        loftPoint(shell, (k / 96) * Math.PI * 2, v, point);
-        const gap = Math.abs(Math.atan2(
-          Math.sin(Math.atan2(point.z, point.x) - angle),
-          Math.cos(Math.atan2(point.z, point.x) - angle),
-        ));
-        if (gap < nearest) {
-          nearest = gap;
-          radius = Math.hypot(point.x, point.z);
-        }
+    const visor = rider.root.getObjectByName('rider-face');
+    assert.ok(visor instanceof THREE.Mesh, 'the wrap shield is missing');
+    assert.equal(visor.castShadow, false);
+    const material = visor.material as THREE.MeshStandardMaterial;
+    assert.equal(material.transparent, false, 'the shield must hide the face');
+    assert.equal(material.opacity, 1);
+    assert.equal(material.map, null, 'reference photos never become helmet textures');
+    const geometry = visor.geometry;
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox!;
+    assert.ok(box.max.y - box.min.y >= 0.135, 'the shield is still a shallow eye strip');
+    assert.ok(box.min.y <= 0.086 && box.max.y >= 0.216, 'the cheek/chin coverage is missing');
+    assert.ok(box.max.x - box.min.x >= 0.250, 'the shield does not wrap to both cheeks');
+    assert.ok(box.max.z - box.min.z >= 0.100, 'the shield is a flat card');
+
+    // Weld identical rim samples and require one opposite directed edge for
+    // each triangle edge. Normals alone also pass a shield with missing walls.
+    const positions = geometry.getAttribute('position'), index = geometry.getIndex()!;
+    const key = (i: number): string => [positions.getX(i), positions.getY(i), positions.getZ(i)]
+      .map((v) => Math.round(v * 1e6)).join(',');
+    const edges = new Map<string, number>();
+    let volume = 0;
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    for (let i = 0; i < index.count; i += 3) {
+      const ids = [index.getX(i), index.getX(i + 1), index.getX(i + 2)];
+      for (let edge = 0; edge < 3; edge += 1) {
+        const name = `${key(ids[edge]!)}|${key(ids[(edge + 1) % 3]!)}`;
+        edges.set(name, (edges.get(name) ?? 0) + 1);
       }
-      return Math.hypot(x, z) - radius;
-    };
-    const position = head.geometry.getAttribute('position');
-    let proudest = 0;
-    for (let i = 0; i < position.count; i += 1) {
-      const y = position.getY(i);
-      // Between the base rim and the crown taper — where a chin bar, a peak or
-      // a spoiler would leave the shell.
-      if (y < 0.08 || y > 0.31) continue;
-      proudest = Math.max(proudest, standOff(position.getX(i), y, position.getZ(i)));
+      a.fromBufferAttribute(positions, ids[0]!); b.fromBufferAttribute(positions, ids[1]!);
+      c.fromBufferAttribute(positions, ids[2]!);
+      volume += a.dot(b.cross(c)) / 6;
     }
-    assert.ok(
-      proudest < 0.025,
-      `the head mesh stands ${(proudest * 1000).toFixed(0)} mm off its shell — that is a volume, not a patch`,
-    );
-    // He carries no sheet at all, so the shell's colour is the material's.
-    assert.equal((head.material as THREE.MeshStandardMaterial).map, null, 'the shell carries a map');
-  } finally {
-    rider.dispose();
-  }
-
-  const face = HIS.panels.face!;
-  assert.equal(face.patches.length, 1, 'the aperture holds one visor');
-  const visor = face.patches[0]!;
-  assert.ok((visor.sink ?? 0) < 0, 'the visor is not sunk into the aperture');
-  assert.equal(visor.art, undefined, 'the visor wears a page — he has no sheet');
-  // And nothing stands off the back of the shell — the owner's third pass on
-  // the last rider saw a rear spoiler as *"a bump on the back protruding"*.
-  assert.ok(HIS.panels.head.every((patch) => patch.anchor !== 'back'), 'a feature stands off the back of the shell');
-
-  // The split PHOTO 1 carries: a very large visor, but a shell that is still a
-  // crown above it and a jaw below.
-  const shell = HIS.profiles.head;
-  const shellHeight = shell[shell.length - 1]!.y - shell[0]!.y;
-  const share = (visor.to - visor.from) / shellHeight;
-  assert.ok(share >= 0.30 && share <= 0.38, `the visor is ${(share * 100).toFixed(0)}% of the shell's height`);
-
-  // **Where the aperture sits, not only how tall it is** — r1's finding 1c.
-  // The share was right in the first cut and the placement was not: the visor
-  // was cut with a 35.5 % brow over it, and a shell with that little crown over
-  // an ear-to-ear eyeport reads as a letterbox wraparound shield rather than as
-  // a road lid. PHOTO 1's column measures brow 50.0 %, shield 40.4 %, shell
-  // below 9.6 %; the aperture moved down 52 mm and did not shrink.
-  const brow = (shell[shell.length - 1]!.y - visor.to) / shellHeight;
-  const jawBand = (visor.from - shell[0]!.y) / shellHeight;
-  assert.ok(brow >= 0.45, `the brow is ${(brow * 100).toFixed(0)}% of the shell — PHOTO 1's is 50%`);
-  // **0.12 and not 0.05 — r2's finding 1a, the round's blocker.** The floor was
-  // written against the whole band under the visor, and the base rim eats the
-  // bottom of it: at 12.1 % of shell below the aperture with a 6.2 % rim inside
-  // that, only 5.9 % was ever *shell-coloured*, and two rounds of helmet critics
-  // read the lid as having no chin bar. So the floor moves up and a second one
-  // is added under the part that actually reads as a jaw — the band between the
-  // rim's top and the visor's bottom, in the shell's own colour, which PHOTO 1
-  // measures at 11–18 % of the helmet's height.
-  assert.ok(jawBand >= 0.12, `only ${(jawBand * 100).toFixed(0)}% of shell under the visor — it runs off the jaw`);
-  const rim = HIS.panels.head.find((each) => each.u1 - each.u0 >= Math.PI * 2 - 1e-6);
-  assert.ok(rim, 'the base rim is missing — the shell has to end somewhere');
-  const chin = (visor.from - rim.to) / shellHeight;
-  assert.ok(chin >= 0.10, `the pale chin band is ${(chin * 100).toFixed(0)}% of the shell — the rim has eaten the jaw`);
-
-  // The jaw holds its width: the ring at 10 % of the shell's height is at
-  // least three quarters of the widest, or the head is a bulb on a stalk from
-  // the chase camera.
-  const widest = Math.max(...shell.map((ring) => ring.halfWidth));
-  const at = (y: number): number => {
-    for (let i = 1; i < shell.length; i += 1) {
-      if (shell[i]!.y < y) continue;
-      const lower = shell[i - 1]!;
-      const upper = shell[i]!;
-      return lower.halfWidth + (upper.halfWidth - lower.halfWidth) * ((y - lower.y) / (upper.y - lower.y));
+    for (const [edge, count] of edges) {
+      const [from, to] = edge.split('|');
+      assert.equal(count, 1, `shield edge is walked twice: ${edge}`);
+      assert.equal(edges.get(`${to}|${from}`), 1, `shield is open at ${edge}`);
     }
-    return shell[shell.length - 1]!.halfWidth;
-  };
-  const jaw = at(shell[0]!.y + shellHeight * 0.10);
-  assert.ok(jaw / widest >= 0.72, `the jaw is ${(100 * jaw / widest).toFixed(0)}% of the shell's widest`);
+    assert.ok(volume > 0, 'the complete shield is wound inward');
+
+    const shell = HIS.profiles.head;
+    assert.ok(shell.every((ring) => ring.halfWidth <= 0.130 && ring.halfDepth <= 0.140),
+      'a new protruding snout or peak replaced the domed shell');
+    const red = (HIS.materials.head.colour >> 16) & 255, blue = HIS.materials.head.colour & 255;
+    assert.ok(red - blue >= 20, 'the shell lost its warm pewter coating');
+    assert.ok(HIS.materials.head.metalness >= 0.40 && HIS.materials.head.roughness >= 0.25,
+      'the shell must carry a broad metal highlight rather than a plastic point');
+    assert.equal(HIS.panels.head.some((patch) => patch.anchor === 'back'), false);
+  } finally { rider.dispose(); }
 });
 
 test("the band is cyan on his right hip and gold on his left, the rear photograph's way", () => {
@@ -407,38 +345,22 @@ test('what shows through his knee hinge is the cup', () => {
   const thighCup = HIS.panels.thighPad!.patches.find((patch) => patch.anchor === 'front' && patch.to === FLO_CUP_TOP);
   const shinCup = HIS.panels.kneePad!.patches.find((patch) => patch.anchor === 'front' && patch.to === 0);
   assert.ok(thighCup && shinCup, 'both halves of the cup must exist');
-  // **The cap is white, and that is r1's finding 3a.** It was authored at the
-  // brace's black and the captures made it the darkest thing on the rider
-  // (0.30 × the trouser) where PHOTO 1's kneecap shell is the *lightest* piece
-  // on the leg (0.96 × the trouser above it). The black did not leave the
-  // brace, it went where the photograph has it: the strap under the cap, the
-  // strut, the bosses — and the limb the guard closes over, which is the half
-  // of this test that did not move.
-  assert.equal(thighCup.shade, FLO_GUARD_SHADE, 'the thigh half of the cap is not the guard white');
-  assert.equal(shinCup.shade, FLO_GUARD_SHADE, 'the shin half of the cap is not the guard white');
-  // And the brace is still one black and one white with nothing in between —
-  // four shades on one brace is the failure this scalar exists to prevent.
+  // The current real-photo request explicitly restores the charcoal upper
+  // knee brace and lighter segmented shin. Both sides of the articulating cup
+  // remain the same dark as the sleeve visible through the hinge.
+  assert.equal(thighCup.shade, FLO_CUP_SHADE);
+  assert.equal(shinCup.shade, FLO_CUP_SHADE);
   const brace = [...HIS.panels.thighPad!.patches, ...HIS.panels.kneePad!.patches];
-  for (const patch of brace) {
-    assert.ok(
-      patch.shade === FLO_GUARD_SHADE || patch.shade === FLO_CUP_SHADE,
-      `a brace patch sits at ${String(patch.shade)} — the brace is one black and one white`,
-    );
+  const shinPlates = HIS.panels.kneePad!.patches.filter((patch) => patch.shade === FLO_GUARD_SHADE);
+  assert.equal(shinPlates.length, 3, 'the shin needs three separate moulded segments');
+  const wraps = brace.filter((patch) => Math.abs(patch.u1 - patch.u0) >= Math.PI * 2 - 1e-6);
+  assert.equal(wraps.length, 4, 'one thigh and three calf straps must wrap their host legs');
+  for (const wrap of wraps) {
+    assert.equal(wrap.shade, FLO_CUP_SHADE, 'a webbing strap is armour-white');
+    assert.ok(wrap.to - wrap.from >= 0.027 && wrap.to - wrap.from <= 0.031,
+      'a strap became a thin line or a large cuff');
+    assert.ok((wrap.lift ?? 0) >= 0.020, 'a wrap strap is buried under its plate');
   }
-  // **Five and not six since r2's finding 3d.** The outboard knee plate left
-  // the dark list: all four outboard patches sat at the cup's value where
-  // PHOTO 2 makes that plate the *lightest* element on the whole leg (L 165
-  // against a shell of 158–169), with the dark living in the strut behind it.
-  // What stays dark is the strut, the two shin bosses and the two straps.
-  assert.equal(
-    brace.filter((patch) => patch.shade === FLO_CUP_SHADE).length,
-    5,
-    "the brace's dark parts are the hinge strut, the two shin bosses and the two straps",
-  );
-  const shell = HIS.panels.thighPad!.patches.find((patch) => patch.shade === FLO_GUARD_SHADE && patch !== thighCup);
-  const plate = HIS.panels.kneePad!.patches.find((patch) => patch.shade === FLO_GUARD_SHADE && patch.to === FLO_CUP_BOTTOM);
-  assert.ok(shell && plate, 'the shell and the plate must both exist');
-  assert.ok(shell.from < thighCup.to && plate.to >= shinCup.from - 1e-9, 'the white armour does not meet the cup on both bones');
 
   const cup = new THREE.Color(BLOCKOUT_COLOURS.floWithZoGuard).multiplyScalar(FLO_CUP_SHADE);
   const nearness = (a: THREE.Color, b: THREE.Color): number => {
@@ -626,4 +548,26 @@ test('silver cloth has deterministic cool fold valleys and a satin material resp
       assert.ok(coolValleys > 5, `${part}: uniform silver has lost its cloth shading`);
     } finally { a.dispose(); b.dispose(); }
   }
+});
+
+test('Flo’s sewn jacket runs a narrow closure from hem to collar with two side pockets', () => {
+  const closure = HIS.panels.torso!;
+  assert.equal(closure.casts, false);
+  assert.equal(closure.role, 'body');
+  const geometry = closure.buildSingle!();
+  try {
+    const pos = geometry.getAttribute('position');
+    let centerTop = false, centerHem = false, left = false, right = false;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i);
+      assert.ok(pos.getZ(i) > 0, 'front closures should stay off the back');
+      if (Math.abs(x) < .007 && y > .515) centerTop = true;
+      if (Math.abs(x) < .007 && y < .05) centerHem = true;
+      if (y > .11 && y < .265 && Math.abs(x) > .105) {
+        if (x > 0) left = true;
+        else right = true;
+      }
+    }
+    assert.ok(centerTop && centerHem && left && right);
+  } finally { geometry.dispose(); }
 });

@@ -370,16 +370,16 @@ test('the savings are pinned per look — a look change moved a merge, re-pin af
   const PINNED: Record<string, readonly [number, number, number]> = {
     'cool-rider': [4, 2, 2272],
     trollina: [4, 3, 0],
-    'red-rider': [3, 2, 1096],
+    'red-rider': [3, 2, 9184], // Recessed chest armour joins the casting torso.
     adonisb2: [7, 2, 2836],
     'maribel-vargas': [3, 2, 0],
     'wheel-in-motion': [8, 2, 2388],
     drunkard: [6, 4, 520],
-    'flo-with-zo': [4, 2, 136],
+    'flo-with-zo': [5, 2, 584], // Jacket closures join the garment draw.
     'seal-on-a-wheel': [2, 2, 0],
     wyldist: [3, 3, 0],
     gnarwheel: [2, 2, 0],
-    cop: [3, 2, 1098],
+    cop: [3, 2, 4164],
   };
   assert.deepEqual(Object.keys(PINNED).sort(), [...SEATS].sort(), 'a seat rig joined or left the roster');
   for (const id of SEATS) {
@@ -543,15 +543,15 @@ test('the ghost and the CPU-cop trims are built from the unconsolidated rig', ()
     }
   }
   // The trim's own build-time counters, the frozen baseline's to the call and
-  // the triangle (`renderCost.test.ts` prices it at 26 calls once its paddle
+  // the triangle (`renderCost.test.ts` prices it at 27 calls once its paddle
   // is armed, and holds `measureCopRig({ full: true })` to
   // `measureSeatRig('cop')`).
   for (const index of [0, 1, 2]) {
     const cop = createCopRider({ index });
     try {
       assert.equal(cop.drawCalls, 23);
-      assert.equal(cop.shadowDrawCalls, 3);
-      assert.equal(cop.triangles, 8902);
+      assert.equal(cop.shadowDrawCalls, 4);
+      assert.equal(cop.triangles, 12_616);
     } finally {
       cop.dispose();
     }

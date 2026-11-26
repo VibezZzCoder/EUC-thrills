@@ -1,6 +1,10 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
+import { DORKINS_CROWN, dorkinsFace, dorkinsHelmet } from './dorkinsHead.ts';
+import { adonisb2Pack, adonisb2Shield } from './adonisb2Kit.ts';
 import { sculptMaribelHair } from './maribelHair.ts';
+import { RED_RIDER_TORSO, RED_RIDER_HELMET, redRiderHelmet, redRiderVisor, redRiderTorsoDetails, redRiderHarness, redRiderArmour, paintRedRiderTorso } from './redRiderKit.ts';
+import { sculptTrollinaDress, sculptTrollinaSleeve, trollinaClothSections, trollinaFaceParts, trollinaHair } from './trollinaSculpt.ts';
 import { COOL_RIDER_LOOK } from './coolRiderLook.ts';
 export { COOL_RIDER_LOOK } from './coolRiderLook.ts';
 import { FLO_WITH_ZO_LOOK } from './floWithZoLook.ts';
@@ -115,6 +119,8 @@ export interface RiderMaterialSpec {
   readonly emissiveIntensity?: number;
   /** A translucent surface. Opaque materials omit this. */
   readonly opacity?: number;
+  /** Look-local surface response, installed once on the owned material. */
+  readonly configure?: (material: THREE.MeshStandardMaterial) => void;
 }
 
 /**
@@ -238,6 +244,8 @@ export interface RiderPatch {
 /** A group of panels drawn as one mesh on one joint. */
 export interface RiderPanelGroup {
   readonly patches: readonly RiderPatch[];
+  /** One joint-local object, such as a chest camera or a backpack. */
+  readonly buildSingle?: () => THREE.BufferGeometry;
   /** A continuous shaped insert, merged with the ordinary patches on the same joint. */
   readonly build?: (side: number) => THREE.BufferGeometry;
   /** A sheet page; per-side pages keep a printed sleeve on one anatomical arm. */
@@ -420,6 +428,8 @@ export interface RiderLook {
   readonly drapedHem?: boolean;
   /** Conservative clothed upper-thigh envelope, metres; omitted keeps the original loose-cargo envelope. */
   readonly hemDrapeEnvelope?: { readonly x: number; readonly z: number; readonly cap: number };
+  /** Optional gravity-hanging lower cloth; omitted keeps the original hem correction. */
+  readonly hemDrapeGravity?: import('./riderClothDrape.ts').HemGravity;
 
   readonly density?: {
     readonly limb?: number;
@@ -596,6 +606,8 @@ export interface RiderLook {
      * at all.
      */
     readonly upperArm?: (geometry: THREE.BufferGeometry, side: number) => void;
+    /** Shaping and colour for a separate cloth cap on the shoulder. */
+    readonly sleeve?: (geometry: THREE.BufferGeometry, side: number) => void;
     /**
      * The forearm — M23 Phase A1c, and the hook that a frame ceiling wrote.
      *
@@ -646,6 +658,8 @@ export interface RiderLook {
   readonly armCarriage: {
     readonly splay: number;
     readonly rise: number;
+    /** Arm carriage in front of the torso, in metres. */
+    readonly forward?: number;
   };
 
   /**
@@ -1121,8 +1135,8 @@ const TROLLINA_NECK = loftProfile([
  * Smaller than the helmet it replaces — a bare head is, and the difference is
  * most of what makes her read as a *cartoon* rather than as Cool Rider in a
  * wig — with a jaw that narrows toward the chin and a cranium that does not.
- * The crown is deliberately a little flat: the hair sits on it, and a domed
- * crown pushes every spike outward into a halo.
+ * The crown is deliberately a little flat: the swept hair masses sit on it
+ * without turning the scalp into the silhouette.
  */
 const TROLLINA_HEAD = loftProfile([
   { y: 0.090, halfWidth: 0.046, halfDepth: 0.050, square: 2.3, z: 0.008 },
@@ -1134,241 +1148,6 @@ const TROLLINA_HEAD = loftProfile([
   { y: 0.306, halfWidth: 0.034, halfDepth: 0.036, square: 2.2 },
   { y: 0.316, halfWidth: 0, halfDepth: 0 },
 ]);
-
-/**
- * One hair spike, as a four-ring taper, built lying along +Y and then aimed.
- *
- * Thin, long, and slightly kinked. The kink is what stops the crown reading as
- * a sea urchin: a straight cone is a spine and a bent one is a *hair*, and the
- * doodle's hair is scribble rather than spikes.
- */
-function hairSpike(length: number, thickness: number): THREE.BufferGeometry {
-  const profile = loftProfile([
-    { y: 0, halfWidth: thickness, halfDepth: thickness * 0.86, square: 2.2 },
-    { y: length * 0.34, halfWidth: thickness * 0.74, halfDepth: thickness * 0.64, square: 2.2, z: length * 0.12 },
-    { y: length * 0.72, halfWidth: thickness * 0.40, halfDepth: thickness * 0.34, square: 2.1, z: length * 0.07 },
-    { y: length, halfWidth: 0, halfDepth: 0 },
-  ]);
-  return loftGeometry(profile, { radialSegments: 5 });
-}
-
-/**
- * The mass the spikes come out of.
- *
- * The first pass pushed the whole mane 35 mm aft to keep the face clear, and
- * the front capture showed the cost: from ahead she read as nearly bald with
- * two horns. The mane is now **wide and shallow** instead of pushed back — an
- * ellipse 0.132 across but only 0.104 deep, still centred aft — so it stands
- * proud of the head at the *sides*, framing the face the way both reference
- * interpretations draw it, while its front edge stays behind the eyes.
- */
-const TROLLINA_MANE = loftProfile([
-  { y: 0.105, halfWidth: 0.078, halfDepth: 0.062, square: 2.3, z: -0.038 },
-  { y: 0.158, halfWidth: 0.126, halfDepth: 0.094, square: 2.4, z: -0.033 },
-  { y: 0.205, halfWidth: 0.142, halfDepth: 0.105, square: 2.4, z: -0.030 },
-  { y: 0.252, halfWidth: 0.142, halfDepth: 0.108, square: 2.4, z: -0.024 },
-  { y: 0.300, halfWidth: 0.120, halfDepth: 0.100, square: 2.3, z: -0.014 },
-  { y: 0.338, halfWidth: 0.082, halfDepth: 0.078, square: 2.2, z: -0.004 },
-  { y: 0.366, halfWidth: 0.036, halfDepth: 0.036, square: 2.2, z: 0.002 },
-  { y: 0.378, halfWidth: 0, halfDepth: 0 },
-]);
-
-/**
- * The fringe: a second small loft over the front of the crown, because the
- * mane cannot both wrap the forehead and stay off the eyes — an ellipse has one
- * front edge. This one starts *above* the brows and leans forward over the
- * forehead, which is the single change that puts hair in the front view.
- */
-const TROLLINA_FRINGE = loftProfile([
-  { y: 0.252, halfWidth: 0.086, halfDepth: 0.052, square: 2.4, z: 0.052 },
-  { y: 0.290, halfWidth: 0.104, halfDepth: 0.064, square: 2.4, z: 0.046 },
-  { y: 0.330, halfWidth: 0.096, halfDepth: 0.060, square: 2.3, z: 0.032 },
-  { y: 0.360, halfWidth: 0.052, halfDepth: 0.040, square: 2.2, z: 0.012 },
-  { y: 0.375, halfWidth: 0, halfDepth: 0 },
-]);
-
-/**
- * The hair: a mane, a fringe, 48 spikes and 8 long strands off one seeded
- * scatter, merged into a single buffer.
- *
- * **One mesh, and that is a budget decision rather than a tidiness one.** A
- * casting rider mesh costs three draw calls out of a frame that has six spare;
- * fifty-six of them would cost over a hundred and fifty. Merged, the entire
- * head of hair is one draw call in the colour pass, one in the shadow pass,
- * and one on the ghost — the same three the helmet it replaces already spent.
- *
- * The scatter is seeded rather than random for the reason everything else in
- * this project is seeded: an asset that differs from the one that was reviewed
- * is an asset nobody reviewed. The spikes are biased backward — that keeps
- * them out of the face without a rejection test, and puts hair where the chase
- * camera is — and the strands hang down-and-back below them, which is the
- * "wild long hair" half of the reference that the first pass had nothing of.
- */
-function trollinaHair(): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [
-    loftGeometry(TROLLINA_MANE, { radialSegments: 16 }),
-    loftGeometry(TROLLINA_FRINGE, { radialSegments: 12 }),
-  ];
-  // Mulberry32, inlined. Deterministic, and cheap enough to run at build time.
-  let seed = 0x7d0011a;
-  const random = (): number => {
-    seed = (seed + 0x6d2b79f5) >>> 0;
-    let t = seed;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-  const up = new THREE.Vector3(0, 1, 0);
-
-  const centre = new THREE.Vector3(0, 0.255, -0.020);
-  const radius = 0.105;
-  for (let i = 0; i < 36; i += 1) {
-    // Spread around the head, jittered off the even ring so no two neighbours
-    // are the same distance apart — an even fan reads as a cog.
-    const around = ((i + 0.5) / 36 + 0.09 * (random() - 0.5)) * Math.PI * 2;
-    // Elevation from below the ears to straight up, weighted upward.
-    const climb = -0.12 + 1.12 * random() ** 0.6;
-    const lift = Math.sin(climb * Math.PI * 0.5);
-    const out = Math.cos(climb * Math.PI * 0.5);
-
-    const direction = new THREE.Vector3(
-      Math.sin(around) * out,
-      lift,
-      Math.cos(around) * out - 0.18,
-    ).normalize();
-
-    const length = 0.13 + 0.18 * random();
-    const spike = hairSpike(length, 0.013 + 0.010 * random());
-    spike.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(up, direction));
-    // Rooted inside the mane, so no spike floats off the head and every one of
-    // them has its wide end buried where nobody can see the join.
-    spike.translate(
-      centre.x + direction.x * radius * 0.78,
-      centre.y + direction.y * radius * 0.78,
-      centre.z + direction.z * radius * 0.78,
-    );
-    parts.push(spike);
-  }
-
-  // A second, back-weighted round of spikes. The even scatter above leaves
-  // the upper back of the crown smooth — high-climb spikes crowd the top pole
-  // and the ring crowds the sides — and the chase camera stares at exactly
-  // that patch all day; the first capture set showed it as a swim cap.
-  for (let i = 0; i < 12; i += 1) {
-    const around = Math.PI + (((i + 0.5) / 12) - 0.5) * 2.4 + 0.12 * (random() - 0.5);
-    const climb = 0.18 + 0.5 * random();
-    const lift = Math.sin(climb * Math.PI * 0.5);
-    const out = Math.cos(climb * Math.PI * 0.5);
-    const direction = new THREE.Vector3(
-      Math.sin(around) * out,
-      lift,
-      Math.cos(around) * out - 0.30,
-    ).normalize();
-    const spike = hairSpike(0.12 + 0.14 * random(), 0.013 + 0.009 * random());
-    spike.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(up, direction));
-    spike.translate(
-      centre.x + direction.x * radius * 0.78,
-      centre.y + direction.y * radius * 0.78,
-      centre.z + direction.z * radius * 0.78,
-    );
-    parts.push(spike);
-  }
-
-  // The strands: longer, thicker, and aimed down the back and sides from a
-  // lower root, so the hair falls past the neck instead of ending at the
-  // skull. These are what stop the mane reading as a helmet of spikes.
-  const nape = new THREE.Vector3(0, 0.205, -0.045);
-  for (let i = 0; i < 8; i += 1) {
-    const around = Math.PI + (((i + 0.5) / 8) - 0.5) * 2.6 + 0.15 * (random() - 0.5);
-    const droop = -(0.18 + 0.5 * random());
-    const direction = new THREE.Vector3(
-      Math.sin(around) * 0.85,
-      droop,
-      Math.cos(around) * 0.85 - 0.30,
-    ).normalize();
-    const strand = hairSpike(0.20 + 0.10 * random(), 0.016 + 0.008 * random());
-    strand.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(up, direction));
-    strand.translate(
-      nape.x + direction.x * 0.070,
-      nape.y + direction.y * 0.070,
-      nape.z + direction.z * 0.070,
-    );
-    parts.push(strand);
-  }
-  return mergeGeometries(parts);
-}
-
-/**
- * The face: two sclerae, two pupils, two brows and an open grin, merged into
- * one buffer and painted in the one `face` material.
- *
- * **Two tones out of one material is the vertex-shade trick**, and it is what
- * the first pass missed: its eyes were single dark beads, which read as two
- * dots at distance and as holes up close, and it had no mouth and no brows at
- * all — a mannequin. The `face` material is now the warm white of a sclera,
- * the sclera geometry carries shade 1, and the pupils, brows and mouth carry
- * shades near zero — dark features and bright whites from one draw call.
- *
- * All lofts, no patches, for the recorded reason: `patchGeometry`'s taper is
- * linear, so its outline has six corners at any segment count, and anything on
- * a face that needs a round outline is a loft. Each piece is an ellipsoid
- * squashed front-to-back and sunk so only its front cap stands proud; the
- * pupils stand proud of the *sclerae*, which is what makes the eyes look
- * somewhere rather than at nothing.
- */
-function trollinaFaceParts(): THREE.BufferGeometry {
-  const ball = (halfWidth: number): LoftProfile => loftProfile([
-    { y: -halfWidth * 1.1, halfWidth: 0, halfDepth: 0 },
-    { y: -halfWidth * 0.78, halfWidth: halfWidth * 0.60, halfDepth: halfWidth * 0.60, square: 2 },
-    { y: -halfWidth * 0.28, halfWidth: halfWidth * 0.96, halfDepth: halfWidth * 0.96, square: 2 },
-    { y: halfWidth * 0.28, halfWidth: halfWidth * 0.96, halfDepth: halfWidth * 0.96, square: 2 },
-    { y: halfWidth * 0.78, halfWidth: halfWidth * 0.60, halfDepth: halfWidth * 0.60, square: 2 },
-    { y: halfWidth * 1.1, halfWidth: 0, halfDepth: 0 },
-  ]);
-
-  const parts: THREE.BufferGeometry[] = [];
-  for (const side of [-1, 1]) {
-    // The sclera: big — the eyes are half the face, per both interpretations —
-    // flattened so it lies on the head, back half buried.
-    const sclera = loftGeometry(ball(0.026), { radialSegments: 12 });
-    sclera.scale(1, 1.06, 0.40);
-    sclera.translate(side * 0.041, 0.206, 0.089);
-    parts.push(sclera);
-
-    // The pupil: proud of the sclera's front cap, very dark, and inboard a
-    // touch so she looks ahead rather than walleyed.
-    const pupil = loftGeometry(ball(0.0115), { radialSegments: 10, shade: 0.05 });
-    pupil.scale(1, 1.1, 0.5);
-    pupil.translate(side * 0.037, 0.204, 0.0995);
-    parts.push(pupil);
-
-    // A brow: a thin tapered stick, arched well up-and-outward. Cartoon
-    // grammar — lifted brows plus a grin is "delighted", which is the
-    // doodle's whole expression; the first cut was thicker and flatter and
-    // the front capture read it as a scowl.
-    const brow = hairSpike(0.040, 0.0046);
-    brow.scale(1, 1, 0.5);
-    brow.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(
-      new THREE.Vector3(0, 1, 0),
-      new THREE.Vector3(side * 0.90, 0.44, 0).normalize(),
-    ));
-    brow.translate(side * 0.020, 0.2415, 0.0935);
-    // Repaint the brow dark: hairSpike writes shade 1.
-    const colours = brow.getAttribute('color');
-    for (let i = 0; i < colours.count; i += 1) colours.setXYZ(i, 0.06, 0.06, 0.06);
-    parts.push(brow);
-  }
-
-  // The grin: one wide flattened ellipsoid, mostly sunk, dark. Open-mouthed
-  // delight is the one feature every version of the drawing agrees on — the
-  // first cut was nearly round and read as a startled "o".
-  const mouth = loftGeometry(ball(0.019), { radialSegments: 12, shade: 0.1 });
-  mouth.scale(1.9, 0.8, 0.5);
-  mouth.translate(0, 0.151, 0.093);
-  parts.push(mouth);
-
-  return mergeGeometries(parts);
-}
 
 const TROLLINA_SKIN: RiderMaterialSpec = Object.freeze({
   colour: BLOCKOUT_COLOURS.trollinaSkin,
@@ -1398,8 +1177,8 @@ export const TROLLINA_LOOK: RiderLook = Object.freeze({
       emissiveIntensity: 0.28,
     }),
     limbs: TROLLINA_SKIN,
-    // The hair, and the knee pads with it: one step brighter than the dress
-    // and rougher than his panel, because it is scribble, not trim.
+    // The hair, and the knee pads with it: one step brighter than the dress.
+    // The sculpt's quiet vertex shades separate the swept locks.
     accent: Object.freeze({
       colour: BLOCKOUT_COLOURS.trollinaHair,
       roughness: 0.52,
@@ -1421,7 +1200,7 @@ export const TROLLINA_LOOK: RiderLook = Object.freeze({
     gear: TROLLINA_GEAR,
   }),
   profiles: Object.freeze({
-    torso: DRESS,
+    torso: trollinaClothSections(DRESS),
     seat: TROLLINA_SEAT,
     thigh: TROLLINA_THIGH,
     shin: TROLLINA_SHIN,
@@ -1435,8 +1214,15 @@ export const TROLLINA_LOOK: RiderLook = Object.freeze({
     boot: BOOT,
     bootSole: BOOT_SOLE,
     hand: TROLLINA_HAND,
-    sleeve: TROLLINA_SLEEVE,
+    sleeve: trollinaClothSections(TROLLINA_SLEEVE, 0.014),
   }),
+  // The 2026-11-25 cloth pass keeps the proven inner profiles, adding shallow
+  // folds outwards and enough sections for their broad, gathered curvature.
+  density: Object.freeze({ torso: 72, limb: 32, head: 24 }),
+  drapedHem: true,
+  hemDrapeEnvelope: Object.freeze({ x: 0.080, z: 0.076, cap: 0.078 }),
+  hemDrapeGravity: Object.freeze({ anchorY: 0.176, share: 0.86, clearanceTravel: 0.160, liningTop: 0.092 }),
+  paint: Object.freeze({ torso: sculptTrollinaDress, sleeve: sculptTrollinaSleeve }),
   // Tights and shorts one step *lighter* than the boots inside the same gear
   // material, so the leg reads as knit over the boot's shell — and so the two
   // halves of the tights (seat mesh and leg meshes) sit at the same value,
@@ -1544,7 +1330,7 @@ export const TROLLINA_LOOK: RiderLook = Object.freeze({
       // judgement Cool Rider's visor makes, and the reason neither shows up on
       // a ghost.
       casts: false,
-      build: trollinaFaceParts,
+      build: () => trollinaFaceParts(TROLLINA_HEAD),
     }),
   ]),
   // Arms wide and a little high — the pose the original drawing is in, and the
@@ -1584,8 +1370,12 @@ const COP_TORSO = loftProfile([
   { y: 0.035, halfWidth: 1.03 * TORSO_HALF_WIDTH, halfDepth: 1.02 * TORSO_HALF_DEPTH, square: 2.9 },
   { y: 0.145, halfWidth: 0.98 * TORSO_HALF_WIDTH, halfDepth: 1.00 * TORSO_HALF_DEPTH, square: 2.8 },
   { y: 0.285, halfWidth: 1.04 * TORSO_HALF_WIDTH, halfDepth: 1.06 * TORSO_HALF_DEPTH, square: 2.8, z: 0.010 },
+  // Exact yoke boundaries. Both panels use these rings and the torso's own
+  // angular grid, so a collar facet cannot cut triangular teeth out of yellow.
+  { y: 0.372, halfWidth: 1.0835 * TORSO_HALF_WIDTH, halfDepth: 1.0455 * TORSO_HALF_DEPTH, square: 2.945, z: 0.0071 },
   { y: 0.405, halfWidth: 1.10 * TORSO_HALF_WIDTH, halfDepth: 1.04 * TORSO_HALF_DEPTH, square: 3.0, z: 0.006 },
   { y: 0.485, halfWidth: 1.04 * TORSO_HALF_WIDTH, halfDepth: 0.94 * TORSO_HALF_DEPTH, square: 3.0 },
+  { y: 0.502, halfWidth: 0.95075 * TORSO_HALF_WIDTH, halfDepth: 0.8635 * TORSO_HALF_DEPTH, square: 2.8725 },
   { y: 0.525, halfWidth: 0.83 * TORSO_HALF_WIDTH, halfDepth: 0.76 * TORSO_HALF_DEPTH, square: 2.7 },
   { y: 0.548, halfWidth: 0.48 * TORSO_HALF_WIDTH, halfDepth: 0.52 * TORSO_HALF_DEPTH, square: 2.4 },
 ]);
@@ -1614,36 +1404,6 @@ const COP_FOREARM = limbProfile(RIDER_BLOCKOUT.forearmLength, [0.053, 0.046, 0.0
   flatten: 0.95,
   square: 2.3,
 });
-
-/** The skin head under the open helmet: cheeks and jaw, not a painted shell. */
-const COP_HEAD = loftProfile([
-  { y: 0.088, halfWidth: 0.050, halfDepth: 0.055, square: 2.4, z: 0.010 },
-  { y: 0.116, halfWidth: 0.077, halfDepth: 0.083, square: 2.5, z: 0.012 },
-  { y: 0.158, halfWidth: 0.101, halfDepth: 0.108, square: 2.5, z: 0.010 },
-  { y: 0.207, halfWidth: 0.108, halfDepth: 0.114, square: 2.5, z: 0.004 },
-  { y: 0.253, halfWidth: 0.103, halfDepth: 0.108, square: 2.4 },
-  { y: 0.291, halfWidth: 0.085, halfDepth: 0.089, square: 2.3 },
-  { y: 0.316, halfWidth: 0.045, halfDepth: 0.047, square: 2.2 },
-  { y: 0.326, halfWidth: 0, halfDepth: 0 },
-]);
-
-/**
- * The white bicycle helmet crown. Its lower edge leaves the whole face open.
- *
- * The crown leans *backward* as it rises — each ring's `z` walks negative —
- * because that sweep is what separates a cycling helmet from a bowl: wide and
- * forward at the brow, tapering aft, which is the reference's aerodynamic
- * read and the second pass's answer to "a miner's hard hat".
- */
-const COP_HELMET = loftProfile([
-  { y: 0.202, halfWidth: 0.112, halfDepth: 0.128, square: 2.5, z: 0.002 },
-  { y: 0.214, halfWidth: 0.130, halfDepth: 0.148, square: 2.7, z: 0.006 },
-  { y: 0.248, halfWidth: 0.126, halfDepth: 0.144, square: 2.5, z: 0.000 },
-  { y: 0.302, halfWidth: 0.115, halfDepth: 0.128, square: 2.4, z: -0.010 },
-  { y: 0.346, halfWidth: 0.086, halfDepth: 0.098, square: 2.3, z: -0.020 },
-  { y: 0.374, halfWidth: 0.042, halfDepth: 0.048, square: 2.2, z: -0.028 },
-  { y: 0.384, halfWidth: 0, halfDepth: 0, z: -0.030 },
-]);
 
 /**
  * `Tint` and `tintOver` live in `render/blockoutKit.ts` from M22 — the machine
@@ -1680,110 +1440,6 @@ function paintBands(
       break;
     }
   }
-}
-
-/**
- * His face, one skin mesh: the head, clear glasses with eyes behind them, a
- * brown moustache over a visible smirk, a nose, ears, and the helmet's chin
- * straps.
- *
- * The first pass painted features onto a full-face helmet; the second gave him
- * a real head but kept the glasses as one dark slab each side — reviewed
- * against the reference, a blindfold. This pass is the difference between
- * "wearing sunglasses" and "a cheerful man in *glasses*": the lens is pale and
- * a pupil stands proud of it, the moustache is hair-brown rather than
- * near-black, and the mouth under it is what makes him look pleased to be
- * chasing you. Everything is still merged into the one extra colour call the
- * 26-call cop ceiling affords — geometry detail is the cheap axis.
- */
-function copFaceParts(): THREE.BufferGeometry {
-  const parts: THREE.BufferGeometry[] = [loftGeometry(COP_HEAD, { radialSegments: 18 })];
-  const skin = BLOCKOUT_COLOURS.copSkin;
-
-  for (const side of [-1, 1]) {
-    // The frame: a dark rounded rectangle, one size up from the lens in it.
-    parts.push(loftGeometry(loftProfile([
-      { y: 0.170, halfWidth: 0.022, halfDepth: 0.004, square: 2.8, x: side * 0.043, z: 0.108 },
-      { y: 0.180, halfWidth: 0.038, halfDepth: 0.008, square: 3.2, x: side * 0.043, z: 0.112 },
-      { y: 0.215, halfWidth: 0.038, halfDepth: 0.008, square: 3.2, x: side * 0.043, z: 0.112 },
-      { y: 0.225, halfWidth: 0.022, halfDepth: 0.004, square: 2.8, x: side * 0.043, z: 0.108 },
-    ]), { radialSegments: 8, shade: 0.28 }));
-    // The lens: pale and slightly cool, proud of the frame — reads as glass
-    // catching the sky rather than as a hole in the face.
-    parts.push(tinted(loftGeometry(loftProfile([
-      { y: 0.177, halfWidth: 0.019, halfDepth: 0.003, square: 2.8, x: side * 0.043, z: 0.1135 },
-      { y: 0.186, halfWidth: 0.030, halfDepth: 0.005, square: 3.0, x: side * 0.043, z: 0.116 },
-      { y: 0.210, halfWidth: 0.030, halfDepth: 0.005, square: 3.0, x: side * 0.043, z: 0.116 },
-      { y: 0.218, halfWidth: 0.019, halfDepth: 0.003, square: 2.8, x: side * 0.043, z: 0.1135 },
-    ]), { radialSegments: 8 }), [1.06, 1.24, 1.46]));
-    // The pupil, proud of the lens and biased inboard so he looks *at* the
-    // road ahead rather than walleyed past it.
-    parts.push(loftGeometry(loftProfile([
-      { y: 0.190, halfWidth: 0.004, halfDepth: 0.002, square: 2.4, x: side * 0.0385, z: 0.117 },
-      { y: 0.198, halfWidth: 0.0085, halfDepth: 0.003, square: 2.6, x: side * 0.0385, z: 0.1185 },
-      { y: 0.206, halfWidth: 0.004, halfDepth: 0.002, square: 2.4, x: side * 0.0385, z: 0.117 },
-    ]), { radialSegments: 8, shade: 0.10 }));
-    // An ear: a small flattened bump standing just proud of the head's side.
-    parts.push(loftGeometry(loftProfile([
-      { y: 0.166, halfWidth: 0.009, halfDepth: 0.013, square: 2.2, x: side * 0.096, z: 0.008 },
-      { y: 0.186, halfWidth: 0.013, halfDepth: 0.018, square: 2.3, x: side * 0.104, z: 0.010 },
-      { y: 0.208, halfWidth: 0.009, halfDepth: 0.013, square: 2.2, x: side * 0.098, z: 0.008 },
-    ]), { radialSegments: 8, shade: 0.96 }));
-    // The chin strap: a thin band following the cheek's diagonal from the
-    // helmet's rim down to the jaw. What says the helmet is *worn*, not rested.
-    parts.push(loftGeometry(loftProfile([
-      { y: 0.104, halfWidth: 0.005, halfDepth: 0.011, square: 2.4, x: side * 0.024, z: 0.096 },
-      { y: 0.148, halfWidth: 0.005, halfDepth: 0.013, square: 2.4, x: side * 0.062, z: 0.070 },
-      { y: 0.198, halfWidth: 0.006, halfDepth: 0.014, square: 2.4, x: side * 0.090, z: 0.024 },
-    ]), { radialSegments: 6, shade: 0.22 }));
-  }
-
-  // The bridge joining the two frames, in the frame's own dark.
-  parts.push(loftGeometry(loftProfile([
-    { y: 0.190, halfWidth: 0.014, halfDepth: 0.004, square: 3, z: 0.116 },
-    { y: 0.197, halfWidth: 0.026, halfDepth: 0.006, square: 3, z: 0.118 },
-    { y: 0.204, halfWidth: 0.014, halfDepth: 0.004, square: 3, z: 0.116 },
-  ]), { radialSegments: 6, shade: 0.28 }));
-
-  // The nose: a small skin wedge between the lenses, a touch brighter than the
-  // face so it catches the sun. Without one the glasses float on a blank.
-  parts.push(loftGeometry(loftProfile([
-    { y: 0.148, halfWidth: 0.010, halfDepth: 0.006, square: 2.4, z: 0.106 },
-    { y: 0.160, halfWidth: 0.015, halfDepth: 0.009, square: 2.5, z: 0.119 },
-    { y: 0.176, halfWidth: 0.011, halfDepth: 0.006, square: 2.4, z: 0.112 },
-  ]), { radialSegments: 8, shade: 1.06 }));
-
-  // The moustache: broad, two-lobed, and *brown* — the reference's is hair,
-  // and the near-black first cut read as a letterbox slot at chase distance.
-  parts.push(tinted(loftGeometry(loftProfile([
-    { y: 0.126, halfWidth: 0.030, halfDepth: 0.006, square: 2.8, z: 0.112 },
-    { y: 0.138, halfWidth: 0.066, halfDepth: 0.013, square: 3.4, z: 0.118 },
-    { y: 0.150, halfWidth: 0.056, halfDepth: 0.011, square: 3.2, z: 0.117 },
-    { y: 0.160, halfWidth: 0.022, halfDepth: 0.005, square: 2.8, z: 0.111 },
-  ]), { radialSegments: 10 }), tintOver(skin, 0x54371c)));
-
-  // The smirk peeking out under it: proud, confident, a little dorky — the
-  // reference's whole expression, and the one feature no pass before this had.
-  // Kept small and dark: the first size read as a startled shout, which is
-  // exactly the wrong man.
-  parts.push(tinted(loftGeometry(loftProfile([
-    { y: 0.106, halfWidth: 0.009, halfDepth: 0.003, square: 2.6, z: 0.106 },
-    { y: 0.112, halfWidth: 0.017, halfDepth: 0.005, square: 2.8, z: 0.110 },
-    { y: 0.119, halfWidth: 0.013, halfDepth: 0.004, square: 2.6, z: 0.108 },
-  ]), { radialSegments: 8 }), tintOver(skin, 0x552018)));
-
-  // The nape: a crescent of trimmed brown hair hugging the back of the skull.
-  // The leaned-back helmet leaves the occiput open, and bare skin there read
-  // as a bald man wearing a bowl — the reference's Dorkins has hair under his
-  // lid, and this is the eight-ring version of it.
-  parts.push(tinted(loftGeometry(loftProfile([
-    { y: 0.098, halfWidth: 0.050, halfDepth: 0.032, square: 2.4, z: -0.058 },
-    { y: 0.150, halfWidth: 0.076, halfDepth: 0.044, square: 2.5, z: -0.066 },
-    { y: 0.205, halfWidth: 0.084, halfDepth: 0.046, square: 2.5, z: -0.060 },
-    { y: 0.236, halfWidth: 0.062, halfDepth: 0.036, square: 2.4, z: -0.048 },
-  ]), { radialSegments: 12 }), tintOver(skin, 0x54371c)));
-
-  return mergeGeometries(parts);
 }
 
 const COP_SKIN: RiderMaterialSpec = Object.freeze({
@@ -2040,7 +1696,7 @@ export const COP_LOOK: RiderLook = Object.freeze({
     upperArm: COP_UPPER_ARM,
     forearm: COP_FOREARM,
     neck: TROLLINA_NECK,
-    head: COP_HELMET,
+    head: DORKINS_CROWN,
     boot: BOOT,
     bootSole: BOOT_SOLE,
     hand: GLOVE,
@@ -2064,151 +1720,45 @@ export const COP_LOOK: RiderLook = Object.freeze({
       u0: 0,
       u1: Math.PI * 2,
       from: 0.502,
-      to: 0.545,
-      uSegments: 20,
+      to: 0.548,
+      uSegments: 24,
       vSegments: 2,
       lift: 0.011,
       shade: 1.1,
     }),
-    // The yoke: hi-vis over both shoulders and the *whole* upper chest and
-    // back, everywhere above the chequer band — the reference's shirt is
-    // yellow from band to collar, and the first cut's shoulder-only pair left
-    // navy Vs at the sternum and spine that read as a costume rather than a
-    // uniform. Still one mesh: the fills ride a lower lift than the outboard
-    // pair so their overlaps stack instead of shimmer. It does not cast: a
-    // flat identity panel that casts is a meaningless blob on anything that
-    // reads `castShadow` (rule 3), and the cop's shadow budget is spent on his
-    // silhouette instead. The badge lives in the markings group now — it is
-    // silver, and this material only does yellow.
+    // One continuous yellow surface, sharing its top ring, angular samples
+    // and normal offset with the collar. The old tapered outboard pair plus
+    // front/back fills overlapped one another and the coarser collar; their
+    // intersecting chords made dark triangles around the neckline. Three
+    // intervals follow every torso knee, rather than raising lift to hide it.
     shoulders: Object.freeze({
       role: 'accent' as RiderMaterialRole,
       casts: false,
-      patches: Object.freeze([
-        Object.freeze({
-          anchor: 'outboard' as PatchAnchor,
-          u0: -1.28,
-          u1: 1.28,
-          from: 0.372,
-          to: 0.520,
-          uSegments: 10,
-          vSegments: 4,
-          lift: 0.011,
-          taper: 0.22,
-        }),
-        // Untapered, and run up under the collar patch: a taper notched dark
-        // triangles of shirt out of the yoke's top edge on the first capture.
-        Object.freeze({
-          anchor: 'front' as PatchAnchor,
-          u0: -0.72,
-          u1: 0.72,
-          from: 0.372,
-          to: 0.512,
-          uSegments: 6,
-          vSegments: 4,
-          lift: 0.009,
-        }),
-        Object.freeze({
-          anchor: 'back' as PatchAnchor,
-          u0: -0.72,
-          u1: 0.72,
-          from: 0.372,
-          to: 0.512,
-          uSegments: 6,
-          vSegments: 4,
-          lift: 0.009,
-        }),
-      ]),
+      patches: Object.freeze([Object.freeze({
+        anchor: 'front' as PatchAnchor,
+        u0: 0,
+        u1: Math.PI * 2,
+        from: 0.372,
+        to: 0.502,
+        uSegments: 24,
+        vSegments: 3,
+        lift: 0.011,
+      })]),
     }),
     torso: Object.freeze({
       role: 'face' as RiderMaterialRole,
       casts: false,
       patches: COP_TORSO_MARKINGS,
     }),
-    // The helmet's dark vents merge into its white crown. The face is real
-    // skin geometry below it (`copFaceParts`) rather than features painted
-    // onto a full-face shell. The visual pass added the brow lip and two more
-    // vent pairs: a bicycle helmet's read is *many* slots radiating back from
-    // a peaked brow, and three patches were a hard hat with a stripe.
-    head: Object.freeze([
-      // The brow lip: a white peak standing proud over the glasses.
-      Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: -0.60,
-        u1: 0.60,
-        from: 0.206,
-        to: 0.230,
-        uSegments: 6,
-        vSegments: 2,
-        lift: 0.017,
-        taper: 0.35,
-        shade: 1.03,
-      }),
-      Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: -0.18,
-        u1: 0.18,
-        from: 0.236,
-        to: 0.342,
-        uSegments: 3,
-        vSegments: 5,
-        lift: 0.008,
-        shade: 0.18,
-      }),
-      Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: 0.38,
-        u1: 0.62,
-        mirrored: true,
-        from: 0.244,
-        to: 0.326,
-        uSegments: 2,
-        vSegments: 4,
-        lift: 0.007,
-        shade: 0.25,
-      }),
-      Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: 0.68,
-        u1: 0.88,
-        mirrored: true,
-        from: 0.242,
-        to: 0.312,
-        uSegments: 2,
-        vSegments: 3,
-        lift: 0.007,
-        shade: 0.25,
-      }),
-      Object.freeze({
-        anchor: 'back' as PatchAnchor,
-        u0: 0.26,
-        u1: 0.46,
-        mirrored: true,
-        from: 0.252,
-        to: 0.318,
-        uSegments: 2,
-        vSegments: 3,
-        lift: 0.007,
-        shade: 0.22,
-      }),
-      Object.freeze({
-        anchor: 'back' as PatchAnchor,
-        u0: -0.92,
-        u1: 0.92,
-        from: 0.208,
-        to: 0.228,
-        uSegments: 8,
-        vSegments: 1,
-        lift: 0.010,
-        shade: 0.88,
-      }),
-    ]),
+    head: Object.freeze([]),
   }),
+  build: Object.freeze({ head: dorkinsHelmet }),
   extras: Object.freeze([Object.freeze({
     name: 'rider-cop-face',
     joint: 'neck' as const,
     role: 'limbs' as RiderMaterialRole,
     casts: false,
-    build: copFaceParts,
+    build: dorkinsFace,
   })]),
   // The shorts, knee pads, socks and sneakers — paint on the limb meshes,
   // because he has no draw calls left to buy them as panels. See the tint
@@ -2233,19 +1783,12 @@ export const COP_LOOK: RiderLook = Object.freeze({
 // are specific about which parts of it are load-bearing: red full-face lid,
 // dark visor, red-and-black outfit, protective armour, gloves.
 //
-// **He is Cool Rider's chassis in his own colours, plus one new silhouette.**
-// Rule 1 again — one skeleton, one stance solve — and beyond that he reuses
-// nine of Cool Rider's ten profiles outright, because a full-face lid over a
-// jacket over boots is the same figure. The two things that make him himself at
-// 30 m are the colour field and the **chest harness**, which is the one piece
-// of kit no rider in this file has had, and which is why his shoulder group
-// casts where the cop's does not: it is a real strap standing off a real chest,
-// not a flat identity panel (rule 3).
-//
-// **Everything below the belt is paint.** The knee guard's lower half, the boot
-// cuff and the outer-leg piping are vertex repaints on the limb meshes — the
-// mechanism the cop introduced, used here for the same reason the cop needed
-// it: a panel on a leg is a mesh, and he is spending his meshes on the harness.
+// One shared skeleton and stance solve; his own shaped helmet, fitted textile
+// torso, continuous harness and moulded guards live in `redRiderKit.ts` and
+// this table. The helmet has a real opening behind opaque smoked glazing.
+// His off-centre camera is on rider-left (+X), with a physical clip and a
+// recessed glass lens. These details merge into existing joint/material meshes.
+// The left-thigh mark, boot panels and glove accents retain their vertex paint.
 
 /**
  * Seams at the thigh graphic's two edges (0.30, 0.68) and the knee guard's top
@@ -2276,7 +1819,7 @@ const RED_SHIN = limbProfile(RIDER_BLOCKOUT.shinLength, [0.064, 0.058, 0.046], [
 /** The red field: his top, his sleeves and his trousers, as one garment. */
 const RED_SUIT: RiderMaterialSpec = Object.freeze({
   colour: BLOCKOUT_COLOURS.redRiderSuit,
-  roughness: 0.68,
+  roughness: 0.82,
   metalness: 0.0,
 });
 
@@ -2494,24 +2037,25 @@ export const RED_RIDER_LOOK: RiderLook = Object.freeze({
     }),
     face: Object.freeze({
       colour: BLOCKOUT_COLOURS.redRiderVisor,
-      roughness: 0.10,
-      metalness: 0.42,
+      roughness: 0.16,
+      metalness: 0.0,
     }),
     gear: RED_GEAR,
   }),
   profiles: Object.freeze({
-    torso: JACKET,
+    torso: RED_RIDER_TORSO,
     seat: SEAT,
     thigh: RED_THIGH,
     shin: RED_SHIN,
     upperArm: UPPER_ARM,
     forearm: FOREARM,
     neck: NECK,
-    head: HELMET,
+    head: RED_RIDER_HELMET,
     boot: BOOT,
     bootSole: BOOT_SOLE,
     hand: FULL_GLOVE,
   }),
+  density: Object.freeze({ torso: 36, head: 64 }),
   // Trousers a hair under the top so the hem still reads on a rider who is one
   // colour from collar to ankle. The neck is the *gear* material at a modest
   // shade rather than the suit crushed to 0.20: what is under his lid is a
@@ -2530,253 +2074,52 @@ export const RED_RIDER_LOOK: RiderLook = Object.freeze({
       anchor: 'front' as PatchAnchor,
       u0: 0,
       u1: Math.PI * 2,
-      from: 0.502,
-      to: 0.545,
-      uSegments: 20,
-      vSegments: 2,
-      lift: 0.011,
-      shade: 1.10,
+      from: 0.527,
+      to: 0.548,
+      uSegments: 36,
+      vSegments: 3,
+      lift: 0.004,
+      shade: 0.88,
     }),
-    // The two continuous shoulder wraps, plus a padded crown standing proud of
-    // each one. They cast because this is the one part of the harness that
-    // genuinely changes the silhouette — rule 3.
-    //
-    // The old wrap stopped at ±0.62 from outboard. The original chest and back
-    // straps began 0.97 rad from outboard, leaving a visible 0.35 rad gap on all four
-    // joins. Matching the front and back *spacing* did not make one harness;
-    // the wrap now reaches the straps and overlaps them literally.
+    // The camera-side diagonal is broad and padded; the opposite strap stays
+    // narrow and outboard. A thin return borders the red armpit insert.
     shoulders: Object.freeze({
       role: 'accent' as RiderMaterialRole,
       casts: true,
-      patches: Object.freeze([
-        // Rear half: climbs from the back drop to the shoulder crown.
-        Object.freeze({
-          anchor: 'outboard' as PatchAnchor,
-          u0: -1.05,
-          u1: 0.04,
-          from: 0.405,
-          to: 0.465,
-          uSegments: 6,
-          vSegments: 3,
-          lift: 0.012,
-          taper: 0.02,
-          skewFrom: 0.440,
-          skewTo: 0.400,
-        }),
-        // Front half: descends from the crown into the chest strap. Together
-        // these two pieces make an arch instead of a horizontal T-junction.
-        Object.freeze({
-          anchor: 'outboard' as PatchAnchor,
-          u0: -0.04,
-          u1: 1.05,
-          from: 0.405,
-          to: 0.465,
-          uSegments: 6,
-          vSegments: 3,
-          lift: 0.012,
-          taper: 0.02,
-          skewFrom: 0.400,
-          skewTo: 0.440,
-        }),
-        // A short padded section over the shoulder crown. The webbing beneath
-        // it remains visible front and back, so this reads as padding on a
-        // continuous strap rather than as an unrelated shoulder plate.
-        Object.freeze({
-          anchor: 'outboard' as PatchAnchor,
-          u0: -0.42,
-          u1: 0.42,
-          from: 0.425,
-          to: 0.492,
-          uSegments: 4,
-          vSegments: 3,
-          lift: 0.019,
-          taper: 0.26,
-          shade: 1.22,
-        }),
-      ]),
+      patches: Object.freeze([]),
+      buildSingle: redRiderHarness,
     }),
-    // The rest of the harness, in one mesh: the two chest straps running down
-    // from the shoulders, the buckle plate they meet at, the waist strap that
-    // wraps him, and the back panel between the shoulder blades. All flat on
-    // the torso, so none of it casts — and all of it is the same armour
-    // material, which is what lets a whole rig cost one draw call. The red
-    // showing *between* the straps is the perforated chest panel of the
-    // reference; it needs no geometry of its own.
+    // Thin horizontal chest webbing reaches both shoulder routes and wraps
+    // to the flank. The broad camera web and side return meet the waist belt.
     torso: Object.freeze({
       role: 'accent' as RiderMaterialRole,
       casts: false,
+      buildSingle: redRiderTorsoDetails,
       patches: Object.freeze([
-        // A broad near-vertical pair running without a capped gap from the
-        // shoulder wraps into the sternum bridge, framing the red chest.
-        // The torso profile supplies the slight convergence of worn webbing;
-        // adding an unrelated diagonal over this pair was the source of the
-        // black zigzag in the owner's screenshots.
         Object.freeze({
           anchor: 'front' as PatchAnchor,
-          u0: 0.42,
-          u1: 0.75,
-          mirrored: true,
-          from: 0.302,
-          to: 0.438,
-          uSegments: 3,
-          vSegments: 6,
-          lift: 0.010,
-          taper: 0.02,
-        }),
-        // The sternum strap bridging the pair, under the buckle — the thin
-        // horizontal that makes two straps read as one garment. It sits high,
-        // leaving the camera and waist hardware below as a separate layer.
-        Object.freeze({
-          anchor: 'front' as PatchAnchor,
-          u0: -0.46,
-          u1: 0.46,
-          from: 0.306,
+          u0: -1.68,
+          u1: 1.68,
+          from: 0.316,
           to: 0.336,
-          uSegments: 4,
-          vSegments: 1,
-          lift: 0.010,
-          taper: 0.16,
+          uSegments: 48,
+          vSegments: 2,
+          lift: 0.009,
+          taper: 0.12,
           shade: 0.92,
         }),
-        // The buckle where the straps meet. **Small, central and black.**
-        //
-        // It spent one build as a large plate driven to shade 7.0, on the
-        // theory that a metal buckle was where a light value belonged on this
-        // character. The owner's screenshot settled it: nothing on his rig is
-        // grey. It read as a grey plate bolted to his sternum, which is not a
-        // buckle and is not anything he wears. The reference's hardware is
-        // black-on-black and is legible only as a *shape*, so that is what this
-        // is now — narrower, shorter, and one step up from the strap rather
-        // than seven.
-        Object.freeze({
-          anchor: 'front' as PatchAnchor,
-          u0: -0.10,
-          u1: 0.10,
-          from: 0.300,
-          to: 0.344,
-          uSegments: 2,
-          vSegments: 2,
-          lift: 0.018,
-          taper: 0.18,
-          shade: 1.30,
-        }),
-        // The waist strap, wrapped. Anchored at the back so its one seam lands
-        // behind him rather than down the buckle. **Tapered**, unlike the
-        // collar it is otherwise shaped like: a hard-edged wall at lift height
-        // is a second surface for the sun to catch, and this is the patch that
-        // had to stop catching it (see `RED_ARMOUR`).
-        // Wide — 66 mm against the first build's 44. The reference's belt is
-        // the broadest single piece of webbing on him, and the base the whole
-        // rig visually stands on; too thin and the vertical straps float.
+        // A fabric waist closure, slimmer than the old 66 mm block band.
         Object.freeze({
           anchor: 'back' as PatchAnchor,
           u0: 0,
           u1: Math.PI * 2,
-          from: 0.156,
-          to: 0.222,
-          uSegments: 20,
-          vSegments: 2,
-          lift: 0.009,
-          taper: 0.30,
+          from: 0.170,
+          to: 0.214,
+          uSegments: 48,
+          vSegments: 3,
+          lift: 0.006,
+          taper: 0.16,
         }),
-        // The vest's flanks. The reference's rig is a *garment* wrapping his
-        // ribs, not two braces on bare chest, and without these the straps
-        // floated on red either side of him.
-        Object.freeze({
-          anchor: 'outboard' as PatchAnchor,
-          u0: -0.42,
-          u1: 0.42,
-          from: 0.208,
-          to: 0.396,
-          uSegments: 5,
-          vSegments: 4,
-          lift: 0.007,
-          taper: 0.26,
-        }),
-        // The action camera/holster hangs immediately inboard of the rider-left
-        // vertical, with its clip overlapping the sternum bridge. This is a
-        // small three-layer object with empty red around it — not a seventh
-        // black line crossing the chest. Negative offsets put it on the same
-        // side as the reference when viewed from the front.
-        Object.freeze({
-          anchor: 'front' as PatchAnchor,
-          u0: -0.30,
-          u1: -0.06,
-          from: 0.214,
-          to: 0.315,
-          uSegments: 3,
-          vSegments: 4,
-          lift: 0.024,
-          taper: 0.10,
-          shade: 0.86,
-        }),
-        // Its lens: a small charcoal port standing proud of the black body.
-        // The former near-black-on-black port disappeared completely; glass
-        // needs one readable value edge before it can make the box a camera.
-        Object.freeze({
-          anchor: 'front' as PatchAnchor,
-          u0: -0.24,
-          u1: -0.10,
-          from: 0.267,
-          to: 0.302,
-          uSegments: 2,
-          vSegments: 1,
-          lift: 0.033,
-          shade: 3.00,
-        }),
-        // The clip that hooks the camera over the sternum bridge.
-        Object.freeze({
-          anchor: 'front' as PatchAnchor,
-          u0: -0.24,
-          u1: -0.12,
-          from: 0.306,
-          to: 0.340,
-          uSegments: 2,
-          vSegments: 1,
-          lift: 0.034,
-          taper: 0.10,
-          shade: 1.28,
-        }),
-        // One loose end below the rider-left strap. Two short central tails
-        // read as fringe and merged into the camera/belt knot; one longer,
-        // side-biased tail reads as adjusted webbing.
-        Object.freeze({
-          anchor: 'front' as PatchAnchor,
-          u0: -0.54,
-          u1: -0.43,
-          from: 0.078,
-          to: 0.166,
-          uSegments: 2,
-          vSegments: 2,
-          lift: 0.011,
-          taper: 0.12,
-        }),
-        // The harness's back: two vertical straps dropping from the shoulder
-        // pair to the waist wrap, and nothing between them.
-        //
-        // **This replaces a solid back panel, and the capture is why.** A panel
-        // the size of Cool Rider's blue one, in armour black on a red back, did
-        // not read as a garment at all — it read as a hole punched through him,
-        // which is the same failure mode his own entry warns about from the
-        // other direction (a *bright* pad reading as part of the wheel). Straps
-        // carry the harness better anyway: the chase camera is behind the rider
-        // essentially all the time, and what should be legible back there is
-        // that he is wearing a rig, not that he has a dark rectangle.
-        //
-        // They share the front pair's angular span, overlap the shoulder wraps
-        // above, and overlap the belt below. These three overlaps — not merely
-        // matching numbers — are what make each route one continuous strap.
-        ...[-1, 1].map((side) => Object.freeze({
-          anchor: 'back' as PatchAnchor,
-          u0: side > 0 ? 0.42 : -0.75,
-          u1: side > 0 ? 0.75 : -0.42,
-          from: 0.212,
-          to: 0.438,
-          uSegments: 3,
-          vSegments: 5,
-          lift: 0.010,
-          taper: 0.02,
-        })),
       ]),
     }),
     // Three uneven bands down the outer sleeve rather than one long panel: the
@@ -2798,40 +2141,40 @@ export const RED_RIDER_LOOK: RiderLook = Object.freeze({
           anchor: 'outboard' as PatchAnchor,
           u0: -1.30,
           u1: 1.30,
-          from: -0.052,
-          to: -0.024,
+          from: -0.067,
+          to: -0.044,
           uSegments: 8,
           vSegments: 1,
-          lift: 0.009,
+          lift: 0.002,
           taper: 0.20,
-          skewFrom: -0.052,
-          skewTo: -0.030,
+          skewFrom: -0.082,
+          skewTo: -0.025,
         }),
         Object.freeze({
           anchor: 'outboard' as PatchAnchor,
           u0: -1.10,
           u1: 1.10,
-          from: -0.100,
-          to: -0.076,
+          from: -0.118,
+          to: -0.098,
           uSegments: 7,
           vSegments: 1,
-          lift: 0.009,
+          lift: 0.002,
           taper: 0.20,
-          skewFrom: -0.100,
-          skewTo: -0.084,
+          skewFrom: -0.142,
+          skewTo: -0.070,
         }),
         Object.freeze({
           anchor: 'outboard' as PatchAnchor,
           u0: -0.90,
           u1: 0.90,
-          from: -0.142,
-          to: -0.122,
+          from: -0.161,
+          to: -0.143,
           uSegments: 6,
           vSegments: 1,
-          lift: 0.009,
+          lift: 0.002,
           taper: 0.20,
-          skewFrom: -0.134,
-          skewTo: -0.142,
+          skewFrom: -0.184,
+          skewTo: -0.118,
         }),
       ]),
     }),
@@ -2845,18 +2188,8 @@ export const RED_RIDER_LOOK: RiderLook = Object.freeze({
     elbowPad: Object.freeze({
       role: 'accent' as RiderMaterialRole,
       casts: false,
+      build: () => redRiderArmour('elbow'),
       patches: Object.freeze([
-        Object.freeze({
-          anchor: 'back' as PatchAnchor,
-          u0: -0.86,
-          u1: 0.86,
-          from: -0.076,
-          to: 0.006,
-          uSegments: 7,
-          vSegments: 4,
-          lift: 0.015,
-          taper: 0.26,
-        }),
         // The strap holding the cup on — a **full loop**, as of the outside
         // review. At ±0.98 rad it stopped just past the sides of the arm, and
         // a strap with visible ends is a tab stuck on; webbing that holds
@@ -2874,19 +2207,6 @@ export const RED_RIDER_LOOK: RiderLook = Object.freeze({
           vSegments: 1,
           lift: 0.008,
           taper: 0.28,
-        }),
-        // The forearm plate.
-        Object.freeze({
-          anchor: 'back' as PatchAnchor,
-          u0: -0.72,
-          u1: 0.72,
-          from: -0.184,
-          to: -0.102,
-          uSegments: 6,
-          vSegments: 3,
-          lift: 0.013,
-          taper: 0.24,
-          shade: 1.12,
         }),
         // The wrist closure — a full loop, same argument as the strap above.
         Object.freeze({
@@ -2907,24 +2227,14 @@ export const RED_RIDER_LOOK: RiderLook = Object.freeze({
     // strap under it and the long plate down the shin are one mesh. The
     // reference's guards are the largest pieces of kit he wears and they run
     // most of the way to the boot. `paintRedRiderShin` colours the trouser
-    // underneath to match and lays the red accent channel down the middle, so
-    // the proud geometry only has to carry the parts that catch light.
+    // underneath to match. The shaped shells carry the raised cups, plates
+    // and their red accent channels.
     // `shinLength` is 0.38.
     kneePad: Object.freeze({
       role: 'accent' as RiderMaterialRole,
       casts: false,
+      build: () => redRiderArmour('knee'),
       patches: Object.freeze([
-        Object.freeze({
-          anchor: 'front' as PatchAnchor,
-          u0: -0.88,
-          u1: 0.88,
-          from: -0.104,
-          to: -0.004,
-          uSegments: 7,
-          vSegments: 4,
-          lift: 0.016,
-          taper: 0.28,
-        }),
         // The strap under the cup — a full loop, as on the arm; the seam lands
         // in the back of the knee.
         Object.freeze({
@@ -2938,123 +2248,23 @@ export const RED_RIDER_LOOK: RiderLook = Object.freeze({
           lift: 0.008,
           taper: 0.28,
         }),
-        Object.freeze({
-          anchor: 'front' as PatchAnchor,
-          u0: -0.70,
-          u1: 0.70,
-          from: -0.228,
-          to: -0.140,
-          uSegments: 6,
-          vSegments: 3,
-          lift: 0.013,
-          taper: 0.24,
-          shade: 1.12,
-        }),
       ]),
     }),
-    // The same four helmet patches Cool Rider has, because it is the same class
-    // of lid. The shades differ: on a red shell a light rim goes pink and a
-    // dark one goes maroon, so the chin bar and spoiler step *down* toward the
-    // visor's black and only the base rim steps up.
-    head: Object.freeze([
-      Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: -0.70,
-        u1: 0.70,
-        from: 0.098,
-        to: 0.152,
-        uSegments: 6,
-        vSegments: 3,
-        lift: 0.015,
-        taper: 0.42,
-        shade: 0.84,
-      }),
-      Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: -0.86,
-        u1: 0.86,
-        from: 0.236,
-        to: 0.256,
-        uSegments: 7,
-        vSegments: 1,
-        lift: 0.011,
-        taper: 0.3,
-        shade: 0.78,
-      }),
-      Object.freeze({
-        anchor: 'back' as PatchAnchor,
-        u0: -0.78,
-        u1: 0.78,
-        from: 0.150,
-        to: 0.206,
-        uSegments: 8,
-        vSegments: 3,
-        lift: 0.012,
-        taper: 0.62,
-        shade: 0.88,
-      }),
-      Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: 0,
-        u1: Math.PI * 2,
-        from: 0.090,
-        to: 0.113,
-        uSegments: 18,
-        vSegments: 1,
-        lift: 0.004,
-        shade: 1.06,
-      }),
-      // Chin vents: three slots angling back across each cheek, the detail the
-      // reference's shell carries below the visor. Dark on the red lid rather
-      // than a separate material, which is what a vent is anyway — a hole.
-      ...[0, 1, 2].map((index) => Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: 0.36 + index * 0.17,
-        u1: 0.47 + index * 0.17,
-        mirrored: true,
-        from: 0.120,
-        to: 0.148,
-        uSegments: 2,
-        vSegments: 1,
-        lift: 0.006,
-        shade: 0.22,
-      })),
-      // **No pivot boss.** One was built here — a small dark patch at the
-      // visor's outer edge each side, standing for the shell's hinge — and the
-      // owner's screenshot caught it as "a black oddity on the side of the
-      // helmet". It was right: at 0.019 of lift on the widest part of the
-      // shell it broke the helmet's outline into a tab, and a hinge is a
-      // detail nobody resolves at riding distance anyway. The helmet's read is
-      // its gloss and its visor; nothing else on it earns silhouette.
-    ]),
-    // **Much wider and deeper than Cool Rider's**, because the reference's lid
-    // is a modern full-face with a big wrapping shield rather than a letterbox
-    // slot — at ±1.05 rad it reaches the widest part of the shell and turns the
-    // corner, which is what makes it read as glass wrapped around a face. It is
-    // the only place on the character where the red stops, and after the
-    // helmet it is the thing that identifies him at any distance.
+    // The shaped shell owns its chin bar, aperture rim and rear exhausts.
+    head: Object.freeze([]),
     face: Object.freeze({
       role: 'face' as RiderMaterialRole,
       casts: false,
-      patches: Object.freeze([Object.freeze({
-        anchor: 'front' as PatchAnchor,
-        u0: -1.05,
-        u1: 1.05,
-        from: 0.158,
-        to: 0.246,
-        uSegments: 12,
-        vSegments: 4,
-        lift: 0.007,
-        sink: -0.014,
-        taper: 0.18,
-      })]),
+      patches: Object.freeze([]),
+      buildSingle: redRiderVisor,
     }),
   }),
   extras: Object.freeze([]),
   // The thumb, merged into each hand's own mesh before `paint.hand` runs, so
   // the knuckle and finger bands below reach it too.
-  build: Object.freeze({ hand: Object.freeze([fullGloveThumb]) }),
+  build: Object.freeze({ head: redRiderHelmet, hand: Object.freeze([fullGloveThumb]) }),
   paint: Object.freeze({
+    torso: paintRedRiderTorso,
     thigh: paintRedRiderThigh,
     shin: paintRedRiderShin,
     boot: paintRedRiderBoot,
@@ -3611,43 +2821,10 @@ export const ADONISB2_LOOK: RiderLook = Object.freeze({
     // pack is the one thing that changes his outline (rule 3). The wrap
     // patches are Red Rider's proven shoulder arch, re-rolled in black gear.
     shoulders: Object.freeze({
+      buildSingle: adonisb2Pack,
       role: 'gear' as RiderMaterialRole,
       casts: true,
       patches: Object.freeze([
-        // The pack body: the largest single piece of kit he wears after the
-        // guards, high on the back between the shoulder blades. Narrower than
-        // the first build's ±0.60 — at that span its top edge wrapped past
-        // the shoulder curve and showed from the *front* as a mantle around
-        // the neck — and prouder, because a backpack is a volume and the flat
-        // first build repeated M19's back panel mistake in luggage form.
-        Object.freeze({
-          anchor: 'back' as PatchAnchor,
-          u0: -0.46,
-          u1: 0.46,
-          from: 0.200,
-          to: 0.452,
-          uSegments: 6,
-          vSegments: 5,
-          lift: 0.050,
-          taper: 0.26,
-          shade: 0.98,
-        }),
-        // Its lid: a top compartment standing prouder and lighter, kept
-        // strictly inside the body's span — the first build let its corners
-        // reach past the body's top edge, and they stood off the shoulder
-        // curve as floating tabs in every capture that saw them.
-        Object.freeze({
-          anchor: 'back' as PatchAnchor,
-          u0: -0.36,
-          u1: 0.36,
-          from: 0.352,
-          to: 0.440,
-          uSegments: 4,
-          vSegments: 3,
-          lift: 0.060,
-          taper: 0.32,
-          shade: 1.10,
-        }),
         // Rear half of each shoulder wrap: climbs from the pack to the crown.
         Object.freeze({
           anchor: 'outboard' as PatchAnchor,
@@ -4105,40 +3282,11 @@ export const ADONISB2_LOOK: RiderLook = Object.freeze({
         shade: 1.08,
       }),
     ]),
-    // The big wrapping shield, Red Rider's span: at ±1.05 rad it turns the
-    // corner of the shell, which is what makes it glass around a face rather
-    // than a letterbox — and on this rider it is the *pale* thing on a black
-    // head, the single strongest identity cue the photograph has.
     face: Object.freeze({
       role: 'face' as RiderMaterialRole,
       casts: false,
-      patches: Object.freeze([
-        Object.freeze({
-          anchor: 'front' as PatchAnchor,
-          u0: -1.05,
-          u1: 1.05,
-          // Down to the chin bar rather than stopping short of it. The chin
-          // patch is lifted further than this one, so it overlaps the shield's
-          // lower edge from in front — which is how a chin bar meets a visor.
-          from: 0.150,
-          to: 0.246,
-          uSegments: 12,
-          vSegments: 4,
-          lift: 0.007,
-          sink: -0.014,
-          taper: 0.18,
-        }),
-        // **A mirror blaze was tried here and removed on the owner's ride.**
-        // The mockup's visor carries a hard bright streak, and with one sun
-        // and no environment map the only way to have one from every heading
-        // is to author it as a second, brighter patch. It worked as a picture
-        // and failed as a game object: at this polygon count a hard-edged
-        // white rectangle sitting on a face does not read as a reflection, it
-        // reads as a sticking plaster — the owner's word for it was "that
-        // bandaid white square thing". A fake highlight needs enough
-        // surrounding detail to be read as light rather than as paint, and
-        // this rider's head does not have it. The shield is one value again.
-      ]),
+      patches: Object.freeze([]),
+      buildSingle: () => adonisb2Shield(HELMET),
     }),
   }),
   extras: Object.freeze([
@@ -7024,7 +6172,7 @@ const DRUNKARD_LID: RiderMaterialSpec = Object.freeze({
 /**
  * The skin: the face extra and the neck. Its base is the skin itself, and the
  * palest things on the face — the tooth strip, the lens glints — are vertex
- * *lifts* over it, the cop's own lens trick (`copFaceParts`), so the shades
+ * *lifts* over it, the cop's own lens trick (`dorkinsFace`), so the shades
  * need no second material: the lenses are tinted down to the one near-black
  * on him and the glint is skin lifted to the print ground's value.
  */

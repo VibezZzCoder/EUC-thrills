@@ -592,7 +592,7 @@ function outboardAngle(side: number): number {
  * with no argument and expect the character every existing baseline was taken
  * against.
  */
-export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): PlaceholderRider {
+export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK, wheelBody?: THREE.Group): PlaceholderRider {
   const root = new THREE.Group();
   root.name = 'rider-blockout';
 
@@ -675,6 +675,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
       vertexColors: true,
       map: sheet !== null && override === undefined && mapsRole(role) ? sheet : null,
     }));
+    spec.configure?.(material);
     built.set(spec, material);
     return material;
   };
@@ -853,6 +854,7 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
         add(patch, 1);
       }
     }
+    if (group.buildSingle) parts.push(paged(group.buildSingle(), group.role));
     if (group.build) {
       for (const pairSide of side === null ? [-1, 1] : [side]) {
         const page = typeof group.art === 'function' ? group.art(pairSide) : group.art;
@@ -1018,6 +1020,9 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     torsoGeometry, pelvis, legs.map(leg => leg.hip), {
       radial: density.torso, rings: profiles.torso.length, splitSeam: mapsRole('body'),
       envelope: look.hemDrapeEnvelope,
+      gravity: look.hemDrapeGravity,
+      wheelBody: look.hemDrapeGravity ? wheelBody : undefined,
+      seatProfile: look.hemDrapeGravity ? profiles.seat : undefined,
     }));
   if (look.parts.seat !== 'body') {
     const seat = new THREE.Mesh(
@@ -1103,7 +1108,8 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     const baseTarget = new THREE.Vector3(
       side * baseSplay,
       shoulderY - reach * RIDER_BLOCKOUT.armHangFraction + look.armCarriage.rise,
-      RIDER_BLOCKOUT.handForward + (rightArm ? RIDER_BLOCKOUT.armAsymmetryForward : 0),
+      RIDER_BLOCKOUT.handForward + (rightArm ? RIDER_BLOCKOUT.armAsymmetryForward : 0)
+        + (look.armCarriage.forward ?? 0),
     );
     // Elbows behind, so the arms read as hanging rather than as reaching.
     const bendToward = new THREE.Vector3(0, 0, -1);
@@ -1139,10 +1145,9 @@ export function createPlaceholderRider(look: RiderLook = COOL_RIDER_LOOK): Place
     // `RiderLook.profiles.sleeve`). Non-casting: it hugs the casting arm, so
     // the silhouette and the ghost already carry its shape.
     if (profiles.sleeve) {
-      const sleeve = new THREE.Mesh(
-        track(loftGeometry(profiles.sleeve, { radialSegments: density.limb })),
-        bodyMaterial,
-      );
+      const sleeveGeometry = track(loftGeometry(profiles.sleeve, { radialSegments: density.limb }));
+      look.paint?.sleeve?.(sleeveGeometry, side);
+      const sleeve = new THREE.Mesh(sleeveGeometry, bodyMaterial);
       sleeve.name = `rider-cap-sleeve-${sideName}`;
       shoulder.add(sleeve);
     }

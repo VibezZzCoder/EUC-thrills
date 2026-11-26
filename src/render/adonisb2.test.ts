@@ -497,3 +497,23 @@ test("nothing on Adonisb2's face hangs off the plate", () => {
     euc.dispose();
   }
 });
+
+test('the fitted pack has a rear gusset and the shield graduates across its surface', () => {
+  const pack = ADONISB2_LOOK.panels.shoulders!.buildSingle!();
+  const lens = ADONISB2_LOOK.panels.face!.buildSingle!();
+  try {
+    pack.computeBoundingBox();
+    const box = pack.boundingBox!;
+    assert.ok(box.max.z < 0 && box.max.z - box.min.z > .10, 'pack needs depth on the back of the jacket');
+    const colour = lens.getAttribute('color');
+    const uv = lens.getAttribute('uv');
+    const levels = new Set<number>();
+    for (let i = 0; i < uv.count; i++) {
+      if (Math.abs(uv.getX(i) - .5) < 1e-5) levels.add(Math.round(colour.getX(i) * 1000));
+    }
+    assert.ok(levels.size >= 5, 'the centre of the shield needs a graded reflection');
+  } finally {
+    pack.dispose();
+    lens.dispose();
+  }
+});

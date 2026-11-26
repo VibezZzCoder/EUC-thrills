@@ -41,8 +41,8 @@ import { createRidingRig, type RidingRig, type RidingRigOptions } from './riding
  *     and status light exist to say something about *the player's* machine —
  *     battery state, which way it is facing in a screenshot — and none of that
  *     is a question anybody asks of the thing chasing them.
- *   - **the shadow pass is a subset**: the wheel's shell, the torso and the
- *     head. Those three carry the contact and the silhouette; the limb shadows
+ *   - **the shadow pass is a subset**: the wheel's shell and tyre, the torso
+ *     and the head. Those four carry the contact and the silhouette; the limb shadows
  *     of a rider at chase distance are below what a single 2048 map resolves,
  *     and a full pass was costing a third of his whole budget.
  *
@@ -129,7 +129,10 @@ export const COP_MACHINE_LOOK: MachineLook = {
  * (the paddle, at 376) close enough behind it that the choice is visible in the
  * numbers rather than hidden in a set literal.
  */
-const SHADOW_MIN_TRIANGLES = 390;
+// The standard tyre is 384 triangles. The old 390 threshold silently stopped
+// casting it after the tyre changed, detaching every trimmed chase cop from
+// his contact patch while the full rig still cast correctly.
+const SHADOW_MIN_TRIANGLES = 384;
 
 export interface CopRider {
   /** Root. Added to the scene by `render/Renderer.ts`, hidden by default. */

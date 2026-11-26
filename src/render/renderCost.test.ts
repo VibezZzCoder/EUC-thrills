@@ -492,16 +492,13 @@ const sameCost = (a: SceneCost, b: SceneCost): void => {
   assert.equal(a.totalTriangles, b.totalTriangles, 'triangles');
 };
 
-test('the shipped cop trim is the rig it always was, and trim 0 is it byte for byte', () => {
-  // The record's first row (§39.6b.4: "the cop rig today"), measured on
-  // 2026-09-23 before Part P built anything: 23 colour calls and 3 shadow
-  // calls — the wheel's shell, the torso and the head (SHADOW_MIN_TRIANGLES)
-  // — 26 in all, and 10,878 triangles across both passes, posed and armed.
+test('every AI cop trim includes the contact tyre in its shadow budget', () => {
+  // The collar and continuous yoke also belong to the measured uniform.
   const trim = measureCopRig();
   assert.equal(trim.drawCalls, 23);
-  assert.equal(trim.shadowDrawCalls, 3);
-  assert.equal(trim.totalDrawCalls, 26);
-  assert.equal(trim.totalTriangles, 10_878);
+  assert.equal(trim.shadowDrawCalls, 4);
+  assert.equal(trim.totalDrawCalls, 27);
+  assert.equal(trim.totalTriangles, 15_932);
   // `index: 0` is the absent option (R-7): the same names, the same cost, so
   // every existing lookup (`cop-rider`, `cop-riding-rig`, the specs) holds.
   const absent = copShape();
@@ -734,7 +731,10 @@ test('the three frame ceilings retain their distinct pass counts', () => {
   // Rider consolidation (perf actions, 2026-10-17; owner OD-1/OD-2): the
   // reserves FELL in calls (144 → 138, 178 → 168, 272 → 252) and R-5 never
   // lowers a ceiling, so every draw-call ceiling stands.
-  assert.equal(RENDER_BUDGET.maxDrawCalls, 217);
+  // The 1.6.0 art pass adds 3 / 2 / 1 calls and 1,092 / 29,564 / 67,772
+  // triangles to the measured solo / split / grid reserve per view. The
+  // ceilings increase by this growth times the number of views under R-5.
+  assert.equal(RENDER_BUDGET.maxDrawCalls, 220);
   // M39 r6 (2026-09-22): triangles raised on the owner's authorization for the
   // town ring's larger ground; draw calls unchanged.
   // Rider consolidation (2026-10-17): OD-2 merges same-joint panels into their
@@ -743,11 +743,13 @@ test('the three frame ceilings retain their distinct pass counts', () => {
   // R-5 raised each triangle ceiling by passes × that growth — 643,618 →
   // 645,890, 1,374,264 → 1,378,808 and 2,995,976 → 3,007,144 — so every
   // level's triangle share is byte-identical (the test below).
-  assert.equal(RENDER_BUDGET.maxTriangles, 645_890);
-  assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls, 522);
-  assert.equal(RENDER_BUDGET_SPLIT.maxTriangles, 1_378_808);
-  assert.equal(RENDER_BUDGET_QUAD.maxDrawCalls, 1_420);
-  assert.equal(RENDER_BUDGET_QUAD.maxTriangles, 3_007_144);
+  // 1.6.1: the three detailed police heads add 14,070 triangles in solo and
+  // 2,848 per split view at the worst roster. R-5 preserves each level share.
+  assert.equal(RENDER_BUDGET.maxTriangles, 661_052);
+  assert.equal(RENDER_BUDGET_SPLIT.maxDrawCalls, 526);
+  assert.equal(RENDER_BUDGET_SPLIT.maxTriangles, 1_443_632);
+  assert.equal(RENDER_BUDGET_QUAD.maxDrawCalls, 1_424);
+  assert.equal(RENDER_BUDGET_QUAD.maxTriangles, 3_278_232);
   assert.ok(RENDER_BUDGET_QUAD.maxDrawCalls > RENDER_BUDGET_SPLIT.maxDrawCalls);
   assert.ok(RENDER_BUDGET_QUAD.maxTriangles > RENDER_BUDGET_SPLIT.maxTriangles);
   // And it is not four halves: the level is drawn four times but the world —
@@ -827,9 +829,9 @@ test('the split frame is judged against its own larger ceiling', () => {
   // Distinct frame budgets still apply after the owner-authorized upgrade.
   assert.ok(RENDER_BUDGET_SPLIT.maxDrawCalls > RENDER_BUDGET.maxDrawCalls);
   assert.ok(RENDER_BUDGET_SPLIT.maxTriangles > RENDER_BUDGET.maxTriangles);
-  assert.equal(RENDER_BUDGET.maxDrawCalls, 217, 'Contract 1 moved');
-  // 643,618 → 645,890 on 2026-10-17: R-5 after OD-2 (the test above).
-  assert.equal(RENDER_BUDGET.maxTriangles, 645_890, 'Contract 1 moved');
+  assert.equal(RENDER_BUDGET.maxDrawCalls, 220, 'Contract 1 moved');
+  // Includes the 1.6.0 measured increase per view, pinned above.
+  assert.equal(RENDER_BUDGET.maxTriangles, 661_052, 'Contract 1 moved');
   // And a single-player verdict is still judged against Contract 1: a plan
   // that fits the split ceiling but not the phone one must still be refused.
   const verdict = withinRenderBudget(slice);

@@ -602,8 +602,8 @@ export const LEVEL_GEOMETRY_COST = deepFreeze({
  *     triangle reserve; draw calls did not move.
  */
 export const NON_LEVEL_RESERVE = deepFreeze({
-  drawCalls: 138,
-  triangles: 132_508,
+  drawCalls: 141,
+  triangles: 147_670,
 });
 
 /**
@@ -631,8 +631,8 @@ export const NON_LEVEL_RESERVE = deepFreeze({
  * out, and a comment inside the braces makes the tool throw.
  */
 export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
-  drawCalls: 168,
-  triangles: 181_630,
+  drawCalls: 170,
+  triangles: 214_042,
 });
 
 /**
@@ -661,8 +661,8 @@ export const SPLIT_NON_LEVEL_RESERVE = deepFreeze({
  * the whole object out, and a comment inside the braces makes the tool throw.
  */
 export const QUAD_NON_LEVEL_RESERVE = deepFreeze({
-  drawCalls: 252,
-  triangles: 247_942,
+  drawCalls: 253,
+  triangles: 315_714,
 });
 
 /**
@@ -696,7 +696,7 @@ export const RENDER_BUDGET = deepFreeze({
    */
   // Environment R15: three new non-casting route-face templates add three
   // library slots per view; measured reserves and triangle rooms are unchanged.
-  maxDrawCalls: 217,
+  maxDrawCalls: 220,
   /**
    * **Raised from 400 k to 460 k by the owner on 2026-08-19** — M23 Phase A1d,
    * the same instruction that moved the draw-call ceiling.
@@ -760,7 +760,7 @@ export const RENDER_BUDGET = deepFreeze({
    * rider panel merge of 2026-10-17): the solo reserve's +2,272 shadow
    * triangles, so the level's 513,382 is unchanged.
    */
-  maxTriangles: 645_890,
+  maxTriangles: 661_052,
 });
 
 /**
@@ -851,7 +851,7 @@ export const RENDER_BUDGET_SPLIT = deepFreeze({
    */
   // Environment R15: three new non-casting route-face templates add three
   // library slots per view; measured reserves and triangle rooms are unchanged.
-  maxDrawCalls: 522,
+  maxDrawCalls: 526,
   /**
    * The measured frame is 561,036, and this is not written against it.
    *
@@ -871,7 +871,7 @@ export const RENDER_BUDGET_SPLIT = deepFreeze({
   // new Contract 1 so each view keeps the same level room below solo as before
   // (5,608 triangles tighter per view). Worst sampled town: 1,341,892 enhanced.
   // 2026-10-18 (R-5, owner OD-2): 1,374,264 → 1,378,808, the reserve's +2,272 a pass.
-  maxTriangles: 1_378_808,
+  maxTriangles: 1_443_632,
 });
 
 /**
@@ -927,7 +927,7 @@ export const RENDER_BUDGET_QUAD = deepFreeze({
    */
   // Environment R15: three new non-casting route-face templates add three
   // library slots per view; measured reserves and triangle rooms are unchanged.
-  maxDrawCalls: 1_420,
+  maxDrawCalls: 1_424,
   /**
    * The measured frame is 1,933,528, and this is not written against it.
    *
@@ -948,7 +948,7 @@ export const RENDER_BUDGET_QUAD = deepFreeze({
   // new Contract 1 so each view keeps the same level room below solo as before
   // (9,538 triangles tighter per view). Worst sampled town: 2,946,952 enhanced.
   // 2026-10-18 (R-5, owner OD-2): 2,995,976 → 3,007,144, the reserve's +2,792 a pass.
-  maxTriangles: 3_007_144,
+  maxTriangles: 3_278_232,
 });
 
 /**

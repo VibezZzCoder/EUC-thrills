@@ -7,7 +7,8 @@ import { PLAYABLE_RIDER_LOOKS, RIDER_LOOKS, RED_RIDER_LOOK } from './riderLook.t
 import { measureObject } from './renderCost.ts';
 import { createPose } from '../simulation/EucController.ts';
 import { BLOCKOUT_COLOURS, RIDER, RIDER_BLOCKOUT } from '../data/tuning.ts';
-import { loftGeometry } from './blockoutKit.ts';
+import { loftGeometry, loftPoint, vAtHeight } from './blockoutKit.ts';
+import { RED_RIDER_HARNESS_ROUTE, RED_RIDER_RIGHT_HARNESS_ROUTE, RED_RIDER_SIDE_RETURN } from './redRiderKit.ts';
 import { createBlockoutEUC } from './euc.ts';
 import {
   RED_RIDER_MACHINE_LOOK,
@@ -141,47 +142,35 @@ test("Red Rider's thigh graphic lands outboard on the left leg only", () => {
   }
 });
 
-/**
- * A continuous harness needs overlap along both axes. Matching the front and
- * back strap spacing was not enough: the former shoulder patch stopped 0.35
- * rad short of both pairs, which the rear capture exposed as four capped gaps.
- */
-test("Red Rider's harness overlaps both shoulder routes and the rear route reaches the belt", () => {
-  const shoulderPatches = RED_RIDER_LOOK.panels.shoulders?.patches ?? [];
-  const torsoPatches = RED_RIDER_LOOK.panels.torso?.patches ?? [];
-
-  const shoulderWraps = shoulderPatches.filter(
-    (patch) => patch.anchor === 'outboard' && patch.u1 - patch.u0 > 1,
-  );
-  const frontStrap = torsoPatches.find(
-    (patch) => patch.anchor === 'front' && patch.mirrored === true,
-  );
-  const belt = torsoPatches.find(
-    (patch) => patch.anchor === 'back' && patch.u1 - patch.u0 > 6,
-  );
-  const backStraps = torsoPatches.filter(
-    (patch) => patch.anchor === 'back' && patch.u1 - patch.u0 < 1,
-  );
-
-  assert.equal(shoulderWraps.length, 2, 'the shoulder route needs a front and rear half');
-  assert.ok(frontStrap, 'front strap pair is missing');
-  assert.ok(belt, 'wrapped waist belt is missing');
-  assert.equal(backStraps.length, 2, 'the harness needs two back drops');
-
-  const frontShoulder = shoulderWraps.find((patch) => patch.u1 > 1);
-  const rearShoulder = shoulderWraps.find((patch) => patch.u0 < -1);
-  assert.ok(frontShoulder, 'front shoulder half is missing');
-  assert.ok(rearShoulder, 'rear shoulder half is missing');
-
-  const angularReach = Math.PI / 2 - Math.max(Math.abs(frontStrap.u0), Math.abs(frontStrap.u1));
-  assert.ok(frontShoulder.u1 >= angularReach, 'shoulder wrap stops before the front strap');
-  assert.ok(-rearShoulder.u0 >= angularReach, 'shoulder wrap stops before the back strap');
-  assert.ok(frontShoulder.u0 <= rearShoulder.u1, 'the shoulder halves do not overlap at the crown');
-  assert.ok(frontStrap.to >= frontShoulder.from, 'front strap stops below the shoulder wrap');
-  for (const backStrap of backStraps) {
-    assert.ok(backStrap.to >= rearShoulder.from, 'back strap stops below the shoulder wrap');
-    assert.ok(backStrap.from <= belt.to, 'back strap stops above the belt');
-  }
+/** A worn route must terminate in its actual chest bridge and waist closure. */
+test("Red Rider's asymmetric harness crosses the camera and anchors into the same belt at the front, flank and rear", () => {
+  const shoulderGroup = RED_RIDER_LOOK.panels.shoulders;
+  assert.ok(shoulderGroup?.buildSingle, 'the two shoulder routes must be one continuous builder');
+  assert.equal(shoulderGroup.patches.length, 0, 'old shoulder caps may not obscure the continuous route');
+  const patches = RED_RIDER_LOOK.panels.torso?.patches ?? [];
+  const bridge = patches.find(p => p.anchor === 'front' && p.u0 < -.1 && p.u1 > .1);
+  const belt = patches.find(p => p.anchor === 'back' && p.u1 - p.u0 > 6);
+  assert.ok(bridge, 'sternum bridge is missing');
+  assert.ok(belt, 'waist closure is missing');
+  const first = RED_RIDER_HARNESS_ROUTE[0], last = RED_RIDER_HARNESS_ROUTE.at(-1)!;
+  const camera = RED_RIDER_HARNESS_ROUTE.find(([u, y]) => u > 0 && y >= bridge.from && y <= bridge.to);
+  assert.ok(camera, 'camera-side web misses bridge height');
+  assert.ok(Math.abs(camera[0] - Math.PI / 2) < bridge.u1, 'camera-side web misses bridge width');
+  assert.ok(first[1] >= belt.from && first[1] <= belt.to, 'the front web ends above the waist');
+  const flankFoot = RED_RIDER_SIDE_RETURN.at(-1)!;
+  assert.ok(flankFoot[1] >= belt.from && flankFoot[1] <= belt.to, 'the side web ends above the waist');
+  assert.ok(bridge.u1 - bridge.u0 > 3, 'the thin chest strap must continue across the chest to both flanks');
+  const right = RED_RIDER_RIGHT_HARNESS_ROUTE;
+  assert.ok(right[0][0] - Math.PI / 2 > .6, 'the narrow lower anchor stays outboard');
+  const shoulder = RED_RIDER_HARNESS_ROUTE.find(([u, y]) => u > 0 && y > .45 && y < .47)!;
+  assert.ok(shoulder[2] > right[2][2] * 2.5, 'camera-side padding must be much broader than opposite webbing');
+  assert.ok(Math.abs(right[0][0] - right[3][0]) < .15, 'the opposite strap stays nearly vertical');
+  assert.ok(last[1] >= belt.from && last[1] <= belt.to, 'rear return misses waist closure');
+  const profile = RED_RIDER_LOOK.profiles.torso;
+  const lower = loftPoint(profile, camera[0], vAtHeight(profile, camera[1]), new THREE.Vector3());
+  const upper = loftPoint(profile, shoulder[0], vAtHeight(profile, shoulder[1]), new THREE.Vector3());
+  assert.ok(upper.x > lower.x + .065, 'the front must converge inward; vertical bracket legs are wrong');
+  assert.ok(belt.to - belt.from < .05, 'waist closure may not grow back into the old broad block band');
 });
 
 /**

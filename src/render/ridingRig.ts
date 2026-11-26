@@ -275,7 +275,7 @@ export function createRidingRig(
   groundPivot.add(leanPivot);
 
   const euc = createBlockoutEUC(machine);
-  const rider = createPlaceholderRider(look);
+  const rider = createPlaceholderRider(look, euc.body);
   leanPivot.add(euc.group);
   leanPivot.add(rider.root);
   // **Consolidated before the paddle is hung** (perf item "riders",

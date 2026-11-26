@@ -1,5 +1,7 @@
 /*! EUC Thrills — (c) 2026 VibezZzCoder — MIT — https://github.com/VibezZzCoder/EUC-thrills */
 import * as THREE from 'three';
+import { configureFloPewter, configureFloSmoke, floWrapShield } from './floWithZoHelmet.ts';
+import { jacketFold, jacketPanelWidth, raceJacketClosures } from './floRaceJacket.ts';
 import { BLOCKOUT_COLOURS as C, RIDER_BLOCKOUT as B } from '../data/tuning.ts';
 import {
   limbProfile,
@@ -21,60 +23,21 @@ import type {
 
 // -- FloWithZo ----------------------------------------------------------------
 //
-// M34 Phase 1 (`docs/PLANS.md` §34.4). The eighth playable look, the fifth real
-// person, and the **first pale one**: a light silver race suit under a mid
-// pewter full-face lid, big white knee and shin armour, a two-tone band across
-// the hem, black gloves and low light trainers. `references/FloWithZo/` holds
-// the two racing photographs he supplied and an AI turnaround; the photographs
-// are the authority and the turnaround only says how a real thing becomes
-// low-poly (§34.2 rules on each of its inventions — the pearl helmet, the back
-// lettering, the chest harness and the both-hips cyan band are all rejected).
+// FloWithZo's supplied racing photographs are the visual authority. His light
+// technical suit has roomy tapered trousers, a warm pewter/bronze domed helmet
+// with an opaque smoked wrap shield, charcoal upper knee braces, segmented pale
+// shin shells, dark wrap straps, and low light trainers. The cyan/gold hem band
+// remains asymmetric. No reference image, lettering or proprietary shell mark
+// is loaded by the game.
 //
-// **Three decisions shape this file** (§34.3 fact 9, §34.4):
+// The shared skeleton and stance solve remain unchanged. Geometry and paint
+// live in this look; the helmet's local material response is in
+// `floWithZoHelmet.ts`. Body and limbs share the silver suit material, while
+// rigid guards use their own surface. Guard geometry remains in replay even
+// where a live shadow pass is unnecessary.
 //
-//   - **No sheet, and no print anywhere on him.** Every accent he wears — the
-//     vest's mid-grey, the charcoal gear, the cyan and the gold at the hem — is
-//     darker than a silver ground in *every* channel, and a vertex colour is a
-//     multiplier, so all of it is reached by painting **down** from
-//     `floWithZoSilver`. Two things stand above the suit and no more: the guard
-//     white, which is patches in the `accent` role with a material of their
-//     own, and the single light-on-light strip on his right shoulder blade that
-//     PHOTO 2 measures at 1.14 × the back beside it (r2's finding 2e) — a lift
-//     of 1.13 on the body's own vertices, which is legal where a texel's would
-//     not be and which clips nothing. He is the first real person on the roster
-//     with no atlas, no page and no decoder.
-//   - **The value drop from suit to lid is the silhouette.** PHOTO 2 measures
-//     the helmet at 0.294 against the jacket's 0.597 — about half. That is the
-//     configuration Cool Rider's first lid failed at (a dark void on a lighter
-//     body, `src/data/tuning.ts:3750-3760`) except that there the helmet was
-//     near-black; here it is a glossy pewter at 0.53 × the suit, which is
-//     inside the safe window and is checked on a capture of the crown from
-//     behind rather than on a swatch. **The value was right in r1 and the
-//     temperature was not** — the shell was authored warm and two blind critics
-//     scored the head as a bare tan dome at gameplay distance, so r2 moved the
-//     hue to a near-neutral and left the luminance where it was (`tuning.ts`,
-//     `floWithZoBronze`).
-//   - **The guards are the bulkiest thing on him** (the brief §9: *"Do not
-//     reduce these guards to small knee pads"*). Adonisb2's anatomy, Wheel in
-//     Motion's spans, run from 106 mm above the knee to 68 mm above the ankle —
-//     1.10 × the shin — as a light kneecap plus two stacked shin plates with
-//     dark strap bands between them, over a limb painted to the cup's own value
-//     where the guard closes on the joint and to a light sleeve down the calf
-//     (r1's findings 3a and 6c: the cap is the lightest piece on the leg in the
-//     photograph, and the calf behind the plates is light, not black).
-//
-// **A sibling module, on `coolRiderLook.ts`'s pattern**, because a value import
-// from `riderLook.ts` would be a load-order cycle: everything below is typed by
-// `riderLook.ts` and imports nothing from it. The shared tables this look
-// starts from (`JACKET`, `NECK`, `BOOT`, `BOOT_SOLE`, `ringOf`,
-// `limbAtHeights`, and Wheel in Motion's jersey, seat, hip dome, limbs
-// and helmet) are copied under `FLO_*` names. The owner-requested glove
-// revision copies Seal's full palm and merged thumb; neither character imports
-// the other, so later edits remain local.
-//
-// Parity: at or under Cool Rider's meshes and calls (`redRider.test.ts`), with
-// no casting panel group at all — no pack, no straps, no shoulder or torso
-// group. What would have paid for those is spent on the guards instead.
+// This sibling module imports riderLook types only, avoiding a value-import
+// cycle. Changes to Flo's copied profiles do not alter the other riders.
 
 // -- Copied helpers and shared tables -----------------------------------------
 
@@ -154,7 +117,7 @@ const FLO_JACKET = loftProfile([
   { y: -0.010, halfWidth: 1.03 * FLO_TORSO_HALF_WIDTH, halfDepth: 1.01 * FLO_TORSO_HALF_DEPTH, square: 2.8 },
   { y: 0.018, halfWidth: 0.98 * FLO_TORSO_HALF_WIDTH, halfDepth: 0.96 * FLO_TORSO_HALF_DEPTH, square: 2.8 },
   { y: 0.050, halfWidth: 0.90 * FLO_TORSO_HALF_WIDTH, halfDepth: 0.93 * FLO_TORSO_HALF_DEPTH, square: 2.6 },
-  { y: 0.155, halfWidth: 0.86 * FLO_TORSO_HALF_WIDTH, halfDepth: 0.87 * FLO_TORSO_HALF_DEPTH, square: 2.5 },
+  { y: 0.155, halfWidth: 0.91 * FLO_TORSO_HALF_WIDTH, halfDepth: 0.92 * FLO_TORSO_HALF_DEPTH, square: 2.5 },
   { y: 0.290, halfWidth: 0.97 * FLO_TORSO_HALF_WIDTH, halfDepth: 1.01 * FLO_TORSO_HALF_DEPTH, square: 2.6, z: 0.008 },
   { y: 0.400, halfWidth: 1.00 * FLO_TORSO_HALF_WIDTH, halfDepth: 0.98 * FLO_TORSO_HALF_DEPTH, square: 2.9, z: 0.006 },
   { y: 0.470, halfWidth: 1.00 * FLO_TORSO_HALF_WIDTH, halfDepth: 0.90 * FLO_TORSO_HALF_DEPTH, square: 3.1, z: 0.002 },
@@ -228,7 +191,7 @@ export const FLO_BAND_TOP = 0.070;
  * At +0.02 m the gate lands just behind the flank pole of every hem ring, so
  * the two hues cover the back and both hips — PHOTO 1's teal hip-crest tab is
  * on the pole and stays — and nothing crosses the front. It mirrors
- * `FLO_VEST_SEAM` on the other face.
+ * the fitted vest on the other face.
  */
 export const FLO_BAND_FRONT_STOP = 0.020;
 /**
@@ -269,50 +232,10 @@ const FLO_BAND_TAPER = 0.024;
  * height and leaves the gold's tip 14–15 % in from the silhouette.
  */
 const FLO_GOLD_HIP_STOP = 0.87;
-/**
- * The mid-grey vest's top edge, and it is **the one number two gauntlet rounds
- * pulled in opposite directions**. r1's finding 2b asked it up to the
- * collarbone and it shipped 0.360 → 0.470; r2's finding 2a asked it back down
- * to the sternum, *"so the top third of the front torso stays light suit"*.
- * The r2 verifier ruled the round contradictory on this line (its §B.1) and
- * resolved it rather than discarding either round, and the resolution is what
- * ships here.
- *
- * r1's actual defect was **a light band with dark above it** — the gear-black
- * collar yoke sat at `FLO_COLLAR_BASE` 0.496 on rings 93 % of the jacket's
- * widest, so the silver between it and the panel read as a stripe rather than
- * as chest. r2 removed the yoke separately (the collar moved to 0.526 and was
- * tinted the panel grey, not the gear black), and with the yoke gone lowering
- * the vest cannot recreate that defect. At 0.470 the light band was **16 % of
- * the visible torso** against PHOTO 1's 27–33 %; **0.410** — a height
- * `FLO_JERSEY` already carries — gives 24–33 % by column and satisfies both
- * rounds.
- */
+/** Existing pattern stations retained in the jersey profile. The racing
+ * jacket now uses a continuous zipped centre panel up to the neckline. */
 export const FLO_VEST_TOP = 0.410;
 export const FLO_VEST_BOTTOM = 0.075;
-/**
- * How far forward the vest's side seam sits. A panel that stopped at the
- * jacket's widest point would put its edge exactly on the silhouette, where a
- * seam has no shape to read against.
- *
- * **55 mm and not 30** — the sharper half of r2's finding 2a, and it was exact:
- * at `r2/rest/front.png` y 380–400 the row read L 42 unbroken from x 626 to
- * x 794, **no silver flank at all**. 30 mm of depth on rings 118–136 mm deep
- * leaves a sliver worth 0.5–1.5 % of the half-width in a front view — inside
- * the antialiasing. 55 mm leaves 2.8–6.3 % depending on the ring's own
- * `square`, which is a flank the eye can find; the plate still wraps 147° of
- * the chest.
- */
-const FLO_VEST_SEAM = 0.055;
-/**
- * The plate's binding — r2's finding 2d, and it needs no geometry because
- * `FLO_JERSEY` already carries a ring pair at each of the vest's edges. PHOTO
- * 1's panel edge measures L 110 against the panel core's 83 and the suit's 125:
- * a **1.33 ×** step out of the panel, not a hard cut to suit-white. 0.75 of the
- * silver is 1.30 × the panel tint, and painting *both* rings of each pair makes
- * it a flat 4 mm edging rather than a gradient into the panel.
- */
-const FLO_VEST_BINDING_ROW = 0.0021;
 /**
  * The light-on-light strip on his right shoulder blade — r2's finding 2e, and
  * the one thing PHOTO 2's back carries that the game's did not. The photograph
@@ -357,19 +280,11 @@ const FLO_SHOULDER_CAP_BOTTOM = -0.060;
 
 // -- Profiles -----------------------------------------------------------------
 
-/**
- * The jersey: `WIM_JERSEY`'s even 30 mm sampling of `FLO_JACKET`
- * (`riderLook.ts:5951`) **plus a ring pair at ±0.002 around every paint
- * boundary** — the band's top, the vest's bottom and top, and the collar's
- * base. Nothing is printed on him, so the even rings are not for a page's rows;
- * they are what keeps a seam pair droppable anywhere without collapsing the
- * interval beside it, and the pairs themselves are the only way a painted band
- * gets an edge instead of a smear across whatever ring gap it lands in
- * (`RiderLook.paint`).
- */
+/** The jacket needs closely spaced rows for the folded textile. Include
+ * exact colour boundaries at the waistband and collar. */
 export const FLO_JERSEY = loftProfile((() => {
   const heights = [-0.010, 0.018];
-  for (let y = 0.050; y < 0.470 + 1e-6; y += 0.030) heights.push(Math.round(y * 1000) / 1000);
+  for (let y = 0.050; y < 0.470 + 1e-6; y += 0.014) heights.push(Math.round(y * 1000) / 1000);
   heights.push(0.500, 0.528, 0.548);
   for (const boundary of [FLO_BAND_TOP, FLO_VEST_BOTTOM, FLO_VEST_TOP, FLO_COLLAR_BASE]) {
     heights.push(boundary - 0.002, boundary + 0.002);
@@ -380,84 +295,59 @@ export const FLO_JERSEY = loftProfile((() => {
   return [...new Set(heights)].sort((a, b) => a - b).map((y) => floRingAt(FLO_JACKET, y));
 })());
 
-/**
- * The hip dome over the thigh's top — `WIM_HIP_DOME` (`riderLook.ts:6013`),
- * 60 mm of rounded close, and it is here **from day one** rather than after a
- * report. The rig drops the inside hip 85 mm under the pelvis in a carve and
- * the outside hip 150 mm in a technical corner and counter-rolls the hem up on
- * top of that, so a thigh ending in a flat cap ends in a flat cap *below the
- * hem* with the seat's underside over it. Black hides it; the Drunkard's amber
- * could not, Wheel in Motion's blue could not, and a light silver trouser
- * certainly cannot (`docs/LESSONS_LEARNED.md:9281`). `riderClearance.test.ts`
- * sweeps him with the other two.
- */
+/** Rounded hip closure retains the shared joint and the existing 60 mm reach. */
 export const FLO_HIP_DOME_APEX = 0.060;
 const FLO_HIP_DOME: LoftRing[] = [[0.018, 0.90], [0.036, 0.78], [0.050, 0.52], [FLO_HIP_DOME_APEX, 0]]
   .map(([y, scale]) => ({
-    y: y!,
-    halfWidth: 0.079 * scale!,
-    halfDepth: 0.079 * 0.94 * scale!,
-    square: 2.4,
+    y: y!, halfWidth: 0.094 * scale!, halfDepth: 0.090 * scale!, square: 2.5,
   }));
 
-/**
- * The thigh: `WIM_THIGH`'s even rings and its pair at the guard-top boundary
- * (`riderLook.ts:6028`), a second pair at each edge of the outer-thigh panel,
- * and the hip dome over the joint.
- */
-export const FLO_THIGH = loftProfile([
-  ...floLimbAtHeights(
-    B.thighLength,
-    [0.079, 0.072, 0.061],
-    [
-      0, -0.040,
-      FLO_THIGH_PANEL_TOP + 0.002, FLO_THIGH_PANEL_TOP - 0.002,
-      -0.080, -0.120, -0.160, -0.200, -0.240,
-      FLO_THIGH_PANEL_BOTTOM + 0.002, FLO_THIGH_PANEL_BOTTOM - 0.002,
-      -0.270,
-      -B.thighLength * FLO_GUARD_TOP + 0.002,
-      -B.thighLength * FLO_GUARD_TOP - 0.002,
-      -0.300, -0.320, -0.340, -0.360, -0.380, -0.400,
-    ],
-    { flatten: 0.94, square: 2.4 },
-  ),
+/** Roomy technical trousers gather above the brace instead of forming two
+ * uniform pipes. Paint boundaries remain explicit rings; the hip join stays
+ * plain suit silver so articulation cannot expose a differently coloured cap. */
+export const FLO_THIGH = floWithRingsAt(loftProfile([
+  { y: 0, halfWidth: 0.094, halfDepth: 0.090, square: 2.5 },
+  { y: -0.040, halfWidth: 0.104, halfDepth: 0.097, square: 2.6 },
+  { y: -0.080, halfWidth: 0.108, halfDepth: 0.099, square: 2.65 },
+  { y: -0.120, halfWidth: 0.106, halfDepth: 0.095, square: 2.6 },
+  { y: -0.160, halfWidth: 0.101, halfDepth: 0.090, square: 2.5 },
+  { y: -0.200, halfWidth: 0.094, halfDepth: 0.084, square: 2.45 },
+  { y: -0.240, halfWidth: 0.084, halfDepth: 0.077, square: 2.4 },
+  { y: -0.270, halfWidth: 0.075, halfDepth: 0.071, square: 2.4 },
+  { y: -0.300, halfWidth: 0.067, halfDepth: 0.064, square: 2.4 },
+  { y: -0.320, halfWidth: 0.064, halfDepth: 0.061, square: 2.4 },
+  { y: -0.340, halfWidth: 0.062, halfDepth: 0.059, square: 2.4 },
+  { y: -0.360, halfWidth: 0.061, halfDepth: 0.058, square: 2.4 },
+  { y: -0.380, halfWidth: 0.060, halfDepth: 0.057, square: 2.4 },
+  { y: -0.400, halfWidth: 0.060, halfDepth: 0.056, square: 2.4 },
+  { y: -0.4165, halfWidth: 0.0516, halfDepth: 0.0482, square: 2.4 },
+  { y: -0.428, halfWidth: 0.0324, halfDepth: 0.0302, square: 2.4 },
+  { y: -0.433, halfWidth: 0, halfDepth: 0 },
   ...FLO_HIP_DOME,
-]);
+].sort((a, b) => a.y - b.y)), [FLO_THIGH_PANEL_TOP + 0.002, FLO_THIGH_PANEL_TOP - 0.002,
+  FLO_THIGH_PANEL_BOTTOM + 0.002, FLO_THIGH_PANEL_BOTTOM - 0.002,
+  -B.thighLength * FLO_GUARD_TOP + 0.002, -B.thighLength * FLO_GUARD_TOP - 0.002]);
 
-/**
- * The seat: `WIM_SEAT` (`riderLook.ts:6054`) — Cool Rider's rings with the hem
- * 30 mm lower and the bottom two a size wider, so the taper still closes over
- * the thighs instead of pinching them. The other half of the hip fix: in the
- * technical corner the outside hip drops 150 mm and the counter-roll lifts that
- * side's hem 26 mm, and the dome has to reach the hem through both.
- */
+/** A rounded trouser seat meets the roomy upper legs. The old broad, flat
+ * lower cap produced a white pelvic plate below the jersey from every angle. */
 export const FLO_SEAT = loftProfile([
-  { y: -0.118, halfWidth: 0.76 * FLO_TORSO_HALF_WIDTH, halfDepth: 0.78 * FLO_TORSO_HALF_DEPTH, square: 2.6 },
-  { y: -0.088, halfWidth: 0.84 * FLO_TORSO_HALF_WIDTH, halfDepth: 0.85 * FLO_TORSO_HALF_DEPTH, square: 2.6 },
-  { y: -0.055, halfWidth: 0.92 * FLO_TORSO_HALF_WIDTH, halfDepth: 0.91 * FLO_TORSO_HALF_DEPTH, square: 2.7 },
-  { y: -0.020, halfWidth: 0.97 * FLO_TORSO_HALF_WIDTH, halfDepth: 0.95 * FLO_TORSO_HALF_DEPTH, square: 2.7 },
-  { y: 0.030, halfWidth: 0.93 * FLO_TORSO_HALF_WIDTH, halfDepth: 0.90 * FLO_TORSO_HALF_DEPTH, square: 2.6 },
+  { y: -0.172, halfWidth: 0, halfDepth: 0 },
+  { y: -0.153, halfWidth: 0.035, halfDepth: 0.028, square: 2.3 },
+  { y: -0.128, halfWidth: 0.070, halfDepth: 0.049, square: 2.6 },
+  { y: -0.092, halfWidth: 0.115, halfDepth: 0.071, square: 2.8 },
+  { y: -0.050, halfWidth: 0.145, halfDepth: 0.087, square: 2.8 },
+  { y: -0.015, halfWidth: 0.166, halfDepth: 0.100, square: 2.8 },
+  { y: 0.030, halfWidth: 0.158, halfDepth: 0.106, square: 2.6 },
 ]);
 
-/**
- * The shin: `WIM_SHIN`'s shape (`riderLook.ts:6065`) with the pairs moved to
- * his boundaries — the cup's lower edge, and the trainer's collar 100 mm
- * further down the shin than a laced boot's, with a second ring under it so the
- * collar is two rows and a hard edge rather than one painted ring interpolating
- * into its neighbours.
- */
+/** A calf behind the segmented brace, tapering to the low trainer. */
 export const FLO_SHIN = floLimbAtHeights(
-  B.shinLength,
-  [0.064, 0.058, 0.053],
-  [
-    0, FLO_CUP_BOTTOM + 0.002, FLO_CUP_BOTTOM - 0.002,
+  B.shinLength, [0.063, 0.059, 0.044],
+  [0, FLO_CUP_BOTTOM + 0.002, FLO_CUP_BOTTOM - 0.002,
     -0.050, -0.080, -0.110, -0.140, -0.170, -0.200, -0.224, -0.250, -0.280,
-    -B.shinLength * FLO_BOOT_TOP + 0.002,
-    -B.shinLength * FLO_BOOT_TOP - 0.002,
-    -B.shinLength * FLO_BOOT_TOP - 0.014,
-    -0.345, -0.380,
-  ],
-  { flatten: 0.92, square: 2.4 },
+    -B.shinLength * FLO_BOOT_TOP + 0.002, -B.shinLength * FLO_BOOT_TOP - 0.002,
+    -B.shinLength * FLO_BOOT_TOP - 0.014, -0.345, -0.380],
+  { flatten: 0.94, square: 2.4 },
 );
 
 /**
@@ -472,45 +362,32 @@ export const FLO_UPPER_ARM = floWithRingsAt(loftProfile([
   { y: 0.034, halfWidth: 0, halfDepth: 0 },
   { y: 0.028, halfWidth: 0.030, halfDepth: 0.029, square: 2.3 },
   { y: 0.014, halfWidth: 0.050, halfDepth: 0.048, square: 2.3 },
-  ...limbProfile(B.upperArmLength, [0.058, 0.050, 0.043], [], {
+  ...limbProfile(B.upperArmLength, [0.061, 0.055, 0.046], [], {
     flatten: 0.95,
     square: 2.3,
   }).slice().reverse(),
-]), [FLO_SHOULDER_CAP_BOTTOM + 0.002, FLO_SHOULDER_CAP_BOTTOM - 0.002, -0.105, -0.135, -0.165, -0.195, -0.225]);
+]), [FLO_SHOULDER_CAP_BOTTOM + 0.002, FLO_SHOULDER_CAP_BOTTOM - 0.002, -.030, -.044, -.058, -.069, -.080, -.096, -.108, -.122, -.134, -.146, -.158, -.170, -.182, -.194, -.206, -.218, -.232, -.248]);
 
 /** `WIM_FOREARM`, copied from `riderLook.ts:6098`. */
-export const FLO_FOREARM = floWithRingsAt(limbProfile(B.forearmLength, [0.047, 0.041, 0.033], [], {
+export const FLO_FOREARM = floWithRingsAt(limbProfile(B.forearmLength, [0.050, 0.046, 0.035], [], {
   flatten: 0.94,
   square: 2.3,
-}), [-0.035, -0.060, -0.085, -0.115, -0.145, -0.180, -0.215]);
+}), [-.014, -.028, -.040, -.052, -.064, -.076, -.088, -.100, -.112, -.124, -.140, -.156, -.172, -.194, -.218, -.220, -.237, -.239]);
 
-/**
- * The lid: `WIM_HELMET`'s twelve rings (`riderLook.ts:6131`) — the roster's
- * road shell, whose jaw lead lives in the rings' own `z` rather than in a chin
- * bar volume, and whose crown rounds off over two extra rings. It is the right
- * shape for him unchanged: PHOTO 1 shows a smooth rounded crown, no peak, no
- * chin bulge and cheeks that stay broad to the base — the same lid the owner
- * accepted on his third look pass, and the reason nothing here is re-proportioned
- * without a critic asking for it.
- *
- * What is his and not Wheel in Motion's is what lies on it: no print, one
- * **much larger** visor (PHOTO 1's wraps ear to ear and hides the face
- * completely), a base rim, and one small pivot boss per side at the visor's
- * hinge.
- */
+/** Smooth domed road helmet: broad cheeks and a short chin under a deep
+ * wrap shield. The lower shell remains closed; no face is exposed. */
 export const FLO_HELMET = loftProfile([
-  { y: 0.058, halfWidth: 0.088, halfDepth: 0.072, square: 2.3, z: 0.012 },
-  { y: 0.088, halfWidth: 0.094, halfDepth: 0.086, square: 2.4, z: 0.018 },
-  { y: 0.112, halfWidth: 0.104, halfDepth: 0.118, square: 2.5, z: 0.022 },
-  { y: 0.132, halfWidth: 0.112, halfDepth: 0.128, square: 2.6, z: 0.020 },
-  { y: 0.158, halfWidth: 0.119, halfDepth: 0.130, square: 2.6, z: 0.010 },
-  { y: 0.215, halfWidth: 0.124, halfDepth: 0.133, square: 2.5, z: 0.004 },
-  { y: 0.268, halfWidth: 0.113, halfDepth: 0.119, square: 2.3 },
-  { y: 0.290, halfWidth: 0.101, halfDepth: 0.106, square: 2.25 },
-  { y: 0.308, halfWidth: 0.084, halfDepth: 0.088, square: 2.2 },
-  { y: 0.324, halfWidth: 0.064, halfDepth: 0.067, square: 2.2 },
-  { y: 0.336, halfWidth: 0.040, halfDepth: 0.042, square: 2.2 },
-  { y: 0.348, halfWidth: 0, halfDepth: 0 },
+  { y: 0.058, halfWidth: 0.091, halfDepth: 0.077, square: 2.25, z: 0.012 },
+  { y: 0.082, halfWidth: 0.102, halfDepth: 0.108, square: 2.35, z: 0.019 },
+  { y: 0.112, halfWidth: 0.115, halfDepth: 0.126, square: 2.45, z: 0.019 },
+  { y: 0.150, halfWidth: 0.124, halfDepth: 0.135, square: 2.45, z: 0.009 },
+  { y: 0.196, halfWidth: 0.128, halfDepth: 0.138, square: 2.35, z: 0.003 },
+  { y: 0.236, halfWidth: 0.125, halfDepth: 0.132, square: 2.25, z: -0.002 },
+  { y: 0.274, halfWidth: 0.114, halfDepth: 0.120, square: 2.15, z: -0.003 },
+  { y: 0.304, halfWidth: 0.096, halfDepth: 0.101, square: 2.1, z: -0.003 },
+  { y: 0.326, halfWidth: 0.074, halfDepth: 0.078, square: 2.05, z: -0.003 },
+  { y: 0.342, halfWidth: 0.045, halfDepth: 0.048, square: 2.0, z: -0.003 },
+  { y: 0.354, halfWidth: 0, halfDepth: 0, z: -0.003 },
 ]);
 
 /** A short cuff, a full palm and a rounded mitten end; thumb merged below. */
@@ -563,48 +440,22 @@ const FLO_GUARD: RiderMaterialSpec = Object.freeze({
   metalness: 0,
 });
 
-/**
- * The lid. **The roughness is the metal, not the albedo** — the shell is only
- * 0.53 × the suit's luminance, and what says "painted metal" in both
- * photographs is a broad soft specular sweeping the crown. 0.34 with a quarter
- * of metalness puts that sweep on the crown at the sun's mirror angle without
- * ACES clipping it to white, and keeps enough diffuse that the shell still
- * reads as a shell from behind instead of as a void.
- *
- * **Both numbers survived r1 untouched and deliberately so**: the round's
- * blocker was the albedo's hue, and the verifier's own reading of the lit crown
- * (0.578 × the lit shoulder, inside §34.4's 0.47–0.60 window against PHOTO 2's
- * 0.49 ×) says the sweep is right. Changing the temperature and the specular
- * together would have left neither measured.
- */
+/** Warm pewter/bronze coating with a soft sun lobe; the local reflected sky
+ * supplies broad form in ordinary tiers and yields to Ultra's real PMREM. */
 const FLO_LID: RiderMaterialSpec = Object.freeze({
-  colour: C.floWithZoBronze,
-  roughness: 0.34,
-  metalness: 0.25,
+  colour: 0xa99b88,
+  roughness: 0.30,
+  metalness: 0.48,
+  configure: configureFloPewter,
 });
 
-/**
- * The visor: dark smoke, mirrored, with the small emissive Adonisb2's carries
- * so a black aperture is not a hole. PHOTO 1's visor samples green at the top —
- * that is the treeline reflected in it, not the lens, so the colour authored
- * here is neutral-cool.
- *
- * **r1, finding 1e: it rendered as a hole anyway.** A 0.08 lobe on a 0.35-metal
- * panel leaves almost no diffuse, so the captured visor read rgb 5,8,14 — dead
- * flat over 67 rows, **0.04 × its own lit shell** and 12 × darker than its own
- * albedo — where PHOTO 1's shield measures 0.52 × the shell beside it. 0.32
- * roughness spreads the lobe into a sheen and 0.55 of emissive intensity puts a
- * floor under the aperture; the target the capture is read against is 0.35–0.45
- * of the lit shell. Nothing was added along the top rim: the reference has no
- * near-white highlight there (the brightest pixel inside the shell is L 184, at
- * the shell's own edge).
- */
+/** Neutral smoked silver, fully opaque. Reflections move with the view and
+ * curved shield rather than being a painted blue stripe or emissive hole. */
 const FLO_LENS: RiderMaterialSpec = Object.freeze({
-  colour: C.floWithZoLens,
-  roughness: 0.32,
-  metalness: 0.35,
-  emissive: 0x1a2028,
-  emissiveIntensity: 0.55,
+  colour: 0x7b7e78,
+  roughness: 0.19,
+  metalness: 0.78,
+  configure: configureFloSmoke,
 });
 
 /** Gloves, the collar, the elbow patches and the sole: the value floor, not black. */
@@ -635,30 +486,9 @@ export const FLO_SEAT_SHADE = 0.86;
  */
 export const FLO_GUARD_SHADE = 1.12;
 
-/**
- * Every dark part of the brace — the strap bands, the hinge strut, the pivot
- * bosses and the limb the guard closes over — at one scalar on the guard's
- * white, so the brace is one black and not four.
- *
- * **0.30 and not r1's 0.10 — r2's finding 3a, and it is the leg's blocker.**
- * The scalar was set on the argument that a real black in sun is a mid-dark
- * grey; at 0.10 it is not a mid-dark grey, it is 0.089 of the shell above it,
- * and the capture showed the consequence in the one place a knee guard is
- * read: a **73 px band at 0.08 × the thigh shell and 0.12 × the kneecap**
- * across the hinge, which a critic reasonably read as a near-black kneecap.
- * PHOTO 2's near leg has nothing below **0.49** of its brightest shell — strap
- * 82 / shell 161 / strap 129 / shell 169 / strap 123 / shell 158 / ankle 121 —
- * and PHOTO 1's near cup is 0.73 × the thigh above it. 0.30 puts strap ÷ shell
- * at **0.27 in linear**, inside PHOTO 2's own 0.24–0.59, and lands the scalar
- * at sRGB 134. Everything the scalar serves moves together, which is the point
- * of there being one of it: the straps, the strut, the bosses and the limb
- * inside the hinge.
- *
- * **The cap left this list in r2 and `FLO_CUP_TINT` is still derived here**
- * (finding 3a's first half): what the limb shows through an open hinge has to
- * be the cup's own value by construction rather than by two numbers kept in
- * step.
- */
+/** Charcoal upper brace, knee cup, webbing and mechanical hardware share one
+ * shade. The limb underneath the hinge targets this exact value so a bent knee
+ * cannot reveal a differently coloured strip between its two rigid halves. */
 export const FLO_CUP_SHADE = 0.30;
 
 /**
@@ -710,13 +540,7 @@ const FLO_COLLAR_TINT = tintOver(C.floWithZoSilver, C.floWithZoPanel, FLO_COLLAR
  * plates is a light shell, which is what the photograph shows.
  */
 const FLO_SLEEVE_TINT: Tint = [0.70, 0.70, 0.70];
-/**
- * Silver → the vest plate's binding (r2, 2d), and silver → **up** for the back
- * strip (r2, 2e). The binding is the only tint on him between the panel and the
- * ground; the strip is the only one above it outside the guards' own material,
- * and both are values rather than devices.
- */
-const FLO_BINDING_TINT: Tint = [0.75, 0.75, 0.75];
+/** Pale fabric detail over the rider's right shoulder blade. */
 const FLO_BACK_STRIP_TINT: Tint = [1.13, 1.13, 1.13];
 /** Silver → the band's two hues. Cyan is his right, gold his left (PHOTO 2). */
 const FLO_CYAN_TINT = tintOver(C.floWithZoSilver, C.floWithZoCyan);
@@ -770,7 +594,7 @@ function floBandTopAt(x: number): number {
  * give silver a value range; the material supplies view-dependent highlights.
  * Heights are local metres. Keep seam boundaries and rigid armour untouched.
  */
-function floFabric(geometry: THREE.BufferGeometry, part: 'torso' | 'arm' | 'thigh'): void {
+function floFabric(geometry: THREE.BufferGeometry, part: 'arm' | 'thigh'): void {
   const position = geometry.getAttribute('position');
   const colour = geometry.getAttribute('color');
   const ridge = (distance: number, width: number): number => Math.exp(-((distance / width) ** 2));
@@ -785,23 +609,16 @@ function floFabric(geometry: THREE.BufferGeometry, part: 'torso' | 'arm' | 'thig
       Math.abs(colour.getComponent(i, axis) - value) < 1e-5);
     if (!silver && !panel) continue;
     let valley = 0;
-    if (part === 'torso') {
-      if (y < 0.065 || y > 0.49) continue;
-      const across = Math.abs(x) / FLO_TORSO_HALF_WIDTH;
-      valley = 0.32 * ridge(y - (0.13 + 0.30 * x), 0.022)
-        + 0.25 * ridge(y - (0.23 - 0.23 * x), 0.026)
-        + 0.20 * ridge(y - (0.37 + 0.18 * x), 0.020);
-      // Soft underarm/flank shading, no invented back harness or stripe.
-      valley += 0.16 * across ** 3;
-    } else if (part === 'arm') {
+    if (part === 'arm') {
       if (y > -0.025 || y < -0.225) continue;
       valley = 0.33 * ridge(y + 0.070 + x * 0.6 + z * 0.3, 0.017)
         + 0.27 * ridge(y + 0.135 - x * 0.7, 0.019)
         + 0.20 * ridge(y + 0.195 + z * 0.7, 0.016);
     } else {
       if (y > -0.080 || y < -0.260) continue;
-      valley = 0.30 * ridge(y + 0.130 + x * 0.45, 0.019)
-        + 0.23 * ridge(y + 0.215 - z * 0.5, 0.021);
+      valley = 0.24 * ridge(y + 0.130 + x * 0.45, 0.018)
+        + 0.28 * ridge(y + 0.218 - z * 0.5, 0.014)
+        + 0.20 * ridge(y + 0.262 + x * 0.25, 0.011);
     }
     valley = Math.min(0.48, valley) * (panel ? 0.55 : 1);
     // Slightly blue-grey shadows against the warm pearl ground; no baked
@@ -820,8 +637,44 @@ function floFabric(geometry: THREE.BufferGeometry, part: 'torso' | 'arm' | 'thig
   geometry.computeVertexNormals();
 }
 
-function paintFloForearm(geometry: THREE.BufferGeometry): void {
+/** Compression rings bunch into the elbow and just above the glove cuff. */
+function paintSleeveTailoring(geometry: THREE.BufferGeometry, side: number, forearm: boolean): void {
+  const position = geometry.getAttribute('position');
+  const colour = geometry.getAttribute('color');
+  const centre = forearm ? -.070 : -.179;
+  for (let i = 0; i < position.count; i++) {
+    const x = position.getX(i), y = position.getY(i), z = position.getZ(i);
+    const wave = y - centre + side * x * .72 - z * .46;
+    const compression = Math.exp(-((wave / .085) ** 2));
+    // Compression gathers mostly on the inner elbow. Opposite sleeve
+    // surfaces have different fold lengths and inclinations.
+    const gather = .48 + .52 * THREE.MathUtils.smoothstep(z - side*x, -.05,.05);
+    const wrinkle = Math.cos(wave * 144 + .62 * Math.sin(wave * 43 + z * 20));
+    const fold = .0044 * compression * gather * wrinkle;
+    const radius = Math.hypot(x,z);
+    if (radius > .012) {
+      position.setX(i, x + fold * x / radius);
+      position.setZ(i, z + fold * z / radius);
+    }
+    const outside = THREE.MathUtils.smoothstep(side*x - .40*z, -.015,.022);
+    // The taupe shoulder protector has a pale piped lower edge. The outer
+    // elbow panel and the short glove cuff show through the gathered sleeve.
+    let dye = 1;
+    if (!forearm && y > -.080 && y < .028) {
+      const pad = THREE.MathUtils.smoothstep(y, -.079,-.067);
+      dye -= .44 * outside * pad;
+    }
+    if (forearm && y > -.120) dye -= .53 * outside * (1 - THREE.MathUtils.smoothstep(-y,.091,.120));
+    if (forearm && y < -.219) dye *= y < -.238 ? .36 : .73;
+    const shade = dye * (1 - .13 * compression * gather * (.5 - .5 * wrinkle));
+    colour.setXYZ(i, colour.getX(i)*shade,colour.getY(i)*shade,colour.getZ(i)*(shade+.017*compression));
+  }
+  geometry.computeVertexNormals();
+}
+
+function paintFloForearm(geometry: THREE.BufferGeometry, side: number): void {
   floFabric(geometry, 'arm');
+  paintSleeveTailoring(geometry, side, true);
 }
 
 function paintFloTorso(geometry: THREE.BufferGeometry): void {
@@ -865,17 +718,6 @@ function paintFloTorso(geometry: THREE.BufferGeometry): void {
       // so "which half is cyan" stays a question with one answer.
       tint = x < 0 ? FLO_CYAN_TINT : FLO_GOLD_TINT;
     } else if (
-      z > FLO_VEST_SEAM
-      && y >= FLO_VEST_BOTTOM - FLO_VEST_BINDING_ROW
-      && y <= FLO_VEST_TOP + FLO_VEST_BINDING_ROW
-    ) {
-      // The plate, and its binding: both rings of each seam pair carry the
-      // lighter edge value, so the panel ends in a 4 mm edging rather than
-      // stepping straight to suit-white (r2, 2d).
-      const edge = Math.abs(y - FLO_VEST_TOP) <= FLO_VEST_BINDING_ROW
-        || Math.abs(y - FLO_VEST_BOTTOM) <= FLO_VEST_BINDING_ROW;
-      tint = edge ? FLO_BINDING_TINT : FLO_PANEL_TINT;
-    } else if (
       z < 0
       && x <= FLO_BACK_STRIP_INBOARD
       && x >= FLO_BACK_STRIP_OUTBOARD
@@ -885,10 +727,27 @@ function paintFloTorso(geometry: THREE.BufferGeometry): void {
       // The light-on-light strip PHOTO 2 carries on his right shoulder blade
       // (r2, 2e) — a value, not a device.
       tint = FLO_BACK_STRIP_TINT;
+    } else if (y > .048 && y < FLO_COLLAR_BASE) {
+      // The graphite front is sewn into the jacket from hem to collar.
+      // Pale inserts rise continuously at the sides and around the shoulders.
+      const across = Math.abs(x);
+      const edge = jacketPanelWidth(y);
+      const front = THREE.MathUtils.smoothstep(z, -.018, .060);
+      const contrast = (1 - THREE.MathUtils.smoothstep(across, edge - .006, edge + .006)) * front;
+      const relief = jacketFold(x, y, z);
+      const shadow = Math.max(0, -relief) * 27;
+      const highlight = Math.max(0, relief) * 11;
+      const value = .965 - .42 * contrast - shadow + highlight;
+      tint = [value, value + .008, value + .015 + shadow * .32];
+      const radius = Math.hypot(x, z);
+      if (radius > .01) {
+        position.setX(i, x + relief * x / radius);
+        position.setZ(i, z + relief * z / radius);
+      }
     }
     colour.setXYZ(i, tint[0], tint[1], tint[2]);
   }
-  floFabric(geometry, 'torso');
+  geometry.computeVertexNormals();
 }
 
 /** The mid-grey shoulder cap: the dome and the top of the sleeve, outboard face. */
@@ -904,6 +763,7 @@ function paintFloUpperArm(geometry: THREE.BufferGeometry, side: number): void {
     colour.setXYZ(i, FLO_PANEL_TINT[0], FLO_PANEL_TINT[1], FLO_PANEL_TINT[2]);
   }
   floFabric(geometry, 'arm');
+  paintSleeveTailoring(geometry, side, false);
 }
 
 /**
@@ -923,20 +783,20 @@ function paintFloThigh(geometry: THREE.BufferGeometry, side: number): void {
   const position = geometry.getAttribute('position');
   const colour = geometry.getAttribute('color');
   for (let i = 0; i < position.count; i += 1) {
-    const y = position.getY(i);
-    let tint = FLO_SILVER;
-    if (y <= guardTop + 1e-6) {
-      tint = FLO_CUP_TINT;
-    } else if (
-      y <= FLO_THIGH_PANEL_TOP + 1e-6
-      && y >= FLO_THIGH_PANEL_BOTTOM - 1e-6
-      && side * position.getX(i) > 0
-    ) {
-      tint = FLO_PANEL_TINT;
-    }
+    const tint = position.getY(i) <= guardTop + 1e-6 ? FLO_CUP_TINT : FLO_SILVER;
     colour.setXYZ(i, tint[0], tint[1], tint[2]);
   }
   floFabric(geometry, 'thigh');
+  // The photo's technical side seam is a narrow sewn line, not a large grey
+  // rectangle that turns the plain central seat into a white underwear cap.
+  for (let i = 0; i < position.count; i += 1) {
+    const y = position.getY(i), x = position.getX(i), z = position.getZ(i);
+    if (y > -0.080 || y < -0.270 || side * x < 0.035) continue;
+    const line = 0.025 + 0.018 * Math.sin((-y - 0.08) / 0.19 * Math.PI);
+    const seam = Math.exp(-(((z - line) / 0.008) ** 2));
+    const shade = 1 - 0.18 * seam;
+    colour.setXYZ(i, colour.getX(i) * shade, colour.getY(i) * shade, colour.getZ(i) * shade);
+  }
 }
 
 /**
@@ -1010,214 +870,52 @@ const group = (role: RiderMaterialRole, patches: readonly RiderPatch[]): RiderPa
   patches: Object.freeze(patches),
 });
 
-/**
- * The guard's arc, thigh and shin alike — Wheel in Motion's spans, kept rather
- * than widened. Its rear edge is the corner the clearance contract measures in
- * the deepest attack-carve-crouch fold, where the thigh lies flat and its back
- * faces up; the last rider's contract moved 1 mm when that span widened.
- */
+/** The shells remain front/outboard of each leg; the straps continue around
+ * the calf so they read as webbing holding armour rather than floating tabs. */
 const FLO_SHELL_U0 = -1.95;
 const FLO_SHELL_U1 = 0.90;
 const FLO_PLATE_U0 = -2.00;
 const FLO_PLATE_U1 = 0.70;
 
-/**
- * The upper half of the brace, on the **thigh** bone — a guard spans a joint
- * and a mesh cannot, so every millimetre above the knee has to be parented to
- * the bone it is strapped to or it swings off the thigh as the leg bends
- * (`RiderLook.panels.thighPad`).
- *
- * Four patches, one mesh, no draw call of its own beyond it: the white shell,
- * the kneecap it closes over, and the hinge strut with its pivot boss down the
- * outside — **dark on light**, which is the sandwich lesson's second rule
- * (`docs/LESSONS_LEARNED.md:6397`). There are no full-loop straps anywhere on
- * this brace, which is that lesson's first rule.
- *
- * **The cap is light since r1 (finding 3a).** It was authored at the brace's
- * black on the argument that a cup is a soft shell, and the captures made it
- * the darkest thing on the whole rider — 0.30 × the trouser — where PHOTO 1's
- * kneecap shell is the *lightest* piece on the leg at 0.96 × the trouser above
- * it, with the dark living in the strap under it at 0.54 ×. Figure and ground
- * were the wrong way round at the one place a knee guard is read from. What
- * stays dark is the gap the photograph actually has: the limb under the guard,
- * which is painted to the cup's own value and shows between the cap and the
- * plates.
- */
+/** The charcoal upper brace and knee cup follow the thigh bone. */
 const FLO_THIGH_PAD: RiderPanelGroup = group('accent', [
-  patch({
-    anchor: 'front' as PatchAnchor,
-    u0: FLO_SHELL_U0,
-    u1: FLO_SHELL_U1,
-    mirrored: true,
-    from: -0.400,
-    to: -0.300,
-    uSegments: 8,
-    vSegments: 5,
-    lift: 0.015,
-    taper: 0.26,
-    shade: FLO_GUARD_SHADE,
-  }),
-  patch({
-    anchor: 'front' as PatchAnchor,
-    u0: FLO_SHELL_U0,
-    u1: FLO_SHELL_U1,
-    mirrored: true,
-    // **−0.428, not −0.400 — r2's finding 3a, second lever.** The thigh loft
-    // closes hemispherically 34 mm below −0.400, and the cap stopped at the
-    // last full ring, so the actual kneecap was bare limb painted to the cup's
-    // value: 34 mm of the 73 mm dark band the critic measured was this. The cap
-    // now covers the close, which is also what shuts the gap the machine's tail
-    // light shone through (3f — a blown red at rgb 255,57,59 in `r2/carve`).
-    from: -0.428,
-    to: FLO_CUP_TOP,
-    uSegments: 7,
-    vSegments: 2,
-    lift: 0.032,
-    taper: 0.30,
-    // The kneecap, r1's finding 3a: the lightest piece on the leg, not the
-    // darkest. Its shin half (`FLO_KNEE_PAD[0]`) moved with it.
-    shade: FLO_GUARD_SHADE,
-  }),
-  patch({
-    anchor: 'outboard' as PatchAnchor,
-    // The hinge strut, narrowed from ±0.16 rad so it reads as the arm under
-    // the plate rather than as the plate's own ground (r2, 3d).
-    u0: -0.12,
-    u1: 0.12,
-    from: -0.400,
-    to: -0.296,
-    uSegments: 2,
-    vSegments: 4,
-    lift: 0.026,
-    taper: 0.10,
-    shade: FLO_CUP_SHADE,
-  }),
-  patch({
-    anchor: 'outboard' as PatchAnchor,
-    // **The outboard knee plate, and it is light — r2's finding 3d.** The
-    // critic's "no outboard side-plate or pivot hardware" was refuted on
-    // absence (four patches were already there) and confirmed on value: all
-    // four sat at the cup's dark, where PHOTO 2's outboard plate is **L 165
-    // against a shell of 158–169 — the lightest element on the whole leg**,
-    // with two dark pivot bolts on its face. So this one carries the guard
-    // white and a squarer footprint (±0.34 rad, 66 mm, `taper` 0.35), and the
-    // strut above stays dark under it: dark on light, the sandwich lesson's
-    // second rule, the right way round at last.
-    u0: -0.34,
-    u1: 0.34,
-    from: -0.386,
-    to: -0.320,
-    uSegments: 5,
-    vSegments: 3,
-    lift: 0.031,
-    taper: 0.35,
-    shade: FLO_GUARD_SHADE,
-  }),
+  patch({ anchor: 'front', u0: FLO_SHELL_U0, u1: FLO_SHELL_U1, mirrored: true,
+    from: -0.400, to: -0.300, uSegments: 12, vSegments: 6,
+    lift: 0.015, taper: 0.26, shade: FLO_CUP_SHADE }),
+  patch({ anchor: 'front', u0: FLO_SHELL_U0, u1: FLO_SHELL_U1, mirrored: true,
+    from: -0.428, to: FLO_CUP_TOP, uSegments: 12, vSegments: 4,
+    lift: 0.028, taper: 0.30, shade: FLO_CUP_SHADE }),
+  patch({ anchor: 'front', u0: 0, u1: Math.PI * 2,
+    from: -0.330, to: -0.300, uSegments: 24, vSegments: 2,
+    lift: 0.020, shade: FLO_CUP_SHADE }),
+  patch({ anchor: 'outboard', u0: -0.12, u1: 0.12,
+    from: -0.400, to: -0.296, uSegments: 3, vSegments: 6,
+    lift: 0.026, taper: 0.10, shade: FLO_CUP_SHADE }),
+  // Small pale side hardware remains distinct from the dark knee cup.
+  patch({ anchor: 'outboard', u0: -0.30, u1: 0.30,
+    from: -0.386, to: -0.328, uSegments: 6, vSegments: 4,
+    lift: 0.031, taper: 0.50, shade: FLO_GUARD_SHADE }),
 ]);
 
-/**
- * The lower half, on the **shin** bone: the cup's lip across the hinge, then
- * PHOTO 2's stack — a long upper plate, a dark band, a shorter lower plate, and
- * a band at the ankle — plus two pivot bosses standing proud of the upper
- * plate. The bands span the front and the outboard flank and stop there; a
- * closed loop is what turns two straps into a sandwich with a slice of leg in
- * it, and real webbing runs lengthwise or behind the leg.
- *
- * The stack is what makes the guard read as **1.10 × the shin**: 106 mm of
- * thigh above the knee, 312 mm of shin below it, ending 68 mm above the ankle.
- * The brief's §9 is explicit that this is the one thing not to shrink.
- */
+/** Three moulded shin segments, a dark hinge lip and genuine wrap straps.
+ * Above-knee and below-knee parts remain on their own mechanical bones. */
 const FLO_KNEE_PAD: RiderPanelGroup = group('accent', [
-  patch({
-    anchor: 'front' as PatchAnchor,
-    u0: FLO_SHELL_U0,
-    u1: FLO_SHELL_U1,
-    mirrored: true,
-    from: FLO_CUP_BOTTOM,
-    to: 0.000,
-    uSegments: 8,
-    vSegments: 1,
-    lift: 0.038,
-    taper: 0.28,
-    // The cap's shin half — light with its thigh half since r1 (finding 3a).
-    shade: FLO_GUARD_SHADE,
-  }),
-  patch({
-    anchor: 'front' as PatchAnchor,
-    u0: FLO_PLATE_U0,
-    u1: FLO_PLATE_U1,
-    mirrored: true,
-    from: -0.224,
-    to: FLO_CUP_BOTTOM,
-    uSegments: 7,
-    vSegments: 7,
-    lift: 0.018,
-    taper: 0.40,
-    shade: FLO_GUARD_SHADE,
-  }),
-  patch({
-    anchor: 'front' as PatchAnchor,
-    u0: FLO_PLATE_U0,
-    u1: FLO_PLATE_U1,
-    mirrored: true,
-    // 18 mm and not 8 (r1, finding 3b), then **40 mm and over the plate, not
-    // between the plates** (r2, finding 3c). PHOTO 2's three straps are each
-    // ≈ 10 px of a 97 px guard — **10.3 %** — where 18 mm of a 418 mm brace is
-    // 4.3 %, about 2.4 × too thin. 40 mm is 9.6 %. It cannot grow upward (the
-    // upper plate starts at −0.224) so it grows down across the lower plate,
-    // and the lift goes 0.010 → 0.024 to clear both plates: webbing lies over
-    // a shell, it does not sink under one, and at 0.010 the extra 22 mm would
-    // simply have been buried.
-    from: -0.262,
-    to: -0.222,
-    uSegments: 7,
-    vSegments: 2,
-    lift: 0.024,
-    taper: 0.20,
-    shade: FLO_CUP_SHADE,
-  }),
-  patch({
-    anchor: 'front' as PatchAnchor,
-    u0: -1.90,
-    u1: 0.66,
-    mirrored: true,
-    from: -0.300,
-    to: -0.240,
-    uSegments: 7,
-    vSegments: 3,
-    lift: 0.016,
-    taper: 0.34,
-    shade: FLO_GUARD_SHADE,
-  }),
-  patch({
-    anchor: 'front' as PatchAnchor,
-    u0: -1.90,
-    u1: 0.66,
-    mirrored: true,
-    // The ankle band, **40 mm on r2's finding 3c** and, like the upper strap,
-    // lying over its plate rather than beside it. It grows **up** and not down:
-    // the verifier's −0.340 is 28 mm below the trainer's collar at −0.3116, and
-    // a guard strap does not run onto a shoe. The guard's own bottom edge stays
-    // at −0.318, 68 mm above the ankle, which is where PHOTO 2 ends it.
-    from: -0.318,
-    to: -0.278,
-    uSegments: 7,
-    vSegments: 2,
-    lift: 0.024,
-    taper: 0.20,
-    shade: FLO_CUP_SHADE,
-  }),
+  patch({ anchor: 'front', u0: FLO_SHELL_U0, u1: FLO_SHELL_U1, mirrored: true,
+    from: FLO_CUP_BOTTOM, to: 0, uSegments: 12, vSegments: 2,
+    lift: 0.032, taper: 0.28, shade: FLO_CUP_SHADE }),
+  ...[[-0.152, FLO_CUP_BOTTOM], [-0.246, -0.164], [-0.310, -0.260]].map(([from, to]) => patch({
+    anchor: 'front', u0: FLO_PLATE_U0, u1: FLO_PLATE_U1, mirrored: true,
+    from: from!, to: to!, uSegments: 12, vSegments: 6,
+    lift: 0.018, taper: 0.20, shade: FLO_GUARD_SHADE,
+  })),
+  ...[[-0.176, -0.148], [-0.266, -0.236], [-0.318, -0.290]].map(([from, to]) => patch({
+    anchor: 'front', u0: 0, u1: Math.PI * 2,
+    from: from!, to: to!, uSegments: 24, vSegments: 2,
+    lift: 0.025, shade: FLO_CUP_SHADE,
+  })),
   ...[-0.104, -0.148].map((from) => patch({
-    anchor: 'outboard' as PatchAnchor,
-    u0: -0.24,
-    u1: 0.24,
-    from,
-    to: from + 0.028,
-    uSegments: 4,
-    vSegments: 2,
-    lift: 0.027,
-    taper: 0.78,
-    shade: FLO_CUP_SHADE,
+    anchor: 'outboard', u0: -0.19, u1: 0.19, from, to: from + 0.023,
+    uSegments: 5, vSegments: 2, lift: 0.028, taper: 0.70, shade: FLO_CUP_SHADE,
   })),
 ]);
 
@@ -1252,175 +950,34 @@ const FLO_ELBOW_PAD: RiderPanelGroup = group('body', [
   }),
 ]);
 
-/**
- * The lid's own features, merged into the head's buffer: a base rim so the
- * shell ends somewhere instead of dissolving into the collar, and **one pivot
- * pod per side** at the visor's hinge. Neither is a volume; both are patches,
- * because a panel on a helmet is the defect the owner named twice on the last
- * rider (*"those yellow panels protruding"*).
- *
- * **Both were re-measured in r1.**
- *
- *   - The rim was authored light (shade 0.95, 4 mm proud) and its wall threw a
- *     hard specular line right across the shell — 2.7 × the value either side
- *     of it — reading as a light collar ring. PHOTO 2's shell base is a **dark
- *     scalloped roll** above the shoulders and PHOTO 1 has a fabric chin strap
- *     and no ring at all, so the rim is now dark (0.45) and half as proud. It
- *     is a value change on a shape the lid already had: the scallops are the
- *     real lid's trade dress and stay unbuilt (finding 7b).
- *   - The pods were 19 mm wide, *darker* than the shell and set 12.6° behind
- *     the visor's edge on bare shell. PHOTO 1's pod is ~22 % of the shell's
- *     width (≈ 55 mm), **lighter** than the shell, and sits on the eyeport's
- *     upper-rear corner. So: 0.22 rad of half-span, shade 1.06, and the centre
- *     moved forward to ±1.24 rad so each pod straddles the visor's corner the
- *     way a hinge does. §34.4's standing rule — drop the bosses the moment a
- *     critic calls them panels — was not tripped; this critic asked for a
- *     bigger, lighter one.
- *
- * **And r2 tripped that rule for the first time, in two seats at once, which
- * is why the pod is now built rather than dropped** (r2's findings 1c and 7d).
- * At `lift` 0.004 with `taper` 0.60 the patch was a flattened card: its bright
- * facet measured **L 152 against a shaded shell of 46 — 3.3 ×, equal to the
- * lit crown in the same frame** — and at some rows it ran onto the silhouette
- * edge with nothing outboard of it. The helmet critic called it *"a flat slab
- * … a render artifact rather than a fitting"* and the **brand** critic called
- * the same pixels a *"pale free-floating hairline"* that could read as a small
- * decal at chase distance. Both readings are of a mark with no thickness, and
- * the verifier left rebuild-or-delete to the builder. It is rebuilt as a
- * hinge, because a real pivot is what stops it reading as a mark: `lift`
- * 0.004 → **0.008** and `taper` 0.60 → **0.25** give the pod a squarer
- * footprint and a wall the light can find an edge on, and a **second,
- * concentric patch** — 0.10 rad, 14 mm, `lift` 0.013, `shade` 0.80 — puts the
- * screw's dark disc in the middle of it, which is what PHOTO 1 shows at
- * x 308–328 and what a free-floating pale strip cannot be mistaken for. The
- * whole assembly still stands 13 mm off a shell that allows 25.
- *
- * The pods are authored as front-anchored patches at ∓π/2 rather than
- * `outboard` ones, because `render/rider.ts:1092` builds every head patch at
- * `side = 1`: an outboard anchor there resolves to his left ear only.
- */
-const FLO_BOSS_CENTRE = Math.PI / 2 - 0.33;
-const FLO_BOSS_HALF_SPAN = 0.22;
-/** The pivot screw's disc, concentric inside the pod and darker than it. */
-const FLO_BOSS_DISC_HALF_SPAN = 0.10;
-
+/** Narrow dark base roll and compact mechanical pivots. */
+const FLO_BOSS_CENTRE = 1.30;
 const FLO_HEAD_PANELS: readonly RiderPatch[] = Object.freeze([
-  patch({
-    anchor: 'front' as PatchAnchor,
-    u0: 0,
-    u1: Math.PI * 2,
-    // **0.068 and not 0.076** — r2's finding 1a. The rim ate 6.2 % of the
-    // shell's height where the whole band under the visor was 12.1 %, leaving
-    // 5.9 % of shell-coloured jaw: 6 px in `r2/rest/front.png`, at 0.69 × the
-    // shell's own front value, sandwiched between the visor's L 12 and the
-    // rim's L 20. Two rounds of helmet critics read that as "no chin bar: the
-    // visor runs to the neck ring". The rim keeps its job — the shell has to
-    // end somewhere — at 10 mm instead of 18.
-    from: 0.058,
-    to: 0.068,
-    uSegments: 18,
-    vSegments: 1,
-    lift: 0.002,
-    shade: 0.45,
-  }),
+  patch({ anchor: 'front', u0: 0, u1: Math.PI * 2, from: 0.058, to: 0.066,
+    uSegments: 32, vSegments: 1, lift: 0.002, shade: 0.42 }),
   ...[-1, 1].map((side) => patch({
-    anchor: 'front' as PatchAnchor,
-    u0: side * FLO_BOSS_CENTRE - FLO_BOSS_HALF_SPAN,
-    u1: side * FLO_BOSS_CENTRE + FLO_BOSS_HALF_SPAN,
-    from: 0.170,
-    to: 0.200,
-    uSegments: 5,
-    vSegments: 2,
-    // r2, 1c and 7d: a pod with a wall, not a card. See the block above.
-    lift: 0.008,
-    taper: 0.25,
-    shade: 1.06,
+    anchor: 'front', u0: side * FLO_BOSS_CENTRE - 0.13,
+    u1: side * FLO_BOSS_CENTRE + 0.13, from: 0.188, to: 0.213,
+    uSegments: 6, vSegments: 3, lift: 0.008, taper: 0.65, shade: 1.02,
   })),
   ...[-1, 1].map((side) => patch({
-    anchor: 'front' as PatchAnchor,
-    u0: side * FLO_BOSS_CENTRE - FLO_BOSS_DISC_HALF_SPAN,
-    u1: side * FLO_BOSS_CENTRE + FLO_BOSS_DISC_HALF_SPAN,
-    from: 0.178,
-    to: 0.192,
-    uSegments: 3,
-    vSegments: 1,
-    lift: 0.013,
-    taper: 0.55,
-    shade: 0.80,
+    anchor: 'front', u0: side * FLO_BOSS_CENTRE - 0.055,
+    u1: side * FLO_BOSS_CENTRE + 0.055, from: 0.196, to: 0.206,
+    uSegments: 4, vSegments: 2, lift: 0.012, taper: 0.70, shade: 0.52,
   })),
 ]);
 
-/**
- * The visor: one patch, sunk into the shell and lifted only a little, so it
- * reads as glass in a recess rather than as a bar stuck on.
- *
- * **Much larger than the roster's other full-face visor**, because PHOTO 1's
- * is: it wraps ear to ear (±1.20 rad against Wheel in Motion's ±0.80) and takes
- * 37.9 % of the shell's height against his 32.6 %, and the face behind it is
- * completely hidden.
- *
- * **It sits 52 mm lower than r1 authored it (finding 1c), and it did not
- * shrink.** The eyeport was never too deep — 34.5 % of the shell against
- * PHOTO 1's 40.4 % — but it was cut too high, leaving a 35.5 % brow over it and
- * 30 % of shell under it, so the lid read as a letterbox wraparound shield.
- * PHOTO 1's column gives brow 50.0 %, shield 40.4 %, shell below 9.6 %.
- *
- * **Then r2 gave 11 mm of it back to the jaw, which is the whole of finding
- * 1a.** Moving the aperture down solved the crown and left the chin: with the
- * base rim taking 6.2 % of the shell, the *shell-coloured* band under the
- * visor was 5.9 % — six pixels at 0.69 × the shell's own front value, between
- * the visor's black and the rim's black, and two rounds of helmet critics read
- * it as no chin bar at all. PHOTO 1's band there is warm shell (hue 25–51°
- * against the visor's 113–166°) at 0.76 × the shell beside it and 11–18 % of
- * the helmet's height. `from` 0.093 → **0.104**, with the rim cut to 0.068,
- * gives **brow 50.0 % / shield 34.1 % / pale jaw 12.4 % / rim 3.4 %** — the
- * aperture loses 11 mm off the *bottom* only, the crown does not move, and the
- * share stays inside the 0.30–0.38 window `floWithZo.test.ts` holds it to. How
- * far a real chin bar projects forward is not measurable from either
- * photograph (r2's inference 4), so nothing here projects: the jaw lead stays
- * in the shell's own rings. `bulge` is what makes it an eyeport rather than a
- * television — a constant-`v` span is a pair of horizontal rings by
- * construction, and `taper` alone pulls both edges in and gives a lens
- * (`blockoutKit.ts:373-388`).
- *
- * **1.20 rad and not the 1.35 the plan started from.** A patch is a slab — an
- * outer face, an inner face sunk below the surface, and a rim joining them —
- * so wherever its end lands the rim is a 20 mm wall, and an end 13° from the
- * shell's widest point in plan is a wall seen edge-on from any rear-quarter
- * camera. 1.20 leaves 21° of shell outboard of the visor on each side, which
- * is where the hinge boss sits and where a real shell continues to the ear,
- * and still wraps 138° of the head.
- */
-const FLO_VISOR_HALF_SPAN = 1.20;
-
-const FLO_FACE: RiderPanelGroup = group('face', [
-  patch({
-    anchor: 'front' as PatchAnchor,
-    u0: -FLO_VISOR_HALF_SPAN,
-    u1: FLO_VISOR_HALF_SPAN,
-    from: 0.104,
-    to: 0.203,
-    uSegments: 16,
-    vSegments: 5,
-    lift: 0.006,
-    sink: -0.014,
-    // The two together are a shield: the taper narrows the aperture toward
-    // each hinge the way a real visor does, and the bulge arches the brow so
-    // the eyeport is not a television.
-    taper: 0.26,
-    bulge: 0.20,
-    shade: 1,
-  }),
-]);
+const FLO_FACE: RiderPanelGroup = Object.freeze({
+  role: 'face', casts: false, patches: Object.freeze([]),
+  buildSingle: () => floWrapShield(FLO_HELMET),
+});
 
 // -- The look -----------------------------------------------------------------
 
 export const FLO_WITH_ZO_LOOK: RiderLook = Object.freeze({
   id: 'flo-with-zo',
-  // Wheel in Motion's densities: a chest that curves two ways carries the
-  // vest's seam, and the lid's silhouette is what the chase camera looks at.
-  // Triangles are the free axis.
-  density: Object.freeze({ limb: 18, torso: 30, head: 32, hand: 18 }),
+  // Enough columns for the curved jacket panels and gathered sleeves.
+  density: Object.freeze({ limb: 26, torso: 48, head: 32, hand: 18 }),
   materials: Object.freeze({
     body: FLO_SUIT,
     limbs: FLO_SUIT,
@@ -1457,22 +1014,23 @@ export const FLO_WITH_ZO_LOOK: RiderLook = Object.freeze({
     seat: 'body' as RiderMaterialRole,
   }),
   panels: Object.freeze({
-    // **No collar patch**, no shoulder group, no torso group and no waist
+    // **No collar patch**, no shoulder group and no waist
     // group. PHOTO 2's back is unbroken light silver: no harness, no straps,
     // no yoke band and no lettering — every one of those is an invention of
     // the AI turnaround (§34.2). The collar is a painted band on the jersey's
     // top rows, never a lifted ring, because a band on a loft's top ring is a
     // collar in the sense the owner rejected on the last rider — a dog
     // harness round the neck.
+    // Jacket zipper, welt seams and two slim pocket openings.
+    torso: Object.freeze({ role: 'body', casts: false, patches: [], buildSingle: () => raceJacketClosures(FLO_JERSEY) }),
     elbowPad: FLO_ELBOW_PAD,
     thighPad: Object.freeze({ ...FLO_THIGH_PAD, ghostSilhouette: true }),
     kneePad: Object.freeze({ ...FLO_KNEE_PAD, ghostSilhouette: true }),
     head: FLO_HEAD_PANELS,
     face: FLO_FACE,
   }),
-  // Nothing bolted on: the visor is a patch and the lid's second colour is the
-  // rim's own shade, so the whole head is two meshes and one of them does not
-  // cast.
+  // The domed shell and opaque curved shield stay two meshes; the shield
+  // carries no live shadow and all pivot hardware merges into the shell.
   extras: Object.freeze([]),
   build: Object.freeze({ hand: Object.freeze([floThumb]) }),
   paint: Object.freeze({
@@ -1483,8 +1041,7 @@ export const FLO_WITH_ZO_LOOK: RiderLook = Object.freeze({
     shin: paintFloShin,
     boot: paintFloBoot,
   }),
-  // PHOTO 1 rides with the leading arm low and forward and the trailing arm
-  // swept back; the rig's own reactions carry that. All the carriage adds is
-  // the touch of splay Wheel in Motion's has, so the sleeves clear the flank.
-  armCarriage: Object.freeze({ splay: 0.012, rise: 0 }),
+  // Bent forearms bring the gloves forward into his racing carriage. The
+  // common rig still supplies the lean, carve, one-foot and rest reactions.
+  armCarriage: Object.freeze({ splay: .008, rise: .050, forward: .086 }),
 });
